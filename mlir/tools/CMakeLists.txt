@@ -1,0 +1,7 @@
+add_subdirectory(rocmlir-lsp-server)
+add_subdirectory(rocmlir-opt)
+add_subdirectory(rocmlir-gen)
+add_subdirectory(rocmlir-translate)
+add_subdirectory(rocmlir-driver)
+add_subdirectory(rocmlir-lib)
+add_subdirectory(rocmlir-tuning-driver)

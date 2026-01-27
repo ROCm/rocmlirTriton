@@ -1,0 +1,118 @@
+set(LLVM_OPTIONAL_SOURCES
+  rocmlir-tuning-driver.cpp
+  )
+
+if(MLIR_ENABLE_ROCM_RUNNER)
+
+get_property(rocmlir_dialect_libs GLOBAL PROPERTY ROCMLIR_DIALECT_LIBS)
+get_property(rocmlir_conversion_libs GLOBAL PROPERTY ROCMLIR_CONVERSION_LIBS)
+
+set(LIBS
+  ${rocmlir_dialect_libs}
+  ${rocmlir_conversion_libs}
+  MLIRParser
+  MLIRAnalysis
+  MLIRFuncInlinerExtension
+
+  TritonIR
+  TritonGPUIR
+  TritonAnalysis
+  TritonGPUTransforms
+  TritonAMDGPUToLLVM
+  TritonAMDGPUTransforms
+  TritonAMDAnalysis
+  TritonAMDGPUDialectToLLVM
+  TritonAMDUtils
+  GluonTransforms
+  TritonInstrumentToLLVM
+  NVHopperTransforms
+  ProtonToProtonGPU
+  ProtonGPUToLLVM
+  ProtonNVIDIAGPUToLLVM
+  ProtonAMDGPUToLLVM
+  ProtonGPUTransforms
+  TritonLLVMIR
+  NVGPUToLLVM
+  TritonInstrumentTransforms
+)
+
+add_rocmlir_tool(rocmlir-tuning-driver
+  rocmlir-tuning-driver.cpp
+  CacheFlush.cpp
+)
+
+# Grab HIP again, since we'll be using it directly
+if (NOT DEFINED ROCM_PATH)
+  if (NOT DEFINED ENV{ROCM_PATH})
+    set(ROCM_PATH "/opt/rocm" CACHE PATH "Path to which ROCm has been installed")
+  else()
+    set(ROCM_PATH $ENV{ROCM_PATH} CACHE PATH "Path to which ROCm has been installed")
+  endif()
+endif()
+# A lot of the ROCm CMake files expect to find their own dependencies in
+# CMAKE_PREFIX_PATH and don't respect PATHS or HINTS :( .
+# Therefore, temporarily add the ROCm path to CMAKE_PREFIX_PATH so we can
+# load HIP, then remove it
+set(REAL_CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}")
+list(APPEND CMAKE_PREFIX_PATH ${ROCM_PATH} "${ROCM_PATH}/hip" "${ROCM_PATH}/hiprtc")
+find_package(hip REQUIRED)
+find_package(hiprtc REQUIRED)
+set(CMAKE_PREFIX_PATH "${REAL_CMAKE_PREFIX_PATH}")
+
+# Supress compiler warnings from HIP headers
+# Only set compile options on mlir_rocm_runtime if it exists and is not an IMPORTED target
+# (i.e., when building LLVM/MLIR from source rather than using a pre-built version)
+if(TARGET mlir_rocm_runtime)
+  get_target_property(_mlir_rocm_runtime_imported mlir_rocm_runtime IMPORTED)
+endif()
+if(TARGET mlir_rocm_runtime AND NOT _mlir_rocm_runtime_imported)
+  check_cxx_compiler_flag(-Wno-c++98-compat-extra-semi
+    CXX_SUPPORTS_NO_CXX98_COMPAT_EXTRA_SEMI_FLAG)
+  if (CXX_SUPPORTS_NO_CXX98_COMPAT_EXTRA_SEMI_FLAG)
+    target_compile_options(mlir_rocm_runtime PRIVATE
+      "-Wno-c++98-compat-extra-semi")
+  endif()
+  check_cxx_compiler_flag(-Wno-return-type-c-linkage
+      CXX_SUPPORTS_WNO_RETURN_TYPE_C_LINKAGE_FLAG)
+  if (CXX_SUPPORTS_WNO_RETURN_TYPE_C_LINKAGE_FLAG)
+    target_compile_options(mlir_rocm_runtime PRIVATE
+      "-Wno-return-type-c-linkage")
+  endif()
+  check_cxx_compiler_flag(-Wno-nested-anon-types
+    CXX_SUPPORTS_WNO_NESTED_ANON_TYPES_FLAG)
+  if (CXX_SUPPORTS_WNO_NESTED_ANON_TYPES_FLAG)
+    target_compile_options(mlir_rocm_runtime PRIVATE
+      "-Wno-nested-anon-types")
+  endif()
+  check_cxx_compiler_flag(-Wno-gnu-anonymous-struct
+    CXX_SUPPORTS_WNO_GNU_ANONYMOUS_STRUCT_FLAG)
+  if (CXX_SUPPORTS_WNO_GNU_ANONYMOUS_STRUCT_FLAG)
+    target_compile_options(mlir_rocm_runtime PRIVATE
+      "-Wno-gnu-anonymous-struct")
+  endif()
+endif()
+
+set_property(TARGET rocmlir-tuning-driver
+  PROPERTY INSTALL_RPATH_USE_LINK_PATH ON)
+
+target_link_libraries(rocmlir-tuning-driver PRIVATE ${LIBS})
+target_link_libraries(rocmlir-tuning-driver PUBLIC benchmark-driver-utils)
+target_link_libraries(rocmlir-tuning-driver PUBLIC hip::host hip::amdhip64 hiprtc::hiprtc)
+llvm_update_compile_flags(rocmlir-tuning-driver)
+
+# Add Triton include directories for compilation
+target_include_directories(rocmlir-tuning-driver PRIVATE
+  ${TRITON_PROJECT_DIR}/include
+  ${TRITON_BINARY_DIR}/include
+  ${TRITON_PROJECT_DIR}/third_party/amd
+  ${TRITON_BINARY_DIR}/third_party/amd
+  ${TRITON_PROJECT_DIR}/third_party/nvidia
+  ${TRITON_BINARY_DIR}/third_party/nvidia
+  ${TRITON_PROJECT_DIR}/third_party
+  ${TRITON_PROJECT_DIR}
+  ${TRITON_BINARY_DIR}/third_party
+  ${TRITON_BINARY_DIR}/third_party/amd/include
+  ${TRITON_BINARY_DIR}/third_party/nvidia/include
+)
+
+endif()

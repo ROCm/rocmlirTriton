@@ -1,0 +1,116 @@
+//===-- RocMLIRPasses.td - Conversion pass definition file -*- tablegen -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef ROCMLIR_CONVERSION_PASSES
+#define ROCMLIR_CONVERSION_PASSES
+
+include "mlir/Pass/PassBase.td"
+
+
+//===----------------------------------------------------------------------===//
+// RocmlirCustomTosaDecomposePass
+//===----------------------------------------------------------------------===//
+
+def RocmlirCustomTosaDecomposePass : Pass<"rocmlir-custom-tosa-decompose", ""> {
+  let summary = "Decompose RocMLIR's custom TOSA ops";
+  let description = [{
+    Pass that decomposes RocMLIR's custom TOSA operators.
+  }];
+  let dependentDialects = ["arith::ArithDialect", "linalg::LinalgDialect",
+                           "tensor::TensorDialect", "tosa::TosaDialect"];
+}
+
+//===----------------------------------------------------------------------===//
+// RocmlirCustomTosaToLinalgPass
+//===----------------------------------------------------------------------===//
+
+def RocmlirCustomTosaToLinalgPass : Pass<"rocmlir-custom-tosa-to-linalg", ""> {
+  let summary = "Lower RocMLIR's custom TOSA ops to Linalg";
+  let description = [{
+    Pass that converts RocMLIR's custom TOSA operators to `linalg`.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "linalg::LinalgDialect",
+    "tensor::TensorDialect",
+    "tosa::TosaDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// TosaToRock
+//===----------------------------------------------------------------------===//
+
+def TosaToRockPass : Pass<"tosa-to-rock", "::mlir::func::FuncOp"> {
+  let summary = "Lower TOSA to Rock";
+  let description = [{
+    Pass that converts TOSA operations to bufferized Rock operations.
+  }];
+  let dependentDialects = [
+    "bufferization::BufferizationDialect",
+    "func::FuncDialect",
+    "rock::RockDialect",
+    "tensor::TensorDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// MIGraphXToTosa
+//===----------------------------------------------------------------------===//
+
+def MIGraphXToTosaPass : Pass<"migraphx-to-tosa", "::mlir::func::FuncOp"> {
+  let summary = "Lower MIGraphX to TOSA";
+  let description = [{
+    Pass that converts MIGraphX operations to TOSA operations.
+  }];
+
+  let dependentDialects = [
+    "func::FuncDialect",
+    "tosa::TosaDialect",
+    //"mhal::MHALDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// EmulateFp8ExtTrunc
+//===----------------------------------------------------------------------===//
+
+def EmulateFp8ExtTruncPass : Pass<"emulate-fp8-ext-trunc"> {
+  let summary = "Emulate arith.extf/truncf on fp8 types";
+  let description = [{
+    Pass that emulates arith.extf and arith.truncf on 8-bit float types
+    so as to allow testing on non-MI-300 platforms.
+
+    arith.extf is converted into lookups in a table generated at
+    code generation-time.
+
+    arith.truncf gets converted to calls to functions which this pass inserts.
+
+    This is a quick implementation that provides the mimimal functionality to
+    test 8-bit float kernels.
+
+    This pass must be run at the `builtin.module`/`gpu.module` level
+    (the root operation needs to have a symbol table)
+  }];
+
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "cf::ControlFlowDialect",
+    "func::FuncDialect",
+    "memref::MemRefDialect",
+    "vector::VectorDialect",
+  ];
+  let options = [
+    Option<"hasFp8ConversionInstrs", "f8-conversion-instrs", "bool", /*default=*/"false",
+           "if the chip has fp8 Nanoo to fp32 conversion instructions or not">,
+    Option<"hasOcpFp8ConversionInstrs", "ocpf8-conversion-instrs", "bool", /*default=*/"false",
+           "if the chip has OCP fp8 to fp32 conversion instructions or not">,
+  ];
+}
+
+#endif // ROCMLIR_CONVERSION_PASSES

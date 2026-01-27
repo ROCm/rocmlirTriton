@@ -1,0 +1,15 @@
+add_rocmlir_test_library(MLIRRockTestPasses
+  TestCollapseContiguousMerges.cpp
+  TestVectorizationInference.cpp
+  TestBufferDependencyAnalysis.cpp
+  TestFunctionFusibility.cpp
+  TestTransformationMapsUtils.cpp
+  EXCLUDE_FROM_LIBMLIR
+
+  LINK_LIBS PUBLIC
+  MLIRFuncDialect
+  MLIRRockAnalysis
+  MLIRRockOps
+  MLIRRockTransforms
+  MLIRRockUtility
+  MLIRPass)
