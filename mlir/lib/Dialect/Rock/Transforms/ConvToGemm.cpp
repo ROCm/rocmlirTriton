@@ -23,7 +23,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -209,6 +208,7 @@ LogicalResult getConvDimNames(T op, SmallVectorImpl<StringRef> &filterNames,
 Type getResultType(Operation *convOp, Value outArg) {
   if (convOp->getNumResults() == 1)
     return outArg.getType();
+  llvm_unreachable("Expected exactly one result");
   return nullptr;
 }
 
@@ -1296,11 +1296,27 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
     Location loc = op.getLoc();
     auto tuningParams = op.getParamsAttr();
     auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
-    GemmOp::create(b, loc, getResultType(op, gemmC), gemmA, gemmB,
-                   /*scaleA=*/nullptr, /*scaleB=*/nullptr,
-                   /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
-                   /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-                   op.getFeaturesAttr(), storeMethod, tuningParams);
+    auto newGemmOp = GemmOp::create(
+        b, loc, getResultType(op, gemmC), gemmA, gemmB,
+        /*scaleA=*/nullptr, /*scaleB=*/nullptr,
+        /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
+        /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
+        op.getFeaturesAttr(), storeMethod, tuningParams);
+
+    // Find and update the StoreOp that uses the conv result.
+    // The conv result type (conv output shape) differs from gemm result type
+    // (gemm shape), so we need to update the StoreOp to use gemm result and
+    // gemmC as the destination.
+    Value convResult = op.getResult();
+    for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
+      if (auto storeOp = dyn_cast<StoreOp>(user)) {
+        // Create a new StoreOp with gemm result and gemmC
+        Type storeResultType = storeOp.getResult().getType();
+        auto newStoreOp = StoreOp::create(b, loc, storeResultType,
+                                          newGemmOp.getResult(), gemmC);
+        b.replaceOp(storeOp, newStoreOp.getResult());
+      }
+    }
 
     // Finally, erase the original Conv op.
     b.eraseOp(op);
@@ -1358,10 +1374,10 @@ void RockConvToGemmPass::runOnOperation() {
   target.addIllegalOp<rock::ConvOp, rock::ConvBwdDataOp, rock::ConvBwdWeightOp,
                       rock::ConvElementwiseGemmOp>();
   target.addLegalOp<rock::TransformOp, rock::GemmOp, rock::WorkgroupIdOp,
-                    rock::GpuAllocOp, rock::GemmElementwiseGemmOp>();
+                    rock::GpuAllocOp, rock::GemmElementwiseGemmOp,
+                    rock::StoreOp>();
   // Below are required legalize for the lowering of ConvBwdWeightOp
-  target.addLegalDialect<arith::ArithDialect, memref::MemRefDialect,
-                         scf::SCFDialect>();
+  target.addLegalDialect<arith::ArithDialect, scf::SCFDialect>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<ConvRewritePattern<ConvOp>, ConvRewritePattern<ConvBwdDataOp>,
