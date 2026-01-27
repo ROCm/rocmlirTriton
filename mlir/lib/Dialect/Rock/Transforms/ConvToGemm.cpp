@@ -1306,6 +1306,7 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
     // The conv result type (conv output shape) differs from gemm result type
     // (gemm shape), so we need to update the StoreOp to use gemm result and
     // gemmC as the destination.
+    // TODO(roctriton): This will break with fusions
     Value convResult = op.getResult();
     for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
       if (auto storeOp = dyn_cast<StoreOp>(user)) {

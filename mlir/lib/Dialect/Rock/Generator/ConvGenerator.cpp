@@ -968,6 +968,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
                               logicalFuncArgTypes, args);
 
   // Get the result type from the output argument type
+  // TODO(roctriton): Is 2 always the right index?
   Type outputResultType = logicalFuncArgTypes[2];
 
   Value convResult;
@@ -1034,6 +1035,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   }
 
   // Store the result to the transformed output tensor (args[2])
+  // TODO(roctriton): Is 2 always the output tensor?
   Value storedVal = rock::StoreOp::create(builder, builder.getUnknownLoc(),
                                           outputFlatType, convResult, args[2]);
 
