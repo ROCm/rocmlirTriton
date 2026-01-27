@@ -76,7 +76,7 @@ class Rock_ConvOpBase<string mnemonic, list<Type> inputTypes = [F32, F16, BF16],
       IndexArrayLength<4>:$padding, IndexArrayLength<2>:$strides,
       IndexArrayLength<2>:$dilations,
       OptionalAttr<RockTuningParamAttrInterface>:$params);
-  let results = (outs Optional<AnyRankedTensor>:$result);
+  let results = (outs AnyRankedTensor:$result);
 }
 
 defvar GemmInputTypes = [F32, F16, BF16, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M2,
@@ -94,7 +94,7 @@ def Rock_ConvOp : Rock_ConvOpBase<"conv", GemmInputTypes, GemmOutputTypes> {
   let hasVerifier = 1;
   let assemblyFormat = [{
     `(` operands `)` (`features` `=` $features^)? attr-dict
-    `:` type(operands) (`->` type($result)^)?
+    `:` type(operands) `->` type($result)
   }];
 }
 
@@ -116,7 +116,7 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
   let hasVerifier = 1;
   let assemblyFormat = [{
     `(` operands `)` (`features` `=` $features^)? attr-dict
-    `:` type(operands) (`->` type($result)^)?
+    `:` type(operands) `->` type($result)
   }];
 }
 
@@ -133,7 +133,7 @@ def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
   let hasVerifier = 1;
   let assemblyFormat = [{
     `(` operands `)` (`features` `=` $features^)? attr-dict
-    `:` type(operands) (`->` type($result)^)?
+    `:` type(operands) `->` type($result)
   }];
 }
 
