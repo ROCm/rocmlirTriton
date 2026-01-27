@@ -797,19 +797,19 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   if (!filterDataType || !inputDataType || !outputDataType)
     return failure();
 
-  // Construct a new FuncOp.
+  // Construct a new FuncOp with tensor types.
   auto filterArgType =
-      MemRefType::get(ArrayRef<int64_t>(config.filterDimension.begin(),
-                                        config.filterDimension.end()),
-                      filterDataType);
+      RankedTensorType::get(ArrayRef<int64_t>(config.filterDimension.begin(),
+                                              config.filterDimension.end()),
+                            filterDataType);
   auto inputArgType =
-      MemRefType::get(ArrayRef<int64_t>(config.inputDimension.begin(),
-                                        config.inputDimension.end()),
-                      inputDataType);
+      RankedTensorType::get(ArrayRef<int64_t>(config.inputDimension.begin(),
+                                              config.inputDimension.end()),
+                            inputDataType);
   auto outputArgType =
-      MemRefType::get(ArrayRef<int64_t>(config.outputDimension.begin(),
-                                        config.outputDimension.end()),
-                      outputDataType);
+      RankedTensorType::get(ArrayRef<int64_t>(config.outputDimension.begin(),
+                                              config.outputDimension.end()),
+                            outputDataType);
 
   bool hasWorkspace = false;
   if (failed(this->hasWorkspace(builder, hasWorkspace))) {
@@ -818,9 +818,9 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   Type workspaceArgType;
   if (hasWorkspace) {
     workspaceArgType =
-        MemRefType::get(ArrayRef<int64_t>(config.filterDimension.begin(),
-                                          config.filterDimension.end()),
-                        builder.getF32Type());
+        RankedTensorType::get(ArrayRef<int64_t>(config.filterDimension.begin(),
+                                                config.filterDimension.end()),
+                              builder.getF32Type());
   }
 
   SmallVector<Type, 3> logicalFuncArgTypes = {filterArgType, inputArgType,
@@ -832,7 +832,9 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
   SmallVector<Type, 3> physicalFuncArgTypes =
       llvm::map_to_vector(logicalFuncArgTypes, getFlattenedType);
-  auto funcType = builder.getFunctionType(physicalFuncArgTypes, {});
+  Type outputFlatType = getFlattenedType(outputArgType);
+  auto funcType =
+      builder.getFunctionType(physicalFuncArgTypes, {outputFlatType});
 
   std::string kernelName = config.kernelBaseName;
   if (isVerifier) {
@@ -964,10 +966,16 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   SmallVector<Value, 4> args;
   expandFlatFunctionArguments(builder, func, argDimNameRefs,
                               logicalFuncArgTypes, args);
+
+  // Get the result type from the output argument type
+  Type outputResultType = logicalFuncArgTypes[2];
+
+  Value convResult;
   switch (config.operation.value()) {
   case ConvOpType::Fwd: {
-    ConvOp::create(builder, builder.getUnknownLoc(), ArrayRef<Type>{}, args,
-                   attributes);
+    auto convOp = ConvOp::create(builder, builder.getUnknownLoc(),
+                                 outputResultType, args, attributes);
+    convResult = convOp.getResult();
   } break;
   case ConvOpType::BwdData: {
     if (!rock::isEveryElementWrittenBwdData(
@@ -984,8 +992,9 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
         zeroInitArg(builder, func, 1);
       }
     }
-    ConvBwdDataOp::create(builder, builder.getUnknownLoc(), ArrayRef<Type>{},
-                          args, attributes);
+    auto convOp = ConvBwdDataOp::create(builder, builder.getUnknownLoc(),
+                                        outputResultType, args, attributes);
+    convResult = convOp.getResult();
   } break;
   case ConvOpType::BwdWeight: {
     int kernelCount = 0;
@@ -1017,13 +1026,18 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
       if (needsZeroInit) {
         zeroInitArg(builder, func, hasWorkspace ? 3 : 0);
       }
-      ConvBwdWeightOp::create(builder, builder.getUnknownLoc(),
-                              ArrayRef<Type>{}, args, attributes);
+      auto convOp = ConvBwdWeightOp::create(builder, builder.getUnknownLoc(),
+                                            outputResultType, args, attributes);
+      convResult = convOp.getResult();
     }
   } break;
   }
 
-  func::ReturnOp::create(builder, builder.getUnknownLoc(), ValueRange{});
+  // Store the result to the transformed output tensor (args[2])
+  Value storedVal = rock::StoreOp::create(builder, builder.getUnknownLoc(),
+                                          outputFlatType, convResult, args[2]);
+
+  func::ReturnOp::create(builder, builder.getUnknownLoc(), storedVal);
   return success();
 }
 
