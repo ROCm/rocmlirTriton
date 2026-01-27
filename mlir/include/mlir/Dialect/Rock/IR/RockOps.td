@@ -478,15 +478,15 @@ def Rock_LoadOp :
     Rock_Op<"load", [AllTypesMatch<["source", "result"]>]>,
     Arguments<(ins AnyRankedTensor:$source)>,
     Results<(outs AnyRankedTensor:$result)> {
-  let summary = "Load tensor";
+  let summary = "Placeholder (used by fusion passes) to mark where loads from global memory will hapen";
   let description = [{
     The rock.load op is a placeholder marking where loads from global memory
     need to happen. It takes a tensor (typically a function argument) and
     returns a tensor of the same type. This operation is used by passes that
-    need to track where data is loaded from global memory into registers/LDS.
+    need to track where data is loaded from global memory (for fusions).
   }];
   let assemblyFormat = [{
-    $source attr-dict `:` type($source) `->` type($result)
+    $source attr-dict `:` type($result)
   }];
 }
 
@@ -498,7 +498,12 @@ def Rock_StoreOp :
     Results<(outs AnyRankedTensor:$result)> {
   let summary = "Store tensor result to destination";
   let description = [{
-    TODO: Explain that this is needed because we now use tensors.
+    The rock.store op is a placeholder marking where stores to global memory need to happen. 
+    This op is used to specify that the output of a given operation (i.e., rock.gemm) will be stored into 
+    a different (tensor) location. This is needed because we have rock.transform ops that are used to 
+    modify the way we load/store to memory, whereas ops like rock.gemm return a tensor result which do 
+    not take into account the rock.transform ops, so rock.store ops allow us to indicate that writing to 
+    the output will occur according to what the rock.transform op indicates.
   }];
   let assemblyFormat = [{
     $source `to` $dest attr-dict `:` type($source) `->` type ($result) `to` type($dest)
