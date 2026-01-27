@@ -208,7 +208,6 @@ LogicalResult getConvDimNames(T op, SmallVectorImpl<StringRef> &filterNames,
 Type getResultType(Operation *convOp, Value outArg) {
   if (convOp->getNumResults() == 1)
     return outArg.getType();
-  llvm_unreachable("Expected exactly one result");
   return nullptr;
 }
 
