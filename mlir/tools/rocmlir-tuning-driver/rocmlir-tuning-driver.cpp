@@ -877,6 +877,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       rock::AmdArchInfo archInfo = rock::lookupArchInfo(backendOpts.chip);
       int waveSize = archInfo.waveSize;
+      int maxSharedMemPerWG = archInfo.maxSharedMemPerWG;
 
       rock::TritonOptions tritonOpts;
       tritonOpts.arch = backendOpts.chip;
@@ -950,6 +951,12 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       if (auto sharedAttr =
               sourceCopy.get()->getAttrOfType<IntegerAttr>("ttg.shared"))
         sharedMemorySize = sharedAttr.getInt();
+
+        
+      if(sharedMemorySize > maxSharedMemPerWG) {
+        result.status = CompilationStatus::NotApplicable;
+        return result;
+      }
 
       // The warp-specialization pass can mutate the number of warps
       int blockSize = 0;

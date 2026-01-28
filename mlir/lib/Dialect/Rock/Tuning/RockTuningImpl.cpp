@@ -133,7 +133,7 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t maxWavesPerEU, Tuning
       {32, 64}, // K/block
       {1, 2},      // kPack
       {16, 32},    // matrixInstrNonkdim
-      {1, 2},     // numStages
+      {1, 2, 3},     // numStages
       wavesPerEUList,         // wavesPerEU
       {0, 4, 6} // gridGroupSize
       };
