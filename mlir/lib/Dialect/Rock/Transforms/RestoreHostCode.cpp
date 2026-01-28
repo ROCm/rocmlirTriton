@@ -29,6 +29,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
@@ -124,7 +125,7 @@ private:
   bool restoreHostFunctions(ModuleOp moduleOp);
 
   /// Collect kernel information from LLVM functions
-  LogicalResult collectKernelInfo(ModuleOp moduleOp,
+  LogicalResult collectKernelInfo(ModuleOp moduleOp, int maxSharedMemPerWG,
                                   SmallVector<KernelInfo> &kernels);
 
   /// Create gpu.binary from HSACO and convert calls to gpu.launch_func
@@ -184,7 +185,7 @@ bool RockRestoreHostCodePass::restoreHostFunctions(ModuleOp moduleOp) {
 }
 
 LogicalResult
-RockRestoreHostCodePass::collectKernelInfo(ModuleOp moduleOp,
+RockRestoreHostCodePass::collectKernelInfo(ModuleOp moduleOp, int maxSharedMemPerWG,
                                            SmallVector<KernelInfo> &kernels) {
   // Get Triton metadata from module attributes for block size
   // The HSACO is compiled with these settings, so we must use them for launch
@@ -200,6 +201,11 @@ RockRestoreHostCodePass::collectKernelInfo(ModuleOp moduleOp,
     warpSize = warpSizeAttr.getInt();
   if (auto sharedAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared"))
     sharedMemory = sharedAttr.getInt();
+
+  if(sharedMemory > maxSharedMemPerWG) {
+    LLVM_DEBUG(llvm::dbgs() << "ttg.shared: too much LDS usage\n");
+    return failure();
+  }
 
   if (numWarps == -1) {
     LLVM_DEBUG(llvm::dbgs() << "ttg.num-warps not found\n");
@@ -394,16 +400,19 @@ void RockRestoreHostCodePass::runOnOperation() {
   // Mark the module as containing GPU code
   moduleOp->setAttr(gpu::GPUDialect::getContainerModuleAttrName(),
                     builder.getUnitAttr());
-
+  
   // Restore host functions from the serialized attribute
   if (!restoreHostFunctions(moduleOp)) {
     // No host functions to restore
     return;
   }
 
+  AmdArchInfo archInfo = rock::lookupArchInfo(arch);
+  int maxSharedMemPerWG = archInfo.maxSharedMemPerWG;
+  
   // Collect kernel information from LLVM functions
   SmallVector<KernelInfo> kernels;
-  if (failed(collectKernelInfo(moduleOp, kernels)))
+  if (failed(collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels)))
     signalPassFailure();
 
   // If we have kernels, create gpu.binary and convert calls to gpu.launch_func
