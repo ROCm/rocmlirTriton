@@ -236,6 +236,9 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
   // Set tt.pointer_range = 32 if tensor is statically known to be < 2GB
   constexpr int64_t k2GBLimit = (1LL << 31); // 2GB
   for (const auto &info : argsToConvert) {
+    // as we use gpu malloc, this is always the case
+    // we use 16 because 128-bit is the maximum vector load/store width on
+    // modern GPUs
     ttFuncOp.setArgAttr(info.argIndex, "tt.divisibility",
                         builder.getI32IntegerAttr(16));
 
@@ -250,6 +253,9 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
         // Tensor fits in 32-bit address range, enable buffer ops optimization
         ttFuncOp.setArgAttr(info.argIndex, "tt.pointer_range",
                             builder.getI32IntegerAttr(32));
+      } else {
+        LLVM_DEBUG(llvm::dbgs() << "Tensor (idx=" << info.argIndex
+                                << ") is too big to add tt.pointer_range=32\n");
       }
     }
   }
