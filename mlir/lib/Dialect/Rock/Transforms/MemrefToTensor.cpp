@@ -37,6 +37,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
@@ -63,14 +64,6 @@ static bool isTensorOfPointers(Type type) {
     return isa<triton::PointerType>(tensorType.getElementType());
   }
   return false;
-}
-
-/// Helper to get element type from a memref type
-static Type getMemRefElementType(Type memrefType) {
-  if (auto mrt = dyn_cast<MemRefType>(memrefType)) {
-    return mrt.getElementType();
-  }
-  return nullptr;
 }
 
 struct RockMemrefToTensorPass
@@ -100,6 +93,7 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
   struct ArgConversionInfo {
     unsigned argIndex;
     Type elementType;
+    RankedTensorType tensorType; // Original tensor type for size calculation
     SmallVector<Value> valuesToReplace; // index_cast results to replace with block arg
     // Ops in the chain that need to be erased (in order: splats, index_cast, extract, to_buffer)
     SmallVector<triton::SplatOp> oldSplatOps;
@@ -134,6 +128,7 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
           ArgConversionInfo info;
           info.argIndex = blockArg.getArgNumber();
           info.elementType = tensorType.getElementType();
+          info.tensorType = tensorType;
           info.valuesToReplace.push_back(indexCastOp.getResult());
           info.toBufferOp = toBufferOp;
           info.extractOp = extractOp;
@@ -236,6 +231,28 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
   auto ttFuncOp = triton::FuncOp::create(
       builder, funcOp.getLoc(), funcOp.getName(), newFuncType, attrsToKeep);
   ttFuncOp->setAttr("noinline", builder.getBoolAttr(true));
+
+  // Set tt.divisibility = 16 on pointer arguments to enable better vectorization
+  // Set tt.pointer_range = 32 if tensor is statically known to be < 2GB
+  constexpr int64_t k2GBLimit = (1LL << 31); // 2GB
+  for (const auto &info : argsToConvert) {
+    ttFuncOp.setArgAttr(info.argIndex, "tt.divisibility",
+                        builder.getI32IntegerAttr(16));
+
+    // Check if tensor size is statically known and < 2GB
+    if (info.tensorType.hasStaticShape()) {
+      int64_t numElements = info.tensorType.getNumElements();
+      assert(info.elementType.isIntOrFloat());
+      unsigned elementBitWidth = info.elementType.getIntOrFloatBitWidth();
+      assert(elementBitWidth > 0);
+        int64_t tensorSizeBytes = llvm::divideCeil(numElements * elementBitWidth, 8);
+      if (tensorSizeBytes < k2GBLimit) {
+        // Tensor fits in 32-bit address range, enable buffer ops optimization
+        ttFuncOp.setArgAttr(info.argIndex, "tt.pointer_range",
+                            builder.getI32IntegerAttr(32));
+      }
+    }
+  }
 
   Region &oldRegion = funcOp.getBody();
   Region &newRegion = ttFuncOp.getBody();
