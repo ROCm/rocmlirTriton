@@ -12,7 +12,6 @@
 
 #include "mlir/Conversion/TosaToRock/TosaToRock.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/IR/BufferizationTypeInterfaces.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1572,7 +1571,7 @@ struct GemmElementwiseGemmRewritePattern
     rock::GemmElementwiseGemmOp gemmElentwiseGemmOp =
         rock::GemmElementwiseGemmOp::create(
             rewriter, loc, outputType, firstMatMulOp.getA(),
-            firstMatMulOp.getB(), op.getB(), elementwiseOtherArgs, output,
+            firstMatMulOp.getB(), op.getB(), elementwiseOtherArgs,
             /*qTransposed=*/nullptr,
             /*kTransposed=*/nullptr,
             /*vTransposed=*/nullptr,
@@ -3012,7 +3011,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     rock::AttentionOp attnOp = rock::AttentionOp::create(
         rewriter, loc, outputType, lseType, queries, keys, values,
-        elementwiseOtherArgs, currentSeqLen, prefixOffset, output, lseOut,
+        elementwiseOtherArgs, currentSeqLen, prefixOffset,
         /*numHeadsQ=*/numHeadsQ,
         /*numHeadsKV=*/numHeadsKV,
         /*qTransposed=*/nullptr,

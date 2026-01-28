@@ -15,7 +15,7 @@
 // limitations under the License.
 // ============================================================
 //
-// This pass converts rock.gridwise_gemm_accel and rock.gridwise_attention_accel
+// This pass converts rock.gridwise_gemm
 // into block- and threadwise ops
 //
 //===-----------------------------------------------------===//
@@ -38,7 +38,6 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -74,7 +73,7 @@ namespace rock {
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-gridwise-to-blockwise"
+#define DEBUG_TYPE "rock-gridwise-gemm-to-blockwise"
 
 using namespace mlir;
 using namespace mlir::arith;
@@ -89,9 +88,9 @@ struct RockGridwiseGemmToBlockwisePass
 
 } // end anonymous namespace
 
-static Value blockwiseGemmAccel(PatternRewriter &rewriter, Location loc,
-                                Value bufferA, Value bufferB, Value matrixC,
-                                Value bufferScaleA, Value bufferScaleB) {
+static Value blockwiseGemm(PatternRewriter &rewriter, Location loc,
+                           Value bufferA, Value bufferB, Value matrixC,
+                           Value bufferScaleA, Value bufferScaleB) {
   auto cType = cast<RankedTensorType>(matrixC.getType());
   auto gemmOp = BlockwiseGemmOp::create(rewriter, loc, cType, bufferA, bufferB,
                                         matrixC, bufferScaleA, bufferScaleB);
@@ -110,7 +109,7 @@ static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
 }
 
 // This function will process a tile of gemm input into LDS (or register)
-// buffer in a way it could be fed to blockwise_gemm_accel op
+// buffer in a way it could be fed to blockwise_gemm op
 static Value loadAndStoreGemmInputTile(PatternRewriter &rewriter, Location loc,
                                        Value in, Value kIter, StringRef dName,
                                        rock::layout::GridCoordinates gridCoords,
@@ -151,10 +150,9 @@ static Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
 namespace {
 
 //===----------------------------------------------------------------------===//
-// GridwiseGemmAccel lowering.
+// GridwiseGemm lowering.
 //===----------------------------------------------------------------------===//
-struct GridwiseGemmAccelRewritePattern
-    : public OpRewritePattern<GridwiseGemmOp> {
+struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
   using OpRewritePattern<GridwiseGemmOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(GridwiseGemmOp op,
@@ -236,7 +234,6 @@ struct GridwiseGemmAccelRewritePattern
          rock::getNumChipletsValue(op), elementTypeA, destType, gridGroupSize},
         arch);
 
-    // Obtain Accelerator-related attributes.
     int64_t numWaves = tuningParams.getNumWaves();
     int64_t numCTAs = tuningParams.getNumCTAs();
 
@@ -290,17 +287,38 @@ struct GridwiseGemmAccelRewritePattern
 
       // Emit blockwise GEMM. This will load data from LDS (or registers) and
       // compute the MMA at the same time
-      Value newAcc = blockwiseGemmAccel(b, loc, loadedA, loadedB, accArg,
-                                        /*bufferScaleA=*/loadedScaleA,
-                                        /*bufferScaleB=*/loadedScaleB);
+      Value newAcc = blockwiseGemm(b, loc, loadedA, loadedB, accArg,
+                                   /*bufferScaleA=*/loadedScaleA,
+                                   /*bufferScaleB=*/loadedScaleB);
 
       // Yield the new accumulator
       scf::YieldOp::create(b, loc, ValueRange{newAcc});
       loopResult = loopOp.getResult(0);
     }
 
-    auto untileResult =
-        rock::UntileOp::create(b, loc, op.getResult().getType(), loopResult);
+    // Compute output transforms
+    FailureOr<RegsAsMatrixSubTiles> maybeOutputViews =
+        computeOutputTransforms(b, loc, mPerBlock, nPerBlock, bidGridLengths);
+
+    if (failed(maybeOutputViews)) {
+      LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms\n");
+      return failure();
+    }
+
+    ArrayAttr idToMatrixCMaps = maybeOutputViews->gridSubTile;
+
+    // Create StoreMarkerOp to mark the tile with output transforms for later
+    // store lowering The StoreMarkerOp preserves the tile type for fusion ops
+    // to operate on, while carrying the transform information needed by
+    // LowerStores
+    auto storeMarkerOp = StoreMarkerOp::create(
+        b, loc, loopResult.getType(), loopResult, idToMatrixCMaps,
+        ValueRange{gridCoords.g_block, gridCoords.m_block, gridCoords.n_block});
+
+    // Create UntileOp to convert tile back to full tensor type for
+    // compatibility with existing fusion ops that expect full tensor types
+    auto untileResult = rock::UntileOp::create(b, loc, op.getResult().getType(),
+                                               storeMarkerOp.getResult());
     b.replaceOp(op, untileResult);
     return success();
   }
@@ -311,16 +329,15 @@ struct GridwiseGemmAccelRewritePattern
 void RockGridwiseGemmToBlockwisePass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
-  target.addIllegalOp<rock::GridwiseGemmOp, GridwiseAttentionOp>();
+  target.addIllegalOp<rock::GridwiseGemmOp>();
   target.addLegalDialect<arith::ArithDialect, rock::RockDialect,
-                         memref::MemRefDialect, affine::AffineDialect,
-                         vector::VectorDialect, linalg::LinalgDialect,
-                         scf::SCFDialect, math::MathDialect,
-                         tensor::TensorDialect, triton::TritonDialect>();
+                         affine::AffineDialect, vector::VectorDialect,
+                         linalg::LinalgDialect, scf::SCFDialect,
+                         math::MathDialect, tensor::TensorDialect, triton::TritonDialect>();
   target.addLegalOp<gpu::PrintfOp>();
 
   RewritePatternSet patterns(ctx);
-  patterns.add<GridwiseGemmAccelRewritePattern>(ctx);
+  patterns.add<GridwiseGemmRewritePattern>(ctx);
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
     signalPassFailure();

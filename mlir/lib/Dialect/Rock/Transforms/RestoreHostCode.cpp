@@ -73,9 +73,11 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
   auto ptrType = LLVM::LLVMPointerType::get(ctx);
 
   for (const KernelInfo &kernel : kernels) {
-    // Create a function type with 5 pointer arguments (matching HSACO metadata)
-    // GEMM kernels typically expect: A, B, C, workspace1, workspace2
-    SmallVector<Type> argTypes(5, ptrType);
+    // Create a function type with the correct number of pointer arguments
+    // (matching the LLVM function signature from the HSACO).
+    // The number of arguments varies by operation type and fusions.
+    // Triton adds 2 workspace pointers (global scratch, profile scratch).
+    SmallVector<Type> argTypes(kernel.argTypes.size(), ptrType);
     auto kernelFuncType = FunctionType::get(ctx, argTypes, {});
 
     // Create metadata for this kernel
@@ -322,11 +324,10 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
       }
     }
 
-    // Triton kernels may have additional workspace arguments (typically 2 more)
-    // Add null pointers for these
-    // The HSACO typically expects 5 pointer arguments for GEMM: A, B, C,
-    // workspace1, workspace2
-    while (launchArgs.size() < 5) {
+    // Triton adds workspace arguments (global scratch, profile scratch).
+    // Add null pointers for these. The number of args varies by operation
+    // type and fusions - we use kernel.argTypes.size() from the LLVM signature.
+    while (launchArgs.size() < kernel.argTypes.size()) {
       Value nullPtr = LLVM::ZeroOp::create(builder, callLoc, ptrType);
       launchArgs.push_back(nullPtr);
     }

@@ -120,7 +120,7 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
 }
 
 AttnGridCoordinates rock::layout::makeGxNGridLayout(
-    PatternRewriter &b, Location loc, Value bid, Value mIter, int64_t nBlocks,
+    PatternRewriter &b, Location loc, Value bid, int64_t mBlocks, Value nIter,
     int64_t gridSize, StringRef arch, int64_t numChiplets, Value splitKV) {
   // Currently the firmware will launch workgroups
   // in a round-robin fashion to each chiplet. However
@@ -135,20 +135,21 @@ AttnGridCoordinates rock::layout::makeGxNGridLayout(
     int64_t numChipletsPerGroup = std::ceil(numChiplets / 2);
     bid = rearrangeWorkgroupsForXCC(loc, b, bid, gridSize, numChipletsPerGroup);
   }
-  Value g1NBlockCountVal = b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), nBlocks);
+  Value g1MBlockCountVal =
+      b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), mBlocks);
 
-  Value gBlockIdx, nBlockIdx, splitKVIdx;
+  Value gBlockIdx, mBlockIdx, splitKVIdx;
   if (splitKV) {
-    Value noGSize = arith::MulIOp::create(b, loc, splitKV, g1NBlockCountVal);
+    Value noGSize = arith::MulIOp::create(b, loc, splitKV, g1MBlockCountVal);
     gBlockIdx = arith::DivUIOp::create(b, loc, bid, noGSize);
-    nBlockIdx = arith::RemUIOp::create(b, loc, bid, g1NBlockCountVal);
-    Value outerIdx = arith::DivUIOp::create(b, loc, bid, g1NBlockCountVal);
+    mBlockIdx = arith::RemUIOp::create(b, loc, bid, g1MBlockCountVal);
+    Value outerIdx = arith::DivUIOp::create(b, loc, bid, g1MBlockCountVal);
     splitKVIdx = arith::RemUIOp::create(b, loc, outerIdx, splitKV);
   } else {
-    gBlockIdx = arith::DivUIOp::create(b, loc, bid, g1NBlockCountVal);
-    nBlockIdx = arith::RemUIOp::create(b, loc, bid, g1NBlockCountVal);
+    gBlockIdx = arith::DivUIOp::create(b, loc, bid, g1MBlockCountVal);
+    mBlockIdx = arith::RemUIOp::create(b, loc, bid, g1MBlockCountVal);
     splitKVIdx = nullptr;
   }
   // braces for init of the base class: GridCoordinates
-  return {{gBlockIdx, mIter, nBlockIdx}, splitKVIdx};
+  return {{gBlockIdx, mBlockIdx, nIter}, splitKVIdx};
 }

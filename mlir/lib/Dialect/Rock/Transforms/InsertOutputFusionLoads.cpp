@@ -267,7 +267,7 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
     if (failed(maybeOutputViews)) {
       LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms for: "
                               << loadOp << "\n");
-      continue;
+      return signalPassFailure();
     }
     
     // Apply the grid subtile transform to the rock.load result

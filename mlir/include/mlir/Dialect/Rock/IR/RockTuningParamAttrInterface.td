@@ -40,8 +40,7 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
       >,
     InterfaceMethod<
         /*desc=*/[{
-          Given that the GEMM input blocks layout is `[kOuter, dPerBlock, kPack]` (where `d` can be `m` or `n`)
-          this method returns `kPack`.
+          TODO: update kpack description
         }],
         /*retType=*/"int64_t",
         /*methodName=*/"getKpack",
@@ -61,7 +60,6 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
       >,
     // TODO: more methods here as needed
   ];
-
 }
 
 #endif // ROCK_TUNING_PARAM_INTERFACE

@@ -575,10 +575,9 @@ mlir::rock::traceGemmOutputToGenericOps(Value matC, func::FuncOp func) {
   return failure();
 }
 
-llvm::FailureOr<RegsAsMatrixSubTiles>
-mlir::rock::computeOutputTransforms(OpBuilder &b, Location loc,
-                                    int64_t mPerBlock, int64_t nPerBlock,
-                                    ArrayRef<int64_t> bidGridLengths) {
+llvm::FailureOr<RegsAsMatrixSubTiles> mlir::rock::computeOutputTransforms(
+    OpBuilder &b, Location loc, int64_t mPerBlock, int64_t nPerBlock,
+    ArrayRef<int64_t> bidGridLengths) {
   RegsAsMatrixSubTiles ret;
   {
     // Create views as gridwise sub-tile of C
@@ -595,6 +594,7 @@ mlir::rock::computeOutputTransforms(OpBuilder &b, Location loc,
                       {bidGridLengths[2], nPerBlock});
 
     TransformMapAttr toMatrixCAttr = toMatrixC.get();
+
     // Before returning the output view, if necessary, swap back the
     // threadid/iter dimensions on both the M/N axis.
     SmallVector<Attribute> transformAttrs{toMatrixCAttr};

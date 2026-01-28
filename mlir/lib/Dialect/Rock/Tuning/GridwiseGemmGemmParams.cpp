@@ -45,6 +45,10 @@ FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
 PopulateParamsGemmGemm::getGemmParams(OpBuilder &b,
                                            RockGemmGemmWrapperInterface op,
                                            GemmGemmParamsAttr params) {
+  // TODO(roctriton): do we need this?
+  if (params.getNPerBlockG1() % params.getNPerBlockG0() != 0)
+    return failure();
+
   GemmParamsAttr accelParams0 = getGemm0Params(b, params);
   GemmParamsAttr accelParams1 = getGemm1Params(b, params);
 
@@ -68,10 +72,9 @@ GemmParamsAttr
 PopulateParamsGemmGemm::getGemm1Params(OpBuilder &b,
                                        GemmGemmParamsAttr params) {
   return GemmParamsAttr::get(
-      b.getContext(), params.getMPerBlockG0() / params.getKpack(),
-      params.getMPerBlockG1(), params.getNPerBlockG0(), params.getKpack(),
-      params.getNumCTAs(),
-      params.getNumWaves(), params.getMatrixInstrNonkdim(), params.getSplitKFactor(),
-      params.getNumStages(), 
-      params.getWavesPerEU(), params.getGridGroupSize());
+      b.getContext(), params.getMPerBlockG0(), params.getNPerBlockG1(),
+      params.getNPerBlockG0(), params.getKpack(), params.getNumCTAs(),
+      params.getNumWaves(), params.getMatrixInstrNonkdim(),
+      params.getSplitKFactor(), params.getNumStages(), params.getWavesPerEU(),
+      params.getGridGroupSize());
 }

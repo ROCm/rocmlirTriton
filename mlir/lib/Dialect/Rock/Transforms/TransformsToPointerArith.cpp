@@ -666,20 +666,34 @@ struct TransformsToPtrRewritePattern
 
     // Hoist pointer extraction to function entry to avoid redundant extractions
     // when TransformsToPtrOp is inside loops or other control flow.
-    Value baseAddrSplat;
+    // For constant buffers (like fakeTensor used for index calculations),
+    // we use a base pointer of 0 since the actual pointer value doesn't matter.
+    Value baseAddr;
     {
       OpBuilder::InsertionGuard guard(b);
-      auto parentFunc = op->getParentOfType<func::FuncOp>();
-      b.setInsertionPointToStart(&parentFunc.front());
 
-      // Extract the base pointer from the tensor as i32
-      Value baseAddr =
-          rock::ExtractPtrOp::create(b, loc, b.getI32Type(), buffer);
+      bool isConstantBuffer =
+          buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
 
-      // Use triton.splat for broadcasting scalar to tensor
-      auto splatType = RankedTensorType::get(shape, b.getI32Type());
-      baseAddrSplat = triton::SplatOp::create(b, loc, splatType, baseAddr);
+      if (isConstantBuffer) {
+        // For constants (like fakeTensor), use base pointer of 0
+        // These are only used for index calculations, not actual memory access
+        baseAddr =
+            arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(0));
+      } else {
+        // For function arguments, hoist to function entry
+        auto parentFunc = op->getParentOfType<func::FuncOp>();
+        b.setInsertionPointToStart(&parentFunc.front());
+
+        // Extract the base pointer from the tensor as i32
+        baseAddr =
+              rock::ExtractPtrOp::create(b, loc, b.getI32Type(), buffer);
+              
+      }
     }
+    // Use tensor.splat for broadcasting scalar to triton
+    auto splatType = RankedTensorType::get(shape, b.getI32Type());
+    Value baseAddrSplat = triton::SplatOp::create(b, loc, splatType, baseAddr);
     // InsertionGuard restores original insertion point here
 
     // add `baseAddr` using linalg.map for tensor addition

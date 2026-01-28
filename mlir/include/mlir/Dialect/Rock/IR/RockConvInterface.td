@@ -74,17 +74,6 @@ def RockConvInterface : OpInterface<"RockConvInterface"> {
 
     // TODO: more methods here as needed
   ];
-
-  let verify = [{
-    auto concreteOp = ::mlir::cast<ConcreteOp>($_op);
-    if ($_op->getNumResults() == 1) {
-      if ($_op->getResult(0).getType() !=
-          concreteOp.getOutArgument()->get().getType()) {
-        return $_op->emitOpError("result type must match output argument type");
-      }
-    }
-    return ::mlir::success();
-  }];
 }
 
 #endif // ROCK_CONV_INTERFACE

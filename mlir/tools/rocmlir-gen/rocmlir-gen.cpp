@@ -1419,7 +1419,7 @@ static Value makeNDMemRef(OpBuilder &b, Value var, uint32_t ndim) {
 
 static std::pair<int64_t, int64_t> getMandNPerBlock(OpBuilder builder,
                                                     const GenParams &params) {
-  // default perfConfig is attn:v3:32,32,32,32,32,32,16,1,1,1,2,0,1
+  // default perfConfig is attn:v1:32,32,32,32,1,1,4,0,1,1,0,0
   // keep in sync with AffixTuningParameters.cpp
   if (params.perfConfig.empty())
     return {32, 32};
@@ -2723,12 +2723,12 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
   // output type = bias type
   const size_t outputIndex = biasIndex;
 
-  MemRefType qType = MemRefType::get(transposeQ ? transposedQDims : qDims,
-                                     elemTypes[qIndex]),
-             kType = MemRefType::get(transposeK ? kDims : transposedKDims,
-                                     elemTypes[kIndex]),
-             vType = MemRefType::get(transposeV ? transposedVDims : vDims,
-                                     elemTypes[vIndex]);
+  RankedTensorType qType = RankedTensorType::get(
+                       transposeQ ? transposedQDims : qDims, elemTypes[qIndex]),
+                   kType = RankedTensorType::get(
+                       transposeK ? kDims : transposedKDims, elemTypes[kIndex]),
+                   vType = RankedTensorType::get(
+                       transposeV ? transposedVDims : vDims, elemTypes[vIndex]);
 
   result.push_back(qType);
   result.push_back(kType);
@@ -2736,48 +2736,51 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
   if (isQuantized) {
     // quant bias is to be broadcasted
     SmallVector<int64_t> quantBiasDims{1, 1, 1};
-    MemRefType qbType = MemRefType::get(
+    RankedTensorType qbType = RankedTensorType::get(
         quantBiasDims, elemTypes[AttentionQuantizedArgIndex::quantBias]);
     result.push_back(qbType);
     // quant scale is to be broadcasted
     SmallVector<int64_t> quantScaleDims{1, 1, 1};
-    MemRefType qsType = MemRefType::get(
+    RankedTensorType qsType = RankedTensorType::get(
         quantScaleDims, elemTypes[AttentionQuantizedArgIndex::quantScale]);
     result.push_back(qsType);
   }
   if (hasAttnScale) {
     SmallVector<int64_t> scaleDims{groupSize * numHeadsQ, sequenceLengthQ,
                                    sequenceLengthK};
-    MemRefType sType = MemRefType::get(scaleDims, elemTypes[scaleIndex]);
+    RankedTensorType sType =
+        RankedTensorType::get(scaleDims, elemTypes[scaleIndex]);
     result.push_back(sType);
   }
   if (hasAttnBias) {
     SmallVector<int64_t> biasDims{groupSize * numHeadsQ, sequenceLengthQ,
                                   sequenceLengthK};
-    MemRefType bType = MemRefType::get(biasDims, elemTypes[biasIndex]);
+    RankedTensorType bType =
+        RankedTensorType::get(biasDims, elemTypes[biasIndex]);
     result.push_back(bType);
   }
   if (!currentSeqLen.empty()) {
     SmallVector<int64_t> currentSeqDims{groupSize};
-    MemRefType currSeqLenType =
-        MemRefType::get(currentSeqDims, elemTypes[currentSeqLenIndex]);
+    RankedTensorType currSeqLenType =
+        RankedTensorType::get(currentSeqDims, elemTypes[currentSeqLenIndex]);
     result.push_back(currSeqLenType);
   }
   if (!prefixOffset.empty()) {
     SmallVector<int64_t> prefixOffsetDims{groupSize};
     // prefixOffset uses the same i32 type as currentSeqLen
-    MemRefType prefixOffsetType =
-        MemRefType::get(prefixOffsetDims, elemTypes[currentSeqLenIndex]);
+    RankedTensorType prefixOffsetType =
+        RankedTensorType::get(prefixOffsetDims, elemTypes[currentSeqLenIndex]);
     result.push_back(prefixOffsetType);
   }
   if (returnLSE) {
     SmallVector<int64_t> lseDims{groupSize * numHeadsQ * splitKV,
                                  sequenceLengthQ};
-    MemRefType lseType = MemRefType::get(lseDims, elemTypes[lseIndex]);
+    RankedTensorType lseType =
+        RankedTensorType::get(lseDims, elemTypes[lseIndex]);
     result.push_back(lseType);
   }
-  MemRefType outType = MemRefType::get(transposeO ? transposedODims : oDims,
-                                       elemTypes[outputIndex]);
+  RankedTensorType outType = RankedTensorType::get(
+      transposeO ? transposedODims : oDims, elemTypes[outputIndex]);
   result.push_back(outType);
 }
 
@@ -2861,10 +2864,10 @@ static void getGemmElementwiseGemmTypes(SmallVectorImpl<Type> &result,
                        outDims = {groupSize, transposeO ? gemmO : gemmM,
                                   transposeO ? gemmM : gemmO};
 
-  MemRefType aType = MemRefType::get(aDims, elemTypes[0]),
-             bType = MemRefType::get(bDims, elemTypes[1]),
-             cType = MemRefType::get(cDims, elemTypes[2]),
-             outType = MemRefType::get(outDims, elemTypes[3]);
+  RankedTensorType aType = RankedTensorType::get(aDims, elemTypes[0]),
+                   bType = RankedTensorType::get(bDims, elemTypes[1]),
+                   cType = RankedTensorType::get(cDims, elemTypes[2]),
+                   outType = RankedTensorType::get(outDims, elemTypes[3]);
   result.push_back(aType);
   result.push_back(bType);
   result.push_back(cType);
@@ -2926,10 +2929,10 @@ static Value addTensorArgToBlock(OpBuilder &builder, Location loc,
                                  Block *preSoftmaxElemwiseBlock,
                                  Value funcArg) {
   ShapedType funcArgType = cast<ShapedType>(funcArg.getType());
-  Value funcArgMemRef = preSoftmaxElemwiseBlock->addArgument(
-      MemRefType::get(funcArgType.getShape(), funcArgType.getElementType()),
+  Value funcArgTensor = preSoftmaxElemwiseBlock->addArgument(
+      RankedTensorType::get(funcArgType.getShape(),
+                            funcArgType.getElementType()),
       loc);
-  Value funcArgTensor = rock::getAsTensor(builder, loc, funcArgMemRef);
   return funcArgTensor;
 }
 
@@ -3327,9 +3330,13 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
         rock::NumChipletsAttr::getMnemonic(), numChipletsAttr));
 
   constexpr StringLiteral kernelName("rock_attention");
-  auto func = func::FuncOp::create(builder, loc, kernelName,
-                                   builder.getFunctionType(flatArgTypes, {}),
-                                   funcAttrs);
+  SmallVector<Type, 2> resultTypes = {flatArgTypes[flatArgTypes.size() - 1]};
+  if (returnLSE) {
+    resultTypes.push_back(flatArgTypes[flatArgTypes.size() - 2]);
+  }
+  auto func = func::FuncOp::create(
+      builder, loc, kernelName,
+      builder.getFunctionType(flatArgTypes, resultTypes), funcAttrs);
 
   Block *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);
@@ -3388,14 +3395,14 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   auto softmaxType =
       TypeAttr::get(typeFromString(softmaxDataType.getValue(), ctx));
   auto attention = rock::AttentionOp::create(
-      builder, loc, TypeRange{}, queries, keys, values, elemwiseInputs,
-      currentSeqLenTensor, prefixOffsetTensor, output, lse, numHeadsQ,
-      numHeadsKV, transposeQ, transposeK, transposeV, transposeO, actualCausal,
-      splitKV,
+      builder, loc, output.getType(), returnLSE ? lse.getType() : nullptr,
+      queries, keys, values, elemwiseInputs, currentSeqLenTensor,
+      prefixOffsetTensor, numHeadsQ, numHeadsKV, transposeQ, transposeK,
+      transposeV, transposeO, actualCausal, splitKV,
       rock::GemmFeaturesAttr::get(builder.getContext(), params.features),
       softmaxType,
       /*params0=*/nullptr, /*params1=*/nullptr,
-      /*firstGemmIdx=*/builder.getDenseI64ArrayAttr({0}));
+      /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
   {
     Block *preSoftmaxElemwiseBlock =
         &attention.getPreSoftmaxBody().emplaceBlock();
@@ -3407,10 +3414,9 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     if (isQuantized) {
       qkElemType = IntegerType::get(ctx, 32);
     }
-    MemRefType qkMemRefType = MemRefType::get(
+    RankedTensorType qkTensorRefType = RankedTensorType::get(
         {qShape[0], sequenceLengthQ, sequenceLengthK}, qkElemType);
-    Value qkMemRef = preSoftmaxElemwiseBlock->addArgument(qkMemRefType, loc);
-    Value qkTensor = rock::getAsTensor(builder, loc, qkMemRef);
+    Value qkTensor = preSoftmaxElemwiseBlock->addArgument(qkTensorRefType, loc);
     if (isQuantized) {
       Value quantBiasI8 =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, quantBias);
@@ -3440,21 +3446,27 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
           builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
           qkTensor, biasTensor);
     }
-    MemRefType resMemRefType =
-        MemRefType::get({qShape[0], sequenceLengthQ, sequenceLengthK},
-                        cast<ShapedType>(qkTensor.getType()).getElementType());
-    Value resMemref = bufferization::ToBufferOp::create(
-        builder, loc, cast<mlir::bufferization::BufferLikeType>(resMemRefType),
-        qkTensor);
-    Value outMemref = preSoftmaxElemwiseBlock->addArgument(resMemRefType, loc);
-    memref::CopyOp::create(builder, loc, resMemref, outMemref);
-    rock::YieldOp::create(builder, loc);
+    rock::YieldOp::create(builder, loc, qkTensor);
   }
 
   if (!params.perfConfig.empty())
     attention->setAttr("perf_config", builder.getStringAttr(params.perfConfig));
 
-  func::ReturnOp::create(builder, loc);
+  // Store the result to the transformed output tensor
+  Value storedOut =
+      rock::StoreOp::create(builder, loc, flatArgTypes[flatArgTypes.size() - 1],
+                            attention.getResult(), output, storeMethod);
+
+  SmallVector<Value> returnOperands = {storedOut};
+  if (returnLSE) {
+    // Store the result to the transformed LSE tensor
+    Value storedLSE = rock::StoreOp::create(
+        builder, loc, flatArgTypes[flatArgTypes.size() - 2], attention.getLse(),
+        lse, rock::StoreMethod::Set);
+    returnOperands.push_back(storedLSE);
+  }
+
+  func::ReturnOp::create(builder, loc, returnOperands);
   module.push_back(func);
   return func;
 }
@@ -3619,9 +3631,11 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
         rock::NumChipletsAttr::getMnemonic(), numChipletsAttr));
 
   constexpr StringLiteral kernelName("rock_gemm_gemm");
-  auto func = func::FuncOp::create(builder, loc, kernelName,
-                                   builder.getFunctionType(flatArgTypes, {}),
-                                   funcAttrs);
+  auto func = func::FuncOp::create(
+      builder, loc, kernelName,
+      builder.getFunctionType(flatArgTypes,
+                              {flatArgTypes[flatArgTypes.size() - 1]}),
+      funcAttrs);
 
   Block *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);
@@ -3639,11 +3653,11 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   SmallVector<Value> elemwiseInputs;
 
   auto gemmElntGemm = rock::GemmElementwiseGemmOp::create(
-      builder, loc, TypeRange{}, a, b, c, elemwiseInputs, output, transposeA,
+      builder, loc, output.getType(), a, b, c, elemwiseInputs, transposeA,
       transposeB, transposeC, transposeO,
       rock::GemmFeaturesAttr::get(builder.getContext(), params.features),
       /*params0=*/nullptr, /*params1=*/nullptr,
-      /*firstGemmIdx=*/builder.getDenseI64ArrayAttr({0}));
+      /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
   {
     Block *preSecondGemmBlock =
         &gemmElntGemm.getPreSecondGemmBody().emplaceBlock();
@@ -3652,26 +3666,21 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
     ShapedType aType = cast<ShapedType>(a.getType());
     ArrayRef<int64_t> aShape = aType.getShape();
     Type abElemType = aType.getElementType();
-    MemRefType abMemRefType =
-        MemRefType::get({aShape[0], gemmM, gemmN}, abElemType);
-    Value abMemRef = preSecondGemmBlock->addArgument(abMemRefType, loc);
-    Value abTensor = rock::getAsTensor(builder, loc, abMemRef);
-    MemRefType resMemRefType =
-        MemRefType::get({aShape[0], gemmM, gemmN},
-                        cast<ShapedType>(abTensor.getType()).getElementType());
-    Value resMemref = bufferization::ToBufferOp::create(
-        builder, loc, cast<mlir::bufferization::BufferLikeType>(resMemRefType),
-        abTensor);
-    Value outMemref = preSecondGemmBlock->addArgument(resMemRefType, loc);
-    memref::CopyOp::create(builder, loc, resMemref, outMemref);
-    rock::YieldOp::create(builder, loc);
+    RankedTensorType abType =
+        RankedTensorType::get({aShape[0], gemmM, gemmN}, abElemType);
+    Value abTensor = preSecondGemmBlock->addArgument(abType, loc);
+    rock::YieldOp::create(builder, loc, abTensor);
   }
 
   if (!params.perfConfig.empty())
     gemmElntGemm->setAttr("perf_config",
                           builder.getStringAttr(params.perfConfig));
 
-  func::ReturnOp::create(builder, loc);
+  // Store the result to the transformed output tensor
+  Value storedOut =
+      rock::StoreOp::create(builder, loc, flatArgTypes[flatArgTypes.size() - 1],
+                            gemmElntGemm.getResult(), output, storeMethod);
+  func::ReturnOp::create(builder, loc, {storedOut});
 
   if (!disableSplitKForTuning)
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),

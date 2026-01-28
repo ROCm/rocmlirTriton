@@ -1233,7 +1233,7 @@ struct ConvGemmRewritePattern : public OpRewritePattern<ConvElementwiseGemmOp> {
     // note that here A = input, B = filter, ConvToGemm is the opposite
     auto newOp = rock::GemmElementwiseGemmOp::create(
         b, loc, op->getResultTypes(), gemmInput, gemmFilter, op.getC(),
-        op.getElemwiseInputs(), op.getOut(),
+        op.getElemwiseInputs(),
         /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
         op.getCTransposedAttr(), op.getOTransposedAttr(), op.getFeaturesAttr(),
         op.getParams0Attr(), op.getParams1Attr(), op.getFirstGemmIndicesAttr());

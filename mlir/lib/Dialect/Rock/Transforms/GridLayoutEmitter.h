@@ -67,7 +67,7 @@ GridCoordinates makeGroupedGridLayout(PatternRewriter &b, Location loc,
                                       StringRef arch);
 
 AttnGridCoordinates makeGxNGridLayout(PatternRewriter &b, Location loc,
-                                      Value bid, Value mIter, int64_t nBlocks,
+                                      Value bid, int64_t mBlocks, Value nIter,
                                       int64_t gridSize, StringRef arch,
                                       int64_t numChiplets,
                                       Value splitKV = nullptr);

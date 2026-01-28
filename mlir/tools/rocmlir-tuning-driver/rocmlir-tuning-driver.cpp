@@ -444,17 +444,25 @@ static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
     argPointers.push_back(reinterpret_cast<void *>(&item));
   }
 
-  // Triton kernels expect 5 pointer arguments for GEMM: A, B, C, workspace1,
-  // workspace2 The workspace pointers can be null. We need to store the null
-  // pointers so we can pass their addresses to the kernel (HIP expects pointers
-  // to the arguments).
-  static void *nullWorkspace1 = nullptr;
-  static void *nullWorkspace2 = nullptr;
-  while (argPointers.size() < 5) {
-    if (argPointers.size() == 3) {
-      argPointers.push_back(reinterpret_cast<void *>(&nullWorkspace1));
-    } else {
-      argPointers.push_back(reinterpret_cast<void *>(&nullWorkspace2));
+  // Triton adds extra workspace arguments to kernel functions:
+  // - globalPtrTy: Global scratch memory pointer
+  // - profilePtrTy: Profile scratch memory pointer
+  // These can be null when not used. The actual number of data args varies
+  // by operation type and fusions, so we use the kernel's argTypes to
+  // determine the expected count. We pad with null pointers as needed.
+  // HIP expects pointers to the arguments, so we store nulls to pass their
+  // addresses.
+  if (!kernels.empty()) {
+    size_t expectedArgs = kernels[0].argTypes.size();
+    // Use a vector to store null workspace pointers (need stable addresses)
+    static std::vector<void *> nullWorkspaces;
+    while (nullWorkspaces.size() < expectedArgs) {
+      nullWorkspaces.push_back(nullptr);
+    }
+    size_t workspaceIdx = 0;
+    while (argPointers.size() < expectedArgs) {
+      argPointers.push_back(
+          reinterpret_cast<void *>(&nullWorkspaces[workspaceIdx++]));
     }
   }
 
