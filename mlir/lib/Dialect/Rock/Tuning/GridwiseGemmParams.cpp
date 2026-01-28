@@ -197,9 +197,13 @@ LogicalResult PopulateParamsAccel::obtainTuningParameters(
     if (parsedParams) {
       validParams = parsedParams;
       LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
+      // TODO(roctriton): Here rocMLIR used to check if the perfconfig is valid,
+      // we should do it too. return paramsProbablyValid(b, info, validParams);
       return success();
     }
     // Signal the client if perfConfig is passed in but is invalid
+    LLVM_DEBUG(llvm::dbgs() << "obtainTuningParameters: Invalid perf config: "
+                            << perfConfig << "\n");
     return failure();
   }
 
@@ -208,6 +212,12 @@ LogicalResult PopulateParamsAccel::obtainTuningParameters(
                                        info.gemmBType, info.arch);
 
   for (const auto &params : orderParams(paramSets, info.gemmSize)) {
+    // TODO(roctriton): Here rocMLIR used to check if the perfconfig is valid,
+    // we should do it too. res = paramsProbablyValid(b, info, params);
+    res = success();
+    if (failed(res)) {
+      continue;
+    }
     validParams = params;
     break;
   }
