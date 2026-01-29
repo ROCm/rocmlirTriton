@@ -20,7 +20,6 @@
 // other/splitkFactor.
 //
 //===-----------------------------------------------------===//
-#include "mlir/Analysis/BufferDependencyAnalysis.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
@@ -88,18 +87,28 @@ static LogicalResult divideAddBySplitkFactor(linalg::GenericOp genericOp,
   return success();
 }
 
-static LogicalResult
-rewriteLinalgForSplitK(func::FuncOp &func,
-                       BufferDependencyAnalysis &bufferDeps) {
+static LogicalResult rewriteLinalgForSplitK(func::FuncOp &func) {
   IRRewriter rewriter(func->getContext());
   SmallVector<GemmOp> gemmOps;
+  bool foundGemmWithoutParams = false;
 
   func.walk([&](GemmOp gemmOp) {
-    int64_t splitKFactor = gemmOp.getParams()->getSplitKFactor();
+    auto params = gemmOp.getParams();
+    if (!params) {
+      foundGemmWithoutParams = true;
+      return;
+    }
+    int64_t splitKFactor = params->getSplitKFactor();
     if (splitKFactor > 1) {
       gemmOps.push_back(gemmOp);
     }
   });
+
+  if (foundGemmWithoutParams) {
+    func->emitError("rewriteLinalgForSplitK: found gemm op without params");
+    return failure();
+  }
+
   if (gemmOps.size() > 1)
     return failure();
 
@@ -112,7 +121,7 @@ rewriteLinalgForSplitK(func::FuncOp &func,
 
     // save all `linalg::GenericOp` that read from a gemm output
     auto genericOpOperands =
-        traceGemmOutputToGenericOps(gemmResult, func, bufferDeps);
+        traceGemmOutputToGenericOps(gemmResult, func);
 
     // GEMM result could come from a block argument, so if it fails, we return
     // success()
@@ -141,10 +150,8 @@ rewriteLinalgForSplitK(func::FuncOp &func,
 
 void RockGemmLinalgSplitkNormalizationPass::runOnOperation() {
   func::FuncOp func = getOperation();
-  BufferDependencyAnalysis &bufferDeps =
-      getAnalysis<BufferDependencyAnalysis>();
 
-  if (failed(rewriteLinalgForSplitK(func, bufferDeps))) {
+  if (failed(rewriteLinalgForSplitK(func))) {
     return signalPassFailure();
   }
 } // namespace

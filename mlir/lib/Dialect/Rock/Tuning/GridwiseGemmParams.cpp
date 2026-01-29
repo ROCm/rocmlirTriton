@@ -42,6 +42,20 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
 #undef NonAccel_DEFINITIONS_GEN
 // clang-format on
 
+/// Static data for XDL tuning parameters (used by ParamLookupTable)
+// clang-format off
+#define XDL_DEFINITIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef XDL_DEFINITIONS_GEN
+// clang-format on
+
+/// Static data for WMMA tuning parameters (used by ParamLookupTable)
+// clang-format off
+#define Wmma_DEFINITIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef Wmma_DEFINITIONS_GEN
+// clang-format on
+
 PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   PopulateParamsInfo info{op.getGemmSize(),      rock::getArchValue(op),
                           rock::getFeatures(op), op.getAType(),
@@ -63,8 +77,7 @@ std::optional<GemmSize> mlir::rock::calculatePadding(int64_t kPerBlock,
                                                      int64_t mPerBlock,
                                                      int64_t nPerBlock,
                                                      const GemmSize &gemmSize) {
-  int64_t kExtra = kPerBlock -
-                   math_util::mod_1_to_n(gemmSize.k, kPerBlock);
+  int64_t kExtra = kPerBlock - math_util::mod_1_to_n(gemmSize.k, kPerBlock);
   int64_t mExtra = mPerBlock - math_util::mod_1_to_n(gemmSize.m, mPerBlock);
   int64_t nExtra = nPerBlock - math_util::mod_1_to_n(gemmSize.n, nPerBlock);
   if (mExtra == 0 && kExtra == 0 && nExtra == 0)
@@ -149,18 +162,6 @@ static int64_t calculatePaddingComplexity(const GemmSize &paddingAmount,
   return paddedComplexity - nonPaddedComplexity;
 }
 
-// Acceleration common interface implementation
-std::unique_ptr<PopulateParamsAccel>
-PopulateParamsAccel::select(GemmFeatures features) {
-  if (bitEnumContainsAll(features, GemmFeatures::mfma)) {
-    return std::make_unique<PopulateParamsXDL>();
-  } else if (bitEnumContainsAll(features, GemmFeatures::wmma)) {
-    return std::make_unique<PopulateParamsWmma>();
-  } else {
-    return nullptr;
-  }
-}
-
 int64_t
 PopulateParamsAccel::calculatePaddingAmount(GemmParamsAttr params,
                                             const GemmSize &gemmSize) const {
@@ -200,19 +201,22 @@ LogicalResult PopulateParamsAccel::obtainTuningParameters(
       return success();
     }
     // Signal the client if perfConfig is passed in but is invalid
+    LLVM_DEBUG(llvm::dbgs() << "obtainTuningParameters: Invalid perf config: "
+                            << perfConfig << "\n");
     return failure();
   }
 
-  LogicalResult res = failure();
   auto paramSets = getTuningParameters(b, info.kernelType, info.gemmAType,
                                        info.gemmBType, info.arch);
 
-  for (const auto &params : orderParams(paramSets, info.gemmSize)) {
-    validParams = params;
-    break;
+  auto orderedParams = orderParams(paramSets, info.gemmSize);
+  if (orderedParams.empty()) {
+    return failure();
   }
+
+  validParams = orderedParams.front();
   LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
-  return res;
+  return success();
 }
 
 LogicalResult PopulateParamsAccel::obtainTuningParameters(
@@ -228,24 +232,26 @@ LogicalResult PopulateParamsAccel::obtainTuningParameters(
   return res;
 }
 
-/// Xdlops acceleration
-// clang-format off
-#define XDL_DEFINITIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef XDL_DEFINITIONS_GEN
-// clang-format on
-
 std::vector<GemmParamsAttr>
-PopulateParamsXDL::getTuningParameters(OpBuilder &b, KernelType opType,
-                                       Type dataTypeA, Type dataTypeB,
-                                       StringRef arch) const {
+PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
+                                    Type dataTypeA, Type dataTypeB,
+                                    StringRef arch) const {
   auto perfConfigs =
       ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
 
+  LLVM_DEBUG(llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "
+                          << perfConfigs.size() << "\n");
   std::vector<GemmParamsAttr> res;
   for (StringRef perfConfig : perfConfigs) {
     auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
     auto params = GemmParamsAttr::get(perfConfigAttr);
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "PopulateParams::getTuningParameters: perfConfigAttr: "
+               << perfConfigAttr << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "PopulateParams::getTuningParameters: params: " << params
+               << "\n");
     if (!params)
       continue;
 
@@ -254,46 +260,10 @@ PopulateParamsXDL::getTuningParameters(OpBuilder &b, KernelType opType,
   return res;
 }
 
-LogicalResult
-PopulateParamsXDL::specificCouldBePerformant(GemmParamsAttr params,
-                                             Type dataTypeA, Type dataTypeB) {
-  // Implement this if needed.
-  (void)params;
-  (void)dataTypeA;
-  (void)dataTypeB;
-  return success();
-}
-
-/// Wmma acceleration
-// clang-format off
-#define Wmma_DEFINITIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef Wmma_DEFINITIONS_GEN
-// clang-format on
-
-std::vector<GemmParamsAttr>
-PopulateParamsWmma::getTuningParameters(OpBuilder &b, KernelType opType,
-                                        Type dataTypeA, Type dataTypeB,
-                                        StringRef arch) const {
-  auto perfConfigs =
-      ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
-
-  std::vector<GemmParamsAttr> res;
-  for (StringRef perfConfig : perfConfigs) {
-    auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
-    auto params = GemmParamsAttr::get(perfConfigAttr);
-    if (!params)
-      continue;
-
-    res.push_back(params);
-  }
-  return res;
-}
-
-LogicalResult
-PopulateParamsWmma::specificCouldBePerformant(GemmParamsAttr params,
-                                              Type dataTypeA, Type dataTypeB) {
-  // Implement this if needed.
+LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
+                                                        Type dataTypeA,
+                                                        Type dataTypeB) {
+  // TODO(roctriton): We should probably implement this.
   (void)params;
   (void)dataTypeA;
   (void)dataTypeB;

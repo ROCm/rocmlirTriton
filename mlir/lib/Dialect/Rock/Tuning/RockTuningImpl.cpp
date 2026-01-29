@@ -192,11 +192,6 @@ getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp,
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
-  GemmFeatures features = rock::getFeatures(gemmGemmOp);
-  if (!rock::isAccel(features)) {
-    // We only support GPUs with matrix accelerator extensions
-    return;
-  }
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getAccelRangeGemmGemm(gemmGemmOp, kind);
   auto archInfo = rock::lookupArchInfo(rock::getArchValue(gemmGemmOp));
@@ -339,12 +334,7 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
   const std::vector<std::vector<uint32_t>> accelParams =
       getAccelRangeGemm(gemmOp, maxWavesPerEU, kind);
 
-  GemmFeatures currentFeatures = rock::getFeatures(gemmOp);
-  std::unique_ptr<PopulateParamsAccel> tuningInfo;
-  if (bitEnumContainsAll(currentFeatures, GemmFeatures::mfma))
-    tuningInfo = std::make_unique<PopulateParamsXDL>();
-  else
-    tuningInfo = std::make_unique<PopulateParamsWmma>();
+  auto tuningInfo = std::make_unique<PopulateParams>();
   int64_t waveSize = rock::lookupArchInfo(rock::getArchValue(gemmOp)).waveSize;
 
   // hardcode to use heuristics
@@ -390,29 +380,15 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
                                        RockGemmWrapperInterface gemmOp) {
   auto info = PopulateParamsInfo::fromOp(gemmOp);
   OpBuilder b(gemmOp.getContext());
-  GemmFeatures currentFeatures = rock::getFeatures(gemmOp);
-  if (bitEnumContainsAll(currentFeatures, GemmFeatures::mfma)) {
-    PopulateParamsXDL tuningInfo;
+  PopulateParams tuningInfo;
 
-    for (GemmParamsAttr param : tuningInfo.orderParams(
-             tuningInfo.getTuningParameters(b, info.kernelType, info.gemmAType,
-                                            info.gemmBType, info.arch),
-             info.gemmSize)) {
-      if (succeeded(tuningInfo.couldBePerformant(info, param)))
-        newSpace->tuningRange.push_back(
-            cast<RockTuningParamAttrInterface>(param));
-    }
-  } else if (bitEnumContainsAll(currentFeatures, GemmFeatures::wmma)) {
-    // Wmma
-    PopulateParamsWmma tuningInfo;
-    for (GemmParamsAttr param : tuningInfo.orderParams(
-             tuningInfo.getTuningParameters(b, info.kernelType, info.gemmAType,
-                                            info.gemmBType, info.arch),
-             info.gemmSize)) {
-      if (succeeded(tuningInfo.couldBePerformant(info, param)))
-        newSpace->tuningRange.push_back(
-            cast<RockTuningParamAttrInterface>(param));
-    }
+  for (GemmParamsAttr param : tuningInfo.orderParams(
+           tuningInfo.getTuningParameters(b, info.kernelType, info.gemmAType,
+                                          info.gemmBType, info.arch),
+           info.gemmSize)) {
+    if (succeeded(tuningInfo.couldBePerformant(info, param)))
+      newSpace->tuningRange.push_back(
+          cast<RockTuningParamAttrInterface>(param));
   }
 }
 

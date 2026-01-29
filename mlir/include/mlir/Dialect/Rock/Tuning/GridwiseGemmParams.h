@@ -152,8 +152,6 @@ public:
 //
 class PopulateParamsAccel : public BasePopulateParams<GemmParamsAttr> {
 public:
-  static std::unique_ptr<PopulateParamsAccel> select(GemmFeatures features);
-
   LogicalResult obtainTuningParameters(OpBuilder &b,
                                        RockGemmWrapperInterface op,
                                        const StringRef perfConfig,
@@ -192,36 +190,32 @@ protected:
 };
 
 //
-// Xdlops interface
+// TODO(roctriton): We should update QuickTuningPerfconfigs.inc at some point
+// to avoid doing this.
+// 
+// Data holders for static tuning parameter arrays from generated .inc file
+// These are kept for compatibility with the ParamLookupTable
 //
-class PopulateParamsXDL : public PopulateParamsAccel {
+struct PopulateParamsXDL {
 #define XDL_DECLARATIONS_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
 #undef XDL_DECLARATIONS_GEN
 
   friend class ParamLookupTable<GemmParamsAttr>;
-
-public:
-  std::vector<GemmParamsAttr>
-  getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
-                      Type dataTypeB, StringRef arch) const override;
-
-protected:
-  LogicalResult specificCouldBePerformant(GemmParamsAttr params, Type dataTypeA,
-                                          Type dataTypeB) override;
 };
 
-//
-// Wmma interface
-//
-class PopulateParamsWmma : public PopulateParamsAccel {
-private:
+struct PopulateParamsWmma {
 #define Wmma_DECLARATIONS_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
 #undef Wmma_DECLARATIONS_GEN
 
   friend class ParamLookupTable<GemmParamsAttr>;
+};
 
+//
+// Unified MFMA/WMMA agnostic interface
+//
+class PopulateParams : public PopulateParamsAccel {
 public:
   std::vector<GemmParamsAttr>
   getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
