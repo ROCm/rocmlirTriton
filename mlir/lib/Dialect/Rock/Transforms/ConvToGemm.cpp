@@ -370,20 +370,13 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   auto filterShape = filterType.getShape();
 
   GemmFeatures features = rock::getFeatures(op);
-  bool isAccel = rock::isAccel(features);
 
   // Determine whether to use workspace.
-  bool hasWorkspace =
-      (filterType.getElementType() == b.getF16Type() && isAccel);
+  bool hasWorkspace = (filterType.getElementType() == b.getF16Type());
   if (hasWorkspace && !op.getWorkspace()) {
     return op.emitOpError(
         "workspace needed for f16 atomic add but none provided");
   }
-
-  // The 1st kernel will conduct the actual backward weight convolution using
-  // atomic adds.
-  if (!isAccel)
-    return op.emitOpError("atomic add kernel requires gemm acceleration");
 
   // Get shape of input tensor.
   ShapedType inputType = op.getInput().getType();

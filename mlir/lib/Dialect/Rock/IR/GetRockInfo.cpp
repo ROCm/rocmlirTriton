@@ -79,10 +79,6 @@ FailureOr<RetAttrType> getAttrFromOpOrParents(
   return attr;
 }
 
-bool mlir::rock::isAccel(rock::GemmFeatures features) {
-  return bitEnumContainsAny(features, GemmFeatures::wmma | GemmFeatures::mfma);
-}
-
 FailureOr<StringAttr> mlir::rock::getArch(Operation *op) {
   return getAttrFromOpOrParents<StringAttr>(op, rock::ArchAttr::getMnemonic(),
                                             rock::ArchAttr::getMnemonic());

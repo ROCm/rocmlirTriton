@@ -192,11 +192,6 @@ getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp,
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
-  GemmFeatures features = rock::getFeatures(gemmGemmOp);
-  if (!rock::isAccel(features)) {
-    // We only support GPUs with matrix accelerator extensions
-    return;
-  }
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getAccelRangeGemmGemm(gemmGemmOp, kind);
   auto archInfo = rock::lookupArchInfo(rock::getArchValue(gemmGemmOp));

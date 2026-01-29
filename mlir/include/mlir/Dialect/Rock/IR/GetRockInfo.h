@@ -29,9 +29,6 @@ namespace rock {
 // This function returns the func or gpu.func of a given op
 Operation *getParentFuncOp(Operation *op);
 
-// Return a boolean if the features contain accel properties
-bool isAccel(rock::GemmFeatures features);
-
 // Get the arch from the op
 FailureOr<StringAttr> getArch(Operation *op);
 

@@ -497,11 +497,6 @@ static LogicalResult commonAttentionGemmElmtGemm(
   if (!isa<MemRefType>(op.getAType()))
     return op.emitOpError("Cannot lower unbufferized gemm to gridwise");
 
-  bool isAccel = rock::isAccel(rock::getFeatures(op));
-  if (!isAccel) {
-    return op.emitError("Currently, op is only supported on GPUs "
-                        "with matrix accelerator extensions");
-  }
   if (!op.getGemm0Params().has_value()) {
     return op.emitError("gemm0 params is missing and it should've been "
                         "assigned by affix-tuning-params");
@@ -1025,14 +1020,10 @@ LogicalResult GemmRewritePattern::computeGridSize(ConversionPatternRewriter &rw,
   const int64_t M = aShape[1];
   const int64_t N = bShape[2];
 
-  auto mPerBlock{0};
-  auto nPerBlock{0};
+  auto tuningParams = cast<GemmParamsAttr>(params);
+  auto mPerBlock = tuningParams.getMPerBlock();
+  auto nPerBlock = tuningParams.getNPerBlock();
 
-  if (isAccel(features)) {
-    auto tuningParams = cast<GemmParamsAttr>(params);
-    mPerBlock = tuningParams.getMPerBlock();
-    nPerBlock = tuningParams.getNPerBlock();
-  }
   const auto gridSize = (M / mPerBlock) * (N / nPerBlock) * G;
   assert(gridSize > 0);
 

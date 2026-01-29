@@ -151,64 +151,60 @@ void AffixTuningParameters::affixTuningParametersImpl(
                           << perfConfig << "\n");
 
   GemmFeatures features = rock::getFeatures(op);
-  if (isAccel(features)) {
-    auto populateParamsAccelPtr = PopulateParamsAccel::select(features);
-    GemmParamsAttr validParams;
-    LogicalResult status = populateParamsAccelPtr->obtainTuningParameters(
-        b, op, perfConfig, validParams);
+  auto populateParamsAccelPtr = PopulateParamsAccel::select(features);
+  GemmParamsAttr validParams;
+  LogicalResult status = populateParamsAccelPtr->obtainTuningParameters(
+      b, op, perfConfig, validParams);
 
+  if (failed(status)) {
+    // Try again if allowed.
+    if (fallBackNoConfig) {
+      perfConfig.clear();
+      status = populateParamsAccelPtr->obtainTuningParameters(
+          b, op, perfConfig, validParams);
+    }
     if (failed(status)) {
-      // Try again if allowed.
-      if (fallBackNoConfig) {
-        perfConfig.clear();
-        status = populateParamsAccelPtr->obtainTuningParameters(
-            b, op, perfConfig, validParams);
-      }
-      if (failed(status)) {
-        LLVM_DEBUG(llvm::dbgs() << "obtainTuningParameters call fails.\n");
-        return signalPassFailure();
-      }
+      LLVM_DEBUG(llvm::dbgs() << "obtainTuningParameters call fails.\n");
+      return signalPassFailure();
     }
-
-    auto origGemmSize = op.getGemmSize();
-    auto paddedGemmSize = calculatePaddedGemmSize(
-        validParams.getKPerBlock(), validParams.getMPerBlock(),
-        validParams.getNPerBlock(), origGemmSize);
-    const bool requiredPadding = !(paddedGemmSize == origGemmSize);
-
-    int64_t gemmKBlocks = 1;
-    PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
-    auto maybeWrwOp = (info.kernelType == KernelType::ConvBwdWeight);
-    if (maybeWrwOp &&
-        isWrWAtomicKernel(info.gemmFeatures, info.gemmAType, requiredPadding)) {
-      auto res = calculateKBlockNum(
-          info.batchSize, paddedGemmSize, validParams.getMPerBlock(),
-          validParams.getNPerBlock(), validParams.getKPerBlock(),
-          validParams.getKpack(), info.numCu, gemmKBlocks);
-
-      if (failed(res)) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "Invalid tuning parameters for computing KBlocks.\n");
-        return signalPassFailure();
-      }
-    }
-
-    // Set kblocks attribute only for backward weight convolutions.
-    if (auto bwdOp = dyn_cast<ConvBwdWeightOp>(op.getOperation()))
-      bwdOp->setAttr(bwdOp.getKBlocksAttrName(), b.getIndexAttr(gemmKBlocks));
-
-    int64_t waveSize = rock::lookupArchInfo(rock::getArchValue(op)).waveSize;
-    GemmParamsAttr gemmParams = cast<GemmParamsAttr>(validParams);
-    int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
-    assert(blockSize > 0);
-    op.setGemmParamsAttr(gemmParams);
-
-    // Set attributes on the function.
-    getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
-                            b.getI32IntegerAttr(blockSize));
-  } else {
-    llvm::errs() << "affixTuningParametersImpl: not accel\n";
   }
+
+  auto origGemmSize = op.getGemmSize();
+  auto paddedGemmSize = calculatePaddedGemmSize(
+      validParams.getKPerBlock(), validParams.getMPerBlock(),
+      validParams.getNPerBlock(), origGemmSize);
+  const bool requiredPadding = !(paddedGemmSize == origGemmSize);
+
+  int64_t gemmKBlocks = 1;
+  PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
+  auto maybeWrwOp = (info.kernelType == KernelType::ConvBwdWeight);
+  if (maybeWrwOp &&
+      isWrWAtomicKernel(info.gemmFeatures, info.gemmAType, requiredPadding)) {
+    auto res = calculateKBlockNum(
+        info.batchSize, paddedGemmSize, validParams.getMPerBlock(),
+        validParams.getNPerBlock(), validParams.getKPerBlock(),
+        validParams.getKpack(), info.numCu, gemmKBlocks);
+
+    if (failed(res)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Invalid tuning parameters for computing KBlocks.\n");
+      return signalPassFailure();
+    }
+  }
+
+  // Set kblocks attribute only for backward weight convolutions.
+  if (auto bwdOp = dyn_cast<ConvBwdWeightOp>(op.getOperation()))
+    bwdOp->setAttr(bwdOp.getKBlocksAttrName(), b.getIndexAttr(gemmKBlocks));
+
+  int64_t waveSize = rock::lookupArchInfo(rock::getArchValue(op)).waveSize;
+  GemmParamsAttr gemmParams = cast<GemmParamsAttr>(validParams);
+  int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
+  assert(blockSize > 0);
+  op.setGemmParamsAttr(gemmParams);
+
+  // Set attributes on the function.
+  getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
+                          b.getI32IntegerAttr(blockSize));
   // check for fusion legality with SplitK for both accel and non-accel path
   // this check should happen after perfConfig is picked either through
   // heuristics or user provided
@@ -224,13 +220,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
 void AffixTuningParameters::affixTuningParametersImpl(
     RockGemmGemmWrapperInterface op) {
   OpBuilder builder(op.getContext());
-  bool isAccel = rock::isAccel(rock::getFeatures(op));
-  if (!isAccel) {
-    op.emitError("Currently, attention/gemm+gemm/conv+gemm op is only "
-                 "supported on GPUs "
-                 "with matrix accelerator extentions");
-    return signalPassFailure();
-  }
   auto funcParent = op->getParentOfType<func::FuncOp>();
 
   Attribute params0 = op.getGemm0Params().value_or(nullptr);

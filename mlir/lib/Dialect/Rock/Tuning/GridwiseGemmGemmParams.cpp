@@ -17,9 +17,6 @@ using namespace mlir::rock;
 std::vector<GemmGemmParamsAttr>
 PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
                                             RockGemmGemmWrapperInterface op) {
-  if (!rock::isAccel(rock::getFeatures(op))) {
-    return {};
-  }
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
       rock::getArchValue(op), op.getKernelType(),
       cast<MemRefType>(op.getAType()).getElementType());
@@ -48,15 +45,9 @@ FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
 PopulateParamsGemmGemm::getGemmParams(OpBuilder &b,
                                            RockGemmGemmWrapperInterface op,
                                            GemmGemmParamsAttr params) {
-  auto features = rock::getFeatures(op);
-  if (!rock::isAccel(features)) {
-    return failure();
-  }
-
   GemmParamsAttr accelParams0 = getGemm0Params(b, params);
   GemmParamsAttr accelParams1 = getGemm1Params(b, params);
 
-  auto populateParamsAccelPtr = PopulateParamsAccel::select(features);
   return std::make_pair(accelParams0, accelParams1);
 }
 
