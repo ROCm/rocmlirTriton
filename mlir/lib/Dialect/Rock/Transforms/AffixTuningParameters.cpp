@@ -150,17 +150,16 @@ void AffixTuningParameters::affixTuningParametersImpl(
   LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
                           << perfConfig << "\n");
 
-  GemmFeatures features = rock::getFeatures(op);
-  auto populateParamsAccelPtr = PopulateParamsAccel::select(features);
+  auto populateParamsPtr = std::make_unique<PopulateParams>();
   GemmParamsAttr validParams;
-  LogicalResult status = populateParamsAccelPtr->obtainTuningParameters(
+  LogicalResult status = populateParamsPtr->obtainTuningParameters(
       b, op, perfConfig, validParams);
 
   if (failed(status)) {
     // Try again if allowed.
     if (fallBackNoConfig) {
       perfConfig.clear();
-      status = populateParamsAccelPtr->obtainTuningParameters(
+      status = populateParamsPtr->obtainTuningParameters(
           b, op, perfConfig, validParams);
     }
     if (failed(status)) {

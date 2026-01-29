@@ -36,13 +36,6 @@ using namespace mlir::rock;
 
 #define DEBUG_TYPE "rock-lowering-utils"
 
-bool mlir::rock::isValidBlockSize(int64_t blockSize, int64_t kPerBlock,
-                                  int64_t mPerBlock, int64_t nPerBlock) {
-  int64_t aCopyPerThread = (kPerBlock * mPerBlock) / blockSize;
-  int64_t bCopyPerThread = (kPerBlock * nPerBlock) / blockSize;
-  return (aCopyPerThread != 0 && bCopyPerThread != 0);
-}
-
 bool mlir::rock::isWrWAtomicKernel(GemmFeatures features, Type dataType,
                                    bool requiredPadding) {
   return bitEnumContainsAll(features, GemmFeatures::atomic_add) &&
@@ -535,21 +528,9 @@ mlir::rock::traceGemmOutputToArgs(Value matC, func::FuncOp func) {
   }
 
   SmallVector<BlockArgument> args;
-  auto funcArgs = func.getArguments();
+  auto funcArgs = func.getArguments();  
 
-  // Check if matC can be directly traced to a kernel argument
-  // (through view-like operations like rock.transform)
-  // FailureOr<BlockArgument> directArg = findBlockArgument(matC);
-  // if (succeeded(directArg)) {
-  //   for (auto arg : funcArgs) {
-  //     if (directArg.value() == arg) {
-  //       args.push_back(arg);
-  //       return args;
-  //     }
-  //   }
-  // }
-
-  // For tensor IR: matC is typically the result of rock.gemm.
+  // matC should be the result of rock.gemm.
   // Find rock.store operations that use matC as their source,
   // then trace the store's dest operand back to function arguments.
   for (OpOperand &use : matC.getUses()) {

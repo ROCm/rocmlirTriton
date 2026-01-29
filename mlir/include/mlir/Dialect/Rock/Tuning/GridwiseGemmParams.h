@@ -138,13 +138,6 @@ public:
     return orderedParams;
   }
 
-  // Succeed if the given `params` could be a valid set of tuning parameters for
-  // `info`. This is not a guarantee that a given set of parameters will pass
-  // applicability, but it should filter out inapplicable configs.
-  virtual LogicalResult paramsProbablyValid(OpBuilder &b,
-                                            const PopulateParamsInfo &info,
-                                            ParamAttrType params) = 0;
-
   // Succeed if `params` should be included in a "full" tuning space that
   // excludes those known to not yield good performance on the problem described
   // in `info`. This function uses hardcoded heuristics.
@@ -159,8 +152,6 @@ public:
 //
 class PopulateParamsAccel : public BasePopulateParams<GemmParamsAttr> {
 public:
-  static std::unique_ptr<PopulateParamsAccel> select(GemmFeatures features);
-
   LogicalResult obtainTuningParameters(OpBuilder &b,
                                        RockGemmWrapperInterface op,
                                        const StringRef perfConfig,
@@ -180,10 +171,6 @@ public:
   getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
                       Type dataTypeB, StringRef arch) const = 0;
 
-  LogicalResult paramsProbablyValid(OpBuilder &b,
-                                    const PopulateParamsInfo &info,
-                                    GemmParamsAttr params) override;
-
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;
 
@@ -200,11 +187,6 @@ protected:
   virtual LogicalResult specificCouldBePerformant(GemmParamsAttr params,
                                                   Type dataTypeA,
                                                   Type dataTypeB) = 0;
-
-  /// Check if the given params form a valid blockwise GEMM configuration.
-  virtual LogicalResult isValidBlockwiseGemm(GemmParamsAttr param,
-                                             Type dataTypeA, Type dataTypeB,
-                                             StringRef arch) = 0;
 };
 
 //
@@ -242,9 +224,6 @@ public:
 protected:
   LogicalResult specificCouldBePerformant(GemmParamsAttr params, Type dataTypeA,
                                           Type dataTypeB) override;
-
-  LogicalResult isValidBlockwiseGemm(GemmParamsAttr param, Type dataTypeA,
-                                     Type dataTypeB, StringRef arch) override;
 };
 
 } // namespace rock
