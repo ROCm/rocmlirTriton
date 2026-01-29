@@ -19,7 +19,6 @@
 // adding padding and group dimensions if needed.
 //
 //===-----------------------------------------------------===//
-#include "mlir/Analysis/BufferDependencyAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
@@ -70,10 +69,7 @@ class RockGemmToGridwisePass
 };
 
 struct GemmRewritePattern : public OpConversionPattern<GemmOp> {
-  // Custom constructor taking an additional argument: bufferDeps
-  GemmRewritePattern(MLIRContext *context,
-                     const BufferDependencyAnalysis &bufferDeps)
-      : OpConversionPattern<GemmOp>(context), bufferDeps(bufferDeps) {}
+  using OpConversionPattern<GemmOp>::OpConversionPattern;
 
   struct SplitKTransformedOperands {
     Value a;
@@ -93,23 +89,15 @@ struct GemmRewritePattern : public OpConversionPattern<GemmOp> {
   arrangeSplitKTransform(OpBuilder &builder, GemmOp op, Location loc,
                          int64_t splitKFactor, Value a, Value b, Value c,
                          Value scaleA, Value scaleB) const;
-
-  const BufferDependencyAnalysis &bufferDeps;
 };
 
 struct GemmElementwiseGemmRewritePattern
     : public OpConversionPattern<GemmElementwiseGemmOp> {
   using OpConversionPattern<GemmElementwiseGemmOp>::OpConversionPattern;
-  // Custom constructor taking an additional argument: bufferDeps
-  GemmElementwiseGemmRewritePattern(MLIRContext *context,
-                                    const BufferDependencyAnalysis &bufferDeps)
-      : OpConversionPattern<GemmElementwiseGemmOp>(context),
-        bufferDeps(bufferDeps) {}
 
   LogicalResult matchAndRewrite(GemmElementwiseGemmOp op,
                                 GemmElementwiseGemmOpAdaptor adaptor,
                                 ConversionPatternRewriter &rw) const override;
-  const BufferDependencyAnalysis &bufferDeps;
 };
 
 struct AttentionRewritePattern : public OpConversionPattern<AttentionOp> {
@@ -315,7 +303,6 @@ computeGridSizeAttentionGemmElmtGemm(ConversionPatternRewriter &rw, Op op,
 static FailureOr<std::tuple<Value, Value, Value, Value>>
 arrangeGemmGemmSplitKTransform(OpBuilder &builder,
                                RockGemmGemmWrapperInterface op, Location loc,
-                               const BufferDependencyAnalysis &bufferDeps,
                                int64_t splitNFactor, Value a, Value b, Value c,
                                Value out) {
   // adjust the store method
@@ -489,8 +476,6 @@ static LogicalResult commonAttentionGemmElmtGemm(
     Value prefixOffset, UnitAttr causal, IntegerAttr splitKV,
     ValueRange elementwiseInputs, Region &preSecondOpRegion, bool enableSoftmax,
     TypeAttr softmaxType, int64_t numHeadsQ, int64_t numHeadsKV,
-    std::optional<std::reference_wrapper<const BufferDependencyAnalysis>>
-        bufferDeps,
     BoolAttr preSoftmaxHasSplitKVTransforms) {
   Location loc = op->getLoc();
 
@@ -521,11 +506,8 @@ static LogicalResult commonAttentionGemmElmtGemm(
     if (enableSoftmax)
       return op.emitError("split-k is not supported for attention");
 
-    assert(bufferDeps.has_value() &&
-           "buffer dependency analysis is required for split-k");
-
-    auto maybeSplitk = arrangeGemmGemmSplitKTransform(
-        rw, op, loc, bufferDeps.value(), splitKFactor, a, b, c, out);
+    auto maybeSplitk = arrangeGemmGemmSplitKTransform(rw, op, loc, splitKFactor,
+                                                     a, b, c, out);
     if (failed(maybeSplitk))
       return maybeSplitk;
 
@@ -1045,7 +1027,6 @@ AttentionRewritePattern::matchAndRewrite(AttentionOp op,
       op.getPreSoftmaxBody(),
       /*enableSoftmax=*/true, op.getSoftmaxTypeAttr(), adaptor.getNumHeadsQ(),
       adaptor.getNumHeadsKV(),
-      /*bufferDeps=*/std::nullopt,
       adaptor.getPreSoftmaxHasSplitKVTransformsAttr());
 }
 
@@ -1059,7 +1040,7 @@ LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
       /*currentSeqLen=*/nullptr, /*prefixOffset=*/nullptr, /*causal=*/nullptr,
       splitKV, adaptor.getElemwiseInputs(), op.getPreSecondGemmBody(),
       /*enableSoftmax=*/false, /*softmaxType=*/nullptr, /*numHeadsQ=*/1,
-      /*numHeadsKV=*/1, std::cref(bufferDeps),
+      /*numHeadsKV=*/1,
       /*preSoftmaxHasSplitKVTransforms=*/rw.getBoolAttr(false));
 }
 
@@ -1077,13 +1058,9 @@ void RockGemmToGridwisePass::runOnOperation() {
 
   target.addLegalDialect<linalg::LinalgDialect, arith::ArithDialect>();
 
-  BufferDependencyAnalysis &bufferDeps =
-      getAnalysis<BufferDependencyAnalysis>();
-
   RewritePatternSet patterns(ctx);
-  patterns.add<GemmRewritePattern, GemmElementwiseGemmRewritePattern>(
-      ctx, bufferDeps);
-  patterns.add<AttentionRewritePattern>(ctx);
+  patterns.add<GemmRewritePattern, GemmElementwiseGemmRewritePattern,
+               AttentionRewritePattern>(ctx);
 
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {

@@ -20,7 +20,6 @@
 // other/splitkFactor.
 //
 //===-----------------------------------------------------===//
-#include "mlir/Analysis/BufferDependencyAnalysis.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
@@ -88,9 +87,7 @@ static LogicalResult divideAddBySplitkFactor(linalg::GenericOp genericOp,
   return success();
 }
 
-static LogicalResult
-rewriteLinalgForSplitK(func::FuncOp &func,
-                       BufferDependencyAnalysis &bufferDeps) {
+static LogicalResult rewriteLinalgForSplitK(func::FuncOp &func) {
   IRRewriter rewriter(func->getContext());
   SmallVector<GemmOp> gemmOps;
   bool foundGemmWithoutParams = false;
@@ -153,10 +150,8 @@ rewriteLinalgForSplitK(func::FuncOp &func,
 
 void RockGemmLinalgSplitkNormalizationPass::runOnOperation() {
   func::FuncOp func = getOperation();
-  BufferDependencyAnalysis &bufferDeps =
-      getAnalysis<BufferDependencyAnalysis>();
 
-  if (failed(rewriteLinalgForSplitK(func, bufferDeps))) {
+  if (failed(rewriteLinalgForSplitK(func))) {
     return signalPassFailure();
   }
 } // namespace
