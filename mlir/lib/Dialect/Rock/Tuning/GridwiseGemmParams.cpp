@@ -206,16 +206,17 @@ LogicalResult PopulateParamsAccel::obtainTuningParameters(
     return failure();
   }
 
-  LogicalResult res = failure();
   auto paramSets = getTuningParameters(b, info.kernelType, info.gemmAType,
                                        info.gemmBType, info.arch);
 
-  for (const auto &params : orderParams(paramSets, info.gemmSize)) {
-    validParams = params;
-    break;
+  auto orderedParams = orderParams(paramSets, info.gemmSize);
+  if (orderedParams.empty()) {
+    return failure();
   }
+
+  validParams = orderedParams.front();
   LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
-  return res;
+  return success();
 }
 
 LogicalResult PopulateParamsAccel::obtainTuningParameters(

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -uvx
 
 # Detect GPU architecture from system
 ARCH=$(rocminfo | grep -o 'gfx[0-9a-z]*' | head -1)
