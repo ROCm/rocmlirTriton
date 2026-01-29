@@ -23,6 +23,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -527,12 +528,14 @@ mlir::rock::traceGemmOutputToArgs(Value matC, func::FuncOp func) {
     return failure();
   }
 
-  SmallVector<BlockArgument> args;
-  auto funcArgs = func.getArguments();  
+  SetVector<BlockArgument> args;
+  auto funcArgs = func.getArguments();
 
-  // matC should be the result of rock.gemm.
+  // matC should be the result of the kernel (gemm, attention, etc.)
   // Find rock.store operations that use matC as their source,
   // then trace the store's dest operand back to function arguments.
+  // TODO(roctriton): This might break fusions, where we can find
+  // arith.*, math.* before the store!
   for (OpOperand &use : matC.getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
       // The dest operand of rock.store can be traced to a function argument
@@ -540,18 +543,15 @@ mlir::rock::traceGemmOutputToArgs(Value matC, func::FuncOp func) {
       FailureOr<BlockArgument> destArg = findBlockArgument(dest);
       if (succeeded(destArg)) {
         for (auto arg : funcArgs) {
-          if (destArg.value() == arg) {
-            // Avoid duplicates
-            if (std::find(args.begin(), args.end(), arg) == args.end())
-              args.push_back(arg);
-          }
+          if (destArg.value() == arg)
+            args.insert(arg);
         }
       }
     }
   }
 
   if (!args.empty())
-    return args;
+    return SmallVector<BlockArgument>(args.begin(), args.end());
 
   LLVM_DEBUG(llvm::dbgs() << "traceGemmOutputToArgs: no arguments found!\n");
   return failure();
