@@ -74,10 +74,26 @@ void AffixTuningParameters::runOnOperation() {
     signalPassFailure();
     return;
   }
-  func.walk(
-      [&](RockGemmWrapperInterface op) { affixTuningParametersImpl(op); });
-  func.walk(
-      [&](RockGemmGemmWrapperInterface op) { affixTuningParametersImpl(op); });
+  func.walk([&](RockGemmWrapperInterface op) {
+    affixTuningParametersImpl(op);
+    // Make sure the op has a params attribute
+    if (!op.getGemmParams().has_value()) {
+      op->emitError(
+          "AffixTuningParameters: RockGemmWrapperInterface op has no params");
+      signalPassFailure();
+      return;
+    }
+  });
+  func.walk([&](RockGemmGemmWrapperInterface op) {
+    affixTuningParametersImpl(op);
+    // Make sure the op has a params attribute
+    if (!op.getGemm0Params().has_value() || !op.getGemm1Params().has_value()) {
+      op->emitError("AffixTuningParameters: RockGemmGemmWrapperInterface op "
+                    "has no params");
+      signalPassFailure();
+      return;
+    }
+  });
 
   // For all ops that can take a 'features' attribute, we want to get or
   // calculate those features and then take the intersection of them and
