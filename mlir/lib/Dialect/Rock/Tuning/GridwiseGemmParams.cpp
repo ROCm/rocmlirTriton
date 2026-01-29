@@ -151,13 +151,9 @@ static int64_t calculatePaddingComplexity(const GemmSize &paddingAmount,
 // Acceleration common interface implementation
 std::unique_ptr<PopulateParamsAccel>
 PopulateParamsAccel::select(GemmFeatures features) {
-  if (bitEnumContainsAll(features, GemmFeatures::mfma)) {
-    return std::make_unique<PopulateParamsXDL>();
-  } else if (bitEnumContainsAll(features, GemmFeatures::wmma)) {
-    return std::make_unique<PopulateParamsWmma>();
-  } else {
-    return nullptr;
-  }
+  (void)features;
+  // Return a unified PopulateParams that is MFMA/WMMA agnostic
+  return std::make_unique<PopulateParams>();
 }
 
 int64_t
@@ -549,6 +545,125 @@ PopulateParamsWmma::getTuningParameters(OpBuilder &b, KernelType opType,
 LogicalResult
 PopulateParamsWmma::specificCouldBePerformant(GemmParamsAttr params,
                                               Type dataTypeA, Type dataTypeB) {
+  // Implement this if needed.
+  (void)params;
+  (void)dataTypeA;
+  (void)dataTypeB;
+  return success();
+}
+
+/// Unified MFMA/WMMA agnostic implementation
+
+LogicalResult PopulateParams::isValidBlockwiseGemm(GemmParamsAttr param,
+                                                   Type dataTypeA,
+                                                   Type dataTypeB,
+                                                   StringRef arch) {
+  const int64_t waveSize = mlir::rock::lookupArchInfo(arch).waveSize;
+  int64_t blockSize = obtainBlockSize(waveSize, param);
+  if (blockSize > maxHardwareWorkgroupSize)
+    return failure();
+
+  // Extract parameters
+  int64_t mPerBlock = param.getMPerBlock();
+  int64_t nPerBlock = param.getNPerBlock();
+  int64_t kPerBlock = param.getKPerBlock();
+  int64_t kpack = param.getKpack();
+  int64_t numWaves = param.getNumWaves();
+  int64_t mnPerXdl = param.getMatrixInstrNonkdim();
+
+  // Compute mPerWave and nPerWave from numWaves
+  int64_t maxMWaves = mPerBlock / mnPerXdl;
+  int64_t mWaves = 1;
+  for (int64_t w = 1; w * w <= numWaves && w <= maxMWaves; w++) {
+    if (numWaves % w == 0) {
+      mWaves = w;
+    }
+  }
+  int64_t nWaves = numWaves / mWaves;
+  int64_t mPerWave = mPerBlock / mWaves;
+  int64_t nPerWave = nPerBlock / nWaves;
+
+  // kpackPerBlock is kPerBlock / kpack in the new schema
+  int64_t kpackPerBlock = kPerBlock / kpack;
+
+  if (mnPerXdl > mPerWave || mnPerXdl > nPerWave) {
+    LLVM_DEBUG(llvm::dbgs() << "mnPerXdl is too large:" << param << "\n");
+    return failure();
+  }
+
+  // Check for valid repeats and k distributions
+  int64_t minDPerWave = std::min(mPerWave, nPerWave);
+  int64_t validKPerWaveFactor = 2;
+  if (minDPerWave <= 16) {
+    validKPerWaveFactor = 4;
+  }
+  if ((mPerBlock % minDPerWave != 0) || (nPerBlock % minDPerWave != 0) ||
+      ((kpackPerBlock * kpack) % validKPerWaveFactor != 0)) {
+    return failure();
+  }
+
+  if (blockSize < waveSize) {
+    return failure();
+  }
+
+  if ((mPerBlock % mPerWave) != 0) {
+    return failure();
+  }
+
+  if ((nPerBlock % nPerWave) != 0) {
+    return failure();
+  }
+
+  if (mPerWave % mnPerXdl != 0) {
+    LLVM_DEBUG(llvm::dbgs() << "tuning: mPerWave not divisible by mnPerXdl\n");
+    return failure();
+  }
+
+  if (nPerWave % mnPerXdl != 0) {
+    LLVM_DEBUG(llvm::dbgs() << "tuning: nPerWave not divisible by mnPerXdl\n");
+    return failure();
+  }
+
+  // Reject invalid blockSize
+  if (!isValidBlockSize(blockSize, kPerBlock, mPerBlock, nPerBlock)) {
+    LLVM_DEBUG(llvm::dbgs() << "tuning: Block size too large.\n");
+    return failure();
+  }
+
+  return success();
+}
+
+std::vector<GemmParamsAttr>
+PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
+                                    Type dataTypeA, Type dataTypeB,
+                                    StringRef arch) const {
+  auto perfConfigs =
+      ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
+
+  LLVM_DEBUG(llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "
+                          << perfConfigs.size() << "\n");
+  std::vector<GemmParamsAttr> res;
+  for (StringRef perfConfig : perfConfigs) {
+    auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
+    auto params = GemmParamsAttr::get(perfConfigAttr);
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "PopulateParams::getTuningParameters: perfConfigAttr: "
+               << perfConfigAttr << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "PopulateParams::getTuningParameters: params: " << params
+               << "\n");
+    if (!params)
+      continue;
+
+    res.push_back(params);
+  }
+  return res;
+}
+
+LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
+                                                        Type dataTypeA,
+                                                        Type dataTypeB) {
   // Implement this if needed.
   (void)params;
   (void)dataTypeA;

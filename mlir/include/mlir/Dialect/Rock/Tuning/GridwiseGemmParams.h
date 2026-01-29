@@ -254,6 +254,23 @@ protected:
                                      Type dataTypeB, StringRef arch) override;
 };
 
+//
+// Unified MFMA/WMMA agnostic interface
+//
+class PopulateParams : public PopulateParamsAccel {
+public:
+  std::vector<GemmParamsAttr>
+  getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
+                      Type dataTypeB, StringRef arch) const override;
+
+protected:
+  LogicalResult specificCouldBePerformant(GemmParamsAttr params, Type dataTypeA,
+                                          Type dataTypeB) override;
+
+  LogicalResult isValidBlockwiseGemm(GemmParamsAttr param, Type dataTypeA,
+                                     Type dataTypeB, StringRef arch) override;
+};
+
 } // namespace rock
 } // namespace mlir
 #endif // MLIR_DIALECT_ROCK_GRIDWISE_GEMM_PARAMS_H
