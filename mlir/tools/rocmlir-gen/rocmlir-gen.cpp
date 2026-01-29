@@ -4806,17 +4806,28 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
   auto loc = b.getUnknownLoc();
   bool heuristicValidation =
       !genVerifierKeepPerfConfig && !genParams.perfConfig.empty();
-  bool gpuValidation = validationType == "gpu";
+  bool isSmallFloatIn = false;
+  if (!genParams.types.empty()) {
+    FloatType ftype, itype;
+    if ((ftype = dyn_cast<FloatType>(genParams.types[0])) &&
+        (itype = dyn_cast<FloatType>(genParams.types[1])))
+      isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
+  }
+  bool gpuValidation = validationType == "gpu" &&
+                        (isSmallFloatIn || heuristicValidation);
   if (gpuValidation) {
     if (genParams.convConfig.has_value()) { // conv GPU validation
       // generate generic kernels
       const auto &genConfig = **genParams.convConfig;
       rock::ConvGenerator convGenerator(genConfig);
-      convGenerator.setPerfConfig("");
+      if (heuristicValidation) {
+        convGenerator.setPerfConfig("");
+      }
       // use non-accel kernels to verify accel kernels except when
       // verifying a tuning case
       convGenerator.flipAccel();
-      if (genConfig.inputDataTypeStr != "i8")
+      if (!(heuristicValidation) &&
+            genConfig.inputDataTypeStr == "i8")
         // use f32 data type to verify non-f32 or xdlops f32 kernels
         // except that i8 xdlops or tuned is verified with i8 non-xdlops.
         convGenerator.setDataTypes("f32");
@@ -4866,12 +4877,13 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
     } else { // gemm GPU validation
       GenParams newParams = genParams;
 
-      newParams.perfConfig = "";
+      if (heuristicValidation)
+        newParams.perfConfig = "";
       newParams.features = bitEnumClear(genParams.features,
                                         mlir::rock::GemmFeatures::mfma |
                                             mlir::rock::GemmFeatures::wmma);
 
-      if (!genParams.types[0].isInteger(8)) {
+      if (!heuristicValidation && genParams.types[0].isInteger(8)) {
         // use f32 data type to verify non-f32 or xdlops f32 kernels
         // except that i8 xdops is verified with i8 non-xdolps and tuned i8 is
         // verified with itself in heuristic mode.
@@ -4995,7 +5007,17 @@ static LogicalResult populateHostHarnessLogic(
   bool isCPUKernel = !root0.func->hasAttr(rock::KernelAttr::getMnemonic());
   bool hasValidation = !validationType.empty() && !genCPUKernel.getValue();
   bool hasCloneValidation = hasValidation && (validationType == "clone");
-  bool gpuValidation = validationType == "gpu";
+  bool heuristicValidation =
+      !genVerifierKeepPerfConfig && !genParams.perfConfig.empty();
+  bool isSmallFloatIn = false;
+  if (!genParams.types.empty()) {
+    FloatType ftype, itype;
+    if ((ftype = dyn_cast<FloatType>(genParams.types[0])) &&
+        (itype = dyn_cast<FloatType>(genParams.types[1])))
+      isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
+  }
+  bool gpuValidation = validationType == "gpu" &&
+                       (isSmallFloatIn || heuristicValidation);
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
   bool isSplitK = (genParams.perfConfig.empty())
                       ? false
