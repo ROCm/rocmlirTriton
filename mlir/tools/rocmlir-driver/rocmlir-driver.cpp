@@ -470,11 +470,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
 int main(int argc, char **argv) {
   DialectRegistry registry;
   registerRocMLIRDialects(registry);
-  MLIRContext context(registry);
-  context.loadDialect<rock::RockDialect, func::FuncDialect, scf::SCFDialect,
-                      affine::AffineDialect, memref::MemRefDialect,
-                      math::MathDialect, arith::ArithDialect, gpu::GPUDialect,
-                      bufferization::BufferizationDialect>();
   mlir::registerRocMLIRPasses();
   InitLLVM y(argc, argv);
 
@@ -484,6 +479,14 @@ int main(int argc, char **argv) {
 
   // Parse pass names in main to ensure static initialization completed.
   cl::ParseCommandLineOptions(argc, argv, "MLIR Rock Dialect driver\n");
+
+  // Create context after ParseCommandLineOptions, otherwise the context
+  // will be created without the command line flags.
+  MLIRContext context(registry);
+  context.loadDialect<rock::RockDialect, func::FuncDialect, scf::SCFDialect,
+                      affine::AffineDialect, memref::MemRefDialect,
+                      math::MathDialect, arith::ArithDialect, gpu::GPUDialect,
+                      bufferization::BufferizationDialect>();
   OpBuilder builder(&context);
   ModuleOp module;
 
