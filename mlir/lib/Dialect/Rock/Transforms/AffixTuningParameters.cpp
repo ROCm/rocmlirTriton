@@ -131,6 +131,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
     perfConfig = perfConfigAttr.getValue().str();
   }
 
+  LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
+                          << perfConfig << "\n");
+
   GemmFeatures features = rock::getFeatures(op);
   if (isAccel(features)) {
     auto populateParamsAccelPtr = PopulateParamsAccel::select(features);
@@ -188,21 +191,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
     getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                             b.getI32IntegerAttr(blockSize));
   } else {
-    // TODO(roctriton): fix this
-    // GeneralGemmParamsAttr validParams;
-    // PopulateParams populateParams;
-    // LogicalResult status =
-    //     populateParams.obtainTuningParameters(b, op, perfConfig,
-    //     validParams);
-    // if (failed(status)) {
-    //   return signalPassFailure();
-    // }
-
-    // op.setGemmParamsAttr(validParams);
-
-    // // Set attributes on the function.
-    // getOperation()->setAttr("block_size",
-    //                         b.getI32IntegerAttr(validParams.getBlockSize()));
+    llvm::errs() << "affixTuningParametersImpl: not accel\n";
   }
   // check for fusion legality with SplitK for both accel and non-accel path
   // this check should happen after perfConfig is picked either through

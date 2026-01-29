@@ -63,8 +63,7 @@ std::optional<GemmSize> mlir::rock::calculatePadding(int64_t kPerBlock,
                                                      int64_t mPerBlock,
                                                      int64_t nPerBlock,
                                                      const GemmSize &gemmSize) {
-  int64_t kExtra = kPerBlock -
-                   math_util::mod_1_to_n(gemmSize.k, kPerBlock);
+  int64_t kExtra = kPerBlock - math_util::mod_1_to_n(gemmSize.k, kPerBlock);
   int64_t mExtra = mPerBlock - math_util::mod_1_to_n(gemmSize.m, mPerBlock);
   int64_t nExtra = nPerBlock - math_util::mod_1_to_n(gemmSize.n, nPerBlock);
   if (mExtra == 0 && kExtra == 0 && nExtra == 0)
@@ -173,6 +172,12 @@ PopulateParamsAccel::calculatePaddingAmount(GemmParamsAttr params,
   return 0;
 }
 
+LogicalResult PopulateParamsAccel::paramsProbablyValid(
+    OpBuilder &b, const PopulateParamsInfo &info, GemmParamsAttr params) {
+  return isValidBlockwiseGemm(params, info.gemmAType, info.gemmBType,
+                              info.arch);
+}
+
 LogicalResult
 PopulateParamsAccel::couldBePerformant(const PopulateParamsInfo &info,
                                        GemmParamsAttr params) {
@@ -197,9 +202,7 @@ LogicalResult PopulateParamsAccel::obtainTuningParameters(
     if (parsedParams) {
       validParams = parsedParams;
       LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
-      // TODO(roctriton): Here rocMLIR used to check if the perfconfig is valid,
-      // we should do it too. return paramsProbablyValid(b, info, validParams);
-      return success();
+      return paramsProbablyValid(b, info, validParams);
     }
     // Signal the client if perfConfig is passed in but is invalid
     LLVM_DEBUG(llvm::dbgs() << "obtainTuningParameters: Invalid perf config: "
@@ -213,8 +216,8 @@ LogicalResult PopulateParamsAccel::obtainTuningParameters(
 
   for (const auto &params : orderParams(paramSets, info.gemmSize)) {
     // TODO(roctriton): Here rocMLIR used to check if the perfconfig is valid,
-    // we should do it too. res = paramsProbablyValid(b, info, params);
-    res = success();
+    // we should do it too.
+    res = paramsProbablyValid(b, info, params);
     if (failed(res)) {
       continue;
     }
@@ -245,6 +248,128 @@ LogicalResult PopulateParamsAccel::obtainTuningParameters(
 #undef XDL_DEFINITIONS_GEN
 // clang-format on
 
+LogicalResult PopulateParamsXDL::isValidBlockwiseGemm(GemmParamsAttr param,
+                                                      Type dataTypeA,
+                                                      Type dataTypeB,
+                                                      StringRef arch) {
+
+  const int64_t waveSize = mlir::rock::lookupArchInfo(arch).waveSize;
+  int64_t blockSize = obtainBlockSize(waveSize, param);
+  if (blockSize > maxHardwareWorkgroupSize)
+    return failure();
+  // TBD: support fp16/bf16
+
+  // Extract parameters
+  int64_t mPerBlock = param.getMPerBlock();
+  int64_t nPerBlock = param.getNPerBlock();
+  int64_t kPerBlock = param.getKPerBlock();
+  int64_t kpack = param.getKpack();
+  int64_t numWaves = param.getNumWaves();
+  int64_t mnPerXdl = param.getMatrixInstrNonkdim();
+
+  // Compute mPerWave and nPerWave from numWaves
+  // numWaves = mWaves * nWaves, where mPerWave = mPerBlock / mWaves
+  int64_t maxMWaves = mPerBlock / mnPerXdl;
+  int64_t mWaves = 1;
+  for (int64_t w = 1; w * w <= numWaves && w <= maxMWaves; w++) {
+    if (numWaves % w == 0) {
+      mWaves = w;
+    }
+  }
+  int64_t nWaves = numWaves / mWaves;
+  int64_t mPerWave = mPerBlock / mWaves;
+  int64_t nPerWave = nPerBlock / nWaves;
+
+  // kpackPerBlock is kPerBlock / kpack in the new schema
+  int64_t kpackPerBlock = kPerBlock / kpack;
+
+  // clang-format off
+  std::vector<std::tuple<int, int, int>> validWaveGemmSize =
+  {
+    std::make_tuple(128, 128, 2),
+    std::make_tuple(128, 64, 2),
+    std::make_tuple(64, 128, 2),
+    std::make_tuple(64, 64, 2),
+    std::make_tuple(64, 32, 2),
+    std::make_tuple(32, 64, 2),
+    std::make_tuple(32, 32, 2),
+    std::make_tuple(64, 16, 4),
+    std::make_tuple(16, 64, 4),
+    std::make_tuple(16, 16, 4),
+  };
+  // clang-format on
+
+  if (mnPerXdl > mPerWave || mnPerXdl > nPerWave) {
+    LLVM_DEBUG(llvm::dbgs() << "mnPerXdl is too large:" << param << "\n");
+    return failure();
+  }
+
+  // Add broadcasts for non 8-bit types.
+  bool is8BitReduceOnly = dataTypeA.getIntOrFloatBitWidth() == 8;
+  if (!is8BitReduceOnly) {
+    validWaveGemmSize.emplace_back(8, 64, 1);
+    validWaveGemmSize.emplace_back(4, 64, 1);
+  }
+
+  // Check for valid repeats and k distributions
+  int64_t minDPerWave = std::min(mPerWave, nPerWave);
+  int64_t validKPerWaveFactor = 2;
+  if (minDPerWave <= 16) {
+    validKPerWaveFactor = 4;
+  }
+  if ((mPerBlock % minDPerWave != 0) || (nPerBlock % minDPerWave != 0) ||
+      ((kpackPerBlock * kpack) % validKPerWaveFactor != 0)) {
+    return failure();
+  }
+
+  if (blockSize < waveSize) {
+    return failure();
+  }
+
+  if ((mPerBlock % mPerWave) != 0) {
+    return failure();
+  }
+
+  if ((nPerBlock % nPerWave) != 0) {
+    return failure();
+  }
+
+  if (mPerWave % mnPerXdl != 0) {
+    LLVM_DEBUG(llvm::dbgs() << "tuning: mPerWave not divisible by mnPerXdl\n");
+    return failure();
+  }
+
+  if (nPerWave % mnPerXdl != 0) {
+    LLVM_DEBUG(llvm::dbgs() << "tuning: nPerWave not divisible by mnPerXdl\n");
+    return failure();
+  }
+
+  // Reject invalid blockSize
+  if (!isValidBlockSize(blockSize, kPerBlock, mPerBlock, nPerBlock)) {
+    LLVM_DEBUG(llvm::dbgs() << "tuning: Block size too large.\n");
+    return failure();
+  }
+
+  // TODO(roctriton): Do we want to check this at this point?
+  // Reject invalid KPACK values.
+  // auto maybeMfmaInsnGroup =
+  //     MfmaInsnGroup::select(dataTypeA, dataTypeB, arch, mnPerXdl, kpack,
+  //                           kpackPerBlock);
+  // if (failed(maybeMfmaInsnGroup)) {
+  //   LLVM_DEBUG(llvm::dbgs() << "Failed to select xdlops instruction
+  //   group.\n"); return failure();
+  // }
+  // MfmaInsnGroup mfmaGroup = *maybeMfmaInsnGroup;
+  // if (!mfmaGroup.isCoherentWithK(kpack, kpackPerBlock)) {
+  //   LLVM_DEBUG(
+  //       llvm::dbgs()
+  //       << "Mfma instruction group selection is not compatible with k.\n");
+  //   return failure();
+  // }
+
+  return success();
+}
+
 std::vector<GemmParamsAttr>
 PopulateParamsXDL::getTuningParameters(OpBuilder &b, KernelType opType,
                                        Type dataTypeA, Type dataTypeB,
@@ -252,10 +377,20 @@ PopulateParamsXDL::getTuningParameters(OpBuilder &b, KernelType opType,
   auto perfConfigs =
       ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
 
+  LLVM_DEBUG(
+      llvm::dbgs() << "PopulateParamsXDL::getTuningParameters: perfConfigs: "
+                   << perfConfigs.size() << "\n");
   std::vector<GemmParamsAttr> res;
   for (StringRef perfConfig : perfConfigs) {
     auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
     auto params = GemmParamsAttr::get(perfConfigAttr);
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "PopulateParamsXDL::getTuningParameters: perfConfigAttr: "
+               << perfConfigAttr << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "PopulateParamsXDL::getTuningParameters: params: " << params
+               << "\n");
     if (!params)
       continue;
 
@@ -280,6 +415,117 @@ PopulateParamsXDL::specificCouldBePerformant(GemmParamsAttr params,
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
 #undef Wmma_DEFINITIONS_GEN
 // clang-format on
+
+LogicalResult PopulateParamsWmma::isValidBlockwiseGemm(GemmParamsAttr param,
+                                                       Type dataTypeA,
+                                                       Type dataTypeB,
+                                                       StringRef arch) {
+
+  const int64_t waveSize = mlir::rock::lookupArchInfo(arch).waveSize;
+  int64_t blockSize = obtainBlockSize(waveSize, param);
+  if (blockSize > maxHardwareWorkgroupSize)
+    return failure();
+
+  // Extract parameters
+  int64_t mPerBlock = param.getMPerBlock();
+  int64_t nPerBlock = param.getNPerBlock();
+  int64_t kPerBlock = param.getKPerBlock();
+  int64_t kpack = param.getKpack();
+  int64_t numWaves = param.getNumWaves();
+  int64_t mnPerXdl = param.getMatrixInstrNonkdim();
+
+  // Compute mPerWave and nPerWave from numWaves
+  int64_t maxMWaves = mPerBlock / mnPerXdl;
+  int64_t mWaves = 1;
+  for (int64_t w = 1; w * w <= numWaves && w <= maxMWaves; w++) {
+    if (numWaves % w == 0) {
+      mWaves = w;
+    }
+  }
+  int64_t nWaves = numWaves / mWaves;
+  int64_t mPerWave = mPerBlock / mWaves;
+  int64_t nPerWave = nPerBlock / nWaves;
+
+  // kpackPerBlock is kPerBlock / kpack in the new schema
+  int64_t kpackPerBlock = kPerBlock / kpack;
+
+  // clang-format off
+  std::vector<std::tuple<int, int, int>> validWaveGemmSize =
+  {
+    std::make_tuple(128, 128, 2),
+    std::make_tuple(128, 64, 2),
+    std::make_tuple(64, 128, 2),
+    std::make_tuple(64, 64, 2),
+    std::make_tuple(64, 32, 2),
+    std::make_tuple(32, 64, 2),
+    std::make_tuple(32, 32, 2),
+    std::make_tuple(32, 16, 2),
+    std::make_tuple(16, 32, 2),
+    std::make_tuple(32, 32, 2),
+    std::make_tuple(64, 16, 2),
+    std::make_tuple(16, 64, 2),
+    std::make_tuple(16, 16, 2),
+  };
+  // clang-format on
+
+  if (mnPerXdl != 16) {
+    LLVM_DEBUG(llvm::dbgs() << "mnPerXdl must be 16\n");
+    return failure();
+  }
+
+  if (mnPerXdl > mPerWave || mnPerXdl > nPerWave) {
+    LLVM_DEBUG(llvm::dbgs() << "mnPerXdl is too large:" << param << "\n");
+    return failure();
+  }
+
+  // Check for valid repeats and k distributions
+  int64_t minDPerWave = std::min(mPerWave, nPerWave);
+  int64_t validKPerWaveFactor = 2;
+  if (minDPerWave <= 16) {
+    validKPerWaveFactor = 4;
+  }
+  if ((mPerBlock % minDPerWave != 0) || (nPerBlock % minDPerWave != 0) ||
+      (kpackPerBlock % validKPerWaveFactor != 0)) {
+    return failure();
+  }
+
+  if (blockSize < waveSize)
+    return failure();
+
+  if ((mPerBlock % mPerWave) != 0)
+    return failure();
+
+  if ((nPerBlock % nPerWave) != 0)
+    return failure();
+
+  if (mPerWave % mnPerXdl != 0) {
+    LLVM_DEBUG(llvm::dbgs() << "tuning: mPerWave not divisible by mnPerXdl\n");
+    return failure();
+  }
+
+  if (nPerWave % mnPerXdl != 0) {
+    LLVM_DEBUG(llvm::dbgs() << "tuning: nPerWave not divisible by mnPerXdl\n");
+    return failure();
+  }
+
+  // TODO(roctriton): Do we want to check this at this point?
+  // Reject invalid KPACK values.
+  // auto maybeWmmaInsn =
+  //     WmmaInsn::select(dataTypeA, dataTypeB, waveSize, arch, mPerWave,
+  //                      nPerWave, kpack, kpackPerBlock);
+  // if (failed(maybeWmmaInsn)) {
+  //   LLVM_DEBUG(llvm::dbgs() << "Failed to select wmma instruction.\n");
+  //   return failure();
+  // }
+  // WmmaInsn wmmaInsn = *maybeWmmaInsn;
+  // if (!wmmaInsn.isCoherentWithK(kpack, kpackPerBlock)) {
+  //   LLVM_DEBUG(llvm::dbgs()
+  //              << "Wmma instruction selection is not compatible with k.\n");
+  //   return failure();
+  // }
+
+  return success();
+}
 
 std::vector<GemmParamsAttr>
 PopulateParamsWmma::getTuningParameters(OpBuilder &b, KernelType opType,

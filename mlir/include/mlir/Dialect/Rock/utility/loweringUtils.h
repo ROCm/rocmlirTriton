@@ -73,6 +73,10 @@ bool isWrWAtomicKernel(GemmFeatures features, Type dataType,
 // in memory.
 bool is4GBMemoryType(ShapedType type);
 
+// Return true if the Block size is valid
+bool isValidBlockSize(int64_t blockSize, int64_t kPerBlock, int64_t mPerBlock,
+                      int64_t nPerBlock);
+
 // Heuristic logic to compute KBlock for backward weight atomic add kernel.
 // The logic is adopted from MIOpen.
 //
@@ -133,7 +137,7 @@ Value normalizeMatrix(Value matrix, OpBuilder &b, Location loc,
                       bool doTranspose, StringRef firstDim,
                       StringRef secondDim);
 
-                      // Given a `value` traverses its "views" until it finds the real
+// Given a `value` traverses its "views" until it finds the real
 // `memref::AllocOp` or fails.
 FailureOr<memref::AllocOp> findMemrefAlloc(Value value);
 
