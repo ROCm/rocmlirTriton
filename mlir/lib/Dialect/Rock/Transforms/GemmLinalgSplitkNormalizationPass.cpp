@@ -93,13 +93,25 @@ rewriteLinalgForSplitK(func::FuncOp &func,
                        BufferDependencyAnalysis &bufferDeps) {
   IRRewriter rewriter(func->getContext());
   SmallVector<GemmOp> gemmOps;
+  bool foundGemmWithoutParams = false;
 
   func.walk([&](GemmOp gemmOp) {
-    int64_t splitKFactor = gemmOp.getParams()->getSplitKFactor();
+    auto params = gemmOp.getParams();
+    if (!params) {
+      foundGemmWithoutParams = true;
+      return;
+    }
+    int64_t splitKFactor = params->getSplitKFactor();
     if (splitKFactor > 1) {
       gemmOps.push_back(gemmOp);
     }
   });
+
+  if (foundGemmWithoutParams) {
+    func->emitError("rewriteLinalgForSplitK: found gemm op without params");
+    return failure();
+  }
+
   if (gemmOps.size() > 1)
     return failure();
 
