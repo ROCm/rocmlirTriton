@@ -124,7 +124,7 @@ rewriteLinalgForSplitK(func::FuncOp &func,
 
     // save all `linalg::GenericOp` that read from a gemm output
     auto genericOpOperands =
-        traceGemmOutputToGenericOps(gemmResult, func, bufferDeps);
+        traceGemmOutputToGenericOps(gemmResult, func);
 
     // GEMM result could come from a block argument, so if it fails, we return
     // success()

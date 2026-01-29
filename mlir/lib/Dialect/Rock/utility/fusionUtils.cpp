@@ -141,7 +141,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         auto outArg = gemmOp.getOutArgument();
         Value gemmResult = outArg ? outArg->get() : gemmOp->getResult(0);
 
-        auto maybeBlockArgs = traceGemmOutputToArgs(gemmResult, func, analysis);
+        auto maybeBlockArgs = traceGemmOutputToArgs(gemmResult, func);
         if (failed(maybeBlockArgs))
           return WalkResult::interrupt();
 
@@ -172,7 +172,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
 
         // save all `linalg::GenericOp` that read from a gemm output
         auto genericOpOperands =
-            traceGemmOutputToGenericOps(gemmResult, func, analysis);
+            traceGemmOutputToGenericOps(gemmResult, func);
 
         // GEMM result could come from a block argument, so if it fails, we call
         // WalkResult::advance()
@@ -200,7 +200,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         auto gemmGemmResult = gemmGemmOp.getOutArgument()->get();
 
         auto maybeBlockArgs =
-            traceGemmOutputToArgs(gemmGemmResult, func, analysis);
+            traceGemmOutputToArgs(gemmGemmResult, func);
         if (failed(maybeBlockArgs))
           return WalkResult::interrupt();
 

@@ -7,7 +7,6 @@
 //===-----------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
@@ -528,103 +527,71 @@ LogicalResult mlir::rock::checkLDSSize(StringAttr arch, int64_t ldsBytes) {
   return success(ldsBytes <= ldsSize);
 }
 
-static void traceAlloc(memref::AllocOp buffer,
-                       const BufferDependencyAnalysis &deps,
-                       SmallVector<BlockArgument> &args,
-                       SmallVector<OpOperand *> &genericOpOperands) {
-  IRRewriter rewriter(buffer.getContext());
-  std::optional<llvm::SmallVector<OpOperand *>> readersOperands =
-      deps.getReaders(buffer);
-  if (!readersOperands.has_value())
-    return;
-  for (OpOperand *readerOperand : readersOperands.value()) {
-    auto readOp = dyn_cast<MemoryEffectOpInterface>(readerOperand->getOwner());
-    if (!readOp)
-      continue;
-
-    if (auto genericOp = dyn_cast<linalg::GenericOp>(readerOperand->getOwner()))
-      genericOpOperands.push_back(readerOperand);
-
-    SmallVector<MemoryEffects::EffectInstance> effects;
-    readOp.getEffects(effects);
-    for (const MemoryEffects::EffectInstance &effect : effects) {
-      OpOperand *writerOperand = effect.getEffectValue<OpOperand *>();
-      // Test against the write operand to guard against [MemRead, MemWrite]
-      if (writerOperand && readerOperand != writerOperand &&
-          isa<MemoryEffects::Write>(effect.getEffect())) {
-        Value writerOperandValue = writerOperand->get();
-
-        FailureOr<BlockArgument> maybeArg =
-            findBlockArgument(writerOperandValue);
-        if (succeeded(maybeArg))
-          args.push_back(maybeArg.value());
-        else if (memref::AllocOp writeBuffer =
-                     writerOperandValue.getDefiningOp<memref::AllocOp>())
-          traceAlloc(writeBuffer, deps, args, genericOpOperands);
-      }
-    }
-  }
-}
-
 FailureOr<SmallVector<BlockArgument>>
-mlir::rock::traceGemmOutputToArgs(Value matC, func::FuncOp func,
-                                  const BufferDependencyAnalysis &deps) {
-  if (func.getNumArguments() == 0)
+mlir::rock::traceGemmOutputToArgs(Value matC, func::FuncOp func) {
+  if (func.getNumArguments() == 0) {
+    LLVM_DEBUG(llvm::dbgs() << "traceGemmOutputToArgs: no function arguments\n");
     return failure();
+  }
 
   SmallVector<BlockArgument> args;
   auto funcArgs = func.getArguments();
-  // check if matC is a kernel argument
-  for (auto arg : funcArgs) {
-    if (findBlockArgument(matC) == arg)
-      args.push_back(arg);
+
+  // Check if matC can be directly traced to a kernel argument
+  // (through view-like operations like rock.transform)
+  // FailureOr<BlockArgument> directArg = findBlockArgument(matC);
+  // if (succeeded(directArg)) {
+  //   for (auto arg : funcArgs) {
+  //     if (directArg.value() == arg) {
+  //       args.push_back(arg);
+  //       return args;
+  //     }
+  //   }
+  // }
+
+  // For tensor IR: matC is typically the result of rock.gemm.
+  // Find rock.store operations that use matC as their source,
+  // then trace the store's dest operand back to function arguments.
+  for (OpOperand &use : matC.getUses()) {
+    if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
+      // The dest operand of rock.store can be traced to a function argument
+      Value dest = storeOp.getDest();
+      FailureOr<BlockArgument> destArg = findBlockArgument(dest);
+      if (succeeded(destArg)) {
+        for (auto arg : funcArgs) {
+          if (destArg.value() == arg) {
+            // Avoid duplicates
+            if (std::find(args.begin(), args.end(), arg) == args.end())
+              args.push_back(arg);
+          }
+        }
+      }
+    }
   }
-  assert(args.empty() || args.size() == 1);
+
   if (!args.empty())
     return args;
 
-  // trace matC to its alloc
-  FailureOr<memref::AllocOp> allocOp = findMemrefAlloc(matC);
-  if (failed(allocOp))
-    return failure();
-
-  // trace gemm alloc to arg
-  SmallVector<OpOperand *> genericOpOperands;
-  traceAlloc(allocOp.value(), deps, args, genericOpOperands);
-  for (auto arg : args) {
-    bool containsArg =
-        std::find(funcArgs.begin(), funcArgs.end(), arg) != funcArgs.end();
-    assert(containsArg &&
-           "Found BlockArgument does not belong to func.getArguments()");
-  }
-  if (!args.empty())
-    return args;
-
+  LLVM_DEBUG(llvm::dbgs() << "traceGemmOutputToArgs: no arguments found!\n");
   return failure();
 }
 
 FailureOr<SmallVector<OpOperand *>>
-mlir::rock::traceGemmOutputToGenericOps(Value matC, func::FuncOp func,
-                                        const BufferDependencyAnalysis &deps) {
+mlir::rock::traceGemmOutputToGenericOps(Value matC, func::FuncOp func) {
   auto funcArgs = func.getArguments();
-  // check if matC is a kernel argument
-  for (auto arg : funcArgs) {
-    // no possible linalg.generic output fusion if matC is a block arg
-    if (findBlockArgument(matC) == arg)
-      return {};
+  // Check if matC can be directly traced to a kernel argument
+  FailureOr<BlockArgument> directArg = findBlockArgument(matC);
+  if (succeeded(directArg)) {
+    for (auto arg : funcArgs) {
+      // no possible linalg.generic output fusion if matC is a block arg
+      if (directArg.value() == arg)
+        return failure();
+    }
   }
 
-  // trace matC to its alloc
-  FailureOr<memref::AllocOp> allocOp = findMemrefAlloc(matC);
-  if (failed(allocOp))
-    return failure();
-
-  // trace gemm alloc to arg, saving all genericOps
-  SmallVector<OpOperand *> genericOpOperands;
-  SmallVector<BlockArgument> args;
-  traceAlloc(allocOp.value(), deps, args, genericOpOperands);
-
-  return genericOpOperands;
+  // For tensor IR: there are no linalg.generic output fusions
+  // in the tensor-based IR flow, so return empty.
+  return failure();
 }
 
 llvm::FailureOr<RegsAsMatrixSubTiles>

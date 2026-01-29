@@ -326,7 +326,7 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
   // set the prefill attribute
   auto func = llvm::cast<func::FuncOp>(op->getParentOp());
   FailureOr<SmallVector<BlockArgument>> args =
-      traceGemmOutputToArgs(out, func, bufferDeps);
+      traceGemmOutputToArgs(out, func);
   if (failed(args)) {
     return op->emitError("can't trace gemm output to output argument");
   }
@@ -849,7 +849,7 @@ GemmRewritePattern::arrangeSplitKTransform(OpBuilder &builder, GemmOp op,
     Value matC = op.getResult();
     auto func = llvm::cast<func::FuncOp>(op->getParentOp());
     FailureOr<SmallVector<BlockArgument>> args =
-        traceGemmOutputToArgs(matC, func, bufferDeps);
+        traceGemmOutputToArgs(matC, func);
     if (failed(args)) {
       return op->emitError("can't trace gemm output to output argument");
     }

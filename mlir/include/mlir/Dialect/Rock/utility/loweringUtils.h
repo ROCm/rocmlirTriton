@@ -9,7 +9,6 @@
 #ifndef ROCK_UTILITY_LOWERINGUTILS_H
 #define ROCK_UTILITY_LOWERINGUTILS_H
 
-#include "mlir/Analysis/BufferDependencyAnalysis.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
@@ -170,18 +169,20 @@ Value gpuAlloc(OpBuilder &b, Location loc, int64_t bufferDim, Type elementType,
 // helper to verify a lds allocation fits in the GPU
 LogicalResult checkLDSSize(StringAttr arch, int64_t ldsBytes);
 
-// Trace gemm output back to its function arguments
+// Trace gemm output back to its function arguments by
+// tracing through rock.store operations to find the
+// destination tensor, then traces that back to function arguments.
 FailureOr<SmallVector<BlockArgument>>
-traceGemmOutputToArgs(Value matC, func::FuncOp func,
-                      const BufferDependencyAnalysis &deps);
+traceGemmOutputToArgs(Value matC, func::FuncOp func);
 
 // Trace value to a block argument, going through view-like operations
 FailureOr<BlockArgument> findBlockArgument(Value value);
 
 // Trace gemm output to all linalg.generic that happen after it (output fusions)
+// TODO(roctriton):this returns an empty list as there are no linalg.generic
+// output fusions in the tensor-based IR flow.
 FailureOr<SmallVector<OpOperand *>>
-traceGemmOutputToGenericOps(Value matC, func::FuncOp func,
-                            const BufferDependencyAnalysis &deps);
+traceGemmOutputToGenericOps(Value matC, func::FuncOp func);
 
 llvm::FailureOr<RegsAsMatrixSubTiles>
 computeOutputTransforms(OpBuilder &b, Location loc, int64_t mPerBlock,
