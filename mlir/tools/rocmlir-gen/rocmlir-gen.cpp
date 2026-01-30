@@ -3771,6 +3771,7 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
 
     // Get the output element type and shape
     Type outElemType = params.types[2];
+    Type aElemType = cast<RankedTensorType>(aTensor.getType()).getElementType();
     auto aType = cast<RankedTensorType>(aTensor.getType());
     auto bType = cast<RankedTensorType>(bTensor.getType());
     int64_t G = aType.getShape()[0];
@@ -3778,13 +3779,24 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
     int64_t K = aType.getShape()[2];
     int64_t N = bType.getShape()[2];
 
-    // Create output tensor type [G, M, N]
-    auto outTensorType = RankedTensorType::get({G, M, N}, outElemType);
+    // Determine accumulator type to match GPU behavior:
+    // f16, bf16, fp8 -> accumulate in f32 to prevent overflow
+    // i8 -> accumulate in i32
+    // f32, i16 -> accumulate in output type
+    Type accElemType = outElemType;
+    if (isa<FloatType>(aElemType) && aElemType.getIntOrFloatBitWidth() < 32) {
+      accElemType = builder.getF32Type();
+    } else if (aElemType.isInteger(8)) {
+      accElemType = builder.getI32Type();
+    }
 
-    // Create zero-initialized output tensor
-    Value zeroVal = rock::createZeroConstantOp(builder, loc, outElemType);
+    // Create accumulator tensor type [G, M, N]
+    auto accTensorType = RankedTensorType::get({G, M, N}, accElemType);
+
+    // Create zero-initialized accumulator tensor
+    Value zeroVal = rock::createZeroConstantOp(builder, loc, accElemType);
     Value emptyTensor =
-        tensor::EmptyOp::create(builder, loc, outTensorType,
+        tensor::EmptyOp::create(builder, loc, accTensorType,
                                 /*dynamic_sizes=*/ValueRange{});
     Value initTensor =
         linalg::FillOp::create(builder, loc, zeroVal, emptyTensor).getResult(0);
@@ -3813,7 +3825,7 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
     AffineMap bMapScaled = scaleAffineMap(!transposeScaleB, n);
 
     auto genericOp = linalg::GenericOp::create(
-        builder, loc, outTensorType,
+        builder, loc, accTensorType,
         ValueRange{aTensor, bTensor, aScaleTensor, bScaleTensor},
         ValueRange{initTensor},
         ArrayRef<AffineMap>{aMap, bMap, aMapScaled, bMapScaled, cMap},
@@ -3833,17 +3845,44 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
             Value add = arith::AddIOp::create(b, loc, mul, c);
             linalg::YieldOp::create(b, loc, add);
           } else {
-            a = arith::MulFOp::create(b, loc, a, aScale);
-            bVal = arith::MulFOp::create(b, loc, bVal, bScale);
-            Value mul = arith::MulFOp::create(b, loc, a, bVal);
+            // Extend inputs and scales to accumulator type (f32) for float types
+            Value aExt = rock::createTypeConversionOp(b, loc, a, cType);
+            Value bExt = rock::createTypeConversionOp(b, loc, bVal, cType);
+            Value aScaleExt = rock::createTypeConversionOp(b, loc, aScale, cType);
+            Value bScaleExt = rock::createTypeConversionOp(b, loc, bScale, cType);
+            aExt = arith::MulFOp::create(b, loc, aExt, aScaleExt);
+            bExt = arith::MulFOp::create(b, loc, bExt, bScaleExt);
+            Value mul = arith::MulFOp::create(b, loc, aExt, bExt);
             Value add = arith::AddFOp::create(b, loc, mul, c);
             linalg::YieldOp::create(b, loc, add);
           }
         });
     resultTensor = genericOp.getResult(0);
+
+    // Convert accumulator result to output type if needed using linalg.generic
+    if (accElemType != outElemType) {
+      auto outTensorType = RankedTensorType::get({G, M, N}, outElemType);
+      Value emptyOut = tensor::EmptyOp::create(builder, loc, outTensorType,
+                                               /*dynamic_sizes=*/ValueRange{});
+      AffineMap identityMap = builder.getMultiDimIdentityMap(3);
+      auto truncOp = linalg::GenericOp::create(
+          builder, loc, outTensorType, ValueRange{resultTensor},
+          ValueRange{emptyOut}, ArrayRef<AffineMap>{identityMap, identityMap},
+          ArrayRef<utils::IteratorType>{utils::IteratorType::parallel,
+                                        utils::IteratorType::parallel,
+                                        utils::IteratorType::parallel},
+          /*doc=*/"", /*library_call=*/"",
+          [outElemType](OpBuilder &b, Location loc, ValueRange elems) {
+            Value truncated =
+                arith::TruncFOp::create(b, loc, outElemType, elems[0]);
+            linalg::YieldOp::create(b, loc, truncated);
+          });
+      resultTensor = truncOp.getResult(0);
+    }
   } else {
     // For non-scaled GEMM, use linalg.generic
     Type outElemType = params.types[2];
+    Type aElemType = cast<RankedTensorType>(aTensor.getType()).getElementType();
     auto aType = cast<RankedTensorType>(aTensor.getType());
     auto bType = cast<RankedTensorType>(bTensor.getType());
     int64_t G = aType.getShape()[0];
@@ -3851,13 +3890,24 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
     int64_t K = aType.getShape()[2];
     int64_t N = bType.getShape()[2];
 
-    // Create output tensor type [G, M, N]
-    auto outTensorType = RankedTensorType::get({G, M, N}, outElemType);
+    // Determine accumulator type to match GPU behavior:
+    // f16, bf16, fp8 -> accumulate in f32 to prevent overflow
+    // i8 -> accumulate in i32
+    // f32, i16 -> accumulate in output type
+    Type accElemType = outElemType;
+    if (isa<FloatType>(aElemType) && aElemType.getIntOrFloatBitWidth() < 32) {
+      accElemType = builder.getF32Type();
+    } else if (aElemType.isInteger(8)) {
+      accElemType = builder.getI32Type();
+    }
 
-    // Create zero-initialized output tensor
-    Value zeroVal = rock::createZeroConstantOp(builder, loc, outElemType);
+    // Create accumulator tensor type [G, M, N]
+    auto accTensorType = RankedTensorType::get({G, M, N}, accElemType);
+
+    // Create zero-initialized accumulator tensor
+    Value zeroVal = rock::createZeroConstantOp(builder, loc, accElemType);
     Value emptyTensor =
-        tensor::EmptyOp::create(builder, loc, outTensorType,
+        tensor::EmptyOp::create(builder, loc, accTensorType,
                                 /*dynamic_sizes=*/ValueRange{});
     Value initTensor =
         linalg::FillOp::create(builder, loc, zeroVal, emptyTensor).getResult(0);
@@ -3873,7 +3923,7 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
     AffineMap cMap = AffineMap::get(4, 0, {g, m, n}, ctx);
 
     auto genericOp = linalg::GenericOp::create(
-        builder, loc, outTensorType, ValueRange{aTensor, bTensor},
+        builder, loc, accTensorType, ValueRange{aTensor, bTensor},
         ValueRange{initTensor}, ArrayRef<AffineMap>{aMap, bMap, cMap},
         ArrayRef<utils::IteratorType>{
             utils::IteratorType::parallel, utils::IteratorType::parallel,
@@ -3890,12 +3940,36 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
             Value add = arith::AddIOp::create(b, loc, mul, c);
             linalg::YieldOp::create(b, loc, add);
           } else {
-            Value mul = arith::MulFOp::create(b, loc, a, bVal);
+            // Extend inputs to accumulator type (f32) for float types
+            Value aExt = rock::createTypeConversionOp(b, loc, a, cType);
+            Value bExt = rock::createTypeConversionOp(b, loc, bVal, cType);
+            Value mul = arith::MulFOp::create(b, loc, aExt, bExt);
             Value add = arith::AddFOp::create(b, loc, mul, c);
             linalg::YieldOp::create(b, loc, add);
           }
         });
     resultTensor = genericOp.getResult(0);
+
+    // Convert accumulator result to output type if needed using linalg.generic
+    if (accElemType != outElemType) {
+      auto outTensorType = RankedTensorType::get({G, M, N}, outElemType);
+      Value emptyOut = tensor::EmptyOp::create(builder, loc, outTensorType,
+                                               /*dynamic_sizes=*/ValueRange{});
+      AffineMap identityMap = builder.getMultiDimIdentityMap(3);
+      auto truncOp = linalg::GenericOp::create(
+          builder, loc, outTensorType, ValueRange{resultTensor},
+          ValueRange{emptyOut}, ArrayRef<AffineMap>{identityMap, identityMap},
+          ArrayRef<utils::IteratorType>{utils::IteratorType::parallel,
+                                        utils::IteratorType::parallel,
+                                        utils::IteratorType::parallel},
+          /*doc=*/"", /*library_call=*/"",
+          [outElemType](OpBuilder &b, Location loc, ValueRange elems) {
+            Value truncated =
+                arith::TruncFOp::create(b, loc, outElemType, elems[0]);
+            linalg::YieldOp::create(b, loc, truncated);
+          });
+      resultTensor = truncOp.getResult(0);
+    }
   }
 
   // Apply output transpose if needed
