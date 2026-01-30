@@ -3706,6 +3706,8 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   constexpr llvm::StringLiteral cpuKernName("host_naive_gemm");
   auto func = func::FuncOp::create(builder, loc, cpuKernName,
                                    builder.getFunctionType(flatArgTypes, {}));
+  // Mark as CPU verifier so buildHostLoweringPipeline can identify it
+  func->setAttr("rock.cpu_verifier", builder.getUnitAttr());
 
   Block *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);
@@ -3987,6 +3989,8 @@ createCpuConvElementwiseGemmKernelWithMlir(ModuleOp module,
   constexpr llvm::StringLiteral cpuKernName("host_naive_conv_gemm");
   auto func = func::FuncOp::create(builder, loc, cpuKernName,
                                    builder.getFunctionType(flatArgTypes, {}));
+  // Mark as CPU verifier so buildHostLoweringPipeline can identify it
+  func->setAttr("rock.cpu_verifier", builder.getUnitAttr());
 
   Block *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);
@@ -4156,6 +4160,8 @@ createCpuGemmElementwiseGemmKernelWithMlir(ModuleOp module,
   constexpr llvm::StringLiteral cpuKernName("host_naive_gemm_gemm");
   auto func = func::FuncOp::create(builder, loc, cpuKernName,
                                    builder.getFunctionType(flatArgTypes, {}));
+  // Mark as CPU verifier so buildHostLoweringPipeline can identify it
+  func->setAttr("rock.cpu_verifier", builder.getUnitAttr());
 
   Block *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);
@@ -4276,6 +4282,8 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   constexpr llvm::StringLiteral cpuKernName("host_naive_attention");
   auto func = func::FuncOp::create(builder, loc, cpuKernName,
                                    builder.getFunctionType(flatArgTypes, {}));
+  // Mark as CPU verifier so buildHostLoweringPipeline can identify it
+  func->setAttr("rock.cpu_verifier", builder.getUnitAttr());
 
   Block *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);

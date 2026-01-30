@@ -20,6 +20,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   InsertOutputFusionLoads.cpp
   LowerLoads.cpp
   LowerStores.cpp
+  LowerCpuVerifier.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/Rock
@@ -54,7 +55,13 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   MLIRAMDGPUUtils
   MLIRSCFToControlFlow
   MLIRSupport
+  MLIRTensorToLinalg
   MLIRTosaDialect
+  MLIRTosaToArith
+  MLIRTosaToLinalg
+  MLIRTosaToSCF
+  MLIRTosaToTensor
+  MLIRTosaTransforms
   MLIRUBDialect
   MLIRVectorTransforms
 
