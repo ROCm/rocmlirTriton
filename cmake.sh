@@ -44,6 +44,9 @@ cmake .. -G Ninja \
   -DCMAKE_C_COMPILER=clang-20 \
   -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
   -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" \
-  -DCMAKE_MODULE_LINKER_FLAGS="-fuse-ld=lld"
+  -DCMAKE_MODULE_LINKER_FLAGS="-fuse-ld=lld" \
+  -DROCK_E2E_TEST_ENABLED=ON \
+  -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=ON \
+  -DROCMLIR_DRIVER_E2E_TEST_ENABLED=ON
 
 ninja libconv-validation-wrappers.so; ninja check-rocmlir-build-only ci-performance-scripts
