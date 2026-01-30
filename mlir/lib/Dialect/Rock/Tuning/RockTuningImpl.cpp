@@ -117,11 +117,12 @@ static std::vector<std::vector<uint32_t>>
 getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t maxWavesPerEU, TuningParamSetKind kind) {
   auto dPerBlock = computeDPerBlock(kind);
 
-  std::vector<uint32_t> wavesPerEUList;
-  wavesPerEUList.push_back(0); // use heuristic
-  for (uint32_t wavesPerEU = 1; wavesPerEU <= maxWavesPerEU; wavesPerEU *= 2) {
-    wavesPerEUList.push_back(wavesPerEU);
-  }
+  std::vector<uint32_t> wavesPerEUList = {0};
+  // std::vector<uint32_t> wavesPerEUList;
+  // wavesPerEUList.push_back(0); // use heuristic
+  // for (uint32_t wavesPerEU = 1; wavesPerEU <= maxWavesPerEU; wavesPerEU *= 2) {
+  //   wavesPerEUList.push_back(wavesPerEU);
+  // }
 
   Type inTypeA = gemmOp.getAType();
   bool is8b = inTypeA.isInteger(8) ||
@@ -140,9 +141,9 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t maxWavesPerEU, Tuning
       kPerBlock,           // K/block
       {1, 2},              // kPack
       {16, 32},            // matrixInstrNonkdim
-      {1, 2, 3, 4},        // numStages
+      {1, 2, 3},        // numStages
       wavesPerEUList,      // wavesPerEU
-      {0, 2, 4, 8, 32, 64} // gridGroupSize
+      {0} // gridGroupSize
   };
 
   // WMMA (RDNA3) parameters
