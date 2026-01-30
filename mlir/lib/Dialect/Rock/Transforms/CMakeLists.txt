@@ -36,16 +36,19 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   MLIRArithTransforms
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
+  MLIRBufferizationTransformOps
   MLIRDialect
   MLIRFuncDialect
   MLIRIR
-  MLIRPass
+  MLIRLinalgTransformOps
   MLIRLinalgUtils
   MLIRLinalgTransforms
   MLIRLLVMDialect
   MLIRMathToLLVM
   MLIRMemRefTransforms
   MLIRAffineToStandard
+  MLIRParser
+  MLIRPass
   MLIRReconcileUnrealizedCasts
   MLIRRockOps
   MLIRRockTuning
@@ -62,6 +65,8 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   MLIRTosaToSCF
   MLIRTosaToTensor
   MLIRTosaTransforms
+  MLIRTransformDialect
+  MLIRTransformDialectTransforms
   MLIRUBDialect
   MLIRVectorTransforms
 
