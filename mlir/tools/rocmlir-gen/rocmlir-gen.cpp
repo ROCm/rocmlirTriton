@@ -5099,6 +5099,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       auto getTimeFunc = makeFuncDecl(module, "getCpuTimeNs", {}, {i64Type});
       auto printTimeFunc =
           makeFuncDecl(module, "printCpuTimeMs", {i64Type, i64Type}, {});
+      auto printDebugMsgFunc =
+          makeFuncDecl(module, "printDebugMsg", {b.getI32Type()}, {});
 
       // Convert memref arguments to tensors for the function call
       // valVars contains: A, B, C, [aScale, bScale for scaled GEMM]
@@ -5118,13 +5120,25 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
         tensorInputs.push_back(tensor);
       }
 
+      // Debug: print before CPU kernel
+      Value beforeMsg = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 1);
+      func::CallOp::create(b, loc, printDebugMsgFunc, ValueRange{beforeMsg});
+
       // Get start time
       auto startTimeCall = func::CallOp::create(b, loc, getTimeFunc, ValueRange{});
       Value startTime = startTimeCall.getResult(0);
 
+      // Debug: print before actual call
+      Value beforeCallMsg = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 2);
+      func::CallOp::create(b, loc, printDebugMsgFunc, ValueRange{beforeCallMsg});
+
       // Call the CPU GEMM kernel (returns tensor result)
       auto callOp = func::CallOp::create(b, loc, cpuGemmFunc, tensorInputs);
       Value resultTensor = callOp.getResult(0);
+
+      // Debug: print after call
+      Value afterCallMsg = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 3);
+      func::CallOp::create(b, loc, printDebugMsgFunc, ValueRange{afterCallMsg});
 
       // Get end time
       auto endTimeCall = func::CallOp::create(b, loc, getTimeFunc, ValueRange{});
@@ -5133,12 +5147,25 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       // Print elapsed time
       func::CallOp::create(b, loc, printTimeFunc, ValueRange{startTime, endTime});
 
+      // Debug: print before result conversion
+      Value beforeConvMsg = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 4);
+      func::CallOp::create(b, loc, printDebugMsgFunc, ValueRange{beforeConvMsg});
+
       // Convert result tensor back to memref and copy to output
       Value outputMemref = valVars[2]; // C is at index 2
       auto outputMemrefType = cast<MemRefType>(outputMemref.getType());
       Value resultMemref = bufferization::ToBufferOp::create(
           b, loc, outputMemrefType, resultTensor);
+
+      // Debug: print before memref copy
+      Value beforeCopyMsg = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 5);
+      func::CallOp::create(b, loc, printDebugMsgFunc, ValueRange{beforeCopyMsg});
+
       memref::CopyOp::create(b, loc, resultMemref, outputMemref);
+
+      // Debug: print after everything
+      Value afterAllMsg = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 6);
+      func::CallOp::create(b, loc, printDebugMsgFunc, ValueRange{afterAllMsg});
     } else if (genParams.operation == rock::KernelType::Attention) {
       if (validationType == "cpp") {
         llvm::errs() << "External attention validator is not available\n";
@@ -5437,6 +5464,10 @@ static LogicalResult populateHostHarnessLogic(
     }
   };
 
+  // Declare printDebugMsg for debug output (used throughout this function)
+  auto printDebugMsgFunc =
+      makeFuncDecl(module, "printDebugMsg", {b.getI32Type()}, {});
+
   // Call the roots.
   for (auto &root : roots) {
     // Is the root also a kernel?
@@ -5445,9 +5476,17 @@ static LogicalResult populateHostHarnessLogic(
           return k.func == root.func;
         }) != kernels.end();
     if (rootKernel) {
+      // Debug: print before GPU kernel
+      Value beforeGpuMsg = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 10);
+      func::CallOp::create(b, loc, printDebugMsgFunc, ValueRange{beforeGpuMsg});
+
       // rootKernel calls will be redirected to GPU wrapper, which expects memrefs
       callFuncWithConversion(root.func, localVars, outIndices,
                              /*willBeWrapped=*/true);
+
+      // Debug: print after GPU kernel
+      Value afterGpuMsg = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 11);
+      func::CallOp::create(b, loc, printDebugMsgFunc, ValueRange{afterGpuMsg});
     } else if (!valVars.empty()) {
       callFuncWithConversion(root.func, valVars, outIndices);
       if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {

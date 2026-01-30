@@ -397,3 +397,43 @@ extern "C" void printCpuTimeMs(int64_t startNs, int64_t endNs) {
       static_cast<double>(endNs - startNs) / 1000000.0; // ns to ms
   printf("CPU kernel time: %.3f ms\n", elapsedMs);
 }
+
+// Debug function to print progress messages
+extern "C" void printDebugMsg(int32_t msgId) {
+  const char *msg = nullptr;
+  switch (msgId) {
+  case 1:
+    msg = "DEBUG[1]: Before CPU kernel setup";
+    break;
+  case 2:
+    msg = "DEBUG[2]: Before CPU GEMM kernel call";
+    break;
+  case 3:
+    msg = "DEBUG[3]: After CPU GEMM kernel call";
+    break;
+  case 4:
+    msg = "DEBUG[4]: Before result tensor to memref conversion";
+    break;
+  case 5:
+    msg = "DEBUG[5]: Before memref copy to output";
+    break;
+  case 6:
+    msg = "DEBUG[6]: After all CPU verification complete";
+    break;
+  case 10:
+    msg = "DEBUG[10]: Before GPU kernel call";
+    break;
+  case 11:
+    msg = "DEBUG[11]: After GPU kernel call";
+    break;
+  default:
+    break;
+  }
+  if (msg) {
+    printf("%s\n", msg);
+    fflush(stdout);
+  } else {
+    printf("DEBUG[%d]: Unknown message\n", msgId);
+    fflush(stdout);
+  }
+}

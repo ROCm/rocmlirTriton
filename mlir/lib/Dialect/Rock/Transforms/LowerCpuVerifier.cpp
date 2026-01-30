@@ -81,7 +81,7 @@ module attributes {transform.with_named_sequence} {
     %2 = transform.apply_registered_pass "canonicalize" to %func1 : (!transform.any_op) -> !transform.any_op
     %3 = transform.apply_registered_pass "lower-affine" to %2 : (!transform.any_op) -> !transform.any_op
 
-    %10 = transform.bufferization.one_shot_bufferize layout{IdentityLayoutMap} %arg0 {bufferize_function_boundaries = true} : (!transform.any_op) -> !transform.any_op
+    %10 = transform.bufferization.one_shot_bufferize layout{IdentityLayoutMap} %arg0 {bufferize_function_boundaries = false} : (!transform.any_op) -> !transform.any_op
     //%11 = transform.structured.match ops{["linalg.generic"]} in %0 : (!transform.any_op) -> !transform.any_op
     //%12 = transform.structured.convert_to_loops %1 : (!transform.any_op) -> !transform.any_op      
 
