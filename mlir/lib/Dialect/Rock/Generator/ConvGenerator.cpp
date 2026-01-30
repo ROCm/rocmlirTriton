@@ -1018,8 +1018,9 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
   // Store the result to the transformed output tensor (args[2])
   // TODO(roctriton): Is 2 always the output tensor?
-  Value storedVal = rock::StoreOp::create(builder, builder.getUnknownLoc(),
-                                          outputFlatType, convResult, args[2]);
+  Value storedVal = rock::StoreOp::create(
+      builder, builder.getUnknownLoc(), outputFlatType, convResult, args[2],
+      builder.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set));
 
   func::ReturnOp::create(builder, builder.getUnknownLoc(), storedVal);
   return success();

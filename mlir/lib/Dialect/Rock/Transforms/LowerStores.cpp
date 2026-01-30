@@ -290,10 +290,9 @@ void RockLowerStoresPass::runOnOperation() {
     // The dest should be the rock.store destination (already transformed)
     // extraViews contains the output grid subtile transforms
     auto bstOp = BlockwiseStoreTileOp::create(
-        builder, loc, storeOp.getResult().getType(),
-        fusedTile, dest, gridCoords,
-        StoreMethod::Set);
-    
+        builder, loc, storeOp.getResult().getType(), fusedTile, dest,
+        gridCoords, storeOp.getStoreMethod());
+
     LLVM_DEBUG(llvm::dbgs() << "Created BlockwiseStoreTileOp: " << bstOp
                             << "\n");
     

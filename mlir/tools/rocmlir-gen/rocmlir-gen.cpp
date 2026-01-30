@@ -2658,17 +2658,17 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   }
 
   auto gemm = rock::GemmOp::create(
-      b, loc, cVal.getType(), aVal, bVal, aScale, bScale,
-      transposeA, transposeB, transposeScaleA, transposeScaleB,
-      rock::GemmFeaturesAttr::get(b.getContext(), params.features), storeMethod,
+      b, loc, cVal.getType(), aVal, bVal, aScale, bScale, transposeA,
+      transposeB, transposeScaleA, transposeScaleB,
+      rock::GemmFeaturesAttr::get(b.getContext(), params.features),
       /*params=*/nullptr);
 
   if (!params.perfConfig.empty())
     gemm->setAttr("perf_config", b.getStringAttr(params.perfConfig));
 
   // Store the result to the transformed C tensor
-  Value storedVal =
-      rock::StoreOp::create(b, loc, cFlatType, gemm.getResult(), cVal);
+  Value storedVal = rock::StoreOp::create(b, loc, cFlatType, gemm.getResult(),
+                                          cVal, storeMethod);
 
   // Convert back to flat type for function return
   // Value result =
@@ -3393,7 +3393,7 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       numHeadsKV, transposeQ, transposeK, transposeV, transposeO, actualCausal,
       splitKV,
       rock::GemmFeaturesAttr::get(builder.getContext(), params.features),
-      storeMethod, softmaxType,
+      softmaxType,
       /*params0=*/nullptr, /*params1=*/nullptr,
       /*firstGemmIdx=*/builder.getDenseI64ArrayAttr({0}));
   {
@@ -3526,7 +3526,7 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
       builder, loc, TypeRange{}, filter, input, c, elemwiseInputs, output,
       transposeC, transposeO,
       rock::GemmFeaturesAttr::get(builder.getContext(), params.features),
-      storeMethod, builder.getIndexArrayAttr(pad),
+      builder.getIndexArrayAttr(pad),
       builder.getIndexArrayAttr(config->strideDims),
       builder.getIndexArrayAttr(config->dilationDims),
       /*params0=*/nullptr, /*params1=*/nullptr,
@@ -3642,7 +3642,6 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
       builder, loc, TypeRange{}, a, b, c, elemwiseInputs, output, transposeA,
       transposeB, transposeC, transposeO,
       rock::GemmFeaturesAttr::get(builder.getContext(), params.features),
-      storeMethod,
       /*params0=*/nullptr, /*params1=*/nullptr,
       /*firstGemmIdx=*/builder.getDenseI64ArrayAttr({0}));
   {

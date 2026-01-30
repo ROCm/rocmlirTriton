@@ -1076,7 +1076,6 @@ public:
         rw, loc, outputType, brA, brB, brAScale, brBScale, transposeA,
         transposeB, /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
         /*features=*/nullptr,
-        rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set),
         /*params=*/nullptr);
 
     if (auto attr = op->getAttrOfType<StringAttr>("perf_config"))
@@ -1494,9 +1493,8 @@ struct ConvElementwiseGemmRewritePattern
         rewriter, loc, outputType, convFields.filterExp, convFields.inputExp,
         op.getB(), elementwiseOtherArgs, output,
         /*cTransposed=*/nullptr,
-        /*oTransposed=*/nullptr, /*features=*/nullptr,
-        rewriter.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set),
-        convFields.pad, convFields.stride, convFields.dilation,
+        /*oTransposed=*/nullptr, /*features=*/nullptr, convFields.pad,
+        convFields.stride, convFields.dilation,
         /*params0=*/nullptr, /*params1=*/nullptr,
         /*firstGemmIndices=*/
         rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
@@ -1580,7 +1578,6 @@ struct GemmElementwiseGemmRewritePattern
             /*vTransposed=*/nullptr,
             /*oTransposed=*/nullptr,
             /*features=*/nullptr,
-            rewriter.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set),
             /*params0=*/nullptr, /*params1=*/nullptr,
             /*firstGemmIndices=*/
             rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
@@ -3023,9 +3020,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         /*vTransposed=*/nullptr,
         /*oTransposed=*/nullptr, causalAttr,
         /*splitKV=*/rewriter.getI32IntegerAttr(1),
-        /*features=*/nullptr,
-        rewriter.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set),
-        softmaxTypeAttr,
+        /*features=*/nullptr, softmaxTypeAttr,
         /*params0=*/nullptr, /*params1=*/nullptr,
         /*firstGemmIndices=*/
         rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
