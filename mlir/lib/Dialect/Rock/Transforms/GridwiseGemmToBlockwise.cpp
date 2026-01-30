@@ -40,10 +40,11 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
@@ -251,7 +252,8 @@ struct GridwiseGemmAccelRewritePattern
                             << "numCTAs: " << numCTAs << "\n");
 
     // TODO(roctriton): f32 if float, i32 if int
-    Type accType = b.getF32Type();
+    Type accType = isa<FloatType>(elementTypeA) ? Type(b.getF32Type())
+                                                : Type(b.getI32Type());
     Value initAcc = createZeroAccBuffer(b, loc, mPerBlock, nPerBlock, accType);
 
     // Emit loop with iter_args for the accumulator
