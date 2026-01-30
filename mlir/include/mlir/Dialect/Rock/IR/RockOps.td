@@ -503,7 +503,7 @@ def Rock_StoreOp : Rock_Op<"store">,
     the output will occur according to what the rock.transform op indicates.
   }];
   let assemblyFormat = [{
-    $source `to` $dest attr-dict `:` type($source) `->` type ($result) `to` type($dest)
+    $source `to` $dest `by` $storeMethod attr-dict `:` type($source) `->` type ($result) `to` type($dest)
   }];
 }
 
