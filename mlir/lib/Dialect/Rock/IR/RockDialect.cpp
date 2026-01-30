@@ -1311,9 +1311,6 @@ SmallVector<mlir::Type> BlockwiseGemmOp::getTypesForFeature() {
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
 LogicalResult GridwiseAttentionOp::verify() {
-  if (getEnableSoftmax() && getStoreMethod() != StoreMethod::Set)
-    return emitError("Only set store method is supported for attention.");
-
   GemmParamsAttr gemm0TuningParams = getParams0();
   int64_t gemm0kpack = gemm0TuningParams.getKpack();
   int64_t gemm0NPerBlock = gemm0TuningParams.getNPerBlock();
@@ -1836,9 +1833,6 @@ LogicalResult AttentionOp::verify() {
 
   if (getSplitKV() <= 0)
     return emitError("Negative or zero split-kv does not make sense");
-
-  if (getStoreMethod() != StoreMethod::Set)
-    return emitError("Only set store method is supported for attention.");
 
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +

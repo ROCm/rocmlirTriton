@@ -581,7 +581,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
 
   auto newOp = GridwiseAttentionOp::create(
       rw, loc, a, b, c, elementwiseInputs, currentSeqLen, prefixOffset, out,
-      lse, causal, splitKV, op.getGemmFeaturesAttr(), op.getStoreMethodAttr(),
+      lse, causal, splitKV, op.getGemmFeaturesAttr(),
       /*disableQBypassLDS=*/nullptr, prePadG0MAttr, prePadG0NAttr,
       numRepeatsGQA, softmaxType, params0, params1,
       rw.getDenseI64ArrayAttr(op.getFirstGemmIndices()),
@@ -771,10 +771,9 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   }
 
   auto accumulatorType = getAccumulatorType(a, b, c, rw, loc);
-  auto gridwiseOp = GridwiseGemmOp::create(
-      rw, loc, accumulatorType, a, b, scaleA, scaleB,
-      op.getFeaturesAttr(), op.getStoreMethodAttr(),
-      cast<GemmParamsAttr>(params));
+  auto gridwiseOp = GridwiseGemmOp::create(rw, loc, accumulatorType, a, b,
+                                           scaleA, scaleB, op.getFeaturesAttr(),
+                                           cast<GemmParamsAttr>(params));
   Value gridwiseResult = gridwiseOp.getResult();
 
   // If accumulator type differs from output type, convert
@@ -791,10 +790,17 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   // c2 = arith.addf(c, otherTensor) -> propagate c and shape to otherTensor
   // rock.store c2, newTransform ... -> propagate c and new transforms
   if (storeOp) {
+
+    // adjust the store method
+    StoreMethodAttr storeMethod =
+        rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set);
+    if (splitKFactor > 1)
+      storeMethod =
+          rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
     rw.setInsertionPoint(storeOp);
-    auto newStoreOp = rock::StoreOp::create(
-        rw, storeOp.getLoc(), storeOp.getResult().getType(), result,
-        c);
+    auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
+                                            storeOp.getResult().getType(),
+                                            result, c, storeMethod);
     rw.replaceOp(storeOp, newStoreOp.getResult());
   }
 
@@ -807,11 +813,6 @@ GemmRewritePattern::arrangeSplitKTransform(OpBuilder &builder, GemmOp op,
                                            Location loc, int64_t splitKFactor,
                                            Value a, Value b, Value c,
                                            Value scaleA, Value scaleB) const {
-  // adjust the store method
-  auto storeMethod =
-      builder.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
-  op.setStoreMethodAttr(storeMethod);
-
   // set the prefill attribute
   // For backward data convolution with multiple V4R1 kernels, only the first
   // kernel (kernelId == 0) should set the prefill attribute. All kernels write

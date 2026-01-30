@@ -570,11 +570,12 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
 
   // This kernel is not run when there is padding on the GEMM
   auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::AtomicAdd);
+  // TODO(roctriton): set storeMethod to rock.store!
   GemmOp::create(b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
                  /*scaleA=*/nullptr, /*scaleB=*/nullptr,
                  /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
                  /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-                 op.getFeaturesAttr(), storeMethod, op.getParamsAttr());
+                 op.getFeaturesAttr(), op.getParamsAttr());
 
   // Finally, erase the original Conv op.
   b.eraseOp(op);
@@ -930,13 +931,12 @@ FailureOr<std::tuple<Value, Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
   }
 
   // Emit rock.gemm op.
-  auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
   auto gemm = GemmOp::create(
       b, loc, getResultType(op, gemmInput), gemmFilter, gemmOutput,
       /*scaleA=*/nullptr, /*scaleB=*/nullptr,
       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
       /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-      op.getFeaturesAttr(), storeMethod, op.getParamsAttr());
+      op.getFeaturesAttr(), op.getParamsAttr());
   // Bounced along for debugging purposes, not used below
   gemm->setAttr("kernelId", b.getIndexAttr(kernelId));
 
@@ -1238,8 +1238,7 @@ struct ConvGemmRewritePattern : public OpRewritePattern<ConvElementwiseGemmOp> {
         op.getElemwiseInputs(), op.getOut(),
         /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
         op.getCTransposedAttr(), op.getOTransposedAttr(), op.getFeaturesAttr(),
-        op.getStoreMethodAttr(), op.getParams0Attr(), op.getParams1Attr(),
-        op.getFirstGemmIndicesAttr());
+        op.getParams0Attr(), op.getParams1Attr(), op.getFirstGemmIndicesAttr());
 
     // copy linalg::GenericOp if there's any
     bool linalgOpFound = false;
@@ -1293,7 +1292,7 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
         /*scaleA=*/nullptr, /*scaleB=*/nullptr,
         /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
         /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-        op.getFeaturesAttr(), storeMethod, tuningParams);
+        op.getFeaturesAttr(), tuningParams);
 
     // Find and update the StoreOp that uses the conv result.
     // The conv result type (conv output shape) differs from gemm result type
@@ -1305,8 +1304,8 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
       if (auto storeOp = dyn_cast<StoreOp>(user)) {
         // Create a new StoreOp with gemm result and gemmC
         Type storeResultType = storeOp.getResult().getType();
-        auto newStoreOp = StoreOp::create(b, loc, storeResultType,
-                                          newGemmOp.getResult(), gemmC);
+        auto newStoreOp = StoreOp::create(
+            b, loc, storeResultType, newGemmOp.getResult(), gemmC, storeMethod);
         b.replaceOp(storeOp, newStoreOp.getResult());
       }
     }

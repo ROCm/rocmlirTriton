@@ -148,7 +148,6 @@ def Rock_GemmOp
           UnitAttr:$aTransposed, UnitAttr:$bTransposed,
           UnitAttr:$aScaleTransposed, UnitAttr:$bScaleTransposed,
           OptionalAttr<Rock_GemmFeaturesAttr>:$features,
-          StoreMethodAttr:$storeMethod, 
           OptionalAttr<RockTuningParamAttrInterface>:$params)>,
       Results<(outs AnyRankedTensor:$c)> {
   let summary = "General matrix multiplication (GEMM)";
@@ -173,7 +172,7 @@ def Rock_GemmOp
   let hasVerifier = 1;
   let assemblyFormat = [{
     (`tr` $aTransposed^)? $a (`scaled` `by` (`tr` $aScaleTransposed^)? $scaleA^)? `*` (`tr` $bTransposed^)? $b (`scaled` `by` (`tr` $bScaleTransposed^)? $scaleB^)?
-    (`features` `=` $features^)? `storeMethod` `=` $storeMethod attr-dict
+    (`features` `=` $features^)? attr-dict
     `:` type($a) (`scaled` `by` type($scaleA)^)? `*` type($b) (`scaled` `by` type($scaleB)^)? `->` type($c)
   }];
 }
@@ -217,7 +216,7 @@ def Rock_AttentionOp
           I32Attr:$numHeadsKV, UnitAttr:$qTransposed, UnitAttr:$kTransposed,
           UnitAttr:$vTransposed, UnitAttr:$oTransposed, UnitAttr:$causal,
           I32Attr:$splitKV, OptionalAttr<Rock_GemmFeaturesAttr>:$features,
-          StoreMethodAttr:$storeMethod, OptionalAttr<TypeAttr>:$softmaxType,
+          OptionalAttr<TypeAttr>:$softmaxType,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           DenseI64ArrayAttr:$firstGemmIndices,
@@ -300,7 +299,6 @@ def Rock_GemmElementwiseGemmOp
           TensorOrMemRefOf<[F32, F16, BF16]>:$out, UnitAttr:$aTransposed,
           UnitAttr:$bTransposed, UnitAttr:$cTransposed, UnitAttr:$oTransposed,
           OptionalAttr<Rock_GemmFeaturesAttr>:$features,
-          StoreMethodAttr:$storeMethod,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           DenseI64ArrayAttr:$firstGemmIndices)>,
@@ -351,8 +349,8 @@ def Rock_ConvElementwiseGemmOp
           Variadic<AnyTensorOrMemRef>:$elemwiseInputs,
           TensorOrMemRefOf<[F32, F16, BF16]>:$out, UnitAttr:$cTransposed,
           UnitAttr:$oTransposed, OptionalAttr<Rock_GemmFeaturesAttr>:$features,
-          StoreMethodAttr:$storeMethod, IndexArrayLength<4>:$padding,
-          IndexArrayLength<2>:$strides, IndexArrayLength<2>:$dilations,
+          IndexArrayLength<4>:$padding, IndexArrayLength<2>:$strides,
+          IndexArrayLength<2>:$dilations,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           DenseI64ArrayAttr:$firstGemmIndices)>,
@@ -491,11 +489,10 @@ def Rock_LoadOp :
 }
 
 // store
-def Rock_StoreOp :
-    Rock_Op<"store">,
-    Arguments<(ins AnyRankedTensor:$source,
-                   AnyRankedTensor:$dest)>,
-    Results<(outs AnyRankedTensor:$result)> {
+def Rock_StoreOp : Rock_Op<"store">,
+                   Arguments<(ins AnyRankedTensor:$source,
+                       AnyRankedTensor:$dest, StoreMethodAttr:$storeMethod)>,
+                   Results<(outs AnyRankedTensor:$result)> {
   let summary = "Store tensor result to destination";
   let description = [{
     The rock.store op is a placeholder marking where stores to global memory need to happen. 
@@ -506,21 +503,20 @@ def Rock_StoreOp :
     the output will occur according to what the rock.transform op indicates.
   }];
   let assemblyFormat = [{
-    $source `to` $dest attr-dict `:` type($source) `->` type ($result) `to` type($dest)
+    $source `to` $dest `by` $storeMethod attr-dict `:` type($source) `->` type ($result) `to` type($dest)
   }];
 }
 
 // gridwise_gemm
 def Rock_GridwiseGemmOp
-    : Rock_Op<"gridwise_gemm",
-              [DeclareOpInterfaceMethods<RockGemmFeaturesInterface>,
-               RockFusionRoot, AttrSizedOperandSegments]>,
+    : Rock_Op<"gridwise_gemm", [DeclareOpInterfaceMethods<
+                                    RockGemmFeaturesInterface>,
+                                RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins Arg<TensorRankOf<GemmInputTypes, [3]>, "matrix A view">:$a,
           Arg<TensorRankOf<GemmInputTypes, [3]>, "matrix B view">:$b,
           Optional<TensorRankOf<[F8E8M0FNU], [3]>>:$scaleA,
           Optional<TensorRankOf<[F8E8M0FNU], [3]>>:$scaleB,
           OptionalAttr<Rock_GemmFeaturesAttr>:$features,
-          StoreMethodAttr:$storeMethod,
           Rock_GemmParamsAttr:$params)>,
       Results<(outs AnyRankedTensor:$c)> {
   let summary = "Gridwise GEMM accelerated version";
@@ -530,7 +526,6 @@ def Rock_GridwiseGemmOp
   let assemblyFormat = [{
     `(` $a `,` $b
         (`,` $scaleA^)? (`,` $scaleB^)? `)`
-    `storeMethod` `(` $storeMethod `)`
     (`features` `=` $features^)? attr-dict
     `:` type($a) `,` type($b)
        (`,` type($scaleA)^)? (`,` type($scaleB)^)?
@@ -555,14 +550,11 @@ def Rock_GridwiseAttentionOp
           MemRefRankOf<[F32, F16, BF16], [3]>:$out,
           Optional<MemRefRankOf<[F32, F16, BF16], [2]>>:$lse, UnitAttr:$causal,
           I32Attr:$splitKV, OptionalAttr<Rock_GemmFeaturesAttr>:$features,
-          StoreMethodAttr:$storeMethod, 
           UnitAttr:$disableQBypassLDS, OptionalAttr<IndexAttr>:$prePadG0M,
           OptionalAttr<IndexAttr>:$prePadG0N,
           OptionalAttr<IndexAttr>:$numRepeatsGQA,
-          OptionalAttr<TypeAttr>:$softmaxType,
-          Rock_GemmParamsAttr:$params0,
-          Rock_GemmParamsAttr:$params1,
-          DenseI64ArrayAttr:$firstGemmIndices,
+          OptionalAttr<TypeAttr>:$softmaxType, Rock_GemmParamsAttr:$params0,
+          Rock_GemmParamsAttr:$params1, DenseI64ArrayAttr:$firstGemmIndices,
           DefaultValuedOptionalAttr<BoolAttr, "true">:$enableSoftmax,
           DefaultValuedOptionalAttr<BoolAttr,
                                     "false">:$preSoftmaxHasSplitKVTransforms)> {
