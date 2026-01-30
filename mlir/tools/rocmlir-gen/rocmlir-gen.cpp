@@ -3685,13 +3685,13 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
 static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
                                                 const GenParams &params) {
   MLIRContext *ctx = module.getContext();
-  OpBuilder b(ctx);
+  OpBuilder builder(ctx);
   Location loc = module->getLoc();
 
   auto cpuTypes = params.types;
   SmallVector<Type, 3> argTypes;
   getGemmTypes(cpuTypes, argTypes, /*isCpuVerifier=*/true);
-  // Convert tensor types to memref types for CPU verifier
+  // Convert tensor types to memref types for CPU verifier function arguments
   SmallVector<Type> flatArgTypes;
   for (Type t : argTypes) {
     Type flatType = rock::getFlattenedType(t);
@@ -3704,147 +3704,232 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   }
 
   constexpr llvm::StringLiteral cpuKernName("host_naive_gemm");
-  auto func = func::FuncOp::create(b, loc, cpuKernName,
-                                   b.getFunctionType(flatArgTypes, {}));
-  module.push_back(func);
+  auto func = func::FuncOp::create(builder, loc, cpuKernName,
+                                   builder.getFunctionType(flatArgTypes, {}));
 
   Block *block = func.addEntryBlock();
-  b.setInsertionPointToStart(block);
+  builder.setInsertionPointToStart(block);
 
-  Value aVal = block->getArgument(0), bVal = block->getArgument(1),
-        cVal = block->getArgument(2);
+  // Helper to convert memref block argument to tensor with proper shape
+  auto getTensorForBlockArg = [&builder, &loc, &block,
+                               &argTypes](unsigned blockArgIndex,
+                                          bool isWritable = false) -> Value {
+    constexpr bool isRestrict{true};
+    Value flatTensor = bufferization::ToTensorOp::create(
+        builder, loc,
+        memref::getTensorTypeFromMemRefType(
+            block->getArgument(blockArgIndex).getType()),
+        block->getArgument(blockArgIndex), isRestrict, isWritable);
+    ArrayRef<int64_t> origShape =
+        cast<ShapedType>(argTypes[blockArgIndex]).getShape();
 
-  auto floatType = b.getF32Type();
+    // Use tensor.expand_shape to reshape flat 1D tensor to the logical shape
+    SmallVector<int64_t> targetShape;
+    if (origShape.size() == 2) {
+      // Add batch dimension if needed (2D -> 3D for batched matmul)
+      targetShape.push_back(1);
+      targetShape.append(origShape.begin(), origShape.end());
+    } else {
+      targetShape.append(origShape.begin(), origShape.end());
+    }
 
-  aVal = ensureFloatIsF32(b, loc, aVal, floatType);
-  bVal = ensureFloatIsF32(b, loc, bVal, floatType);
-  cVal = ensureFloatIsF32(b, loc, cVal, floatType);
+    auto flatTensorType = cast<RankedTensorType>(flatTensor.getType());
+    auto expandedType =
+        RankedTensorType::get(targetShape, flatTensorType.getElementType());
 
-  Value aScaleVal = nullptr, bScaleVal = nullptr;
-  if (scaledGemm) {
-    aScaleVal = block->getArgument(3);
-    bScaleVal = block->getArgument(4);
-    aScaleVal = ensureFloatIsF32(b, loc, aScaleVal, floatType);
-    bScaleVal = ensureFloatIsF32(b, loc, bScaleVal, floatType);
+    // All dimensions in the output correspond to the single input dimension
+    SmallVector<ReassociationIndices> reassociation;
+    ReassociationIndices allDims;
+    for (size_t i = 0; i < targetShape.size(); ++i) {
+      allDims.push_back(i);
+    }
+    reassociation.push_back(allDims);
+
+    return tensor::ExpandShapeOp::create(builder, loc, expandedType, flatTensor,
+                                         reassociation);
+  };
+
+  // Convert memref arguments to tensors
+  Value aTensor = getTensorForBlockArg(0);
+  if (transposeA) {
+    aTensor = rock::tosa::getTransposeOp(builder, loc, aTensor, {0, 2, 1});
+  }
+  Value bTensor = getTensorForBlockArg(1);
+  if (transposeB) {
+    bTensor = rock::tosa::getTransposeOp(builder, loc, bTensor, {0, 2, 1});
   }
 
-  auto cType = cast<MemRefType>(cVal.getType());
-  Value zeroOut = rock::createZeroConstantOp(b, loc, cType.getElementType());
+  Value resultTensor;
 
-  linalg::FillOp::create(b, loc, zeroOut, cVal);
-
-  auto expandArg = [&loc, &b](Value arg, Type rawLogicalType) -> Value {
-    // rawLogicalType may be a tensor type, convert to memref for processing
-    auto shapedType = cast<ShapedType>(rawLogicalType);
-    auto logicalType =
-        MemRefType::get(shapedType.getShape(), shapedType.getElementType());
-    // Replicate the effect of ensureFloatIsF32()
-    if (isa<FloatType>(logicalType.getElementType()))
-      logicalType = cast<MemRefType>(
-          logicalType.clone(Float32Type::get(arg.getContext())));
-    ArrayRef<int64_t> logicalShape = logicalType.getShape();
-    ReassociationIndices allDims = llvm::to_vector(
-        llvm::iota_range<int64_t>(0, logicalShape.size(), false));
-    return memref::ExpandShapeOp::create(b, loc, logicalType, arg, allDims);
-  };
-  AffineExpr g = b.getAffineDimExpr(0), m = b.getAffineDimExpr(1),
-             n = b.getAffineDimExpr(2), k = b.getAffineDimExpr(3);
-  AffineMap aMap = AffineMap::get(
-                4, 0, {g, transposeA ? k : m, transposeA ? m : k}, ctx),
-            bMap = AffineMap::get(
-                4, 0, {g, transposeB ? n : k, transposeB ? k : n}, ctx),
-            cMap = AffineMap::get(
-                4, 0, {g, transposeC ? n : m, transposeC ? m : n}, ctx);
-  Value aExpVal = expandArg(aVal, argTypes[0]),
-        bExpVal = expandArg(bVal, argTypes[1]),
-        cExpVal = expandArg(cVal, argTypes[2]);
-  Value aExpValScaled = nullptr, bExpValScaled = nullptr;
   if (scaledGemm) {
-    // Create scaled AffineMaps
-    // (g, m, n, k) -> (g, m, k // blockSize)  for A if not transposed
-    // (g, m, n, k) -> (g, k // blockSize, n)  for B if not transposed
+    // For scaled GEMM, we need to handle per-element scaling during matmul
+    // Use linalg::GenericOp with tensor semantics
+    Value aScaleTensor = getTensorForBlockArg(3);
+    Value bScaleTensor = getTensorForBlockArg(4);
+
+    // Get the output element type and shape
+    Type outElemType = params.types[2];
+    auto aType = cast<RankedTensorType>(aTensor.getType());
+    auto bType = cast<RankedTensorType>(bTensor.getType());
+    int64_t G = aType.getShape()[0];
+    int64_t M = aType.getShape()[1];
+    int64_t K = aType.getShape()[2];
+    int64_t N = bType.getShape()[2];
+
+    // Create output tensor type [G, M, N]
+    auto outTensorType = RankedTensorType::get({G, M, N}, outElemType);
+
+    // Create zero-initialized output tensor
+    Value zeroVal = rock::createZeroConstantOp(builder, loc, outElemType);
+    Value emptyTensor =
+        tensor::EmptyOp::create(builder, loc, outTensorType,
+                                /*dynamic_sizes=*/ValueRange{});
+    Value initTensor =
+        linalg::FillOp::create(builder, loc, zeroVal, emptyTensor).getResult(0);
+
+    // Create affine maps for the generic op
+    // A: (g, m, n, k) -> (g, m, k)
+    // B: (g, m, n, k) -> (g, k, n)
+    // aScale: (g, m, n, k) -> (g, m, k // blockSize) or transposed
+    // bScale: (g, m, n, k) -> (g, k // blockSize, n) or transposed
+    // C: (g, m, n, k) -> (g, m, n)
+    AffineExpr g = builder.getAffineDimExpr(0), m = builder.getAffineDimExpr(1),
+               n = builder.getAffineDimExpr(2), k = builder.getAffineDimExpr(3);
+    AffineMap aMap = AffineMap::get(4, 0, {g, m, k}, ctx);
+    AffineMap bMap = AffineMap::get(4, 0, {g, k, n}, ctx);
+    AffineMap cMap = AffineMap::get(4, 0, {g, m, n}, ctx);
+
     auto scaleAffineMap = [&](bool transposeFlag, AffineExpr d) -> AffineMap {
-      // Create constant for blockSize
-      auto cBlockSize = getAffineConstantExpr(quantBlockSize, b.getContext());
-      auto kFloorDiv32 = k.floorDiv(cBlockSize);
-      SmallVector<AffineExpr> resultExprs = {g, transposeFlag ? kFloorDiv32 : d,
-                                             transposeFlag ? d : kFloorDiv32};
-      return AffineMap::get(4, 0, resultExprs, b.getContext());
+      auto cBlockSize =
+          getAffineConstantExpr(quantBlockSize, builder.getContext());
+      auto kFloorDiv = k.floorDiv(cBlockSize);
+      SmallVector<AffineExpr> resultExprs = {g, transposeFlag ? kFloorDiv : d,
+                                             transposeFlag ? d : kFloorDiv};
+      return AffineMap::get(4, 0, resultExprs, builder.getContext());
     };
     AffineMap aMapScaled = scaleAffineMap(transposeScaleA, m);
     AffineMap bMapScaled = scaleAffineMap(!transposeScaleB, n);
 
-    aExpValScaled = expandArg(aScaleVal, argTypes[3]);
-    bExpValScaled = expandArg(bScaleVal, argTypes[4]);
-    linalg::GenericOp::create(
-        b, loc, ValueRange{aExpVal, bExpVal, aExpValScaled, bExpValScaled},
-        ValueRange{cExpVal},
+    auto genericOp = linalg::GenericOp::create(
+        builder, loc, outTensorType,
+        ValueRange{aTensor, bTensor, aScaleTensor, bScaleTensor},
+        ValueRange{initTensor},
         ArrayRef<AffineMap>{aMap, bMap, aMapScaled, bMapScaled, cMap},
         ArrayRef<utils::IteratorType>{
             utils::IteratorType::parallel, utils::IteratorType::parallel,
             utils::IteratorType::parallel, utils::IteratorType::reduction},
         /*doc=*/"", /*library_call=*/"",
-        [](OpBuilder &builder, Location loc, ValueRange elems) {
-          Value a = elems[0], b = elems[1], aScale = elems[2],
+        [](OpBuilder &b, Location loc, ValueRange elems) {
+          Value a = elems[0], bVal = elems[1], aScale = elems[2],
                 bScale = elems[3];
           Value c = elems[4];
           Type cType = c.getType();
           if (isa<IntegerType>(cType)) {
-            Value aExt = rock::createTypeConversionOp(builder, loc, a, cType);
-            Value bExt = rock::createTypeConversionOp(builder, loc, b, cType);
-            Value mul = arith::MulIOp::create(builder, loc, aExt, bExt);
-            Value add = arith::AddIOp::create(builder, loc, mul, c);
-            linalg::YieldOp::create(builder, loc, add);
+            Value aExt = rock::createTypeConversionOp(b, loc, a, cType);
+            Value bExt = rock::createTypeConversionOp(b, loc, bVal, cType);
+            Value mul = arith::MulIOp::create(b, loc, aExt, bExt);
+            Value add = arith::AddIOp::create(b, loc, mul, c);
+            linalg::YieldOp::create(b, loc, add);
           } else {
-            a = arith::MulFOp::create(builder, loc, a, aScale);
-            b = arith::MulFOp::create(builder, loc, b, bScale);
-            Value mul = arith::MulFOp::create(builder, loc, a, b);
-            Value add = arith::AddFOp::create(builder, loc, mul, c);
-            linalg::YieldOp::create(builder, loc, add);
+            a = arith::MulFOp::create(b, loc, a, aScale);
+            bVal = arith::MulFOp::create(b, loc, bVal, bScale);
+            Value mul = arith::MulFOp::create(b, loc, a, bVal);
+            Value add = arith::AddFOp::create(b, loc, mul, c);
+            linalg::YieldOp::create(b, loc, add);
           }
         });
-    if (!isa<BlockArgument>(aScaleVal))
-      memref::DeallocOp::create(b, loc, aScaleVal);
-    if (!isa<BlockArgument>(bScaleVal))
-      memref::DeallocOp::create(b, loc, bScaleVal);
+    resultTensor = genericOp.getResult(0);
   } else {
-    linalg::GenericOp::create(
-        b, loc, ValueRange{aExpVal, bExpVal}, ValueRange{cExpVal},
-        ArrayRef<AffineMap>{aMap, bMap, cMap},
+    // For non-scaled GEMM, use linalg.generic
+    Type outElemType = params.types[2];
+    auto aType = cast<RankedTensorType>(aTensor.getType());
+    auto bType = cast<RankedTensorType>(bTensor.getType());
+    int64_t G = aType.getShape()[0];
+    int64_t M = aType.getShape()[1];
+    int64_t K = aType.getShape()[2];
+    int64_t N = bType.getShape()[2];
+
+    // Create output tensor type [G, M, N]
+    auto outTensorType = RankedTensorType::get({G, M, N}, outElemType);
+
+    // Create zero-initialized output tensor
+    Value zeroVal = rock::createZeroConstantOp(builder, loc, outElemType);
+    Value emptyTensor =
+        tensor::EmptyOp::create(builder, loc, outTensorType,
+                                /*dynamic_sizes=*/ValueRange{});
+    Value initTensor =
+        linalg::FillOp::create(builder, loc, zeroVal, emptyTensor).getResult(0);
+
+    // Create affine maps for the generic op
+    // A: (g, m, n, k) -> (g, m, k)
+    // B: (g, m, n, k) -> (g, k, n)
+    // C: (g, m, n, k) -> (g, m, n)
+    AffineExpr g = builder.getAffineDimExpr(0), m = builder.getAffineDimExpr(1),
+               n = builder.getAffineDimExpr(2), k = builder.getAffineDimExpr(3);
+    AffineMap aMap = AffineMap::get(4, 0, {g, m, k}, ctx);
+    AffineMap bMap = AffineMap::get(4, 0, {g, k, n}, ctx);
+    AffineMap cMap = AffineMap::get(4, 0, {g, m, n}, ctx);
+
+    auto genericOp = linalg::GenericOp::create(
+        builder, loc, outTensorType, ValueRange{aTensor, bTensor},
+        ValueRange{initTensor}, ArrayRef<AffineMap>{aMap, bMap, cMap},
         ArrayRef<utils::IteratorType>{
             utils::IteratorType::parallel, utils::IteratorType::parallel,
             utils::IteratorType::parallel, utils::IteratorType::reduction},
         /*doc=*/"", /*library_call=*/"",
-        [](OpBuilder &builder, Location loc, ValueRange elems) {
-          Value a = elems[0], b = elems[1];
+        [](OpBuilder &b, Location loc, ValueRange elems) {
+          Value a = elems[0], bVal = elems[1];
           Value c = elems[2];
           Type cType = c.getType();
           if (isa<IntegerType>(cType)) {
-            Value aExt = rock::createTypeConversionOp(builder, loc, a, cType);
-            Value bExt = rock::createTypeConversionOp(builder, loc, b, cType);
-            Value mul = arith::MulIOp::create(builder, loc, aExt, bExt);
-            Value add = arith::AddIOp::create(builder, loc, mul, c);
-            linalg::YieldOp::create(builder, loc, add);
+            Value aExt = rock::createTypeConversionOp(b, loc, a, cType);
+            Value bExt = rock::createTypeConversionOp(b, loc, bVal, cType);
+            Value mul = arith::MulIOp::create(b, loc, aExt, bExt);
+            Value add = arith::AddIOp::create(b, loc, mul, c);
+            linalg::YieldOp::create(b, loc, add);
           } else {
-            Value mul = arith::MulFOp::create(builder, loc, a, b);
-            Value add = arith::AddFOp::create(builder, loc, mul, c);
-            linalg::YieldOp::create(builder, loc, add);
+            Value mul = arith::MulFOp::create(b, loc, a, bVal);
+            Value add = arith::AddFOp::create(b, loc, mul, c);
+            linalg::YieldOp::create(b, loc, add);
           }
         });
+    resultTensor = genericOp.getResult(0);
   }
 
-  if (!isa<BlockArgument>(aVal))
-    memref::DeallocOp::create(b, loc, aVal);
-  if (!isa<BlockArgument>(bVal))
-    memref::DeallocOp::create(b, loc, bVal);
-  if (!isa<BlockArgument>(cVal)) {
-    BlockArgument resultBlockArg = block->getArgument(2);
-    Value resultFlat = makeNDMemRef(b, cVal, 1);
-    emitMemcpy(b, resultFlat, resultBlockArg);
-    memref::DeallocOp::create(b, loc, cVal);
+  // Apply output transpose if needed
+  if (transposeC) {
+    resultTensor =
+        rock::tosa::getTransposeOp(builder, loc, resultTensor, {0, 2, 1});
   }
 
-  func::ReturnOp::create(b, loc);
+  // Convert result tensor back to memref and copy to output
+  Value output = block->getArguments().back();
+  auto outputType = cast<bufferization::BufferLikeType>(output.getType());
+
+  // Use tensor.collapse_shape to flatten the result tensor back to 1D
+  auto resultTensorType = cast<RankedTensorType>(resultTensor.getType());
+  auto flatResultType = RankedTensorType::get(
+      {cast<ShapedType>(outputType).getNumElements()},
+      resultTensorType.getElementType());
+
+  // All dimensions in the input collapse to the single output dimension
+  SmallVector<ReassociationIndices> reassociation;
+  ReassociationIndices allDims;
+  for (int64_t i = 0; i < resultTensorType.getRank(); ++i) {
+    allDims.push_back(i);
+  }
+  reassociation.push_back(allDims);
+
+  Value flatResultTensor = tensor::CollapseShapeOp::create(
+      builder, loc, flatResultType, resultTensor, reassociation);
+
+  auto flatResultMemref = bufferization::ToBufferOp::create(
+      builder, loc, outputType, flatResultTensor);
+
+  memref::CopyOp::create(builder, loc, flatResultMemref, output);
+
+  func::ReturnOp::create(builder, loc);
+  module.push_back(func);
   return func;
 }
 
