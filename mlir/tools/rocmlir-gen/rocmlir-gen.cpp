@@ -4923,7 +4923,26 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
         exit(1);
       }
       auto cpuGemmFunc = createCpuGemmKernelWithMlir(module, genParams);
+
+      // Add timing around CPU GEMM kernel
+      Type i64Type = b.getI64Type();
+      auto getTimeFunc = makeFuncDecl(module, "getCpuTimeNs", {}, {i64Type});
+      auto printTimeFunc =
+          makeFuncDecl(module, "printCpuTimeMs", {i64Type, i64Type}, {});
+
+      // Get start time
+      auto startTimeCall = func::CallOp::create(b, loc, getTimeFunc, ValueRange{});
+      Value startTime = startTimeCall.getResult(0);
+
+      // Call the CPU GEMM kernel
       func::CallOp::create(b, loc, cpuGemmFunc, valVars);
+
+      // Get end time
+      auto endTimeCall = func::CallOp::create(b, loc, getTimeFunc, ValueRange{});
+      Value endTime = endTimeCall.getResult(0);
+
+      // Print elapsed time
+      func::CallOp::create(b, loc, printTimeFunc, ValueRange{startTime, endTime});
     } else if (genParams.operation == rock::KernelType::Attention) {
       if (validationType == "cpp") {
         llvm::errs() << "External attention validator is not available\n";

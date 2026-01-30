@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include <cassert>
+#include <chrono>
 #include <iostream>
 #include <mutex>
 #include <numeric>
@@ -376,4 +377,23 @@ extern "C" void mcpuVerifyInt8Int8(int8_t *gpuAllocated, int8_t *gpuAligned,
 
   assert(gpuSize == valSize);
   mcpuVerifyNaive(gpuAligned, valAligned, valSize, printDebug);
+}
+
+//===----------------------------------------------------------------------===//
+// CPU timing functions for measuring kernel execution time
+//===----------------------------------------------------------------------===//
+
+// Returns the current time in nanoseconds using a steady clock
+extern "C" int64_t getCpuTimeNs() {
+  auto now = std::chrono::steady_clock::now();
+  auto duration = now.time_since_epoch();
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+}
+
+// Prints the elapsed time in milliseconds given start and end times in
+// nanoseconds
+extern "C" void printCpuTimeMs(int64_t startNs, int64_t endNs) {
+  double elapsedMs =
+      static_cast<double>(endNs - startNs) / 1000000.0; // ns to ms
+  printf("CPU kernel time: %.3f ms\n", elapsedMs);
 }
