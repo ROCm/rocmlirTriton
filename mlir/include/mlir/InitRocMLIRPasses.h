@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 
 // MLIR includes
+#include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
@@ -51,6 +52,8 @@ inline void registerUpstreamPasses() {
   registerTosaToLinalgNamed();
   registerTosaToSCFPass();
   registerConvertControlFlowToLLVMPass();
+  registerConvertVectorToSCFPass();
+  registerConvertLinalgToLoopsPass();
 
   // TODO: These require GPU/ROCDL dialects - evaluate for Triton backend
   // registerArithToAMDGPUConversionPass();

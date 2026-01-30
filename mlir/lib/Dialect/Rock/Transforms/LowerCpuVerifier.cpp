@@ -28,13 +28,18 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/TransformOps/BufferizationTransformOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/TransformOps/FuncTransformOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/TransformOps/MemRefTransformOps.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/Dialect/Vector/TransformOps/VectorTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/Dialect/Transform/Transforms/TransformInterpreterUtils.h"
@@ -66,11 +71,63 @@ namespace {
 ///   mlir-opt --transform-interpreter
 /// with this transform module.
 constexpr const char *kTransformSequence = R"mlir(
-module attributes {transform.with_named_sequence} {
+module attributes {transform.with_named_sequence} {    
+  transform.named_sequence @__basic_lowering(%arg0: !transform.any_op {transform.consumed}) {
+
+    %0 = transform.structured.match attributes{"rock.matmul"} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %1, %loops:4 = transform.structured.tile_using_for %0 tile_sizes [3, 32, 32, 1] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
+
+    %func1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %2 = transform.apply_registered_pass "canonicalize" to %func1 : (!transform.any_op) -> !transform.any_op
+    %3 = transform.apply_registered_pass "lower-affine" to %2 : (!transform.any_op) -> !transform.any_op
+
+    %10 = transform.bufferization.one_shot_bufferize layout{IdentityLayoutMap} %arg0 {bufferize_function_boundaries = true} : (!transform.any_op) -> !transform.any_op
+    //%11 = transform.structured.match ops{["linalg.generic"]} in %0 : (!transform.any_op) -> !transform.any_op
+    //%12 = transform.structured.convert_to_loops %1 : (!transform.any_op) -> !transform.any_op      
+
+    // Lowering to LLVM
+
+    %func = transform.structured.match ops{["func.func"]} in %10 : (!transform.any_op) -> !transform.any_op
+    %f = transform.apply_registered_pass "convert-vector-to-scf" to %func : (!transform.any_op) -> !transform.any_op
+    %f2 = transform.apply_registered_pass "convert-linalg-to-loops" to %f : (!transform.any_op) -> !transform.any_op
+    %f3 = transform.apply_registered_pass "convert-scf-to-cf" to %f2 : (!transform.any_op) -> !transform.any_op
+    %f4 = transform.apply_registered_pass "expand-strided-metadata" to %f3 : (!transform.any_op) -> !transform.any_op
+    %f5 = transform.apply_registered_pass "lower-affine" to %f4 : (!transform.any_op) -> !transform.any_op
+
+    transform.apply_conversion_patterns to %f5 {
+      transform.apply_conversion_patterns.dialect_to_llvm "math"
+      transform.apply_conversion_patterns.vector.vector_to_llvm
+      transform.apply_conversion_patterns.dialect_to_llvm "memref"
+      transform.apply_conversion_patterns.func.func_to_llvm
+      transform.apply_conversion_patterns.dialect_to_llvm "index"
+      transform.apply_conversion_patterns.dialect_to_llvm "arith"
+      transform.apply_conversion_patterns.dialect_to_llvm "cf"
+    } with type_converter {
+      transform.apply_conversion_patterns.memref.memref_to_llvm_type_converter
+        {index_bitwidth = 64,
+        use_bare_ptr = false,
+        use_bare_ptr_memref_call_conv = false,
+        use_opaque_pointers = true}
+    } {
+      legal_dialects = ["llvm"],
+      partial_conversion
+    } : !transform.any_op
+
+    // Need to rematch here because:
+    //   1. applying reconcile-unrealized-casts on the whole module yields the
+    //      transform applies to transform, when called from a named sequence, at
+    //      this time.
+    //   2. apply_conversion patterns consumes the func but does not produce 
+    //      a new llvm.func.
+    %f6 = transform.structured.match ops{["llvm.func"]} in %10 
+      : (!transform.any_op) -> !transform.any_op
+    %f7 = transform.apply_registered_pass "reconcile-unrealized-casts" to %f6
+      : (!transform.any_op) -> !transform.any_op
+
+    transform.yield 
+  }
   transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
-    %0 = transform.bufferization.one_shot_bufferize layout{IdentityLayoutMap} %arg0 {bufferize_function_boundaries = true} : (!transform.any_op) -> !transform.any_op
-    %1 = transform.structured.match ops{["linalg.generic"]} in %0 : (!transform.any_op) -> !transform.any_op
-    %2 = transform.structured.convert_to_loops %1 : (!transform.any_op) -> !transform.any_op
+    transform.include @__basic_lowering failures(propagate) (%arg0) : (!transform.any_op) -> ()
     transform.yield
   }
 }
@@ -95,6 +152,13 @@ struct RockLowerCpuVerifierPass
     // transform.structured.match, transform.bufferization.one_shot_bufferize.
     linalg::registerTransformDialectExtension(registry);
     bufferization::registerTransformDialectExtension(registry);
+    vector::registerTransformDialectExtension(registry);
+    func::registerTransformDialectExtension(registry);
+    memref::registerTransformDialectExtension(registry);
+
+    // Register ValueBoundsOpInterface for SCF dialect, required by
+    // transform.structured.tile_using_for
+    scf::registerValueBoundsOpInterfaceExternalModels(registry);
   }
 
   void runOnOperation() override;
@@ -141,24 +205,21 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
   }
 
   // Step 5: Get the lowered function from the temporary module
-  func::FuncOp loweredFunc = nullptr;
-  tempModule->walk([&](func::FuncOp f) { loweredFunc = f; });
+  // After lowering to LLVM, the function is now LLVM::LLVMFuncOp
+  LLVM::LLVMFuncOp loweredFunc = nullptr;
+  tempModule->walk([&](LLVM::LLVMFuncOp f) { loweredFunc = f; });
 
   if (!loweredFunc) {
     return func.emitError("Could not find lowered function in temporary module");
   }
 
   // Step 6: Replace the original function with the lowered one
-  // Remove the cpu_verifier attribute from the lowered function
-  loweredFunc->removeAttr("rock.cpu_verifier");
-
   // Clone the lowered function back to the original module
   OpBuilder builder(ctx);
   builder.setInsertionPoint(func);
   IRMapping backMapping;
   Operation *finalOp = loweredFunc->clone(backMapping);
-  auto finalFunc = cast<func::FuncOp>(finalOp);
-  builder.insert(finalFunc);
+  builder.insert(finalOp);
 
   // Erase the original function
   func.erase();
@@ -202,6 +263,22 @@ void RockLowerCpuVerifierPass::runOnOperation() {
     if (failed(lowerSingleFunction(func, transformModule.get()))) {
       return signalPassFailure();
     }
+  }
+
+  // THIS IS A HUGE HACK.
+  // Add declaration for memrefCopy runtime function if not already present
+  // This is needed because memref.copy lowers to a call to this function
+  if (!module.lookupSymbol("memrefCopy")) {
+    OpBuilder builder(ctx);
+    builder.setInsertionPointToStart(module.getBody());
+
+    auto i64Type = builder.getI64Type();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto voidType = LLVM::LLVMVoidType::get(ctx);
+    auto funcType = LLVM::LLVMFunctionType::get(voidType, {i64Type, ptrType, ptrType});
+
+    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "memrefCopy", funcType,
+                                     LLVM::Linkage::External);
   }
 
   LLVM_DEBUG(llvm::dbgs() << "CPU verifier lowering completed\n");

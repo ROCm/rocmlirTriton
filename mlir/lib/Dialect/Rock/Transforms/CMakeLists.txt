@@ -69,6 +69,9 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   MLIRTransformDialectTransforms
   MLIRUBDialect
   MLIRVectorTransforms
+  MLIRVectorTransformOps
+  MLIRFuncTransformOps
+  MLIRMemRefTransformOps
 
   # Triton dependencies
   # TritonIR depends on TritonGPUIR because Traits.cpp uses MemDescType

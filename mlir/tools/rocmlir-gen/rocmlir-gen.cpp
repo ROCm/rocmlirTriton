@@ -3857,6 +3857,7 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
             linalg::YieldOp::create(b, loc, add);
           }
         });
+    genericOp->setAttr("rock.matmul", builder.getUnitAttr());
     resultTensor = genericOp.getResult(0);
 
     // Convert accumulator result to output type if needed using linalg.generic
@@ -3948,6 +3949,7 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
             linalg::YieldOp::create(b, loc, add);
           }
         });
+    genericOp->setAttr("rock.matmul", builder.getUnitAttr());
     resultTensor = genericOp.getResult(0);
 
     // Convert accumulator result to output type if needed using linalg.generic
