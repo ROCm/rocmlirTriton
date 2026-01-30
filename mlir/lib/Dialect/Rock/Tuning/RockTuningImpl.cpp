@@ -45,7 +45,7 @@ namespace rock {
 static std::vector<uint32_t> computeDPerBlock(TuningParamSetKind tuningKind) {
   std::vector<uint32_t> dPerBlockList;
 
-  for (uint32_t dPerBlock = 128; dPerBlock <= 256; dPerBlock *= 2) {
+  for (uint32_t dPerBlock = 16; dPerBlock <= 256; dPerBlock *= 2) {
     dPerBlockList.push_back(dPerBlock);
   }
   return dPerBlockList;
@@ -128,15 +128,15 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t maxWavesPerEU, Tuning
   // Note: kPack max is 2
   // See AccelerateAMDMatmul.cpp comment about kPack limit
   std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
-      dPerBlock,   // M/block
-      dPerBlock,   // N/block
-      {32, 64}, // K/block
-      {1, 2},      // kPack
-      {16, 32},    // matrixInstrNonkdim
-      {1, 2, 3},     // numStages
-      wavesPerEUList,         // wavesPerEU
-      {0, 4, 6} // gridGroupSize
-      };
+      dPerBlock,      // M/block
+      dPerBlock,      // N/block
+      {16, 32},       // K/block
+      {1, 2},         // kPack
+      {16, 32},       // matrixInstrNonkdim
+      {1, 2, 3},      // numStages
+      wavesPerEUList, // wavesPerEU
+      {0}             // gridGroupSize
+  };
 
   // WMMA (RDNA3) parameters
   // kPack is limited similarly for WMMA

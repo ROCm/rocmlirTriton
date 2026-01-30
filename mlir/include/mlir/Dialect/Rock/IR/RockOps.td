@@ -652,14 +652,14 @@ defvar LdsBufferTypes = GemmInputTypes # [VectorOfRankAndType<[1], GemmInputType
 
 // blockwise_gemm
 def Rock_BlockwiseGemmOp
-    : Rock_Op<"blockwise_gemm",
-              [AttrSizedOperandSegments,
-               DeclareOpInterfaceMethods<RockGemmFeaturesInterface>]>,
-      Arguments<(ins TensorOf<LdsBufferTypes>:$matrixA,
-          TensorOf<LdsBufferTypes>:$matrixB, TensorOf<LdsBufferTypes>:$matrixC,
-          Optional<TensorOf<LdsBufferTypes>>:$matrixScaleA,
-          Optional<TensorOf<LdsBufferTypes>>:$matrixScaleB)>,
-      Results<(outs AnyRankedTensor:$result)> {
+    : Rock_Op<"blockwise_gemm", [AttrSizedOperandSegments,
+                                 DeclareOpInterfaceMethods<
+                                     RockGemmFeaturesInterface>]>,
+      Arguments<(ins TensorOf<GemmInputTypes>:$matrixA,
+          TensorOf<GemmInputTypes>:$matrixB, TensorOf<GemmOutputTypes>:$matrixC,
+          Optional<TensorOf<GemmInputTypes>>:$matrixScaleA,
+          Optional<TensorOf<GemmInputTypes>>:$matrixScaleB)>,
+      Results<(outs TensorOf<GemmOutputTypes>:$result)> {
   let summary = "Blockwise GEMM accelerated version";
   let description = [{
     The `rock.blockwise_gemm` op does GEMM at workgroup (block) level.
