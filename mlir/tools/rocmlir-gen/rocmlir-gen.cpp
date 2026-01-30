@@ -5157,8 +5157,7 @@ static LogicalResult populateHostHarnessLogic(
       } else if ((genValidation == "clone") || elemType.isInteger(8) ||
                  elemType.isInteger(32)) {
         valElemType = elemType;
-      } else if (!gpuValidation && isSmallFloat &&
-                 genParams.operation.has_value()) {
+      } else if (isSmallFloat && genParams.operation.has_value()) {
         valElemType = elemType;
       }
 
