@@ -98,7 +98,7 @@ module attributes {transform.with_named_sequence} {
       transform.apply_conversion_patterns.dialect_to_llvm "math"
       transform.apply_conversion_patterns.vector.vector_to_llvm
       transform.apply_conversion_patterns.dialect_to_llvm "memref"
-      transform.apply_conversion_patterns.func.func_to_llvm
+      // transform.apply_conversion_patterns.func.func_to_llvm
       transform.apply_conversion_patterns.dialect_to_llvm "index"
       transform.apply_conversion_patterns.dialect_to_llvm "arith"
       transform.apply_conversion_patterns.dialect_to_llvm "cf"
@@ -206,8 +206,8 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
 
   // Step 5: Get the lowered function from the temporary module
   // After lowering to LLVM, the function is now LLVM::LLVMFuncOp
-  LLVM::LLVMFuncOp loweredFunc = nullptr;
-  tempModule->walk([&](LLVM::LLVMFuncOp f) { loweredFunc = f; });
+  func::FuncOp loweredFunc = nullptr;
+  tempModule->walk([&](func::FuncOp f) { loweredFunc = f; });
 
   if (!loweredFunc) {
     return func.emitError("Could not find lowered function in temporary module");

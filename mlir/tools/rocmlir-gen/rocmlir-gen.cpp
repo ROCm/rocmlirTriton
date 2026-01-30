@@ -3691,37 +3691,44 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   auto cpuTypes = params.types;
   SmallVector<Type, 3> argTypes;
   getGemmTypes(cpuTypes, argTypes, /*isCpuVerifier=*/true);
-  // Convert tensor types to memref types for CPU verifier function arguments
-  SmallVector<Type> flatArgTypes;
-  for (Type t : argTypes) {
-    Type flatType = rock::getFlattenedType(t);
-    if (auto tensorType = dyn_cast<RankedTensorType>(flatType)) {
-      flatArgTypes.push_back(
-          MemRefType::get(tensorType.getShape(), tensorType.getElementType()));
+
+  // Create flat tensor types for function arguments (inputs only, no output)
+  // Output will be returned as a tensor result
+  SmallVector<Type> flatInputTypes;
+  Type flatOutputType;
+  for (size_t i = 0; i < argTypes.size(); ++i) {
+    Type flatType = rock::getFlattenedType(argTypes[i]);
+    RankedTensorType tensorType;
+    if (auto tt = dyn_cast<RankedTensorType>(flatType)) {
+      tensorType = tt;
     } else {
-      flatArgTypes.push_back(flatType);
+      auto memrefType = cast<MemRefType>(flatType);
+      tensorType =
+          RankedTensorType::get(memrefType.getShape(), memrefType.getElementType());
+    }
+    if (i == 2) {
+      // Output tensor (index 2 for GEMM: A, B, C)
+      flatOutputType = tensorType;
+    } else {
+      flatInputTypes.push_back(tensorType);
     }
   }
 
   constexpr llvm::StringLiteral cpuKernName("host_naive_gemm");
-  auto func = func::FuncOp::create(builder, loc, cpuKernName,
-                                   builder.getFunctionType(flatArgTypes, {}));
+  auto func = func::FuncOp::create(
+      builder, loc, cpuKernName,
+      builder.getFunctionType(flatInputTypes, {flatOutputType}));
   // Mark as CPU verifier so buildHostLoweringPipeline can identify it
   func->setAttr("rock.cpu_verifier", builder.getUnitAttr());
 
   Block *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);
 
-  // Helper to convert memref block argument to tensor with proper shape
+  // Helper to expand flat tensor argument to the logical shape
   auto getTensorForBlockArg = [&builder, &loc, &block,
                                &argTypes](unsigned blockArgIndex,
-                                          bool isWritable = false) -> Value {
-    constexpr bool isRestrict{true};
-    Value flatTensor = bufferization::ToTensorOp::create(
-        builder, loc,
-        memref::getTensorTypeFromMemRefType(
-            block->getArgument(blockArgIndex).getType()),
-        block->getArgument(blockArgIndex), isRestrict, isWritable);
+                                          unsigned funcArgIndex) -> Value {
+    Value flatTensor = block->getArgument(funcArgIndex);
     ArrayRef<int64_t> origShape =
         cast<ShapedType>(argTypes[blockArgIndex]).getShape();
 
@@ -3751,12 +3758,14 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
                                          reassociation);
   };
 
-  // Convert memref arguments to tensors
-  Value aTensor = getTensorForBlockArg(0);
+  // Expand tensor arguments to logical shapes
+  // Function args: A (0), B (1), [aScale (2), bScale (3) for scaled GEMM]
+  // argTypes indices: A (0), B (1), C (2), [aScale (3), bScale (4) for scaled GEMM]
+  Value aTensor = getTensorForBlockArg(0, 0);
   if (transposeA) {
     aTensor = rock::tosa::getTransposeOp(builder, loc, aTensor, {0, 2, 1});
   }
-  Value bTensor = getTensorForBlockArg(1);
+  Value bTensor = getTensorForBlockArg(1, 1);
   if (transposeB) {
     bTensor = rock::tosa::getTransposeOp(builder, loc, bTensor, {0, 2, 1});
   }
@@ -3766,8 +3775,8 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   if (scaledGemm) {
     // For scaled GEMM, we need to handle per-element scaling during matmul
     // Use linalg::GenericOp with tensor semantics
-    Value aScaleTensor = getTensorForBlockArg(3);
-    Value bScaleTensor = getTensorForBlockArg(4);
+    Value aScaleTensor = getTensorForBlockArg(3, 2);
+    Value bScaleTensor = getTensorForBlockArg(4, 3);
 
     // Get the output element type and shape
     Type outElemType = params.types[2];
@@ -3980,15 +3989,11 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
         rock::tosa::getTransposeOp(builder, loc, resultTensor, {0, 2, 1});
   }
 
-  // Convert result tensor back to memref and copy to output
-  Value output = block->getArguments().back();
-  auto outputType = cast<bufferization::BufferLikeType>(output.getType());
-
   // Use tensor.collapse_shape to flatten the result tensor back to 1D
   auto resultTensorType = cast<RankedTensorType>(resultTensor.getType());
+  auto flatOutputTensorType = cast<RankedTensorType>(flatOutputType);
   auto flatResultType = RankedTensorType::get(
-      {cast<ShapedType>(outputType).getNumElements()},
-      resultTensorType.getElementType());
+      flatOutputTensorType.getShape(), resultTensorType.getElementType());
 
   // All dimensions in the input collapse to the single output dimension
   SmallVector<ReassociationIndices> reassociation;
@@ -4001,12 +4006,8 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   Value flatResultTensor = tensor::CollapseShapeOp::create(
       builder, loc, flatResultType, resultTensor, reassociation);
 
-  auto flatResultMemref = bufferization::ToBufferOp::create(
-      builder, loc, outputType, flatResultTensor);
-
-  memref::CopyOp::create(builder, loc, flatResultMemref, output);
-
-  func::ReturnOp::create(builder, loc);
+  // Return the result tensor
+  func::ReturnOp::create(builder, loc, flatResultTensor);
   module.push_back(func);
   return func;
 }
@@ -5099,12 +5100,31 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       auto printTimeFunc =
           makeFuncDecl(module, "printCpuTimeMs", {i64Type, i64Type}, {});
 
+      // Convert memref arguments to tensors for the function call
+      // valVars contains: A, B, C, [aScale, bScale for scaled GEMM]
+      // Function expects: A, B, [aScale, bScale] as inputs, returns C
+      SmallVector<Value> tensorInputs;
+      constexpr bool isRestrict = true;
+      for (size_t i = 0; i < valVars.size(); ++i) {
+        if (i == 2)
+          continue; // Skip output (C), it will be returned
+        Value memref = valVars[i];
+        auto memrefType = cast<MemRefType>(memref.getType());
+        auto tensorType =
+            RankedTensorType::get(memrefType.getShape(), memrefType.getElementType());
+        Value tensor = bufferization::ToTensorOp::create(b, loc, tensorType,
+                                                         memref, isRestrict,
+                                                         /*writable=*/false);
+        tensorInputs.push_back(tensor);
+      }
+
       // Get start time
       auto startTimeCall = func::CallOp::create(b, loc, getTimeFunc, ValueRange{});
       Value startTime = startTimeCall.getResult(0);
 
-      // Call the CPU GEMM kernel
-      func::CallOp::create(b, loc, cpuGemmFunc, valVars);
+      // Call the CPU GEMM kernel (returns tensor result)
+      auto callOp = func::CallOp::create(b, loc, cpuGemmFunc, tensorInputs);
+      Value resultTensor = callOp.getResult(0);
 
       // Get end time
       auto endTimeCall = func::CallOp::create(b, loc, getTimeFunc, ValueRange{});
@@ -5112,6 +5132,13 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
 
       // Print elapsed time
       func::CallOp::create(b, loc, printTimeFunc, ValueRange{startTime, endTime});
+
+      // Convert result tensor back to memref and copy to output
+      Value outputMemref = valVars[2]; // C is at index 2
+      auto outputMemrefType = cast<MemRefType>(outputMemref.getType());
+      Value resultMemref = bufferization::ToBufferOp::create(
+          b, loc, outputMemrefType, resultTensor);
+      memref::CopyOp::create(b, loc, resultMemref, outputMemref);
     } else if (genParams.operation == rock::KernelType::Attention) {
       if (validationType == "cpp") {
         llvm::errs() << "External attention validator is not available\n";

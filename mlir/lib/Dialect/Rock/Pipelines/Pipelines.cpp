@@ -374,10 +374,25 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
-  // First, lower CPU verifier functions (host_naive_*) that use tensor semantics.
+  pm.addPass(rock::createRockLowerCpuVerifierPass());
+  // First, bufferize tensor operations in the module.
+  // This is needed because the CPU verifier functions (host_naive_*) use tensor
+  // semantics, and the callers (in main) also use tensor types. One-shot
+  // bufferize will convert both the function signatures and their callers to
+  // use memref types, ensuring consistency.
+  bufferization::OneShotBufferizePassOptions bufOpts;
+  bufOpts.allowReturnAllocsFromLoops = true;
+  bufOpts.bufferizeFunctionBoundaries = true;
+  bufOpts.functionBoundaryTypeConversion =
+      bufferization::LayoutMapOption::IdentityLayoutMap;
+  pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
+
+  // Cleanup after bufferization
+  pm.addPass(createCanonicalizerPass());
+
+  // Now lower the CPU verifier functions (host_naive_*) to LLVM.
   // This pass only affects functions marked with "rock.cpu_verifier" attribute,
   // leaving other functions (main, wrappers) unchanged.
-  pm.addPass(rock::createRockLowerCpuVerifierPass());
 
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());
