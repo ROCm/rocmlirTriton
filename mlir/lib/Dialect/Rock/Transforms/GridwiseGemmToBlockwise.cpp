@@ -251,7 +251,6 @@ struct GridwiseGemmAccelRewritePattern
                             << "numWaves: " << numWaves << "\n"
                             << "numCTAs: " << numCTAs << "\n");
 
-    // TODO(roctriton): f32 if float, i32 if int
     Type accType = isa<FloatType>(elementTypeA) ? Type(b.getF32Type())
                                                 : Type(b.getI32Type());
     Value initAcc = createZeroAccBuffer(b, loc, mPerBlock, nPerBlock, accType);
