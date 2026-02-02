@@ -354,20 +354,29 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
 
     // gpu.launch_func doesn't return values - it modifies buffers in-place.
     // Replace uses of the func.call result with the output operand.
-    // For GEMM/Conv, the output (C matrix) is the last tensor argument.
     if (callOp.getNumResults() > 0) {
-      // Find the last tensor operand - this is the output that was modified
       Value outputOperand;
-      for (Value operand : llvm::reverse(callOp.getOperands())) {
-        if (isa<TensorType, MemRefType>(operand.getType())) {
+      Type resultType = callOp.getResult(0).getType();
+
+      // Find the operand whose type matches the result type. This is needed in
+      // case of convs, because the output is not always the last argument:
+      // - Forward conv: output is at index 2 (last)
+      // - BwdData: input is at index 1
+      // - BwdWeight: filter is at index 0 (first)
+      for (Value operand : callOp.getOperands()) {
+        if (operand.getType() == resultType) {
           outputOperand = operand;
           break;
         }
       }
-      if (outputOperand) {
-        // Replace all uses of the call result with the output operand
-        callOp.getResult(0).replaceAllUsesWith(outputOperand);
+
+      if (!outputOperand) {
+        return callOp.emitError("could not find output operand matching result "
+                                "type for kernel call");
       }
+
+      // Replace all uses of the call result with the output operand
+      callOp.getResult(0).replaceAllUsesWith(outputOperand);
     }
 
     // Erase the old func.call
