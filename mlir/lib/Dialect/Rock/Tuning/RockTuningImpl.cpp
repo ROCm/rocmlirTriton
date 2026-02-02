@@ -63,7 +63,7 @@ static SmallVector<uint32_t> compute1MPerBlock(TuningParamSetKind tuningKind,
 
 static SmallVector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
                                              int64_t waveSize) {
-  SmallVector<uint32_t> numWavesList = {2, 4, 8};
+  SmallVector<uint32_t> numWavesList = {1, 2, 4, 8};
   return numWavesList;
   // SmallVector<uint32_t> numWavesList;
 
@@ -124,18 +124,26 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t maxWavesPerEU, Tuning
   //   wavesPerEUList.push_back(wavesPerEU);
   // }
 
+  Type inTypeA = gemmOp.getAType();
+  bool is8b = inTypeA.isInteger(8) ||
+              (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
+
+  std::vector<uint32_t> kPerBlock = {16, 32, 64, 128};
+  if (is8b)
+    kPerBlock = {32, 64, 128};
+
   // MFMA (CDNA) parameters
   // Note: kPack max is 2
   // See AccelerateAMDMatmul.cpp comment about kPack limit
   std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
-      dPerBlock,      // M/block
-      dPerBlock,      // N/block
-      {16, 32},       // K/block
-      {1, 2},         // kPack
-      {16, 32},       // matrixInstrNonkdim
-      {1, 2, 3},      // numStages
-      wavesPerEUList, // wavesPerEU
-      {0}             // gridGroupSize
+      dPerBlock,           // M/block
+      dPerBlock,           // N/block
+      kPerBlock,           // K/block
+      {1, 2},              // kPack
+      {16, 32},            // matrixInstrNonkdim
+      {1, 2, 3},        // numStages
+      wavesPerEUList,      // wavesPerEU
+      {0} // gridGroupSize
   };
 
   // WMMA (RDNA3) parameters
