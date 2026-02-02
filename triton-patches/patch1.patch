@@ -1,0 +1,132 @@
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/ConvertToBufferOps.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/ConvertToBufferOps.cpp
+index 90b09a4a7..8615f8199 100644
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/ConvertToBufferOps.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/ConvertToBufferOps.cpp
+@@ -457,10 +457,12 @@ struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
+       mlir::MLIRContext *context,
+       DenseMap<Value, SetVector<Operation *>> &assumptions,
+       ModuleAxisInfoAnalysis &axisAnalysisPass,
+-      std::shared_ptr<DataFlowSolver> solver, bool analyzeSmallTensorOfst_)
++      std::shared_ptr<DataFlowSolver> solver, bool analyzeSmallTensorOfst_,
++      const triton::AMD::TargetInfo *targetInfo_ = nullptr)
+       : mlir::OpRewritePattern<SourceOp>(context), assumptions(assumptions),
+         axisAnalysisPass(axisAnalysisPass), solver(std::move(solver)),
+-        analyzeSmallTensorOfst(analyzeSmallTensorOfst_) {}
++        analyzeSmallTensorOfst(analyzeSmallTensorOfst_),
++        targetInfo(targetInfo_) {}
+   mlir::LogicalResult
+   matchAndRewrite(SourceOp op, PatternRewriter &rewriter) const override {
+     LDBG("Try to convert: " << op);
+@@ -480,7 +482,7 @@ struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
+         maybeMask = op.getMask();
+       Value blockStride = getBlockStride(op->getLoc(), tensorOffset, rewriter);
+ 
+-      auto bufferLoadOp = [&]() {
++      auto bufferLoadOp = [&]() -> Operation * {
+         if constexpr (std::is_same_v<SourceOp, triton::LoadOp>) {
+           unsigned contig = getVectorSize(ptr, axisAnalysisPass);
+           if (maybeMask)
+@@ -492,6 +494,24 @@ struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
+         } else if constexpr (std::is_same_v<
+                                  SourceOp,
+                                  triton::gpu::AsyncCopyGlobalToLocalOp>) {
++          // Check if we can actually lower this to direct-to-LDS load.
++          // Otherwise, compilation can fail later in TritonGPUToLLVM when it
++          // finds out that we cannot actually lower this to direct-to-LDS load.
++          if (targetInfo) {
++            auto srcTy = cast<RankedTensorType>(ptr.getType());
++            auto dstMemDesc =
++                cast<triton::gpu::MemDescType>(op.getResult().getType());
++            auto dstEnc = dstMemDesc.getEncoding();
++            auto dstAllocShape = dstMemDesc.getAllocShape();
++            unsigned vec = getVectorSize(ptr, axisAnalysisPass);
++            vec = std::max(vec, op.getContiguity());
++            if (!LLVM::AMD::canLoadDirectToLDS(*targetInfo, srcTy, dstEnc,
++                                               dstAllocShape, vec)) {
++              LDBG("canLoadDirectToLDS returned false, skipping "
++                   "BufferLoadToLocalOp creation");
++              return nullptr;
++            }
++          }
+           return triton::amdgpu::BufferLoadToLocalOp::create(
+               rewriter, op->getLoc(), op.getType(), op.getResult(), basePtr,
+               tensorOffset, maybeMask, maybeOther, blockStride, op.getCache(),
+@@ -518,6 +538,7 @@ private:
+   ModuleAxisInfoAnalysis &axisAnalysisPass;
+   std::shared_ptr<DataFlowSolver> solver;
+   bool analyzeSmallTensorOfst;
++  const triton::AMD::TargetInfo *targetInfo;
+ };
+ 
+ struct ConvertTritonStoreToBufferStore
+@@ -609,7 +630,7 @@ struct TritonAMDGPUConvertToBufferOpsPass
+       patterns
+           .add<ConvertTritonLoadToBufferLoad<ttg::AsyncCopyGlobalToLocalOp>>(
+               context, assumptions, axisInfoAnalysis, solver,
+-              this->analyzeSmallTensorOfst);
++              this->analyzeSmallTensorOfst, &targetInfo);
+     }
+ 
+     // Gate buffer atomics behind CDNA3 for now
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
+index 1c8494f0f..035651dee 100644
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
+@@ -2,12 +2,14 @@
+ #include "Utility.h"
+ #include "amd/lib/TritonAMDGPUToLLVM/AsyncUtility.h"
+ #include "amd/lib/TritonAMDGPUToLLVM/TargetInfo.h"
++#include "amd/lib/TritonAMDGPUToLLVM/Utility.h"
+ #include "amd/lib/TritonAMDGPUTransforms/PipelineUtility.h"
+ #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
+ #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+ #include "llvm/Support/Debug.h"
+ #include <variant>
+ 
++#undef DEBUG_TYPE
+ #define DEBUG_TYPE "tritonamdgpu-pipeline-lower-loops"
+ #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
+ #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
+@@ -292,30 +294,23 @@ bool canBeConvertedToAsyncLoad(unsigned numBuffers, tt::LoadOp loadOp,
+   using tt::AMD::ISAFamily;
+   if (sharedEnc && llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
+                                       targetInfo.getISAFamily())) {
+-    // Compute the final vecSize we can use for the combination of
+-    // sourceEncoding and sharedEncoding. We can only use AsyncCopy if the
+-    // target supports the requested or a smaller vecSize because we cannot
+-    // stride when loading directly to lds on GFX9
++    // Use the full canLoadDirectToLDS check to ensure the async copy can
++    // actually be lowered. This checks vector size, coalescing constraints,
++    // and all other requirements for direct-to-LDS loads.
+     auto srcTy = cast<RankedTensorType>(loadOp.getPtr().getType());
+-    auto regLayout = triton::gpu::toLinearLayout(srcTy);
+-    // It's the allocation so we trim the multibuffer dimension
+     auto srcShape = srcTy.getShape();
+-    triton::LinearLayout sharedLayout;
+-    auto paddedEnc = dyn_cast<triton::gpu::PaddedSharedEncodingAttr>(sharedEnc);
+-    if (paddedEnc) {
+-      sharedLayout = paddedEnc.getLinearComponent();
+-    } else {
+-      sharedLayout = triton::gpu::toLinearLayout(srcShape, sharedEnc);
+-    }
+-    auto regToSharedLayout = regLayout.invertAndCompose(sharedLayout);
+ 
+-    unsigned elemBitWidth = tt::getPointeeBitWidth(srcTy);
+-    unsigned vecSize = regToSharedLayout.getNumConsecutiveInOut();
+-    if (paddedEnc)
+-      vecSize = std::min(vecSize, paddedEnc.getMinInterval());
++    // Compute vector size from axis info
++    unsigned vecSize = axisInfoAnalysis.getContiguity(loadOp.getPtr());
++    if (auto mask = loadOp.getMask())
++      vecSize = std::min<unsigned>(vecSize, axisInfoAnalysis.getMaskAlignment(mask));
+ 
+-    if (fitToValidDirectToLdsVecSize(vecSize, elemBitWidth, targetInfo) == 0)
++    // Use the full canLoadDirectToLDS check
++    if (!LLVM::AMD::canLoadDirectToLDS(targetInfo, srcTy, sharedEnc, srcShape,
++                                       vecSize)) {
++      LDBG("canLoadDirectToLDS returned false, cannot use async copy");
+       return false;
++    }
+   }
+ 
+   // Checks whether the global pointer's contiguity and mask alignment allows
