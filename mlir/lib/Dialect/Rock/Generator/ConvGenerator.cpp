@@ -815,9 +815,11 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
   SmallVector<Type, 3> physicalFuncArgTypes =
       llvm::map_to_vector(logicalFuncArgTypes, getFlattenedType);
-  Type outputFlatType = getFlattenedType(outputArgType);
+  // The function return type must match the operation's output argument.
+  int funcReturnArgIndex = getOutArgumentIndex(config.operation.value());
+  Type funcReturnFlatType = physicalFuncArgTypes[funcReturnArgIndex];
   auto funcType =
-      builder.getFunctionType(physicalFuncArgTypes, {outputFlatType});
+      builder.getFunctionType(physicalFuncArgTypes, {funcReturnFlatType});
 
   std::string kernelName = config.kernelBaseName;
   if (isVerifier) {
@@ -950,15 +952,16 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   expandFlatFunctionArguments(builder, func, argDimNameRefs,
                               logicalFuncArgTypes, args);
 
-  // Get the result type from the output argument type
-  // TODO(roctriton): Is 2 always the right index?
-  Type outputResultType = logicalFuncArgTypes[2];
+  // Get the result type and store destination based on operation type.
+  // The result type must match the "out argument" type per RockConvInterface.
+  int outArgIndex = getOutArgumentIndex(config.operation.value());
+  Type resultType = logicalFuncArgTypes[outArgIndex];
 
   Value convResult;
   switch (config.operation.value()) {
   case ConvOpType::Fwd: {
-    auto convOp = ConvOp::create(builder, builder.getUnknownLoc(),
-                                 outputResultType, args, attributes);
+    auto convOp = ConvOp::create(builder, builder.getUnknownLoc(), resultType,
+                                 args, attributes);
     convResult = convOp.getResult();
   } break;
   case ConvOpType::BwdData: {
@@ -977,7 +980,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
       }
     }
     auto convOp = ConvBwdDataOp::create(builder, builder.getUnknownLoc(),
-                                        outputResultType, args, attributes);
+                                        resultType, args, attributes);
     convResult = convOp.getResult();
   } break;
   case ConvOpType::BwdWeight: {
@@ -1010,16 +1013,18 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
         zeroInitArg(builder, func, hasWorkspace ? 3 : 0);
       }
       auto convOp = ConvBwdWeightOp::create(builder, builder.getUnknownLoc(),
-                                            outputResultType, args, attributes);
+                                            resultType, args, attributes);
       convResult = convOp.getResult();
     }
   } break;
   }
 
-  // Store the result to the transformed output tensor (args[2])
-  // TODO(roctriton): Is 2 always the output tensor?
+  // Store the result to the appropriate output tensor based on operation type.
+  // The flat type for the store needs to match the function's return type.
+  Type storeFlatType = func.getResultTypes()[0];
   Value storedVal = rock::StoreOp::create(
-      builder, builder.getUnknownLoc(), outputFlatType, convResult, args[2],
+      builder, builder.getUnknownLoc(), storeFlatType, convResult,
+      args[outArgIndex],
       builder.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set));
 
   func::ReturnOp::create(builder, builder.getUnknownLoc(), storedVal);

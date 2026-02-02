@@ -591,6 +591,18 @@ ConvOpType mlir::rock::convOpTypeFromKernelType(KernelType kernelType) {
   llvm_unreachable("Unsuppported KernelType");
 }
 
+int mlir::rock::getOutArgumentIndex(ConvOpType opType) {
+  switch (opType) {
+  case ConvOpType::Fwd:
+    return 2; // output
+  case ConvOpType::BwdData:
+    return 1; // input
+  case ConvOpType::BwdWeight:
+    return 0; // filter
+  }
+  llvm_unreachable("Unknown ConvOpType");
+}
+
 KernelType mlir::rock::kernelTypeFromConvOpType(ConvOpType convOpType) {
   switch (convOpType) {
   case ConvOpType::Fwd:
@@ -773,12 +785,16 @@ Type ConvBwdWeightOp::getCType() {
   return getFilter().getType().getElementType();
 }
 
-OpOperand *ConvOp::getOutArgument() { return &(*this)->getOpOperand(2); }
+OpOperand *ConvOp::getOutArgument() {
+  return &(*this)->getOpOperand(getOutArgumentIndex(ConvOpType::Fwd));
+}
 
-OpOperand *ConvBwdDataOp::getOutArgument() { return &(*this)->getOpOperand(1); }
+OpOperand *ConvBwdDataOp::getOutArgument() {
+  return &(*this)->getOpOperand(getOutArgumentIndex(ConvOpType::BwdData));
+}
 
 OpOperand *ConvBwdWeightOp::getOutArgument() {
-  return &(*this)->getOpOperand(0);
+  return &(*this)->getOpOperand(getOutArgumentIndex(ConvOpType::BwdWeight));
 }
 
 SmallVector<mlir::Type> GemmOp::getTypesForFeature() { return {getAType()}; }
@@ -1143,7 +1159,6 @@ LogicalResult GridwiseGemmOp::verify() {
   }
   return verifyGridwiseGemm(*this);
 }
-
 
 //===-----------------------------------------------------===//
 // GpuAllocOp
