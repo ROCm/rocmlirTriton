@@ -446,6 +446,10 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     restoreOpts.optLevel = options.optLevel;
     pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
 
+    // Lower FP8 extf/truncf ops explicitly. Leaving this task to 
+    // buildHostLoweringPipeline would generate invalid builtin.unrealized_casts.
+    pm.addPass(createEmulateFp8ExtTruncPass());
+
     // Lower host code (GPU launch + func/memref ops) to LLVM
     buildHostLoweringPipeline(pm);
   }
