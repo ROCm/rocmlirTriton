@@ -480,14 +480,8 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     restoreOpts.optLevel = options.optLevel;
     pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
 
-<<<<<<< HEAD
     // Lower FP8 extf/truncf ops explicitly. Leaving this task to 
     // buildHostLoweringPipeline would generate invalid builtin.unrealized_casts.
-=======
-    // Quick hack around the fact that our host code runner pipeline can't
-    // include our fp8 extf implmenentation becasue of MHAL's organization. That
-    // pass will ideally be nicely implemented and upstreamed Later (tm).
->>>>>>> faf4043 (Add missing pass)
     pm.addPass(createEmulateFp8ExtTruncPass());
 
     // Lower host code (GPU launch + func/memref ops) to LLVM
