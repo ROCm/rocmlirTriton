@@ -369,8 +369,6 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   ShapedType filterType = op.getFilter().getType();
   auto filterShape = filterType.getShape();
 
-  GemmFeatures features = rock::getFeatures(op);
-
   // Determine whether to use workspace.
   bool hasWorkspace = (filterType.getElementType() == b.getF16Type());
   if (hasWorkspace && !op.getWorkspace()) {
@@ -569,7 +567,6 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   }
 
   // This kernel is not run when there is padding on the GEMM
-  auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::AtomicAdd);
   // TODO(roctriton): set storeMethod to rock.store!
   GemmOp::create(b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
                  /*scaleA=*/nullptr, /*scaleB=*/nullptr,

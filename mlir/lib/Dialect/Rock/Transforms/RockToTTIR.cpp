@@ -279,7 +279,7 @@ struct RockLoadTilePtrOpRewritePattern
 
     // Convert tensor of i32 to tensor of pointers
     Value ptrTensorOfPtrs =
-        rewriter.create<rock::CastToPtrOp>(loc, ptrTensorOfPtrsType, pointerTensor);
+        rock::CastToPtrOp::create(rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
     // Create tt.load operation
     // LoadOp takes: ptr, mask (optional), other (optional), boundaryCheck,
@@ -291,8 +291,8 @@ struct RockLoadTilePtrOpRewritePattern
         rewriter.getContext(), triton::EvictionPolicy::NORMAL);
     auto isVolatileAttr = rewriter.getBoolAttr(false);
 
-    Value result = rewriter.create<triton::LoadOp>(
-        loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
+    Value result = triton::LoadOp::create(
+        rewriter, loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
         /*other=*/Value(), boundaryCheckAttr,
         /*padding=*/nullptr, cacheAttr, evictAttr, isVolatileAttr);
 
@@ -327,8 +327,8 @@ struct RockBlockwiseGemmOpRewritePattern
       return failure();
 
     // Create tt.dot operation
-    Value result = rewriter.create<triton::DotOp>(
-        loc, cTensorType, a, b, c,
+    Value result = triton::DotOp::create(
+        rewriter, loc, cTensorType, a, b, c,
         /*inputPrecision=*/triton::InputPrecision::IEEE,
         /*maxNumImpreciseAcc=*/0);
 
@@ -489,8 +489,8 @@ struct RockStoreTilePtrOpRewritePattern
         ptrTensorType.getShape(), ptrType, ptrTensorType.getEncoding());
 
     // Cast the i32 tensor to tensor of pointers
-    Value ptrTensorOfPtrs = rewriter.create<rock::CastToPtrOp>(
-        loc, ptrTensorOfPtrsType, pointerTensor);
+    Value ptrTensorOfPtrs = rock::CastToPtrOp::create(
+        rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
     // 5. Create triton::StoreOp or triton::AtomicRMWOp depending on storeMethod
     auto storeMethod = op.getStoreMethod();
@@ -499,8 +499,8 @@ struct RockStoreTilePtrOpRewritePattern
       triton::RMWOp rmwOp =
           elementType.isIntOrIndex() ? triton::RMWOp::ADD : triton::RMWOp::FADD;
       // AtomicRMWOp returns the old value, but we don't need it
-      rewriter.create<triton::AtomicRMWOp>(
-          loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
+      triton::AtomicRMWOp::create(
+          rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
           triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else if (storeMethod == rock::StoreMethod::AtomicMax) {
       // Use MAX for signed int, UMAX for unsigned int
@@ -513,14 +513,14 @@ struct RockStoreTilePtrOpRewritePattern
         // Signed integer or floating point - use MAX
         rmwOp = triton::RMWOp::MAX;
       }
-      rewriter.create<triton::AtomicRMWOp>(
-          loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
+      triton::AtomicRMWOp::create(
+          rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
           triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else {
       // Default: StoreMethod::Set - regular store
       // Signature: (ptr, value, mask, boundaryCheck, cache, evict)
-      rewriter.create<triton::StoreOp>(
-          loc, ptrTensorOfPtrs, valueToStore, maskTensor,
+      triton::StoreOp::create(
+          rewriter, loc, ptrTensorOfPtrs, valueToStore, maskTensor,
           /*boundaryCheck=*/ArrayRef<int32_t>{},
           /*cache=*/triton::CacheModifier::NONE,
           /*evict=*/triton::EvictionPolicy::NORMAL);

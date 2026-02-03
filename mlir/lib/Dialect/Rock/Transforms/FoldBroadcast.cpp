@@ -195,9 +195,6 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
     Value scaleA = op.getScaleA();
     Value scaleB = op.getScaleB();
 
-    // Get the result as a typed tensor value for merge/unbroadcast
-    auto resultValue = cast<TypedValue<ShapedType>>(op.getResult());
-
     if (isBBatchBroadcast) {
       newA = mergeBatch(rw, loc, op.getA(), op.getATransposed());
       newB = unbroadcastBatch(rw, loc, op.getB());

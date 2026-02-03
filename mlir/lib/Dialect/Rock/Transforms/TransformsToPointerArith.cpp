@@ -558,7 +558,6 @@ struct TransformsToPtrRewritePattern
 
     // Get output shapes from result types (tensors)
     auto pointerResultType = cast<RankedTensorType>(op.getPointers().getType());
-    auto maskResultType = cast<RankedTensorType>(op.getMask().getType());
     ArrayRef<int64_t> shape = pointerResultType.getShape();
 
     source = isolateTransforms(b, source);
