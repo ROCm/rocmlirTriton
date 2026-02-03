@@ -851,10 +851,17 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   NamedAttribute numChipletsAttr = builder.getNamedAttr(
       rock::NumChipletsAttr::getMnemonic(), numChipletsIntAttr);
 
+  // The output argument indices tell which arguments are written to by the kernel.
+  // For convolutions, there's always exactly one output.
+  SmallVector<Attribute> outIdxAttrs = {
+      builder.getI64IntegerAttr(getOutArgumentIndex(config.operation.value()))};
+  NamedAttribute outIndicesAttr = builder.getNamedAttr(
+      "rock.output_indices", builder.getArrayAttr(outIdxAttrs));
+
   SmallVector<NamedAttribute, 2> kernelAttrs = {
       builder.getNamedAttr(rock::KernelAttr::getMnemonic(),
                            builder.getI32IntegerAttr(kernelId)),
-      archAttr, numCUAttr, numChipletsAttr};
+      archAttr, numCUAttr, numChipletsAttr, outIndicesAttr};
 
   // Construct the FuncOp.
   func = func::FuncOp::create(builder.getUnknownLoc(), kernelName, funcType,

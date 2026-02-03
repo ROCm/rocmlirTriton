@@ -970,15 +970,21 @@ struct KernelIF {
     assert(func.getNumResults() > 0);
     for (Type resultType : func.getResultTypes()) {
       resultTypes.push_back(resultType);
-      // Find the argument index that matches this result type
-      // This is needed for backward convolutions where the output is not
-      // the last argument (BwdWeight outputs to filter at index 0,
-      // BwdData outputs to input at index 1)
-      for (size_t i = 0; i < argCount; i++) {
-        if (params[i] == resultType) {
-          outIndices.push_back(i);
-          break;
-        }
+    }
+
+    // Get output indices from the rock.output_indices attribute if available.
+    // This is set by ConvGenerator and correctly handles backward convolutions
+    // where the output is not the last argument.
+    if (auto outIndicesAttr =
+            func->getAttrOfType<ArrayAttr>("rock.output_indices")) {
+      for (Attribute attr : outIndicesAttr) {
+        outIndices.push_back(cast<IntegerAttr>(attr).getInt());
+      }
+    }
+    // Assume outputs are the last N arguments for N results
+    if (outIndices.empty()) {
+      for (size_t i = 0; i < resultTypes.size(); i++) {
+        outIndices.push_back(argCount - resultTypes.size() + i);
       }
     }
   }

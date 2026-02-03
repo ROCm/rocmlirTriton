@@ -227,11 +227,21 @@ RockRestoreHostCodePass::collectKernelInfo(ModuleOp moduleOp, int maxSharedMemPe
     info.blockSize = tritonBlockSize; // Use Triton's block size (matches HSACO)
     info.sharedMemorySize = sharedMemory;
 
-    // Get the saved grid_size from module attribute (set by MemrefToTensor)
+    // Get the saved grid_size from module attribute (set by FuncToTritonFunc)
     // This is the problem-specific value from the original rocMLIR kernel
     std::string gridAttrName = "rock.grid_size." + info.name;
     if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
       info.gridSize = gridAttr.getInt();
+
+    // Get the saved output_indices from module attribute (set by FuncToTritonFunc)
+    // This tells us which arguments are written to by the kernel.
+    std::string outIndicesAttrName = "rock.output_indices." + info.name;
+    if (auto outIndicesAttr =
+            moduleOp->getAttrOfType<ArrayAttr>(outIndicesAttrName)) {
+      for (Attribute attr : outIndicesAttr) {
+        info.outIndices.push_back(cast<IntegerAttr>(attr).getInt());
+      }
+    }
 
     // Store the argument types from the LLVM function
     auto llvmFuncType = funcOp.getFunctionType();
@@ -353,30 +363,27 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
         /*clusterSize=*/std::nullopt);
 
     // gpu.launch_func doesn't return values - it modifies buffers in-place.
-    // Replace uses of the func.call result with the output operand.
-    if (callOp.getNumResults() > 0) {
-      Value outputOperand;
-      Type resultType = callOp.getResult(0).getType();
-
-      // Find the operand whose type matches the result type. This is needed in
-      // case of convs, because the output is not always the last argument:
-      // - Forward conv: output is at index 2 (last)
-      // - BwdData: input is at index 1
-      // - BwdWeight: filter is at index 0 (first)
-      for (Value operand : callOp.getOperands()) {
-        if (operand.getType() == resultType) {
-          outputOperand = operand;
-          break;
-        }
+    // Replace uses of each func.call result with the corresponding output operand.
+    for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
+      // Use the output index from kernel info if available.
+      // This is important for backward convolutions where the output is not
+      // the last argument.
+      // For GEMM and other operations, default to last N arguments for N results.
+      int64_t outIdx;
+      if (resultIdx < kernel.outIndices.size()) {
+        outIdx = kernel.outIndices[resultIdx];
+      } else {
+        // Default: assume outputs are the last N operands
+        outIdx = callOp.getNumOperands() - callOp.getNumResults() + resultIdx;
       }
 
-      if (!outputOperand) {
-        return callOp.emitError("could not find output operand matching result "
-                                "type for kernel call");
-      }
+      if (outIdx == -1)
+        outIdx = callOp.getNumOperands() - 1; // Fallback to last operand
+      if (outIdx < 0 || outIdx >= callOp.getNumOperands())
+        return callOp.emitError("invalid output index");
 
-      // Replace all uses of the call result with the output operand
-      callOp.getResult(0).replaceAllUsesWith(outputOperand);
+      Value outputOperand = callOp.getOperand(outIdx);
+      result.replaceAllUsesWith(outputOperand);
     }
 
     // Erase the old func.call
