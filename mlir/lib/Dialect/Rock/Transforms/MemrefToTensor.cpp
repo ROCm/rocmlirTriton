@@ -88,30 +88,23 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
 
-  // Step 1: Find all extract_aligned_pointer_as_index patterns and collect info
-  // Pattern: block_arg (tensor) -> to_buffer -> extract_ptr -> index_cast -> tt.splat
+  // Step 1: Find all rock.extract_ptr patterns and collect info
+  // Pattern: block_arg (tensor) -> rock.extract_ptr -> tt.splat
   struct ArgConversionInfo {
     unsigned argIndex;
     Type elementType;
     RankedTensorType tensorType; // Original tensor type for size calculation
-    SmallVector<Value> valuesToReplace; // index_cast results to replace with block arg
-    // Ops in the chain that need to be erased (in order: splats, index_cast, extract, to_buffer)
+    SmallVector<Value> valuesToReplace; // extract_ptr results to replace with block arg
+    // Ops in the chain that need to be erased (in order: splats, extract_ptr)
     SmallVector<triton::SplatOp> oldSplatOps;
-    bufferization::ToBufferOp toBufferOp;
-    memref::ExtractAlignedPointerAsIndexOp extractOp;
-    arith::IndexCastOp indexCastOp;
+    rock::ExtractPtrOp extractPtrOp;
   };
   SmallVector<ArgConversionInfo> argsToConvert;
 
-  funcOp.walk([&](memref::ExtractAlignedPointerAsIndexOp extractOp) {
-    Value memrefOperand = extractOp.getSource();
+  funcOp.walk([&](rock::ExtractPtrOp extractPtrOp) {
+    Value tensorOperand = extractPtrOp.getSource();
 
-    // Trace through to_buffer to find the tensor block argument
-    auto toBufferOp = memrefOperand.getDefiningOp<bufferization::ToBufferOp>();
-    if (!toBufferOp)
-      return;
-
-    Value tensorOperand = toBufferOp.getTensor();
+    // Check if the source is a block argument (tensor)
     auto blockArg = dyn_cast<BlockArgument>(tensorOperand);
     if (!blockArg)
       return;
@@ -120,22 +113,16 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
     if (!tensorType)
       return;
 
-    // Find index_cast ops that use the extract result
-    for (Operation *user : extractOp.getResult().getUsers()) {
-      if (auto indexCastOp = dyn_cast<arith::IndexCastOp>(user)) {
-        if (indexCastOp.getResult().getType().isInteger(32)) {
-          // Found the pattern - record it
-          ArgConversionInfo info;
-          info.argIndex = blockArg.getArgNumber();
-          info.elementType = tensorType.getElementType();
-          info.tensorType = tensorType;
-          info.valuesToReplace.push_back(indexCastOp.getResult());
-          info.toBufferOp = toBufferOp;
-          info.extractOp = extractOp;
-          info.indexCastOp = indexCastOp;
-          argsToConvert.push_back(info);
-        }
-      }
+    // The result of extract_ptr is i32, which is what we need to replace
+    if (extractPtrOp.getResult().getType().isInteger(32)) {
+      // Found the pattern - record it
+      ArgConversionInfo info;
+      info.argIndex = blockArg.getArgNumber();
+      info.elementType = tensorType.getElementType();
+      info.tensorType = tensorType;
+      info.valuesToReplace.push_back(extractPtrOp.getResult());
+      info.extractPtrOp = extractPtrOp;
+      argsToConvert.push_back(info);
     }
   });
 
@@ -171,7 +158,7 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
     attrsToKeep.push_back(attr);
   }
 
-  // Step 3: For each index_cast result, replace its users with the block argument
+  // Step 3: For each extract_ptr result, replace its users with the block argument
   // We do this BEFORE changing types so the old ops become dead
   Block &entryBlock = funcOp.front();
   for (auto &info : argsToConvert) {
@@ -179,7 +166,7 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
     auto ptrType = triton::PointerType::get(info.elementType, 1);
 
     for (Value oldValue : info.valuesToReplace) {
-      // For each user of the index_cast result (like tt.splat), create a replacement
+      // For each user of the extract_ptr result (like tt.splat), create a replacement
       for (OpOperand &use : llvm::make_early_inc_range(oldValue.getUses())) {
         Operation *user = use.getOwner();
 
@@ -209,21 +196,15 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
   }
 
   // Erase the ops in the chain (users first, producers last)
-  // Order: old splats -> index_cast -> extract_ptr -> to_buffer
+  // Order: old splats -> extract_ptr
   for (auto &info : argsToConvert) {
-    // First erase the old splat ops (they use index_cast result)
+    // First erase the old splat ops (they use extract_ptr result)
     for (auto splatOp : info.oldSplatOps) {
       splatOp.erase();
     }
-    // Then erase index_cast (uses extract_ptr result)
-    if (info.indexCastOp)
-      info.indexCastOp.erase();
-    // Then erase extract_ptr (uses to_buffer result)
-    if (info.extractOp)
-      info.extractOp.erase();
-    // Finally erase to_buffer (uses block arg)
-    if (info.toBufferOp)
-      info.toBufferOp.erase();
+    // Then erase extract_ptr (uses block arg)
+    if (info.extractPtrOp)
+      info.extractPtrOp.erase();
   }
 
   // Step 4: Create tt.func and move body
