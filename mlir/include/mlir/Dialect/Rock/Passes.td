@@ -121,22 +121,6 @@ def RockFuncToTTFuncPass : Pass<"rock-func-to-ttfunc", "::mlir::ModuleOp"> {
   ];
 }
 
-def RockUnbufferizePass : Pass<"rock-unbufferize", "::mlir::triton::FuncOp"> {
-  let summary = "Remove bufferization artifacts and convert to pure tensor operations";
-  let description = [{
-    This pass removes remaining bufferization operations after pointer conversion:
-    - Folds to_tensor(to_buffer(x)) -> x
-    - Removes dead rock.alloc() and memref.copy operations
-  }];
-  let dependentDialects = [
-    "rock::RockDialect",
-    "func::FuncDialect",
-    "arith::ArithDialect",
-    "bufferization::BufferizationDialect",
-    "memref::MemRefDialect",
-  ];
-}
-
 def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
   let summary = "Convert Triton LLVM dialect IR to HSACO binary";
   let description = [{

@@ -354,7 +354,6 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.addPass(rock::createRockFuncToTTFuncPass());
     // After this point, function is triton::FuncOp
     auto &ttFuncPm = pm.nest<triton::FuncOp>();
-    ttFuncPm.addPass(rock::createRockUnbufferizePass());
     ttFuncPm.addPass(createCanonicalizerPass());
     ttFuncPm.addPass(createCSEPass());
   }

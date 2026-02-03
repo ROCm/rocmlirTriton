@@ -14,7 +14,6 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
   FuncToTTFunc.cpp
-  Unbufferize.cpp
   RestoreHostCode.cpp
   InsertLoads.cpp
   InsertOutputFusionLoads.cpp
