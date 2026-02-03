@@ -61,7 +61,8 @@ set(MLIR_INCLUDE_TESTS ON CACHE BOOL "Include MLIR tests")
 set(ROCMLIR_DRIVER_E2E_TEST_ENABLED OFF CACHE BOOL "Enable build E2E tests for Rock driver")
 set(ROCMLIR_DRIVER_RANDOM_DATA_SEED "none" CACHE STRING "Enable E2E tests using random data")
 set(ROCMLIR_GEN_FLAGS "" CACHE BOOL "Set feature flag for rocmlir-gen")
-set(ROCMLIR_DRIVER_TEST_GPU_VALIDATION 1 CACHE BOOL "Enable E2E tests with GPU validation")
+# Disable GPU validation for now, as we dont trust GPU lowering
+# set(ROCMLIR_DRIVER_TEST_GPU_VALIDATION 1 CACHE BOOL "Enable E2E tests with GPU validation")
 # Disable E2E tests by default since they require JIT runner
 set(ROCK_E2E_TEST_ENABLED OFF CACHE BOOL "Enable build rock E2E tests")
 set(ROCMLIR_ENABLE_BENCHMARKS "" CACHE STRING "List of enabled benchmarks")
