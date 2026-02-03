@@ -24,14 +24,14 @@
 #include "mlir/Dialect/Rock/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
+
+#include "llvm/Support/Debug.h"
 
 namespace mlir {
 namespace rock {
@@ -632,8 +632,6 @@ void RockToTTIRPass::runOnOperation() {
   target2.addLegalDialect<arith::ArithDialect>();
   target2.addLegalDialect<rock::RockDialect>();
   target2.addLegalDialect<triton::TritonDialect>();
-  target2.addLegalDialect<bufferization::BufferizationDialect>();
-  target2.addLegalOp<memref::ExtractAlignedPointerAsIndexOp>();
   target2.addDynamicallyLegalOp<scf::ForOp>(
       [](scf::ForOp op) { return op.getNumResults() > 0; });
   target2.addIllegalOp<rock::BlockwiseStoreTilePtrOp>();
