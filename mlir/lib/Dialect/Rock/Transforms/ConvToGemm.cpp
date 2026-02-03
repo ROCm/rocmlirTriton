@@ -589,9 +589,9 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
 static void replaceConvStoreWithGemmStore(PatternRewriter &b, Location loc,
                                           Value convResult, Value gemmResult,
                                           Value gemmDest) {
-  auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
   for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
     if (auto storeOp = dyn_cast<StoreOp>(user)) {
+      auto storeMethod = storeOp.getStoreMethod();
       Type storeResultType = storeOp.getResult().getType();
       auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
                                         gemmDest, storeMethod);
