@@ -121,13 +121,15 @@ func.func @rock_conv_bwd_weight_f16(%filter : tensor<?x?x?x?x?xf16>, %input : te
 // CHECK-LABEL: func.func @rock_conv_bwd_weight_f16
 // CHECK-NEXT: rock.conv_bwd_weight
 
-func.func @rock_gemm(%a : tensor<32x64xf16>, %b : tensor<1x32x128xf16>) -> tensor<64x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-  %result = rock.gemm tr %a * %b features = none storeMethod = set
+func.func @rock_gemm(%a : tensor<32x64xf16>, %b : tensor<1x32x128xf16>, %out : tensor<64x128xf32>) -> tensor<64x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
+  %gemm_result = rock.gemm tr %a * %b features = none
   : tensor<32x64xf16> * tensor<1x32x128xf16> -> tensor<64x128xf32>
+  %result = rock.store %gemm_result to %out by set : tensor<64x128xf32> -> tensor<64x128xf32> to tensor<64x128xf32>
   func.return %result : tensor<64x128xf32>
 }
 // CHECK-LABEL: func.func @rock_gemm
 // CHECK-NEXT: rock.gemm
+// CHECK-NEXT: rock.store
 
 // TODO: Scaled gemm tests need rework
 // func.func @rock_scaled_gemm(%a : tensor<32x64xf4E2M1FN>, %b : tensor<1x32x128xf4E2M1FN>, %scaleA : tensor<32x64xf8E8M0FNU>, %scaleB : tensor<1x32x128xf8E8M0FNU>) -> tensor<64x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
@@ -193,8 +195,8 @@ func.func @rock_transform_1_to_n(%tensor : tensor<?x?x?x?x?xf32>) -> tensor<?x?x
 // CHECK-LABEL: func.func @rock_transform_1_to_n
 //  CHECK-NEXT: rock.transform
 
-func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2048xf32>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", numCU = 64 : i32} {
-  %result = rock.gridwise_gemm(%A, %B) storeMethod(set) features = none {
+func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2048xf32>, %out : tensor<2x1024x2048xf32>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", numCU = 64 : i32} {
+  %gemm_result = rock.gridwise_gemm(%A, %B) features = none {
     blockSize = 256 : i32,
     gridSize = 1 : i32,
     params = #rock.gemm_params<
@@ -210,11 +212,13 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
       gridGroupSize = 0,
       numCTAs = 1>
   } : tensor<2x1024x1024xf32>, tensor<2x1024x2048xf32> -> tensor<2x1024x2048xf32>
+  %result = rock.store %gemm_result to %out by set : tensor<2x1024x2048xf32> -> tensor<2x1024x2048xf32> to tensor<2x1024x2048xf32>
   return %result : tensor<2x1024x2048xf32>
 }
 
 // CHECK-LABEL: func.func @rock_gridwise_gemm
 // CHECK-NEXT: rock.gridwise_gemm
+// CHECK-NEXT: rock.store
 
 // TODO: Scaled gemm tests need rework
 // func.func @rock_gridwise_scaled_gemm(%A : tensor<2x1024x1024xf4E2M1FN>, %B : tensor<2x1024x2048xf4E2M1FN>, %scaleA : tensor<2x1024x1024xf8E8M0FNU>, %scaleB : tensor<2x1024x2048xf8E8M0FNU>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", numCU = 256 : i32} {
