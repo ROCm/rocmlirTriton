@@ -1,4 +1,4 @@
-//===- FuncToTTFunc.cpp - Convert func.func to tt.func for Triton ---------===//
+//===- FuncToTritonFunc.cpp - Convert func.func to tt.func for Triton -----===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -37,12 +37,12 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKFUNCTOTTFUNCPASS
+#define GEN_PASS_DEF_ROCKFUNCTOTRITONFUNCPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-func-to-ttfunc"
+#define DEBUG_TYPE "rock-func-to-triton-func"
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -59,8 +59,8 @@ static bool isTensorOfPointers(Type type) {
   return false;
 }
 
-struct RockFuncToTTFuncPass
-    : public rock::impl::RockFuncToTTFuncPassBase<RockFuncToTTFuncPass> {
+struct RockFuncToTritonFuncPass
+    : public rock::impl::RockFuncToTritonFuncPassBase<RockFuncToTritonFuncPass> {
   void runOnOperation() override;
 
 private:
@@ -73,7 +73,7 @@ private:
 
 } // end anonymous namespace
 
-void RockFuncToTTFuncPass::processFunction(func::FuncOp funcOp) {
+void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   valueMapping.clear();
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
@@ -359,7 +359,7 @@ void RockFuncToTTFuncPass::processFunction(func::FuncOp funcOp) {
   }
 }
 
-void RockFuncToTTFuncPass::runOnOperation() {
+void RockFuncToTritonFuncPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
   MLIRContext *ctx = &getContext();
 

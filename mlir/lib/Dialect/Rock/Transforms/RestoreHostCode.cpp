@@ -17,7 +17,7 @@
 // =============================================================================
 //
 // This pass restores host functions that were stored during
-// RockFuncToTTFuncPass and converts them to use gpu.launch_func with a
+// RockFuncToTritonFuncPass and converts them to use gpu.launch_func with a
 // gpu.binary containing the HSACO.
 //
 //===----------------------------------------------------------------------===//

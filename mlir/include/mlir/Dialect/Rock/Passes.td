@@ -96,7 +96,7 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   ];
 }
 
-def RockFuncToTTFuncPass : Pass<"rock-func-to-ttfunc", "::mlir::ModuleOp"> {
+def RockFuncToTritonFuncPass : Pass<"rock-func-to-triton-func", "::mlir::ModuleOp"> {
   let summary = "Convert func.func kernels to tt.func with Triton pointer arguments";
   let description = [{
     This pass transforms Rock kernel functions from the standard `func.func` dialect
@@ -162,7 +162,7 @@ def RockRestoreHostCodePass : Pass<"rock-restore-host-code", "::mlir::ModuleOp">
   let summary = "Restore host functions after Triton kernel compilation";
   let description = [{
     This pass restores host functions (like the GPU wrapper and main) that were
-    stored during RockFuncToTTFuncPass. It:
+    stored during RockFuncToTritonFuncPass. It:
     1. Reads the serialized host functions from the module attribute
     2. Parses them back into the module
     3. Updates kernel calls to use the compiled kernel
