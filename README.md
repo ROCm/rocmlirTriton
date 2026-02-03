@@ -51,9 +51,8 @@ In general (with all invocations given from the build directory)
     - `-mfma=on` (which enables mfma usage) (or `-wmma=on` for gfx11 targets)
     - `-mfma=off` (which disables mfma usage) (or `-wmma=off` for gfx11 targets)
     - `-ph` (which causes host code to be generated)
-    - `-pv` (which makes the host code validtae the results against a reference)
-    - `-pv_with_gpu` (which uses a GPU validator instead)
-    - `-pr` (which prints kkrnel results)
+    - `-pv` (which makes the host code validate the results against a reference)
+    - `-pr` (which prints kernel results)
 - `./bin/rocmlir-driver` is a wrapper around the kernel generation pipeline.
   Use `-c` (or `--kernel-pipeline=full --host-pipeline=runner`) to run the
   default pipeline

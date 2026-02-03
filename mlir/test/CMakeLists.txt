@@ -68,11 +68,8 @@ if(NOT ROCMLIR_DRIVER_RANDOM_DATA_SEED STREQUAL "none")
   set(MLIR_RANDOM_DATA_CONSTRAINED_RANGE_FLOAT "${MLIR_RANDOM_DATA} -rand_min -1 -rand_max 1 -rand_type float")
 endif()
 
-# Passed to lit.site.cfg.py.in to set the -pv or -pv_with_gpu flag for the mlir E2E tests.
+# Passed to lit.site.cfg.py.in to set the -pv flag for the mlir E2E tests.
 set(MLIR_POPULATE_VALIDATION "-pv")
-if(ROCMLIR_DRIVER_TEST_GPU_VALIDATION)
-  set(MLIR_POPULATE_VALIDATION "-pv_with_gpu")
-endif()
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in

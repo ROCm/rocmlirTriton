@@ -785,20 +785,6 @@ static llvm::cl::opt<bool>
                       }));
 
 static llvm::cl::opt<bool>
-    genGPUValidation("pv_with_gpu", llvm::cl::Hidden, llvm::cl::init(false),
-                     llvm::cl::Optional, llvm::cl::cb<void, bool>([](bool v) {
-                       if (v) {
-                         genValidation = "gpu";
-                         genHostHarness = true;
-                       }
-                     }));
-
-static llvm::cl::opt<bool> genVerifierKeepPerfConfig(
-    "verifier-keep-perf-config", llvm::cl::init(false),
-    llvm::cl::desc(
-        "whether to clear perf config on verification with GPU kernels"));
-
-static llvm::cl::opt<bool>
     genCPUKernel("cpu-kernels", llvm::cl::desc("Generate CPU kernel for test"),
                  llvm::cl::init(false), llvm::cl::Optional,
                  llvm::cl::cb<void, bool>([](bool v) {
@@ -4803,99 +4789,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
                                   KernelIF &root0) {
   auto validationType = genValidation.getValue();
   auto loc = b.getUnknownLoc();
-  bool heuristicValidation =
-      !genVerifierKeepPerfConfig && !genParams.perfConfig.empty();
-  bool isSmallFloatIn = false;
-  if (!genParams.types.empty()) {
-    FloatType ftype, itype;
-    if ((ftype = dyn_cast<FloatType>(genParams.types[0])) &&
-        (itype = dyn_cast<FloatType>(genParams.types[1])))
-      isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
-  }
-  bool gpuValidation = validationType == "gpu" &&
-                        (isSmallFloatIn || heuristicValidation);
-  if (gpuValidation) {
-    if (genParams.convConfig.has_value()) { // conv GPU validation
-      // generate generic kernels
-      const auto &genConfig = **genParams.convConfig;
-      rock::ConvGenerator convGenerator(genConfig);
-      if (heuristicValidation) {
-        convGenerator.setPerfConfig("");
-      }
-      // use non-accel kernels to verify accel kernels except when
-      // verifying a tuning case
-      convGenerator.flipAccel();
-      if (!(heuristicValidation) &&
-            genConfig.inputDataTypeStr == "i8")
-        // use f32 data type to verify non-f32 or xdlops f32 kernels
-        // except that i8 xdlops or tuned is verified with i8 non-xdlops.
-        convGenerator.setDataTypes("f32");
-
-      int kernelStart = genConfig.kernelId;
-      int kernelCount = 0;
-      if (failed(convGenerator.getKernelCount(b, kernelCount))) {
-        llvm::errs() << "Getting kernel count failed.\n";
-        exit(1);
-      }
-      if (kernelStart < 0) {
-        kernelStart = 0;
-      } else {
-        kernelCount = kernelStart + 1;
-      }
-      // generate all sub-kernels, and get corresponding gemmId
-      std::string kernelBaseName = genConfig.kernelBaseName;
-      SmallVector<KernelIF, 8> kernelIFFuncs;
-      for (int i = kernelStart; i < kernelCount; ++i) {
-        convGenerator.setKernelName(kernelBaseName + "_" + std::to_string(i));
-        if (failed(convGenerator.genConvModule(module, i, true,
-                                               /*ignoreTuning=*/true))) {
-          llvm::errs() << "Module population failed.\n";
-          exit(1);
-        }
-        kernelIFFuncs.push_back(convGenerator.getKernelFunc());
-      }
-      // Decide whether to trim the last workspace argument to the verifier
-      // GPU kernel.
-      rock::ConvGenerator originalConvGenerator(genConfig);
-      bool originalHasWorkspace = false, verifierHasWorkspace = false;
-      if (failed(originalConvGenerator.hasWorkspace(b, originalHasWorkspace))) {
-        llvm::errs() << "Getting workspace failed.\n";
-        exit(1);
-      }
-      if (failed(convGenerator.hasWorkspace(b, verifierHasWorkspace))) {
-        llvm::errs() << "Getting workspace failed.\n";
-        exit(1);
-      }
-      if (originalHasWorkspace && !verifierHasWorkspace) {
-        valVars.resize(valVars.size() - 1);
-      }
-      auto kernelWrapperFunc = createGPUWrapper(module, kernelBaseName + "_ver",
-                                                kernelIFFuncs, genParams);
-      func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
-      convGenerator.setKernelName(kernelBaseName);
-    } else { // gemm GPU validation
-      GenParams newParams = genParams;
-
-      if (heuristicValidation)
-        newParams.perfConfig = "";
-      newParams.features = bitEnumClear(genParams.features,
-                                        mlir::rock::GemmFeatures::mfma |
-                                            mlir::rock::GemmFeatures::wmma);
-
-      if (!heuristicValidation && genParams.types[0].isInteger(8)) {
-        // use f32 data type to verify non-f32 or xdlops f32 kernels
-        // except that i8 xdops is verified with i8 non-xdolps and tuned i8 is
-        // verified with itself in heuristic mode.
-        newParams.types = SmallVector<Type>(5, b.getF32Type());
-      }
-
-      KernelIF kernel(
-          createGpuGemmKernel(module, newParams, /*isVerifier=*/true));
-      auto kernelWrapperFunc = createGPUWrapper(
-          module, kernel.func.getName().str(), {kernel}, genParams);
-      func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
-    }
-  } else if (validationType != "clone") { // -pv_with_cpp or -pv_with_mlir (-pv)
+  if (validationType != "clone") { // -pv_with_cpp or -pv_with_mlir (-pv)
     // Emit call to host_<conv>
     if (genParams.operation == rock::KernelType::ConvElementwiseGemm) {
       if (validationType == "cpp") {
@@ -5006,17 +4900,6 @@ static LogicalResult populateHostHarnessLogic(
   bool isCPUKernel = !root0.func->hasAttr(rock::KernelAttr::getMnemonic());
   bool hasValidation = !validationType.empty() && !genCPUKernel.getValue();
   bool hasCloneValidation = hasValidation && (validationType == "clone");
-  bool heuristicValidation =
-      !genVerifierKeepPerfConfig && !genParams.perfConfig.empty();
-  bool isSmallFloatIn = false;
-  if (!genParams.types.empty()) {
-    FloatType ftype, itype;
-    if ((ftype = dyn_cast<FloatType>(genParams.types[0])) &&
-        (itype = dyn_cast<FloatType>(genParams.types[1])))
-      isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
-  }
-  bool gpuValidation = validationType == "gpu" &&
-                       (isSmallFloatIn || heuristicValidation);
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
   bool isSplitK = (genParams.perfConfig.empty())
                       ? false
@@ -5150,9 +5033,8 @@ static LogicalResult populateHostHarnessLogic(
       Type valElemType = floatType;
       if (genParams.operation.has_value() && isa<IntegerType>(elemType)) {
         valElemType = elemType;
-        if (!gpuValidation && idx == 2)
-          //-pv_with_mlir, -pv_with_cpp, or -pv_with_gpu && non-accel
-          // validate in int64_t to detect overflow
+        if (idx == 2)
+          // -pv_with_mlir or -pv_with_cpp: validate in int64_t to detect overflow
           valElemType = b.getIntegerType(64);
       } else if ((genValidation == "clone") || elemType.isInteger(8) ||
                  elemType.isInteger(32)) {
