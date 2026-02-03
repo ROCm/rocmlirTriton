@@ -117,7 +117,6 @@ def RockFuncToTTFuncPass : Pass<"rock-func-to-ttfunc", "::mlir::ModuleOp"> {
     "func::FuncDialect",
     "arith::ArithDialect",
     "triton::TritonDialect",
-    "bufferization::BufferizationDialect",
   ];
 }
 

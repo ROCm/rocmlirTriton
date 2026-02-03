@@ -22,9 +22,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -54,8 +52,6 @@ using namespace mlir;
 using namespace mlir::rock;
 using namespace mlir::triton;
 using namespace mlir::arith;
-using namespace mlir::bufferization;
-using namespace mlir::memref;
 
 namespace {
 
@@ -77,9 +73,6 @@ private:
 
   /// Process a single kernel function (convert to tt.func)
   void processFunction(func::FuncOp funcOp);
-
-  /// Fix up func.call ops in wrapper functions that reference converted kernels
-  void fixupKernelCalls(ModuleOp moduleOp);
 };
 
 } // end anonymous namespace
@@ -258,58 +251,8 @@ void RockFuncToTTFuncPass::processFunction(func::FuncOp funcOp) {
   // Continue with remaining transformations
   SmallVector<Operation *, 8> opsToErase;
 
-  // Step 5: Propagate pointer types through bufferization.to_buffer ops
+  // Step 5: Convert arith.addi on pointer tensors to tt.addptr
   bool changed = true;
-  while (changed) {
-    changed = false;
-    ttFuncOp.walk([&](bufferization::ToBufferOp toBufferOp) {
-      if (llvm::is_contained(opsToErase, toBufferOp.getOperation()))
-        return;
-
-      Value src = toBufferOp.getTensor();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-
-      if (!mappedSrc)
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(toBufferOp.getResult()))
-        return;
-
-      // If the source is now a pointer tensor, propagate the mapping
-      valueMapping.map(toBufferOp.getResult(), mappedSrc);
-      opsToErase.push_back(toBufferOp);
-      changed = true;
-    });
-  }
-
-  // Step 6: Propagate through bufferization.to_tensor ops
-  changed = true;
-  while (changed) {
-    changed = false;
-    ttFuncOp.walk([&](bufferization::ToTensorOp toTensorOp) {
-      if (llvm::is_contained(opsToErase, toTensorOp.getOperation()))
-        return;
-
-      Value src = toTensorOp.getBuffer();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-
-      if (!mappedSrc)
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(toTensorOp.getResult()))
-        return;
-
-      // Map the tensor result to the pointer value
-      valueMapping.map(toTensorOp.getResult(), mappedSrc);
-      opsToErase.push_back(toTensorOp);
-      changed = true;
-    });
-  }
-
-  // Step 7: Convert arith.addi on pointer tensors to tt.addptr
-  changed = true;
   while (changed) {
     changed = false;
     ttFuncOp.walk([&](arith::AddIOp addOp) {
@@ -362,73 +305,10 @@ void RockFuncToTTFuncPass::processFunction(func::FuncOp funcOp) {
     });
   }
 
-  // Step 8: Propagate pointer tensors through remaining bufferization ops
+  // Step 6: Propagate pointer tensors through rock.cast_to_ptr ops
   changed = true;
   while (changed) {
     changed = false;
-
-    // Handle to_buffer of pointer tensors
-    ttFuncOp.walk([&](bufferization::ToBufferOp toBufferOp) {
-      if (llvm::is_contained(opsToErase, toBufferOp.getOperation()))
-        return;
-
-      Value src = toBufferOp.getTensor();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-      Value ptrTensor = mappedSrc ? mappedSrc : src;
-
-      if (!isTensorOfPointers(ptrTensor.getType()))
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(toBufferOp.getResult()))
-        return;
-
-      // Map the memref result to the pointer tensor
-      valueMapping.map(toBufferOp.getResult(), ptrTensor);
-      opsToErase.push_back(toBufferOp);
-      changed = true;
-    });
-
-    // Handle memref.copy where source maps to pointer tensor
-    ttFuncOp.walk([&](memref::CopyOp copyOp) {
-      if (llvm::is_contained(opsToErase, copyOp.getOperation()))
-        return;
-
-      Value src = copyOp.getSource();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-
-      if (!mappedSrc || !isTensorOfPointers(mappedSrc.getType()))
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(copyOp.getTarget()))
-        return;
-
-      // Map the destination to the pointer tensor
-      valueMapping.map(copyOp.getTarget(), mappedSrc);
-      opsToErase.push_back(copyOp);
-      changed = true;
-    });
-
-    // Handle to_tensor ops whose memref source maps to a pointer tensor
-    ttFuncOp.walk([&](bufferization::ToTensorOp toTensorOp) {
-      if (llvm::is_contained(opsToErase, toTensorOp.getOperation()))
-        return;
-
-      Value src = toTensorOp.getBuffer();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-
-      if (!mappedSrc || !isTensorOfPointers(mappedSrc.getType()))
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(toTensorOp.getResult()))
-        return;
-
-      valueMapping.map(toTensorOp.getResult(), mappedSrc);
-      opsToErase.push_back(toTensorOp);
-      changed = true;
-    });
 
     // Handle rock.cast_to_ptr - if input maps to pointer tensor, replace it
     ttFuncOp.walk([&](rock::CastToPtrOp castOp) {
@@ -452,18 +332,10 @@ void RockFuncToTTFuncPass::processFunction(func::FuncOp funcOp) {
     });
   }
 
-  // Step 9: Update all remaining uses
+  // Step 7: Update all remaining uses
   ttFuncOp.walk([&](Operation *op) {
     // Skip ops we're about to erase
     if (llvm::is_contained(opsToErase, op))
-      return;
-
-    // Skip bufferization ops - they have strict type requirements
-    if (isa<bufferization::ToBufferOp, bufferization::ToTensorOp>(op))
-      return;
-
-    // Skip memref ops - they require memref operands
-    if (isa<memref::CopyOp>(op))
       return;
 
     bool needsUpdate = false;
@@ -488,68 +360,6 @@ void RockFuncToTTFuncPass::processFunction(func::FuncOp funcOp) {
   // Erase the converted operations in reverse order
   for (auto it = opsToErase.rbegin(); it != opsToErase.rend(); ++it) {
     (*it)->erase();
-  }
-}
-
-/// Fix up func.call ops that reference tt.func kernels.
-/// Converts them to tt.call with proper pointer type conversions.
-void RockFuncToTTFuncPass::fixupKernelCalls(ModuleOp moduleOp) {
-  MLIRContext *ctx = &getContext();
-  OpBuilder builder(ctx);
-
-  // Collect all func.call ops that need to be converted
-  SmallVector<func::CallOp> callsToFix;
-  moduleOp.walk([&](func::CallOp callOp) {
-    // Check if the callee is a triton::FuncOp
-    auto callee = moduleOp.lookupSymbol<triton::FuncOp>(callOp.getCallee());
-    if (callee) {
-      callsToFix.push_back(callOp);
-    }
-  });
-
-  // Convert each call
-  for (func::CallOp callOp : callsToFix) {
-    auto callee = moduleOp.lookupSymbol<triton::FuncOp>(callOp.getCallee());
-    if (!callee)
-      continue;
-
-    builder.setInsertionPoint(callOp);
-    Location loc = callOp.getLoc();
-
-    // Get the expected argument types from the triton function
-    FunctionType calleeType = callee.getFunctionType();
-    SmallVector<Value> newOperands;
-
-    for (auto [idx, operand] : llvm::enumerate(callOp.getOperands())) {
-      Type expectedType = calleeType.getInput(idx);
-
-      // If the operand is a memref and the expected type is a tt.ptr,
-      // we need to extract the pointer
-      if (auto memrefType = dyn_cast<MemRefType>(operand.getType())) {
-        if (auto ptrType = dyn_cast<triton::PointerType>(expectedType)) {
-          // Extract the aligned pointer from the memref
-          Value indexPtr = memref::ExtractAlignedPointerAsIndexOp::create(
-              builder, loc, operand);
-          // Convert index to i64 for pointer conversion
-          Value i64Ptr = arith::IndexCastOp::create(
-              builder, loc, builder.getI64Type(), indexPtr);
-          // Convert i64 to tt.ptr
-          Value ttPtr =
-              triton::IntToPtrOp::create(builder, loc, ptrType, i64Ptr);
-          newOperands.push_back(ttPtr);
-          continue;
-        }
-      }
-
-      // If types match or no conversion needed, use the operand as-is
-      newOperands.push_back(operand);
-    }
-
-    // Create the tt.call operation
-    triton::CallOp::create(builder, loc, callee, newOperands);
-
-    // Erase the old func.call
-    callOp.erase();
   }
 }
 
