@@ -62,8 +62,6 @@ def verify_mode_flags(verify_mode: str) -> str:
         return ""
     if verify_mode == "cpu":
         return " -pv"
-    if verify_mode == "gpu":
-        return " -pv_with_gpu --verifier-keep-perf-config=false"
     raise ValueError("Unknown verification mode", verify_mode)
 
 
@@ -384,8 +382,6 @@ def tune_mlir_kernels(configs, conf_class, paths: Paths, options: Options):
                 print(
                     f"Tuned and verified : {test_vector} : {winning_config} with {max_tflops} TFlops and {verify_tflops} on verification",
                     file=sys.stderr)
-                if options.verify_mode == "gpu":
-                    print("Note: Verify tflops counts verification kernel", file=sys.stderr)
             else:
                 print(f"Tuned : {test_vector} : {winning_config} with {max_tflops} TFlops",
                       file=sys.stderr)
@@ -532,10 +528,10 @@ def main(args=None):
 
     parser.add_argument(
         "--verify-mode",
-        default="gpu",
-        choices=["none", "cpu", "gpu"],
+        default="cpu",
+        choices=["none", "cpu"],
         help=
-        "Flag to specify if verification of compiled kernel with selected PerfConfig should use CPU based implementation or GPU based implementation"
+        "Flag to specify if verification of compiled kernel with selected PerfConfig should use CPU based implementation"
     )
 
     parser.add_argument(
@@ -588,7 +584,7 @@ def main(args=None):
 
     if parsed_args.verify_perf_configs and parsed_args.verify_mode == "none":
         print(
-            "Use of `--verify-perf-configs` is not allowed with `--verify-mode=none`. Please pass `--verify-mode=cpu` or `--verify-mode=gpu`."
+            "Use of `--verify-perf-configs` is not allowed with `--verify-mode=none`. Please pass `--verify-mode=cpu`."
         )
         return 1
 
