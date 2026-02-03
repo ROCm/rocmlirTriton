@@ -1,5 +1,4 @@
-//===- MemrefToTensor - MLIR Rock ops lowering passes
-//-------------------------===//
+//===- FuncToTTFunc.cpp - Convert func.func to tt.func for Triton ---------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -16,8 +15,10 @@
 // limitations under the License.
 // =============================================================================
 //
-// This pass converts from memref to tensors and converts pointer arithmetic
-// to use Triton pointer types.
+// This pass transforms Rock kernel functions from the standard func.func
+// dialect to Triton's tt.func dialect. It converts tensor arguments to Triton
+// pointer types, eliminates the pointer extraction chain, and sets up proper
+// pointer attributes for optimization.
 //
 //===----------------------------------------------------------------------===//
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -42,12 +43,12 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKMEMREFTOTENSORPASS
+#define GEN_PASS_DEF_ROCKFUNCTOTTFUNCPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-memref-to-tensor"
+#define DEBUG_TYPE "rock-func-to-ttfunc"
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -66,8 +67,8 @@ static bool isTensorOfPointers(Type type) {
   return false;
 }
 
-struct RockMemrefToTensorPass
-    : public rock::impl::RockMemrefToTensorPassBase<RockMemrefToTensorPass> {
+struct RockFuncToTTFuncPass
+    : public rock::impl::RockFuncToTTFuncPassBase<RockFuncToTTFuncPass> {
   void runOnOperation() override;
 
 private:
@@ -83,7 +84,7 @@ private:
 
 } // end anonymous namespace
 
-void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
+void RockFuncToTTFuncPass::processFunction(func::FuncOp funcOp) {
   valueMapping.clear();
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
@@ -492,7 +493,7 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
 
 /// Fix up func.call ops that reference tt.func kernels.
 /// Converts them to tt.call with proper pointer type conversions.
-void RockMemrefToTensorPass::fixupKernelCalls(ModuleOp moduleOp) {
+void RockFuncToTTFuncPass::fixupKernelCalls(ModuleOp moduleOp) {
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
 
@@ -552,7 +553,7 @@ void RockMemrefToTensorPass::fixupKernelCalls(ModuleOp moduleOp) {
   }
 }
 
-void RockMemrefToTensorPass::runOnOperation() {
+void RockFuncToTTFuncPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
   MLIRContext *ctx = &getContext();
 
