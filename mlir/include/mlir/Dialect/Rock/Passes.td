@@ -105,8 +105,7 @@ def RockFuncToTTFuncPass : Pass<"rock-func-to-ttfunc", "::mlir::ModuleOp"> {
     Key transformations:
     1. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
     2. Replaces tensor arguments with `!tt.ptr<element_type>` Triton pointers
-    3. Eliminates the pointer extraction (rock.extract_ptr) and replaces it with
-      `tt.splat` on pointer arguments
+    3. Eliminates rock.extract_ptr and adapts the users to use the !tt.ptr directly.
     4. Converts `arith.addi` on pointer tensors to `tt.addptr`
     5. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
     6. Stores host functions (wrappers, main) as module attributes for later restoration
