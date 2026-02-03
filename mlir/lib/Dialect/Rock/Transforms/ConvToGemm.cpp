@@ -957,8 +957,9 @@ FailureOr<std::tuple<Value, Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
   // Bounced along for debugging purposes, not used below
   gemm->setAttr("kernelId", b.getIndexAttr(kernelId));
 
-  // Update the StoreOp that uses the conv result.
-  // For BwdData, the output is the input tensor (gemmInput).
+  // The conv op has an associated StoreOp that stores conv's result.
+  // Replace it with a StoreOp that stores the gemm result to gemmInput
+  // (the input tensor, which is the output for BwdData).
   // TODO(roctriton): This will break with fusions
   replaceConvStoreWithGemmStore(b, loc, op.getResult(), gemm.getResult(),
                                 gemmInput);
