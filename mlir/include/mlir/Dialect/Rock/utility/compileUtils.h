@@ -22,8 +22,7 @@ struct KernelInfo {
   int64_t gridSize;
   int64_t blockSize;
   int64_t sharedMemorySize;
-  SmallVector<Type> argTypes;      // Original func argument types
-  SmallVector<int64_t> outIndices; // Indices of output arguments (empty = use default)
+  SmallVector<Type> argTypes; // Original func argument types
 };
 
 /// Create a gpu.ObjectAttr from the HSACO binary in moduleOp and kernel info.

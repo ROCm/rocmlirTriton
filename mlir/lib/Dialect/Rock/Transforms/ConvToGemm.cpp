@@ -581,25 +581,6 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   return std::make_tuple(Value(), Value(), Value());
 }
 
-/// Helper function to update StoreOps that use the conv result.
-/// When converting a conv op to gemm, the StoreOp that consumed the conv result
-/// needs to be updated to use the gemm result and the correct destination
-/// tensor. This is needed because the conv result type (conv output shape)
-/// differs from the gemm result type (gemm shape).
-static void replaceConvStoreWithGemmStore(PatternRewriter &b, Location loc,
-                                          Value convResult, Value gemmResult,
-                                          Value gemmDest) {
-  for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
-    if (auto storeOp = dyn_cast<StoreOp>(user)) {
-      auto storeMethod = storeOp.getStoreMethod();
-      Type storeResultType = storeOp.getResult().getType();
-      auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
-                                        gemmDest, storeMethod);
-      b.replaceOp(storeOp, newStoreOp.getResult());
-    }
-  }
-}
-
 FailureOr<std::tuple<Value, Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
                                                             PatternRewriter &b,
                                                             int64_t kernelId,
@@ -957,13 +938,6 @@ FailureOr<std::tuple<Value, Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
   // Bounced along for debugging purposes, not used below
   gemm->setAttr("kernelId", b.getIndexAttr(kernelId));
 
-  // The conv op has an associated StoreOp that stores conv's result.
-  // Replace it with a StoreOp that stores the gemm result to gemmInput
-  // (the input tensor, which is the output for BwdData).
-  // TODO(roctriton): This will break with fusions
-  replaceConvStoreWithGemmStore(b, loc, op.getResult(), gemm.getResult(),
-                                gemmInput);
-
   // Only erase the op in the case of V4R1. In non-V4R1 paths we will handle
   // this removal outside of this function
   if (usesV4R1)
@@ -1310,6 +1284,7 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
     // Emit rock.gemm op.
     Location loc = op.getLoc();
     auto tuningParams = op.getParamsAttr();
+    auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
     auto newGemmOp = GemmOp::create(
         b, loc, getResultType(op, gemmC), gemmA, gemmB,
         /*scaleA=*/nullptr, /*scaleB=*/nullptr,
@@ -1317,10 +1292,21 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
         /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
         op.getFeaturesAttr(), tuningParams);
 
-    // Update the StoreOp that uses the conv result.
+    // Find and update the StoreOp that uses the conv result.
+    // The conv result type (conv output shape) differs from gemm result type
+    // (gemm shape), so we need to update the StoreOp to use gemm result and
+    // gemmC as the destination.
     // TODO(roctriton): This will break with fusions
-    replaceConvStoreWithGemmStore(b, loc, op.getResult(), newGemmOp.getResult(),
-                                  gemmC);
+    Value convResult = op.getResult();
+    for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
+      if (auto storeOp = dyn_cast<StoreOp>(user)) {
+        // Create a new StoreOp with gemm result and gemmC
+        Type storeResultType = storeOp.getResult().getType();
+        auto newStoreOp = StoreOp::create(
+            b, loc, storeResultType, newGemmOp.getResult(), gemmC, storeMethod);
+        b.replaceOp(storeOp, newStoreOp.getResult());
+      }
+    }
 
     // Finally, erase the original Conv op.
     b.eraseOp(op);

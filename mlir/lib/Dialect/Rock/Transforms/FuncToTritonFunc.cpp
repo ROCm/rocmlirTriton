@@ -377,21 +377,14 @@ void RockFuncToTritonFuncPass::runOnOperation() {
       nonKernelFuncs.push_back(funcOp);
   });
 
-  // Store kernel grid/block sizes and output indices as module attributes
-  // BEFORE converting to tt.func (which erases the func::FuncOp). These will
-  // be used later for gpu.launch_func.
+  // Store kernel grid/block sizes as module attributes BEFORE converting to
+  // tt.func (which erases the func::FuncOp). These will be used later for
+  // gpu.launch_func.
   for (func::FuncOp funcOp : funcsToProcess) {
     std::string kernelName = funcOp.getName().str();
     if (auto gridAttr = funcOp->getAttrOfType<IntegerAttr>(
             rock::GridSizeAttr::getMnemonic())) {
       moduleOp->setAttr("rock.grid_size." + kernelName, gridAttr);
-    }
-    // Save the output argument indices so RestoreHostCode knows which operands
-    // are written to by the kernel. This is important for backward convolutions
-    // where the output is not the last argument, and for multi-output kernels.
-    if (auto outIndicesAttr =
-            funcOp->getAttrOfType<ArrayAttr>("rock.output_indices")) {
-      moduleOp->setAttr("rock.output_indices." + kernelName, outIndicesAttr);
     }
   }
 

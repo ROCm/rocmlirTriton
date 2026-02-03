@@ -967,24 +967,22 @@ struct KernelIF {
       params.push_back(func.getArgument(i).getType());
     }
 
-    assert(func.getNumResults() > 0);
-    for (Type resultType : func.getResultTypes()) {
-      resultTypes.push_back(resultType);
-    }
-
-    // Get output indices from the rock.output_indices attribute if available.
-    // This is set by ConvGenerator and correctly handles backward convolutions
-    // where the output is not the last argument.
-    if (auto outIndicesAttr =
-            func->getAttrOfType<ArrayAttr>("rock.output_indices")) {
-      for (Attribute attr : outIndicesAttr) {
-        outIndices.push_back(cast<IntegerAttr>(attr).getInt());
+    // Handle functions that return results (tensor-based)
+    if (func.getNumResults() > 0) {
+      for (Type resultType : func.getResultTypes()) {
+        resultTypes.push_back(resultType);
       }
-    }
-    // Assume outputs are the last N arguments for N results
-    if (outIndices.empty()) {
-      for (size_t i = 0; i < resultTypes.size(); i++) {
-        outIndices.push_back(argCount - resultTypes.size() + i);
+    } else {
+      // Handle functions with output arguments (memref-based)
+      llvm::SmallDenseSet<Value> outs;
+      auto walker = [&](memref::CopyOp copy) {
+        outs.insert(copy.getTarget());
+      };
+      func.walk(walker);
+      for (size_t i = 0; i < argCount; i++) {
+        if (outs.contains(func.getArgument(i))) {
+          outIndices.push_back(i);
+        }
       }
     }
   }
@@ -1562,9 +1560,8 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
         // Store returned tensors back to gpu memrefs
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
           // Result should be stored back to the corresponding output memref
-          // Use outIndices which correctly maps result index to argument index
-          // (e.g., BwdWeight outputs to filter at index 0, not index 2)
-          size_t outIdx = kernel.outIndices[resultIdx];
+          // For GEMM, the output is typically the last argument
+          size_t outIdx = gpuMem.size() - callOp.getNumResults() + resultIdx;
           auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
           Value resultMemref =
               bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
@@ -2615,8 +2612,7 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
                                transposeScaleB ? kName : nName});
   }
 
-  // Function takes flattened (a, b, c, [aScale, bScale]) as inputs and returns
-  // flattened c
+  // Function takes flattened (a, b, c, [aScale, bScale]) as inputs and returns flattened c
   SmallVector<Type, 5> funcArgTypes;
   SmallVector<Type, 5> funcArgLogicalTypes;
   Type cType = argTypes[2];
@@ -2639,9 +2635,9 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
     funcArgLogicalTypes.push_back(argTypes[4]);
   }
 
-  auto func = func::FuncOp::create(
-      b, loc, isVerifier ? kernelNameVerifier : kernelName,
-      b.getFunctionType(funcArgTypes, {cFlatType}), funcAttrs);
+  auto func =
+      func::FuncOp::create(b, loc, isVerifier ? kernelNameVerifier : kernelName,
+                           b.getFunctionType(funcArgTypes, {cFlatType}), funcAttrs);
 
   Block *block = func.addEntryBlock();
   b.setInsertionPointToStart(block);
@@ -2676,8 +2672,7 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
 
   // Convert back to flat type for function return
   // Value result =
-  //     rock::TensorUntransformCastOp::create(b, loc, cFlatType, storedVal,
-  //     cVal);
+  //     rock::TensorUntransformCastOp::create(b, loc, cFlatType, storedVal, cVal);
 
   func::ReturnOp::create(b, loc, storedVal);
 
@@ -4817,8 +4812,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
         (itype = dyn_cast<FloatType>(genParams.types[1])))
       isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
   }
-  bool gpuValidation =
-      validationType == "gpu" && (isSmallFloatIn || heuristicValidation);
+  bool gpuValidation = validationType == "gpu" &&
+                        (isSmallFloatIn || heuristicValidation);
   if (gpuValidation) {
     if (genParams.convConfig.has_value()) { // conv GPU validation
       // generate generic kernels
@@ -4830,7 +4825,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       // use non-accel kernels to verify accel kernels except when
       // verifying a tuning case
       convGenerator.flipAccel();
-      if (!(heuristicValidation) && genConfig.inputDataTypeStr == "i8")
+      if (!(heuristicValidation) &&
+            genConfig.inputDataTypeStr == "i8")
         // use f32 data type to verify non-f32 or xdlops f32 kernels
         // except that i8 xdlops or tuned is verified with i8 non-xdlops.
         convGenerator.setDataTypes("f32");
@@ -4882,9 +4878,9 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
 
       if (heuristicValidation)
         newParams.perfConfig = "";
-      newParams.features =
-          bitEnumClear(genParams.features, mlir::rock::GemmFeatures::mfma |
-                                               mlir::rock::GemmFeatures::wmma);
+      newParams.features = bitEnumClear(genParams.features,
+                                        mlir::rock::GemmFeatures::mfma |
+                                            mlir::rock::GemmFeatures::wmma);
 
       if (!heuristicValidation && genParams.types[0].isInteger(8)) {
         // use f32 data type to verify non-f32 or xdlops f32 kernels
@@ -5019,8 +5015,8 @@ static LogicalResult populateHostHarnessLogic(
         (itype = dyn_cast<FloatType>(genParams.types[1])))
       isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
   }
-  bool gpuValidation =
-      validationType == "gpu" && (isSmallFloatIn || heuristicValidation);
+  bool gpuValidation = validationType == "gpu" &&
+                       (isSmallFloatIn || heuristicValidation);
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
   bool isSplitK = (genParams.perfConfig.empty())
                       ? false
@@ -5187,9 +5183,9 @@ static LogicalResult populateHostHarnessLogic(
                                     ArrayRef<int32_t> outputIndices,
                                     bool willBeWrapped = false) {
     // Check if the function expects tensor arguments by looking at first arg
-    bool expectsTensors = !willBeWrapped &&
-                          !callee.getArgumentTypes().empty() &&
-                          isa<TensorType>(callee.getArgumentTypes().front());
+    bool expectsTensors =
+        !willBeWrapped && !callee.getArgumentTypes().empty() &&
+        isa<TensorType>(callee.getArgumentTypes().front());
 
     if (expectsTensors) {
       // Convert memrefs to tensors for the call
@@ -5207,18 +5203,17 @@ static LogicalResult populateHostHarnessLogic(
         if (resultIdx < outputIndices.size()) {
           int32_t outIdx = outputIndices[resultIdx];
           // Convert result tensor to memref and copy to output
-          auto outMemrefType = cast<MemRefType>(memrefArgs[outIdx].getType());
-          Value resultMemref =
-              bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
+          auto outMemrefType =
+              cast<MemRefType>(memrefArgs[outIdx].getType());
+          Value resultMemref = bufferization::ToBufferOp::create(
+              b, loc, outMemrefType, result);
           memref::CopyOp::create(b, loc, resultMemref, memrefArgs[outIdx]);
         }
       }
     } else if (willBeWrapped) {
       // Call will be redirected to GPU wrapper which expects memrefs
-      // Create call with explicit memref types (callee signature is
-      // tensor-based)
-      func::CallOp::create(b, loc, callee.getSymName(), TypeRange{},
-                           memrefArgs);
+      // Create call with explicit memref types (callee signature is tensor-based)
+      func::CallOp::create(b, loc, callee.getSymName(), TypeRange{}, memrefArgs);
     } else {
       // Legacy memref-based interface - call directly
       func::CallOp::create(b, loc, callee, memrefArgs);
@@ -5233,8 +5228,7 @@ static LogicalResult populateHostHarnessLogic(
           return k.func == root.func;
         }) != kernels.end();
     if (rootKernel) {
-      // rootKernel calls will be redirected to GPU wrapper, which expects
-      // memrefs
+      // rootKernel calls will be redirected to GPU wrapper, which expects memrefs
       callFuncWithConversion(root.func, localVars, outIndices,
                              /*willBeWrapped=*/true);
     } else if (!valVars.empty()) {

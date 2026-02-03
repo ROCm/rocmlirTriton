@@ -815,11 +815,9 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
   SmallVector<Type, 3> physicalFuncArgTypes =
       llvm::map_to_vector(logicalFuncArgTypes, getFlattenedType);
-  // The function return type must match the operation's output argument.
-  int funcReturnArgIndex = getOutArgumentIndex(config.operation.value());
-  Type funcReturnFlatType = physicalFuncArgTypes[funcReturnArgIndex];
+  Type outputFlatType = getFlattenedType(outputArgType);
   auto funcType =
-      builder.getFunctionType(physicalFuncArgTypes, {funcReturnFlatType});
+      builder.getFunctionType(physicalFuncArgTypes, {outputFlatType});
 
   std::string kernelName = config.kernelBaseName;
   if (isVerifier) {
@@ -851,17 +849,10 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   NamedAttribute numChipletsAttr = builder.getNamedAttr(
       rock::NumChipletsAttr::getMnemonic(), numChipletsIntAttr);
 
-  // The output argument indices tell which arguments are written to by the kernel.
-  // For convolutions, there's always exactly one output.
-  SmallVector<Attribute> outIdxAttrs = {
-      builder.getI64IntegerAttr(getOutArgumentIndex(config.operation.value()))};
-  NamedAttribute outIndicesAttr = builder.getNamedAttr(
-      "rock.output_indices", builder.getArrayAttr(outIdxAttrs));
-
   SmallVector<NamedAttribute, 2> kernelAttrs = {
       builder.getNamedAttr(rock::KernelAttr::getMnemonic(),
                            builder.getI32IntegerAttr(kernelId)),
-      archAttr, numCUAttr, numChipletsAttr, outIndicesAttr};
+      archAttr, numCUAttr, numChipletsAttr};
 
   // Construct the FuncOp.
   func = func::FuncOp::create(builder.getUnknownLoc(), kernelName, funcType,
@@ -959,16 +950,15 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   expandFlatFunctionArguments(builder, func, argDimNameRefs,
                               logicalFuncArgTypes, args);
 
-  // Get the result type and store destination based on operation type.
-  // The result type must match the "out argument" type per RockConvInterface.
-  int outArgIndex = getOutArgumentIndex(config.operation.value());
-  Type resultType = logicalFuncArgTypes[outArgIndex];
+  // Get the result type from the output argument type
+  // TODO(roctriton): Is 2 always the right index?
+  Type outputResultType = logicalFuncArgTypes[2];
 
   Value convResult;
   switch (config.operation.value()) {
   case ConvOpType::Fwd: {
-    auto convOp = ConvOp::create(builder, builder.getUnknownLoc(), resultType,
-                                 args, attributes);
+    auto convOp = ConvOp::create(builder, builder.getUnknownLoc(),
+                                 outputResultType, args, attributes);
     convResult = convOp.getResult();
   } break;
   case ConvOpType::BwdData: {
@@ -987,7 +977,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
       }
     }
     auto convOp = ConvBwdDataOp::create(builder, builder.getUnknownLoc(),
-                                        resultType, args, attributes);
+                                        outputResultType, args, attributes);
     convResult = convOp.getResult();
   } break;
   case ConvOpType::BwdWeight: {
@@ -1020,18 +1010,16 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
         zeroInitArg(builder, func, hasWorkspace ? 3 : 0);
       }
       auto convOp = ConvBwdWeightOp::create(builder, builder.getUnknownLoc(),
-                                            resultType, args, attributes);
+                                            outputResultType, args, attributes);
       convResult = convOp.getResult();
     }
   } break;
   }
 
-  // Store the result to the appropriate output tensor based on operation type.
-  // The flat type for the store needs to match the function's return type.
-  Type storeFlatType = func.getResultTypes()[0];
+  // Store the result to the transformed output tensor (args[2])
+  // TODO(roctriton): Is 2 always the output tensor?
   Value storedVal = rock::StoreOp::create(
-      builder, builder.getUnknownLoc(), storeFlatType, convResult,
-      args[outArgIndex],
+      builder, builder.getUnknownLoc(), outputFlatType, convResult, args[2],
       builder.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set));
 
   func::ReturnOp::create(builder, builder.getUnknownLoc(), storedVal);

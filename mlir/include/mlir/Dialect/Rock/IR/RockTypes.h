@@ -23,13 +23,6 @@ namespace mlir {
 namespace rock {
 ConvOpType convOpTypeFromKernelType(KernelType kernelType);
 KernelType kernelTypeFromConvOpType(ConvOpType convOpType);
-
-/// Returns the operand index of the output argument for a given convolution
-/// operation type. The output argument is the tensor being computed:
-/// - Fwd: output (index 2)
-/// - BwdData: input (index 1)
-/// - BwdWeight: filter (index 0)
-int getOutArgumentIndex(ConvOpType opType);
 } // namespace rock
 } // namespace mlir
 
