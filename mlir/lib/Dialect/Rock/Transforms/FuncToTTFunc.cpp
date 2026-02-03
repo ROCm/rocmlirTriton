@@ -13,29 +13,25 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// =============================================================================
+//===----------------------------------------------------------------------===//
 //
-// This pass transforms Rock kernel functions from the standard func.func
-// dialect to Triton's tt.func dialect. It converts tensor arguments to Triton
-// pointer types, eliminates the pointer extraction chain, and sets up proper
-// pointer attributes for optimization.
+// This pass transforms Rock kernel functions from func.func to Triton's tt.func.
+// It converts tensor arguments to Triton pointer types (!tt.ptr), eliminates the
+// pointer extraction chain (rock.extract_ptr), converts arith.addi on pointer
+// tensors to tt.addptr, and sets up pointer attributes for optimization.
 //
 //===----------------------------------------------------------------------===//
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Diagnostics.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/IRMapping.h"
-#include "mlir/IR/TypeUtilities.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Support/LLVM.h"
-#include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Transforms/Passes.h"
+
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
+
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 

@@ -1,4 +1,4 @@
-//===- RockToTTIR - MLIR Rock ops lowering passes -------------------------===//
+//===- RockToTTIR.cpp - Convert Rock dialect to Triton IR -----------------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -13,28 +13,25 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// =============================================================================
+//===----------------------------------------------------------------------===//
 //
-// This pass converts Rock dialect operations to Triton IR
+// This pass converts Rock dialect operations (blockwise loads, stores, gemm,
+// etc.) to Triton IR counterparts (tt.load, tt.store, tt.dot, etc.).
 //
 //===----------------------------------------------------------------------===//
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Diagnostics.h"
-#include "mlir/IR/TypeUtilities.h"
-#include "mlir/IR/Value.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Support/LLVM.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "mlir/Transforms/Passes.h"
+
 #include "triton/Dialect/Triton/IR/Dialect.h"
-// #include "triton/Dialect/Triton/IR/TritonEnums.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 
 namespace mlir {
 namespace rock {
