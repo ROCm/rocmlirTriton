@@ -674,20 +674,6 @@ static llvm::cl::opt<bool>
                       }));
 
 static llvm::cl::opt<bool>
-    genGPUValidation("pv_with_gpu", llvm::cl::Hidden, llvm::cl::init(false),
-                     llvm::cl::Optional, llvm::cl::cb<void, bool>([](bool v) {
-                       if (v) {
-                         genValidation = "gpu";
-                         genHostHarness = true;
-                       }
-                     }));
-
-static llvm::cl::opt<bool> genVerifierKeepPerfConfig(
-    "verifier-keep-perf-config", llvm::cl::init(false),
-    llvm::cl::desc(
-        "whether to clear perf config on verification with GPU kernels"));
-
-static llvm::cl::opt<bool>
     genCPUKernel("cpu-kernels", llvm::cl::desc("Generate CPU kernel for test"),
                  llvm::cl::init(false), llvm::cl::Optional,
                  llvm::cl::cb<void, bool>([](bool v) {
@@ -5385,17 +5371,6 @@ static LogicalResult populateHostHarnessLogic(
   bool isCPUKernel = !root0.func->hasAttr(rock::KernelAttr::getMnemonic());
   bool hasValidation = !validationType.empty() && !genCPUKernel.getValue();
   bool hasCloneValidation = hasValidation && (validationType == "clone");
-  bool heuristicValidation =
-      !genVerifierKeepPerfConfig && !genParams.perfConfig.empty();
-  bool isSmallFloatIn = false;
-  if (!genParams.types.empty()) {
-    FloatType ftype, itype;
-    if ((ftype = dyn_cast<FloatType>(genParams.types[0])) &&
-        (itype = dyn_cast<FloatType>(genParams.types[1])))
-      isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
-  }
-  bool gpuValidation = validationType == "gpu" &&
-                       (isSmallFloatIn || heuristicValidation);
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
   bool isSplitK = (genParams.perfConfig.empty())
                       ? false
@@ -5539,9 +5514,8 @@ static LogicalResult populateHostHarnessLogic(
       Type valElemType = floatType;
       if (genParams.operation.has_value() && isa<IntegerType>(elemType)) {
         valElemType = elemType;
-        if (!gpuValidation && idx == 2)
-          //-pv_with_mlir, -pv_with_cpp, or -pv_with_gpu && non-accel
-          // validate in int64_t to detect overflow
+        if (idx == 2)
+          // -pv_with_mlir or -pv_with_cpp: validate in int64_t to detect overflow
           valElemType = b.getIntegerType(64);
       } else if ((genValidation == "clone") || elemType.isInteger(8) ||
                  elemType.isInteger(32)) {
