@@ -96,30 +96,26 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   ];
 }
 
-def RockMemrefToTensorPass : Pass<"rock-memref-to-tensor", "::mlir::ModuleOp"> {
-  let summary = "Convert Memref to Tensor and func.func to tt.func";
-  let dependentDialects = [
-    "rock::RockDialect",
-    "func::FuncDialect",
-    "arith::ArithDialect",
-    "triton::TritonDialect",
-    "bufferization::BufferizationDialect",
-  ];
-}
-
-def RockUnbufferizePass : Pass<"rock-unbufferize", "::mlir::triton::FuncOp"> {
-  let summary = "Remove bufferization artifacts and convert to pure tensor operations";
+def RockFuncToTritonFuncPass : Pass<"rock-func-to-triton-func", "::mlir::ModuleOp"> {
+  let summary = "Convert func.func kernels to tt.func with Triton pointer arguments";
   let description = [{
-    This pass removes remaining bufferization operations after pointer conversion:
-    - Folds to_tensor(to_buffer(x)) -> x
-    - Removes dead rock.alloc() and memref.copy operations
+    This pass transforms Rock kernel functions from the standard `func.func` dialect
+    to Triton's `tt.func` dialect, preparing them for the Triton compilation pipeline.
+
+    Key transformations:
+    1. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
+    2. Replaces tensor arguments with `!tt.ptr<element_type>` Triton pointers
+    3. Eliminates rock.extract_ptr and adapts the users to use the !tt.ptr directly.
+    4. Converts `arith.addi` on pointer tensors to `tt.addptr`
+    5. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
+    6. Stores host functions (wrappers, main) as module attributes for later restoration
+    7. Preserves grid size as module attributes for gpu.launch_func
   }];
   let dependentDialects = [
     "rock::RockDialect",
     "func::FuncDialect",
     "arith::ArithDialect",
-    "bufferization::BufferizationDialect",
-    "memref::MemRefDialect",
+    "triton::TritonDialect",
   ];
 }
 
@@ -166,7 +162,7 @@ def RockRestoreHostCodePass : Pass<"rock-restore-host-code", "::mlir::ModuleOp">
   let summary = "Restore host functions after Triton kernel compilation";
   let description = [{
     This pass restores host functions (like the GPU wrapper and main) that were
-    stored during RockMemrefToTensorPass. It:
+    stored during RockFuncToTritonFuncPass. It:
     1. Reads the serialized host functions from the module attribute
     2. Parses them back into the module
     3. Updates kernel calls to use the compiled kernel

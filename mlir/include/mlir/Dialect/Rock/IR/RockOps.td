@@ -916,4 +916,23 @@ def Rock_CastToPtrOp : Rock_Op<"cast_to_ptr", [Pure]> {
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
 }
 
+def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {
+  let summary = "Extract a pointer from a tensor as an i32";
+
+  let description = [{
+    The `rock.extract_ptr` op extracts the base pointer from a tensor and
+    returns it as an i32. This operation is used to obtain the memory address
+    of tensor data for pointer arithmetic computations.
+
+    Please note that this op is only used as a glue between
+    tensor inputs (rock IR) and pointer inputs (triton IR).
+  }];
+
+  let arguments = (ins AnyRankedTensor:$source);
+
+  let results = (outs I32:$result);
+
+  let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
+}
+
 #endif // ROCK_OPS

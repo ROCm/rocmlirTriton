@@ -1,4 +1,4 @@
-//===- GridwiseGemmToBlockwise - MLIR Rock ops lowering passes -----===//
+//===- TransformsToPointerArith.cpp - Expand transform maps to arith ------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -13,59 +13,25 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// ============================================================
+//===----------------------------------------------------------------------===//
 //
-// This pass converts rock.gridwise_gemm_accel and rock.gridwise_attention_accel
-// into block- and threadwise ops
+// This pass lowers TransformsToPtrOp by expanding transform map chains into
+// arithmetic operations that compute pointer offsets and validity masks.
 //
-//===-----------------------------------------------------===//
-#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
-#include "mlir/Dialect/Affine/Utils.h"
-#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
-#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
+//===----------------------------------------------------------------------===//
+
 #include "mlir/Dialect/Rock/IR/Rock.h"
-#include "mlir/Dialect/Rock/IR/RockTypes.h"
-#include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
-#include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
-#include "mlir/Dialect/Rock/utility/builderUtils.h"
-#include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Utils/IndexingUtils.h"
-#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/AffineExprVisitor.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Diagnostics.h"
-#include "mlir/IR/IRMapping.h"
-#include "mlir/IR/Value.h"
-#include "mlir/IR/Visitors.h"
-#include "mlir/Pass/PassManager.h"
-#include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Transforms/Passes.h"
-#include "mlir/Transforms/RegionUtils.h"
 
-#include "GridLayoutEmitter.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/LogicalResult.h"
-#include <cstdint>
-#include <optional>
-#include <tuple>
 
 namespace mlir {
 namespace rock {
@@ -592,7 +558,6 @@ struct TransformsToPtrRewritePattern
 
     // Get output shapes from result types (tensors)
     auto pointerResultType = cast<RankedTensorType>(op.getPointers().getType());
-    auto maskResultType = cast<RankedTensorType>(op.getMask().getType());
     ArrayRef<int64_t> shape = pointerResultType.getShape();
 
     source = isolateTransforms(b, source);
@@ -676,20 +641,9 @@ struct TransformsToPtrRewritePattern
       auto parentFunc = op->getParentOfType<func::FuncOp>();
       b.setInsertionPointToStart(&parentFunc.front());
 
-      // Convert tensor to memref to extract the base pointer
-      // The buffer is a tensor, so we need to get the underlying memref
-      Value bufferMemref = buffer;
-      if (isa<RankedTensorType>(buffer.getType())) {
-        auto tensorType = cast<RankedTensorType>(buffer.getType());
-        auto memrefType =
-            MemRefType::get(tensorType.getShape(), tensorType.getElementType());
-        bufferMemref =
-            bufferization::ToBufferOp::create(b, loc, memrefType, buffer);
-      }
-
+      // Extract the base pointer from the tensor as i32
       Value baseAddr =
-          memref::ExtractAlignedPointerAsIndexOp::create(b, loc, bufferMemref);
-      baseAddr = arith::IndexCastOp::create(b, loc, b.getI32Type(), baseAddr);
+          rock::ExtractPtrOp::create(b, loc, b.getI32Type(), buffer);
 
       // Use tensor.splat for broadcasting scalar to tensor
       auto splatType = RankedTensorType::get(shape, b.getI32Type());
@@ -732,9 +686,8 @@ struct TransformsToPtrRewritePattern
 void RockTransformsToPointerArithPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
-  target.addIllegalOp<TransformsToPtrOp>();
-  target.addLegalDialect<rock::RockDialect, memref::MemRefDialect,
-                         arith::ArithDialect, bufferization::BufferizationDialect,
+  target.addIllegalOp<rock::TransformsToPtrOp>();
+  target.addLegalDialect<rock::RockDialect, arith::ArithDialect,
                          tensor::TensorDialect>();
 
   RewritePatternSet patterns(ctx);

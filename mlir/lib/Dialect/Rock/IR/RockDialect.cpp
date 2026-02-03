@@ -1902,24 +1902,6 @@ parsePerfConfigStr(StringRef configStr, StringRef expectedPrefix = "") {
   return PerfConfigParseResult{version, params};
 }
 
-std::tuple<int64_t, int64_t, int64_t> handleLegacyNPerWaveOrMnPerXdl(
-    const SmallVectorImpl<int64_t> &params, int64_t &idx, int64_t mPerBlock,
-    int64_t nPerBlock, int64_t mPerWave, bool isWmma) {
-  int64_t nPerWave, mnPerXdl;
-  if (isWmma) {
-    mnPerXdl = 16; // default value 16 because older versions had no mnPerXdl
-    nPerWave = params[idx++];
-  } else {
-    mnPerXdl = params[idx++];
-    constexpr int64_t maxWavesPerWG = 4;
-    int64_t mWaves = std::min(mPerBlock / mPerWave, maxWavesPerWG);
-    int64_t nWaves = maxWavesPerWG / mWaves;
-    mPerWave = mPerBlock / mWaves;
-    nPerWave = std::max(nPerBlock / nWaves, mnPerXdl);
-  }
-  return {mPerWave, nPerWave, mnPerXdl};
-}
-
 } // namespace
 
 //===-----------------------------------------------------===//

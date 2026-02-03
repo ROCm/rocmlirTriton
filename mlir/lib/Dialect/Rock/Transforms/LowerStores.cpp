@@ -84,33 +84,6 @@ static bool isFusionOp(Operation *op) {
   return isa<arith::ArithDialect, math::MathDialect>(op->getDialect());
 }
 
-/// Get the tile value from a UntileOp, or return the value if it's
-/// already a tile (from BlockwiseLoadTileOp or similar).
-static Value getTileValue(Value val, IRMapping &fullToTileMapping) {
-  // Check if we've already mapped this value
-  if (fullToTileMapping.contains(val))
-    return fullToTileMapping.lookup(val);
-  
-  Operation *defOp = val.getDefiningOp();
-  if (!defOp)
-    return val;
-  
-  // UntileOp: return its source (the tile)
-  if (auto fusionRootOp = dyn_cast<UntileOp>(defOp)) {
-    Value tile = fusionRootOp.getSource();
-    fullToTileMapping.map(val, tile);
-    return tile;
-  }
-  
-  // BlockwiseLoadTileOp result is already a tile
-  if (isa<BlockwiseLoadTileOp>(defOp)) {
-    fullToTileMapping.map(val, val);
-    return val;
-  }
-  
-  return val;
-}
-
 /// Find grid coordinates from existing BlockwiseLoadTileOp in the function.
 static SmallVector<Value> findGridCoordinates(func::FuncOp funcOp) {
   SmallVector<Value> coords;

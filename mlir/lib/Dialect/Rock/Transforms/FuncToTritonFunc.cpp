@@ -1,5 +1,4 @@
-//===- MemrefToTensor - MLIR Rock ops lowering passes
-//-------------------------===//
+//===- FuncToTritonFunc.cpp - Convert func.func to tt.func for Triton -----===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -14,47 +13,41 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// =============================================================================
+//===----------------------------------------------------------------------===//
 //
-// This pass converts from memref to tensors and converts pointer arithmetic
-// to use Triton pointer types.
+// This pass transforms Rock kernel functions from func.func to Triton's tt.func.
+// It converts tensor arguments to Triton pointer types (!tt.ptr), eliminates the
+// pointer extraction chain (rock.extract_ptr), converts arith.addi on pointer
+// tensors to tt.addptr, and sets up pointer attributes for optimization.
 //
 //===----------------------------------------------------------------------===//
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
+
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Diagnostics.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/IRMapping.h"
-#include "mlir/IR/TypeUtilities.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Support/LLVM.h"
-#include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Transforms/Passes.h"
+
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
+
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKMEMREFTOTENSORPASS
+#define GEN_PASS_DEF_ROCKFUNCTOTRITONFUNCPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-memref-to-tensor"
+#define DEBUG_TYPE "rock-func-to-triton-func"
 
 using namespace mlir;
 using namespace mlir::rock;
 using namespace mlir::triton;
 using namespace mlir::arith;
-using namespace mlir::bufferization;
-using namespace mlir::memref;
 
 namespace {
 
@@ -66,8 +59,8 @@ static bool isTensorOfPointers(Type type) {
   return false;
 }
 
-struct RockMemrefToTensorPass
-    : public rock::impl::RockMemrefToTensorPassBase<RockMemrefToTensorPass> {
+struct RockFuncToTritonFuncPass
+    : public rock::impl::RockFuncToTritonFuncPassBase<RockFuncToTritonFuncPass> {
   void runOnOperation() override;
 
 private:
@@ -76,42 +69,32 @@ private:
 
   /// Process a single kernel function (convert to tt.func)
   void processFunction(func::FuncOp funcOp);
-
-  /// Fix up func.call ops in wrapper functions that reference converted kernels
-  void fixupKernelCalls(ModuleOp moduleOp);
 };
 
 } // end anonymous namespace
 
-void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
+void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   valueMapping.clear();
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
 
-  // Step 1: Find all extract_aligned_pointer_as_index patterns and collect info
-  // Pattern: block_arg (tensor) -> to_buffer -> extract_ptr -> index_cast -> tt.splat
+  // Step 1: Find all rock.extract_ptr patterns and collect info
+  // Pattern: block_arg (tensor) -> rock.extract_ptr -> tt.splat
   struct ArgConversionInfo {
     unsigned argIndex;
     Type elementType;
     RankedTensorType tensorType; // Original tensor type for size calculation
-    SmallVector<Value> valuesToReplace; // index_cast results to replace with block arg
-    // Ops in the chain that need to be erased (in order: splats, index_cast, extract, to_buffer)
+    SmallVector<Value> valuesToReplace; // extract_ptr results to replace with block arg
+    // Ops in the chain that need to be erased (in order: splats, extract_ptr)
     SmallVector<triton::SplatOp> oldSplatOps;
-    bufferization::ToBufferOp toBufferOp;
-    memref::ExtractAlignedPointerAsIndexOp extractOp;
-    arith::IndexCastOp indexCastOp;
+    rock::ExtractPtrOp extractPtrOp;
   };
   SmallVector<ArgConversionInfo> argsToConvert;
 
-  funcOp.walk([&](memref::ExtractAlignedPointerAsIndexOp extractOp) {
-    Value memrefOperand = extractOp.getSource();
+  funcOp.walk([&](rock::ExtractPtrOp extractPtrOp) {
+    Value tensorOperand = extractPtrOp.getSource();
 
-    // Trace through to_buffer to find the tensor block argument
-    auto toBufferOp = memrefOperand.getDefiningOp<bufferization::ToBufferOp>();
-    if (!toBufferOp)
-      return;
-
-    Value tensorOperand = toBufferOp.getTensor();
+    // Check if the source is a block argument (tensor)
     auto blockArg = dyn_cast<BlockArgument>(tensorOperand);
     if (!blockArg)
       return;
@@ -120,22 +103,16 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
     if (!tensorType)
       return;
 
-    // Find index_cast ops that use the extract result
-    for (Operation *user : extractOp.getResult().getUsers()) {
-      if (auto indexCastOp = dyn_cast<arith::IndexCastOp>(user)) {
-        if (indexCastOp.getResult().getType().isInteger(32)) {
-          // Found the pattern - record it
-          ArgConversionInfo info;
-          info.argIndex = blockArg.getArgNumber();
-          info.elementType = tensorType.getElementType();
-          info.tensorType = tensorType;
-          info.valuesToReplace.push_back(indexCastOp.getResult());
-          info.toBufferOp = toBufferOp;
-          info.extractOp = extractOp;
-          info.indexCastOp = indexCastOp;
-          argsToConvert.push_back(info);
-        }
-      }
+    // The result of extract_ptr is i32, which is what we need to replace
+    if (extractPtrOp.getResult().getType().isInteger(32)) {
+      // Found the pattern - record it
+      ArgConversionInfo info;
+      info.argIndex = blockArg.getArgNumber();
+      info.elementType = tensorType.getElementType();
+      info.tensorType = tensorType;
+      info.valuesToReplace.push_back(extractPtrOp.getResult());
+      info.extractPtrOp = extractPtrOp;
+      argsToConvert.push_back(info);
     }
   });
 
@@ -171,7 +148,7 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
     attrsToKeep.push_back(attr);
   }
 
-  // Step 3: For each index_cast result, replace its users with the block argument
+  // Step 3: For each extract_ptr result, replace its users with the block argument
   // We do this BEFORE changing types so the old ops become dead
   Block &entryBlock = funcOp.front();
   for (auto &info : argsToConvert) {
@@ -179,7 +156,7 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
     auto ptrType = triton::PointerType::get(info.elementType, 1);
 
     for (Value oldValue : info.valuesToReplace) {
-      // For each user of the index_cast result (like tt.splat), create a replacement
+      // For each user of the extract_ptr result (like tt.splat), create a replacement
       for (OpOperand &use : llvm::make_early_inc_range(oldValue.getUses())) {
         Operation *user = use.getOwner();
 
@@ -209,21 +186,15 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
   }
 
   // Erase the ops in the chain (users first, producers last)
-  // Order: old splats -> index_cast -> extract_ptr -> to_buffer
+  // Order: old splats -> extract_ptr
   for (auto &info : argsToConvert) {
-    // First erase the old splat ops (they use index_cast result)
+    // First erase the old splat ops (they use extract_ptr result)
     for (auto splatOp : info.oldSplatOps) {
       splatOp.erase();
     }
-    // Then erase index_cast (uses extract_ptr result)
-    if (info.indexCastOp)
-      info.indexCastOp.erase();
-    // Then erase extract_ptr (uses to_buffer result)
-    if (info.extractOp)
-      info.extractOp.erase();
-    // Finally erase to_buffer (uses block arg)
-    if (info.toBufferOp)
-      info.toBufferOp.erase();
+    // Then erase extract_ptr (uses block arg)
+    if (info.extractPtrOp)
+      info.extractPtrOp.erase();
   }
 
   // Step 4: Create tt.func and move body
@@ -276,58 +247,8 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
   // Continue with remaining transformations
   SmallVector<Operation *, 8> opsToErase;
 
-  // Step 5: Propagate pointer types through bufferization.to_buffer ops
+  // Step 5: Convert arith.addi on pointer tensors to tt.addptr
   bool changed = true;
-  while (changed) {
-    changed = false;
-    ttFuncOp.walk([&](bufferization::ToBufferOp toBufferOp) {
-      if (llvm::is_contained(opsToErase, toBufferOp.getOperation()))
-        return;
-
-      Value src = toBufferOp.getTensor();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-
-      if (!mappedSrc)
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(toBufferOp.getResult()))
-        return;
-
-      // If the source is now a pointer tensor, propagate the mapping
-      valueMapping.map(toBufferOp.getResult(), mappedSrc);
-      opsToErase.push_back(toBufferOp);
-      changed = true;
-    });
-  }
-
-  // Step 6: Propagate through bufferization.to_tensor ops
-  changed = true;
-  while (changed) {
-    changed = false;
-    ttFuncOp.walk([&](bufferization::ToTensorOp toTensorOp) {
-      if (llvm::is_contained(opsToErase, toTensorOp.getOperation()))
-        return;
-
-      Value src = toTensorOp.getBuffer();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-
-      if (!mappedSrc)
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(toTensorOp.getResult()))
-        return;
-
-      // Map the tensor result to the pointer value
-      valueMapping.map(toTensorOp.getResult(), mappedSrc);
-      opsToErase.push_back(toTensorOp);
-      changed = true;
-    });
-  }
-
-  // Step 7: Convert arith.addi on pointer tensors to tt.addptr
-  changed = true;
   while (changed) {
     changed = false;
     ttFuncOp.walk([&](arith::AddIOp addOp) {
@@ -380,73 +301,10 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
     });
   }
 
-  // Step 8: Propagate pointer tensors through remaining bufferization ops
+  // Step 6: Propagate pointer tensors through rock.cast_to_ptr ops
   changed = true;
   while (changed) {
     changed = false;
-
-    // Handle to_buffer of pointer tensors
-    ttFuncOp.walk([&](bufferization::ToBufferOp toBufferOp) {
-      if (llvm::is_contained(opsToErase, toBufferOp.getOperation()))
-        return;
-
-      Value src = toBufferOp.getTensor();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-      Value ptrTensor = mappedSrc ? mappedSrc : src;
-
-      if (!isTensorOfPointers(ptrTensor.getType()))
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(toBufferOp.getResult()))
-        return;
-
-      // Map the memref result to the pointer tensor
-      valueMapping.map(toBufferOp.getResult(), ptrTensor);
-      opsToErase.push_back(toBufferOp);
-      changed = true;
-    });
-
-    // Handle memref.copy where source maps to pointer tensor
-    ttFuncOp.walk([&](memref::CopyOp copyOp) {
-      if (llvm::is_contained(opsToErase, copyOp.getOperation()))
-        return;
-
-      Value src = copyOp.getSource();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-
-      if (!mappedSrc || !isTensorOfPointers(mappedSrc.getType()))
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(copyOp.getTarget()))
-        return;
-
-      // Map the destination to the pointer tensor
-      valueMapping.map(copyOp.getTarget(), mappedSrc);
-      opsToErase.push_back(copyOp);
-      changed = true;
-    });
-
-    // Handle to_tensor ops whose memref source maps to a pointer tensor
-    ttFuncOp.walk([&](bufferization::ToTensorOp toTensorOp) {
-      if (llvm::is_contained(opsToErase, toTensorOp.getOperation()))
-        return;
-
-      Value src = toTensorOp.getBuffer();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-
-      if (!mappedSrc || !isTensorOfPointers(mappedSrc.getType()))
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(toTensorOp.getResult()))
-        return;
-
-      valueMapping.map(toTensorOp.getResult(), mappedSrc);
-      opsToErase.push_back(toTensorOp);
-      changed = true;
-    });
 
     // Handle rock.cast_to_ptr - if input maps to pointer tensor, replace it
     ttFuncOp.walk([&](rock::CastToPtrOp castOp) {
@@ -470,18 +328,10 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
     });
   }
 
-  // Step 9: Update all remaining uses
+  // Step 7: Update all remaining uses
   ttFuncOp.walk([&](Operation *op) {
     // Skip ops we're about to erase
     if (llvm::is_contained(opsToErase, op))
-      return;
-
-    // Skip bufferization ops - they have strict type requirements
-    if (isa<bufferization::ToBufferOp, bufferization::ToTensorOp>(op))
-      return;
-
-    // Skip memref ops - they require memref operands
-    if (isa<memref::CopyOp>(op))
       return;
 
     bool needsUpdate = false;
@@ -509,69 +359,7 @@ void RockMemrefToTensorPass::processFunction(func::FuncOp funcOp) {
   }
 }
 
-/// Fix up func.call ops that reference tt.func kernels.
-/// Converts them to tt.call with proper pointer type conversions.
-void RockMemrefToTensorPass::fixupKernelCalls(ModuleOp moduleOp) {
-  MLIRContext *ctx = &getContext();
-  OpBuilder builder(ctx);
-
-  // Collect all func.call ops that need to be converted
-  SmallVector<func::CallOp> callsToFix;
-  moduleOp.walk([&](func::CallOp callOp) {
-    // Check if the callee is a triton::FuncOp
-    auto callee = moduleOp.lookupSymbol<triton::FuncOp>(callOp.getCallee());
-    if (callee) {
-      callsToFix.push_back(callOp);
-    }
-  });
-
-  // Convert each call
-  for (func::CallOp callOp : callsToFix) {
-    auto callee = moduleOp.lookupSymbol<triton::FuncOp>(callOp.getCallee());
-    if (!callee)
-      continue;
-
-    builder.setInsertionPoint(callOp);
-    Location loc = callOp.getLoc();
-
-    // Get the expected argument types from the triton function
-    FunctionType calleeType = callee.getFunctionType();
-    SmallVector<Value> newOperands;
-
-    for (auto [idx, operand] : llvm::enumerate(callOp.getOperands())) {
-      Type expectedType = calleeType.getInput(idx);
-
-      // If the operand is a memref and the expected type is a tt.ptr,
-      // we need to extract the pointer
-      if (auto memrefType = dyn_cast<MemRefType>(operand.getType())) {
-        if (auto ptrType = dyn_cast<triton::PointerType>(expectedType)) {
-          // Extract the aligned pointer from the memref
-          Value indexPtr = memref::ExtractAlignedPointerAsIndexOp::create(
-              builder, loc, operand);
-          // Convert index to i64 for pointer conversion
-          Value i64Ptr = arith::IndexCastOp::create(
-              builder, loc, builder.getI64Type(), indexPtr);
-          // Convert i64 to tt.ptr
-          Value ttPtr =
-              triton::IntToPtrOp::create(builder, loc, ptrType, i64Ptr);
-          newOperands.push_back(ttPtr);
-          continue;
-        }
-      }
-
-      // If types match or no conversion needed, use the operand as-is
-      newOperands.push_back(operand);
-    }
-
-    // Create the tt.call operation
-    triton::CallOp::create(builder, loc, callee, newOperands);
-
-    // Erase the old func.call
-    callOp.erase();
-  }
-}
-
-void RockMemrefToTensorPass::runOnOperation() {
+void RockFuncToTritonFuncPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
   MLIRContext *ctx = &getContext();
 

@@ -350,12 +350,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     funcPm.addPass(rock::createRockTransformsToPtrPass());
     funcPm.addPass(rock::createRockTransformsToPointerArithPass());
     funcPm.addPass(rock::createRockToTTIRPass());
-    // RockMemrefToTensorPass operates on ModuleOp (converts func.func to
-    // tt.func)
-    pm.addPass(rock::createRockMemrefToTensorPass());
+    // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to tt.func)
+    pm.addPass(rock::createRockFuncToTritonFuncPass());
     // After this point, function is triton::FuncOp
     auto &ttFuncPm = pm.nest<triton::FuncOp>();
-    ttFuncPm.addPass(rock::createRockUnbufferizePass());
     ttFuncPm.addPass(createCanonicalizerPass());
     ttFuncPm.addPass(createCSEPass());
   }
@@ -437,8 +435,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
 
     // Restore host functions (main, wrapper) that were stored during
-    // RockMemrefToTensorPass. This converts func.call @kernel to
-    // gpu.launch_func.
+    // RockFuncToTritonFuncPass. This converts func.call @kernel to gpu.launch_func.
     rock::RockRestoreHostCodePassOptions restoreOpts;
     restoreOpts.triple = options.triple;
     restoreOpts.arch = arch;

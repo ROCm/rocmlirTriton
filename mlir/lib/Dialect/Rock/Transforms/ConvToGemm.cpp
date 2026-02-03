@@ -369,8 +369,6 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   ShapedType filterType = op.getFilter().getType();
   auto filterShape = filterType.getShape();
 
-  GemmFeatures features = rock::getFeatures(op);
-
   // Determine whether to use workspace.
   bool hasWorkspace = (filterType.getElementType() == b.getF16Type());
   if (hasWorkspace && !op.getWorkspace()) {

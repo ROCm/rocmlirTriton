@@ -569,7 +569,6 @@ static LogicalResult commonAttentionGemmElmtGemm(
                         "`GemmElementwiseGemmOp`/`AttentionOp`");
   }
 
-  func::FuncOp func = op->template getParentOfType<func::FuncOp>();
   IntegerAttr prePadG0MAttr;
   if (gemm0ExtraPad.m) {
     prePadG0MAttr = rw.getIndexAttr(gemm0Size.m);
@@ -993,7 +992,6 @@ GemmRewritePattern::arrangeSplitKTransform(OpBuilder &builder, GemmOp op,
 LogicalResult GemmRewritePattern::computeGridSize(ConversionPatternRewriter &rw,
                                                   GemmOp op, Value a,
                                                   Value b) const {
-  GemmFeatures features = rock::getFeatures(op);
   Attribute params = op.getParams().value();
 
   const auto aShape = cast<RankedTensorType>(a.getType()).getShape();

@@ -1,4 +1,4 @@
-//===- RockToTTIR - MLIR Rock ops lowering passes -------------------------===//
+//===- RockToTTIR.cpp - Convert Rock dialect to Triton IR -----------------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -13,28 +13,25 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// =============================================================================
+//===----------------------------------------------------------------------===//
 //
-// This pass converts Rock dialect operations to Triton IR
+// This pass converts Rock dialect operations (blockwise loads, stores, gemm,
+// etc.) to Triton IR counterparts (tt.load, tt.store, tt.dot, etc.).
 //
 //===----------------------------------------------------------------------===//
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Diagnostics.h"
-#include "mlir/IR/TypeUtilities.h"
-#include "mlir/IR/Value.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Support/LLVM.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "mlir/Transforms/Passes.h"
+
 #include "triton/Dialect/Triton/IR/Dialect.h"
-// #include "triton/Dialect/Triton/IR/TritonEnums.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
+
+#include "llvm/Support/Debug.h"
 
 namespace mlir {
 namespace rock {
@@ -282,7 +279,7 @@ struct RockLoadTilePtrOpRewritePattern
 
     // Convert tensor of i32 to tensor of pointers
     Value ptrTensorOfPtrs =
-        rewriter.create<rock::CastToPtrOp>(loc, ptrTensorOfPtrsType, pointerTensor);
+        rock::CastToPtrOp::create(rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
     // Create tt.load operation
     // LoadOp takes: ptr, mask (optional), other (optional), boundaryCheck,
@@ -294,8 +291,8 @@ struct RockLoadTilePtrOpRewritePattern
         rewriter.getContext(), triton::EvictionPolicy::NORMAL);
     auto isVolatileAttr = rewriter.getBoolAttr(false);
 
-    Value result = rewriter.create<triton::LoadOp>(
-        loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
+    Value result = triton::LoadOp::create(
+        rewriter, loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
         /*other=*/Value(), boundaryCheckAttr,
         /*padding=*/nullptr, cacheAttr, evictAttr, isVolatileAttr);
 
@@ -330,8 +327,8 @@ struct RockBlockwiseGemmOpRewritePattern
       return failure();
 
     // Create tt.dot operation
-    Value result = rewriter.create<triton::DotOp>(
-        loc, cTensorType, a, b, c,
+    Value result = triton::DotOp::create(
+        rewriter, loc, cTensorType, a, b, c,
         /*inputPrecision=*/triton::InputPrecision::IEEE,
         /*maxNumImpreciseAcc=*/0);
 
@@ -492,8 +489,8 @@ struct RockStoreTilePtrOpRewritePattern
         ptrTensorType.getShape(), ptrType, ptrTensorType.getEncoding());
 
     // Cast the i32 tensor to tensor of pointers
-    Value ptrTensorOfPtrs = rewriter.create<rock::CastToPtrOp>(
-        loc, ptrTensorOfPtrsType, pointerTensor);
+    Value ptrTensorOfPtrs = rock::CastToPtrOp::create(
+        rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
     // 5. Create triton::StoreOp or triton::AtomicRMWOp depending on storeMethod
     auto storeMethod = op.getStoreMethod();
@@ -502,8 +499,8 @@ struct RockStoreTilePtrOpRewritePattern
       triton::RMWOp rmwOp =
           elementType.isIntOrIndex() ? triton::RMWOp::ADD : triton::RMWOp::FADD;
       // AtomicRMWOp returns the old value, but we don't need it
-      rewriter.create<triton::AtomicRMWOp>(
-          loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
+      triton::AtomicRMWOp::create(
+          rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
           triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else if (storeMethod == rock::StoreMethod::AtomicMax) {
       // Use MAX for signed int, UMAX for unsigned int
@@ -516,14 +513,14 @@ struct RockStoreTilePtrOpRewritePattern
         // Signed integer or floating point - use MAX
         rmwOp = triton::RMWOp::MAX;
       }
-      rewriter.create<triton::AtomicRMWOp>(
-          loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
+      triton::AtomicRMWOp::create(
+          rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
           triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else {
       // Default: StoreMethod::Set - regular store
       // Signature: (ptr, value, mask, boundaryCheck, cache, evict)
-      rewriter.create<triton::StoreOp>(
-          loc, ptrTensorOfPtrs, valueToStore, maskTensor,
+      triton::StoreOp::create(
+          rewriter, loc, ptrTensorOfPtrs, valueToStore, maskTensor,
           /*boundaryCheck=*/ArrayRef<int32_t>{},
           /*cache=*/triton::CacheModifier::NONE,
           /*evict=*/triton::EvictionPolicy::NORMAL);
@@ -635,8 +632,6 @@ void RockToTTIRPass::runOnOperation() {
   target2.addLegalDialect<arith::ArithDialect>();
   target2.addLegalDialect<rock::RockDialect>();
   target2.addLegalDialect<triton::TritonDialect>();
-  target2.addLegalDialect<bufferization::BufferizationDialect>();
-  target2.addLegalOp<memref::ExtractAlignedPointerAsIndexOp>();
   target2.addDynamicallyLegalOp<scf::ForOp>(
       [](scf::ForOp op) { return op.getNumResults() > 0; });
   target2.addIllegalOp<rock::BlockwiseStoreTilePtrOp>();
