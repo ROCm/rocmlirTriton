@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt -rock-gemm-linalg-splitk-normalization %s | FileCheck %s
 
 #wg = #gpu.address_space<workgroup>

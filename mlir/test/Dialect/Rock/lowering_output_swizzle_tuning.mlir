@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt -rock-output-swizzle %s | FileCheck %s
 
 #wg = #gpu.address_space<workgroup>

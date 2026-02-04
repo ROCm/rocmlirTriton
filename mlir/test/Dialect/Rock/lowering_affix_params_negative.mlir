@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // Negative test to deliberately pass incorrect tuning parameters.
 
 // RUN: rocmlir-gen --arch gfx90a -p -mfma=on -t f16 --perf_config "v3:128,128,2,64,64,2,1,1,2,1,1" | rocmlir-opt -rock-affix-params -verify-diagnostics

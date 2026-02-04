@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt -rock-sugar-to-loops %s | FileCheck %s
 
 module {

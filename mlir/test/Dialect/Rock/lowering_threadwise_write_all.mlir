@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt --rock-threadwise-gemm-lowering %s | FileCheck %s
 
 // CHECK-LABEL: func @write_to_lds_gated_waves

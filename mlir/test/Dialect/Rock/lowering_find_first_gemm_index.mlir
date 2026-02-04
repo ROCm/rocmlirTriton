@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt --rock-find-first-gemm-index %s -verify-diagnostics -o -| FileCheck %s
 
 

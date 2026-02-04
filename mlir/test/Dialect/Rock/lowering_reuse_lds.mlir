@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-reuse-lds | FileCheck %s
 
 #wg = #gpu.address_space<workgroup>

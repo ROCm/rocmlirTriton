@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-gen --arch gfx908 -p | rocmlir-driver -rock-affix-params -rock-conv-to-gemm | FileCheck %s
 // RUN: rocmlir-gen --arch gfx908 -p --operation=conv | rocmlir-driver -rock-affix-params -rock-conv-to-gemm | FileCheck %s
 

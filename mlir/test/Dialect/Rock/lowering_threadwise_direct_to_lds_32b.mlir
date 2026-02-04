@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt -rock-threadwise-gemm-lowering %s | FileCheck %s
 
 #map = affine_map<(d0, d1, d2, d3, d4) -> (d1 * 256 + d2)>

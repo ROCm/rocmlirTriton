@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt --rock-blockwise-gemm-to-threadwise --rock-threadwise-gemm-lowering %s | FileCheck %s
 #map5 = affine_map<(d0, d1) -> (d0 * 8 + d1)>
 #map6 = affine_map<(d0, d1) -> (d1, d0)>

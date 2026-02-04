@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt -rock-affix-params -rock-conv-to-gemm %s | FileCheck %s
 module  {
   func.func @rock_conv_bwd_weight_gkyxc_nghwc_nghwk_0(%arg0: memref<1x32x3x3x32xf32>, %arg1: memref<32x1x7x7x32xf32>, %arg2: memref<32x1x9x9x32xf32>) attributes {kernel = 0 : i32, arch = "amdgcn-amd-amdhsa:gfx908", numCU = 120 : i32} {

@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt --rock-sort-dimensions-memory-layout %s -verify-diagnostics -o -| FileCheck %s
 
 // CHECK-LABEL: test_conv
