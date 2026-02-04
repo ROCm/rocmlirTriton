@@ -1,7 +1,7 @@
 // RUN: rocmlir-opt --rock-fold-broadcast %s | FileCheck %s
 
-// TODO(rocmlirTriton): This pass seems broken, investigate why
-// TODO(rocmlirTriton): Add dumy DISABLED-CHECK to make FileDISABLED-CHECK happy
+// TODO(rocmlirTriton): This fails due to a bug in rocmlirTriton
+// TODO(rocmlirTriton): Add dumy DISABLED-CHECK to make FileCheck happy
 // CHECK: module
 
 //#map = affine_map<(d0, d1, d2) -> (d1, d2, d0)>
