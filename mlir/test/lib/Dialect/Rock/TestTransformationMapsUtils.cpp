@@ -145,10 +145,15 @@ struct RemoveDimTestPattern : public OpRewritePattern<func::FuncOp> {
     DenseI64ArrayAttr firstLowerBounds = firstTrMap.getLowerBounds();
 
     Type inputType = func.getArgument(0).getType();
-    Type inputElementType = cast<MemRefType>(inputType).getElementType();
+    auto inputTensorType = dyn_cast<RankedTensorType>(inputType);
+    if (!inputTensorType) {
+      emitError(func.getLoc(), "expected tensor input, got memref");
+      return failure();
+    }
+    Type inputElementType = inputTensorType.getElementType();
 
     auto newInputType =
-        MemRefType::get(firstLowerBounds.asArrayRef(), inputElementType);
+        RankedTensorType::get(firstLowerBounds.asArrayRef(), inputElementType);
     auto newFuncType =
         FunctionType::get(func->getContext(), {newInputType}, {});
 
