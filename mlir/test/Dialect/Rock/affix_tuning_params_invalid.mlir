@@ -145,4 +145,3 @@ func.func @two_gemms(
 //     %out = rock.store %2 to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
 //     return %out : tensor<1x2x320xf32>
 //   }
-  
