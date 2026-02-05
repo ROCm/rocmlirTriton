@@ -23,7 +23,7 @@ func.func @rock_blockwise_gemm(%A : tensor<8x128x1xf32>, %B : tensor<8x128x1xf32
       kPerBlock = 8,
       kpack = 1,
       numWaves = 1,
-      matrixInstrNonkdim = 32,
+      matrixInstrNonkdim = 0,
       splitKFactor = 1,
       numStages = 2,
       wavesPerEU = 0,
