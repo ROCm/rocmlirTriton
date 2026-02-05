@@ -85,7 +85,7 @@ func.func @rock_conv_i8(%filter : tensor<1x128x8x3x3xi8>, %input : tensor<128x1x
 // TODO(rocmlirTriton): This fails due to a bug in rocmlirTriton
 // DISABLED-CHECK-LABEL: func.func @rock_conv_bwd_data
 // DISABLED-GRID-LABEL: func.func @rock_conv_bwd_data
-// func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tensor<128x1x1024x14x14xf32>, %output: tensor<128x1x1024x14x14xf32>) -> tensor<128x1x1024x14x14xf32> attributes {kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tensor<128x1x1024x14x14xf32>, %output: tensor<128x1x1024x14x14xf32>) -> tensor<128x1x1024x14x14xf32> attributes {rock.kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.conv_bwd_data
 //   // DISABLED-CHECK-SAME: params = #rock.gemm_params<
 //   // DISABLED-GRID: rock.gridwise_gemm
@@ -107,7 +107,7 @@ func.func @rock_conv_i8(%filter : tensor<1x128x8x3x3xi8>, %input : tensor<128x1x
 // TODO(rocmlirTriton): This fails due to a bug in rocmlirTriton
 // DISABLED-CHECK-LABEL: @rock_conv_bwd_data_f16
 // DISABLED-GRID-LABEL: @rock_conv_bwd_data_f16
-// func.func @rock_conv_bwd_data_f16(%filter: tensor<1x1024x1024x1x1xf16>, %input: tensor<128x1x1024x14x14xf16>, %output: tensor<128x1x1024x14x14xf16>) -> tensor<128x1x1024x14x14xf16> attributes {kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_conv_bwd_data_f16(%filter: tensor<1x1024x1024x1x1xf16>, %input: tensor<128x1x1024x14x14xf16>, %output: tensor<128x1x1024x14x14xf16>) -> tensor<128x1x1024x14x14xf16> attributes {rock.kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.conv_bwd_data
 //   // DISABLED-CHECK-SAME: params = #rock.gemm_params<
 //   // DISABLED-GRID: rock.gridwise_gemm
@@ -290,7 +290,7 @@ func.func @rock_conv_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x23
 
 // CHECK-LABEL: @rock_conv_bwd_weight_7x7
 // GRID-LABEL: rock_conv_bwd_weight_7x7
-func.func @rock_conv_bwd_weight_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<1x64x3x7x7xf32> attributes {kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx906", numCU = 120 : i32} {
+func.func @rock_conv_bwd_weight_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<1x64x3x7x7xf32> attributes {rock.kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx906", numCU = 120 : i32} {
   // CHECK: rock.conv_bwd_weight
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
@@ -310,7 +310,7 @@ func.func @rock_conv_bwd_weight_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor
 // TODO(rocmlirTriton): This fails due to a bug in rocmlirTriton
 // DISABLED-CHECK-LABEL: @rock_conv_bwd_data_7x7_tuning
 // DISABLED-GRID-LABEL: @rock_conv_bwd_data_7x7_tuning
-// func.func @rock_conv_bwd_data_7x7_tuning(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<256x1x3x230x230xf32> attributes {kernel = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
+// func.func @rock_conv_bwd_data_7x7_tuning(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<256x1x3x230x230xf32> attributes {rock.kernel = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
 //   // DISABLED-CHECK: rock.conv_bwd_data
 //   // DISABLED-CHECK-SAME: params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 128, numWaves = 4, kPerBlock = 8, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   // DISABLED-GRID: rock.gridwise_gemm
@@ -333,7 +333,7 @@ func.func @rock_conv_bwd_weight_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor
 // TODO(rocmlirTriton): This fails due to a bug in rocmlirTriton
 // DISABLED-CHECK-LABEL: @rock_conv_bwd_data_7x7
 // DISABLED-GRID-LABEL: @rock_conv_bwd_data_7x7
-// func.func @rock_conv_bwd_data_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<256x1x3x230x230xf32> attributes {kernel = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_conv_bwd_data_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<256x1x3x230x230xf32> attributes {rock.kernel = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.conv_bwd_data
 //   // DISABLED-CHECK-SAME: params = #rock.gemm_params<
 //   // DISABLED-GRID: rock.gridwise_gemm
@@ -437,7 +437,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): We need to unbufferize attention
 // DISABLED-CHECK-LABEL: func.func @rock_attention_default
-// DISABLED-CHECK-SAME: block_size = 32
+// DISABLED-CHECK-SAME: rock.block_size = 32
 // DISABLED-GRID-LABEL: func.func @rock_attention_default
 // DISABLED-GRID-SAME: grid_size = 12
 // func.func @rock_attention_default(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
@@ -453,7 +453,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): We need to unbufferize attention
 // DISABLED-CHECK-LABEL: func.func @rock_attention_large
-// DISABLED-CHECK-SAME: block_size = 256
+// DISABLED-CHECK-SAME: rock.block_size = 256
 // DISABLED-GRID-LABEL: func.func @rock_attention_large
 // DISABLED-GRID-SAME: grid_size = 128
 // func.func @rock_attention_large(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
@@ -471,7 +471,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): We need to unbufferize attention
 // DISABLED-CHECK-LABEL: func.func @rock_attention_mperblockg1_wmma
-// DISABLED-CHECK-SAME: block_size = 128
+// DISABLED-CHECK-SAME: rock.block_size = 128
 // DISABLED-GRID-LABEL: func.func @rock_attention_mperblockg1_wmma
 // DISABLED-GRID-SAME: grid_size = 3
 // func.func @rock_attention_mperblockg1_wmma(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
@@ -488,7 +488,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): We need to unbufferize attention
 // DISABLED-CHECK-LABEL: func.func @rock_attention_mperblockg1_mfma
-// DISABLED-CHECK-SAME: block_size = 256
+// DISABLED-CHECK-SAME: rock.block_size = 256
 // DISABLED-GRID-LABEL: func.func @rock_attention_mperblockg1_mfma
 // DISABLED-GRID-SAME: grid_size = 3
 // func.func @rock_attention_mperblockg1_mfma(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, rock.arch = "gfx942:sramecc+:xnack-"} {
@@ -505,7 +505,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): gemm_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_gemm_gemm_default
-// DISABLED-CHECK-SAME: block_size = 32
+// DISABLED-CHECK-SAME: rock.block_size = 32
 // DISABLED-GRID-LABEL: func.func @rock_gemm_gemm_default
 // DISABLED-GRID-SAME: grid_size = 12
 // func.func @rock_gemm_gemm_default(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
@@ -521,7 +521,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): gemm_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_gemm_gemm_v1
-// DISABLED-CHECK-SAME: block_size = 256
+// DISABLED-CHECK-SAME: rock.block_size = 256
 // DISABLED-GRID-LABEL: func.func @rock_gemm_gemm_v1
 // DISABLED-GRID-SAME: grid_size = 128
 // func.func @rock_gemm_gemm_v1(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
@@ -539,7 +539,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): gemm_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_gemm_gemm_large
-// DISABLED-CHECK-SAME: block_size = 256
+// DISABLED-CHECK-SAME: rock.block_size = 256
 // DISABLED-GRID-LABEL: func.func @rock_gemm_gemm_large
 // DISABLED-GRID-SAME: grid_size = 128
 // func.func @rock_gemm_gemm_large(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
@@ -557,7 +557,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): gemm_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_gemm_gemm_mperblockg1_wmma
-// DISABLED-CHECK-SAME: block_size = 128
+// DISABLED-CHECK-SAME: rock.block_size = 128
 // DISABLED-GRID-LABEL: func.func @rock_gemm_gemm_mperblockg1_wmma
 // DISABLED-GRID-SAME: grid_size = 3
 // func.func @rock_gemm_gemm_mperblockg1_wmma(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
@@ -574,7 +574,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): gemm_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_gemm_gemm_mperblockg1_mfma
-// DISABLED-CHECK-SAME: block_size = 256
+// DISABLED-CHECK-SAME: rock.block_size = 256
 // DISABLED-GRID-LABEL: func.func @rock_gemm_gemm_mperblockg1_mfma
 // DISABLED-GRID-SAME: grid_size = 3
 // func.func @rock_gemm_gemm_mperblockg1_mfma(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x384x64xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {kernel, rock.arch = "gfx942:sramecc+:xnack-"} {
@@ -591,7 +591,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): conv_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_conv_gemm_default
-// DISABLED-CHECK-SAME: block_size = 32
+// DISABLED-CHECK-SAME: rock.block_size = 32
 // DISABLED-GRID-LABEL: func.func @rock_conv_gemm_default
 // DISABLED-GRID-SAME: grid_size = 64
 // func.func @rock_conv_gemm_default(%arg0: tensor<1x128x256x1x1xf16>, %arg1: tensor<2x1x256x32x32xf16>, %arg2: tensor<1x128x64xf16>, %arg3: tensor<1x2048x64xf16>) -> tensor<1x2048x64xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
@@ -607,7 +607,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): conv_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_conv_gemm_splitk
-// DISABLED-CHECK-SAME: block_size = 256
+// DISABLED-CHECK-SAME: rock.block_size = 256
 // DISABLED-GRID-LABEL: func.func @rock_conv_gemm_splitk
 // DISABLED-GRID-SAME: grid_size = 2048
 // func.func @rock_conv_gemm_splitk(%arg0: tensor<1x128x256x3x3xf32>, %arg1: tensor<2x1x256x128x128xf32>, %arg2: tensor<1x128x128xf32>, %arg3: tensor<1x32768x128xf32>) -> tensor<1x32768x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
@@ -624,7 +624,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): conv_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_conv_gemm_large
-// DISABLED-CHECK-SAME: block_size = 256
+// DISABLED-CHECK-SAME: rock.block_size = 256
 // DISABLED-GRID-LABEL: func.func @rock_conv_gemm_large
 // DISABLED-GRID-SAME: grid_size = 256
 // func.func @rock_conv_gemm_large(%arg0: tensor<1x128x256x3x3xf32>, %arg1: tensor<2x1x256x128x128xf32>, %arg2: tensor<1x128x128xf32>, %arg3: tensor<1x32768x128xf32>) -> tensor<1x32768x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
@@ -641,7 +641,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): conv_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_conv_gemm_mperblockg1_wmma
-// DISABLED-CHECK-SAME: block_size = 128
+// DISABLED-CHECK-SAME: rock.block_size = 128
 // DISABLED-GRID-LABEL: func.func @rock_conv_gemm_mperblockg1_wmma
 // DISABLED-GRID-SAME: grid_size = 256
 // func.func @rock_conv_gemm_mperblockg1_wmma(%arg0: tensor<1x128x256x1x1xf16>, %arg1: tensor<2x1x256x128x128xf16>, %arg2: tensor<1x128x128xf16>, %arg3: tensor<1x32768x128xf16>) -> tensor<1x32768x128xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
@@ -658,7 +658,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 
 // TODO(roctriton): conv_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: func.func @rock_conv_gemm_mperblockg1_mfma
-// DISABLED-CHECK-SAME: block_size = 256
+// DISABLED-CHECK-SAME: rock.block_size = 256
 // DISABLED-GRID-LABEL: func.func @rock_conv_gemm_mperblockg1_mfma
 // DISABLED-GRID-SAME: grid_size = 256
 // func.func @rock_conv_gemm_mperblockg1_mfma(%arg0: tensor<1x128x256x1x1xf32>, %arg1: tensor<2x1x256x128x128xf32>, %arg2: tensor<1x128x128xf32>, %arg3: tensor<1x32768x128xf32>) -> tensor<1x32768x128xf32> attributes {kernel, rock.arch = "gfx942:sramecc+:xnack-"} {
@@ -676,7 +676,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // TODO(rocmlirTriton): This fails due to a bug in rocmlirTriton
 // DISABLED-CHECK-LABEL: func.func @rock_conv_tuning
 // DISABLED-GRID-LABEL: func.func @rock_conv_tuning
-// func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x14x14xf32>, %arg2: tensor<64x1x1x14x14xf32>) -> tensor<64x1x1x14x14xf32> attributes {kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
+// func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x14x14xf32>, %arg2: tensor<64x1x1x14x14xf32>) -> tensor<64x1x1x14x14xf32> attributes {rock.kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
 //   %result = rock.conv(%arg0, %arg1, %arg2) features =  mfma|dot|atomic_add|atomic_add_f16 {
 //     dilations = [1 : index, 1 : index],
 //     filter_layout = ["g", "k", "c", "0", "1"],

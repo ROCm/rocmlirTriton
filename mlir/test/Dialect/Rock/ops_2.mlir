@@ -14,7 +14,7 @@ func.func @rock_indexing() attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
 
 func.func @rock_blockwise_gemm(%A : tensor<8x128x1xf32>, %B : tensor<8x128x1xf32>, %C : tensor<8x8xf32>) -> tensor<8x8xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
   %result = rock.blockwise_gemm(%A, %B, %C) {
-    arch = "amdgcn-amd-amdhsa:gfx90a",
+    rock.arch = "amdgcn-amd-amdhsa:gfx90a",
     inMPerThread = 2 : i32,
     inNPerThread = 2 : i32,
     params = #rock.gemm_params<

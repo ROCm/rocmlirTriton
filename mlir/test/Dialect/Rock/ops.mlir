@@ -93,7 +93,7 @@ func.func @rock_conv_bwd_weight(%filter : tensor<?x?x?x?x?xf32>, %input : tensor
   %result = rock.conv_bwd_weight(%filter, %input, %output) features = none {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
-    numCU = 64 : i32,
+    rock.numCU = 64 : i32,
     output_layout = ["n", "go", "k", "0o", "1o"],
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
@@ -109,7 +109,7 @@ func.func @rock_conv_bwd_weight_f16(%filter : tensor<?x?x?x?x?xf16>, %input : te
   %result = rock.conv_bwd_weight(%filter, %input, %output) features = none {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
-    numCU = 64 : i32,
+    rock.numCU = 64 : i32,
     output_layout = ["n", "go", "k", "0o", "1o"],
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
@@ -195,7 +195,7 @@ func.func @rock_transform_1_to_n(%tensor : tensor<?x?x?x?x?xf32>) -> tensor<?x?x
 // CHECK-LABEL: func.func @rock_transform_1_to_n
 //  CHECK-NEXT: rock.transform
 
-func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2048xf32>, %out : tensor<2x1024x2048xf32>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", numCU = 64 : i32} {
+func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2048xf32>, %out : tensor<2x1024x2048xf32>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.numCU = 64 : i32} {
   %gemm_result = rock.gridwise_gemm(%A, %B) features = none {
     blockSize = 256 : i32,
     gridSize = 1 : i32,
@@ -221,7 +221,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 // CHECK-NEXT: rock.store
 
 // TODO: Scaled gemm tests need rework
-// func.func @rock_gridwise_scaled_gemm(%A : tensor<2x1024x1024xf4E2M1FN>, %B : tensor<2x1024x2048xf4E2M1FN>, %scaleA : tensor<2x1024x1024xf8E8M0FNU>, %scaleB : tensor<2x1024x2048xf8E8M0FNU>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", numCU = 256 : i32} {
+// func.func @rock_gridwise_scaled_gemm(%A : tensor<2x1024x1024xf4E2M1FN>, %B : tensor<2x1024x2048xf4E2M1FN>, %scaleA : tensor<2x1024x1024xf8E8M0FNU>, %scaleB : tensor<2x1024x2048xf8E8M0FNU>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.numCU = 256 : i32} {
 //   %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB) storeMethod (set) features = mfma {
 //     blockSize = 256 : i32,
 //     gridSize = 1 : i32,
@@ -304,7 +304,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 // TODO(roctriton): We need to "unbufferize" attention
 // DISABLED-CHECK-LABEL: func.func @gridwise_attn_atomic_add
 // DISABLED-CHECK: rock.gridwise_attention
-// func.func @gridwise_attn_atomic_add(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x64x384xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {block_size = 64 : i32, grid_size = 24 : i32, kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"} {
+// func.func @gridwise_attn_atomic_add(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x64x384xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, grid_size = 24 : i32, kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"} {
 //   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["gemmG"] at [0] -> ["gemmG"] at [0]>, <PassThrough ["gemm0K", "gemm0M"] at [1, 2] -> ["gemm0K", "gemm0M"] at [2, 1]>] bounds = [1, 64, 384] -> [1, 384, 64]> : tensor<1x384x64xf32> to tensor<1x64x384xf32>
 //   %result = rock.gridwise_attention(%0, %arg1, %arg2, %arg3) preSoftmaxOps = {} {
 //     blockSize = 64 : i32,
