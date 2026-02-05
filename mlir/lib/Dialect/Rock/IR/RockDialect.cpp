@@ -1357,32 +1357,6 @@ void GridwiseAttentionOp::getEffects(
   getAttentionEffects(*this, effects);
 }
 
-//===----------------------------------------------------------------------===//
-// WorkgroupIdOp
-//===----------------------------------------------------------------------===//
-static ConstantIntRanges
-getIdRange(StringRef idName, Operation *op,
-           int64_t fallback = std::numeric_limits<int32_t>::max()) {
-  uint32_t bitwidth =
-      ConstantIntRanges::getStorageBitwidth(op->getResultTypes().front());
-  APInt zero = APInt::getZero(bitwidth);
-  APInt max(bitwidth, fallback);
-  if (func::FuncOp container = op->getParentOfType<func::FuncOp>()) {
-    if (IntegerAttr size =
-            dyn_cast_or_null<IntegerAttr>(container->getAttr(idName))) {
-      // Range inference uses ranges that're inclusive on both ends
-      max = APInt(bitwidth, size.getValue().getSExtValue() - 1);
-    }
-  }
-  return ConstantIntRanges::fromUnsigned(zero, max);
-}
-
-void WorkgroupIdOp::inferResultRanges(ArrayRef<ConstantIntRanges> argRanges,
-                                      SetIntRangeFn setResultRanges) {
-  setResultRanges(getResult(), getIdRange(rock::GridSizeAttr::getMnemonic(),
-                                          getOperation()));
-}
-
 //===-----------------------------------------------------===//
 // ReduceOp
 //===-----------------------------------------------------===//

@@ -53,188 +53,6 @@ struct RockToTTIRPass : public rock::impl::RockToTTIRPassBase<RockToTTIRPass> {
 };
 
 //===----------------------------------------------------------------------===//
-// TensorSplatOpRewritePattern - Convert tensor.splat to tt.splat
-//===----------------------------------------------------------------------===//
-struct TensorSplatOpRewritePattern : public OpRewritePattern<tensor::SplatOp> {
-  using OpRewritePattern<tensor::SplatOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(tensor::SplatOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    // Get the source scalar value
-    Value src = op.getInput();
-
-    // Get the result tensor type
-    auto resultType = op.getResult().getType();
-
-    // Create tt.splat operation
-    Value result = triton::SplatOp::create(rewriter, loc, resultType, src);
-
-    rewriter.replaceOp(op, result);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// RockFillOpRewritePattern - Convert rock.fill to tt.splat
-// This pattern is applied via greedy rewriting before partial conversion
-// because it needs to replace uses of the input tensor, which isn't supported
-// in conversion pattern rollback mode.
-//===----------------------------------------------------------------------===//
-struct RockFillOpRewritePattern : public OpRewritePattern<rock::FillOp> {
-  using OpRewritePattern<rock::FillOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(rock::FillOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    Value inputTensor = op.getInput();
-    Value fillValue = op.getValue();
-
-    auto tensorType = dyn_cast<RankedTensorType>(inputTensor.getType());
-    if (!tensorType)
-      return failure();
-
-    // Create tt.splat operation to create a tensor filled with the value
-    Value splatTensor =
-        triton::SplatOp::create(rewriter, loc, tensorType, fillValue);
-
-    // Replace all uses of the original tensor (except the fill op itself)
-    // with the new splat-filled tensor
-    rewriter.replaceAllUsesExcept(inputTensor, splatTensor, op);
-
-    // Erase the fill op
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// RockMakeRangeOpRewritePattern - Convert rock.make_range to tt.make_range
-//===----------------------------------------------------------------------===//
-struct RockMakeRangeOpRewritePattern
-    : public OpRewritePattern<rock::MakeRangeOp> {
-  using OpRewritePattern<rock::MakeRangeOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(rock::MakeRangeOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    int32_t start = op.getStart();
-    int32_t end = op.getEnd();
-
-    auto tensorType = dyn_cast<RankedTensorType>(op.getType());
-    if (!tensorType)
-      return failure();
-
-    // triton::MakeRangeOp only supports 1D tensors, but rock::MakeRangeOp
-    // can output multi-dimensional tensors where only one dimension is
-    // non-unit. Find the non-unit dimension and use expand_dims to restore the
-    // shape.
-    ArrayRef<int64_t> shape = tensorType.getShape();
-    int64_t nonUnitDim = -1;
-    SmallVector<int64_t> unitDimIndices;
-
-    for (int64_t i = 0; i < static_cast<int64_t>(shape.size()); ++i) {
-      if (shape[i] > 1) {
-        if (nonUnitDim != -1) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "Expected only one non-unit dimension in MakeRangeOp "
-                        "output shape\n");
-          return failure();
-        }
-        nonUnitDim = shape[i];
-      } else {
-        unitDimIndices.push_back(i);
-      }
-    }
-
-    if (nonUnitDim == -1) {
-      LLVM_DEBUG(llvm::dbgs() << "Expected at least one non-unit dimension\n");
-      return failure();
-    }
-
-    // Create 1D tensor type for tt.make_range
-    auto tensorType1D =
-        RankedTensorType::get({nonUnitDim}, rewriter.getI32Type());
-
-    // Create tt.make_range operation (1D)
-    Value rangeTensor =
-        triton::MakeRangeOp::create(rewriter, loc, tensorType1D, start, end);
-
-    // Use tt.expand_dims to restore the original shape
-    // We need to insert unit dimensions at the correct positions
-    Value expandedTensor = rangeTensor;
-    for (int64_t unitDimIdx : unitDimIndices) {
-      // Get current tensor type
-      auto currentType = cast<RankedTensorType>(expandedTensor.getType());
-      SmallVector<int64_t> newShape(currentType.getShape().begin(),
-                                    currentType.getShape().end());
-      newShape.insert(newShape.begin() + unitDimIdx, 1);
-      auto expandedType =
-          RankedTensorType::get(newShape, rewriter.getI32Type());
-
-      expandedTensor = triton::ExpandDimsOp::create(rewriter, loc, expandedType,
-                                                    expandedTensor, unitDimIdx);
-    }
-
-    rewriter.replaceOp(op, expandedTensor);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// RockBroadCastOpRewritePattern - Convert rock.broadcast to tt.broadcast
-//===----------------------------------------------------------------------===//
-struct RockBroadCastOpRewritePattern
-    : public OpRewritePattern<rock::BroadcastOp> {
-  using OpRewritePattern<rock::BroadcastOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(rock::BroadcastOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    // Get the source tensor
-    Value src = op.getSrc();
-
-    // Get the result tensor type
-    auto resultTensorType = dyn_cast<RankedTensorType>(op.getResult().getType());
-    if (!resultTensorType)
-      return failure();
-
-    // Get the source tensor type
-    auto srcTensorType = dyn_cast<RankedTensorType>(src.getType());
-    if (!srcTensorType)
-      return failure();
-
-    // Create tt.broadcast operation
-    Value result = triton::BroadcastOp::create(rewriter, loc, resultTensorType, src);
-
-    rewriter.replaceOp(op, result);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// RockWorkgroupIdOpRewritePattern - Convert rock.workgroup_id to
-// tt.get_program_id
-//===----------------------------------------------------------------------===//
-struct RockWorkgroupIdOpRewritePattern
-    : public OpRewritePattern<rock::WorkgroupIdOp> {
-  using OpRewritePattern<rock::WorkgroupIdOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(rock::WorkgroupIdOp op,
-                                PatternRewriter &rewriter) const override {
-    // tt.get_program_id returns i32
-    Value programId = triton::GetProgramIdOp::create(
-        rewriter, op.getLoc(), triton::ProgramIDDim::X);
-    rewriter.replaceOp(op, programId);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
 // RockLoadTilePtrOpRewritePattern - Convert rock.blockwise_load_tile_ptr to
 // tt.load
 //===----------------------------------------------------------------------===//
@@ -334,113 +152,6 @@ struct RockBlockwiseGemmOpRewritePattern
 
     // We dont use replaceOp because result has one result whereas op has none.
     rewriter.replaceOp(op, result);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// RockMicroKernelOpRewritePattern
-//===----------------------------------------------------------------------===//
-struct RockMicroKernelOpRewritePattern : public OpRewritePattern<scf::ForOp> {
-  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(scf::ForOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    // Make sure this is a microkernel (contains a tt.dot operation)
-    triton::DotOp dotOpInBody = nullptr;
-    Block *body = op.getBody();
-
-    for (Operation &bodyOp : *body) {
-      if (auto dot = dyn_cast<triton::DotOp>(bodyOp)) {
-        dotOpInBody = dot;
-        break;
-      }
-    }
-
-    if (!dotOpInBody) {
-      LLVM_DEBUG(llvm::dbgs() << "Loop is not a microkernel\n");
-      return failure();
-    }
-
-    // Get the output tensor from the tt.dot's C operand
-    Value outputTensor = dotOpInBody.getC();
-    auto outputTensorType = dyn_cast<RankedTensorType>(outputTensor.getType());
-    if (!outputTensorType) {
-      LLVM_DEBUG(llvm::dbgs() << "tt.dot C operand is not a tensor\n");
-      return failure();
-    }
-
-    // Create init args for the new loop - the output tensor
-    SmallVector<Value> initArgs;
-    initArgs.push_back(outputTensor);
-
-    // Create new ForOp with same bounds but new init args.
-    rewriter.setInsertionPointAfter(op);
-    auto newForOp = scf::ForOp::create(
-        rewriter, loc, op.getLowerBound(), op.getUpperBound(), op.getStep(),
-        initArgs, [](OpBuilder &builder, Location loc, Value, ValueRange) {
-          // Create an empty yield (will be updated later with proper operands)
-          scf::YieldOp::create(builder, loc, ValueRange{});
-        });
-    newForOp->setAttrs(op->getAttrs());
-
-    // Move operations from old body to new body, except the scf.yield
-    // terminator.
-    Block *oldBody = op.getBody();
-    Block *newBody = newForOp.getBody();
-
-    // Collect ops to move (excluding the terminator)
-    SmallVector<Operation *> opsToMove;
-    for (Operation &bodyOp : *oldBody) {
-      if (!bodyOp.hasTrait<OpTrait::IsTerminator>()) {
-        opsToMove.push_back(&bodyOp);
-      }
-    }
-
-    // Move the ops to the new body (before the yield terminator)
-    Operation *newTerminator = newBody->getTerminator();
-    for (Operation *opToMove : opsToMove) {
-      opToMove->moveBefore(newTerminator);
-    }
-
-    // Replace old block arguments with new ones.
-    // First argument is the induction variable.
-    op.getInductionVar().replaceAllUsesWith(newForOp.getInductionVar());
-
-    // Find the tt.dot operation in the new body and update its C operand
-    // to use the iter arg instead of the original tensor
-    triton::DotOp dotOp = nullptr;
-    for (Operation &bodyOp : *newBody) {
-      if (auto dot = dyn_cast<triton::DotOp>(bodyOp)) {
-        dotOp = dot;
-        break;
-      }
-    }
-
-    if (!dotOp) {
-      LLVM_DEBUG(llvm::dbgs() << "Expected a tt.dot op in the loop body\n");
-      return failure();
-    }
-
-    // Update the tt.dot's C operand to use the iter arg
-    // First iter arg is at index 1 (index 0 is the induction variable)
-    dotOp->setOperand(2, newForOp.getBody()->getArgument(1));
-
-    // Update the yield to yield the output of the tt.dot
-    auto yieldOp = cast<scf::YieldOp>(newBody->getTerminator());
-
-    rewriter.setInsertionPoint(yieldOp);
-    SmallVector<Value> yieldOperands;
-    yieldOperands.push_back(dotOp.getResult()); // Output of tt.dot
-
-    // Modify the yield op in place.
-    yieldOp->setOperands(yieldOperands);
-
-    // Finally, erase the old ForOp
-    rewriter.eraseOp(op);
-
     return success();
   }
 };
@@ -569,38 +280,11 @@ void RockToTTIRPass::runOnOperation() {
     return;
   }
 
-  // First, apply rock.fill -> tt.splat conversion using greedy rewriting.
-  // This must be done before partial conversion because the pattern uses
-  // replaceAllUsesExcept which isn't supported in conversion rollback mode.
-  {
-    RewritePatternSet fillPatterns(ctx);
-    fillPatterns.add<RockFillOpRewritePattern>(ctx);
-    if (failed(
-            applyPatternsGreedily(getOperation(), std::move(fillPatterns)))) {
-      return signalPassFailure();
-    }
-  }
-
-  // Apply rock.make_range -> tt.make_range conversion using greedy rewriting.
-  {
-    RewritePatternSet makeRangePatterns(ctx);
-    makeRangePatterns.add<RockMakeRangeOpRewritePattern>(ctx);
-    if (failed(applyPatternsGreedily(getOperation(),
-                                     std::move(makeRangePatterns)))) {
-      return signalPassFailure();
-    }
-  }
-
   ConversionTarget target(*ctx);
 
   // Mark Rock ops as illegal - they should be converted
-  target.addIllegalOp<tensor::SplatOp>();
-  target.addIllegalOp<rock::BroadcastOp>();
-  target.addIllegalOp<rock::WorkgroupIdOp>();
   target.addIllegalOp<rock::BlockwiseLoadTilePtrOp>();
   target.addIllegalOp<rock::BlockwiseGemmOp>();
-  // Note: rock::MakeRangeOp is already converted in the greedy rewrite phase
-  // above
 
   // Triton and Rock dialects are legal (Rock for now, will be converted later)
   target.addLegalDialect<triton::TritonDialect>();
@@ -609,13 +293,8 @@ void RockToTTIRPass::runOnOperation() {
   target.addLegalDialect<arith::ArithDialect>();
 
   RewritePatternSet patterns(ctx);
-  patterns.add<TensorSplatOpRewritePattern>(ctx);
-  patterns.add<RockBroadCastOpRewritePattern>(ctx);
-  patterns.add<RockWorkgroupIdOpRewritePattern>(ctx);
   patterns.add<RockLoadTilePtrOpRewritePattern>(ctx);
   patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
-  // Note: RockMakeRangeOpRewritePattern is already applied in greedy rewrite
-  // above
 
   // Apply partial conversion - convert tensor.splat and Rock ops to Triton ops
   if (failed(applyPartialConversion(getOperation(), target,
@@ -640,7 +319,6 @@ void RockToTTIRPass::runOnOperation() {
   });
 
   RewritePatternSet patterns2(ctx);
-  patterns2.add<RockMicroKernelOpRewritePattern>(ctx);
   patterns2.add<RockStoreTilePtrOpRewritePattern>(ctx);
   patterns2.add<ReturnOpRewritePattern>(ctx);
   if (failed(applyFullConversion(getOperation(), target2,

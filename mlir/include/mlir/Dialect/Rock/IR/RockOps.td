@@ -587,32 +587,6 @@ def Rock_GpuAllocOp:
   let hasVerifier = 1;
 }
 
-// TBD: eventually replace this with linalg.fill?
-def Rock_FillOp:
-    Rock_Op<"fill">,
-    Arguments<(ins AnyMemRef:$input,
-                   //AnyTypeOf<[AnyInteger, AnyFloat]>:$value)> {
-                   AnyTypeOf<[AnyInteger, AnyFloat, AnyVectorOfNonZeroRank]>:$value)> {
-  let summary = "Fill memory with constant value on GPU";
-  let description = [{
-    The `rock.fill` op fills a memref on GPU with a constant value.
-  }];
-  let assemblyFormat = [{
-    `(` operands `)` attr-dict `:` type(operands)
-  }];
-}
-
-def Rock_WorkgroupIdOp:
-    Rock_Op<"workgroup_id", [Pure,
-      DeclareOpInterfaceMethods<InferIntRangeInterface,["inferResultRanges"]>]>,
-    Results<(outs I32:$id)> {
-  let summary = "Get current workgroup ID";
-  let description = [{
-    The `rock.workgroup_id` op gets the current workgroup ID.
-  }];
-  let assemblyFormat = "attr-dict `:` type($id)";
-}
-
 // yield
 def Rock_YieldOp :
     Rock_Op<"yield", [Pure, Terminator, ReturnLike]> {
@@ -794,33 +768,6 @@ def Rock_TransformsToPtrOp
   }];
 }
 
-def Rock_MakeRangeOp : 
-    Rock_Op<"make_range", [Pure]> {
-  let summary = "Create a 1D tensor range";
-
-  let description = [{
-    The `rock.make_range` op creates a tensor with integer values 
-    spanning from `start` to `end` (exclusive), with step = 1.
-    
-    Values: [start, start+1, start+2, ..., end-1]
-    
-    This operation is used in the tensor-based Rock dialect for 
-    generating indices and coordinate ranges for GPU computations.
-    The result tensor shape is determined by the result type.
-  }];
-
-  let arguments = (ins 
-    I32Attr:$start,
-    I32Attr:$end
-  );
-
-  let results = (outs AnyRankedTensor:$result);
-
-  let assemblyFormat = [{
-    $start `to` $end attr-dict `:` type($result)
-  }];
-}
-
 // blockwise_broadcasting_reduction
 def Rock_BlockwiseBroadcastReduceOp:
     Rock_Op<"blockwise_broadcast_reduce">,
@@ -868,38 +815,6 @@ def Rock_BlockwiseBroadcastReduceOp:
   }];
 
   let hasVerifier = 1;
-}
-
-def Rock_ArithOp : Rock_Op<"arith_op", []> {
-  let summary = "Generic arithmetic operation wrapper";
-
-  let description = [{
-    A generic wrapper for arithmetic operations that will be lowered
-    when converting memrefs to tensors. The 'name' attribute specifies
-    which arithmetic operation to perform.
-  }];
-
-  let arguments = (ins StrAttr:$name, OptionalAttr<AnyAttr>:$constantValue, Variadic<AnyType>:$operands);
-
-  let results = (outs AnyType:$result);
-
-  let assemblyFormat = "`{` $name `}` $operands attr-dict `:` functional-type($operands, $result)";
-}
-
-def Rock_BroadcastOp : Rock_Op<"broadcast", [Pure]> {
-  let summary = "Broadcast a tensor to a new shape";
-
-  let description = [{
-    For a given tensor, broadcast changes one or more dimensions with size 1
-    to a new size, e.g. tensor<1x32x1xf32> -> tensor<2x32x4xf32>. You cannot
-    change the size of a non-1 dimension.
-  }];
-
-  let arguments = (ins AnyRankedTensor:$src);
-
-  let results = (outs AnyRankedTensor:$result);
-
-  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
 }
 
 def Rock_CastToPtrOp : Rock_Op<"cast_to_ptr", [Pure]> {
