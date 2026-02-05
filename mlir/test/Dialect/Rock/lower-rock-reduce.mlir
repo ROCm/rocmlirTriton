@@ -4,6 +4,7 @@
 // XXX: rocmlir-opt -rock-lower-reduce %s | FileCheck %s
 
 // TODO(rocmlirTriton): Add dumy check to make FileCheck happy
+// RUN: rocmlir-opt %s | FileCheck %s
 // CHECK: module
 
 // TODO(roctriton): We need to unbufferize rock.reduce
