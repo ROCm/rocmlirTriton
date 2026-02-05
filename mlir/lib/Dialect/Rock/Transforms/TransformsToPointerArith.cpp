@@ -612,20 +612,9 @@ struct TransformsToPtrRewritePattern
     assert(extraIdxCount >= bufferIdxCount);
     SmallVector<Value> initValues(extraIndices);
     for (size_t dimension = 0; dimension < shape.size(); ++dimension) {
-      // Create tensor shape with 1s everywhere except the current dimension
-      // SmallVector<int64_t> tensorShape(shape.size(), 1);
-      // tensorShape[dimension] = shape[dimension];
-
-      // // Create tensor type for the range
-      // auto tensorType = RankedTensorType::get(tensorShape, b.getI32Type());
-
-      // Create the range values using rock.make_range
+      // Create the range values using triton.make_range
       auto rangeValue =
           makeRange(b, loc, 0, shape[dimension], shape.size(), dimension);
-      // auto rangeValue = triton::MakeRangeOp::create(
-      //     b, loc, tensorType,
-      //     b.getI32IntegerAttr(0),
-      //     b.getI32IntegerAttr(shape[dimension]));
       initValues.push_back(rangeValue);
     }
 
