@@ -7,11 +7,11 @@
 #general_gemm_params_splitk = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 8, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 2, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 #general_gemm_params1 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 16, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 #xdlops_gemm_params0 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 8, kpack = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-#xdlops_gemm_params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 4, kpack = 4, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+#xdlops_gemm_params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 16, kpack = 4, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 #xdlops_gemm_params3 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 8, kpack = 1, numWaves = 2, matrixInstrNonkdim = 0, splitKFactor = 3, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-#xldops_attn_params_g0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 1, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-#xldops_attn_params_g1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 8, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-#xldops_attn_params_g1_splitk = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 8, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+#xldops_attn_params_g0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 4, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+#xldops_attn_params_g1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+#xldops_attn_params_g1_splitk = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 
 // CHECK-LABEL: func.func @gemm_easy_case_from_conv
 // CHECK-SAME: (%[[a:.*]]: tensor<1x72x128xf32>, %[[b:.*]]: tensor<1x72x512xf32>, %[[c:.*]]: tensor<1x128x512xf32>)
@@ -535,7 +535,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //     rock.yield
 //   }
 //    %alloc = ab * %0 : tensor<1x64x64xf32> -> tensor<1x64x64xf32>
-//   } {firstGemmIndices = array<i64: 0>, params0 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 32, kPerBlock = 16, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 32, kPerBlock = 16, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, perf_config = "attn:v2:64,128,32,16,32,16,4,4,1,2,1", storeMethod = #rock<StoreMethod set>} -> tensor<1x64x64xf32>
+//   } {firstGemmIndices = array<i64: 0>, params0 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, perf_config = "attn:v2:64,128,32,16,32,16,4,4,1,2,1", storeMethod = #rock<StoreMethod set>} -> tensor<1x64x64xf32>
 //   %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 64, d0 mod 64)> by [<Merge{1, 64, 64} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [4096] -> [1, 64, 64]> : tensor<1x64x64xf32> to tensor<4096xf32>
 //   %alloc_0 = tensor.empty() : tensor<1x64x1xf32>
 // 
@@ -769,7 +769,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   %result = rock.gemm %0 scaled by %7 * %1 scaled by %10 features = mfma {
 //     derivedBlockSize = 256 : i32,
 //     gridSize = 12 : i32,
-//     params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 16, kpack = 32, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 5, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//     params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 512, kpack = 32, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 5, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   } : tensor<3x256x768xf4E2M1FN> scaled by tensor<3x256x768xf8E8M0FNU> * tensor<3x768x256xf4E2M1FN> scaled by tensor<3x768x256xf8E8M0FNU> -> tensor<3x256x256xf32>
 //   %result_flat = rock.transform %result by <affine_map<(d0) -> (d0 floordiv 65536, (d0 mod 65536) floordiv 256, d0 mod 256)> by [<Merge{3, 256, 256} ["raw"] at [0] -> ["g", "m", "n"] at [0, 1, 2]>] bounds = [196608] -> [3, 256, 256]> : tensor<3x256x256xf32> to tensor<196608xf32>
 //   %out = rock.store %result_flat to %arg2 by set : tensor<196608xf32> -> tensor<196608xf32> to tensor<196608xf32>
