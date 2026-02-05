@@ -285,44 +285,25 @@ void RockToTTIRPass::runOnOperation() {
   // Mark Rock ops as illegal - they should be converted
   target.addIllegalOp<rock::BlockwiseLoadTilePtrOp>();
   target.addIllegalOp<rock::BlockwiseGemmOp>();
+  target.addIllegalOp<rock::BlockwiseStoreTilePtrOp>();
 
   // Triton and Rock dialects are legal (Rock for now, will be converted later)
   target.addLegalDialect<triton::TritonDialect>();
   target.addLegalDialect<rock::RockDialect>();
   target.addLegalDialect<func::FuncDialect>();
   target.addLegalDialect<arith::ArithDialect>();
+  target.addDynamicallyLegalOp<func::ReturnOp>(
+      [](func::ReturnOp op) { return op.getOperands().empty(); });
 
   RewritePatternSet patterns(ctx);
   patterns.add<RockLoadTilePtrOpRewritePattern>(ctx);
   patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
+  patterns.add<RockStoreTilePtrOpRewritePattern>(ctx);
+  patterns.add<ReturnOpRewritePattern>(ctx);
 
   // Apply partial conversion - convert tensor.splat and Rock ops to Triton ops
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
-    return signalPassFailure();
-  }
-
-  // Second conversion step: convert the micro kernel loop
-  // by converting the scf.for op to a scf.for op with iter_args and
-  // yield and rewrite the store tile ptr op to triton::store op.
-  ConversionTarget target2(*ctx);
-  target2.addLegalDialect<scf::SCFDialect>();
-  target2.addLegalDialect<func::FuncDialect>();
-  target2.addLegalDialect<arith::ArithDialect>();
-  target2.addLegalDialect<rock::RockDialect>();
-  target2.addLegalDialect<triton::TritonDialect>();
-  target2.addDynamicallyLegalOp<scf::ForOp>(
-      [](scf::ForOp op) { return op.getNumResults() > 0; });
-  target2.addIllegalOp<rock::BlockwiseStoreTilePtrOp>();
-  target2.addDynamicallyLegalOp<func::ReturnOp>([](func::ReturnOp op) {
-    return op.getOperands().empty();
-  });
-
-  RewritePatternSet patterns2(ctx);
-  patterns2.add<RockStoreTilePtrOpRewritePattern>(ctx);
-  patterns2.add<ReturnOpRewritePattern>(ctx);
-  if (failed(applyFullConversion(getOperation(), target2,
-                                    std::move(patterns2)))) {
     return signalPassFailure();
   }
 }

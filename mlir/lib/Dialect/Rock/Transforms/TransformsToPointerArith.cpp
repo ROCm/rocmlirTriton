@@ -718,6 +718,10 @@ void RockTransformsToPointerArithPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
   target.addIllegalOp<rock::TransformsToPtrOp>();
+  // Note: We don't mark TransformOp as illegal. After TransformsToPtrOp
+  // conversion, transform chains become dead code (each transform only used
+  // by the next transform in the chain). These will be cleaned up by
+  // Canonicalizer.
   target.addLegalDialect<rock::RockDialect, arith::ArithDialect,
                          tensor::TensorDialect, triton::TritonDialect>();
 
