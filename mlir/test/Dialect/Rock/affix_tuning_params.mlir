@@ -12,7 +12,7 @@ func.func @rock_conv(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x
   // CHECK: rock.conv
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.conv(%filter, %input, %output) features = none {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
@@ -31,7 +31,7 @@ func.func @rock_conv_schedulev2(%filter : tensor<1x128x8x3x3xf32>, %input : tens
   // CHECK: rock.conv
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.conv(%filter, %input, %output) features = none {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
@@ -50,7 +50,7 @@ func.func @rock_conv_f16(%filter : tensor<1x128x8x3x3xf16>, %input : tensor<128x
   // CHECK: rock.conv
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.conv(%filter, %input, %output) features = none {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
@@ -69,7 +69,7 @@ func.func @rock_conv_i8(%filter : tensor<1x128x8x3x3xi8>, %input : tensor<128x1x
   // CHECK: rock.conv
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.conv(%filter, %input, %output) features = mfma|dot|atomic_add|atomic_add_f16 {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
@@ -176,7 +176,7 @@ func.func @rock_conv_bwd_weight(%filter : tensor<1x128x8x3x3xf32>, %input : tens
   // CHECK: rock.conv_bwd_weight
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 4
   %result = rock.conv_bwd_weight(%filter, %input, %output) features = none {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
@@ -195,7 +195,7 @@ func.func @rock_conv_bwd_weight_f16(%filter : tensor<1x128x8x3x3xf16>, %input : 
   // CHECK: rock.conv_bwd_weight
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 4
   %result = rock.conv_bwd_weight(%filter, %input, %output) features = none {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
@@ -214,7 +214,7 @@ func.func @rock_conv_bwd_weight_padALL(%filter : tensor<1x20x8x3x3xf32>, %input 
   // CHECK: rock.conv_bwd_weight
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 2
   %result = rock.conv_bwd_weight(%filter, %input, %output) features = none {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
@@ -233,7 +233,7 @@ func.func @rock_conv_bwd_weight_padALL_f16(%filter : tensor<1x20x8x3x3xf16>, %in
   // CHECK: rock.conv_bwd_weight
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 2
   %result = rock.conv_bwd_weight(%filter, %input, %output) features = none {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
@@ -275,7 +275,7 @@ func.func @rock_conv_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x23
   // CHECK: rock.conv
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 50176
   %result = rock.conv(%arg0, %arg1, %arg2) features =  mfma|dot|atomic_add|atomic_add_f16 {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -294,7 +294,7 @@ func.func @rock_conv_bwd_weight_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor
   // CHECK: rock.conv_bwd_weight
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3
   %result = rock.conv_bwd_weight(%arg0, %arg1, %arg2) features =  mfma|dot|atomic_add|atomic_add_f16 {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -358,7 +358,7 @@ func.func @rock_gemm_from_conv(%a : tensor<1x72x128xf32>, %b : tensor<1x72x11520
   // CHECK: rock.gemm
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.gemm tr %a * %b features = none
   : tensor<1x72x128xf32> * tensor<1x72x115200xf32> -> tensor<1x128x115200xf32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xf32> -> tensor<1x128x115200xf32> to tensor<1x128x115200xf32>
@@ -371,7 +371,7 @@ func.func @rock_gemm_from_i8_conv(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115
   // CHECK: rock.gemm
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.gemm tr %a * %b features = mfma|dot|atomic_add|atomic_add_f16
   : tensor<1x72x128xi8> * tensor<1x72x115200xi8> -> tensor<1x128x115200xi32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xi32> -> tensor<1x128x115200xi32> to tensor<1x128x115200xi32>
@@ -384,7 +384,7 @@ func.func @rock_gemm_from_i8_conv_schedule_v2(%a : tensor<1x72x128xi8>, %b : ten
   // CHECK: rock.gemm
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.gemm tr %a * %b features = mfma|dot|atomic_add|atomic_add_f16
   : tensor<1x72x128xi8> * tensor<1x72x115200xi8> -> tensor<1x128x115200xi32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xi32> -> tensor<1x128x115200xi32> to tensor<1x128x115200xi32>
@@ -400,7 +400,7 @@ func.func @rock_gemm_from_i8_conv_gfx942(%a : tensor<1x72x128xi8>, %b : tensor<1
   // CHECK: rock.gemm
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.gemm tr %a * %b features = mfma|dot|atomic_add|atomic_add_f16
   : tensor<1x72x128xi8> * tensor<1x72x115200xi8> -> tensor<1x128x115200xi32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xi32> -> tensor<1x128x115200xi32> to tensor<1x128x115200xi32>
@@ -414,7 +414,7 @@ func.func @rock_gemm_xdlops_fp8_bf8(%a : tensor<1x72x128xf8E4M3FNUZ>, %b : tenso
   // CHECK: rock.gemm
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.gemm tr %a * %b features = mfma|dot|atomic_add|atomic_add_f16
   : tensor<1x72x128xf8E4M3FNUZ> * tensor<1x72x115200xf8E5M2FNUZ> -> tensor<1x128x115200xf32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xf32> -> tensor<1x128x115200xf32> to tensor<1x128x115200xf32>
@@ -428,7 +428,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
   // CHECK: rock.gemm
   // CHECK-SAME: params = #rock.gemm_params<
   // GRID: rock.gridwise_gemm
-  // GRID: rock.grid_size =
+  // GRID: rock.grid_size = 3600
   %result = rock.gemm tr %a * %b features = mfma|dot|atomic_add|atomic_add_f16|atomic_add_bf16
   : tensor<1x72x128xf8E4M3FN> * tensor<1x72x115200xf8E5M2> -> tensor<1x128x115200xf32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xf32> -> tensor<1x128x115200xf32> to tensor<1x128x115200xf32>
