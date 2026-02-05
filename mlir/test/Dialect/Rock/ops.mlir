@@ -203,7 +203,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
       mPerBlock = 128,
       nPerBlock = 128,
       kPerBlock = 4,
-      kpack = 4,
+      kpack = 1,
       numWaves = 4,
       matrixInstrNonkdim = 0,
       splitKFactor = 1,
@@ -227,7 +227,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 //     gridSize = 1 : i32,
 //     params = #rock.gemm_params<
 //       kPerBlock = 4,
-//       kpack = 4,
+//       kpack = 1,
 //       mPerBlock = 128,
 //       nPerBlock = 128,
 //       numWaves = 4,
@@ -261,7 +261,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 //     matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //     params = #rock.gemm_params<
 //       kPerBlock = 2,
-//       kpack = 2,
+//       kpack = 1,
 //       mPerBlock = 128,
 //       nPerBlock = 128,
 //       numWaves = 4,

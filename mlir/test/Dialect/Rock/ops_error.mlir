@@ -319,7 +319,7 @@ func.func @gemm_scaled_inputs_not_float4e2m1(%a: tensor<2x64x128xf16>,
 // TODO(roctriton): Scaled gemm tests need rework
 #common_params = #rock.gemm_params<
   kPerBlock = 4,
-  kpack = 4,
+  kpack = 1,
   mPerBlock = 64,
   nPerBlock = 64,
   numWaves = 4,
@@ -454,7 +454,7 @@ func.func @rock_gridwise_gemm_accel_invalid_out_dtype(%A: tensor<2x1024x1024xf4E
 // TODO(roctriton): Scaled gemm tests need rework
 // #blockwise_params = #rock.gemm_params<
 //   kPerBlock = 2,
-//   kpack = 2,
+//   kpack = 1,
 //   mPerBlock = 128,
 //   nPerBlock = 128,
 //   numWaves = 4,

@@ -312,7 +312,7 @@ func.func @rock_conv_bwd_weight_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor
 // DISABLED-GRID-LABEL: @rock_conv_bwd_data_7x7_tuning
 // func.func @rock_conv_bwd_data_7x7_tuning(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<256x1x3x230x230xf32> attributes {kernel = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
 //   // DISABLED-CHECK: rock.conv_bwd_data
-//   // DISABLED-CHECK-SAME: params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 128, numWaves = 4, kPerBlock = 8, kpack = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK-SAME: params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 128, numWaves = 4, kPerBlock = 8, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   // DISABLED-GRID: rock.gridwise_gemm
 //   // DISABLED-GRID-SAME: gridSize = 26450
 //   %result = rock.conv_bwd_data(%arg0, %arg1, %arg2) features =  mfma|dot|atomic_add|atomic_add_f16 {
@@ -459,8 +459,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // func.func @rock_attention_large(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
 //   %alloc = tensor.empty() : tensor<1x16384x512xf32>
 //   // DISABLED-CHECK: rock.attention
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.attention{
 //     qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
 //     %arg3 = softmax(qk) * %arg2 : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32>
@@ -476,8 +476,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // DISABLED-GRID-SAME: grid_size = 3
 // func.func @rock_attention_mperblockg1_wmma(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // DISABLED-CHECK: rock.attention
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
@@ -493,8 +493,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // DISABLED-GRID-SAME: grid_size = 3
 // func.func @rock_attention_mperblockg1_mfma(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, rock.arch = "gfx942:sramecc+:xnack-"} {
 //   // DISABLED-CHECK: rock.attention
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
@@ -527,8 +527,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // func.func @rock_gemm_gemm_v1(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
 //   %alloc = tensor.empty() : tensor<1x16384x512xf32>
 //   // DISABLED-CHECK: rock.gemm_elementwise_gemm
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.gemm_elementwise_gemm{
 //     ab = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
 //     %arg3 = ab * %arg2 : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32>
@@ -545,8 +545,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // func.func @rock_gemm_gemm_large(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
 //   %alloc = tensor.empty() : tensor<1x16384x512xf32>
 //   // DISABLED-CHECK: rock.gemm_elementwise_gemm
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.gemm_elementwise_gemm{
 //     ab = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
 //     %arg3 = ab * %arg2 : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32>
@@ -562,8 +562,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // DISABLED-GRID-SAME: grid_size = 3
 // func.func @rock_gemm_gemm_mperblockg1_wmma(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // DISABLED-CHECK: rock.gemm_elementwise_gemm
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.gemm_elementwise_gemm{
 //    ab = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = ab * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
@@ -579,8 +579,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // DISABLED-GRID-SAME: grid_size = 3
 // func.func @rock_gemm_gemm_mperblockg1_mfma(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x384x64xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {kernel, rock.arch = "gfx942:sramecc+:xnack-"} {
 //   // DISABLED-CHECK: rock.gemm_elementwise_gemm
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.gemm_elementwise_gemm{
 //    ab = %arg0 * tr %arg1 : tensor<1x384x64xf32>, tensor<1x384x64xf32>
 //    %arg3 = ab * %arg2 : tensor<1x384x64xf32> -> tensor<1x384x64xf32>
@@ -612,8 +612,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // DISABLED-GRID-SAME: grid_size = 2048
 // func.func @rock_conv_gemm_splitk(%arg0: tensor<1x128x256x3x3xf32>, %arg1: tensor<2x1x256x128x128xf32>, %arg2: tensor<1x128x128xf32>, %arg3: tensor<1x32768x128xf32>) -> tensor<1x32768x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
 //   // DISABLED-CHECK: rock.conv_elementwise_gemm
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 8, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 8, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.conv_elementwise_gemm{
 //    ab = conv(%arg0, %arg1) : tensor<1x128x256x3x3xf32>, tensor<2x1x256x128x128xf32>
 //    %arg3 = ab * %arg2 : tensor<1x128x128xf32> -> tensor<1x32768x128xf32>
@@ -629,8 +629,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // DISABLED-GRID-SAME: grid_size = 256
 // func.func @rock_conv_gemm_large(%arg0: tensor<1x128x256x3x3xf32>, %arg1: tensor<2x1x256x128x128xf32>, %arg2: tensor<1x128x128xf32>, %arg3: tensor<1x32768x128xf32>) -> tensor<1x32768x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
 //   // DISABLED-CHECK: rock.conv_elementwise_gemm
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.conv_elementwise_gemm{
 //    ab = conv(%arg0, %arg1) : tensor<1x128x256x3x3xf32>, tensor<2x1x256x128x128xf32>
 //    %arg3 = ab * %arg2 : tensor<1x128x128xf32> -> tensor<1x32768x128xf32>
@@ -646,8 +646,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // DISABLED-GRID-SAME: grid_size = 256
 // func.func @rock_conv_gemm_mperblockg1_wmma(%arg0: tensor<1x128x256x1x1xf16>, %arg1: tensor<2x1x256x128x128xf16>, %arg2: tensor<1x128x128xf16>, %arg3: tensor<1x32768x128xf16>) -> tensor<1x32768x128xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // DISABLED-CHECK: rock.conv_elementwise_gemm
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.conv_elementwise_gemm{
 //    ab = conv(%arg0, %arg1) : tensor<1x128x256x1x1xf16>, tensor<2x1x256x128x128xf16>
 //    %arg3 = ab * %arg2 : tensor<1x128x128xf16> -> tensor<1x32768x128xf16>
@@ -663,8 +663,8 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 // DISABLED-GRID-SAME: grid_size = 256
 // func.func @rock_conv_gemm_mperblockg1_mfma(%arg0: tensor<1x128x256x1x1xf32>, %arg1: tensor<2x1x256x128x128xf32>, %arg2: tensor<1x128x128xf32>, %arg3: tensor<1x32768x128xf32>) -> tensor<1x32768x128xf32> attributes {kernel, rock.arch = "gfx942:sramecc+:xnack-"} {
 //   // DISABLED-CHECK: rock.conv_elementwise_gemm
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, numWaves = 4, kPerBlock = 2, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+//   // DISABLED-CHECK: #rock.gemm_params<mPerBlock = 256, nPerBlock = 128, numWaves = 4, kPerBlock = 16, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   %result = rock.conv_elementwise_gemm{
 //    ab = conv(%arg0, %arg1) : tensor<1x128x256x1x1xf32>, tensor<2x1x256x128x128xf32>
 //    %arg3 = ab * %arg2 : tensor<1x128x128xf32> -> tensor<1x32768x128xf32>
