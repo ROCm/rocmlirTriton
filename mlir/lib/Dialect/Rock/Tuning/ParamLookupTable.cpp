@@ -14,10 +14,6 @@ template <typename ParamsType>
 ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
                                                          KernelType op,
                                                          Type dataType) {
-  if (dataType.getIntOrFloatBitWidth() == 4 && isa<FloatType>(dataType) &&
-      op == KernelType::Gemm && !lookupArchInfo(arch).hasScaledGemm)
-    llvm::report_fatal_error("Unsupported arch for f4 kernels");
-
   arch = normalizeArch(arch);
   auto key = makeKey(arch, op, dataType);
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key

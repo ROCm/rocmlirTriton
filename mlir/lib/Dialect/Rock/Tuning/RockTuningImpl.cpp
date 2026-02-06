@@ -85,8 +85,7 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
     return splitKValues;
   }
 
-  uint32_t numCUs =
-      rock::lookupArchInfo(rock::getArchValue(gemmGemmOp)).minNumCU;
+  uint32_t numCUs = rock::getMinNumCU(rock::getArchValue(gemmGemmOp));
   auto opNumCUs = rock::getNumCU(gemmGemmOp);
   if (succeeded(opNumCUs))
     numCUs = opNumCUs.value();
@@ -159,8 +158,10 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t maxWavesPerEU, Tuning
       {0} // gridGroupSize
       };
 
-  GemmFeatures currentFeatures = rock::getFeatures(gemmOp);
-  if (bitEnumContainsAll(currentFeatures, GemmFeatures::mfma))
+  MatrixAccelKind accelKind =
+      rock::getMatrixAccelKind(rock::getArchValue(gemmOp), gemmOp);
+  if (accelKind == MatrixAccelKind::MFMA ||
+      accelKind == MatrixAccelKind::ScaledMFMA)
     return validRangeMfmaParams;
 
   return validRangeWmmaParams;
@@ -184,14 +185,20 @@ getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp,
        /*kPack=*/{4, 8, 16},
        /*mnPerXdl=*/{16},
        {0}};
-  GemmFeatures features = rock::getFeatures(gemmGemmOp);
+  auto [firstGemmKind, secondGemmKind] =
+      rock::getMatrixAccelKind(rock::getArchValue(gemmGemmOp), gemmGemmOp);
 
   std::vector<std::vector<uint32_t>> validRangeGemmGemmParams;
-  if (bitEnumContainsAny(features, GemmFeatures::mfma)) {
+  // TODO(roctriton): non-accel list!
+
+  // checking first gemm only is ok
+  if (firstGemmKind == MatrixAccelKind::MFMA ||
+      firstGemmKind == MatrixAccelKind::ScaledMFMA)
     validRangeGemmGemmParams = validRangeGemmGemmParamsMFMA;
-  } else if (bitEnumContainsAny(features, GemmFeatures::wmma)) {
+  else if (firstGemmKind == MatrixAccelKind::WMMA ||
+           firstGemmKind == MatrixAccelKind::ScaledWMMA)
     validRangeGemmGemmParams = validRangeGemmGemmParamsWMMA;
-  }
+
   return validRangeGemmGemmParams;
 }
 
@@ -202,8 +209,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         TuningParamSetKind kind) {
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getAccelRangeGemmGemm(gemmGemmOp, kind);
-  auto archInfo = rock::lookupArchInfo(rock::getArchValue(gemmGemmOp));
-  int64_t waveSize = archInfo.waveSize;
+  auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
   // TODO(roctriton): numCTAs for gfx1250
   int64_t numCTAs{1}, wavesPerEU{0}, gridGroupSize{0};
   OpBuilder b(gemmGemmOp.getContext());
@@ -318,7 +324,7 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
     return splitKValues;
   }
 
-  uint32_t numCUs = rock::lookupArchInfo(rock::getArchValue(gemmOp)).minNumCU;
+  uint32_t numCUs = rock::getMinNumCU(rock::getArchValue(gemmOp));
   if (succeeded(rock::getNumCU(gemmOp))) {
     numCUs = rock::getNumCU(gemmOp).value();
   }
@@ -337,13 +343,12 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     TuningParamSetKind kind) {
   auto info = PopulateParamsInfo::fromOp(gemmOp);
 
-  int64_t maxWavesPerEU =
-      rock::lookupArchInfo(rock::getArchValue(gemmOp)).maxWavesPerEU;
+  int64_t maxWavesPerEU = rock::getMaxWavesPerEU(rock::getArchValue(gemmOp));
   const std::vector<std::vector<uint32_t>> accelParams =
       getAccelRangeGemm(gemmOp, maxWavesPerEU, kind);
 
   auto tuningInfo = std::make_unique<PopulateParams>();
-  int64_t waveSize = rock::lookupArchInfo(rock::getArchValue(gemmOp)).waveSize;
+  int64_t waveSize = rock::getWaveSize(rock::getArchValue(gemmOp));
 
   // hardcode to use heuristics
   // TODO(roctriton): numCTAs for gfx1250
@@ -1071,7 +1076,7 @@ LogicalResult tuningTableLookup(TuningTable *perfTable, ModuleOp &mod,
   return failure();
 }
 
-static int64_t retrieveSplitKValue(rock::GemmFeatures features,
+static int64_t retrieveSplitKValue(
                                    StringAttr perfConfig) {
   auto gemmGemmPerfConfig = GemmGemmParamsAttr::get(perfConfig);
   if (gemmGemmPerfConfig)
@@ -1081,15 +1086,15 @@ static int64_t retrieveSplitKValue(rock::GemmFeatures features,
   return params ? params.getSplitKFactor() : 1;
 }
 
-bool isSplitKRequested(rock::GemmFeatures features, StringAttr perfConfig) {
-  return retrieveSplitKValue(features, perfConfig) > 1;
+bool isSplitKRequested(StringAttr perfConfig) {
+  return retrieveSplitKValue(perfConfig) > 1;
 }
 
 bool isSplitKRequested(ModuleOp mod, StringRef perfConfig) {
   auto perfConfigAttr = StringAttr::get(mod->getContext(), perfConfig);
   WalkResult walkResult = mod.walk([&](Operation *op) -> WalkResult {
     if (isa<RockGemmWrapperInterface, RockGemmGemmWrapperInterface>(op) &&
-        isSplitKRequested(rock::getFeatures(op), perfConfigAttr))
+        isSplitKRequested(perfConfigAttr))
       return WalkResult::interrupt();
 
     return WalkResult::advance();

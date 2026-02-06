@@ -55,10 +55,9 @@ class RockGemmLinalgSplitkNormalizationPass
 static LogicalResult divideAddBySplitkFactor(linalg::GenericOp genericOp,
                                              Value gemmResult,
                                              int64_t splitKFactor,
-                                             GemmFeatures features,
                                              IRRewriter &b) {
   SmallVector<std::tuple<Operation *, int>> adds;
-  if (failed(checkValidOutputFusion(genericOp, gemmResult, features, adds)))
+  if (failed(checkValidOutputFusion(genericOp, gemmResult, adds)))
     return failure();
 
   for (auto [arithOp, gemmOutIndex] : adds) {
@@ -117,7 +116,6 @@ static LogicalResult rewriteLinalgForSplitK(func::FuncOp &func) {
     // GemmOp no longer has an output argument - use the result directly
     auto gemmResult = gemmOp.getResult();
     int64_t splitKFactor = gemmOp.getParams()->getSplitKFactor();
-    GemmFeatures features = rock::getFeatures(gemmOp);
 
     // save all `linalg::GenericOp` that read from a gemm output
     auto genericOpOperands =
@@ -140,7 +138,7 @@ static LogicalResult rewriteLinalgForSplitK(func::FuncOp &func) {
         return failure();
 
       if (failed(divideAddBySplitkFactor(genericOp, inputAlloc.value(),
-                                         splitKFactor, features, rewriter)))
+                                         splitKFactor, rewriter)))
         return failure();
     }
   }

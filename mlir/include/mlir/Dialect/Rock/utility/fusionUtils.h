@@ -51,7 +51,6 @@ LogicalResult testFusionLegalityBwdDataConv(ModuleOp mod);
 // split-k kernel.
 LogicalResult
 checkValidOutputFusion(linalg::GenericOp genericOp, Value gemmResult,
-                       GemmFeatures features,
                        SmallVector<std::tuple<Operation *, int>> &adds);
 
 } // end namespace rock

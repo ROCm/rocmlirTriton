@@ -54,7 +54,6 @@ int64_t obtainBlockSize(int64_t waveSize, GemmParamsAttr params);
 struct PopulateParamsInfo {
   GemmSize gemmSize;
   SmallString<32> arch;
-  GemmFeatures gemmFeatures;
   Type gemmAType;
   Type gemmBType;
   KernelType kernelType;
@@ -62,19 +61,18 @@ struct PopulateParamsInfo {
   uint32_t numCu;
   bool hasFusedReduction;
 
-  PopulateParamsInfo(GemmSize gemmSize, StringRef arch,
-                     GemmFeatures gemmFeatures, Type gemmAType, Type gemmBType,
-                     KernelType kernelType)
-      : gemmSize(gemmSize), arch(arch), gemmFeatures(gemmFeatures),
-        gemmAType(gemmAType), gemmBType(gemmBType), kernelType(kernelType),
-        hasFusedReduction(false) {}
+  PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
+                     Type gemmBType, KernelType kernelType)
+      : gemmSize(gemmSize), arch(arch), gemmAType(gemmAType),
+        gemmBType(gemmBType), kernelType(kernelType), hasFusedReduction(false) {
+  }
 
-  PopulateParamsInfo(GemmSize gemmSize, StringRef arch,
-                     GemmFeatures gemmFeatures, Type gemmAType, Type gemmBType,
-                     KernelType kernelType, int64_t batchSize, uint32_t numCu)
-      : gemmSize(gemmSize), arch(arch), gemmFeatures(gemmFeatures),
-        gemmAType(gemmAType), gemmBType(gemmBType), kernelType(kernelType),
-        batchSize(batchSize), numCu(numCu), hasFusedReduction(false) {}
+  PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
+                     Type gemmBType, KernelType kernelType, int64_t batchSize,
+                     uint32_t numCu)
+      : gemmSize(gemmSize), arch(arch), gemmAType(gemmAType),
+        gemmBType(gemmBType), kernelType(kernelType), batchSize(batchSize),
+        numCu(numCu), hasFusedReduction(false) {}
 
   /// Extract the relevant information from a RockGemmWrapperInterface operation
   static PopulateParamsInfo fromOp(RockGemmWrapperInterface op);

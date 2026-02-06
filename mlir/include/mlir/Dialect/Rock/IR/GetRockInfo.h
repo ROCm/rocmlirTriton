@@ -47,15 +47,6 @@ FailureOr<int64_t> getNumChiplets(Operation *op);
 // Get the num_chiplets from the op, and error out if it cannot be found
 int64_t getNumChipletsValue(Operation *op);
 
-inline rock::GemmFeatures intersectGemmFeatures(rock::GemmFeatures a,
-                                                rock::GemmFeatures b) {
-  return a & b;
-}
-
-// Get the features enabled for the specified op. These will be dependent on
-// the architecture being used, and the type of the op.
-rock::GemmFeatures getFeatures(Operation *op);
-
 } // End namespace rock
 } // End namespace mlir
 #endif // MLIR_DIALECT_ROCK_IR_GETROCKINFO_H

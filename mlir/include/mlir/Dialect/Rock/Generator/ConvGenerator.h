@@ -39,7 +39,6 @@ public:
     std::string perfConfig;
     std::optional<int> num_cu;
     std::optional<int> num_chiplets;
-    GemmFeatures features;
     std::optional<rock::ConvOpType> operation;
     std::string filterDataTypeStr;
     std::string inputDataTypeStr;
@@ -68,7 +67,6 @@ public:
       const std::string &perfConfig = "",
       std::optional<int> num_cu = std::nullopt,
       std::optional<int> num_chiplets = std::nullopt,
-      GemmFeatures features = GemmFeatures::none,
       const std::optional<rock::ConvOpType> operation = std::nullopt,
       const std::string &filterDataTypeStr = "f32",
       const std::string &inputDataTypeStr = "f32",
@@ -92,8 +90,6 @@ public:
   Type getOutputDataType(OpBuilder &builder) const;
 
   void setDataTypes(const std::string &dataTypeStr);
-
-  void flipAccel();
 
   void setPerfConfig(StringRef perfConfig);
 

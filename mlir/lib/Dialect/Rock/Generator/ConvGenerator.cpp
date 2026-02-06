@@ -43,8 +43,7 @@ ConvGenerator::ConvGenerator(
     bool disableSplitKForTuning, int64_t scheduleVersion,
     const std::string &triple, const std::string &chipFeatures,
     const std::string &perfConfig, std::optional<int> num_cu,
-    std::optional<int> num_chiplets, GemmFeatures features,
-    const std::optional<ConvOpType> operation,
+    std::optional<int> num_chiplets, const std::optional<ConvOpType> operation,
     const std::string &filterDataTypeStr, const std::string &inputDataTypeStr,
     const std::string &outputDataTypeStr, ArrayRef<int> dilations,
     ArrayRef<int> strides, ArrayRef<int> paddingLeft,
@@ -60,7 +59,6 @@ ConvGenerator::ConvGenerator(
              perfConfig,
              num_cu,
              num_chiplets,
-             features,
              operation,
              filterDataTypeStr,
              inputDataTypeStr,
@@ -358,7 +356,6 @@ LogicalResult ConvGenerator::needExtraPadBwdWeight(OpBuilder &builder,
   // TODO: support mixed-type fp8 here too.
   PopulateParamsInfo info{/*gemmSize=*/gemmSize,
                           /*arch*=*/config.arch,
-                          /*gemmFeatures=*/config.features,
                           /*gemmAType=*/dataType,
                           /*gemmBType=*/dataType,
                           /*kernelType=*/KernelType::ConvBwdWeight,
@@ -427,13 +424,12 @@ LogicalResult ConvGenerator::getWorkspaceSize(ModuleOp &module,
 
 uint32_t ConvGenerator::getNumCU() const {
   return config.num_cu.has_value() ? config.num_cu.value()
-                                   : rock::lookupArchInfo(config.arch).minNumCU;
+                                   : rock::getMinNumCU(config.arch);
 }
 
 int64_t ConvGenerator::getNumChiplets() const {
-  return config.num_chiplets.has_value()
-             ? config.num_chiplets.value()
-             : rock::lookupArchInfo(config.arch).maxNumXCC;
+  return config.num_chiplets.has_value() ? config.num_chiplets.value()
+                                         : rock::getMaxNumChiplets(config.arch);
 }
 
 LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,
@@ -569,30 +565,6 @@ LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,
 
   strToStr("kernel_name", config.kernelBaseName);
 
-  // Get the default features associated with the chip (and with the data type)
-  AmdArchInfo archInfo = lookupArchInfo(splitter.getChip());
-  Type filterDataType = getFilterDataType(builder);
-  Type inputDataType = getInputDataType(builder);
-  Type filterElemType = mlir::getElementTypeOrSelf(filterDataType);
-  Type inputElemType = mlir::getElementTypeOrSelf(inputDataType);
-  Type dataType = inputDataType;
-  config.features = archInfo.getDefaultFeatures(dataType);
-  // Disable acceleration for mixed types
-  if (filterElemType.getIntOrFloatBitWidth() !=
-      inputElemType.getIntOrFloatBitWidth())
-    config.features = bitEnumClear(config.features, GemmFeatures::mfma);
-
-  if (filterElemType != inputElemType)
-    config.features = bitEnumClear(config.features, GemmFeatures::wmma);
-
-  // Force acceleration if that's what the client wants
-  int hasAccel = 0;
-  strToInt("x2", hasAccel);
-  config.features =
-      bitEnumSet(config.features, GemmFeatures::mfma, hasAccel == 1);
-  config.features =
-      bitEnumSet(config.features, GemmFeatures::wmma, hasAccel == 2);
-
   // Allow only fwd direction for 8-bit types. Reject other directions.
   if (config.operation.value() != ConvOpType::Fwd &&
       (config.inputDataTypeStr == "i8" || config.inputDataTypeStr == "fp8" ||
@@ -721,11 +693,6 @@ void ConvGenerator::setKernelName(const std::string &newName) {
 void ConvGenerator::setDataTypes(const std::string &dataTypeStr) {
   config.filterDataTypeStr = config.inputDataTypeStr =
       config.outputDataTypeStr = dataTypeStr;
-}
-
-void ConvGenerator::flipAccel() {
-  config.features = bitEnumClear(config.features, GemmFeatures::mfma);
-  config.features = bitEnumClear(config.features, GemmFeatures::wmma);
 }
 
 void ConvGenerator::setPerfConfig(StringRef perfConfig) {

@@ -1,4 +1,4 @@
-//===- AmdArchDb.cpp - Dtabase of AMD GPU features ------------------===//
+//===- AmdArchDb.cpp - Database of AMD GPU features ------------------===//
 //
 // Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -8,8 +8,6 @@
 
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 
-#include "mlir/Dialect/AMDGPU/IR/AMDGPUDialect.h"
-#include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 
@@ -18,445 +16,403 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 
-// HIP and HSA are not supported on Windows CI.
-#ifndef _WIN32
-#include "hip/hip_runtime_api.h"
-#include "hsa/hsa.h"
-#include "hsa/hsa_ext_amd.h"
-#endif
+// Include Triton AMD APIs for intrinsic selection
+#include "TritonAMDGPUToLLVM/TargetUtils.h"
+#include "TritonAMDGPUTransforms/MfmaGroup.h"
+#include "TritonAMDGPUTransforms/WmmaGroup.h"
+
+// triton::AMD::TargetInfo
+#include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 
 #define DEBUG_TYPE "rock-amd-arch-db"
 
 using namespace mlir;
 using namespace mlir::rock;
-
-static constexpr AmdArchInfo
-    gcnInfo(GemmFeatures::none, /*waveSize=*/64,
-            /*maxWavesPerEU*/ 10, /*totalSGPRPerEU*/ 512,
-            /*totalVGPRPerEU*/ 256, /*totalSharedMemPerCU*/ 65536,
-            /*maxSharedMemPerWG*/ 65536, /*numEUPerCU=*/4, /*minNumCU=*/80,
-            /*hasFp8ConversionInstrs=*/false,
-            /*hasOcpFp8ConversionInstrs=*/false, /*hasScaledGemm=*/false,
-            /*maxNumXCC=*/1, /*hasLdsTransposeLoad=*/false),
-    cdna50Info(GemmFeatures::dot, /*waveSize=*/64, /*maxWavesPerEU*/ 8,
-               /*totalSGPRPerEU*/ 512, /*totalVGPRPerEU*/ 256,
-               /*totalSharedMemPerCU*/ 65536, /*maxSharedMemPerWG*/ 65536,
-               /*numEUPerCU=*/4, /*minNumCU=*/10,
-               /*hasFp8ConversionInstrs=*/false,
-               /*hasOcpFp8ConversionInstrs=*/false, /*hasScaledGemm=*/false,
-               /*maxNumXCC=*/1, /*hasLdsTransposeLoad=*/false),
-    cdnaInfo(GemmFeatures::mfma | GemmFeatures::dot | GemmFeatures::atomic_add |
-                 GemmFeatures::atomic_add_f16,
-             /*waveSize=*/64, /*maxWavesPerEU*/ 10, /*totalSGPRPerEU*/ 800,
-             /*totalVGPRPerEU*/ 256, /*totalSharedMemPerCU*/ 65536,
-             /*maxSharedMemPerWG*/ 65536, /*numEUPerCU=*/4, /*minNumCU=*/120,
-             /*hasFp8ConversionInstrs=*/false,
-             /*hasOcpFp8ConversionInstrs=*/false, /*hasScaledGemm=*/false,
-             /*maxNumXCC=*/1, /*hasLdsTransposeLoad=*/false),
-    cdna2Info(GemmFeatures::mfma | GemmFeatures::dot |
-                  GemmFeatures::atomic_add | GemmFeatures::atomic_add_f16,
-              /*waveSize=*/64, /*maxWavesPerEU*/ 8, /*totalSGPRPerEU*/ 800,
-              /*totalVGPRPerEU*/ 512, /*totalSharedMemPerCU*/ 65536,
-              /*maxSharedMemPerWG*/ 65536, /*numEUPerCU=*/4, /*minNumCU=*/104,
-              /*hasFp8ConversionInstrs=*/false,
-              /*hasOcpFp8ConversionInstrs=*/false, /*hasScaledGemm=*/false,
-              /*maxNumXCC=*/1, /*hasLdsTransposeLoad=*/false),
-    cdna3Info(GemmFeatures::mfma | GemmFeatures::dot |
-                  GemmFeatures::atomic_add | GemmFeatures::atomic_add_f16 |
-                  GemmFeatures::direct_to_lds_32b,
-              /*waveSize=*/64, /*maxWavesPerEU*/ 8, /*totalSGPRPerEU*/ 800,
-              /*totalVGPRPerEU*/ 512, /*totalSharedMemPerCU*/ 65536,
-              /*maxSharedMemPerWG*/ 65536, /*numEUPerCU=*/4, /*minNumCU=*/20,
-              /*hasFp8ConversionInstrs=*/true,
-              /*hasOcpFp8ConversionInstrs=*/false, /*hasScaledGemm=*/false,
-              /*maxNumXCC=*/8, /*hasLdsTransposeLoad=*/false),
-    cdna40Info(GemmFeatures::mfma | GemmFeatures::dot |
-                   GemmFeatures::atomic_add | GemmFeatures::atomic_add_f16 |
-                   GemmFeatures::atomic_add_bf16 |
-                   GemmFeatures::direct_to_lds_32b |
-                   GemmFeatures::direct_to_lds_128b,
-               /*waveSize=*/64, /*maxWavesPerEU*/ 8, /*totalSGPRPerEU*/ 800,
-               /*totalVGPRPerEU*/ 512, /*totalSharedMemPerCU*/ 163840,
-               /*maxSharedMemPerWG*/ 163840, /*numEUPerCU=*/4, /*minNumCU=*/256,
-               /*hasFp8ConversionInstrs=*/false,
-               /*hasOcpFp8ConversionInstrs=*/true, /*hasScaledGemm=*/true,
-               /*maxNumXCC=*/8, /*hasLdsTransposeLoad=*/true),
-    // amdgpu target builds all RDNA in WGP Mode
-    rdnaNoDotInfo(GemmFeatures::atomic_fmax_f32, /*waveSize=*/32,
-                  /*maxWavesPerEU*/ 16, /*totalSGPRPerEU*/ 512,
-                  /*totalVGPRPerEU*/ 1024, /*totalSharedMemPerCU*/ 131072,
-                  /*maxSharedMemPerWG*/ 65536, /*numEUPerCU=*/4,
-                  /*minNumCU=*/30,
-                  /*hasFp8ConversionInstrs=*/false,
-                  /*hasOcpFp8ConversionInstrs=*/false, /*hasScaledGemm=*/false,
-                  /*maxNumXCC=*/1, /*hasLdsTransposeLoad=*/false),
-    rdnaInfo(GemmFeatures::dot | GemmFeatures::atomic_fmax_f32,
-             /*waveSize=*/32, /*maxWavesPerEU*/ 16, /*totalSGPRPerEU*/ 512,
-             /*totalVGPRPerEU*/ 1024, /*totalSharedMemPerCU*/ 131072,
-             /*maxSharedMemPerWG*/ 65536, /*numEUPerCU=*/4, /*minNumCU=*/30,
-             /*hasFp8ConversionInstrs=*/false,
-             /*hasOcpFp8ConversionInstrs=*/false, /*hasScaledGemm=*/false,
-             /*maxNumXCC=*/1, /*hasLdsTransposeLoad=*/false),
-    rdna3Info(GemmFeatures::dot | GemmFeatures::atomic_add |
-                  GemmFeatures::atomic_fmax_f32 | GemmFeatures::wmma,
-              /*waveSize=*/32, /*maxWavesPerEU*/ 16, /*totalSGPRPerEU*/ 800,
-              /*totalVGPRPerEU*/ 1536, /*totalSharedMemPerCU*/ 131072,
-              /*maxSharedMemPerWG*/ 65536, /*numEUPerCU=*/4, /*minNumCU=*/2,
-              /*hasFp8ConversionInstrs=*/false,
-              /*hasOcpFp8ConversionInstrs=*/false, /*hasScaledGemm=*/false,
-              /*maxNumXCC=*/1, /*hasLdsTransposeLoad=*/false),
-    rdna4Info(GemmFeatures::dot | GemmFeatures::atomic_add |
-                  GemmFeatures::atomic_fmax_f32 | GemmFeatures::wmma |
-                  GemmFeatures::atomic_add_f16 | GemmFeatures::atomic_add_bf16,
-              /*waveSize=*/32, /*maxWavesPerEU*/ 16, /*totalSGPRPerEU*/ 800,
-              /*totalVGPRPerEU*/ 1536, /*totalSharedMemPerCU*/ 131072,
-              /*maxSharedMemPerWG*/ 65536, /*numEUPerCU=*/4, /*minNumCU=*/12,
-              /*hasFp8ConversionInstrs=*/false,
-              /*hasOcpFp8ConversionInstrs=*/true, /*hasScaledGemm=*/false,
-              /*maxNumXCC=*/1, /*hasLdsTransposeLoad=*/false),
-    // TODO: update with right information
-    gfx1250Info(GemmFeatures::dot | GemmFeatures::atomic_add |
-                    GemmFeatures::atomic_fmax_f32 | GemmFeatures::wmma |
-                    GemmFeatures::atomic_add_f16 |
-                    GemmFeatures::atomic_add_bf16,
-                /*waveSize=*/32, /*maxWavesPerEU*/ 16, /*totalSGPRPerEU*/ 800,
-                /*totalVGPRPerEU*/ 1536, /*totalSharedMemPerCU*/ 131072,
-                /*maxSharedMemPerWG*/ 65536, /*numEUPerCU=*/4, /*minNumCU=*/12,
-                /*hasFp8ConversionInstrs=*/false,
-                /*hasOcpFp8ConversionInstrs=*/true, /*hasScaledGemm=*/false,
-                /*maxNumXCC=*/1, /*hasLdsTransposeLoad=*/false);
+using namespace mlir::triton::AMD;
 
 static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
   std::tuple<StringRef, unsigned> ret("", 0);
 
   StringRef firstPart, remainingParts;
   std::tie(firstPart, remainingParts) = arch.split(':');
-  if (firstPart == "native") {
-    std::get<0>(ret) = firstPart;
-    if (unsigned long long deviceId;
-        !llvm::getAsUnsignedInteger(remainingParts, 0, deviceId)) {
-      std::get<1>(ret) = deviceId;
-    }
+  auto chipPos = firstPart.find("gfx");
+  if (chipPos != StringRef::npos) {
+    firstPart = firstPart.substr(chipPos);
   } else {
-    auto chipPos = firstPart.find("gfx");
-    if (chipPos != StringRef::npos) {
-      firstPart = firstPart.substr(chipPos);
-    } else {
-      std::tie(firstPart, remainingParts) = remainingParts.split(':');
-    }
-    std::get<0>(ret) = firstPart;
+    std::tie(firstPart, remainingParts) = remainingParts.split(':');
   }
+  std::get<0>(ret) = firstPart;
 
   return ret;
 }
 
-// native arch is not supported in Windows, which lacks both HSA and
-// HIP libraries during CI. For more information check:
-// https://github.com/ROCm/rocMLIR/pull/1790
-#ifndef _WIN32
+static std::tuple<ISAFamily, StringRef> getArch(StringRef arch) {
+  auto [chip, _] = parseArchString(arch);
+  ISAFamily isaFamily = triton::AMD::deduceISAFamily(chip);
+  if (isaFamily == ISAFamily::Unknown) {
+    llvm_unreachable("Unknown chip");
+  }
+  return std::make_tuple(isaFamily, chip);
+}
+
+//===----------------------------------------------------------------------===//
+// Matrix Acceleration Support Detection (using Triton APIs)
+//===----------------------------------------------------------------------===//
+
 namespace {
-
-template <typename LHS, typename RHS>
-std::enable_if_t<std::is_assignable_v<LHS &, RHS &&>, void>
-checkAndSetInfo(StringRef name, LHS &lhs, RHS &&rhs) {
-  if (lhs != static_cast<LHS>(rhs)) {
-    LLVM_DEBUG(llvm::dbgs() << "NOTE: Value discrepancy for " << name << ": "
-                            << lhs << " (old) != " << rhs
-                            << " (new). Proceeding with " << rhs << ".\n");
-    lhs = std::forward<RHS>(rhs);
+/// Get MFMA version from ISA family
+int getMfmaVersion(ISAFamily isaFamily) {
+  switch (isaFamily) {
+  case ISAFamily::CDNA1:
+    return 1;
+  case ISAFamily::CDNA2:
+    return 2;
+  case ISAFamily::CDNA3:
+    return 3;
+  case ISAFamily::CDNA4:
+    return 4;
+  default:
+    return 0;
   }
 }
 
-struct AgentInfo {
-  // Input fields:
-  //   The ID of the GPU device that we are looking for.
-  unsigned deviceId;
-  //   Used in acquireAgentInfo, to compute GPU internal IDs.
-  int numCpus;
-  // Output fields:
-  uint32_t simdsPerCU;
-  uint32_t maxWavesPerCU;
-  uint32_t numXCC;
-};
-
-AmdArchInfo fetchNativeArchInfo(const hipDeviceProp_t &prop,
-                                AgentInfo &agentInfo) {
-  auto ret = lookupArchInfo(prop.gcnArchName); // get baseline
-
-  checkAndSetInfo("(HIP) minNumCU", ret.minNumCU, prop.multiProcessorCount);
-  checkAndSetInfo("(HIP) waveSize", ret.waveSize, prop.warpSize);
-  checkAndSetInfo("(HIP) totalSharedMemPerCU", ret.totalSharedMemPerCU,
-                  prop.maxSharedMemoryPerMultiProcessor);
-  checkAndSetInfo("(HIP) maxSharedMemPerWG", ret.maxSharedMemPerWG,
-                  prop.sharedMemPerBlock);
-
-// We cannot get those values under Windows, since HSA is not supported.
-#ifndef _WIN32
-  checkAndSetInfo("(HSA) numEUPerCU", ret.numEUPerCU, agentInfo.simdsPerCU);
-  checkAndSetInfo("(HSA) maxWavesPerEU", ret.maxWavesPerEU,
-                  agentInfo.maxWavesPerCU / agentInfo.simdsPerCU);
-  checkAndSetInfo("(HSA) maxNumXCC", ret.maxNumXCC, agentInfo.numXCC);
-#endif
-
-  // TODO: Add missing fields:
-  // - totalSGPRPerEU
-  // - totalVGPRPerEU
-  // - defaultFeatures
-  // - hasOcpFp8ConversionInstrs
-  return ret;
+/// Get WMMA version from architecture string
+int getWmmaVersion(StringRef arch) {
+  if (arch.starts_with("gfx11"))
+    return 1; // RDNA3
+  if (arch.starts_with("gfx12") && !arch.ends_with("50"))
+    return 2; // RDNA4
+  if (arch == "gfx1250")
+    return 3; // GFX1250
+  return 0;
 }
-
-#define RET_IF_HSA_ERR(err)                                                    \
-  {                                                                            \
-    if ((err) != HSA_STATUS_SUCCESS) {                                         \
-      return err;                                                              \
-    }                                                                          \
-  }
-
-// hsa_iterate_agents expects a callback function (acquireAgentInfo in this
-// case) with one void* argument which contains arbitrary data to be used by the
-// called function. Each time the callback is invoked, it is called with a
-// different HSA agent and the pointer (i.e., the void* argument is shared
-// across all calls). That is also why we count the number of CPUs, since we
-// need to match the HIP deviceId with the HSA agent index.
-//
-// See hsa_iterate_agents documentation in
-// https://rocm.docs.amd.com/projects/ROCR-Runtime/en/latest/api-reference/api.html
-// for more information.
-static hsa_status_t acquireAgentInfo(hsa_agent_t agent, void *data) {
-  // Use HSA to get data not exposed by HIP.
-  // Based on:
-  // https://github.com/ROCm/rocm-systems/blob/develop/projects/rocminfo/rocminfo.cc
-  hsa_status_t err;
-  AgentInfo *agentI = reinterpret_cast<AgentInfo *>(data);
-
-  hsa_device_type_t deviceType;
-  err = hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, &deviceType);
-  RET_IF_HSA_ERR(err);
-
-  if (HSA_DEVICE_TYPE_GPU == deviceType) {
-    // This a GPU, check if its the GPU that we are looking for.
-    uint32_t internalNodeId;
-    err = hsa_agent_get_info(
-        agent, (hsa_agent_info_t)HSA_AMD_AGENT_INFO_DRIVER_NODE_ID,
-        &internalNodeId);
-    RET_IF_HSA_ERR(err);
-
-    unsigned gpuDeviceId = internalNodeId - agentI->numCpus;
-
-    if (gpuDeviceId == agentI->deviceId) {
-      // This is the GPU that we want to check.
-      err = hsa_agent_get_info(
-          agent, (hsa_agent_info_t)HSA_AMD_AGENT_INFO_NUM_SIMDS_PER_CU,
-          &agentI->simdsPerCU);
-      RET_IF_HSA_ERR(err);
-
-      err = hsa_agent_get_info(
-          agent, (hsa_agent_info_t)HSA_AMD_AGENT_INFO_MAX_WAVES_PER_CU,
-          &agentI->maxWavesPerCU);
-      RET_IF_HSA_ERR(err);
-
-      err = hsa_agent_get_info(
-          agent, (hsa_agent_info_t)HSA_AMD_AGENT_INFO_NUM_XCC, &agentI->numXCC);
-      RET_IF_HSA_ERR(err);
-    }
-  } else {
-    agentI->numCpus++;
-  }
-
-  return HSA_STATUS_SUCCESS;
-}
-
-void fixNaviProperties(AgentInfo *agentI, hipDeviceProp_t *prop) {
-  // Fix per CU metrics in Navi GPUs due to WGPs.
-  // I wonder why we have to implement this logic instead of relying
-  // on HIP to do this.
-  //
-  // Navi AMD docs define a CU as "One half of a WGP. Contains 2 SIMD32’s that
-  // share one path to memory" In this context we treat a WGP as CU, so we need
-  // to double simdsPerCU, totalSharedMemPerCU and
-  // maxSharedMemoryPerMultiProcessor. This is consistent with the behavior of
-  // amdgpu target in LLVM. They say: "Per CU" really means "per whatever
-  // functional block the waves of a workgroup must share" This is also
-  // mentioned on HIP multiProcessorCount field: "When the GPU works in Compute
-  // Unit (CU) mode, this value equals the number of CUs; when in Workgroup
-  // Processor (WGP) mode, this value equels half of CUs, because a single WGP
-  // contains two CUs"
-  //
-  // References:
-  // -
-  // https://rocm.docs.amd.com/projects/HIP/en/docs-6.0.2/user_guide/hip_rtc.html#cu-mode-vs-wgp-mode
-  // -
-  // https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna3-shader-instruction-set-architecture-feb-2023_0.pdf
-  // -
-  // https://github.com/llvm/llvm-project/blob/main/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp
-
-  // TODO: Can we check WGP mode in a better way instead of checking warp size?
-  if (prop->warpSize == 32) {
-    agentI->simdsPerCU *= 2;
-    agentI->maxWavesPerCU *= 2;
-    prop->maxSharedMemoryPerMultiProcessor *= 2;
-  }
-}
-
-AmdArchInfo nativeArchInfo(unsigned deviceId = 0) {
-  static std::mutex m;
-  static std::unordered_map<std::string, AmdArchInfo> cache;
-
-  LLVM_DEBUG(llvm::dbgs() << "Retrieving native arch info for device "
-                          << deviceId << "...\n");
-
-  hipDeviceProp_t prop;
-  if (auto err = hipGetDeviceProperties(&prop, deviceId); err != hipSuccess) {
-    auto reason = "hipGetDeviceProperties failed with error: " +
-                  std::string(hipGetErrorString(err));
-    llvm::report_fatal_error(reason.c_str());
-  }
-
-  LLVM_DEBUG(llvm::dbgs() << "gcnArchName: " << prop.gcnArchName << "\n");
-
-  AgentInfo agentInfo;
-#ifndef _WIN32
-  agentInfo.numCpus = 0;
-  agentInfo.deviceId = deviceId;
-  hsa_status_t err = hsa_iterate_agents(acquireAgentInfo, &agentInfo);
-  if (err != HSA_STATUS_SUCCESS) {
-    char errVal[12];
-    const char *errStr = nullptr;
-    if (hsa_status_string(err, (const char **)&errStr) != HSA_STATUS_SUCCESS) {
-      snprintf(&(errVal[0]), sizeof(errVal), "%#x", (uint32_t)err);
-      errStr = &(errVal[0]);
-    }
-    llvm::report_fatal_error(errStr);
-  }
-
-  fixNaviProperties(&agentInfo, &prop);
-#endif
-
-  std::lock_guard<std::mutex> lock(m);
-
-  auto it = cache.find(prop.gcnArchName);
-  if (it == cache.end()) {
-    LLVM_DEBUG(llvm::dbgs() << "Cache miss! Fetching native arch info...\n");
-    it = cache.emplace(prop.gcnArchName, fetchNativeArchInfo(prop, agentInfo))
-             .first;
-  }
-
-  return it->second;
-}
-
 } // anonymous namespace
 
-#endif // _WIN32
+/// Check if MFMA is supported for the given types on the specified version.
+/// Triton's MfmaIntrinsic::selectFor() requires tile dimensions, but we only
+/// want to know if ANY MFMA intrinsic exists for these types. We try all known
+/// tile sizes that MFMA intrinsics use across AMD CDNA architectures.
+///
+/// Note: If AMD adds new MFMA tile sizes in future architectures, this list
+/// would need to be updated. Consider proposing an "hasTypeSupport" API to
+/// upstream Triton to eliminate this maintenance burden.
+///
+/// \param withScale If true, check for scaled MFMA support (CDNA4 with
+///                  F8/F6/F4 types). Scaled MFMA only supports 16x16 and 32x32.
+static bool hasMfmaSupport(Location loc, int mfmaVersion, Type elemA,
+                           Type elemB, bool withScale) {
+  // Scaled MFMA (with withScale=true in selectFor) is only available on CDNA4
+  // (mfmaVersion 4). For gfx1250, scaled operations use WMMA, not MFMA.
+  if (withScale && mfmaVersion < 4)
+    return false;
 
-AmdArchInfo mlir::rock::lookupArchInfo(StringRef arch) {
-  // Keep this implementation in sync with
-  // mlir/test/lit.site.cfg.py.in:set_arch_features()
-  auto [chip, deviceId] = parseArchString(arch);
-  if (chip == "native") {
-#ifdef _WIN32
-    llvm_unreachable("native arch lookup is not supported on Windows");
-#else
-    return nativeArchInfo(deviceId);
-#endif
+  // All known MFMA tile sizes across CDNA1/CDNA2/CDNA3/CDNA4:
+  // - 16x16: mfma_f32_16x16x*, mfma_i32_16x16x*, mfma_scale_f32_16x16x128_f8f6f4
+  // - 32x32: mfma_f32_32x32x*, mfma_i32_32x32x*, mfma_scale_f32_32x32x64_f8f6f4
+  // - 4x64/64x4: specialized shapes for certain types (not for scaled)
+  // For scaled MFMA, only 16x16 and 32x32 are available.
+  static constexpr std::pair<unsigned, unsigned> regularMfmaTileSizes[] = {
+      {16, 16}, {32, 32}, {4, 64}, {64, 4}};
+  static constexpr std::pair<unsigned, unsigned> scaledMfmaTileSizes[] = {
+      {16, 16}, {32, 32}};
+
+  auto tileSizes = withScale ? llvm::ArrayRef(scaledMfmaTileSizes)
+                             : llvm::ArrayRef(regularMfmaTileSizes);
+
+  // Use a large K value (larger than any kDim in the database) so selectFor()
+  // always matches if the type combination exists, regardless of actual K.
+  constexpr unsigned largeK = 512;
+
+  for (auto [mDim, nDim] : tileSizes) {
+    auto result = MfmaIntrinsic::selectFor(loc, mfmaVersion, mDim, nDim, largeK,
+                                           elemA, elemB, withScale,
+                                           /*useTF32=*/false);
+    if (succeeded(result))
+      return true;
   }
-  StringRef minor = chip.take_back(2);
-  StringRef major = chip.slice(0, chip.size() - 2);
-  if (major == "gfx9") {
-    return llvm::StringSwitch<AmdArchInfo>(minor)
-        .Case("08", cdnaInfo)
-        .Case("0a", cdna2Info)
-        .Case("42", cdna3Info)
-        .Case("50", cdna40Info)
-        // gfx906 has the dot product instructions, uniquely
-        .Case("06", cdna50Info)
-        .Default(gcnInfo);
-  }
-  if (major == "gfx10") {
-    return llvm::StringSwitch<AmdArchInfo>(minor)
-        .Cases("11", "13", rdnaNoDotInfo)
-        .Cases("10", "12", rdnaInfo)
-        // All gfx103x are the same for us
-        .StartsWith("3", rdnaInfo)
-        .Default(rdnaNoDotInfo);
-  }
-  if (major == "gfx11") {
-    // We know these chips have common features per backend
-    return rdna3Info;
-  }
-  if (major == "gfx12") {
-    return llvm::StringSwitch<AmdArchInfo>(minor)
-        .Case("50", gfx1250Info)
-        .Default(rdna4Info);
-  }
-  auto msg = "Unsupported architecture: " + arch.str();
-  llvm_unreachable(msg.c_str());
+  return false;
 }
 
-GemmFeatures mlir::rock::AmdArchInfo::getDefaultFeatures(Type dataType) {
-  GemmFeatures theseFeatures = defaultFeatures;
-  bool isWmma = bitEnumContainsAll(theseFeatures, GemmFeatures::wmma);
+/// Check if scaled WMMA is supported for the given types.
+/// gfx1250 (WMMA version 3) supports scaled operations for F8/F4 types using
+/// WMMA intrinsics with kDim=128. Unlike scaled MFMA, there's no separate
+/// "withScale" flag - the fp8/fp4 WMMA intrinsics ARE the scaled instructions.
+static bool hasScaledWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
+                                 Type elemOut) {
+  // Scaled WMMA is only available on gfx1250 (wmmaVersion 3)
+  if (wmmaVersion < 3)
+    return false;
 
-  // Get the underlying element type of the dataType. We may have to do this
-  // recursively if the initial dataType is a nested vector.
-  Type elementType = getElementTypeOrSelf(dataType);
-  while (isa<ShapedType>(elementType)) {
-    elementType = getElementTypeOrSelf(elementType);
-  }
+  // Use large K to match any intrinsic - gfx1250 fp8 WMMA uses kDim=128
+  constexpr unsigned largeK = 512;
 
-  if (isWmma) {
-    if (!(isa<Float16Type, BFloat16Type>(elementType) ||
-          elementType.isInteger(8) ||
-          (hasFp8ConversionInstrs &&
-           isa<Float8E5M2FNUZType, Float8E4M3FNUZType>(elementType)) ||
-          (hasOcpFp8ConversionInstrs &&
-           isa<Float8E5M2Type, Float8E4M3FNType>(elementType)))) {
-      theseFeatures = bitEnumClear(theseFeatures, GemmFeatures::wmma);
+  auto result = WmmaIntrinsic::selectFor(wmmaVersion, /*mDim=*/16, /*nDim=*/16,
+                                         largeK, elemA, elemB, elemOut);
+  return succeeded(result);
+}
+
+/// Check if WMMA is supported for the given types on the specified version.
+/// All WMMA intrinsics across RDNA3/RDNA4 use 16x16 tiles (only kDim varies).
+static bool hasWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
+                           Type elemOut) {
+  // WMMA has consistently used 16x16 tiles across all RDNA architectures.
+  // The kDim varies (16, 32, 64, 128) but selectFor handles that internally.
+  constexpr unsigned largeK = 512;
+
+  auto result = WmmaIntrinsic::selectFor(wmmaVersion, /*mDim=*/16, /*nDim=*/16,
+                                         largeK, elemA, elemB, elemOut);
+  return succeeded(result);
+}
+
+/// Check if a type is valid for scaled WMMA on gfx1250.
+/// gfx1250 supports only E2M1, E4M3, E5M2 (NOT E3M2, E2M3).
+/// See ScaledBlockedToScaledWMMAF8F6F4 in AccelerateAMDMatmul.cpp
+static bool isScaledWmmaType(Type type) {
+  return isa<Float8E4M3FNType, Float8E5M2Type, Float4E2M1FNType>(type);
+}
+
+MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
+                                               Type inputTypeB, Type outputType,
+                                               Type scaleAType,
+                                               Type scaleBType) {
+  auto [isaFamily, chip] = getArch(arch);
+
+  // Get element types if these are shaped types
+  Type elemA = getElementTypeOrSelf(inputTypeA);
+  Type elemB = getElementTypeOrSelf(inputTypeB);
+  Type elemOut = getElementTypeOrSelf(outputType);
+
+  // We need an MLIRContext for creating a dummy location
+  MLIRContext *ctx = elemA.getContext();
+  Location loc = UnknownLoc::get(ctx);
+
+  // Determine if scales are provided
+  bool hasScales = static_cast<bool>(scaleAType) || static_cast<bool>(scaleBType);
+
+  // Check MFMA support (CDNA architectures)
+  int mfmaVersion = getMfmaVersion(isaFamily);
+  if (mfmaVersion > 0) {
+    // Scaled MFMA requires: CDNA4 (version 4) + F8/F6/F4 input types
+    // This mirrors AccelerateAMDMatmul.cpp:
+    bool canUseScaledMfma =
+        hasScales && mfmaVersion == 4 && isF8F6F4(elemA) && isF8F6F4(elemB);
+
+    if (canUseScaledMfma &&
+        hasMfmaSupport(loc, mfmaVersion, elemA, elemB, /*withScale=*/true)) {
+      return MatrixAccelKind::ScaledMFMA;
+    }
+    // Fallback to regular MFMA (either no scales, or scaled failed)
+    if (hasMfmaSupport(loc, mfmaVersion, elemA, elemB, /*withScale=*/false)) {
+      return MatrixAccelKind::MFMA;
     }
   }
-  bool isMfma = bitEnumContainsAll(theseFeatures, GemmFeatures::mfma);
 
-  if (isMfma && !hasFp8ConversionInstrs) {
-    if (isa<Float8E4M3FNUZType>(elementType) ||
-        isa<Float8E5M2FNUZType>(elementType))
-      theseFeatures = bitEnumClear(theseFeatures, GemmFeatures::mfma);
-  }
-  if (isMfma && !hasOcpFp8ConversionInstrs) {
-    if (isa<Float8E4M3FNType>(elementType) || isa<Float8E5M2Type>(elementType))
-      theseFeatures = bitEnumClear(theseFeatures, GemmFeatures::mfma);
-  }
-  if (isMfma && !hasScaledGemm) {
-    if (isa<Float4E2M1FNType>(elementType) ||
-        isa<Float8E8M0FNUType>(elementType)) {
-      theseFeatures = bitEnumClear(theseFeatures, GemmFeatures::mfma);
+  // Check WMMA support (RDNA architectures)
+  int wmmaVersion = getWmmaVersion(chip);
+  if (wmmaVersion > 0) {
+    // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2, E2M1)
+    // Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops.
+    // See supportsTypes() in ScaledBlockedToScaledWMMAF8F6F4
+    bool canUseScaledWmma = hasScales && wmmaVersion >= 3 &&
+                            isScaledWmmaType(elemA) && isScaledWmmaType(elemB);
+
+    if (canUseScaledWmma &&
+        hasScaledWmmaSupport(wmmaVersion, elemA, elemB, elemOut)) {
+      return MatrixAccelKind::ScaledWMMA;
+    }
+    // Fallback to regular WMMA
+    if (hasWmmaSupport(wmmaVersion, elemA, elemB, elemOut)) {
+      return MatrixAccelKind::WMMA;
     }
   }
-  return theseFeatures;
+
+  return MatrixAccelKind::None;
 }
 
-bool mlir::rock::isDirectToLDSSupported(GemmFeatures features) {
-  return bitEnumContainsAll(features, GemmFeatures::direct_to_lds_128b) ||
-         bitEnumContainsAll(features, GemmFeatures::direct_to_lds_32b);
+MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch,
+                                               RockGemmWrapperInterface gemmOp) {
+  Type aType = gemmOp.getAType();
+  Type bType = gemmOp.getBType();
+  Type cType = gemmOp.getCType();
+  Type scaleAType = gemmOp.getScaleAType();
+  Type scaleBType = gemmOp.getScaleBType();
+  return getMatrixAccelKind(arch, aType, bType, cType, scaleAType, scaleBType);
 }
 
-bool mlir::rock::isAsyncDirectToLDSSupported(StringRef arch) {
-  return arch.contains("gfx1250");
+bool mlir::rock::hasAccel(StringRef arch,
+                          RockGemmGemmWrapperInterface gemmGemmOp) {
+  auto [firstGemm, secondGemm] = getMatrixAccelKind(arch, gemmGemmOp);
+  return firstGemm != MatrixAccelKind::None &&
+         secondGemm != MatrixAccelKind::None;
 }
 
-int64_t
-mlir::rock::AmdArchInfo::getMaxLDSVectorLength(int64_t elementBitWidth) {
-  int64_t maxGlobalToLDSVectorLen = std::numeric_limits<int64_t>::max();
-  assert(elementBitWidth > 0 && "elementBitWidth must be greater than 0");
-  if (bitEnumContainsAll(defaultFeatures, GemmFeatures::direct_to_lds_128b)) {
-    maxGlobalToLDSVectorLen = 128 / elementBitWidth;
-  } else if (bitEnumContainsAll(defaultFeatures,
-                                GemmFeatures::direct_to_lds_32b)) {
-    maxGlobalToLDSVectorLen = 32 / elementBitWidth;
+std::pair<MatrixAccelKind, MatrixAccelKind>
+mlir::rock::getMatrixAccelKind(StringRef arch,
+                               RockGemmGemmWrapperInterface gemmGemmOp) {
+  Type aType = gemmGemmOp.getAType();
+  Type bType = gemmGemmOp.getBType();
+  Type cType = gemmGemmOp.getCType();
+  Type outputType = gemmGemmOp.getOutType();
+
+  // TODO: no scaled gemms for attention yet
+  Type scaleAType = nullptr;
+  Type scaleBType = nullptr;
+  auto kindFirstGemm = getMatrixAccelKind(arch, aType, bType, outputType,
+                                          scaleAType, scaleBType);
+  // we convert the output of A*B to cType
+  auto kindSecondGemm = getMatrixAccelKind(arch, cType, cType, outputType,
+                                           scaleAType, scaleBType);
+
+  return std::make_pair(kindFirstGemm, kindSecondGemm);
+}
+
+bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
+  return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
+}
+
+bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Type type) {
+  auto [isaFamily, _] = getArch(arch);
+
+  Type elem = getElementTypeOrSelf(type);
+  if (elem.isF32()) {
+    switch (isaFamily) {
+    case ISAFamily::CDNA1:
+    case ISAFamily::CDNA2:
+    case ISAFamily::CDNA3:
+    case ISAFamily::CDNA4:
+    case ISAFamily::RDNA1:
+    case ISAFamily::RDNA2:
+    case ISAFamily::RDNA3:
+    case ISAFamily::RDNA4:
+    case ISAFamily::GFX1250:
+      return true;
+    default:
+      return false;
+    }
+  } else if (elem.isF16()) {
+    switch (isaFamily) {
+    case ISAFamily::CDNA1:
+    case ISAFamily::CDNA2:
+    case ISAFamily::CDNA3:
+    case ISAFamily::CDNA4:
+    case ISAFamily::RDNA4:
+    case ISAFamily::GFX1250:
+      return true;
+    default:
+      return false;
+    }
+  } else if (elem.isBF16()) {
+    switch (isaFamily) {
+    case ISAFamily::CDNA4:
+    case ISAFamily::RDNA4:
+    case ISAFamily::GFX1250:
+      return true;
+    default:
+      return false;
+    }
   }
-
-  return maxGlobalToLDSVectorLen;
+  return false;
 }
 
-bool mlir::rock::isGlobalPrefetchSupported(StringRef arch) {
-  return arch.contains("gfx1250");
+bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
+  auto [isaFamily, _] = getArch(arch);
+
+  Type elem = getElementTypeOrSelf(type);
+  if (elem.isF32()) {
+    switch (isaFamily) {
+    case ISAFamily::RDNA1:
+    case ISAFamily::RDNA2:
+    case ISAFamily::RDNA3:
+    case ISAFamily::RDNA4:
+    case ISAFamily::GFX1250:
+      return true;
+    default:
+      return false;
+    }
+  }
+  return false;
+}
+
+int64_t mlir::rock::getMinNumCU(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+
+  switch (isaFamily) {
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+  case ISAFamily::GFX1250:
+    return 8;
+  default:
+    return 1;
+  }
+  return 1;
+}
+
+int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+
+  switch (isaFamily) {
+  case ISAFamily::CDNA1:
+    return 120;
+    break;
+  case ISAFamily::CDNA2:
+    return 104;
+    break;
+  case ISAFamily::CDNA3:
+    return 20;
+    break;
+  case ISAFamily::CDNA4:
+    return 256;
+    break;
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+    return 30;
+    break;
+  case ISAFamily::RDNA3:
+    return 2;
+    break;
+  case ISAFamily::RDNA4:
+    return 12;
+    break;
+  case ISAFamily::GFX1250:
+    return 256;
+    break;
+  default:
+    return 1;
+  }
+  return 1;
+}
+
+int64_t mlir::rock::getWaveSize(StringRef arch) {
+  auto [_, chip] = getArch(arch);
+  triton::AMD::TargetInfo targetInfo(chip.str());
+  return targetInfo.getWarpSize();
+}
+
+int64_t mlir::rock::getLDSSize(StringRef arch) {
+  auto [_, chip] = getArch(arch);
+  triton::AMD::TargetInfo targetInfo(chip.str());
+  return targetInfo.getSharedMemorySize();
+}
+
+int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+
+  switch (isaFamily) {
+  case ISAFamily::CDNA1:
+  case ISAFamily::CDNA2:
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+    return 8;
+    break;
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+  case ISAFamily::RDNA3:
+  case ISAFamily::RDNA4:
+  case ISAFamily::GFX1250:
+    return 16;
+    break;
+  default:
+    return 1;
+  }
+  return 1;
 }

@@ -8,7 +8,6 @@
 
 #include "mlir/Dialect/Rock/Generator/ConvGenerator.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
-#include "mlir/Dialect/Rock/IR/RockGemmFeaturesInterface.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
@@ -605,114 +604,6 @@ GemmSize GemmSize::fromConvolution(ConvOpType type,
   return GemmSize(gemmGSize, gemmMSize, gemmKSize, gemmNSize);
 }
 
-static bool isFloat8Type(Type type) {
-  return isa<FloatType>(type) && type.getIntOrFloatBitWidth() == 8;
-}
-
-static LogicalResult verifyGemmTypes(Operation *op, GemmFeatures features,
-                                     StringRef arch, Type elemTypeA,
-                                     Type elemTypeB, Type elemTypeC) {
-  bool isGfx11 = arch.contains("gfx11");
-  bool isGfx1250 = arch.contains("gfx1250");
-  if (isa<Float8E8M0FNUType>(elemTypeA) || isa<Float8E8M0FNUType>(elemTypeB)) {
-    return op->emitOpError(
-        "Matrix A or B is not allowed to have Float8E8M0FNU types");
-  }
-  if (bitEnumContainsAll(features, GemmFeatures::wmma)) {
-    // Validate input data types based on architecture
-    bool isValidTypeA = elemTypeA.isF16() || elemTypeA.isBF16() ||
-                        elemTypeA.isInteger(8) || isFloat8Type(elemTypeA);
-
-    // gfx1250 additionally supports F32
-    if (isGfx1250)
-      isValidTypeA = isValidTypeA || elemTypeA.isF32();
-
-    // gfx11 doesn't support float8 types
-    if (isGfx11 && isFloat8Type(elemTypeA))
-      isValidTypeA = false;
-
-    if (!isValidTypeA) {
-      if (isGfx11)
-        return op->emitOpError("Wmma supports only F16/BF16/int8 data types");
-      if (isGfx1250)
-        return op->emitOpError(
-            "Wmma supports only F32/F16/BF16/int8/E4M3/E5M2 data types");
-      return op->emitOpError(
-          "Wmma supports only F16/BF16/int8/E4M3/E5M2 data types");
-    }
-
-    // Validate mixed types
-    if (elemTypeA != elemTypeB) {
-      // gfx1250 allows mixed precision for float8 types only
-      bool allowMixed =
-          isGfx1250 && isFloat8Type(elemTypeA) && isFloat8Type(elemTypeB);
-      if (!allowMixed)
-        return op->emitOpError(isGfx1250 ? "Wmma on gfx1250 supports mixed "
-                                           "types only for FP8/BF8 combinations"
-                                         : "Wmma does not support mixed types");
-    }
-  }
-  if (bitEnumContainsAll(features, GemmFeatures::mfma)) {
-    bool isGfx95 = arch.contains("gfx95");
-    if (isGfx95 && (isa<Float8E4M3FNUZType, Float8E5M2FNUZType>(elemTypeA) ||
-                    isa<Float8E4M3FNUZType, Float8E5M2FNUZType>(elemTypeB))) {
-      return op->emitOpError(
-          "Mfma does not support E4M3FNUZ/E5M2FNUZ data types");
-    }
-    if (!isGfx95 && arch.contains("gfx9") &&
-        (isa<Float8E4M3FNType, Float8E5M2Type>(elemTypeA) ||
-         isa<Float8E4M3FNType, Float8E5M2Type>(elemTypeB))) {
-      return op->emitOpError("Mfma does not support E4M3/E5M2 data types ");
-    }
-    if (!isGfx95 && (isa<Float4E2M1FNType>(elemTypeA) ||
-                     isa<Float4E2M1FNType>(elemTypeB))) {
-      return op->emitOpError("Mfma does not support Float4E2M1FN data type ");
-    }
-  }
-  if (elemTypeC) {
-    if (isa<FloatType>(elemTypeA) && !isa<FloatType>(elemTypeC)) {
-      return op->emitOpError("floating-point input type ")
-             << elemTypeA
-             << " requires a floating-point output type, but the output type "
-                "is "
-             << elemTypeC;
-    }
-    if (isa<IntegerType>(elemTypeA) && !isa<IntegerType>(elemTypeC)) {
-      return op->emitOpError("integer input type ")
-             << elemTypeA
-             << " requires an integer output type, but the output type is "
-             << elemTypeC;
-    }
-  }
-  return success();
-}
-
-static LogicalResult verifyGemmTypes(RockGemmWrapperInterface gemmOp) {
-  Type elemTypeA = gemmOp.getAType(), elemTypeB = gemmOp.getBType(),
-       elemTypeC = gemmOp.getCType();
-
-  StringAttr arch = rock::getArchValue(gemmOp);
-  GemmFeatures features = rock::getFeatures(gemmOp);
-
-  return verifyGemmTypes(gemmOp, features, arch, elemTypeA, elemTypeB,
-                         elemTypeC);
-}
-
-static LogicalResult verifyConvOp(RockConvInterface convOp) {
-  RockGemmWrapperInterface gemmOp = cast<RockGemmWrapperInterface>(*convOp);
-
-  if (failed(verifyGemmTypes(gemmOp)))
-    return failure();
-
-  return success();
-}
-
-LogicalResult ConvOp::verify() { return verifyConvOp(*this); }
-
-LogicalResult ConvBwdDataOp::verify() { return verifyConvOp(*this); }
-
-LogicalResult ConvBwdWeightOp::verify() { return verifyConvOp(*this); }
-
 KernelType ConvOp::getKernelType() { return KernelType::Conv; }
 
 KernelType ConvBwdDataOp::getKernelType() { return KernelType::ConvBwdData; }
@@ -755,18 +646,6 @@ OpOperand *ConvBwdDataOp::getOutArgument() { return &(*this)->getOpOperand(1); }
 
 OpOperand *ConvBwdWeightOp::getOutArgument() {
   return &(*this)->getOpOperand(0);
-}
-
-SmallVector<mlir::Type> GemmOp::getTypesForFeature() { return {getAType()}; }
-
-SmallVector<mlir::Type> ConvOp::getTypesForFeature() { return {getAType()}; }
-
-SmallVector<mlir::Type> ConvBwdDataOp::getTypesForFeature() {
-  return {getAType()};
-}
-
-SmallVector<mlir::Type> ConvBwdWeightOp::getTypesForFeature() {
-  return {getAType()};
 }
 
 GemmSize ConvOp::getGemmSize() {
@@ -1015,10 +894,6 @@ LogicalResult GemmOp::verify() {
     }
   }
 
-  RockGemmWrapperInterface gemmIfaceOp =
-      cast<RockGemmWrapperInterface>(this->getOperation());
-  if (failed(verifyGemmTypes(gemmIfaceOp)))
-    return failure();
   return success();
 }
 
@@ -1051,20 +926,6 @@ template <typename GridOp>
 static LogicalResult verifyGridwiseGemm(GridOp op) {
   RankedTensorType aType = op.getA().getType(), bType = op.getB().getType(),
                    resultType = op.getResult().getType();
-  Type aElemType = getElementTypeOrSelfRecursive(aType);
-  Type bElemType = getElementTypeOrSelfRecursive(bType);
-  Type resultElemType = getElementTypeOrSelfRecursive(resultType);
-  StringAttr archAttr =
-      rock::getArch(op).value_or(StringAttr::get(op.getContext(), "gfx00"));
-  if (failed(verifyGemmTypes(op, rock::getFeatures(op), archAttr, aElemType,
-                             bElemType, resultElemType)))
-    return failure();
-  if (aElemType.isInteger(8) &&
-      !(resultElemType.isInteger(32) || resultElemType.isInteger(8)))
-    return op.emitOpError("i8 input requires i32 or i8 output");
-  if ((isFloat8Type(aElemType) || isa<Float4E2M1FNType>(aElemType)) &&
-      !resultElemType.isF32())
-    return op.emitOpError("4-bit or 8-bit float input requires f32 output");
 
   ArrayRef<int64_t> aShape = aType.getShape(), bShape = bType.getShape(),
                     resultShape = resultType.getShape();
@@ -1099,10 +960,6 @@ static LogicalResult verifyGridwiseGemm(GridOp op) {
            << n << " cannot be greater than int32_max " << intMax;
 
   return success();
-}
-
-SmallVector<mlir::Type> GridwiseGemmOp::getTypesForFeature() {
-  return {getA().getType()};
 }
 
 LogicalResult GridwiseGemmOp::verify() {
@@ -1140,14 +997,6 @@ LogicalResult GpuAllocOp::verify() {
     return success();
   }
   return emitError("The size of rock.alloc should be greather than zero.");
-}
-
-//===----------------------------------------------------------------------===//
-// BlockwiseLoadTileOp
-//===----------------------------------------------------------------------===//
-
-SmallVector<mlir::Type> BlockwiseLoadTileOp::getTypesForFeature() {
-  return {getSource().getType().getElementType()};
 }
 
 //===----------------------------------------------------------------------===//
@@ -1225,16 +1074,7 @@ LogicalResult BlockwiseGemmOp::verify() {
   ShapedType aBufferType = cast<ShapedType>(getMatrixA().getType());
   ShapedType bBufferType = cast<ShapedType>(getMatrixB().getType());
   ShapedType cBufferType = cast<ShapedType>(getMatrixC().getType());
-  Type aType = getElementTypeOrSelfRecursive(aBufferType);
-  Type bType = getElementTypeOrSelfRecursive(bBufferType);
-  Type cType = getElementTypeOrSelfRecursive(cBufferType);
 
-  StringAttr archAttr = rock::getArch(*this).value_or(
-      StringAttr::get(this->getContext(), "gfx00"));
-
-  if (failed(verifyGemmTypes(*this, rock::getFeatures(*this), archAttr, aType,
-                             bType, cType)))
-    return failure();
   auto verifyMatrixAndScale = [&](Value bufferScale, ShapedType bufferType,
                                   const char *matrixName) -> LogicalResult {
     bool hasBufferScale = bufferScale != nullptr;
@@ -1279,10 +1119,6 @@ LogicalResult BlockwiseGemmOp::verify() {
   return success();
 }
 
-SmallVector<mlir::Type> BlockwiseGemmOp::getTypesForFeature() {
-  return {getMatrixA().getType().getElementType()};
-}
-
 //===----------------------------------------------------------------------===//
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
@@ -1322,10 +1158,6 @@ LogicalResult GridwiseAttentionOp::verify() {
         "Prefix causal attention is causal masking with an offset.");
 
   return success();
-}
-
-SmallVector<mlir::Type> GridwiseAttentionOp::getTypesForFeature() {
-  return {getKeys().getType(), getValues().getType()};
 }
 
 //===-----------------------------------------------------===//
@@ -1399,10 +1231,6 @@ KernelType GemmElementwiseGemmOp::getKernelType() {
 
 Region &GemmElementwiseGemmOp::getPreSecondGemmRegion() {
   return getPreSecondGemmBody();
-}
-
-SmallVector<mlir::Type> GemmElementwiseGemmOp::getTypesForFeature() {
-  return {getAType(), getCType()};
 }
 
 GemmGemmSize GemmElementwiseGemmOp::getGemmGemmSize() {
@@ -1585,10 +1413,6 @@ Region &ConvElementwiseGemmOp::getPreSecondGemmRegion() {
   return getPreSecondGemmBody();
 }
 
-SmallVector<mlir::Type> ConvElementwiseGemmOp::getTypesForFeature() {
-  return {getAType(), getCType()};
-}
-
 GemmGemmSize ConvElementwiseGemmOp::getGemmGemmSize() {
   auto strideVal = extractFromIntegerArrayAttr<int64_t>(getStrides());
   auto dilationVal = extractFromIntegerArrayAttr<int64_t>(getDilations());
@@ -1677,10 +1501,6 @@ GemmGemmSize AttentionOp::getGemmGemmSize() {
           n = dimsB[offsetB + (getKTransposed() ? 0 : 1)],
           o = dimsC[offsetC + (getVTransposed() ? 1 : 0)];
   return GemmGemmSize(g, m, k, n, o);
-}
-
-SmallVector<mlir::Type> AttentionOp::getTypesForFeature() {
-  return {getAType(), getCType()};
 }
 
 LogicalResult AttentionOp::verify() {

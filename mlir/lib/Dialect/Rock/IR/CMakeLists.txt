@@ -4,7 +4,6 @@ add_rocmlir_dialect_library(MLIRRockOps
   GetRockInfo.cpp
   TransformMapBuilder.cpp
   RockDialect.cpp
-  RockGemmFeaturesInterface.cpp
   RockGemmWrapperInterface.cpp
   RockGemmGemmWrapperInterface.cpp
   RockConvInterface.cpp
@@ -17,7 +16,6 @@ add_rocmlir_dialect_library(MLIRRockOps
 
   DEPENDS
   MLIRRockAttrDefsIncGen
-  MLIRRockGemmFeaturesInterfaceIncGen
   MLIRRockGemmWrapperInterfaceIncGen
   MLIRRockGemmGemmWrapperInterfaceIncGen
   MLIRRockTuningParamAttrInterfaceIncGen
@@ -26,6 +24,20 @@ add_rocmlir_dialect_library(MLIRRockOps
   MLIRRockOpsIncGen
   )
 
+# Add Triton AMD include paths for matrix acceleration detection APIs
+# and for lib/TritonAMDGPUToLLVM/TargetInfo.h (AMD::TargetInfo)
+target_include_directories(MLIRRockOps PRIVATE
+  ${CMAKE_SOURCE_DIR}/external/triton/third_party/amd/include
+  ${TRITON_PROJECT_DIR}/third_party/amd
+  ${TRITON_PROJECT_DIR}/include
+  ${TRITON_BINARY_DIR}/include
+)
+target_include_directories(obj.MLIRRockOps PRIVATE
+  ${CMAKE_SOURCE_DIR}/external/triton/third_party/amd/include
+  ${TRITON_PROJECT_DIR}/third_party/amd
+  ${TRITON_PROJECT_DIR}/include
+  ${TRITON_BINARY_DIR}/include
+)
 
 target_link_libraries(MLIRRockOps
   PUBLIC
@@ -41,6 +53,8 @@ target_link_libraries(MLIRRockOps
   MLIRROCDLDialect
   MLIRSupport
   MLIRLinalgTransformOps
+  PRIVATE
+  TritonAMDGPUTransforms
   )
 
 # ROCm on Windows does not support HSA.

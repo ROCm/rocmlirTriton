@@ -371,112 +371,6 @@ static llvm::cl::opt<rock::StoreMethod> storeMethod(
                    "atomically add results to values in matrix C")),
     llvm::cl::init(rock::StoreMethod::Set));
 
-// A toggle to control whether a feature should be added to the feature list
-enum class FeatureToggle : uint32_t { infer, on, off };
-
-// use the toggle on each feature
-// mfma
-static llvm::cl::opt<FeatureToggle> mfmaFeature(
-    "mfma", llvm::cl::desc("toggle feature mfma"),
-    llvm::cl::values(clEnumValN(FeatureToggle::infer, "infer",
-                                "use the default value provided by the chip"),
-                     clEnumValN(FeatureToggle::on, "on",
-                                "force mfma into the feature list"),
-                     clEnumValN(FeatureToggle::off, "off",
-                                "remove mfma from the feature list")),
-    llvm::cl::init(FeatureToggle::infer));
-
-// wmma
-static llvm::cl::opt<FeatureToggle> wmmaFeature(
-    "wmma", llvm::cl::desc("toggle feature wmma"),
-    llvm::cl::values(clEnumValN(FeatureToggle::infer, "infer",
-                                "use the default value provided by the chip"),
-                     clEnumValN(FeatureToggle::on, "on",
-                                "force wmma into the feature list"),
-                     clEnumValN(FeatureToggle::off, "off",
-                                "remove wmma from the feature list")),
-    llvm::cl::init(FeatureToggle::infer));
-
-// dot
-static llvm::cl::opt<FeatureToggle> dotFeature(
-    "dot", llvm::cl::desc("toggle feature dot"),
-    llvm::cl::values(clEnumValN(FeatureToggle::infer, "infer",
-                                "use the default value provided by the chip"),
-                     clEnumValN(FeatureToggle::on, "on",
-                                "force dot into the feature list"),
-                     clEnumValN(FeatureToggle::off, "off",
-                                "remove dot from the feature list")),
-    llvm::cl::init(FeatureToggle::infer));
-
-// atomicAdd
-static llvm::cl::opt<FeatureToggle> atomicAddFeature(
-    "atomic_add", llvm::cl::desc("toggle feature atomic_add"),
-    llvm::cl::values(clEnumValN(FeatureToggle::infer, "infer",
-                                "use the default value provided by the chip"),
-                     clEnumValN(FeatureToggle::on, "on",
-                                "force atomic_add into the feature list"),
-                     clEnumValN(FeatureToggle::off, "off",
-                                "remove atomic_add from the feature list")),
-    llvm::cl::init(FeatureToggle::infer));
-
-// atomicAddF16
-static llvm::cl::opt<FeatureToggle> atomicAddF16Feature(
-    "atomic_add_f16", llvm::cl::desc("toggle feature atomic_add_f16"),
-    llvm::cl::values(clEnumValN(FeatureToggle::infer, "infer",
-                                "use the default value provided by the chip"),
-                     clEnumValN(FeatureToggle::on, "on",
-                                "force atomic_add_f16 into the feature list"),
-                     clEnumValN(FeatureToggle::off, "off",
-                                "remove atomic_add_f16 from the feature list")),
-    llvm::cl::init(FeatureToggle::infer));
-
-// atomicAddBF16
-static llvm::cl::opt<FeatureToggle> atomicAddBF16Feature(
-    "atomic_add_bf16", llvm::cl::desc("toggle feature atomic_add_bf16"),
-    llvm::cl::values(
-        clEnumValN(FeatureToggle::infer, "infer",
-                   "use the default value provided by the chip"),
-        clEnumValN(FeatureToggle::on, "on",
-                   "force atomic_add_bf16 into the feature list"),
-        clEnumValN(FeatureToggle::off, "off",
-                   "remove atomic_add_bf16 from the feature list")),
-    llvm::cl::init(FeatureToggle::infer));
-
-// atomicFmaxF32
-static llvm::cl::opt<FeatureToggle> atomicFMaxF32Feature(
-    "atomic_fmax_f32", llvm::cl::desc("toggle feature atomic_fmax_f32"),
-    llvm::cl::values(clEnumValN(FeatureToggle::infer, "infer",
-                                "use the default value provided by the chip"),
-                     clEnumValN(FeatureToggle::on, "on",
-                                "force atomic_add into the feature list"),
-                     clEnumValN(FeatureToggle::off, "off",
-                                "remove atomic_add from the feature list")),
-    llvm::cl::init(FeatureToggle::infer));
-
-// directToLDS32B
-static llvm::cl::opt<FeatureToggle> directToLDS32BFeature(
-    "direct_to_lds_32b", llvm::cl::desc("toggle feature direct_to_lds_32b"),
-    llvm::cl::values(
-        clEnumValN(FeatureToggle::infer, "infer",
-                   "use the default value provided by the chip"),
-        clEnumValN(FeatureToggle::on, "on",
-                   "force direct_to_lds_32b into the feature list"),
-        clEnumValN(FeatureToggle::off, "off",
-                   "remove direct_to_lds_32b from the feature list")),
-    llvm::cl::init(FeatureToggle::infer));
-
-// directToLDS128B
-static llvm::cl::opt<FeatureToggle> directToLDS128BFeature(
-    "direct_to_lds_128b", llvm::cl::desc("toggle feature direct_to_lds_128b"),
-    llvm::cl::values(
-        clEnumValN(FeatureToggle::infer, "infer",
-                   "use the default value provided by the chip"),
-        clEnumValN(FeatureToggle::on, "on",
-                   "force direct_to_lds_128b into the feature list"),
-        clEnumValN(FeatureToggle::off, "off",
-                   "remove direct_to_lds_128b from the feature list")),
-    llvm::cl::init(FeatureToggle::infer));
-
 static llvm::cl::opt<std::string>
     filterDataType("fil_dtype",
                    llvm::cl::desc("Data type for filter tensor or matrix A"),
@@ -1017,7 +911,6 @@ struct AttentionArgIndex {
 struct GenParams {
   std::optional<rock::KernelType> operation = std::nullopt;
   SmallVector<Type, 5> types;
-  rock::GemmFeatures features = rock::GemmFeatures::none;
   std::optional<const rock::ConvGenerator::Config *> convConfig = std::nullopt;
   StringRef arch;
   StringRef perfConfig;
@@ -1209,53 +1102,28 @@ static void populateDefaults() {
       headDimV = 32;
     }
     if (isConv) {
-      if (mfmaFeature != FeatureToggle::on) {
-        groupSize = 1;
-        batchSize = 128;
-        inputChannel = 8;
-        outputChannel = 128;
-        inputHeight = 32;
-        inputWidth = 32;
-        inputDepth = 1;
-        filterHeight = 3;
-        filterWidth = 3;
-        filterDepth = 1;
-        dilationHeight = 1;
-        dilationWidth = 1;
-        dilationDepth = 1;
-        strideHeight = 1;
-        strideWidth = 1;
-        strideDepth = 1;
-        paddingHeightLeft = 0;
-        paddingHeightRight = 0;
-        paddingWidthLeft = 0;
-        paddingWidthRight = 0;
-        paddingDepthLeft = 0;
-        paddingDepthRight = 0;
-      } else {
-        groupSize = 1;
-        batchSize = 128;
-        inputChannel = 1024;
-        outputChannel = 1024;
-        inputHeight = 14;
-        inputWidth = 14;
-        inputDepth = 1;
-        filterHeight = 1;
-        filterWidth = 1;
-        filterDepth = 1;
-        dilationHeight = 1;
-        dilationWidth = 1;
-        dilationDepth = 1;
-        strideHeight = 1;
-        strideWidth = 1;
-        strideDepth = 1;
-        paddingHeightLeft = 0;
-        paddingHeightRight = 0;
-        paddingWidthLeft = 0;
-        paddingWidthRight = 0;
-        paddingDepthLeft = 0;
-        paddingDepthRight = 0;
-      }
+      groupSize = 1;
+      batchSize = 128;
+      inputChannel = 8;
+      outputChannel = 128;
+      inputHeight = 32;
+      inputWidth = 32;
+      inputDepth = 1;
+      filterHeight = 3;
+      filterWidth = 3;
+      filterDepth = 1;
+      dilationHeight = 1;
+      dilationWidth = 1;
+      dilationDepth = 1;
+      strideHeight = 1;
+      strideWidth = 1;
+      strideDepth = 1;
+      paddingHeightLeft = 0;
+      paddingHeightRight = 0;
+      paddingWidthLeft = 0;
+      paddingWidthRight = 0;
+      paddingDepthLeft = 0;
+      paddingDepthRight = 0;
     }
   }
 
@@ -2577,14 +2445,12 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   IntegerAttr numCUAttr =
       (num_cu.getNumOccurrences() > 0
            ? b.getI64IntegerAttr(num_cu)
-           : b.getI64IntegerAttr(
-                 rock::lookupArchInfo(archAttr.getValue()).minNumCU));
+           : b.getI64IntegerAttr(rock::getMinNumCU(archAttr.getValue())));
 
   IntegerAttr numChipletsAttr =
       (numChiplets.getNumOccurrences() > 0
            ? b.getI64IntegerAttr(numChiplets)
-           : b.getI64IntegerAttr(
-                 rock::lookupArchInfo(archAttr.getValue()).maxNumXCC));
+           : b.getI64IntegerAttr(rock::getMaxNumChiplets(archAttr.getValue())));
   SmallVector<NamedAttribute> funcAttrs = {
       b.getNamedAttr(rock::KernelAttr::getMnemonic(), b.getUnitAttr()),
       b.getNamedAttr(rock::ArchAttr::getMnemonic(), archAttr)};
@@ -2657,11 +2523,10 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
                                     /*isA=*/false);
   }
 
-  auto gemm = rock::GemmOp::create(
-      b, loc, cVal.getType(), aVal, bVal, aScale, bScale, transposeA,
-      transposeB, transposeScaleA, transposeScaleB,
-      rock::GemmFeaturesAttr::get(b.getContext(), params.features),
-      /*params=*/nullptr);
+  auto gemm = rock::GemmOp::create(b, loc, cVal.getType(), aVal, bVal, aScale,
+                                   bScale, transposeA, transposeB,
+                                   transposeScaleA, transposeScaleB,
+                                   /*params=*/nullptr);
 
   if (!params.perfConfig.empty())
     gemm->setAttr("perf_config", b.getStringAttr(params.perfConfig));
@@ -3398,9 +3263,7 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       builder, loc, output.getType(), returnLSE ? lse.getType() : nullptr,
       queries, keys, values, elemwiseInputs, currentSeqLenTensor,
       prefixOffsetTensor, numHeadsQ, numHeadsKV, transposeQ, transposeK,
-      transposeV, transposeO, actualCausal, splitKV,
-      rock::GemmFeaturesAttr::get(builder.getContext(), params.features),
-      softmaxType,
+      transposeV, transposeO, actualCausal, splitKV, softmaxType,
       /*params0=*/nullptr, /*params1=*/nullptr,
       /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
   {
@@ -3536,9 +3399,7 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   }
   auto convElntGemm = rock::ConvElementwiseGemmOp::create(
       builder, loc, TypeRange{}, filter, input, c, elemwiseInputs, output,
-      transposeC, transposeO,
-      rock::GemmFeaturesAttr::get(builder.getContext(), params.features),
-      builder.getIndexArrayAttr(pad),
+      transposeC, transposeO, builder.getIndexArrayAttr(pad),
       builder.getIndexArrayAttr(config->strideDims),
       builder.getIndexArrayAttr(config->dilationDims),
       /*params0=*/nullptr, /*params1=*/nullptr,
@@ -3655,7 +3516,6 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   auto gemmElntGemm = rock::GemmElementwiseGemmOp::create(
       builder, loc, output.getType(), a, b, c, elemwiseInputs, transposeA,
       transposeB, transposeC, transposeO,
-      rock::GemmFeaturesAttr::get(builder.getContext(), params.features),
       /*params0=*/nullptr, /*params1=*/nullptr,
       /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
   {
@@ -4823,6 +4683,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
   }
   bool gpuValidation = validationType == "gpu" &&
                         (isSmallFloatIn || heuristicValidation);
+  // TODO(roctriton): remove gpuValidation
   if (gpuValidation) {
     if (genParams.convConfig.has_value()) { // conv GPU validation
       // generate generic kernels
@@ -4833,7 +4694,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       }
       // use non-accel kernels to verify accel kernels except when
       // verifying a tuning case
-      convGenerator.flipAccel();
+      // convGenerator.flipAccel();
       if (!(heuristicValidation) &&
             genConfig.inputDataTypeStr == "i8")
         // use f32 data type to verify non-f32 or xdlops f32 kernels
@@ -4883,13 +4744,14 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
       convGenerator.setKernelName(kernelBaseName);
     } else { // gemm GPU validation
+      // TODO(roctriton): remove gpu validation
       GenParams newParams = genParams;
 
       if (heuristicValidation)
         newParams.perfConfig = "";
-      newParams.features = bitEnumClear(genParams.features,
-                                        mlir::rock::GemmFeatures::mfma |
-                                            mlir::rock::GemmFeatures::wmma);
+      // newParams.features = bitEnumClear(genParams.features,
+      //                                   mlir::rock::GemmFeatures::mfma |
+      //                                       mlir::rock::GemmFeatures::wmma);
 
       if (!heuristicValidation && genParams.types[0].isInteger(8)) {
         // use f32 data type to verify non-f32 or xdlops f32 kernels
@@ -5030,7 +4892,6 @@ static LogicalResult populateHostHarnessLogic(
   bool isSplitK = (genParams.perfConfig.empty())
                       ? false
                       : rock::isSplitKRequested(
-                            genParams.features,
                             StringAttr::get(context, genParams.perfConfig));
 
   if (isRandom) {
@@ -5412,7 +5273,6 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     genParams.types.push_back(convGenerator.getOutputDataType(builder));
     const auto *convConfig = &convGenerator.getConfig();
     genParams.convConfig = convConfig;
-    genParams.features = convConfig->features;
     genParams.operation =
         rock::kernelTypeFromConvOpType(convConfig->operation.value());
     genParams.perfConfig = convConfig->perfConfig;
@@ -5452,58 +5312,7 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
       filterElemType = typeFromString(outputDataType.getValue(), context);
     }
     Type elemType = inputElemType;
-    rock::AmdArchInfo archInfo = rock::lookupArchInfo(arch);
-    rock::GemmFeatures enabledFeatures = archInfo.getDefaultFeatures(elemType);
-    // toggle feature list according to llvm::cl::opt inputs
-    if (mfmaFeature == FeatureToggle::infer) {
-      // Disable acceleration for mixed types
-      if (filterElemType.getIntOrFloatBitWidth() !=
-          inputElemType.getIntOrFloatBitWidth()) {
-        enabledFeatures =
-            bitEnumClear(enabledFeatures, rock::GemmFeatures::mfma);
-      }
-    } else
-      enabledFeatures = bitEnumSet(enabledFeatures, rock::GemmFeatures::mfma,
-                                   mfmaFeature == FeatureToggle::on);
-    if (dotFeature != FeatureToggle::infer)
-      enabledFeatures = bitEnumSet(enabledFeatures, rock::GemmFeatures::dot,
-                                   dotFeature == FeatureToggle::on);
-    if (atomicAddFeature != FeatureToggle::infer)
-      enabledFeatures =
-          bitEnumSet(enabledFeatures, rock::GemmFeatures::atomic_add,
-                     atomicAddFeature == FeatureToggle::on);
-    if (atomicAddF16Feature != FeatureToggle::infer)
-      enabledFeatures =
-          bitEnumSet(enabledFeatures, rock::GemmFeatures::atomic_add_f16,
-                     atomicAddF16Feature == FeatureToggle::on);
-    if (atomicAddBF16Feature != FeatureToggle::infer)
-      enabledFeatures =
-          bitEnumSet(enabledFeatures, rock::GemmFeatures::atomic_add_bf16,
-                     atomicAddBF16Feature == FeatureToggle::on);
-    if (atomicFMaxF32Feature != FeatureToggle::infer)
-      enabledFeatures =
-          bitEnumSet(enabledFeatures, rock::GemmFeatures::atomic_fmax_f32,
-                     atomicFMaxF32Feature == FeatureToggle::on);
-    if (directToLDS32BFeature != FeatureToggle::infer)
-      enabledFeatures =
-          bitEnumSet(enabledFeatures, rock::GemmFeatures::direct_to_lds_32b,
-                     directToLDS32BFeature == FeatureToggle::on);
-    if (directToLDS128BFeature != FeatureToggle::infer)
-      enabledFeatures =
-          bitEnumSet(enabledFeatures, rock::GemmFeatures::direct_to_lds_128b,
-                     directToLDS128BFeature == FeatureToggle::on);
-
-    if (wmmaFeature == FeatureToggle::infer) {
-      // Disable acceleration for mixed types
-      if (filterElemType != inputElemType) {
-        enabledFeatures =
-            bitEnumClear(enabledFeatures, rock::GemmFeatures::wmma);
-      }
-    } else
-      enabledFeatures = bitEnumSet(enabledFeatures, rock::GemmFeatures::wmma,
-                                   wmmaFeature == FeatureToggle::on);
     genParams.operation = operation;
-    genParams.features = enabledFeatures;
     genParams.arch = arch;
     genParams.perfConfig = perfConfig;
     if (isGemm) {
@@ -5602,7 +5411,7 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
           numChiplets.getNumOccurrences()
               ? std::optional<int>(numChiplets.getValue())
               : std::nullopt,
-          enabledFeatures, rock::convOpTypeFromKernelType(operation.getValue()),
+          rock::convOpTypeFromKernelType(operation.getValue()),
           filterDataType.getValue(), inputDataType.getValue(),
           outputDataType.getValue(), dilations, strides, paddingLeft,
           paddingRight, filterLayout.getValue(), inputLayout.getValue(),

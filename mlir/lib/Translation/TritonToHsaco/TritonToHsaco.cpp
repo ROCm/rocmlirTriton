@@ -185,8 +185,7 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
                          bool allowFlushDenorm, bool enableAsan,
                          StringRef scheduleHint) {
-  rock::AmdArchInfo archInfo = rock::lookupArchInfo(archStr);
-  int waveSize = archInfo.waveSize;
+  int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
   llvm::Function *kernelFn = nullptr;
@@ -615,8 +614,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   setISAVersion(*llvmModule, arch);
   setABIVersion(*llvmModule, 500);
 
-  AmdArchInfo archInfo = rock::lookupArchInfo(arch);
-  int waveSize = archInfo.waveSize;
+  int waveSize = rock::getWaveSize(arch);
   addControlConstant(*llvmModule, "__oclc_finite_only_opt", 8, 0);
   addControlConstant(*llvmModule, "__oclc_correctly_rounded_sqrt32", 8, 1);
   addControlConstant(*llvmModule, "__oclc_unsafe_math_opt", 8, 0);

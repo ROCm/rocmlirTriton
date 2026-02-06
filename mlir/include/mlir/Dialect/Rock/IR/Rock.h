@@ -76,7 +76,6 @@ constexpr int64_t maxHardwareWorkgroupSize = 1024;
 
 #include "mlir/Dialect/Rock/IR/RockAcceptingViewOpInterface.h"
 #include "mlir/Dialect/Rock/IR/RockConvInterface.h"
-#include "mlir/Dialect/Rock/IR/RockGemmFeaturesInterface.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockWriterOpInterface.h"

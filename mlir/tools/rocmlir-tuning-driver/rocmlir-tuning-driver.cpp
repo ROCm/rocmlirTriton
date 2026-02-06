@@ -883,9 +883,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       backendOpts.optLevel = 3;
       backendOpts.suppressDiagnostic = true;
 
-      rock::AmdArchInfo archInfo = rock::lookupArchInfo(backendOpts.chip);
-      int waveSize = archInfo.waveSize;
-      int maxSharedMemPerWG = archInfo.maxSharedMemPerWG;
+      int waveSize = rock::getWaveSize(backendOpts.chip);
+      int maxSharedMemPerWG = rock::getLDSSize(backendOpts.chip);
 
       rock::TritonOptions tritonOpts;
       tritonOpts.arch = backendOpts.chip;

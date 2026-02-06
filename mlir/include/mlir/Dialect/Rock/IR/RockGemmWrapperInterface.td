@@ -27,122 +27,136 @@ def RockGemmWrapperInterface : OpInterface<"RockGemmWrapperInterface"> {
   }];
   let cppNamespace = "::mlir::rock";
 
-  let methods = [
-    InterfaceMethod<
-        /*desc=*/[{
+  let methods = [InterfaceMethod<
+                     /*desc=*/[{
           Return the KernelType of this op
         }],
-        /*retType=*/"::mlir::rock::KernelType",
-        /*methodName=*/"getKernelType",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/""
-      >,
-    InterfaceMethod<
-        /*desc=*/[{
+                     /*retType=*/"::mlir::rock::KernelType",
+                     /*methodName=*/"getKernelType",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
           Return the OpOperand that corresponds to the operand argument
           that corresponds to the output result of the operation.
         }],
-        /*retType=*/"OpOperand *",
-        /*methodName=*/"getOutArgument",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/""
-      >,
-    InterfaceMethod<
-        /*desc=*/[{
+                     /*retType=*/"OpOperand *",
+                     /*methodName=*/"getOutArgument",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
           Return the size of the matrix multiplication that this op will eventually
           perform.
         }],
-        /*retType=*/"::mlir::rock::GemmSize",
-        /*methodName=*/"getGemmSize",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/""
-      >,
-    InterfaceMethod<
-        /*desc=*/[{
+                     /*retType=*/"::mlir::rock::GemmSize",
+                     /*methodName=*/"getGemmSize",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
           Return the element type of [what will become] matrix A for this operation.
         }],
-        /*retType=*/"::mlir::Type",
-        /*methodName=*/"getAType",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/""
-      >,
-      InterfaceMethod<
-        /*desc=*/[{
+                     /*retType=*/"::mlir::Type",
+                     /*methodName=*/"getAType",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
           Return the element type of [what will become] matrix B for this operation.
         }],
-        /*retType=*/"::mlir::Type",
-        /*methodName=*/"getBType",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/""
-      >,
-      InterfaceMethod<
-        /*desc=*/[{
+                     /*retType=*/"::mlir::Type",
+                     /*methodName=*/"getBType",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
           Return the element type of [what will become] matrix C for this operation.
         }],
-        /*retType=*/"::mlir::Type",
-        /*methodName=*/"getCType",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/""
-      >,
-    InterfaceMethod<
-        /*desc=*/[{
-          Return the optional features attribute of this op.
-        }],
-        /*retType=*/"std::optional<::mlir::rock::GemmFeatures>",
-        /*methodName=*/"getGemmFeatures",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{
-          return $_op.getFeatures();
-        }]
-      >,
-    InterfaceMethod<
-        /*desc=*/[{
-          Return the features attribute of this op.
-        }],
-        /*retType=*/"::mlir::rock::GemmFeaturesAttr",
-        /*methodName=*/"getGemmFeaturesAttr",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{
-          return $_op.getFeaturesAttr();
-        }]
-      >,
-
-    InterfaceMethod<
-        /*desc=*/[{
+                     /*retType=*/"::mlir::Type",
+                     /*methodName=*/"getCType",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
           Set the tuning parameters attribute of this operation
 
           This is needed for --affix-tuning-params to work and can go away if it does
         }],
-        /*retType=*/"void",
-        /*methodName=*/"setGemmParamsAttr",
-        /*args=*/(ins "::mlir::Attribute":$params),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{
+                     /*retType=*/"void",
+                     /*methodName=*/"setGemmParamsAttr",
+                     /*args=*/(ins "::mlir::Attribute":$params),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/[{
           $_op->setAttr($_op.getParamsAttrName(), params);
-        }]
-      >,
-    InterfaceMethod<
-        /*desc=*/[{
+        }]>,
+                 InterfaceMethod<
+                     /*desc=*/[{
           Get the tuning parameters attribute of this operation
         }],
-        /*retType=*/"std::optional<RockTuningParamAttrInterface>",
-        /*methodName=*/"getGemmParams",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{
+                     /*retType=*/"std::optional<RockTuningParamAttrInterface>",
+                     /*methodName=*/"getGemmParams",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/[{
           return $_op.getParams();
-        }]
-      >,
-
-    // TODO: more methods here as needed
+        }]>,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Return the optional scale tensor for matrix A.
+          Returns a null Value if no scale is present.
+        }],
+                     /*retType=*/"::mlir::Value",
+                     /*methodName=*/"getScaleA",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/[{
+          return ::mlir::Value();
+        }]>,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Return the optional scale tensor for matrix B.
+          Returns a null Value if no scale is present.
+        }],
+                     /*retType=*/"::mlir::Value",
+                     /*methodName=*/"getScaleB",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/[{
+          return ::mlir::Value();
+        }]>,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Return the type of the optional scale tensor for matrix A.
+          Returns a null Type if no scale is present.
+        }],
+                     /*retType=*/"::mlir::Type",
+                     /*methodName=*/"getScaleAType",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/[{
+          auto scale = $_op.getScaleA();
+          return scale ? scale.getType() : ::mlir::Type();
+        }]>,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Return the type of the optional scale tensor for matrix B.
+          Returns a null Type if no scale is present.
+        }],
+                     /*retType=*/"::mlir::Type",
+                     /*methodName=*/"getScaleBType",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/[{
+          auto scale = $_op.getScaleB();
+          return scale ? scale.getType() : ::mlir::Type();
+        }]>,
   ];
 }
 

@@ -144,31 +144,6 @@ def RockGemmGemmWrapperInterface : OpInterface<"RockGemmGemmWrapperInterface"> {
       >,
     InterfaceMethod<
         /*desc=*/[{
-          Return the optional features attribute of this op.
-        }],
-        /*retType=*/"std::optional<::mlir::rock::GemmFeatures>",
-        /*methodName=*/"getGemmFeatures",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{
-          return $_op.getFeatures();
-        }]
-      >,
-    InterfaceMethod<
-        /*desc=*/[{
-          Return the features attribute of this op.
-        }],
-        /*retType=*/"::mlir::rock::GemmFeaturesAttr",
-        /*methodName=*/"getGemmFeaturesAttr",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{
-          return $_op.getFeaturesAttr();
-        }]
-      >,
-
-    InterfaceMethod<
-        /*desc=*/[{
           Set the tuning parameters attribute of the first GEMM
         }],
         /*retType=*/"void",
