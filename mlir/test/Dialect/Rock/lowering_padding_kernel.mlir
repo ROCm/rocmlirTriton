@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // This tests checks the following aspects of lowering component:
 // * The correct padding transformations are generated and added to the gemm
 

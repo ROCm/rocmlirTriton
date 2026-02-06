@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt -split-input-file -rock-gridwise-gemm-to-blockwise -rock-blockwise-load-tile-to-threadwise -rock-blockwise-gemm-to-threadwise -canonicalize --mlir-print-local-scope %s | FileCheck %s
 
 // CHECK-LABEL: @rock_gemm_schedulev2

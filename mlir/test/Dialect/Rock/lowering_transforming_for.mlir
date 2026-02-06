@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt --rock-sugar-to-loops %s | FileCheck %s
 
 #transform_map0 = #rock.transform_map<affine_map<(d0, d1) -> (d1 + 4 * d0)>

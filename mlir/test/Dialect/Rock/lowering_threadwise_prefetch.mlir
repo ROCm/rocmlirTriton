@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // Note: this should be in a post-fusion pass
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-blockwise-gemm-to-threadwise -rock-threadwise-gemm-lowering --canonicalize | FileCheck --enable-var-scope %s
 

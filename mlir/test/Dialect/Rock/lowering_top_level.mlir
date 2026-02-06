@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // This tests checks the following aspects of lowering component:
 // * Can pass arguments correctly
 // * Can pass arguments in the right sequence

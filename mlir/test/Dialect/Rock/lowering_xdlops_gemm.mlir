@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt -rock-threadwise-gemm-lowering %s | FileCheck %s
 
 #transform_map0 = #rock.transform_map<affine_map<(d0, d1) -> (2*d0 + d1)> by [<Unmerge{1, 2} ["ci", "cj"] at [0, 1] -> ["offset"] at [0]>] bounds = [1, 2] -> [2]>

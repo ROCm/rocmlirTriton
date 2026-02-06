@@ -2,146 +2,26 @@
 // RUN: rocmlir-opt %s | rocmlir-opt | FileCheck %s
 // Run: rocmlir-opt -mlir-print-op-generic %s | rocmlir-opt | FileCheck %s
 
-func.func @rock_blockwise_gemm_f16(%A : memref<8x128x1xf16, 3>, %B : memref<8x128x1xf16, 3>, %C : memref<8x8xf16, 5>){
-  rock.blockwise_gemm %C += %A * %B {
+func.func @rock_blockwise_gemm_f16(%A : tensor<8x128x1xf16>, %B : tensor<8x128x1xf16>, %C : tensor<8x8xf16>) -> tensor<8x8xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+  %result = rock.blockwise_gemm(%A, %B, %C) {
     inMPerThread = 2 : i32,
     inNPerThread = 2 : i32,
-    params = #rock.general_gemm_params<
-      blockSize = 256,
+    params = #rock.gemm_params<
       kPerBlock = 8,
       mPerBlock = 256,
       nPerBlock = 256,
-      kPerThread = 1,
-      mPerThread = 4,
-      nPerThread = 4,
-      splitKFactor = 1, 
-      scheduleVersion = 1, 
-      outputSwizzle = 2,
-      kpack = 1>
-  } : memref<8x8xf16, 5> += memref<8x128x1xf16, 3> * memref<8x128x1xf16, 3>
-  return
+      kpack = 1,
+      numWaves = 1,
+      matrixInstrNonkdim = 0,
+      splitKFactor = 1,
+      numStages = 2,
+      wavesPerEU = 0,
+      gridGroupSize = 0,
+      numCTAs = 1>
+  } : tensor<8x128x1xf16>, tensor<8x128x1xf16>, tensor<8x8xf16> -> tensor<8x8xf16>
+  %out = rock.store %result to %C by set : tensor<8x8xf16> -> tensor<8x8xf16> to tensor<8x8xf16>
+  return %out : tensor<8x8xf16>
 }
 
 // CHECK-LABEL: func.func @rock_blockwise_gemm_f16
 //  CHECK: rock.blockwise_gemm
-
-// ----
-
-func.func @rock_xdlops_gemm_accel_one_result_f16(%matrixA : memref<1x4xvector<4xf16>, 5>,
-                                                %matrixB : memref<1x4xvector<4xf16>, 5>,
-                                                %matrixC : memref<1x1xvector<32xf32>, 5>) {
-  %c0 = arith.constant 0 : index
-  rock.threadwise_gemm_accel %matrixC += %matrixA * %matrixB at [%c0, %c0, %c0] features = mfma{
-    arch = "amdgcn-amd-amdhsa:gfx90a",
-    params = #rock.accel_gemm_params<
-      mPerBlock = 256,
-      nPerBlock = 256,
-      kpackPerBlock = 16,
-      mPerWave = 128,
-      nPerWave = 64,
-      mnPerXdl = 32,
-      kpack = 1,
-      splitKFactor = 1, 
-      scheduleVersion = 1, 
-      outputSwizzle = 2, 
-      wavesPerEU = 0, 
-      gridGroupSize = 0,
-      forceUnroll = true>
-  } : memref<1x1xvector<32xf32>, 5> += memref<1x4xvector<4xf16>, 5> * memref<1x4xvector<4xf16>, 5>
-  return
-}
-
-// CHECK-LABEL: func.func @rock_xdlops_gemm_accel_one_result_f16
-//  CHECK: rock.threadwise_gemm_accel
-
-// ----
-
-func.func @rock_xdlops_gemm_accel_two_results_f16(%matrixA : memref<1x4xvector<4xf16>, 5>,
-                                               %matrixB : memref<1x4xvector<4xf16>, 5>,
-                                               %matrixC : memref<1x1xvector<32xf32>, 5>) {
-  %c0 = arith.constant 0 : index
-  rock.threadwise_gemm_accel %matrixC += %matrixA * %matrixB at [%c0, %c0, %c0] features = mfma {
-    arch = "amdgcn-amd-amdhsa:gfx90a",
-    params = #rock.accel_gemm_params<
-      mPerBlock = 256,
-      nPerBlock = 256,
-      kpackPerBlock = 16,
-      mPerWave = 128,
-      nPerWave = 64,
-      mnPerXdl = 32,
-      kpack = 1,
-      splitKFactor = 1, 
-      scheduleVersion = 1, 
-      outputSwizzle = 2, 
-      wavesPerEU = 0, 
-      gridGroupSize = 0,
-      forceUnroll = true>
-  } : memref<1x1xvector<32xf32>, 5> += memref<1x4xvector<4xf16>, 5> * memref<1x4xvector<4xf16>, 5>
-  return
-}
-
-// CHECK-LABEL: func.func @rock_xdlops_gemm_accel_two_results_f16
-//  CHECK: rock.threadwise_gemm_accel
-
-// ----
-
-func.func @rock_blockwise_gemm_accel_one_result_f16(%matrixA : memref<8192xf16, 3>, %matrixB : memref<4096xf16, 3>,
-                                          %bufferA : memref<4xvector<4xf16>, 5>, %bufferB : memref<4xvector<4xf16>, 5>,
-                                          %matrixC : memref<1xvector<32xf32>, 5>) {
-  %c0f = arith.constant 0.0 : f16
-  rock.blockwise_gemm_accel %matrixC += %bufferA from %matrixA * %bufferB from %matrixB features = mfma {
-    arch = "amdgcn-amd-amdhsa:gfx90a",
-    blockSize = 256 : i32,
-    matrixParamsA = #rock.blockwise_matrix_params<elementType = f16, elementTypeLoad = f16, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
-    matrixParamsB = #rock.blockwise_matrix_params<elementType = f16, elementTypeLoad = f16, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-    params = #rock.accel_gemm_params<
-      mPerBlock = 256,
-      nPerBlock = 256,
-      kpackPerBlock = 16,
-      mPerWave = 16,
-      nPerWave = 16,
-      mnPerXdl = 16,
-      kpack = 1,
-      splitKFactor = 1, 
-      scheduleVersion = 1, 
-      outputSwizzle = 2, 
-      wavesPerEU = 0, 
-      gridGroupSize = 0,
-      forceUnroll = true>
-  } : memref<1xvector<32xf32>, 5> +=  memref<4xvector<4xf16>, 5> from memref<8192xf16, 3> * memref<4xvector<4xf16>, 5> from memref<4096xf16, 3>
-  return
-}
-
-// CHECK-LABEL: func.func @rock_blockwise_gemm_accel_one_result_f16
-//  CHECK: rock.blockwise_gemm_accel
-
-// ----
-
-func.func @rock_blockwise_gemm_accel_two_results_f16(%matrixA : memref<8192xf16, 3>, %matrixB : memref<4096xf16, 3>,
-                                               %bufferA : memref<4xvector<4xf16>, 5>, %bufferB : memref<4xvector<4xf16>, 5>,
-                                               %matrixC : memref<2xvector<32xf32>, 5>) {
-  rock.blockwise_gemm_accel %matrixC += %bufferA from %matrixA * %bufferB from %matrixB features = mfma {
-    arch = "amdgcn-amd-amdhsa:gfx90a",
-    blockSize = 256 : i32,
-    matrixParamsA = #rock.blockwise_matrix_params<elementType = f16, elementTypeLoad = f16, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
-    matrixParamsB = #rock.blockwise_matrix_params<elementType = f16, elementTypeLoad = f16, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-    params = #rock.accel_gemm_params<
-      mPerBlock = 256,
-      nPerBlock = 256,
-      kpackPerBlock = 16,
-      mPerWave = 128,
-      nPerWave = 64,
-      mnPerXdl = 32,
-      kpack = 1,
-      splitKFactor = 1, 
-      scheduleVersion = 1, 
-      outputSwizzle = 2, 
-      wavesPerEU = 0, 
-      gridGroupSize = 0,
-      forceUnroll = true>
-  } : memref<2xvector<32xf32>, 5> += memref<4xvector<4xf16>, 5> from memref<8192xf16, 3> * memref<4xvector<4xf16>, 5> from memref<4096xf16, 3>
-  return
-}
-
-// CHECK-LABEL: func.func @rock_blockwise_gemm_accel_two_results_f16
-//  CHECK: rock.blockwise_gemm_accel

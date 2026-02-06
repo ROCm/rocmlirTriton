@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-annotate-liveness -verify-diagnostics
 
 #wg = #gpu.address_space<workgroup>

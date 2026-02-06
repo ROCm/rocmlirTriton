@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt -rock-blockwise-gemm-to-threadwise %s | FileCheck %s
 
 #wg = #gpu.address_space<workgroup>

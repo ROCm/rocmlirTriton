@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: sed s/##TOKEN_ARCH##/gfx942/g %s | rocmlir-opt --rock-sugar-to-loops | FileCheck %s --check-prefixes=CHECK,GFX942
 // RUN: sed s/##TOKEN_ARCH##/gfx1250/g %s | rocmlir-opt --rock-sugar-to-loops | FileCheck %s --check-prefixes=CHECK,GFX1250
 

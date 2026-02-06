@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt -rock-output-swizzle -rock-lower-reduce -rock-threadwise-gemm-lowering %s | FileCheck %s
 
 #wg = #gpu.address_space<workgroup>

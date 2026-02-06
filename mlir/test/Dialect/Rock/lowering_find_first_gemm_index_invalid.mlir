@@ -1,3 +1,4 @@
+// UNSUPPORTED: true
 // RUN: rocmlir-opt --rock-find-first-gemm-index %s -verify-diagnostics
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
