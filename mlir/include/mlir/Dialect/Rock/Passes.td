@@ -74,7 +74,8 @@ def RockGridwiseAttnToBlockwisePass
                 "attention, and threadwise copy";
   let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
                            "gpu::GPUDialect", "vector::VectorDialect",
-                           "linalg::LinalgDialect", "scf::SCFDialect"];
+                           "linalg::LinalgDialect", "scf::SCFDialect",
+                           "triton::TritonDialect"];
 }
 
 def RockShuffleGemmForReductions : Pass<"rock-shuffle-gemm-for-reductions", "::mlir::func::FuncOp"> {

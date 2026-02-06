@@ -65,6 +65,8 @@
 #include <optional>
 #include <tuple>
 
+#include "triton/Dialect/Triton/IR/Dialect.h"
+
 namespace mlir {
 namespace rock {
 #define GEN_PASS_DEF_ROCKGRIDWISEATTNTOBLOCKWISEPASS
@@ -169,13 +171,12 @@ struct GridwiseAttentionRewritePattern
     
     // Step 1: Expand dims [M] -> [M, 1]
     auto expandedType = RankedTensorType::get({numRows, 1}, elemType);
-    SmallVector<ReassociationIndices> reassociation = {{0, 1}};
-    Value expanded = tensor::ExpandShapeOp::create(rewriter, loc, expandedType,
-                                                    rowVector, reassociation);
+    Value expanded = triton::ExpandDimsOp::create(rewriter, loc, expandedType,
+                                                    rowVector, 1);
     
     // Step 2: Broadcast [M, 1] -> [M, N]
     auto resultType = RankedTensorType::get({numRows, numCols}, elemType);
-    return rock::BroadcastOp::create(rewriter, loc, resultType, expanded);
+    return triton::BroadcastOp::create(rewriter, loc, resultType, expanded);
   }
 
   // This function computes exp(gemm0 - rowmax_j)
@@ -481,7 +482,7 @@ struct GridwiseAttentionRewritePattern
         case OutOfScopeType::KVCache: {
         assert(currentSeqLen != nullptr);
         auto splatType = RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(), cast<ShapedType>(currentSeqLen.getType()).getElementType());
-        Value currentSeqLenSplat = tensor::SplatOp::create(rewriter, loc, splatType, currentSeqLen);
+        Value currentSeqLenSplat = triton::SplatOp::create(rewriter, loc, splatType, currentSeqLen);
         // pointerTensor is mIndex
         isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
                                           nIndex, currentSeqLenSplat);
@@ -500,7 +501,7 @@ struct GridwiseAttentionRewritePattern
         // - Anything after the prefix, standard causal masking applies
         assert(prefixOffset != nullptr);
         auto splatType = RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(), cast<ShapedType>(prefixOffset.getType()).getElementType());
-        Value prefixOffsetSplat = tensor::SplatOp::create(rewriter, loc, splatType, prefixOffset);
+        Value prefixOffsetSplat = triton::SplatOp::create(rewriter, loc, splatType, prefixOffset);
 
         // Compute query_pos + prefix_offset
         Value threshold =
@@ -949,7 +950,8 @@ struct GridwiseAttentionRewritePattern
     assert(gemm0N % gemm0NPerBlock == 0);
 
     // Get current workgroup ID.
-    auto bid = WorkgroupIdOp::create(rewriter, loc, rewriter.getI32Type());
+    Value bid =
+        triton::GetProgramIdOp::create(rewriter, op.getLoc(), triton::ProgramIDDim::X);
 
     // Calculate different size derivations
     int64_t gemm1KPerBlock = gemm1TuningParams.getKPerBlock();
@@ -1413,7 +1415,7 @@ void RockGridwiseAttnToBlockwisePass::runOnOperation() {
   target.addLegalDialect<arith::ArithDialect, rock::RockDialect,
                          affine::AffineDialect, vector::VectorDialect,
                          linalg::LinalgDialect, scf::SCFDialect,
-                         math::MathDialect, tensor::TensorDialect>();
+                         math::MathDialect, tensor::TensorDialect, triton::TritonDialect>();
   target.addLegalOp<gpu::PrintfOp>();
 
   RewritePatternSet patterns(ctx);
