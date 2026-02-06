@@ -944,15 +944,11 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       // Compilation
       if (failed(compilationPM.run(sourceCopy.get()))) {
-        // TODO(roctriton): temporarily, treat compilation errors as
-        // non-applicable
-        result.status = CompilationStatus::NotApplicable;
-
-        // std::lock_guard<std::mutex> lock(outputMutex);
-        // llvm::errs() << "Backend pipeline failed for config: "
-        //              << result.perfConfig << "\n";
-        // result.status = CompilationStatus::CompilationFailed;
-        // compilationFailed.store(true, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(outputMutex);
+        llvm::errs() << "Backend pipeline failed for config: "
+                     << result.perfConfig << "\n";
+        result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
         return result;
       }
 

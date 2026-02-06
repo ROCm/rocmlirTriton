@@ -61,18 +61,20 @@ static SmallVector<uint32_t> compute1MPerBlock(TuningParamSetKind tuningKind,
   return mPerBlockList;
 }
 
-static SmallVector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
+static std::vector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
                                              int64_t waveSize) {
-  SmallVector<uint32_t> numWavesList = {1, 2, 4, 8};
-  return numWavesList;
-  // SmallVector<uint32_t> numWavesList;
+  if (tuningKind == TuningParamSetKind::Exhaustive) {
+    std::vector<uint32_t> numWavesList;
 
-  // uint32_t maxNumWaves = maxHardwareWorkgroupSize / waveSize;
-  // for (uint32_t numWaves = 1; numWaves <= maxNumWaves; numWaves *= 2) {
-  //   numWavesList.push_back(numWaves);
-  // }
-  // assert(!numWavesList.empty() && "numWavesList can't be empty");
-  // return numWavesList;
+    uint32_t maxNumWaves = maxHardwareWorkgroupSize / waveSize;
+    for (uint32_t numWaves = 1; numWaves <= maxNumWaves; numWaves *= 2) {
+      numWavesList.push_back(numWaves);
+    }
+    assert(!numWavesList.empty() && "numWavesList can't be empty");
+    return numWavesList;
+  }
+
+  return {2, 4, 8};
 }
 
 static SmallVector<int64_t>
@@ -113,8 +115,16 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 }
 
 static std::vector<std::vector<uint32_t>>
-getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t maxWavesPerEU, TuningParamSetKind kind) {
+getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
+                  int64_t maxWavesPerEU, TuningParamSetKind kind) {
+  bool hasAccel = rock::hasAccel(rock::getArchValue(gemmOp), gemmOp);
   auto dPerBlock = computeDPerBlock(kind);
+  
+  // non-accel
+  if (!hasAccel) {
+    dPerBlock = {4, 8, 16, 32, 64};
+  }
+  std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
 
   std::vector<uint32_t> wavesPerEUList = {0};
   // std::vector<uint32_t> wavesPerEUList;
@@ -123,40 +133,44 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t maxWavesPerEU, Tuning
   //   wavesPerEUList.push_back(wavesPerEU);
   // }
 
+  GemmFeatures currentFeatures = rock::getFeatures(gemmOp);
+  bool isMfma = bitEnumContainsAll(currentFeatures, GemmFeatures::mfma);
   Type inTypeA = gemmOp.getAType();
   bool is8b = inTypeA.isInteger(8) ||
               (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
 
   std::vector<uint32_t> kPerBlock = {16, 32, 64, 128};
-  if (is8b)
+  if (is8b && isMfma)
     kPerBlock = {32, 64, 128};
 
   // MFMA (CDNA) parameters
   // Note: kPack max is 2
   // See AccelerateAMDMatmul.cpp comment about kPack limit
   std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
-      dPerBlock,           // M/block
-      dPerBlock,           // N/block
-      kPerBlock,           // K/block
-      {1, 2},              // kPack
-      {16, 32},            // matrixInstrNonkdim
-      {1, 2, 3},        // numStages
-      wavesPerEUList,      // wavesPerEU
-      {0} // gridGroupSize
+      dPerBlock,      // M/block
+      dPerBlock,      // N/block
+      kPerBlock,      // K/block
+      {1, 2},         // kPack
+      numWavesRange,  // numWaves
+      {16, 32},       // matrixInstrNonkdim
+      {1, 2, 3},      // numStages
+      wavesPerEUList, // wavesPerEU
+      {0}             // gridGroupSize
   };
 
-  // WMMA (RDNA3) parameters
-  // kPack is limited similarly for WMMA
+  // WMMA (RDNA) parameters
+  // kPack is always one for WMMA
   std::vector<std::vector<uint32_t>> validRangeWmmaParams = {
-      dPerBlock,    // M/block
-      dPerBlock,    // N/block
-      {32, 64}, // K/block
-      {1, 2},       // kPack
-      {0},         // matrixInstrNonkdim
-      {1, 2},      // numStages
-      wavesPerEUList,         // wavesPerEU
-      {0} // gridGroupSize
-      };
+      dPerBlock,      // M/block
+      dPerBlock,      // N/block
+      {32, 64},       // K/block
+      {1},         // kPack
+      numWavesRange,  // numWaves
+      {0},            // matrixInstrNonkdim
+      {1, 2},         // numStages
+      wavesPerEUList, // wavesPerEU
+      {0}             // gridGroupSize
+  };
 
   MatrixAccelKind accelKind =
       rock::getMatrixAccelKind(rock::getArchValue(gemmOp), gemmOp);
@@ -214,7 +228,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
   int64_t numCTAs{1}, wavesPerEU{0}, gridGroupSize{0};
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[0]) {
-    SmallVector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
+    std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
     SmallVector<uint32_t> mPerBlockGemm1 =
         compute1MPerBlock(kind, gemm0NPerBlock);
     for (uint32_t gemm1NPerBlock : mPerBlockGemm1) {
@@ -344,29 +358,28 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
   auto info = PopulateParamsInfo::fromOp(gemmOp);
 
   int64_t maxWavesPerEU = rock::getMaxWavesPerEU(rock::getArchValue(gemmOp));
+  int64_t waveSize = rock::getWaveSize(rock::getArchValue(gemmOp));
   const std::vector<std::vector<uint32_t>> accelParams =
-      getAccelRangeGemm(gemmOp, maxWavesPerEU, kind);
+      getAccelRangeGemm(gemmOp, waveSize, maxWavesPerEU, kind);
 
   auto tuningInfo = std::make_unique<PopulateParams>();
-  int64_t waveSize = rock::getWaveSize(rock::getArchValue(gemmOp));
 
   // hardcode to use heuristics
   // TODO(roctriton): numCTAs for gfx1250
   int64_t numCTAs{1};
-  SmallVector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
   OpBuilder b(gemmOp.getContext());
   for (uint32_t gemmMPerBlock : accelParams[0]) {
     for (uint32_t gemmNPerBlock : accelParams[1]) {
       for (uint32_t gemmKPerBlock : accelParams[2]) {
         for (uint32_t gemmKPack : accelParams[3]) {
-          for (uint32_t numWaves : numWavesRange) {
-            for (uint32_t matrixInstrNonkdim : accelParams[4]) {
+          for (uint32_t numWaves : accelParams[4]) {
+            for (uint32_t matrixInstrNonkdim : accelParams[5]) {
               auto optimalSplitKFactors = computeOptimalSplitKFactors(
                   gemmOp, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock);
               for (int64_t splitKFactor : optimalSplitKFactors) {
-                for (int64_t numStages : accelParams[5]) {
-                  for (int64_t wavesPerEU : accelParams[6]) {
-                    for (int64_t gridGroupSize : accelParams[7]) {
+                for (int64_t numStages : accelParams[6]) {
+                  for (int64_t wavesPerEU : accelParams[7]) {
+                    for (int64_t gridGroupSize : accelParams[8]) {
                       auto gemmParams = GemmParamsAttr::get(
                           b.getContext(), gemmMPerBlock, gemmNPerBlock,
                           gemmKPerBlock, gemmKPack, numCTAs, numWaves,
