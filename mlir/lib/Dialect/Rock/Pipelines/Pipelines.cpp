@@ -339,6 +339,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     funcPm.addPass(rock::createRockGemmToGridwisePass());
     funcPm.addPass(rock::createRockShuffleGemmForReductions());
     funcPm.addPass(rock::createRockInsertLoadsPass());
+    funcPm.addPass(rock::createRockGridwiseAttnToBlockwisePass());
     funcPm.addPass(rock::createRockGridwiseGemmToBlockwisePass());
     funcPm.addPass(rock::createRockInsertOutputFusionLoadsPass());
     funcPm.addPass(rock::createRockLowerLoadsPass());
@@ -375,6 +376,13 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
+  // Bufferize tensor ops to memref ops - required before linalg-to-loops
+  // The host functions restored from attributes contain tensor operations
+  // that need to be converted to memref operations first.
+  bufferization::OneShotBufferizePassOptions bufOpts;
+  bufOpts.bufferizeFunctionBoundaries = true;
+  pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
+
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());
 

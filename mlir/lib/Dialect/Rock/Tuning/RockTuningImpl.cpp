@@ -207,14 +207,14 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
   // TODO(roctriton): numCTAs for gfx1250
   int64_t numCTAs{1}, wavesPerEU{0}, gridGroupSize{0};
   OpBuilder b(gemmGemmOp.getContext());
-  for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
+  for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[0]) {
     SmallVector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
     SmallVector<uint32_t> mPerBlockGemm1 =
-        compute1MPerBlock(kind, gemm0MPerBlock);
-    for (uint32_t gemm1MPerBlock : mPerBlockGemm1) {
-      for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
+        compute1MPerBlock(kind, gemm0NPerBlock);
+    for (uint32_t gemm1NPerBlock : mPerBlockGemm1) {
+      for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[1]) {
         auto optimalSplitKFactors =
-            computeOptimalSplitKFactors(gemmGemmOp, gemm0NPerBlock);
+            computeOptimalSplitKFactors(gemmGemmOp, gemm0MPerBlock);
 
         for (uint32_t gemmKPerBlock : validRangeGemmGemmParams[2]) {
           for (uint32_t gemmKPack : validRangeGemmGemmParams[3]) {
@@ -223,8 +223,8 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                 for (int64_t splitKFactor : optimalSplitKFactors) {
                   for (uint32_t numStages : validRangeGemmGemmParams[5]) {
                     auto gemmGemmParams = GemmGemmParamsAttr::get(
-                        gemmGemmOp.getContext(), gemm0MPerBlock, gemm1MPerBlock,
-                        gemm0NPerBlock, gemmKPerBlock, gemmKPack, numCTAs,
+                        gemmGemmOp.getContext(), gemm0NPerBlock, gemm1NPerBlock,
+                        gemm0MPerBlock, gemmKPerBlock, gemmKPack, numCTAs,
                         numWaves, matrixInstrNonkdim, splitKFactor, numStages,
                         wavesPerEU, gridGroupSize);
                     newSpace->tuningRange.push_back(

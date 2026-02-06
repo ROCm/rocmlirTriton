@@ -19,31 +19,34 @@
 // rock.blockwise_store_tile.
 //
 // At this point, the IR has:
-// - UntileOp wrapping tile results (from GEMM and output fusion loads)
+// - TileOp wrapping tile results with output transforms (from ToBlockwise)
+// - UntileOp converting tiles to full tensors for fusion ops
 // - Fusion ops (arith.addf, etc.) operating on full tensor types
 // - rock.store storing the fused result
 //
 // This pass:
-// 1. Traces back from rock.store through fusion ops to find UntileOp
-// 2. Gets the tile values from UntileOp.source()
+// 1. Traces back from rock.store through fusion ops to find StoreMarkerOp
+// 2. Gets the tile values and transforms from StoreMarkerOp
 // 3. Clones fusion ops to operate on tiles
-// 4. Creates BlockwiseStoreTileOp with proper output transforms
-// 5. Cleans up UntileOp and dead ops
+// 4. Combines StoreMarkerOp transforms with store destination transforms
+// 5. Creates BlockwiseStoreTileOp with the combined transform chain
+// 6. Cleans up UntileOp, StoreMarkerOp and dead ops
 //
 // Example:
 //   Before:
-//     %gemm_tile = scf.for ... -> tensor<128x256xf32>
-//     %gemm_full = rock.untile %gemm_tile : tile -> full
-//     %bias_tile = rock.blockwise_load_tile %bias[indices] : ... -> tensor<128x256xf32>
-//     %bias_full = rock.untile %bias_tile : tile -> full
+//     %gemm_tile = scf.for ... -> tensor<16x16xf32>
+//     %marked = rock.tile %gemm_tile views [<transforms>] [%g, %m, %n]
+//     %gemm_full = rock.untile %marked : tile -> full
 //     %fused = arith.addf %gemm_full, %bias_full : tensor<full>
-//     %out = rock.store %fused to %dest : tensor<full> -> tensor<flat>
+//     %dest_tr = rock.transform %arg2 by <dest_transforms>
+//     %out = rock.store %fused to %dest_tr by set
 //
 //   After:
-//     %gemm_tile = scf.for ... -> tensor<128x256xf32>
-//     %bias_tile = rock.blockwise_load_tile %bias[indices] : ... -> tensor<128x256xf32>
-//     %fused_tile = arith.addf %gemm_tile, %bias_tile : tensor<128x256xf32>
-//     %out = rock.blockwise_store_tile %fused_tile -> %dest[indices] by set
+//     %gemm_tile = scf.for ... -> tensor<16x16xf32>
+//     %fused_tile = arith.addf %gemm_tile, %bias_tile : tensor<16x16xf32>
+//     %combined_dest = rock.transform %arg2 by <dest_transforms +
+//     tile_transforms> %out = rock.blockwise_store_tile %fused_tile ->
+//     %combined_dest[%g, %m, %n] by set
 //
 //===----------------------------------------------------------------------===//
 
@@ -84,59 +87,45 @@ static bool isFusionOp(Operation *op) {
   return isa<arith::ArithDialect, math::MathDialect>(op->getDialect());
 }
 
-/// Find grid coordinates from existing BlockwiseLoadTileOp in the function.
-static SmallVector<Value> findGridCoordinates(func::FuncOp funcOp) {
-  SmallVector<Value> coords;
-  
-  funcOp.walk([&](BlockwiseLoadTileOp loadTileOp) {
-    if (!coords.empty())
-      return WalkResult::interrupt();
-    
-    // Output loads have indices [g_block, m_block, n_block]
-    // Input loads have indices [kIter, g_block, m_block, n_block]
-    // We want the last 3 (g_block, m_block, n_block)
-    ValueRange indices = loadTileOp.getSourceIndices();
-    if (indices.size() >= 3) {
-      size_t offset = indices.size() - 3;
-      coords.push_back(indices[offset]);     // g_block
-      coords.push_back(indices[offset + 1]); // m_block
-      coords.push_back(indices[offset + 2]); // n_block
+/// Information extracted from a StoreMarkerOp found in the store chain.
+struct StoreMarkerInfo {
+  StoreMarkerOp storeMarkerOp;
+  ArrayAttr extraViews;
+  SmallVector<Value> extraIndices;
+};
+
+/// Recursively search for a StoreMarkerOp through UntileOp and fusion ops.
+/// Returns the StoreMarkerOp if found, or nullptr otherwise.
+static StoreMarkerOp findStoreMarkerOp(Value val) {
+  Operation *defOp = val.getDefiningOp();
+  if (!defOp)
+    return nullptr;
+
+  // Check if this is a StoreMarkerOp
+  if (auto storeMarkerOp = dyn_cast<StoreMarkerOp>(defOp))
+    return storeMarkerOp;
+
+  // UntileOp: look at its source
+  if (auto untileOp = dyn_cast<UntileOp>(defOp))
+    return findStoreMarkerOp(untileOp.getSource());
+
+  // Fusion op: recursively search operands
+  if (isFusionOp(defOp)) {
+    for (Value operand : defOp->getOperands()) {
+      if (StoreMarkerOp found = findStoreMarkerOp(operand))
+        return found;
     }
-    return WalkResult::interrupt();
-  });
-  
-  return coords;
-}
+  }
 
-/// Get tile shape from a UntileOp source type.
-static std::pair<int64_t, int64_t> getTileShape(UntileOp fusionRoot) {
-  auto sourceType = cast<RankedTensorType>(fusionRoot.getSource().getType());
-  ArrayRef<int64_t> shape = sourceType.getShape();
-  assert(shape.size() == 2 && "Expected 2D tile");
-  return {shape[0], shape[1]};
-}
-
-/// Get bidGridLengths from output shape and tile shape.
-static SmallVector<int64_t, 3> getBidGridLengths(RankedTensorType outputType,
-                                                  int64_t mPerBlock,
-                                                  int64_t nPerBlock) {
-  ArrayRef<int64_t> shape = outputType.getShape();
-  assert(shape.size() == 3 && "Expected 3D output shape [G, M, N]");
-  
-  int64_t G = shape[0];
-  int64_t M = shape[1];
-  int64_t N = shape[2];
-  
-  int64_t mBlocks = M / mPerBlock;
-  int64_t nBlocks = N / nPerBlock;
-  
-  return {G, mBlocks, nBlocks};
+  return nullptr;
 }
 
 /// Recursively convert a full-tensor value to its tile equivalent.
-/// Handles UntileOp and fusion ops.
+/// Handles UntileOp, StoreMarkerOp and fusion ops.
+/// Also collects StoreMarkerOp info if found.
 static Value convertToTile(OpBuilder &builder, Location loc, Value fullVal,
-                           Type tileType, IRMapping &fullToTileMapping) {
+                           Type tileType, IRMapping &fullToTileMapping,
+                           StoreMarkerInfo *outStoreMarkerInfo = nullptr) {
   // Check if already converted
   if (fullToTileMapping.contains(fullVal))
     return fullToTileMapping.lookup(fullVal);
@@ -146,20 +135,34 @@ static Value convertToTile(OpBuilder &builder, Location loc, Value fullVal,
     // Block argument - shouldn't happen
     return fullVal;
   }
-  
-  // UntileOp: return its source (the tile)
-  if (auto fusionRootOp = dyn_cast<UntileOp>(defOp)) {
-    Value tile = fusionRootOp.getSource();
+
+  // UntileOp: recurse into its source
+  if (auto untileOp = dyn_cast<UntileOp>(defOp)) {
+    Value tile = convertToTile(builder, loc, untileOp.getSource(), tileType,
+                               fullToTileMapping, outStoreMarkerInfo);
     fullToTileMapping.map(fullVal, tile);
     return tile;
   }
-  
+
+  // StoreMarkerOp: extract info and return the tile source
+  if (auto storeMarkerOp = dyn_cast<StoreMarkerOp>(defOp)) {
+    if (outStoreMarkerInfo && !outStoreMarkerInfo->storeMarkerOp) {
+      outStoreMarkerInfo->storeMarkerOp = storeMarkerOp;
+      outStoreMarkerInfo->extraViews = storeMarkerOp.getExtraViews();
+      outStoreMarkerInfo->extraIndices =
+          llvm::to_vector(storeMarkerOp.getExtraIndices());
+    }
+    Value tile = storeMarkerOp.getSource();
+    fullToTileMapping.map(fullVal, tile);
+    return tile;
+  }
+
   // Fusion op: recursively convert operands and clone with tile types
   if (isFusionOp(defOp) && defOp->getNumResults() == 1) {
     IRMapping fusionMapping;
     for (Value operand : defOp->getOperands()) {
       Value tileOperand = convertToTile(builder, loc, operand, tileType,
-                                        fullToTileMapping);
+                                        fullToTileMapping, outStoreMarkerInfo);
       fusionMapping.map(operand, tileOperand);
     }
     
@@ -173,6 +176,15 @@ static Value convertToTile(OpBuilder &builder, Location loc, Value fullVal,
   
   // Other ops - return as-is (shouldn't happen for well-formed IR)
   return fullVal;
+}
+
+/// Get tile shape from a StoreMarkerOp source type.
+static std::pair<int64_t, int64_t>
+getTileShapeFromStoreMarkerOp(StoreMarkerOp storeMarkerOp) {
+  auto sourceType = cast<RankedTensorType>(storeMarkerOp.getSource().getType());
+  ArrayRef<int64_t> shape = sourceType.getShape();
+  assert(shape.size() == 2 && "Expected 2D tile");
+  return {shape[0], shape[1]};
 }
 
 struct RockLowerStoresPass
@@ -189,30 +201,6 @@ void RockLowerStoresPass::runOnOperation() {
     return;
   }
 
-  // Find grid coordinates from existing BlockwiseLoadTileOp
-  SmallVector<Value> gridCoords = findGridCoordinates(funcOp);
-  if (gridCoords.size() != 3) {
-    LLVM_DEBUG(llvm::dbgs() << "Could not find grid coordinates\n");
-    return;
-  }
-
-  // Find a UntileOp to get tile shape
-  UntileOp sampleFusionRoot = nullptr;
-  funcOp.walk([&](UntileOp op) {
-    sampleFusionRoot = op;
-    return WalkResult::interrupt();
-  });
-  
-  if (!sampleFusionRoot) {
-    LLVM_DEBUG(llvm::dbgs() << "No UntileOp found\n");
-    return;
-  }
-  
-  auto [mPerBlock, nPerBlock] = getTileShape(sampleFusionRoot);
-  
-  LLVM_DEBUG(llvm::dbgs() << "Tile shape: mPerBlock=" << mPerBlock
-                          << ", nPerBlock=" << nPerBlock << "\n");
-
   // Collect all rock.store ops
   SmallVector<StoreOp> storeOps;
   funcOp.walk([&](StoreOp storeOp) {
@@ -228,43 +216,66 @@ void RockLowerStoresPass::runOnOperation() {
     
     Value storeSource = storeOp.getSource();  // The fused result (full tensor)
     Value storeDest = storeOp.getDest();      // The destination (transformed arg)
-    
-    // Get the output type for computing transforms
-    auto outputType = cast<RankedTensorType>(storeSource.getType());
-    SmallVector<int64_t, 3> bidGridLengths = getBidGridLengths(outputType,
-                                                               mPerBlock,
-                                                               nPerBlock);
-    
-    // Compute output transforms
-    FailureOr<RegsAsMatrixSubTiles> maybeOutputViews = computeOutputTransforms(
-        builder, loc, mPerBlock, nPerBlock, bidGridLengths);
-    
-    if (failed(maybeOutputViews)) {
-      LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms\n");
+
+    // Find the StoreMarkerOp in the store chain to get transforms and indices
+    StoreMarkerOp storeMarkerOp = findStoreMarkerOp(storeSource);
+    if (!storeMarkerOp) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "No StoreMarkerOp found for store: " << storeOp << "\n");
       continue;
     }
-    
-    ArrayAttr idToMatrixCMaps = maybeOutputViews->gridSubTile;
-    auto dest = rock::transform(builder, storeDest, idToMatrixCMaps);
-    
+
+    auto [mPerBlock, nPerBlock] = getTileShapeFromStoreMarkerOp(storeMarkerOp);
+    LLVM_DEBUG(llvm::dbgs() << "Tile shape: mPerBlock=" << mPerBlock
+                            << ", nPerBlock=" << nPerBlock << "\n");
+
+    // Get the output type for determining tile type
+    auto outputType = cast<RankedTensorType>(storeSource.getType());
+
     // Determine tile type
     auto tileType = RankedTensorType::get({mPerBlock, nPerBlock},
                                           outputType.getElementType());
-    
-    // Convert the store source from full tensor to tile
+
+    // Convert the store source from full tensor to tile, collecting
+    // StoreMarkerOp info
+    StoreMarkerInfo storeMarkerInfo;
     IRMapping fullToTileMapping;
     Value fusedTile = convertToTile(builder, loc, storeSource, tileType,
-                                    fullToTileMapping);
-    
+                                    fullToTileMapping, &storeMarkerInfo);
+
+    if (!storeMarkerInfo.storeMarkerOp) {
+      LLVM_DEBUG(llvm::dbgs() << "Failed to extract StoreMarkerOp info\n");
+      continue;
+    }
+
     LLVM_DEBUG(llvm::dbgs() << "Converted store source to tile: " << fusedTile
                             << "\n");
-    
-    // Create BlockwiseStoreTileOp
-    // The dest should be the rock.store destination (already transformed)
-    // extraViews contains the output grid subtile transforms
+
+    // Combine transforms: StoreMarkerOp's extraViews are applied on top of
+    // any existing transforms on storeDest.
+    // Use untransform to get existing transforms, then combine with
+    // StoreMarkerOp's
+    SmallVector<TransformMapAttr> destTransforms;
+    auto [destRoot, _] = rock::untransform(storeDest, destTransforms);
+
+    // Build combined transforms: extraViews (from StoreMarkerOp) +
+    // destTransforms
+    SmallVector<Attribute> combinedTransforms;
+    combinedTransforms.append(storeMarkerInfo.extraViews.begin(),
+                              storeMarkerInfo.extraViews.end());
+    combinedTransforms.append(destTransforms.begin(), destTransforms.end());
+
+    // Apply combined transforms to the root destination
+    Value combinedDest = destRoot;
+    if (!combinedTransforms.empty()) {
+      ArrayAttr transformsAttr = builder.getArrayAttr(combinedTransforms);
+      combinedDest = rock::transform(builder, destRoot, transformsAttr);
+    }
+
+    // Create BlockwiseStoreTileOp with combined transforms
     auto bstOp = BlockwiseStoreTileOp::create(
-        builder, loc, storeOp.getResult().getType(), fusedTile, dest,
-        gridCoords, storeOp.getStoreMethod());
+        builder, loc, storeOp.getResult().getType(), fusedTile, combinedDest,
+        storeMarkerInfo.extraIndices, storeOp.getStoreMethod());
 
     LLVM_DEBUG(llvm::dbgs() << "Created BlockwiseStoreTileOp: " << bstOp
                             << "\n");
@@ -274,14 +285,21 @@ void RockLowerStoresPass::runOnOperation() {
     storeOp.erase();
   }
 
-  // Clean up dead ops (UntileOp, fusion ops, etc.)
+  // Clean up dead ops (UntileOp, StoreMarkerOp, fusion ops, etc.)
   bool changed = true;
   while (changed) {
     changed = false;
 
-    funcOp.walk([&](UntileOp fusionRootOp) {
-      if (fusionRootOp.getResult().use_empty()) {
-        fusionRootOp.erase();
+    funcOp.walk([&](UntileOp untileOp) {
+      if (untileOp.getResult().use_empty()) {
+        untileOp.erase();
+        changed = true;
+      }
+    });
+
+    funcOp.walk([&](StoreMarkerOp storeMarkerOp) {
+      if (storeMarkerOp.getResult().use_empty()) {
+        storeMarkerOp.erase();
         changed = true;
       }
     });

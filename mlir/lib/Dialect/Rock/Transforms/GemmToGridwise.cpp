@@ -34,8 +34,9 @@
 #include "mlir/Dialect/Rock/utility/math.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
@@ -49,6 +50,7 @@
 #include <algorithm>
 #include <memory>
 #include <sstream>
+#include <tuple>
 
 namespace mlir {
 namespace rock {
@@ -123,23 +125,23 @@ static Value moveNumHeadsToSeqLenQ(OpBuilder builder, Location loc,
          "gemmG must be divisible by numRepeats");
 
   int64_t newGemmG = inpShape[0] / numRepeats;
-  SmallVector<StringRef> startNames = {"gemmG", "headDim", "seqLen"};
+  SmallVector<StringRef> startNames = {"gemmG", "seqLen", "headDim"};
 
-  // (gemmG, headDim, seqLen) -> (gemmG / numRepeats, headDim, seqLen,
+  // (gemmG, seqLen, headDim) -> (gemmG / numRepeats, seqLen, headDim,
   // numRepeats)
   rock::BottomUpTMBuilder unmerge(builder, startNames, inpShape);
-  unmerge.unmerge({"gemmG", "numRepeats"}, {0, 3}, "gemmG",
+  unmerge.unmerge({"gemmG", "numRepeats"}, {0, 2}, "gemmG",
                   {newGemmG, numRepeats});
-  unmerge.passThrough({"seqLen", "headDim"}, {2, 1}, {"seqLen", "headDim"});
+  unmerge.passThrough({"seqLen", "headDim"}, {1, 3}, {"seqLen", "headDim"});
   auto unmergeAttr = unmerge.get();
   Value matrixUnmerge =
       rock::TransformOp::create(builder, loc, inputTensor, unmergeAttr);
 
-  // (gemmG / numRepeats, headDim, seqLen, numRepeats) -> (gemmG / numRepeats,
-  // headDim, seqLen * numRepeats)
+  // (gemmG / numRepeats, seqLen, headDim, numRepeats) -> (gemmG / numRepeats,
+  // seqLen * numRepeats, headDim)
   auto merger = rock::BottomUpTMBuilder::above(unmerge, unmergeAttr);
-  merger.merge("seqLen", 2, {"seqLen", "numRepeats"});
-  merger.passThrough(ArrayRef<uint32_t>{0, 1}, ArrayRef<uint32_t>{0, 1});
+  merger.merge("seqLen", 1, {"seqLen", "numRepeats"});
+  merger.passThrough(ArrayRef<uint32_t>{0, 2}, ArrayRef<uint32_t>{0, 3});
   auto mergerAttr = merger.get();
   return rock::TransformOp::create(builder, loc, matrixUnmerge, mergerAttr);
 }
@@ -279,20 +281,20 @@ computeGridSizeAttentionGemmElmtGemm(ConversionPatternRewriter &rw, Op op,
       cast<GemmParamsAttr>(op.getGemm0Params().value());
 
   SmallVector<int64_t, 3> aShape =
-      llvm::to_vector<3>(cast<MemRefType>(a.getType()).getShape());
+      llvm::to_vector<3>(cast<ShapedType>(a.getType()).getShape());
 
   SmallVector<int64_t, 3> bShape =
-      llvm::to_vector<3>(cast<MemRefType>(b.getType()).getShape());
+      llvm::to_vector<3>(cast<ShapedType>(b.getType()).getShape());
 
   SmallVector<int64_t, 3> cShape =
-      llvm::to_vector<3>(cast<MemRefType>(c.getType()).getShape());
+      llvm::to_vector<3>(cast<ShapedType>(c.getType()).getShape());
 
-  GemmSize gemm0Size(/*g=*/aShape[0], /*m=*/bShape[2],
-                     /*k=*/aShape[1],
-                     /*n=*/aShape[2]);
+  GemmSize gemm0Size(/*g=*/aShape[0], /*m=*/aShape[1],
+                     /*k=*/aShape[2],
+                     /*n=*/bShape[2]);
 
   int64_t gridSize =
-      (gemm0Size.n / accelParams0.getNPerBlock()) * gemm0Size.g * splitKV;
+      (gemm0Size.m / accelParams0.getMPerBlock()) * gemm0Size.g * splitKV;
 
   IntegerAttr gridSizeAttr = rw.getI32IntegerAttr(gridSize);
   func::FuncOp funcOp = cast<func::FuncOp>(op->getParentOp());
@@ -404,14 +406,14 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
   }
 
   {
-    // Prepare matrix A - i.e., (gemmG, gemmK, gemmM)
+    // Prepare matrix A - i.e., (gemmG, gemmM, gemmK)
     // Using bottom-up transformations
     // 1. addDim (gemmNSplit)
     // 2. merge (gemmG, gemmNSplit) -> (gemmG*)
-    BottomUpTMBuilder addDimTransform(builder, {"gemmG", "gemmK", "gemmM"},
+    BottomUpTMBuilder addDimTransform(builder, {"gemmG", "gemmM", "gemmK"},
                                       aShape, loc);
 
-    addDimTransform.passThrough({"gemmG", "gemmK", "gemmM"});
+    addDimTransform.passThrough({"gemmG", "gemmM", "gemmK"});
     addDimTransform.addDim("gemmNSplit", 3, splitNFactor);
     auto addDimTransformAttr = addDimTransform.get();
 
@@ -422,7 +424,7 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
         BottomUpTMBuilder::above(addDimTransform, addDimTransformAttr);
 
     mergeTransform.merge("gemmG", 0, {"gemmG", "gemmNSplit"});
-    mergeTransform.passThrough({"gemmK", "gemmM"});
+    mergeTransform.passThrough({"gemmM", "gemmK"});
 
     auto mergeTransformAttr = mergeTransform.get();
     transformAttrs.push_back(mergeTransformAttr);
@@ -470,7 +472,8 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
   return std::make_tuple(aNew, bNew, cNew, outNew);
 }
 
-static LogicalResult commonAttentionGemmElmtGemm(
+static FailureOr<std::tuple<GridwiseAttentionOp, Value, Value>>
+commonAttentionGemmElmtGemm(
     ConversionPatternRewriter &rw, RockGemmGemmWrapperInterface op, Value a,
     Value b, Value c, Value out, Value lse, Value currentSeqLen,
     Value prefixOffset, UnitAttr causal, IntegerAttr splitKV,
@@ -478,9 +481,6 @@ static LogicalResult commonAttentionGemmElmtGemm(
     TypeAttr softmaxType, int64_t numHeadsQ, int64_t numHeadsKV,
     BoolAttr preSoftmaxHasSplitKVTransforms) {
   Location loc = op->getLoc();
-
-  if (!isa<MemRefType>(op.getAType()))
-    return op.emitOpError("Cannot lower unbufferized gemm to gridwise");
 
   if (!op.getGemm0Params().has_value()) {
     return op.emitError("gemm0 params is missing and it should've been "
@@ -493,9 +493,8 @@ static LogicalResult commonAttentionGemmElmtGemm(
   }
   GemmParamsAttr params1 = cast<GemmParamsAttr>(op.getGemm1Params().value());
 
-  // Note: the gridwise ops take K x M and K x N, so A must be transposed if
-  // it's in the natural M x K form
-  a = normalizeMatrix(a, rw, loc, !op.getTransposedA(), "gemm0K", "gemm0M");
+  // Note: the gridwise ops take M x K, K x N and K x N
+  a = normalizeMatrix(a, rw, loc, op.getTransposedA(), "gemm0M", "gemm0K");
   b = normalizeMatrix(b, rw, loc, op.getTransposedB(), "gemm0K", "gemm0N");
   c = normalizeMatrix(c, rw, loc, op.getTransposedC(), "gemm1K", "gemm1N");
   out =
@@ -509,7 +508,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
     auto maybeSplitk = arrangeGemmGemmSplitKTransform(rw, op, loc, splitKFactor,
                                                      a, b, c, out);
     if (failed(maybeSplitk))
-      return maybeSplitk;
+      return op.emitError("split-k set up failed");
 
     std::tie(a, b, c, out) = maybeSplitk.value();
   }
@@ -533,35 +532,35 @@ static LogicalResult commonAttentionGemmElmtGemm(
   }
 
   // Note, matrix dimension correctness is handled in the verifier
-  ArrayRef<int64_t> aShape = cast<MemRefType>(a.getType()).getShape();
-  ArrayRef<int64_t> bShape = cast<MemRefType>(b.getType()).getShape();
-  ArrayRef<int64_t> cShape = cast<MemRefType>(c.getType()).getShape();
+  ArrayRef<int64_t> aShape = cast<ShapedType>(a.getType()).getShape();
+  ArrayRef<int64_t> bShape = cast<ShapedType>(b.getType()).getShape();
+  ArrayRef<int64_t> cShape = cast<ShapedType>(c.getType()).getShape();
+  assert(aShape[0] == bShape[0]);
+  assert(cShape[0] == bShape[0]);
+  assert(aShape[2] == bShape[1]);
   assert(cShape[1] == bShape[2]);
-  GemmSize gemm0Size(/*g=*/aShape[0], /*m=*/bShape[2],
-                     /*k=*/aShape[1],
-                     /*n=*/aShape[2]);
-  GemmSize gemm1Size(/*g=*/aShape[0], /*m=*/cShape[2],
+
+  GemmSize gemm0Size(/*g=*/aShape[0], /*m=*/aShape[1],
+                     /*k=*/aShape[2],
+                     /*n=*/bShape[2]);
+  GemmSize gemm1Size(/*g=*/aShape[0], /*m=*/aShape[1],
                      /*k=*/cShape[1],
-                     /*n=*/aShape[2]);
+                     /*n=*/cShape[2]);
   GemmSize gemm0ExtraPad = requiredPadding(params0, gemm0Size, 1, splitKVNum)
                                .value_or(GemmSize{0, 0, 0, 0});
   GemmSize gemm1ExtraPad = requiredPadding(params1, gemm1Size, splitKVNum)
                                .value_or(GemmSize{0, 0, 0, 0});
 
-  a = padMatrix(a, rw, loc, "gemm0K", gemm0ExtraPad.k, "gemm0N",
+  a = padMatrix(a, rw, loc, "gemm0M", gemm0ExtraPad.m, "gemm0K",
+                gemm0ExtraPad.k);
+  b = padMatrix(b, rw, loc, "gemm0K", gemm0ExtraPad.k, "gemm0N",
                 gemm0ExtraPad.n);
-  b = padMatrix(b, rw, loc, "gemm0K", gemm0ExtraPad.k, "gemm0M",
-                gemm0ExtraPad.m);
-  c = padMatrix(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1M",
-                gemm1ExtraPad.m);
-  // In the transposed layout, from a tuning params point of view
-  // the output dimensions are swapped. Though we will only be
-  // swapping them inside gridwise lowering to keep the surrounding
-  // fusions legit. So the extra pad needs to be swapped and applied.
-  out = padMatrix(out, rw, loc, "gemm1N", gemm1ExtraPad.n, "gemm1M",
-                  gemm1ExtraPad.m);
+  c = padMatrix(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1N",
+                gemm1ExtraPad.n);
+  out = padMatrix(out, rw, loc, "gemm1M", gemm1ExtraPad.m, "gemm1N",
+                  gemm1ExtraPad.n);
   if (lse)
-    lse = padVector(lse, rw, loc, "gemm1N", gemm1ExtraPad.n);
+    lse = padVector(lse, rw, loc, "gemm1M", gemm1ExtraPad.m);
 
   if (failed(
           computeGridSizeAttentionGemmElmtGemm(rw, op, a, b, c, splitKVNum))) {
@@ -579,12 +578,14 @@ static LogicalResult commonAttentionGemmElmtGemm(
   }
 
   auto newOp = GridwiseAttentionOp::create(
-      rw, loc, a, b, c, elementwiseInputs, currentSeqLen, prefixOffset, out,
-      lse, causal, splitKV, op.getGemmFeaturesAttr(),
+      rw, loc, out.getType(), lse ? lse.getType() : nullptr, a, b, c,
+      elementwiseInputs, currentSeqLen, prefixOffset, causal, splitKV,
+      op.getGemmFeaturesAttr(), 
       /*disableQBypassLDS=*/nullptr, prePadG0MAttr, prePadG0NAttr,
       numRepeatsGQA, softmaxType, params0, params1,
       rw.getDenseI64ArrayAttr(op.getFirstGemmIndices()),
       rw.getBoolAttr(enableSoftmax), preSoftmaxHasSplitKVTransforms);
+  // TODO: fix this for fusions
   bool linalgOpFound = false;
   preSecondOpRegion.walk(
       [&](linalg::GenericOp genOp) { linalgOpFound = true; });
@@ -593,7 +594,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
                           newOp.getPreSoftmaxBody().begin());
   }
   rw.replaceOp(op, newOp);
-  return success();
+  return std::make_tuple(newOp, out, lse);
 }
 
 static Type getSmallestType(Type type1, Type type2) {
@@ -1018,29 +1019,129 @@ LogicalResult
 AttentionRewritePattern::matchAndRewrite(AttentionOp op,
                                          AttentionOpAdaptor adaptor,
                                          ConversionPatternRewriter &rw) const {
-  return commonAttentionGemmElmtGemm(
-      rw, op, adaptor.getQueries(), adaptor.getKeys(), adaptor.getValues(),
-      adaptor.getOut(), adaptor.getLse(), adaptor.getCurrentSeqLen(),
-      adaptor.getPrefixOffset(), adaptor.getCausalAttr(),
-      adaptor.getSplitKVAttr(), adaptor.getPreSoftmaxElemWiseInputs(),
-      op.getPreSoftmaxBody(),
+
+  // TODO: fix for fusions!
+  // Find the StoreOp that uses this AttentionOp's result to get the transformed
+  // out
+  Value out;
+  Value lse;
+  rock::StoreOp storeOp = nullptr;
+  rock::StoreOp storeLseOp = nullptr;
+  for (Operation *user : op.getResult().getUsers()) {
+    if (auto sop = dyn_cast<rock::StoreOp>(user)) {
+      storeOp = sop;
+      out = storeOp.getDest();
+      break;
+    }
+  }
+  if (!out) {
+    return op.emitOpError(
+        "AttentionOp result must be used by a StoreOp to provide "
+        "the output tensor");
+  }
+  if (op.getLse()) {
+    for (Operation *user : op.getLse().getUsers()) {
+      if (auto sop = dyn_cast<rock::StoreOp>(user)) {
+        storeLseOp = sop;
+        lse = storeLseOp.getDest();
+        break;
+      }
+    }
+    if (!lse) {
+      return op.emitOpError(
+          "AttentionOp LSE must be used by a StoreOp to provide "
+          "the output tensor");
+    }
+  }
+  auto maybeAttnOut = commonAttentionGemmElmtGemm(
+      rw, op, adaptor.getQueries(), adaptor.getKeys(), adaptor.getValues(), out,
+      lse, adaptor.getCurrentSeqLen(), adaptor.getPrefixOffset(),
+      adaptor.getCausalAttr(), adaptor.getSplitKVAttr(),
+      adaptor.getPreSoftmaxElemWiseInputs(), op.getPreSoftmaxBody(),
       /*enableSoftmax=*/true, op.getSoftmaxTypeAttr(), adaptor.getNumHeadsQ(),
       adaptor.getNumHeadsKV(),
       adaptor.getPreSoftmaxHasSplitKVTransformsAttr());
+  if (failed(maybeAttnOut))
+    return failure();
+
+  GridwiseAttentionOp newOp;
+  Value newOut, newLse;
+  std::tie(newOp, newOut, newLse) = maybeAttnOut.value();
+
+  // Update the StoreOp to use the new result type (which may be different)
+  // TODO(roctriton): In case of padded result, we need to do this, otherwise we
+  // dont...this should be done in a cleaner way.
+  
+  // TODO(roctriton): split-k for g+g!
+  StoreMethodAttr storeMethod =
+      rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set);
+  if (storeOp) {
+    rw.setInsertionPoint(storeOp);
+    auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
+                                            storeOp.getResult().getType(),
+                                            newOp.getResult(), newOut, storeMethod);
+    rw.replaceOp(storeOp, newStoreOp.getResult());
+  }
+  if (storeLseOp) {
+    rw.setInsertionPoint(storeLseOp);
+    auto newStoreOp = rock::StoreOp::create(rw, storeLseOp.getLoc(),
+                                            storeLseOp.getResult().getType(),
+                                            newOp.getLse(), newLse, storeMethod);
+    rw.replaceOp(storeLseOp, newStoreOp.getResult());
+  }
+  return success();
 }
 
 LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
     GemmElementwiseGemmOp op, GemmElementwiseGemmOpAdaptor adaptor,
     ConversionPatternRewriter &rw) const {
+  // TODO: fix for fusions!
+  // Find the StoreOp that uses this AttentionOp's result to get the transformed
+  // out
+  Value out;
+  rock::StoreOp storeOp = nullptr;
+  for (Operation *user : op.getResult().getUsers()) {
+    if (auto sop = dyn_cast<rock::StoreOp>(user)) {
+      storeOp = sop;
+      out = storeOp.getDest();
+      break;
+    }
+  }
+  if (!out) {
+    return op.emitOpError(
+        "AttentionOp result must be used by a StoreOp to provide "
+        "the output tensor");
+  }
   auto splitKV = rw.getI32IntegerAttr(1);
-  return commonAttentionGemmElmtGemm(
-      rw, op, adaptor.getA(), adaptor.getB(), adaptor.getC(), adaptor.getOut(),
+  auto maybeAttnOut = commonAttentionGemmElmtGemm(
+      rw, op, adaptor.getA(), adaptor.getB(), adaptor.getC(), out,
       /*lse=*/nullptr,
       /*currentSeqLen=*/nullptr, /*prefixOffset=*/nullptr, /*causal=*/nullptr,
       splitKV, adaptor.getElemwiseInputs(), op.getPreSecondGemmBody(),
       /*enableSoftmax=*/false, /*softmaxType=*/nullptr, /*numHeadsQ=*/1,
       /*numHeadsKV=*/1,
       /*preSoftmaxHasSplitKVTransforms=*/rw.getBoolAttr(false));
+  if (failed(maybeAttnOut))
+    return failure();
+
+  GridwiseAttentionOp newOp;
+  Value newOut, newLse;
+  std::tie(newOp, newOut, newLse) = maybeAttnOut.value();
+
+  // Update the StoreOp to use the new result type (which may be different)
+  // TODO(roctriton): In case of padded result, we need to do this, otherwise we
+  // dont...this should be done in a cleaner way.
+  // TODO(roctriton): split-k for g+g!
+  StoreMethodAttr storeMethod =
+      rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set);
+  if (storeOp) {
+    rw.setInsertionPoint(storeOp);
+    auto newStoreOp = rock::StoreOp::create(
+        rw, storeOp.getLoc(), storeOp.getResult().getType(), newOp.getResult(),
+        newOut, storeMethod);
+    rw.replaceOp(storeOp, newStoreOp.getResult());
+  }
+  return success();
 }
 
 void RockGemmToGridwisePass::runOnOperation() {
@@ -1049,11 +1150,10 @@ void RockGemmToGridwisePass::runOnOperation() {
 
   target.addIllegalOp<rock::GemmOp, rock::AttentionOp,
                       rock::GemmElementwiseGemmOp>();
-  target.addLegalOp<rock::TransformOp, rock::GridwiseGemmOp,
-                    rock::StoreOp,
-                    rock::GridwiseAttentionOp, memref::AllocOp,
-                    linalg::GenericOp, arith::TruncIOp, arith::ExtFOp,
-                    arith::ExtSIOp, arith::TruncFOp>();
+  target
+      .addLegalOp<rock::TransformOp, rock::GridwiseGemmOp, rock::StoreOp,
+                  rock::GridwiseAttentionOp, linalg::GenericOp, arith::TruncIOp,
+                  arith::ExtFOp, arith::ExtSIOp, arith::TruncFOp>();
 
   target.addLegalDialect<linalg::LinalgDialect, arith::ArithDialect>();
 

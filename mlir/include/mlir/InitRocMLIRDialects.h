@@ -17,7 +17,6 @@
 // rocMLIR includes
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
-#include "mlir/Dialect/Rock/Transforms/BufferizableOpInterfaceImpl.h"
 
 // MLIR includes
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -56,7 +55,6 @@
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
-#include "mlir/Dialect/Vector/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/Dialect.h"
 
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
@@ -135,18 +133,18 @@ inline void registerUpstreamDialects(DialectRegistry &registry) {
                   tosa::TosaDialect>();
   // clang-format on
 
-  // TODO: Re-enable GPU/AMDGPU/ROCDL dialects for Triton backend
-  // These are handled by Triton now
-  // registry.insert<amdgpu::AMDGPUDialect,
-  //                 gpu::GPUDialect,
-  //                 ROCDL::ROCDLDialect>();
-
-  // Register bufferization hooks for rock interfaces
-  rock::registerBufferizableOpInterfaceExternalModels(registry);
-
   // Register all dialect extensions.
   bufferization::registerTransformDialectExtension(registry);
   func::registerInlinerExtension(registry);
+
+  // Register bufferizable op interface external models.
+  // Required for one-shot-bufferize pass to work.
+  arith::registerBufferizableOpInterfaceExternalModels(registry);
+  bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
+  linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  scf::registerBufferizableOpInterfaceExternalModels(registry);
+  tensor::registerBufferizableOpInterfaceExternalModels(registry);
 
   // Register all conversions to LLVM extensions.
   arith::registerConvertArithToLLVMInterface(registry);
@@ -158,16 +156,9 @@ inline void registerUpstreamDialects(DialectRegistry &registry) {
   ub::registerConvertUBToLLVMInterface(registry);
 
   // Register all external models.
-  arith::registerBufferizableOpInterfaceExternalModels(registry);
-  bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
-      registry);
-  linalg::registerBufferizableOpInterfaceExternalModels(registry);
   linalg::registerTilingInterfaceExternalModels(registry);
-  scf::registerBufferizableOpInterfaceExternalModels(registry);
-  tensor::registerBufferizableOpInterfaceExternalModels(registry);
   tensor::registerInferTypeOpInterfaceExternalModels(registry);
   tensor::registerTilingInterfaceExternalModels(registry);
-  vector::registerBufferizableOpInterfaceExternalModels(registry);
   vector::registerConvertVectorToLLVMInterface(registry);
   index::registerConvertIndexToLLVMInterface(registry);
 }

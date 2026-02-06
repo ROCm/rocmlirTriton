@@ -224,7 +224,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   Attribute params0 = op.getGemm0Params().value_or(nullptr);
   // set a default one if params is not provided
   StringAttr perfConfigStrAttr =
-      builder.getStringAttr("attn:v3:32,32,32,32,32,32,16,1,1,1,2,0,1");
+      builder.getStringAttr("attn:v1:32,32,32,32,1,1,4,0,1,1,0,0");
   if (!params0) {
     if (StringAttr mayBePerfConfigStrAttr =
             dyn_cast_or_null<StringAttr>(op->getAttr("perf_config"))) {

@@ -191,8 +191,6 @@ def Rock_ReduceOp
     $reduceMethod $in `into` $out attr-dict `:` type($in) `into` type($out) (`->` type($result)^)?
   }];
   let extraClassDeclaration = [{
-    ::mlir::OpOperand* getOutArgument() { return &(*this)->getOpOperand(1); }
-
     SmallVector<::mlir::Type> getTypesForFeature() {
       return {getIn().getType()};
     }
@@ -201,18 +199,14 @@ def Rock_ReduceOp
 def Rock_AttentionOp
     : Rock_Op<
           "attention", [DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
-                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
                         DeclareOpInterfaceMethods<RockGemmFeaturesInterface>,
-                        RockFusionRoot, AttrSizedOperandSegments,
-                        AttrSizedResultSegments]>,
+                        RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins TensorOrMemRefOf<[F32, F16, BF16, I8]>:$queries,
           TensorOrMemRefOf<[F32, F16, BF16, I8]>:$keys,
           TensorOrMemRefOf<[F32, F16, BF16]>:$values,
           Variadic<AnyTensorOrMemRef>:$preSoftmaxElemWiseInputs,
           Optional<TensorOrMemRefOf<[I32]>>:$currentSeqLen,
-          Optional<TensorOrMemRefOf<[I32]>>:$prefixOffset,
-          TensorOrMemRefOf<[F32, F16, BF16]>:$out,
-          Optional<TensorOrMemRefOf<[F32, F16, BF16]>>:$lse, I32Attr:$numHeadsQ,
+          Optional<TensorOrMemRefOf<[I32]>>:$prefixOffset, I32Attr:$numHeadsQ,
           I32Attr:$numHeadsKV, UnitAttr:$qTransposed, UnitAttr:$kTransposed,
           UnitAttr:$vTransposed, UnitAttr:$oTransposed, UnitAttr:$causal,
           I32Attr:$splitKV, OptionalAttr<Rock_GemmFeaturesAttr>:$features,
@@ -222,8 +216,8 @@ def Rock_AttentionOp
           DenseI64ArrayAttr:$firstGemmIndices,
           DefaultValuedOptionalAttr<BoolAttr,
                                     "false">:$preSoftmaxHasSplitKVTransforms)>,
-      Results<(outs Optional<TensorOf<[F32, F16, BF16]>>:$result,
-          Optional<TensorOf<[F32, F16, BF16]>>:$lseOut)> {
+      Results<(outs TensorOf<[F32, F16, BF16]>:$result,
+          Optional<TensorOf<[F32, F16, BF16]>>:$lse)> {
   let summary = "Attention operation of transformer models";
   let description = [{
     Performs the operation out = SOFTMAX(preSoftmaxBody(queries * keys, preSoftmaxElemWiseInputs)) * values.
@@ -261,7 +255,7 @@ def Rock_AttentionOp
 
     The parameters `gridSize`, and `blockSize` are optional as they can be
     inferred by a tuning process or a heuristic, but they must be set before
-    the `attention` is lowered into the `gridwise_attention_accel` stage of the
+    the `attention` is lowered into the `gridwise_attention` stage of the
     code generation pipeline.
 
     `features` specifies what hardware features can be used in the generated code.
@@ -274,15 +268,9 @@ def Rock_AttentionOp
         (`currentSeqLen` `=` `(` $currentSeqLen^ `:` type($currentSeqLen) `)` `\n`)?
         (`prefixOffset` `=` `(` $prefixOffset^ `:` type($prefixOffset) `)` `\n`)?
         (`causal` `\n` $causal^)?
-        (`lse` `=` $lse^ `:` type($lse) `\n`)?
         (`qk` `=` `elementwise` (`otherIns` `(` $preSoftmaxElemWiseInputs^ `:` type($preSoftmaxElemWiseInputs) `)`)? $preSoftmaxBody^ `\n`)?
-        (`tr` $oTransposed^)? $out `=` `softmax` `(` `qk` `)` `*` (`tr` $vTransposed^)? $values `:` type($values) `->` type($out) `\n`
-    `}` attr-dict (`->` type($result)^)? (`,` type($lseOut)^)?
-  }];
-
-  // Return operand of LSE if it exists.
-  let extraClassDeclaration = [{
-    ::mlir::OpOperand* getOutLseArgument() { return getLse() ? &(*this)->getOpOperand(getNumOperands() - 1) : nullptr; }
+        `softmax` `(` `qk` `)` `*` (`tr` $vTransposed^)? $values `:` type($values) `\n`
+    `}` attr-dict `->` type($result) (`,` type($lse)^)?
   }];
 }
 
@@ -295,14 +283,13 @@ def Rock_GemmElementwiseGemmOp
       Arguments<(ins TensorOrMemRefOf<[F32, F16, BF16]>:$a,
           TensorOrMemRefOf<[F32, F16, BF16]>:$b,
           TensorOrMemRefOf<[F32, F16, BF16]>:$c,
-          Variadic<AnyTensorOrMemRef>:$elemwiseInputs,
-          TensorOrMemRefOf<[F32, F16, BF16]>:$out, UnitAttr:$aTransposed,
+          Variadic<AnyTensorOrMemRef>:$elemwiseInputs, UnitAttr:$aTransposed,
           UnitAttr:$bTransposed, UnitAttr:$cTransposed, UnitAttr:$oTransposed,
           OptionalAttr<Rock_GemmFeaturesAttr>:$features,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           DenseI64ArrayAttr:$firstGemmIndices)>,
-      Results<(outs Optional<TensorOf<[F32, F16, BF16]>>:$result)> {
+      Results<(outs TensorOf<[F32, F16, BF16]>:$result)> {
   let summary = "GEMM-elementwise-GEMM operation";
   let description = [{
     Performs the operation out = preSecondGemmBody(a * b, elemwiseInputs) * c.
@@ -320,7 +307,7 @@ def Rock_GemmElementwiseGemmOp
 
     The parameters `gridSize`, and `blockSize` are optional as they can be
     inferred by a tuning process or a heuristic, but they must be set before
-    the `gemm_elementwise_gemm` is lowered into the `gridwise_attention_accel`
+    the `gemm_elementwise_gemm` is lowered into the `gridwise_attention`
     stage of the code generation pipeline.
 
     `features` specifies what hardware features can be used in the generated code.
@@ -331,8 +318,8 @@ def Rock_GemmElementwiseGemmOp
     `{` `\n`
         ` ` `ab` `=` (`tr` $aTransposed^)? $a `*` (`tr` $bTransposed^)? $b `:` type($a) `,` type($b) `\n`
         (`ab` `=` `elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
-        (`tr` $oTransposed^)? $out `=` `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `->` type($out) `\n`
-    `}` attr-dict (`->` type($result)^)?
+        `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
+    `}` attr-dict `->` type($result)
   }];
 }
 
@@ -372,7 +359,7 @@ def Rock_ConvElementwiseGemmOp
 
     The parameters `gridSize`, and `blockSize` are optional as they can be
     inferred by a tuning process or a heuristic, but they must be set before
-    the `conv_elementwise_gemm` is lowered into the `gridwise_attention_accel`
+    the `conv_elementwise_gemm` is lowered into the `gridwise_attention`
     stage of the code generation pipeline.
 
     `features` specifies what hardware features can be used in the generated code.
@@ -471,6 +458,37 @@ def Rock_UntileOp :
   }];
 }
 
+// store_marker
+def Rock_StoreMarkerOp
+    : Rock_Op<"store_marker", [AllTypesMatch<["source", "result"]>]>,
+      Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
+          Variadic<I32>:$extraIndices)>,
+      Results<(outs AnyRankedTensor:$result)> {
+  let summary =
+      "Mark a tile tensor with output transforms for later store lowering";
+  let description = [{
+    The rock.store_marker op marks a tile tensor (e.g., from a GEMM loop result)
+    with the transform information needed to write it to global memory. This op
+    is a placeholder that:
+    1. Preserves the tile tensor type for fusion ops to operate on
+    2. Carries the output transforms (extraViews) computed during ToBlockwise
+    3. Carries the grid coordinates (extraIndices) for the tile position
+
+    In LowerStores, this op is combined with rock.store to create the final
+    rock.blockwise_store_tile with proper transform chains.
+
+    Example:
+      %tile = scf.for ... -> tensor<16x16xf32>  // GEMM loop result
+      %marked = rock.store_marker %tile views [<transforms>] [%g, %m, %n]
+      %fused = arith.addf %marked, %bias : tensor<16x16xf32>
+      %out = rock.store %fused to %dest by set
+  }];
+  let assemblyFormat = [{
+    $source `views` $extraViews (`[` $extraIndices^ `]`)? attr-dict
+    `:` type($result)
+  }];
+}
+
 // load
 def Rock_LoadOp :
     Rock_Op<"load", [AllTypesMatch<["source", "result"]>]>,
@@ -519,9 +537,9 @@ def Rock_GridwiseGemmOp
           OptionalAttr<Rock_GemmFeaturesAttr>:$features,
           Rock_GemmParamsAttr:$params)>,
       Results<(outs AnyRankedTensor:$c)> {
-  let summary = "Gridwise GEMM accelerated version";
+  let summary = "Gridwise GEMM";
   let description = [{
-    The `rock.gridwise_gemm` op computes gridwise GEMM with acceleration.
+    The `rock.gridwise_gemm` op computes gridwise GEMM.
   }];
   let assemblyFormat = [{
     `(` $a `,` $b
@@ -536,19 +554,16 @@ def Rock_GridwiseGemmOp
 
 // gridwise_attention
 def Rock_GridwiseAttentionOp
-    : Rock_Op<"gridwise_attention",
-              [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-               DeclareOpInterfaceMethods<RockGemmFeaturesInterface>,
-               RockFusionRoot, AttrSizedOperandSegments,
+    : Rock_Op<"gridwise_attention", [DeclareOpInterfaceMethods<
+                                         RockGemmFeaturesInterface>,
+                                     RockFusionRoot, AttrSizedOperandSegments,
 ]>,
-      Arguments<(ins MemRefRankOf<[F32, F16, BF16, I8], [3]>:$queries,
-          MemRefRankOf<[F32, F16, BF16, I8], [3]>:$keys,
-          MemRefRankOf<[F32, F16, BF16], [3]>:$values,
-          Variadic<AnyTensorOrMemRef>:$preSoftmaxElemWiseInputs,
-          Optional<MemRefRankOf<[I32], [1]>>:$currentSeqLen,
-          Optional<MemRefRankOf<[I32], [1]>>:$prefixOffset,
-          MemRefRankOf<[F32, F16, BF16], [3]>:$out,
-          Optional<MemRefRankOf<[F32, F16, BF16], [2]>>:$lse, UnitAttr:$causal,
+      Arguments<(ins TensorRankOf<[F32, F16, BF16, I8], [3]>:$queries,
+          TensorRankOf<[F32, F16, BF16, I8], [3]>:$keys,
+          TensorRankOf<[F32, F16, BF16], [3]>:$values,
+          Variadic<AnyRankedTensor>:$preSoftmaxElemWiseInputs,
+          Optional<TensorRankOf<[I32], [1]>>:$currentSeqLen,
+          Optional<TensorRankOf<[I32], [1]>>:$prefixOffset, UnitAttr:$causal,
           I32Attr:$splitKV, OptionalAttr<Rock_GemmFeaturesAttr>:$features,
           UnitAttr:$disableQBypassLDS, OptionalAttr<IndexAttr>:$prePadG0M,
           OptionalAttr<IndexAttr>:$prePadG0N,
@@ -557,14 +572,17 @@ def Rock_GridwiseAttentionOp
           Rock_GemmParamsAttr:$params1, DenseI64ArrayAttr:$firstGemmIndices,
           DefaultValuedOptionalAttr<BoolAttr, "true">:$enableSoftmax,
           DefaultValuedOptionalAttr<BoolAttr,
-                                    "false">:$preSoftmaxHasSplitKVTransforms)> {
-  let summary = "Gridwise attention accelerated version";
+                                    "false">:$preSoftmaxHasSplitKVTransforms)>,
+      Results<(outs TensorOf<[F32, F16, BF16]>:$result,
+          Optional<TensorOf<[F32, F16, BF16]>>:$lse)> {
+  let summary = "Gridwise attention";
   let description = [{
-    The `rock.gridwise_attention_accel` op computes gridwise attention with acceleration.
+    The `rock.gridwise_attention` op computes gridwise attention.
   }];
   let regions = (region AnyRegion:$preSoftmaxBody);
   let assemblyFormat = [{
     `(` operands `)` (`features` `=` $features^)? `preSoftmaxOps` `=` $preSoftmaxBody attr-dict `:` type(operands)
+    `->` type($result) (`,` type($lse)^)?
   }];
   let hasVerifier = 1;
 }
@@ -634,7 +652,7 @@ def Rock_BlockwiseGemmOp
           Optional<TensorOf<GemmInputTypes>>:$matrixScaleA,
           Optional<TensorOf<GemmInputTypes>>:$matrixScaleB)>,
       Results<(outs TensorOf<GemmOutputTypes>:$result)> {
-  let summary = "Blockwise GEMM accelerated version";
+  let summary = "Blockwise GEMM";
   let description = [{
     The `rock.blockwise_gemm` op does GEMM at workgroup (block) level.
     - Matrix A and Matrix B shall reside on registers.
@@ -768,53 +786,22 @@ def Rock_TransformsToPtrOp
   }];
 }
 
-// blockwise_broadcasting_reduction
-def Rock_BlockwiseBroadcastReduceOp:
-    Rock_Op<"blockwise_broadcast_reduce">,
-    Arguments<(ins MemRefOf<GemmOutputTypes>:$input,
-                   MemRefOf<LdsBufferTypes>:$workspace_buffer,
-                   MemRefOf<GemmOutputTypes>:$output,
-                   Optional<MemRefOf<GemmOutputTypes>>:$extraOut,
+// blockwise_reduction
+def Rock_BlockwiseReduceOp:
+    Rock_Op<"blockwise_reduce">,
+    Arguments<(ins AnyRankedTensor:$input,
                    IndexAttr:$axis,
-                   ReduceMethodAttr:$reduceMethod,
-                   TransformMapArrayAttr:$inputRegView,
-                   TransformMapArrayAttr:$tidSubTileSliceView,
-                   TransformMapArrayAttr:$iterSubTileSliceView,
-                   OptionalAttr<TransformMapArrayAttr>:$extraOutView,
-                   I32Attr:$blockSize
-                   )> {
-  let summary = "Blockwise reduce operation with output broadcasting";
+                   ReduceMethodAttr:$reduceMethod
+                   )>,
+      Results<(outs AnyRankedTensor:$result)> {
+  let summary = "Blockwise reduce operation";
   let description = [{
-    The `rock.blockwise_broadcast_reduce` op does reduce at a blockwise level and
-    to fill all elements of the input tensor with reduced values. Note that both input/output
-    tensors live in registers.
-
-    $input tensor resides in registers, where each thread holds a subset of the elements
-    of the tensor as defined by $inputView.
-
-    $inputRegView should be a coordinate transform taking {tid, iter} (where iter is
-    the register number in $input and tid is the ID of the lane within the workgroup
-    and producing indices into a virtual tensor `{d0, ..., dR, ... dN}
-    which is spread across the lanes of the workgroup. Note that the reduction
-    axis (Dr) is not sliced because it is not supported.
-
-    $output tensor resides in registers. It would be of same shape as the input
-    tensor because the reduced value will be broadcasted to create the same shape as
-    the input tensor.
-
-    $workspace_buffer resides in LDS. This should be a flat tensor with at least
-    number of elements in the input tensor.
-
-    {$extraOut,$extraOutView} optionally be used to broadcast the output in a different
-    layout that is different to the input layout.
-    $extraOut and $extraOutView are an optional argument and a view stack, respectively,
-    that still needs to have upper dimensions equal to the input.
+    The `rock.blockwise_reduce` op does reduce at a blockwise level and
+    to fill all elements of the input tensor with reduced values. 
   }];
   let assemblyFormat = [{
-    $reduceMethod $inputRegView $tidSubTileSliceView $iterSubTileSliceView $input `into` $output(`,` $extraOutView $extraOut^)? `using` $workspace_buffer attr-dict `:` type($input) `using` type($workspace_buffer) `into` type($output)( `,` type($extraOut)^)?
+    $reduceMethod $input attr-dict `:` type($input) `->` type($result)
   }];
-
-  let hasVerifier = 1;
 }
 
 def Rock_CastToPtrOp : Rock_Op<"cast_to_ptr", [Pure]> {

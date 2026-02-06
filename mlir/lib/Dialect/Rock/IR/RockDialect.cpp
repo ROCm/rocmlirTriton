@@ -89,30 +89,6 @@ struct rank<0> {};
 
 template <typename OpType>
 static void
-getAttentionEffects(OpType &op,
-                    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  auto *read = MemoryEffects::Read::get();
-  auto *write = MemoryEffects::Write::get();
-  effects.emplace_back(read, &op.getOutMutable());
-  effects.emplace_back(write, &op.getOutMutable());
-
-  if (op.getLse()) {
-    effects.emplace_back(read, &op.getLseMutable()[0]);
-    effects.emplace_back(write, &op.getLseMutable()[0]);
-  }
-  if (op.getCurrentSeqLen()) {
-    effects.emplace_back(read, &op.getCurrentSeqLenMutable()[0]);
-  }
-
-  effects.emplace_back(read, &op.getQueriesMutable());
-  effects.emplace_back(read, &op.getKeysMutable());
-  effects.emplace_back(read, &op.getValuesMutable());
-  for (auto &regionArg : op.getPreSoftmaxElemWiseInputsMutable())
-    effects.emplace_back(read, &regionArg);
-}
-
-template <typename OpType>
-static void
 getConvEffects(OpType &op,
                SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   effects.emplace_back(MemoryEffects::Read::get(), &op.getInputMutable(),
@@ -1352,11 +1328,6 @@ SmallVector<mlir::Type> GridwiseAttentionOp::getTypesForFeature() {
   return {getKeys().getType(), getValues().getType()};
 }
 
-void GridwiseAttentionOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  getAttentionEffects(*this, effects);
-}
-
 //===-----------------------------------------------------===//
 // ReduceOp
 //===-----------------------------------------------------===//
@@ -1400,102 +1371,13 @@ LogicalResult ReduceOp::verify() {
 }
 
 //===-----------------------------------------------------===//
-// Blockwise_ReduceOp
-//===-----------------------------------------------------===//
-
-LogicalResult BlockwiseBroadcastReduceOp::verify() {
-  ArrayAttr inputViewArrayAttr = getInputRegViewAttr();
-  // This view should be {tid, iter} to {d0, ... , Dr , ... , dn};
-  // where {d0, ... , Dr , ... , dn} represent a blockwise tile
-  // of a larger tensor that is being reduced.
-  size_t inputViewArrLen = inputViewArrayAttr.size();
-  ArrayRef<int64_t> inputTensorShape =
-      cast<TransformMapAttr>(inputViewArrayAttr[inputViewArrLen - 1])
-          .getLowerBounds()
-          .asArrayRef();
-  ArrayAttr tidSubTileSliceView = getTidSubTileSliceView();
-  int64_t axis = getAxis().getSExtValue();
-  size_t tidSubTileSliceViewArrLen = tidSubTileSliceView.size();
-  ArrayRef<int64_t> inputPartialReductionTensorShape =
-      cast<TransformMapAttr>(tidSubTileSliceView[tidSubTileSliceViewArrLen - 1])
-          .getLowerBounds()
-          .asArrayRef();
-  ArrayRef<int64_t> inputThreadView =
-      cast<TransformMapAttr>(inputViewArrayAttr[0])
-          .getUpperBounds()
-          .asArrayRef();
-  ArrayRef<int64_t> wsShape = getWorkspaceBuffer().getType().getShape();
-  int64_t blockSize = getBlockSize();
-
-  gpu::AddressSpaceAttr inMemSpaceAttr =
-      dyn_cast_or_null<gpu::AddressSpaceAttr>(
-          getInput().getType().getMemorySpace());
-  if (!inMemSpaceAttr) {
-    return emitError("No gpu memspace attr found in input memref; the input "
-                     "memref should be in regs");
-  } else {
-    if (inMemSpaceAttr.getValue() != gpu::AddressSpace::Private) {
-      return emitError("input should be in regs.");
-    }
-  }
-
-  gpu::AddressSpaceAttr outMemSpaceAttr =
-      dyn_cast_or_null<gpu::AddressSpaceAttr>(
-          getOutput().getType().getMemorySpace());
-  if (!outMemSpaceAttr) {
-    return emitError("No gpu memspace attr found in output memref; the output "
-                     "memref should be in regs");
-  } else {
-    if (outMemSpaceAttr.getValue() != gpu::AddressSpace::Private) {
-      return emitError("output should be in regs.");
-    }
-  }
-
-  gpu::AddressSpaceAttr wsMemSpaceAttr =
-      dyn_cast_or_null<gpu::AddressSpaceAttr>(
-          getWorkspaceBuffer().getType().getMemorySpace());
-  if (!wsMemSpaceAttr) {
-    return emitError("No gpu memspace attr found in workspace memref; the "
-                     "workspace memref should be in LDS");
-  } else {
-    if (wsMemSpaceAttr.getValue() != gpu::AddressSpace::Workgroup) {
-      return emitError("workspace should be in LDS.");
-    }
-  }
-
-  if (inputThreadView[0] != blockSize) {
-    return emitError("first dimension of the input view should be equal to "
-                     "the block size");
-  }
-  if (wsShape.size() != 1) {
-    return emitError("workspace LDS buffer should be flat");
-  }
-
-  int64_t blockwiseInputPartialReductionTensorElements = 1;
-  for (auto [dim, dimSize] : llvm::enumerate(inputTensorShape)) {
-    if ((int64_t)dim == axis) {
-      blockwiseInputPartialReductionTensorElements *=
-          inputPartialReductionTensorShape[axis];
-    } else {
-      blockwiseInputPartialReductionTensorElements *= dimSize;
-    }
-  }
-  if (blockwiseInputPartialReductionTensorElements > wsShape[0]) {
-    return emitError(
-        "workspace should be at least the size of elements per block ");
-  }
-  return success();
-}
-
-//===-----------------------------------------------------===//
 // GemmElementwiseGemmOp
 //===-----------------------------------------------------===//
-
 OpOperand *GemmElementwiseGemmOp::getOutArgument() {
   return &(*this)->getOpOperand(getNumOperands() - 1);
 }
 
-Type GemmElementwiseGemmOp::getOutType() { return getOut().getType(); }
+Type GemmElementwiseGemmOp::getOutType() { return getResult().getType(); }
 
 Type GemmElementwiseGemmOp::getAType() { return getA().getType(); }
 
@@ -1761,7 +1643,7 @@ OpOperand *AttentionOp::getOutArgument() {
   return &(*this)->getOpOperand(getNumOperands() - outIndex);
 }
 
-Type AttentionOp::getOutType() { return getOut().getType(); }
+Type AttentionOp::getOutType() { return getResult().getType(); }
 
 Type AttentionOp::getAType() { return getQueries().getType(); }
 
@@ -1790,7 +1672,7 @@ GemmGemmSize AttentionOp::getGemmGemmSize() {
           offsetB = dimsB.size() == 2 ? 0 : 1,
           offsetC = dimsC.size() == 2 ? 0 : 1;
   int64_t g = offsetA ? dimsA[0] : 1,
-          m = dimsA[offsetA + (getQTransposed() ? 1 : 0)],
+          m = dimsA[offsetA + (getQTransposed() ? 0 : 1)],
           k = dimsA[offsetA + (getQTransposed() ? 0 : 1)],
           n = dimsB[offsetB + (getKTransposed() ? 0 : 1)],
           o = dimsC[offsetC + (getVTransposed() ? 1 : 0)];
@@ -1818,11 +1700,6 @@ LogicalResult AttentionOp::verify() {
 
   return verifyGemmPlusGemmLikeOp(*this, getCurrentSeqLen(), getLse(),
                                   getNumHeadsQ(), getNumHeadsKV());
-}
-
-void AttentionOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  getAttentionEffects(*this, effects);
 }
 
 //===-----------------------------------------------------===//
@@ -1934,9 +1811,9 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   }
 
   int idx = 0;
-  int64_t mPerBlockG0 = params[idx++];
-  int64_t mPerBlockG1 = params[idx++];
   int64_t nPerBlockG0 = params[idx++];
+  int64_t nPerBlockG1 = params[idx++];
+  int64_t mPerBlockG0 = params[idx++];
   int64_t kPerBlock = params[idx++];
   int64_t kpack = params[idx++];
   int64_t numCTAs = params[idx++];
@@ -1948,7 +1825,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t gridGroupSize = params[idx++];
 
   return GemmGemmParamsAttr::get(
-      perfConfigStrAttr.getContext(), mPerBlockG0, mPerBlockG1, nPerBlockG0,
+      perfConfigStrAttr.getContext(), nPerBlockG0, nPerBlockG1, mPerBlockG0,
       kPerBlock, kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor,
       numStages, wavesPerEU, gridGroupSize);
 }

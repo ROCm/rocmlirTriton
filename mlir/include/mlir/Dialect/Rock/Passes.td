@@ -63,7 +63,19 @@ def RockFoldBroadcastPass: Pass<"rock-fold-broadcast", "::mlir::func::FuncOp"> {
 
 def RockGridwiseGemmToBlockwisePass : Pass<"rock-gridwise-gemm-to-blockwise", "::mlir::func::FuncOp"> {
   let summary = "expand gridwise gemm into blockwise copy, blockwise gemm, and threadwise copy";
-  let dependentDialects = ["rock::RockDialect", "affine::AffineDialect", "gpu::GPUDialect", "vector::VectorDialect", "memref::MemRefDialect", "linalg::LinalgDialect", "scf::SCFDialect"];
+  let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
+                           "gpu::GPUDialect", "vector::VectorDialect",
+                           "linalg::LinalgDialect", "scf::SCFDialect"];
+}
+
+def RockGridwiseAttnToBlockwisePass
+    : Pass<"rock-gridwise-attn-to-blockwise", "::mlir::func::FuncOp"> {
+  let summary = "expand gridwise attention into blockwise copy, blockwise "
+                "attention, and threadwise copy";
+  let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
+                           "gpu::GPUDialect", "vector::VectorDialect",
+                           "linalg::LinalgDialect", "scf::SCFDialect",
+                           "triton::TritonDialect"];
 }
 
 def RockShuffleGemmForReductions : Pass<"rock-shuffle-gemm-for-reductions", "::mlir::func::FuncOp"> {

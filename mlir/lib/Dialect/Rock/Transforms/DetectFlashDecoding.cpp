@@ -409,15 +409,14 @@ struct DetectFlashDecodingPattern : public OpRewritePattern<AttentionOp> {
     Value newValues = maybeNewValues.value();
 
     Type resultType = op.getResult().getType();
-    Type lseOutType = op.getLseOut().getType();
+    Type lseType = op.getLse().getType();
 
     auto newOp = rock::AttentionOp::create(
-        rewriter, op->getLoc(), resultType, lseOutType, newQueries, newKeys,
+        rewriter, op->getLoc(), resultType, lseType, newQueries, newKeys,
         newValues, op.getPreSoftmaxElemWiseInputs(), op.getCurrentSeqLen(),
-        op.getPrefixOffset(), op.getOut(), op.getLse(), op.getNumHeadsQAttr(),
-        op.getNumHeadsKVAttr(), op.getQTransposedAttr(),
-        op.getKTransposedAttr(), op.getVTransposedAttr(),
-        op.getOTransposedAttr(), op.getCausalAttr(),
+        op.getPrefixOffset(), op.getNumHeadsQAttr(), op.getNumHeadsKVAttr(),
+        op.getQTransposedAttr(), op.getKTransposedAttr(),
+        op.getVTransposedAttr(), op.getOTransposedAttr(), op.getCausalAttr(),
         rewriter.getI32IntegerAttr(splitKVFromQ), op.getFeaturesAttr(),
         op.getSoftmaxTypeAttr(), op.getParams0Attr(), op.getParams1Attr(),
         op.getFirstGemmIndicesAttr(),

@@ -2,16 +2,6 @@
 // RUN: rocmlir-opt %s | rocmlir-opt | FileCheck %s
 // Run: rocmlir-opt -mlir-print-op-generic %s | rocmlir-opt | FileCheck %s
 
-func.func @rock_indexing() attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
-  %0 = rock.workgroup_id : i32
-  return
-}
-
-// CHECK-LABEL: func.func @rock_indexing
-//   CHECK-NEXT: rock.workgroup_id
-
-// ----
-
 func.func @rock_blockwise_gemm(%A : tensor<8x128x1xf32>, %B : tensor<8x128x1xf32>, %C : tensor<8x8xf32>) -> tensor<8x8xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
   %result = rock.blockwise_gemm(%A, %B, %C) {
     rock.arch = "amdgcn-amd-amdhsa:gfx90a",

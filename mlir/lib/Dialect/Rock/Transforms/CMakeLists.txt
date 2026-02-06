@@ -1,11 +1,11 @@
 add_rocmlir_dialect_library(MLIRRockTransforms
   AffixTuningParameters.cpp
-  BufferizableOpInterfaceImpl.cpp
   ConvToGemm.cpp
   DetectFlashDecoding.cpp
   FoldBroadcast.cpp
   GemmToGridwise.cpp
   GridwiseGemmToBlockwise.cpp
+  GridwiseAttnToBlockwise.cpp
   GridLayoutEmitter.cpp
   ViewToTransform.cpp
   ShuffleGemmForReductions.cpp

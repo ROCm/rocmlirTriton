@@ -53,6 +53,68 @@ struct RockToTTIRPass : public rock::impl::RockToTTIRPassBase<RockToTTIRPass> {
 };
 
 //===----------------------------------------------------------------------===//
+// RockBlockwiseReduceOpRewritePattern - Convert rock.blockwise_reduce to tt.reduce
+//===----------------------------------------------------------------------===//
+struct RockBlockwiseReduceOpRewritePattern
+    : public OpRewritePattern<rock::BlockwiseReduceOp> {
+  using OpRewritePattern<rock::BlockwiseReduceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(rock::BlockwiseReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value input = op.getInput();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    Type elemType = inputType.getElementType();
+    int axis = static_cast<int>(op.getAxisAttr().getInt());
+    
+    // Create tt.reduce operation
+    auto reduceOp = triton::ReduceOp::create(
+        rewriter, loc, ValueRange{input}, axis);
+    
+    // Build the combiner region
+    Block *block = rewriter.createBlock(&reduceOp.getCombineOp());
+    
+    // Add block arguments - tt.reduce expects scalar arguments for the combiner
+    block->addArgument(elemType, loc);
+    block->addArgument(elemType, loc);
+    
+    // Create the combiner operation based on reduce method
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(block);
+    
+    Value lhs = block->getArgument(0);
+    Value rhs = block->getArgument(1);
+    Value result;
+    
+    ReduceMethod method = op.getReduceMethod();
+    bool isFloat = isa<FloatType>(elemType);
+    
+    if (method == ReduceMethod::Max) {
+      if (isFloat) {
+        result = arith::MaximumFOp::create(rewriter, loc, lhs, rhs);
+      } else {
+        // Use signed max for integers (MaxSIOp)
+        result = arith::MaxSIOp::create(rewriter, loc, lhs, rhs);
+      }
+    } else if (method == ReduceMethod::Sum) {
+      if (isFloat) {
+        result = arith::AddFOp::create(rewriter, loc, lhs, rhs);
+      } else {
+        result = arith::AddIOp::create(rewriter, loc, lhs, rhs);
+      }
+    } else {
+      return failure();
+    }
+    
+    // Create reduce.return
+    triton::ReduceReturnOp::create(rewriter, loc, ValueRange{result});
+    
+    rewriter.replaceOp(op, reduceOp.getResults());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // RockLoadTilePtrOpRewritePattern - Convert rock.blockwise_load_tile_ptr to
 // tt.load
 //===----------------------------------------------------------------------===//
@@ -283,6 +345,7 @@ void RockToTTIRPass::runOnOperation() {
   ConversionTarget target(*ctx);
 
   // Mark Rock ops as illegal - they should be converted
+  target.addIllegalOp<rock::BlockwiseReduceOp>();
   target.addIllegalOp<rock::BlockwiseLoadTilePtrOp>();
   target.addIllegalOp<rock::BlockwiseGemmOp>();
   target.addIllegalOp<rock::BlockwiseStoreTilePtrOp>();
@@ -296,6 +359,7 @@ void RockToTTIRPass::runOnOperation() {
       [](func::ReturnOp op) { return op.getOperands().empty(); });
 
   RewritePatternSet patterns(ctx);
+  patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
   patterns.add<RockLoadTilePtrOpRewritePattern>(ctx);
   patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
   patterns.add<RockStoreTilePtrOpRewritePattern>(ctx);
