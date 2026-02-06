@@ -1,4 +1,5 @@
 // UNSUPPORTED: true
+// TODO(rocmlirTriton): Adapt this test when rock-gemm-linalg-splitk-normalization works again
 // RUN: rocmlir-opt -rock-gemm-linalg-splitk-normalization %s | FileCheck %s
 
 #wg = #gpu.address_space<workgroup>

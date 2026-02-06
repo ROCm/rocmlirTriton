@@ -1,9 +1,11 @@
 // UNSUPPORTED: true
+// TODO(rocmlirTriton): This test shows different transforms compared to what we used to have in rocMLIR. Investigate why
 // RUN: rocmlir-opt -rock-affix-params -rock-conv-to-gemm %s | FileCheck %s
 module  {
-  func.func @rock_conv_bwd_weight_gkyxc_nghwc_nghwk_0(%arg0: memref<1x32x3x3x32xf32>, %arg1: memref<32x1x7x7x32xf32>, %arg2: memref<32x1x9x9x32xf32>) attributes {kernel = 0 : i32, arch = "amdgcn-amd-amdhsa:gfx908", numCU = 120 : i32} {
-    rock.conv_bwd_weight(%arg0, %arg1, %arg2) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], input_layout = ["ni", "gi", "0i", "1i", "ci"], output_layout = ["no", "go", "0o", "1o", "ko"], padding = [2 : index, 2 : index, 2 : index, 2 : index], strides = [1 : index, 1 : index]} : memref<1x32x3x3x32xf32>, memref<32x1x7x7x32xf32>, memref<32x1x9x9x32xf32>
-    return
+  func.func @rock_conv_bwd_weight_gkyxc_nghwc_nghwk_0(%arg0: tensor<1x32x3x3x32xf32>, %arg1: tensor<32x1x7x7x32xf32>, %arg2: tensor<32x1x9x9x32xf32>) -> tensor<1x32x3x3x32xf32> attributes {rock.kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.numCU = 120 : i32} {
+    %result = rock.conv_bwd_weight(%arg0, %arg1, %arg2) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], input_layout = ["ni", "gi", "0i", "1i", "ci"], output_layout = ["no", "go", "0o", "1o", "ko"], padding = [2 : index, 2 : index, 2 : index, 2 : index], strides = [1 : index, 1 : index]} : tensor<1x32x3x3x32xf32>, tensor<32x1x7x7x32xf32>, tensor<32x1x9x9x32xf32> -> tensor<1x32x3x3x32xf32>
+    %out = rock.store %result to %arg0 by set : tensor<1x32x3x3x32xf32> -> tensor<1x32x3x3x32xf32> to tensor<1x32x3x3x32xf32>
+    return %out : tensor<1x32x3x3x32xf32>
   }
 }
 
