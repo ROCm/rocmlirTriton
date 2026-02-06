@@ -57,6 +57,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "GridLayoutEmitter.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -224,7 +225,8 @@ struct GridwiseGemmAccelRewritePattern
     SmallVector<int64_t, 3> bidGridLengths = {G, mBlocks, nBlocks};
 
     // Get current workgroup ID.
-    auto bid = WorkgroupIdOp::create(b, loc, b.getI32Type());
+    Value bid =
+        triton::GetProgramIdOp::create(b, op.getLoc(), triton::ProgramIDDim::X);
 
     // Compute grid coordinates
     int64_t gridGroupSize = tuningParams.getGridGroupSize();
@@ -314,7 +316,7 @@ void RockGridwiseGemmToBlockwisePass::runOnOperation() {
                          memref::MemRefDialect, affine::AffineDialect,
                          vector::VectorDialect, linalg::LinalgDialect,
                          scf::SCFDialect, math::MathDialect,
-                         tensor::TensorDialect>();
+                         tensor::TensorDialect, triton::TritonDialect>();
   target.addLegalOp<gpu::PrintfOp>();
 
   RewritePatternSet patterns(ctx);

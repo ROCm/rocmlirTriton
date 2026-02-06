@@ -22,6 +22,7 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -29,6 +30,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExprVisitor.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -56,6 +58,44 @@ struct RockTransformsToPointerArithPass
 } // end anonymous namespace
 
 namespace {
+
+// Helper function to create a tensor range using tt.make_range with proper
+// shape. Creates a tensor where the non-unit dimension contains values [start,
+// end).
+static Value makeRange(OpBuilder &b, Location loc, int32_t start, int32_t end,
+                       int64_t numDims, int64_t nonUnitDim) {
+  SmallVector<int64_t> unitDimIndices;
+  assert(numDims > 0);
+  assert(nonUnitDim >= 0 && nonUnitDim < numDims);
+
+  for (int64_t i = 0; i < numDims; ++i) {
+    if (nonUnitDim != i)
+      unitDimIndices.push_back(i);
+  }
+
+  // Create 1D tensor type for tt.make_range
+  auto tensorType1D = RankedTensorType::get({end - start}, b.getI32Type());
+
+  // Create tt.make_range operation (1D)
+  Value rangeTensor =
+      triton::MakeRangeOp::create(b, loc, tensorType1D, start, end);
+
+  // Use tt.expand_dims to restore the original shape
+  // We need to insert unit dimensions at the correct positions
+  Value expandedTensor = rangeTensor;
+  for (int64_t unitDimIdx : unitDimIndices) {
+    // Get current tensor type
+    auto currentType = cast<RankedTensorType>(expandedTensor.getType());
+    SmallVector<int64_t> newShape(currentType.getShape().begin(),
+                                  currentType.getShape().end());
+    newShape.insert(newShape.begin() + unitDimIdx, 1);
+    auto expandedType = RankedTensorType::get(newShape, b.getI32Type());
+
+    expandedTensor = triton::ExpandDimsOp::create(b, loc, expandedType,
+                                                  expandedTensor, unitDimIdx);
+  }
+  return expandedTensor;
+}
 
 // Helper function to broadcast tensors to compatible shapes
 static std::pair<Value, Value>
@@ -94,10 +134,10 @@ broadcastTensors(OpBuilder &builder, Location loc, Value lhs, Value rhs) {
   auto resultType =
       RankedTensorType::get(resultShape, tensorLhsType.getElementType());
 
-  // Broadcast lhs if needed using rock.broadcast
+  // Broadcast lhs if needed using triton.broadcast
   Value broadcastedLhs = lhs;
   if (!llvm::equal(lhsShape, resultShape)) {
-    broadcastedLhs = rock::BroadcastOp::create(builder, loc, resultType, lhs);
+    broadcastedLhs = triton::BroadcastOp::create(builder, loc, resultType, lhs);
   }
 
   // Broadcast rhs if needed
@@ -106,7 +146,7 @@ broadcastTensors(OpBuilder &builder, Location loc, Value lhs, Value rhs) {
     auto rhsResultType =
         RankedTensorType::get(resultShape, tensorRhsType.getElementType());
     broadcastedRhs =
-        rock::BroadcastOp::create(builder, loc, rhsResultType, rhs);
+        triton::BroadcastOp::create(builder, loc, rhsResultType, rhs);
   }
 
   return {broadcastedLhs, broadcastedRhs};
@@ -119,9 +159,9 @@ static Value broadcastScalarToTensor(OpBuilder &builder, Location loc,
   auto shape = tensorType.getShape();
   auto elementType = scalar.getType();
 
-  // Use tensor.splat to broadcast scalar to tensor
+  // Use triton.splat to broadcast scalar to tensor
   auto resultType = RankedTensorType::get(shape, elementType);
-  return tensor::SplatOp::create(builder, loc, resultType, scalar);
+  return triton::SplatOp::create(builder, loc, resultType, scalar);
 }
 
 // Helper function to ensure operands have compatible shapes
@@ -572,18 +612,9 @@ struct TransformsToPtrRewritePattern
     assert(extraIdxCount >= bufferIdxCount);
     SmallVector<Value> initValues(extraIndices);
     for (size_t dimension = 0; dimension < shape.size(); ++dimension) {
-      // Create tensor shape with 1s everywhere except the current dimension
-      SmallVector<int64_t> tensorShape(shape.size(), 1);
-      tensorShape[dimension] = shape[dimension];
-
-      // Create tensor type for the range
-      auto tensorType = RankedTensorType::get(tensorShape, b.getI32Type());
-
-      // Create the range values using rock.make_range
-      auto rangeValue = rock::MakeRangeOp::create(
-          b, loc, tensorType,
-          b.getI32IntegerAttr(0),
-          b.getI32IntegerAttr(shape[dimension]));
+      // Create the range values using triton.make_range
+      auto rangeValue =
+          makeRange(b, loc, 0, shape[dimension], shape.size(), dimension);
       initValues.push_back(rangeValue);
     }
 
@@ -645,9 +676,9 @@ struct TransformsToPtrRewritePattern
       Value baseAddr =
           rock::ExtractPtrOp::create(b, loc, b.getI32Type(), buffer);
 
-      // Use tensor.splat for broadcasting scalar to tensor
+      // Use triton.splat for broadcasting scalar to tensor
       auto splatType = RankedTensorType::get(shape, b.getI32Type());
-      baseAddrSplat = tensor::SplatOp::create(b, loc, splatType, baseAddr);
+      baseAddrSplat = triton::SplatOp::create(b, loc, splatType, baseAddr);
     }
     // InsertionGuard restores original insertion point here
 
@@ -662,16 +693,16 @@ struct TransformsToPtrRewritePattern
       // isValid is already a tensor, ensure it has the right shape
       auto isValidTensorType = cast<RankedTensorType>(isValid.getType());
       if (isValidTensorType.getShape() != shape) {
-        // Need to broadcast using rock.broadcast
+        // Need to broadcast using triton.broadcast
         auto maskType = RankedTensorType::get(shape, b.getI1Type());
-        maskTensor = rock::BroadcastOp::create(b, loc, maskType, isValid);
+        maskTensor = triton::BroadcastOp::create(b, loc, maskType, isValid);
       } else {
         maskTensor = isValid;
       }
     } else {
       // isValid is a scalar, splat it to tensor using tensor.splat
       auto maskType = RankedTensorType::get(shape, b.getI1Type());
-      maskTensor = tensor::SplatOp::create(b, loc, maskType, isValid);
+      maskTensor = triton::SplatOp::create(b, loc, maskType, isValid);
     }
 
     // Replace the op with the tensor results
@@ -687,8 +718,12 @@ void RockTransformsToPointerArithPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
   target.addIllegalOp<rock::TransformsToPtrOp>();
+  // Note: We don't mark TransformOp as illegal. After TransformsToPtrOp
+  // conversion, transform chains become dead code (each transform only used
+  // by the next transform in the chain). These will be cleaned up by
+  // Canonicalizer.
   target.addLegalDialect<rock::RockDialect, arith::ArithDialect,
-                         tensor::TensorDialect>();
+                         tensor::TensorDialect, triton::TritonDialect>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<TransformsToPtrRewritePattern>(ctx);

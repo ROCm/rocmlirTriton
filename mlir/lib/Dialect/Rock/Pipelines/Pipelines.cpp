@@ -349,6 +349,9 @@ void rock::buildKernelPipeline(OpPassManager &pm,
       options.applicabilityMode == rock::ApplicabilityMode::Full) {
     funcPm.addPass(rock::createRockTransformsToPtrPass());
     funcPm.addPass(rock::createRockTransformsToPointerArithPass());
+    // Clean up dead transform chains left after TransformsToPointerArith
+    funcPm.addPass(createCanonicalizerPass());
+
     funcPm.addPass(rock::createRockToTTIRPass());
     // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to tt.func)
     pm.addPass(rock::createRockFuncToTritonFuncPass());
