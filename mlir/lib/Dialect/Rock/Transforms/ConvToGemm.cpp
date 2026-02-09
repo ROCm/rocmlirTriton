@@ -586,11 +586,15 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   // This kernel is not run when there is padding on the GEMM
   auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::AtomicAdd);
   // TODO(roctriton): set storeMethod to rock.store!
-  GemmOp::create(b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
+  auto gemm = GemmOp::create(b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
                  /*scaleA=*/nullptr, /*scaleB=*/nullptr,
                  /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
                  /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
                  op.getParamsAttr());
+
+  // Update any StoreOp that uses the conv result to use the gemm result.
+  updateStoreOpForGemm(b, loc, op.getResult(), gemm.getResult(), gemmFilter,
+                       storeMethod);
 
   // Finally, erase the original Conv op.
   b.eraseOp(op);
