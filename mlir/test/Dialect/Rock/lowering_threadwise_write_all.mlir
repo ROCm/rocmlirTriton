@@ -1,5 +1,6 @@
 // UNSUPPORTED: true
 // RUN: rocmlir-opt --rock-threadwise-gemm-lowering %s | FileCheck %s
+// TODO(rocmlirTriton): Use this test as inspiration for blockwise_store lowering
 
 // CHECK-LABEL: func @write_to_lds_gated_waves
 func.func @write_to_lds_gated_waves(%source: memref<32xf32, #gpu.address_space<private>>, %dest: memref<2x64x30xf32>) attributes {arch = "gfx942"} {

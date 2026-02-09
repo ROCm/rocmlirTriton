@@ -1,4 +1,6 @@
 // UNSUPPORTED: true
+// TODO(rocmlirTrion): Adapt to rock.blockwise_reduce
+
 // RUN: rocmlir-opt -rock-blockwise-gemm-to-threadwise -canonicalize -split-input-file %s | FileCheck %s
 
 // CHECK-DAG: #[[MAP:.*]] =  affine_map<(d0) -> (d0, 0)>

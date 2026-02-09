@@ -1,5 +1,7 @@
+// RUN: rocmlir-opt -rock-to-ttir %s | FileCheck %s
+
 // UNSUPPORTED: true
-// RUN: rocmlir-opt -rock-blockwise-gemm-to-threadwise %s | FileCheck %s
+// TODO(rocmlirTriton): Disabled for now, this can be used as inspiration for the rock-to-ttir lowering
 
 #wg = #gpu.address_space<workgroup>
 #priv = #gpu.address_space<private>
