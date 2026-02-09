@@ -26,7 +26,7 @@
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/AMDGPU/Transforms/Passes.h"
-#include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -147,7 +147,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
         mlir::createTritonAMDGPUInThreadTranspose());
     pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   }
-  pm->addPass(mlir::createTritonAMDGPUReorderInstructions());
+  pm->addPass(mlir::triton::gpu::createTritonGPUReorderInstructions());
   if (useBlockPingpong && options.numStages > 1) {
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
@@ -171,7 +171,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
                      int numStages) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
-  pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass());
+  pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -210,7 +210,7 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
 
   // TODO: add_di_scope
 
-  pm->addPass(mlir::triton::createConvertBuiltinFuncToLLVMPass(/*ftz=*/true));
+  pm->addPass(mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, /*ftz=*/true));
 }
 
 //===- Consolidate the Rock Pipelines here ---------------------===//
