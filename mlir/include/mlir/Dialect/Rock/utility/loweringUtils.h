@@ -176,6 +176,10 @@ llvm::FailureOr<RegsAsMatrixSubTiles>
 computeOutputTransforms(OpBuilder &b, Location loc, int64_t mPerBlock,
                         int64_t nPerBlock, ArrayRef<int64_t> bidGridLengths);
 
+ArrayAttr computeOutputLseTransforms(OpBuilder &b, Location loc,
+                                     int64_t mPerBlock,
+                                     ArrayRef<int64_t> bidGridLengths);
+
 } // end namespace rock
 } // end namespace mlir
 #endif

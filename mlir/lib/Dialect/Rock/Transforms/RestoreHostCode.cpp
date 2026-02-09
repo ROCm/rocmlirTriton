@@ -269,17 +269,19 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
                                         /*offloadingHandler=*/nullptr,
                                         builder.getArrayAttr({objectAttr}));
 
-  // Collect all func.call ops that call kernels
+  // Collect all func.call ops that call kernels (use callee name for lookup)
   SmallVector<func::CallOp> callsToConvert;
   moduleOp.walk([&](func::CallOp callOp) {
-    if (kernelMap.count(callOp.getCallee())) {
+    StringRef calleeName = callOp.getCalleeAttr().getValue();
+    if (kernelMap.count(calleeName)) {
       callsToConvert.push_back(callOp);
     }
   });
 
   // Convert each call to gpu.launch_func
   for (func::CallOp callOp : callsToConvert) {
-    auto it = kernelMap.find(callOp.getCallee());
+    StringRef calleeName = callOp.getCalleeAttr().getValue();
+    auto it = kernelMap.find(calleeName);
     if (it == kernelMap.end())
       continue;
     KernelInfo &kernel = kernels[it->second];
@@ -354,21 +356,42 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
         /*clusterSize=*/std::nullopt);
 
     // gpu.launch_func doesn't return values - it modifies buffers in-place.
-    // Replace uses of the func.call result with the output operand.
-    // For GEMM/Conv, the output (C matrix) is the last tensor argument.
-    if (callOp.getNumResults() > 0) {
-      // Find the last tensor operand - this is the output that was modified
-      Value outputOperand;
-      for (Value operand : llvm::reverse(callOp.getOperands())) {
-        if (isa<TensorType, MemRefType>(operand.getType())) {
-          outputOperand = operand;
-          break;
+    // Replace uses of the func.call results with the corresponding output
+    // operands. Support a variable number of results: the last N tensor/memref
+    // operands (in reverse order) correspond to the N results (e.g. GEMM: 1
+    // result = last operand; attention with return_lse: 2 results = last two).
+    const unsigned numResults = callOp.getNumResults();
+    if (numResults > 0) {
+      // Collect redundant to_buffer + copy ops before replacing (they use the
+      // call results). The kernel writes in-place, so these are no-ops;
+      // removing them avoids issues with multi-result kernels (e.g.
+      // -return_lse).
+      SmallVector<Operation *> redundantOpsToErase;
+      for (Value result : callOp.getResults()) {
+        for (Operation *user : result.getUsers()) {
+          if (isa<bufferization::ToBufferOp>(user)) {
+            redundantOpsToErase.push_back(user);
+            for (Operation *copyUser : user->getResult(0).getUsers())
+              if (isa<memref::CopyOp>(copyUser))
+                redundantOpsToErase.push_back(copyUser);
+          }
         }
       }
-      if (outputOperand) {
-        // Replace all uses of the call result with the output operand
-        callOp.getResult(0).replaceAllUsesWith(outputOperand);
+      SmallVector<Value> outputOperandsInReverseOrder;
+      outputOperandsInReverseOrder.reserve(numResults);
+      for (Value operand : llvm::reverse(callOp.getOperands())) {
+        if (isa<TensorType, MemRefType>(operand.getType())) {
+          outputOperandsInReverseOrder.push_back(operand);
+          if (outputOperandsInReverseOrder.size() >= numResults)
+            break;
+        }
       }
+      for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
+        if (resultIdx < outputOperandsInReverseOrder.size())
+          result.replaceAllUsesWith(outputOperandsInReverseOrder[resultIdx]);
+      }
+      for (Operation *op : llvm::reverse(redundantOpsToErase))
+        op->erase();
     }
 
     // Erase the old func.call

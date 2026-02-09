@@ -895,6 +895,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
                                         backendOpts))) {
         result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
         return result;
       }
 

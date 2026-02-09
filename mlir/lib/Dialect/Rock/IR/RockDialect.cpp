@@ -932,16 +932,16 @@ LogicalResult GridwiseGemmOp::verify() {
 }
 
 //===-----------------------------------------------------===//
-// BlockwiseStoreTileOp
+// BlockwiseStoreOp
 //===-----------------------------------------------------===//
 
-SmallPtrSet<OpOperand *, 2> BlockwiseStoreTileOp::getAcceptingViewOperands() {
+SmallPtrSet<OpOperand *, 2> BlockwiseStoreOp::getAcceptingViewOperands() {
   auto operands = getOperation()->getOpOperands();
   return {operands.begin() + 1};
 }
 
 std::optional<OperandRange>
-BlockwiseStoreTileOp::getExtraIndices(OpOperand &operand) {
+BlockwiseStoreOp::getExtraIndices(OpOperand &operand) {
   if (!getAcceptingViewOperands().contains(&operand)) {
     return std::nullopt;
   }
@@ -950,21 +950,21 @@ BlockwiseStoreTileOp::getExtraIndices(OpOperand &operand) {
 }
 
 Operation *
-BlockwiseStoreTileOp::cloneWithExtraIndices(OpBuilder &builder,
-                                            OpOperand &operand, Value view,
-                                            ArrayRef<Value> newExtraIndices) {
+BlockwiseStoreOp::cloneWithExtraIndices(OpBuilder &builder, OpOperand &operand,
+                                        Value view,
+                                        ArrayRef<Value> newExtraIndices) {
   if (!getAcceptingViewOperands().contains(&operand)) {
     return getOperation();
   }
 
   // Only one operand supports view
-  auto newOp = BlockwiseStoreTileOp::create(builder, getLoc(), getResult().getType(),
-                                            getSource(), view, newExtraIndices,
-                                            getStoreMethod());
+  auto newOp = BlockwiseStoreOp::create(
+      builder, getLoc(), getResult().getType(), getSource(), view,
+      newExtraIndices, getStoreMethod());
   return newOp.getOperation();
 }
 
-LogicalResult BlockwiseStoreTileOp::verify() {
+LogicalResult BlockwiseStoreOp::verify() {
   ArrayRef<int64_t> outputShape = getDest().getType().getShape();
 
   size_t extraIdxCount = getExtraIndices().size();
@@ -981,7 +981,7 @@ LogicalResult BlockwiseStoreTileOp::verify() {
 }
 
 //===-----------------------------------------------------===//
-// BlockwiseStoreTilePtrOp
+// BlockwiseStorePtrOp
 //===-----------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
@@ -1505,15 +1505,14 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  size_t expectedCount = (version == 1) ? 12 : 0;
+  size_t expectedCount = (version == 1) ? 11 : 0;
   if (expectedCount == 0 || params.size() != expectedCount) {
     return {};
   }
 
   int idx = 0;
-  int64_t nPerBlockG0 = params[idx++];
-  int64_t nPerBlockG1 = params[idx++];
   int64_t mPerBlockG0 = params[idx++];
+  int64_t nPerBlockG0 = params[idx++];
   int64_t kPerBlock = params[idx++];
   int64_t kpack = params[idx++];
   int64_t numCTAs = params[idx++];
@@ -1524,10 +1523,10 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t wavesPerEU = params[idx++];
   int64_t gridGroupSize = params[idx++];
 
-  return GemmGemmParamsAttr::get(
-      perfConfigStrAttr.getContext(), nPerBlockG0, nPerBlockG1, mPerBlockG0,
-      kPerBlock, kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor,
-      numStages, wavesPerEU, gridGroupSize);
+  return GemmGemmParamsAttr::get(perfConfigStrAttr.getContext(), mPerBlockG0,
+                                 nPerBlockG0, kPerBlock, kpack, numCTAs,
+                                 numWaves, matrixInstrNonkdim, splitKFactor,
+                                 numStages, wavesPerEU, gridGroupSize);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1539,3 +1538,25 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
 
 #define GET_OP_CLASSES
 #include "mlir/Dialect/Rock/IR/RockOps.cpp.inc"
+
+//===----------------------------------------------------------------------===//
+// CastToPtrOp canonicalization
+//===----------------------------------------------------------------------===//
+namespace {
+struct CastToPtrSameTypePattern : public OpRewritePattern<CastToPtrOp> {
+  using OpRewritePattern<CastToPtrOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CastToPtrOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getSrc().getType() != op.getResult().getType())
+      return failure();
+    rewriter.replaceOp(op, op.getSrc());
+    return success();
+  }
+};
+} // namespace
+
+void CastToPtrOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                              MLIRContext *context) {
+  results.add<CastToPtrSameTypePattern>(context);
+}

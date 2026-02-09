@@ -110,11 +110,11 @@ static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
 
 // This function will process a tile of gemm input into LDS (or register)
 // buffer in a way it could be fed to blockwise_gemm op
-static Value loadAndStoreGemmInputTile(PatternRewriter &rewriter, Location loc,
-                                       Value in, Value kIter, StringRef dName,
-                                       rock::layout::GridCoordinates gridCoords,
-                                       int64_t kPerBlock, int64_t dPerBlock,
-                                       SmallVector<int64_t, 3> &bidGridLengths) {
+static Value loadTile(PatternRewriter &rewriter, Location loc, Value in,
+                      Value kIter, StringRef dName,
+                      rock::layout::GridCoordinates gridCoords,
+                      int64_t kPerBlock, int64_t dPerBlock,
+                      SmallVector<int64_t, 3> &bidGridLengths) {
   FailureOr<RegsAsMatrixSubTiles> maybeBufferViews = getLoadRegsAsTileViews(
       rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock);
   assert(succeeded(maybeBufferViews));
@@ -127,7 +127,7 @@ static Value loadAndStoreGemmInputTile(PatternRewriter &rewriter, Location loc,
       sourceShape.take_back(2), sourceType.getElementType());
 
   // Load from global memory to LDS or register buffer.
-  auto loadOp = BlockwiseLoadTileOp::create(
+  auto loadOp = BlockwiseLoadOp::create(
       rewriter, loc, resultType, wrappedSource,
       ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
                  gridCoords.n_block});
@@ -264,21 +264,17 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
       Value accArg = loopOp.getRegionIterArg(0);
 
       // Load from global memory to registers
-      Value loadedB = loadAndStoreGemmInputTile(
-          b, loc, matB, /*kiter=*/iv, "n", gridCoords, kPerBlock,
-          nPerBlock, bidGridLengths);
-      Value loadedA = loadAndStoreGemmInputTile(
-          b, loc, matA, /*kiter=*/iv, "m", gridCoords, kPerBlock,
-          mPerBlock, bidGridLengths);
+      Value loadedB = loadTile(b, loc, matB, /*kiter=*/iv, "n", gridCoords,
+                               kPerBlock, nPerBlock, bidGridLengths);
+      Value loadedA = loadTile(b, loc, matA, /*kiter=*/iv, "m", gridCoords,
+                               kPerBlock, mPerBlock, bidGridLengths);
 
       Value loadedScaleA, loadedScaleB;
       if (isScaledGemm) {
-        loadedScaleB = loadAndStoreGemmInputTile(
-            b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
-            kPerBlock, nPerBlock, bidGridLengths);
-        loadedScaleA = loadAndStoreGemmInputTile(
-            b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
-            kPerBlock, mPerBlock, bidGridLengths);
+        loadedScaleB = loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
+                                kPerBlock, nPerBlock, bidGridLengths);
+        loadedScaleA = loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
+                                kPerBlock, mPerBlock, bidGridLengths);
       }
 
       // Emit blockwise GEMM. This will load data from LDS (or registers) and

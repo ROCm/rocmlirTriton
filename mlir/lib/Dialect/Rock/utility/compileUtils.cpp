@@ -42,6 +42,7 @@ namespace rock {
 LogicalResult fillCompilationConfigs(StringAttr perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts) {
+  // TODO(roctriton): add common params to RockTuningParamAttrInterface
   if (auto gemmParams = rock::GemmParamsAttr::get(perfConfig)) {
     tritonOpts.numWarps = gemmParams.getNumWaves();
     tritonOpts.numCTAs = gemmParams.getNumCTAs();
@@ -53,6 +54,18 @@ LogicalResult fillCompilationConfigs(StringAttr perfConfig,
     backendOpts.numWarps = gemmParams.getNumWaves();
     backendOpts.numCTAs = gemmParams.getNumCTAs();
     backendOpts.wavesPerEU = gemmParams.getWavesPerEU();
+    return success();
+  }
+  if (auto gemmGemmParams = rock::GemmGemmParamsAttr::get(perfConfig)) {
+    tritonOpts.numWarps = gemmGemmParams.getNumWaves();
+    tritonOpts.numCTAs = gemmGemmParams.getNumCTAs();
+    tritonOpts.numStages = gemmGemmParams.getNumStages();
+    tritonOpts.matrixInstrNonkdim = gemmGemmParams.getMatrixInstrNonkdim();
+    tritonOpts.kpack = gemmGemmParams.getKpack();
+
+    backendOpts.numStages = gemmGemmParams.getNumStages();
+    backendOpts.numWarps = gemmGemmParams.getNumWaves();
+    backendOpts.wavesPerEU = gemmGemmParams.getWavesPerEU();
     return success();
   }
   return failure();

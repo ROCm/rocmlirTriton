@@ -617,30 +617,17 @@ def Rock_BlockwiseGemmOp
   let hasVerifier = 1;
 }
 
-// blockwise_load_tile
-def Rock_BlockwiseLoadTileOp
-    : Rock_Op<"blockwise_load_tile", []>,
+// blockwise_load
+def Rock_BlockwiseLoadOp
+    : Rock_Op<"blockwise_load", []>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source global memory">:$source,
           Variadic<I32>:$sourceIndices)>,
       Results<(outs AnyRankedTensor:$result)> {
-  let summary =
-      "Blockwise load tile from global memory to LDS and/or registers";
+  let summary = "Blockwise load from global memory";
   let description = [{
-    The `rock.blockwise_load_tile` op does tile loading at workgroup (block) level.
-    We will load a tile of data from global memory into LDS and/or registers.
-
-    There are different load types:
-    - Default: Creates two stages, (1) load from memory, (2) write to LDS.
-    - BypassLDS: Bypasses LDS and loads from device memory to registers directly (only one stage).
-    - DoubleBuffer: Creates three stages, (1) load from memory, (2) write to LDS, (3) load to registers.
-    - DirectToLDSDefault: Same as Default, but a single stage loads from memory and writes to LDS.
-    - DirectToLDSDoubleBuffer: Same as DoubleBuffer, but a single stage loads from memory and writes to LDS.
-
-    `isA` determines if we are loading an A matrix or B matrix. `G`, `M` and `N` are the GEMM sizes.
-    `elementTypeA` and `elementTypeB` are used to construct AccelEmitter. They are data types for the Matrix A & B of the GEMMs. 
-    `elementLoadType` is the element type of the global buffer this BlockwiseLoadTileOp is trying to load. 
-    `elementType` is the elementType in the registers.  Note that it may differ from `elementLoadType` because of input fusions.  
+    The `rock.blockwise_load` op loads at workgroup (block) level.
+    We will load data from global memory.
   }];
   let assemblyFormat = [{
     $source (`[` $sourceIndices^ `]`)? attr-dict
@@ -648,14 +635,13 @@ def Rock_BlockwiseLoadTileOp
   }];
 }
 
-// blockwise_load_tile
-def Rock_BlockwiseLoadTilePtrOp
-    : Rock_Op<"blockwise_load_tile_ptr", []>,
+// blockwise_load_ptr
+def Rock_BlockwiseLoadPtrOp
+    : Rock_Op<"blockwise_load_ptr", []>,
       Arguments<(ins Arg<AnyRankedTensor, "Pointer tensor">:$pointerTensor,
           Arg<AnyRankedTensor, "Mask tensor">:$maskTensor)>,
       Results<(outs TensorOf<NativeMemoryOpTypes>:$result)> {
-  let summary =
-      "Blockwise load tile from global memory to LDS and/or registers";
+  let summary = "Blockwise load from global memory";
   let description = [{
   }];
   let assemblyFormat = [{
@@ -664,19 +650,17 @@ def Rock_BlockwiseLoadTilePtrOp
   }];
 }
 
-// blockwise_store_tile
-def Rock_BlockwiseStoreTileOp
-    : Rock_Op<"blockwise_store_tile",
+// blockwise_store
+def Rock_BlockwiseStoreOp
+    : Rock_Op<"blockwise_store",
               [DeclareOpInterfaceMethods<RockAcceptingViewOpInterface>,
                DeclareOpInterfaceMethods<RockWriterOpInterface>]>,
       AllElementTypesMatch<["source", "dest"]>,
-      Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
-                         "source registers">:$source,
+      Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Arg<TensorOf<NativeMemoryOpTypes>, "destination view">:$dest,
-          Variadic<I32>:$extraIndices,
-          StoreMethodAttr:$storeMethod)>,
+          Variadic<I32>:$extraIndices, StoreMethodAttr:$storeMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
-  let summary = "Write out values in registers to transformed destination";
+  let summary = "Write out values to transformed destination";
 
   let description = [{
   }];
@@ -688,16 +672,15 @@ def Rock_BlockwiseStoreTileOp
   let hasVerifier = 1;
 }
 
-// blockwise_store_tile
-def Rock_BlockwiseStoreTilePtrOp
-    : Rock_Op<"blockwise_store_tile_ptr",
-              []>,
+// blockwise_store_ptr
+def Rock_BlockwiseStorePtrOp
+    : Rock_Op<"blockwise_store_ptr", []>,
       Arguments<(ins Arg<AnyRankedTensor, "Pointer tensor">:$pointerTensor,
           Arg<AnyRankedTensor, "Mask tensor">:$maskTensor,
-          Arg<TensorOf<NativeMemoryOpTypes>,
-              "source registers">:$source, StoreMethodAttr:$storeMethod)>,
+          Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
+          StoreMethodAttr:$storeMethod)>,
       Results<(outs TensorOf<NativeMemoryOpTypes>:$result)> {
-  let summary = "Write out values in registers to transformed destination";
+  let summary = "Write out values to transformed destination";
 
   let description = [{
   }];
@@ -758,6 +741,8 @@ def Rock_CastToPtrOp : Rock_Op<"cast_to_ptr", [Pure]> {
   let results = (outs AnyRankedTensor:$result);
 
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
+
+  let hasCanonicalizer = 1;
 }
 
 def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {

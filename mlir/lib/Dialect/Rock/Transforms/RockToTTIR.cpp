@@ -119,10 +119,10 @@ struct RockBlockwiseReduceOpRewritePattern
 // tt.load
 //===----------------------------------------------------------------------===//
 struct RockLoadTilePtrOpRewritePattern
-    : public OpRewritePattern<rock::BlockwiseLoadTilePtrOp> {
-  using OpRewritePattern<rock::BlockwiseLoadTilePtrOp>::OpRewritePattern;
+    : public OpRewritePattern<rock::BlockwiseLoadPtrOp> {
+  using OpRewritePattern<rock::BlockwiseLoadPtrOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(rock::BlockwiseLoadTilePtrOp op,
+  LogicalResult matchAndRewrite(rock::BlockwiseLoadPtrOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
@@ -219,10 +219,10 @@ struct RockBlockwiseGemmOpRewritePattern
 };
 
 struct RockStoreTilePtrOpRewritePattern
-    : public OpRewritePattern<rock::BlockwiseStoreTilePtrOp> {
-  using OpRewritePattern<rock::BlockwiseStoreTilePtrOp>::OpRewritePattern;
+    : public OpRewritePattern<rock::BlockwiseStorePtrOp> {
+  using OpRewritePattern<rock::BlockwiseStorePtrOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(rock::BlockwiseStoreTilePtrOp op,
+  LogicalResult matchAndRewrite(rock::BlockwiseStorePtrOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
@@ -346,9 +346,9 @@ void RockToTTIRPass::runOnOperation() {
 
   // Mark Rock ops as illegal - they should be converted
   target.addIllegalOp<rock::BlockwiseReduceOp>();
-  target.addIllegalOp<rock::BlockwiseLoadTilePtrOp>();
+  target.addIllegalOp<rock::BlockwiseLoadPtrOp>();
   target.addIllegalOp<rock::BlockwiseGemmOp>();
-  target.addIllegalOp<rock::BlockwiseStoreTilePtrOp>();
+  target.addIllegalOp<rock::BlockwiseStorePtrOp>();
 
   // Triton and Rock dialects are legal (Rock for now, will be converted later)
   target.addLegalDialect<triton::TritonDialect>();

@@ -132,8 +132,8 @@ static Value reconstructForBlockwiseLoad(
     }
     
     // Create blockwise_load_tile
-    auto loadTileOp = BlockwiseLoadTileOp::create(builder, loc, tileType,
-                                                   source, blockIndices);
+    auto loadTileOp =
+        BlockwiseLoadOp::create(builder, loc, tileType, source, blockIndices);
     valueMapping.map(originalVal, loadTileOp.getResult());
     return loadTileOp.getResult();
   }
@@ -188,8 +188,8 @@ void RockLowerLoadsPass::runOnOperation() {
   }
 
   // Collect all blockwise_load_tile ops
-  SmallVector<BlockwiseLoadTileOp> loadTilesToProcess;
-  funcOp.walk([&](BlockwiseLoadTileOp loadTileOp) {
+  SmallVector<BlockwiseLoadOp> loadTilesToProcess;
+  funcOp.walk([&](BlockwiseLoadOp loadTileOp) {
     loadTilesToProcess.push_back(loadTileOp);
   });
 
@@ -197,7 +197,7 @@ void RockLowerLoadsPass::runOnOperation() {
                           << " blockwise_load_tile ops to process\n");
 
   // Process each blockwise_load_tile
-  for (BlockwiseLoadTileOp loadTileOp : loadTilesToProcess) {
+  for (BlockwiseLoadOp loadTileOp : loadTilesToProcess) {
     OpBuilder builder(loadTileOp);
     Location loc = loadTileOp.getLoc();
 

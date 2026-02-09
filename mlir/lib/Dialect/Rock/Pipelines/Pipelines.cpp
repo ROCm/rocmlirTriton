@@ -373,12 +373,18 @@ void rock::buildKernelPipeline(OpPassManager &pm,
 
   if (options.applicabilityMode == rock::ApplicabilityMode::NonApplicability ||
       options.applicabilityMode == rock::ApplicabilityMode::Full) {
-    funcPm.addPass(rock::createRockTransformsToPtrPass());
-    funcPm.addPass(rock::createRockTransformsToPointerArithPass());
+    // Serialize and erase host functions BEFORE any func-level pass that
+    // changes the kernel signature (e.g. RockToTTIRPass sets return to void).
+    // Must use a new nest<func::FuncOp>() so these passes go into a separate
+    // adaptor that runs AFTER SerializeHostFuncs.
+    pm.addPass(rock::createRockSerializeHostFuncsPass());
+    auto &funcPm2 = pm.nest<func::FuncOp>();
+    funcPm2.addPass(rock::createRockTransformsToPtrPass());
+    funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
     // Clean up dead transform chains left after TransformsToPointerArith
-    funcPm.addPass(createCanonicalizerPass());
+    funcPm2.addPass(createCanonicalizerPass());
 
-    funcPm.addPass(rock::createRockToTTIRPass());
+    funcPm2.addPass(rock::createRockToTTIRPass());
     // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to tt.func)
     pm.addPass(rock::createRockFuncToTritonFuncPass());
     // After this point, function is triton::FuncOp

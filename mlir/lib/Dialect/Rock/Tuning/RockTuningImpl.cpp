@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -34,31 +35,29 @@
 #include <cstdint>
 #include <random>
 
-// Found experimentally, might need to change it if we add more params to the
-// tuning space
-#define NUM_RANDOM_PERFCONFIGS_PER_TILE_SIZE 50
-#define RND_SEED 42
-
 namespace mlir {
 namespace rock {
 
-static std::vector<uint32_t> computeDPerBlock(TuningParamSetKind tuningKind) {
-  std::vector<uint32_t> dPerBlockList;
+static std::vector<uint32_t> computeDPerBlock(Operation *op,
+                                              TuningParamSetKind tuningKind) {
+  auto arch = rock::getArchValue(op);
+  bool hasAcceleration = false;
+  if (auto gemmOp = dyn_cast<RockGemmWrapperInterface>(op))
+    hasAcceleration = rock::hasAccel(arch, gemmOp);
+  else if (auto gemmGemmOp = dyn_cast<RockGemmGemmWrapperInterface>(op))
+    hasAcceleration = rock::hasAccel(arch, gemmGemmOp);
+  else
+    llvm_unreachable("Unexpected op");
 
-  for (uint32_t dPerBlock = 16; dPerBlock <= 256; dPerBlock *= 2) {
-    dPerBlockList.push_back(dPerBlock);
+  if (hasAcceleration) {
+    std::vector<uint32_t> dPerBlockList;
+    for (uint32_t dPerBlock = 16; dPerBlock <= 256; dPerBlock *= 2) {
+      dPerBlockList.push_back(dPerBlock);
+    }
+    return dPerBlockList;
   }
-  return dPerBlockList;
-}
-
-static SmallVector<uint32_t> compute1MPerBlock(TuningParamSetKind tuningKind,
-                                               uint32_t gemm0MPerBlock) {
-  SmallVector<uint32_t> mPerBlockList;
-  for (uint32_t mPerBlock = gemm0MPerBlock; mPerBlock <= 256; mPerBlock *= 2) {
-    if (mPerBlock % gemm0MPerBlock == 0)
-      mPerBlockList.push_back(mPerBlock);
-  }
-  return mPerBlockList;
+  // non-accel
+  return {4, 8, 16, 32, 64};
 }
 
 static std::vector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
@@ -117,23 +116,18 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 static std::vector<std::vector<uint32_t>>
 getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
                   int64_t maxWavesPerEU, TuningParamSetKind kind) {
-  auto arch = rock::getArchValue(gemmOp);
-  bool hasAccel = rock::hasAccel(arch, gemmOp);
-  auto dPerBlock = computeDPerBlock(kind);
-  
-  // non-accel
-  if (!hasAccel) {
-    dPerBlock = {4, 8, 16, 32, 64};
-  }
+  auto dPerBlock = computeDPerBlock(gemmOp, kind);
   std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
 
   std::vector<uint32_t> wavesPerEUList = {0};
+  std::vector<uint32_t> gridGroupSizeList = {0};
   // std::vector<uint32_t> wavesPerEUList;
   // wavesPerEUList.push_back(0); // use heuristic
   // for (uint32_t wavesPerEU = 1; wavesPerEU <= maxWavesPerEU; wavesPerEU *= 2) {
   //   wavesPerEUList.push_back(wavesPerEU);
   // }
 
+  auto arch = rock::getArchValue(gemmOp);
   auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
   bool isMfma = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;
@@ -149,67 +143,83 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   // Note: kPack max is 2
   // See AccelerateAMDMatmul.cpp comment about kPack limit
   std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
-      dPerBlock,      // M/block
-      dPerBlock,      // N/block
-      kPerBlock,      // K/block
-      {1, 2},         // kPack
-      numWavesRange,  // numWaves
-      {16, 32},       // matrixInstrNonkdim
-      {1, 2, 3},      // numStages
-      wavesPerEUList, // wavesPerEU
-      {0}             // gridGroupSize
+      dPerBlock,        // M/block
+      dPerBlock,        // N/block
+      kPerBlock,        // K/block
+      {1, 2},           // kPack
+      numWavesRange,    // numWaves
+      {16, 32},         // matrixInstrNonkdim
+      {1, 2, 3},        // numStages
+      wavesPerEUList,   // wavesPerEU
+      gridGroupSizeList // gridGroupSize
   };
 
   // WMMA (RDNA) parameters
   // kPack is always one for WMMA
   std::vector<std::vector<uint32_t>> validRangeWmmaParams = {
-      dPerBlock,      // M/block
-      dPerBlock,      // N/block
-      {32, 64},       // K/block
-      {1},         // kPack
-      numWavesRange,  // numWaves
-      {0},            // matrixInstrNonkdim
-      {1, 2},         // numStages
-      wavesPerEUList, // wavesPerEU
-      {0}             // gridGroupSize
+      dPerBlock,        // M/block
+      dPerBlock,        // N/block
+      {32, 64},         // K/block
+      {1},              // kPack
+      numWavesRange,    // numWaves
+      {0},              // matrixInstrNonkdim
+      {1, 2},           // numStages
+      wavesPerEUList,   // wavesPerEU
+      gridGroupSizeList // gridGroupSize
   };
 
   return isMfma ? validRangeMfmaParams : validRangeWmmaParams;
 }
 
 static std::vector<std::vector<uint32_t>>
-getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp,
+getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
                       TuningParamSetKind kind) {
-  auto dPerBlock = computeDPerBlock(kind);
+  std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
+  auto dPerBlock = computeDPerBlock(gemmGemmOp, kind);
+  std::vector<uint32_t> wavesPerEUList = {0};
+  std::vector<uint32_t> gridGroupSizeList = {0};
+
+  std::vector<uint32_t> kPerBlock = {16, 32, 64, 128, 512, 1024, 2048};
+  // use the actual K dimension, typically it's 128 for attention
+  if (kind != TuningParamSetKind::Exhaustive) {
+    auto aShape = cast<ShapedType>(gemmGemmOp.getAType()).getShape();
+    int idx = gemmGemmOp.getTransposedA() ? 0 : 1;
+    assert(aShape.size() == 3 || aShape.size() == 2);
+    if (aShape.size() == 3)
+      idx++;
+    uint32_t gemm0KPerBlock = llvm::PowerOf2Ceil(aShape[idx]);
+    kPerBlock = {gemm0KPerBlock};
+  }
+
   static const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsMFMA =
       {/*gemm0MPerBlock=*/dPerBlock,
        /*gemm0NPerBlock=*/dPerBlock,
-       /*kPerBlock=*/{2, 4, 8, 16, 32, 64},
-       /*kPack=*/{4, 8, 16},
-       /*mnPerXdl=*/{4, 16, 32},
-       {0}};
+       kPerBlock,
+       /*kPack=*/{1, 2},
+       numWavesRange,
+       /*matrixInstrNonkdim=*/{16, 32},
+       {1, 2, 3},
+       wavesPerEUList,
+       gridGroupSizeList};
   static const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsWMMA =
       {/*gemm0MPerBlock=*/dPerBlock,
        /*gemm0NPerBlock=*/dPerBlock,
-       /*kPerBlock=*/{2, 4, 8, 16, 32, 64},
-       /*kPack=*/{4, 8, 16},
-       /*mnPerXdl=*/{16},
-       {0}};
+       kPerBlock,
+       /*kPack=*/{1},
+       numWavesRange,
+       /*matrixInstrNonkdim=*/{0},
+       {1, 2},
+       wavesPerEUList,
+       gridGroupSizeList};
   auto [firstGemmKind, secondGemmKind] =
       rock::getMatrixAccelKind(rock::getArchValue(gemmGemmOp), gemmGemmOp);
 
   std::vector<std::vector<uint32_t>> validRangeGemmGemmParams;
-  // TODO(roctriton): non-accel list!
 
   // checking first gemm only is ok
-  if (firstGemmKind == MatrixAccelKind::MFMA ||
-      firstGemmKind == MatrixAccelKind::ScaledMFMA)
-    validRangeGemmGemmParams = validRangeGemmGemmParamsMFMA;
-  else if (firstGemmKind == MatrixAccelKind::WMMA ||
-           firstGemmKind == MatrixAccelKind::ScaledWMMA)
-    validRangeGemmGemmParams = validRangeGemmGemmParamsWMMA;
-
-  return validRangeGemmGemmParams;
+  bool isMfma = firstGemmKind == MatrixAccelKind::MFMA ||
+                firstGemmKind == MatrixAccelKind::ScaledMFMA;
+  return isMfma ? validRangeGemmGemmParamsMFMA : validRangeGemmGemmParamsWMMA;
 }
 
 // Keep in sync with attentionSweeps.py
@@ -217,34 +227,33 @@ getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp,
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
-  const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
-      getAccelRangeGemmGemm(gemmGemmOp, kind);
   auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
+  const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
+      getAccelRangeGemmGemm(gemmGemmOp, waveSize, kind);
   // TODO(roctriton): numCTAs for gfx1250
-  int64_t numCTAs{1}, wavesPerEU{0}, gridGroupSize{0};
+  int64_t numCTAs{1};
   OpBuilder b(gemmGemmOp.getContext());
-  for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[0]) {
-    std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
-    SmallVector<uint32_t> mPerBlockGemm1 =
-        compute1MPerBlock(kind, gemm0NPerBlock);
-    for (uint32_t gemm1NPerBlock : mPerBlockGemm1) {
-      for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[1]) {
-        auto optimalSplitKFactors =
-            computeOptimalSplitKFactors(gemmGemmOp, gemm0MPerBlock);
+  for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
+    for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
+      auto optimalSplitKFactors =
+          computeOptimalSplitKFactors(gemmGemmOp, gemm0MPerBlock);
 
-        for (uint32_t gemmKPerBlock : validRangeGemmGemmParams[2]) {
-          for (uint32_t gemmKPack : validRangeGemmGemmParams[3]) {
-            for (uint32_t numWaves : numWavesRange) {
-              for (uint32_t matrixInstrNonkdim : validRangeGemmGemmParams[4]) {
-                for (int64_t splitKFactor : optimalSplitKFactors) {
-                  for (uint32_t numStages : validRangeGemmGemmParams[5]) {
-                    auto gemmGemmParams = GemmGemmParamsAttr::get(
-                        gemmGemmOp.getContext(), gemm0NPerBlock, gemm1NPerBlock,
-                        gemm0MPerBlock, gemmKPerBlock, gemmKPack, numCTAs,
-                        numWaves, matrixInstrNonkdim, splitKFactor, numStages,
-                        wavesPerEU, gridGroupSize);
-                    newSpace->tuningRange.push_back(
-                        cast<RockTuningParamAttrInterface>(gemmGemmParams));
+      for (uint32_t gemmKPerBlock : validRangeGemmGemmParams[2]) {
+        for (uint32_t gemmKPack : validRangeGemmGemmParams[3]) {
+          for (uint32_t numWaves : validRangeGemmGemmParams[4]) {
+            for (uint32_t matrixInstrNonkdim : validRangeGemmGemmParams[5]) {
+              for (int64_t splitKFactor : optimalSplitKFactors) {
+                for (uint32_t numStages : validRangeGemmGemmParams[6]) {
+                  for (uint32_t wavesPerEU : validRangeGemmGemmParams[7]) {
+                    for (uint32_t gridGroupSize : validRangeGemmGemmParams[8]) {
+                      auto gemmGemmParams = GemmGemmParamsAttr::get(
+                          gemmGemmOp.getContext(), gemm0MPerBlock,
+                          gemm0NPerBlock, gemmKPerBlock, gemmKPack, numCTAs,
+                          numWaves, matrixInstrNonkdim, splitKFactor, numStages,
+                          wavesPerEU, gridGroupSize);
+                      newSpace->tuningRange.push_back(
+                          cast<RockTuningParamAttrInterface>(gemmGemmParams));
+                    }
                   }
                 }
               }

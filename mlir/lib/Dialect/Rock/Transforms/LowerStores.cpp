@@ -29,7 +29,7 @@
 // 2. Gets the tile values and transforms from StoreMarkerOp
 // 3. Clones fusion ops to operate on tiles
 // 4. Combines StoreMarkerOp transforms with store destination transforms
-// 5. Creates BlockwiseStoreTileOp with the combined transform chain
+// 5. Creates BlockwiseStoreOp with the combined transform chain
 // 6. Cleans up UntileOp, StoreMarkerOp and dead ops
 //
 // Example:
@@ -65,6 +65,7 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -179,12 +180,11 @@ static Value convertToTile(OpBuilder &builder, Location loc, Value fullVal,
 }
 
 /// Get tile shape from a StoreMarkerOp source type.
-static std::pair<int64_t, int64_t>
-getTileShapeFromStoreMarkerOp(StoreMarkerOp storeMarkerOp) {
+static ArrayRef<int64_t>
+getShapeFromStoreMarkerOp(StoreMarkerOp storeMarkerOp) {
   auto sourceType = cast<RankedTensorType>(storeMarkerOp.getSource().getType());
   ArrayRef<int64_t> shape = sourceType.getShape();
-  assert(shape.size() == 2 && "Expected 2D tile");
-  return {shape[0], shape[1]};
+  return shape;
 }
 
 struct RockLowerStoresPass
@@ -225,16 +225,14 @@ void RockLowerStoresPass::runOnOperation() {
       continue;
     }
 
-    auto [mPerBlock, nPerBlock] = getTileShapeFromStoreMarkerOp(storeMarkerOp);
-    LLVM_DEBUG(llvm::dbgs() << "Tile shape: mPerBlock=" << mPerBlock
-                            << ", nPerBlock=" << nPerBlock << "\n");
+    auto storeMarkerShape = getShapeFromStoreMarkerOp(storeMarkerOp);
 
     // Get the output type for determining tile type
     auto outputType = cast<RankedTensorType>(storeSource.getType());
 
     // Determine tile type
-    auto tileType = RankedTensorType::get({mPerBlock, nPerBlock},
-                                          outputType.getElementType());
+    auto tileType =
+        RankedTensorType::get(storeMarkerShape, outputType.getElementType());
 
     // Convert the store source from full tensor to tile, collecting
     // StoreMarkerOp info
@@ -272,15 +270,14 @@ void RockLowerStoresPass::runOnOperation() {
       combinedDest = rock::transform(builder, destRoot, transformsAttr);
     }
 
-    // Create BlockwiseStoreTileOp with combined transforms
-    auto bstOp = BlockwiseStoreTileOp::create(
+    // Create BlockwiseStoreOp with combined transforms
+    auto bstOp = BlockwiseStoreOp::create(
         builder, loc, storeOp.getResult().getType(), fusedTile, combinedDest,
         storeMarkerInfo.extraIndices, storeOp.getStoreMethod());
 
-    LLVM_DEBUG(llvm::dbgs() << "Created BlockwiseStoreTileOp: " << bstOp
-                            << "\n");
-    
-    // Replace rock.store with BlockwiseStoreTileOp result
+    LLVM_DEBUG(llvm::dbgs() << "Created BlockwiseStoreOp: " << bstOp << "\n");
+
+    // Replace rock.store with BlockwiseStoreOp result
     storeOp.getResult().replaceAllUsesWith(bstOp.getResult());
     storeOp.erase();
   }
@@ -304,7 +301,7 @@ void RockLowerStoresPass::runOnOperation() {
       }
     });
 
-    funcOp.walk([&](BlockwiseLoadTileOp loadTileOp) {
+    funcOp.walk([&](BlockwiseLoadOp loadTileOp) {
       if (loadTileOp.getResult().use_empty()) {
         loadTileOp.erase();
         changed = true;

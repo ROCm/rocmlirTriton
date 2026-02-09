@@ -42,7 +42,8 @@ protected:
                                             GemmGemmParamsAttr params);
 
   static GemmParamsAttr getGemm1Params(OpBuilder &b,
-                                            GemmGemmParamsAttr params);
+                                       RockGemmGemmWrapperInterface op,
+                                       GemmGemmParamsAttr params);
 
 private:
 #define GemmGemm_DECLARATIONS_GEN

@@ -1,9 +1,12 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 
 #define DEBUG_TYPE "rock-tuning-parameter"
 
@@ -43,14 +46,10 @@ PopulateParamsGemmGemm::deserializePerfConfigs(OpBuilder &b,
 
 FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
 PopulateParamsGemmGemm::getGemmParams(OpBuilder &b,
-                                           RockGemmGemmWrapperInterface op,
-                                           GemmGemmParamsAttr params) {
-  // TODO(roctriton): do we need this?
-  if (params.getNPerBlockG1() % params.getNPerBlockG0() != 0)
-    return failure();
-
+                                      RockGemmGemmWrapperInterface op,
+                                      GemmGemmParamsAttr params) {
   GemmParamsAttr accelParams0 = getGemm0Params(b, params);
-  GemmParamsAttr accelParams1 = getGemm1Params(b, params);
+  GemmParamsAttr accelParams1 = getGemm1Params(b, op, params);
 
   return std::make_pair(accelParams0, accelParams1);
 }
@@ -68,11 +67,18 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
       params.getWavesPerEU(), params.getGridGroupSize());
 }
 
-GemmParamsAttr
-PopulateParamsGemmGemm::getGemm1Params(OpBuilder &b,
-                                       GemmGemmParamsAttr params) {
+GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
+    OpBuilder &b, RockGemmGemmWrapperInterface op, GemmGemmParamsAttr params) {
+  // Due to limitations, gemm1NPerBlock must be equal to gemm1N
+  // and gemm1NPerBlock must be a power of two
+  auto cShape = cast<ShapedType>(op.getCType()).getShape();
+  int idx = op.getTransposedC() ? 0 : 1;
+  assert(cShape.size() == 3 || cShape.size() == 2);
+  if (cShape.size() == 3)
+    idx++;
+  int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(cShape[idx]);
   return GemmParamsAttr::get(
-      b.getContext(), params.getMPerBlockG0(), params.getNPerBlockG1(),
+      b.getContext(), params.getMPerBlockG0(), gemm1NPerBlock,
       params.getNPerBlockG0(), params.getKpack(), params.getNumCTAs(),
       params.getNumWaves(), params.getMatrixInstrNonkdim(),
       params.getSplitKFactor(), params.getNumStages(), params.getWavesPerEU(),

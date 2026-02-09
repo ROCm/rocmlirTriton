@@ -1427,9 +1427,11 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
         // Store returned tensors back to gpu memrefs
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-          // Result should be stored back to the corresponding output memref
-          // For GEMM, the output is typically the last argument
-          size_t outIdx = gpuMem.size() - callOp.getNumResults() + resultIdx;
+          // Result should be stored back to the corresponding output memref.
+          // Kernel returns (Output, LSE, ...) while args are (..., LSE,
+          // Output), so map result i to the (numResults - 1 - i)-th-from-last
+          // argument.
+          size_t outIdx = gpuMem.size() - 1 - resultIdx;
           auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
           Value resultMemref =
               bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
