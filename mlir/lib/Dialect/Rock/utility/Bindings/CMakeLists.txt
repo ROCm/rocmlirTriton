@@ -1,6 +1,5 @@
 # Python bindings for AMD arch database
-# TODO: Re-enable once Python bindings are needed with Triton backend
-if(FALSE AND NOT WIN32)
+if(NOT WIN32)
     find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 
     # Use MLIR's Python detection from the found MLIR installation
