@@ -131,11 +131,12 @@ def get_perf_config(operation, test_vector, arch, num_cu, num_chiplets):
 
 
 def compile_config(conf_class, paths, timestamp):
-    rocmlir_gen_options = conf_class.generate_mlir_driver_commandline("",
-                                                                     kernel_repeats=None)
+    rocmlir_gen_options = conf_class.generate_mlir_driver_commandline(
+        kernel_repeats=None, perf_config=conf_class.perfconfig)
 
     # Build the rocmlir-gen command
-    rocmlir_gen_cmd = [paths.mlir_paths.rocmlir_gen_path] + rocmlir_gen_options.split()
+    rocmlir_gen_cmd = [paths.mlir_paths.rocmlir_gen_path] + \
+        rocmlir_gen_options.split()
 
     # Build the rocmlir-driver command
     rocmlir_driver_cmd = [
@@ -503,7 +504,7 @@ def parse_perf_config(perf_config, num_cu, arch):
                 if len(params) != 12:
                     raise ValueError(f"attn:v1 expects 12 params, got "
                                      f"{len(params)}")
-                n_per_block_g0 = params[0]
+                # n_per_block_g0 = params[0]
                 n_per_block_g1 = params[1]
                 m_per_block_g0 = params[2]
                 parsed_params['KPerBlock'] = params[3]
