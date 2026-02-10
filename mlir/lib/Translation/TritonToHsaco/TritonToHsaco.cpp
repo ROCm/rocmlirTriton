@@ -30,6 +30,7 @@
 #include "mlir/Tools/mlir-translate/Translation.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
@@ -56,6 +57,7 @@
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -67,6 +69,8 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "mlir/Pass/Pass.h"
+
+#include "triton/Tools/Sys/GetEnv.hpp"
 
 #include <array>
 #include <mutex>
@@ -114,6 +118,42 @@ void initializeLLVMTargets() {
   });
 }
 
+/// Set LLVM command-line option programmatically - from setLLVMOption in llvm.cc
+/// This is necessary because some LLVM passes check whether an option was
+/// explicitly set on the command line.
+template <typename T> T setLLVMOption(const std::string &name, T value);
+
+template <> bool setLLVMOption<bool>(const std::string &name, bool value) {
+  auto options = llvm::cl::getRegisteredOptions();
+  auto it = options.find(name);
+  if (it == options.end())
+    return false;
+  auto *opt = static_cast<llvm::cl::opt<bool> *>(it->second);
+  bool original = opt->getValue();
+  // Use addOccurrence to mark the option as explicitly set on command line.
+  it->second->addOccurrence(1, name, value ? "true" : "false");
+  return original;
+}
+
+/// Apply selective LLVM optimizations disable flags from DISABLE_LLVM_OPT
+/// environment variable. When DISABLE_LLVM_OPT is set to a comma-separated
+/// list of LLVM flag names (e.g., "disable-vector-combine,instcombine"),
+/// those flags are set to true, effectively disabling specific passes.
+void applySelectiveLLVMOptDisable() {
+  bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
+  if (!disableLLVMOpt) {
+    // Check to see if we are passing a list of flags to disable optimizations.
+    auto flagList = mlir::triton::tools::getStrEnv("DISABLE_LLVM_OPT");
+    if (!flagList.empty()) {
+      llvm::SmallVector<llvm::StringRef, 3> split;
+      llvm::StringRef(flagList.c_str()).split(split, ',');
+      for (const auto &flag : split) {
+        setLLVMOption<bool>(flag.str(), true);
+      }
+    }
+  }
+}
+
 /// Create LLVM target machine - from createTargetMachine in llvm.cc
 std::unique_ptr<llvm::TargetMachine> createTargetMachine(llvm::Module &module,
                                                          llvm::Triple &triple,
@@ -127,6 +167,8 @@ std::unique_ptr<llvm::TargetMachine> createTargetMachine(llvm::Module &module,
     return nullptr;
   }
 
+  bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
+
   llvm::TargetOptions opt;
   if (enableFpFusion)
     opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
@@ -138,7 +180,8 @@ std::unique_ptr<llvm::TargetMachine> createTargetMachine(llvm::Module &module,
 
   return std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(
       triple, archStr, features, opt, llvm::Reloc::PIC_, std::nullopt,
-      llvm::CodeGenOptLevel::Aggressive));
+      disableLLVMOpt ? llvm::CodeGenOptLevel::None
+                     : llvm::CodeGenOptLevel::Aggressive));
 }
 
 /// Add control constant to module (for device library compatibility)
