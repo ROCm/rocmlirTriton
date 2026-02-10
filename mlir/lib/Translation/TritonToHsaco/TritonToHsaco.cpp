@@ -369,6 +369,10 @@ static std::optional<llvm::OptimizationLevel> mapToLevel(unsigned optLevel) {
 void optimizeModule(llvm::Module &module, llvm::TargetMachine *tm,
                     StringRef arch, llvm::OptimizationLevel optLevel,
                     bool enableAsan) {
+  // Apply selective LLVM optimization disables from DISABLE_LLVM_OPT env var
+  // e.g., DISABLE_LLVM_OPT="disable-vector-combine,instcombine"
+  applySelectiveLLVMOptDisable();
+
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;
   llvm::CGSCCAnalysisManager cgam;
