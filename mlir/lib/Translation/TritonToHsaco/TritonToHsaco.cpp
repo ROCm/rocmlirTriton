@@ -379,13 +379,25 @@ void disablePrintInline(llvm::Module &module) {
 
 //===----------------------------------------------------------------------===//
 // make_amdgcn - LLVM IR to AMDGCN assembly (compiler.py lines 452-473)
+// Inspired by translateLLVMIRToASM in external/triton/python/src/llvm.cc
 //===----------------------------------------------------------------------===//
 
 std::string translateLLVMIRToASM(llvm::Module &module,
                                  llvm::TargetMachine *machine) {
   using namespace mlir;
 
-  // emit machine code
+  // inline everything (matches llvm.cc lines 329-332)
+  for (llvm::Function &f : module.functions())
+    if (!f.hasFnAttribute(llvm::Attribute::NoInline))
+      f.addFnAttr(llvm::Attribute::AlwaysInline);
+
+  // verify and run inliner (matches llvm.cc lines 333-344)
+  llvm::legacy::PassManager pm;
+  pm.add(llvm::createAlwaysInlinerLegacyPass());
+  pm.add(llvm::createVerifierPass());
+  pm.run(module);
+
+  // emit machine code (matches llvm.cc lines 360-377)
   std::string result;
   {
     llvm::raw_string_ostream stream(result);

@@ -65,7 +65,8 @@ def RockGridwiseGemmToBlockwisePass : Pass<"rock-gridwise-gemm-to-blockwise", ":
   let summary = "expand gridwise gemm into blockwise copy, blockwise gemm, and threadwise copy";
   let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
                            "gpu::GPUDialect", "vector::VectorDialect",
-                           "linalg::LinalgDialect", "scf::SCFDialect"];
+                           "linalg::LinalgDialect", "scf::SCFDialect",
+                           "triton::TritonDialect"];
 }
 
 def RockGridwiseAttnToBlockwisePass
