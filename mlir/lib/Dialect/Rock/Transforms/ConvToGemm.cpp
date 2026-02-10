@@ -573,7 +573,7 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
                  /*scaleA=*/nullptr, /*scaleB=*/nullptr,
                  /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
                  /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-                 op.getFeaturesAttr(), op.getParamsAttr());
+                 op.getParamsAttr());
 
   // Finally, erase the original Conv op.
   b.eraseOp(op);
@@ -934,7 +934,7 @@ FailureOr<std::tuple<Value, Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
       /*scaleA=*/nullptr, /*scaleB=*/nullptr,
       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
       /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-      op.getFeaturesAttr(), op.getParamsAttr());
+      op.getParamsAttr());
   // Bounced along for debugging purposes, not used below
   gemm->setAttr("kernelId", b.getIndexAttr(kernelId));
 
@@ -950,8 +950,6 @@ template <typename T>
 static FailureOr<std::tuple<Value, Value, Value>>
 commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
                   ConvOpType convOpType) {
-  GemmFeatures features = rock::getFeatures(op);
-
   Type dataType = op.getInput().getType().getElementType();
   if (ConvOpType::BwdData == convOpType) {
     auto bwdDataOp = cast<ConvBwdDataOp>(op);
@@ -1012,7 +1010,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     }
 
     if (ConvOpType::BwdWeight == convOpType &&
-        isWrWAtomicKernel(features, dataType, maybeGemmExtraPad.has_value())) {
+        isWrWAtomicKernel(rock::getArchValue(op), dataType,
+                          maybeGemmExtraPad.has_value())) {
       return backwardWeightAtomicAdd(cast<ConvBwdWeightOp>(op), b);
     }
   }
@@ -1235,8 +1234,8 @@ struct ConvGemmRewritePattern : public OpRewritePattern<ConvElementwiseGemmOp> {
         b, loc, op->getResultTypes(), gemmInput, gemmFilter, op.getC(),
         op.getElemwiseInputs(),
         /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
-        op.getCTransposedAttr(), op.getOTransposedAttr(), op.getFeaturesAttr(),
-        op.getParams0Attr(), op.getParams1Attr(), op.getFirstGemmIndicesAttr());
+        op.getCTransposedAttr(), op.getOTransposedAttr(), op.getParams0Attr(),
+        op.getParams1Attr(), op.getFirstGemmIndicesAttr());
 
     // copy linalg::GenericOp if there's any
     bool linalgOpFound = false;
@@ -1285,12 +1284,12 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
     Location loc = op.getLoc();
     auto tuningParams = op.getParamsAttr();
     auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
-    auto newGemmOp = GemmOp::create(
-        b, loc, getResultType(op, gemmC), gemmA, gemmB,
-        /*scaleA=*/nullptr, /*scaleB=*/nullptr,
-        /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
-        /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-        op.getFeaturesAttr(), tuningParams);
+    auto newGemmOp =
+        GemmOp::create(b, loc, getResultType(op, gemmC), gemmA, gemmB,
+                       /*scaleA=*/nullptr, /*scaleB=*/nullptr,
+                       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
+                       /*aScaleTransposed=*/nullptr,
+                       /*bScaleTransposed=*/nullptr, tuningParams);
 
     // Find and update the StoreOp that uses the conv result.
     // The conv result type (conv output shape) differs from gemm result type

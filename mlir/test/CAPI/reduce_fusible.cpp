@@ -1,5 +1,4 @@
-// Check that we can properly use `mlirIsModuleFusible` on ReduceOps without
-// having GemmFeatures set on the func
+// Check that we can properly use `mlirIsModuleFusible` on ReduceOps
 
 // clang-format off
 // RUN: mlir-reduce-fusible-test

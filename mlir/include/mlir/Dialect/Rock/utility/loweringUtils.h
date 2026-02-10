@@ -65,8 +65,7 @@ getLoadRegsAsTileViews(OpBuilder &b, Location loc, Value globalBuffer,
                        StringRef dName, ArrayRef<int64_t> bidGridLengths,
                        int64_t kPerBlock, int64_t dPerBlock);
 
-bool isWrWAtomicKernel(GemmFeatures features, Type dataType,
-                       bool requiredPadding);
+bool isWrWAtomicKernel(StringRef arch, Type dataType, bool requiredPadding);
 
 // Return true if this shaped type will occupy more than 4 GB (2 ^ 32 bytes)
 // in memory.
@@ -161,9 +160,6 @@ TypedValue<MemRefType> viewBufferAs(OpBuilder &b, Value buffer,
 // helper to allocate memory on the GPU
 Value gpuAlloc(OpBuilder &b, Location loc, int64_t bufferDim, Type elementType,
                gpu::AddressSpace memoryAddressSpace);
-
-// helper to verify a lds allocation fits in the GPU
-LogicalResult checkLDSSize(StringAttr arch, int64_t ldsBytes);
 
 // Trace gemm output back to its function arguments by
 // tracing through rock.store operations to find the

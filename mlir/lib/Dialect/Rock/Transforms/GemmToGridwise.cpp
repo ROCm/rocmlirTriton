@@ -580,7 +580,6 @@ commonAttentionGemmElmtGemm(
   auto newOp = GridwiseAttentionOp::create(
       rw, loc, out.getType(), lse ? lse.getType() : nullptr, a, b, c,
       elementwiseInputs, currentSeqLen, prefixOffset, causal, splitKV,
-      op.getGemmFeaturesAttr(), 
       /*disableQBypassLDS=*/nullptr, prePadG0MAttr, prePadG0NAttr,
       numRepeatsGQA, softmaxType, params0, params1,
       rw.getDenseI64ArrayAttr(op.getFirstGemmIndices()),
@@ -771,9 +770,9 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   }
 
   auto accumulatorType = getAccumulatorType(a, b, c, rw, loc);
-  auto gridwiseOp = GridwiseGemmOp::create(rw, loc, accumulatorType, a, b,
-                                           scaleA, scaleB, op.getFeaturesAttr(),
-                                           cast<GemmParamsAttr>(params));
+  auto gridwiseOp =
+      GridwiseGemmOp::create(rw, loc, accumulatorType, a, b, scaleA, scaleB,
+                             cast<GemmParamsAttr>(params));
   Value gridwiseResult = gridwiseOp.getResult();
 
   // If accumulator type differs from output type, convert

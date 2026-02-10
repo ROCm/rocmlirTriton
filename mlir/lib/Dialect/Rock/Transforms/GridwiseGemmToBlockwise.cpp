@@ -182,10 +182,6 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     auto elementTypeScaleB =
         isScaledGemm ? scaleB.getType().getElementType() : nullptr;
 
-    // Get 'features' from the op
-    auto features = rock::getFeatures(op);
-    auto featuresAttr = op.getFeaturesAttr();
-
     // Prepare some useful constants.
     Value matA = op.getA();
     Value matB = op.getB();

@@ -2,7 +2,7 @@
 // RUN: rocmlir-opt %s | rocmlir-opt | FileCheck %s
 
 func.func @rock_conv(%filter : tensor<?x?x?x?x?xf32>, %input : tensor<?x?x?x?x?xf32>, %output : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-  %result = rock.conv(%filter, %input, %output) features = none {
+  %result = rock.conv(%filter, %input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
     output_layout = ["n", "go", "k", "0o", "1o"],
@@ -16,7 +16,7 @@ func.func @rock_conv(%filter : tensor<?x?x?x?x?xf32>, %input : tensor<?x?x?x?x?x
 // CHECK-NEXT: rock.conv
 
 func.func @rock_conv_f16(%filter : tensor<?x?x?x?x?xf16>, %input : tensor<?x?x?x?x?xf16>, %output : tensor<?x?x?x?x?xf16>) -> tensor<?x?x?x?x?xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-  %result = rock.conv(%filter, %input, %output) features = none {
+  %result = rock.conv(%filter, %input, %output) {
     filter_layout = ["g" ,"k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
     output_layout = ["n", "go", "k", "0o", "1o"],
@@ -30,7 +30,7 @@ func.func @rock_conv_f16(%filter : tensor<?x?x?x?x?xf16>, %input : tensor<?x?x?x
 // CHECK-NEXT: rock.conv
 
 func.func @rock_conv_fp8_mixed(%filter : tensor<?x?x?x?x?xf8E4M3FNUZ>, %input : tensor<?x?x?x?x?xf8E5M2FNUZ>, %output : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
-  %result = rock.conv(%filter, %input, %output) features = mfma {
+  %result = rock.conv(%filter, %input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
     output_layout = ["n", "go", "k", "0o", "1o"],
@@ -44,7 +44,7 @@ func.func @rock_conv_fp8_mixed(%filter : tensor<?x?x?x?x?xf8E4M3FNUZ>, %input : 
 // CHECK-NEXT: rock.conv
 
 func.func @rock_conv_fp8_mixed_ocp(%filter : tensor<?x?x?x?x?xf8E4M3FN>, %input : tensor<?x?x?x?x?xf8E5M2>, %output : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  %result = rock.conv(%filter, %input, %output) features = mfma {
+  %result = rock.conv(%filter, %input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
     output_layout = ["n", "go", "k", "0o", "1o"],
@@ -58,7 +58,7 @@ func.func @rock_conv_fp8_mixed_ocp(%filter : tensor<?x?x?x?x?xf8E4M3FN>, %input 
 // CHECK-NEXT: rock.conv
 
 func.func @rock_conv_bwd_data(%filter : tensor<?x?x?x?x?xf32>, %input : tensor<?x?x?x?x?xf32>, %output : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-  %result = rock.conv_bwd_data(%filter, %input, %output) features = none {
+  %result = rock.conv_bwd_data(%filter, %input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     kernelId = 0 : index,
     input_layout = ["n", "gi", "c", "0i", "1i"],
@@ -74,7 +74,7 @@ func.func @rock_conv_bwd_data(%filter : tensor<?x?x?x?x?xf32>, %input : tensor<?
 // CHECK-NEXT: rock.conv_bwd_data
 
 func.func @rock_conv_bwd_data_f16(%filter : tensor<?x?x?x?x?xf16>, %input : tensor<?x?x?x?x?xf16>, %output : tensor<?x?x?x?x?xf16>) -> tensor<?x?x?x?x?xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-  %result = rock.conv_bwd_data(%filter, %input, %output) features = none {
+  %result = rock.conv_bwd_data(%filter, %input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     kernelId = 0 : index,
     input_layout = ["n", "gi", "c", "0i", "1i"],
@@ -90,7 +90,7 @@ func.func @rock_conv_bwd_data_f16(%filter : tensor<?x?x?x?x?xf16>, %input : tens
 // CHECK-NEXT: rock.conv_bwd_data
 
 func.func @rock_conv_bwd_weight(%filter : tensor<?x?x?x?x?xf32>, %input : tensor<?x?x?x?x?xf32>, %output : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-  %result = rock.conv_bwd_weight(%filter, %input, %output) features = none {
+  %result = rock.conv_bwd_weight(%filter, %input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
     rock.numCU = 64 : i32,
@@ -106,7 +106,7 @@ func.func @rock_conv_bwd_weight(%filter : tensor<?x?x?x?x?xf32>, %input : tensor
 // CHECK-NEXT: rock.conv_bwd_weight
 
 func.func @rock_conv_bwd_weight_f16(%filter : tensor<?x?x?x?x?xf16>, %input : tensor<?x?x?x?x?xf16>, %output : tensor<?x?x?x?x?xf16>) -> tensor<?x?x?x?x?xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-  %result = rock.conv_bwd_weight(%filter, %input, %output) features = none {
+  %result = rock.conv_bwd_weight(%filter, %input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
     rock.numCU = 64 : i32,
@@ -122,7 +122,7 @@ func.func @rock_conv_bwd_weight_f16(%filter : tensor<?x?x?x?x?xf16>, %input : te
 // CHECK-NEXT: rock.conv_bwd_weight
 
 func.func @rock_gemm(%a : tensor<32x64xf16>, %b : tensor<1x32x128xf16>, %out : tensor<64x128xf32>) -> tensor<64x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-  %gemm_result = rock.gemm tr %a * %b features = none
+  %gemm_result = rock.gemm tr %a * %b
   : tensor<32x64xf16> * tensor<1x32x128xf16> -> tensor<64x128xf32>
   %result = rock.store %gemm_result to %out by set : tensor<64x128xf32> -> tensor<64x128xf32> to tensor<64x128xf32>
   func.return %result : tensor<64x128xf32>
@@ -133,7 +133,7 @@ func.func @rock_gemm(%a : tensor<32x64xf16>, %b : tensor<1x32x128xf16>, %out : t
 
 // TODO: Scaled gemm tests need rework
 // func.func @rock_scaled_gemm(%a : tensor<32x64xf4E2M1FN>, %b : tensor<1x32x128xf4E2M1FN>, %scaleA : tensor<32x64xf8E8M0FNU>, %scaleB : tensor<1x32x128xf8E8M0FNU>) -> tensor<64x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-//   %result = rock.gemm tr %a scaled by tr %scaleA * %b scaled by %scaleB features = mfma storeMethod = set
+//   %result = rock.gemm tr %a scaled by tr %scaleA * %b scaled by %scaleB storeMethod = set
 //   : tensor<32x64xf4E2M1FN> scaled by tensor<32x64xf8E8M0FNU> * tensor<1x32x128xf4E2M1FN> scaled by tensor<1x32x128xf8E8M0FNU> -> tensor<64x128xf32>
 //   func.return %result : tensor<64x128xf32>
 // }
@@ -196,7 +196,7 @@ func.func @rock_transform_1_to_n(%tensor : tensor<?x?x?x?x?xf32>) -> tensor<?x?x
 //  CHECK-NEXT: rock.transform
 
 func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2048xf32>, %out : tensor<2x1024x2048xf32>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.numCU = 64 : i32} {
-  %gemm_result = rock.gridwise_gemm(%A, %B) features = none {
+  %gemm_result = rock.gridwise_gemm(%A, %B) {
     blockSize = 256 : i32,
     gridSize = 1 : i32,
     params = #rock.gemm_params<
@@ -222,7 +222,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 
 // TODO: Scaled gemm tests need rework
 // func.func @rock_gridwise_scaled_gemm(%A : tensor<2x1024x1024xf4E2M1FN>, %B : tensor<2x1024x2048xf4E2M1FN>, %scaleA : tensor<2x1024x1024xf8E8M0FNU>, %scaleB : tensor<2x1024x2048xf8E8M0FNU>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.numCU = 256 : i32} {
-//   %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB) storeMethod (set) features = mfma {
+//   %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB) storeMethod (set) {
 //     blockSize = 256 : i32,
 //     gridSize = 1 : i32,
 //     params = #rock.gemm_params<
@@ -254,7 +254,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 //                                                 %bufferScaleA : tensor<4xf8E8M0FNU>,
 //                                                 %bufferScaleB : tensor<4xf8E8M0FNU>,
 //                                                 %matrixC : tensor<4xvector<16xf32>>) -> tensor<4xvector<16xf32>> {
-//   %result = rock.blockwise_gemm %matrixC += %bufferA from %matrixA scaled by %bufferScaleA from %matrixScaleA * %bufferB from %matrixB scaled by %bufferScaleB from %matrixScaleB features = mfma {
+//   %result = rock.blockwise_gemm %matrixC += %bufferA from %matrixA scaled by %bufferScaleA from %matrixScaleA * %bufferB from %matrixB scaled by %bufferScaleB from %matrixScaleB {
 //     rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //     blockSize = 256 : i32,
 //     matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
@@ -283,7 +283,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 //                                                 %matrixB : tensor<1x4xvector<4xf4E2M1FN>>,
 //                                                 %matrixC : tensor<1x1xvector<32xf32>>, %scaleA : tensor<1x4xvector<4xf8E8M0FNU>>, %scaleB : tensor<1x4xvector<4xf8E8M0FNU>>) -> tensor<1x1xvector<32xf32>> {
 //   %c0 = arith.constant 0 : index
-//   %result = rock.threadwise_gemm_accel %matrixC += %matrixA scaled by %scaleA * %matrixB scaled by %scaleB at [%c0, %c0, %c0] features = mfma{
+//   %result = rock.threadwise_gemm_accel %matrixC += %matrixA scaled by %scaleA * %matrixB scaled by %scaleB at [%c0, %c0, %c0] {
 //     rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //     params = #rock.gemm_params<
 //       mPerBlock = 256,
@@ -326,7 +326,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {features = #rock<GemmFeatures dot|atomic_add|atomic_fmax_f32|wmma>, firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>} -> tensor<1x384x64xf16>
+//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>} -> tensor<1x384x64xf16>
 //   return %result : tensor<1x384x64xf16>
 // }
 

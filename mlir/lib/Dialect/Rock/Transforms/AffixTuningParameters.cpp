@@ -94,24 +94,6 @@ void AffixTuningParameters::runOnOperation() {
       return;
     }
   });
-
-  // For all ops that can take a 'features' attribute, we want to get or
-  // calculate those features and then take the intersection of them and
-  // apply them to the top level func. This precalculation saves us from
-  // constantly needing to recompute this value at later points in the pipeline.
-  SmallVector<rock::GemmFeatures> allFeatures;
-  func.walk([&](Operation *op) {
-    if (isa<RockGemmFeaturesInterface>(op))
-      allFeatures.push_back(rock::getFeatures(op));
-  });
-
-  if (allFeatures.size() >= 1) {
-    assert(std::all_of(allFeatures.begin() + 1, allFeatures.end(),
-                       [&](const rock::GemmFeatures &features) {
-                         return features == allFeatures[0];
-                       }) &&
-           "All features in func should be identical");
-  }
 }
 
 template <typename T>
@@ -177,8 +159,8 @@ void AffixTuningParameters::affixTuningParametersImpl(
   int64_t gemmKBlocks = 1;
   PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
   auto maybeWrwOp = (info.kernelType == KernelType::ConvBwdWeight);
-  if (maybeWrwOp &&
-      isWrWAtomicKernel(info.gemmFeatures, info.gemmAType, requiredPadding)) {
+  if (maybeWrwOp && isWrWAtomicKernel(rock::getArchValue(op), info.gemmAType,
+                                      requiredPadding)) {
     auto res = calculateKBlockNum(
         info.batchSize, paddedGemmSize, validParams.getMPerBlock(),
         validParams.getNPerBlock(), validParams.getKPerBlock(),
@@ -195,7 +177,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   if (auto bwdOp = dyn_cast<ConvBwdWeightOp>(op.getOperation()))
     bwdOp->setAttr(bwdOp.getKBlocksAttrName(), b.getIndexAttr(gemmKBlocks));
 
-  int64_t waveSize = rock::lookupArchInfo(rock::getArchValue(op)).waveSize;
+  int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
   GemmParamsAttr gemmParams = cast<GemmParamsAttr>(validParams);
   int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
   assert(blockSize > 0);
@@ -207,8 +189,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // check for fusion legality with SplitK for both accel and non-accel path
   // this check should happen after perfConfig is picked either through
   // heuristics or user provided
-  if (rock::isSplitKRequested(rock::getFeatures(op),
-                              b.getStringAttr(perfConfig))) {
+  if (rock::isSplitKRequested(b.getStringAttr(perfConfig))) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
       op->emitError("Fusion with SplitK perfConfig is not legal");
       return signalPassFailure();
@@ -244,7 +225,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
     return signalPassFailure();
   }
   // check for splitK legality
-  if (rock::isSplitKRequested(rock::getFeatures(op), perfConfigStrAttr)) {
+  if (rock::isSplitKRequested(perfConfigStrAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
       op->emitError("Fusion with SplitK perfConfig is not legal");
       return signalPassFailure();

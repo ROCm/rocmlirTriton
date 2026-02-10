@@ -2,7 +2,6 @@ from hip import hip
 
 
 # Helper function to decode arch to its features
-# Keep this in sync with mlir/lib/Dialect/Rock/Generator/AmdArchDb.cpp:mlir::rock::lookupArchInfo
 def get_arch_features(arch: str):
     chip_name = arch.split(':')[0]
     if len(chip_name) < 5:

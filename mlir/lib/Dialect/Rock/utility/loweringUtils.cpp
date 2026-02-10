@@ -37,9 +37,9 @@ using namespace mlir::rock;
 
 #define DEBUG_TYPE "rock-lowering-utils"
 
-bool mlir::rock::isWrWAtomicKernel(GemmFeatures features, Type dataType,
+bool mlir::rock::isWrWAtomicKernel(StringRef arch, Type dataType,
                                    bool requiredPadding) {
-  return bitEnumContainsAll(features, GemmFeatures::atomic_add) &&
+  return isFastAtomicAddSupported(arch, dataType) &&
          (dataType.isF32() || dataType.isF16()) && !requiredPadding;
 }
 
@@ -513,12 +513,6 @@ Value mlir::rock::gpuAlloc(OpBuilder &b, Location loc, int64_t bufferDim,
   auto buffer = GpuAllocOp::create(b, loc, rawMemType);
 
   return viewBufferAs(b, buffer, elementType);
-}
-
-LogicalResult mlir::rock::checkLDSSize(StringAttr arch, int64_t ldsBytes) {
-  // Check for arch limitations exceede
-  const int64_t ldsSize = rock::lookupArchInfo(arch).maxSharedMemPerWG;
-  return success(ldsBytes <= ldsSize);
 }
 
 FailureOr<SmallVector<BlockArgument>>

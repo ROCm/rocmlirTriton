@@ -111,21 +111,6 @@ static Value expandTensor(PatternRewriter &rw, Operation *op, Value operand,
   return rock::TransformOp::create(rw, loc, operand, transform.get());
 }
 
-static rock::GemmFeatures getGemmFeaturesFromOp(Operation *op, Type inputType) {
-  // Start by getting the arch from the Tosa op
-  StringAttr arch = StringAttr::get(op->getContext(), "");
-  FailureOr<StringAttr> maybeArch = rock::getArch(op);
-  if (succeeded(maybeArch)) {
-    arch = maybeArch.value();
-  }
-
-  // Now we can lookup the default features from the arch
-  rock::AmdArchInfo archInfo = rock::lookupArchInfo(arch);
-  rock::GemmFeatures features = archInfo.getDefaultFeatures(inputType);
-
-  return features;
-}
-
 struct ConvFields {
   SmallString<8> filterLayout;
   SmallString<8> inputLayout;
@@ -136,7 +121,6 @@ struct ConvFields {
   ArrayAttr pad;
   ArrayAttr stride;
   ArrayAttr dilation;
-  rock::GemmFeaturesAttr features;
   StringAttr perfConfig;
 };
 
@@ -229,8 +213,7 @@ makeRockConv(ConversionPatternRewriter &rw, Operation *op, Value input,
       convBackwardKind.value() == ROCK_CUSTOMOP_CONV_BWD_DATA) {
     cop = rock::ConvBwdDataOp::create(
         rw, loc, convFields.outputExp.getType(), convFields.filterExp,
-        convFields.outputExp, convFields.inputExp,
-        /*features=*/nullptr, rw.getIndexArrayAttr(pad),
+        convFields.outputExp, convFields.inputExp, rw.getIndexArrayAttr(pad),
         rw.getIndexArrayAttr(stride), rw.getIndexArrayAttr(dilation),
         /*params=*/nullptr, rw.getIndexAttr(kernelID),
         /*usesV4R1=*/rw.getBoolAttr(false));
@@ -239,11 +222,10 @@ makeRockConv(ConversionPatternRewriter &rw, Operation *op, Value input,
     assert((!convBackwardKind.has_value() ||
             convBackwardKind.value() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT) &&
            "bwd_weight currently not implemented");
-    cop = rock::ConvOp::create(rw, loc, convFields.outputExp.getType(),
-                               convFields.filterExp, convFields.inputExp,
-                               convFields.outputExp, /*features=*/nullptr,
-                               convFields.pad, convFields.stride,
-                               convFields.dilation, /*params=*/nullptr);
+    cop = rock::ConvOp::create(
+        rw, loc, convFields.outputExp.getType(), convFields.filterExp,
+        convFields.inputExp, convFields.outputExp, convFields.pad,
+        convFields.stride, convFields.dilation, /*params=*/nullptr);
   }
 
   addConvAttributes(rw, cop, convFields);
@@ -304,10 +286,10 @@ static SetVector<int64_t> traceToRes(Value expectedTensor, func::FuncOp func) {
 }
 
 template <typename OpT>
-static LogicalResult setSplitKAttrs(OpT op, rock::GemmFeatures features,
+static LogicalResult setSplitKAttrs(OpT op, 
                                     PatternRewriter &rw) {
   auto perfConfig = op->template getAttrOfType<StringAttr>("perf_config");
-  if (perfConfig && rock::isSplitKRequested(features, perfConfig)) {
+  if (perfConfig && rock::isSplitKRequested(perfConfig)) {
     func::FuncOp func = op->template getParentOfType<func::FuncOp>();
     SetVector<int64_t> resIndices = traceToRes(op->getResult(0), func);
     if (resIndices.empty())
@@ -632,9 +614,7 @@ public:
     auto bias = operands[2];
     auto outputType = cast<RankedTensorType>(op.getType());
 
-    rock::GemmFeatures features = getGemmFeaturesFromOp(op, input.getType());
-
-    if (failed(setSplitKAttrs(op, features, rw)))
+    if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
     Value output =
@@ -719,9 +699,7 @@ public:
     auto bias = operands[2];
     RankedTensorType outputType = cast<RankedTensorType>(op.getType(0));
 
-    rock::GemmFeatures features = getGemmFeaturesFromOp(op, input.getType());
-
-    if (failed(setSplitKAttrs(op, features, rw)))
+    if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
     Value output =
@@ -1022,9 +1000,7 @@ public:
     Value output =
         bufferization::AllocTensorOp::create(rw, loc, outputType, ValueRange{});
 
-    rock::GemmFeatures features = getGemmFeaturesFromOp(op, matA.getType());
-
-    if (failed(setSplitKAttrs(op, features, rw)))
+    if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
     UnitAttr transposeA = getTranspose(op, "transpose_a"),
@@ -1074,7 +1050,6 @@ public:
     auto rockGemm = rock::GemmOp::create(
         rw, loc, outputType, brA, brB, brAScale, brBScale, transposeA,
         transposeB, /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-        /*features=*/nullptr,
         /*params=*/nullptr);
 
     if (auto attr = op->getAttrOfType<StringAttr>("perf_config"))
@@ -1479,21 +1454,15 @@ struct ConvElementwiseGemmRewritePattern
                    firstConv.getDilationAttr(), group);
     auto firstGemmBlockIndex = elementwiseRegionFinder.getFirstGemmBlockIndex();
 
-    rock::GemmFeatures featuresA =
-        getGemmFeaturesFromOp(op, convFields.filterExp.getType());
-    rock::GemmFeatures featuresC =
-        getGemmFeaturesFromOp(op, op.getB().getType());
-    rock::GemmFeatures features = intersectGemmFeatures(featuresA, featuresC);
-
-    if (failed(setSplitKAttrs(op, features, rewriter)))
+    if (failed(setSplitKAttrs(op, rewriter)))
       return;
 
     auto convElentwiseGemmOp = rock::ConvElementwiseGemmOp::create(
         rewriter, loc, outputType, convFields.filterExp, convFields.inputExp,
         op.getB(), elementwiseOtherArgs, output,
         /*cTransposed=*/nullptr,
-        /*oTransposed=*/nullptr, /*features=*/nullptr, convFields.pad,
-        convFields.stride, convFields.dilation,
+        /*oTransposed=*/nullptr, convFields.pad, convFields.stride,
+        convFields.dilation,
         /*params0=*/nullptr, /*params1=*/nullptr,
         /*firstGemmIndices=*/
         rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
@@ -1559,13 +1528,7 @@ struct GemmElementwiseGemmRewritePattern
     tosa::MatMulOp firstMatMulOp = elemwiseFinder.getFirstGemmBasedOp().value();
     int64_t firstGemmBlockIndex = elemwiseFinder.getFirstGemmBlockIndex();
 
-    rock::GemmFeatures featuresA =
-        getGemmFeaturesFromOp(op, firstMatMulOp.getA().getType());
-    rock::GemmFeatures featuresC =
-        getGemmFeaturesFromOp(op, op.getB().getType());
-    rock::GemmFeatures features = intersectGemmFeatures(featuresA, featuresC);
-
-    if (failed(setSplitKAttrs(op, features, rewriter)))
+    if (failed(setSplitKAttrs(op, rewriter)))
       return;
 
     rock::GemmElementwiseGemmOp gemmElentwiseGemmOp =
@@ -1576,7 +1539,6 @@ struct GemmElementwiseGemmRewritePattern
             /*kTransposed=*/nullptr,
             /*vTransposed=*/nullptr,
             /*oTransposed=*/nullptr,
-            /*features=*/nullptr,
             /*params0=*/nullptr, /*params1=*/nullptr,
             /*firstGemmIndices=*/
             rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
@@ -3018,8 +2980,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         /*kTransposed=*/nullptr,
         /*vTransposed=*/nullptr,
         /*oTransposed=*/nullptr, causalAttr,
-        /*splitKV=*/rewriter.getI32IntegerAttr(1),
-        /*features=*/nullptr, softmaxTypeAttr,
+        /*splitKV=*/rewriter.getI32IntegerAttr(1), softmaxTypeAttr,
         /*params0=*/nullptr, /*params1=*/nullptr,
         /*firstGemmIndices=*/
         rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));

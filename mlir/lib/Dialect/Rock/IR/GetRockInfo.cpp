@@ -105,11 +105,11 @@ FailureOr<int64_t> mlir::rock::getNumCU(Operation *op) {
     return failure();
   }
   IntegerAttr numCU = maybeNumCU.value();
-  AmdArchInfo archInfo = rock::lookupArchInfo(arch);
-  if (numCU.getValue().getSExtValue() < archInfo.minNumCU) {
+  int64_t minNumCU = rock::getMinNumCU(arch);
+  if (numCU.getValue().getSExtValue() < minNumCU) {
     return op->emitError() << "num_cu=" << numCU
                            << " cannot be lower than arch minNumCU="
-                           << archInfo.minNumCU;
+                           << minNumCU;
   }
   return numCU.getValue().getSExtValue();
 }
@@ -122,7 +122,7 @@ int64_t mlir::rock::getNumCUValue(Operation *op) {
 
   // Otherwise, we will need to get the minimum CU value from the architecture
   auto archStr = rock::getArchValue(op);
-  int64_t minCU = rock::lookupArchInfo(archStr).minNumCU;
+  int64_t minCU = rock::getMinNumCU(archStr);
   LLVM_DEBUG(llvm::dbgs() << "Could not find num_cu, defaulting to minimum "
                           << "CU value for " << archStr << ": " << minCU
                           << "\n");
@@ -143,14 +143,14 @@ FailureOr<int64_t> mlir::rock::getNumChiplets(Operation *op) {
     return failure();
   }
   IntegerAttr numChiplets = maybeNumChiplets.value();
-  AmdArchInfo archInfo = rock::lookupArchInfo(arch);
   if (numChiplets.getValue().getSExtValue() <= 0) {
     return op->emitError() << "num_chiplets must be greater than zero";
   }
-  if (numChiplets.getValue().getSExtValue() > archInfo.maxNumXCC) {
+  int64_t maxNumChiplets = rock::getMaxNumChiplets(arch);
+  if (numChiplets.getValue().getSExtValue() > maxNumChiplets) {
     return op->emitError() << "num_chiplets=" << numChiplets
-                           << " cannot be greater than arch maxNumXCC="
-                           << archInfo.maxNumXCC;
+                           << " cannot be greater than arch maxNumChiplets="
+                           << maxNumChiplets;
   }
   return numChiplets.getValue().getSExtValue();
 }
@@ -163,7 +163,7 @@ int64_t mlir::rock::getNumChipletsValue(Operation *op) {
 
   // Otherwise, we will need to get the max chiplets value from the architecture
   auto archStr = rock::getArchValue(op);
-  int64_t maxChiplets = rock::lookupArchInfo(archStr).maxNumXCC;
+  int64_t maxChiplets = rock::getMaxNumChiplets(archStr);
   LLVM_DEBUG(
       llvm::dbgs() << "Could not find num_chiplets, defaulting to maximum "
                    << "chiplets value for " << archStr << ": " << maxChiplets
@@ -171,56 +171,3 @@ int64_t mlir::rock::getNumChipletsValue(Operation *op) {
   return maxChiplets;
 }
 
-mlir::rock::GemmFeatures mlir::rock::getFeatures(Operation *op) {
-  // First, check to see if the func has a 'features' attribute.
-  auto func = getParentFuncOp(op);
-  if (func) {
-    if (auto features = func->getAttrOfType<rock::GemmFeaturesAttr>("features"))
-      return features.getValue();
-
-    // If the initial op is a func and there is no `features` attribute, then
-    // we cannot proceed
-    if (isa<func::FuncOp>(op) || isa<gpu::GPUFuncOp>(op))
-      llvm_unreachable("Trying to get 'features' for an invalid func op");
-  }
-
-  // Next, check to see if the op has a 'features' attribute.
-  if (auto features = op->getAttrOfType<rock::GemmFeaturesAttr>("features"))
-    return features.getValue();
-
-  // In this case, the op does not have a 'Features' attribute, so we can
-  // calculate the default features based on the architecture.
-  rock::AmdArchInfo archInfo = rock::lookupArchInfo(rock::getArchValue(op));
-  // Get the types needed for feature calculation using TypeSwitch
-  SmallVector<Type> typesForFeature =
-      llvm::TypeSwitch<Operation *, SmallVector<Type>>(op)
-          .Case<RockGemmFeaturesInterface, rock::ReduceOp>(
-              [](auto opWithFeatures) {
-                return opWithFeatures.getTypesForFeature();
-              })
-          .Default([](Operation *op) -> SmallVector<Type> {
-            llvm_unreachable("Trying to get feature type on unsupported op");
-          });
-
-  std::optional<rock::GemmFeatures> features = std::nullopt;
-  for (auto &ty : typesForFeature) {
-    // If features is not yet set, then we can update features without having to
-    // do an set intersection first
-    auto newFeatures = archInfo.getDefaultFeatures(ty);
-    if (!features.has_value()) {
-      features = newFeatures;
-      continue;
-    }
-
-    // For all other types, we need to do a set intersection
-    features = intersectGemmFeatures(features.value(), newFeatures);
-  }
-
-  // Handle the case where no types were found, and we could not calculate
-  // features
-  if (!features.has_value()) {
-    llvm_unreachable("Unable to calculate features for the operation");
-  }
-
-  return features.value();
-}

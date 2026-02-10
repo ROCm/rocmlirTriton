@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
@@ -38,28 +39,8 @@ bool validOperationGemmOut(Operation &op) {
              ExtUIOp, ExtSIOp, ExtFOp, TruncFOp, TruncIOp>(op);
 }
 
-static LogicalResult validOutputAtomicAdd(Type outType, GemmFeatures features) {
-  // Split-K currently supports only f32/f16/bf16 element types
-  if (!isa<Float32Type, Float16Type, BFloat16Type>(outType))
-    return failure();
-
-  if (isa<Float32Type>(outType) &&
-      !bitEnumContainsAll(features, GemmFeatures::atomic_add))
-    return failure();
-
-  if (isa<Float16Type>(outType) &&
-      !bitEnumContainsAll(features, GemmFeatures::atomic_add_f16))
-    return failure();
-
-  if (isa<BFloat16Type>(outType) &&
-      !bitEnumContainsAll(features, GemmFeatures::atomic_add_bf16))
-    return failure();
-
-  return success();
-}
-
 LogicalResult mlir::rock::checkValidOutputFusion(
-    linalg::GenericOp genericOp, Value gemmResult, GemmFeatures features,
+    linalg::GenericOp genericOp, Value gemmResult,
     SmallVector<std::tuple<Operation *, int>> &adds) {
   /* We can only fuse:
   - add/sub gemmResult, otherTensor (which will be converted to add gemmResult,
@@ -154,8 +135,8 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         for (auto blockArg : blockArgs) {
           auto outElementType =
               cast<ShapedType>(blockArg.getType()).getElementType();
-          if (failed(validOutputAtomicAdd(outElementType,
-                                          rock::getFeatures(gemmOp))))
+          if (!isFastAtomicAddSupported(rock::getArchValue(gemmOp),
+                                        outElementType))
             return WalkResult::interrupt();
         }
 
@@ -191,7 +172,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
 
           if (failed(checkValidOutputFusion(
                   cast<linalg::GenericOp>(genericOpOperand->getOwner()),
-                  inputAlloc.value(), rock::getFeatures(gemmOp), adds)))
+                  inputAlloc.value(), adds)))
             return WalkResult::interrupt();
         }
 
@@ -213,8 +194,8 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         for (auto blockArg : blockArgs) {
           auto outElementType =
               cast<ShapedType>(blockArg.getType()).getElementType();
-          if (failed(validOutputAtomicAdd(outElementType,
-                                          rock::getFeatures(gemmGemmOp))))
+          if (!isFastAtomicAddSupported(rock::getArchValue(gemmGemmOp),
+                                        outElementType))
             return WalkResult::interrupt();
         }
 
@@ -269,15 +250,10 @@ LogicalResult mlir::rock::testFusionLegalityReduce(func::FuncOp func) {
   WalkResult walkResult = func.walk([&](rock::ReduceOp reduceOp) -> WalkResult {
     auto outElemType = reduceOp.getOut().getType().getElementType();
     if (reduceOp.getReduceMethod() == ReduceMethod::Max) {
-      if (!isa<Float32Type>(outElemType))
-        return WalkResult::interrupt();
-
-      if (!bitEnumContainsAll(rock::getFeatures(reduceOp),
-                              GemmFeatures::atomic_fmax_f32))
+      if (!isFastAtomicMaxSupported(rock::getArchValue(reduceOp), outElemType))
         return WalkResult::interrupt();
     } else {
-      if (failed(
-              validOutputAtomicAdd(outElemType, rock::getFeatures(reduceOp))))
+      if (!isFastAtomicAddSupported(rock::getArchValue(reduceOp), outElemType))
         return WalkResult::interrupt();
     }
     return WalkResult::advance();

@@ -21,6 +21,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
+#include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 #include "mlir/Conversion/ArithToAMDGPU/ArithToAMDGPU.h"
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/Conversion/Passes.h"
@@ -365,9 +366,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
 
 void rock::buildTritonPipeline(OpPassManager &pm,
                                const rock::TritonOptions &options) {
-  StringRef arch = options.arch;
-  AmdArchInfo archInfo = rock::lookupArchInfo(arch);
-  int threadPerWarp = archInfo.waveSize;
+  std::string arch = options.arch;
+  int threadPerWarp = rock::getWaveSize(arch);
 
   makeTTIR(&pm);
   makeTTGIR(&pm, threadPerWarp, options);

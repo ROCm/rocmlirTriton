@@ -407,10 +407,8 @@ void RockRestoreHostCodePass::runOnOperation() {
     // No host functions to restore
     return;
   }
+  int maxSharedMemPerWG = rock::getLDSSize(arch);
 
-  AmdArchInfo archInfo = rock::lookupArchInfo(arch);
-  int maxSharedMemPerWG = archInfo.maxSharedMemPerWG;
-  
   // Collect kernel information from LLVM functions
   SmallVector<KernelInfo> kernels;
   if (failed(collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels)))

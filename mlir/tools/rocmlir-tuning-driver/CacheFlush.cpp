@@ -245,8 +245,7 @@ private:
     if (icacheKernel.isBuilt())
       return success();
 
-    auto archInfo = rock::lookupArchInfo(deviceProps.gcnArchName);
-    int64_t waveSize = archInfo.waveSize;
+    auto waveSize = rock::getWaveSize(deviceProps.gcnArchName);
     if (waveSize <= 0)
       waveSize = kDefaultWaveSize;
     icacheBlockDim = static_cast<unsigned>(waveSize);
