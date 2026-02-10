@@ -173,6 +173,11 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 
 // Based on make_llir() in
 // @triton//:third_party/amd/backend/compiler.py
+// 
+// NOTE: make_llir is divided into two parts in our project:
+// 1. makeLLIR (the function below)
+// 2. TritonToHsaco (in TritonToHsaco.cpp)
+// See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
                      int numStages) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
@@ -216,6 +221,17 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // TODO: add_di_scope
 
   pm->addPass(mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, /*ftz=*/true));
+
+  // IMPORTANT:
+  // 
+  // make_llir here has this comment:
+  // # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
+  // and keeps lowering the IR to LLVM.
+  // We have the rest of the lowering in TritonToHsaco.cpp
+  // 
+  // The reason for doing this is to keep Pipelines as a 
+  // lowering pipeline for MLIR only, leaving the LLVM lowering to
+  // TritonToHsaco.cpp.
 }
 
 //===- Consolidate the Rock Pipelines here ---------------------===//
