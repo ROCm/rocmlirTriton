@@ -623,7 +623,6 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   addControlConstant(*llvmModule, "__oclc_wavefrontsize64", 8, waveSize == 64);
 
   int numWarps = options.numWarps;
-  int numCTAs = options.numCTAs;
   if(auto totalNumWarps = module->getAttrOfType<IntegerAttr>("ttg.total-num-warps")) {
     if(numWarps != totalNumWarps.getInt()) {
       LLVM_DEBUG(llvm::dbgs() << "ttg.total-num-warps != rock.num_waves ("<<totalNumWarps.getInt()<<" != "<<numWarps<<")\n");
@@ -634,7 +633,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
   setKernelAttributes(*llvmModule, arch, features, numWarps,
-                      options.wavesPerEU, numCTAs, options.allowFlushDenorm,
+                      options.wavesPerEU, options.numCTAs, options.allowFlushDenorm,
                       enableAsan, options.scheduleHint);
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
