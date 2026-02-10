@@ -165,6 +165,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
         /*analyzeSmallTensorOfst*/false}));
 
   pm->addPass(mlir::createTritonAMDFoldTrueCmpI());
+  pm->addPass(mlir::createTritonAMDGPUPrepareIfCombining());
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createSymbolDCEPass());
