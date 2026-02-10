@@ -169,6 +169,10 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createSymbolDCEPass());
+  // TODO(roctriton): Implement options like this.
+  // if (options.instrumentationMode == "fpsan") {
+  //   pm->addPass(mlir::createTritonAMDGPUFPSanitizer());
+  // }
 }
 
 // Based on make_llir() in
