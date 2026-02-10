@@ -117,7 +117,8 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 static std::vector<std::vector<uint32_t>>
 getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
                   int64_t maxWavesPerEU, TuningParamSetKind kind) {
-  bool hasAccel = rock::hasAccel(rock::getArchValue(gemmOp), gemmOp);
+  auto arch = rock::getArchValue(gemmOp);
+  bool hasAccel = rock::hasAccel(arch, gemmOp);
   auto dPerBlock = computeDPerBlock(kind);
   
   // non-accel
@@ -133,8 +134,9 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   //   wavesPerEUList.push_back(wavesPerEU);
   // }
 
-  GemmFeatures currentFeatures = rock::getFeatures(gemmOp);
-  bool isMfma = bitEnumContainsAll(currentFeatures, GemmFeatures::mfma);
+  auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
+  bool isMfma = accelKind == MatrixAccelKind::MFMA ||
+                accelKind == MatrixAccelKind::ScaledMFMA;
   Type inTypeA = gemmOp.getAType();
   bool is8b = inTypeA.isInteger(8) ||
               (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
@@ -172,13 +174,7 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       {0}             // gridGroupSize
   };
 
-  MatrixAccelKind accelKind =
-      rock::getMatrixAccelKind(rock::getArchValue(gemmOp), gemmOp);
-  if (accelKind == MatrixAccelKind::MFMA ||
-      accelKind == MatrixAccelKind::ScaledMFMA)
-    return validRangeMfmaParams;
-
-  return validRangeWmmaParams;
+  return isMfma ? validRangeMfmaParams : validRangeWmmaParams;
 }
 
 static std::vector<std::vector<uint32_t>>
