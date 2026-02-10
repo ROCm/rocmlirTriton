@@ -183,6 +183,7 @@ void setABIVersion(llvm::Module &module, int version) {
 /// Set kernel function attributes
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
+                         int numCTAs,
                          bool allowFlushDenorm, bool enableAsan,
                          StringRef scheduleHint) {
   int waveSize = rock::getWaveSize(archStr);
@@ -200,6 +201,7 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
     return;
 
   kernelFn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
+  kernelFn->addFnAttr("amdgpu-cluster-dims", std::to_string(numCTAs) + ",1,1");
   kernelFn->addFnAttr("amdgpu-flat-work-group-size",
                       "1," + std::to_string(totalThreads));
 
@@ -621,6 +623,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   addControlConstant(*llvmModule, "__oclc_wavefrontsize64", 8, waveSize == 64);
 
   int numWarps = options.numWarps;
+  int numCTAs = options.numCTAs;
   if(auto totalNumWarps = module->getAttrOfType<IntegerAttr>("ttg.total-num-warps")) {
     if(numWarps != totalNumWarps.getInt()) {
       LLVM_DEBUG(llvm::dbgs() << "ttg.total-num-warps != rock.num_waves ("<<totalNumWarps.getInt()<<" != "<<numWarps<<")\n");
@@ -631,7 +634,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
   setKernelAttributes(*llvmModule, arch, features, numWarps,
-                      options.wavesPerEU, options.allowFlushDenorm,
+                      options.wavesPerEU, numCTAs, options.allowFlushDenorm,
                       enableAsan, options.scheduleHint);
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
@@ -763,6 +766,7 @@ public:
     options.features = features.getValue();
     options.optLevel = optLevel.getValue();
     options.numWarps = numWarps.getValue();
+    options.numCTAs = numCTAs.getValue();
     options.wavesPerEU = wavesPerEU.getValue();
     options.enableFpFusion = enableFpFusion.getValue();
     options.allowFlushDenorm = allowFlushDenorm.getValue();

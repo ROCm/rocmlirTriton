@@ -461,6 +461,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.features = options.features;
     hsacoOpts.optLevel = options.optLevel;
     hsacoOpts.numWarps = options.numWarps;
+    hsacoOpts.numCTAs = options.numCTAs;
     hsacoOpts.wavesPerEU = options.wavesPerEU;
     hsacoOpts.enableFpFusion = options.enableFpFusion;
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;

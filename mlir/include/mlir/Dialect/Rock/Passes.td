@@ -157,6 +157,8 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
       "Compiler optimization level">,
     Option<"numWarps", "num-warps", "int", "4",
       "Number of warps per block">,
+    Option<"numCTAs", "num-ctas", "int", "1",
+      "Number of CTAs">,
     Option<"wavesPerEU", "waves-per-eu", "int", "0",
       "Waves per execution unit hint (0 for default)">,
     Option<"enableFpFusion", "enable-fp-fusion", "bool", "true",

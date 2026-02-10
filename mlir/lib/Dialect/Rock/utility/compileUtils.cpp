@@ -51,6 +51,7 @@ LogicalResult fillCompilationConfigs(StringAttr perfConfig,
 
     backendOpts.numStages = gemmParams.getNumStages();
     backendOpts.numWarps = gemmParams.getNumWaves();
+    backendOpts.numCTAs = gemmParams.getNumCTAs();
     backendOpts.wavesPerEU = gemmParams.getWavesPerEU();
     return success();
   }
