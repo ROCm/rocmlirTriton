@@ -65,7 +65,6 @@ class Rock_ConvOpBase<string mnemonic, list<Type> inputTypes = [F32, F16, BF16],
                       list<Type> outputTypes = [F32, F16, BF16]>
     : Rock_Op<mnemonic, [DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
                          DeclareOpInterfaceMethods<RockConvInterface>,
-                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
                          RockFusionRoot]> {
   dag commonConvArgs = (ins TensorOrMemRefOf<inputTypes>:$filter,
       TensorOrMemRefOf<inputTypes>:$input,
@@ -167,8 +166,7 @@ def Rock_GemmOp
 }
 
 def Rock_ReduceOp
-    : Rock_Op<"reduce", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-                         AllElementTypesMatch<["in", "out"]>]>,
+    : Rock_Op<"reduce", [AllElementTypesMatch<["in", "out"]>]>,
       Arguments<(ins Arg<TensorOrMemRefOf<[BF16, F16, F32]>, "input">:$in,
           Arg<TensorOrMemRefOf<[BF16, F16, F32]>, "output">:$out,
           ReduceMethodAttr:$reduceMethod, IndexAttr:$axis, I32Attr:$blockSize,
@@ -300,10 +298,9 @@ def Rock_GemmElementwiseGemmOp
 }
 
 def Rock_ConvElementwiseGemmOp
-    : Rock_Op<"conv_elementwise_gemm",
-              [DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
-               DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-               RockFusionRoot]>,
+    : Rock_Op<"conv_elementwise_gemm", [DeclareOpInterfaceMethods<
+                                            RockGemmGemmWrapperInterface>,
+                                        RockFusionRoot]>,
       AllElementTypesMatch<["filter", "input"]>,
       Arguments<(ins TensorOrMemRefOf<[F32, F16, BF16]>:$filter,
           TensorOrMemRefOf<[F32, F16, BF16]>:$input,
@@ -554,24 +551,6 @@ def Rock_GridwiseAttentionOp
   let hasVerifier = 1;
 }
 
-// Memory allocation on GPU memory hierachy.
-def Rock_GpuAllocOp:
-    Rock_Op<"alloc">,
-    Results<(outs Res<AnyMemRef, "", [MemAlloc]>:$output)> {
-  let summary = "Memory allocation on GPU";
-  let description = [{
-    The `rock.alloc` op allocates memory on GPU.
-    - Address space 0 : global.
-    - Address space 3 : LDS.
-    - Address space 5 : private (VGPR).
-    All other values would be considered as allocation on global.
-  }];
-  let assemblyFormat = [{
-    `(` `)` attr-dict `:` type($output)
-  }];
-  let hasVerifier = 1;
-}
-
 // yield
 def Rock_YieldOp :
     Rock_Op<"yield", [Pure, Terminator, ReturnLike]> {
@@ -671,8 +650,7 @@ def Rock_BlockwiseLoadTileOp
 
 // blockwise_load_tile
 def Rock_BlockwiseLoadTilePtrOp
-    : Rock_Op<"blockwise_load_tile_ptr",
-              [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]>,
+    : Rock_Op<"blockwise_load_tile_ptr", []>,
       Arguments<(ins Arg<AnyRankedTensor, "Pointer tensor">:$pointerTensor,
           Arg<AnyRankedTensor, "Mask tensor">:$maskTensor)>,
       Results<(outs TensorOf<NativeMemoryOpTypes>:$result)> {

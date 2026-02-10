@@ -157,10 +157,6 @@ TypedValue<MemRefType> viewBufferAs(OpBuilder &b, Value buffer,
                                     Type elementType,
                                     ArrayRef<int64_t> dimensions);
 
-// helper to allocate memory on the GPU
-Value gpuAlloc(OpBuilder &b, Location loc, int64_t bufferDim, Type elementType,
-               gpu::AddressSpace memoryAddressSpace);
-
 // Trace gemm output back to its function arguments by
 // tracing through rock.store operations to find the
 // destination tensor, then traces that back to function arguments.

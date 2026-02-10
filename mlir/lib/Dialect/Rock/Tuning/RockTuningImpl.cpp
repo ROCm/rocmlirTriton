@@ -930,8 +930,7 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
     }
 
     // Output datatype
-    auto outArg = gemmIF.getOutArgument();
-    Type outType = outArg ? outArg->get().getType() : gemmIF->getResult(0).getType();
+    Type outType = gemmIF->getResult(0).getType();
     Type elemTypeC;
     if (auto memRefType = dyn_cast<mlir::MemRefType>(outType))
       elemTypeC = memRefType.getElementType();

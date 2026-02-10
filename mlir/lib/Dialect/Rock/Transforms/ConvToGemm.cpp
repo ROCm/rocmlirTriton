@@ -1362,7 +1362,7 @@ void RockConvToGemmPass::runOnOperation() {
 
   target.addIllegalOp<rock::ConvOp, rock::ConvBwdDataOp, rock::ConvBwdWeightOp,
                       rock::ConvElementwiseGemmOp>();
-  target.addLegalOp<rock::TransformOp, rock::GemmOp, rock::GpuAllocOp,
+  target.addLegalOp<rock::TransformOp, rock::GemmOp,
                     rock::GemmElementwiseGemmOp, rock::StoreOp>();
   // Below are required legalize for the lowering of ConvBwdWeightOp
   target.addLegalDialect<arith::ArithDialect, scf::SCFDialect>();
