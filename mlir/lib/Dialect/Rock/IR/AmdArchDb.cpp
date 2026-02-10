@@ -60,6 +60,10 @@ static std::tuple<ISAFamily, StringRef> getArch(StringRef arch) {
 //===----------------------------------------------------------------------===//
 
 namespace {
+
+// getMfmaVersion and getWmmaVersion are internal triton functions in
+// AccelerateAMDMatmul.cpp keep them in sync.
+
 /// Get MFMA version from ISA family
 int getMfmaVersion(ISAFamily isaFamily) {
   switch (isaFamily) {
