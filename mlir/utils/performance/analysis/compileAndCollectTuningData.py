@@ -57,9 +57,11 @@ FIELD_LDS_ALLOCATED = 'lds_allocated'
 FIELD_OCCUPANCY = 'occupancy'
 FIELD_WF_PER_WG = 'wf_per_wg'
 FIELD_MFMA_WMMA_INSTRUCTION = 'mfma_wmma_instruction'
+FIELD_PERFCONFIG_ROCMLIR = 'rocmlir_perfconfig'
 
 # Define new data fieldnames (the tuning metrics we're adding)
 NEW_DATA_FIELDNAMES = [
+    FIELD_PERFCONFIG_ROCMLIR,
     FIELD_NS,
     FIELD_BLOCKSIZE,
     FIELD_GRIDSIZE,
@@ -89,6 +91,7 @@ class TuningData:
         self.occupancy = None
         self.wf_per_wg = None
         self.mfma_wmma_instruction = None
+        self.rocmlir_perfconfig = None
 
     def to_dict(self):
         """Convert to dictionary format for tsv writing."""
@@ -145,7 +148,7 @@ def compile_config(conf_class, paths, timestamp):
     # Run rocmlir-gen | rocmlir-driver pipeline
     commands = [rocmlir_gen_cmd, rocmlir_driver_cmd]
     outs, errs = perfRunner.run_pipeline(commands)
-    return errs
+    return outs, errs
 
 
 def parse_mfma_wmma_instructions(content):
@@ -171,6 +174,185 @@ def parse_mfma_wmma_instructions(content):
            f"Expected exactly one unique MFMA/WMMA instruction, found: {size}"
 
     return unique_instructions
+
+
+def compute_wave_distribution(num_waves, m_per_block, n_per_block,
+                              matrix_instr_nonkdim):
+    """
+    Compute how waves are distributed across M and N dimensions.
+
+    This is a port of the warpsPerTile() function from Triton's
+    AccelerateAMDMatmul.cpp.
+
+    Args:
+        num_waves: Total number of waves in the workgroup.
+        m_per_block: M tile size per block.
+        n_per_block: N tile size per block.
+        matrix_instr_nonkdim: The MFMA/WMMA instruction dimension (e.g. 16).
+
+    Returns:
+        tuple: (mPerWave, nPerWave)
+    """
+    shape_per_warp = (matrix_instr_nonkdim, matrix_instr_nonkdim)
+    m_warps = 1
+    n_warps = 1
+
+    while m_warps * n_warps < num_waves:
+        # Distribute to the dimension with more remaining tiles.
+        # The comparison uses (shapePerWarp * 2) for M to bias towards
+        # distributing along N first when tiles are equal.
+        m_tiles_remaining = m_per_block // (shape_per_warp[0] * 2) // m_warps
+        n_tiles_remaining = n_per_block // shape_per_warp[1] // n_warps
+        if m_tiles_remaining >= n_tiles_remaining:
+            if m_warps < m_per_block // shape_per_warp[0]:
+                m_warps *= 2
+            else:
+                n_warps *= 2
+        else:
+            n_warps *= 2
+
+    # If N warps exceed the number of N tiles, swap M and N
+    if n_warps * shape_per_warp[1] > n_per_block:
+        m_warps, n_warps = n_warps, m_warps
+
+    m_per_wave = m_per_block // m_warps
+    n_per_wave = n_per_block // n_warps
+    return m_per_wave, n_per_wave
+
+
+def _convert_gemm_to_rocmlir(params):
+    """Convert gemm:v1 params to rocMLIR AccelGemm v4 perfConfig string.
+
+    rocmlirTriton gemm:v1 input fields:
+        mPerBlock, nPerBlock, kPerBlock, kpack, numCTAs, numWaves,
+        matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU,
+        gridGroupSize
+
+    rocMLIR AccelGemm v4 output fields and how each is derived:
+        mPerBlock        = triton.mPerBlock             (direct)
+        nPerBlock        = triton.nPerBlock             (direct)
+        kpackPerBlock    = triton.kPerBlock             (since kpack=1)
+        mPerWave         = mPerBlock / mWaves           (warpsPerTile algo)
+        nPerWave         = nPerBlock / nWaves           (warpsPerTile algo)
+        mnPerXdl         = triton.matrixInstrNonkdim    (direct)
+        kpack            = 1                            (always 1)
+        splitKFactor     = triton.splitKFactor          (direct)
+        scheduleVersion  = 1 if numStages<=1 else 2     (Default/DoubleBuffer)
+        outputSwizzle    = 2                            (default to let rocMLIR choose)
+        wavesPerEU       = triton.wavesPerEU            (direct)
+        gridGroupSize    = triton.gridGroupSize         (direct)
+        forceUnroll      = 1                            (default, Triton has no equivalent tuning param)
+        threadCopyMore   = 1                            (legacy, always 1)
+    """
+    if len(params) != 11:
+        return None
+
+    m_per_block = params[0]
+    n_per_block = params[1]
+    k_per_block = params[2]
+    # kpack = params[3]  # rocmlirTriton kpack (not used in mapping)
+    # num_ctas = params[4]  # always 1
+    num_waves = params[5]
+    matrix_instr_nonkdim = params[6]
+    split_k_factor = params[7]
+    num_stages = params[8]
+    waves_per_eu = params[9]
+    grid_group_size = params[10]
+
+    kpack_per_block = k_per_block  # since rocmlirTriton kpack = 1
+    m_per_wave, n_per_wave = compute_wave_distribution(
+        num_waves, m_per_block, n_per_block, matrix_instr_nonkdim)
+    schedule_version = 1 if num_stages <= 1 else 2
+
+    # AccelGemm v4 format (see RockAttrDefs.td):
+    # v4:mPerBlock,nPerBlock,kpackPerBlock,mPerWave,nPerWave,mnPerXdl,
+    #    kpack,splitKFactor,scheduleVersion,outputSwizzle,wavesPerEU,
+    #    gridGroupSize,forceUnroll,threadCopyMore
+    return (f"v4:{m_per_block},{n_per_block},{kpack_per_block},"
+            f"{m_per_wave},{n_per_wave},{matrix_instr_nonkdim},"
+            f"1,{split_k_factor},{schedule_version},"
+            f"2,{waves_per_eu},{grid_group_size},"
+            f"1,1")
+
+
+def _convert_attn_to_rocmlir(params):
+    """Convert attn:v1 params to rocMLIR GemmGemm v3 (attn:v3) perfConfig string.
+
+    rocmlirTriton attn:v1 input fields:
+        nPerBlockG0, nPerBlockG1, mPerBlockG0, kPerBlock, kpack,
+        numCTAs, numWaves, matrixInstrNonkdim, splitKFactor,
+        numStages, wavesPerEU, gridGroupSize
+
+    rocMLIR GemmGemm v3 output fields and how each is derived:
+        mPerBlockG0      = triton.mPerBlockG0           (direct)
+        mPerBlockG1      = triton.nPerBlockG1           (reordered)
+        nPerBlockG0      = triton.nPerBlockG0           (reordered)
+        kpackPerBlock    = triton.kPerBlock             (since kpack=1)
+        mPerWave         = mPerBlockG0 / mWaves         (warpsPerTile algo)
+        nPerWave         = nPerBlockG1 / nWaves         (warpsPerTile algo)
+        mnPerXdl         = triton.matrixInstrNonkdim    (direct)
+        kpack            = 1                            (always 1)
+        splitKFactor     = triton.splitKFactor          (direct)
+        scheduleVersion  = 1 if numStages<=1 else 2     (Default/DoubleBuffer)
+        outputSwizzle    = 2                            (default to let rocMLIR choose)
+        wavesPerEU       = triton.wavesPerEU            (direct)
+        forceUnroll      = 1                            (default, Triton has no equivalent tuning param)
+    """
+    if len(params) != 12:
+        return None
+
+    n_per_block_g0 = params[0]
+    n_per_block_g1 = params[1]
+    m_per_block_g0 = params[2]
+    k_per_block = params[3]
+    # kpack = params[4]
+    # num_ctas = params[5]
+    num_waves = params[6]
+    matrix_instr_nonkdim = params[7]
+    split_k_factor = params[8]
+    num_stages = params[9]
+    waves_per_eu = params[10]
+    # grid_group_size = params[11]
+
+    kpack_per_block = k_per_block  # since rocmlirTriton kpack = 1
+    m_per_wave, n_per_wave = compute_wave_distribution(
+        num_waves, m_per_block_g0, n_per_block_g1, matrix_instr_nonkdim)
+    schedule_version = 1 if num_stages <= 1 else 2
+
+    # GemmGemm v3 format (see RockAttrDefs.td):
+    # attn:v3:mPerBlockG0,mPerBlockG1,nPerBlockG0,kpackPerBlock,
+    #         mPerWave,nPerWave,mnPerXdl,kpack,splitKFactor,
+    #         scheduleVersion,outputSwizzle,wavesPerEU,forceUnroll
+    return (f"attn:v3:{m_per_block_g0},"
+            f"{n_per_block_g1},{n_per_block_g0},"
+            f"{kpack_per_block},{m_per_wave},{n_per_wave},"
+            f"{matrix_instr_nonkdim},1,{split_k_factor},"
+            f"{schedule_version},2,{waves_per_eu},"
+            f"1")
+
+
+def convert_triton_to_rocmlir_perfconfig(perf_config):
+    """Convert a rocmlirTriton perfConfig string to the equivalent rocMLIR
+    perfConfig string.
+    """
+    try:
+        parts = perf_config.split(':')
+        if len(parts) != 3:
+            return None
+
+        operation = parts[0]
+        params = [int(p) for p in parts[2].split(',')]
+
+        if operation == 'gemm':
+            return _convert_gemm_to_rocmlir(params)
+        elif operation == 'attn':
+            return _convert_attn_to_rocmlir(params)
+        else:
+            return None
+
+    except (ValueError, IndexError, ZeroDivisionError) as e:
+        print(f"Error converting perfConfig '{perf_config}' to rocMLIR: {e}")
+        return None
 
 
 def parse_results(debug_output):
@@ -200,11 +382,13 @@ def parse_results(debug_output):
         raise ValueError("Could not find waveSize in output")
     tuning_data.wf_per_wg = int(blocksize_match.group(1)) / int(wavesize_match.group(1))
 
-    # Look for LDS usage. `group_segment_fixed_size` is the amount of LDS
-    # allocated for each workgroup.
-    lds_match = re.search(r'\.group_segment_fixed_size:\s*(\d+)', debug_output)
+    # Look for LDS usage from the module output (stdout).
+    # In Triton's compilation model, LDS is allocated dynamically and tracked
+    # via the `ttg.shared` module attribute, not in the kernel descriptor's
+    # `.group_segment_fixed_size` (which is always 0 for Triton kernels).
+    lds_match = re.search(r'ttg\.shared\s*=\s*(\d+)', debug_output)
     if not lds_match:
-        raise ValueError("Could not find LDS usage in output")
+        raise ValueError("Could not find ttg.shared (LDS usage) in module output")
     tuning_data.lds_allocated = int(lds_match.group(1))
 
     # Look for SGPR count
@@ -465,11 +649,15 @@ def compile_and_collect_data(config, operation, binaries):
     conf_class = get_perf_config(op_type, test_vector, arch, num_cu, num_chiplets)
     conf_class.set_perfconfig(perf_config)
 
-    # Compile the config
-    debug_output = compile_config(conf_class, binaries,
-                                  timestamp)
+    # Compile the config. module_output (stdout) has the compiled MLIR module
+    # with ttg.shared (LDS). debug_output (stderr) has debug prints and AMDGCN
+    # assembly.
+    module_output, debug_output = compile_config(conf_class, binaries,
+                                                 timestamp)
     if isinstance(debug_output, bytes):
         debug_output = debug_output.decode('utf-8')
+    if isinstance(module_output, bytes):
+        module_output = module_output.decode('utf-8')
 
     # If the debug output is empty, then this means that the compilation
     # pipeline failed. We expect this to happen for some of the invalid configs
@@ -478,8 +666,13 @@ def compile_and_collect_data(config, operation, binaries):
               "Skipping calculations.")
         return None
 
-    # Parse the results from the compiled config
-    results = parse_results(debug_output)
+    # Combine both outputs so parse_results can find everything it needs
+    combined_output = debug_output + "\n" + module_output
+    results = parse_results(combined_output)
+
+    # Convert rocmlirTriton perfConfig to rocMLIR perfConfig
+    results.rocmlir_perfconfig = convert_triton_to_rocmlir_perfconfig(
+        perf_config)
 
     # Convert the TFLOPs value to seconds
     results.ns = conf_class.compute_ns_from_tflops(tflops)
