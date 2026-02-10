@@ -128,7 +128,8 @@ def get_perf_config(operation, test_vector, arch, num_cu, num_chiplets):
 
 
 def compile_config(conf_class, paths, timestamp):
-    rocmlir_gen_options = conf_class.generate_mlir_driver_commandline("")
+    rocmlir_gen_options = conf_class.generate_mlir_driver_commandline("",
+                                                                     kernel_repeats=None)
 
     # Build the rocmlir-gen command
     rocmlir_gen_cmd = [paths.mlir_paths.rocmlir_gen_path] + rocmlir_gen_options.split()
@@ -137,13 +138,14 @@ def compile_config(conf_class, paths, timestamp):
     rocmlir_driver_cmd = [
         paths.mlir_paths.rocmlir_driver_path,
         "-c",
-        "--debug-only=convert-rock-to-gpu,serialize-to-isa",
+        f"--arch={conf_class.arch}",
+        "--debug-only=rock-gridwise-gemm-to-blockwise,triton-to-hsaco",
     ]
 
+    # Run rocmlir-gen | rocmlir-driver pipeline
     commands = [rocmlir_gen_cmd, rocmlir_driver_cmd]
-    out, err = perfRunner.run_pipeline(commands)
-
-    return err
+    outs, errs = perfRunner.run_pipeline(commands)
+    return errs
 
 
 def parse_mfma_wmma_instructions(content):
@@ -198,10 +200,11 @@ def parse_results(debug_output):
         raise ValueError("Could not find waveSize in output")
     tuning_data.wf_per_wg = int(blocksize_match.group(1)) / int(wavesize_match.group(1))
 
-    # Look for lds_allocated
-    lds_match = re.search(r'ldsUsage:\s*(\d+)', debug_output)
+    # Look for LDS usage. `group_segment_fixed_size` is the amount of LDS
+    # allocated for each workgroup.
+    lds_match = re.search(r'\.group_segment_fixed_size:\s*(\d+)', debug_output)
     if not lds_match:
-        raise ValueError("Could not find ldsUsage in output")
+        raise ValueError("Could not find LDS usage in output")
     tuning_data.lds_allocated = int(lds_match.group(1))
 
     # Look for SGPR count
@@ -241,11 +244,18 @@ def parse_perf_config(perf_config, num_cu, arch):
     """
     Parse the perfConfig string to extract tuning parameters.
 
-    Format: attn:v1:MPerBlock,NPerBlock,KPerBlock,MPerWave,NPerWave,kPack,
-            splitKFactor,forceUnroll,ThreadCopyMore
+    rocmlirTriton perfConfig formats (from RockDialect.cpp):
+
+    gemm:v1:mPerBlock,nPerBlock,kPerBlock,kpack,numCTAs,numWaves,
+            matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,
+            gridGroupSize                                         (11 params)
+
+    attn:v1:nPerBlockG0,nPerBlockG1,mPerBlockG0,kPerBlock,kpack,numCTAs,
+            numWaves,matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,
+            gridGroupSize                                         (12 params)
 
     Returns:
-        dict: Dictionary containing parsed parameters
+        dict: Dictionary containing parsed parameters, or None on failure.
 
     TODO: The format of the perfConfig string is subject to changes in the
           future, so we should at a minimum be keeping this in sync with the
@@ -255,106 +265,87 @@ def parse_perf_config(perf_config, num_cu, arch):
     try:
         # Split by ':' to separate operation, version, and parameters
         parts = perf_config.split(':')
-        if len(parts) < 2:
-            raise ValueError(f"Invalid perfConfig format: {perf_config}")
+        if len(parts) != 3:
+            raise ValueError(f"Expected format 'op:vN:params', got: "
+                             f"{perf_config}")
 
-        # The format is either going to have three parts or two parts. Make sure
-        # to properly handle the `operation` case
-        # - operation:version:parameters
-        # - version:parameters
-        version = None
-        uses_attn = False
-        if len(parts) >= 3:
-            # If there are three parts, then we assume the first part denoting
-            # the operation is going to be equal to `attn`
-            if (parts[0] != 'attn'):
-                raise ValueError("Invalid perfConfig format. Expected 'attn' "
-                                 "to be the first part.")
-            params_str = parts[2]
-            version = parts[1]
-            uses_attn = True
-        else:
-            # parameters are after the first ':'
-            params_str = parts[1]
-            version = parts[0]
+        operation = parts[0]
+        version_str = parts[1]
+        params_str = parts[2]
 
-            # Attention will be the only operation that uses the v1/v2 format
-            # for PerfConfig, so in all other cases we should be using v3
-            if (version != 'v3'):
-                raise ValueError("Invalid perfConfig format. Expected 'v3' "
-                                 "format for non-attention ops.")
+        if not version_str.startswith('v'):
+            raise ValueError(f"Expected version like 'v1', got: "
+                             f"{version_str}")
+        version = int(version_str[1:])
 
-        # Split parameters by comma
-        params = params_str.split(',')
+        params = [int(p) for p in params_str.split(',')]
         parsed_params = {}
 
         # Calculate minNumWaves based on numCUs and numEUPerCU
         arch_info = amd_arch_db.lookup_arch_info(arch)
         num_eu_per_cu = getattr(arch_info, 'num_eu_per_cu')
         parsed_params['minNumWaves'] = int(num_cu) * num_eu_per_cu
-        wave_size = getattr(arch_info, 'wave_size')
 
-        def has_feature(info, feature):
-            return (int(info.default_features) & int(feature)) != 0
+        if operation == 'gemm':
+            # gemm:v1:mPerBlock,nPerBlock,kPerBlock,kpack,numCTAs,numWaves,
+            #         matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,
+            #         gridGroupSize
+            if version == 1:
+                if len(params) != 11:
+                    raise ValueError(f"gemm:v1 expects 11 params, got "
+                                     f"{len(params)}")
+                parsed_params['MPerBlock'] = params[0]
+                parsed_params['NPerBlock'] = params[1]
+                parsed_params['KPerBlock'] = params[2]
+                parsed_params['kPack'] = params[3]
+                parsed_params['numCTAs'] = params[4]
+                num_waves = params[5]
+                parsed_params['matrixInstrNonkdim'] = params[6]
+                parsed_params['splitKFactor'] = params[7]
+                parsed_params['numStages'] = params[8]
+                parsed_params['wavesPerEU'] = params[9]
+                parsed_params['gridGroupSize'] = params[10]
 
-        has_mfma = has_feature(arch_info, amd_arch_db.GemmFeatures.MFMA)
-        has_wmma = has_feature(arch_info, amd_arch_db.GemmFeatures.WMMA)
+                # MNPerWave: total block tile divided by number of waves
+                parsed_params['MNPerWave'] = (params[0] * params[1]) // num_waves
+            else:
+                raise ValueError(f"Unsupported gemm version: v{version}")
 
-        # Handle v1/v2 attention formats. Note, the only difference between
-        # v1 and v2 are the extra parameters added on at the end of the v2
-        # format, which we do not need for this specific case.
-        if (uses_attn):
-            # MPerBlock = MPerBlockG0 * MPerBlockG1
-            parsed_params['MPerBlock'] = int(params[0]) * int(params[1])
-            parsed_params['NPerBlock'] = int(params[2])
-            parsed_params['KPerBlock'] = int(params[3])
-            m_per_wave = int(params[4])
-            # NPerWave = max(NPerBlock/minNumWaves, mnPerXdl)
-            mn_per_xdl = int(params[5])
-            n_per_wave = max(parsed_params['NPerBlock'] / parsed_params['minNumWaves'], mn_per_xdl)
-            parsed_params['kPack'] = int(params[6])
-            parsed_params['splitKFactor'] = int(params[7])
-            parsed_params['MNPerWave'] = m_per_wave * n_per_wave
-        elif (has_mfma):
-            # Handle MFMA v3 formats
-            parsed_params['MPerBlock'] = int(params[0])
-            parsed_params['NPerBlock'] = int(params[1])
-            parsed_params['KPerBlock'] = int(params[2])
-            parsed_params['kPack'] = int(params[5])
-            parsed_params['splitKFactor'] = int(params[6])
-            # For the MFMA v3 formats we have no way of distinguishing between
-            # the XdlopsGemmDerivedParamsAttr and the XdlopsGemmParamsAttr.
-            # The only difference between these two perfConfigs strings is that
-            # one has a NPerWave value and the other has a MnPerXdl value
-            # in the 5th position in the params array.
-            # We can use # NPerWave = max(NPerBlock/minNumWaves, params[5]) to
-            # cover both of the possibilities and still compute a valid
-            # NPerWave value
-            m_per_wave = int(params[3])
-            n_per_wave = max(parsed_params['NPerBlock'] / parsed_params['minNumWaves'], int(params[4]))
-            parsed_params['MNPerWave'] = m_per_wave * n_per_wave
-        elif (has_wmma):
-            # Handle WMMA v3 formats
-            parsed_params['MPerBlock'] = int(params[0])
-            parsed_params['NPerBlock'] = int(params[1])
-            parsed_params['KPerBlock'] = int(params[2])
-            parsed_params['kPack'] = int(params[5])
-            parsed_params['splitKFactor'] = int(params[6])
-            m_per_wave = int(params[3])
-            n_per_wave = int(params[4])
-            parsed_params['MNPerWave'] = m_per_wave * n_per_wave
+        elif operation == 'attn':
+            # attn:v1:nPerBlockG0,nPerBlockG1,mPerBlockG0,kPerBlock,kpack,
+            #         numCTAs,numWaves,matrixInstrNonkdim,splitKFactor,
+            #         numStages,wavesPerEU,gridGroupSize
+            if version == 1:
+                if len(params) != 12:
+                    raise ValueError(f"attn:v1 expects 12 params, got "
+                                     f"{len(params)}")
+                n_per_block_g0 = params[0]
+                n_per_block_g1 = params[1]
+                m_per_block_g0 = params[2]
+                parsed_params['KPerBlock'] = params[3]
+                parsed_params['kPack'] = params[4]
+                parsed_params['numCTAs'] = params[5]
+                num_waves = params[6]
+                parsed_params['matrixInstrNonkdim'] = params[7]
+                parsed_params['splitKFactor'] = params[8]
+                parsed_params['numStages'] = params[9]
+                parsed_params['wavesPerEU'] = params[10]
+                parsed_params['gridGroupSize'] = params[11]
+
+                # For attention: MPerBlock = mPerBlockG0,
+                # NPerBlock = nPerBlockG1 (the full N tile)
+                parsed_params['MPerBlock'] = m_per_block_g0
+                parsed_params['NPerBlock'] = n_per_block_g1
+
+                # MNPerWave: block tile divided by number of waves
+                parsed_params['MNPerWave'] = \
+                    (m_per_block_g0 * n_per_block_g1) // num_waves
+            else:
+                raise ValueError(f"Unsupported attn version: v{version}")
+
         else:
-            # Handle non-accel v3 formats
-            block_size = int(params[0])
-            m_per_block = int(params[1])
-            n_per_block = int(params[2])
-            parsed_params['MPerBlock'] = m_per_block
-            parsed_params['NPerBlock'] = n_per_block
-            parsed_params['KPerBlock'] = int(params[3])
-            parsed_params['MNPerWave'] = (m_per_block * n_per_block) / (block_size / wave_size)
-            # Non-accel does not use kpack, so default to 1
-            parsed_params['kPack'] = 1
-            parsed_params['splitKFactor'] = int(params[6])
+            raise ValueError(f"Unknown operation in perfConfig: "
+                             f"'{operation}'")
 
         return parsed_params
 

@@ -177,14 +177,6 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     bool hasScaleA = scaleA != nullptr;
     bool hasScaleB = scaleB != nullptr;
     bool isScaledGemm = hasScaleA && hasScaleB;
-    auto elementTypeScaleA =
-        isScaledGemm ? scaleA.getType().getElementType() : nullptr;
-    auto elementTypeScaleB =
-        isScaledGemm ? scaleB.getType().getElementType() : nullptr;
-
-    // Get 'features' from the op
-    auto features = rock::getFeatures(op);
-    auto featuresAttr = op.getFeaturesAttr();
 
     // Prepare some useful constants.
     Value matA = op.getA();
@@ -202,6 +194,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
 
     // Obtain critical tuning parameters.
     StringRef arch = rock::getArchValue(op);
+    int64_t waveSize = rock::lookupArchInfo(arch).waveSize;
     uint32_t blockSize = rock::getBlockSize(op).value().getInt();
     uint32_t gridSize = rock::getGridSize(op).value().getInt();
     GemmParamsAttr tuningParams = op.getParams();
@@ -214,6 +207,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
 
     LLVM_DEBUG(llvm::dbgs() << "gridSize: " << gridSize << "\n"
                             << "blockSize: " << blockSize << "\n"
+                            << "waveSize: " << waveSize << "\n"
                             << "elementTypeALoad: " << elementTypeALoad << "\n"
                             << "elementTypeBLoad: " << elementTypeBLoad << "\n"
                             << "\n"

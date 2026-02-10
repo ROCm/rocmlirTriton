@@ -462,6 +462,11 @@ def get_miliseconds(output):
 
 
 def run_pipeline(proc_specs):
+    """Run a pipeline of commands piped together.
+
+    Returns (stdout, stderr) from the last process on success,
+    or (stdout, False) on pipeline failure.
+    """
     procs = []
     for proc in proc_specs:
         prev_stdout = procs[-1].stdout if procs else subprocess.DEVNULL
@@ -470,35 +475,30 @@ def run_pipeline(proc_specs):
                               stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE)
         procs.append(po)
-    try:
-        for p in procs:
-            p.wait()
-        outs, errs = p.communicate()
-        return outs, errs
-        # Close intermediate stdout pipes
-        # for p in procs[:-1]:
-        #     if p.stdout:
-        #         p.stdout.close()
 
-        # # Wait for the last process to finish and collect its output
-        # outs, errs = procs[-1].communicate()
-        # if procs[-1].returncode != 0:
-        #     raise OSError(str(procs[-1].stderr.read()))
+    # Close intermediate stdout pipes in the parent to allow proper EOF
+    # propagation through the pipeline.
+    for p in procs[:-1]:
+        p.stdout.close()
 
-        # # Now check all processes for errors
-        # for i, p in enumerate(procs):
-        #     if p.returncode is None:
-        #         p.wait()
-        #     if p.returncode != 0:
-        #         raise OSError(str(p.stderr.read()))
+    # Collect output from the last process. communicate() reads both
+    # stdout and stderr concurrently, avoiding pipe buffer deadlocks.
+    outs, errs = procs[-1].communicate()
 
-        # return outs, errs
-    except Exception as err:
-        print(f"Error:  {err}")
-        print(f"Failing command:  {' '.join(p.args)}")
-        print(f"Failing pipeline:  {' | '.join([' '.join(proc) for proc in proc_specs])}")
-        outs, errs = p.communicate()
-    return outs, False
+    # Wait for all upstream processes
+    for p in procs[:-1]:
+        p.wait()
+
+    # Check for failures in any pipeline stage
+    failed = [p for p in procs if p.returncode != 0]
+    if failed:
+        p = failed[0]
+        print(f"Error in pipeline stage: {' '.join(p.args)}")
+        print(f"Full pipeline: "
+              f"{' | '.join([' '.join(spec) for spec in proc_specs])}")
+        return outs, False
+
+    return outs, errs
 
 
 class PerfConfiguration:
