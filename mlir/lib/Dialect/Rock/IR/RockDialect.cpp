@@ -640,14 +640,6 @@ Type ConvBwdWeightOp::getCType() {
   return getFilter().getType().getElementType();
 }
 
-OpOperand *ConvOp::getOutArgument() { return &(*this)->getOpOperand(2); }
-
-OpOperand *ConvBwdDataOp::getOutArgument() { return &(*this)->getOpOperand(1); }
-
-OpOperand *ConvBwdWeightOp::getOutArgument() {
-  return &(*this)->getOpOperand(0);
-}
-
 GemmSize ConvOp::getGemmSize() {
   auto sizes = ConvolutionDims::fromOp(*this);
   return GemmSize::fromConvolution(ConvOpType::Fwd, sizes);
@@ -736,42 +728,6 @@ GemmSize ConvBwdDataOp::getGemmSize() {
 GemmSize ConvBwdWeightOp::getGemmSize() {
   auto sizes = ConvolutionDims::fromOp(*this);
   return GemmSize::fromConvolution(ConvOpType::BwdWeight, sizes);
-}
-
-void ConvOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  getConvEffects(*this, effects);
-  effects.emplace_back(MemoryEffects::Write::get(), &getOutputMutable(),
-                       transform::TransformMappingResource::get());
-}
-
-void ConvBwdDataOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  getConvEffects(*this, effects);
-  effects.emplace_back(MemoryEffects::Write::get(), &getInputMutable(),
-                       transform::TransformMappingResource::get());
-}
-
-void ConvBwdWeightOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  const bool hasWorkspace = getWorkspace() != nullptr;
-  if (hasWorkspace) {
-    OpOperand *wsm = &getWorkspaceMutable()[0];
-    effects.emplace_back(MemoryEffects::Read::get(), wsm,
-                         transform::TransformMappingResource::get());
-    effects.emplace_back(MemoryEffects::Write::get(), wsm,
-                         transform::TransformMappingResource::get());
-  } else {
-    effects.emplace_back(MemoryEffects::Read::get(), &getFilterMutable(),
-                         transform::TransformMappingResource::get());
-    effects.emplace_back(MemoryEffects::Write::get(), &getFilterMutable(),
-                         transform::TransformMappingResource::get());
-  }
-  effects.emplace_back(MemoryEffects::Read::get(), &getInputMutable(),
-                       transform::TransformMappingResource::get());
-
-  effects.emplace_back(MemoryEffects::Read::get(), &getOutputMutable(),
-                       transform::TransformMappingResource::get());
 }
 
 //===-----------------------------------------------------===//
@@ -905,8 +861,6 @@ Type GemmOp::getBType() { return getB().getType().getElementType(); }
 
 Type GemmOp::getCType() { return getResult().getType().getElementType(); }
 
-OpOperand *GemmOp::getOutArgument() { return nullptr; }
-
 GemmSize GemmOp::getGemmSize() {
   ShapedType typeA = getA().getType(), typeB = getB().getType();
   ArrayRef<int64_t> dimsA = typeA.getShape(), dimsB = typeB.getShape();
@@ -975,40 +929,6 @@ LogicalResult GridwiseGemmOp::verify() {
     return failure();
   }
   return verifyGridwiseGemm(*this);
-}
-
-
-//===-----------------------------------------------------===//
-// GpuAllocOp
-//===-----------------------------------------------------===//
-
-static bool nonZero(MemRefType memref) {
-  int64_t numElements = 1;
-  Type type = memref.getElementType();
-  if (auto vecType = dyn_cast<VectorType>(type)) {
-    numElements = vecType.getNumElements();
-  }
-  return memref.getNumElements() * numElements > 0;
-}
-
-LogicalResult GpuAllocOp::verify() {
-  // Make sure the size is bigger than 0
-  if (nonZero(getOutput().getType())) {
-    return success();
-  }
-  return emitError("The size of rock.alloc should be greather than zero.");
-}
-
-//===----------------------------------------------------------------------===//
-// BlockwiseLoadTilePtrOp
-//===----------------------------------------------------------------------===//
-
-void BlockwiseLoadTilePtrOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  auto *read = MemoryEffects::Read::get();
-
-  effects.emplace_back(read, &getPointerTensorMutable());
-  effects.emplace_back(read, &getMaskTensorMutable());
 }
 
 //===-----------------------------------------------------===//
@@ -1163,15 +1083,6 @@ LogicalResult GridwiseAttentionOp::verify() {
 //===-----------------------------------------------------===//
 // ReduceOp
 //===-----------------------------------------------------===//
-void ReduceOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  auto *read = MemoryEffects::Read::get();
-  auto *write = MemoryEffects::Write::get();
-  effects.emplace_back(read, &getInMutable());
-  effects.emplace_back(read, &getOutMutable());
-  effects.emplace_back(write, &getOutMutable());
-}
-
 LogicalResult ReduceOp::verify() {
   APInt axis = getAxis();
   ArrayRef<int64_t> inpShape = cast<ShapedType>(getIn().getType()).getShape();
@@ -1205,10 +1116,6 @@ LogicalResult ReduceOp::verify() {
 //===-----------------------------------------------------===//
 // GemmElementwiseGemmOp
 //===-----------------------------------------------------===//
-OpOperand *GemmElementwiseGemmOp::getOutArgument() {
-  return &(*this)->getOpOperand(getNumOperands() - 1);
-}
-
 Type GemmElementwiseGemmOp::getOutType() { return getResult().getType(); }
 
 Type GemmElementwiseGemmOp::getAType() { return getA().getType(); }
@@ -1366,11 +1273,6 @@ LogicalResult GemmElementwiseGemmOp::verify() {
 //===-----------------------------------------------------===//
 // ConvElementwiseGemmOp
 //===-----------------------------------------------------===//
-
-OpOperand *ConvElementwiseGemmOp::getOutArgument() {
-  return &(*this)->getOpOperand(getNumOperands() - 1);
-}
-
 Type ConvElementwiseGemmOp::getOutType() { return getOut().getType(); }
 
 Type ConvElementwiseGemmOp::getAType() {
@@ -1442,31 +1344,9 @@ LogicalResult ConvElementwiseGemmOp::verify() {
                                   /*numHeadsKV=*/1);
 }
 
-void ConvElementwiseGemmOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  auto *read = MemoryEffects::Read::get();
-  auto *write = MemoryEffects::Write::get();
-  effects.emplace_back(read, &getOutMutable());
-  effects.emplace_back(write, &getOutMutable());
-
-  effects.emplace_back(read, &getFilterMutable());
-  effects.emplace_back(read, &getInputMutable());
-  effects.emplace_back(read, &getCMutable());
-  for (auto &regionArg : getElemwiseInputsMutable())
-    effects.emplace_back(read, &regionArg);
-}
-
 //===-----------------------------------------------------===//
 // AttentionOp
 //===-----------------------------------------------------===//
-
-OpOperand *AttentionOp::getOutArgument() {
-  // The output is the last operand unless LSE is used.
-  // In that case, the output is the second to last operand.
-  int64_t outIndex = getLse() ? 2 : 1;
-  return &(*this)->getOpOperand(getNumOperands() - outIndex);
-}
-
 Type AttentionOp::getOutType() { return getResult().getType(); }
 
 Type AttentionOp::getAType() { return getQueries().getType(); }

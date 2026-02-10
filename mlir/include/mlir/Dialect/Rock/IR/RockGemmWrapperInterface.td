@@ -38,16 +38,6 @@ def RockGemmWrapperInterface : OpInterface<"RockGemmWrapperInterface"> {
                      /*defaultImplementation=*/"">,
                  InterfaceMethod<
                      /*desc=*/[{
-          Return the OpOperand that corresponds to the operand argument
-          that corresponds to the output result of the operation.
-        }],
-                     /*retType=*/"OpOperand *",
-                     /*methodName=*/"getOutArgument",
-                     /*args=*/(ins),
-                     /*methodBody=*/"",
-                     /*defaultImplementation=*/"">,
-                 InterfaceMethod<
-                     /*desc=*/[{
           Return the size of the matrix multiplication that this op will eventually
           perform.
         }],

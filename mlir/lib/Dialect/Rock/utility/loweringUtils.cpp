@@ -493,28 +493,6 @@ TypedValue<MemRefType> mlir::rock::viewBufferAs(OpBuilder &b, Value buffer,
   return viewBufferAs(b, buffer, elementType, {length});
 }
 
-Value mlir::rock::gpuAlloc(OpBuilder &b, Location loc, int64_t bufferDim,
-                           Type elementType,
-                           gpu::AddressSpace memoryAddressSpace) {
-  auto memoryAddressSpaceAttr =
-      b.getAttr<gpu::AddressSpaceAttr>(memoryAddressSpace);
-
-  // Note: we don't need to create views for register buffers, since those won't
-  // have real memory accesses at the end of the day. This is important when
-  // dealing with booleans and sub-byte types.
-  if (memoryAddressSpace == gpu::AddressSpace::Private) {
-    auto memType = MemRefType::get({bufferDim}, elementType, AffineMap{},
-                                   memoryAddressSpaceAttr);
-    return GpuAllocOp::create(b, loc, memType);
-  }
-  auto rawMemType =
-      MemRefType::get({getPackedByteSize(bufferDim, elementType)},
-                      b.getI8Type(), AffineMap{}, memoryAddressSpaceAttr);
-  auto buffer = GpuAllocOp::create(b, loc, rawMemType);
-
-  return viewBufferAs(b, buffer, elementType);
-}
-
 FailureOr<SmallVector<BlockArgument>>
 mlir::rock::traceGemmOutputToArgs(Value matC, func::FuncOp func) {
   if (func.getNumArguments() == 0) {
