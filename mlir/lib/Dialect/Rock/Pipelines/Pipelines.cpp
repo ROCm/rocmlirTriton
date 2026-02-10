@@ -21,12 +21,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
-#include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 #include "mlir/Conversion/ArithToAMDGPU/ArithToAMDGPU.h"
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/AMDGPU/Transforms/Passes.h"
-#include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -69,10 +68,13 @@ using namespace mlir::triton;
 
 // Based on make_ttir() in
 // @triton//:third_party/amd/backend/compiler.py
-static void makeTTIR(mlir::OpPassManager *pm) {
+static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::createInlinerPass());
   pm->addPass(mlir::triton::createTritonRewriteTensorPointer());
-  pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
+  
+  if (rock::supportsTDM(arch)) {
+    pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
+  }
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::triton::createTritonCombineOps());
   pm->addPass(mlir::triton::createTritonReorderBroadcast());
@@ -135,6 +137,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   if (useAsyncCopy) {
     pm->addPass(mlir::createTritonAMDGPUCoalesceAsyncCopy({options.arch}));
   }
+  pm->addPass(mlir::createTritonAMDGPUConvertToTensorOps());
   pm->addPass(mlir::createCanonicalizerPass());
   if (scheduleHint != "none") {
     pm->addPass(mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
@@ -147,7 +150,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
         mlir::createTritonAMDGPUInThreadTranspose());
     pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   }
-  pm->addPass(mlir::createTritonAMDGPUReorderInstructions());
+  pm->addPass(mlir::createTritonAMDGPUMoveUpPrologueLoads());
   if (useBlockPingpong && options.numStages > 1) {
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
@@ -161,17 +164,27 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
         /*analyzeSmallTensorOfst*/false}));
 
   pm->addPass(mlir::createTritonAMDFoldTrueCmpI());
+  pm->addPass(mlir::createTritonAMDGPUPrepareIfCombining());
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createSymbolDCEPass());
+  // TODO(roctriton): Implement options like this.
+  // if (options.instrumentationMode == "fpsan") {
+  //   pm->addPass(mlir::createTritonAMDGPUFPSanitizer());
+  // }
 }
 
 // Based on make_llir() in
 // @triton//:third_party/amd/backend/compiler.py
+// 
+// NOTE: make_llir is divided into two parts in our project:
+// 1. makeLLIR (the function below)
+// 2. TritonToHsaco (in TritonToHsaco.cpp)
+// See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
                      int numStages) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
-  pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass());
+  pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -210,7 +223,18 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
 
   // TODO: add_di_scope
 
-  pm->addPass(mlir::triton::createConvertBuiltinFuncToLLVMPass(/*ftz=*/true));
+  pm->addPass(mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, /*ftz=*/true));
+
+  // IMPORTANT:
+  // 
+  // make_llir here has this comment:
+  // # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
+  // and keeps lowering the IR to LLVM.
+  // We have the rest of the lowering in TritonToHsaco.cpp
+  // 
+  // The reason for doing this is to keep Pipelines as a 
+  // lowering pipeline for MLIR only, leaving the LLVM lowering to
+  // TritonToHsaco.cpp.
 }
 
 //===- Consolidate the Rock Pipelines here ---------------------===//
@@ -369,7 +393,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   std::string arch = options.arch;
   int threadPerWarp = rock::getWaveSize(arch);
 
-  makeTTIR(&pm);
+  makeTTIR(&pm, arch);
   makeTTGIR(&pm, threadPerWarp, options);
 }
 
@@ -440,6 +464,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.features = options.features;
     hsacoOpts.optLevel = options.optLevel;
     hsacoOpts.numWarps = options.numWarps;
+    hsacoOpts.numCTAs = options.numCTAs;
     hsacoOpts.wavesPerEU = options.wavesPerEU;
     hsacoOpts.enableFpFusion = options.enableFpFusion;
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;

@@ -420,3 +420,9 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   }
   return 1;
 }
+
+bool mlir::rock::supportsTDM(StringRef arch) {
+  auto [_, chip] = getArch(arch);
+  triton::AMD::TargetInfo targetInfo(chip.str());
+  return targetInfo.supportsTDM();
+}

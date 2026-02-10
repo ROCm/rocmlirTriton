@@ -100,6 +100,8 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
                                      desc("Number of stages"), init(2)};
   PassOptions::Option<int> numWarps{*this, "numWarps", desc("Number of warps"),
                                     init(4)};
+  PassOptions::Option<int> numCTAs{*this, "numCTAs", desc("Number of CTAs"),
+                                   init(1)};
   PassOptions::Option<int> wavesPerEU{*this, "wavesPerEU",
                                       desc("Number of waves per EU"), init(0)};
   PassOptions::Option<bool> enableFpFusion{

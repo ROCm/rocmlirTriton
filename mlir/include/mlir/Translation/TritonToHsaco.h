@@ -32,6 +32,7 @@ struct TritonToHsacoOptions {
   std::string features;
   int optLevel;
   int numWarps;
+  int numCTAs;
   int wavesPerEU;
   bool enableFpFusion = true;
   bool allowFlushDenorm = false;
