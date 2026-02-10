@@ -337,7 +337,7 @@ bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
   return false;
 }
 
-int64_t mlir::rock::getMinNumCU(StringRef arch) {
+int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
   switch (isaFamily) {
@@ -351,7 +351,7 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   return 1;
 }
 
-int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
+int64_t mlir::rock::getMinNumCU(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
   switch (isaFamily) {
