@@ -69,10 +69,13 @@ using namespace mlir::triton;
 
 // Based on make_ttir() in
 // @triton//:third_party/amd/backend/compiler.py
-static void makeTTIR(mlir::OpPassManager *pm) {
+static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::createInlinerPass());
   pm->addPass(mlir::triton::createTritonRewriteTensorPointer());
-  pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
+  // TODO: Do this once we merge the TargetInfo PR.
+  // if (supportsTDM(arch)) {
+    pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
+  // }
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::triton::createTritonCombineOps());
   pm->addPass(mlir::triton::createTritonReorderBroadcast());
@@ -135,6 +138,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   if (useAsyncCopy) {
     pm->addPass(mlir::createTritonAMDGPUCoalesceAsyncCopy({options.arch}));
   }
+  pm->addPass(mlir::createTritonAMDGPUConvertToTensorOps());
   pm->addPass(mlir::createCanonicalizerPass());
   if (scheduleHint != "none") {
     pm->addPass(mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
@@ -369,7 +373,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   std::string arch = options.arch;
   int threadPerWarp = rock::getWaveSize(arch);
 
-  makeTTIR(&pm);
+  makeTTIR(&pm, arch);
   makeTTGIR(&pm, threadPerWarp, options);
 }
 
