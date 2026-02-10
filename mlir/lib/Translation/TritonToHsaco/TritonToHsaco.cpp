@@ -70,8 +70,7 @@
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "mlir/Pass/Pass.h"
 
-#include "triton/Tools/Sys/GetEnv.hpp"
-
+#include <algorithm>
 #include <array>
 #include <mutex>
 #include <unordered_set>
@@ -105,6 +104,25 @@ namespace {
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
+
+/// Get string value of an environment variable (local implementation to avoid
+/// global constructors from triton/Tools/Sys/GetEnv.hpp)
+std::string getStrEnv(const std::string &env) {
+  const char *cstr = std::getenv(env.c_str());
+  if (!cstr)
+    return "";
+  return std::string(cstr);
+}
+
+/// Get boolean value of an environment variable (local implementation to avoid
+/// global constructors from triton/Tools/Sys/GetEnv.hpp)
+bool getBoolEnv(const std::string &env) {
+  const char *s = std::getenv(env.c_str());
+  std::string str(s ? s : "");
+  std::transform(str.begin(), str.end(), str.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return str == "on" || str == "true" || str == "1";
+}
 
 /// Initialize LLVM targets (call once) - from init_targets in llvm.cc
 void initializeLLVMTargets() {
@@ -140,10 +158,10 @@ template <> bool setLLVMOption<bool>(const std::string &name, bool value) {
 /// list of LLVM flag names (e.g., "disable-vector-combine,instcombine"),
 /// those flags are set to true, effectively disabling specific passes.
 void applySelectiveLLVMOptDisable() {
-  bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
+  bool disableLLVMOpt = getBoolEnv("DISABLE_LLVM_OPT");
   if (!disableLLVMOpt) {
     // Check to see if we are passing a list of flags to disable optimizations.
-    auto flagList = mlir::triton::tools::getStrEnv("DISABLE_LLVM_OPT");
+    auto flagList = getStrEnv("DISABLE_LLVM_OPT");
     if (!flagList.empty()) {
       llvm::SmallVector<llvm::StringRef, 3> split;
       llvm::StringRef(flagList.c_str()).split(split, ',');
@@ -167,7 +185,7 @@ std::unique_ptr<llvm::TargetMachine> createTargetMachine(llvm::Module &module,
     return nullptr;
   }
 
-  bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
+  bool disableLLVMOpt = getBoolEnv("DISABLE_LLVM_OPT");
 
   llvm::TargetOptions opt;
   if (enableFpFusion)
