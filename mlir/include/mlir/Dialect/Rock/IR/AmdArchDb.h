@@ -84,6 +84,9 @@ int64_t getWaveSize(StringRef arch);
 /// Get LDS size
 int64_t getLDSSize(StringRef arch);
 
+/// Check if architecture supports TDM (Tensor Descriptor Memory)
+bool supportsTDM(StringRef arch);
+
 } // namespace rock
 } // namespace mlir
 

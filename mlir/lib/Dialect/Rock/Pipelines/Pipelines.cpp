@@ -21,7 +21,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
-#include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 #include "mlir/Conversion/ArithToAMDGPU/ArithToAMDGPU.h"
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/Conversion/Passes.h"
@@ -72,10 +71,10 @@ using namespace mlir::triton;
 static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::createInlinerPass());
   pm->addPass(mlir::triton::createTritonRewriteTensorPointer());
-  // TODO: Do this once we merge the TargetInfo PR.
-  // if (supportsTDM(arch)) {
+  
+  if (rock::supportsTDM(arch)) {
     pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
-  // }
+  }
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::triton::createTritonCombineOps());
   pm->addPass(mlir::triton::createTritonReorderBroadcast());
