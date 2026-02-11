@@ -25,6 +25,19 @@ struct KernelInfo {
   SmallVector<Type> argTypes; // Original func argument types
 };
 
+/// Find an LLVM kernel function by name in the module.
+/// Returns nullptr if not found.
+LLVM::LLVMFuncOp findKernelFunc(ModuleOp moduleOp, StringRef kernelName);
+
+/// Populate argTypes for kernels by walking LLVM functions in the module.
+/// Each kernel in the vector should have its name set before calling this.
+void populateKernelArgTypes(ModuleOp moduleOp,
+                            SmallVectorImpl<KernelInfo> &kernels);
+
+/// Returns the argument count for a kernel by name.
+std::optional<unsigned> getKernelArgCount(ModuleOp moduleOp,
+                                          StringRef kernelName);
+
 /// Create a gpu.ObjectAttr from the HSACO binary in moduleOp and kernel info.
 /// Returns the ObjectAttr and a mapping from kernel names to their indices.
 FailureOr<std::pair<gpu::ObjectAttr, DenseMap<StringRef, size_t>>>

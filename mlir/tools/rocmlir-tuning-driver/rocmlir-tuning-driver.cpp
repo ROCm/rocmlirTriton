@@ -292,6 +292,7 @@ struct CompilationResult {
   std::string hsacoBinary; // Single HSACO binary containing all kernels
   SmallVector<rock::KernelInfo>
       kernels; // Info for each kernel (name, block/grid sizes)
+  unsigned numKernelArgs = 0; // Number of kernel arguments (from compiled LLVM function).
 };
 
 // Thread-local resources to avoid per-config initialization overhead.
@@ -420,6 +421,7 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
 // In order to match rocprof, returns time in nanoseconds
 static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
                                           ArrayRef<rock::KernelInfo> kernels,
+                                          unsigned numKernelArgs,
                                           ArrayRef<void *> hostBuffers,
                                           MutableArrayRef<void *> gpuBuffers,
                                           ArrayRef<size_t> bufferSizes,
@@ -451,22 +453,26 @@ static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
   // - globalPtrTy: Global scratch memory pointer
   // - profilePtrTy: Profile scratch memory pointer
   // These can be null when not used. The actual number of data args varies
-  // by operation type and fusions, so we use the kernel's argTypes to
-  // determine the expected count. We pad with null pointers as needed.
+  // by operation type and fusions, so we use numKernelArgs (extracted from
+  // the compiled LLVM function) to determine the expected count.
+  // We pad with null pointers as needed.
   // HIP expects pointers to the arguments, so we store nulls to pass their
   // addresses.
-  if (!kernels.empty()) {
-    size_t expectedArgs = kernels[0].argTypes.size();
-    // Use a vector to store null workspace pointers (need stable addresses)
-    static std::vector<void *> nullWorkspaces;
-    while (nullWorkspaces.size() < expectedArgs) {
-      nullWorkspaces.push_back(nullptr);
-    }
-    size_t workspaceIdx = 0;
-    while (argPointers.size() < expectedArgs) {
-      argPointers.push_back(
-          reinterpret_cast<void *>(&nullWorkspaces[workspaceIdx++]));
-    }
+  if (numKernelArgs == 0) {
+    llvm::errs() << "Error: numKernelArgs is 0, kernel argument extraction "
+                    "failed or kernel has no arguments\n";
+    return failure();
+  }
+
+  // Use a vector to store null workspace pointers (need stable addresses)
+  static std::vector<void *> nullWorkspaces;
+  while (nullWorkspaces.size() < numKernelArgs) {
+    nullWorkspaces.push_back(nullptr);
+  }
+  size_t workspaceIdx = 0;
+  while (argPointers.size() < numKernelArgs) {
+    argPointers.push_back(
+        reinterpret_cast<void *>(&nullWorkspaces[workspaceIdx++]));
   }
 
   // Load ONE module from the single HSACO binary (contains all kernels)
@@ -983,22 +989,15 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         }
       }
 
-      // Extract argTypes from compiled LLVM functions
-      sourceCopy.get().walk([&](LLVM::LLVMFuncOp funcOp) {
-        if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
-          return;
-        
-        // Find matching kernel by name and update argTypes
-        for (auto &kernel : localKernels) {
-          if (kernel.name == funcOp.getName()) {
-            auto llvmFuncType = funcOp.getFunctionType();
-            for (unsigned i = 0; i < llvmFuncType.getNumParams(); ++i) {
-              kernel.argTypes.push_back(llvmFuncType.getParamType(i));
-            }
-            break;
-          }
+      // Get the number of kernel arguments from the compiled LLVM function.
+      // We only store the count (not the Types) because Type objects reference
+      // the MLIRContext which may be destroyed/recycled during parallel compilation.
+      if (!localKernels.empty()) {
+        if (auto argCount = rock::getKernelArgCount(sourceCopy.get(),
+                                                     localKernels[0].name)) {
+          result.numKernelArgs = *argCount;
         }
-      });
+      }
 
       // Get the HSACO binary from the compiled module
       auto hsacoAttr =
@@ -1081,8 +1080,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
              "Unexpected compilation status in benchmarking phase");
 
       FailureOr<double> timing =
-          benchmarkKernels(result.hsacoBinary, result.kernels, hostBuffers,
-                           gpuBuffers, bufferLengths, benchmarkParams);
+          benchmarkKernels(result.hsacoBinary, result.kernels,
+                           result.numKernelArgs, hostBuffers, gpuBuffers,
+                           bufferLengths, benchmarkParams);
 
       if (failed(timing)) {
         llvm::errs() << "Kernel execution failed\n";

@@ -39,6 +39,42 @@ using namespace mlir::rock;
 
 namespace mlir {
 namespace rock {
+
+LLVM::LLVMFuncOp findKernelFunc(ModuleOp moduleOp, StringRef kernelName) {
+  LLVM::LLVMFuncOp result = nullptr;
+  moduleOp.walk([&](LLVM::LLVMFuncOp funcOp) {
+    if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+      return WalkResult::advance();
+    if (funcOp.getName() == kernelName) {
+      result = funcOp;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return result;
+}
+
+void populateKernelArgTypes(ModuleOp moduleOp,
+                            SmallVectorImpl<KernelInfo> &kernels) {
+  for (auto &kernel : kernels) {
+    if (auto funcOp = findKernelFunc(moduleOp, kernel.name)) {
+      auto llvmFuncType = funcOp.getFunctionType();
+      kernel.argTypes.clear();
+      for (unsigned i = 0; i < llvmFuncType.getNumParams(); ++i) {
+        kernel.argTypes.push_back(llvmFuncType.getParamType(i));
+      }
+    }
+  }
+}
+
+std::optional<unsigned> getKernelArgCount(ModuleOp moduleOp,
+                                          StringRef kernelName) {
+  if (auto funcOp = findKernelFunc(moduleOp, kernelName)) {
+    return funcOp.getFunctionType().getNumParams();
+  }
+  return std::nullopt;
+}
+
 LogicalResult fillCompilationConfigs(StringAttr perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts) {

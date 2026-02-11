@@ -235,14 +235,12 @@ RockRestoreHostCodePass::collectKernelInfo(ModuleOp moduleOp, int maxSharedMemPe
     if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
       info.gridSize = gridAttr.getInt();
 
-    // Store the argument types from the LLVM function
-    auto llvmFuncType = funcOp.getFunctionType();
-    for (unsigned i = 0; i < llvmFuncType.getNumParams(); ++i) {
-      info.argTypes.push_back(llvmFuncType.getParamType(i));
-    }
-
     kernels.push_back(info);
   });
+
+  // Use shared utility to populate argTypes from LLVM functions
+  populateKernelArgTypes(moduleOp, kernels);
+
   return success();
 }
 
