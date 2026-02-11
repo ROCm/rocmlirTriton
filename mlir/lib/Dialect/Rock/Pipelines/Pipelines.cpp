@@ -150,7 +150,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
         mlir::createTritonAMDGPUInThreadTranspose());
     pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   }
-  pm->addPass(mlir::createTritonAMDGPUMoveUpPrologueLoads());
+  pm->addNestedPass<mlir::triton::FuncOp>(mlir::createTritonAMDGPUMoveUpPrologueLoads());
   if (useBlockPingpong && options.numStages > 1) {
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
