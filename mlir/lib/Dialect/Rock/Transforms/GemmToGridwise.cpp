@@ -779,7 +779,12 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   Value result = gridwiseResult;
   auto resultTensorType = cast<RankedTensorType>(op.getResult().getType());
   if (accumulatorType.getElementType() != resultTensorType.getElementType()) {
-    result = createTypeConversionOp(rw, loc, result, resultTensorType);
+    // Type conversion should preserve the (potentially padded) shape from
+    // gridwiseResult and only change the element type.
+    auto gridwiseResultType = cast<RankedTensorType>(gridwiseResult.getType());
+    auto targetType = RankedTensorType::get(gridwiseResultType.getShape(),
+                                            resultTensorType.getElementType());
+    result = createTypeConversionOp(rw, loc, result, targetType);
   }
 
   // Update the StoreOp to use the new result type (which may be different)

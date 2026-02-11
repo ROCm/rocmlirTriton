@@ -118,6 +118,24 @@ void matchUnderlyingOrder(SmallVectorImpl<StringRef> &names,
             });
 }
 
+// TODO(rocmlirTriton): Propagate the type to fusions as well.
+/// Update any StoreOp that uses the conv result to use the gemm result instead.
+/// The conv result type differs from the gemm result type (due to shape
+/// transformations), so we need to update the StoreOp to use the gemm result
+/// and the transformed destination tensor.
+void updateStoreOpForGemm(PatternRewriter &b, Location loc, Value convResult,
+                          Value gemmResult, Value gemmDest,
+                          StoreMethodAttr storeMethod) {
+  for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
+    if (auto storeOp = dyn_cast<StoreOp>(user)) {
+      Type storeResultType = storeOp.getResult().getType();
+      auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
+                                        gemmDest, storeMethod);
+      b.replaceOp(storeOp, newStoreOp.getResult());
+    }
+  }
+}
+
 /// Get the dimension names for the given `op` into `filterNames`, `inputNames`
 /// and `outputNames`, returning failure if `op`'s layout doesn't contain all of
 /// the expected dimension names.
@@ -568,12 +586,15 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
 
   // This kernel is not run when there is padding on the GEMM
   auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::AtomicAdd);
-  // TODO(roctriton): set storeMethod to rock.store!
-  GemmOp::create(b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
+  auto gemm = GemmOp::create(b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
                  /*scaleA=*/nullptr, /*scaleB=*/nullptr,
                  /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
                  /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
                  op.getParamsAttr());
+
+  // Update any StoreOp that uses the conv result to use the gemm result.
+  updateStoreOpForGemm(b, loc, op.getResult(), gemm.getResult(), gemmFilter,
+                       storeMethod);
 
   // Finally, erase the original Conv op.
   b.eraseOp(op);
@@ -938,6 +959,11 @@ FailureOr<std::tuple<Value, Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
   // Bounced along for debugging purposes, not used below
   gemm->setAttr("kernelId", b.getIndexAttr(kernelId));
 
+  // Update any StoreOp that uses the conv result to use the gemm result.
+  auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
+  updateStoreOpForGemm(b, loc, op.getResult(), gemm.getResult(), gemmInput,
+                       storeMethod);
+
   // Only erase the op in the case of V4R1. In non-V4R1 paths we will handle
   // this removal outside of this function
   if (usesV4R1)
@@ -1291,21 +1317,10 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
                        /*aScaleTransposed=*/nullptr,
                        /*bScaleTransposed=*/nullptr, tuningParams);
 
-    // Find and update the StoreOp that uses the conv result.
-    // The conv result type (conv output shape) differs from gemm result type
-    // (gemm shape), so we need to update the StoreOp to use gemm result and
-    // gemmC as the destination.
+    // Update any StoreOp that uses the conv result to use the gemm result.
     // TODO(roctriton): This will break with fusions
-    Value convResult = op.getResult();
-    for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
-      if (auto storeOp = dyn_cast<StoreOp>(user)) {
-        // Create a new StoreOp with gemm result and gemmC
-        Type storeResultType = storeOp.getResult().getType();
-        auto newStoreOp = StoreOp::create(
-            b, loc, storeResultType, newGemmOp.getResult(), gemmC, storeMethod);
-        b.replaceOp(storeOp, newStoreOp.getResult());
-      }
-    }
+    updateStoreOpForGemm(b, loc, op.getResult(), newGemmOp.getResult(), gemmC,
+                         storeMethod);
 
     // Finally, erase the original Conv op.
     b.eraseOp(op);
