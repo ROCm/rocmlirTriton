@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -337,6 +338,7 @@ static LogicalResult
 measureSmallKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
+                   ArrayRef<uint32_t> sharedMemSizes,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements, double &smallKernelCpuMs,
                    bool benchmarkMode) {
@@ -354,10 +356,10 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
         return failure();
       }
     }
-    for (auto [func, blockSize, gridSize] :
-         llvm::zip(functions, blockSizes, gridSizes)) {
+    for (auto [func, blockSize, gridSize, sharedMem] :
+         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
       HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, 0, stream,
+          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
           argPointers.data(), nullptr, nullptr, nullptr));
     }
   }
@@ -374,6 +376,7 @@ static LogicalResult
 measureLargeKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
+                   ArrayRef<uint32_t> sharedMemSizes,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements) {
   // Measure runs normally.
@@ -387,14 +390,14 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
 
     double totalMilliseconds = 0.0;
 
-    for (auto [func, blockSize, gridSize] :
-         llvm::zip(functions, blockSizes, gridSizes)) {
+    for (auto [func, blockSize, gridSize, sharedMem] :
+         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
       hipEvent_t startEvent, stopEvent;
       HIPCHECK(hipEventCreate(&startEvent));
       HIPCHECK(hipEventCreate(&stopEvent));
 
       HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, 0, stream,
+          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
           argPointers.data(), nullptr, startEvent, stopEvent));
       HIPCHECK(hipEventSynchronize(stopEvent));
 
@@ -489,11 +492,12 @@ static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
     functions.push_back(func);
   }
 
-  // Extract block and grid sizes from kernel info
-  SmallVector<uint32_t> blockSizes, gridSizes;
+  // Extract block, grid, and shared memory sizes from kernel info
+  SmallVector<uint32_t> blockSizes, gridSizes, sharedMemSizes;
   for (const rock::KernelInfo &kernel : kernels) {
     blockSizes.push_back(static_cast<uint32_t>(kernel.blockSize));
     gridSizes.push_back(static_cast<uint32_t>(kernel.gridSize));
+    sharedMemSizes.push_back(static_cast<uint32_t>(kernel.sharedMemorySize));
   }
 
   // Sleep guard to avoid GPU throttling
@@ -512,14 +516,14 @@ static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
     // not.
     double totalMillisecondsWarmup = 0.0;
     for (unsigned iter = 0; iter < params.warmupIterations; ++iter) {
-      for (auto [func, blockSize, gridSize] :
-           llvm::zip(functions, blockSizes, gridSizes)) {
+      for (auto [func, blockSize, gridSize, sharedMem] :
+           llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
         hipEvent_t startEvent, stopEvent;
         HIPCHECK(hipEventCreate(&startEvent));
         HIPCHECK(hipEventCreate(&stopEvent));
 
         HIPCHECK(hipExtModuleLaunchKernel(
-            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, 0, stream,
+            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
             argPointers.data(), nullptr, startEvent, stopEvent));
 
         HIPCHECK(hipStreamSynchronize(stream));
@@ -570,12 +574,13 @@ static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
 
   if (isSmallKernel) {
     if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, argPointers, measurements,
-                                  smallKernelCpuMs, benchmarkMode)))
+                                  gridSizes, sharedMemSizes, argPointers,
+                                  measurements, smallKernelCpuMs, benchmarkMode)))
       return failure();
   } else {
     if (failed(measureLargeKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, argPointers, measurements)))
+                                  gridSizes, sharedMemSizes, argPointers,
+                                  measurements)))
       return failure();
   }
 
@@ -868,11 +873,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       }
 
       // Pipeline
-      PassManager applicabilityPM(res.ctx.get(),
-                                  ModuleOp::getOperationName(),
+      PassManager applicabilityPM(res.sourceModule.get()->getName(),
                                   PassManager::Nesting::Implicit);
-      PassManager compilationPM(res.ctx.get(),
-                                ModuleOp::getOperationName(),
+      PassManager compilationPM(res.sourceModule.get()->getName(),
                                 PassManager::Nesting::Implicit);
 
       rock::BackendOptions backendOpts;
@@ -979,6 +982,23 @@ static LogicalResult runTuningLoop(ModuleOp source) {
           kernel.blockSize = blockSize;
         }
       }
+
+      // Extract argTypes from compiled LLVM functions
+      sourceCopy.get().walk([&](LLVM::LLVMFuncOp funcOp) {
+        if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+          return;
+        
+        // Find matching kernel by name and update argTypes
+        for (auto &kernel : localKernels) {
+          if (kernel.name == funcOp.getName()) {
+            auto llvmFuncType = funcOp.getFunctionType();
+            for (unsigned i = 0; i < llvmFuncType.getNumParams(); ++i) {
+              kernel.argTypes.push_back(llvmFuncType.getParamType(i));
+            }
+            break;
+          }
+        }
+      });
 
       // Get the HSACO binary from the compiled module
       auto hsacoAttr =
