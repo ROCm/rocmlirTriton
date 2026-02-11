@@ -132,7 +132,7 @@ def get_perf_config(operation, test_vector, arch, num_cu, num_chiplets):
 
 def compile_config(conf_class, paths, timestamp):
     rocmlir_gen_options = conf_class.generate_mlir_driver_commandline(
-        kernel_repeats=None, perf_config=conf_class.perfconfig)
+        "", kernel_repeats=None)
 
     # Build the rocmlir-gen command
     rocmlir_gen_cmd = [paths.mlir_paths.rocmlir_gen_path] + \
@@ -194,6 +194,9 @@ def compute_wave_distribution(num_waves, m_per_block, n_per_block,
     Returns:
         tuple: (mPerWave, nPerWave)
     """
+    # matrixInstrNonkdim=0 means WMMA mode, the actual WMMA tile is 16x16
+    if matrix_instr_nonkdim == 0:
+        matrix_instr_nonkdim = 16
     shape_per_warp = (matrix_instr_nonkdim, matrix_instr_nonkdim)
     m_warps = 1
     n_warps = 1
