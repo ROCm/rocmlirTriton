@@ -869,10 +869,10 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       // Pipeline
       PassManager applicabilityPM(res.ctx.get(),
-                                  PassManager::getAnyOpAnchorName(),
+                                  ModuleOp::getOperationName(),
                                   PassManager::Nesting::Implicit);
       PassManager compilationPM(res.ctx.get(),
-                                PassManager::getAnyOpAnchorName(),
+                                ModuleOp::getOperationName(),
                                 PassManager::Nesting::Implicit);
 
       rock::BackendOptions backendOpts;
