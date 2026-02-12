@@ -295,45 +295,26 @@ struct CompilationResult {
   unsigned numKernelArgs = 0; // Number of kernel arguments (from compiled LLVM function).
 };
 
-// Thread-local resources to avoid per-config initialization overhead.
-// Each worker thread gets its own context, PassManagers, and parsed module.
-// Note: MLIR's MLIRContext cannot be safely shared across parallel pass
-// executions - it asserts when the registry is modified during multi-threaded
-// execution. Therefore, each thread needs its own context.
-struct ThreadResources {
-  std::unique_ptr<MLIRContext> ctx;
-  OwningOpRef<ModuleOp> sourceModule;
-
-  ThreadResources() = default;
-  ThreadResources(ThreadResources &&) = default;
-  ThreadResources &operator=(ThreadResources &&) = default;
-
-  // Non-copyable
-  ThreadResources(const ThreadResources &) = delete;
-  ThreadResources &operator=(const ThreadResources &) = delete;
-
-  // Initialize all resources for this thread
-  bool initialize(const std::string &sourceModuleStr) {
-    DialectRegistry registry;
-    registerRocMLIRDialects(registry);
-    ctx = std::make_unique<MLIRContext>(registry);
-    ctx->getDiagEngine().registerHandler([](Diagnostic &diag) {
-      // Print errors to help debug applicability failures
-      if (diag.getSeverity() == DiagnosticSeverity::Error) {
-        llvm::errs() << "Diagnostic error: " << diag << "\n";
-        for (auto &note : diag.getNotes()) {
-          llvm::errs() << "  note: " << note << "\n";
-        }
+// Create a fresh MLIRContext with all rocMLIR dialects registered.
+// A new context is created for each compilation to avoid memory accumulation
+// from MLIR's BumpPtrAllocator (which never frees individual allocations).
+// Each compilation stores large artifacts (HSACO binaries as StringAttrs,
+// LLVM types, etc.) in the context, so reusing a context across many
+// compilations causes unbounded memory growth.
+static std::unique_ptr<MLIRContext> createCompilationContext() {
+  DialectRegistry registry;
+  registerRocMLIRDialects(registry);
+  auto ctx = std::make_unique<MLIRContext>(registry);
+  ctx->getDiagEngine().registerHandler([](Diagnostic &diag) {
+    if (diag.getSeverity() == DiagnosticSeverity::Error) {
+      llvm::errs() << "Diagnostic error: " << diag << "\n";
+      for (auto &note : diag.getNotes()) {
+        llvm::errs() << "  note: " << note << "\n";
       }
-    });
-
-    // Parse source module once per thread
-    sourceModule = parseSourceString<ModuleOp>(sourceModuleStr, ctx.get());
-    return sourceModule && *sourceModule;
-  }
-
-  bool isValid() const { return sourceModule && *sourceModule; }
-};
+    }
+  });
+  return ctx;
+}
 
 static LogicalResult
 measureSmallKernel(unsigned iterations, hipStream_t stream,
@@ -817,47 +798,33 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       source->print(sourceOs);
     }
 
-    // PHASE 2: Pre-initialize thread resources (contexts, parsed
-    // modules).
-    // Note: MLIR's MLIRContext cannot be safely shared across parallel pass
-    // executions, so each thread needs its own context.
-    std::vector<ThreadResources> threadResources(numThreads);
-    std::atomic<bool> initFailed{false};
-
-    {
-      std::vector<std::thread> initThreads;
-      initThreads.reserve(numThreads);
-      for (unsigned i = 0; i < numThreads; ++i) {
-        initThreads.emplace_back([&, i]() {
-          if (!threadResources[i].initialize(sourceModuleStr)) {
-            initFailed.store(true, std::memory_order_relaxed);
-          }
-        });
-      }
-      for (auto &t : initThreads) {
-        t.join();
-      }
-    }
-
-    if (initFailed.load(std::memory_order_relaxed)) {
-      llvm::errs() << "Failed to initialize thread resources\n";
-      return failure();
-    }
-
-    // PHASE 3: Parallel compilation phase using pre-initialized resources
+    // PHASE 2: Parallel compilation phase.
+    // Each compilation creates a fresh MLIRContext that is destroyed when the
+    // compilation finishes. This prevents unbounded memory growth from MLIR's
+    // BumpPtrAllocator (which never frees individual allocations). Each
+    // compilation stores large artifacts (HSACO binaries as StringAttrs,
+    // LLVM types, etc.) in the context, so reusing a context across many
+    // compilations causes the process to consume ever-increasing RAM.
     std::vector<CompilationResult> compilationResults(configs.size());
     std::mutex outputMutex; // For thread-safe console output
     std::atomic<bool> compilationFailed{
         false}; // Flag to signal early termination
 
-    // Compile a single config using pre-initialized thread resources
-    auto compileConfig = [&](size_t idx,
-                             ThreadResources &res) -> CompilationResult {
+    // Compile a single config with a fresh MLIRContext
+    auto compileConfig = [&](size_t idx) -> CompilationResult {
       CompilationResult result;
       result.perfConfig = configs[idx];
 
-      if (!res.isValid())
+      // Create a fresh context for this compilation. It will be destroyed
+      // when this lambda returns, freeing all accumulated MLIR data.
+      auto ctx = createCompilationContext();
+      OwningOpRef<ModuleOp> sourceModule =
+          parseSourceString<ModuleOp>(sourceModuleStr, ctx.get());
+      if (!sourceModule || !*sourceModule) {
+        result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
         return result;
+      }
 
       // Helper to copy IR with perf config set
       auto copyIR = [&](ModuleOp src,
@@ -872,16 +839,16 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return copy;
       };
 
-      if (doesModuleHaveFusions(res.sourceModule.get()) &&
-          !rock::isModuleFusible(res.sourceModule.get(), result.perfConfig)) {
+      if (doesModuleHaveFusions(sourceModule.get()) &&
+          !rock::isModuleFusible(sourceModule.get(), result.perfConfig)) {
         result.status = CompilationStatus::NotApplicable;
         return result;
       }
 
       // Pipeline
-      PassManager applicabilityPM(res.sourceModule.get()->getName(),
+      PassManager applicabilityPM(sourceModule.get()->getName(),
                                   PassManager::Nesting::Implicit);
-      PassManager compilationPM(res.sourceModule.get()->getName(),
+      PassManager compilationPM(sourceModule.get()->getName(),
                                 PassManager::Nesting::Implicit);
 
       rock::BackendOptions backendOpts;
@@ -898,8 +865,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       rock::TritonOptions tritonOpts;
       tritonOpts.arch = backendOpts.chip;
 
-      StringAttr perfConfigAttr =
-          StringAttr::get(res.ctx.get(), result.perfConfig);
+      StringAttr perfConfigAttr = StringAttr::get(ctx.get(), result.perfConfig);
       // Parse perfConfig
       if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
                                         backendOpts))) {
@@ -915,7 +881,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       // Applicability check - clone the pre-parsed module
       OwningOpRef<ModuleOp> sourceCopy =
-          copyIR(res.sourceModule.get(), perfConfigAttr);
+          copyIR(sourceModule.get(), perfConfigAttr);
       if (failed(applicabilityPM.run(sourceCopy.get()))) {
         result.status = CompilationStatus::NotApplicable;
         return result;
@@ -969,8 +935,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
               sourceCopy.get()->getAttrOfType<IntegerAttr>("ttg.shared"))
         sharedMemorySize = sharedAttr.getInt();
 
-        
-      if(sharedMemorySize > maxSharedMemPerWG) {
+      if (sharedMemorySize > maxSharedMemPerWG) {
         result.status = CompilationStatus::NotApplicable;
         return result;
       }
@@ -984,14 +949,14 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       for (auto &kernel : localKernels) {
         kernel.sharedMemorySize = sharedMemorySize;
-        if(blockSize != 0) {
+        if (blockSize != 0) {
           kernel.blockSize = blockSize;
         }
       }
 
       // Get the number of kernel arguments from the compiled LLVM function.
       // We only store the count (not the Types) because Type objects reference
-      // the MLIRContext which may be destroyed/recycled during parallel compilation.
+      // the MLIRContext which is destroyed when this function returns.
       if (!localKernels.empty()) {
         if (auto argCount = rock::getKernelArgCount(sourceCopy.get(),
                                                      localKernels[0].name)) {
@@ -1011,29 +976,25 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // Store the HSACO binary and kernel info in the result
+      // Store the HSACO binary and kernel info in the result.
+      // This copies the data out of the context before it's destroyed.
       result.hsacoBinary = hsacoAttr.getValue().str();
       result.kernels = std::move(localKernels);
 
       result.status = CompilationStatus::Success;
       return result;
+      // ctx and all MLIR data destroyed here, freeing accumulated memory.
     };
 
-    // Launch parallel compilation tasks with dynamic work stealing
+    // Launch parallel compilation tasks with dynamic work stealing.
     // Note: We use atomic counter instead of static partitioning because
     // compilation times vary dramatically between configs (NotApplicable is
     // fast, full compilation is slow). Dynamic work stealing provides better
     // load balancing by allowing fast threads to pick up more work.
     {
       std::atomic<size_t> nextIdx{0};
-      std::atomic<unsigned> nextThreadId{0};
 
       auto worker = [&]() {
-        // Each worker gets assigned a unique thread ID for its resources
-        unsigned myThreadId =
-            nextThreadId.fetch_add(1, std::memory_order_relaxed);
-        ThreadResources &myRes = threadResources[myThreadId];
-
         while (true) {
           if (compilationFailed.load(std::memory_order_relaxed))
             break;
@@ -1042,7 +1003,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
           if (idx >= configs.size())
             break;
 
-          compilationResults[idx] = compileConfig(idx, myRes);
+          compilationResults[idx] = compileConfig(idx);
         }
       };
 
