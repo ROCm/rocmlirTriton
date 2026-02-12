@@ -20,6 +20,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 
@@ -355,6 +356,7 @@ void RockToTTIRPass::runOnOperation() {
   target.addLegalDialect<rock::RockDialect>();
   target.addLegalDialect<func::FuncDialect>();
   target.addLegalDialect<arith::ArithDialect>();
+  target.addLegalDialect<math::MathDialect>();
   target.addDynamicallyLegalOp<func::ReturnOp>(
       [](func::ReturnOp op) { return op.getOperands().empty(); });
 

@@ -61,6 +61,32 @@ def RockFoldBroadcastPass: Pass<"rock-fold-broadcast", "::mlir::func::FuncOp"> {
   let dependentDialects = ["rock::RockDialect"];
 }
 
+def RockRegularizeOutputPass
+    : Pass<"rock-regularize-output", "::mlir::func::FuncOp"> {
+  let summary = "Move output fusions to operate directly in gemm output space";
+  let description = [{
+    This pass finds rock.transform ops between a FusionRoot (e.g., rock.gemm)
+    result and output fusion ops (arith/math element-wise ops), then rewrites
+    the IR so that fusions happen directly after the gemm. The intervening
+    transforms are pushed past the fusions to sit between the last fusion and
+    rock.store.
+
+    The end goal of the pass is to make sure there are no rock.transform ops 
+    between the FusionRoot and rock.store, there can only be fusion ops between
+    FusionRoot and rock.store. Because of this, the pass inverts the 
+    transforms applied to the fusion ops, thus avoiding the transformation of the 
+    gemm output. This keeps all fusion computations in a canonical shape matching 
+    the gemm output.
+
+    Extra operands (non-gemm-chain inputs to the fusions) are handled by kind:
+    - Splat arith.constant: recreated with the gemm-output type.
+    - Other tensors: the inverse of the transform chain is applied.
+    The pass fails if a non-constant extra operand requires a non-invertible
+    transform (e.g., AddDim with length > 1).
+  }];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
+}
+
 def RockGridwiseGemmToBlockwisePass : Pass<"rock-gridwise-gemm-to-blockwise", "::mlir::func::FuncOp"> {
   let summary = "expand gridwise gemm into blockwise copy, blockwise gemm, and threadwise copy";
   let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
@@ -237,10 +263,10 @@ def RockInsertOutputFusionLoadsPass : Pass<"rock-insert-output-fusion-loads", ":
   let summary = "Insert BlockwiseLoadOp for output fusion loads";
   let description = [{
     This pass runs AFTER GridwiseGemmToBlockwise and BEFORE RockLowerLoads.
-    It creates rock.blockwise_load_tile for rock.load ops used in output fusions.
+    It creates rock.load_marker for rock.load ops used in output fusions.
 
     Output fusion loads are rock.load ops that:
-    1. Are NOT reachable from any existing rock.blockwise_load_tile (input loads)
+    1. Are NOT reachable from any existing rock.load_marker (input loads)
     2. Feed into fusion ops (arith/math) that operate on the GEMM result
 
     Example:
@@ -249,7 +275,8 @@ def RockInsertOutputFusionLoadsPass : Pass<"rock-insert-output-fusion-loads", ":
           %loadedA = rock.blockwise_load_tile %a[indices]
           ...
         }
-        %fusionRoot = rock.untile %result
+        %fusionRoot = rock.store_marker %result views [...] [%g, %m, %n]
+                        : tensor<64x64xf16> -> tensor<1x128x128xf16>
         %bias_t = rock.transform %bias
         %bias_loaded = rock.load %bias_t
         %fused = arith.addf %fusionRoot, %bias_loaded
@@ -257,15 +284,17 @@ def RockInsertOutputFusionLoadsPass : Pass<"rock-insert-output-fusion-loads", ":
 
       After:
         %result = scf.for ... { ... }
-        %fusionRoot = rock.untile %result
+        %fusionRoot = rock.store_marker %result views [...] [%g, %m, %n]
+                        : tensor<64x64xf16> -> tensor<1x128x128xf16>
         %bias_t = rock.transform %bias
-        %bias_loaded = rock.load %bias_t  // Still exists for LowerLoads to trace
+        %bias_loaded = rock.load %bias_t
         %bias_wrapped = rock.transform %bias_loaded by <output_grid_subtile>
-        %bias_tile = rock.blockwise_load_tile %bias_wrapped[g_block, m_block, n_block]
-        %fused = arith.addf %fusionRoot, %bias_tile
+        %bias_tile = rock.load_marker %bias_wrapped[g, m, n]
+        %bias_full = rock.untile %bias_tile : tile -> full
+        %fused = arith.addf %fusionRoot, %bias_full
         %out = rock.store %fused to %dest
 
-    The chain BlockwiseLoadOp -> transform -> rock.load allows LowerLoads
+    The chain rock.load -> transform(s) -> rock.load_marker -> rock.untile allows LowerLoads
     to trace back through rock.load and combine the pre-load transforms with
     the output grid subtile transforms.
   }];

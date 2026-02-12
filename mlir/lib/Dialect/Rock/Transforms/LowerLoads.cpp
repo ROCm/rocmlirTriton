@@ -1,4 +1,4 @@
-//===- LowerLoads.cpp - Lower rock.load ops for blockwise loads -----------===//
+//===- LowerLoads.cpp - Lower rock.load_marker ops to blockwise loads -----===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -15,42 +15,58 @@
 // limitations under the License.
 // =============================================================================
 //
-// This pass runs AFTER GridwiseGemmToBlockwise and processes rock.load markers.
+// This pass runs AFTER GridwiseGemmToBlockwise and InsertOutputFusionLoads.
+// It converts rock.load_marker ops into actual rock.blockwise_load ops.
 //
-// InsertLoads has already placed rock.load ops to mark where loads should happen.
-// This pass traces through rock.load ops and fusion patterns to create the
-// actual blockwise_load_tile ops with proper transform chains.
+// LoadMarkerOps are introduced by:
+// 1. ToBlockwise passes (via loadTile) for GEMM/Attention input loads
+// 2. InsertOutputFusionLoads for output fusion extra inputs
 //
-// Example:
-//   Before (after InsertLoads + ToBlockwise):
+// The LoadMarkerOp's source is the tensor (possibly through
+// a fusion chain with rock.load markers). The tiling transforms are carried
+// as metadata in extraViews. This pass applies those views and traces back
+// through the source chain (transforms, fusion ops, rock.load markers) to
+// create BlockwiseLoadOp for each rock.load encountered.
+//
+// Example (no fusion):
+//   Before:
 //     %t1 = rock.transform %arg0 by <pre_transform>
 //     %l1 = rock.load %t1
-//     %post = rock.transform %l1 by <post_transform>
-//     %loaded = rock.blockwise_load_tile %post[indices]
+//     %tile = rock.load_marker %l1 views [<tiling>] [%kIter, %g, %m, %n]
+//               : tensor<...> -> tensor<tile>
 //
 //   After:
-//     %t1 = rock.transform %arg0 by <pre_transform>
-//     %combined = rock.transform %t1 by <post_transform>
-//     %loaded = rock.blockwise_load_tile %combined[indices]
+//     %combined = rock.transform %arg0 by <pre_transform + tiling>
+//     %tile = rock.blockwise_load %combined[%kIter, %g, %m, %n]
 //
 // Fusion example:
 //   Before:
-//     %t1 = rock.transform %arg0
-//     %l1 = rock.load %t1
-//     %t2 = rock.transform %arg1
-//     %l2 = rock.load %t2
+//     %t1 = rock.transform %arg0, %l1 = rock.load %t1
+//     %t2 = rock.transform %arg1, %l2 = rock.load %t2
 //     %fused = arith.addf %l1, %l2
-//     %post = rock.transform %fused by <post_transform>
-//     %loaded = rock.blockwise_load_tile %post[indices]
+//     %tile = rock.load_marker %fused views [<tiling>] [indices]
+//               : tensor<...> -> tensor<tile>
 //
 //   After:
-//     %t1 = rock.transform %arg0
-//     %post1 = rock.transform %t1 by <post_transform>
-//     %loaded1 = rock.blockwise_load_tile %post1[indices]
-//     %t2 = rock.transform %arg1
-//     %post2 = rock.transform %t2 by <post_transform>
-//     %loaded2 = rock.blockwise_load_tile %post2[indices]
-//     %fused = arith.addf %loaded1, %loaded2
+//     %combined1 = rock.transform %arg0 by <pre1 + tiling>
+//     %loaded1 = rock.blockwise_load %combined1[indices]
+//     %combined2 = rock.transform %arg1 by <pre2 + tiling>
+//     %loaded2 = rock.blockwise_load %combined2[indices]
+//     %fused_tile = arith.addf %loaded1, %loaded2
+//
+// Output fusion example (LoadMarkerOp + UntileOp):
+//   Before:
+//     %bias_t = rock.transform %arg_bias by <transforms>
+//     %bias_loaded = rock.load %bias_t
+//     %tile = rock.load_marker %bias_loaded views [<output_tiling>] [%g, %m,
+//     %n]
+//               : tensor<full> -> tensor<tile>
+//     %full = rock.untile %tile : tensor<tile> -> tensor<full>
+//
+//   After:
+//     %combined = rock.transform %arg_bias by <transforms + output_tiling>
+//     %tile = rock.blockwise_load %combined[%g, %m, %n]
+//     %full = rock.untile %tile : tensor<tile> -> tensor<full>
 //
 //===----------------------------------------------------------------------===//
 
@@ -59,6 +75,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -71,6 +88,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LogicalResult.h"
 
 namespace mlir {
 namespace rock {
@@ -86,19 +104,15 @@ using namespace mlir::rock;
 
 namespace {
 
-/// Check if an operation is a fusion op (arith or math dialect).
-static bool isFusionOp(Operation *op) {
-  return isa<arith::ArithDialect, math::MathDialect>(op->getDialect());
-}
-
 /// Recursively reconstruct a value for blockwise loading.
 /// Traces through transforms, rock.load ops, and fusion ops.
-static Value reconstructForBlockwiseLoad(
+static FailureOr<Value> reconstructForBlockwiseLoad(
     OpBuilder &builder, Location loc, Value originalVal,
-    ArrayRef<TransformMapAttr> postTransforms, // Transforms accumulated (in reverse order)
-    ValueRange blockIndices,                   // Indices for blockwise_load_tile
-    Type tileType,                             // Result type of blockwise_load_tile
-    IRMapping &valueMapping                    // Maps original values to loaded values
+    ArrayRef<TransformMapAttr> postTransforms, // Transforms in [last_to_apply,
+                                               // ..., first_to_apply] order
+    ValueRange blockIndices, // Indices for blockwise_load_tile
+    Type tileType,           // Result type of blockwise_load_tile
+    IRMapping &valueMapping  // Maps original values to loaded values
 ) {
   // Check if we've already processed this value
   if (valueMapping.contains(originalVal)) {
@@ -108,7 +122,7 @@ static Value reconstructForBlockwiseLoad(
   Operation *defOp = originalVal.getDefiningOp();
   if (!defOp) {
     // Block argument without rock.load - shouldn't happen in normal flow
-    llvm_unreachable("Unexpected block argument without rock.load");
+    return failure();
   }
 
   // Case 1: rock.load - trace through to get actual source and create load
@@ -118,8 +132,8 @@ static Value reconstructForBlockwiseLoad(
     // Collect transforms from load source to root (in reverse order)
     SmallVector<TransformMapAttr> preTransforms;
     auto [source, _] = rock::untransform(loadSource, preTransforms);
-    
-    // Combine: post-transforms (reversed) then pre-transforms (reversed)
+
+    // Combine: post-transforms then pre-transforms
     // rock::transform expects [last_to_apply, ..., first_to_apply] order
     SmallVector<Attribute> combinedTransforms;
     combinedTransforms.append(postTransforms.begin(), postTransforms.end());
@@ -139,27 +153,40 @@ static Value reconstructForBlockwiseLoad(
   }
 
   // Case 2: rock.transform - accumulate and recurse
+  // We walk backwards: load_marker -> tiling -> pad -> fusion/load.
+  // rock::transform expects [last_to_apply, ..., first_to_apply].
+  // So we append each transform we encounter (tiling first, pad second)
+  // giving [tiling, pad], which applies as pad then tiling -- correct.
   if (auto transformOp = dyn_cast<TransformOp>(defOp)) {
     SmallVector<TransformMapAttr> newPostTransforms;
-    newPostTransforms.push_back(transformOp.getTransform());
     newPostTransforms.append(postTransforms.begin(), postTransforms.end());
-    
-    Value result = reconstructForBlockwiseLoad(
-        builder, loc, transformOp.getInput(), newPostTransforms,
-        blockIndices, tileType, valueMapping);
-    valueMapping.map(originalVal, result);
+    newPostTransforms.push_back(transformOp.getTransform());
+
+    FailureOr<Value> result = reconstructForBlockwiseLoad(
+        builder, loc, transformOp.getInput(), newPostTransforms, blockIndices,
+        tileType, valueMapping);
+    if (succeeded(result))
+      valueMapping.map(originalVal, result.value());
     return result;
   }
 
   // Case 3: Fusion op (arith or math dialect)
-  if (isFusionOp(defOp)) {
-    // Reconstruct each operand
+  if (rock::isFusionOp(defOp)) {
+    // Reconstruct each operand with its own tile type. For type-changing ops
+    // like arith.truncf (f32->f16), the operand's element type differs from
+    // the result's, so the tile type must match the operand's element type.
+    auto tileShape = cast<RankedTensorType>(tileType).getShape();
     IRMapping fusionMapping;
     for (Value operand : defOp->getOperands()) {
-      Value reconstructed = reconstructForBlockwiseLoad(
-          builder, loc, operand, postTransforms,
-          blockIndices, tileType, valueMapping);
-      fusionMapping.map(operand, reconstructed);
+      auto operandElemType =
+          cast<RankedTensorType>(operand.getType()).getElementType();
+      auto operandTileType = RankedTensorType::get(tileShape, operandElemType);
+      FailureOr<Value> reconstructed = reconstructForBlockwiseLoad(
+          builder, loc, operand, postTransforms, blockIndices, operandTileType,
+          valueMapping);
+      if (failed(reconstructed))
+        return failure();
+      fusionMapping.map(operand, reconstructed.value());
     }
 
     // Clone the fusion op with reconstructed operands
@@ -169,8 +196,24 @@ static Value reconstructForBlockwiseLoad(
     return cloned->getResult(0);
   }
 
+  // Case 4: arith.constant - must be a splat; reshape to tile type
+  if (auto constOp = dyn_cast<arith::ConstantOp>(defOp)) {
+    auto attr = dyn_cast<DenseElementsAttr>(constOp.getValue());
+    if (!attr || !attr.isSplat()) {
+      defOp->emitOpError("non-splat constant in fusion chain not supported");
+      return failure();
+    }
+    auto tileRankedType = cast<RankedTensorType>(tileType);
+    auto newAttr =
+        DenseElementsAttr::get(tileRankedType, attr.getSplatValue<Attribute>());
+    auto newConst =
+        arith::ConstantOp::create(builder, loc, tileRankedType, newAttr);
+    valueMapping.map(originalVal, newConst.getResult());
+    return newConst.getResult();
+  }
+
   // Unknown op - shouldn't happen for valid input
-  llvm_unreachable("Unexpected op in load chain");
+  return failure();
 }
 
 struct RockLowerLoadsPass
@@ -187,64 +230,47 @@ void RockLowerLoadsPass::runOnOperation() {
     return;
   }
 
-  // Collect all blockwise_load_tile ops
-  SmallVector<BlockwiseLoadOp> loadTilesToProcess;
-  funcOp.walk([&](BlockwiseLoadOp loadTileOp) {
-    loadTilesToProcess.push_back(loadTileOp);
-  });
+  // Collect all load_marker ops
+  SmallVector<LoadMarkerOp> loadMarkersToProcess;
+  funcOp.walk(
+      [&](LoadMarkerOp markerOp) { loadMarkersToProcess.push_back(markerOp); });
 
-  LLVM_DEBUG(llvm::dbgs() << "Found " << loadTilesToProcess.size()
-                          << " blockwise_load_tile ops to process\n");
+  LLVM_DEBUG(llvm::dbgs() << "Found " << loadMarkersToProcess.size()
+                          << " load_marker ops to process\n");
 
-  // Process each blockwise_load_tile
-  for (BlockwiseLoadOp loadTileOp : loadTilesToProcess) {
-    OpBuilder builder(loadTileOp);
-    Location loc = loadTileOp.getLoc();
+  // Process each load_marker
+  for (LoadMarkerOp markerOp : loadMarkersToProcess) {
+    OpBuilder builder(markerOp);
+    Location loc = markerOp.getLoc();
 
-    Value source = loadTileOp.getSource();
-    ValueRange indices = loadTileOp.getSourceIndices();
-    Type resultType = loadTileOp.getResult().getType();
+    Value source = markerOp.getSource();
+    ValueRange indices = markerOp.getExtraIndices();
 
-    LLVM_DEBUG(llvm::dbgs() << "Processing: " << loadTileOp << "\n");
+    // The result type of the LoadMarkerOp is the tile type.
+    auto tileType = cast<RankedTensorType>(markerOp.getResult().getType());
+
+    // The extraViews are the tiling transforms that must be applied.
+    // The source is the untransformed tensor, so we seed
+    // reconstructForBlockwiseLoad with the marker's views as the initial
+    // post-transforms.
+    auto initialTransforms = llvm::to_vector(
+        markerOp.getExtraViews().getAsRange<TransformMapAttr>());
+
+    LLVM_DEBUG(llvm::dbgs() << "Processing: " << markerOp << "\n");
 
     IRMapping valueMapping;
-    SmallVector<TransformMapAttr> emptyTransforms;
-    Value newResult = reconstructForBlockwiseLoad(
-        builder, loc, source, emptyTransforms,
-        indices, resultType, valueMapping);
+    FailureOr<Value> maybeTileResult =
+        reconstructForBlockwiseLoad(builder, loc, source, initialTransforms,
+                                    indices, tileType, valueMapping);
+    if (failed(maybeTileResult)) {
+      markerOp->emitError("Couldn't lower to BlockwiseLoad");
+      return signalPassFailure();
+    }
+    Value tileResult = maybeTileResult.value();
 
-    loadTileOp.getResult().replaceAllUsesWith(newResult);
-    loadTileOp.erase();
+    markerOp.getResult().replaceAllUsesWith(tileResult);
+    markerOp.erase();
 
-    LLVM_DEBUG(llvm::dbgs() << "  Replaced with: " << newResult << "\n");
-  }
-
-  // Clean up dead ops
-  bool changed = true;
-  while (changed) {
-    changed = false;
-
-    funcOp.walk([&](LoadOp loadOp) {
-      if (loadOp.getResult().use_empty()) {
-        loadOp.erase();
-        changed = true;
-      }
-    });
-
-    funcOp.walk([&](TransformOp transformOp) {
-      if (transformOp.getOutput().use_empty()) {
-        transformOp.erase();
-        changed = true;
-      }
-    });
-
-    funcOp.walk([&](Operation *op) {
-      if (isFusionOp(op) &&
-          op->getNumResults() == 1 &&
-          op->getResult(0).use_empty()) {
-        op->erase();
-        changed = true;
-      }
-    });
+    LLVM_DEBUG(llvm::dbgs() << "  Replaced with: " << tileResult << "\n");
   }
 }

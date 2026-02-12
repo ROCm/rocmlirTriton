@@ -23,8 +23,9 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
-#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -467,31 +468,61 @@ TypedValue<MemRefType> mlir::rock::viewBufferAs(OpBuilder &b, Value buffer,
   return viewBufferAs(b, buffer, elementType, {length});
 }
 
+FailureOr<SetVector<StoreOp>>
+mlir::rock::traceRootOutputToStoreOps(Value output) {
+  SetVector<StoreOp> stores;
+
+  // output should be the result of the kernel (gemm, attention, etc.)
+  // Find rock.store operations that use output as their source,
+  // tracing through fusion ops (arith.*, math.*) to reach the stores.
+  SmallVector<Value> worklist;
+  worklist.push_back(output);
+
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    for (OpOperand &use : current.getUses()) {
+      Operation *owner = use.getOwner();
+      if (auto storeOp = dyn_cast<StoreOp>(owner)) {
+        stores.insert(storeOp);
+      } else if (isFusionOp(owner)) {
+        for (Value result : owner->getResults()) {
+          worklist.push_back(result);
+        }
+      }
+    }
+  }
+
+  if (!stores.empty())
+    return stores;
+
+  LLVM_DEBUG(
+      llvm::dbgs() << "traceRootOutputToStoreOps: no rock.store ops found!\n");
+  return failure();
+}
+
 FailureOr<SmallVector<BlockArgument>>
-mlir::rock::traceGemmOutputToArgs(Value matC, func::FuncOp func) {
+mlir::rock::traceRootOutputToArgs(Value output, func::FuncOp func) {
   if (func.getNumArguments() == 0) {
-    LLVM_DEBUG(llvm::dbgs() << "traceGemmOutputToArgs: no function arguments\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "traceRootOutputToArgs: no function arguments\n");
     return failure();
   }
+
+  FailureOr<SetVector<StoreOp>> maybeStores = traceRootOutputToStoreOps(output);
+  if (failed(maybeStores))
+    return failure();
 
   SetVector<BlockArgument> args;
   auto funcArgs = func.getArguments();
 
-  // matC should be the result of the kernel (gemm, attention, etc.)
-  // Find rock.store operations that use matC as their source,
-  // then trace the store's dest operand back to function arguments.
-  // TODO(roctriton): This might break fusions, where we can find
-  // arith.*, math.* before the store!
-  for (OpOperand &use : matC.getUses()) {
-    if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
-      // The dest operand of rock.store can be traced to a function argument
-      Value dest = storeOp.getDest();
-      FailureOr<BlockArgument> destArg = findBlockArgument(dest);
-      if (succeeded(destArg)) {
-        for (auto arg : funcArgs) {
-          if (destArg.value() == arg)
-            args.insert(arg);
-        }
+  for (auto storeOp : maybeStores.value()) {
+    // The dest operand of rock.store can be traced to a function argument
+    Value dest = storeOp.getDest();
+    FailureOr<BlockArgument> destArg = findBlockArgument(dest);
+    if (succeeded(destArg)) {
+      for (auto arg : funcArgs) {
+        if (destArg.value() == arg)
+          args.insert(arg);
       }
     }
   }
@@ -499,7 +530,7 @@ mlir::rock::traceGemmOutputToArgs(Value matC, func::FuncOp func) {
   if (!args.empty())
     return SmallVector<BlockArgument>(args.begin(), args.end());
 
-  LLVM_DEBUG(llvm::dbgs() << "traceGemmOutputToArgs: no arguments found!\n");
+  LLVM_DEBUG(llvm::dbgs() << "traceRootOutputToArgs: no arguments found!\n");
   return failure();
 }
 
@@ -593,21 +624,25 @@ Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
   FailureOr<ArrayAttr> maybeBufferViews = getLoadRegsAsTileViews(
       rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock);
   assert(succeeded(maybeBufferViews));
-  Value wrappedSource = transform(rewriter, in, maybeBufferViews.value());
+  ArrayAttr bufferViews = maybeBufferViews.value();
 
-  // Determine the result type from the source shape (last two dimensions are
-  // the tile)
+  // Compute the tile result type by applying the tiling transforms to
+  // determine the output shape, then taking the last two dimensions.
+  Value wrappedSource = transform(rewriter, in, bufferViews);
   auto sourceType = cast<RankedTensorType>(wrappedSource.getType());
   auto sourceShape = sourceType.getShape();
   auto resultType = RankedTensorType::get(sourceShape.take_back(2),
                                           sourceType.getElementType());
 
-  // Load from global memory to LDS or register buffer.
-  auto loadOp = BlockwiseLoadOp::create(
-      rewriter, loc, resultType, wrappedSource,
-      ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
-                 gridCoords.n_block});
-  return loadOp.getResult();
+  // Create a LoadMarkerOp placeholder. LowerLoads will later convert this
+  // into an actual BlockwiseLoadOp by tracing back through the source chain.
+  // We pass the original (un-transformed) input as source and carry the
+  // tiling transforms as metadata in extraViews.
+  auto markerOp =
+      LoadMarkerOp::create(rewriter, loc, resultType, in, bufferViews,
+                           ValueRange{kIter, gridCoords.g_block,
+                                      gridCoords.m_block, gridCoords.n_block});
+  return markerOp.getResult();
 }
 
 // This function creates a zero-initialized accumulator tensor
@@ -616,4 +651,128 @@ Value mlir::rock::createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
   auto tensorType = RankedTensorType::get(shape, accType);
   auto zeroAttr = rewriter.getZeroAttr(tensorType);
   return arith::ConstantOp::create(rewriter, loc, tensorType, zeroAttr);
+}
+
+bool mlir::rock::isFusionOp(Operation *op) {
+  if (!isa<arith::ArithDialect, math::MathDialect>(op->getDialect()))
+    return false;
+  // Exclude zero-operand ops like arith.constant — they don't participate
+  // in data-flow fusion chains.
+  return op->getNumOperands() > 0 && op->getNumResults() == 1;
+}
+
+DenseMap<Value, Value> mlir::rock::collectFusionExtraInputs(Value root) {
+  DenseSet<Value> chainValues;
+  chainValues.insert(root);
+
+  // Pass 1: flood-fill all values reachable through fusion ops from root.
+  // Must be done before checking operands, because use-list iteration order
+  // is not guaranteed to follow program order — a downstream op (e.g. addf)
+  // may be visited before an upstream op (e.g. mulf), causing the upstream
+  // result to be missing from chainValues when the downstream op's operands
+  // are inspected.
+  SmallVector<Value> worklist;
+  worklist.push_back(root);
+  SmallVector<Operation *> fusionOps;
+  DenseSet<Operation *> visited;
+
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    for (OpOperand &use : current.getUses()) {
+      Operation *owner = use.getOwner();
+      if (!isFusionOp(owner) || !visited.insert(owner).second)
+        continue;
+      fusionOps.push_back(owner);
+      for (Value result : owner->getResults()) {
+        chainValues.insert(result);
+        worklist.push_back(result);
+      }
+    }
+  }
+
+  // Pass 2: now that chainValues is complete, find operands outside the chain.
+  DenseMap<Value, Value> extraInputs;
+  for (Operation *op : fusionOps) {
+    for (Value operand : op->getOperands()) {
+      if (!chainValues.count(operand))
+        extraInputs.try_emplace(operand, operand);
+    }
+  }
+
+  return extraInputs;
+}
+
+void mlir::rock::replaceFusionExtraInputs(
+    Value root, const DenseMap<Value, Value> &inputMap) {
+  if (inputMap.empty())
+    return;
+  SmallVector<Value> worklist;
+  worklist.push_back(root);
+  DenseSet<Operation *> visited;
+
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    for (OpOperand &use : current.getUses()) {
+      Operation *owner = use.getOwner();
+      if (!isFusionOp(owner) || visited.count(owner))
+        continue;
+      visited.insert(owner);
+
+      // Replace extra input operands with their padded versions.
+      for (OpOperand &operand : owner->getOpOperands()) {
+        auto it = inputMap.find(operand.get());
+        if (it != inputMap.end() && it->second != it->first)
+          operand.set(it->second);
+      }
+
+      // Continue through results.
+      for (Value result : owner->getResults())
+        worklist.push_back(result);
+    }
+  }
+}
+
+void mlir::rock::propagateOutputType(Value oldRoot, Value newRoot) {
+  auto newRootType = dyn_cast<RankedTensorType>(newRoot.getType());
+  if (!newRootType)
+    return;
+
+  // worklist items: (oldValue whose uses to scan, newValue to substitute)
+  SmallVector<std::pair<Value, Value>> worklist;
+  worklist.push_back({oldRoot, newRoot});
+  DenseSet<Operation *> visited;
+
+  while (!worklist.empty()) {
+    auto [oldVal, newVal] = worklist.pop_back_val();
+    auto newShape = cast<RankedTensorType>(newVal.getType()).getShape();
+
+    for (OpOperand &use : llvm::make_early_inc_range(oldVal.getUses())) {
+      Operation *owner = use.getOwner();
+      if (!isFusionOp(owner))
+        continue;
+
+      // Always replace the operand, even if we've already visited this op.
+      // A fusion op can use the same value for multiple operands
+      // (e.g. arith.addf %x, %x).
+      use.set(newVal);
+
+      if (visited.count(owner))
+        continue;
+      visited.insert(owner);
+
+      // Update each result: preserve element type, adopt the new shape.
+      for (OpResult result : owner->getResults()) {
+        auto oldType = dyn_cast<RankedTensorType>(result.getType());
+        if (!oldType)
+          continue;
+        if (oldType.getShape() != newShape) {
+          auto updatedType =
+              RankedTensorType::get(newShape, oldType.getElementType());
+          result.setType(updatedType);
+        }
+        // Continue propagating through this result's downstream uses.
+        worklist.push_back({result, result});
+      }
+    }
+  }
 }

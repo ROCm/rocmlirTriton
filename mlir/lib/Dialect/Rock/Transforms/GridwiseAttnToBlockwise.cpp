@@ -528,12 +528,13 @@ struct GridwiseAttentionRewritePattern
       auto resultType = RankedTensorType::get({1},
                                           cast<ShapedType>(tensor.getType()).getElementType());
 
-      // Load from global memory to LDS or register buffer.
-      auto loadOp =
-          BlockwiseLoadOp::create(rewriter, loc, resultType, tensor,
-                                  ValueRange{gridCoordsGemm0.g_block});
+      // Create a LoadMarkerOp placeholder for a scalar-like load.
+      ArrayAttr emptyViews = rewriter.getArrayAttr({});
+      auto markerOp =
+          LoadMarkerOp::create(rewriter, loc, resultType, tensor, emptyViews,
+                               ValueRange{gridCoordsGemm0.g_block});
 
-      return triton::UnsplatOp::create(rewriter, loc, loadOp);
+      return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
 
     // This is needed for KV Cache/Causal/Prefix Causal masking support
@@ -1264,29 +1265,23 @@ struct GridwiseAttentionRewritePattern
     ArrayAttr idToMatrixCMaps = maybeOutputViews.value();
 
     // Create StoreMarkerOp to mark the tile with output transforms for later
-    // store lowering The StoreMarkerOp preserves the tile type for fusion ops
-    // to operate on, while carrying the transform information needed by
-    // LowerStores
+    // store lowering. The result type is the full tensor type so that fusion
+    // ops can operate on it directly.
     auto storeMarkerOp = StoreMarkerOp::create(
-        rewriter, loc, outAcc.getType(), outAcc, idToMatrixCMaps,
+        rewriter, loc, op.getResult().getType(), outAcc, idToMatrixCMaps,
         ValueRange{gridCoordsGemm1.g_block, gridCoordsGemm1.m_block,
                    gridCoordsGemm1.n_block});
-
-    auto untileResult = rock::UntileOp::create(
-        rewriter, loc, op.getResult().getType(), storeMarkerOp.getResult());
 
     if (lse) {
       ArrayAttr lseMap = computeOutputLseTransforms(
           rewriter, loc, gemm1MPerBlock, gemm1BidGridLengths);
 
       auto lseStoreMarkerOp = StoreMarkerOp::create(
-          rewriter, loc, lseOut.getType(), lseOut, lseMap,
+          rewriter, loc, op.getLse().getType(), lseOut, lseMap,
           ValueRange{gridCoordsGemm1.g_block, gridCoordsGemm1.m_block});
-      auto untileLseResult = rock::UntileOp::create(
-          rewriter, loc, op.getLse().getType(), lseStoreMarkerOp.getResult());
-      rewriter.replaceOp(op, ValueRange{untileResult, untileLseResult});
+      rewriter.replaceOp(op, ValueRange{storeMarkerOp, lseStoreMarkerOp});
     } else {
-      rewriter.replaceOp(op, untileResult);
+      rewriter.replaceOp(op, storeMarkerOp.getResult());
     }
 
     return success();

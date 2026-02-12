@@ -357,9 +357,14 @@ void rock::buildKernelPipeline(OpPassManager &pm,
    * --rock-blockwise-load-tile-to-threadwise
    */
   auto &funcPm = pm.nest<func::FuncOp>();
+  auto addWithCSE = [&funcPm](std::unique_ptr<Pass> pass) {
+    funcPm.addPass(std::move(pass));
+    funcPm.addPass(createCSEPass());
+  };
 
   funcPm.addPass(rock::createRockAffixTuningParametersPass(
       rock::RockAffixTuningParametersPassOptions{options.tuningFallback}));
+  funcPm.addPass(rock::createRockRegularizeOutputPass());
   funcPm.addPass(rock::createRockConvToGemmPass());
   funcPm.addPass(rock::createRockGemmLinalgSplitkNormalizationPass());
   funcPm.addPass(rock::createRockGemmToGridwisePass());
@@ -368,8 +373,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm.addPass(rock::createRockGridwiseAttnToBlockwisePass());
   funcPm.addPass(rock::createRockGridwiseGemmToBlockwisePass());
   funcPm.addPass(rock::createRockInsertOutputFusionLoadsPass());
-  funcPm.addPass(rock::createRockLowerLoadsPass());
-  funcPm.addPass(rock::createRockLowerStoresPass());
+  
+  // Both LowerLoads and LowerStores passes create dead values that need to be cleaned up
+  addWithCSE(rock::createRockLowerLoadsPass());
+  addWithCSE(rock::createRockLowerStoresPass());
 
   // Serialize and erase host functions BEFORE any func-level pass that
   // changes the kernel signature (e.g. RockToTTIRPass sets return to void).

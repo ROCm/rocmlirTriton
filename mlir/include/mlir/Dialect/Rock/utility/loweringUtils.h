@@ -9,6 +9,7 @@
 #ifndef ROCK_UTILITY_LOWERINGUTILS_H
 #define ROCK_UTILITY_LOWERINGUTILS_H
 
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
@@ -149,11 +150,13 @@ TypedValue<MemRefType> viewBufferAs(OpBuilder &b, Value buffer,
                                     Type elementType,
                                     ArrayRef<int64_t> dimensions);
 
-// Trace gemm output back to its function arguments by
+FailureOr<SetVector<StoreOp>> traceRootOutputToStoreOps(Value output);
+
+// Trace root output back to its function arguments by
 // tracing through rock.store operations to find the
 // destination tensor, then traces that back to function arguments.
-FailureOr<SmallVector<BlockArgument>>
-traceGemmOutputToArgs(Value matC, func::FuncOp func);
+FailureOr<SmallVector<BlockArgument>> traceRootOutputToArgs(Value output,
+                                                            func::FuncOp func);
 
 // Trace value to a block argument, going through view-like operations
 FailureOr<BlockArgument> findBlockArgument(Value value);
@@ -181,6 +184,30 @@ Value loadTile(PatternRewriter &rewriter, Location loc, Value in, Value kIter,
 
 Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
                           ArrayRef<int64_t> shape, Type accType);
+
+bool isFusionOp(Operation *op);
+
+/// Walk the fusion chain from `root` (the FusionRoot result) and collect
+/// operands of fusion ops that are NOT in the FusionRoot-result chain. These
+/// are "extra inputs" to output fusions (e.g., the second operand of
+/// `arith.addf %gemm_result, %extra_input`). Returns a map from original
+/// value to itself; callers update the mapped values after normalize+pad.
+DenseMap<Value, Value> collectFusionExtraInputs(Value root);
+
+/// After propagateOutputType has updated the FusionRoot-chain operands and
+/// result types in fusion ops, this replaces the extra input operands with
+/// their padded versions using the provided map (original -> padded).
+void replaceFusionExtraInputs(Value root,
+                              const DenseMap<Value, Value> &inputMap);
+
+/// Propagate a new output type through the fusion chain.
+/// Replaces uses of `oldRoot` in fusion ops (arith.*, math.*) with `newRoot`,
+/// and updates each fusion op's result type to carry the new shape while
+/// preserving its original element type. Continues recursively through the
+/// fusion chain. This is needed when the root value's type changes (e.g., due
+/// to padding in GemmToGridwise) and downstream fusion ops need their operands
+/// and result types updated accordingly.
+void propagateOutputType(Value oldRoot, Value newRoot);
 
 } // end namespace rock
 } // end namespace mlir

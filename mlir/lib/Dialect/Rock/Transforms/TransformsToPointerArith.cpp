@@ -526,6 +526,9 @@ static std::optional<SmallVector<Value, 8>>
 expandAffineMap(OpBuilder &builder, Location loc, AffineMap affineMap,
                 ValueRange operands) {
   auto numDims = affineMap.getNumDims();
+  if (operands.size() < numDims)
+    return std::nullopt;
+
   auto expanded = llvm::to_vector<8>(
       llvm::map_range(affineMap.getResults(),
                       [numDims, &builder, loc, operands](AffineExpr expr) {
@@ -627,8 +630,6 @@ struct TransformsToPtrRewritePattern
 
     // TODO(roctriton): check rangeIndices match `pointers` and `mask` shapes
 
-    ////// Init
-
     // For each domain, store the sequence of composed affine maps needed to
     // compute the result coordinate, along with the transform map that
     // triggered each break in the chain. Such a break is created at any point
@@ -647,10 +648,6 @@ struct TransformsToPtrRewritePattern
     // Account for all maps after the last validity impact.
     AffineMap finalComposed = composeTransforms(toCompose);
     composedMaps.emplace_back(finalComposed, nullptr);
-
-    //////
-
-    //////
 
     // Create code to actually transform the coordinates
     AffineResults computed(initValues);
