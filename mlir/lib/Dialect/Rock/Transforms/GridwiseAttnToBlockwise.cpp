@@ -16,7 +16,7 @@
 // ============================================================
 //
 // This pass converts rock.gridwise_attention
-// into block- and threadwise ops
+// into block- ops
 //
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
@@ -64,6 +64,7 @@
 #include <cstdint>
 #include <optional>
 #include <tuple>
+#include <utility>
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -88,62 +89,6 @@ struct RockGridwiseAttnToBlockwisePass
 };
 
 } // end anonymous namespace
-
-static Value blockwiseGemm(PatternRewriter &rewriter, Location loc,
-                           Value bufferA, Value bufferB, Value matrixC,
-                           Value bufferScaleA, Value bufferScaleB) {
-  auto cType = cast<RankedTensorType>(matrixC.getType());
-  auto gemmOp = BlockwiseGemmOp::create(rewriter, loc, cType, bufferA, bufferB,
-                                        matrixC, bufferScaleA, bufferScaleB);
-  return gemmOp.getResult();
-}
-
-static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
-                                 Value end, ValueRange iterArgs) {
-  Value one = rewriter.createOrFold<arith::ConstantIntOp>(
-      loc, rewriter.getI32Type(), 1);
-  Value start = rewriter.createOrFold<arith::ConstantIntOp>(
-      loc, rewriter.getI32Type(), 0);
-  scf::ForOp loopOp =
-      scf::ForOp::create(rewriter, loc, start, end, one, iterArgs);
-  return loopOp;
-}
-
-// This function will process a tile of gemm input into LDS (or register)
-// buffer in a way it could be fed to blockwise_gemm op
-static Value loadTile(PatternRewriter &rewriter, Location loc, Value in,
-                      Value kIter, StringRef dName,
-                      rock::layout::GridCoordinates gridCoords,
-                      int64_t kPerBlock, int64_t dPerBlock,
-                      SmallVector<int64_t, 3> &bidGridLengths) {
-  FailureOr<RegsAsMatrixSubTiles> maybeBufferViews = getLoadRegsAsTileViews(
-      rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock);
-  assert(succeeded(maybeBufferViews));
-  Value wrappedSource = transform(rewriter, in, maybeBufferViews->gridSubTile);
-
-  // Determine the result type from the source shape (last two dimensions are
-  // the tile)
-  auto sourceType = cast<RankedTensorType>(wrappedSource.getType());
-  auto sourceShape = sourceType.getShape();
-  auto resultType = RankedTensorType::get(sourceShape.take_back(2),
-                                          sourceType.getElementType());
-
-  // Load from global memory to LDS or register buffer.
-  auto loadOp = BlockwiseLoadOp::create(
-      rewriter, loc, resultType, wrappedSource,
-      ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
-                 gridCoords.n_block});
-  return loadOp.getResult();
-}
-
-// This function creates a zero-initialized accumulator tensor
-static Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
-                                 ArrayRef<int64_t> shape,
-                                 Type accType) {
-  auto tensorType = RankedTensorType::get(shape, accType);
-  auto zeroAttr = rewriter.getZeroAttr(tensorType);
-  return arith::ConstantOp::create(rewriter, loc, tensorType, zeroAttr);
-}
 
 //===----------------------------------------------------------------------===//
 // GridwiseGemm lowering.
@@ -303,56 +248,12 @@ struct GridwiseAttentionRewritePattern
     return newAttentionAcc;
   }
 
-  // This function will take a view stack that has lower view as m x n.
-  // Then append a view to make it : m x n --> m --> m x constDim(0, n).
-  // This is used to get corresponding 0th col idx in between two matrices
-  // that have same number of rows.
-  ArrayAttr createNZeroBroadcastView(PatternRewriter &rewriter, Location loc,
-                                     ArrayAttr subTileView,
-                                     int64_t zeroNDimSize) const {
-    ArrayRef<int64_t> lowerShape = getLowerShape(subTileView);
-    bool hasGDim = lowerShape.size() == 3;
-    SmallVector<StringRef> topNames{"m", "n"};
-    int nDimIdx = 1;
-    if (hasGDim) {
-      topNames.insert(topNames.begin(), "g");
-      nDimIdx = 2;
-    }
-    TopDownTMBuilder dropNTop(rewriter, topNames, lowerShape, loc);
-    if (hasGDim) {
-      dropNTop.passThrough("g");
-    }
-    dropNTop.passThrough("m");
-    dropNTop.constDim("nzero", nDimIdx, 0, zeroNDimSize);
-    TransformMapAttr mOnlyViewMap = dropNTop.get();
-    return prependUpperViews(rewriter, subTileView,
-                             rewriter.getArrayAttr({mOnlyViewMap}));
-  }
-
-  // This function will call makeNZeroSubTile on subtile views of registers
-  // across grid, block and thread levels.
-  RegsAsMatrixSubTiles makeNZeroSubTile(PatternRewriter &rewriter, Location loc,
-                                        RegsAsMatrixSubTiles subTileViews,
-                                        int64_t nLen, int64_t nPerBlock,
-                                        int64_t nPerThread) const {
-    RegsAsMatrixSubTiles ret;
-    ret.gridSubTile =
-        createNZeroBroadcastView(rewriter, loc, subTileViews.gridSubTile, nLen);
-    ret.blockSubTile = createNZeroBroadcastView(
-        rewriter, loc, subTileViews.blockSubTile, nPerBlock);
-    ret.threadSubTile = createNZeroBroadcastView(
-        rewriter, loc, subTileViews.threadSubTile, nPerThread);
-    return ret;
-  }
-
-  // This function will create a grid subtile view that has the unpadded
+  // This function will create a tile view that has the unpadded
   // coordinates if there were any padding involved in the gemm operands.
-  RegsAsMatrixSubTiles unpadGridSubTileView(PatternRewriter &rewriter,
-                                            Location loc,
-                                            RegsAsMatrixSubTiles subtileViews,
-                                            int64_t prePadDim1,
-                                            int64_t prePadDim2) const {
-    ArrayRef<int64_t> paddedShape = getLowerShape(subtileViews.gridSubTile);
+  ArrayAttr unpadTileView(PatternRewriter &rewriter, Location loc,
+                          ArrayAttr tileView, int64_t prePadDim1,
+                          int64_t prePadDim2) const {
+    ArrayRef<int64_t> paddedShape = getLowerShape(tileView);
     assert(paddedShape.size() == 3);
     TopDownTMBuilder viewBuilder{
         rewriter, {"g", "paddedDim1", "paddedDim2"}, paddedShape, loc};
@@ -363,53 +264,46 @@ struct GridwiseAttentionRewritePattern
         {0, paddedShape[1] - prePadDim1, 0, paddedShape[2] - prePadDim2});
     TransformMapAttr padMap = viewBuilder.get();
 
-    subtileViews.gridSubTile = prependUpperViews(
-        rewriter, subtileViews.gridSubTile, rewriter.getArrayAttr({padMap}));
-    return subtileViews;
+    return prependUpperViews(rewriter, tileView,
+                             rewriter.getArrayAttr({padMap}));
   }
 
-  RegsAsMatrixSubTiles outputViewToIndex(PatternRewriter &rewriter,
-                                            Location loc,
-                                            RegsAsMatrixSubTiles subTileViews) const {
-    ArrayRef<int64_t> shape = getLowerShape(subTileViews.gridSubTile);
+  ArrayAttr outputViewToIndex(PatternRewriter &rewriter, Location loc,
+                              ArrayAttr tileView) const {
+    ArrayRef<int64_t> shape = getLowerShape(tileView);
     TopDownTMBuilder viewBuilder{
         rewriter, {"gemmG", "gemmN", "gemmM"}, shape, loc};
         
     viewBuilder.unmerge("raw", 0, {"gemmG", "gemmN", "gemmM"}, shape);
 
-    subTileViews.gridSubTile = prependUpperViews(
-        rewriter, subTileViews.gridSubTile, rewriter.getArrayAttr({viewBuilder.get()}));
-    return subTileViews;
+    return prependUpperViews(rewriter, tileView,
+                             rewriter.getArrayAttr({viewBuilder.get()}));
   }
-  
-  RegsAsMatrixSubTiles outputViewToN(PatternRewriter &rewriter,
-                                            Location loc,
-                                            RegsAsMatrixSubTiles subtileViews) const {
-    ArrayRef<int64_t> shape = getLowerShape(subtileViews.gridSubTile);
+
+  ArrayAttr outputViewToN(PatternRewriter &rewriter, Location loc,
+                          ArrayAttr tileView) const {
+    ArrayRef<int64_t> shape = getLowerShape(tileView);
     TopDownTMBuilder viewBuilder{
         rewriter, {"gemmG", "gemmM", "gemmN"}, shape, loc};
     viewBuilder.ignore("gemmG");
     viewBuilder.ignore("gemmM");
     viewBuilder.passThrough({"gemmN"}, {0}, {"gemmN"});
 
-    subtileViews.gridSubTile = prependUpperViews(
-        rewriter, subtileViews.gridSubTile, rewriter.getArrayAttr({viewBuilder.get()}));
-    return subtileViews;
+    return prependUpperViews(rewriter, tileView,
+                             rewriter.getArrayAttr({viewBuilder.get()}));
   }
-  
-  RegsAsMatrixSubTiles outputViewToM(PatternRewriter &rewriter,
-                                            Location loc,
-                                            RegsAsMatrixSubTiles subtileViews) const {
-    ArrayRef<int64_t> shape = getLowerShape(subtileViews.gridSubTile);
+
+  ArrayAttr outputViewToM(PatternRewriter &rewriter, Location loc,
+                          ArrayAttr tileView) const {
+    ArrayRef<int64_t> shape = getLowerShape(tileView);
     TopDownTMBuilder viewBuilder{
         rewriter, {"gemmG", "gemmM", "gemmN"}, shape, loc};
     viewBuilder.ignore("gemmG");
     viewBuilder.ignore("gemmN");
     viewBuilder.passThrough({"gemmM"}, {0}, {"gemmM"});
 
-    subtileViews.gridSubTile = prependUpperViews(
-        rewriter, subtileViews.gridSubTile, rewriter.getArrayAttr({viewBuilder.get()}));
-    return subtileViews;
+    return prependUpperViews(rewriter, tileView,
+                             rewriter.getArrayAttr({viewBuilder.get()}));
   }
 
   // If padding is used in the kernel, this means the first gemm
@@ -421,15 +315,15 @@ struct GridwiseAttentionRewritePattern
   // post normalization. Therefore, this function creates a transforming
   // for loop that overwrites out of bounds values of first gemm output
   // to be negative infinity.
-  Value createFirstGemmNegInfPadding(
-      PatternRewriter &rewriter, Location loc,
-      layout::GridCoordinates gridCoords, Value fakeTensor,
-      Value firstGemmResult, Value negInfTensor, RegsAsMatrixSubTiles subTileViews) const {
-    RegsAsMatrixSubTiles indexView = outputViewToIndex(rewriter, loc, subTileViews);
-    fakeTensor = transform(
-        rewriter, fakeTensor, indexView.gridSubTile);
+  Value createFirstGemmNegInfPadding(PatternRewriter &rewriter, Location loc,
+                                     layout::GridCoordinates gridCoords,
+                                     Value fakeTensor, Value firstGemmResult,
+                                     Value negInfTensor,
+                                     ArrayAttr tileView) const {
+    ArrayAttr indexView = outputViewToIndex(rewriter, loc, tileView);
+    fakeTensor = transform(rewriter, fakeTensor, indexView);
 
-        auto tileShape = cast<ShapedType>(firstGemmResult.getType()).getShape();
+    auto tileShape = cast<ShapedType>(firstGemmResult.getType()).getShape();
     auto pointerTensorType = RankedTensorType::get(tileShape, rewriter.getI32Type());
     auto maskTensorType = RankedTensorType::get(tileShape, rewriter.getI1Type());
     auto transformsToPtrOp = TransformsToPtrOp::create(
@@ -444,30 +338,32 @@ struct GridwiseAttentionRewritePattern
   Value setGemm0OutputOutOfScope(
       PatternRewriter &rewriter, Location loc, OutOfScopeType outOfScopeType,
       layout::GridCoordinates gridCoords, Value firstGemmResult,
-      Value fakeTensor, Value negInfTensor, RegsAsMatrixSubTiles subTileViews,
-      bool enabled, Value nLoopIV, Value gemm0NBlocksLastIter,
-      Value currentSeqLen, Value prefixOffset) const {
+      Value fakeTensor, Value negInfTensor, ArrayAttr tileView, bool enabled,
+      Value nLoopIV, Value gemm0NBlocksLastIter, Value currentSeqLen,
+      Value prefixOffset) const {
     if (enabled) {
-        RegsAsMatrixSubTiles nView = outputViewToN(rewriter, loc, subTileViews);
-        RegsAsMatrixSubTiles mView = outputViewToM(rewriter, loc, subTileViews);
-        Value fakeTensorN = transform(
-            rewriter, fakeTensor, nView.gridSubTile);
-        Value fakeTensorM = transform(
-            rewriter, fakeTensor, mView.gridSubTile);
+      ArrayAttr nView = outputViewToN(rewriter, loc, tileView);
+      ArrayAttr mView = outputViewToM(rewriter, loc, tileView);
+      Value fakeTensorN = transform(rewriter, fakeTensor, nView);
+      Value fakeTensorM = transform(rewriter, fakeTensor, mView);
 
-        auto tileShape = cast<ShapedType>(firstGemmResult.getType()).getShape();
-        auto pointerTensorType = RankedTensorType::get(tileShape, rewriter.getI32Type());
-        auto maskTensorType = RankedTensorType::get(tileShape, rewriter.getI1Type());
+      auto tileShape = cast<ShapedType>(firstGemmResult.getType()).getShape();
+      auto pointerTensorType =
+          RankedTensorType::get(tileShape, rewriter.getI32Type());
+      auto maskTensorType =
+          RankedTensorType::get(tileShape, rewriter.getI1Type());
 
-        auto transformsToPtrN = TransformsToPtrOp::create(
-            rewriter, loc, pointerTensorType, maskTensorType, fakeTensorN, ValueRange{gridCoords.g_block, gridCoords.m_block,
-                gridCoords.n_block});
-        Value nIndex = transformsToPtrN.getPointers();
-        
-        auto transformsToPtrM = TransformsToPtrOp::create(
-            rewriter, loc, pointerTensorType, maskTensorType, fakeTensorM, ValueRange{gridCoords.g_block, gridCoords.m_block,
-                gridCoords.n_block});
-        Value mIndex = transformsToPtrM.getPointers();
+      auto transformsToPtrN = TransformsToPtrOp::create(
+          rewriter, loc, pointerTensorType, maskTensorType, fakeTensorN,
+          ValueRange{gridCoords.g_block, gridCoords.m_block,
+                     gridCoords.n_block});
+      Value nIndex = transformsToPtrN.getPointers();
+
+      auto transformsToPtrM = TransformsToPtrOp::create(
+          rewriter, loc, pointerTensorType, maskTensorType, fakeTensorM,
+          ValueRange{gridCoords.g_block, gridCoords.m_block,
+                     gridCoords.n_block});
+      Value mIndex = transformsToPtrM.getPointers();
 
       // For KVCache, we only need to mask on the last iteration, but for causal
       // masking we need to mask on every iteration.
@@ -608,20 +504,6 @@ struct GridwiseAttentionRewritePattern
     auto mergeAttr = merge.get();
 
     return builder.getArrayAttr({mergeAttr, unmergeSeqKAttr});
-  }
-
-  TransformMapAttr getFlatToMiterMap(PatternRewriter &rewriter, int64_t gBlocks,
-                                     int64_t mIterLen, int64_t nBlocks,
-                                     int64_t blockSize,
-                                     int64_t numElements) const {
-    TopDownTMBuilder viewBuilder(rewriter,
-                                 {"g_block", "n_block", "tid", "flatiter"},
-                                 {gBlocks, nBlocks, blockSize, numElements});
-    viewBuilder.passThrough({"g_block", "n_block", "tid"}, {0, 2, 3},
-                            {"g_block", "n_block", "tid"});
-    viewBuilder.merge({"mIter", "iter"}, {1, 4}, "flatiter",
-                      {mIterLen, numElements / mIterLen});
-    return viewBuilder.get();
   }
 
   std::tuple<Value, Value, Value, Value, Value>
@@ -862,7 +744,7 @@ struct GridwiseAttentionRewritePattern
 
     FailureOr<Value> maybeSomeWorkToDo =
         computeIfWorkToDo(rewriter, loc, start, end, splitKV, gemm0NPerBlock,
-                          prePadG0N, isCausal, isKVCache);
+                          std::move(prePadG0N), isCausal, isKVCache);
 
     if (failed(maybeSomeWorkToDo))
       return std::nullopt;
@@ -967,14 +849,14 @@ struct GridwiseAttentionRewritePattern
                << "elemTypeVLoad: " << elemTypeVLoad << "\n");
     
     // Compute output transforms for this load
-    FailureOr<RegsAsMatrixSubTiles> maybeGemm0OutSubTileViews = computeOutputTransforms(
+    FailureOr<ArrayAttr> maybeGemm0OutTileView = computeOutputTransforms(
         rewriter, loc, gemm0MPerBlock, gemm0NPerBlock, gemm0BidGridLengths);
-    
-    if (failed(maybeGemm0OutSubTileViews)) {
+
+    if (failed(maybeGemm0OutTileView)) {
       LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms\n");
       return failure();
     }
-    auto gemm0OutSubTileViews = maybeGemm0OutSubTileViews.value();
+    auto gemm0OutTileView = maybeGemm0OutTileView.value();
 
     // Currently, there is a working assumption that this kernel is meant
     // support fp32/fp16/bf16. This should be guaranteed by op verifiers.
@@ -1039,7 +921,7 @@ struct GridwiseAttentionRewritePattern
     // always has defined values; the else branch yields zero-initialized
     // tensors.
     SmallVector<Value> earlyExitElseValues;
-    auto initOutAcc = createZeroAccBuffer(
+    auto initOutAcc = rock::createZeroAccBuffer(
         rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, elemTypeOut);
     earlyExitElseValues.push_back(initOutAcc);
     RankedTensorType lseType;
@@ -1073,17 +955,16 @@ struct GridwiseAttentionRewritePattern
           rewriter, loc, bid, gemm0MBlocks, zero, gridSize, arch,
           rock::getNumCUValue(op), splitKVConst);
 
-      loadedQ = loadTile(rewriter, loc, inQ, /*kiter=*/zero, "m",
-                         gridCoordsGemm0LoadQ, gemm0KPerBlock, gemm0MPerBlock,
-                         gemm0BidGridLengths);
+      loadedQ = rock::loadTile(rewriter, loc, inQ, /*kiter=*/zero, "m",
+                               gridCoordsGemm0LoadQ, gemm0KPerBlock,
+                               gemm0MPerBlock, gemm0BidGridLengths);
     }
 
-    Type accType = isa<FloatType>(elemTypeQ) ? Type(rewriter.getF32Type())
-                                             : Type(rewriter.getI32Type());
+    Type accType = rock::getAccType(elemTypeQ, elemTypeK);
 
     // Create initial accumulator for nLoop with the shape of the final output
     // tile
-    Value initNLoopAcc = createZeroAccBuffer(
+    Value initNLoopAcc = rock::createZeroAccBuffer(
         rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, accType);
 
     Value one = rewriter.createOrFold<arith::ConstantIntOp>(
@@ -1107,12 +988,13 @@ struct GridwiseAttentionRewritePattern
       layout::GridCoordinates gridCoordsGemm0 = layout::makeGxNGridLayout(
           rewriter, loc, bid, gemm0MBlocks, nLoopIV, gridSize, arch,
           rock::getNumCUValue(op), splitKVConst);
-      Value initAcc = createZeroAccBuffer(
+      Value initAcc = rock::createZeroAccBuffer(
           rewriter, loc, {gemm0MPerBlock, gemm0NPerBlock}, accType);
 
       Value endKLoop =
           rewriter.createOrFold<arith::ConstantIntOp>(loc, rewriter.getI32Type(), kIterationsGemm0);
-      scf::ForOp kLoopOp = createMainLoop(rewriter, loc, endKLoop, ValueRange{initAcc});
+      scf::ForOp kLoopOp = scf::ForOp::create(rewriter, loc, zero, endKLoop,
+                                              one, ValueRange{initAcc});
       {
         PatternRewriter::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(kLoopOp.getBody());
@@ -1122,17 +1004,19 @@ struct GridwiseAttentionRewritePattern
         // if gemm0K is equal to gemm0KPerBlock, the Q tile
         // is already prefetched into regs. See above.
         if (!prefetchQTile) {
-          loadedQ = loadTile(rewriter, loc, inQ, /*kiter=*/kLoopIV, "m",
-                             gridCoordsGemm0, gemm0KPerBlock, gemm0MPerBlock,
-                             gemm0BidGridLengths);
+          loadedQ = rock::loadTile(rewriter, loc, inQ, /*kiter=*/kLoopIV, "m",
+                                   gridCoordsGemm0, gemm0KPerBlock,
+                                   gemm0MPerBlock, gemm0BidGridLengths);
         }
 
-        Value loadedK = loadTile(rewriter, loc, inK, /*kiter=*/kLoopIV, "n",
-                                 gridCoordsGemm0, gemm0KPerBlock,
-                                 gemm0NPerBlock, gemm0BidGridLengths);
+        Value loadedK = rock::loadTile(rewriter, loc, inK, /*kiter=*/kLoopIV,
+                                       "n", gridCoordsGemm0, gemm0KPerBlock,
+                                       gemm0NPerBlock, gemm0BidGridLengths);
 
         // TODO(roctriton): scaled gemm
-        Value newAcc = blockwiseGemm(rewriter, loc, loadedQ, loadedK, accArg, nullptr, nullptr);
+        Value newAcc =
+            BlockwiseGemmOp::create(rewriter, loc, accArg.getType(), loadedQ,
+                                    loadedK, accArg, nullptr, nullptr);
 
         // Yield the new accumulator
         scf::YieldOp::create(rewriter, loc, ValueRange{newAcc});
@@ -1147,25 +1031,22 @@ struct GridwiseAttentionRewritePattern
       if (op.getPrePadG0N().has_value()) {
         prePadG0N = op.getPrePadG0N().value().getSExtValue();
       }
-      RegsAsMatrixSubTiles gemm0OutSubTileViewsUnPadded = unpadGridSubTileView(
-          rewriter, loc, gemm0OutSubTileViews, prePadG0M, prePadG0N);
+      ArrayAttr gemm0OutTileViewUnPadded =
+          unpadTileView(rewriter, loc, gemm0OutTileView, prePadG0M, prePadG0N);
 
       // undo Grouped-Query Attention (GQA) transforms
       // This is needed because the preSoftmaxElementWise inputs (if any), don't
       // have the GQA transformed applied to them. So, we undo the transform to
       // the output of the first GEMM. See postProcessFirstGemm() to understand
       // the transforms done to preSoftmaxElementWise inputs.
-      ArrayRef<int64_t> unpaddedShape =
-          getLowerShape(gemm0OutSubTileViewsUnPadded.gridSubTile);
+      ArrayRef<int64_t> unpaddedShape = getLowerShape(gemm0OutTileViewUnPadded);
       ArrayAttr undoGQA = undoGQATransforms(rewriter, loc, op, unpaddedShape);
 
       // undo the GQA transforms for postProcessFirstGemm()
       if (undoGQA) {
-        ArrayAttr linalgGridSubTileMaps =
-            gemm0OutSubTileViewsUnPadded.gridSubTile;
-        linalgGridSubTileMaps =
-            prependUpperViews(rewriter, linalgGridSubTileMaps, undoGQA);
-        gemm0OutSubTileViewsUnPadded.gridSubTile = linalgGridSubTileMaps;
+        ArrayAttr linalgTileMaps = gemm0OutTileViewUnPadded;
+        linalgTileMaps = prependUpperViews(rewriter, linalgTileMaps, undoGQA);
+        gemm0OutTileViewUnPadded = linalgTileMaps;
       }
 
       // Apply splitKV transforms if needed
@@ -1176,11 +1057,10 @@ struct GridwiseAttentionRewritePattern
         ArrayAttr splitKVTransforms = createSplitKVTransformsForGemm0Out(
             rewriter, loc, unpaddedShape, splitKV);
         assert(splitKVTransforms && "splitKV transforms should be non-null");
-        ArrayAttr linalgGridSubTileMaps =
-            gemm0OutSubTileViewsUnPadded.gridSubTile;
-        linalgGridSubTileMaps = prependUpperViews(
-            rewriter, linalgGridSubTileMaps, splitKVTransforms);
-        gemm0OutSubTileViewsUnPadded.gridSubTile = linalgGridSubTileMaps;
+        ArrayAttr linalgSubTileMaps = gemm0OutTileViewUnPadded;
+        linalgSubTileMaps =
+            prependUpperViews(rewriter, linalgSubTileMaps, splitKVTransforms);
+        gemm0OutTileViewUnPadded = linalgSubTileMaps;
       }
 
     // TODO(roctriton): attention fusion
@@ -1210,15 +1090,15 @@ struct GridwiseAttentionRewritePattern
                                                           : APFloat::opInexact);
         softmaxInput = arith::MulFOp::create(rewriter, loc, softmaxInput, ln2Recip);
 
-        // fakeTensor is needed to generate the views and indices needed for
-        // rock.
-        ArrayRef<int64_t> lowerShape =
-            getLowerShape(gemm0OutSubTileViewsUnPadded.gridSubTile);
+        // fakeTensor is needed to generate the views and indices+mask with
+        // TransformsToPtrOp It represents the Q*K matrix (that is never written
+        // to global memory)
+        ArrayRef<int64_t> lowerShape = getLowerShape(gemm0OutTileViewUnPadded);
         int64_t tensorSize =
             std::accumulate(lowerShape.begin(), lowerShape.end(), 1LL,
                             std::multiplies<int64_t>());
         Value fakeTensor =
-            createZeroAccBuffer(rewriter, loc, {tensorSize}, accType);
+            rock::createZeroAccBuffer(rewriter, loc, {tensorSize}, accType);
         Value negInfTensor = createConstantFloatOp(
             rewriter, loc, softmaxInput.getType(),
             cast<ShapedType>(softmaxInput.getType()).getElementType(),
@@ -1228,9 +1108,9 @@ struct GridwiseAttentionRewritePattern
         bool hasPadding =
             op.getPrePadG0M().has_value() || op.getPrePadG0N().has_value();
         if (hasPadding) {
-          softmaxInput = createFirstGemmNegInfPadding(rewriter, loc, gridCoordsGemm0,
-                                       fakeTensor,
-                                       softmaxInput, negInfTensor, gemm0OutSubTileViewsUnPadded);
+          softmaxInput = createFirstGemmNegInfPadding(
+              rewriter, loc, gridCoordsGemm0, fakeTensor, softmaxInput,
+              negInfTensor, gemm0OutTileViewUnPadded);
         }
 
         // Negative Infinite for extra values based on masking type
@@ -1239,9 +1119,8 @@ struct GridwiseAttentionRewritePattern
         // cache is enabled, regardless of causal/prefix-causal mode.
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::KVCache, gridCoordsGemm0,
-            softmaxInput, fakeTensor, negInfTensor,
-            gemm0OutSubTileViewsUnPadded, isKVCache, nLoopIV,
-            gemm0NBlocksLastIter, currentSeqLen,
+            softmaxInput, fakeTensor, negInfTensor, gemm0OutTileViewUnPadded,
+            isKVCache, nLoopIV, gemm0NBlocksLastIter, currentSeqLen,
             /*prefixOffset=*/nullptr);
 
         // Causal masking: either prefix-causal or standard causal
@@ -1249,17 +1128,15 @@ struct GridwiseAttentionRewritePattern
         // This combines causal masking with a prefix offset
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::PrefixCausal, gridCoordsGemm0,
-            softmaxInput, fakeTensor, negInfTensor,
-            gemm0OutSubTileViewsUnPadded, isPrefixCausal, nLoopIV,
-            gemm0NBlocksLastIter,
+            softmaxInput, fakeTensor, negInfTensor, gemm0OutTileViewUnPadded,
+            isPrefixCausal, nLoopIV, gemm0NBlocksLastIter,
             /*currentSeqLen=*/nullptr, prefixOffset);
 
         // Standard causal masking: mask when key > query
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::Causal, gridCoordsGemm0,
-            softmaxInput, fakeTensor, negInfTensor,
-            gemm0OutSubTileViewsUnPadded, isCausal && !isPrefixCausal, nLoopIV,
-            gemm0NBlocksLastIter,
+            softmaxInput, fakeTensor, negInfTensor, gemm0OutTileViewUnPadded,
+            isCausal && !isPrefixCausal, nLoopIV, gemm0NBlocksLastIter,
             /*currentSeqLen=*/nullptr,
             /*prefixOffset=*/nullptr);
 
@@ -1301,7 +1178,7 @@ struct GridwiseAttentionRewritePattern
       // into attentionAcc across nLoop iterations.
       Value gemm1InitAcc;
       if (op.getEnableSoftmax()) {
-        gemm1InitAcc = createZeroAccBuffer(
+        gemm1InitAcc = rock::createZeroAccBuffer(
             rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, accType);
       } else {
         gemm1InitAcc = attentionAcc;
@@ -1312,13 +1189,14 @@ struct GridwiseAttentionRewritePattern
           rock::getNumCUValue(op), splitKVConst);
 
       Value loadedV =
-          loadTile(rewriter, loc, inV,
-                   /*kIter=*/nLoopIV, "n", gridCoordsGemm1, gemm1KPerBlock,
-                   gemm1NPerBlock, gemm1BidGridLengths);
+          rock::loadTile(rewriter, loc, inV,
+                         /*kIter=*/nLoopIV, "n", gridCoordsGemm1,
+                         gemm1KPerBlock, gemm1NPerBlock, gemm1BidGridLengths);
 
       // TODO(roctriton): scaled gemm
-      Value gemm1Out = blockwiseGemm(rewriter, loc, gemm0Out, loadedV,
-                                     gemm1InitAcc, nullptr, nullptr);
+      Value gemm1Out = BlockwiseGemmOp::create(
+          rewriter, loc, gemm1InitAcc.getType(), gemm0Out, loadedV,
+          gemm1InitAcc, nullptr, nullptr);
 
       // Apply flash attention correction
       if (op.getEnableSoftmax()) {
@@ -1375,7 +1253,7 @@ struct GridwiseAttentionRewritePattern
                                   gridSize, arch, rock::getNumCUValue(op));
 
     // Compute output transforms
-    FailureOr<RegsAsMatrixSubTiles> maybeOutputViews = computeOutputTransforms(
+    FailureOr<ArrayAttr> maybeOutputViews = computeOutputTransforms(
         rewriter, loc, gemm1MPerBlock, gemm1NPerBlock, gemm1BidGridLengths);
 
     if (failed(maybeOutputViews)) {
@@ -1383,7 +1261,7 @@ struct GridwiseAttentionRewritePattern
       return failure();
     }
 
-    ArrayAttr idToMatrixCMaps = maybeOutputViews.value().gridSubTile;
+    ArrayAttr idToMatrixCMaps = maybeOutputViews.value();
 
     // Create StoreMarkerOp to mark the tile with output transforms for later
     // store lowering The StoreMarkerOp preserves the tile type for fusion ops

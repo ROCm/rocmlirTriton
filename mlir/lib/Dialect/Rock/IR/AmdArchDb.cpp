@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -186,9 +187,7 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   Type elemB = getElementTypeOrSelf(inputTypeB);
 
   // We always use f32 or i32 for output element
-  OpBuilder b(elemA.getContext());
-  Type elemOut =
-      isa<FloatType>(elemA) ? Type(b.getF32Type()) : Type(b.getI32Type());
+  Type elemOut = rock::getAccType(elemA, elemB);
 
   // We need an MLIRContext for creating a dummy location
   MLIRContext *ctx = elemA.getContext();

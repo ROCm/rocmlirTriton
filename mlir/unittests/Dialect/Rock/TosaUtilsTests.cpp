@@ -272,42 +272,6 @@ TEST(TosaUtilsTest, ConstantValuePredicatesTensors) {
   }
 }
 
-TEST(TosaUtilsTest, AccTypeSelection) {
-  TestEnv env(false); // only tosa
-  OpBuilder &b = env.builder;
-  EXPECT_TRUE(rock::tosa::getAccType(b, b.getF16Type()).isF32());
-  EXPECT_TRUE(rock::tosa::getAccType(b, b.getBF16Type()).isF32());
-  EXPECT_TRUE(
-      rock::tosa::getAccType(b, IntegerType::get(&env.ctx, 8)).isInteger(32));
-}
-
-TEST(TosaUtilsTest, CreateOpAndInferMulHelper) {
-  TestEnv env;
-  OpBuilder &builder = env.builder;
-  Location loc = builder.getUnknownLoc();
-
-  auto funcType = builder.getFunctionType({}, {});
-  auto func = func::FuncOp::create(builder, loc, "test3", funcType);
-  auto &entryBlock = *func.addEntryBlock();
-  builder.setInsertionPointToStart(&entryBlock);
-
-  auto tType = RankedTensorType::get({2, 2}, builder.getF32Type());
-  SmallVector<Attribute> elemsA(4, builder.getF32FloatAttr(2.0f));
-  SmallVector<Attribute> elemsB(4, builder.getF32FloatAttr(3.0f));
-  auto aAttr = DenseElementsAttr::get(tType, elemsA);
-  auto bAttr = DenseElementsAttr::get(tType, elemsB);
-  auto aConst = mlir::tosa::ConstOp::create(builder, loc, tType, aAttr);
-  auto bConst = mlir::tosa::ConstOp::create(builder, loc, tType, bAttr);
-
-  auto mulOp = rock::tosa::getMulOp(builder, loc, aConst.getResult(),
-                                    bConst.getResult(), builder.getF32Type());
-  auto resType = cast<RankedTensorType>(mulOp.getResult().getType());
-  EXPECT_EQ(resType.getShape().size(), 2u);
-  EXPECT_EQ(resType.getDimSize(0), 2);
-  EXPECT_EQ(resType.getDimSize(1), 2);
-  EXPECT_TRUE(resType.getElementType().isF32());
-}
-
 TEST(TosaTransposeUtilsTest, Basic3DTranspose) {
   TestEnv env;
   OpBuilder &b = env.builder;

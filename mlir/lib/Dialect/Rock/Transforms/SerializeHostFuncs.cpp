@@ -68,6 +68,10 @@ struct RockSerializeHostFuncsPass
       funcStrings.push_back(StringAttr::get(ctx, funcStr));
     }
     moduleOp->setAttr("rock.host_functions", ArrayAttr::get(ctx, funcStrings));
+
+    // Erase order doesn't matter: func.call holds a FlatSymbolRefAttr (a
+    // string), not an SSA use-def edge, so erasing a callee before its
+    // caller won't fail.
     for (func::FuncOp funcOp : nonKernelFuncs)
       funcOp.erase();
   }

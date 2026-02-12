@@ -741,8 +741,6 @@ def Rock_CastToPtrOp : Rock_Op<"cast_to_ptr", [Pure]> {
   let results = (outs AnyRankedTensor:$result);
 
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
-
-  let hasCanonicalizer = 1;
 }
 
 def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {

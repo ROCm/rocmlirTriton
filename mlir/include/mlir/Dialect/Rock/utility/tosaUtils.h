@@ -52,8 +52,6 @@ TosaOp createOpAndInfer(OpBuilder &rewriter, Location loc, Type elemType,
 
 Value getOneTensor(OpBuilder &builder, Location loc, RankedTensorType type);
 
-Type getAccType(OpBuilder &builder, Type inputType);
-
 Value getZeroTensor(OpBuilder &builder, Location loc, RankedTensorType type);
 
 mlir::tosa::TransposeOp getTransposeOp(OpBuilder &builder, Location loc,

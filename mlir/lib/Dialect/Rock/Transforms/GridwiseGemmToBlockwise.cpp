@@ -16,7 +16,7 @@
 // ============================================================
 //
 // This pass converts rock.gridwise_gemm
-// into block- and threadwise ops
+// into block- ops
 //
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
@@ -88,15 +88,6 @@ struct RockGridwiseGemmToBlockwisePass
 
 } // end anonymous namespace
 
-static Value blockwiseGemm(PatternRewriter &rewriter, Location loc,
-                           Value bufferA, Value bufferB, Value matrixC,
-                           Value bufferScaleA, Value bufferScaleB) {
-  auto cType = cast<RankedTensorType>(matrixC.getType());
-  auto gemmOp = BlockwiseGemmOp::create(rewriter, loc, cType, bufferA, bufferB,
-                                        matrixC, bufferScaleA, bufferScaleB);
-  return gemmOp.getResult();
-}
-
 static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
                                  Value end, ValueRange iterArgs) {
   Value one = rewriter.createOrFold<arith::ConstantIntOp>(
@@ -106,41 +97,6 @@ static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
   scf::ForOp loopOp =
       scf::ForOp::create(rewriter, loc, start, end, one, iterArgs);
   return loopOp;
-}
-
-// This function will process a tile of gemm input into LDS (or register)
-// buffer in a way it could be fed to blockwise_gemm op
-static Value loadTile(PatternRewriter &rewriter, Location loc, Value in,
-                      Value kIter, StringRef dName,
-                      rock::layout::GridCoordinates gridCoords,
-                      int64_t kPerBlock, int64_t dPerBlock,
-                      SmallVector<int64_t, 3> &bidGridLengths) {
-  FailureOr<RegsAsMatrixSubTiles> maybeBufferViews = getLoadRegsAsTileViews(
-      rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock);
-  assert(succeeded(maybeBufferViews));
-  Value wrappedSource = transform(rewriter, in, maybeBufferViews->gridSubTile);
-
-  // Determine the result type from the source shape (last two dimensions are the tile)
-  auto sourceType = cast<RankedTensorType>(wrappedSource.getType());
-  auto sourceShape = sourceType.getShape();
-  auto resultType = RankedTensorType::get(
-      sourceShape.take_back(2), sourceType.getElementType());
-
-  // Load from global memory to LDS or register buffer.
-  auto loadOp = BlockwiseLoadOp::create(
-      rewriter, loc, resultType, wrappedSource,
-      ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
-                 gridCoords.n_block});
-  return loadOp.getResult();
-}
-
-// This function creates a zero-initialized accumulator tensor
-static Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
-                                 int64_t mPerBlock, int64_t nPerBlock,
-                                 Type accType) {
-  auto tensorType = RankedTensorType::get({mPerBlock, nPerBlock}, accType);
-  auto zeroAttr = rewriter.getZeroAttr(tensorType);
-  return arith::ConstantOp::create(rewriter, loc, tensorType, zeroAttr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -246,9 +202,9 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
                             << "numWaves: " << numWaves << "\n"
                             << "numCTAs: " << numCTAs << "\n");
 
-    Type accType = isa<FloatType>(elementTypeA) ? Type(b.getF32Type())
-                                                : Type(b.getI32Type());
-    Value initAcc = createZeroAccBuffer(b, loc, mPerBlock, nPerBlock, accType);
+    Type accType = rock::getAccType(elementTypeA, elementTypeB);
+    Value initAcc =
+        rock::createZeroAccBuffer(b, loc, {mPerBlock, nPerBlock}, accType);
 
     // Emit loop with iter_args for the accumulator
     int64_t kIterations = K / kPerBlock;
@@ -264,24 +220,28 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
       Value accArg = loopOp.getRegionIterArg(0);
 
       // Load from global memory to registers
-      Value loadedB = loadTile(b, loc, matB, /*kiter=*/iv, "n", gridCoords,
-                               kPerBlock, nPerBlock, bidGridLengths);
-      Value loadedA = loadTile(b, loc, matA, /*kiter=*/iv, "m", gridCoords,
-                               kPerBlock, mPerBlock, bidGridLengths);
+      Value loadedB =
+          rock::loadTile(b, loc, matB, /*kiter=*/iv, "n", gridCoords, kPerBlock,
+                         nPerBlock, bidGridLengths);
+      Value loadedA =
+          rock::loadTile(b, loc, matA, /*kiter=*/iv, "m", gridCoords, kPerBlock,
+                         mPerBlock, bidGridLengths);
 
       Value loadedScaleA, loadedScaleB;
       if (isScaledGemm) {
-        loadedScaleB = loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
-                                kPerBlock, nPerBlock, bidGridLengths);
-        loadedScaleA = loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
-                                kPerBlock, mPerBlock, bidGridLengths);
+        loadedScaleB =
+            rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
+                           kPerBlock, nPerBlock, bidGridLengths);
+        loadedScaleA =
+            rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
+                           kPerBlock, mPerBlock, bidGridLengths);
       }
 
       // Emit blockwise GEMM. This will load data from LDS (or registers) and
       // compute the MMA at the same time
-      Value newAcc = blockwiseGemm(b, loc, loadedA, loadedB, accArg,
-                                   /*bufferScaleA=*/loadedScaleA,
-                                   /*bufferScaleB=*/loadedScaleB);
+      Value newAcc =
+          BlockwiseGemmOp::create(b, loc, accArg.getType(), loadedA, loadedB,
+                                  accArg, loadedScaleA, loadedScaleB);
 
       // Yield the new accumulator
       scf::YieldOp::create(b, loc, ValueRange{newAcc});
@@ -289,7 +249,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     }
 
     // Compute output transforms
-    FailureOr<RegsAsMatrixSubTiles> maybeOutputViews =
+    FailureOr<ArrayAttr> maybeOutputViews =
         computeOutputTransforms(b, loc, mPerBlock, nPerBlock, bidGridLengths);
 
     if (failed(maybeOutputViews)) {
@@ -297,7 +257,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
       return failure();
     }
 
-    ArrayAttr idToMatrixCMaps = maybeOutputViews->gridSubTile;
+    ArrayAttr idToMatrixCMaps = maybeOutputViews.value();
 
     // Create StoreMarkerOp to mark the tile with output transforms for later
     // store lowering The StoreMarkerOp preserves the tile type for fusion ops

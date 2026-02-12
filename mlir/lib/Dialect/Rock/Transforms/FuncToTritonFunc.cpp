@@ -314,7 +314,11 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
       Value src = castOp.getSrc();
       Value mappedSrc = valueMapping.lookupOrNull(src);
 
-      if (!mappedSrc || !isTensorOfPointers(mappedSrc.getType()))
+      // in some cases, there's no tt.add_ptr, so mappedSrc = nullptr
+      if (!mappedSrc)
+        mappedSrc = src;
+
+      if (!isTensorOfPointers(mappedSrc.getType()))
         return;
 
       // Check if already mapped
@@ -361,7 +365,6 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
 
 void RockFuncToTritonFuncPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
-  MLIRContext *ctx = &getContext();
 
   // Collect kernel functions (host functions were already serialized and
   // erased by RockSerializeHostFuncsPass earlier in the pipeline).
@@ -388,4 +391,16 @@ void RockFuncToTritonFuncPass::runOnOperation() {
   for (func::FuncOp funcOp : funcsToProcess) {
     processFunction(funcOp);
   }
+
+  // Verify no Rock dialect ops remain after conversion.
+  WalkResult result = moduleOp->walk([&](Operation *op) {
+    if (op->getDialect() && op->getDialect()->getNamespace() ==
+                                rock::RockDialect::getDialectNamespace()) {
+      op->emitError("unexpected Rock op remaining after FuncToTritonFunc");
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted())
+    return signalPassFailure();
 }
