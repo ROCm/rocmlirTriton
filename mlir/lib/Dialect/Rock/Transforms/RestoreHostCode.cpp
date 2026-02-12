@@ -77,7 +77,7 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
     // (matching the LLVM function signature from the HSACO).
     // The number of arguments varies by operation type and fusions.
     // Triton adds 2 workspace pointers (global scratch, profile scratch).
-    SmallVector<Type> argTypes(kernel.argCount, ptrType);
+    SmallVector<Type> argTypes(kernel.argTypes.size(), ptrType);
     auto kernelFuncType = FunctionType::get(ctx, argTypes, {});
 
     // Create metadata for this kernel
@@ -264,8 +264,8 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
 
     // Triton adds workspace arguments (global scratch, profile scratch).
     // Add null pointers for these. The number of args varies by operation
-    // type and fusions - we use kernel.argCount from the LLVM signature.
-    while (launchArgs.size() < kernel.argCount) {
+    // type and fusions - we use kernel.argTypes.size() from the LLVM signature.
+    while (launchArgs.size() < kernel.argTypes.size()) {
       Value nullPtr = LLVM::ZeroOp::create(builder, callLoc, ptrType);
       launchArgs.push_back(nullPtr);
     }

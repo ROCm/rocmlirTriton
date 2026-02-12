@@ -23,7 +23,6 @@ struct KernelInfo {
   int64_t blockSize;
   int64_t sharedMemorySize;
   SmallVector<Type> argTypes; // Original func argument types
-  unsigned argCount = 0;      // Total argument count
 };
 
 /// Collect kernel information from a compiled module.

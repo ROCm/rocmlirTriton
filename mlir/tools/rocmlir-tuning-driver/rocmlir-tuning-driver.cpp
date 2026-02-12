@@ -907,8 +907,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // Get numKernelArgs from the collected info (argTypes won't survive
-      // context destruction, but argCount will)
+      // Get numKernelArgs from the collected info
       if (localKernels.empty()) {
         std::lock_guard<std::mutex> lock(outputMutex);
         llvm::errs() << "No kernels found for config: " << result.perfConfig
@@ -917,7 +916,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         compilationFailed.store(true, std::memory_order_relaxed);
         return result;
       }
-      result.numKernelArgs = localKernels[0].argCount;
+      result.numKernelArgs = localKernels[0].argTypes.size();
 
       // Get the HSACO binary from the compiled module
       auto hsacoAttr =

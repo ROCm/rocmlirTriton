@@ -94,10 +94,9 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
       info.gridSize = gridAttr.getInt();
 
-    // Get argument types and count from LLVM function signature
+    // Get argument types from LLVM function signature
     auto llvmFuncType = funcOp.getFunctionType();
     unsigned numParams = llvmFuncType.getNumParams();
-    info.argCount = numParams;
     info.argTypes.clear();
     for (unsigned i = 0; i < numParams; ++i) {
       info.argTypes.push_back(llvmFuncType.getParamType(i));
