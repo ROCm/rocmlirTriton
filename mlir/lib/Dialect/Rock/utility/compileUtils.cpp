@@ -67,7 +67,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     LLVM_DEBUG(llvm::dbgs() << "ttg.num-warps not found\n");
     return failure();
   }
-  if (waveSize == -1) {
+  if (warpSize == -1) {
     LLVM_DEBUG(llvm::dbgs() << "ttg.threads-per-warp not found\n");
     return failure();
   }
