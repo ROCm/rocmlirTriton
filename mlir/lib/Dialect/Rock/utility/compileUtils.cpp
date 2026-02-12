@@ -47,23 +47,19 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
   int64_t waveSize = -1;
   int64_t sharedMemory = 0;
 
-  // Try ttg.total-num-warps first (set by warp-specialization pass),
-  // fall back to ttg.num-warps
-  if (auto totalNumWarpsAttr =
-          moduleOp->getAttrOfType<IntegerAttr>("ttg.total-num-warps"))
-    numWarps = totalNumWarpsAttr.getInt();
   if (auto numWarpsAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.num-warps"))
     numWarps = numWarpsAttr.getInt();
   if (auto warpSizeAttr =
           moduleOp->getAttrOfType<IntegerAttr>("ttg.threads-per-warp"))
-    waveSize = warpSizeAttr.getInt();
+    warpSize = warpSizeAttr.getInt();
   if (auto sharedAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared"))
     sharedMemory = sharedAttr.getInt();
 
   // Validate LDS usage
   if (sharedMemory > maxSharedMemPerWG) {
-    LLVM_DEBUG(llvm::dbgs() << "ttg.shared: too much LDS usage (" << sharedMemory
-                            << " > " << maxSharedMemPerWG << ")\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "ttg.shared: too much LDS usage (" << sharedMemory << " > "
+               << maxSharedMemPerWG << ")\n");
     return failure();
   }
 
