@@ -6,6 +6,14 @@ if [ -z "$ARCH" ]; then
     echo "Error: Could not detect GPU architecture. Is rocminfo available?"
     exit 1
 fi
+
+# Get Compute Units from GPU section (after the gfx Name line, not the CPU)
+NUM_CU=$(rocminfo | grep -A 30 "Name:.*gfx" | grep "Compute Unit" | head -1 | grep -o '[0-9]*')
+if [ -z "$NUM_CU" ]; then
+    echo "Warning: Could not detect number of compute units, defaulting to 64"
+    NUM_CU=64
+fi
+
 echo "Detected GPU architecture: $ARCH"
 
 build/bin/rocmlir-gen -pv -operation gemm -t f16 -out_datatype f32 --arch $ARCH --num_cu 256 -g 1 -m 64 -k 256 -n 128 --perf_config=gemm:v1:64,64,64,1,1,4,16,1,2,0,0 | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
@@ -30,14 +38,8 @@ build/bin/rocmlir-gen --perf_config=gemm:v1:256,128,32,1,1,4,16,4,1,0,0 -g 3 -m 
 
 build/bin/rocmlir-gen --perf_config=gemm:v1:64,64,32,1,1,4,16,1,1,0,0 -g 1 -m 4 -k 128 -n 4 --transA=false -t i8  --operation gemm --arch $ARCH -pv   | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
 
-# Tuning driver (architecture-specific)
-if [[ "$ARCH" == *"gfx950"* ]]; then
-    build/bin/rocmlir-gen -operation gemm -t f16 -out_datatype f32 --arch gfx950:sramecc+:xnack- --num_cu 256 --num_chiplets 8 -g 1 -m 4096 -k 4096 -n 4096 -transA=False -transB=False --perf_config= | build/bin/rocmlir-tuning-driver --tuning-space=quick --num-iterations=10 --warmup-iterations=1 --sleep-us=100 --use-median --show-all-measurements=false
-elif [[ "$ARCH" == *"gfx1101"* ]]; then
-    build/bin/rocmlir-gen -operation gemm -t f16 -out_datatype f32 --arch gfx1101 --num_cu 12 -g 1 -m 1024 -k 1024 -n 1024 -transA=False -transB=False --perf_config= | build/bin/rocmlir-tuning-driver --tuning-space=quick --num-iterations=10 --warmup-iterations=1 --sleep-us=100 --use-median --show-all-measurements=false
-else
-    echo "Warning: Tuning driver test skipped for architecture $ARCH (only gfx950 and gfx1101 are configured)"
-fi
+# Tuning driver
+build/bin/rocmlir-gen -operation gemm -t f16 -out_datatype f32 --arch $ARCH --num_cu $NUM_CU -g 1 -m 1024 -k 1024 -n 1024 -transA=False -transB=False --perf_config= | build/bin/rocmlir-tuning-driver --tuning-space=quick --num-iterations=10 --warmup-iterations=1 --sleep-us=100 --use-median --show-all-measurements=false
 
 # gemm+gemm
 
