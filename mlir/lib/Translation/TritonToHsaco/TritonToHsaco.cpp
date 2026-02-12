@@ -180,10 +180,10 @@ void setABIVersion(llvm::Module &module, int version) {
                        version);
 }
 
-/// Set kernel function attributes on ALL kernel functions in the module.
-/// A kernel function is identified as a non-declaration function with external
-/// linkage. Multi-kernel cases (e.g. backward data conv with v4r1=1) have
-/// multiple such functions that all need proper GPU kernel attributes.
+// Set kernel function attributes on all kernel functions in the module.
+// A kernel function is identified as a non-declaration function with external
+// linkage. Multi-kernel cases (e.g. backward data conv with v4r1=1) have
+// multiple such functions that all need proper GPU kernel attributes.
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
                          int numCTAs,

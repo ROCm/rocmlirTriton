@@ -602,10 +602,6 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   return std::make_tuple(Value(), Value(), Value());
 }
 
-/// Backward data V4R1: create the gemm for a given kernel ID.
-/// Returns (gemmResult, gemmDest) where gemmDest is the transformed input
-/// tensor (C matrix). The caller is responsible for creating StoreOps
-/// and erasing the conv op.
 FailureOr<std::pair<Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
                                                     PatternRewriter &b,
                                                     int64_t kernelId) {
@@ -990,6 +986,10 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       kernelIds = rock::backwardDataKernelIds(strideDims, dilationDims,
                                               filterDims, /*usesV4R1=*/true);
     }
+
+    if (usesV4R1)
+      assert(kernelIds.size() == 1 &&
+             "Only one kernel ID expected for V4R1 path");
 
     // Find the original StoreOp that consumes the conv result.
     StoreOp originalStoreOp = nullptr;
