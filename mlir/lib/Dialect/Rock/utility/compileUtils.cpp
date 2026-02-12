@@ -40,39 +40,73 @@ using namespace mlir::rock;
 namespace mlir {
 namespace rock {
 
-LLVM::LLVMFuncOp findKernelFunc(ModuleOp moduleOp, StringRef kernelName) {
-  LLVM::LLVMFuncOp result = nullptr;
+LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
+                                SmallVectorImpl<KernelInfo> &kernels) {
+  // Get Triton metadata from module attributes
+  int64_t numWarps = -1;
+  int64_t waveSize = -1;
+  int64_t sharedMemory = 0;
+
+  // Try ttg.total-num-warps first (set by warp-specialization pass),
+  // fall back to ttg.num-warps
+  if (auto totalNumWarpsAttr =
+          moduleOp->getAttrOfType<IntegerAttr>("ttg.total-num-warps"))
+    numWarps = totalNumWarpsAttr.getInt();
+  if (auto numWarpsAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.num-warps"))
+    numWarps = numWarpsAttr.getInt();
+  if (auto warpSizeAttr =
+          moduleOp->getAttrOfType<IntegerAttr>("ttg.threads-per-warp"))
+    waveSize = warpSizeAttr.getInt();
+  if (auto sharedAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared"))
+    sharedMemory = sharedAttr.getInt();
+
+  // Validate LDS usage
+  if (sharedMemory > maxSharedMemPerWG) {
+    LLVM_DEBUG(llvm::dbgs() << "ttg.shared: too much LDS usage (" << sharedMemory
+                            << " > " << maxSharedMemPerWG << ")\n");
+    return failure();
+  }
+
+  if (numWarps == -1) {
+    LLVM_DEBUG(llvm::dbgs() << "ttg.num-warps not found\n");
+    return failure();
+  }
+  if (waveSize == -1) {
+    LLVM_DEBUG(llvm::dbgs() << "ttg.threads-per-warp not found\n");
+    return failure();
+  }
+
+  int64_t blockSize = numWarps * waveSize;
+
+  // Walk LLVM functions with KernelAttr
   moduleOp.walk([&](LLVM::LLVMFuncOp funcOp) {
     if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
-      return WalkResult::advance();
-    if (funcOp.getName() == kernelName) {
-      result = funcOp;
-      return WalkResult::interrupt();
+      return;
+
+    KernelInfo info;
+    info.name = funcOp.getName().str();
+    info.llvmFunc = funcOp;
+    info.blockSize = blockSize;
+    info.sharedMemorySize = sharedMemory;
+
+    // Get grid_size from module attribute (set by FuncToTritonFunc)
+    std::string gridAttrName = "rock.grid_size." + info.name;
+    if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
+      info.gridSize = gridAttr.getInt();
+
+    // Get argument types and count from LLVM function signature
+    auto llvmFuncType = funcOp.getFunctionType();
+    unsigned numParams = llvmFuncType.getNumParams();
+    info.argCount = numParams;
+    info.argTypes.clear();
+    for (unsigned i = 0; i < numParams; ++i) {
+      info.argTypes.push_back(llvmFuncType.getParamType(i));
     }
-    return WalkResult::advance();
+
+    kernels.push_back(info);
   });
-  return result;
-}
 
-void populateKernelArgTypes(ModuleOp moduleOp,
-                            SmallVectorImpl<KernelInfo> &kernels) {
-  for (auto &kernel : kernels) {
-    if (auto funcOp = findKernelFunc(moduleOp, kernel.name)) {
-      auto llvmFuncType = funcOp.getFunctionType();
-      kernel.argTypes.clear();
-      for (unsigned i = 0; i < llvmFuncType.getNumParams(); ++i) {
-        kernel.argTypes.push_back(llvmFuncType.getParamType(i));
-      }
-    }
-  }
-}
-
-std::optional<unsigned> getKernelArgCount(ModuleOp moduleOp,
-                                          StringRef kernelName) {
-  if (auto funcOp = findKernelFunc(moduleOp, kernelName)) {
-    return funcOp.getFunctionType().getNumParams();
-  }
-  return std::nullopt;
+  return success();
 }
 
 LogicalResult fillCompilationConfigs(StringAttr perfConfig,

@@ -77,7 +77,7 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
     // (matching the LLVM function signature from the HSACO).
     // The number of arguments varies by operation type and fusions.
     // Triton adds 2 workspace pointers (global scratch, profile scratch).
-    SmallVector<Type> argTypes(kernel.argTypes.size(), ptrType);
+    SmallVector<Type> argTypes(kernel.argCount, ptrType);
     auto kernelFuncType = FunctionType::get(ctx, argTypes, {});
 
     // Create metadata for this kernel
@@ -125,10 +125,6 @@ struct RockRestoreHostCodePass
 private:
   /// Parse and restore host functions from the serialized attribute
   bool restoreHostFunctions(ModuleOp moduleOp);
-
-  /// Collect kernel information from LLVM functions
-  LogicalResult collectKernelInfo(ModuleOp moduleOp, int maxSharedMemPerWG,
-                                  SmallVector<KernelInfo> &kernels);
 
   /// Create gpu.binary from HSACO and convert calls to gpu.launch_func
   LogicalResult
@@ -184,64 +180,6 @@ bool RockRestoreHostCodePass::restoreHostFunctions(ModuleOp moduleOp) {
   // Remove the attribute
   moduleOp->removeAttr("rock.host_functions");
   return true;
-}
-
-LogicalResult
-RockRestoreHostCodePass::collectKernelInfo(ModuleOp moduleOp, int maxSharedMemPerWG,
-                                           SmallVector<KernelInfo> &kernels) {
-  // Get Triton metadata from module attributes for block size
-  // The HSACO is compiled with these settings, so we must use them for launch
-  int64_t numWarps = -1;
-  int64_t warpSize = -1;
-  int64_t sharedMemory = 0;
-
-  if (auto numWarpsAttr =
-          moduleOp->getAttrOfType<IntegerAttr>("ttg.num-warps"))
-    numWarps = numWarpsAttr.getInt();
-  if (auto warpSizeAttr =
-          moduleOp->getAttrOfType<IntegerAttr>("ttg.threads-per-warp"))
-    warpSize = warpSizeAttr.getInt();
-  if (auto sharedAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared"))
-    sharedMemory = sharedAttr.getInt();
-
-  if(sharedMemory > maxSharedMemPerWG) {
-    LLVM_DEBUG(llvm::dbgs() << "ttg.shared: too much LDS usage\n");
-    return failure();
-  }
-
-  if (numWarps == -1) {
-    LLVM_DEBUG(llvm::dbgs() << "ttg.num-warps not found\n");
-    return failure();
-  }
-  if (warpSize == -1) {
-    LLVM_DEBUG(llvm::dbgs() << "ttg.threads-per-warp not found\n");
-    return failure();
-  }
-
-  int64_t tritonBlockSize = numWarps * warpSize;
-  moduleOp.walk([&](LLVM::LLVMFuncOp funcOp) {
-    if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
-      return;
-
-    KernelInfo info;
-    info.name = funcOp.getName();
-    info.llvmFunc = funcOp;
-    info.blockSize = tritonBlockSize; // Use Triton's block size (matches HSACO)
-    info.sharedMemorySize = sharedMemory;
-
-    // Get the saved grid_size from module attribute (set by MemrefToTensor)
-    // This is the problem-specific value from the original rocMLIR kernel
-    std::string gridAttrName = "rock.grid_size." + info.name;
-    if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
-      info.gridSize = gridAttr.getInt();
-
-    kernels.push_back(info);
-  });
-
-  // Use shared utility to populate argTypes from LLVM functions
-  populateKernelArgTypes(moduleOp, kernels);
-
-  return success();
 }
 
 LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
@@ -326,8 +264,8 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
 
     // Triton adds workspace arguments (global scratch, profile scratch).
     // Add null pointers for these. The number of args varies by operation
-    // type and fusions - we use kernel.argTypes.size() from the LLVM signature.
-    while (launchArgs.size() < kernel.argTypes.size()) {
+    // type and fusions - we use kernel.argCount from the LLVM signature.
+    while (launchArgs.size() < kernel.argCount) {
       Value nullPtr = LLVM::ZeroOp::create(builder, callLoc, ptrType);
       launchArgs.push_back(nullPtr);
     }
@@ -432,7 +370,7 @@ void RockRestoreHostCodePass::runOnOperation() {
 
   // Collect kernel information from LLVM functions
   SmallVector<KernelInfo> kernels;
-  if (failed(collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels)))
+  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels)))
     signalPassFailure();
 
   // If we have kernels, create gpu.binary and convert calls to gpu.launch_func

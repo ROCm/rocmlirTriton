@@ -23,20 +23,19 @@ struct KernelInfo {
   int64_t blockSize;
   int64_t sharedMemorySize;
   SmallVector<Type> argTypes; // Original func argument types
+  unsigned argCount = 0;      // Total argument count
 };
 
-/// Find an LLVM kernel function by name in the module.
-/// Returns nullptr if not found.
-LLVM::LLVMFuncOp findKernelFunc(ModuleOp moduleOp, StringRef kernelName);
-
-/// Populate argTypes for kernels by walking LLVM functions in the module.
-/// Each kernel in the vector should have its name set before calling this.
-void populateKernelArgTypes(ModuleOp moduleOp,
-                            SmallVectorImpl<KernelInfo> &kernels);
-
-/// Returns the argument count for a kernel by name.
-std::optional<unsigned> getKernelArgCount(ModuleOp moduleOp,
-                                          StringRef kernelName);
+/// Collect kernel information from a compiled module.
+/// Walks LLVM functions with KernelAttr and extracts launch parameters:
+/// - Block size from ttg.num-warps (or ttg.total-num-warps) * ttg.threads-per-warp
+/// - Shared memory from ttg.shared
+/// - Grid size from rock.grid_size.{kernelName} module attribute
+/// - Argument types and count from LLVM function signature
+/// Returns failure if LDS usage exceeds maxSharedMemPerWG or required
+/// attributes are missing.
+LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
+                                SmallVectorImpl<KernelInfo> &kernels);
 
 /// Create a gpu.ObjectAttr from the HSACO binary in moduleOp and kernel info.
 /// Returns the ObjectAttr and a mapping from kernel names to their indices.

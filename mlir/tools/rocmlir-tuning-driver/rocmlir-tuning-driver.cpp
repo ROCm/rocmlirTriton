@@ -859,7 +859,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       backendOpts.optLevel = 3;
       backendOpts.suppressDiagnostic = true;
 
-      int waveSize = rock::getWaveSize(backendOpts.chip);
       int maxSharedMemPerWG = rock::getLDSSize(backendOpts.chip);
 
       rock::TritonOptions tritonOpts;
@@ -887,37 +886,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // Extract block and grid sizes from the applicability-checked module
-      // We need to collect kernel info from the funcs in the source module
-      SmallVector<func::FuncOp> funcsCopy;
-      if (failed(extractFuncOps(sourceCopy.get(), funcsCopy))) {
-        result.status = CompilationStatus::CompilationFailed;
-        compilationFailed.store(true, std::memory_order_relaxed);
-        return result;
-      }
-
-      // Build kernel info for each func
-      SmallVector<rock::KernelInfo> localKernels;
-      for (func::FuncOp &funcOp : funcsCopy) {
-        rock::KernelInfo kernel;
-        kernel.name = funcOp.getSymName().str();
-
-        auto blockSizeAttr = funcOp->getAttrOfType<IntegerAttr>(
-            rock::BlockSizeAttr::getMnemonic());
-        auto gridSizeAttr = funcOp->getAttrOfType<IntegerAttr>(
-            rock::GridSizeAttr::getMnemonic());
-
-        if (!blockSizeAttr || !gridSizeAttr) {
-          result.status = CompilationStatus::CompilationFailed;
-          compilationFailed.store(true, std::memory_order_relaxed);
-          return result;
-        }
-
-        kernel.blockSize = blockSizeAttr.getInt();
-        kernel.gridSize = gridSizeAttr.getInt();
-        localKernels.push_back(kernel);
-      }
-
       // Compilation
       if (failed(compilationPM.run(sourceCopy.get()))) {
         std::lock_guard<std::mutex> lock(outputMutex);
@@ -928,40 +896,19 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // Get shared memory size from module attribute (set by Triton
-      // compilation)
-      int64_t sharedMemorySize = 0;
-      if (auto sharedAttr =
-              sourceCopy.get()->getAttrOfType<IntegerAttr>("ttg.shared"))
-        sharedMemorySize = sharedAttr.getInt();
-
-      if (sharedMemorySize > maxSharedMemPerWG) {
+      // Collect kernel info from the compiled module (block/grid sizes,
+      // shared memory, argument count). This also validates LDS usage.
+      SmallVector<rock::KernelInfo> localKernels;
+      if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
+                                         localKernels))) {
         result.status = CompilationStatus::NotApplicable;
         return result;
       }
 
-      // The warp-specialization pass can mutate the number of warps
-      int blockSize = 0;
-      if (auto totalNumWarpsAttr =
-              sourceCopy.get()->getAttrOfType<IntegerAttr>("ttg.total-num-warps")) {
-        blockSize = totalNumWarpsAttr.getInt() * waveSize;
-      }
-
-      for (auto &kernel : localKernels) {
-        kernel.sharedMemorySize = sharedMemorySize;
-        if (blockSize != 0) {
-          kernel.blockSize = blockSize;
-        }
-      }
-
-      // Get the number of kernel arguments from the compiled LLVM function.
-      // We only store the count (not the Types) because Type objects reference
-      // the MLIRContext which is destroyed when this function returns.
+      // Get numKernelArgs from the collected info (argTypes won't survive
+      // context destruction, but argCount will)
       if (!localKernels.empty()) {
-        if (auto argCount = rock::getKernelArgCount(sourceCopy.get(),
-                                                     localKernels[0].name)) {
-          result.numKernelArgs = *argCount;
-        }
+        result.numKernelArgs = localKernels[0].argCount;
       }
 
       // Get the HSACO binary from the compiled module
