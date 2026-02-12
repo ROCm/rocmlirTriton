@@ -262,9 +262,9 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
     }
     
     // Compute output transforms for this load
-    FailureOr<RegsAsMatrixSubTiles> maybeOutputViews = computeOutputTransforms(
+    FailureOr<ArrayAttr> maybeOutputViews = computeOutputTransforms(
         builder, loc, mPerBlock, nPerBlock, bidGridLengths);
-    
+
     if (failed(maybeOutputViews)) {
       LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms for: "
                               << loadOp << "\n");
@@ -274,9 +274,9 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
     // Apply the grid subtile transform to the rock.load result
     // Chain: BlockwiseLoadOp.source -> transform -> rock.load result
     // LowerLoads will trace back through this and find rock.load
-    Value wrappedSource = transform(builder, loadResult,
-                                    maybeOutputViews->gridSubTile);
-    
+    Value wrappedSource =
+        transform(builder, loadResult, maybeOutputViews.value());
+
     // Determine the tile type (last 2 dimensions are the tile)
     auto sourceType = cast<RankedTensorType>(wrappedSource.getType());
     auto wrappedShape = sourceType.getShape();

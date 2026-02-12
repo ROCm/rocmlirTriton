@@ -32,38 +32,31 @@ namespace rock {
 struct ConvolutionDims;
 struct GemmSize;
 
-// This structure captures three views of
-// a register memref. Each view correspond
-// to a (strided) slice of a 2D matrix that is
-// loaded into the register memref.
-struct RegsAsMatrixSubTiles {
-  // This is a [gridIdx0, ... , gridIdxN, tid, iter] to a 2D subtile view.
-  // Using all grid idxs, tid and iterative idx, this provides access to
-  // gridwise sub-tile of the matrix.
-  ArrayAttr gridSubTile;
-  // This is a [tid, iter] to a 2D subtile view.
-  // Using just tid and iterative idx, this provides access to blockwise
-  // sub-tile of the matrix.
-  ArrayAttr blockSubTile;
-  // This is a [iter] to to a 2D subtile view.
-  // Using just a iterative dix, this provides access to threadwise sub-tile
-  // of the matrix.
-  ArrayAttr threadSubTile;
-  // This is a [tid] to a 2D subtile view.
-  // i.e. [tid] --> [m_tid, n_tid]
-  // where |m_tid| x |n_tid| == workgroup size.
-  // It is equivalent to removing all iter-dependent components from
-  // blockSubTile.
-  std::optional<ArrayAttr> blockSubTileTidSlice;
+namespace layout {
+/// Struct containing the {g,m,n} block coordinates of a block
+/// with a given bid. I.e., block bid will compute C[g_block, m_block, n_block]
+/// output
+struct GridCoordinates {
+  Value g_block;
+  Value m_block;
+  Value n_block;
 };
+
+/// Struct containing the {g,m,n,split} block coordinates of a block
+/// with a given bid.
+struct AttnGridCoordinates : GridCoordinates {
+  Value split_block;
+};
+} // namespace layout
 
 // This function will create views of the register buffer of the loaded tile
 // of a matrix in global memory. Those views will provide sub-tiles of the
-// respective hierarchy within the GPU. See above about RegsAsMatrixSubTiles
-FailureOr<RegsAsMatrixSubTiles>
-getLoadRegsAsTileViews(OpBuilder &b, Location loc, Value globalBuffer,
-                       StringRef dName, ArrayRef<int64_t> bidGridLengths,
-                       int64_t kPerBlock, int64_t dPerBlock);
+// respective hierarchy within the GPU.
+FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
+                                            Value globalBuffer, StringRef dName,
+                                            ArrayRef<int64_t> bidGridLengths,
+                                            int64_t kPerBlock,
+                                            int64_t dPerBlock);
 
 bool isWrWAtomicKernel(StringRef arch, Type dataType, bool requiredPadding);
 
@@ -172,13 +165,23 @@ FailureOr<BlockArgument> findBlockArgument(Value value);
 FailureOr<SmallVector<OpOperand *>>
 traceGemmOutputToGenericOps(Value matC, func::FuncOp func);
 
-llvm::FailureOr<RegsAsMatrixSubTiles>
+llvm::FailureOr<ArrayAttr>
 computeOutputTransforms(OpBuilder &b, Location loc, int64_t mPerBlock,
                         int64_t nPerBlock, ArrayRef<int64_t> bidGridLengths);
 
 ArrayAttr computeOutputLseTransforms(OpBuilder &b, Location loc,
                                      int64_t mPerBlock,
                                      ArrayRef<int64_t> bidGridLengths);
+
+Type getAccType(Type elemA, Type elemB);
+
+Value loadTile(PatternRewriter &rewriter, Location loc, Value in, Value kIter,
+               StringRef dName, rock::layout::GridCoordinates gridCoords,
+               int64_t kPerBlock, int64_t dPerBlock,
+               SmallVector<int64_t, 3> &bidGridLengths);
+
+Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
+                          ArrayRef<int64_t> shape, Type accType);
 
 } // end namespace rock
 } // end namespace mlir

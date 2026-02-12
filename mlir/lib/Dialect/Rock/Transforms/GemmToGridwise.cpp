@@ -597,30 +597,6 @@ commonAttentionGemmElmtGemm(
   return std::make_tuple(newOp, out, lse);
 }
 
-static Type getSmallestType(Type type1, Type type2) {
-  return (type1.getIntOrFloatBitWidth() > type2.getIntOrFloatBitWidth())
-             ? type2
-             : type1;
-}
-
-static Type deduceAccumulatorElementType(Type elementTypeA, Type elementTypeB,
-                                         Type elementTypeC,
-                                         OpBuilder &builder) {
-  // Determine the type used on VGPR to act as accumulator.
-  // f32: f32.
-  // f16, bf16: f32 to prevent overflow from happening.
-  // i16 : i16.
-  // fp8 (any combo) : f32.
-  // i8: i32, since we have an i32 output
-  auto type = getSmallestType(elementTypeA, elementTypeB);
-  if (isa<FloatType>(type) && type.getIntOrFloatBitWidth() < 32) {
-    return builder.getF32Type();
-  } else if (type.isInteger(8)) {
-    return builder.getI32Type();
-  }
-  return elementTypeC;
-}
-
 // returns accumulator type
 static ShapedType getAccumulatorType(Value a, Value b, Value c, OpBuilder &builder,
                             Location loc) {
@@ -629,8 +605,7 @@ static ShapedType getAccumulatorType(Value a, Value b, Value c, OpBuilder &build
   auto cElementType = cast<ShapedType>(c.getType()).getElementType();
   auto accumulatorType = cast<ShapedType>(c.getType());
 
-  auto accumulatorElementType = deduceAccumulatorElementType(
-      aElementType, bElementType, cElementType, builder);
+  auto accumulatorElementType = rock::getAccType(aElementType, bElementType);
 
   if (accumulatorElementType != cElementType) {
     accumulatorType = RankedTensorType::get(accumulatorType.getShape(), accumulatorElementType);

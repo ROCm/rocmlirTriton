@@ -1538,25 +1538,3 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
 
 #define GET_OP_CLASSES
 #include "mlir/Dialect/Rock/IR/RockOps.cpp.inc"
-
-//===----------------------------------------------------------------------===//
-// CastToPtrOp canonicalization
-//===----------------------------------------------------------------------===//
-namespace {
-struct CastToPtrSameTypePattern : public OpRewritePattern<CastToPtrOp> {
-  using OpRewritePattern<CastToPtrOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(CastToPtrOp op,
-                                PatternRewriter &rewriter) const override {
-    if (op.getSrc().getType() != op.getResult().getType())
-      return failure();
-    rewriter.replaceOp(op, op.getSrc());
-    return success();
-  }
-};
-} // namespace
-
-void CastToPtrOp::getCanonicalizationPatterns(RewritePatternSet &results,
-                                              MLIRContext *context) {
-  results.add<CastToPtrSameTypePattern>(context);
-}

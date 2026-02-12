@@ -3854,8 +3854,7 @@ createCpuConvElementwiseGemmKernelWithMlir(ModuleOp module,
 
   Type convOutElemType = params.types[2];
   // accumulate in 32 bit
-  Type firstAccType = rock::tosa::getAccType(builder, params.types[0]);
-  assert(firstAccType == rock::tosa::getAccType(builder, params.types[1]));
+  Type firstAccType = rock::getAccType(params.types[0], params.types[1]);
 
   auto biasTy = RankedTensorType::get(
       cast<ShapedType>(filterTensor.getType()).getShape()[0], convOutElemType);
@@ -3886,8 +3885,7 @@ createCpuConvElementwiseGemmKernelWithMlir(ModuleOp module,
       tosa::createZeroPointTensor(builder, loc, cTensor.getType(), 0).value();
   Type secondGemmOutElemType = params.types[3];
   // accumulate in 32 bit
-  Type secondAccType = rock::tosa::getAccType(builder, convOutElemType);
-  assert(secondAccType == rock::tosa::getAccType(builder, params.types[2]));
+  Type secondAccType = rock::getAccType(convOutElemType, params.types[2]);
   auto resultTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, secondGemmOutElemType, gemmA, cTensor, abZp, cZp);
   resultTensorMatMul->setAttr("acc_type", TypeAttr::get(secondAccType));
@@ -3993,8 +3991,7 @@ createCpuGemmElementwiseGemmKernelWithMlir(ModuleOp module,
 
   Type firstGemmOutElemType = params.types[2];
   // accumulate in 32 bit
-  Type firstAccType = rock::tosa::getAccType(builder, params.types[0]);
-  assert(firstAccType == rock::tosa::getAccType(builder, params.types[1]));
+  Type firstAccType = rock::getAccType(params.types[0], params.types[1]);
   auto abTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, firstGemmOutElemType, aTensor, bTensor, aZp, bZp);
   abTensorMatMul->setAttr("acc_type", TypeAttr::get(firstAccType));
@@ -4006,8 +4003,7 @@ createCpuGemmElementwiseGemmKernelWithMlir(ModuleOp module,
       tosa::createZeroPointTensor(builder, loc, cTensor.getType(), 0).value();
   Type secondGemmOutElemType = params.types[3];
   // accumulate in 32 bit
-  Type secondAccType = rock::tosa::getAccType(builder, firstGemmOutElemType);
-  assert(secondAccType == rock::tosa::getAccType(builder, params.types[2]));
+  Type secondAccType = rock::getAccType(firstGemmOutElemType, params.types[2]);
   auto resultTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, secondGemmOutElemType, abTensor, cTensor, abZp, cZp);
   resultTensorMatMul->setAttr("acc_type", TypeAttr::get(secondAccType));
@@ -4124,8 +4120,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
       tosa::createZeroPointTensor(builder, loc, keysTensor.getType(), 0)
           .value();
   // accumulate in 32 bit
-  Type firstAccType = rock::tosa::getAccType(builder, firstGemmOutElemType);
-  assert(firstAccType == rock::tosa::getAccType(builder, params.types[1]));
+  Type firstAccType = rock::getAccType(firstGemmOutElemType, params.types[1]);
   auto qkTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, firstGemmOutElemType, queriesTensor, keysTensor, queriesZp,
       keysZp);
@@ -4286,7 +4281,8 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
           .value();
 
   // accumulate in 32 bit
-  Type secondAccType = rock::tosa::getAccType(builder, resultOutElementType);
+  Type secondAccType =
+      rock::getAccType(resultOutElementType, resultOutElementType);
   auto resultTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, resultOutElementType, softmaxTensor, valuesTensor,
       softmaxZp, valuesZp);

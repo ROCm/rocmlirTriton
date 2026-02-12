@@ -150,18 +150,6 @@ Value getOneTensor(OpBuilder &builder, Location loc, RankedTensorType type) {
   return ::mlir::tosa::ConstOp::create(builder, loc, type, value);
 }
 
-Type getAccType(OpBuilder &builder, Type inputType) {
-  Type accType;
-  if (isa<FloatType>(inputType)) {
-    accType = builder.getF32Type();
-  } else if (isa<IntegerType>(inputType)) {
-    accType = builder.getI32Type();
-  } else {
-    llvm_unreachable("not expected type");
-  }
-  return accType;
-}
-
 Value getZeroTensor(OpBuilder &builder, Location loc, RankedTensorType type) {
   auto value = cast<ElementsAttr>(builder.getZeroAttr(type));
   return mlir::tosa::ConstOp::create(builder, loc, type, value);

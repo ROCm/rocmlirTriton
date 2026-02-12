@@ -26,25 +26,11 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 
 namespace mlir {
 namespace rock {
 namespace layout {
-
-/// Struct containing the {g,m,n} block coordinates of a block
-/// with a given bid. I.e., block bid will compute C[g_block, m_block, n_block]
-/// output
-struct GridCoordinates {
-  Value g_block;
-  Value m_block;
-  Value n_block;
-};
-
-/// Struct containing the {g,m,n,split} block coordinates of a block
-/// with a given bid.
-struct AttnGridCoordinates : GridCoordinates {
-  Value split_block;
-};
 
 /// Struct containing information that guide the layout heuristic selection
 struct GridLayoutInfo {

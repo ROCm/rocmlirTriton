@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/tosaUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
@@ -191,8 +192,10 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
   Value input = adaptor.getInput();
   auto inputType = cast<ShapedType>(input.getType());
   Value filter = adaptor.getFilter();
+  auto filterType = cast<ShapedType>(filter.getType());
   ValueRange results = op->getResults();
   Type elementTy = inputType.getElementType();
+  Type elementTyFilter = filterType.getElementType();
   auto outputTy = cast<MIXRShapedType>(results[0].getType());
   Type outElementTy = outputTy.getElementType();
   Type newOutElementTy = getTypeConverter()->convertType(outElementTy);
@@ -355,7 +358,7 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
   }
 
   // Determine the accumulation type based on the output type.
-  Type accType = rock::tosa::getAccType(rewriter, elementTy);
+  Type accType = rock::getAccType(elementTy, elementTyFilter);
   // convolution config attributes
   if (dims == 1) {
     if ((dilations.size() != 1) || (strides.size() != 1) ||
@@ -411,6 +414,7 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
   auto inB = cast<TypedValue<RankedTensorType>>(adaptor.getInB());
   auto results = op->getResults();
   Type elementTy = inA.getType().getElementType();
+  Type elementTyB = inB.getType().getElementType();
   auto origOutputTy = cast<MIXRShapedType>(results[0].getType());
   Type outElementTy = origOutputTy.getElementType();
   Type newOutElementTy = getTypeConverter()->convertType(outElementTy);
@@ -487,7 +491,7 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
       tosa::MatMulOp::create(rewriter, loc, newOutType, inA, inB, aZp, bZp);
 
   // Determine the accumulation type based on the output type.
-  Type accType = rock::tosa::getAccType(rewriter, elementTy);
+  Type accType = rock::getAccType(elementTy, elementTyB);
   mop->setAttr("acc_type", TypeAttr::get(accType));
 
   // Convert optional attributes

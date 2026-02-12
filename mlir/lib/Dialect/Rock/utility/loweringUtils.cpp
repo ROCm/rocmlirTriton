@@ -177,7 +177,7 @@ Type mlir::rock::vectorTypeOrSelf(Type elementType, int64_t len) {
   return VectorType::get({len}, elementType);
 }
 
-FailureOr<RegsAsMatrixSubTiles> mlir::rock::getLoadRegsAsTileViews(
+FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
     OpBuilder &b, Location loc, Value globalBuffer, StringRef dName,
     ArrayRef<int64_t> bidGridLengths, int64_t kPerBlock, int64_t dPerBlock) {
   SmallVector<StringRef, 3> bidGridOrder = {"g_block", "m_block", "n_block"};
@@ -210,52 +210,26 @@ FailureOr<RegsAsMatrixSubTiles> mlir::rock::getLoadRegsAsTileViews(
     std::swap(firstDimLen, secondDimLen);
   }
 
-  RegsAsMatrixSubTiles gpuViews;
-  {
-    TopDownTMBuilder toGlobalIdx(b,
-                                 {"k_loop", bidGridOrder[0], bidGridOrder[1],
-                                  bidGridOrder[2], firstDim, secondDim},
-                                 {kIters, bidGridLengths[0], bidGridLengths[1],
-                                  bidGridLengths[2], firstDimLen, secondDimLen},
-                                 loc);
+  TopDownTMBuilder toGlobalIdx(b,
+                               {"k_loop", bidGridOrder[0], bidGridOrder[1],
+                                bidGridOrder[2], firstDim, secondDim},
+                               {kIters, bidGridLengths[0], bidGridLengths[1],
+                                bidGridLengths[2], firstDimLen, secondDimLen},
+                               loc);
 
-    toGlobalIdx.passThrough({"g"}, {0}, {"g_block"});
-    // For matrix B (isKFirst): source is [g, k, n], k at index 1, n at index 2
-    // For matrix A (!isKFirst): source is [g, m, k], m at index 1, k at index 2
-    int kLowerIdx = isKFirst ? 1 : 2;
-    int dLowerIdx = isKFirst ? 2 : 1;
-    toGlobalIdx.unmerge("k", kLowerIdx, {"k_loop", "k_iter"},
-                        {kIters, kPerBlock});
-    toGlobalIdx.unmerge(dName, dLowerIdx, {thisBlockDim, dIterName},
-                        {dGlobal / dPerBlock, dPerBlock});
+  toGlobalIdx.passThrough({"g"}, {0}, {"g_block"});
+  // For matrix B (isKFirst): source is [g, k, n], k at index 1, n at index 2
+  // For matrix A (!isKFirst): source is [g, m, k], m at index 1, k at index 2
+  int kLowerIdx = isKFirst ? 1 : 2;
+  int dLowerIdx = isKFirst ? 2 : 1;
+  toGlobalIdx.unmerge("k", kLowerIdx, {"k_loop", "k_iter"},
+                      {kIters, kPerBlock});
+  toGlobalIdx.unmerge(dName, dLowerIdx, {thisBlockDim, dIterName},
+                      {dGlobal / dPerBlock, dPerBlock});
 
-    toGlobalIdx.ignore(otherBlockDim);
-    TransformMapAttr toGlobalIdxAttr = toGlobalIdx.get();
-    gpuViews.gridSubTile = b.getArrayAttr({toGlobalIdxAttr});
-  }
-  {
-    StringSet<> dimensionsToRemove{"k_loop", bidGridOrder[0], bidGridOrder[1],
-                                   bidGridOrder[2]};
-    FailureOr<ArrayAttr> maybeBlockSubTile =
-        removeUpperDims(b, gpuViews.gridSubTile, dimensionsToRemove);
-
-    if (failed(maybeBlockSubTile)) {
-      return failure();
-    }
-    gpuViews.blockSubTile = maybeBlockSubTile.value();
-  }
-  {
-    StringSet<> dimensionsToRemove{"k_loop", bidGridOrder[0], bidGridOrder[1],
-                                   bidGridOrder[2], "tid"};
-    FailureOr<ArrayAttr> maybeThreadSubTile =
-        removeUpperDims(b, gpuViews.gridSubTile, dimensionsToRemove);
-
-    if (failed(maybeThreadSubTile)) {
-      return failure();
-    }
-    gpuViews.threadSubTile = maybeThreadSubTile.value();
-  }
-  return gpuViews;
+  toGlobalIdx.ignore(otherBlockDim);
+  TransformMapAttr toGlobalIdxAttr = toGlobalIdx.get();
+  return b.getArrayAttr({toGlobalIdxAttr});
 }
 
 Value mlir::rock::normalizeMatrix(Value matrix, OpBuilder &b, Location loc,
@@ -569,68 +543,77 @@ mlir::rock::computeOutputLseTransforms(OpBuilder &b, Location loc,
   return b.getArrayAttr(transformAttrs);
 }
 
-llvm::FailureOr<RegsAsMatrixSubTiles> mlir::rock::computeOutputTransforms(
-    OpBuilder &b, Location loc, int64_t mPerBlock, int64_t nPerBlock,
-    ArrayRef<int64_t> bidGridLengths) {
-  RegsAsMatrixSubTiles ret;
-  {
-    // Create views as gridwise sub-tile of C
-    TopDownTMBuilder toMatrixC(
-        b, {"g_block", "m_block", "n_block", "m_iter", "n_iter"},
-        {bidGridLengths[0], bidGridLengths[1], bidGridLengths[2], mPerBlock,
-         nPerBlock},
-        loc);
+llvm::FailureOr<ArrayAttr>
+mlir::rock::computeOutputTransforms(OpBuilder &b, Location loc,
+                                    int64_t mPerBlock, int64_t nPerBlock,
+                                    ArrayRef<int64_t> bidGridLengths) {
+  // Create views as gridwise sub-tile of C
+  TopDownTMBuilder toMatrixC(
+      b, {"g_block", "m_block", "n_block", "m_iter", "n_iter"},
+      {bidGridLengths[0], bidGridLengths[1], bidGridLengths[2], mPerBlock,
+       nPerBlock},
+      loc);
 
-    toMatrixC.passThrough({"gemmG"}, {0}, {"g_block"});
-    toMatrixC.unmerge("gemmM", 1, {"m_block", "m_iter"},
-                      {bidGridLengths[1], mPerBlock});
-    toMatrixC.unmerge("gemmN", 2, {"n_block", "n_iter"},
-                      {bidGridLengths[2], nPerBlock});
+  toMatrixC.passThrough({"gemmG"}, {0}, {"g_block"});
+  toMatrixC.unmerge("gemmM", 1, {"m_block", "m_iter"},
+                    {bidGridLengths[1], mPerBlock});
+  toMatrixC.unmerge("gemmN", 2, {"n_block", "n_iter"},
+                    {bidGridLengths[2], nPerBlock});
 
-    TransformMapAttr toMatrixCAttr = toMatrixC.get();
+  TransformMapAttr toMatrixCAttr = toMatrixC.get();
 
-    // Before returning the output view, if necessary, swap back the
-    // threadid/iter dimensions on both the M/N axis.
-    SmallVector<Attribute> transformAttrs{toMatrixCAttr};
+  // Before returning the output view, if necessary, swap back the
+  // threadid/iter dimensions on both the M/N axis.
+  SmallVector<Attribute> transformAttrs{toMatrixCAttr};
 
-    ret.gridSubTile = b.getArrayAttr(transformAttrs);
+  return b.getArrayAttr(transformAttrs);
+}
+
+Type mlir::rock::getAccType(Type elemA, Type elemB) {
+  OpBuilder b(elemA.getContext());
+
+  Type accType;
+  if (isa<FloatType>(elemA) && isa<FloatType>(elemB)) {
+    accType = b.getF32Type();
+  } else if (isa<IntegerType>(elemA) && isa<IntegerType>(elemB)) {
+    accType = b.getI32Type();
+  } else {
+    llvm_unreachable("not expected type");
   }
+  return accType;
+}
 
-  {
-    // Create views as blockwise sub-tile of C
-    StringSet<> dimensionsToRemove{"g_block", "m_block", "n_block"};
-    FailureOr<ArrayAttr> maybeBlockSubTile =
-        removeUpperDims(b, ret.gridSubTile, dimensionsToRemove);
+// This function will process a tile of gemm input into LDS (or register)
+// buffer in a way it could be fed to blockwise_gemm op
+Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
+                           Value kIter, StringRef dName,
+                           rock::layout::GridCoordinates gridCoords,
+                           int64_t kPerBlock, int64_t dPerBlock,
+                           SmallVector<int64_t, 3> &bidGridLengths) {
+  FailureOr<ArrayAttr> maybeBufferViews = getLoadRegsAsTileViews(
+      rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock);
+  assert(succeeded(maybeBufferViews));
+  Value wrappedSource = transform(rewriter, in, maybeBufferViews.value());
 
-    if (failed(maybeBlockSubTile)) {
-      return failure();
-    }
-    ret.blockSubTile = maybeBlockSubTile.value();
-  }
+  // Determine the result type from the source shape (last two dimensions are
+  // the tile)
+  auto sourceType = cast<RankedTensorType>(wrappedSource.getType());
+  auto sourceShape = sourceType.getShape();
+  auto resultType = RankedTensorType::get(sourceShape.take_back(2),
+                                          sourceType.getElementType());
 
-  {
-    // Create views for tid slice of blockwise sub-tile of C
-    StringSet<> dimensionsToRemove{"g_block", "m_block", "n_block", "item"};
-    FailureOr<ArrayAttr> maybeBlockSubTileTidSlice =
-        removeUpperDims(b, ret.gridSubTile, dimensionsToRemove);
+  // Load from global memory to LDS or register buffer.
+  auto loadOp = BlockwiseLoadOp::create(
+      rewriter, loc, resultType, wrappedSource,
+      ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
+                 gridCoords.n_block});
+  return loadOp.getResult();
+}
 
-    if (failed(maybeBlockSubTileTidSlice)) {
-      return failure();
-    }
-    ret.blockSubTileTidSlice = maybeBlockSubTileTidSlice.value();
-  }
-
-  {
-    // Create views as threadwise sub-tile of C
-    StringSet<> dimensionsToRemove{"g_block", "m_block", "n_block", "tid"};
-    FailureOr<ArrayAttr> maybeThreadSubTile =
-        removeUpperDims(b, ret.gridSubTile, dimensionsToRemove);
-
-    if (failed(maybeThreadSubTile)) {
-      return failure();
-    }
-    ret.threadSubTile = maybeThreadSubTile.value();
-  }
-
-  return ret;
+// This function creates a zero-initialized accumulator tensor
+Value mlir::rock::createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
+                                      ArrayRef<int64_t> shape, Type accType) {
+  auto tensorType = RankedTensorType::get(shape, accType);
+  auto zeroAttr = rewriter.getZeroAttr(tensorType);
+  return arith::ConstantOp::create(rewriter, loc, tensorType, zeroAttr);
 }
