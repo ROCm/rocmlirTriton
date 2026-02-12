@@ -385,7 +385,8 @@ std::string translateLLVMIRToASM(llvm::Module &module,
                                  llvm::TargetMachine *machine) {
   using namespace mlir;
 
-  // inline everything except kernel entry points (matches llvm.cc lines 329-332)
+  // inline everything except kernel entry points (matches llvm.cc lines
+  // 329-332)
   for (llvm::Function &f : module.functions())
     if (!f.hasFnAttribute(llvm::Attribute::NoInline) &&
         f.getCallingConv() != llvm::CallingConv::AMDGPU_KERNEL)

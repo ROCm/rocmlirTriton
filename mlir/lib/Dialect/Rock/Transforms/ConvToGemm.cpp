@@ -602,9 +602,8 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   return std::make_tuple(Value(), Value(), Value());
 }
 
-FailureOr<std::pair<Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
-                                                    PatternRewriter &b,
-                                                    int64_t kernelId) {
+FailureOr<std::pair<Value, Value>>
+backwardDataV4R1(ConvBwdDataOp op, PatternRewriter &b, int64_t kernelId) {
   Location loc = op.getLoc();
 
   ConvolutionContext ctx = populateConvContext(op);
