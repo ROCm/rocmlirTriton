@@ -44,7 +44,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
                                 SmallVectorImpl<KernelInfo> &kernels) {
   // Get Triton metadata from module attributes
   int64_t numWarps = -1;
-  int64_t waveSize = -1;
+  int64_t warpSize = -1;
   int64_t sharedMemory = 0;
 
   if (auto numWarpsAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.num-warps"))
@@ -72,7 +72,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     return failure();
   }
 
-  int64_t blockSize = numWarps * waveSize;
+  int64_t tritonBlockSize = numWarps * warpSize;
 
   // Walk LLVM functions with KernelAttr
   moduleOp.walk([&](LLVM::LLVMFuncOp funcOp) {
@@ -82,7 +82,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     KernelInfo info;
     info.name = funcOp.getName().str();
     info.llvmFunc = funcOp;
-    info.blockSize = blockSize;
+    info.blockSize = tritonBlockSize; // Use Triton's block size (matches HSACO)
     info.sharedMemorySize = sharedMemory;
 
     // Get grid_size from module attribute (set by FuncToTritonFunc)
