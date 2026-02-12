@@ -400,13 +400,15 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
 }
 
 // In order to match rocprof, returns time in nanoseconds
-static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
-                                          ArrayRef<rock::KernelInfo> kernels,
-                                          unsigned numKernelArgs,
+static FailureOr<double> benchmarkKernels(const CompilationResult &result,
                                           ArrayRef<void *> hostBuffers,
                                           MutableArrayRef<void *> gpuBuffers,
                                           ArrayRef<size_t> bufferSizes,
                                           const BenchmarkParams &params) {
+  const auto &hsacoBinary = result.hsacoBinary;
+  const auto &kernels = result.kernels;
+  unsigned numKernelArgs = result.numKernelArgs;
+
   bool benchmarkMode = !params.benchmarkConfig.empty();
   hipStream_t stream;
   HIPCHECK(hipStreamCreate(&stream));
@@ -907,9 +909,15 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       // Get numKernelArgs from the collected info (argTypes won't survive
       // context destruction, but argCount will)
-      if (!localKernels.empty()) {
-        result.numKernelArgs = localKernels[0].argCount;
+      if (localKernels.empty()) {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        llvm::errs() << "No kernels found for config: " << result.perfConfig
+                     << "\n";
+        result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
+        return result;
       }
+      result.numKernelArgs = localKernels[0].argCount;
 
       // Get the HSACO binary from the compiled module
       auto hsacoAttr =
@@ -987,10 +995,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       assert(result.status == CompilationStatus::Success &&
              "Unexpected compilation status in benchmarking phase");
 
-      FailureOr<double> timing =
-          benchmarkKernels(result.hsacoBinary, result.kernels,
-                           result.numKernelArgs, hostBuffers, gpuBuffers,
-                           bufferLengths, benchmarkParams);
+      FailureOr<double> timing = benchmarkKernels(result, hostBuffers, gpuBuffers,
+                                                   bufferLengths, benchmarkParams);
 
       if (failed(timing)) {
         llvm::errs() << "Kernel execution failed\n";
