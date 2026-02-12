@@ -254,7 +254,10 @@ LogicalResult ConvGenerator::getKernelCount(OpBuilder &builder,
   assert(config.operation.has_value());
   switch (config.operation.value()) {
   case ConvOpType::BwdData:
-    kernelCount = getBwdDataKernelCount();
+    // When usesV4R1 = false, all gemms are created inside a single kernel
+    // function by the ConvToGemm pass, so we only need one kernel.
+    // When usesV4R1 = true, each kernel ID gets its own separate function.
+    kernelCount = config.usesV4R1 ? getBwdDataKernelCount() : 1;
     return success();
   case ConvOpType::Fwd:
     kernelCount = 1;

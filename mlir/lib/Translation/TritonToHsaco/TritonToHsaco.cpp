@@ -180,7 +180,10 @@ void setABIVersion(llvm::Module &module, int version) {
                        version);
 }
 
-/// Set kernel function attributes
+/// Set kernel function attributes on ALL kernel functions in the module.
+/// A kernel function is identified as a non-declaration function with external
+/// linkage. Multi-kernel cases (e.g. backward data conv with v4r1=1) have
+/// multiple such functions that all need proper GPU kernel attributes.
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
                          int numCTAs,
@@ -189,51 +192,45 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
-  llvm::Function *kernelFn = nullptr;
   for (llvm::Function &fn : module) {
-    if (!fn.isDeclaration() && fn.hasExternalLinkage()) {
-      kernelFn = &fn;
-      break;
+    if (fn.isDeclaration() || !fn.hasExternalLinkage())
+      continue;
+
+    fn.setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
+    fn.addFnAttr("amdgpu-cluster-dims", std::to_string(numCTAs) + ",1,1");
+    fn.addFnAttr("amdgpu-flat-work-group-size",
+                 "1," + std::to_string(totalThreads));
+
+    // memory-bound-attention schedule hint enables iterative-ilp scheduler
+    // (compiler.py lines 387-388)
+    // TODO(roctriton): set this in ToBlockwise? or somewhere
+    if (scheduleHint.contains("memory-bound-attention")) {
+      fn.addFnAttr("amdgpu-sched-strategy", "iterative-ilp");
     }
-  }
 
-  if (!kernelFn)
-    return;
+    fn.addFnAttr("uniform-work-group-size", "true");
 
-  kernelFn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
-  kernelFn->addFnAttr("amdgpu-cluster-dims", std::to_string(numCTAs) + ",1,1");
-  kernelFn->addFnAttr("amdgpu-flat-work-group-size",
-                      "1," + std::to_string(totalThreads));
+    if (wavesPerEU > 0) {
+      std::string wavesStr =
+          std::to_string(wavesPerEU) + ", " + std::to_string(wavesPerEU);
+      fn.addFnAttr("amdgpu-waves-per-eu", wavesStr);
+    }
 
-  // memory-bound-attention schedule hint enables iterative-ilp scheduler
-  // (compiler.py lines 387-388)
-  // TODO(roctriton): set this in ToBlockwise? or somewhere
-  if (scheduleHint.contains("memory-bound-attention")) {
-    kernelFn->addFnAttr("amdgpu-sched-strategy", "iterative-ilp");
-  }
+    std::string denormalMode = allowFlushDenorm ? "preserve-sign" : "ieee";
+    fn.addFnAttr("denormal-fp-math-f32", denormalMode);
 
-  kernelFn->addFnAttr("uniform-work-group-size", "true");
+    fn.addFnAttr("target-features", features);
+    // ASan support
+    if (enableAsan) {
+      fn.addFnAttr(llvm::Attribute::SanitizeAddress);
+    }
 
-  if (wavesPerEU > 0) {
-    std::string wavesStr =
-        std::to_string(wavesPerEU) + ", " + std::to_string(wavesPerEU);
-    kernelFn->addFnAttr("amdgpu-waves-per-eu", wavesStr);
-  }
-
-  std::string denormalMode = allowFlushDenorm ? "preserve-sign" : "ieee";
-  kernelFn->addFnAttr("denormal-fp-math-f32", denormalMode);
-
-  kernelFn->addFnAttr("target-features", features);
-  // ASan support
-  if (enableAsan) {
-    kernelFn->addFnAttr(llvm::Attribute::SanitizeAddress);
-  }
-
-  // set_all_fn_arg_inreg in compiler.py
-  if (!archStr.starts_with("gfx1250")) {
-    for (llvm::Argument &arg : kernelFn->args()) {
-      if (!arg.hasByRefAttr() && !arg.hasNestAttr()) {
-        arg.addAttr(llvm::Attribute::InReg);
+    // set_all_fn_arg_inreg in compiler.py
+    if (!archStr.starts_with("gfx1250")) {
+      for (llvm::Argument &arg : fn.args()) {
+        if (!arg.hasByRefAttr() && !arg.hasNestAttr()) {
+          arg.addAttr(llvm::Attribute::InReg);
+        }
       }
     }
   }
@@ -388,9 +385,10 @@ std::string translateLLVMIRToASM(llvm::Module &module,
                                  llvm::TargetMachine *machine) {
   using namespace mlir;
 
-  // inline everything (matches llvm.cc lines 329-332)
+  // inline everything except kernel entry points (matches llvm.cc lines 329-332)
   for (llvm::Function &f : module.functions())
-    if (!f.hasFnAttribute(llvm::Attribute::NoInline))
+    if (!f.hasFnAttribute(llvm::Attribute::NoInline) &&
+        f.getCallingConv() != llvm::CallingConv::AMDGPU_KERNEL)
       f.addFnAttr(llvm::Attribute::AlwaysInline);
 
   // verify and run inliner (matches llvm.cc lines 333-344)
@@ -708,7 +706,6 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
         fn.removeFnAttr("amdgpu-no-workgroup-id-x");
         fn.removeFnAttr("amdgpu-no-workgroup-id-y");
         fn.removeFnAttr("amdgpu-no-workgroup-id-z");
-        break;
       }
     }
   }
@@ -718,7 +715,6 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     for (llvm::Function &fn : *llvmModule) {
       if (!fn.isDeclaration() && fn.hasExternalLinkage()) {
         mlir::triton::AMD::runScalarizePackedFOpsPass(fn);
-        break;
       }
     }
   }
