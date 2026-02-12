@@ -903,7 +903,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       SmallVector<rock::KernelInfo> localKernels;
       if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
                                          localKernels))) {
-        result.status = CompilationStatus::NotApplicable;
+        result.status = CompilationStatus::CompilationFailed;
         return result;
       }
 
