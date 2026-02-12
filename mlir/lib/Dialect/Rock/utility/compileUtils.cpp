@@ -47,7 +47,13 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
   int64_t warpSize = -1;
   int64_t sharedMemory = 0;
 
-  if (auto numWarpsAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.num-warps"))
+  // Try ttg.total-num-warps first (set by warp-specialization pass),
+  // fall back to ttg.num-warps
+  if (auto totalNumWarpsAttr =
+          moduleOp->getAttrOfType<IntegerAttr>("ttg.total-num-warps"))
+    numWarps = totalNumWarpsAttr.getInt();
+  else if (auto numWarpsAttr =
+               moduleOp->getAttrOfType<IntegerAttr>("ttg.num-warps"))
     numWarps = numWarpsAttr.getInt();
   if (auto warpSizeAttr =
           moduleOp->getAttrOfType<IntegerAttr>("ttg.threads-per-warp"))

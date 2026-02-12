@@ -903,7 +903,10 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       SmallVector<rock::KernelInfo> localKernels;
       if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
                                          localKernels))) {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        llvm::errs() << "Failed to collect kernel info\n";
         result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
         return result;
       }
 
