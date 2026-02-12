@@ -650,8 +650,41 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
   // compiler.py lines 412-423
-  if (!options.externLibPaths.empty()) {
-    if (!linkExternLibs(*llvmModule, options.externLibPaths)) {
+  // Auto-detect needed libraries by scanning for unresolved __ocml_/__ockl_
+  // references (same logic as need_extern_lib in triton_amd.cc).
+  std::vector<std::string> libPaths = options.externLibPaths;
+  {
+    auto needsLib = [&](StringRef libName) -> bool {
+      for (llvm::Function &f : *llvmModule) {
+        if (f.hasExternalLinkage() && f.hasName() && !f.hasExactDefinition()) {
+          if (f.getName().contains(libName))
+            return true;
+        }
+      }
+      return false;
+    };
+    // Triton bundles device libraries alongside its backend Python code.
+    // Use that path first, fall back to the ROCm system path.
+    std::array<std::string, 2> searchDirs = {
+        TRITON_AMD_BACKEND_LIB_DIR, // from CMake:
+                                    // triton/third_party/amd/backend/lib
+        "/opt/rocm/amdgcn/bitcode"  // system fallback
+    };
+    for (const char *lib : {"ocml", "ockl"}) {
+      if (!needsLib(lib))
+        continue;
+      std::string filename = std::string(lib) + ".bc";
+      for (const std::string &dir : searchDirs) {
+        std::string path = dir + "/" + filename;
+        if (llvm::sys::fs::exists(path)) {
+          libPaths.push_back(path);
+          break;
+        }
+      }
+    }
+  }
+  if (!libPaths.empty()) {
+    if (!linkExternLibs(*llvmModule, libPaths)) {
       llvm::errs() << "Failed to link external libraries\n";
       return failure();
     }

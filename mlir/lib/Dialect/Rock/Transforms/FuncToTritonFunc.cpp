@@ -363,18 +363,14 @@ void RockFuncToTritonFuncPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
   MLIRContext *ctx = &getContext();
 
-  // Collect functions first to avoid iterator invalidation when we move/erase
-  // them
+  // Collect kernel functions (host functions were already serialized and
+  // erased by RockSerializeHostFuncsPass earlier in the pipeline).
   SmallVector<func::FuncOp> funcsToProcess;
-  SmallVector<func::FuncOp> nonKernelFuncs;
   moduleOp.walk([&](func::FuncOp funcOp) {
-    // Only process top-level functions (not in nested modules)
     if (funcOp->getParentOfType<ModuleOp>() != moduleOp)
       return;
     if (funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
       funcsToProcess.push_back(funcOp);
-    else
-      nonKernelFuncs.push_back(funcOp);
   });
 
   // Store kernel grid/block sizes as module attributes BEFORE converting to
@@ -391,30 +387,5 @@ void RockFuncToTritonFuncPass::runOnOperation() {
   // Process kernel functions (convert to tt.func)
   for (func::FuncOp funcOp : funcsToProcess) {
     processFunction(funcOp);
-  }
-
-  // Store non-kernel functions (host code) as serialized MLIR in a module
-  // attribute. This isolates them from Triton passes. We use local scope
-  // printing to avoid issues with symbol references that will change during
-  // Triton compilation. The host code will be restored and lowered separately
-  // after Triton compilation.
-  if (!nonKernelFuncs.empty()) {
-    OpBuilder builder(ctx);
-    SmallVector<Attribute> funcStrings;
-
-    for (func::FuncOp funcOp : nonKernelFuncs) {
-      std::string funcStr;
-      llvm::raw_string_ostream os(funcStr);
-      // Use local scope to allow printing without verifying symbol references
-      funcOp.print(os, OpPrintingFlags().useLocalScope());
-      funcStrings.push_back(StringAttr::get(ctx, funcStr));
-    }
-
-    moduleOp->setAttr("rock.host_functions", ArrayAttr::get(ctx, funcStrings));
-
-    // Erase the original host functions from the main module
-    for (func::FuncOp funcOp : nonKernelFuncs) {
-      funcOp.erase();
-    }
   }
 }

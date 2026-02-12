@@ -109,6 +109,18 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   ];
 }
 
+def RockSerializeHostFuncsPass
+    : Pass<"rock-serialize-host-funcs", "::mlir::ModuleOp"> {
+  let summary = "Serialize and erase host functions before kernel lowering";
+  let description = [{
+    Serializes non-kernel (host) functions into a module attribute and erases them
+    from the module. Must run before func-level passes that change kernel signatures
+    (e.g. RockToTTIRPass sets kernel return to void), so that no func.call to the
+    kernel remains when the kernel's type changes.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
 def RockFuncToTritonFuncPass : Pass<"rock-func-to-triton-func", "::mlir::ModuleOp"> {
   let summary = "Convert func.func kernels to tt.func with Triton pointer arguments";
   let description = [{
@@ -222,7 +234,7 @@ def RockInsertLoadsPass : Pass<"rock-insert-loads", "::mlir::func::FuncOp"> {
 }
 
 def RockInsertOutputFusionLoadsPass : Pass<"rock-insert-output-fusion-loads", "::mlir::func::FuncOp"> {
-  let summary = "Insert BlockwiseLoadTileOp for output fusion loads";
+  let summary = "Insert BlockwiseLoadOp for output fusion loads";
   let description = [{
     This pass runs AFTER GridwiseGemmToBlockwise and BEFORE RockLowerLoads.
     It creates rock.blockwise_load_tile for rock.load ops used in output fusions.
@@ -253,7 +265,7 @@ def RockInsertOutputFusionLoadsPass : Pass<"rock-insert-output-fusion-loads", ":
         %fused = arith.addf %fusionRoot, %bias_tile
         %out = rock.store %fused to %dest
 
-    The chain BlockwiseLoadTileOp -> transform -> rock.load allows LowerLoads
+    The chain BlockwiseLoadOp -> transform -> rock.load allows LowerLoads
     to trace back through rock.load and combine the pre-load transforms with
     the output grid subtile transforms.
   }];

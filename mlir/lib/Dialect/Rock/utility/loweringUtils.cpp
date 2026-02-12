@@ -547,6 +547,28 @@ mlir::rock::traceGemmOutputToGenericOps(Value matC, func::FuncOp func) {
   return failure();
 }
 
+ArrayAttr
+mlir::rock::computeOutputLseTransforms(OpBuilder &b, Location loc,
+                                       int64_t mPerBlock,
+                                       ArrayRef<int64_t> bidGridLengths) {
+  // Create views as gridwise sub-tile of LSE
+  TopDownTMBuilder toMatrixLSE(
+      b, {"g_block", "m_block", "m_iter"},
+      {bidGridLengths[0], bidGridLengths[1], mPerBlock}, loc);
+
+  toMatrixLSE.passThrough({"gemmG"}, {0}, {"g_block"});
+  toMatrixLSE.unmerge("gemmM", 1, {"m_block", "m_iter"},
+                      {bidGridLengths[1], mPerBlock});
+
+  TransformMapAttr toMatrixLSEAttr = toMatrixLSE.get();
+
+  // Before returning the output view, if necessary, swap back the
+  // threadid/iter dimensions on both the M/N axis.
+  SmallVector<Attribute> transformAttrs{toMatrixLSEAttr};
+
+  return b.getArrayAttr(transformAttrs);
+}
+
 llvm::FailureOr<RegsAsMatrixSubTiles> mlir::rock::computeOutputTransforms(
     OpBuilder &b, Location loc, int64_t mPerBlock, int64_t nPerBlock,
     ArrayRef<int64_t> bidGridLengths) {

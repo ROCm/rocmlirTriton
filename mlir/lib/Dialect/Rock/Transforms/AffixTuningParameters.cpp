@@ -205,7 +205,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   Attribute params0 = op.getGemm0Params().value_or(nullptr);
   // set a default one if params is not provided
   StringAttr perfConfigStrAttr =
-      builder.getStringAttr("attn:v1:32,32,32,32,1,1,4,0,1,1,0,0");
+      builder.getStringAttr("attn:v1:32,32,32,1,1,4,0,1,1,0,0");
   if (!params0) {
     if (StringAttr mayBePerfConfigStrAttr =
             dyn_cast_or_null<StringAttr>(op->getAttr("perf_config"))) {
@@ -238,4 +238,12 @@ void AffixTuningParameters::affixTuningParametersImpl(
   LLVM_DEBUG(llvm::dbgs() << "accelParams1=" << accelParams1 << "\n");
   op.setGemm0ParamsAttr(accelParams0);
   op.setGemm1ParamsAttr(accelParams1);
+
+  // Set block size on the function (use gemm0 params since both gemms
+  // share the same wave/block configuration).
+  int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
+  int64_t blockSize = obtainBlockSize(waveSize, accelParams0);
+  assert(blockSize > 0);
+  getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
+                          builder.getI32IntegerAttr(blockSize));
 }

@@ -13,6 +13,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   TransformsToPtr.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
+  SerializeHostFuncs.cpp
   FuncToTritonFunc.cpp
   RestoreHostCode.cpp
   InsertLoads.cpp

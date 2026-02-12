@@ -1,4 +1,5 @@
-//===- InsertOutputFusionLoads.cpp - Insert BlockwiseLoadTileOp for output fusions ===//
+//===- InsertOutputFusionLoads.cpp - Insert BlockwiseLoadOp for output fusions
+//===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -38,13 +39,13 @@
 //     %result = scf.for ... { ... }
 //     %fusionRoot = rock.untile %result
 //     %bias_t = rock.transform %bias
-//     %bias_loaded = rock.load %bias_t            // Still exists for LowerLoads to trace
-//     %bias_wrapped = rock.transform %bias_loaded by <output_grid_subtile>
-//     %bias_tile = rock.blockwise_load_tile %bias_wrapped[g_block, m_block, n_block]
-//     %fused = arith.addf %fusionRoot, %bias_tile  // now operates on tiles
-//     %out = rock.store %fused to %dest
+//     %bias_loaded = rock.load %bias_t            // Still exists for
+//     LowerLoads to trace %bias_wrapped = rock.transform %bias_loaded by
+//     <output_grid_subtile> %bias_tile = rock.blockwise_load_tile
+//     %bias_wrapped[g_block, m_block, n_block] %fused = arith.addf %fusionRoot,
+//     %bias_tile  // now operates on tiles %out = rock.store %fused to %dest
 //
-//   The chain BlockwiseLoadTileOp -> transform -> rock.load allows LowerLoads
+//   The chain BlockwiseLoadOp -> transform -> rock.load allows LowerLoads
 //   to trace back through rock.load and combine the pre-load transforms with
 //   the output grid subtile transforms.
 //
@@ -85,13 +86,13 @@ static bool isFusionOp(Operation *op) {
   return isa<arith::ArithDialect, math::MathDialect>(op->getDialect());
 }
 
-/// Collect all rock.load ops that are reachable from existing BlockwiseLoadTileOp.
+/// Collect all rock.load ops that are reachable from existing BlockwiseLoadOp.
 /// These are input fusion loads and should NOT be processed by this pass.
 static void collectInputFusionLoads(func::FuncOp funcOp,
                                     llvm::DenseSet<LoadOp> &inputLoads) {
-  // For each BlockwiseLoadTileOp, trace back through its source to find all
+  // For each BlockwiseLoadOp, trace back through its source to find all
   // rock.load ops that feed into it
-  funcOp.walk([&](BlockwiseLoadTileOp loadTileOp) {
+  funcOp.walk([&](BlockwiseLoadOp loadTileOp) {
     SmallVector<Value> worklist;
     worklist.push_back(loadTileOp.getSource());
     
@@ -122,12 +123,12 @@ static void collectInputFusionLoads(func::FuncOp funcOp,
   });
 }
 
-/// Find existing BlockwiseLoadTileOp to extract grid coordinates.
+/// Find existing BlockwiseLoadOp to extract grid coordinates.
 /// Returns the g_block, m_block, n_block indices.
 static SmallVector<Value> findGridCoordinates(func::FuncOp funcOp) {
   SmallVector<Value> coords;
-  
-  funcOp.walk([&](BlockwiseLoadTileOp loadTileOp) {
+
+  funcOp.walk([&](BlockwiseLoadOp loadTileOp) {
     if (!coords.empty())
       return WalkResult::interrupt();
     
@@ -143,7 +144,7 @@ static SmallVector<Value> findGridCoordinates(func::FuncOp funcOp) {
     }
     return WalkResult::interrupt();
   });
-  
+
   return coords;
 }
 
@@ -190,14 +191,14 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
     return;
   }
 
-  // Step 1: Collect all input fusion loads (reachable from BlockwiseLoadTileOp)
+  // Step 1: Collect all input fusion loads (reachable from BlockwiseLoadOp)
   llvm::DenseSet<LoadOp> inputFusionLoads;
   collectInputFusionLoads(funcOp, inputFusionLoads);
   
   LLVM_DEBUG(llvm::dbgs() << "Found " << inputFusionLoads.size()
                           << " input fusion loads\n");
 
-  // Step 2: Find grid coordinates from existing BlockwiseLoadTileOp
+  // Step 2: Find grid coordinates from existing BlockwiseLoadOp
   SmallVector<Value> gridCoords = findGridCoordinates(funcOp);
   if (gridCoords.size() != 3) {
     LLVM_DEBUG(llvm::dbgs() << "Could not find grid coordinates\n");
@@ -241,14 +242,14 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
     return;
   }
 
-  // Step 5: Create BlockwiseLoadTileOp for each output fusion load
+  // Step 5: Create BlockwiseLoadOp for each output fusion load
   OpBuilder builder(funcOp.getContext());
   
   for (LoadOp loadOp : outputFusionLoads) {
     builder.setInsertionPointAfter(loadOp);
     Location loc = loadOp.getLoc();
-    
-    // The source of BlockwiseLoadTileOp should be the rock.load RESULT
+
+    // The source of BlockwiseLoadOp should be the rock.load RESULT
     // (wrapped with output transforms), not the input to rock.load.
     // This ensures LowerLoads can trace back through rock.load to find
     // the pre-transforms and create proper loads.
@@ -269,9 +270,9 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
                               << loadOp << "\n");
       return signalPassFailure();
     }
-    
+
     // Apply the grid subtile transform to the rock.load result
-    // Chain: BlockwiseLoadTileOp.source -> transform -> rock.load result
+    // Chain: BlockwiseLoadOp.source -> transform -> rock.load result
     // LowerLoads will trace back through this and find rock.load
     Value wrappedSource = transform(builder, loadResult,
                                     maybeOutputViews->gridSubTile);
@@ -281,11 +282,11 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
     auto wrappedShape = sourceType.getShape();
     auto tileType = RankedTensorType::get(
         wrappedShape.take_back(2), sourceType.getElementType());
-    
-    // Create BlockwiseLoadTileOp with output indices [g_block, m_block, n_block]
-    auto loadTileOp = BlockwiseLoadTileOp::create(
-        builder, loc, tileType, wrappedSource, gridCoords);
-    
+
+    // Create BlockwiseLoadOp with output indices [g_block, m_block, n_block]
+    auto loadTileOp = BlockwiseLoadOp::create(builder, loc, tileType,
+                                              wrappedSource, gridCoords);
+
     // Create UntileOp to convert tile type back to full tensor type.
     // This maintains type compatibility with the original rock.load result.
     // The UntileOp acts as a temporary bridge - we'll fix this later.
@@ -298,13 +299,14 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
     for (OpOperand *use : existingUses) {
       use->set(untileOp.getResult());
     }
-    
-    LLVM_DEBUG(llvm::dbgs() << "Created BlockwiseLoadTileOp for output fusion load: "
-                            << loadTileOp << "\n"
-                            << "  with UntileOp: " << untileOp << "\n");
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "Created BlockwiseLoadOp for output fusion load: "
+               << loadTileOp << "\n"
+               << "  with UntileOp: " << untileOp << "\n");
   }
 
   // Note: We don't clean up rock.load ops here because they are still used
   // by the transform ops we created. LowerLoads will clean them up after
-  // processing the BlockwiseLoadTileOp.
+  // processing the BlockwiseLoadOp.
 }

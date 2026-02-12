@@ -546,8 +546,9 @@ commonAttentionGemmElmtGemm(
   GemmSize gemm1Size(/*g=*/aShape[0], /*m=*/aShape[1],
                      /*k=*/cShape[1],
                      /*n=*/cShape[2]);
-  GemmSize gemm0ExtraPad = requiredPadding(params0, gemm0Size, 1, splitKVNum)
-                               .value_or(GemmSize{0, 0, 0, 0});
+  GemmSize gemm0ExtraPad =
+      requiredPadding(params0, gemm0Size, 1, 1, splitKVNum)
+          .value_or(GemmSize{0, 0, 0, 0});
   GemmSize gemm1ExtraPad = requiredPadding(params1, gemm1Size, splitKVNum)
                                .value_or(GemmSize{0, 0, 0, 0});
 

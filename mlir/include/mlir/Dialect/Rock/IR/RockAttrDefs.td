@@ -274,11 +274,9 @@ def Rock_GemmGemmParamsAttr
     The tuning parameters for an mfma or wmma-based gemm+gemm operation
     (e.g., attention).
 
-    - nPerBlockG0: The number of values of n to process in each workgroup for
-      the first GEMM
-    - nPerBlockG1: The number of values of n to process in each workgroup for
-      the second GEMM
     - mPerBlockG0: The number of values of m to process in each workgroup for
+      the first GEMM
+    - nPerBlockG0: The number of values of n to process in each workgroup for
       the first GEMM
     - kPerBlock: The number of values of k to process in each workgroup
     - kpack: The number of matrix instructions we can run with one LDS load (can be 1 or 2, see AccelerateAMDMatmul.cpp)
@@ -293,18 +291,17 @@ def Rock_GemmGemmParamsAttr
     - forceUnroll: Whether to force loop unrolling
   }];
 
-  let parameters = (ins "int64_t":$nPerBlockG0, "int64_t":$nPerBlockG1,
-      "int64_t":$mPerBlockG0, "int64_t":$kPerBlock, "int64_t":$kpack,
-      "int64_t":$numCTAs, "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
+  let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
+      "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs,
+      "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
       "int64_t":$splitKFactor, "int64_t":$numStages, "int64_t":$wavesPerEU,
       "int64_t":$gridGroupSize);
 
   let extraClassDeclaration = [{
     void getPerfConfigStr(::llvm::SmallVectorImpl<char> &perfStr) {
       ("attn:v1:"
-      + Twine(getNPerBlockG0()) + ","
-      + Twine(getNPerBlockG1()) + ","
       + Twine(getMPerBlockG0()) + ","
+      + Twine(getNPerBlockG0()) + ","
       + Twine(getKPerBlock()) + ","
       + Twine(getKpack()) + ","
       + Twine(getNumCTAs()) + ","

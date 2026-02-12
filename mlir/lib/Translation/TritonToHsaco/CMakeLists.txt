@@ -73,6 +73,11 @@ target_include_directories(obj.TritonToHsacoTranslation PRIVATE
   ${TRITON_BINARY_DIR}/third_party/amd/include
 )
 
+# Define path to Triton's bundled device libraries (ocml.bc, ockl.bc)
+target_compile_definitions(obj.TritonToHsacoTranslation PRIVATE
+  TRITON_AMD_BACKEND_LIB_DIR="${TRITON_PROJECT_DIR}/third_party/amd/backend/lib"
+)
+
 # Add LLD include directory for compilation (header access)
 if("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
   # Find LLD include directory from LLVM source tree

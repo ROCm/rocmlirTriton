@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 
@@ -176,15 +177,18 @@ static bool isScaledWmmaType(Type type) {
 }
 
 MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
-                                               Type inputTypeB, Type outputType,
-                                               Type scaleAType,
+                                               Type inputTypeB, Type scaleAType,
                                                Type scaleBType) {
   auto [isaFamily, chip] = getArch(arch);
 
   // Get element types if these are shaped types
   Type elemA = getElementTypeOrSelf(inputTypeA);
   Type elemB = getElementTypeOrSelf(inputTypeB);
-  Type elemOut = getElementTypeOrSelf(outputType);
+
+  // We always use f32 or i32 for output element
+  OpBuilder b(elemA.getContext());
+  Type elemOut =
+      isa<FloatType>(elemA) ? Type(b.getF32Type()) : Type(b.getI32Type());
 
   // We need an MLIRContext for creating a dummy location
   MLIRContext *ctx = elemA.getContext();
@@ -237,10 +241,9 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch,
                                                RockGemmWrapperInterface gemmOp) {
   Type aType = gemmOp.getAType();
   Type bType = gemmOp.getBType();
-  Type cType = gemmOp.getCType();
   Type scaleAType = gemmOp.getScaleAType();
   Type scaleBType = gemmOp.getScaleBType();
-  return getMatrixAccelKind(arch, aType, bType, cType, scaleAType, scaleBType);
+  return getMatrixAccelKind(arch, aType, bType, scaleAType, scaleBType);
 }
 
 bool mlir::rock::hasAccel(StringRef arch,
@@ -256,16 +259,15 @@ mlir::rock::getMatrixAccelKind(StringRef arch,
   Type aType = gemmGemmOp.getAType();
   Type bType = gemmGemmOp.getBType();
   Type cType = gemmGemmOp.getCType();
-  Type outputType = gemmGemmOp.getOutType();
 
   // TODO: no scaled gemms for attention yet
   Type scaleAType = nullptr;
   Type scaleBType = nullptr;
-  auto kindFirstGemm = getMatrixAccelKind(arch, aType, bType, outputType,
-                                          scaleAType, scaleBType);
+  auto kindFirstGemm =
+      getMatrixAccelKind(arch, aType, bType, scaleAType, scaleBType);
   // we convert the output of A*B to cType
-  auto kindSecondGemm = getMatrixAccelKind(arch, cType, cType, outputType,
-                                           scaleAType, scaleBType);
+  auto kindSecondGemm =
+      getMatrixAccelKind(arch, cType, cType, scaleAType, scaleBType);
 
   return std::make_pair(kindFirstGemm, kindSecondGemm);
 }

@@ -200,6 +200,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
                      !kernelPipelineSet.contains("binary");
   backendOpts.compile = !isRocdlOnly;
 
+  // TODO(roctriton): add common params to RockTuningParamAttrInterface
   auto fillCompilationRes =
       m.walk([&](mlir::rock::RockGemmWrapperInterface op) -> WalkResult {
         if (auto perfConfigAttr =
@@ -214,6 +215,21 @@ runKernelPipeline(StringRef arch, ModuleOp m,
         return WalkResult::advance();
       });
   if (fillCompilationRes.wasInterrupted()) {
+    return failure();
+  }
+  auto fillCompilationResGemmGemm =
+      m.walk([&](mlir::rock::RockGemmGemmWrapperInterface op) -> WalkResult {
+        if (auto perfConfigAttr =
+                op->template getAttrOfType<StringAttr>("perf_config")) {
+          if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
+                                            backendOpts))) {
+            llvm::errs() << "Failed to process perfConfig for gemm_gemm op\n";
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+  if (fillCompilationResGemmGemm.wasInterrupted()) {
     return failure();
   }
 

@@ -15,8 +15,8 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 //
-// This pass converts BlockwiseLoadTileOp and BlockwiseStoreTileOp into their
-// pointer-based variants (BlockwiseLoadTilePtrOp and BlockwiseStoreTilePtrOp)
+// This pass converts BlockwiseLoadOp and BlockwiseStoreOp into their
+// pointer-based variants (BlockwiseLoadPtrOp and BlockwiseStorePtrOp)
 // by first computing pointer and mask tensors via TransformsToPtrOp.
 //
 //===----------------------------------------------------------------------===//
@@ -49,13 +49,13 @@ struct RockTransformsToPtrPass
 namespace {
 
 //===----------------------------------------------------------------------===//
-// BlockwiseLoadTileOp lowering.
+// BlockwiseLoadOp lowering.
 //===----------------------------------------------------------------------===//
 struct BlockwiseLoadTileRewritePattern
-    : public OpRewritePattern<BlockwiseLoadTileOp> {
-  using OpRewritePattern<BlockwiseLoadTileOp>::OpRewritePattern;
+    : public OpRewritePattern<BlockwiseLoadOp> {
+  using OpRewritePattern<BlockwiseLoadOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(BlockwiseLoadTileOp op,
+  LogicalResult matchAndRewrite(BlockwiseLoadOp op,
                                 PatternRewriter &b) const override {
     Location loc = op.getLoc();
 
@@ -79,8 +79,8 @@ struct BlockwiseLoadTileRewritePattern
 
     // Create rock.blockwise_load_tile_ptr operation (returns loaded tensor)
     auto resultType = RankedTensorType::get(shape, elementType);
-    auto loadOp = BlockwiseLoadTilePtrOp::create(
-        b, loc, resultType, pointerTensor, maskTensor);
+    auto loadOp = BlockwiseLoadPtrOp::create(b, loc, resultType, pointerTensor,
+                                             maskTensor);
 
     b.replaceOp(op, loadOp.getResult());
     return success();
@@ -88,13 +88,13 @@ struct BlockwiseLoadTileRewritePattern
 };
 
 //===----------------------------------------------------------------------===//
-// BlockwiseStoreTileOp lowering.
+// BlockwiseStoreOp lowering.
 //===----------------------------------------------------------------------===//
 struct BlockwiseStoreTileRewritePattern
-    : public OpRewritePattern<BlockwiseStoreTileOp> {
-  using OpRewritePattern<BlockwiseStoreTileOp>::OpRewritePattern;
+    : public OpRewritePattern<BlockwiseStoreOp> {
+  using OpRewritePattern<BlockwiseStoreOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(BlockwiseStoreTileOp op,
+  LogicalResult matchAndRewrite(BlockwiseStoreOp op,
                                 PatternRewriter &b) const override {
     Location loc = op.getLoc();
 
@@ -119,7 +119,7 @@ struct BlockwiseStoreTileRewritePattern
 
     // Create rock.blockwise_store_tile_ptr operation (returns stored tensor)
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
-    auto storeOp = BlockwiseStoreTilePtrOp::create(
+    auto storeOp = BlockwiseStorePtrOp::create(
         b, loc, resultType, pointerTensor, maskTensor, source, storeMethod);
 
     b.replaceOp(op, storeOp.getResult());
@@ -132,9 +132,9 @@ struct BlockwiseStoreTileRewritePattern
 void RockTransformsToPtrPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
-  target.addIllegalOp<BlockwiseLoadTileOp, BlockwiseStoreTileOp>();
-  target.addLegalOp<BlockwiseLoadTilePtrOp, BlockwiseStoreTilePtrOp,
-                    TransformsToPtrOp>();
+  target.addIllegalOp<BlockwiseLoadOp, BlockwiseStoreOp>();
+  target
+      .addLegalOp<BlockwiseLoadPtrOp, BlockwiseStorePtrOp, TransformsToPtrOp>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<BlockwiseLoadTileRewritePattern, BlockwiseStoreTileRewritePattern>(ctx);

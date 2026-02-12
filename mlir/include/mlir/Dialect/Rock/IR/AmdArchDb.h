@@ -30,7 +30,6 @@ enum class MatrixAccelKind {
 /// \param arch The target architecture string (e.g., "gfx942", "gfx1100")
 /// \param inputTypeA Element type of the first input matrix
 /// \param inputTypeB Element type of the second input matrix
-/// \param outputType Element type of the output/accumulator matrix
 /// \param scaleAType Optional scale tensor type for input A. If provided
 ///                   (non-null), indicates this is a scaled GEMM operation.
 /// \param scaleBType Optional scale tensor type for input B. If provided
@@ -41,8 +40,7 @@ enum class MatrixAccelKind {
 /// - If input types don't match requirements, falls back to regular
 ///   (non-scaled) MFMA/WMMA if available for the given types
 MatrixAccelKind getMatrixAccelKind(StringRef arch, Type inputTypeA,
-                                   Type inputTypeB, Type outputType,
-                                   Type scaleAType = Type(),
+                                   Type inputTypeB, Type scaleAType = Type(),
                                    Type scaleBType = Type());
 
 /// Get the matrix acceleration kind for a GEMM operation.

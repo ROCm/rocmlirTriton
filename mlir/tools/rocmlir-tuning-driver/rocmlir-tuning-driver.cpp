@@ -869,10 +869,10 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       // Pipeline
       PassManager applicabilityPM(res.ctx.get(),
-                                  PassManager::getAnyOpAnchorName(),
+                                  ModuleOp::getOperationName(),
                                   PassManager::Nesting::Implicit);
       PassManager compilationPM(res.ctx.get(),
-                                PassManager::getAnyOpAnchorName(),
+                                ModuleOp::getOperationName(),
                                 PassManager::Nesting::Implicit);
 
       rock::BackendOptions backendOpts;
@@ -895,6 +895,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
                                         backendOpts))) {
         result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
         return result;
       }
 

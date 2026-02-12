@@ -111,12 +111,11 @@ static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
 
 // This function will process a tile of gemm input into LDS (or register)
 // buffer in a way it could be fed to blockwise_gemm op
-static Value
-loadAndStoreGemmInputTile(PatternRewriter &rewriter, Location loc, Value in,
-                          Value kIter, StringRef dName, 
-                          rock::layout::GridCoordinates gridCoords,
-                          int64_t kPerBlock, int64_t dPerBlock,
-                          SmallVector<int64_t, 3> &bidGridLengths) {
+static Value loadTile(PatternRewriter &rewriter, Location loc, Value in,
+                      Value kIter, StringRef dName,
+                      rock::layout::GridCoordinates gridCoords,
+                      int64_t kPerBlock, int64_t dPerBlock,
+                      SmallVector<int64_t, 3> &bidGridLengths) {
   FailureOr<RegsAsMatrixSubTiles> maybeBufferViews = getLoadRegsAsTileViews(
       rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock);
   assert(succeeded(maybeBufferViews));
@@ -130,7 +129,7 @@ loadAndStoreGemmInputTile(PatternRewriter &rewriter, Location loc, Value in,
                                           sourceType.getElementType());
 
   // Load from global memory to LDS or register buffer.
-  auto loadOp = BlockwiseLoadTileOp::create(
+  auto loadOp = BlockwiseLoadOp::create(
       rewriter, loc, resultType, wrappedSource,
       ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
                  gridCoords.n_block});
@@ -139,7 +138,7 @@ loadAndStoreGemmInputTile(PatternRewriter &rewriter, Location loc, Value in,
 
 // This function creates a zero-initialized accumulator tensor
 static Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
-                                 SmallVector<int64_t> shape,
+                                 ArrayRef<int64_t> shape,
                                  Type accType) {
   auto tensorType = RankedTensorType::get(shape, accType);
   auto zeroAttr = rewriter.getZeroAttr(tensorType);
@@ -235,14 +234,14 @@ struct GridwiseAttentionRewritePattern
   // We want to compute log(sum e^x), therefore we do:
   // log(l*exp2(m)) = (log2(l) + m)*log(2) -> we use exp2() for "m", because we
   // need to use the same exp function used for "l"
-  Value computeLse(PatternRewriter &rewriter, Location loc, Value lseOut,
-                  Value sumRow, Value maxRow) const {
-    auto lseElemType = cast<ShapedType>(lseOut.getType()).getElementType();
+  Value computeLse(PatternRewriter &rewriter, Location loc, Type lseType,
+                   Value sumRow, Value maxRow) const {
+    auto lseElemType = cast<ShapedType>(lseType).getElementType();
     Value ln2Const = createConstantFloatOp(
-        rewriter, loc, lseOut.getType(), lseElemType, 0.69314718f,
+        rewriter, loc, lseType, lseElemType, 0.69314718f,
         lseElemType.getIntOrFloatBitWidth() >= 32 ? APFloat::opOK
                                                   : APFloat::opInexact);
-                    
+
     // convert to LSE type (need full tensor type, not just element type)
     auto sumRowType = cast<RankedTensorType>(sumRow.getType());
     auto destTensorType = RankedTensorType::get(sumRowType.getShape(), lseElemType);
@@ -253,9 +252,9 @@ struct GridwiseAttentionRewritePattern
     
     // lse_i = (log2(l_i) + m_i)*log(2)
     // Migraphx expects LSE to be log
-    Value log2Li = math::Log2Op::create(rewriter, loc, maxRowCasted);
-    Value log2Mi = sumRowCasted;
-    Value lseLog2 = arith::AddFOp::create(rewriter, loc, log2Li, log2Mi);
+    Value log2Li = math::Log2Op::create(rewriter, loc, sumRowCasted);
+    Value maxRowLog2 = maxRowCasted;
+    Value lseLog2 = arith::AddFOp::create(rewriter, loc, log2Li, maxRowLog2);
     return arith::MulFOp::create(rewriter, loc, lseLog2, ln2Const);
   }
 
@@ -481,7 +480,9 @@ struct GridwiseAttentionRewritePattern
         switch (outOfScopeType) {
         case OutOfScopeType::KVCache: {
         assert(currentSeqLen != nullptr);
-        auto splatType = RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(), cast<ShapedType>(currentSeqLen.getType()).getElementType());
+        auto splatType =
+            RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(),
+                                  currentSeqLen.getType());
         Value currentSeqLenSplat = triton::SplatOp::create(rewriter, loc, splatType, currentSeqLen);
         // pointerTensor is mIndex
         isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
@@ -500,7 +501,9 @@ struct GridwiseAttentionRewritePattern
         // - A prefix of tokens (0..prefix_offset) is always visible
         // - Anything after the prefix, standard causal masking applies
         assert(prefixOffset != nullptr);
-        auto splatType = RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(), cast<ShapedType>(prefixOffset.getType()).getElementType());
+        auto splatType =
+            RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(),
+                                  prefixOffset.getType());
         Value prefixOffsetSplat = triton::SplatOp::create(rewriter, loc, splatType, prefixOffset);
 
         // Compute query_pos + prefix_offset
@@ -635,52 +638,26 @@ struct GridwiseAttentionRewritePattern
     Value effectiveSeqLen;
     Value start, end;
 
-    // TODO(roctriton): implement loadTensorValue() for kv-cache etc
-
     // Lambda to load a 1D tensor value (used for currentSeqLen and
     // prefixOffset)
-    // auto loadTensorValue = [&](Value tensor) -> Value {
-    //   assert(tensor && "tensor must be non-null");
-    //   Value zero = rewriter.createOrFold<arith::ConstantIntOp>(loc, 0);
-    //   // add dim 1 for thread_read_into (registers)
-    //   ArrayRef<int64_t> inpShape =
-    //       cast<ShapedType>(tensor.getType()).getShape();
-    //   SmallVector<StringRef> startNames = {"gemmG"};
-    //   rock::BottomUpTMBuilder addDim(rewriter, startNames, inpShape);
-    //   addDim.addDim("dummy", 1, 1);
-    //   addDim.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
-    //   auto addDimAttr = addDim.get();
-    //   Value tensorAddDim =
-    //       rock::TransformOp::create(rewriter, loc, tensor, addDimAttr);
-    //   Type elemType = getElementTypeOrSelf(tensorAddDim.getType());
+    auto loadTensorValue = [&](Value tensor) -> Value {
+      assert(tensor && "tensor must be non-null");
 
-    //   // create registers
-    //   auto privateMemoryAddressSpace = rewriter.getAttr<gpu::AddressSpaceAttr>(
-    //       gpu::GPUDialect::getPrivateAddressSpace());
-    //   auto shapedType = ShapedType::get({1}, elemType, AffineMap{},
-    //                                     privateMemoryAddressSpace);
-    //   auto loadAlloc = GpuAllocOp::create(rewriter, loc, shapedType);
+      auto resultType = RankedTensorType::get({1},
+                                          cast<ShapedType>(tensor.getType()).getElementType());
 
-    //   // load from memory to registers
-    //   ThreadwiseReadIntoOp::create(
-    //       rewriter, loc, vectorOfBoolShapedLike(loadAlloc), tensorAddDim,
-    //       loadAlloc,
-    //       /*dynamicValidities=*/ValueRange{},
-    //       /*extraViews=*/rewriter.getArrayAttr({}),
-    //       /*extraIndices=*/
-    //       ValueRange{gridCoordsGemm0.g_block}, true, true);
+      // Load from global memory to LDS or register buffer.
+      auto loadOp =
+          BlockwiseLoadOp::create(rewriter, loc, resultType, tensor,
+                                  ValueRange{gridCoordsGemm0.g_block});
 
-    //   // load from registers
-    //   Value loadedValue = InBoundsLoadOp::create(rewriter, loc, elemType,
-    //                                              loadAlloc, ValueRange{zero});
-    //   return rewriter.createOrFold<arith::IndexCastOp>(
-    //       loc, rewriter.getIndexType(), loadedValue);
-    // };
+      return triton::UnsplatOp::create(rewriter, loc, loadOp);
+    };
 
     // This is needed for KV Cache/Causal/Prefix Causal masking support
     if (isCausal || isKVCache || isPrefixCausal) {
       if (isKVCache) {
-        // currentSeqLen = loadTensorValue(currentSeqLenTensor);
+        currentSeqLen = loadTensorValue(currentSeqLenTensor);
         effectiveSeqLen = currentSeqLen;
       }
 
@@ -709,7 +686,7 @@ struct GridwiseAttentionRewritePattern
           assert(isCausal && "isPrefixCausal requires isCausal");
           // For prefix causal: effective seq len = maxRowOfBlock + offset
           // This determines how many M-blocks we need to process
-        //   prefixOffset = loadTensorValue(prefixOffsetTensor);
+          prefixOffset = loadTensorValue(prefixOffsetTensor);
           maxRowOfBlock =
               arith::AddIOp::create(rewriter, loc, maxRowOfBlock, prefixOffset);
         }
@@ -780,8 +757,13 @@ struct GridwiseAttentionRewritePattern
       // this is the code for the case where kv-cache and causal are not
       // enabled. the logic is easier, but note that some blocks will early
       // exit, see runEarlyExit() for details.
+      // Use ceiling division so each split gets at least 1 iteration when
+      // gemm0N < gemm0NPerBlock * splitKV (e.g. seq_len_k=64, block=64,
+      // splitKV=2).
+      int64_t nIterPerSplit =
+          llvm::divideCeil(llvm::divideCeil(gemm0N, gemm0NPerBlock), splitKV);
       Value gemm0NIterations = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), gemm0N / (gemm0NPerBlock * splitKV));
+          loc, rewriter.getI32Type(), nIterPerSplit);
       Value one = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 1);
       start = arith::MulIOp::create(rewriter, loc, gridCoordsGemm0.split_block,
@@ -872,8 +854,12 @@ struct GridwiseAttentionRewritePattern
                                         Value start, Value end, int64_t splitKV,
                                         int64_t gemm0NPerBlock,
                                         std::optional<APInt> prePadG0N,
-                                        bool isCausal, bool isKVCache) const {
-    // Compute the work condition using the extracted helper function
+                                        bool isCausal, bool isKVCache,
+                                        ArrayRef<Value> elseYieldValues) const {
+    assert((elseYieldValues.size() == 1 || elseYieldValues.size() == 2) &&
+           "early exit if must yield outAcc (length 1) or outAcc and lseOut "
+           "(length 2)");
+
     FailureOr<Value> maybeSomeWorkToDo =
         computeIfWorkToDo(rewriter, loc, start, end, splitKV, gemm0NPerBlock,
                           prePadG0N, isCausal, isKVCache);
@@ -881,12 +867,19 @@ struct GridwiseAttentionRewritePattern
     if (failed(maybeSomeWorkToDo))
       return std::nullopt;
 
-    scf::IfOp ifb = scf::IfOp::create(rewriter, loc, maybeSomeWorkToDo.value(),
-                                      /*withElseRegion=*/false);
+    SmallVector<Type> resultTypes;
+    for (Value v : elseYieldValues)
+      resultTypes.push_back(v.getType());
+
+    scf::IfOp ifb =
+        scf::IfOp::create(rewriter, loc, resultTypes, maybeSomeWorkToDo.value(),
+                          /*withElseRegion=*/true);
     rewriter.setInsertionPointToStart(&ifb.getThenRegion().front());
 
-    // Return the IfOp so caller can close it later (by setting insertion point
-    // after it) to ensure output writes happen unconditionally
+    rewriter.setInsertionPointToStart(&ifb.getElseRegion().front());
+    scf::YieldOp::create(rewriter, loc, elseYieldValues);
+    rewriter.setInsertionPointToStart(&ifb.getThenRegion().front());
+
     return ifb;
   }
 
@@ -958,14 +951,14 @@ struct GridwiseAttentionRewritePattern
     assert(gemm0NPerBlock == gemm1KPerBlock);
     int64_t gemm1MPerBlock = gemm1TuningParams.getMPerBlock();
     int64_t gemm1NPerBlock = gemm1TuningParams.getNPerBlock();
+    assert(gemm1N == gemm1NPerBlock &&
+           "Current limitation, gemm1NPerBlock has to be equal to gemm1N");
 
     // params related to how we load Q
     bool prefetchQTile = gemm0K == gemm0KPerBlock;
 
     int64_t gemm1MBlocks = gemm1M / gemm1MPerBlock;
     assert(gemm1M % gemm1MPerBlock == 0);
-    int64_t gemm1NBlocks = gemm1N / gemm1NPerBlock;
-    assert(gemm1N % gemm1NPerBlock == 0);
     SmallVector<int64_t, 3> gemm0BidGridLengths = {gemm0G, gemm0MBlocks,
                                                    gemm0NBlocks};
     LLVM_DEBUG(llvm::dbgs()
@@ -999,8 +992,7 @@ struct GridwiseAttentionRewritePattern
     });
 
     SmallVector<StringRef, 3> bidGridOrder = {"g_block", "m_block", "n_block"};
-    SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks,
-                                                   gemm1NBlocks};
+    SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks, 1};
 
     // if splitKV == 1, we define nullptr, and makeGxNGridLayout() will use
     // fewer instructions
@@ -1022,22 +1014,14 @@ struct GridwiseAttentionRewritePattern
                                                     0),
         gridSize, arch, rock::getNumCUValue(op), splitKVConst);
 
-    // Create buffers
-
-    auto blockNTensorType =
-        RankedTensorType::get({gemm0NPerBlock}, elemTypeSoftmax);
+    auto blockMTensorType =
+        RankedTensorType::get({gemm0MPerBlock}, elemTypeSoftmax);
     Value maxRow = createConstantFloatOp(
-        rewriter, loc, blockNTensorType, elemTypeSoftmax,
+        rewriter, loc, blockMTensorType, elemTypeSoftmax,
         -std::numeric_limits<float>::infinity(), APFloat::opOK);
-    Value sumRow = createConstantFloatOp(rewriter, loc, blockNTensorType,
+    Value sumRow = createConstantFloatOp(rewriter, loc, blockMTensorType,
                                          elemTypeSoftmax, 0.0, APFloat::opOK);
-
-    Value lseOut;
-    if(lse) {
-      lseOut = createConstantFloatOp(
-          rewriter, loc, blockNTensorType, elemTypeSoftmax,
-          -std::numeric_limits<float>::infinity(), APFloat::opOK);
-    }
+    Value zero = rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), 0);
 
     Value gemm0NBlocksLastIter;
     Value currentSeqLen;
@@ -1051,18 +1035,30 @@ struct GridwiseAttentionRewritePattern
                      isPrefixCausal, op.getNumRepeatsGQAAttr());
 
     // Early exit: Skip all computation when there's no work but always write
-    // output.
-    // This wraps Q loads, M/K loops, GEMMs, softmax, etc. in a conditional.
-    // TODO(roctriton): make sure we return a value init to zero!
-    std::optional<scf::IfOp> earlyExitIf =
-        runEarlyExit(rewriter, loc, start, end, splitKV, gemm0NPerBlock,
-                     op.getPrePadG0N(), isCausal, isKVCache);
+    // output. The IfOp returns (outAcc, lseOut?) so the code after the if
+    // always has defined values; the else branch yields zero-initialized
+    // tensors.
+    SmallVector<Value> earlyExitElseValues;
+    auto initOutAcc = createZeroAccBuffer(
+        rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, elemTypeOut);
+    earlyExitElseValues.push_back(initOutAcc);
+    RankedTensorType lseType;
+    if (lse) {
+      auto lseElemType = cast<ShapedType>(lse.getType()).getElementType();
+      lseType = RankedTensorType::get({gemm0MPerBlock}, lseElemType);
+      Value initLseOut = createConstantFloatOp(
+          rewriter, loc, lseType, lseElemType,
+          -std::numeric_limits<float>::infinity(), APFloat::opOK);
+      earlyExitElseValues.push_back(initLseOut);
+    }
+    std::optional<scf::IfOp> earlyExitIf = runEarlyExit(
+        rewriter, loc, start, end, splitKV, gemm0NPerBlock, op.getPrePadG0N(),
+        isCausal, isKVCache, earlyExitElseValues);
 
     // If gemm0K is equal to gemm0KPerBlock that means
     // effectively there is no K loop. Therefore, we
     // can prefetch the Q tile into regs outside of the
     // loop.
-    Value zeroI32 = rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), 0);
     Value loadedQ;
     // TODO(roctriton): do this in an independent pass, hoist loads out of the loop if possible
     if (prefetchQTile) {
@@ -1074,16 +1070,16 @@ struct GridwiseAttentionRewritePattern
       // it is fine m iteration to be zero as it irrelevant to Q tensor
       // as the first gemm is Kt x Qt.
       auto gridCoordsGemm0LoadQ = layout::makeGxNGridLayout(
-          rewriter, loc, bid, gemm0MBlocks, zeroI32, gridSize, arch,
+          rewriter, loc, bid, gemm0MBlocks, zero, gridSize, arch,
           rock::getNumCUValue(op), splitKVConst);
 
-      loadedQ = loadAndStoreGemmInputTile(
-          rewriter, loc, inQ, /*kiter=*/zeroI32, "m", gridCoordsGemm0LoadQ,
-          gemm0KPerBlock, gemm0MPerBlock, gemm0BidGridLengths);
+      loadedQ = loadTile(rewriter, loc, inQ, /*kiter=*/zero, "m",
+                         gridCoordsGemm0LoadQ, gemm0KPerBlock, gemm0MPerBlock,
+                         gemm0BidGridLengths);
     }
 
-    // TODO(roctriton): f32 if float, i32 if int
-    Type accType = rewriter.getF32Type();
+    Type accType = isa<FloatType>(elemTypeQ) ? Type(rewriter.getF32Type())
+                                             : Type(rewriter.getI32Type());
 
     // Create initial accumulator for nLoop with the shape of the final output
     // tile
@@ -1104,6 +1100,7 @@ struct GridwiseAttentionRewritePattern
           loc, rewriter.getI32Type(), nLoopOp.getInductionVar());
       // Get the iteration arguments
       Value attentionAcc = nLoopOp.getRegionIterArg(0);
+
       maxRow = nLoopOp.getRegionIterArg(1);
       sumRow = nLoopOp.getRegionIterArg(2);
 
@@ -1125,14 +1122,14 @@ struct GridwiseAttentionRewritePattern
         // if gemm0K is equal to gemm0KPerBlock, the Q tile
         // is already prefetched into regs. See above.
         if (!prefetchQTile) {
-          loadedQ = loadAndStoreGemmInputTile(
-              rewriter, loc, inQ, /*kiter=*/kLoopIV, "m", gridCoordsGemm0,
-              gemm0KPerBlock, gemm0MPerBlock, gemm0BidGridLengths);
+          loadedQ = loadTile(rewriter, loc, inQ, /*kiter=*/kLoopIV, "m",
+                             gridCoordsGemm0, gemm0KPerBlock, gemm0MPerBlock,
+                             gemm0BidGridLengths);
         }
 
-        Value loadedK = loadAndStoreGemmInputTile(
-            rewriter, loc, inK, /*kiter=*/kLoopIV, "n", gridCoordsGemm0,
-            gemm0KPerBlock, gemm0NPerBlock, gemm0BidGridLengths);
+        Value loadedK = loadTile(rewriter, loc, inK, /*kiter=*/kLoopIV, "n",
+                                 gridCoordsGemm0, gemm0KPerBlock,
+                                 gemm0NPerBlock, gemm0BidGridLengths);
 
         // TODO(roctriton): scaled gemm
         Value newAcc = blockwiseGemm(rewriter, loc, loadedQ, loadedK, accArg, nullptr, nullptr);
@@ -1287,56 +1284,49 @@ struct GridwiseAttentionRewritePattern
       }
 
       // Emit blockwise GEMM 1.
-        auto gemm0Out =
-            op.getEnableSoftmax() ? softmaxExp : firstGemmResult;
-        // Convert gemm0Out to match V's element type for the second gemm
-        Type gemm0OutElemType = cast<RankedTensorType>(gemm0Out.getType()).getElementType();
-        if (gemm0OutElemType != elemTypeV) {
-          auto gemm0OutType = cast<RankedTensorType>(gemm0Out.getType());
-          auto destType = RankedTensorType::get(gemm0OutType.getShape(), elemTypeV);
-          gemm0Out = createTypeConversionOp(rewriter, loc, gemm0Out, destType);
-        }
+      auto gemm0Out = op.getEnableSoftmax() ? softmaxExp : firstGemmResult;
+      // Convert gemm0Out to match V's element type for the second gemm
+      Type gemm0OutElemType =
+          cast<RankedTensorType>(gemm0Out.getType()).getElementType();
+      if (gemm0OutElemType != elemTypeV) {
+        auto gemm0OutType = cast<RankedTensorType>(gemm0Out.getType());
+        auto destType =
+            RankedTensorType::get(gemm0OutType.getShape(), elemTypeV);
+        gemm0Out = createTypeConversionOp(rewriter, loc, gemm0Out, destType);
+      }
 
-        Value endG1NLoop = rewriter.createOrFold<ConstantIntOp>(
-            loc, rewriter.getI32Type(), gemm1NBlocks);
+      // For attention (softmax enabled), each nLoop iteration starts gemm1
+      // from zero because flash-attention corrections handle cross-iteration
+      // accumulation. For gemm_gemm (no softmax), we accumulate directly
+      // into attentionAcc across nLoop iterations.
+      Value gemm1InitAcc;
+      if (op.getEnableSoftmax()) {
+        gemm1InitAcc = createZeroAccBuffer(
+            rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, accType);
+      } else {
+        gemm1InitAcc = attentionAcc;
+      }
 
-        Value initAccSecondGemm = createZeroAccBuffer(rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, accType);
-        scf::ForOp g1NLoopOp =
-            createMainLoop(rewriter, loc, endG1NLoop, {initAccSecondGemm});
-        {
-          OpBuilder::InsertionGuard guard(rewriter);
-          rewriter.setInsertionPointToStart(g1NLoopOp.getBody());
-          Value g1NLoopIndVar = g1NLoopOp.getInductionVar();
-          Value accArg = g1NLoopOp.getRegionIterArg(0);
+      auto gridCoordsGemm1 = layout::makeGxNGridLayout(
+          rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
+          rock::getNumCUValue(op), splitKVConst);
 
-          auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-              rewriter, loc, bid, gemm1MBlocks, g1NLoopIndVar, gridSize, arch,
-              rock::getNumCUValue(op), splitKVConst);
+      Value loadedV =
+          loadTile(rewriter, loc, inV,
+                   /*kIter=*/nLoopIV, "n", gridCoordsGemm1, gemm1KPerBlock,
+                   gemm1NPerBlock, gemm1BidGridLengths);
 
-          Value loadedV = loadAndStoreGemmInputTile(
-              rewriter, loc, inV,
-              /*kIter=*/nLoopIV, "n", gridCoordsGemm1, gemm1KPerBlock,
-              gemm1NPerBlock, gemm1BidGridLengths);
+      // TODO(roctriton): scaled gemm
+      Value gemm1Out = blockwiseGemm(rewriter, loc, gemm0Out, loadedV,
+                                     gemm1InitAcc, nullptr, nullptr);
 
-          // TODO(roctriton): scaled gemm
-          Value gemm1Out = blockwiseGemm(rewriter, loc, gemm0Out, loadedV,
-                                         accArg, nullptr, nullptr);
-
-          // Yield the gemm result (accumulated within g1NLoopOp)
-          scf::YieldOp::create(rewriter, loc, ValueRange{gemm1Out});
-        }
-        // Get the result from g1NLoopOp - this is the second gemm output for
-        // this nLoop iteration
-        Value secondGemmResult = g1NLoopOp.getResult(0);
-
-        // Apply flash attention correction AFTER g1NLoopOp completes
-        if (op.getEnableSoftmax()) {
-          attentionAcc = createAttentionRowStateCorrections(
-              rewriter, loc, secondGemmResult,
-              attentionAcc, maxRowDiffExp);
-        } else {
-          attentionAcc = secondGemmResult;
-        }
+      // Apply flash attention correction
+      if (op.getEnableSoftmax()) {
+        attentionAcc = createAttentionRowStateCorrections(
+            rewriter, loc, gemm1Out, attentionAcc, maxRowDiffExp);
+      } else {
+        attentionAcc = gemm1Out;
+      }
         
         // Yield the updated accumulators (attentionAcc, maxRow, sumRow)
         scf::YieldOp::create(rewriter, loc, ValueRange{attentionAcc, maxRow, sumRow});
@@ -1354,19 +1344,25 @@ struct GridwiseAttentionRewritePattern
         auto destType = RankedTensorType::get(outAccTensorType.getShape(), elemTypeOut);
         outAcc = createTypeConversionOp(rewriter, loc, outAcc, destType);
     }
-    // TODO(roctriton): return LSE!
+    Value lseOut;
     if (lse) {
       // it must be guaranteed by the verifier
       assert(op.getEnableSoftmax());
-      assert(lseOut);
-      lseOut = computeLse(rewriter, loc, lseOut, sumRow, maxRow);
+      lseOut = computeLse(rewriter, loc, lseType, sumRow, maxRow);
     }
 
-    // Close the early exit if block here. Everything above this point is
-    // conditional (only runs when there's work to do). Everything below
-    // (output writes) always executes, writing zeros when there's no work.
+    // When early exit is enabled, the IfOp returns (outAcc, lseOut?). Yield
+    // from the then region and then take results from the if.
     if (earlyExitIf.has_value()) {
+      rewriter.setInsertionPointToEnd(&earlyExitIf->getThenRegion().front());
+      if (lse)
+        scf::YieldOp::create(rewriter, loc, ValueRange{outAcc, lseOut});
+      else
+        scf::YieldOp::create(rewriter, loc, ValueRange{outAcc});
       rewriter.setInsertionPointAfter(*earlyExitIf);
+      outAcc = earlyExitIf->getResult(0);
+      if (lse)
+        lseOut = earlyExitIf->getResult(1);
       LLVM_DEBUG(llvm::dbgs()
                  << "rock.attention: early exit enabled - "
                  << "output writes will execute unconditionally\n");
@@ -1375,7 +1371,7 @@ struct GridwiseAttentionRewritePattern
     // Note that we don't use splitKV here because that dimension belongs to the
     // batch size already for output tensors
     auto gridCoordsGemm1 =
-        layout::makeGxNGridLayout(rewriter, loc, bid, gemm1MBlocks, zeroI32,
+        layout::makeGxNGridLayout(rewriter, loc, bid, gemm1MBlocks, zero,
                                   gridSize, arch, rock::getNumCUValue(op));
 
     // Compute output transforms
@@ -1400,7 +1396,20 @@ struct GridwiseAttentionRewritePattern
 
     auto untileResult = rock::UntileOp::create(
         rewriter, loc, op.getResult().getType(), storeMarkerOp.getResult());
-    rewriter.replaceOp(op, untileResult);
+
+    if (lse) {
+      ArrayAttr lseMap = computeOutputLseTransforms(
+          rewriter, loc, gemm1MPerBlock, gemm1BidGridLengths);
+
+      auto lseStoreMarkerOp = StoreMarkerOp::create(
+          rewriter, loc, lseOut.getType(), lseOut, lseMap,
+          ValueRange{gridCoordsGemm1.g_block, gridCoordsGemm1.m_block});
+      auto untileLseResult = rock::UntileOp::create(
+          rewriter, loc, op.getLse().getType(), lseStoreMarkerOp.getResult());
+      rewriter.replaceOp(op, ValueRange{untileResult, untileLseResult});
+    } else {
+      rewriter.replaceOp(op, untileResult);
+    }
 
     return success();
   }
