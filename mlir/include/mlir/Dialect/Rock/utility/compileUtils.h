@@ -25,6 +25,17 @@ struct KernelInfo {
   SmallVector<Type> argTypes; // Original func argument types
 };
 
+/// Collect kernel information from a compiled module.
+/// Walks LLVM functions with KernelAttr and extracts launch parameters:
+/// - Block size from ttg.num-warps (or ttg.total-num-warps) * ttg.threads-per-warp
+/// - Shared memory from ttg.shared
+/// - Grid size from rock.grid_size.{kernelName} module attribute
+/// - Argument types and count from LLVM function signature
+/// Returns failure if LDS usage exceeds maxSharedMemPerWG or required
+/// attributes are missing.
+LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
+                                SmallVectorImpl<KernelInfo> &kernels);
+
 /// Create a gpu.ObjectAttr from the HSACO binary in moduleOp and kernel info.
 /// Returns the ObjectAttr and a mapping from kernel names to their indices.
 FailureOr<std::pair<gpu::ObjectAttr, DenseMap<StringRef, size_t>>>

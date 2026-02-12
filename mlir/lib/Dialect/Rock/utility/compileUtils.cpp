@@ -39,6 +39,77 @@ using namespace mlir::rock;
 
 namespace mlir {
 namespace rock {
+
+LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
+                                SmallVectorImpl<KernelInfo> &kernels) {
+  // Get Triton metadata from module attributes
+  int64_t numWarps = -1;
+  int64_t warpSize = -1;
+  int64_t sharedMemory = 0;
+
+  // Try ttg.total-num-warps first (set by warp-specialization pass),
+  // fall back to ttg.num-warps
+  if (auto totalNumWarpsAttr =
+          moduleOp->getAttrOfType<IntegerAttr>("ttg.total-num-warps"))
+    numWarps = totalNumWarpsAttr.getInt();
+  else if (auto numWarpsAttr =
+               moduleOp->getAttrOfType<IntegerAttr>("ttg.num-warps"))
+    numWarps = numWarpsAttr.getInt();
+  if (auto warpSizeAttr =
+          moduleOp->getAttrOfType<IntegerAttr>("ttg.threads-per-warp"))
+    warpSize = warpSizeAttr.getInt();
+  if (auto sharedAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared"))
+    sharedMemory = sharedAttr.getInt();
+
+  // Validate LDS usage
+  if (sharedMemory > maxSharedMemPerWG) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "ttg.shared: too much LDS usage (" << sharedMemory << " > "
+               << maxSharedMemPerWG << ")\n");
+    return failure();
+  }
+
+  if (numWarps == -1) {
+    LLVM_DEBUG(llvm::dbgs() << "ttg.num-warps not found\n");
+    return failure();
+  }
+  if (warpSize == -1) {
+    LLVM_DEBUG(llvm::dbgs() << "ttg.threads-per-warp not found\n");
+    return failure();
+  }
+
+  int64_t tritonBlockSize = numWarps * warpSize;
+
+  // Walk LLVM functions with KernelAttr
+  moduleOp.walk([&](LLVM::LLVMFuncOp funcOp) {
+    if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+      return;
+
+    KernelInfo info;
+    info.name = funcOp.getName().str();
+    info.llvmFunc = funcOp;
+    info.blockSize = tritonBlockSize; // Use Triton's block size (matches HSACO)
+    info.sharedMemorySize = sharedMemory;
+
+    // Get grid_size from module attribute (set by FuncToTritonFunc)
+    std::string gridAttrName = "rock.grid_size." + info.name;
+    if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
+      info.gridSize = gridAttr.getInt();
+
+    // Get argument types from LLVM function signature
+    auto llvmFuncType = funcOp.getFunctionType();
+    unsigned numParams = llvmFuncType.getNumParams();
+    info.argTypes.clear();
+    for (unsigned i = 0; i < numParams; ++i) {
+      info.argTypes.push_back(llvmFuncType.getParamType(i));
+    }
+
+    kernels.push_back(info);
+  });
+
+  return success();
+}
+
 LogicalResult fillCompilationConfigs(StringAttr perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts) {

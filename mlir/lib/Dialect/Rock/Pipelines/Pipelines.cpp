@@ -71,7 +71,7 @@ using namespace mlir::triton;
 static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::createInlinerPass());
   pm->addPass(mlir::triton::createTritonRewriteTensorPointer());
-  
+
   if (rock::supportsTDM(arch)) {
     pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
   }
@@ -150,7 +150,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
         mlir::createTritonAMDGPUInThreadTranspose());
     pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   }
-  pm->addPass(mlir::createTritonAMDGPUMoveUpPrologueLoads());
+  pm->addNestedPass<mlir::triton::FuncOp>(
+      mlir::createTritonAMDGPUMoveUpPrologueLoads());
   if (useBlockPingpong && options.numStages > 1) {
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
@@ -164,7 +165,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
         /*analyzeSmallTensorOfst*/false}));
 
   pm->addPass(mlir::createTritonAMDFoldTrueCmpI());
-  pm->addPass(mlir::createTritonAMDGPUPrepareIfCombining());
+  pm->addNestedPass<mlir::triton::FuncOp>(
+      mlir::createTritonAMDGPUPrepareIfCombining());
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createSymbolDCEPass());
@@ -176,7 +178,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 
 // Based on make_llir() in
 // @triton//:third_party/amd/backend/compiler.py
-// 
+//
 // NOTE: make_llir is divided into two parts in our project:
 // 1. makeLLIR (the function below)
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
@@ -223,16 +225,17 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
 
   // TODO: add_di_scope
 
-  pm->addPass(mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, /*ftz=*/true));
+  pm->addPass(
+      mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, /*ftz=*/true));
 
   // IMPORTANT:
-  // 
+  //
   // make_llir here has this comment:
   // # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
   // and keeps lowering the IR to LLVM.
   // We have the rest of the lowering in TritonToHsaco.cpp
-  // 
-  // The reason for doing this is to keep Pipelines as a 
+  //
+  // The reason for doing this is to keep Pipelines as a
   // lowering pipeline for MLIR only, leaving the LLVM lowering to
   // TritonToHsaco.cpp.
 }

@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -291,52 +292,35 @@ struct CompilationResult {
   std::string hsacoBinary; // Single HSACO binary containing all kernels
   SmallVector<rock::KernelInfo>
       kernels; // Info for each kernel (name, block/grid sizes)
+  unsigned numKernelArgs = 0; // Number of kernel arguments (from compiled LLVM function).
 };
 
-// Thread-local resources to avoid per-config initialization overhead.
-// Each worker thread gets its own context, PassManagers, and parsed module.
-// Note: MLIR's MLIRContext cannot be safely shared across parallel pass
-// executions - it asserts when the registry is modified during multi-threaded
-// execution. Therefore, each thread needs its own context.
-struct ThreadResources {
-  std::unique_ptr<MLIRContext> ctx;
-  OwningOpRef<ModuleOp> sourceModule;
-
-  ThreadResources() = default;
-  ThreadResources(ThreadResources &&) = default;
-  ThreadResources &operator=(ThreadResources &&) = default;
-
-  // Non-copyable
-  ThreadResources(const ThreadResources &) = delete;
-  ThreadResources &operator=(const ThreadResources &) = delete;
-
-  // Initialize all resources for this thread
-  bool initialize(const std::string &sourceModuleStr) {
-    DialectRegistry registry;
-    registerRocMLIRDialects(registry);
-    ctx = std::make_unique<MLIRContext>(registry);
-    ctx->getDiagEngine().registerHandler([](Diagnostic &diag) {
-      // Print errors to help debug applicability failures
-      if (diag.getSeverity() == DiagnosticSeverity::Error) {
-        llvm::errs() << "Diagnostic error: " << diag << "\n";
-        for (auto &note : diag.getNotes()) {
-          llvm::errs() << "  note: " << note << "\n";
-        }
+// Create a fresh MLIRContext with all rocMLIR dialects registered.
+// A new context is created for each compilation to avoid memory accumulation
+// from MLIR's BumpPtrAllocator (which never frees individual allocations).
+// Each compilation stores large artifacts (HSACO binaries as StringAttrs,
+// LLVM types, etc.) in the context, so reusing a context across many
+// compilations causes unbounded memory growth.
+static std::unique_ptr<MLIRContext> createCompilationContext() {
+  DialectRegistry registry;
+  registerRocMLIRDialects(registry);
+  auto ctx = std::make_unique<MLIRContext>(registry);
+  ctx->getDiagEngine().registerHandler([](Diagnostic &diag) {
+    if (diag.getSeverity() == DiagnosticSeverity::Error) {
+      llvm::errs() << "Diagnostic error: " << diag << "\n";
+      for (auto &note : diag.getNotes()) {
+        llvm::errs() << "  note: " << note << "\n";
       }
-    });
-
-    // Parse source module once per thread
-    sourceModule = parseSourceString<ModuleOp>(sourceModuleStr, ctx.get());
-    return sourceModule && *sourceModule;
-  }
-
-  bool isValid() const { return sourceModule && *sourceModule; }
-};
+    }
+  });
+  return ctx;
+}
 
 static LogicalResult
 measureSmallKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
+                   ArrayRef<uint32_t> sharedMemSizes,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements, double &smallKernelCpuMs,
                    bool benchmarkMode) {
@@ -354,10 +338,10 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
         return failure();
       }
     }
-    for (auto [func, blockSize, gridSize] :
-         llvm::zip(functions, blockSizes, gridSizes)) {
+    for (auto [func, blockSize, gridSize, sharedMem] :
+         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
       HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, 0, stream,
+          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
           argPointers.data(), nullptr, nullptr, nullptr));
     }
   }
@@ -374,6 +358,7 @@ static LogicalResult
 measureLargeKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
+                   ArrayRef<uint32_t> sharedMemSizes,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements) {
   // Measure runs normally.
@@ -387,14 +372,14 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
 
     double totalMilliseconds = 0.0;
 
-    for (auto [func, blockSize, gridSize] :
-         llvm::zip(functions, blockSizes, gridSizes)) {
+    for (auto [func, blockSize, gridSize, sharedMem] :
+         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
       hipEvent_t startEvent, stopEvent;
       HIPCHECK(hipEventCreate(&startEvent));
       HIPCHECK(hipEventCreate(&stopEvent));
 
       HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, 0, stream,
+          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
           argPointers.data(), nullptr, startEvent, stopEvent));
       HIPCHECK(hipEventSynchronize(stopEvent));
 
@@ -415,12 +400,15 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
 }
 
 // In order to match rocprof, returns time in nanoseconds
-static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
-                                          ArrayRef<rock::KernelInfo> kernels,
+static FailureOr<double> benchmarkKernels(const CompilationResult &result,
                                           ArrayRef<void *> hostBuffers,
                                           MutableArrayRef<void *> gpuBuffers,
                                           ArrayRef<size_t> bufferSizes,
                                           const BenchmarkParams &params) {
+  const auto &hsacoBinary = result.hsacoBinary;
+  const auto &kernels = result.kernels;
+  unsigned numKernelArgs = result.numKernelArgs;
+
   bool benchmarkMode = !params.benchmarkConfig.empty();
   hipStream_t stream;
   HIPCHECK(hipStreamCreate(&stream));
@@ -448,22 +436,26 @@ static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
   // - globalPtrTy: Global scratch memory pointer
   // - profilePtrTy: Profile scratch memory pointer
   // These can be null when not used. The actual number of data args varies
-  // by operation type and fusions, so we use the kernel's argTypes to
-  // determine the expected count. We pad with null pointers as needed.
+  // by operation type and fusions, so we use numKernelArgs (extracted from
+  // the compiled LLVM function) to determine the expected count.
+  // We pad with null pointers as needed.
   // HIP expects pointers to the arguments, so we store nulls to pass their
   // addresses.
-  if (!kernels.empty()) {
-    size_t expectedArgs = kernels[0].argTypes.size();
-    // Use a vector to store null workspace pointers (need stable addresses)
-    static std::vector<void *> nullWorkspaces;
-    while (nullWorkspaces.size() < expectedArgs) {
-      nullWorkspaces.push_back(nullptr);
-    }
-    size_t workspaceIdx = 0;
-    while (argPointers.size() < expectedArgs) {
-      argPointers.push_back(
-          reinterpret_cast<void *>(&nullWorkspaces[workspaceIdx++]));
-    }
+  if (numKernelArgs == 0) {
+    llvm::errs() << "Error: numKernelArgs is 0, kernel argument extraction "
+                    "failed or kernel has no arguments\n";
+    return failure();
+  }
+
+  // Use a vector to store null workspace pointers (need stable addresses)
+  static std::vector<void *> nullWorkspaces;
+  while (nullWorkspaces.size() < numKernelArgs) {
+    nullWorkspaces.push_back(nullptr);
+  }
+  size_t workspaceIdx = 0;
+  while (argPointers.size() < numKernelArgs) {
+    argPointers.push_back(
+        reinterpret_cast<void *>(&nullWorkspaces[workspaceIdx++]));
   }
 
   // Load ONE module from the single HSACO binary (contains all kernels)
@@ -489,11 +481,12 @@ static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
     functions.push_back(func);
   }
 
-  // Extract block and grid sizes from kernel info
-  SmallVector<uint32_t> blockSizes, gridSizes;
+  // Extract block, grid, and shared memory sizes from kernel info
+  SmallVector<uint32_t> blockSizes, gridSizes, sharedMemSizes;
   for (const rock::KernelInfo &kernel : kernels) {
     blockSizes.push_back(static_cast<uint32_t>(kernel.blockSize));
     gridSizes.push_back(static_cast<uint32_t>(kernel.gridSize));
+    sharedMemSizes.push_back(static_cast<uint32_t>(kernel.sharedMemorySize));
   }
 
   // Sleep guard to avoid GPU throttling
@@ -512,14 +505,14 @@ static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
     // not.
     double totalMillisecondsWarmup = 0.0;
     for (unsigned iter = 0; iter < params.warmupIterations; ++iter) {
-      for (auto [func, blockSize, gridSize] :
-           llvm::zip(functions, blockSizes, gridSizes)) {
+      for (auto [func, blockSize, gridSize, sharedMem] :
+           llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
         hipEvent_t startEvent, stopEvent;
         HIPCHECK(hipEventCreate(&startEvent));
         HIPCHECK(hipEventCreate(&stopEvent));
 
         HIPCHECK(hipExtModuleLaunchKernel(
-            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, 0, stream,
+            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
             argPointers.data(), nullptr, startEvent, stopEvent));
 
         HIPCHECK(hipStreamSynchronize(stream));
@@ -570,12 +563,13 @@ static FailureOr<double> benchmarkKernels(const std::string &hsacoBinary,
 
   if (isSmallKernel) {
     if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, argPointers, measurements,
-                                  smallKernelCpuMs, benchmarkMode)))
+                                  gridSizes, sharedMemSizes, argPointers,
+                                  measurements, smallKernelCpuMs, benchmarkMode)))
       return failure();
   } else {
     if (failed(measureLargeKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, argPointers, measurements)))
+                                  gridSizes, sharedMemSizes, argPointers,
+                                  measurements)))
       return failure();
   }
 
@@ -806,47 +800,33 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       source->print(sourceOs);
     }
 
-    // PHASE 2: Pre-initialize thread resources (contexts, parsed
-    // modules).
-    // Note: MLIR's MLIRContext cannot be safely shared across parallel pass
-    // executions, so each thread needs its own context.
-    std::vector<ThreadResources> threadResources(numThreads);
-    std::atomic<bool> initFailed{false};
-
-    {
-      std::vector<std::thread> initThreads;
-      initThreads.reserve(numThreads);
-      for (unsigned i = 0; i < numThreads; ++i) {
-        initThreads.emplace_back([&, i]() {
-          if (!threadResources[i].initialize(sourceModuleStr)) {
-            initFailed.store(true, std::memory_order_relaxed);
-          }
-        });
-      }
-      for (auto &t : initThreads) {
-        t.join();
-      }
-    }
-
-    if (initFailed.load(std::memory_order_relaxed)) {
-      llvm::errs() << "Failed to initialize thread resources\n";
-      return failure();
-    }
-
-    // PHASE 3: Parallel compilation phase using pre-initialized resources
+    // PHASE 2: Parallel compilation phase.
+    // Each compilation creates a fresh MLIRContext that is destroyed when the
+    // compilation finishes. This prevents unbounded memory growth from MLIR's
+    // BumpPtrAllocator (which never frees individual allocations). Each
+    // compilation stores large artifacts (HSACO binaries as StringAttrs,
+    // LLVM types, etc.) in the context, so reusing a context across many
+    // compilations causes the process to consume ever-increasing RAM.
     std::vector<CompilationResult> compilationResults(configs.size());
     std::mutex outputMutex; // For thread-safe console output
     std::atomic<bool> compilationFailed{
         false}; // Flag to signal early termination
 
-    // Compile a single config using pre-initialized thread resources
-    auto compileConfig = [&](size_t idx,
-                             ThreadResources &res) -> CompilationResult {
+    // Compile a single config with a fresh MLIRContext
+    auto compileConfig = [&](size_t idx) -> CompilationResult {
       CompilationResult result;
       result.perfConfig = configs[idx];
 
-      if (!res.isValid())
+      // Create a fresh context for this compilation. It will be destroyed
+      // when this lambda returns, freeing all accumulated MLIR data.
+      auto ctx = createCompilationContext();
+      OwningOpRef<ModuleOp> sourceModule =
+          parseSourceString<ModuleOp>(sourceModuleStr, ctx.get());
+      if (!sourceModule || !*sourceModule) {
+        result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
         return result;
+      }
 
       // Helper to copy IR with perf config set
       auto copyIR = [&](ModuleOp src,
@@ -861,18 +841,16 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return copy;
       };
 
-      if (doesModuleHaveFusions(res.sourceModule.get()) &&
-          !rock::isModuleFusible(res.sourceModule.get(), result.perfConfig)) {
+      if (doesModuleHaveFusions(sourceModule.get()) &&
+          !rock::isModuleFusible(sourceModule.get(), result.perfConfig)) {
         result.status = CompilationStatus::NotApplicable;
         return result;
       }
 
       // Pipeline
-      PassManager applicabilityPM(res.ctx.get(),
-                                  ModuleOp::getOperationName(),
+      PassManager applicabilityPM(sourceModule.get()->getName(),
                                   PassManager::Nesting::Implicit);
-      PassManager compilationPM(res.ctx.get(),
-                                ModuleOp::getOperationName(),
+      PassManager compilationPM(sourceModule.get()->getName(),
                                 PassManager::Nesting::Implicit);
 
       rock::BackendOptions backendOpts;
@@ -883,14 +861,12 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       backendOpts.optLevel = 3;
       backendOpts.suppressDiagnostic = true;
 
-      int waveSize = rock::getWaveSize(backendOpts.chip);
       int maxSharedMemPerWG = rock::getLDSSize(backendOpts.chip);
 
       rock::TritonOptions tritonOpts;
       tritonOpts.arch = backendOpts.chip;
 
-      StringAttr perfConfigAttr =
-          StringAttr::get(res.ctx.get(), result.perfConfig);
+      StringAttr perfConfigAttr = StringAttr::get(ctx.get(), result.perfConfig);
       // Parse perfConfig
       if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
                                         backendOpts))) {
@@ -906,41 +882,10 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       // Applicability check - clone the pre-parsed module
       OwningOpRef<ModuleOp> sourceCopy =
-          copyIR(res.sourceModule.get(), perfConfigAttr);
+          copyIR(sourceModule.get(), perfConfigAttr);
       if (failed(applicabilityPM.run(sourceCopy.get()))) {
         result.status = CompilationStatus::NotApplicable;
         return result;
-      }
-
-      // Extract block and grid sizes from the applicability-checked module
-      // We need to collect kernel info from the funcs in the source module
-      SmallVector<func::FuncOp> funcsCopy;
-      if (failed(extractFuncOps(sourceCopy.get(), funcsCopy))) {
-        result.status = CompilationStatus::CompilationFailed;
-        compilationFailed.store(true, std::memory_order_relaxed);
-        return result;
-      }
-
-      // Build kernel info for each func
-      SmallVector<rock::KernelInfo> localKernels;
-      for (func::FuncOp &funcOp : funcsCopy) {
-        rock::KernelInfo kernel;
-        kernel.name = funcOp.getSymName().str();
-
-        auto blockSizeAttr = funcOp->getAttrOfType<IntegerAttr>(
-            rock::BlockSizeAttr::getMnemonic());
-        auto gridSizeAttr = funcOp->getAttrOfType<IntegerAttr>(
-            rock::GridSizeAttr::getMnemonic());
-
-        if (!blockSizeAttr || !gridSizeAttr) {
-          result.status = CompilationStatus::CompilationFailed;
-          compilationFailed.store(true, std::memory_order_relaxed);
-          return result;
-        }
-
-        kernel.blockSize = blockSizeAttr.getInt();
-        kernel.gridSize = gridSizeAttr.getInt();
-        localKernels.push_back(kernel);
       }
 
       // Compilation
@@ -953,32 +898,28 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // Get shared memory size from module attribute (set by Triton
-      // compilation)
-      int64_t sharedMemorySize = 0;
-      if (auto sharedAttr =
-              sourceCopy.get()->getAttrOfType<IntegerAttr>("ttg.shared"))
-        sharedMemorySize = sharedAttr.getInt();
-
-        
-      if(sharedMemorySize > maxSharedMemPerWG) {
-        result.status = CompilationStatus::NotApplicable;
+      // Collect kernel info from the compiled module (block/grid sizes,
+      // shared memory, argument count). This also validates LDS usage.
+      SmallVector<rock::KernelInfo> localKernels;
+      if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
+                                         localKernels))) {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        llvm::errs() << "Failed to collect kernel info\n";
+        result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
         return result;
       }
 
-      // The warp-specialization pass can mutate the number of warps
-      int blockSize = 0;
-      if (auto totalNumWarpsAttr =
-              sourceCopy.get()->getAttrOfType<IntegerAttr>("ttg.total-num-warps")) {
-        blockSize = totalNumWarpsAttr.getInt() * waveSize;
+      // Get numKernelArgs from the collected info
+      if (localKernels.empty()) {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        llvm::errs() << "No kernels found for config: " << result.perfConfig
+                     << "\n";
+        result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
+        return result;
       }
-
-      for (auto &kernel : localKernels) {
-        kernel.sharedMemorySize = sharedMemorySize;
-        if(blockSize != 0) {
-          kernel.blockSize = blockSize;
-        }
-      }
+      result.numKernelArgs = localKernels[0].argTypes.size();
 
       // Get the HSACO binary from the compiled module
       auto hsacoAttr =
@@ -992,29 +933,25 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // Store the HSACO binary and kernel info in the result
+      // Store the HSACO binary and kernel info in the result.
+      // This copies the data out of the context before it's destroyed.
       result.hsacoBinary = hsacoAttr.getValue().str();
       result.kernels = std::move(localKernels);
 
       result.status = CompilationStatus::Success;
       return result;
+      // ctx and all MLIR data destroyed here, freeing accumulated memory.
     };
 
-    // Launch parallel compilation tasks with dynamic work stealing
+    // Launch parallel compilation tasks with dynamic work stealing.
     // Note: We use atomic counter instead of static partitioning because
     // compilation times vary dramatically between configs (NotApplicable is
     // fast, full compilation is slow). Dynamic work stealing provides better
     // load balancing by allowing fast threads to pick up more work.
     {
       std::atomic<size_t> nextIdx{0};
-      std::atomic<unsigned> nextThreadId{0};
 
       auto worker = [&]() {
-        // Each worker gets assigned a unique thread ID for its resources
-        unsigned myThreadId =
-            nextThreadId.fetch_add(1, std::memory_order_relaxed);
-        ThreadResources &myRes = threadResources[myThreadId];
-
         while (true) {
           if (compilationFailed.load(std::memory_order_relaxed))
             break;
@@ -1023,7 +960,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
           if (idx >= configs.size())
             break;
 
-          compilationResults[idx] = compileConfig(idx, myRes);
+          compilationResults[idx] = compileConfig(idx);
         }
       };
 
@@ -1060,9 +997,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       assert(result.status == CompilationStatus::Success &&
              "Unexpected compilation status in benchmarking phase");
 
-      FailureOr<double> timing =
-          benchmarkKernels(result.hsacoBinary, result.kernels, hostBuffers,
-                           gpuBuffers, bufferLengths, benchmarkParams);
+      FailureOr<double> timing = benchmarkKernels(result, hostBuffers, gpuBuffers,
+                                                   bufferLengths, benchmarkParams);
 
       if (failed(timing)) {
         llvm::errs() << "Kernel execution failed\n";
