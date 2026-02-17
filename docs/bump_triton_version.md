@@ -102,6 +102,29 @@ pm->addNestedPass<mlir::triton::FuncOp>(
     mlir::createTritonAMDGPUMoveUpPrologueLoads());
 ```
 
+### 4.5 Hardware feature detection
+Python code will usually add certain passes only if hardware supports it. For example:
+
+```python
+if not amd.supports_tdm(options.arch):
+```
+
+In these cases, ALWAYS use `rock` functions to check for hardware features.
+
+For example, instead of:
+
+```cpp
+if (!triton::AMD::TargetInfo(arch.str()).supportsTDM())
+```
+
+use the `rock` function:
+
+```cpp
+if (rock::supportsTDM(arch))
+```
+
+If there is no `rock` equivalent function to check that hardware feature, then implement a new function in `AmdArchDb.cpp` and use it.
+
 ## Step 5: Features Intentionally NOT Implemented
 
 The following Python features are **intentionally omitted** from the C++ implementation. Do NOT add them when synchronizing:
