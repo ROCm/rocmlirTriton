@@ -187,3 +187,96 @@ func.func @test_inside_scf_for(%arg0: tensor<4096xf16>) attributes {rock.arch = 
   }
   return
 }
+
+// -----
+
+// Verifies a real GEMM test case with scf.for loop, loads, dot, and store
+// CHECK: module attributes {{{.*}}rock.grid_size.rock_gemm = 1 : i32
+// CHECK-LABEL: tt.func @rock_gemm
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG1:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG2:.*]]: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+//      CHECK:   %[[INIT:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
+//      CHECK:   scf.for {{.*}} iter_args({{.*}} = %[[INIT]]) -> (tensor<64x64xf32>)
+//      CHECK:     tt.splat %[[ARG1]] : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
+//      CHECK:     tt.addptr {{.*}} : tensor<64x64x!tt.ptr<f16>>, tensor<64x64xi32>
+//      CHECK:     tt.load {{.*}} : tensor<64x64x!tt.ptr<f16>>
+//      CHECK:     tt.splat %[[ARG0]] : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
+//      CHECK:     tt.addptr {{.*}} : tensor<64x64x!tt.ptr<f16>>, tensor<64x64xi32>
+//      CHECK:     tt.load {{.*}} : tensor<64x64x!tt.ptr<f16>>
+//      CHECK:     tt.dot {{.*}} : tensor<64x64xf16> * tensor<64x64xf16> -> tensor<64x64xf32>
+//      CHECK:     scf.yield
+//      CHECK:   tt.splat %[[ARG2]] : !tt.ptr<f32> -> tensor<64x64x!tt.ptr<f32>>
+//      CHECK:   tt.addptr {{.*}} : tensor<64x64x!tt.ptr<f32>>, tensor<64x64xi32>
+//      CHECK:   tt.store {{.*}} : tensor<64x64x!tt.ptr<f32>>
+//      CHECK:   tt.return
+//  CHECK-NOT:   rock.extract_ptr
+//  CHECK-NOT:   rock.cast_to_ptr
+//  CHECK-NOT:   func.func
+func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: tensor<64xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.block_size = 256 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 1 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
+  %cst = arith.constant dense<128> : tensor<64x1xi32>
+  %cst_0 = arith.constant dense<8> : tensor<64x1xi32>
+  %cst_1 = arith.constant dense<8> : tensor<1x64xi32>
+  %c64_i32 = arith.constant 64 : i32
+  %c2_i32 = arith.constant 2 : i32
+  %cst_2 = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
+  %c1_i32 = arith.constant 1 : i32
+  %c0_i32 = arith.constant 0 : i32
+  %0 = rock.extract_ptr %arg2 : tensor<64xf32> -> i32
+  %1 = rock.extract_ptr %arg0 : tensor<1024xf16> -> i32
+  %2 = rock.extract_ptr %arg1 : tensor<1024xf16> -> i32
+  %3 = scf.for %arg3 = %c0_i32 to %c2_i32 step %c1_i32 iter_args(%arg4 = %cst_2) -> (tensor<64x64xf32>)  : i32 {
+    %20 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+    %21 = tt.expand_dims %20 {axis = 1 : i32} : tensor<64xi32> -> tensor<64x1xi32>
+    %22 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+    %23 = tt.expand_dims %22 {axis = 0 : i32} : tensor<64xi32> -> tensor<1x64xi32>
+    %24 = arith.muli %arg3, %c64_i32 : i32
+    %25 = tt.splat %24 : i32 -> tensor<64x1xi32>
+    %26 = arith.addi %25, %21 : tensor<64x1xi32>
+    %27 = arith.cmpi ult, %23, %cst_1 : tensor<1x64xi32>
+    %28 = arith.muli %26, %cst_0 : tensor<64x1xi32>
+    %29 = tt.broadcast %28 : tensor<64x1xi32> -> tensor<64x64xi32>
+    %30 = tt.broadcast %23 : tensor<1x64xi32> -> tensor<64x64xi32>
+    %31 = arith.addi %29, %30 : tensor<64x64xi32>
+    %32 = tt.splat %2 : i32 -> tensor<64x64xi32>
+    %33 = arith.addi %32, %31 : tensor<64x64xi32>
+    %34 = tt.broadcast %27 : tensor<1x64xi1> -> tensor<64x64xi1>
+    %35 = rock.cast_to_ptr %33 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+    %36 = tt.load %35, %34 : tensor<64x64x!tt.ptr<f16>>
+    %37 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+    %38 = tt.expand_dims %37 {axis = 1 : i32} : tensor<64xi32> -> tensor<64x1xi32>
+    %39 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+    %40 = tt.expand_dims %39 {axis = 0 : i32} : tensor<64xi32> -> tensor<1x64xi32>
+    %41 = arith.muli %arg3, %c64_i32 : i32
+    %42 = tt.splat %41 : i32 -> tensor<1x64xi32>
+    %43 = arith.addi %42, %40 : tensor<1x64xi32>
+    %44 = arith.cmpi ult, %38, %cst_0 : tensor<64x1xi32>
+    %45 = arith.muli %38, %cst : tensor<64x1xi32>
+    %46 = tt.broadcast %45 : tensor<64x1xi32> -> tensor<64x64xi32>
+    %47 = tt.broadcast %43 : tensor<1x64xi32> -> tensor<64x64xi32>
+    %48 = arith.addi %46, %47 : tensor<64x64xi32>
+    %49 = tt.splat %1 : i32 -> tensor<64x64xi32>
+    %50 = arith.addi %49, %48 : tensor<64x64xi32>
+    %51 = tt.broadcast %44 : tensor<64x1xi1> -> tensor<64x64xi1>
+    %52 = rock.cast_to_ptr %50 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+    %53 = tt.load %52, %51 : tensor<64x64x!tt.ptr<f16>>
+    %54 = tt.dot %53, %36, %arg4 : tensor<64x64xf16> * tensor<64x64xf16> -> tensor<64x64xf32>
+    scf.yield %54 : tensor<64x64xf32>
+  }
+  %4 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+  %5 = tt.expand_dims %4 {axis = 1 : i32} : tensor<64xi32> -> tensor<64x1xi32>
+  %6 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+  %7 = tt.expand_dims %6 {axis = 0 : i32} : tensor<64xi32> -> tensor<1x64xi32>
+  %8 = arith.cmpi ult, %5, %cst_0 : tensor<64x1xi32>
+  %9 = arith.cmpi ult, %7, %cst_1 : tensor<1x64xi32>
+  %10 = tt.broadcast %9 : tensor<1x64xi1> -> tensor<64x64xi1>
+  %11 = tt.broadcast %8 : tensor<64x1xi1> -> tensor<64x64xi1>
+  %12 = arith.andi %10, %11 : tensor<64x64xi1>
+  %13 = arith.muli %5, %cst_0 : tensor<64x1xi32>
+  %14 = tt.broadcast %13 : tensor<64x1xi32> -> tensor<64x64xi32>
+  %15 = tt.broadcast %7 : tensor<1x64xi32> -> tensor<64x64xi32>
+  %16 = arith.addi %14, %15 : tensor<64x64xi32>
+  %17 = tt.splat %0 : i32 -> tensor<64x64xi32>
+  %18 = arith.addi %17, %16 : tensor<64x64xi32>
+  %19 = rock.cast_to_ptr %18 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
+  tt.store %19, %3, %12 : tensor<64x64x!tt.ptr<f32>>
+  return
+}
