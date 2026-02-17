@@ -5037,8 +5037,26 @@ static LogicalResult populateHostHarnessLogic(
     }
   }
 
+  // For functions that return tensor results but have no arguments, allocate
+  // output buffers from the result types so the harness can capture and
+  // print them.
+  if (localVars.empty() && !root0.resultTypes.empty()) {
+    for (auto resultType : root0.resultTypes) {
+      if (auto shapedType = dyn_cast<ShapedType>(resultType)) {
+        auto memrefType =
+            MemRefType::get(shapedType.getShape(), shapedType.getElementType());
+        auto lvar = memref::AllocOp::create(b, loc, memrefType);
+        localVars.push_back(lvar);
+      }
+    }
+    // All allocated buffers are outputs
+    outIndices.clear();
+    for (int32_t i = 0; i < static_cast<int32_t>(localVars.size()); ++i)
+      outIndices.push_back(i);
+  }
+
   // capture result index
-  if (outIndices.empty()) {
+  if (outIndices.empty() && !localVars.empty()) {
     outIndices.push_back(localVars.size() - 1);
   }
 
@@ -5050,17 +5068,24 @@ static LogicalResult populateHostHarnessLogic(
                                     SmallVectorImpl<Value> &memrefArgs,
                                     ArrayRef<int32_t> outputIndices,
                                     bool willBeWrapped = false) {
-    // Check if the function expects tensor arguments by looking at first arg
-    bool expectsTensors =
-        !willBeWrapped && !callee.getArgumentTypes().empty() &&
+    // Check if the function uses tensors (either as arguments or return values)
+    bool hasTensorArgs =
+        !callee.getArgumentTypes().empty() &&
         isa<TensorType>(callee.getArgumentTypes().front());
+    bool hasTensorResults =
+        !callee.getResultTypes().empty() &&
+        isa<TensorType>(callee.getResultTypes().front());
+    bool expectsTensors = !willBeWrapped && (hasTensorArgs || hasTensorResults);
 
     if (expectsTensors) {
-      // Convert memrefs to tensors for the call
+      // Convert memrefs to tensors for input arguments
       SmallVector<Value, 8> tensorArgs;
-      for (auto [idx, memrefArg] : llvm::enumerate(memrefArgs)) {
-        bool isWritable = llvm::is_contained(outputIndices, idx);
-        tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, isWritable));
+      if (hasTensorArgs) {
+        for (auto [idx, memrefArg] : llvm::enumerate(memrefArgs)) {
+          bool isWritable = llvm::is_contained(outputIndices, idx);
+          tensorArgs.push_back(
+              rock::getAsTensor(b, loc, memrefArg, isWritable));
+        }
       }
 
       // Call the function with tensor arguments
@@ -5725,7 +5750,9 @@ int main(int argc, char **argv) {
   } else if (!genCloneHarness.getValue()) {
     auto func = module->lookupSymbol<func::FuncOp>(testFuncName);
     assert(func && "does -fut point to the wrong function?");
-    kernels.emplace_back(func); // +++pf: should it be a kernel?
+    // Only treat functions with rock.kernel attribute as kernels.
+    if (func->hasAttr(rock::KernelAttr::getMnemonic()))
+      kernels.emplace_back(func);
     rootIFs.emplace_back(func);
   }
 
