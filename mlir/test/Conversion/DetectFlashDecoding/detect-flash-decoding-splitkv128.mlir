@@ -36,7 +36,7 @@
 #transform_map13 = #rock.transform_map<#map14 by [<Merge{1024, 128, 64} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [8388608] -> [1024, 128, 64]>
 
 module {
-  func.func @flash_decode_splitkv128(%arg0: tensor<65536xf16>, %arg1: tensor<65536xf16>, %arg2: tensor<65536xf16>) -> (tensor<8388608xf16>, tensor<131072xf32>) attributes {arch = "gfx942", kernel = "mixr", num_cu = 304 : i64} {
+  func.func @flash_decode_splitkv128(%arg0: tensor<65536xf16>, %arg1: tensor<65536xf16>, %arg2: tensor<65536xf16>) -> (tensor<8388608xf16>, tensor<131072xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", kernel = "mixr", num_cu = 304 : i64} {
     // Q tensor transforms
     %0 = rock.transform %arg0 by #transform_map1 : tensor<65536xf16> to tensor<1x8x1x128x64xf16>
     %1 = rock.transform %0 by #transform_map2 : tensor<1x8x1x128x64xf16> to tensor<1x8x128x128x64xf16>
@@ -50,18 +50,16 @@ module {
     %5 = rock.transform %4 by #transform_map5 : tensor<1x8x1x128x64xf16> to tensor<1x8x128x1x64xf16>
     %6 = rock.transform %5 by #transform_map9 : tensor<1x8x128x1x64xf16> to tensor<1024x1x64xf16>
     
-    %10 = bufferization.alloc_tensor() : tensor<1024x128x64xf16>
-    %11 = bufferization.alloc_tensor() : tensor<1024x128xf32>
+    %10 = tensor.empty() : tensor<1024x128x64xf16>
+    %11 = tensor.empty() : tensor<1024x128xf32>
 
     // CHECK: rock.attention{
     // CHECK-NEXT: qk = %{{.*}} * %{{.*}} : tensor<8x128x64xf16>, tensor<8x64x128xf16>
-    // CHECK-NEXT: lse = %{{.*}} : tensor<1024x128xf32>
-    // CHECK: softmax(qk) * %{{.*}} : tensor<8x128x64xf16> -> tensor<1024x128x64xf16>
+    // CHECK: softmax(qk) * %{{.*}} : tensor<8x128x64xf16>
     // CHECK: splitKV = 128 : i32
 
     %result, %lseOut = rock.attention{
      qk = %2 * %3 : tensor<1024x128x64xf16>, tensor<1024x64x1xf16>
-     lse = %11 : tensor<1024x128xf32>
      qk = elementwise {
     ^bb0(%arg3: memref<1024x1x64xf16>, %arg4: memref<1x8x1x128x64xf32>):
       %15 = bufferization.to_tensor %arg3 restrict : memref<1024x1x64xf16> to tensor<1024x1x64xf16>
@@ -71,8 +69,8 @@ module {
       memref.copy %18, %arg4 : memref<1x8x1x128x64xf32> to memref<1x8x1x128x64xf32>
       rock.yield
     }
-     %10 = softmax(qk) * %6 : tensor<1024x1x64xf16> -> tensor<1024x128x64xf16>
-    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32, storeMethod = #rock<StoreMethod set>} -> tensor<1024x128x64xf16>, tensor<1024x128xf32>
+     softmax(qk) * %6 : tensor<1024x1x64xf16>
+    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1024x128x64xf16>, tensor<1024x128xf32>
     %12 = rock.transform %lseOut by #transform_map11 : tensor<1024x128xf32> to tensor<1x8x128x128x1xf32>
     %13 = rock.transform %12 by #transform_map12 : tensor<1x8x128x128x1xf32> to tensor<131072xf32>
     %14 = rock.transform %result by #transform_map13 : tensor<1024x128x64xf16> to tensor<8388608xf16>
