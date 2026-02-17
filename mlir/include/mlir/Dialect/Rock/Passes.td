@@ -120,6 +120,21 @@ def RockTransformsToPtrPass : Pass<"rock-transforms-to-ptr", "::mlir::func::Func
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockMaskNonZeroPreservingFusionsPass
+    : Pass<"rock-mask-non-zero-preserving-fusions", "::mlir::func::FuncOp"> {
+  let summary = "Insert arith.select masks after non-zero-preserving fusions "
+                "fed by Pad/Embed loads";
+  let description = [{
+    When a blockwise load has Pad or Embed transforms, OOB positions are masked
+    to zero. If the loaded tile feeds into a non-zero-preserving fusion (e.g.
+    arith.addf %tile, 1.0), those positions become non-zero. This pass detects
+    such cases and inserts arith.select with the load mask to re-zero OOB
+    positions at the end of the fusion chain.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect"];
+}
+
 def RockTransformsToPointerArithPass : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
   let summary = "";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect", "triton::TritonDialect"];

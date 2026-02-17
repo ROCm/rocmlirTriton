@@ -11,6 +11,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   ShuffleGemmForReductions.cpp
   GemmLinalgSplitkNormalizationPass.cpp
   TransformsToPtr.cpp
+  MaskNonZeroPreservingFusions.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
   SerializeHostFuncs.cpp
