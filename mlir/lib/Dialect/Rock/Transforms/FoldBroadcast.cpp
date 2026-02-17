@@ -221,18 +221,25 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
                                !op.getBScaleTransposed());
     }
 
-    // Compute the new result type based on transformed A and B shapes
-    auto newAType = cast<ShapedType>(newA.getType());
-    auto newBType = cast<ShapedType>(newB.getType());
+    // Compute the new 2D result type by merging the batch dimension of the
+    // original 3D result [G, M, N], mirroring what rocMLIR does with the C
+    // buffer.
     auto origResultType = cast<RankedTensorType>(op.getResult().getType());
-    // New result shape: [G from A/B, M from A, N from B]
-    int64_t newG = newAType.getShape()[0];
-    int64_t newM = newAType.getShape()[op.getATransposed() ? 2 : 1];
-    int64_t newN = newBType.getShape()[op.getBTransposed() ? 1 : 2];
-    auto newResultType = RankedTensorType::get(
-        {newG, newM, newN}, origResultType.getElementType());
+    auto origShape = origResultType.getShape(); // [G, M, N]
+    int64_t G = origShape[0], M = origShape[1], N = origShape[2];
 
-    // Create the new GemmOp
+    SmallVector<int64_t, 2> newResultShape;
+    if (isBBatchBroadcast) {
+      // mergeBatch(C, false): [G, M, N] -> [G*M, N]
+      newResultShape = {G * M, N};
+    } else {
+      // mergeBatch(C, true): [G, M, N] -> [M, G*N]
+      newResultShape = {M, G * N};
+    }
+    auto newResultType = RankedTensorType::get(
+        newResultShape, origResultType.getElementType());
+
+    // Create the new GemmOp with 2D result
     auto gemm = rock::GemmOp::create(
         rw, op.getLoc(), newResultType, newA, newB, newScaleA, newScaleB,
         op.getATransposed(), op.getBTransposed(), op.getAScaleTransposed(),
@@ -242,12 +249,23 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
     if (auto attr = (*op).template getAttrOfType<StringAttr>("perf_config"))
       gemm->setAttr("perf_config", attr);
 
-    // The result needs to be converted back to the original result type
-    // Since we don't have a C input anymore, we need to create a transform
-    // that represents how to convert from the new shape to the original shape
-    // For now, we use a direct replacement since the shapes should be compatible
-    // after the broadcast folding
-    rw.replaceOp(op, gemm.getResult());
+    // Transform the 2D result back to the original 3D shape [G, M, N]
+    ArrayAttr unmergeAttr;
+    if (isBBatchBroadcast) {
+      // [G*M, N] -> [G, M, N]: unmerge dim0 into G and M
+      rock::TopDownTMBuilder builder(rw, {"g", "m", "n"}, {G, M, N}, loc);
+      builder.unmerge("gm", 0, {"g", "m"}, {G, M});
+      builder.passThrough({"n"}, {1}, {"n"});
+      unmergeAttr = rw.getArrayAttr({builder.get()});
+    } else {
+      // [M, G*N] -> [G, M, N]: unmerge dim1 into G and N
+      rock::TopDownTMBuilder builder(rw, {"g", "m", "n"}, {G, M, N}, loc);
+      builder.passThrough({"m"}, {0}, {"m"});
+      builder.unmerge("gn", 1, {"g", "n"}, {G, N});
+      unmergeAttr = rw.getArrayAttr({builder.get()});
+    }
+    Value result = rock::transform(rw, gemm.getResult(), unmergeAttr);
+    rw.replaceOp(op, result);
 
     return success();
   }
