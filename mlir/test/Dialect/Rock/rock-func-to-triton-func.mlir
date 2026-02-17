@@ -3,8 +3,7 @@
 // Verifies func.func with rock.kernel is converted to tt.func with pointer arguments
 // CHECK: module attributes {{{.*}}rock.grid_size.test_basic_conversion = 2 : i32
 // CHECK-LABEL: tt.func @test_basic_conversion
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
-//      CHECK: attributes {noinline = true, rock.arch = "{{.*}}"
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) attributes {noinline = true, rock.arch = "{{.*}}"
 //      CHECK:   tt.splat %[[ARG0]] : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
 //      CHECK:   tt.load
 //      CHECK:   tt.return
