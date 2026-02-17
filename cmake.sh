@@ -11,6 +11,28 @@
 # $ cd external/triton/scripts/
 # $ bash build-llvm-project.sh
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCHES_DIR="$SCRIPT_DIR/triton-patches"
+TRITON_DIR="$SCRIPT_DIR/external/triton"
+
+# Apply patches to the triton submodule if any exist
+if [ -d "$PATCHES_DIR" ] && [ -n "$(ls -A "$PATCHES_DIR"/*.patch 2>/dev/null)" ]; then
+    echo "Applying patches from $PATCHES_DIR to triton submodule..."
+    cd "$TRITON_DIR"
+    for patch in "$PATCHES_DIR"/*.patch; do
+        if git apply --check "$patch" 2>/dev/null; then
+            echo "Applying: $(basename "$patch")"
+            git apply "$patch"
+        elif git apply --check --reverse "$patch" 2>/dev/null; then
+            echo "Skipping (already applied): $(basename "$patch")"
+        else
+            echo "ERROR: Patch cannot be applied (conflicts or other error): $(basename "$patch")"
+        fi
+    done
+    cd "$SCRIPT_DIR"
+fi
+
 rm -rf build
 mkdir build
 cd build
