@@ -38,6 +38,13 @@ build/bin/rocmlir-gen --perf_config=gemm:v1:256,128,32,1,1,4,16,4,1,0,0 -g 3 -m 
 
 build/bin/rocmlir-gen --perf_config=gemm:v1:64,64,32,1,1,4,16,1,1,0,0 -g 1 -m 4 -k 128 -n 4 --transA=false -t i8  --operation gemm --arch $ARCH -pv   | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
 
+# NOTE: This bug only occurs on gfx950, that's why we hardcode the arch.
+build/bin/rocmlir-gen -operation gemm -t f16 -out_datatype f32 --arch gfx950:sramecc+:xnack- --num_cu 256 --num_chiplets 8 -g 1 -m 4096 -k 11008 -n 4096 -transA=False -transB=False --perf_config="gemm:v1:16,16,16,1,1,1,32,1,2,0,0" --arch="gfx950" | timeout 5 build/bin/rocmlir-driver -c
+if [ $? -ne 0 ]; then
+  echo "Error: Gemm test failed on gfx950"
+  exit 1
+fi
+
 # Tuning driver
 build/bin/rocmlir-gen -operation gemm -t f16 -out_datatype f32 --arch $ARCH --num_cu $NUM_CU -g 1 -m 1024 -k 1024 -n 1024 -transA=False -transB=False --perf_config= | build/bin/rocmlir-tuning-driver --tuning-space=quick --num-iterations=10 --warmup-iterations=1 --sleep-us=100 --use-median --show-all-measurements=false
 
