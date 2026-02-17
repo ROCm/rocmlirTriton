@@ -96,22 +96,36 @@ void runScalarizePackedFOpsPass(llvm::Function &F);
 
 using namespace mlir;
 
+/// Track whether LLVM targets have been initialized.
+/// Using atomic bool instead of std::once_flag to allow re-initialization
+/// after llvm_shutdown() is called.
+static std::atomic<bool> llvmTargetsInitialized{false};
+
+namespace mlir {
+/// Reset the LLVM targets initialization flag.
+/// Call this after llvm_shutdown() to allow re-initialization.
+void resetLLVMTargetsInitialized() {
+  llvmTargetsInitialized.store(false);
+}
+} // namespace mlir
+
 namespace {
 
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
 
-/// Initialize LLVM targets (call once) - from init_targets in llvm.cc
+/// Initialize LLVM targets - from init_targets in llvm.cc
+/// Can be called multiple times; only initializes if not already done.
 void initializeLLVMTargets() {
-  static std::once_flag initFlag;
-  std::call_once(initFlag, []() {
-    llvm::InitializeAllTargetInfos();
-    llvm::InitializeAllTargets();
-    llvm::InitializeAllTargetMCs();
-    llvm::InitializeAllAsmParsers();
-    llvm::InitializeAllAsmPrinters();
-  });
+  if (llvmTargetsInitialized.exchange(true))
+    return; // Already initialized
+
+  llvm::InitializeAllTargetInfos();
+  llvm::InitializeAllTargets();
+  llvm::InitializeAllTargetMCs();
+  llvm::InitializeAllAsmParsers();
+  llvm::InitializeAllAsmPrinters();
 }
 
 /// Create LLVM target machine - from createTargetMachine in llvm.cc

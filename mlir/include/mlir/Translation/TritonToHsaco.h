@@ -57,6 +57,13 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options);
 void registerTritonToHsacoTranslation();
 
 } // namespace rock
+
+/// Reset the LLVM targets initialization flag.
+/// Call this after llvm_shutdown() to allow re-initialization of LLVM targets.
+/// This is needed because llvm_shutdown() clears all registered targets, but
+/// the normal initialization check would prevent re-registration.
+void resetLLVMTargetsInitialized();
+
 } // namespace mlir
 
 #endif // MLIR_TRANSLATION_TRITONTOHSACO_H

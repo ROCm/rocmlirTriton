@@ -64,6 +64,7 @@
 #include "CacheFlush.h"
 
 #include <hip/hip_runtime.h>
+#include <malloc.h>
 
 #if !defined(_HIP_CLANG_ONLY__)
 // GCC complains if we don't do this
@@ -156,6 +157,11 @@ static llvm::cl::opt<unsigned> numCompileThreads(
     "num-compile-threads",
     llvm::cl::desc("Number of parallel compilation threads (0 = auto)"),
     llvm::cl::value_desc("thread count"), llvm::cl::init(0));
+
+static llvm::cl::opt<unsigned> batchSize(
+    "batch-size",
+    llvm::cl::desc("Number of configs to compile before benchmarking (0 = all at once)"),
+    llvm::cl::value_desc("batch size"), llvm::cl::init(500));
 
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef inputFilename,
@@ -277,6 +283,7 @@ struct BenchmarkParams {
   bool showAllMeasurements;
   rock::TuningParamSetKind tuningSpaceKind;
   const unsigned numCompileThreads;
+  const unsigned batchSize;
   std::string benchmarkConfig;
 };
 
@@ -744,7 +751,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   const BenchmarkParams benchmarkParams = {
       numIterations,     warmupIterations, useMedian,           trimPercent,
       sleepUs,           showStats,        showAllMeasurements, tuningSpaceKind,
-      numCompileThreads, benchmarkConfig};
+      numCompileThreads, batchSize,        benchmarkConfig};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);
@@ -800,14 +807,15 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       source->print(sourceOs);
     }
 
-    // PHASE 2: Parallel compilation phase.
+    // PHASE 2: Batch processing - compile and benchmark in chunks to bound memory.
     // Each compilation creates a fresh MLIRContext that is destroyed when the
     // compilation finishes. This prevents unbounded memory growth from MLIR's
     // BumpPtrAllocator (which never frees individual allocations). Each
     // compilation stores large artifacts (HSACO binaries as StringAttrs,
     // LLVM types, etc.) in the context, so reusing a context across many
     // compilations causes the process to consume ever-increasing RAM.
-    std::vector<CompilationResult> compilationResults(configs.size());
+    // By processing in batches, we also bound the memory used by stored HSACO
+    // binaries (which can be hundreds of KB each).
     std::mutex outputMutex; // For thread-safe console output
     std::atomic<bool> compilationFailed{
         false}; // Flag to signal early termination
@@ -816,6 +824,12 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     auto compileConfig = [&](size_t idx) -> CompilationResult {
       CompilationResult result;
       result.perfConfig = configs[idx];
+
+      {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        llvm::errs() << "[DEBUG] Compiling config " << idx + 1 << "/"
+                     << configs.size() << ": " << result.perfConfig << "\n";
+      }
 
       // Create a fresh context for this compilation. It will be destroyed
       // when this lambda returns, freeing all accumulated MLIR data.
@@ -843,6 +857,12 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       if (doesModuleHaveFusions(sourceModule.get()) &&
           !rock::isModuleFusible(sourceModule.get(), result.perfConfig)) {
+        {
+          std::lock_guard<std::mutex> lock(outputMutex);
+          llvm::errs() << "[DEBUG] Config " << idx + 1 << "/" << configs.size()
+                       << " not applicable (fusion check): "
+                       << result.perfConfig << "\n";
+        }
         result.status = CompilationStatus::NotApplicable;
         return result;
       }
@@ -884,6 +904,12 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       OwningOpRef<ModuleOp> sourceCopy =
           copyIR(sourceModule.get(), perfConfigAttr);
       if (failed(applicabilityPM.run(sourceCopy.get()))) {
+        {
+          std::lock_guard<std::mutex> lock(outputMutex);
+          llvm::errs() << "[DEBUG] Config " << idx + 1 << "/" << configs.size()
+                       << " not applicable (applicability check): "
+                       << result.perfConfig << "\n";
+        }
         result.status = CompilationStatus::NotApplicable;
         return result;
       }
@@ -916,6 +942,13 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       // Check that kernels don't use too much LDS
       for (auto &kernel : localKernels) {
         if (kernel.sharedMemorySize > maxSharedMemPerWG) {
+          {
+            std::lock_guard<std::mutex> lock(outputMutex);
+            llvm::errs() << "[DEBUG] Config " << idx + 1 << "/" << configs.size()
+                         << " not applicable (LDS too large: "
+                         << kernel.sharedMemorySize << " > " << maxSharedMemPerWG
+                         << "): " << result.perfConfig << "\n";
+          }
           result.status = CompilationStatus::NotApplicable;
           return result;
         }
@@ -950,82 +983,133 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       result.kernels = std::move(localKernels);
 
       result.status = CompilationStatus::Success;
+      {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        llvm::errs() << "[DEBUG] Compilation successful for config " << idx + 1
+                     << "/" << configs.size() << ": " << result.perfConfig
+                     << "\n";
+      }
       return result;
       // ctx and all MLIR data destroyed here, freeing accumulated memory.
     };
 
-    // Launch parallel compilation tasks with dynamic work stealing.
-    // Note: We use atomic counter instead of static partitioning because
-    // compilation times vary dramatically between configs (NotApplicable is
-    // fast, full compilation is slow). Dynamic work stealing provides better
-    // load balancing by allowing fast threads to pick up more work.
-    {
-      std::atomic<size_t> nextIdx{0};
-
-      auto worker = [&]() {
-        while (true) {
-          if (compilationFailed.load(std::memory_order_relaxed))
-            break;
-
-          size_t idx = nextIdx.fetch_add(1, std::memory_order_relaxed);
-          if (idx >= configs.size())
-            break;
-
-          compilationResults[idx] = compileConfig(idx);
-        }
-      };
-
-      std::vector<std::thread> threads;
-      threads.reserve(numThreads);
-      for (unsigned i = 0; i < numThreads; ++i) {
-        threads.emplace_back(worker);
-      }
-
-      for (auto &t : threads) {
-        t.join();
-      }
-    }
-
-    // Check if any compilation failed and terminate early
-    if (compilationFailed.load(std::memory_order_relaxed)) {
-      llvm::errs()
-          << "Compilation failed for one or more configs. Terminating.\n";
-      return failure();
-    }
+    // Determine batch size - 0 means process all at once
+    size_t effectiveBatchSize = benchmarkParams.batchSize > 0
+                                    ? benchmarkParams.batchSize
+                                    : configs.size();
+    size_t numBatches = (configs.size() + effectiveBatchSize - 1) / effectiveBatchSize;
 
     int64_t validResults = 0;
-    // Sequential benchmarking phase (must be sequential for accurate timing)
-    // Note: Due to early exit on compilation failures, only NotApplicable and
-    // Success statuses are possible here.
-    for (const auto &result : compilationResults) {
-      llvm::outs() << result.perfConfig << "\t";
 
-      if (result.status == CompilationStatus::NotApplicable) {
-        llvm::outs() << "N/A\n";
-        continue;
-      }
+    // Process configs in batches to bound memory usage
+    for (size_t batchIdx = 0; batchIdx < numBatches; ++batchIdx) {
+      auto batchStartTime = std::chrono::steady_clock::now();
 
-      assert(result.status == CompilationStatus::Success &&
-             "Unexpected compilation status in benchmarking phase");
+      size_t batchStart = batchIdx * effectiveBatchSize;
+      size_t batchEnd = std::min(batchStart + effectiveBatchSize, configs.size());
+      size_t batchSize = batchEnd - batchStart;
 
-      FailureOr<double> timing = benchmarkKernels(result, hostBuffers, gpuBuffers,
-                                                   bufferLengths, benchmarkParams);
+      llvm::errs() << "[DEBUG] Processing batch " << batchIdx + 1 << "/"
+                   << numBatches << " (configs " << batchStart + 1 << "-"
+                   << batchEnd << " of " << configs.size() << ")\n";
 
-      if (failed(timing)) {
-        llvm::errs() << "Kernel execution failed\n";
-        return failure();
-      }
-      llvm::outs() << timing.value() << "\n";
+      // Allocate results for this batch only
+      std::vector<CompilationResult> batchResults(batchSize);
 
-      validResults++;
-      // Find best config
-      if (rock::needToUpdateBest(benchmarkParams.tuningSpaceKind)) {
-        if (timing.value() < bestTimeOverall) {
-          bestTimeOverall = timing.value();
-          bestConfigOverall = result.perfConfig;
+      // Launch parallel compilation tasks with dynamic work stealing.
+      // Note: We use atomic counter instead of static partitioning because
+      // compilation times vary dramatically between configs (NotApplicable is
+      // fast, full compilation is slow). Dynamic work stealing provides better
+      // load balancing by allowing fast threads to pick up more work.
+      {
+        std::atomic<size_t> nextLocalIdx{0};
+
+        auto worker = [&]() {
+          while (true) {
+            if (compilationFailed.load(std::memory_order_relaxed))
+              break;
+
+            size_t localIdx = nextLocalIdx.fetch_add(1, std::memory_order_relaxed);
+            if (localIdx >= batchSize)
+              break;
+
+            size_t globalIdx = batchStart + localIdx;
+            batchResults[localIdx] = compileConfig(globalIdx);
+          }
+        };
+
+        // Don't create more threads than configs in this batch
+        unsigned batchThreads = std::min(numThreads, static_cast<unsigned>(batchSize));
+        std::vector<std::thread> threads;
+        threads.reserve(batchThreads);
+        for (unsigned i = 0; i < batchThreads; ++i) {
+          threads.emplace_back(worker);
+        }
+
+        for (auto &t : threads) {
+          t.join();
         }
       }
-    }
+
+      auto compileEndTime = std::chrono::steady_clock::now();
+      double compileDurationSec = std::chrono::duration<double>(compileEndTime - batchStartTime).count();
+
+      // Check if any compilation failed and terminate early
+      if (compilationFailed.load(std::memory_order_relaxed)) {
+        llvm::errs()
+            << "Compilation failed for one or more configs. Terminating.\n";
+        return failure();
+      }
+
+      // Sequential benchmarking phase for this batch (must be sequential for accurate timing)
+      // Note: Due to early exit on compilation failures, only NotApplicable and
+      // Success statuses are possible here.
+      for (size_t localIdx = 0; localIdx < batchResults.size(); ++localIdx) {
+        const auto &result = batchResults[localIdx];
+        size_t globalIdx = batchStart + localIdx + 1;
+
+        llvm::errs() << "[DEBUG] Executing config " << globalIdx << "/"
+                     << configs.size() << ": " << result.perfConfig << "\n";
+        llvm::outs() << result.perfConfig << "\t";
+
+        if (result.status == CompilationStatus::NotApplicable) {
+          llvm::outs() << "N/A\n";
+          continue;
+        }
+
+        assert(result.status == CompilationStatus::Success &&
+               "Unexpected compilation status in benchmarking phase");
+
+        FailureOr<double> timing = benchmarkKernels(result, hostBuffers, gpuBuffers,
+                                                     bufferLengths, benchmarkParams);
+
+        if (failed(timing)) {
+          llvm::errs() << "Kernel execution failed\n";
+          return failure();
+        }
+        llvm::outs() << timing.value() << "\n";
+
+        validResults++;
+        // Find best config
+        if (rock::needToUpdateBest(benchmarkParams.tuningSpaceKind)) {
+          if (timing.value() < bestTimeOverall) {
+            bestTimeOverall = timing.value();
+            bestConfigOverall = result.perfConfig;
+          }
+        }
+      }
+
+      // batchResults is destroyed here, freeing HSACO binaries and other data
+      auto batchEndTime = std::chrono::steady_clock::now();
+      double batchDurationSec = std::chrono::duration<double>(batchEndTime - batchStartTime).count();
+      double benchDurationSec = batchDurationSec - compileDurationSec;
+      llvm::errs() << "[DEBUG] Batch " << batchIdx + 1 << "/" << numBatches
+                   << " complete in " << batchDurationSec << "s (compile: "
+                   << compileDurationSec << "s, benchmark: " << benchDurationSec << "s)\n";
+
+      // Force glibc to return freed memory to OS
+      malloc_trim(0);
+    } // End of batch loop
 
     if (validResults == 0) {
       llvm::errs() << "No valid configurations found\n";
