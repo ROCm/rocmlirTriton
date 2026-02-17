@@ -24,8 +24,10 @@ if [ -d "$PATCHES_DIR" ] && [ -n "$(ls -A "$PATCHES_DIR"/*.patch 2>/dev/null)" ]
         if git apply --check "$patch" 2>/dev/null; then
             echo "Applying: $(basename "$patch")"
             git apply "$patch"
+        elif git apply --check --reverse "$patch" 2>/dev/null; then
+            echo "Skipping (already applied): $(basename "$patch")"
         else
-            echo "Skipping (already applied or conflicts): $(basename "$patch")"
+            echo "ERROR: Patch cannot be applied (conflicts or other error): $(basename "$patch")"
         fi
     done
     cd "$SCRIPT_DIR"
