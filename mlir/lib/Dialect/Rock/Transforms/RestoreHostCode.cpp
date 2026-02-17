@@ -370,7 +370,8 @@ void RockRestoreHostCodePass::runOnOperation() {
 
   // Collect kernel information from LLVM functions
   SmallVector<KernelInfo> kernels;
-  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels)))
+  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels,
+                                     /*checkLDS=*/true)))
     signalPassFailure();
 
   // If we have kernels, create gpu.binary and convert calls to gpu.launch_func
