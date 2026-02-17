@@ -41,7 +41,8 @@ namespace mlir {
 namespace rock {
 
 LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
-                                SmallVectorImpl<KernelInfo> &kernels) {
+                                SmallVectorImpl<KernelInfo> &kernels,
+                                bool checkLDS) {
   // Get Triton metadata from module attributes
   int64_t numWarps = -1;
   int64_t warpSize = -1;
@@ -62,7 +63,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     sharedMemory = sharedAttr.getInt();
 
   // Validate LDS usage
-  if (sharedMemory > maxSharedMemPerWG) {
+  if (checkLDS && sharedMemory > maxSharedMemPerWG) {
     LLVM_DEBUG(llvm::dbgs()
                << "ttg.shared: too much LDS usage (" << sharedMemory << " > "
                << maxSharedMemPerWG << ")\n");
