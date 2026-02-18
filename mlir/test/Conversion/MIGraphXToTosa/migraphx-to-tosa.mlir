@@ -1,5 +1,6 @@
 // RUN: rocmlir-opt -split-input-file --migraphx-to-tosa %s | FileCheck %s
 
+// TODO(rocmlirTriton): 'tosa.conv2d' op expected input_height - 1 + pad_top + pad_bottom - (kernel_height - 1) * dilation_y to be wholly divisible by stride_y
 // module  {
 //   // DISABLED-CHECK-LABEL: func.func @ConvNoBias
 //   // DISABLED-CHECK-SAME: ([[arg0:%.+]]: tensor<200704xf32>) -> tensor<200704xf32>

@@ -203,6 +203,7 @@ func.func @basic_add_si32(%arg0: !migraphx.shaped<1x112x112x64xsi32, 802816x7168
   return %1 : !migraphx.shaped<1x112x112x64xsi32, 802816x7168x64x1>
 }
 
+// TODO(rocmlirTriton): 'tosa.conv2d' op expected input_height - 1 + pad_top + pad_bottom - (kernel_height - 1) * dilation_y to be wholly divisible by stride_y
 // DISABLED-CHECK-LABEL: func @conv_with_quant_si8
 // DISABLED-CHECK: tosa.conv2d{{.*}}(tensor<1x224x224x3xi8>, tensor<64x7x7x3xi8>, tensor<64xi32>, tensor<1xi8>, tensor<1xi8>) -> tensor<1x112x112x64xi32>
 // DISABLED-CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xf32>
