@@ -25,7 +25,7 @@
 #transform_map11 = #rock.transform_map<#map9 by [<Merge{1, 2, 256, 1} ["dim0"] at [0] -> ["col0", "col1", "col2", "col3"] at [0, 1, 2, 3]>] bounds = [512] -> [1, 2, 256, 1]>
 #transform_map12 = #rock.transform_map<#map10 by [<Merge{2, 256, 256} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [131072] -> [2, 256, 256]>
 module {
-  func.func @mlir_attention(%arg0: tensor<65536xf16>, %arg1: tensor<65536xf16>, %arg2: tensor<65536xf16>) -> (tensor<131072xf16>, tensor<512xf32>) attributes {kernel = "mixr"} {
+  func.func @mlir_attention(%arg0: tensor<65536xf16>, %arg1: tensor<65536xf16>, %arg2: tensor<65536xf16>) -> (tensor<131072xf16>, tensor<512xf32>) attributes {kernel = "mixr", rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
     %0 = rock.transform %arg0 by #transform_map : tensor<65536xf16> to tensor<1x1x256x256xf16>
     %1 = rock.transform %0 by #transform_map1 : tensor<1x1x256x256xf16> to tensor<1x2x256x256xf16>
     %2 = rock.transform %arg1 by #transform_map2 : tensor<65536xf16> to tensor<1x2x128x256xf16>
@@ -35,17 +35,13 @@ module {
     %6 = rock.transform %1 by #transform_map6 : tensor<1x2x256x256xf16> to tensor<2x256x256xf16>
     %7 = rock.transform %3 by #transform_map7 : tensor<1x2x256x128xf16> to tensor<2x256x128xf16>
     %8 = rock.transform %5 by #transform_map8 : tensor<1x2x128x256xf16> to tensor<2x128x256xf16>
-    %9 = bufferization.alloc_tensor() : tensor<2x256x256xf16>
-    %10 = bufferization.alloc_tensor() : tensor<2x256xf32>
 
     // CHECK: rock.attention{
     // CHECK-NEXT: qk = %{{.*}} * %{{.*}} : tensor<1x256x256xf16>, tensor<1x256x256xf16>
-    // CHECK-NEXT: lse = %{{.*}} : tensor<2x256xf32>
     // CHECK: splitKV = 2
 
     %result, %lseOut = rock.attention{
      qk = %6 * %7 : tensor<2x256x256xf16>, tensor<2x256x128xf16>
-     lse = %10 : tensor<2x256xf32>
      qk = elementwise {
     ^bb0(%arg3: memref<2x256x128xf16>, %arg4: memref<1x2x256x128xf32>):
       %14 = bufferization.to_tensor %arg3 restrict : memref<2x256x128xf16> to tensor<2x256x128xf16>
@@ -55,8 +51,8 @@ module {
       memref.copy %17, %arg4 : memref<1x2x256x128xf32> to memref<1x2x256x128xf32>
       rock.yield
     }
-     %9 = softmax(qk) * %8 : tensor<2x128x256xf16> -> tensor<2x256x256xf16>
-    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32, storeMethod = #rock<StoreMethod set>} -> tensor<2x256x256xf16>, tensor<2x256xf32>
+     softmax(qk) * %8 : tensor<2x128x256xf16>
+    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<2x256x256xf16>, tensor<2x256xf32>
     %11 = rock.transform %lseOut by #transform_map10 : tensor<2x256xf32> to tensor<1x2x256x1xf32>
     %12 = rock.transform %11 by #transform_map11 : tensor<1x2x256x1xf32> to tensor<512xf32>
     %13 = rock.transform %result by #transform_map12 : tensor<2x256x256xf16> to tensor<131072xf16>

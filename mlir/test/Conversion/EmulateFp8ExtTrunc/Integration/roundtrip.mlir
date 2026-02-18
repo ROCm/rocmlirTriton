@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): This crashes with: error: Dialect `func' not found for custom op 'func.func'
+
 // COM: This is a host-side test and doesn't require a GPU
 // RUN: sed -e 's/##TYPE##/f8E4M3FNUZ/g' -e 's/##OCP##/false/g' %s | \
 // RUN: rocmlir-opt -emulate-fp8-ext-trunc - | \

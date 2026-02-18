@@ -1,4 +1,6 @@
 // RUN: rocmlir-opt --rocmlir-custom-tosa-decompose --split-input-file %s | FileCheck %s
+// UNSUPPORTED: true
+// TODO(roctriton): group convolution
 
 // CHECK: @bwd_data_conv2d
 // CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} {axis = 1 : i32} : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32>

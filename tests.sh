@@ -68,4 +68,7 @@ build/bin/rocmlir-gen -rand 1 --causal -pv --arch $ARCH --operation attention -t
 
 build/bin/rocmlir-gen --causal -num_heads_q 4 -num_heads_kv 2 -rand 1  -pv --arch $ARCH --operation attention -t f16 -seq_len_q 32 -seq_len_k 32 -head_dim_qk 32 -head_dim_v 32 -g 1 | build/bin/rocmlir-driver --host-pipeline=highlevel | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
 
-cd build && LIT_FILTER=Dialect/Rock ninja check-rocmlir && LIT_FILTER=e2e ninja check-rocmlir
+cd build && \
+ LIT_FILTER=Dialect/Rock ninja check-rocmlir && \
+ LIT_FILTER=Conversion ninja check-rocmlir && \
+ LIT_FILTER=e2e ninja check-rocmlir

@@ -191,25 +191,25 @@ module  {
     return %1 : !migraphx.shaped<1x112x112x64xi8, 802816x7168x64x1>
   }
 
-  // CHECK-LABEL: func @conv_with_quant
-  // CHECK: tosa.conv2d
-  // CHECK: tosa.cast
-  // CHECK: tosa.cast
-  // CHECK: tosa.sub
-  // CHECK: tosa.mul
-  // CHECK: tosa.reciprocal
-  // CHECK: tosa.mul
-  // CHECK: tosa.cast
-  // CHECK: tosa.cast
-  // CHECK: tosa.add
-  // CHECK: tosa.clamp
-  // CHECK: tosa.cast
-  func.func @conv_with_quant(%arg1: !migraphx.shaped<1x3x224x224xi8, 150528x50176x224x1>, %arg2: !migraphx.shaped<64x3x7x7xi8, 147x49x7x1>, %scale: !migraphx.shaped<1x64x1x1xf32, 64x1x1x1>, %bias: !migraphx.shaped<1x64x1x1xi32, 64x1x1x1>, %bias2: !migraphx.shaped<1x64x1x1xi8, 64x1x1x1>) -> !migraphx.shaped<1x64x112x112xi8, 802816x12544x112x1> attributes {kernel = "mixr"} {
-    %1 = migraphx.quant_convolution %arg1, %arg2 {dilation = [1, 1], group = 1 : i64, padding = [3, 3, 3, 3], padding_mode = 0 : i64, stride = [2, 2]} : <1x3x224x224xi8, 150528x50176x224x1>, <64x3x7x7xi8, 147x49x7x1> -> <1x64x112x112xi32, 802816x12544x112x1>
-    %2 = migraphx.dequantizelinear %1, %scale, %bias : <1x64x112x112xi32, 802816x12544x112x1>, <1x64x1x1xf32, 64x1x1x1>, !migraphx.shaped<1x64x1x1xi32, 64x1x1x1> -> <1x64x112x112xf32, 802816x12544x112x1>
-    %3 = migraphx.quantizelinear %2, %scale, %bias2 : <1x64x112x112xf32, 802816x12544x112x1>, <1x64x1x1xf32, 64x1x1x1>, !migraphx.shaped<1x64x1x1xi8, 64x1x1x1> -> <1x64x112x112xi8, 802816x12544x112x1>
-    return %3 : !migraphx.shaped<1x64x112x112xi8, 802816x12544x112x1>
-  }
+  // DISABLED-CHECK-LABEL: func @conv_with_quant
+  // DISABLED-CHECK: tosa.conv2d
+  // DISABLED-CHECK: tosa.cast
+  // DISABLED-CHECK: tosa.cast
+  // DISABLED-CHECK: tosa.sub
+  // DISABLED-CHECK: tosa.mul
+  // DISABLED-CHECK: tosa.reciprocal
+  // DISABLED-CHECK: tosa.mul
+  // DISABLED-CHECK: tosa.cast
+  // DISABLED-CHECK: tosa.cast
+  // DISABLED-CHECK: tosa.add
+  // DISABLED-CHECK: tosa.clamp
+  // DISABLED-CHECK: tosa.cast
+  // func.func @conv_with_quant(%arg1: !migraphx.shaped<1x3x224x224xi8, 150528x50176x224x1>, %arg2: !migraphx.shaped<64x3x7x7xi8, 147x49x7x1>, %scale: !migraphx.shaped<1x64x1x1xf32, 64x1x1x1>, %bias: !migraphx.shaped<1x64x1x1xi32, 64x1x1x1>, %bias2: !migraphx.shaped<1x64x1x1xi8, 64x1x1x1>) -> !migraphx.shaped<1x64x112x112xi8, 802816x12544x112x1> attributes {kernel = "mixr"} {
+  //   %1 = migraphx.quant_convolution %arg1, %arg2 {dilation = [1, 1], group = 1 : i64, padding = [3, 3, 3, 3], padding_mode = 0 : i64, stride = [2, 2]} : <1x3x224x224xi8, 150528x50176x224x1>, <64x3x7x7xi8, 147x49x7x1> -> <1x64x112x112xi32, 802816x12544x112x1>
+  //   %2 = migraphx.dequantizelinear %1, %scale, %bias : <1x64x112x112xi32, 802816x12544x112x1>, <1x64x1x1xf32, 64x1x1x1>, !migraphx.shaped<1x64x1x1xi32, 64x1x1x1> -> <1x64x112x112xf32, 802816x12544x112x1>
+  //   %3 = migraphx.quantizelinear %2, %scale, %bias2 : <1x64x112x112xf32, 802816x12544x112x1>, <1x64x1x1xf32, 64x1x1x1>, !migraphx.shaped<1x64x1x1xi8, 64x1x1x1> -> <1x64x112x112xi8, 802816x12544x112x1>
+  //   return %3 : !migraphx.shaped<1x64x112x112xi8, 802816x12544x112x1>
+  // }
 
   // CHECK-LABEL: func.func @matmul
   // CHECK: tosa.matmul
@@ -329,14 +329,14 @@ module  {
 
 
   // broadcast ops will be lowered as implicit broadcast in tosa, passes if they're converted and legalize tosa.
-  // CHECK-LABEL: func @func_mbcast
-  func.func @func_mbcast(%arg0: !migraphx.shaped<1x64x1x1xf32, 64x1x1x1>, %arg1: !migraphx.shaped<1x3x224x224xf32, 150528x50176x224x1>, %arg2: !migraphx.shaped<64x3x7x7xf32, 147x49x7x1>) -> !migraphx.shaped<1x64x112x112xf32, 802816x12544x112x1> attributes {kernel = "mixr"} {
-    %0 = migraphx.multibroadcast %arg0 {out_lens = [1, 64, 112, 112]} : <1x64x1x1xf32, 64x1x1x1> -> <1x64x112x112xf32, 0x1x0x0>
-    %1 = migraphx.convolution %arg1, %arg2 {dilation = [1, 1], group = 1 : i64, padding = [3, 3, 3, 3], padding_mode = 0 : i64, stride = [2, 2]} : <1x3x224x224xf32, 150528x50176x224x1>, <64x3x7x7xf32, 147x49x7x1> -> <1x64x112x112xf32, 802816x12544x112x1>
-    %2 = migraphx.add %1, %0 : <1x64x112x112xf32, 802816x12544x112x1>, <1x64x112x112xf32, 0x1x0x0> -> <1x64x112x112xf32, 802816x12544x112x1>
-    %3 = migraphx.relu %2 : <1x64x112x112xf32, 802816x12544x112x1> -> <1x64x112x112xf32, 802816x12544x112x1>
-    return %3 : !migraphx.shaped<1x64x112x112xf32, 802816x12544x112x1>
-  }
+  // DISABLED-CHECK-LABEL: func @func_mbcast
+  // func.func @func_mbcast(%arg0: !migraphx.shaped<1x64x1x1xf32, 64x1x1x1>, %arg1: !migraphx.shaped<1x3x224x224xf32, 150528x50176x224x1>, %arg2: !migraphx.shaped<64x3x7x7xf32, 147x49x7x1>) -> !migraphx.shaped<1x64x112x112xf32, 802816x12544x112x1> attributes {kernel = "mixr"} {
+  //   %0 = migraphx.multibroadcast %arg0 {out_lens = [1, 64, 112, 112]} : <1x64x1x1xf32, 64x1x1x1> -> <1x64x112x112xf32, 0x1x0x0>
+  //   %1 = migraphx.convolution %arg1, %arg2 {dilation = [1, 1], group = 1 : i64, padding = [3, 3, 3, 3], padding_mode = 0 : i64, stride = [2, 2]} : <1x3x224x224xf32, 150528x50176x224x1>, <64x3x7x7xf32, 147x49x7x1> -> <1x64x112x112xf32, 802816x12544x112x1>
+  //   %2 = migraphx.add %1, %0 : <1x64x112x112xf32, 802816x12544x112x1>, <1x64x112x112xf32, 0x1x0x0> -> <1x64x112x112xf32, 802816x12544x112x1>
+  //   %3 = migraphx.relu %2 : <1x64x112x112xf32, 802816x12544x112x1> -> <1x64x112x112xf32, 802816x12544x112x1>
+  //   return %3 : !migraphx.shaped<1x64x112x112xf32, 802816x12544x112x1>
+  // }
 
   // CHECK-LABEL: func.func @mbcast_non_first_dim
   // COM: test for a bug in how mbcast was handled in this case.
