@@ -60,13 +60,11 @@ func.func @rock_conv_fp8_mixed_ocp(%filter : tensor<?x?x?x?x?xf8E4M3FN>, %input 
 func.func @rock_conv_bwd_data(%filter : tensor<?x?x?x?x?xf32>, %input : tensor<?x?x?x?x?xf32>, %output : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
   %result = rock.conv_bwd_data(%filter, %input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
-    kernelId = 0 : index,
     input_layout = ["n", "gi", "c", "0i", "1i"],
     output_layout = ["n", "go", "k", "0o", "1o"],
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
-    padding = [0 : index,  0 : index,  0 : index,  0 : index],
-    usesV4R1 = true
+    padding = [0 : index,  0 : index,  0 : index,  0 : index]
   } : tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32> -> tensor<?x?x?x?x?xf32>
   return %result : tensor<?x?x?x?x?xf32>
 }
@@ -76,13 +74,11 @@ func.func @rock_conv_bwd_data(%filter : tensor<?x?x?x?x?xf32>, %input : tensor<?
 func.func @rock_conv_bwd_data_f16(%filter : tensor<?x?x?x?x?xf16>, %input : tensor<?x?x?x?x?xf16>, %output : tensor<?x?x?x?x?xf16>) -> tensor<?x?x?x?x?xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
   %result = rock.conv_bwd_data(%filter, %input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
-    kernelId = 0 : index,
     input_layout = ["n", "gi", "c", "0i", "1i"],
     output_layout = ["n", "go", "k", "0o", "1o"],
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
-    padding = [0 : index,  0 : index,  0 : index,  0 : index],
-    usesV4R1 = true
+    padding = [0 : index,  0 : index,  0 : index,  0 : index]
   } : tensor<?x?x?x?x?xf16>, tensor<?x?x?x?x?xf16>, tensor<?x?x?x?x?xf16> -> tensor<?x?x?x?x?xf16>
   return %result : tensor<?x?x?x?x?xf16>
 }
@@ -97,8 +93,7 @@ func.func @rock_conv_bwd_weight(%filter : tensor<?x?x?x?x?xf32>, %input : tensor
     output_layout = ["n", "go", "k", "0o", "1o"],
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
-    padding = [0 : index,  0 : index,  0 : index,  0 : index],
-    usesV4R1 = true
+    padding = [0 : index,  0 : index,  0 : index,  0 : index]
   } : tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32> -> tensor<?x?x?x?x?xf32>
   return %result : tensor<?x?x?x?x?xf32>
 }

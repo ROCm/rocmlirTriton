@@ -603,7 +603,7 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
 }
 
 FailureOr<std::pair<Value, Value>>
-backwardDataV4R1(ConvBwdDataOp op, PatternRewriter &b, int64_t kernelId) {
+backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b, int64_t kernelId) {
   Location loc = op.getLoc();
 
   ConvolutionContext ctx = populateConvContext(op);
@@ -697,7 +697,7 @@ backwardDataV4R1(ConvBwdDataOp op, PatternRewriter &b, int64_t kernelId) {
     iDotSlice.push_back(math_util::integer_divide_ceil(
         convDims.fil[i] - iTilda[i], filTilda[i]));
 
-  // backward data only, it's igemm v4r1 algo
+  // backward data only, compute iTilda indices for multi-gemm decomposition
   // c is input channels , k is output channels
   // n is batch , yDotSlice,xDotSlice computed in above
 
@@ -967,44 +967,46 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   Type dataType = op.getInput().getType().getElementType();
   if (ConvOpType::BwdData == convOpType) {
     auto bwdDataOp = cast<ConvBwdDataOp>(op);
-    bool usesV4R1 = op->template getAttrOfType<BoolAttr>("usesV4R1").getValue();
     Location loc = bwdDataOp.getLoc();
     auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
 
-    // Determine which kernel IDs to expand into gemms.
-    SmallVector<int64_t> kernelIds;
-    if (usesV4R1) {
-      // V4R1 path: one function per kernel ID, just process this one.
-      kernelIds.push_back(bwdDataOp.getKernelIdAttr().getInt());
-    } else {
-      // Non-V4R1 path: single function, expand all kernel IDs into
-      // multiple gemms within this function.
-      auto strideDims = ctx.getStrideVal();
-      auto dilationDims = ctx.getDilationVal();
-      auto filterDims = ctx.getConvDims().fil;
-      kernelIds = rock::backwardDataKernelIds(strideDims, dilationDims,
-                                              filterDims, /*usesV4R1=*/true);
-    }
+    // Single function, expand all kernel IDs into
+    // multiple gemms within this function.
+    auto strideDims = ctx.getStrideVal();
+    auto dilationDims = ctx.getDilationVal();
+    auto filterDims = ctx.getConvDims().fil;
+    auto kernelIds = rock::backwardDataKernelIds(strideDims, dilationDims,
+                                                 filterDims);
 
-    if (usesV4R1)
-      assert(kernelIds.size() == 1 &&
-             "Only one kernel ID expected for V4R1 path");
-
-    // Find the original StoreOp that consumes the conv result.
-    StoreOp originalStoreOp = nullptr;
+    // ConvBwdData rewrite currently expects a single consuming rock.store.
+    SmallVector<StoreOp, 1> storeOps;
     for (Operation *user : bwdDataOp.getResult().getUsers()) {
       if (auto sop = dyn_cast<StoreOp>(user)) {
-        originalStoreOp = sop;
-        break;
+        storeOps.push_back(sop);
+        continue;
       }
+
+      bwdDataOp.emitOpError()
+          << "expected only rock.store users during ConvBwdData rewrite, got "
+          << user->getName();
+      return failure();
     }
-    assert(originalStoreOp && "ConvBwdDataOp must have a StoreOp user");
+
+    if (storeOps.size() != 1) {
+      bwdDataOp.emitOpError()
+          << "expected exactly one consuming rock.store user during "
+             "ConvBwdData rewrite, got "
+          << storeOps.size();
+      return failure();
+    }
+    StoreOp originalStoreOp = storeOps.front();
+
     Type storeResultType = originalStoreOp.getResult().getType();
 
     // Create a gemm + store pair for each kernel ID.
     Value lastStoreResult;
     for (int64_t kid : kernelIds) {
-      auto maybe = backwardDataV4R1(bwdDataOp, b, kid);
+      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid);
       if (failed(maybe))
         return failure();
       auto [gemmResult, gemmDest] = maybe.value();

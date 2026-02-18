@@ -50,7 +50,6 @@ public:
     std::string filterLayout;
     std::string inputLayout;
     std::string outputLayout;
-    bool usesV4R1;
 
     std::string kernelBaseName;
     int kernelId;
@@ -75,7 +74,7 @@ public:
       ArrayRef<int> paddingLeft = {0, 0}, ArrayRef<int> paddingRight = {0, 0},
       const std::string &filterLayout = "kcyx",
       const std::string &inputLayout = "nchw",
-      const std::string &outputLayout = "nkhw", const bool usesV4R1 = false,
+      const std::string &outputLayout = "nkhw",
       const std::string &kernelBaseName = "");
 
   ConvGenerator(const Config &_config);
@@ -165,7 +164,6 @@ private:
                    });
     return permutation;
   }
-  int getBwdDataKernelCount() const;
   LogicalResult getBwdWeightKernelCount(OpBuilder &builder,
                                         int &kernelCount) const;
   LogicalResult needExtraPadBwdWeight(OpBuilder &builder,

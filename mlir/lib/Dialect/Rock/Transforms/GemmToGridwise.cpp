@@ -794,44 +794,29 @@ GemmRewritePattern::arrangeSplitKTransform(OpBuilder &builder, GemmOp op,
                                            Value a, Value b, Value c,
                                            Value scaleA, Value scaleB) const {
   // set the prefill attribute
-  // For backward data convolution with multiple V4R1 kernels, only the first
-  // kernel (kernelId == 0) should set the prefill attribute. All kernels write
-  // to disjoint regions of the same output buffer, so only one initialization
-  // is needed.
-  bool shouldSetPrefill = true;
-  // Only Gemms that have been converted from conv_bwd_data ops will have the
-  // kernelId attribute.
-  if (auto kernelIdAttr = op->getAttrOfType<IntegerAttr>("kernelId")) {
-    if (kernelIdAttr.getInt() > 0) {
-      shouldSetPrefill = false;
-    }
+  // Use the result since GemmOp no longer has C as input
+  Value matC = op.getResult();
+  auto func = llvm::cast<func::FuncOp>(op->getParentOp());
+  FailureOr<SmallVector<BlockArgument>> args =
+      traceGemmOutputToArgs(matC, func);
+  if (failed(args)) {
+    return op->emitError("can't trace gemm output to output argument");
   }
 
-  if (shouldSetPrefill) {
-    // Use the result since GemmOp no longer has C as input
-    Value matC = op.getResult();
-    auto func = llvm::cast<func::FuncOp>(op->getParentOp());
-    FailureOr<SmallVector<BlockArgument>> args =
-        traceGemmOutputToArgs(matC, func);
-    if (failed(args)) {
-      return op->emitError("can't trace gemm output to output argument");
+  auto attrName = rock::PrefillAttr::getMnemonic();
+  for (auto arg : args.value()) {
+    // initialize to zeros
+    auto elementType = cast<ShapedType>(arg.getType()).getElementType();
+    Attribute zero;
+    if (llvm::isa<FloatType>(elementType)) {
+      zero = builder.getFloatAttr(elementType, 0.0f);
+    } else if (llvm::isa<IntegerType>(elementType)) {
+      zero = builder.getIntegerAttr(elementType, 0);
+    } else {
+      return op->emitError("expecting `float` or `int` element type");
     }
-
-    auto attrName = rock::PrefillAttr::getMnemonic();
-    for (auto arg : args.value()) {
-      // initialize to zeros
-      auto elementType = cast<ShapedType>(arg.getType()).getElementType();
-      Attribute zero;
-      if (llvm::isa<FloatType>(elementType)) {
-        zero = builder.getFloatAttr(elementType, 0.0f);
-      } else if (llvm::isa<IntegerType>(elementType)) {
-        zero = builder.getIntegerAttr(elementType, 0);
-      } else {
-        return op->emitError("expecting `float` or `int` element type");
-      }
-      func.setArgAttrs(arg.getArgNumber(),
-                       builder.getNamedAttr(attrName, zero));
-    }
+    func.setArgAttrs(arg.getArgNumber(),
+                      builder.getNamedAttr(attrName, zero));
   }
 
   const int64_t origK = cast<RankedTensorType>(a.getType()).getShape()[2];

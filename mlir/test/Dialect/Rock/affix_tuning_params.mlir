@@ -96,12 +96,10 @@ func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tens
   %result = rock.conv_bwd_data(%filter, %input, %output) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
-    kernelId = 0 : index,
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
     output_layout = ["no", "go", "ko", "0o", "1o"],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    strides = [1 : index, 1 : index],
-    usesV4R1 = true
+    strides = [1 : index, 1 : index]
   } : tensor<1x1024x1024x1x1xf32>, tensor<128x1x1024x14x14xf32>, tensor<128x1x1024x14x14xf32> -> tensor<128x1x1024x14x14xf32>
   %out = rock.store %result to %output by set : tensor<128x1x1024x14x14xf32> -> tensor<128x1x1024x14x14xf32> to tensor<128x1x1024x14x14xf32>
   return %out : tensor<128x1x1024x14x14xf32>
@@ -117,12 +115,10 @@ func.func @rock_conv_bwd_data_f16(%filter: tensor<1x1024x1024x1x1xf16>, %input: 
   %result = rock.conv_bwd_data(%filter, %input, %output) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
-    kernelId = 0 : index,
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
     output_layout = ["no", "go", "ko", "0o", "1o"],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    strides = [1 : index, 1 : index],
-    usesV4R1 = true
+    strides = [1 : index, 1 : index]
   } : tensor<1x1024x1024x1x1xf16>, tensor<128x1x1024x14x14xf16>, tensor<128x1x1024x14x14xf16> -> tensor<128x1x1024x14x14xf16>
   %out = rock.store %result to %output by set : tensor<128x1x1024x14x14xf16> -> tensor<128x1x1024x14x14xf16> to tensor<128x1x1024x14x14xf16>
   return %out : tensor<128x1x1024x14x14xf16>
@@ -141,9 +137,7 @@ func.func @rock_conv_bwd_data_padMN(%filter : tensor<1x64x3x1x1xf32>, %input : t
     output_layout = ["no", "go", "ko", "0o", "1o"],
     dilations = [1 : index, 1 : index],
     strides = [1 : index, 1 : index],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    kernelId = 0 : index,
-    usesV4R1 = true
+    padding = [0 : index, 0 : index, 0 : index, 0 : index]
   } : tensor<1x64x3x1x1xf32>, tensor<11x1x3x15x15xf32>, tensor<11x1x64x15x15xf32> -> tensor<11x1x3x15x15xf32>
   %out = rock.store %result to %input by set : tensor<11x1x3x15x15xf32> -> tensor<11x1x3x15x15xf32> to tensor<11x1x3x15x15xf32>
   return %out : tensor<11x1x3x15x15xf32>
@@ -162,9 +156,7 @@ func.func @rock_conv_bwd_data_padMK(%filter : tensor<1x11x3x1x1xf32>, %input : t
     output_layout = ["no", "go", "ko", "0o", "1o"],
     dilations = [1 : index, 1 : index],
     strides = [1 : index, 1 : index],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    kernelId = 0 : index,
-    usesV4R1 = true
+    padding = [0 : index, 0 : index, 0 : index, 0 : index]
   } : tensor<1x11x3x1x1xf32>, tensor<128x1x3x15x15xf32>, tensor<128x1x11x15x15xf32> -> tensor<128x1x3x15x15xf32>
   %out = rock.store %result to %input by set : tensor<128x1x3x15x15xf32> -> tensor<128x1x3x15x15xf32> to tensor<128x1x3x15x15xf32>
   return %out : tensor<128x1x3x15x15xf32>
@@ -313,29 +305,6 @@ func.func @rock_conv_bwd_weight_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor
   return %out : tensor<1x64x3x7x7xf32>
 }
 
-// TODO(rocmlirTriton): This fails due to a bug in rocmlirTriton
-// DISABLED-CHECK-LABEL: @rock_conv_bwd_data_7x7_tuning
-// DISABLED-GRID-LABEL: @rock_conv_bwd_data_7x7_tuning
-// func.func @rock_conv_bwd_data_7x7_tuning(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<256x1x3x230x230xf32> attributes {rock.kernel = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
-//   // DISABLED-CHECK: rock.conv_bwd_data
-//   // DISABLED-CHECK-SAME: params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 128, numWaves = 4, kPerBlock = 8, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-GRID: rock.gridwise_gemm
-//   // DISABLED-GRID-SAME: gridSize = 26450
-//   %result = rock.conv_bwd_data(%arg0, %arg1, %arg2) {
-//     dilations = [1 : index, 1 : index],
-//     filter_layout = ["g", "k", "c", "0", "1"],
-//     kernelId = 1 : index,
-//     input_layout = ["ni", "gi", "ci", "0i", "1i"],
-//     output_layout = ["no", "go", "ko", "0o", "1o"],
-//     padding = [0 : index, 0 : index, 0 : index, 0 : index],
-//     perf_config = "v3:16,128,8,16,16,4,1,1,2,1,1",
-//     strides = [2 : index, 2 : index],
-//     usesV4R1 = true
-//   } : tensor<1x64x3x7x7xf32>, tensor<256x1x3x230x230xf32>, tensor<256x1x64x112x112xf32> -> tensor<256x1x3x230x230xf32>
-//   %out = rock.store %result to %arg1 by set : tensor<256x1x3x230x230xf32> -> tensor<256x1x3x230x230xf32> to tensor<256x1x3x230x230xf32>
-//   return %out : tensor<256x1x3x230x230xf32>
-// }
-
 // CHECK-LABEL: @rock_conv_bwd_data_7x7
 // GRID-LABEL: @rock_conv_bwd_data_7x7
 func.func @rock_conv_bwd_data_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<256x1x3x230x230xf32> attributes {rock.kernel = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
@@ -346,12 +315,10 @@ func.func @rock_conv_bwd_data_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<2
   %result = rock.conv_bwd_data(%arg0, %arg1, %arg2) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
-    kernelId = 1 : index,
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
     output_layout = ["no", "go", "ko", "0o", "1o"],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    strides = [2 : index, 2 : index],
-    usesV4R1 = true
+    strides = [2 : index, 2 : index]
   } : tensor<1x64x3x7x7xf32>, tensor<256x1x3x230x230xf32>, tensor<256x1x64x112x112xf32> -> tensor<256x1x3x230x230xf32>
   %out = rock.store %result to %arg1 by set : tensor<256x1x3x230x230xf32> -> tensor<256x1x3x230x230xf32> to tensor<256x1x3x230x230xf32>
   return %out : tensor<256x1x3x230x230xf32>

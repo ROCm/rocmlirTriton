@@ -581,8 +581,8 @@ KernelType mlir::rock::kernelTypeFromConvOpType(ConvOpType convOpType) {
 GemmSize GemmSize::fromConvolution(ConvOpType type,
                                    const ConvolutionDims &sizes) {
   assert(type != ConvOpType::BwdData &&
-         "Backward data convolutions cannot have their size computed without "
-         "kernelId and other parameters. Use op.getGemmSize() instead");
+         "Backward data convolutions require stride/dilation-dependent "
+         "multi-kernel expansion. Use op.getGemmSize() instead");
   int64_t gemmGSize, gemmMSize, gemmKSize, gemmNSize;
   switch (type) {
   case ConvOpType::Fwd:
@@ -645,84 +645,99 @@ GemmSize ConvOp::getGemmSize() {
   return GemmSize::fromConvolution(ConvOpType::Fwd, sizes);
 }
 
-GemmSize ConvBwdDataOp::getGemmSize() {
-  auto sizes = ConvolutionDims::fromOp(*this);
-  auto padding = extractFromIntegerArrayAttr<int64_t>(this->getPadding());
-  auto strides = extractFromIntegerArrayAttr<int64_t>(this->getStrides());
-  auto dilations = extractFromIntegerArrayAttr<int64_t>(this->getDilations());
-  int64_t kernelId = getKernelId().getSExtValue();
-
+/// Compute the GemmSize for a single backward-data kernel ID.
+static GemmSize bwdDataGemmSizeForKernelId(const ConvolutionDims &sizes,
+                                           ArrayRef<int64_t> padding,
+                                           ArrayRef<int64_t> strides,
+                                           ArrayRef<int64_t> dilations,
+                                           int64_t kernelId) {
   SmallVector<int64_t, 5> gcdStrideDilations;
   assert(strides.size() == dilations.size());
-  for (const auto &[stride, dilation] : zip(strides, dilations)) {
+  for (const auto &[stride, dilation] : zip(strides, dilations))
     gcdStrideDilations.push_back(math_util::gcd(stride, dilation));
-  }
 
   SmallVector<int64_t, 5> filTilda;
-  for (const auto &[stride, gcdSD] : zip(strides, gcdStrideDilations)) {
+  for (const auto &[stride, gcdSD] : zip(strides, gcdStrideDilations))
     filTilda.push_back(stride / gcdSD);
-  }
 
   SmallVector<int64_t, 5> outTilda;
   for (const auto &[out, dilation, fil, stride] :
-       zip(sizes.out, dilations, sizes.fil, strides)) {
+       zip(sizes.out, dilations, sizes.fil, strides))
     outTilda.push_back(
         out + math_util::integer_divide_ceil(dilation * (fil - 1), stride));
-  }
 
   SmallVector<int64_t, 5> iTildaLeft;
   SmallVector<int64_t, 5> iTildaRight;
   for (const auto &[padindex, dilation, tilda, stride] :
-       enumerate(dilations, filTilda, strides)) {
+       enumerate(dilations, filTilda, strides))
     iTildaLeft.push_back(math_util::integer_divide_floor(
         std::max((int64_t)0, padding[2 * padindex] - dilation * (tilda - 1)),
         stride));
-  }
   for (const auto &[padindex, out, in, stride] :
-       enumerate(outTilda, sizes.in, strides)) {
+       enumerate(outTilda, sizes.in, strides))
     iTildaRight.push_back(std::min(
         out,
         math_util::integer_divide_ceil(padding[2 * padindex] + in - 1, stride) +
             1));
-  }
 
   SmallVector<int64_t, 5> tildaSlice;
   for (const auto &[right, left] : zip(iTildaRight, iTildaLeft))
     tildaSlice.push_back(right - left);
 
-  SmallVector<int64_t, 3> iTilda;
-  SmallVector<int64_t, 3> iDotSlice;
+  // Decompose kernelId into per-spatial-dimension iTilda indices.
   int64_t product = 1;
   for (size_t i = 1; i < sizes.fil.size(); i++)
     product *= filTilda[i];
-  int64_t divisor = 1;
-  iTilda.resize(sizes.fil.size());
+  int64_t divisor = (sizes.fil.size() == 3) ? filTilda[2] : 1;
+
+  SmallVector<int64_t, 3> iTilda(sizes.fil.size());
   switch (sizes.fil.size()) {
   default:
     llvm_unreachable("Only 2-D and 3-D have been implemented.");
     break;
   case 3:
-    divisor = filTilda[2];
     iTilda[2] = kernelId % divisor;
     [[fallthrough]];
   case 2:
     iTilda[1] = (kernelId % product) / divisor;
     iTilda[0] = kernelId / product;
   }
-  for (size_t i = 0; i < sizes.fil.size(); i++)
-    iDotSlice.push_back(
-        math_util::integer_divide_ceil(sizes.fil[i] - iTilda[i], filTilda[i]));
 
   int64_t g = sizes.g;
   int64_t m = sizes.c;
   int64_t k = sizes.k;
-  for (auto ds : iDotSlice)
-    k *= ds;
+  for (size_t i = 0; i < sizes.fil.size(); i++)
+    k *= math_util::integer_divide_ceil(sizes.fil[i] - iTilda[i], filTilda[i]);
   int64_t n = sizes.n;
   for (auto ts : tildaSlice)
     n *= ts;
 
   return GemmSize(g, m, k, n);
+}
+
+GemmSize ConvBwdDataOp::getGemmSize() {
+  // A single ConvBwdDataOp is expanded into multiple GEMMs by ConvToGemm,
+  // one per valid kernel ID.  The g, m, and n dimensions are identical across
+  // all kernel IDs while k varies. We report the GemmSize with the largest k
+  // so that tuning, padding checks, and problem-string generation operate on
+  // the most demanding individual GEMM.
+  auto sizes = ConvolutionDims::fromOp(*this);
+  auto padding = extractFromIntegerArrayAttr<int64_t>(this->getPadding());
+  auto strides = extractFromIntegerArrayAttr<int64_t>(this->getStrides());
+  auto dilations = extractFromIntegerArrayAttr<int64_t>(this->getDilations());
+
+  auto kernelIds =
+      rock::backwardDataKernelIds(strides, dilations, sizes.fil);
+
+  GemmSize best(0, 0, 0, 0);
+  for (int64_t kernelId : kernelIds) {
+    GemmSize single =
+        bwdDataGemmSizeForKernelId(sizes, padding, strides, dilations,
+                                   kernelId);
+    if (single.k > best.k)
+      best = single;
+  }
+  return best;
 }
 
 GemmSize ConvBwdWeightOp::getGemmSize() {

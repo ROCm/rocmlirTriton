@@ -13,14 +13,12 @@ module {
     %4 = rock.transform %alloc by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 64 + d2, d3, d4)> by [<PassThrough ["n", "h", "w"] at [0, 3, 4] -> ["n", "h", "w"] at [0, 2, 3]>, <Unmerge{1, 64} ["g", "k"] at [1, 2] -> ["k"] at [1]>] bounds = [256, 1, 64, 112, 112] -> [256, 64, 112, 112]> : memref<256x1x64x112x112xf32> to memref<256x1x64x112x112xf32>  
     rock.conv_bwd_data(%3, %2, %4) features = mfma|dot|atomic_add|atomic_add_f16 {  
       arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-",   
-      kernelId = 1 : index,  
       dilations = [1 : index, 1 : index],   
-      filter_layout = ["g", "k", "c", "y", "x"],   
-      input_layout = ["ni", "gi", "ci", "hi", "wi"],   
-      output_layout = ["no", "go", "ko", "ho", "wo"],   
-      padding = [0 : index, 0 : index, 0 : index, 0 : index],   
-      strides = [2 : index, 2 : index],
-      usesV4R1 = true
+    filter_layout = ["g", "k", "c", "y", "x"],   
+    input_layout = ["ni", "gi", "ci", "hi", "wi"],   
+    output_layout = ["no", "go", "ko", "ho", "wo"],   
+    padding = [0 : index, 0 : index, 0 : index, 0 : index],   
+    strides = [2 : index, 2 : index]
     } : memref<1x64x3x7x7xf32>, memref<256x1x3x230x230xf32>, memref<256x1x64x112x112xf32>  
     %5 = rock.transform %alloc by <affine_map<(d0, d1, d2) -> (d0, 0, d1, d2, 0)> by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <PassThrough ["dim2"] at [1] -> ["dim2"] at [2]>, <PassThrough ["dim3"] at [2] -> ["dim3"] at [3]>, <AddDim{1} ["dim1"] at [3] -> [] at []>, <AddDim{64} ["dim4"] at [4] -> [] at []>] bounds = [256, 112, 112] -> [256, 1, 64, 112, 112]> : memref<256x1x64x112x112xf32> to memref<256x112x112xf32>  
     %6 = rock.transform %1 by <affine_map<(d0, d1, d2) -> (0, d0, d1, d2)> by [<PassThrough ["dim1"] at [0] -> ["dim1"] at [1]>, <PassThrough ["dim2"] at [1] -> ["dim2"] at [2]>, <PassThrough ["dim3"] at [2] -> ["dim3"] at [3]>, <AddDim{256} ["dim0"] at [3] -> [] at []>] bounds = [64, 112, 112] -> [1, 64, 112, 112]> : memref<1x64x112x112xf32> to memref<64x112x112xf32>  
