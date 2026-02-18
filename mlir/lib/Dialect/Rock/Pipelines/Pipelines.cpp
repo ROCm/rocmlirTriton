@@ -399,6 +399,9 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 
   makeTTIR(&pm, arch);
   makeTTGIR(&pm, threadPerWarp, options);
+
+  // Run MLIR passes to convert TritonGPU -> LLVM dialect
+  makeLLIR(&pm, arch, options.numStages);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
@@ -451,9 +454,6 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
 void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
   std::string arch = options.chip;
-
-  // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.numStages);
 
   // Optionally generate the HSACO binary
   if (options.compile) {

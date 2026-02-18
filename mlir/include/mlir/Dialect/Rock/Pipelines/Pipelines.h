@@ -86,8 +86,6 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> compile{
       *this, "compile", desc("should the serailization pass be run"),
       init(true)};
-  PassOptions::Option<int> numStages{*this, "numStages",
-                                     desc("Number of stages"), init(2)};
   PassOptions::Option<int> numWarps{*this, "numWarps", desc("Number of warps"),
                                     init(4)};
   PassOptions::Option<int> numCTAs{*this, "numCTAs", desc("Number of CTAs"),

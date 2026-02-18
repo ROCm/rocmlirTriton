@@ -121,7 +121,6 @@ LogicalResult fillCompilationConfigs(StringAttr perfConfig,
     tritonOpts.matrixInstrNonkdim = gemmParams.getMatrixInstrNonkdim();
     tritonOpts.kpack = gemmParams.getKpack();
 
-    backendOpts.numStages = gemmParams.getNumStages();
     backendOpts.numWarps = gemmParams.getNumWaves();
     backendOpts.numCTAs = gemmParams.getNumCTAs();
     backendOpts.wavesPerEU = gemmParams.getWavesPerEU();
@@ -134,7 +133,6 @@ LogicalResult fillCompilationConfigs(StringAttr perfConfig,
     tritonOpts.matrixInstrNonkdim = gemmGemmParams.getMatrixInstrNonkdim();
     tritonOpts.kpack = gemmGemmParams.getKpack();
 
-    backendOpts.numStages = gemmGemmParams.getNumStages();
     backendOpts.numWarps = gemmGemmParams.getNumWaves();
     backendOpts.wavesPerEU = gemmGemmParams.getWavesPerEU();
     return success();
