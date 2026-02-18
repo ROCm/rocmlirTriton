@@ -446,38 +446,28 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     }
   }*/
 
-  // Run host code lowering that makes the result of this operation acceptable
-  // to mlir-runner. This converts func/arith/scf/memref to LLVM dialect.
-  if (hostPipelineSet.contains("runner")) {
+  // Run host code lowering that makes the result of this operation accetable
+  // to mlir-runner. Explicitly aborts in the case of multiple mhal
+  // targets to prevent confusing behavior.
+  /*if (hostPipelineSet.contains("runner")) {
+    if (targetList.size() > 1) {
+      llvm::errs() << "Expected at most one mhal target when compling from "
+                      "within rocmlir-driver\n";
+      return failure();
+    }
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
     pm.enableVerifier(verifyPasses);
-
-    // Build a host lowering pipeline for mlir-runner compatibility
-    // Lower vector operations to SCF (for vector.print, etc.)
-    pm.addPass(createConvertVectorToSCFPass());
-    // Lower linalg to loops (for linalg.fill, etc.)
-    pm.addPass(createConvertLinalgToLoopsPass());
-    // Lower affine to standard loops
-    pm.addPass(createLowerAffinePass());
-    // Expand strided metadata (handles memref.expand_shape, etc.)
-    pm.addPass(memref::createExpandStridedMetadataPass());
-    // Lower SCF to control flow
-    pm.addPass(createSCFToControlFlowPass());
-    // Lower control flow to LLVM
-    pm.addPass(createConvertControlFlowToLLVMPass());
-    // Lower arith to LLVM
-    pm.addPass(createArithToLLVMConversionPass());
-    // Lower memref to LLVM
-    pm.addPass(createFinalizeMemRefToLLVMConversionPass());
-    // Lower func to LLVM
-    pm.addPass(createConvertFuncToLLVMPass());
-    // Cleanup
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
-    pm.addPass(createReconcileUnrealizedCastsPass());
-
+    mhal::RunnerOptions runnerOptions;
+    runnerOptions.barePtrMemrefs = barePointers.getValue();
+    runnerOptions.enableCoroutines = hostAsyncCoroutines.getValue();
+    SmallVector<std::string, 4> targetTypes{"GPU"};
+    SmallVector<std::string, 4> targetArchs;
+    targetArchs.push_back(targetArch.str());
+    runnerOptions.targetTypes = targetTypes;
+    runnerOptions.targetArchs = targetArchs;
+    mhal::buildRunnerPipeline(pm, runnerOptions);
     if (dumpPipelines) {
       llvm::errs() << "Host runner pipeline:\n";
       pm.printAsTextualPipeline(llvm::errs());
@@ -485,7 +475,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     }
     if (failed(pm.run(module)))
       return failure();
-  }
+  }*/
 
   // Clean up
   module->walk(
