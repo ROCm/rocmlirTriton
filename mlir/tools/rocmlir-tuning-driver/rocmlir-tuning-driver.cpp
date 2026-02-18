@@ -901,11 +901,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       // Collect kernel info from the compiled module (block/grid sizes,
       // shared memory, argument count). This also validates LDS usage.
       SmallVector<rock::KernelInfo> localKernels;
-      // Not checking LDS here to avoid CompilationFailed for kernels that use
-      // too much LDS. We should return NotApplicable in those cases.
-      // TODO: find a proper way to have applicability checks
       if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
-                                         localKernels, /*checkLDS=*/false))) {
+                                         localKernels))) {
         std::lock_guard<std::mutex> lock(outputMutex);
         llvm::errs() << "Failed to collect kernel info\n";
         result.status = CompilationStatus::CompilationFailed;

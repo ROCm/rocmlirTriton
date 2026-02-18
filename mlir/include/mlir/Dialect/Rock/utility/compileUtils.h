@@ -34,8 +34,7 @@ struct KernelInfo {
 /// Returns failure if LDS usage exceeds maxSharedMemPerWG or required
 /// attributes are missing.
 LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
-                                SmallVectorImpl<KernelInfo> &kernels,
-                                bool checkLDS);
+                                SmallVectorImpl<KernelInfo> &kernels);
 
 /// Create a gpu.ObjectAttr from the HSACO binary in moduleOp and kernel info.
 /// Returns the ObjectAttr and a mapping from kernel names to their indices.

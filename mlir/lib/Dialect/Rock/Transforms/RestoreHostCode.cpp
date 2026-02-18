@@ -360,19 +360,18 @@ void RockRestoreHostCodePass::runOnOperation() {
   // Mark the module as containing GPU code
   moduleOp->setAttr(gpu::GPUDialect::getContainerModuleAttrName(),
                     builder.getUnitAttr());
-  
+
+  int maxSharedMemPerWG = rock::getLDSSize(arch);
+  // Collect kernel information from LLVM functions
+  SmallVector<KernelInfo> kernels;
+  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels)))
+    signalPassFailure();
+
   // Restore host functions from the serialized attribute
   if (!restoreHostFunctions(moduleOp)) {
     // No host functions to restore
     return;
   }
-  int maxSharedMemPerWG = rock::getLDSSize(arch);
-
-  // Collect kernel information from LLVM functions
-  SmallVector<KernelInfo> kernels;
-  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels,
-                                     /*checkLDS=*/true)))
-    signalPassFailure();
 
   // If we have kernels, create gpu.binary and convert calls to gpu.launch_func
   if (!kernels.empty()) {

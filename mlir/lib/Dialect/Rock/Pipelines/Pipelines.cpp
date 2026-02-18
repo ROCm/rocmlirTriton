@@ -372,15 +372,16 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     funcPm.addPass(rock::createRockInsertOutputFusionLoadsPass());
     funcPm.addPass(rock::createRockLowerLoadsPass());
     funcPm.addPass(rock::createRockLowerStoresPass());
-  }
 
-  if (options.applicabilityMode == rock::ApplicabilityMode::NonApplicability ||
-      options.applicabilityMode == rock::ApplicabilityMode::Full) {
     // Serialize and erase host functions BEFORE any func-level pass that
     // changes the kernel signature (e.g. RockToTTIRPass sets return to void).
     // Must use a new nest<func::FuncOp>() so these passes go into a separate
     // adaptor that runs AFTER SerializeHostFuncs.
     pm.addPass(rock::createRockSerializeHostFuncsPass());
+  }
+
+  if (options.applicabilityMode == rock::ApplicabilityMode::NonApplicability ||
+      options.applicabilityMode == rock::ApplicabilityMode::Full) {
     auto &funcPm2 = pm.nest<func::FuncOp>();
     funcPm2.addPass(rock::createRockTransformsToPtrPass());
     funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
