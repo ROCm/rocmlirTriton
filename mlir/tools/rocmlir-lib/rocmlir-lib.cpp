@@ -259,7 +259,8 @@ extern "C" MiirStatus miirLowerTuningParams(MiirHandle mlirHandle) {
   PassManager pm(module->getName(), PassManager::Nesting::Implicit);
 
   rock::KernelOptions opts;
-  opts.applicabilityMode = mlir::rock::ApplicabilityMode::Applicability;
+  // TODO: fix applicability
+  // opts.applicabilityMode = mlir::rock::ApplicabilityMode::Applicability;
   rock::buildKernelPipeline(pm, opts);
 
   auto status = pm.run(module);

@@ -38,19 +38,9 @@ struct BufferizeOptions : public PassPipelineOptions<BufferizeOptions> {
 void buildBufferizePipeline(OpPassManager &pm,
                             const BufferizeOptions &options = {});
 
-enum class ApplicabilityMode {
-  Full,             // run full pipeline
-  Applicability,    // run applicability only
-  NonApplicability, // run non-applicability passes only
-};
-
 //===--- Kernel Pipeline --------------------------------------------------===//
 struct KernelOptions : public PassPipelineOptions<KernelOptions> {
 
-  PassOptions::Option<ApplicabilityMode> applicabilityMode{
-      *this, "applicability",
-      desc("Whether to run (non-)applicability or the full pipeline"),
-      init(ApplicabilityMode::Full)};
   PassOptions::Option<bool> tuningFallback{
       *this, "tuningFallback",
       desc("Falls back default if invalid config is given"), init(false)};
@@ -96,8 +86,6 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> compile{
       *this, "compile", desc("should the serailization pass be run"),
       init(true)};
-  PassOptions::Option<int> numStages{*this, "numStages",
-                                     desc("Number of stages"), init(2)};
   PassOptions::Option<int> numWarps{*this, "numWarps", desc("Number of warps"),
                                     init(4)};
   PassOptions::Option<int> numCTAs{*this, "numCTAs", desc("Number of CTAs"),

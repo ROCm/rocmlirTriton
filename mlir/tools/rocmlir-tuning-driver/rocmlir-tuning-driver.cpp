@@ -681,14 +681,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   }
 
   // 2. Set up compilation options (shared across all threads)
-  rock::KernelOptions applicabilityOpts;
-  applicabilityOpts.applicabilityMode =
-      mlir::rock::ApplicabilityMode::Applicability;
-  applicabilityOpts.tuningFallback = false;
-
   rock::KernelOptions compilationKernOpts;
-  compilationKernOpts.applicabilityMode =
-      mlir::rock::ApplicabilityMode::NonApplicability;
   compilationKernOpts.tuningFallback = false;
 
   RocmDeviceName deviceName;
@@ -875,15 +868,21 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      rock::buildKernelPipeline(applicabilityPM, applicabilityOpts);
-      rock::buildKernelPipeline(compilationPM, compilationKernOpts);
-      rock::buildTritonPipeline(compilationPM, tritonOpts);
+      rock::buildKernelPipeline(applicabilityPM, compilationKernOpts);
+      rock::buildTritonPipeline(applicabilityPM, tritonOpts);
       rock::buildBackendPipeline(compilationPM, backendOpts);
 
       // Applicability check - clone the pre-parsed module
+      // TODO: find a more robust way to check for applicability
       OwningOpRef<ModuleOp> sourceCopy =
           copyIR(sourceModule.get(), perfConfigAttr);
       if (failed(applicabilityPM.run(sourceCopy.get()))) {
+        result.status = CompilationStatus::NotApplicable;
+        return result;
+      }
+
+      // check if we use too much LDS
+      if (failed(rock::checkLDSUsage(sourceCopy.get(), maxSharedMemPerWG))) {
         result.status = CompilationStatus::NotApplicable;
         return result;
       }
@@ -901,24 +900,13 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       // Collect kernel info from the compiled module (block/grid sizes,
       // shared memory, argument count). This also validates LDS usage.
       SmallVector<rock::KernelInfo> localKernels;
-      // Not checking LDS here to avoid CompilationFailed for kernels that use
-      // too much LDS. We should return NotApplicable in those cases.
-      // TODO: find a proper way to have applicability checks
       if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
-                                         localKernels, /*checkLDS=*/false))) {
+                                         localKernels))) {
         std::lock_guard<std::mutex> lock(outputMutex);
         llvm::errs() << "Failed to collect kernel info\n";
         result.status = CompilationStatus::CompilationFailed;
         compilationFailed.store(true, std::memory_order_relaxed);
         return result;
-      }
-
-      // Check that kernels don't use too much LDS
-      for (auto &kernel : localKernels) {
-        if (kernel.sharedMemorySize > maxSharedMemPerWG) {
-          result.status = CompilationStatus::NotApplicable;
-          return result;
-        }
       }
 
       // Get numKernelArgs from the collected info

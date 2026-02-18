@@ -358,43 +358,38 @@ void rock::buildKernelPipeline(OpPassManager &pm,
    */
   auto &funcPm = pm.nest<func::FuncOp>();
 
-  if (options.applicabilityMode == rock::ApplicabilityMode::Applicability ||
-      options.applicabilityMode == rock::ApplicabilityMode::Full) {
-    funcPm.addPass(rock::createRockAffixTuningParametersPass(
-        rock::RockAffixTuningParametersPassOptions{options.tuningFallback}));
-    funcPm.addPass(rock::createRockConvToGemmPass());
-    funcPm.addPass(rock::createRockGemmLinalgSplitkNormalizationPass());
-    funcPm.addPass(rock::createRockGemmToGridwisePass());
-    funcPm.addPass(rock::createRockShuffleGemmForReductions());
-    funcPm.addPass(rock::createRockInsertLoadsPass());
-    funcPm.addPass(rock::createRockGridwiseAttnToBlockwisePass());
-    funcPm.addPass(rock::createRockGridwiseGemmToBlockwisePass());
-    funcPm.addPass(rock::createRockInsertOutputFusionLoadsPass());
-    funcPm.addPass(rock::createRockLowerLoadsPass());
-    funcPm.addPass(rock::createRockLowerStoresPass());
-  }
+  funcPm.addPass(rock::createRockAffixTuningParametersPass(
+      rock::RockAffixTuningParametersPassOptions{options.tuningFallback}));
+  funcPm.addPass(rock::createRockConvToGemmPass());
+  funcPm.addPass(rock::createRockGemmLinalgSplitkNormalizationPass());
+  funcPm.addPass(rock::createRockGemmToGridwisePass());
+  funcPm.addPass(rock::createRockShuffleGemmForReductions());
+  funcPm.addPass(rock::createRockInsertLoadsPass());
+  funcPm.addPass(rock::createRockGridwiseAttnToBlockwisePass());
+  funcPm.addPass(rock::createRockGridwiseGemmToBlockwisePass());
+  funcPm.addPass(rock::createRockInsertOutputFusionLoadsPass());
+  funcPm.addPass(rock::createRockLowerLoadsPass());
+  funcPm.addPass(rock::createRockLowerStoresPass());
 
-  if (options.applicabilityMode == rock::ApplicabilityMode::NonApplicability ||
-      options.applicabilityMode == rock::ApplicabilityMode::Full) {
-    // Serialize and erase host functions BEFORE any func-level pass that
-    // changes the kernel signature (e.g. RockToTTIRPass sets return to void).
-    // Must use a new nest<func::FuncOp>() so these passes go into a separate
-    // adaptor that runs AFTER SerializeHostFuncs.
-    pm.addPass(rock::createRockSerializeHostFuncsPass());
-    auto &funcPm2 = pm.nest<func::FuncOp>();
-    funcPm2.addPass(rock::createRockTransformsToPtrPass());
-    funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
-    // Clean up dead transform chains left after TransformsToPointerArith
-    funcPm2.addPass(createCanonicalizerPass());
+  // Serialize and erase host functions BEFORE any func-level pass that
+  // changes the kernel signature (e.g. RockToTTIRPass sets return to void).
+  // Must use a new nest<func::FuncOp>() so these passes go into a separate
+  // adaptor that runs AFTER SerializeHostFuncs.
+  pm.addPass(rock::createRockSerializeHostFuncsPass());
+  auto &funcPm2 = pm.nest<func::FuncOp>();
+  funcPm2.addPass(rock::createRockTransformsToPtrPass());
+  funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
+  // Clean up dead transform chains left after TransformsToPointerArith
+  funcPm2.addPass(createCanonicalizerPass());
 
-    funcPm2.addPass(rock::createRockToTTIRPass());
-    // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to tt.func)
-    pm.addPass(rock::createRockFuncToTritonFuncPass());
-    // After this point, function is triton::FuncOp
-    auto &ttFuncPm = pm.nest<triton::FuncOp>();
-    ttFuncPm.addPass(createCanonicalizerPass());
-    ttFuncPm.addPass(createCSEPass());
-  }
+  funcPm2.addPass(rock::createRockToTTIRPass());
+  // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to
+  // tt.func)
+  pm.addPass(rock::createRockFuncToTritonFuncPass());
+  // After this point, function is triton::FuncOp
+  auto &ttFuncPm = pm.nest<triton::FuncOp>();
+  ttFuncPm.addPass(createCanonicalizerPass());
+  ttFuncPm.addPass(createCSEPass());
 }
 
 void rock::buildTritonPipeline(OpPassManager &pm,
@@ -404,6 +399,9 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 
   makeTTIR(&pm, arch);
   makeTTGIR(&pm, threadPerWarp, options);
+
+  // Run MLIR passes to convert TritonGPU -> LLVM dialect
+  makeLLIR(&pm, arch, options.numStages);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
@@ -456,9 +454,6 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
 void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
   std::string arch = options.chip;
-
-  // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.numStages);
 
   // Optionally generate the HSACO binary
   if (options.compile) {
