@@ -35,8 +35,6 @@ module {
     %6 = rock.transform %1 by #transform_map6 : tensor<1x2x256x256xf16> to tensor<2x256x256xf16>
     %7 = rock.transform %3 by #transform_map7 : tensor<1x2x256x128xf16> to tensor<2x256x128xf16>
     %8 = rock.transform %5 by #transform_map8 : tensor<1x2x128x256xf16> to tensor<2x128x256xf16>
-    %9 = tensor.empty() : tensor<2x256x256xf16>
-    %10 = tensor.empty() : tensor<2x256xf32>
 
     // CHECK: rock.attention{
     // CHECK-NEXT: qk = %{{.*}} * %{{.*}} : tensor<1x256x256xf16>, tensor<1x256x256xf16>

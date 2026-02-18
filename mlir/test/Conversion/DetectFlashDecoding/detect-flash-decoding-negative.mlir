@@ -13,7 +13,6 @@ module {
     %q = rock.transform %arg0 by #transform_map : tensor<393216xf16> to tensor<12x256x128xf16>
     %k = rock.transform %arg1 by #transform_map1 : tensor<393216xf16> to tensor<12x128x256xf16>
     %v = rock.transform %arg2 by #transform_map2 : tensor<393216xf16> to tensor<12x256x128xf16>
-    %out = tensor.empty() : tensor<12x256x128xf16>
 
     // CHECK: rock.attention
     // CHECK: splitKV = 1
@@ -32,8 +31,6 @@ module {
     %q = rock.transform %arg0 by #transform_map : tensor<393216xf16> to tensor<12x256x128xf16>
     %k = rock.transform %arg1 by #transform_map1 : tensor<393216xf16> to tensor<12x128x256xf16>
     %v = rock.transform %arg2 by #transform_map2 : tensor<393216xf16> to tensor<12x256x128xf16>
-    %out = tensor.empty() : tensor<12x256x128xf16>
-    %lse = tensor.empty() : tensor<12x256xf32>
 
     // CHECK: rock.attention
     // CHECK: splitKV = 1
@@ -53,8 +50,6 @@ module {
     %q = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> ((d0 * 128 + d1) * 128 + d2)> by [<Unmerge{12, 128, 128} ["b", "m", "k"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [12, 128, 128] -> [196608]> : tensor<196608xf16> to tensor<12x128x128xf16>
     %k = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> ((d0 * 128 + d1) * 128 + d2)> by [<Unmerge{12, 128, 128} ["b", "k", "n"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [12, 128, 128] -> [196608]> : tensor<196608xf16> to tensor<12x128x128xf16>
     %v = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> ((d0 * 128 + d1) * 128 + d2)> by [<Unmerge{12, 128, 128} ["b", "n", "d"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [12, 128, 128] -> [196608]> : tensor<196608xf16> to tensor<12x128x128xf16>
-    %out = tensor.empty() : tensor<12x128x128xf16>
-    %lse = tensor.empty() : tensor<12x128xf32>
 
     // CHECK: rock.attention
     // CHECK: splitKV = 1
@@ -74,8 +69,6 @@ module {
     %q = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> ((d0 * 256 + d1) * 256 + d2)> by [<Unmerge{12, 256, 256} ["b", "m", "k"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [12, 256, 256] -> [786432]> : tensor<786432xf16> to tensor<12x256x256xf16>
     %k = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> ((d0 * 256 + d1) * 128 + d2)> by [<Unmerge{12, 256, 128} ["b", "k", "n"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [12, 256, 128] -> [393216]> : tensor<393216xf16> to tensor<12x256x128xf16>
     %v = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> ((d0 * 128 + d1) * 256 + d2)> by [<Unmerge{12, 128, 256} ["b", "n", "d"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [12, 128, 256] -> [393216]> : tensor<393216xf16> to tensor<12x128x256xf16>
-    %out = tensor.empty() : tensor<12x256x256xf16>
-    %lse = tensor.empty() : tensor<12x256xf32>
 
     // CHECK: rock.attention
     // CHECK: splitKV = 1
