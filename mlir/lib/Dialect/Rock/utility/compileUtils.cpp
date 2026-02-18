@@ -40,12 +40,27 @@ using namespace mlir::rock;
 namespace mlir {
 namespace rock {
 
+FailureOr<int64_t> checkLDSUsage(ModuleOp moduleOp, int64_t maxSharedMemPerWG) {
+  int64_t sharedMemory = 0;
+  if (auto sharedAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared"))
+    sharedMemory = sharedAttr.getInt();
+  // Validate LDS usage
+  if (sharedMemory > maxSharedMemPerWG) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "ttg.shared: too much LDS usage (" << sharedMemory << " > "
+               << maxSharedMemPerWG << ")\n");
+    return failure();
+  }
+  return sharedMemory;
+}
+
 LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
                                 SmallVectorImpl<KernelInfo> &kernels) {
   // Get Triton metadata from module attributes
   int64_t numWarps = -1;
   int64_t warpSize = -1;
-  int64_t sharedMemory = 0;
+  FailureOr<int64_t> maybeSharedMemory =
+      checkLDSUsage(moduleOp, maxSharedMemPerWG);
 
   // Try ttg.total-num-warps first (set by warp-specialization pass),
   // fall back to ttg.num-warps
@@ -58,16 +73,11 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
   if (auto warpSizeAttr =
           moduleOp->getAttrOfType<IntegerAttr>("ttg.threads-per-warp"))
     warpSize = warpSizeAttr.getInt();
-  if (auto sharedAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared"))
-    sharedMemory = sharedAttr.getInt();
 
   // Validate LDS usage
-  if (sharedMemory > maxSharedMemPerWG) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "ttg.shared: too much LDS usage (" << sharedMemory << " > "
-               << maxSharedMemPerWG << ")\n");
+  if (failed(maybeSharedMemory))
     return failure();
-  }
+  int64_t sharedMemory = maybeSharedMemory.value();
 
   if (numWarps == -1) {
     LLVM_DEBUG(llvm::dbgs() << "ttg.num-warps not found\n");

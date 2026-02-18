@@ -36,6 +36,8 @@ struct KernelInfo {
 LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
                                 SmallVectorImpl<KernelInfo> &kernels);
 
+FailureOr<int64_t> checkLDSUsage(ModuleOp moduleOp, int64_t maxSharedMemPerWG);
+
 /// Create a gpu.ObjectAttr from the HSACO binary in moduleOp and kernel info.
 /// Returns the ObjectAttr and a mapping from kernel names to their indices.
 FailureOr<std::pair<gpu::ObjectAttr, DenseMap<StringRef, size_t>>>

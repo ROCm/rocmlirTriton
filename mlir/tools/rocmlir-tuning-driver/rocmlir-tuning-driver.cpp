@@ -882,9 +882,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       }
 
       // run collectKernelInfo() to check if we use too much LDS early
-      SmallVector<rock::KernelInfo> localKernels;
-      if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
-                                         localKernels))) {
+      if (failed(rock::checkLDSUsage(sourceCopy.get(), maxSharedMemPerWG))) {
         result.status = CompilationStatus::NotApplicable;
         return result;
       }
@@ -901,7 +899,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       // Collect kernel info from the compiled module (block/grid sizes,
       // shared memory, argument count). This also validates LDS usage.
-      localKernels.clear();
+      SmallVector<rock::KernelInfo> localKernels;
       if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
                                          localKernels))) {
         std::lock_guard<std::mutex> lock(outputMutex);
@@ -909,14 +907,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         result.status = CompilationStatus::CompilationFailed;
         compilationFailed.store(true, std::memory_order_relaxed);
         return result;
-      }
-
-      // Check that kernels don't use too much LDS
-      for (auto &kernel : localKernels) {
-        if (kernel.sharedMemorySize > maxSharedMemPerWG) {
-          result.status = CompilationStatus::NotApplicable;
-          return result;
-        }
       }
 
       // Get numKernelArgs from the collected info
