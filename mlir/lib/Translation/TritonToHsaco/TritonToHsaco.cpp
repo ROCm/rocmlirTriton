@@ -68,7 +68,10 @@
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "mlir/Pass/Pass.h"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
+#include <cstdlib>
 #include <mutex>
 #include <unordered_set>
 
@@ -746,6 +749,16 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   if (amdgcnAsm.empty()) {
     llvm::errs() << "Failed to generate AMDGCN assembly\n";
     return failure();
+  }
+
+  // make_amdgcn (compiler.py)
+  if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_DUMP")) {
+    std::string envVal(dumpEnv);
+    std::transform(envVal.begin(), envVal.end(), envVal.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (envVal == "1") {
+      llvm::errs() << "// -----// AMDGCN Dump //----- //\n" << amdgcnAsm << "\n";
+    }
   }
 
   // make_hsaco (compiler.py lines 476-488)
