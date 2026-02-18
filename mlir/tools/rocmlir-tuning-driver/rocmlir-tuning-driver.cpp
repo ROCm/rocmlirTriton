@@ -881,7 +881,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // run collectKernelInfo() to check if we use too much LDS early
+      // check if we use too much LDS
       if (failed(rock::checkLDSUsage(sourceCopy.get(), maxSharedMemPerWG))) {
         result.status = CompilationStatus::NotApplicable;
         return result;
