@@ -80,6 +80,7 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 | `getMfmaVersion()` | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
 | `getWmmaVersion()` | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
 
+If there are any new architecture not handled by our rocmlirTrion functions we should see warnings/errors because the switch would not be handling all cases.
 
 **Example mapping:**
 
