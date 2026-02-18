@@ -96,7 +96,7 @@ def RockTransformsToPtrPass : Pass<"rock-transforms-to-ptr", "::mlir::func::Func
 
 def RockTransformsToPointerArithPass : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
   let summary = "";
-  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect", "triton::TritonDialect"];
 }
 
 def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {

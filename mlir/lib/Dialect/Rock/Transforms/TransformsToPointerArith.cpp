@@ -607,9 +607,16 @@ struct TransformsToPtrRewritePattern
     auto [buffer, transforms, needs64BitIdx] = untransform(b, source);
 
     size_t bufferIdxCount = shape.size();
-    assert(bufferIdxCount != 0);
+    if (bufferIdxCount == 0) {
+      return op.emitOpError("output pointer tensor must have non-zero rank");
+    }
     size_t extraIdxCount = extraIndices.size();
-    assert(extraIdxCount >= bufferIdxCount);
+    if (extraIdxCount < bufferIdxCount) {
+      return op.emitOpError("requires at least ")
+             << bufferIdxCount << " extra indices for output tile of rank "
+             << bufferIdxCount << ", but only " << extraIdxCount
+             << " indices were provided";
+    }
     SmallVector<Value> initValues(extraIndices);
     for (size_t dimension = 0; dimension < shape.size(); ++dimension) {
       // Create the range values using triton.make_range
