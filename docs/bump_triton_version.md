@@ -36,7 +36,22 @@ cd external/triton/scripts/
 bash build-llvm-project.sh
 ```
 
-## Step 3: Analyze Upstream Changes
+## Step 3: Check if our local patches are still needed
+We may have local patches (`.patch` files) under `./triton-patches`, which are applied using the `cmake.sh` script.
+These might not be needed if the changes in the patch were merged into upstream.
+
+For each patch, check the files that are modified and do:
+
+```bash
+cd external/triton
+git diff ${OLD_COMMIT}..${NEW_COMMIT} -- FILE
+```
+
+And compare the changes with the corresponding `.patch` file.
+
+If the changes are already in `external/triton`, then remove the `.patch` file.
+
+## Step 4: Analyze Upstream Changes
 
 Generate a diff between the old and new commits for the key files that need synchronization. Those are:
 
@@ -48,11 +63,11 @@ git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/python/triton_amd.cc > 
 git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp > AccelerateAMDMatmul.cpp.diff
 ```
 
-## Step 4: Synchronize C++ Implementations
+## Step 5: Synchronize C++ Implementations
 
 The following tables map Python functions to their C++ equivalents. Each must be reviewed and updated when upstream changes.
 
-### 4.1 Pipeline Functions (from `compiler.py`)
+### 5.1 Pipeline Functions (from `compiler.py`)
 
 | Python Function | C++ Location |
 |----------------|--------------|
@@ -61,11 +76,11 @@ The following tables map Python functions to their C++ equivalents. Each must be
 | `make_llir()` Part 1 | `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` |
 | `make_llir()` Part 2 + `make_amdgcn()` + `make_hsaco()` | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
 
-### 4.2 Understanding Pass Bindings (from `triton_amd.cc`)
+### 5.2 Understanding Pass Bindings (from `triton_amd.cc`)
 
 The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Python bindings for Triton passes. When `compiler.py` adds a new pass call, check `triton_amd.cc` to find the actual C++ pass creation function.
 
-### 4.3 LLVM Functions (from `llvm.cc`)
+### 5.3 LLVM Functions (from `llvm.cc`)
 
 | Python/C++ Function in Triton | C++ Location in rocmlirTriton |
 |------------------------------|-------------------------------|
@@ -73,7 +88,7 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 | `createTargetMachine()` | `TritonToHsaco.cpp::createTargetMachine()` |
 | `optimize_module()` | `TritonToHsaco.cpp::optimizeModule()` |
 
-### 4.4 Architecture Database (from `AccelerateAMDMatmul.cpp`)
+### 5.4 Architecture Database (from `AccelerateAMDMatmul.cpp`)
 
 | Triton Function | C++ Location in rocmlirTriton |
 |----------------|-------------------------------|
@@ -103,7 +118,7 @@ pm->addNestedPass<mlir::triton::FuncOp>(
     mlir::createTritonAMDGPUMoveUpPrologueLoads());
 ```
 
-### 4.5 Hardware feature detection
+### 5.5 Hardware feature detection
 Python code will usually add certain passes only if hardware supports it. For example:
 
 ```python
@@ -126,7 +141,7 @@ if (rock::supportsTDM(arch))
 
 If there is no `rock` equivalent function to check that hardware feature, then implement a new function in `AmdArchDb.cpp` and use it.
 
-## Step 5: Features Intentionally NOT Implemented
+## Step 6: Features Intentionally NOT Implemented
 
 The following Python features are **intentionally omitted** from the C++ implementation. Do NOT add them when synchronizing:
 
@@ -144,7 +159,7 @@ The following Python features are **intentionally omitted** from the C++ impleme
 
 When reviewing diffs, **skip changes** related to these features.
 
-## Step 6: Handling Pass Interface Changes
+## Step 7: Handling Pass Interface Changes
 
 When Triton changes pass interfaces (arguments, types), follow these steps:
 
@@ -159,7 +174,7 @@ When Triton changes pass interfaces (arguments, types), follow these steps:
 - New string parameter (usually arch) → pass `options.arch` or equivalent
 - New integer parameter → check what value Triton passes and match it
 
-## Step 7: Build the Project
+## Step 8: Build the Project
 
 After making all synchronization changes:
 
@@ -167,7 +182,7 @@ After making all synchronization changes:
 # From project root
 bash cmake.sh
 ```
-## Step 8: Run Tests
+## Step 9: Run Tests
 
 ```bash
 bash tests.sh
