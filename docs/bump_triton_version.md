@@ -174,7 +174,7 @@ When Triton changes pass interfaces (arguments, types), follow these steps:
 - New string parameter (usually arch) → pass `options.arch` or equivalent
 - New integer parameter → check what value Triton passes and match it
 
-## Step 8: Build the Project
+## Step 8: Rebuild rocmlirTriton and fix changes (due to upstream MLIR changes)
 
 After making all synchronization changes:
 
@@ -182,6 +182,10 @@ After making all synchronization changes:
 # From project root
 bash cmake.sh
 ```
+
+Which will probably fail due to LLVM being also bumped with Triton version.
+For this, we need to manually resolve the errors due to upstream LLVM changes.
+
 ## Step 9: Run Tests
 
 ```bash
