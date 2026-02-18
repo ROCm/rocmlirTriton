@@ -52,7 +52,7 @@ static cl::opt<std::string> outputFilename("o", cl::desc("Output filename"),
 static cl::opt<std::string> kernelPipeline(
     "kernel-pipeline", cl::desc("rocmlir-driver kernel pipeline list"),
     cl::value_desc("comma separated list of rock pipelines: "
-                   "applicability,migraphx,highlevel,gpu,rocdl,binary or full"),
+                   "migraphx,highlevel,gpu,rocdl,binary or full"),
     cl::init(""));
 
 static cl::opt<std::string>
@@ -234,12 +234,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   }
 
   // Set up lowering pipeline.
-  if (kernelPipelineSet.contains("applicability")) {
-    rock::KernelOptions opts;
-    opts.applicabilityMode = mlir::rock::ApplicabilityMode::Applicability;
-    opts.arch = arch.str();
-    rock::buildKernelPipeline(pm, opts);
-  }
   if (kernelPipelineSet.contains("gpu")) {
     // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
@@ -297,8 +291,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   }
 
   llvm::SmallDenseSet<StringRef> kernelPipelineOptions{
-      "applicability", "migraphx", "highlevel", "gpu",
-      "rocdl",         "binary",   "triton"};
+      "migraphx", "highlevel", "gpu", "rocdl", "binary", "triton"};
   llvm::SmallDenseSet<StringRef> kernelFullPipeline{"gpu", "triton", "binary"};
   llvm::SmallDenseSet<StringRef> kernelPipelineSet;
   std::string kernelPipelineStr = kernelPipeline.getValue();
@@ -306,15 +299,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                            kernelPipelineOptions, kernelFullPipeline))) {
     return failure();
   }
-  if (!kernelPipelineSet.empty()) {
-    if (kernelPipelineSet.contains("applicability") &&
-        kernelPipelineSet.size() != 1) {
-      llvm::errs() << "The `applicability` pipeline cannot be combined with "
-                      "any other pipeline options.\n";
-      return failure();
-    }
-  }
-
   llvm::SmallDenseSet<StringRef> hostPipelineOptions{"migraphx", "highlevel",
                                                      "runner"};
   llvm::SmallDenseSet<StringRef> hostPipelineSet;
