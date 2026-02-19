@@ -2,12 +2,12 @@
 // RUN: rocmlir-gen --arch %arch -p %s | rocmlir-driver -c | FileCheck %s --check-prefix=LOWERING
 // RUN: rocmlir-gen --arch %arch -p %s | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=E2E
 
-func.func private @rock_conv_gkc01_ngc01_ngk01_0(%arg0: memref<9216xf32>, %arg1: memref<1048576xf32>, %arg2: memref<14745600xf32>) -> ()
+func.func private @rock_conv_gkc01_ngc01_ngk01_0(%arg0: tensor<9216xf32>, %arg1: tensor<1048576xf32>, %arg2: tensor<14745600xf32>) -> tensor<14745600xf32>
 
 // HARNESS: module
-// HARNESS: func @rock_conv_gkc01_ngc01_ngk01_0([[FILTER_MEMREF:%.*]]: memref<9216xf32>, [[INPUT_MEMREF:%.*]]: memref<1048576xf32>, [[OUTPUT_MEMREF:%.*]]: memref<14745600xf32>)
+// HARNESS: func @rock_conv_gkc01_ngc01_ngk01_0([[FILTER:%.*]]: tensor<9216xf32>, [[INPUT:%.*]]: tensor<1048576xf32>, [[OUTPUT:%.*]]: tensor<14745600xf32>) -> tensor<14745600xf32>
 // LOWERING: module
-// LOWERING: gpu.binary @rock_conv_gkc01_ngc01_ngk01_0_module
+// LOWERING: gpu.binary @rock_kernels
 
 func.func @main() {
   // memref.allocate CPU memory.
@@ -31,8 +31,17 @@ func.func @main() {
   gpu.memcpy  %input, %1 : memref<1048576xf32>, memref<1048576xf32>
   gpu.memcpy  %output, %2 : memref<14745600xf32>, memref<14745600xf32>
 
+  // Cast memrefs to tensors for the kernel call.
+  %filter_tensor = bufferization.to_tensor %filter {restrict, writable} : memref<9216xf32> to tensor<9216xf32>
+  %input_tensor = bufferization.to_tensor %input {restrict, writable} : memref<1048576xf32> to tensor<1048576xf32>
+  %output_tensor = bufferization.to_tensor %output {restrict, writable} : memref<14745600xf32> to tensor<14745600xf32>
+
   // launch kernel.
-  call @rock_conv_gkc01_ngc01_ngk01_0(%filter, %input, %output) : (memref<9216xf32>, memref<1048576xf32>, memref<14745600xf32>) -> ()
+  %result_tensor = call @rock_conv_gkc01_ngc01_ngk01_0(%filter_tensor, %input_tensor, %output_tensor) : (tensor<9216xf32>, tensor<1048576xf32>, tensor<14745600xf32>) -> tensor<14745600xf32>
+
+  // Convert result tensor back to memref and copy to original output.
+  %result_memref = bufferization.to_buffer %result_tensor : tensor<14745600xf32> to memref<14745600xf32>
+  memref.copy %result_memref, %output : memref<14745600xf32> to memref<14745600xf32>
 
   // transfer data GPU -> CPU.
   gpu.memcpy  %2, %output : memref<14745600xf32>, memref<14745600xf32>
