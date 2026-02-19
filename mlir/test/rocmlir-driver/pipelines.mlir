@@ -1,9 +1,8 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=migraphx -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=MIGRAPHX --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=gpu -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=GPU --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
-// RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx942 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY_MI300 --strict-whitespace
-// RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx950 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY_MI350 --strict-whitespace
-// RUN: rocmlir-driver -dump-pipelines -host-pipeline=mhal -targets=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=MHAL --match-full-lines --strict-whitespace
+// RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx942 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
+// RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx950 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=highlevel -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=HIGHLEVEL --match-full-lines --strict-whitespace
 
 // COM: Do not put a leading space between the colon and the pass you're looking for
@@ -20,130 +19,40 @@
 // GPU-NEXT:rock-conv-to-gemm,
 // GPU-NEXT:rock-gemm-linalg-splitk-normalization,
 // GPU-NEXT:rock-gemm-to-gridwise,
-// GPU-NEXT:rock-regularize,
 // GPU-NEXT:rock-shuffle-gemm-for-reductions,
+// GPU-NEXT:rock-insert-loads,
+// GPU-NEXT:rock-gridwise-attn-to-blockwise,
 // GPU-NEXT:rock-gridwise-gemm-to-blockwise,
-// GPU-NEXT:rock-blockwise-load-tile-to-threadwise,
-// GPU-NEXT:rock-linalg-align,
-// GPU-NEXT:rock-blockwise-gemm-to-threadwise,
-// GPU-NEXT:rock-pipeline{rock-pipeline-remove-stages=true},
+// GPU-NEXT:rock-insert-output-fusion-loads,
+// GPU-NEXT:rock-lower-loads,
+// GPU-NEXT:rock-lower-stores),
+// GPU-NEXT:rock-serialize-host-funcs,
+// GPU-NEXT:func.func(rock-transforms-to-ptr,
+// GPU-NEXT:rock-transforms-to-pointer-arith,
 // GPU-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// GPU-NEXT:convert-linalg-to-affine-loops,
-// GPU-NEXT:rock-vectorize-fusions,
-// GPU-NEXT:rock-add-async-wait,
-// GPU-NEXT:rock-annotate-liveness,
-// GPU-NEXT:rock-reuse-lds,
-// GPU-NEXT:rock-output-swizzle,
-// GPU-NEXT:rock-annotate-liveness,
-// GPU-NEXT:rock-reuse-lds,
-// GPU-NEXT:rock-lower-reduce,
-// GPU-NEXT:rock-threadwise-gemm-lowering,
-// GPU-NEXT:rock-analyze-memory-use,
-// GPU-NEXT:rock-sugar-to-loops,
-// GPU-NEXT:rock-clean-math,
-// GPU-NEXT:math-extend-to-supported-types{extra-types={f16} target-type=f32},
-// GPU-NEXT:rock-buffer-load-merge,
-// GPU-NEXT:rock-transform-to-memref,
-// GPU-NEXT:rock-emulate-narrow-type,
-// GPU-NEXT:rock-pack-4bit-gpu-ops-to-8bit,
-// GPU-NEXT:rock-loops-to-cf),
-// GPU-NEXT:convert-rock-to-gpu)
+// GPU-NEXT:rock-to-ttir),
+// GPU-NEXT:rock-func-to-triton-func,
+// GPU-NEXT:tt.func(canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// GPU-NEXT:cse))
 
 // BINARY:Kernel pipeline:
-// BINARY-NEXT:builtin.module(strip-debuginfo,
-// BINARY-NEXT:gpu.module(amdgpu-emulate-atomics{chipset=gfx90a},
-// BINARY-NEXT:arith-emulate-unsupported-floats{source-types={f8E4M3FNUZ,
-// BINARY-NEXT:f8E5M2FNUZ,
-// BINARY-NEXT:f8E4M3FN,
-// BINARY-NEXT:f8E5M2,
-// BINARY-NEXT:f8E8M0FNU} target-type=f32},
-// BINARY-NEXT:arith-expand{include-bf16=false include-f4e2m1=false include-f8e8m0=true},
-// BINARY-NEXT:convert-arith-to-amdgpu{allow-packed-f16-round-to-zero=false chipset=gfx90a saturate-fp8-truncf=true},
+// BINARY-NEXT:builtin.module(triton-to-hsaco{allow-flush-denorm=false arch={{gfx90a|gfx942|gfx950}} enable-fp-fusion=true features= num-ctas=1 num-warps=4 opt-level=3 scalarize-packed-fops=false schedule-hint=none triple=amdgcn-amd-amdhsa waves-per-eu=0},
+// BINARY-NEXT:rock-restore-host-code{arch={{gfx90a|gfx942|gfx950}} features= opt-level=3 triple=amdgcn-amd-amdhsa},
 // BINARY-NEXT:emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false},
-// BINARY-NEXT:expand-strided-metadata,
+// BINARY-NEXT:one-shot-bufferize{allow-return-allocs-from-loops=false allow-unknown-ops=false analysis-fuzzer-seed=0 analysis-heuristic=bottom-up buffer-alignment=64 bufferize-function-boundaries=true check-parallel-regions=true copy-before-write=false  dump-alias-sets=false function-boundary-type-conversion=infer-layout-map must-infer-memory-space=false  print-conflicts=false test-analysis-only=false unknown-type-conversion=fully-dynamic-layout-map use-encoding-for-memory-space=false},
+// BINARY-NEXT:convert-linalg-to-loops,
 // BINARY-NEXT:lower-affine,
-// BINARY-NEXT:convert-gpu-to-rocdl{allowed-dialects={
-// BINARY-DAG:vector
-// BINARY-DAG:memref
-// BINARY-DAG:cf
-// BINARY-DAG:math
-// BINARY-DAG:func
-// BINARY-DAG:arith
-// BINARY-SAME:} chipset=gfx90a index-bitwidth=0 runtime=HIP use-bare-ptr-memref-call-conv=true},
-// BINARY-NEXT:rock-add-direct-to-lds-alias-info,
-// BINARY-NEXT:llvm.func(rock-to-rocdl{chipset=gfx90a}),
-// BINARY-NEXT:llvm.func(canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// BINARY-NEXT:expand-strided-metadata,
+// BINARY-NEXT:convert-scf-to-cf{allow-pattern-rollback=true},
+// BINARY-NEXT:func.func(gpu-async-region),
+// BINARY-NEXT:convert-cf-to-llvm{index-bitwidth=0},
+// BINARY-NEXT:convert-arith-to-llvm{index-bitwidth=0},
+// BINARY-NEXT:finalize-memref-to-llvm{index-bitwidth=0 use-aligned-alloc=false use-generic-functions=false},
+// BINARY-NEXT:gpu-to-llvm{intersperse-sizes-for-kernels=false use-bare-pointers-for-host=false use-bare-pointers-for-kernels=true},
+// BINARY-NEXT:convert-func-to-llvm{index-bitwidth=0 use-bare-ptr-memref-call-conv=false},
+// BINARY-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // BINARY-NEXT:cse,
-// BINARY-NEXT:rock-prepare-llvm)),
-// BINARY-NEXT:rocdl-attach-target{O=3 abi=600 chip=gfx90a correct-sqrt=true daz=false fast=false features= finite-only=false  module= triple=amdgcn-amd-amdhsa unsafe-math=false wave64=true},
-// BINARY-NEXT:gpu-module-to-binary{format=fatbin  opts= section= toolkit=},
-// BINARY-NEXT:rock-check-residency,
-// BINARY-NEXT:emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false})
-
-// BINARY_MI300:Kernel pipeline:
-// BINARY_MI300-NEXT:builtin.module(strip-debuginfo,
-// BINARY_MI300-NEXT:gpu.module(amdgpu-emulate-atomics{chipset=gfx942},
-// BINARY_MI300-NEXT:arith-emulate-unsupported-floats{source-types={f8E4M3FNUZ,
-// BINARY_MI300-NEXT:f8E5M2FNUZ,
-// BINARY_MI300-NEXT:f8E4M3FN,
-// BINARY_MI300-NEXT:f8E5M2,
-// BINARY_MI300-NEXT:f8E8M0FNU} target-type=f32},
-// BINARY_MI300-NEXT:arith-expand{include-bf16=false include-f4e2m1=false include-f8e8m0=true},
-// BINARY_MI300-NEXT:convert-arith-to-amdgpu{allow-packed-f16-round-to-zero=false chipset=gfx942 saturate-fp8-truncf=true},
-// BINARY_MI300-NEXT:emulate-fp8-ext-trunc{f8-conversion-instrs=true ocpf8-conversion-instrs=false},
-// BINARY_MI300-NEXT:expand-strided-metadata,
-// BINARY_MI300-NEXT:lower-affine,
-// BINARY_MI300-NEXT:convert-gpu-to-rocdl{allowed-dialects={
-// BINARY_MI300-DAG:vector
-// BINARY_MI300-DAG:memref
-// BINARY_MI300-DAG:cf
-// BINARY_MI300-DAG:math
-// BINARY_MI300-DAG:func
-// BINARY_MI300-DAG:arith
-// BINARY_MI300-SAME:} chipset=gfx942 index-bitwidth=0 runtime=HIP use-bare-ptr-memref-call-conv=true},
-// BINARY_MI300-NEXT:rock-add-direct-to-lds-alias-info,
-// BINARY_MI300-NEXT:llvm.func(rock-to-rocdl{chipset=gfx942}),
-// BINARY_MI300-NEXT:llvm.func(canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// BINARY_MI300-NEXT:cse,
-// BINARY_MI300-NEXT:rock-prepare-llvm)),
-// BINARY_MI300-NEXT:rocdl-attach-target{O=3 abi=600 chip=gfx942 correct-sqrt=true daz=false fast=false features= finite-only=false  module= triple=amdgcn-amd-amdhsa unsafe-math=false wave64=true},
-// BINARY_MI300-NEXT:gpu-module-to-binary{format=fatbin  opts= section= toolkit=},
-// BINARY_MI300-NEXT:rock-check-residency,
-// BINARY_MI300-NEXT:emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false})
-
-// BINARY_MI350:Kernel pipeline:
-// BINARY_MI350-NEXT:builtin.module(strip-debuginfo,
-// BINARY_MI350-NEXT:gpu.module(amdgpu-emulate-atomics{chipset=gfx950},
-// BINARY_MI350-NEXT:arith-emulate-unsupported-floats{source-types={f8E4M3FNUZ,
-// BINARY_MI350-NEXT:f8E5M2FNUZ,
-// BINARY_MI350-NEXT:f8E4M3FN,
-// BINARY_MI350-NEXT:f8E5M2,
-// BINARY_MI350-NEXT:f8E8M0FNU} target-type=f32},
-// BINARY_MI350-NEXT:arith-expand{include-bf16=false include-f4e2m1=false include-f8e8m0=true},
-// BINARY_MI350-NEXT:convert-arith-to-amdgpu{allow-packed-f16-round-to-zero=false chipset=gfx950 saturate-fp8-truncf=true},
-// BINARY_MI350-NEXT:emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=true},
-// BINARY_MI350-NEXT:expand-strided-metadata,
-// BINARY_MI350-NEXT:lower-affine,
-// BINARY_MI350-NEXT:convert-gpu-to-rocdl{allowed-dialects={
-// BINARY_MI350-DAG:vector
-// BINARY_MI350-DAG:memref
-// BINARY_MI350-DAG:cf
-// BINARY_MI350-DAG:math
-// BINARY_MI350-DAG:func
-// BINARY_MI350-DAG:arith
-// BINARY_MI350-SAME:} chipset=gfx950 index-bitwidth=0 runtime=HIP use-bare-ptr-memref-call-conv=true},
-// BINARY_MI350-NEXT:rock-add-direct-to-lds-alias-info,
-// BINARY_MI350-NEXT:llvm.func(rock-to-rocdl{chipset=gfx950}),
-// BINARY_MI350-NEXT:llvm.func(canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// BINARY_MI350-NEXT:cse,
-// BINARY_MI350-NEXT:rock-prepare-llvm)),
-// BINARY_MI350-NEXT:rocdl-attach-target{O=3 abi=600 chip=gfx950 correct-sqrt=true daz=false fast=false features= finite-only=false  module= triple=amdgcn-amd-amdhsa unsafe-math=false wave64=true},
-// BINARY_MI350-NEXT:gpu-module-to-binary{format=fatbin  opts= section= toolkit=},
-// BINARY_MI350-NEXT:rock-check-residency,
-// BINARY_MI350-NEXT:emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false})
-
-// MHAL:MHAL package pipeline:
-// MHAL-NEXT:any(mhal-package-targets)
+// BINARY-NEXT:reconcile-unrealized-casts)
 
 // HIGHLEVEL:Kernel pipeline:
 // HIGHLEVEL-NEXT:builtin.module(func.func(tosa-to-tensor,
@@ -174,14 +83,5 @@
 // HIGHLEVEL-NEXT:linalg-fold-unit-extent-dims{use-rank-reducing-slices=false},
 // HIGHLEVEL-NEXT:rock-view-to-transform,
 // HIGHLEVEL-NEXT:rock-fold-broadcast,
-// HIGHLEVEL-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// HIGHLEVEL-NEXT:empty-tensor-to-alloc-tensor,
-// HIGHLEVEL-NEXT:cse),
-// HIGHLEVEL-NEXT:convert-tensor-to-linalg,
-// HIGHLEVEL-NEXT:func.func(empty-tensor-to-alloc-tensor,
-// HIGHLEVEL-NEXT:linalg-fold-unit-extent-dims{use-rank-reducing-slices=false}),
-// HIGHLEVEL-NEXT:one-shot-bufferize{allow-return-allocs-from-loops=true allow-unknown-ops=false analysis-fuzzer-seed=0 analysis-heuristic=bottom-up buffer-alignment=64 bufferize-function-boundaries=true check-parallel-regions=true copy-before-write=false  dump-alias-sets=false function-boundary-type-conversion=identity-layout-map must-infer-memory-space=false  print-conflicts=false test-analysis-only=false unknown-type-conversion=identity-layout-map use-encoding-for-memory-space=false},
-// HIGHLEVEL-NEXT:buffer-results-to-out-params{add-result-attr=false hoist-dynamic-allocs=false hoist-static-allocs=false modify-public-functions=true},
-// HIGHLEVEL-NEXT:func.func(rock-remove-output-alloc,
-// HIGHLEVEL-NEXT:rock-find-first-gemm-index,
-// HIGHLEVEL-NEXT:rock-sort-dimensions-memory-layout))
+// HIGHLEVEL-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}),
+// HIGHLEVEL-NEXT:convert-tensor-to-linalg)

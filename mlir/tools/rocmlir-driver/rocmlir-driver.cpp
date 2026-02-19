@@ -150,6 +150,9 @@ static LogicalResult runHostHighLevelPipeline(ModuleOp m) {
     llvm::errs() << "Host pipeline:\n";
     pm.printAsTextualPipeline(llvm::errs());
     llvm::errs() << "\n";
+    // If the module is empty, skip running the pipeline
+    if (m.getBody()->empty())
+      return success();
   }
 
   return pm.run(m);
@@ -253,6 +256,9 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     llvm::errs() << "Kernel pipeline:\n";
     pm.printAsTextualPipeline(llvm::errs());
     llvm::errs() << "\n";
+    // If the module is empty, skip running the pipeline
+    if (m.getBody()->empty())
+      return success();
   }
   return pm.run(m);
 }
@@ -386,6 +392,9 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       llvm::errs() << "Custom pipeline:\n";
       pm.printAsTextualPipeline(llvm::errs());
       llvm::errs() << "\n";
+      // If the module is empty, skip running the pipeline
+      if (module.getBody()->empty())
+        return success();
     }
     if (failed(pm.run(module))) {
       return failure();
@@ -406,6 +415,9 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       llvm::errs() << "Bufferization pipeline:\n";
       pm.printAsTextualPipeline(llvm::errs());
       llvm::errs() << "\n";
+      // If the module is empty, skip running the pipeline
+      if (module.getBody()->empty())
+        return success();
     }
     if (failed(pm.run(module))) {
       return failure();
