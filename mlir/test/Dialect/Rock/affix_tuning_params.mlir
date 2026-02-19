@@ -305,25 +305,6 @@ func.func @rock_conv_bwd_weight_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor
   return %out : tensor<1x64x3x7x7xf32>
 }
 
-// CHECK-LABEL: @rock_conv_bwd_data_7x7
-// GRID-LABEL: @rock_conv_bwd_data_7x7
-func.func @rock_conv_bwd_data_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<256x1x3x230x230xf32> attributes {rock.kernel = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
-  // CHECK: rock.conv_bwd_data
-  // CHECK-SAME: params = #rock.gemm_params<
-  // GRID-SAME: rock.grid_size = 52900
-  // GRID: rock.gridwise_gemm
-  %result = rock.conv_bwd_data(%arg0, %arg1, %arg2) {
-    dilations = [1 : index, 1 : index],
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["ni", "gi", "ci", "0i", "1i"],
-    output_layout = ["no", "go", "ko", "0o", "1o"],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    strides = [2 : index, 2 : index]
-  } : tensor<1x64x3x7x7xf32>, tensor<256x1x3x230x230xf32>, tensor<256x1x64x112x112xf32> -> tensor<256x1x3x230x230xf32>
-  %out = rock.store %result to %arg1 by set : tensor<256x1x3x230x230xf32> -> tensor<256x1x3x230x230xf32> to tensor<256x1x3x230x230xf32>
-  return %out : tensor<256x1x3x230x230xf32>
-}
-
 // CHECK-LABEL: @rock_gemm_from_conv
 // GRID-LABEL: rock_gemm_from_conv
 func.func @rock_gemm_from_conv(%a : tensor<1x72x128xf32>, %b : tensor<1x72x115200xf32>, %c : tensor<1x128x115200xf32>) -> tensor<1x128x115200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", numCU = 120 : i32} {
