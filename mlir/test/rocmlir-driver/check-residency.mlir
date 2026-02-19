@@ -1,3 +1,3 @@
-// RUN: rocmlir-gen --arch gfx90a -p -t f16 | rocmlir-driver -kernel-pipeline=gpu,binary --verify-passes | FileCheck %s 
+// RUN: rocmlir-gen --arch gfx90a -p -t f16 | rocmlir-driver -kernel-pipeline=gpu,triton,binary --verify-passes | FileCheck %s 
 
-// CHECK: gpu.binary {{.*}} rock.blocks_per_cu = {{.*}} : i32
+// CHECK: rock.grid_size{{.*}} = {{.*}} : i32, triton.hsaco
