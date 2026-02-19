@@ -77,4 +77,5 @@ build/bin/rocmlir-gen --causal -num_heads_q 4 -num_heads_kv 2 -rand 1  -pv --arc
 cd build && \
  LIT_FILTER=Dialect/Rock ninja check-rocmlir && \
  LIT_FILTER=Conversion ninja check-rocmlir && \
+ LIT_FILTER=rocmlir-driver ninja check-rocmlir && \
  LIT_FILTER=e2e ninja check-rocmlir
