@@ -815,8 +815,7 @@ GemmRewritePattern::arrangeSplitKTransform(OpBuilder &builder, GemmOp op,
     } else {
       return op->emitError("expecting `float` or `int` element type");
     }
-    func.setArgAttrs(arg.getArgNumber(),
-                      builder.getNamedAttr(attrName, zero));
+    func.setArgAttrs(arg.getArgNumber(), builder.getNamedAttr(attrName, zero));
   }
 
   const int64_t origK = cast<RankedTensorType>(a.getType()).getShape()[2];

@@ -726,14 +726,12 @@ GemmSize ConvBwdDataOp::getGemmSize() {
   auto strides = extractFromIntegerArrayAttr<int64_t>(this->getStrides());
   auto dilations = extractFromIntegerArrayAttr<int64_t>(this->getDilations());
 
-  auto kernelIds =
-      rock::backwardDataKernelIds(strides, dilations, sizes.fil);
+  auto kernelIds = rock::backwardDataKernelIds(strides, dilations, sizes.fil);
 
   GemmSize best(0, 0, 0, 0);
   for (int64_t kernelId : kernelIds) {
-    GemmSize single =
-        bwdDataGemmSizeForKernelId(sizes, padding, strides, dilations,
-                                   kernelId);
+    GemmSize single = bwdDataGemmSizeForKernelId(sizes, padding, strides,
+                                                 dilations, kernelId);
     if (single.k > best.k)
       best = single;
   }

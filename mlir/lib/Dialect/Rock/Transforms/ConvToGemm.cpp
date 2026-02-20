@@ -603,7 +603,8 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
 }
 
 FailureOr<std::pair<Value, Value>>
-backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b, int64_t kernelId) {
+backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
+                            int64_t kernelId) {
   Location loc = op.getLoc();
 
   ConvolutionContext ctx = populateConvContext(op);
@@ -975,8 +976,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     auto strideDims = ctx.getStrideVal();
     auto dilationDims = ctx.getDilationVal();
     auto filterDims = ctx.getConvDims().fil;
-    auto kernelIds = rock::backwardDataKernelIds(strideDims, dilationDims,
-                                                 filterDims);
+    auto kernelIds =
+        rock::backwardDataKernelIds(strideDims, dilationDims, filterDims);
 
     // ConvBwdData rewrite currently expects a single consuming rock.store.
     SmallVector<StoreOp, 1> storeOps;

@@ -918,7 +918,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
       // TODO: This is okay for right now since we are not doing any fusions.
       // When we do handle fusions in the future there is no guarantee that
       // arg 1 is going to be the input tensor.
-        zeroInitArg(builder, func, 1);
+      zeroInitArg(builder, func, 1);
     }
     auto convOp = ConvBwdDataOp::create(builder, builder.getUnknownLoc(),
                                         outputResultType, args, attributes);
