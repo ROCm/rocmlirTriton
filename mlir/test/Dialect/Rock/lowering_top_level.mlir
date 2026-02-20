@@ -108,13 +108,11 @@ func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tens
   %result = rock.conv_bwd_data(%filter, %input, %output) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
-    kernelId = 0 : index,
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
     output_layout = ["no", "go", "ko", "0o", "1o"],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
     params = #xdlops_gemm_params1,
-    strides = [1 : index, 1 : index],
-    usesV4R1 = true
+    strides = [1 : index, 1 : index]
   } : tensor<1x1024x1024x1x1xf32>, tensor<128x1x1024x14x14xf32>, tensor<128x1x1024x14x14xf32> -> tensor<128x1x1024x14x14xf32>
   %out = rock.store %result to %input by set : tensor<128x1x1024x14x14xf32> -> tensor<128x1x1024x14x14xf32> to tensor<128x1x1024x14x14xf32>
   return %out : tensor<128x1x1024x14x14xf32>
@@ -134,7 +132,7 @@ func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tens
 // CHECK-NEXT:  %[[OUT3:.*]] = rock.transform %[[OUT2]] by #[[$MAP_BWD_DATA_OUT3_NO_PAD]]
 // CHECK-NEXT:  {{%.*}} = rock.gemm tr %[[FIL3]] * %[[OUT3]]{{.*}}
 
-func.func @rock_conv_bwd_data_nov4r1(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x8x32x32xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906", numCU = 64 : i32} {
+func.func @rock_conv_bwd_data_small(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x8x32x32xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906", numCU = 64 : i32} {
   %result = rock.conv_bwd_data(%filter, %input, %output) features = none {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -142,15 +140,13 @@ func.func @rock_conv_bwd_data_nov4r1(%filter : tensor<1x128x8x3x3xf32>, %input :
     output_layout = ["no", "go", "ko", "0o", "1o"],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
     params = #gemm_params1,
-    strides = [1 : index,  1 : index],
-    usesV4R1 = false,
-    kernelId = 0 : index
+    strides = [1 : index,  1 : index]
   } : tensor<1x128x8x3x3xf32>, tensor<128x1x8x32x32xf32>, tensor<128x1x128x30x30xf32> -> tensor<128x1x8x32x32xf32>
   %out = rock.store %result to %input by set : tensor<128x1x8x32x32xf32> -> tensor<128x1x8x32x32xf32> to tensor<128x1x8x32x32xf32>
   return %out : tensor<128x1x8x32x32xf32>
 }
 
-// CHECK-LABEL: func.func {{@rock_conv_bwd_data_nov4r1.*%arg0.*%arg1.*%arg2}}
+// CHECK-LABEL: func.func {{@rock_conv_bwd_data_small.*%arg0.*%arg1.*%arg2}}
 // CHECK-NOT: rock.conv_bwd_data
 // CHECK-NEXT: %[[FIL1:.*]] = rock.transform %arg0
 // CHECK-NEXT: %[[FIL2:.*]] = rock.transform %[[FIL1]]
@@ -168,13 +164,11 @@ func.func @rock_conv_bwd_data_f16(%filter: tensor<1x1024x1024x1x1xf16>, %input: 
   %result = rock.conv_bwd_data(%filter, %input, %output) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
-    kernelId = 0 : index,
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
     output_layout = ["no", "go", "ko", "0o", "1o"],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
     params = #xdlops_gemm_params1,
-    strides = [1 : index, 1 : index],
-    usesV4R1 = true
+    strides = [1 : index, 1 : index]
   } : tensor<1x1024x1024x1x1xf16>, tensor<128x1x1024x14x14xf16>, tensor<128x1x1024x14x14xf16> -> tensor<128x1x1024x14x14xf16>
   %out = rock.store %result to %input by set : tensor<128x1x1024x14x14xf16> -> tensor<128x1x1024x14x14xf16> to tensor<128x1x1024x14x14xf16>
   return %out : tensor<128x1x1024x14x14xf16>

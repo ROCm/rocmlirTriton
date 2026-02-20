@@ -92,15 +92,14 @@ bool isEveryElementWrittenBwdData(ArrayRef<int64_t> strideDims,
                                   ArrayRef<int64_t> filterDims);
 
 /// Populate a vector of kernel IDs to be used by a backward data convolution
-/// algorithm. In the current v4r1 algorithm, several kernels may be needed to
-/// realize a complete backward data convolution.
+/// algorithm. Several GEMMs may be needed to realize a complete backward data
+/// convolution (all created within a single kernel function).
 ///
 /// A kernel ID denotes an actual implicit GEMM kernels to
 /// partipate the backward data convolution.
 SmallVector<int64_t> backwardDataKernelIds(ArrayRef<int64_t> strideDims,
                                            ArrayRef<int64_t> dilationDims,
-                                           ArrayRef<int64_t> filterDims,
-                                           bool usesV4R1);
+                                           ArrayRef<int64_t> filterDims);
 
 /// Return a vector type of length `len` if `len` is more than 1, otherwise,
 /// return `type`.

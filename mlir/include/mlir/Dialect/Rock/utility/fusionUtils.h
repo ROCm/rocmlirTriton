@@ -30,8 +30,8 @@ LogicalResult testFusionLegalitySplitK(func::FuncOp func);
 // the atomic operation is supported by the hardware.
 LogicalResult testFusionLegalityReduce(func::FuncOp func);
 
-// Checks whether a function contains any `rock::BwdDataConv` ops, and if they
-// are using the v4r1 algorithm (for splitting)
+// Checks whether a function contains any `rock::BwdDataConv` ops and verifies
+// fusion legality for backward data convolutions
 LogicalResult testFusionLegalityBwdDataConv(func::FuncOp func);
 
 // This is an overload of the `testFusionLegalitySplitK` which is more

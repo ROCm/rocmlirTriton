@@ -118,7 +118,7 @@ bool mlir::rock::isEveryElementWrittenBwdData(ArrayRef<int64_t> strideDims,
 SmallVector<int64_t>
 mlir::rock::backwardDataKernelIds(ArrayRef<int64_t> strideDims,
                                   ArrayRef<int64_t> dilationDims,
-                                  ArrayRef<int64_t> filterDims, bool usesV4R1) {
+                                  ArrayRef<int64_t> filterDims) {
   assert(strideDims.size() == dilationDims.size());
   SmallVector<int64_t, 5> gcdStrideDilations;
   for (const auto &[stride, dilation] : zip(strideDims, dilationDims))

@@ -602,10 +602,9 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   return std::make_tuple(Value(), Value(), Value());
 }
 
-FailureOr<std::tuple<Value, Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
-                                                            PatternRewriter &b,
-                                                            int64_t kernelId,
-                                                            bool usesV4R1) {
+FailureOr<std::pair<Value, Value>>
+backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
+                            int64_t kernelId) {
   Location loc = op.getLoc();
 
   ConvolutionContext ctx = populateConvContext(op);
@@ -699,7 +698,7 @@ FailureOr<std::tuple<Value, Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
     iDotSlice.push_back(math_util::integer_divide_ceil(
         convDims.fil[i] - iTilda[i], filTilda[i]));
 
-  // backward data only, it's igemm v4r1 algo
+  // backward data only, compute iTilda indices for multi-gemm decomposition
   // c is input channels , k is output channels
   // n is batch , yDotSlice,xDotSlice computed in above
 
@@ -956,20 +955,8 @@ FailureOr<std::tuple<Value, Value, Value>> backwardDataV4R1(ConvBwdDataOp op,
       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
       /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
       op.getParamsAttr());
-  // Bounced along for debugging purposes, not used below
-  gemm->setAttr("kernelId", b.getIndexAttr(kernelId));
 
-  // Update any StoreOp that uses the conv result to use the gemm result.
-  auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
-  updateStoreOpForGemm(b, loc, op.getResult(), gemm.getResult(), gemmInput,
-                       storeMethod);
-
-  // Only erase the op in the case of V4R1. In non-V4R1 paths we will handle
-  // this removal outside of this function
-  if (usesV4R1)
-    b.eraseOp(op);
-
-  return std::make_tuple(Value(), Value(), Value());
+  return std::pair<Value, Value>(gemm.getResult(), gemmInput);
 }
 
 template <typename T>
@@ -979,29 +966,57 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   Type dataType = op.getInput().getType().getElementType();
   if (ConvOpType::BwdData == convOpType) {
     auto bwdDataOp = cast<ConvBwdDataOp>(op);
-    bool usesV4R1 = op->template getAttrOfType<BoolAttr>("usesV4R1").getValue();
-    if (usesV4R1) {
-      auto kernelId = bwdDataOp.getKernelIdAttr().getInt();
-      return backwardDataV4R1(bwdDataOp, b, kernelId, usesV4R1);
-    } else {
-      // For the cases where the V4R1 algorithm requires more than one kernel,
-      // i.e., stride != dilation, we want to create multiple GEMMs in a
-      // single kernel
-      auto strideDims = ctx.getStrideVal();
-      auto dilationDims = ctx.getDilationVal();
-      auto filterDims = ctx.getConvDims().fil;
-      auto numKernels =
-          rock::backwardDataKernelIds(strideDims, dilationDims, filterDims,
-                                      /*usesV4R1=*/true);
-      for (size_t i = 0; i < numKernels.size(); i++) {
-        auto maybe = backwardDataV4R1(bwdDataOp, b, i, usesV4R1);
-        if (failed(maybe))
-          return failure();
+    Location loc = bwdDataOp.getLoc();
+    // Single function, expand all kernel IDs into
+    // multiple gemms within this function.
+    auto strideDims = ctx.getStrideVal();
+    auto dilationDims = ctx.getDilationVal();
+    auto filterDims = ctx.getConvDims().fil;
+    auto kernelIds =
+        rock::backwardDataKernelIds(strideDims, dilationDims, filterDims);
+
+    // ConvBwdData rewrite currently expects a single consuming rock.store.
+    SmallVector<StoreOp, 1> storeOps;
+    for (Operation *user : bwdDataOp.getResult().getUsers()) {
+      if (auto sop = dyn_cast<StoreOp>(user)) {
+        storeOps.push_back(sop);
+        continue;
       }
 
-      b.eraseOp(bwdDataOp);
-      return std::make_tuple(Value(), Value(), Value());
+      bwdDataOp.emitOpError()
+          << "expected only rock.store users during ConvBwdData rewrite, got "
+          << user->getName();
+      return failure();
     }
+
+    if (storeOps.size() != 1) {
+      bwdDataOp.emitOpError()
+          << "expected exactly one consuming rock.store user during "
+             "ConvBwdData rewrite, got "
+          << storeOps.size();
+      return failure();
+    }
+    StoreOp originalStoreOp = storeOps.front();
+
+    Type storeResultType = originalStoreOp.getResult().getType();
+    auto storeMethod = originalStoreOp.getStoreMethodAttr();
+
+    // Create a gemm + store pair for each kernel ID.
+    Value lastStoreResult;
+    for (int64_t kid : kernelIds) {
+      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid);
+      if (failed(maybe))
+        return failure();
+      auto [gemmResult, gemmDest] = maybe.value();
+      auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
+                                        gemmDest, storeMethod);
+      lastStoreResult = newStoreOp.getResult();
+    }
+
+    // Replace the original StoreOp with the last store result.
+    b.replaceOp(originalStoreOp, lastStoreResult);
+    b.eraseOp(bwdDataOp);
+    return std::make_tuple(Value(), Value(), Value());
   }
   Location loc = op.getLoc();
 

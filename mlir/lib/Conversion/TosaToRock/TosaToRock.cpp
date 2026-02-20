@@ -215,8 +215,7 @@ makeRockConv(ConversionPatternRewriter &rw, Operation *op, Value input,
         rw, loc, convFields.outputExp.getType(), convFields.filterExp,
         convFields.outputExp, convFields.inputExp, rw.getIndexArrayAttr(pad),
         rw.getIndexArrayAttr(stride), rw.getIndexArrayAttr(dilation),
-        /*params=*/nullptr, rw.getIndexAttr(kernelID),
-        /*usesV4R1=*/rw.getBoolAttr(false));
+        /*params=*/nullptr);
   } else {
     // Handle forwards convolution
     assert((!convBackwardKind.has_value() ||
@@ -527,8 +526,7 @@ static void addZeroInitPrefillAttribute(tosa::CustomOp op,
   auto dilationDims = ctx.getDilationVal();
   auto filterDims = ctx.getConvDims().fil;
   auto numKernels =
-      rock::backwardDataKernelIds(strideDims, dilationDims, filterDims,
-                                  /*usesV4R1=*/true);
+      rock::backwardDataKernelIds(strideDims, dilationDims, filterDims);
 
   // If there is no zeroinit kernel needed, then there is nothing more we need
   // to do here.
