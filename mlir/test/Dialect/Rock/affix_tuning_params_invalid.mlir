@@ -3,7 +3,7 @@
 // RUN: rocmlir-opt -rock-affix-params %s -verify-diagnostics
 
 // TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attention_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @rock_attention_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @+1 {{The provided perf config is not valid}}
 //   rock.attention{
 //     qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
@@ -13,7 +13,7 @@
 // }
 
 // TODO(roctriton): gemm_elementwise_gemm are broken
-// func.func @rock_gemm_gemm_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @rock_gemm_gemm_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @+1 {{The provided perf config is not valid}}
 //   rock.gemm_elementwise_gemm{
 //     ab = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
@@ -23,7 +23,7 @@
 // }
 
 // TODO(roctriton): conv_elementwise_gemm are broken
-// func.func @rock_conv_gemm_invalid_perf_config(%arg0: memref<1x128x256x1x1xf16>, %arg1: memref<2x1x256x32x32xf16>, %arg2: memref<1x128x128xf16>, %arg3: memref<1x2048x128xf16>) attributes {kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @rock_conv_gemm_invalid_perf_config(%arg0: memref<1x128x256x1x1xf16>, %arg1: memref<2x1x256x32x32xf16>, %arg2: memref<1x128x128xf16>, %arg3: memref<1x2048x128xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @+1 {{The provided perf config is not valid}}
 //   rock.conv_elementwise_gemm{
 //     ab = conv(%arg0, %arg1) : memref<1x128x256x1x1xf16>, memref<2x1x256x32x32xf16>
@@ -99,7 +99,7 @@ func.func @two_gemms(
 // }
 
 // TODO(roctriton): gemm_elementwise_gemm are broken
-// func.func @rock_gemm_gemm_splitk(%arg0: memref<1474560xf16>, %arg1: memref<1474560xf16>, %arg2: memref<1474560xf16>, %arg3: memref<1474560xf16>) attributes {enable_splitk_for_tuning, kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
+// func.func @rock_gemm_gemm_splitk(%arg0: memref<1474560xf16>, %arg1: memref<1474560xf16>, %arg2: memref<1474560xf16>, %arg3: memref<1474560xf16>) attributes {enable_splitk_for_tuning, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
 //     %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 360 + d2)> by [<Unmerge{4096, 360} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : memref<1474560xf16> to memref<1x4096x360xf16>
 //     %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 4096 + d2)> by [<Unmerge{360, 4096} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 360, 4096] -> [1474560]> : memref<1474560xf16> to memref<1x360x4096xf16>
 //     %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 360 + d2)> by [<Unmerge{4096, 360} ["n", "gemmO"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : memref<1474560xf16> to memref<1x4096x360xf16>
