@@ -728,14 +728,20 @@ GemmSize ConvBwdDataOp::getGemmSize() {
 
   auto kernelIds = rock::backwardDataKernelIds(strides, dilations, sizes.fil);
 
-  GemmSize best(0, 0, 0, 0);
-  for (int64_t kernelId : kernelIds) {
+  assert(!kernelIds.empty());
+  GemmSize biggest =
+      bwdDataGemmSizeForKernelId(sizes, padding, strides, dilations,
+                                 kernelIds.front());
+  for (int64_t kernelId : llvm::drop_begin(kernelIds)) {
     GemmSize single = bwdDataGemmSizeForKernelId(sizes, padding, strides,
                                                  dilations, kernelId);
-    if (single.k > best.k)
-      best = single;
+    assert(single.g == biggest.g && single.m == biggest.m &&
+           single.n == biggest.n &&
+           "g, m, and n must be identical across all kernel IDs");
+    if (single.k > biggest.k)
+      biggest = single;
   }
-  return best;
+  return biggest;
 }
 
 GemmSize ConvBwdWeightOp::getGemmSize() {
@@ -1006,7 +1012,6 @@ LogicalResult BlockwiseGemmOp::verify() {
   bool hasScaleBBuffer = getMatrixScaleB() != nullptr;
   ShapedType aBufferType = cast<ShapedType>(getMatrixA().getType());
   ShapedType bBufferType = cast<ShapedType>(getMatrixB().getType());
-  ShapedType cBufferType = cast<ShapedType>(getMatrixC().getType());
 
   auto verifyMatrixAndScale = [&](Value bufferScale, ShapedType bufferType,
                                   const char *matrixName) -> LogicalResult {

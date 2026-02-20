@@ -5302,7 +5302,6 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     } else if (operation == rock::KernelType::ConvBwdWeight) {
       filterElemType = typeFromString(outputDataType.getValue(), context);
     }
-    Type elemType = inputElemType;
     genParams.operation = operation;
     genParams.arch = arch;
     genParams.perfConfig = perfConfig;

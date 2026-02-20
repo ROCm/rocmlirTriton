@@ -475,12 +475,6 @@ LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,
     }
   };
 
-  auto strToBool = [&argMap](const std::string &key, bool &setting) {
-    if (argMap.find(key) != argMap.end()) {
-      setting = (argMap[key] == "true");
-    }
-  };
-
   std::string arch;
   strToStr(rock::ArchAttr::getMnemonic().str(), arch);
   RocmDeviceName splitter;

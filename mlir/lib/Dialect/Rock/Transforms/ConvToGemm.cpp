@@ -955,8 +955,6 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
       /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
       op.getParamsAttr());
-  // Bounced along for debugging purposes, not used below
-  gemm->setAttr("kernelId", b.getIndexAttr(kernelId));
 
   return std::pair<Value, Value>(gemm.getResult(), gemmInput);
 }
@@ -969,8 +967,6 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   if (ConvOpType::BwdData == convOpType) {
     auto bwdDataOp = cast<ConvBwdDataOp>(op);
     Location loc = bwdDataOp.getLoc();
-    auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
-
     // Single function, expand all kernel IDs into
     // multiple gemms within this function.
     auto strideDims = ctx.getStrideVal();
@@ -1003,6 +999,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     StoreOp originalStoreOp = storeOps.front();
 
     Type storeResultType = originalStoreOp.getResult().getType();
+    auto storeMethod = originalStoreOp.getStoreMethodAttr();
 
     // Create a gemm + store pair for each kernel ID.
     Value lastStoreResult;
