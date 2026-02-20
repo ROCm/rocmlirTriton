@@ -27,7 +27,7 @@ module {
     mhal.await %token1 : !mhal.token
     return
   }
-  module @__xmodule_gfx90a attributes {mhal.rock.arch = "gfx90a",mhal.module} {
+  module @__xmodule_gfx90a attributes {rock.arch = "gfx90a",mhal.module} {
     func.func private @test_reduce__part_1(%arg0: memref<10x30x20xf32> {mhal.read_access}, %arg1: memref<10x1x20xf32> {mhal.read_access, mhal.write_access, rock.prefill = 0.000000e+00 : f32}) attributes {kernel, original_func = @test_reduce__part_1, grid_size = 1, rock.block_size = 256} {
       rock.reduce sum %arg0 into %arg1 {axis = 1 : index, blockSize = 256 : i32, gridSize = 1 : i32} : memref<10x30x20xf32> into memref<10x1x20xf32>
       return

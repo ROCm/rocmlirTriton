@@ -57,7 +57,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 // DISABLED-CHECK: <AddDim{1} ["0"] at [1] -> [] at []>, <PassThrough ["0o"] at [2] -> ["0ipad"] at [1]>, <AddDim{1} ["1"] at [3] -> [] at []>, <PassThrough ["1o"] at [4] -> ["1ipad"] at [2]>
 // DISABLED-CHECK-NOT: Embed
 // DISABLED-CHECK: rock.gemm_elementwise_gemm
-// func.func @conv_gemm_nhwc_1x1(%arg0: memref<16384xf32>, %arg1: memref<802816xf32>, %arg2: memref<65536xf32>, %arg3: memref<3211264xf32>) attributes {kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
+// func.func @conv_gemm_nhwc_1x1(%arg0: memref<16384xf32>, %arg1: memref<802816xf32>, %arg2: memref<65536xf32>, %arg3: memref<3211264xf32>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
 //   %0 = rock.transform %arg0 by #transform_map : memref<16384xf32> to memref<1x256x1x1x64xf32>
 //   %1 = rock.transform %arg1 by #transform_map1 : memref<802816xf32> to memref<64x14x14x1x64xf32>
 //   %2 = rock.transform %arg2 by #transform_map2 : memref<65536xf32> to memref<1x256x256xf32>
@@ -78,7 +78,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 // DISABLED-CHECK-LABEL: @conv_gemm_nhwc_1x1_stride_2
 // DISABLED-CHECK: <AddDim{1} ["0"] at [1] -> [] at []>, <Embed{2} ["0o"] at [2] -> ["0ipad"] at [1]>, <AddDim{1} ["1"] at [3] -> [] at []>, <Embed{2} ["1o"] at [4] -> ["1ipad"] at [2]>
 // DISABLED-CHECK: rock.gemm_elementwise_gemm
-// func.func @conv_gemm_nhwc_1x1_stride_2(%arg0: memref<16384xf32>, %arg1: memref<802816xf32>, %arg2: memref<65536xf32>, %arg3: memref<802816xf32>) attributes {kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
+// func.func @conv_gemm_nhwc_1x1_stride_2(%arg0: memref<16384xf32>, %arg1: memref<802816xf32>, %arg2: memref<65536xf32>, %arg3: memref<802816xf32>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
 //   %0 = rock.transform %arg0 by #transform_map : memref<16384xf32> to memref<1x256x1x1x64xf32>
 //   %1 = rock.transform %arg1 by #transform_map1 : memref<802816xf32> to memref<64x14x14x1x64xf32>
 //   %2 = rock.transform %arg2 by #transform_map4 : memref<65536xf32> to memref<1x256x256xf32>
@@ -99,7 +99,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 // DISABLED-CHECK-LABEL: @conv_gemm_nhwc_3x3
 // DISABLED-CHECK: <Embed{1, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // DISABLED-CHECK: rock.gemm_elementwise_gemm
-// func.func @conv_gemm_nhwc_3x3(%arg0: memref<147456xf32>, %arg1: memref<802816xf32>, %arg2: memref<65536xf32>, %arg3: memref<2359296xf32>) attributes {kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
+// func.func @conv_gemm_nhwc_3x3(%arg0: memref<147456xf32>, %arg1: memref<802816xf32>, %arg2: memref<65536xf32>, %arg3: memref<2359296xf32>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
 //   %0 = rock.transform %arg0 by #transform_map5 : memref<147456xf32> to memref<1x256x3x3x64xf32>
 //   %1 = rock.transform %arg1 by #transform_map1 : memref<802816xf32> to memref<64x14x14x1x64xf32>
 //   %2 = rock.transform %arg2 by #transform_map6 : memref<65536xf32> to memref<1x256x256xf32>
@@ -121,7 +121,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 // DISABLED-CHECK: <Embed{1, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // DISABLED-CHECK: rock.gemm_elementwise_gemm
 // DISABLED-CHECK: storeMethod = #rock<StoreMethod atomic_add>
-// func.func @conv_gemm_nhwc_3x3_atomicadd(%arg0: memref<147456xf32>, %arg1: memref<802816xf32>, %arg2: memref<65536xf32>, %arg3: memref<2359296xf32>) attributes {kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
+// func.func @conv_gemm_nhwc_3x3_atomicadd(%arg0: memref<147456xf32>, %arg1: memref<802816xf32>, %arg2: memref<65536xf32>, %arg3: memref<2359296xf32>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"} {
 //   %0 = rock.transform %arg0 by #transform_map5 : memref<147456xf32> to memref<1x256x3x3x64xf32>
 //   %1 = rock.transform %arg1 by #transform_map1 : memref<802816xf32> to memref<64x14x14x1x64xf32>
 //   %2 = rock.transform %arg2 by #transform_map6 : memref<65536xf32> to memref<1x256x256xf32>
