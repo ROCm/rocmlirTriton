@@ -100,7 +100,7 @@ FailureOr<int64_t> mlir::rock::getNumCU(Operation *op) {
   }
   StringAttr arch = maybeArch.value();
   FailureOr<IntegerAttr> maybeNumCU = getAttrFromOpOrParents<IntegerAttr>(
-      op, rock::NumCUAttr::getMnemonic());
+      op, rock::NumCUAttr::getMnemonic(), "num_cu");
   if (failed(maybeNumCU)) {
     return failure();
   }
