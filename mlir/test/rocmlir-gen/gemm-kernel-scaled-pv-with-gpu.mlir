@@ -23,11 +23,11 @@
 // NOTRC-DAG: #[[$trMapCUnmerge:.*]] = #rock.transform_map<#[[mapCUnmerge]] by [<Unmerge{3, 1024, 512} ["g", "m", "n"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [3, 1024, 512] -> [1572864]>
 // TRC-DAG:   #[[$trMapCUnmerge:.*]] = #rock.transform_map<#[[mapCUnmerge]] by [<Unmerge{3, 512, 1024} ["g", "n", "m"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [3, 512, 1024] -> [1572864]>
 
-// CHECK: module attributes {mhal.arch = "[[$ARCH:.*]]"}
+// CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 // CHECK-LABEL: func.func @rock_gemm
 // CHECK-SAME: (%[[aRaw:.*]]: memref<2359296xf4E2M1FN>, %[[bRaw:.*]]: memref<1179648xf4E2M1FN>, %[[cRaw:.*]]: memref<1572864xf32>, %[[scaleARaw:.*]]: memref<73728xf8E8M0FNU>, %[[scaleBRaw:.*]]: memref<36864xf8E8M0FNU>)
 // CHECK-SAME: attributes {enable_splitk_for_tuning, kernel 
-// CHECK-SAME: mhal.arch = "[[$ARCH]]"
+// CHECK-SAME: rock.arch = "[[$ARCH]]"
 // SCHEDV2-SAME: schedule_version = #rock.schedule_version<2>
 // CHECK: rock.gemm
 // CHECK-SAME: scaled by
@@ -45,7 +45,7 @@
 // CHECK-LABEL: func.func @rock_gemm_ver
 // CHECK-SAME: (%[[aRawVer:.*]]: memref<2359296xf32>, %[[bRawVer:.*]]: memref<1179648xf32>, %[[cRawVer:.*]]: memref<1572864xf32>, %[[scaleARawVer:.*]]: memref<73728xf32>, %[[scaleBRawVer:.*]]: memref<36864xf32>)
 // CHECK-SAME: attributes {enable_splitk_for_tuning, kernel 
-// CHECK-SAME: mhal.arch = "[[$ARCH]]"
+// CHECK-SAME: rock.arch = "[[$ARCH]]"
 // CHECK-SAME: num_cu = {{[0-9]+}} : i64
 // CHECK: %[[aVer:.*]] = rock.transform %[[aRawVer]] by
 // NOTRA-SAME: memref<2359296xf32> to memref<3x1024x768xf32>

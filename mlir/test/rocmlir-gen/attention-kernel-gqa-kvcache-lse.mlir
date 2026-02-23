@@ -1,6 +1,6 @@
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -return_lse -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv --apply-bufferization-pipeline=false | rocmlir-opt | FileCheck %s --enable-var-scope
 
-// CHECK: module attributes {mhal.arch = "[[$ARCH:.*]]"}
+// CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // CHECK-LABEL: func.func @rock_attention
 // CHECK-SAME: (%[[queriesRaw:.*0]]: memref<131072xf32>,
@@ -9,7 +9,7 @@
 // CHECK-SAME: %[[currentSeqLenRaw:.*3]]: memref<1xi32>,
 // CHECK-SAME: %[[lseRaw:.*4]]: memref<4096xf32>,
 // CHECK-SAME: %[[outputRaw:.*5]]: memref<131072xf32>)
-// CHECK-SAME: attributes {kernel, mhal.arch = "[[$ARCH]]"}
+// CHECK-SAME: attributes {kernel, rock.arch = "[[$ARCH]]"}
 // CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : memref<131072xf32> to memref<4x1024x32xf32>
 // CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : memref<65536xf32> to memref<2x32x1024xf32>
 // CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : memref<65536xf32> to memref<2x1024x32xf32>

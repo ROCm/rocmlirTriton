@@ -29,11 +29,11 @@
 // NOTRC-DAG: #[[$trMapCUnmerge:.*]] = #rock.transform_map<#[[mapCUnmerge]] by [<Unmerge{3, 1024, 512} ["g", "m", "n"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [3, 1024, 512] -> [1572864]>
 // TRC-DAG:   #[[$trMapCUnmerge:.*]] = #rock.transform_map<#[[mapCUnmerge]] by [<Unmerge{3, 512, 1024} ["g", "n", "m"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [3, 512, 1024] -> [1572864]>
 
-// CHECK: module attributes {mhal.arch = "[[$ARCH:.*]]"}
+// CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 // CHECK-LABEL: func.func @rock_gemm
 // CHECK-SAME: (%[[aRaw:.*]]: memref<2362368xf32>, %[[bRaw:.*]]: memref<1181184xf32>, %[[cRaw:.*]]: memref<1572864xf32>)
 // CHECK-SAME: attributes {enable_splitk_for_tuning, kernel 
-// CHECK-SAME: mhal.arch = "[[$ARCH]]"
+// CHECK-SAME: rock.arch = "[[$ARCH]]"
 // SCHEDV2-SAME: schedule_version = #rock.schedule_version<2>
 // CHECK-NEXT: %[[a:.*]] = rock.transform %[[aRaw]] by #[[$trMapAUnmerge]]
 // CHECK-NEXT: %[[b:.*]] = rock.transform %[[bRaw]] by #[[$trMapBUnmerge]]

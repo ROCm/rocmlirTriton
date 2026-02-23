@@ -1,6 +1,6 @@
 // RUN: rocmlir-driver -kernel-pipeline=gpu,rocdl %s | FileCheck %s
 
-module attributes {mhal.arch = "amdgcn-amd-amdhsa:gfx1030"} {
+module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1030"} {
 // CHECK-LABEL: llvm.func @add_scalar
 // CHECK-SAME: (%[[val:.*]]: f32,
 // CHECK: %[[init:.+]] = rocdl.raw.ptr.buffer.load

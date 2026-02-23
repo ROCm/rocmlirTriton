@@ -9,7 +9,7 @@ module {
       %arg2: tensor<256x1x64x112x112xf32>,
       %arg3: tensor<256x1x64x112x112xf32>
   ) -> tensor<256x1x64x112x112xf32>
-  attributes {enable_splitk_for_tuning, rock.kernel, mhal.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"} {
+  attributes {enable_splitk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"} {
     %conv = rock.conv_bwd_data(%arg0, %arg1, %arg2) {
       arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-",
       dilations = [1 : index, 1 : index],
