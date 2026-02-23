@@ -16,7 +16,7 @@
 // ============================================================
 //
 // This pass converts rock.conv into rock.transform and
-// rock.gemm. Additionally, it also convert rock.conv_elementwise_gemm
+// rock.gemm. Additionally, it also converts rock.conv_elementwise_gemm
 // into rock.gemm_elementwise_gemm.
 //
 //===-----------------------------------------------------===//
@@ -33,10 +33,12 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/UtilityParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/TypeUtilities.h"
 
 #include "mlir/IR/PatternMatch.h"
@@ -44,6 +46,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -1074,7 +1077,9 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
 template <typename T>
 static FailureOr<std::tuple<Value, Value, Value>>
 commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
-                  ConvOpType convOpType) {
+                  ConvOpType convOpType, DenseMap<Value, Value> &fusionInputMap,
+                  SmallVector<Value> &outputViews) {
+  // Type dataType = op.getInput().getType().getElementType();
   if (ConvOpType::BwdData == convOpType) {
     auto bwdDataOp = cast<ConvBwdDataOp>(op);
     Location loc = bwdDataOp.getLoc();
@@ -1438,7 +1443,36 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     }
 
     TransformMapAttr outputTransformAttr = outputTransform.get();
-    gemmOutput = TransformOp::create(b, loc, outputValue, outputTransformAttr);
+
+    // For forward conv, also transform the store destinations and fusion
+    // inputs with the output transform. For BwdWeight, the store destination
+    // is the filter (not the output), so the caller uses gemmC instead.
+    if (convOpType == ConvOpType::Fwd) {
+      for (auto &outputView : outputViews) {
+        if (Operation *defOp = outputView.getDefiningOp()) {
+          OpBuilder::InsertionGuard guard(b);
+          b.setInsertionPointAfter(defOp);
+          outputView =
+              TransformOp::create(b, loc, outputView, outputTransformAttr);
+        } else {
+          outputView =
+              TransformOp::create(b, loc, outputView, outputTransformAttr);
+        }
+      }
+      for (auto &[orig, view] : fusionInputMap) {
+        if (Operation *defOp = view.getDefiningOp()) {
+          OpBuilder::InsertionGuard guard(b);
+          b.setInsertionPointAfter(defOp);
+          view = TransformOp::create(b, loc, view, outputTransformAttr);
+        } else {
+          view = TransformOp::create(b, loc, view, outputTransformAttr);
+        }
+      }
+      gemmOutput = outputViews[0];
+    } else {
+      gemmOutput =
+          TransformOp::create(b, loc, outputValue, outputTransformAttr);
+    }
   }
 
   return std::make_tuple(gemmFilter, gemmInput, gemmOutput);
@@ -1452,7 +1486,11 @@ struct ConvGemmRewritePattern : public OpRewritePattern<ConvElementwiseGemmOp> {
 
     ConvolutionContext ctx = populateConvContextFromConvGemm(op);
 
-    auto maybeArgs = commonConvRewrite(op, b, ctx, ConvOpType::Fwd);
+    // pass empty tensors because it's not used for conv+gemm
+    DenseMap<Value, Value> fusionInputMap;
+    SmallVector<Value> outputViews;
+    auto maybeArgs = commonConvRewrite(op, b, ctx, ConvOpType::Fwd,
+                                       fusionInputMap, outputViews);
     if (failed(maybeArgs))
       return failure();
     Value gemmFilter, gemmInput;
@@ -1469,11 +1507,9 @@ struct ConvGemmRewritePattern : public OpRewritePattern<ConvElementwiseGemmOp> {
         op.getCTransposedAttr(), op.getOTransposedAttr(), op.getParams0Attr(),
         op.getParams1Attr(), op.getFirstGemmIndicesAttr());
 
-    // copy linalg::GenericOp if there's any
-    bool linalgOpFound = false;
-    op.getPreSecondGemmBody().walk(
-        [&linalgOpFound](linalg::GenericOp genOp) { linalgOpFound = true; });
-    if (linalgOpFound) {
+    // copy fusions if there are any
+    bool hasFusion = rock::gemmGemmHasPreSecondGemmFusion(op);
+    if (hasFusion) {
       b.inlineRegionBefore(op.getPreSecondGemmBody(),
                            newOp.getPreSecondGemmBody(),
                            newOp.getPreSecondGemmBody().begin());
@@ -1492,7 +1528,21 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
 
   LogicalResult matchAndRewrite(T op, PatternRewriter &b) const override {
     ConvolutionContext ctx = populateConvContext(op);
-    auto maybeArgs = commonConvRewrite(op, b, ctx, convOpType);
+
+    auto maybeStores = rock::traceRootOutputToStoreOps(op.getResult());
+    if (failed(maybeStores)) {
+      return op.emitOpError("cannot trace to rock::StoreOp");
+    }
+    SetVector<StoreOp> stores = maybeStores.value();
+    SmallVector<Value> outputViews;
+    for (auto storeOp : stores) {
+      outputViews.push_back(storeOp.getDest());
+    }
+
+    auto fusionInputMap = rock::collectFusionExtraInputs(op.getResult());
+
+    auto maybeArgs =
+        commonConvRewrite(op, b, ctx, convOpType, fusionInputMap, outputViews);
     if (failed(maybeArgs))
       return failure();
     Value gemmFilter, gemmInput, gemmOutput;
@@ -1515,18 +1565,44 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
     // Emit rock.gemm op.
     Location loc = op.getLoc();
     auto tuningParams = op.getParamsAttr();
-    auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
-    auto newGemmOp = GemmOp::create(
-        b, loc, getResultType(op, gemmC), gemmA, gemmB,
-        /*scaleA=*/nullptr, /*scaleB=*/nullptr,
-        /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
-        /*aScaleTransposed=*/nullptr,
-        /*bScaleTransposed=*/nullptr, /*quantBlockSize=*/nullptr, tuningParams);
+    auto newGemmOp =
+        GemmOp::create(b, loc, getResultType(op, gemmC), gemmA, gemmB,
+                       /*scaleA=*/nullptr, /*scaleB=*/nullptr,
+                       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
+                       /*aScaleTransposed=*/nullptr,
+                       /*bScaleTransposed=*/nullptr, /*quantBlockSize=*/nullptr, tuningParams);
 
-    // Update any StoreOp that uses the conv result to use the gemm result.
-    // TODO(roctriton): This will break with fusions
-    updateStoreOpForGemm(b, loc, op.getResult(), newGemmOp.getResult(), gemmC,
-                         storeMethod);
+    Value result = newGemmOp.getResult();
+
+    // Propagate the new output type through any fusion ops
+    // between the gemm result and the store ops. This replaces uses of the old
+    // gemm result inside fusion ops with the gridwise result and updates their
+    // result types to match the new shape.
+    rock::propagateOutputType(op.getResult(), result);
+
+    // Replace extra fusion input operands with their gemm versions.
+    rock::replaceFusionExtraInputs(result, fusionInputMap);
+
+    for (size_t i = 0; i < stores.size(); ++i) {
+      StoreOp storeOp = stores[i];
+      // For Fwd, the store destination has been output-transformed.
+      // For BwdWeight, the store destination is the filter; use gemmC which
+      // already carries the filter transform.
+      Value view = (convOpType == ConvOpType::Fwd) ? outputViews[i] : gemmC;
+      // adjust the store method
+      StoreMethodAttr storeMethod = storeOp.getStoreMethodAttr();
+      // If the store's source is the gemm result directly (no fusions),
+      // use the gridwise result. Otherwise, propagateOutputType has already
+      // updated the fusion chain, and storeOp.getSource() has the correct type.
+      Value source = storeOp.getSource();
+      if (source == op.getResult())
+        source = result;
+      b.setInsertionPoint(storeOp);
+      auto newStoreOp = rock::StoreOp::create(b, storeOp.getLoc(),
+                                              storeOp.getResult().getType(),
+                                              source, view, storeMethod);
+      b.replaceOp(storeOp, newStoreOp.getResult());
+    }
 
     // Finally, erase the original Conv op.
     b.eraseOp(op);

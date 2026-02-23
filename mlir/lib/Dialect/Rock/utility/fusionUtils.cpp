@@ -81,6 +81,18 @@ LogicalResult mlir::rock::checkValidOutputFusion(
   return success();
 }
 
+bool mlir::rock::gemmGemmHasPreSecondGemmFusion(
+    RockGemmGemmWrapperInterface gemmGemmOp) {
+  bool fusionsFound = false;
+  gemmGemmOp.getPreSecondGemmRegion().walk(
+      [&fusionsFound](Operation *fusionOp) {
+        if (rock::isFusionOp(fusionOp))
+          fusionsFound = true;
+      });
+
+  return fusionsFound;
+}
+
 LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
   // can't fuse reduce_max with split-k
   WalkResult reduceMaxRes = func.walk([](ReduceOp reduceOp) -> WalkResult {
@@ -145,12 +157,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
           return WalkResult::interrupt();
 
         // fusions between gemm0 and gemm1 are not allowed
-        bool fusionsFound = false;
-        gemmGemmOp.getPreSecondGemmRegion().walk(
-            [&fusionsFound](Operation *fusionOp) {
-              if (rock::isFusionOp(fusionOp))
-                fusionsFound = true;
-            });
+        bool fusionsFound = gemmGemmHasPreSecondGemmFusion(gemmGemmOp);
         if (fusionsFound)
           return WalkResult::interrupt();
 

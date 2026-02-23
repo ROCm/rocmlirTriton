@@ -3687,9 +3687,11 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
         rock::NumChipletsAttr::getMnemonic(), numChipletsAttr));
 
   constexpr StringLiteral kernelName("rock_conv_gemm");
-  auto func = func::FuncOp::create(builder, loc, kernelName,
-                                   builder.getFunctionType(flatArgTypes, {}),
-                                   funcAttrs);
+  auto func = func::FuncOp::create(
+      builder, loc, kernelName,
+      builder.getFunctionType(flatArgTypes,
+                              {flatArgTypes[flatArgTypes.size() - 1]}),
+      funcAttrs);
 
   Block *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);
@@ -3713,12 +3715,12 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
     pad.push_back(right);
   }
   auto convElntGemm = rock::ConvElementwiseGemmOp::create(
-      builder, loc, TypeRange{}, filter, input, c, elemwiseInputs, output,
+      builder, loc, output.getType(), filter, input, c, elemwiseInputs, output,
       transposeC, transposeO, builder.getIndexArrayAttr(pad),
       builder.getIndexArrayAttr(config->strideDims),
       builder.getIndexArrayAttr(config->dilationDims),
       /*params0=*/nullptr, /*params1=*/nullptr,
-      /*firstGemmIdx=*/builder.getDenseI64ArrayAttr({0}));
+      /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
   {
     Block *preSecondGemmBlock =
         &convElntGemm.getPreSecondGemmBody().emplaceBlock();
@@ -3752,7 +3754,12 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
                         builder.getArrayAttr(ArrayRef<Attribute>(
                             inputLayoutSpec.begin(), inputLayoutSpec.end())));
 
-  func::ReturnOp::create(builder, loc);
+  // Store the result to the transformed output tensor
+  Value storedOut =
+      rock::StoreOp::create(builder, loc, flatArgTypes[flatArgTypes.size() - 1],
+                            convElntGemm.getResult(), output, storeMethod);
+
+  func::ReturnOp::create(builder, loc, storedOut);
 
   if (!disableSplitKForTuning)
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),

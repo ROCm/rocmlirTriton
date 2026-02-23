@@ -17,6 +17,7 @@
 #define MLIR_DIALECT_ROCK_IR_ROCKGEMMGEMMWRAPPERINTERFACE_H
 
 #include "mlir/Dialect/Rock/IR/GemmGemmSize.h"
+#include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/IR/OpDefinition.h"
 
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
