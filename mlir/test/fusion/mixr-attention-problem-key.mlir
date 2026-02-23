@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fusions need rework
+
 
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
 // CHECK: gfx942

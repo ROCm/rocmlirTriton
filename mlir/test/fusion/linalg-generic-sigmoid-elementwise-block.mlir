@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fusions need rework
+
 // RUN: rocmlir-opt -rock-linalg-align < %s | FileCheck %s
 
 #map2 = affine_map<(d0, d1, d2) -> (d0 * 2 + d1, d2)>

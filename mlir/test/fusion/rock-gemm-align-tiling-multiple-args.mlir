@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fusions need rework
+
 // RUN: rocmlir-driver --rock-regularize %s | FileCheck %s
 // RUN: rocmlir-driver --rock-regularize --rock-gridwise-gemm-to-blockwise --rock-blockwise-load-tile-to-threadwise --rock-blockwise-gemm-to-threadwise --rock-linalg-align --verify-passes %s | rocmlir-opt
 

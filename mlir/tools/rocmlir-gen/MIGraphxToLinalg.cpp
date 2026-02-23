@@ -1,0 +1,716 @@
+//===- MIGraphXToLinalg.cpp - Lowering MIGraphX to Linalg Dialect ---------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// These rewriters lower from the MIGraphX to the Linalg dialect.
+//
+//===----------------------------------------------------------------------===//
+#include "mlir/Conversion/MIGraphXToLinalg/MIGraphXToLinalg.h"
+#include "mlir/Conversion/MIGraphXToTosa/MIGraphXToTosa.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/Transforms/FuncConversions.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+
+using namespace mlir;
+
+//===----------------------------------------------------------------------===//
+// !migraphx.shaped materialization, and FuncBoundary
+//===----------------------------------------------------------------------===//
+namespace {
+struct AsUnderlyingShapeConverter final
+    : public OpConversionPattern<migraphx::AsUnderlyingShapeOp> {
+  using OpConversionPattern<migraphx::AsUnderlyingShapeOp>::OpConversionPattern;
+  using OpConversionPattern<migraphx::AsUnderlyingShapeOp>::getTypeConverter;
+  using OpAdaptor =
+      typename OpConversionPattern<migraphx::AsUnderlyingShapeOp>::OpAdaptor;
+
+  LogicalResult
+  matchAndRewrite(migraphx::AsUnderlyingShapeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+struct AsLogicalShapeOpConverter final
+    : public OpConversionPattern<migraphx::AsLogicalShapeOp> {
+  using OpConversionPattern<migraphx::AsLogicalShapeOp>::OpConversionPattern;
+  using OpConversionPattern<migraphx::AsLogicalShapeOp>::getTypeConverter;
+  using OpAdaptor =
+      typename OpConversionPattern<migraphx::AsLogicalShapeOp>::OpAdaptor;
+
+  LogicalResult
+  matchAndRewrite(migraphx::AsLogicalShapeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+} // namespace
+
+/// Checking to see if the permutation vector is like (0, 1, 2, 3, 4, 5, ...)
+static bool isPermutationStandardForm(ArrayRef<int64_t> permutation) {
+  SmallVector<int64_t, 4> increasingVec(permutation.size(), 0);
+  std::iota(increasingVec.begin(), increasingVec.end(), 0);
+  return llvm::equal(permutation, increasingVec);
+}
+
+LogicalResult AsLogicalShapeOpConverter::matchAndRewrite(
+    migraphx::AsLogicalShapeOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  Location loc = op.getLoc();
+  migraphx::MIXRShapedType inType = op.getIn().getType();
+  RankedTensorType resultType = op.getOut().getType();
+  Value in = adaptor.getIn(); // The shape we are casting from
+
+  SmallVector<int64_t, 4> permutation;
+  inType.getStridePermutation(permutation);
+  if (isPermutationStandardForm(permutation)) {
+    SmallVector<ReassociationIndices, 4> reassociationIndex(
+        1, ReassociationIndices(resultType.getRank(), 0));
+    std::iota(reassociationIndex[0].begin(), reassociationIndex[0].end(), 0);
+    auto newShape = tensor::ExpandShapeOp::create(rewriter, loc, resultType, in,
+                                                  reassociationIndex);
+    rewriter.replaceOp(op, newShape);
+    return success();
+  }
+
+  return op.emitError(
+      "input shape is non standard or broadcast; cannot convert this shape");
+}
+
+LogicalResult AsUnderlyingShapeConverter::matchAndRewrite(
+    migraphx::AsUnderlyingShapeOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  Location loc = op.getLoc();
+  Value in = adaptor.getIn();
+  migraphx::MIXRShapedType resultType = op.getResult().getType();
+  auto resultTensorType =
+      cast<RankedTensorType>(getTypeConverter()->convertType(resultType));
+
+  SmallVector<int64_t, 4> permutation;
+  resultType.getStridePermutation(permutation);
+  if (isPermutationStandardForm(permutation)) {
+    SmallVector<ReassociationIndices, 4> reassociationIndex(
+        1, ReassociationIndices(resultType.getRank(), 0));
+    std::iota(reassociationIndex[0].begin(), reassociationIndex[0].end(), 0);
+    auto reshape = tensor::CollapseShapeOp::create(
+        rewriter, loc, resultTensorType, in, reassociationIndex);
+    rewriter.replaceOp(op, reshape);
+    return success();
+  }
+
+  return op.emitError(
+      "input shape is non standard or broadcast; cannot convert this shape");
+}
+
+namespace {
+struct ConvConverter final
+    : public OpConversionPattern<migraphx::ConvolutionOp> {
+  using OpConversionPattern<migraphx::ConvolutionOp>::OpConversionPattern;
+  using OpConversionPattern<migraphx::ConvolutionOp>::getTypeConverter;
+  using OpAdaptor =
+      typename OpConversionPattern<migraphx::ConvolutionOp>::OpAdaptor;
+
+  LogicalResult
+  matchAndRewrite(migraphx::ConvolutionOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+
+private:
+  LogicalResult emitConv(ConversionPatternRewriter &rewriter,
+                         migraphx::ConvolutionOp op, Value input,
+                         Value filter) const;
+};
+} // namespace
+
+// Nice helper function for the linalg.generic op region
+static void convBodyBuilder(OpBuilder &b, Location loc, ValueRange blockArgs) {
+  Value inputVal = blockArgs[0];
+  Value filterVal = blockArgs[1];
+  Value outputVal = blockArgs[2];
+  Value mul = arith::MulFOp::create(b, loc, inputVal, filterVal);
+  Value add = arith::AddFOp::create(b, loc, outputVal, mul);
+  linalg::YieldOp::create(b, loc, add);
+}
+
+/// Emit convolution attributes on the newly created operation.
+static void emitConvAttributes(migraphx::ConvolutionOp op, Value convOp,
+                               Attribute strides, Attribute dilation,
+                               Attribute pad, Attribute convOpName) {
+  Operation *newOp = convOp.getDefiningOp();
+  newOp->setAttr("pad", pad);
+  newOp->setAttr("group", op.getGroupAttr());
+  newOp->setAttr("stride", strides);
+  newOp->setAttr("dilation", dilation);
+
+  // Convert optional attributes
+  if (auto attr = (*op).template getAttrOfType<StringAttr>("perf_config"))
+    newOp->setAttr("perf_config", attr);
+  newOp->setAttr("conv_op", convOpName);
+}
+
+/// Emit a grouped convolution of any spatial rank (1D, 2D, or 3D).
+/// Input shape: (batch, group, channel, spatial...),
+/// filter shape: (group, filter, channel, kernel_spatial...)
+///
+/// clang-format off
+///   for n in batch:
+///     for g in group:
+///       for f in filters:
+///         for oh_0 in output_spatial_0:
+///           for oh_1 in output_spatial_1:
+///             // ...
+///             for oh_{dim-1} in output_spatial_{dim-1}:
+///               for c in channels:                          // reduction
+///                 for kh_0 in kernel_spatial_0:              // reduction
+///                   for kh_1 in kernel_spatial_1:            // reduction
+///                     // ...
+/// clang-format on
+static Value emitGroupedConv(ConversionPatternRewriter &rewriter, Location loc,
+                             RankedTensorType resultType, Value input,
+                             Value filter, Value zero,
+                             ArrayAttr strides,
+                             ArrayAttr dilation) {
+  MLIRContext *ctx = rewriter.getContext();
+  int64_t dim = cast<RankedTensorType>(input.getType()).getRank() - 3;
+  SmallVector<int64_t, 4> strideVals;
+  SmallVector<int64_t, 4> dilationVals;
+  llvm::transform(strides.getValue(), std::back_inserter(strideVals), [](Attribute attr){
+      return cast<IntegerAttr>(attr).getInt();
+  });
+  llvm::transform(dilation.getValue(), std::back_inserter(dilationVals), [](Attribute attr){
+      return cast<IntegerAttr>(attr).getInt();
+  });
+
+  // Iteration domain layout:
+  //   parallel:  batch, group, filter, oh_0 .. oh_{dim-1}
+  //   reduction: channel, kh_0 .. kh_{dim-1}
+  int64_t totalDims = 4 + 2 * dim;
+  SmallVector<AffineExpr> d;
+  for (int64_t i = 0; i < totalDims; ++i)
+    d.push_back(getAffineDimExpr(i, ctx));
+
+  AffineExpr batch = d[0], group = d[1], filterExpr = d[2];
+  AffineExpr channel = d[3 + dim];
+
+  SmallVector<AffineExpr> inputExprs = {batch, group, channel};
+  for (int64_t i = 0; i < dim; ++i)
+    inputExprs.push_back(d[3 + i] * strideVals[i] +
+                         d[4 + dim + i] * dilationVals[i]);
+
+  SmallVector<AffineExpr> filterExprs = {group, filterExpr, channel};
+  for (int64_t i = 0; i < dim; ++i)
+    filterExprs.push_back(d[4 + dim + i]);
+
+  SmallVector<AffineExpr> outputExprs = {batch, group, filterExpr};
+  for (int64_t i = 0; i < dim; ++i)
+    outputExprs.push_back(d[3 + i]);
+
+  SmallVector<AffineMap> indexingMaps = {
+      AffineMap::get(totalDims, 0, inputExprs, ctx),
+      AffineMap::get(totalDims, 0, filterExprs, ctx),
+      AffineMap::get(totalDims, 0, outputExprs, ctx)};
+
+  SmallVector<utils::IteratorType> iteratorTypes(3 + dim,
+                                                 utils::IteratorType::parallel);
+  iteratorTypes.append(1 + dim, utils::IteratorType::reduction);
+
+  return linalg::GenericOp::create(rewriter, loc, resultType,
+                                   ValueRange{input, filter}, zero,
+                                   indexingMaps, iteratorTypes, convBodyBuilder)
+      .getResult(0);
+}
+
+LogicalResult ConvConverter::emitConv(ConversionPatternRewriter &rewriter,
+                                      migraphx::ConvolutionOp op, Value input,
+                                      Value filter) const {
+  // Input and filter are already in NGC* and GFC* form (group dimension
+  // expanded). Build the result type as NGF* (with explicit G), emit the
+  // grouped linalg conv (1D/2D/3D), then collapse back to NF* for the type
+  // converter.
+  Location loc = op.getLoc();
+  int64_t group = op.getGroupAttr().getInt();
+  int64_t dim = cast<RankedTensorType>(input.getType()).getRank() -
+                3; // exclude batch (N), group (G), channel (C)
+  assert(dim >= 1 && dim <= 3 && "this should be checked at matchAndRewrite");
+
+  // Result type from the op is NF*; expand to NGF* for the linalg conv.
+  RankedTensorType resultType =
+      cast<RankedTensorType>(getTypeConverter()->convertType(op.getResult()));
+  ArrayRef<int64_t> resultShape = resultType.getShape();
+  SmallVector<int64_t, 4> newShape;
+  int64_t n = resultType.getDimSize(0);
+  int64_t newF = resultType.getDimSize(1) / group;
+  assert(resultType.getDimSize(1) % group == 0 &&
+         "output channel must be divisible by group");
+  newShape.push_back(n);
+  newShape.push_back(group);
+  newShape.push_back(newF);
+  newShape.insert(newShape.end(), std::next(resultShape.begin(), 2),
+                  resultShape.end());
+  auto newResultType =
+      RankedTensorType::get(newShape, resultType.getElementType());
+  Value zero = arith::ConstantOp::create(rewriter, loc, newResultType,
+                                         rewriter.getZeroAttr(newResultType));
+
+  ArrayAttr strides = op.getStride();
+  ArrayAttr dilation =op.getDilation();
+
+  rock::LinalgConvType convLayout =
+      (dim == 1)   ? rock::LinalgConvType::Conv1dNgchGfch
+      : (dim == 2) ? rock::LinalgConvType::Conv2dNgchwGfchw
+                   : rock::LinalgConvType::Conv3dNgchwdGfchwd;
+  auto resultConvOpName =
+      rock::LinalgConvTypeAttr::get(rewriter.getContext(), convLayout);
+  Value result = emitGroupedConv(rewriter, loc, newResultType, input, filter,
+                                 zero, strides, dilation);
+
+  emitConvAttributes(op, result, strides, dilation,
+                     op.getPaddingAttr(),
+                     resultConvOpName);
+
+  // we must reshape the operand to what the type converter expects
+  SmallVector<ReassociationIndices, 4> reassociation{{0}, {1, 2}};
+  llvm::for_each(llvm::seq<int64_t>(3, dim + 3),
+                 [&](int64_t index) { reassociation.push_back({index}); });
+  auto finalResult =
+      tensor::CollapseShapeOp::create(rewriter, loc, result, reassociation);
+
+  rewriter.replaceOp(op, finalResult);
+  return success();
+}
+
+LogicalResult
+ConvConverter::matchAndRewrite(migraphx::ConvolutionOp op, OpAdaptor adaptor,
+                               ConversionPatternRewriter &rewriter) const {
+  // Forward convolution is lowered in three steps:
+  // 1. Apply padding to the input when the op has non-zero padding.
+  // 2. Expand the channel dimension into (group, channel_per_group),
+  // introducing
+  //    a group dimension G. Input becomes NGC* (e.g. NGCL, NGCHW, NGCDHW) and
+  //    filter becomes GFC* (e.g. GFCL, GFCHW, GFCDHW), matching the group attr.
+  // 3. Emit the grouped linalg convolution (1D/2D/3D), then collapse the
+  //    result back to the original NFHW/NFDHW shape for the type converter.
+  Location loc = op.getLoc();
+  Value input = adaptor.getInput();
+  Value filter = adaptor.getFilter();
+  ArrayAttr padAttr = adaptor.getPaddingAttr();
+  RankedTensorType inputType = cast<RankedTensorType>(input.getType());
+  int64_t dim = inputType.getRank() - 2;
+  int64_t group = op.getGroupAttr().getInt();
+
+  if (dim > 3 || dim < 1) {
+    return op.emitError(Twine(dim) + "D conv is not supported for now");
+  }
+
+  // For now, the linalg.generic region doesn't support type casting,
+  // so we emit an error for now
+
+  if (inputType.getElementType() != op.getFilter().getType().getElementType() ||
+      inputType.getElementType() != op.getResult().getType().getElementType()) {
+    return op.emitError(
+        "type casting between operands and result is unsupported for now");
+  }
+
+  // Step 1: apply padding when any padding value is non-zero.
+  if (!llvm::all_of(padAttr, [](Attribute pad) {
+        return cast<IntegerAttr>(pad).getValue() == 0;
+      })) {
+    // Apply symmetric padding to spatial dimensions.
+    SmallVector<OpFoldResult, 4> low(inputType.getRank(),
+                                     rewriter.getIndexAttr(0));
+    SmallVector<OpFoldResult, 4> high(inputType.getRank(),
+                                      rewriter.getIndexAttr(0));
+    // insert padding to inputs
+    assert(2 * dim == (int64_t)padAttr.size() && "padding is symmetric");
+
+    // MIGraphX padAttr is [dim0_low, dim1_low,..., dim0_high, dim1_high, ...]
+    SmallVector<int64_t, 4> newShape(inputType.getShape());
+    auto lowAttrs = padAttr.getValue().drop_back(dim);
+    auto highAttrs = padAttr.getValue().drop_front(dim);
+    //  The first spatial dimension (H) is always located at index 2 in the
+    //  NC* layout (after batch and channel), regardless of convolution rank.
+    int64_t dimHOffset = 2;
+    llvm::for_each(llvm::seq<int64_t>(dim), [&](int64_t index) {
+      int64_t lowPad = cast<IntegerAttr>(lowAttrs[index]).getInt();
+      int64_t highPad = cast<IntegerAttr>(highAttrs[index]).getInt();
+      newShape[dimHOffset + index] += lowPad + highPad;
+      low[dimHOffset + index] = rewriter.getIndexAttr(lowPad);
+      high[dimHOffset + index] = rewriter.getIndexAttr(highPad);
+    });
+
+    RankedTensorType newInputType =
+        RankedTensorType::get(newShape, inputType.getElementType());
+    Value padValue = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(inputType.getElementType()));
+    input = tensor::PadOp::create(rewriter, loc, newInputType, input, low, high,
+                                  padValue)
+                .getResult();
+  }
+
+  auto expandGroupDim = [&](Value input, bool isFilter) -> Value {
+    RankedTensorType originalType = cast<RankedTensorType>(input.getType());
+    ArrayRef<int64_t> originalShape = originalType.getShape();
+    SmallVector<int64_t, 4> newShape;
+
+    if (isFilter) {
+      // FCHW into GFCHW
+      int64_t newF = originalType.getDimSize(0) / group;
+      assert(originalType.getDimSize(0) % group == 0 &&
+             "output channel must be divisible by group");
+      newShape.push_back(group);
+      newShape.push_back(newF);
+      newShape.push_back(originalType.getDimSize(1));
+      newShape.insert(newShape.end(), std::next(originalShape.begin(), 2),
+                      originalShape.end());
+      RankedTensorType newType =
+          RankedTensorType::get(newShape, originalType.getElementType());
+
+      SmallVector<ReassociationIndices, 4> reassociation;
+      reassociation.push_back({0, 1});
+      llvm::for_each(llvm::seq<int64_t>(2, dim + 3),
+                     [&](int64_t i) { reassociation.push_back({i}); });
+      return tensor::ExpandShapeOp::create(rewriter, loc, newType, input,
+                                           reassociation);
+    } else {
+      // Convert NCHW into NGCHW
+      int64_t newC = originalType.getDimSize(1) / group;
+      assert(originalType.getDimSize(1) % group == 0 &&
+             "input channel must be divisible by group");
+      newShape.push_back(originalType.getDimSize(0));
+      newShape.push_back(group);
+      newShape.push_back(newC);
+      newShape.insert(newShape.end(), std::next(originalShape.begin(), 2),
+                      originalShape.end());
+
+      RankedTensorType newType =
+          RankedTensorType::get(newShape, originalType.getElementType());
+      SmallVector<ReassociationIndices, 4> reassociation;
+      reassociation.push_back({0});
+      reassociation.push_back({1, 2});
+      llvm::for_each(llvm::seq<int64_t>(3, dim + 3),
+                     [&](int64_t i) { reassociation.push_back({i}); });
+      return tensor::ExpandShapeOp::create(rewriter, loc, newType, input,
+                                           reassociation);
+    }
+  };
+
+  // Step 2: expand group dimension (NCHW -> NGCHW, FCHW -> GFCHW). We
+  // want expand in group dimension because linalg.conv2d_ngchw_gfchw
+  // expects the layout to have the group dimension. It also makes for
+  // a nicer linalg.generic loop
+  input = expandGroupDim(input, false);
+  filter = expandGroupDim(filter, true);
+  // Step 3: emit linalg conv and collapse result to match type converter.
+  return emitConv(rewriter, op, input, filter);
+}
+
+// TODO: add support for scaled gemms, and migraphx::DeQuantizeLinearConverter
+//===----------------------------------------------------------------------===//
+// Base kernels (gemm)
+//===----------------------------------------------------------------------===//
+namespace {
+struct DotConverter final : public OpConversionPattern<migraphx::DotOp> {
+  using OpConversionPattern<migraphx::DotOp>::OpConversionPattern;
+  using OpConversionPattern<migraphx::DotOp>::getTypeConverter;
+  using OpAdaptor = typename OpConversionPattern<migraphx::DotOp>::OpAdaptor;
+
+  LogicalResult
+  matchAndRewrite(migraphx::DotOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+} // namespace
+
+LogicalResult
+DotConverter::matchAndRewrite(migraphx::DotOp op, OpAdaptor adaptor,
+                              ConversionPatternRewriter &rewriter) const {
+  Location loc = op->getLoc();
+  Value inA = adaptor.getInA();
+  Value inB = adaptor.getInB();
+  auto results = op->getResults();
+  if (!isa<RankedTensorType>(inA.getType()) ||
+      !isa<RankedTensorType>(inB.getType())) {
+    return op.emitError("expected both operands to be RankedTensorType");
+  }
+  RankedTensorType aRankedType = cast<RankedTensorType>(inA.getType());
+  RankedTensorType bRankedType = cast<RankedTensorType>(inB.getType());
+  Type elementTy = aRankedType.getElementType();
+  auto origOutputTy = cast<migraphx::MIXRShapedType>(results[0].getType());
+  Type outElementTy = origOutputTy.getElementType();
+  Type newOutElementTy = getTypeConverter()->convertType(outElementTy);
+
+  ArrayRef<int64_t> origOutDims = origOutputTy.getShape();
+  RankedTensorType newOutType =
+      RankedTensorType::get(origOutDims, newOutElementTy);
+  size_t outRank = origOutDims.size();
+  ArrayRef<int64_t> orgDimsA = aRankedType.getShape();
+  ArrayRef<int64_t> orgDimsB = bRankedType.getShape();
+  size_t rankA = orgDimsA.size();
+  size_t rankB = orgDimsB.size();
+
+  if (rankA != rankB || rankB != outRank) {
+    // It is possible to support rank of different dimensions such as
+    // A = (3,2,2,2), B = (6,2,2,2), and C = (1,3,2,2,2). The tosa
+    // lowering path doesn't seems to support it for now so we error
+    // for now.
+    return op.emitError("operands must have the same rank");
+  }
+
+  if (!aRankedType.hasStaticShape() || !bRankedType.hasStaticShape()) {
+    return op.emitError("only static shape is supported for now");
+  }
+
+  // A nice help function that collapse and expand the shape when necessary
+  auto getReassociationIndices = [](int64_t rank) {
+    assert(rank >= 3 && "this help only works for rank greater than 3");
+    SmallVector<ReassociationIndices, 4> reassociation(3,
+                                                       ReassociationIndices());
+    reassociation[0].resize(rank - 2);
+    std::iota(reassociation[0].begin(), reassociation[0].end(), 0);
+    reassociation[1] = {rank - 2};
+    reassociation[2] = {rank - 1};
+    return reassociation;
+  };
+
+  // nice help function to reshape the input
+  auto reshapeToDimThree = [&](int64_t rank, Type newType, Value in) -> Value {
+    return (rank == 2)
+               ? tensor::ExpandShapeOp::create(rewriter, loc, newType, in,
+                                               {{0, 1}, {2}})
+               : tensor::CollapseShapeOp::create(rewriter, loc, newType, in,
+                                                 getReassociationIndices(rank))
+                     .getResult();
+  };
+
+  auto getBatchSize = [](ArrayRef<int64_t> shape) {
+    return std::accumulate(shape.begin(), std::prev(shape.end(), 2), 1,
+                           std::multiplies<int>());
+  };
+
+  // Handle special cases. Here we are going to compute the new shape of the
+  // inputs and the outputs so that we can use linalg.batch_matmul which expects
+  // the rank of the input and output to be 3.
+  bool needToReshape = outRank != 3 || rankA != rankB ||
+                       (outRank == 3 && orgDimsA[0] != orgDimsB[0]);
+  if (needToReshape) {
+    // reshape the (d0, d1, d2, ..., dn-1, dn) into (d0*d1*d2,...,dn-1,dn)
+    int64_t batchSizeA = getBatchSize(orgDimsA);
+    int64_t batchSizeB = getBatchSize(orgDimsB);
+    int64_t batchSizeC = getBatchSize(origOutDims);
+
+    int64_t newDimsA[3] = {batchSizeA, orgDimsA[rankA - 2],
+                           orgDimsA[rankA - 1]};
+    int64_t newDimsB[3] = {batchSizeB, orgDimsB[rankB - 2],
+                           orgDimsB[rankB - 1]};
+    int64_t newDimsOut[3] = {batchSizeC, origOutDims[outRank - 2],
+                             origOutDims[outRank - 1]};
+    if (batchSizeA != batchSizeB || batchSizeC != batchSizeB) {
+      return op.emitError("cannot handle this broadcast for now");
+    }
+
+    assert(batchSizeA == batchSizeB && batchSizeB == batchSizeC &&
+           "have to be like this for now");
+    // Casting the original input into their new shape
+    RankedTensorType newAType = RankedTensorType::get(newDimsA, elementTy);
+    RankedTensorType newBType = RankedTensorType::get(newDimsB, elementTy);
+    newOutType = RankedTensorType::get(newDimsOut, newOutElementTy);
+    inA = reshapeToDimThree(rankA, newAType, inA);
+    inB = reshapeToDimThree(rankB, newBType, inB);
+  }
+
+  auto init = arith::ConstantOp::create(rewriter, loc, newOutType,
+                                        rewriter.getZeroAttr(newOutType))
+                  .getResult();
+  Value result = linalg::BatchMatmulOp::create(rewriter, loc, {inA, inB}, init)
+                     .getResult(0);
+
+  // Convert optional attributes
+  if (auto attr = (*op).template getAttrOfType<StringAttr>("perf_config"))
+    result.getDefiningOp()->setAttr("perf_config", attr);
+
+  if (needToReshape) {
+    // We have to reshape the output of linalg.batch_matmul to match the
+    // original output in some cases. We have reshaped the input from before
+    RankedTensorType finalResultType =
+        cast<RankedTensorType>(getTypeConverter()->convertType(origOutputTy));
+    SmallVector<ReassociationIndices, 4> reasociation;
+    result =
+        (finalResultType.getRank() == 2)
+            ? tensor::CollapseShapeOp::create(rewriter, loc, finalResultType,
+                                              result, {{0, 1}, {2}})
+                  .getResult()
+            : tensor::ExpandShapeOp::create(rewriter, loc, finalResultType,
+                                            result,
+                                            getReassociationIndices(outRank));
+  }
+
+  rewriter.replaceOp(op, result);
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// One to One MIGraphX to Linalg Ops
+//===----------------------------------------------------------------------===//
+namespace {
+template <class MIGraphXOp, class LinalgOp>
+struct ElementwiseConverter final : public OpConversionPattern<MIGraphXOp> {
+  using OpConversionPattern<MIGraphXOp>::OpConversionPattern;
+  using OpConversionPattern<MIGraphXOp>::getTypeConverter;
+  using OpAdaptor = typename OpConversionPattern<MIGraphXOp>::OpAdaptor;
+
+  LogicalResult
+  matchAndRewrite(MIGraphXOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+} // namespace
+
+template <class MIGraphXOp, class LinalgOp>
+LogicalResult ElementwiseConverter<MIGraphXOp, LinalgOp>::matchAndRewrite(
+    MIGraphXOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  Location loc = op.getLoc();
+
+  // Check that all operands are RankedTensorType
+  auto operands = adaptor.getOperands();
+  if (operands.size() == 0) {
+    return op.emitError("cannot have zero operands");
+  }
+
+  RankedTensorType aType = cast<RankedTensorType>(operands[0].getType());
+  // Check all operands have RankedTensorType and the same shape
+  if (!llvm::all_of(operands, [&](Value v) {
+        return isa<RankedTensorType>(v.getType()) &&
+               cast<RankedTensorType>(v.getType()) == aType;
+      })) {
+    return op.emitError("all operands must have the same RankedTensorType");
+  }
+
+  RankedTensorType resultType =
+      cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
+  Value init = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(),
+                                       resultType.getElementType());
+  auto result = LinalgOp::create(rewriter, loc, operands, init);
+  rewriter.replaceOp(op, result);
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Other elementwise operations
+//===----------------------------------------------------------------------===//
+namespace {
+struct ReluConverter final : public OpConversionPattern<migraphx::ReluOp> {
+  using OpConversionPattern<migraphx::ReluOp>::OpConversionPattern;
+  using OpConversionPattern<migraphx::ReluOp>::getTypeConverter;
+  using OpAdaptor = typename OpConversionPattern<migraphx::ReluOp>::OpAdaptor;
+
+  LogicalResult
+  matchAndRewrite(migraphx::ReluOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+} // namespace
+
+LogicalResult
+ReluConverter::matchAndRewrite(migraphx::ReluOp op, OpAdaptor adaptor,
+                               ConversionPatternRewriter &rewriter) const {
+  if (adaptor.getOperands().size() != 1) {
+    return op.emitError("only expected one operand");
+  }
+
+  RankedTensorType resultType =
+      cast<RankedTensorType>(getTypeConverter()->convertType(op.getResult()));
+  Location loc = op.getLoc();
+  Value in = adaptor.getInA();
+  Value zero = arith::ConstantOp::create(rewriter, loc, resultType,
+                                         rewriter.getZeroAttr(resultType));
+  Value init = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(),
+                                       resultType.getElementType());
+
+  // relu(x) = max(0, x)
+  auto result = linalg::MaxOp::create(rewriter, loc, {in, zero}, init);
+  rewriter.replaceOp(op, result);
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Other operations
+//===----------------------------------------------------------------------===//
+namespace {
+struct ClipConverter final : public OpConversionPattern<migraphx::ClipOp> {
+  using OpConversionPattern<migraphx::ClipOp>::OpConversionPattern;
+  using OpConversionPattern<migraphx::ClipOp>::getTypeConverter;
+  using OpAdaptor = typename OpConversionPattern<migraphx::ClipOp>::OpAdaptor;
+
+  LogicalResult
+  matchAndRewrite(migraphx::ClipOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+} // namespace
+
+LogicalResult
+ClipConverter::matchAndRewrite(migraphx::ClipOp op, OpAdaptor adaptor,
+                               ConversionPatternRewriter &rewriter) const {
+  Location loc = op.getLoc();
+  Value x = adaptor.getX();
+  Value minVals = adaptor.getMinVals();
+  Value maxVals = adaptor.getMaxVals();
+  RankedTensorType outType = dyn_cast<RankedTensorType>(
+      getTypeConverter()->convertType(op.getResult().getType()));
+  if (!outType) {
+    return op.emitError("expected a RankedTensorType type");
+  }
+
+  if (outType != adaptor.getMaxVals().getType() ||
+      maxVals.getType() != x.getType() || x.getType() != minVals.getType()) {
+    return op.emitError("expected all operands and result type to be the same");
+  }
+
+  // clip(x, min, max) = min(max(x, minvals), maxvals)
+  Value initOne = tensor::EmptyOp::create(rewriter, loc, outType.getShape(),
+                                          outType.getElementType());
+  Value initTwo = tensor::EmptyOp::create(rewriter, loc, outType.getShape(),
+                                          outType.getElementType());
+  Value atLeastMin =
+      linalg::MaxOp::create(rewriter, loc, {x, minVals}, initOne).getResult(0);
+  auto result =
+      linalg::MinOp::create(rewriter, loc, {atLeastMin, maxVals}, initTwo);
+  rewriter.replaceOp(op, result);
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// populateMIGraphXToLinalg* method
+//===----------------------------------------------------------------------===//
+void mlir::migraphx::populateMIGraphXToLinalgConversionPatterns(
+    TypeConverter &converter, RewritePatternSet &patterns) {
+  patterns
+      .add<DotConverter, ElementwiseConverter<migraphx::AddOp, linalg::AddOp>,
+           ElementwiseConverter<migraphx::SubOp, linalg::SubOp>,
+           ElementwiseConverter<migraphx::MulOp, linalg::MulOp>,
+           ElementwiseConverter<migraphx::DivOp, linalg::DivOp>,
+           ElementwiseConverter<migraphx::PowOp, linalg::PowFOp>,
+           ElementwiseConverter<migraphx::AbsOp, linalg::AbsOp>,
+           ElementwiseConverter<migraphx::CeilOp, linalg::CeilOp>,
+           ElementwiseConverter<migraphx::ExpOp, linalg::ExpOp>,
+           ElementwiseConverter<migraphx::FloorOp, linalg::FloorOp>,
+           ElementwiseConverter<migraphx::LogOp, linalg::LogOp>,
+           ElementwiseConverter<migraphx::NegOp, linalg::NegFOp>,
+           ElementwiseConverter<migraphx::SqrtOp, linalg::SqrtOp>,
+           ElementwiseConverter<migraphx::TanhOp, linalg::TanhOp>,
+           ElementwiseConverter<migraphx::RecipOp, linalg::ReciprocalOp>,
+           ReluConverter, ClipConverter, ConvConverter>(converter,
+                                                        patterns.getContext());
+}
+
+void mlir::migraphx::populateMIGraphXFuncBoundaryToLinalgConversionPatterns(
+    RewritePatternSet &patterns, TypeConverter &typeConverter) {
+  patterns.add<AsUnderlyingShapeConverter, AsLogicalShapeOpConverter>(
+      typeConverter, patterns.getContext());
+
+  // mhal.launch can be generated through rocmlir-gen, so we need a way to
+  // legalize it
+  populateMIGraphXToLinalgMHALLauncherConversion(patterns, typeConverter);
+  populateAnyFunctionOpInterfaceTypeConversionPattern(patterns, typeConverter);
+  populateReturnOpTypeConversionPattern(patterns, typeConverter);
+  populateCallOpTypeConversionPattern(patterns, typeConverter);
+}

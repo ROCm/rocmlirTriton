@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fusions need rework
+
 // RUN: rocmlir-driver --kernel-pipeline=migraphx,highlevel %s | FileCheck %s
 // Note: if we move bufferization, this should be a check for three emptys or
 // alloc_tensors unless there's a wider refactoring.

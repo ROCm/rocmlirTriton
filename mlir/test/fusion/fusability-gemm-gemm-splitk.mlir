@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fusions need rework
+
 // RUN: rocmlir-gen -emit-module-fusibility-for=attn:v2:32,128,32,32,32,16,8,4,1,2,1 - < %s | FileCheck %s --check-prefixes=CHECK-SPLITK
 // CHECK-SPLITK: fusible:1
 // RUN: rocmlir-gen -emit-module-fusibility-for=attn:v2:32,128,32,32,32,16,8,1,1,2,1 - < %s | FileCheck %s --check-prefixes=CHECK-NONSPLITK

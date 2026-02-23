@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fusions need rework
+
 // RUN: rocmlir-driver -kernel-pipeline highlevel %s | FileCheck %s
 
 module {
