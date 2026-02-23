@@ -4823,6 +4823,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
     nameBuffer += "_cloned";
     cloneFuncOp.setName(nameBuffer);
     cloneFunc->removeAttr(rock::KernelAttr::getMnemonic());
+    cloneFunc->removeAttr(rock::KernelLegacyAttr::getMnemonic());
     SymbolTable symbolTable(module);
     symbolTable.insert(cloneFunc);
     func::CallOp::create(b, loc, SymbolRefAttr::get(cloneFunc), TypeRange{},
@@ -4867,7 +4868,8 @@ static LogicalResult populateHostHarnessLogic(
     // TODO: verify that all parameter lists match
   }
   auto root0 = *roots.begin();
-  bool isCPUKernel = !root0.func->hasAttr(rock::KernelAttr::getMnemonic());
+  bool isCPUKernel = !root0.func->hasAttr(rock::KernelAttr::getMnemonic()) &&
+                     !root0.func->hasAttr(rock::KernelLegacyAttr::getMnemonic());
   bool hasValidation = !validationType.empty() && !genCPUKernel.getValue();
   bool hasCloneValidation = hasValidation && (validationType == "clone");
   bool heuristicValidation =
@@ -5096,13 +5098,15 @@ static LogicalResult populateHostHarnessLogic(
                              /*willBeWrapped=*/true);
     } else if (!valVars.empty()) {
       callFuncWithConversion(root.func, valVars, outIndices);
-      if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {
+      if (!root.func->hasAttr(rock::KernelAttr::getMnemonic()) &&
+          !root.func->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
         printValidationResults = true;
         printResults = false;
       }
     } else {
       callFuncWithConversion(root.func, localVars, outIndices);
-      if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {
+      if (!root.func->hasAttr(rock::KernelAttr::getMnemonic()) &&
+          !root.func->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
         printValidationResults = false;
         printResults = true;
       }
@@ -5156,7 +5160,8 @@ static LogicalResult populateHostHarnessLogic(
           ? genParams.convConfig.value()->kernelBaseName
           : root0.func.getName().str();
   for (auto &kernel : kernels) {
-    if (kernel.func->hasAttr(rock::KernelAttr::getMnemonic())) {
+    if (kernel.func->hasAttr(rock::KernelAttr::getMnemonic()) ||
+        kernel.func->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
       kernelsSet.insert(kernel.func);
     }
   }
@@ -5220,7 +5225,8 @@ static OwningOpRef<ModuleOp> readTestFile(std::string inputFilenameStr,
   }
 
   module->walk([&](func::FuncOp func) -> WalkResult {
-    if (func->hasAttr(rock::KernelAttr::getMnemonic())) {
+    if (func->hasAttr(rock::KernelAttr::getMnemonic()) ||
+        func->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
       hasUserKernel = true;
     }
     return WalkResult::advance();
@@ -5501,8 +5507,10 @@ static void populateCloneHarnessLogic(ModuleOp module) {
   OpBuilder b(context);
 
   originalFunc->removeAttr(rock::KernelAttr::getMnemonic());
+  originalFunc->removeAttr(rock::KernelLegacyAttr::getMnemonic());
   StringAttr archAttr = b.getStringAttr(arch);
-  if (originalFunc->hasAttr(rock::ArchAttr::getMnemonic()))
+  if (originalFunc->hasAttr(rock::ArchAttr::getMnemonic()) ||
+      originalFunc->hasAttr(rock::ArchLegacyAttr::getMnemonic()))
     originalFunc->setAttr(rock::ArchAttr::getMnemonic(), archAttr);
   // TODO(roctriton): mhal
   // auto readAttr = b.getNamedAttr(mhal::MHALDialect::getReadAccessAttrName(),
@@ -5709,7 +5717,8 @@ int main(int argc, char **argv) {
       rootIFs.emplace_back(func);
     }
     module->walk([&](func::FuncOp func) -> WalkResult {
-      if (func->hasAttr(rock::KernelAttr::getMnemonic())) {
+      if (func->hasAttr(rock::KernelAttr::getMnemonic()) ||
+          func->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
         kernels.emplace_back(func);
       }
       return WalkResult::advance();

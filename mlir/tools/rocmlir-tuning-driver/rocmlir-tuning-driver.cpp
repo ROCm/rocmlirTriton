@@ -625,11 +625,14 @@ static int toKernelOrder(Attribute attr) {
 
 static LogicalResult extractFuncOps(ModuleOp op,
                                     SmallVectorImpl<func::FuncOp> &kernels) {
-  if (!op->hasAttr(rock::ArchAttr::getMnemonic())) {
+  if (!op->hasAttr(rock::ArchAttr::getMnemonic()) &&
+      !op->hasAttr(rock::ArchLegacyAttr::getMnemonic())) {
     return op->emitOpError("no architecture set, set arch on the input module");
   }
   op.walk([&kernels](func::FuncOp f) {
     Attribute kernel = f->getAttr(rock::KernelAttr::getMnemonic());
+    if (!kernel)
+      kernel = f->getAttr(rock::KernelLegacyAttr::getMnemonic());
     if (!kernel)
       return;
     kernels.push_back(f);
@@ -637,10 +640,14 @@ static LogicalResult extractFuncOps(ModuleOp op,
 
   std::sort(kernels.begin(), kernels.end(),
             [](const func::FuncOp &a, const func::FuncOp &b) {
-              int kernelA =
-                  toKernelOrder(a->getAttr(rock::KernelAttr::getMnemonic()));
-              int kernelB =
-                  toKernelOrder(b->getAttr(rock::KernelAttr::getMnemonic()));
+              Attribute attrA = a->getAttr(rock::KernelAttr::getMnemonic());
+              if (!attrA)
+                attrA = a->getAttr(rock::KernelLegacyAttr::getMnemonic());
+              Attribute attrB = b->getAttr(rock::KernelAttr::getMnemonic());
+              if (!attrB)
+                attrB = b->getAttr(rock::KernelLegacyAttr::getMnemonic());
+              int kernelA = toKernelOrder(attrA);
+              int kernelB = toKernelOrder(attrB);
               return kernelA < kernelB;
             });
   return success();
@@ -685,9 +692,12 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   compilationKernOpts.tuningFallback = false;
 
   RocmDeviceName deviceName;
-  StringRef archName =
-      source->getAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic())
-          .getValue();
+  StringAttr archAttr =
+      source->getAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic());
+  if (!archAttr)
+    archAttr =
+        source->getAttrOfType<StringAttr>(rock::ArchLegacyAttr::getMnemonic());
+  StringRef archName = archAttr.getValue();
   if (failed(deviceName.parse(archName)))
     return source->emitOpError("could not parse arch name: " + archName);
 

@@ -615,7 +615,8 @@ rearrangeGemmParallelDimsForReduction(ReduceOp rOp,
 void RockShuffleGemmForReductionsPass::runOnOperation() {
   func::FuncOp func = getOperation();
   // Only run this pass on GPU kernel functions.
-  if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
+  if (!func->hasAttr(rock::KernelAttr::getMnemonic()) &&
+      !func->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
     return;
   }
   ReduceOp largestReductionOp;

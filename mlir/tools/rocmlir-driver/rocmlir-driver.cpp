@@ -339,6 +339,9 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     module->walk([&](ModuleOp kernelModule) {
       auto archAttr = kernelModule->getAttrOfType<StringAttr>(
           rock::ArchAttr::getMnemonic());
+      if (!archAttr)
+        archAttr = kernelModule->getAttrOfType<StringAttr>(
+            rock::ArchLegacyAttr::getMnemonic());
       hasKernels |= (bool)archAttr;
       if (archAttr && llvm::find(targetList, archAttr.getValue())) {
         kernelResult = runKernelPipeline(archAttr.getValue(), kernelModule,
@@ -357,6 +360,12 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
           onlyArch =
               module->getAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic())
                   .getValue();
+        } else if (module->hasAttrOfType<StringAttr>(
+                       rock::ArchLegacyAttr::getMnemonic())) {
+          onlyArch = module
+                         ->getAttrOfType<StringAttr>(
+                             rock::ArchLegacyAttr::getMnemonic())
+                         .getValue();
         }
       }
       targetArch = onlyArch;

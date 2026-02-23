@@ -92,7 +92,8 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
 
   // Walk LLVM functions with KernelAttr
   moduleOp.walk([&](LLVM::LLVMFuncOp funcOp) {
-    if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
+        !funcOp->hasAttr(rock::KernelLegacyAttr::getMnemonic()))
       return;
 
     KernelInfo info;

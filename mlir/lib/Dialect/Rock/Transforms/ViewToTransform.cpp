@@ -165,7 +165,8 @@ struct RockViewToTransform
 public:
   void runOnOperation() override {
     auto func = getOperation();
-    if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
+    if (!func->hasAttr(rock::KernelAttr::getMnemonic()) &&
+        !func->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
       return;
     }
     MLIRContext *ctx = &getContext();

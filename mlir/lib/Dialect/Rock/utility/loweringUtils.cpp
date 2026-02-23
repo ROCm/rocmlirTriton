@@ -382,13 +382,15 @@ static FailureOr<RetAttrType> getAttrFromOpOrParents(
 }
 
 FailureOr<IntegerAttr> mlir::rock::getGridSize(Operation *op) {
-  return getAttrFromOpOrParents<IntegerAttr>(op,
-                                             rock::GridSizeAttr::getMnemonic());
+  return getAttrFromOpOrParents<IntegerAttr>(
+      op, rock::GridSizeAttr::getMnemonic(),
+      rock::GridSizeLegacyAttr::getMnemonic());
 }
 
 FailureOr<IntegerAttr> mlir::rock::getBlockSize(Operation *op) {
   return getAttrFromOpOrParents<IntegerAttr>(
-      op, rock::BlockSizeAttr::getMnemonic());
+      op, rock::BlockSizeAttr::getMnemonic(),
+      rock::BlockSizeLegacyAttr::getMnemonic());
 }
 
 ReassociationIndices

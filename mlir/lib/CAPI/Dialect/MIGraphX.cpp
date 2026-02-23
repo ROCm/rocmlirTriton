@@ -99,8 +99,14 @@ MLIR_CAPI_EXPORTED void mlirGetKernelAttrs(MlirModule module, uint32_t *attrs) {
     for (auto kernel : metadata) {
       auto block = kernel.getAttr<mlir::IntegerAttr>(
           mlir::rock::BlockSizeAttr::getMnemonic());
+      if (!block)
+        block = kernel.getAttr<mlir::IntegerAttr>(
+            mlir::rock::BlockSizeLegacyAttr::getMnemonic());
       auto grid = kernel.getAttr<mlir::IntegerAttr>(
           mlir::rock::GridSizeAttr::getMnemonic());
+      if (!grid)
+        grid = kernel.getAttr<mlir::IntegerAttr>(
+            mlir::rock::GridSizeLegacyAttr::getMnemonic());
       if (!block || !grid)
         continue;
       attrs[0] = block.getInt();

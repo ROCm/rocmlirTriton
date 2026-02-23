@@ -82,7 +82,8 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
   SmallVector<int64_t> splitKValues = {1};
 
   auto func = cast<func::FuncOp>(gemmGemmOp->getParentOp());
-  if (!func->hasAttr(rock::EnableSplitKForTuningAttr::getMnemonic())) {
+  if (!func->hasAttr(rock::EnableSplitKForTuningAttr::getMnemonic()) &&
+      !func->hasAttr(rock::EnableSplitKForTuningLegacyAttr::getMnemonic())) {
     return splitKValues;
   }
 
@@ -339,7 +340,8 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
   SmallVector<int64_t> splitKValues = {1};
 
   auto func = cast<func::FuncOp>(gemmOp->getParentOp());
-  if (!func->hasAttr(rock::EnableSplitKForTuningAttr::getMnemonic())) {
+  if (!func->hasAttr(rock::EnableSplitKForTuningAttr::getMnemonic()) &&
+      !func->hasAttr(rock::EnableSplitKForTuningLegacyAttr::getMnemonic())) {
     return splitKValues;
   }
 

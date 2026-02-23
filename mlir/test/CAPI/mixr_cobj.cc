@@ -245,14 +245,18 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   auto status = pm.run(module);
 
   module.walk([&](mlir::LLVM::LLVMFuncOp llvmFunc) {
-    size_t block_size = llvmFunc
-                            ->getAttrOfType<mlir::IntegerAttr>(
-                                rock::BlockSizeAttr::getMnemonic())
-                            .getInt();
-    size_t grid_size = llvmFunc
-                           ->getAttrOfType<mlir::IntegerAttr>(
-                               rock::GridSizeAttr::getMnemonic())
-                           .getInt();
+    auto blockSizeAttr = llvmFunc->getAttrOfType<mlir::IntegerAttr>(
+        rock::BlockSizeAttr::getMnemonic());
+    if (!blockSizeAttr)
+      blockSizeAttr = llvmFunc->getAttrOfType<mlir::IntegerAttr>(
+          rock::BlockSizeLegacyAttr::getMnemonic());
+    auto gridSizeAttr = llvmFunc->getAttrOfType<mlir::IntegerAttr>(
+        rock::GridSizeAttr::getMnemonic());
+    if (!gridSizeAttr)
+      gridSizeAttr = llvmFunc->getAttrOfType<mlir::IntegerAttr>(
+          rock::GridSizeLegacyAttr::getMnemonic());
+    size_t block_size = blockSizeAttr.getInt();
+    size_t grid_size = gridSizeAttr.getInt();
     auto funcType = mlir::dyn_cast<mlir::LLVM::LLVMFunctionType>(
         llvmFunc.getFunctionType());
     uint32_t numOperands = funcType.getNumParams();

@@ -187,7 +187,8 @@ struct RockInsertOutputFusionLoadsPass
 void RockInsertOutputFusionLoadsPass::runOnOperation() {
   func::FuncOp funcOp = getOperation();
 
-  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic())) {
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
+      !funcOp->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
     return;
   }
 

@@ -330,10 +330,27 @@ def Rock_EnableSplitKForTuning : Rock_Attr<"EnableSplitKForTuning"> {
   }];
 }
 
+def Rock_EnableSplitKForTuningLegacy : Rock_Attr<"EnableSplitKForTuningLegacy"> {
+  let mnemonic = "enable_splitk_for_tuning";
+  let description = [{
+    Legacy version of EnableSplitKForTuning. Whether we tune for split-k. If unset, split-k=1.
+  }];
+}
+
 def Rock_Arch : Rock_Attr<"Arch"> {
   let mnemonic = "rock.arch";
   let description = [{
     The target architecture (ISA) string for the module, e.g. "gfx950", "gfx1250".
+    This attribute can be attached to modules to specify the target GPU architecture.
+  }];
+  let parameters = (ins StringRefParameter<"The architecture string">:$value);
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Rock_ArchLegacy : Rock_Attr<"ArchLegacy"> {
+  let mnemonic = "arch";
+  let description = [{
+    Legacy version of Arch. The target architecture (ISA) string for the module, e.g. "gfx950", "gfx1250".
     This attribute can be attached to modules to specify the target GPU architecture.
   }];
   let parameters = (ins StringRefParameter<"The architecture string">:$value);
@@ -348,10 +365,26 @@ def Rock_Kernel : Rock_Attr<"Kernel"> {
   }];
 }
 
+def Rock_KernelLegacy : Rock_Attr<"KernelLegacy"> {
+  let mnemonic = "kernel";
+  let description = [{
+    Legacy version of Kernel. Marker attribute to indicate that a function is a GPU kernel.
+    This attribute can be attached to func.func operations to mark them as kernels.
+  }];
+}
+
 def Rock_NumCU : Rock_Attr<"NumCU"> {
   let mnemonic = "rock.num_cu";
   let description = [{
     The number of compute units on the target GPU device.
+    Valid combinations include: gfx803(36/64), gfx900(56/64), gfx906(60/64), gfx908(120).
+  }];
+}
+
+def Rock_NumCULegacy : Rock_Attr<"NumCULegacy"> {
+  let mnemonic = "num_cu";
+  let description = [{
+    Legacy version of NumCU. The number of compute units on the target GPU device.
     Valid combinations include: gfx803(36/64), gfx900(56/64), gfx906(60/64), gfx908(120).
   }];
 }
@@ -363,12 +396,27 @@ def Rock_NumChiplets : Rock_Attr<"NumChiplets"> {
   }];
 }
 
+def Rock_NumChipletsLegacy : Rock_Attr<"NumChipletsLegacy"> {
+  let mnemonic = "num_chiplets";
+  let description = [{
+    Legacy version of NumChiplets. The number of chiplets on the target GPU device.
+  }];
+}
+
 def Rock_BlockSsize : Rock_Attr<"BlockSize"> {
   let mnemonic = "rock.block_size";
 }
 
+def Rock_BlockSizeLegacy : Rock_Attr<"BlockSizeLegacy"> {
+  let mnemonic = "block_size";
+}
+
 def Rock_GridSsize : Rock_Attr<"GridSize"> {
   let mnemonic = "rock.grid_size";
+}
+
+def Rock_GridSizeLegacy : Rock_Attr<"GridSizeLegacy"> {
+  let mnemonic = "grid_size";
 }
 
 def Rock_PrefillAttr : Rock_Attr<"Prefill"> {
@@ -376,6 +424,25 @@ def Rock_PrefillAttr : Rock_Attr<"Prefill"> {
 
   let description = [{
       A user interface parameter for initializing specific memory buffers
+
+      The attribute is a way to describe which specific kernel parameter
+      (typically memref) must be initialized with specific value before
+      a kernel invocation.
+
+  }];
+
+  let parameters = (ins
+    "uint32_t":$argIndex,
+    "TypedAttr":$initValue
+  );
+  let assemblyFormat = "`<` params `>`";
+}
+
+def Rock_PrefillAttrLegacy : Rock_Attr<"PrefillLegacy"> {
+  let mnemonic = "prefill";
+
+  let description = [{
+      Legacy version of Prefill. A user interface parameter for initializing specific memory buffers
 
       The attribute is a way to describe which specific kernel parameter
       (typically memref) must be initialized with specific value before

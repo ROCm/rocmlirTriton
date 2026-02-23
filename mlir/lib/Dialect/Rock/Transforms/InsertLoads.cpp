@@ -73,7 +73,8 @@ void RockInsertLoadsPass::runOnOperation() {
   func::FuncOp funcOp = getOperation();
 
   // Only run this pass on GPU kernel functions.
-  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic())) {
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
+      !funcOp->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
     return;
   }
 

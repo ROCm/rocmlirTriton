@@ -37,7 +37,8 @@ struct TosaToRock : public impl::TosaToRockPassBase<TosaToRock> {
 public:
   void runOnOperation() override {
     auto func = getOperation();
-    if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
+    if (!func->hasAttr(rock::KernelAttr::getMnemonic()) &&
+        !func->hasAttr(rock::KernelLegacyAttr::getMnemonic())) {
       llvm::report_fatal_error("func op does not have the kernel attribute");
     }
     auto &ctx = getContext();

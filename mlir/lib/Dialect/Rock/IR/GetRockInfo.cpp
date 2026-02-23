@@ -81,7 +81,7 @@ FailureOr<RetAttrType> getAttrFromOpOrParents(
 
 FailureOr<StringAttr> mlir::rock::getArch(Operation *op) {
   return getAttrFromOpOrParents<StringAttr>(op, rock::ArchAttr::getMnemonic(),
-                                            rock::ArchAttr::getMnemonic());
+                                            rock::ArchLegacyAttr::getMnemonic());
 }
 
 StringAttr mlir::rock::getArchValue(Operation *op) {
@@ -100,7 +100,7 @@ FailureOr<int64_t> mlir::rock::getNumCU(Operation *op) {
   }
   StringAttr arch = maybeArch.value();
   FailureOr<IntegerAttr> maybeNumCU = getAttrFromOpOrParents<IntegerAttr>(
-      op, rock::NumCUAttr::getMnemonic(), "num_cu");
+    op, rock::NumCUAttr::getMnemonic(), rock::NumCULegacyAttr::getMnemonic());
   if (failed(maybeNumCU)) {
     return failure();
   }
@@ -137,7 +137,8 @@ FailureOr<int64_t> mlir::rock::getNumChiplets(Operation *op) {
   }
   StringAttr arch = maybeArch.value();
   FailureOr<IntegerAttr> maybeNumChiplets = getAttrFromOpOrParents<IntegerAttr>(
-      op, rock::NumChipletsAttr::getMnemonic());
+      op, rock::NumChipletsAttr::getMnemonic(),
+      rock::NumChipletsLegacyAttr::getMnemonic());
   if (failed(maybeNumChiplets)) {
     LLVM_DEBUG(llvm::dbgs() << "Could not find num_chiplets\n");
     return failure();
@@ -170,4 +171,3 @@ int64_t mlir::rock::getNumChipletsValue(Operation *op) {
                    << "\n");
   return maxChiplets;
 }
-

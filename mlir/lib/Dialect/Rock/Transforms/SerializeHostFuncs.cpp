@@ -52,7 +52,8 @@ struct RockSerializeHostFuncsPass
     moduleOp.walk([&](func::FuncOp funcOp) {
       if (funcOp->getParentOfType<ModuleOp>() != moduleOp)
         return;
-      if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+      if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
+          !funcOp->hasAttr(rock::KernelLegacyAttr::getMnemonic()))
         nonKernelFuncs.push_back(funcOp);
     });
 

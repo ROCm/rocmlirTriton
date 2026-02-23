@@ -463,20 +463,27 @@ LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,
     return std::stol(argMap[argKey]);
   };
 
-  auto strToInt = [&argMap](const std::string &key, auto &setting) {
+  auto strToInt = [&argMap](const std::string &key, auto &setting,
+                            const std::string &legacyKey = "") {
     if (argMap.find(key) != argMap.end()) {
       setting = std::stoi(argMap[key]);
+    } else if (!legacyKey.empty() && argMap.find(legacyKey) != argMap.end()) {
+      setting = std::stoi(argMap[legacyKey]);
     }
   };
 
-  auto strToStr = [&argMap](const std::string &key, std::string &setting) {
+  auto strToStr = [&argMap](const std::string &key, std::string &setting,
+                            const std::string &legacyKey = "") {
     if (argMap.find(key) != argMap.end()) {
       setting = argMap[key];
+    } else if (!legacyKey.empty() && argMap.find(legacyKey) != argMap.end()) {
+      setting = argMap[legacyKey];
     }
   };
 
   std::string arch;
-  strToStr(rock::ArchAttr::getMnemonic().str(), arch);
+  strToStr(rock::ArchAttr::getMnemonic().str(), arch,
+           rock::ArchLegacyAttr::getMnemonic().str());
   RocmDeviceName splitter;
   if (failed(splitter.parse(arch))) {
     return failure();
@@ -499,8 +506,10 @@ LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,
   }
 
   strToStr("perf_config", config.perfConfig);
-  strToInt(rock::NumCUAttr::getMnemonic().str(), config.num_cu);
-  strToInt(rock::NumChipletsAttr::getMnemonic().str(), config.num_chiplets);
+  strToInt(rock::NumCUAttr::getMnemonic().str(), config.num_cu,
+           rock::NumCULegacyAttr::getMnemonic().str());
+  strToInt(rock::NumChipletsAttr::getMnemonic().str(), config.num_chiplets,
+           rock::NumChipletsLegacyAttr::getMnemonic().str());
 
   // conv settings
   auto const op = getConvOpTypeForName(argMap["operation"]);

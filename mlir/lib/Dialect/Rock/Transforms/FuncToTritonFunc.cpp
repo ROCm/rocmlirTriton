@@ -372,7 +372,8 @@ void RockFuncToTritonFuncPass::runOnOperation() {
   moduleOp.walk([&](func::FuncOp funcOp) {
     if (funcOp->getParentOfType<ModuleOp>() != moduleOp)
       return;
-    if (funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    if (funcOp->hasAttr(rock::KernelAttr::getMnemonic()) ||
+        funcOp->hasAttr(rock::KernelLegacyAttr::getMnemonic()))
       funcsToProcess.push_back(funcOp);
   });
 
@@ -381,8 +382,12 @@ void RockFuncToTritonFuncPass::runOnOperation() {
   // gpu.launch_func.
   for (func::FuncOp funcOp : funcsToProcess) {
     std::string kernelName = funcOp.getName().str();
-    if (auto gridAttr = funcOp->getAttrOfType<IntegerAttr>(
-            rock::GridSizeAttr::getMnemonic())) {
+    auto gridAttr = funcOp->getAttrOfType<IntegerAttr>(
+        rock::GridSizeAttr::getMnemonic());
+    if (!gridAttr)
+      gridAttr = funcOp->getAttrOfType<IntegerAttr>(
+          rock::GridSizeLegacyAttr::getMnemonic());
+    if (gridAttr) {
       moduleOp->setAttr("rock.grid_size." + kernelName, gridAttr);
     }
   }
