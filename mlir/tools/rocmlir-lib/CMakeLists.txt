@@ -55,36 +55,6 @@ target_include_directories(MLIRRockThin PRIVATE
   ${TRITON_BINARY_DIR}/third_party/nvidia/include
 )
 
-add_llvm_executable(rocmlir-lib-test
-  PARTIAL_SOURCES_INTENDED
-
-  rocmlir-lib-test.cpp
-
-  DEPENDS
-  MLIRRockThin
-  ${LIBS}
-)
-
-llvm_update_compile_flags(rocmlir-lib-test)
-
-# Add Triton include directories for compilation
-target_include_directories(rocmlir-lib-test PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_BINARY_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/third_party/nvidia
-  ${TRITON_BINARY_DIR}/third_party/nvidia
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_PROJECT_DIR}
-  ${TRITON_BINARY_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party/amd/include
-  ${TRITON_BINARY_DIR}/third_party/nvidia/include
-)
-
-target_link_libraries(rocmlir-lib-test PRIVATE MLIRRockThin ${LIBS})
-mlir_check_link_libraries(rocmlir-lib-test)
-
 llvm_canonicalize_cmake_booleans(BUILD_FAT_LIBROCKCOMPILER)
 # Static library target, enabled only when building static libs
 if(BUILD_FAT_LIBROCKCOMPILER)
