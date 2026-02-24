@@ -1,6 +1,6 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph --apply-bufferization-pipeline=false | FileCheck %s
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -t f16 --apply-bufferization-pipeline=false | FileCheck %s
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -t i8 --apply-bufferization-pipeline=false | FileCheck %s
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph | FileCheck %s
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -t f16 | FileCheck %s
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -t i8 | FileCheck %s
 
 // CHECK-LABEL: func.func @main()
 // CHECK-NEXT: %[[filter:.*]] = memref.alloc() : memref<[[GKCYX:[0-9]+]]x[[TYPE:[a-zA-Z0-9]+]]>
@@ -51,7 +51,12 @@
 // CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[NGCHIWI]]x[[TYPE]]>,  memref<[[NGCHIWI]]x[[TYPE]]>
 // CHECK-NEXT: gpu.alloc  () : memref<[[NGKHOWO]]x[[OTYPE]]>
 // CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[NGKHOWO]]x[[OTYPE]]>,  memref<[[NGKHOWO]]x[[OTYPE]]>
-// CHECK-NEXT: call @rock_conv_gkc01_ngc01_ngk01_0(%{{.*}}, %{{.*}}, %{{.*}}) : (memref<[[GKCYX]]x[[TYPE]]>, memref<[[NGCHIWI]]x[[TYPE]]>, memref<[[NGKHOWO]]x[[OTYPE]]>) -> ()
+// CHECK-NEXT: %{{.*}} = bufferization.to_tensor %{{.*}} restrict writable : memref<[[GKCYX]]x[[TYPE]]> to tensor<[[GKCYX]]x[[TYPE]]>
+// CHECK-NEXT: %{{.*}} = bufferization.to_tensor %{{.*}} restrict writable : memref<[[NGCHIWI]]x[[TYPE]]> to tensor<[[NGCHIWI]]x[[TYPE]]>
+// CHECK-NEXT: %{{.*}} = bufferization.to_tensor %{{.*}} restrict writable : memref<[[NGKHOWO]]x[[OTYPE]]> to tensor<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: %{{.*}} = call @rock_conv_gkc01_ngc01_ngk01_0(%{{.*}}, %{{.*}}, %{{.*}}) : (tensor<[[GKCYX]]x[[TYPE]]>, tensor<[[NGCHIWI]]x[[TYPE]]>, tensor<[[NGKHOWO]]x[[OTYPE]]>) -> tensor<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: %{{.*}} = bufferization.to_buffer %{{.*}} : tensor<[[NGKHOWO]]x[[OTYPE]]> to memref<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: memref.copy %{{.*}}, %{{.*}} : memref<[[NGKHOWO]]x[[OTYPE]]> to memref<[[NGKHOWO]]x[[OTYPE]]>
 // CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[GKCYX]]x[[TYPE]]>,  memref<[[GKCYX]]x[[TYPE]]>
 // CHECK-NEXT: gpu.dealloc  %{{.*}} : memref<[[GKCYX]]x[[TYPE]]>
 // CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[NGCHIWI]]x[[TYPE]]>,  memref<[[NGCHIWI]]x[[TYPE]]>

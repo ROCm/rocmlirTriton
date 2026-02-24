@@ -1,7 +1,7 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -pr --apply-bufferization-pipeline=false | FileCheck %s
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -pr -t f16 --apply-bufferization-pipeline=false | FileCheck %s --check-prefix=F16
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -pr -t bf16 --apply-bufferization-pipeline=false | FileCheck %s --check-prefix=BF16
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -pr -t i8 --apply-bufferization-pipeline=false | FileCheck %s --check-prefix=I8
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -pr | FileCheck %s
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -pr -t f16 | FileCheck %s --check-prefix=F16
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -pr -t bf16 | FileCheck %s --check-prefix=BF16
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -pr -t i8 | FileCheck %s --check-prefix=I8
 
 // CHECK-LABEL: func.func @main()
 // CHECK-NEXT: %[[filter:.*]] = memref.alloc() : memref<[[GKCYX:[0-9]+]]x[[TYPE:[a-zA-Z0-9]+]]>

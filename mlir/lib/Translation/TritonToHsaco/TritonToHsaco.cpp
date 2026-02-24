@@ -742,10 +742,28 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     return failure();
   }
 
+  // Dump LLVM IR if AMDGCN_ENABLE_LLVM_DUMP is set
+  if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_LLVM_DUMP")) {
+    std::string envVal(dumpEnv);
+    if (envVal == "1") {
+      llvm::errs() << "// -----// LLVM IR Dump //----- //\n";
+      llvmModule->print(llvm::errs(), nullptr);
+      llvm::errs() << "\n";
+    }
+  }
+
   std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
   if (amdgcnAsm.empty()) {
     llvm::errs() << "Failed to generate AMDGCN assembly\n";
     return failure();
+  }
+
+  // make_amdgcn (compiler.py)
+  if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_DUMP")) {
+    std::string envVal(dumpEnv);
+    if (envVal == "1") {
+      llvm::errs() << "// -----// AMDGCN Dump //----- //\n" << amdgcnAsm << "\n";
+    }
   }
 
   // make_hsaco (compiler.py lines 476-488)

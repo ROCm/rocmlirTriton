@@ -150,6 +150,8 @@ static LogicalResult runHostHighLevelPipeline(ModuleOp m) {
     llvm::errs() << "Host pipeline:\n";
     pm.printAsTextualPipeline(llvm::errs());
     llvm::errs() << "\n";
+    if (m.getBody()->empty())
+      return success();
   }
 
   return pm.run(m);
@@ -253,6 +255,12 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     llvm::errs() << "Kernel pipeline:\n";
     pm.printAsTextualPipeline(llvm::errs());
     llvm::errs() << "\n";
+
+    // Return success in dump-pipelines if the module is empty
+    // Otherwise rocmlir-driver will return failure when we run
+    // certain passes like triton-to-hsaco (which fail on empty modules)
+    if (m.getBody()->empty())
+      return success();
   }
   return pm.run(m);
 }
@@ -386,6 +394,8 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       llvm::errs() << "Custom pipeline:\n";
       pm.printAsTextualPipeline(llvm::errs());
       llvm::errs() << "\n";
+      if (module.getBody()->empty())
+        return success();
     }
     if (failed(pm.run(module))) {
       return failure();
@@ -406,6 +416,8 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       llvm::errs() << "Bufferization pipeline:\n";
       pm.printAsTextualPipeline(llvm::errs());
       llvm::errs() << "\n";
+      if (module.getBody()->empty())
+        return success();
     }
     if (failed(pm.run(module))) {
       return failure();

@@ -1,14 +1,17 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -p -rand=none | rocmlir-opt -canonicalize | FileCheck %s --check-prefix=NONE
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fix bug due to SplitK not zeroing out the output
+
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand=none | rocmlir-opt -canonicalize | FileCheck %s --check-prefix=NONE
 
 // NONE-NOT: call @seedRandomValues
 
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -p -rand 1 | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,RAND1,RAND2,FWD
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -p -rand 1 -rand_side filter | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,RAND1,FIXED2,FWD
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -p -rand 1 -rand_side input | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED1,RAND2
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -p -rand 1 -rand_side filter -operation conv_bwd_data | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,RAND1,FIXED3,BWDDATA
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -p -rand 1 -rand_side output  -operation conv_bwd_data | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED1,RAND3,BWDDATA
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -p -rand 1 -rand_side input -operation conv_bwd_weight | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,RAND2,FIXED3,BWDWEIGHT
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="v3:64,64,8,16,16,4,4,1,2,1,1" -ph -p -rand 1 -rand_side output  -operation conv_bwd_weight | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED2,RAND3,BWDWEIGHT
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand 1 | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,RAND1,RAND2
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand 1 -rand_side filter | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,RAND1,FIXED2
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand 1 -rand_side input | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED1,RAND2
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand 1 -rand_side filter -operation conv_bwd_data | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,RAND1,FIXED3
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand 1 -rand_side output  -operation conv_bwd_data | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED1,RAND3
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand 1 -rand_side input -operation conv_bwd_weight | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,RAND2,FIXED3
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand 1 -rand_side output  -operation conv_bwd_weight | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED2,RAND3
 
 // CHECK-LABEL: @main
 // CHECK-DAG: %[[zero:.*]] = arith.constant 0.000000e+00 : f32

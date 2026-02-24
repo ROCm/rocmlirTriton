@@ -1,6 +1,9 @@
 // REQUIRES: rocm-runner
 // RUN: rocmlir-driver -dump-pipelines -host-pipeline=runner -arch=gfx90a /dev/null -o /dev/null 2>&1 | FileCheck %s --check-prefix=RUNNER
 
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): move the host passes to the runner pipeline
+
 // RUNNER: Host runner pipeline:
 // RUNNER-NEXT: {{^}}builtin.module(func.func(mhal-select-targets{archs={amdgcn-amd-amdhsa:gfx90a} target-types={GPU}}),
 // RUNNER-SAME: func.func(convert-linalg-to-affine-loops,

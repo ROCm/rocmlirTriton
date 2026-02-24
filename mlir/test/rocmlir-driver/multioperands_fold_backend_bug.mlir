@@ -1,6 +1,6 @@
 // This test is just ensure backend LLVM compiler is not crashing while compiling this kernel. It was crashing earlier and fixed by https://github.com/llvm/llvm-project/pull/148205.  
-// RUN: sed -e 's/##TOKEN_ARCH##/%arch/g' %s | rocmlir-driver --kernel-pipeline=migraphx,highlevel,gpu,binary --arch %arch | FileCheck %s
-// CHECK: gpu.binary
+// RUN: sed -e 's/##TOKEN_ARCH##/%arch/g' %s | rocmlir-driver -c --arch %arch | FileCheck %s
+// CHECK: triton.hsaco
 module {
   func.func @test(%arg0: !migraphx.shaped<1x40x9419x128xf16, 48225280x1205632x128x1>, %arg1: !migraphx.shaped<1x9419x40x128xf16, 48225280x5120x128x1>) -> !migraphx.shaped<1x40x9419x9419xf16, 3548702440x88717561x9419x1> attributes {kernel = "mixr", arch = "##TOKEN_ARCH##"} {
     %0 = migraphx.literal(dense<8.831780e-02> : tensor<1xf16>) : <1xf16, 1>

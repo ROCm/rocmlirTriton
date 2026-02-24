@@ -770,10 +770,8 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   // c2 = arith.addf(c, otherTensor) -> propagate c and shape to otherTensor
   // rock.store c2, newTransform ... -> propagate c and new transforms
   if (storeOp) {
-
-    // adjust the store method
-    StoreMethodAttr storeMethod =
-        rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set);
+    // Preserve the original store method, but force AtomicAdd for split-K
+    StoreMethodAttr storeMethod = storeOp.getStoreMethodAttr();
     if (splitKFactor > 1)
       storeMethod =
           rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
