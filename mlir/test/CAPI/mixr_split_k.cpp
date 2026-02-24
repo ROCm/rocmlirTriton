@@ -262,9 +262,9 @@ MlirModule makeAndDumpMIXR(MlirContext ctx, MlirLocation location,
 
   // set additional attributes
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString("kernel"), mlirUnitAttrGet(ctx));
+      func, mlirStringRefCreateFromCString("rock.kernel"), mlirUnitAttrGet(ctx));
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString("arch"),
+      func, mlirStringRefCreateFromCString("rock.arch"),
       mlirStringAttrGet(
           ctx, mlirStringRefCreateFromCString(options.targetArch.c_str())));
 
@@ -349,7 +349,7 @@ static bool constructAndTraverseIr(MlirContext ctx,
     mlirOperationDump(moduleMO);
 
   std::stringstream stream;
-  stream << "v3:64,64,16,32,32,4," << options.splitKFactor << ",1,2,1,1";
+  stream << "gemm:v1:64,64,64,1,1,4,16," << options.splitKFactor << ",2,0,0";
   std::string streamStr = stream.str() + "\0";
   MlirStringRef perfStr = mlirStringRefCreateFromCString(streamStr.data());
 

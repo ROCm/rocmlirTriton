@@ -78,9 +78,9 @@ MlirModule makeAndDumpMIXR(MlirContext ctx, MlirLocation loc) {
   mlirOperationStateAddOwnedRegions(&funcState, 1, &funcBodyRegion);
   MlirOperation func = mlirOperationCreate(&funcState);
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString("kernel"), mlirUnitAttrGet(ctx));
+      func, mlirStringRefCreateFromCString("rock.kernel"), mlirUnitAttrGet(ctx));
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString("arch"),
+      func, mlirStringRefCreateFromCString("rock.arch"),
       mlirStringAttrGet(
           ctx, mlirStringRefCreateFromCString("gfx908:sramecc+:xnack-")));
   mlirBlockInsertOwnedOperation(moduleBody, 0, func);
@@ -174,10 +174,26 @@ static MlirModule cloneModule(MlirModule module) {
       mlirOperationClone(mlirModuleGetOperation(module)));
 }
 
+static void printToFile(MlirStringRef str, void *userData) {
+  FILE *f = (FILE *)userData;
+  fwrite(str.data, 1, str.length, f);
+}
+
+static void dumpIrToFile(MlirOperation op, const char *filename) {
+  FILE *f = fopen(filename, "w");
+  if (f) {
+    mlirOperationPrint(op, printToFile, f);
+    fclose(f);
+    printf("IR dumped to %s\n", filename);
+  }
+}
+
 static bool constructAndTraverseIr(MlirContext ctx) {
   MlirLocation loc = mlirLocationUnknownGet(ctx);
   MlirModule module = makeAndDumpMIXR(ctx, loc);
   MlirOperation moduleOp = mlirModuleGetOperation(module);
+
+  dumpIrToFile(moduleOp, "/tmp/mixr_initial.mlir");
 
   MlirPassManager highLevelPm = mlirPassManagerCreate(ctx);
   MlirPassManager applicabilityPm = mlirPassManagerCreate(ctx);
@@ -187,8 +203,10 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   if (mlirLogicalResultIsFailure(
           mlirPassManagerRunOnOp(highLevelPm, moduleOp))) {
     printf("Running high-level pipeline failed\n");
+    dumpIrToFile(moduleOp, "/tmp/mixr_after_highlevel_failed.mlir");
     return false;
   }
+  dumpIrToFile(moduleOp, "/tmp/mixr_after_highlevel.mlir");
 
   MlirRockTuningSpace tuningSpace =
       mlirRockTuningSpaceCreate(module, RocmlirTuningParamSetKindFull);
