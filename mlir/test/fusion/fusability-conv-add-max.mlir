@@ -3,7 +3,7 @@
 // RUN: rocmlir-gen -emit-module-fusibility-for=v3:16,16,4,16,16,1,1,1,2,1,1 - < %s | FileCheck %s --check-prefixes=CHECK-NONSPLITK
 // CHECK-NONSPLITK: fusible:1
 module {
-  func.func @mlir_convolution_add_relu(%arg0: memref<64x1x1x1xf32>, %arg1: memref<1x256x56x56xf32>, %arg2: memref<64x256x1x1xf32>, %arg3: memref<1x64x56x56xf32>) attributes {enable_splitk_for_tuning, kernel, mhal.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
+  func.func @mlir_convolution_add_relu(%arg0: memref<64x1x1x1xf32>, %arg1: memref<1x256x56x56xf32>, %arg2: memref<64x256x1x1xf32>, %arg3: memref<1x64x56x56xf32>) attributes {enable_splitk_for_tuning, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
     %cst = arith.constant 0.000000e+00 : f32
     %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3) -> (d1, d2, d3, d0)> by [<PassThrough ["dim3", "dim0", "dim1", "dim2"] at [0, 1, 2, 3] -> ["dim3", "dim0", "dim1", "dim2"] at [3, 0, 1, 2]>] bounds = [1, 64, 1, 1] -> [64, 1, 1, 1]> : memref<64x1x1x1xf32> to memref<1x64x1x1xf32>
     %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3) -> (d0, d1, 0, 0)> by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [1]>, <Broadcast{1} ["dim2"] at [2] -> ["dim2"] at [2]>, <Broadcast{1} ["dim3"] at [3] -> ["dim3"] at [3]>] bounds = [1, 64, 56, 56] -> [1, 64, 1, 1]> : memref<1x64x1x1xf32> to memref<1x64x56x56xf32>

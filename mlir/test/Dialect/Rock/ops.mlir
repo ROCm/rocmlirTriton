@@ -299,7 +299,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 // TODO(roctriton): We need to "unbufferize" attention
 // DISABLED-CHECK-LABEL: func.func @gridwise_attn_atomic_add
 // DISABLED-CHECK: rock.gridwise_attention
-// func.func @gridwise_attn_atomic_add(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x64x384xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, grid_size = 24 : i32, kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"} {
+// func.func @gridwise_attn_atomic_add(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x64x384xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, grid_size = 24 : i32, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"} {
 //   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["gemmG"] at [0] -> ["gemmG"] at [0]>, <PassThrough ["gemm0K", "gemm0M"] at [1, 2] -> ["gemm0K", "gemm0M"] at [2, 1]>] bounds = [1, 64, 384] -> [1, 384, 64]> : tensor<1x384x64xf32> to tensor<1x64x384xf32>
 //   %result = rock.gridwise_attention(%0, %arg1, %arg2, %arg3) preSoftmaxOps = {} {
 //     blockSize = 64 : i32,
@@ -317,7 +317,7 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 //
 // DISABLED-CHECK-LABEL: func.func @attention
 // DISABLED-CHECK: rock.attention
-// func.func @attention(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, mhal.rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>

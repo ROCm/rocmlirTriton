@@ -16,7 +16,7 @@ module {
     mhal.await %token : !mhal.token
     return %results : tensor<1x128x1xbf16>
   }
-  module @__xmodule_ attributes {mhal.arch = "##TOKEN_ARCH##", mhal.module} {
+  module @__xmodule_ attributes {rock.arch = "##TOKEN_ARCH##", mhal.module} {
     func.func private @dot_add_part_0(%arg0: tensor<1x128x64xbf16> {mhal.read_access}, %arg1: tensor<1x64x256xbf16> {mhal.read_access}, %arg2: tensor<1x128x256xbf16> {mhal.read_access}) -> (tensor<1x128x1xbf16> {mhal.write_access}) attributes {kernel, original_func = @dot_add_part_0} {
       %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xbf16>}> : () -> tensor<1xbf16>
       %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xbf16>}> : () -> tensor<1xbf16>

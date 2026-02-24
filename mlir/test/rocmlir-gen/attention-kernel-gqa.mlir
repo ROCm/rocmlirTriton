@@ -1,6 +1,6 @@
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f32 -pv --apply-bufferization-pipeline=false | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_SCALE
 
-// CHECK_SCALE: module attributes {mhal.arch = "[[$ARCH:.*]]"}
+// CHECK_SCALE: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // CHECK_SCALE-LABEL: func.func @rock_attention
 // CHECK_SCALE-SAME: (%[[queriesRaw:.*0]]: memref<131072xf32>,
@@ -8,7 +8,7 @@
 // CHECK_SCALE-SAME: %[[valuesRaw:.*2]]: memref<65536xf32>,
 // CHECK_SCALE-SAME: %[[scaleRaw:.*3]]: memref<4194304xf32>,
 // CHECK_SCALE-SAME: %[[outputRaw:.*4]]: memref<131072xf32>)
-// CHECK_SCALE-SAME: attributes {kernel, mhal.arch = "[[$ARCH]]"}
+// CHECK_SCALE-SAME: attributes {kernel, rock.arch = "[[$ARCH]]"}
 // CHECK_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : memref<131072xf32> to memref<4x1024x32xf32>
 // CHECK_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : memref<65536xf32> to memref<2x32x1024xf32>
 // CHECK_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : memref<65536xf32> to memref<2x1024x32xf32>
@@ -46,14 +46,14 @@
 
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv --apply-bufferization-pipeline=false | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_NO_SCALE
 
-// CHECK_NO_SCALE: module attributes {mhal.arch = "[[$ARCH:.*]]"}
+// CHECK_NO_SCALE: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // CHECK_NO_SCALE-LABEL: func.func @rock_attention
 // CHECK_NO_SCALE-SAME: (%[[queriesRaw:.*0]]: memref<131072xf32>,
 // CHECK_NO_SCALE-SAME: %[[keysRaw:.*1]]: memref<65536xf32>,
 // CHECK_NO_SCALE-SAME: %[[valuesRaw:.*2]]: memref<65536xf32>,
 // CHECK_NO_SCALE-SAME: %[[outputRaw:.*3]]: memref<131072xf32>)
-// CHECK_NO_SCALE-SAME: attributes {kernel, mhal.arch = "[[$ARCH]]"}
+// CHECK_NO_SCALE-SAME: attributes {kernel, rock.arch = "[[$ARCH]]"}
 // CHECK_NO_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : memref<131072xf32> to memref<4x1024x32xf32>
 // CHECK_NO_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : memref<65536xf32> to memref<2x32x1024xf32>
 // CHECK_NO_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : memref<65536xf32> to memref<2x1024x32xf32>

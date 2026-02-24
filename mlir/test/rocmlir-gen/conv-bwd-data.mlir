@@ -1,6 +1,6 @@
 // RUN: rocmlir-gen --arch gfx906:sramecc+:xnack- -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -batchsize=32 -in_channels=32 -out_channels=32 -in_h=14 -in_w=14 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --padding_h=1 --padding_w=1 --conv_stride_h=2 --conv_stride_w=2 --groupsize=1  --operation=conv_bwd_data | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=BWD
 
-// BWD: module attributes {mhal.arch = "[[$ARCH:.*]]"}
+// BWD: module attributes {rock.arch = "[[$ARCH:.*]]"}
 // BWD: @rock_conv_bwd_data_gk01c_n01gc_n01gk_0({{.*}} kernel = 0 : i32
 // BWD: rock.conv_bwd_data(%0, %1, %2) {{.*}}
 // BWD-NOT: kernel = 1: i32

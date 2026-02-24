@@ -5,9 +5,9 @@
 #map1 = affine_map<(d0, d1, d2) -> (d0, d2, d1)>
 #transform_map = #rock.transform_map<#map1 by [<PassThrough ["gemmG", "gemmK", "gemmM"] at [0, 1, 2] -> ["gemmG", "gemmK", "gemmM"] at [0, 2, 1]>] bounds = [1, 32, 16] -> [1, 16, 32]>
 
-module attributes {mhal.arch = "amdgcn-amd-amdhsa:gfx90a"} {
+module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
   // CHECK-LABEL: @rock_gemm
-  func.func @rock_gemm(%arg0: memref<1x32x16xf16>, %arg1: memref<1x16x32xf32>, %arg2: memref<1x32x32xf32>) attributes {block_size = 128 : i32, enable_splitk_for_tuning, grid_size = 1 : i32, kernel, mhal.arch = "amdgcn-amd-amdhsa:gfx90a"} {
+  func.func @rock_gemm(%arg0: memref<1x32x16xf16>, %arg1: memref<1x16x32xf32>, %arg2: memref<1x32x32xf32>) attributes {block_size = 128 : i32, enable_splitk_for_tuning, grid_size = 1 : i32, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     // CHECK: %[[ALLOC:.+]] = memref.alloc() : memref<1x32x16xf32>
     %alloc = memref.alloc() : memref<1x32x16xf32>
     // CHECK-NEXT: linalg.generic {{.*}} outs(%[[ALLOC]]
@@ -35,7 +35,7 @@ module attributes {mhal.arch = "amdgcn-amd-amdhsa:gfx90a"} {
 
 
   // CHECK-LABEL: @rock_gemm_tr
-  func.func @rock_gemm_tr(%arg0: memref<1x32x16xf16>, %arg1: memref<1x16x32xf32>, %arg2: memref<1x32x32xf32>) attributes {block_size = 128 : i32, enable_splitk_for_tuning, grid_size = 1 : i32, kernel, mhal.arch = "amdgcn-amd-amdhsa:gfx90a"} {
+  func.func @rock_gemm_tr(%arg0: memref<1x32x16xf16>, %arg1: memref<1x16x32xf32>, %arg2: memref<1x32x32xf32>) attributes {block_size = 128 : i32, enable_splitk_for_tuning, grid_size = 1 : i32, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     // CHECK: %[[alloc:.+]] = memref.alloc() : memref<1x32x16xf32>
     // CHECK-NEXT: %[[trAlloc:.*]] = rock.transform %[[alloc]] by
     // CHECK-SAME: [<PassThrough ["gemmG", "gemmK", "gemmM"] at [0, 2, 1] -> ["gemmG", "gemmK", "gemmM"] at [0, 1, 2]>]

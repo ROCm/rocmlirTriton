@@ -3,7 +3,7 @@
 // UNSUPPORTED: true
 // TODO(rocmlirTriton): Disabling this test due to issues in tosa-to-rock pass
 
-module attributes {rock.kernel.module, mhal.arch = "amdgcn-amd-amdhsa:gfx906"} {
+module attributes {rock.kernel.module, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
 // CHECK: @test_basic
 // CHECK-SAME: (%[[a:.*]]: tensor<2x128x64xf32>, %[[b:.*]]: tensor<2x64x256xf32>)
 func.func @test_basic(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> tensor<2x128x256xf32> attributes {rock.kernel} {
