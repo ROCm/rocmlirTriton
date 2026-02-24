@@ -255,6 +255,10 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     llvm::errs() << "Kernel pipeline:\n";
     pm.printAsTextualPipeline(llvm::errs());
     llvm::errs() << "\n";
+
+    // Return success in dump-pipelines if the module is empty
+    // Otherwise rocmlir-driver will return failure when we run
+    // certain passes like triton-to-hsaco (which fail on empty modules)
     if (m.getBody()->empty())
       return success();
   }
