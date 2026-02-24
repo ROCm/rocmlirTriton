@@ -23,6 +23,9 @@ from hip import hip
 import reportUtils
 from perfCommonUtils import Operation, GEMMLibrary
 
+# Split-K parameter index in perfconfig
+SPLITK_IDX = 7
+
 # global variables.
 ROCPROF = '/opt/rocm/bin/rocprofv3'
 MIOPENDRIVER = '/opt/rocm/bin/MIOpenDriver'
@@ -201,6 +204,29 @@ def initialize_dtypes_attn():
     return DATA_TYPES_ATTENTION  # For modules that import this function
 
 
+def _find_llvm_build_dir(mlir_build_dir_path) -> Optional[str]:
+    """Locate the LLVM build directory for the given rocMLIR build.
+
+    Checks the Triton-based layout first (external/triton/llvm-project/build),
+    then falls back to reading LLVM_DIR from CMakeCache.txt.
+    """
+    repo_root = Path(mlir_build_dir_path).parent
+    triton_llvm = repo_root / 'external/triton/llvm-project/build'
+    if (triton_llvm / 'bin').exists():
+        return str(triton_llvm.resolve())
+
+    cmake_cache = Path(mlir_build_dir_path) / 'CMakeCache.txt'
+    if cmake_cache.exists():
+        with open(cmake_cache) as f:
+            for line in f:
+                if line.startswith('LLVM_DIR'):
+                    llvm_cmake_dir = Path(line.split('=', 1)[1].strip())
+                    llvm_build_root = llvm_cmake_dir.parent.parent.parent
+                    if (llvm_build_root / 'bin').exists():
+                        return str(llvm_build_root.resolve())
+    return None
+
+
 def create_paths(config_file_path, mlir_build_dir_path) -> Paths:
     """Creates the composite Paths structure using build dir paths"""
 
@@ -210,9 +236,14 @@ def create_paths(config_file_path, mlir_build_dir_path) -> Paths:
         mlir_bin_dir = str(mlir_bin_dir_path)
         ck_gemm_benchmark_driver_location = mlir_bin_dir_path / 'ck-gemm-benchmark-driver'
         hipblaslt_benchmark_driver_location = mlir_bin_dir_path / 'hipblaslt-benchmark-driver'
-        llvm_bin_dir = str((Path(mlir_build_dir_path) / 'external/llvm-project/llvm/bin').resolve())
         mlir_lib_dir = str((Path(mlir_build_dir_path) / 'lib').resolve())
-        llvm_lib_dir = str((Path(mlir_build_dir_path) / 'external/llvm-project/llvm/lib').resolve())
+
+        llvm_build_dir = _find_llvm_build_dir(mlir_build_dir_path)
+        if not llvm_build_dir:
+            raise RuntimeError("Cannot find LLVM build directory")
+        llvm_bin_dir = str(Path(llvm_build_dir, 'bin'))
+        llvm_lib_dir = str(Path(llvm_build_dir, 'lib'))
+
         mlir_paths = MLIRPaths(
             rocmlir_gen_path=mlir_bin_dir + '/rocmlir-gen',
             rocmlir_driver_path=mlir_bin_dir + '/rocmlir-driver',
@@ -2089,11 +2120,8 @@ def benchmark_fusion_kernels(test_dir,
         # InitParamsAccel::visit().
         for (arch, config), perfconfig in tuning_db.items():
             split_perf = perfconfig.split(',')
-            if ((perfconfig[0:3] == 'v2:' or perfconfig[0:3] == 'v3:') and int(split_perf[6]) > 1):
-                split_perf[6] = '1'
-                tuning_db[arch, config] = ','.join(split_perf)
-            if ((perfconfig[0:3] == 'v4:') and int(split_perf[7]) > 1):
-                split_perf[7] = '1'
+            if int(split_perf[SPLITK_IDX]) > 1:
+                split_perf[SPLITK_IDX] = '1'
                 tuning_db[arch, config] = ','.join(split_perf)
 
     # Profile each test case

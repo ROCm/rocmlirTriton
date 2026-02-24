@@ -14,6 +14,9 @@ import numpy as np
 import pandas as pd
 import pulp
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from perfRunner import SPLITK_IDX  # noqa: E402
+
 # Column definitions for grouping problems
 GEMM_COLUMNS = ['TransA', 'TransB', 'G', 'M', 'K', 'N']
 CONV_COLUMNS = [
@@ -76,39 +79,16 @@ def get_target_columns(op):
 def parse_perfconfig(perfconfig):
     """Parse a perfconfig string into format, version, and params."""
     parts = perfconfig.split(":")
-    if len(parts) == 3:
-        # format:vN:params
-        return parts[0], int(parts[1][1:]), parts[2].split(",")
-    elif len(parts) == 2:
-        if parts[0].startswith("v"):
-            # vN:params
-            return None, int(parts[0][1:]), parts[1].split(",")
-        else:
-            # format:params
-            return parts[0], 1, parts[1].split(",")
-    else:
-        # params only
-        return None, 1, perfconfig.split(",")
+    if len(parts) != 3:
+        raise ValueError(f"Invalid perfconfig format: {perfconfig}")
+    return parts[0], int(parts[1][1:]), parts[2].split(",")
 
 
 def get_splitk_value(perfconfig):
     """Extract the Split-K value from a perfconfig string."""
     fmt, version, params = parse_perfconfig(perfconfig)
-
-    idx = None
-    if fmt == "attn":
-        if version >= 3:
-            idx = 8
-        elif version >= 2:
-            idx = 7
-    else:
-        if version >= 4:
-            idx = 7
-        elif version >= 2:
-            idx = 6
-
-    if idx is not None and idx < len(params):
-        return params[idx]
+    if SPLITK_IDX < len(params):
+        return params[SPLITK_IDX]
     return None
 
 
@@ -490,4 +470,3 @@ Examples:
 
 if __name__ == '__main__':
     sys.exit(main())
-    
