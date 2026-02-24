@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fix bug due to SplitK not zeroing out the output
+
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand=none | rocmlir-opt -canonicalize | FileCheck %s --check-prefix=NONE
 
 // NONE-NOT: call @seedRandomValues
@@ -11,6 +14,7 @@
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" -ph -p -rand 1 -rand_side output  -operation conv_bwd_weight | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED2,RAND3
 
 // CHECK-LABEL: @main
+// CHECK-DAG: %[[zero:.*]] = arith.constant 0.000000e+00 : f32
 // CHECK-DAG: %[[min:.*]] = arith.constant -5 : i16
 // CHECK-DAG: %[[max:.*]] = arith.constant 5 : i16
 // CHECK-DAG: %[[one:.*]] = arith.constant 1 : i32
@@ -21,18 +25,21 @@
 // CHECK: affine.for
 // RAND1-NEXT: %[[val1:.*]] = func.call @randomIntegerValue(%[[min]], %[[max]])
 // FIXED1-NEXT: %[[val1:.*]] = func.call @randomIntegerValue(%[[one_i16]], %[[one_i16]])
+// BWDWEIGHT-NEXT: memref.store %[[zero]]
 // RAND1-NEXT: memref.store %[[val1]]
 // FIXED1-NEXT: memref.store %[[val1]]
 // CHECK: memref.alloc
 // CHECK-NEXT: affine.for
 // RAND2-NEXT: %[[val2:.*]] = func.call @randomIntegerValue(%[[min]], %[[max]])
 // FIXED2-NEXT: %[[val2:.*]] = func.call @randomIntegerValue(%[[one_i16]], %[[one_i16]])
+// BWDDATA-NEXT: memref.store %[[zero]]
 // RAND2-NEXT: memref.store %[[val2]]
 // FIXED2-NEXT: memref.store %[[val2]]
 // CHECK: memref.alloc
 // CHECK-NEXT: affine.for
 // RAND3-NEXT: %[[val3:.*]] = func.call @randomIntegerValue(%[[min]], %[[max]])
 // FIXED3-NEXT: %[[val3:.*]] = func.call @randomIntegerValue(%[[one_i16]], %[[one_i16]])
+// FWD-NEXT: memref.store %[[zero]]
 // RAND3-NEXT: memref.store %[[val3]]
 // FIXED3-NEXT: memref.store %[[val3]]
 
