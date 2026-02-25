@@ -1,24 +1,24 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f32 -pv --apply-bufferization-pipeline=false | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_SCALE
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_SCALE
 
 // CHECK_SCALE: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // CHECK_SCALE-LABEL: func.func @rock_attention
-// CHECK_SCALE-SAME: (%[[queriesRaw:.*0]]: memref<131072xf32>,
-// CHECK_SCALE-SAME: %[[keysRaw:.*1]]: memref<65536xf32>,
-// CHECK_SCALE-SAME: %[[valuesRaw:.*2]]: memref<65536xf32>,
-// CHECK_SCALE-SAME: %[[scaleRaw:.*3]]: memref<4194304xf32>,
-// CHECK_SCALE-SAME: %[[outputRaw:.*4]]: memref<131072xf32>)
-// CHECK_SCALE-SAME: attributes {kernel, rock.arch = "[[$ARCH]]"}
-// CHECK_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : memref<131072xf32> to memref<4x1024x32xf32>
-// CHECK_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : memref<65536xf32> to memref<2x32x1024xf32>
-// CHECK_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : memref<65536xf32> to memref<2x1024x32xf32>
-// CHECK_SCALE-NEXT: %[[scale:.*]] = rock.transform %[[scaleRaw]] {{.*}} : memref<4194304xf32> to memref<4x1024x1024xf32>
-// CHECK_SCALE-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : memref<131072xf32> to memref<4x1024x32xf32>
+// CHECK_SCALE-SAME: (%[[queriesRaw:.*0]]: tensor<131072xf32>,
+// CHECK_SCALE-SAME: %[[keysRaw:.*1]]: tensor<65536xf32>,
+// CHECK_SCALE-SAME: %[[valuesRaw:.*2]]: tensor<65536xf32>,
+// CHECK_SCALE-SAME: %[[scaleRaw:.*3]]: tensor<4194304xf32>,
+// CHECK_SCALE-SAME: %[[outputRaw:.*4]]: tensor<131072xf32>)
+// CHECK_SCALE-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
+// CHECK_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
+// CHECK_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>
+// CHECK_SCALE-NEXT: %[[scale:.*]] = rock.transform %[[scaleRaw]] {{.*}} : tensor<4194304xf32> to tensor<4x1024x1024xf32>
+// CHECK_SCALE-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
 
 // CHECK_SCALE-NEXT: rock.attention
 // CHECK_SCALE-NEXT: qk = %[[queries]] * %[[keys]]
 // CHECK_SCALE-NEXT: qk = elementwise otherIns(%[[scale]]
-// CHECK_SCALE: %[[output]] = softmax(qk) * %[[values]]
+// CHECK_SCALE: softmax(qk) * %[[values]]
 // CHECK_SCALE-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
 // CHECK_SCALE: return
 
@@ -44,24 +44,24 @@
 
 // ----
 
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv --apply-bufferization-pipeline=false | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_NO_SCALE
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_NO_SCALE
 
 // CHECK_NO_SCALE: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // CHECK_NO_SCALE-LABEL: func.func @rock_attention
-// CHECK_NO_SCALE-SAME: (%[[queriesRaw:.*0]]: memref<131072xf32>,
-// CHECK_NO_SCALE-SAME: %[[keysRaw:.*1]]: memref<65536xf32>,
-// CHECK_NO_SCALE-SAME: %[[valuesRaw:.*2]]: memref<65536xf32>,
-// CHECK_NO_SCALE-SAME: %[[outputRaw:.*3]]: memref<131072xf32>)
-// CHECK_NO_SCALE-SAME: attributes {kernel, rock.arch = "[[$ARCH]]"}
-// CHECK_NO_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : memref<131072xf32> to memref<4x1024x32xf32>
-// CHECK_NO_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : memref<65536xf32> to memref<2x32x1024xf32>
-// CHECK_NO_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : memref<65536xf32> to memref<2x1024x32xf32>
-// CHECK_NO_SCALE-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : memref<131072xf32> to memref<4x1024x32xf32>
+// CHECK_NO_SCALE-SAME: (%[[queriesRaw:.*0]]: tensor<131072xf32>,
+// CHECK_NO_SCALE-SAME: %[[keysRaw:.*1]]: tensor<65536xf32>,
+// CHECK_NO_SCALE-SAME: %[[valuesRaw:.*2]]: tensor<65536xf32>,
+// CHECK_NO_SCALE-SAME: %[[outputRaw:.*3]]: tensor<131072xf32>)
+// CHECK_NO_SCALE-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK_NO_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
+// CHECK_NO_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
+// CHECK_NO_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>
+// CHECK_NO_SCALE-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
 
 // CHECK_NO_SCALE-NEXT: rock.attention
 // CHECK_NO_SCALE-NEXT: qk = %[[queries]] * %[[keys]]
-// CHECK_NO_SCALE: %[[output]] = softmax(qk) * %[[values]]
+// CHECK_NO_SCALE: softmax(qk) * %[[values]]
 // CHECK_NO_SCALE-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
 // CHECK_NO_SCALE: return
 

@@ -1,11 +1,11 @@
 // Arch is fixed here because not all architectures have atomic_add
 // RUN: rocmlir-gen --arch gfx908 --operation gemm -p --store-method atomic_add | FileCheck %s --check-prefix=ATOMIC_ADD
 // ATOMIC_ADD: rock.gemm
-// ATOMIC_ADD-SAME: storeMethod = atomic_add
-// RUN: rocmlir-gen --emit-tuning-key -p --arch gfx900 | FileCheck %s --check-prefix=CONV
-// CONV: amdgcn-amd-amdhsa:gfx900   {{.*}}     conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 128 -c 8 -H 32 -W 32 -k 128 -y 3 -x 3 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
-// RUN: rocmlir-gen --emit-tuning-key -p -t fp8_fp8 --arch gfx900 | FileCheck %s --check-prefix=CONVFP8
-// CONVFP8: amdgcn-amd-amdhsa:gfx900   {{.*}}     convfp8_fp8 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 128 -c 8 -H 32 -W 32 -k 128 -y 3 -x 3 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
+// ATOMIC_ADD: rock.store {{.*}} by atomic_add
+// RUN: rocmlir-gen --emit-tuning-key -p --arch gfx1101 | FileCheck %s --check-prefix=CONV
+// CONV: amdgcn-amd-amdhsa:gfx1101   {{.*}}     conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 128 -c 8 -H 32 -W 32 -k 128 -y 3 -x 3 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
+// RUN: rocmlir-gen --emit-tuning-key -p -t fp8_fp8 --arch gfx1101 | FileCheck %s --check-prefix=CONVFP8
+// CONVFP8: amdgcn-amd-amdhsa:gfx1101   {{.*}}     convfp8_fp8 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 128 -c 8 -H 32 -W 32 -k 128 -y 3 -x 3 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 // RUN: rocmlir-gen --emit-tuning-key -p -t fp8_fp8 --arch gfx1201 | FileCheck %s --check-prefix=CONVOCPFP8
 // CONVOCPFP8: amdgcn-amd-amdhsa:gfx1201   {{.*}}     convfp8_fp8 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 128 -c 8 -H 32 -W 32 -k 128 -y 3 -x 3 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 // RUN: rocmlir-gen --arch gfx908 --operation gemm -p --emit-tuning-key | FileCheck %s --check-prefix=GEMM
@@ -13,4 +13,4 @@
 // RUN: rocmlir-gen --emit-tuning-key -p -t fp8_fp8 --arch gfx950 | FileCheck %s --check-prefix=CONVOCPFP8_GFX950
 // CONVOCPFP8_GFX950: amdgcn-amd-amdhsa:gfx950   {{.*}}     convfp8_fp8 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 128 -c 8 -H 32 -W 32 -k 128 -y 3 -x 3 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -p --num_cu 40 --num_chiplets 20 | FileCheck %s --check-prefix=NUM_CHIPLETS
-// NUM_CHIPLETS: num_chiplets = 20 : i64, num_cu = 40 : i64
+// NUM_CHIPLETS: rock.num_chiplets = 20 : i64, rock.num_cu = 40 : i64

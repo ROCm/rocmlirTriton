@@ -1,30 +1,29 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -return_lse -split_kv 8 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv --apply-bufferization-pipeline=false | rocmlir-opt | FileCheck %s --enable-var-scope
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -return_lse -split_kv 8 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // CHECK-LABEL: func.func @rock_attention
-// CHECK-SAME: (%[[queriesRaw:.*0]]: memref<128xf32>,
-// CHECK-SAME: %[[keysRaw:.*1]]: memref<65536xf32>,
-// CHECK-SAME: %[[valuesRaw:.*2]]: memref<65536xf32>,
-// CHECK-SAME: %[[currentSeqLenRaw:.*3]]: memref<1xi32>,
-// CHECK-SAME: %[[lseRaw:.*4]]: memref<32xf32>,
-// CHECK-SAME: %[[outputRaw:.*5]]: memref<1024xf32>)
-// CHECK-SAME: attributes {kernel, rock.arch = "[[$ARCH]]"}
-// CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : memref<128xf32> to memref<4x1x32xf32>
-// CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : memref<65536xf32> to memref<2x32x1024xf32>
-// CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : memref<65536xf32> to memref<2x1024x32xf32>
-// CHECK-NEXT: %[[currentSeqLen:.*]] = rock.transform %[[currentSeqLenRaw]] {{.*}} : memref<1xi32> to memref<1xi32>
-// CHECK-NEXT: %[[lse:.*]] = rock.transform %[[lseRaw]] {{.*}} : memref<32xf32> to memref<32x1xf32>
-// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : memref<1024xf32> to memref<32x1x32xf32>
-// CHECK-NEXT: %[[currentSeqLenAddDim:.*]] = rock.transform %[[currentSeqLen]] {{.*}} : memref<1xi32> to memref<1x1xi32>
-// CHECK-NEXT: %[[currentSeqLenBroadcast:.*]] = rock.transform %[[currentSeqLenAddDim]] {{.*}} : memref<1x1xi32> to memref<1x4xi32>
-// CHECK-NEXT: %[[currentSeqLenMerge:.*]] = rock.transform %[[currentSeqLenBroadcast]] {{.*}} : memref<1x4xi32> to memref<4xi32>
+// CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<128xf32>,
+// CHECK-SAME: %[[keysRaw:.*1]]: tensor<65536xf32>,
+// CHECK-SAME: %[[valuesRaw:.*2]]: tensor<65536xf32>,
+// CHECK-SAME: %[[currentSeqLenRaw:.*3]]: tensor<1xi32>,
+// CHECK-SAME: %[[lseRaw:.*4]]: tensor<32xf32>,
+// CHECK-SAME: %[[outputRaw:.*5]]: tensor<1024xf32>)
+// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<128xf32> to tensor<4x1x32xf32>
+// CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
+// CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>
+// CHECK-NEXT: %[[currentSeqLen:.*]] = rock.transform %[[currentSeqLenRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
+// CHECK-NEXT: %[[lse:.*]] = rock.transform %[[lseRaw]] {{.*}} : tensor<32xf32> to tensor<32x1xf32>
+// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<1024xf32> to tensor<32x1x32xf32>
+// CHECK-NEXT: %[[currentSeqLenAddDim:.*]] = rock.transform %[[currentSeqLen]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
+// CHECK-NEXT: %[[currentSeqLenBroadcast:.*]] = rock.transform %[[currentSeqLenAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
+// CHECK-NEXT: %[[currentSeqLenMerge:.*]] = rock.transform %[[currentSeqLenBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
 
-// CHECK-NEXT: rock.attention
+// CHECK-NEXT: %[[output:.*]], %[[lse:.*]] = rock.attention
 // CHECK-NEXT: qk = %[[queries]] * %[[keys]]
-// CHECK-NEXT: currentSeqLen = (%[[currentSeqLenMerge]] : memref<4xi32>)
-// CHECK-NEXT: lse = %[[lse]] : memref<32x1xf32>
-// CHECK: %[[output]] = softmax(qk) * %[[values]]
+// CHECK-NEXT: currentSeqLen = (%[[currentSeqLenMerge]] : tensor<4xi32>)
+// CHECK: softmax(qk) * %[[values]]
 // CHECK-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
 // CHECK-SAME: splitKV = 8 : i32
 // CHECK: return
