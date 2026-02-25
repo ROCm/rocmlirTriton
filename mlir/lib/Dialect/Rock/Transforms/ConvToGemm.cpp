@@ -1557,17 +1557,10 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
   LogicalResult matchAndRewrite(T op, PatternRewriter &b) const override {
     ConvolutionContext ctx = populateConvContext(op);
 
-    auto maybeStores = rock::traceRootOutputToStoreOps(op.getResult());
-    if (failed(maybeStores)) {
+    auto maybeViews = rock::traceOutputsAndFusionInputs(op.getResult());
+    if (failed(maybeViews))
       return op.emitOpError("cannot trace to rock::StoreOp");
-    }
-    SetVector<StoreOp> stores = maybeStores.value();
-    SmallVector<Value> outputViews;
-    for (auto storeOp : stores) {
-      outputViews.push_back(storeOp.getDest());
-    }
-
-    auto fusionInputMap = rock::collectFusionExtraInputs(op.getResult());
+    auto &[stores, outputViews, fusionInputMap] = maybeViews.value();
 
     auto maybeArgs =
         commonConvRewrite(op, b, ctx, convOpType, fusionInputMap, outputViews);

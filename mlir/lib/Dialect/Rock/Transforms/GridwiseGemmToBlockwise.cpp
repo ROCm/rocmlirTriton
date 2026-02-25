@@ -303,10 +303,8 @@ void RockGridwiseGemmToBlockwisePass::runOnOperation() {
   ConversionTarget target(*ctx);
   target.addIllegalOp<rock::GridwiseGemmOp>();
   target.addLegalDialect<arith::ArithDialect, rock::RockDialect,
-                         affine::AffineDialect, vector::VectorDialect,
-                         linalg::LinalgDialect, scf::SCFDialect,
-                         math::MathDialect, tensor::TensorDialect, triton::TritonDialect>();
-  target.addLegalOp<gpu::PrintfOp>();
+                         affine::AffineDialect, scf::SCFDialect,
+                         triton::TritonDialect>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<GridwiseGemmRewritePattern>(ctx);

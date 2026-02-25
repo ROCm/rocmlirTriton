@@ -3567,12 +3567,19 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   Value currentSeqLenTensor;
   Value prefixOffsetTensor;
 
+  ShapedType qType = cast<ShapedType>(queries.getType());
+  Type qkElemType = qType.getElementType();
+  ArrayRef<int64_t> qShape = qType.getShape();
+  SmallVector<int64_t> qkShape = {qShape[0], sequenceLengthQ, sequenceLengthK};
+
   SmallVector<Value> elemwiseInputs;
   unsigned optionalArgsCounter = 3;
   if (isQuantized) {
     quantBias = unflattenedArgs[optionalArgsCounter++];
+    quantBias = rock::insertBroadcast(builder, loc, quantBias, qkShape);
     elemwiseInputs.push_back(quantBias);
     quantScale = unflattenedArgs[optionalArgsCounter++];
+    quantScale = rock::insertBroadcast(builder, loc, quantScale, qkShape);
     elemwiseInputs.push_back(quantScale);
   }
   if (hasAttnScale) {
@@ -3609,43 +3616,37 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
         &attention.getPreSoftmaxBody().emplaceBlock();
     PatternRewriter::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(preSoftmaxElemwiseBlock);
-    ShapedType qType = cast<ShapedType>(queries.getType());
-    ArrayRef<int64_t> qShape = qType.getShape();
-    Type qkElemType = qType.getElementType();
     if (isQuantized) {
       qkElemType = IntegerType::get(ctx, 32);
     }
-    RankedTensorType qkTensorRefType = RankedTensorType::get(
-        {qShape[0], sequenceLengthQ, sequenceLengthK}, qkElemType);
+    RankedTensorType qkTensorRefType =
+        RankedTensorType::get(qkShape, qkElemType);
     Value qkTensor = preSoftmaxElemwiseBlock->addArgument(qkTensorRefType, loc);
     if (isQuantized) {
+      auto qkShape = cast<ShapedType>(qkTensor.getType()).getShape();
       Value quantBiasI8 =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, quantBias);
       Value quantScaleF16 = addTensorArgToBlock(
           builder, loc, preSoftmaxElemwiseBlock, quantScale);
-      Value quantBiasI32 = rock::tosa::createOpAndInfer<tosa::CastOp>(
-          builder, loc, IntegerType::get(ctx, 32), quantBiasI8);
-      qkTensor = rock::tosa::createOpAndInfer<tosa::SubOp>(
-          builder, loc, IntegerType::get(ctx, 32), qkTensor, quantBiasI32);
-      qkTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(
-          builder, loc, Float16Type::get(ctx), qkTensor);
+      Value quantBiasI32 = rock::createTypeConversionOp(
+          builder, loc, quantBiasI8,
+          RankedTensorType::get(qkShape, IntegerType::get(ctx, 32)));
+      qkTensor = arith::SubIOp::create(builder, loc, qkTensor, quantBiasI32);
+      qkTensor = rock::createTypeConversionOp(
+          builder, loc, qkTensor,
+          RankedTensorType::get(qkShape, Float16Type::get(ctx)));
 
-      qkTensor = rock::tosa::getMulOp(builder, loc, qkTensor, quantScaleF16,
-                                      Float16Type::get(ctx));
+      qkTensor = arith::MulFOp::create(builder, loc, qkTensor, quantScaleF16);
     }
     if (hasAttnScale) {
       Value scaleTensor =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, scale);
-      qkTensor = rock::tosa::getMulOp(
-          builder, loc, qkTensor, scaleTensor,
-          cast<ShapedType>(scaleTensor.getType()).getElementType());
+      qkTensor = arith::MulFOp::create(builder, loc, qkTensor, scaleTensor);
     }
     if (hasAttnBias) {
       Value biasTensor =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, bias);
-      qkTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
-          builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
-          qkTensor, biasTensor);
+      qkTensor = arith::AddFOp::create(builder, loc, qkTensor, biasTensor);
     }
     rock::YieldOp::create(builder, loc, qkTensor);
   }
