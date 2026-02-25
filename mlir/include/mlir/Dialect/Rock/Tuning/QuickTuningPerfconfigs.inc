@@ -375,6 +375,12 @@ const StringRef PopulateParamsWmma::initParametersF16GemmGfx1201[] = {
 };
 // END_GEMM_Wmma_f16_gfx1201_DEFS
 
+// BEGIN_GEMM_Wmma_f32_gfx1201_DEFS
+const StringRef PopulateParamsWmma::initParametersF32GemmGfx1201[] = {
+    "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"
+};
+// END_GEMM_Wmma_f32_gfx1201_DEFS
+
 // BEGIN_GEMM_Wmma_i8_gfx1201_DEFS
 const StringRef PopulateParamsWmma::initParametersI8GemmGfx1201[] = {
     "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"
@@ -494,6 +500,11 @@ static const StringRef initParametersI8ConvGfx1000[nInitParametersI8ConvGfx1000]
 static constexpr size_t nInitParametersI8ConvGfx1100 = 1;
 static const StringRef initParametersI8ConvGfx1100[nInitParametersI8ConvGfx1100];
 // END_CONV_Wmma_i8_gfx1100_DECS
+
+// BEGIN_GEMM_Wmma_f32_gfx1201_DECS
+static constexpr size_t nInitParametersF32GemmGfx1201 = 1;
+static const StringRef initParametersF32GemmGfx1201[nInitParametersF32GemmGfx1201];
+// END_GEMM_Wmma_f32_gfx1201_DECS
 
 // BEGIN_GEMM_Wmma_f16_gfx1201_DECS
 static constexpr size_t nInitParametersF16GemmGfx1201 = 2;
@@ -659,7 +670,7 @@ static const StringRef initParametersF16AttentionGfx1000[nInitParametersF16Atten
 {"gfx1100_gemm_i8", {PopulateParamsWmma::initParametersI8GemmGfx1100, PopulateParamsWmma::nInitParametersI8GemmGfx1100}},
 {"gfx1000_conv_i8", {PopulateParamsWmma::initParametersI8ConvGfx1000, PopulateParamsWmma::nInitParametersI8ConvGfx1000}},
 {"gfx1100_conv_i8", {PopulateParamsWmma::initParametersI8ConvGfx1100, PopulateParamsWmma::nInitParametersI8ConvGfx1100}},
-{"gfx1201_gemm_f32", {PopulateParamsWmma::initParametersF16GemmGfx1201, PopulateParamsWmma::nInitParametersF16GemmGfx1201}},
+{"gfx1201_gemm_f32", {PopulateParamsWmma::initParametersF32GemmGfx1201, PopulateParamsWmma::nInitParametersF32GemmGfx1201}},
 {"gfx1201_gemm_f16", {PopulateParamsWmma::initParametersF16GemmGfx1201, PopulateParamsWmma::nInitParametersF16GemmGfx1201}},
 {"gfx1201_gemm_i8", {PopulateParamsWmma::initParametersI8GemmGfx1201, PopulateParamsWmma::nInitParametersI8GemmGfx1201}},
 {"gfx1201_conv_f32", {PopulateParamsWmma::initParametersF16ConvGfx1201, PopulateParamsWmma::nInitParametersF16ConvGfx1201}},
