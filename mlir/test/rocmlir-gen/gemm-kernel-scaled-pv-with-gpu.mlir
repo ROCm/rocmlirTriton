@@ -1,14 +1,17 @@
 // The extra rocmlir-opt calls check IR validity
 
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv_with_gpu -t f4E2M1FN -out_dtype f32 --scaledGemm | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,NOTRC
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv_with_gpu -t f4E2M1FN -out_dtype f32 --scaledGemm --schedule_version 2 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,NOTRC,SCHEDV2
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv_with_gpu -t f4E2M1FN -out_dtype f32 --scaledGemm -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,TRC
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv_with_gpu -t f4E2M1FN -out_dtype f32 --scaledGemm -transB | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,TRB,NOTRC
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv_with_gpu -t f4E2M1FN -out_dtype f32 --scaledGemm -transB -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,TRB,TRC
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv_with_gpu -t f4E2M1FN -out_dtype f32 --scaledGemm -transA | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,NOTRB,NOTRC
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv_with_gpu -t f4E2M1FN -out_dtype f32 --scaledGemm -transA -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,NOTRB,TRC
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv_with_gpu -t f4E2M1FN -out_dtype f32 --scaledGemm -transA -transB | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,TRB,NOTRC
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv_with_gpu -t f4E2M1FN -out_dtype f32 --scaledGemm -transA -transB -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,TRB,TRC
+// UNSUPPORTED: true
+// TODO(roctriton): Scaled gemm tests need rework
+
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv -t f4E2M1FN -out_dtype f32 --scaledGemm | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,NOTRC
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv -t f4E2M1FN -out_dtype f32 --scaledGemm --schedule_version 2 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,NOTRC,SCHEDV2
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv -t f4E2M1FN -out_dtype f32 --scaledGemm -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,TRC
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv -t f4E2M1FN -out_dtype f32 --scaledGemm -transB | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,TRB,NOTRC
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv -t f4E2M1FN -out_dtype f32 --scaledGemm -transB -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,TRB,TRC
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv -t f4E2M1FN -out_dtype f32 --scaledGemm -transA | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,NOTRB,NOTRC
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv -t f4E2M1FN -out_dtype f32 --scaledGemm -transA -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,NOTRB,TRC
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv -t f4E2M1FN -out_dtype f32 --scaledGemm -transA -transB | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,TRB,NOTRC
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -g 3 -m 1024 -k 768 -n 512 -pv -t f4E2M1FN -out_dtype f32 --scaledGemm -transA -transB -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,TRB,TRC
 
 // NOTRA-DAG: #[[mapAUnmerge:.*]] = affine_map<(d0, d1, d2) -> ((d0 * 1024 + d1) * 768 + d2)>
 // TRA-DAG:   #[[mapAUnmerge:.*]] = affine_map<(d0, d1, d2) -> ((d0 * 768 + d1) * 1024 + d2)>

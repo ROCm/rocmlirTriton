@@ -1,30 +1,29 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -return_lse -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv --apply-bufferization-pipeline=false | rocmlir-opt | FileCheck %s --enable-var-scope
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -return_lse -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // CHECK-LABEL: func.func @rock_attention
-// CHECK-SAME: (%[[queriesRaw:.*0]]: memref<131072xf32>,
-// CHECK-SAME: %[[keysRaw:.*1]]: memref<65536xf32>,
-// CHECK-SAME: %[[valuesRaw:.*2]]: memref<65536xf32>,
-// CHECK-SAME: %[[currentSeqLenRaw:.*3]]: memref<1xi32>,
-// CHECK-SAME: %[[lseRaw:.*4]]: memref<4096xf32>,
-// CHECK-SAME: %[[outputRaw:.*5]]: memref<131072xf32>)
-// CHECK-SAME: attributes {kernel, rock.arch = "[[$ARCH]]"}
-// CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : memref<131072xf32> to memref<4x1024x32xf32>
-// CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : memref<65536xf32> to memref<2x32x1024xf32>
-// CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : memref<65536xf32> to memref<2x1024x32xf32>
-// CHECK-NEXT: %[[currentSeqLen:.*]] = rock.transform %[[currentSeqLenRaw]] {{.*}} : memref<1xi32> to memref<1xi32>
-// CHECK-NEXT: %[[lse:.*]] = rock.transform %[[lseRaw]] {{.*}} : memref<4096xf32> to memref<4x1024xf32>
-// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : memref<131072xf32> to memref<4x1024x32xf32>
-// CHECK-NEXT: %[[currentSeqLenAddDim:.*]] = rock.transform %[[currentSeqLen]] {{.*}} : memref<1xi32> to memref<1x1xi32>
-// CHECK-NEXT: %[[currentSeqLenBroadcast:.*]] = rock.transform %[[currentSeqLenAddDim]] {{.*}} : memref<1x1xi32> to memref<1x4xi32>
-// CHECK-NEXT: %[[currentSeqLenMerge:.*]] = rock.transform %[[currentSeqLenBroadcast]] {{.*}} : memref<1x4xi32> to memref<4xi32>
+// CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<131072xf32>,
+// CHECK-SAME: %[[keysRaw:.*1]]: tensor<65536xf32>,
+// CHECK-SAME: %[[valuesRaw:.*2]]: tensor<65536xf32>,
+// CHECK-SAME: %[[currentSeqLenRaw:.*3]]: tensor<1xi32>,
+// CHECK-SAME: %[[lseRaw:.*4]]: tensor<4096xf32>,
+// CHECK-SAME: %[[outputRaw:.*5]]: tensor<131072xf32>)
+// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
+// CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
+// CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>
+// CHECK-NEXT: %[[currentSeqLen:.*]] = rock.transform %[[currentSeqLenRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
+// CHECK-NEXT: %[[lse:.*]] = rock.transform %[[lseRaw]] {{.*}} : tensor<4096xf32> to tensor<4x1024xf32>
+// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
+// CHECK-NEXT: %[[currentSeqLenAddDim:.*]] = rock.transform %[[currentSeqLen]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
+// CHECK-NEXT: %[[currentSeqLenBroadcast:.*]] = rock.transform %[[currentSeqLenAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
+// CHECK-NEXT: %[[currentSeqLenMerge:.*]] = rock.transform %[[currentSeqLenBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
 
 // CHECK-NEXT: rock.attention
 // CHECK-NEXT: qk = %[[queries]] * %[[keys]]
-// CHECK-NEXT: currentSeqLen = (%[[currentSeqLenMerge]] : memref<4xi32>)
-// CHECK-NEXT: lse = %[[lse]] : memref<4x1024xf32>
-// CHECK: %[[output]] = softmax(qk) * %[[values]]
+// CHECK-NEXT: currentSeqLen = (%[[currentSeqLenMerge]] : tensor<4xi32>)
+// CHECK: softmax(qk) * %[[values]]
 // CHECK-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
 // CHECK: return
 

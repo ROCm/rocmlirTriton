@@ -1,26 +1,26 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -prefix_offset=5 --causal -num_heads_q 4 -num_heads_kv 4 -seq_len_q 8 -seq_len_k 16 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv --apply-bufferization-pipeline=false | rocmlir-opt | FileCheck %s --enable-var-scope
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -prefix_offset=5 --causal -num_heads_q 4 -num_heads_kv 4 -seq_len_q 8 -seq_len_k 16 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // CHECK-LABEL: func.func @rock_attention
-// CHECK-SAME: (%[[queriesRaw:.*0]]: memref<1024xf32>,
-// CHECK-SAME: %[[keysRaw:.*1]]: memref<2048xf32>,
-// CHECK-SAME: %[[valuesRaw:.*2]]: memref<2048xf32>,
-// CHECK-SAME: %[[prefixOffsetRaw:.*3]]: memref<1xi32>,
-// CHECK-SAME: %[[outputRaw:.*4]]: memref<1024xf32>)
-// CHECK-SAME: attributes {kernel, rock.arch = "[[$ARCH]]"}
-// CHECK: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : memref<1024xf32> to memref<4x8x32xf32>
-// CHECK: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : memref<2048xf32> to memref<4x32x16xf32>
-// CHECK: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : memref<2048xf32> to memref<4x16x32xf32>
-// CHECK: %[[prefixOffset:.*]] = rock.transform %[[prefixOffsetRaw]] {{.*}} : memref<1xi32> to memref<1xi32>
-// CHECK: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : memref<1024xf32> to memref<4x8x32xf32>
+// CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<1024xf32>,
+// CHECK-SAME: %[[keysRaw:.*1]]: tensor<2048xf32>,
+// CHECK-SAME: %[[valuesRaw:.*2]]: tensor<2048xf32>,
+// CHECK-SAME: %[[prefixOffsetRaw:.*3]]: tensor<1xi32>,
+// CHECK-SAME: %[[outputRaw:.*4]]: tensor<1024xf32>)
+// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<1024xf32> to tensor<4x8x32xf32>
+// CHECK: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<2048xf32> to tensor<4x32x16xf32>
+// CHECK: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<2048xf32> to tensor<4x16x32xf32>
+// CHECK: %[[prefixOffset:.*]] = rock.transform %[[prefixOffsetRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
+// CHECK: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<1024xf32> to tensor<4x8x32xf32>
 
 // Verify rock.attention has causal attribute and prefixOffset
 // CHECK: rock.attention
 // CHECK: qk = %[[queries]] * %[[keys]]
-// CHECK: prefixOffset = (%{{.*}} : memref<4xi32>)
+// CHECK: prefixOffset = (%{{.*}} : tensor<4xi32>)
 // CHECK: causal
-// CHECK: %[[output]] = softmax(qk) * %[[values]]
+// CHECK: softmax(qk) * %[[values]]
 // CHECK: return
 
 // Verify the host verification function uses prefix causal masking

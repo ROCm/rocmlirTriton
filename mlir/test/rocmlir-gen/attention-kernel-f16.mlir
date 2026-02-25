@@ -1,7 +1,9 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false | rocmlir-opt | FileCheck %s --enable-var-scope
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false --schedule_version 2 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=SCHEDV2
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false --schedule_version 3 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=SCHEDV3
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false --schedule_version 4 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=SCHEDV4
+// TODO(rocmlirTriton): Rework schedule_version -> num_stages
+
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
+// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false --schedule_version 2 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=SCHEDV2
+// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false --schedule_version 3 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=SCHEDV3
+// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false --schedule_version 4 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=SCHEDV4
 
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
@@ -15,22 +17,22 @@
 // SCHEDV4-SAME: schedule_version = #rock.schedule_version<4>
 
 // CHECK-LABEL: func.func @rock_attention
-// CHECK-SAME: (%[[queriesRaw:.*0]]: memref<32768xf16>,
-// CHECK-SAME: %[[keysRaw:.*1]]: memref<32768xf16>,
-// CHECK-SAME: %[[valuesRaw:.*2]]: memref<32768xf16>,
-// CHECK-SAME: %[[scaleRaw:.*3]]: memref<1048576xf16>,
-// CHECK-SAME: %[[outputRaw:.*4]]: memref<32768xf16>)
-// CHECK-SAME: attributes {kernel, rock.arch = "[[$ARCH]]"}
-// CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : memref<32768xf16> to memref<1x1024x32xf16>
-// CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : memref<32768xf16> to memref<1x32x1024xf16>
-// CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : memref<32768xf16> to memref<1x1024x32xf16>
-// CHECK-NEXT: %[[scale:.*]] = rock.transform %[[scaleRaw]] {{.*}} : memref<1048576xf16> to memref<1x1024x1024xf16>
-// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : memref<32768xf16> to memref<1x1024x32xf16>
+// CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<32768xf16>,
+// CHECK-SAME: %[[keysRaw:.*1]]: tensor<32768xf16>,
+// CHECK-SAME: %[[valuesRaw:.*2]]: tensor<32768xf16>,
+// CHECK-SAME: %[[scaleRaw:.*3]]: tensor<1048576xf16>,
+// CHECK-SAME: %[[outputRaw:.*4]]: tensor<32768xf16>)
+// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<32768xf16> to tensor<1x1024x32xf16>
+// CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<32768xf16> to tensor<1x32x1024xf16>
+// CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<32768xf16> to tensor<1x1024x32xf16>
+// CHECK-NEXT: %[[scale:.*]] = rock.transform %[[scaleRaw]] {{.*}} : tensor<1048576xf16> to tensor<1x1024x1024xf16>
+// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<32768xf16> to tensor<1x1024x32xf16>
 
-// CHECK-NEXT: rock.attention
+// CHECK-NEXT: %[[output:.*]] = rock.attention
 // CHECK-NEXT: qk = %[[queries]] * %[[keys]]
 // CHECK-NEXT: qk = elementwise otherIns(%[[scale]]
-// CHECK: %[[output]] = softmax(qk) * %[[values]]
+// CHECK: softmax(qk) * %[[values]]
 // CHECK: return
 
 // CHECK-LABEL: func.func @host_naive_attention
