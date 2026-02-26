@@ -813,8 +813,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
                   builder.getUnitAttr());
   }
   module.push_back(func);
-  if (!isVerifier)
-    module->setAttr(archAttr.getName(), archAttr.getValue());
   if (func.getName() != kernelName) {
     return failure();
   }

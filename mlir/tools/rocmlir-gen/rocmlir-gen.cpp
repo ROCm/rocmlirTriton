@@ -5451,6 +5451,12 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
 
   if (genParams.convConfig.has_value()) {
     const auto &genConfig = **genParams.convConfig;
+
+    // Set arch on module to make compilation pipeline work (same as GEMM)
+    StringAttr archAttr = builder.getStringAttr(genConfig.arch);
+    if (!module->hasAttr(rock::ArchAttr::getMnemonic()))
+      module->setAttr(rock::ArchAttr::getMnemonic(), archAttr);
+
     if (isConvElntwiseGemm) {
       constexpr size_t numArgs{4};
       // Note: In the current implementation, all operands have the same type.
