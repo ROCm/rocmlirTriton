@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -c -arch %arch %s
+// RUN: rocmlir-driver -c %s
 // XFAIL: *
 // COM: rock.reduce is not the output, there's a linalg.genericop after it. This is not allowed and must fail.
 
