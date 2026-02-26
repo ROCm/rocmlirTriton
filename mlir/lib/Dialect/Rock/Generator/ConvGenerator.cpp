@@ -813,8 +813,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
                   builder.getUnitAttr());
   }
   module.push_back(func);
-  if (!isVerifier)
-    module->setAttr(archAttr.getName(), archAttr.getValue());
   if (func.getName() != kernelName) {
     return failure();
   }
@@ -935,11 +933,13 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
     if (kernelId == 1) {
       // Workspace -> filter tensor
+      // TODO: ConvertingCopyKernelOp is not implemented yet
       // ConvertingCopyKernelOp::create(
       //     builder, builder.getUnknownLoc(), /*resultType=*/TypeRange{},
       //     func.getArgument(3), func.getArgument(0),
       //     /*blockSize=*/nullptr, /*gridSize=*/nullptr,
       //     /*elemsPerThread=*/nullptr);
+      return failure();
     } else {
       // TODO: This is okay for right now since we are not doing any fusions.
       // When we do handle fusions in the future there is no guarantee that
