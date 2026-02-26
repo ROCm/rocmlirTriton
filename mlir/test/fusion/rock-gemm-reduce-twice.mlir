@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -c %s
+// RUN: rocmlir-driver -c -arch %arch %s
 // XFAIL: *
 // COM: nested reductions like reduce(reduce(x)) are not allowed
 
