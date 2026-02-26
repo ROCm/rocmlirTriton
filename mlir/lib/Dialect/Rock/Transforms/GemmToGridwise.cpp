@@ -48,6 +48,7 @@
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/LogicalResult.h"
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <sstream>
 #include <tuple>
@@ -635,7 +636,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
       a = createTypeConversionOp(rw, loc, a, newAType);
     }
   }
-  ArrayRef<int64_t> scaleAShape, scaleBShape;
+  SmallVector<int64_t> scaleAShape, scaleBShape;
 
   // Note: the gridwise ops take M x K and K x N
   a = normalizeMatrix(a, rw, loc, op.getATransposed(), "gemmM", "gemmK");
@@ -659,19 +660,12 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   aShape = cast<ShapedType>(a.getType()).getShape();
   bShape = cast<ShapedType>(b.getType()).getShape();
   if (scaleA && scaleB) {
-    auto scaleAType = cast<ShapedType>(scaleA.getType());
-    auto scaleBType = cast<ShapedType>(scaleB.getType());
-    scaleAShape = scaleAType.getShape();
-    scaleBShape = scaleBType.getShape();
-    // keep both scales in the same layout as the matrices
-    // do transpose as necessary to achieve this. This is required to align load
-    // and store layouts with matrices.
-    bool transposeScaleA = (aShape != scaleAShape);
+    bool transposeScaleA = op.getAScaleTransposed();
     scaleA =
         normalizeMatrix(scaleA, rw, loc, transposeScaleA, "gemmM", "gemmK");
-    bool transposeScaleB = (bShape != scaleBShape);
+    bool transposeScaleB = op.getBScaleTransposed();
     scaleB =
-        normalizeMatrix(scaleB, rw, loc, transposeScaleB, "gemmK", "gemmN");
+        normalizeMatrix(scaleB, rw, loc, transposeScaleB, "gemmN", "gemmK");
   }
 
   const int64_t splitKFactor = op.getParams()->getSplitKFactor();
@@ -691,10 +685,6 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     scaleB = transformed.scaleB;
     aShape = cast<ShapedType>(a.getType()).getShape();
     bShape = cast<ShapedType>(b.getType()).getShape();
-    if (scaleA && scaleB) {
-      scaleAShape = cast<ShapedType>(scaleA.getType()).getShape();
-      scaleBShape = cast<ShapedType>(scaleB.getType()).getShape();
-    }
   }
 
   // Note, matrix dimension correctness is handled in the verifier
@@ -710,23 +700,19 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     return padMatrix(v, rw, loc, "gemmM", extraPad.m, "gemmN", extraPad.n);
   });
   if (scaleA && scaleB) {
+    int64_t quantBlockSize = op.getQuantBlockSize().value();
+    int64_t newK = size.k + extraPad.k;
+    // this should never happen as long as both quantBlockSize <= kPerBlock
+    // (GemmOp verifier checks this) and both are powers of two
+    assert(newK % quantBlockSize == 0 &&
+           "newK is not divisible by quantBlockSize");
+    int64_t newScaleK = newK / quantBlockSize;
+    int64_t padScaleK =
+        newScaleK - cast<ShapedType>(scaleA.getType()).getDimSize(2);
     scaleA =
-        padMatrix(scaleA, rw, loc, "gemmM", extraPad.m, "gemmK", extraPad.k);
+        padMatrix(scaleA, rw, loc, "gemmM", extraPad.m, "gemmK", padScaleK);
     scaleB =
-        padMatrix(scaleB, rw, loc, "gemmK", extraPad.k, "gemmN", extraPad.n);
-    auto scaleAType = cast<ShapedType>(scaleA.getType());
-    auto scaleBType = cast<ShapedType>(scaleB.getType());
-    scaleAShape = scaleAType.getShape();
-    scaleBShape = scaleBType.getShape();
-    Type f8e8m0Type = rw.getF8E8M0Type();
-    if (scaleAType.getElementType() != f8e8m0Type) {
-      auto newScaleAType = RankedTensorType::get(scaleAShape, f8e8m0Type);
-      scaleA = createTypeConversionOp(rw, loc, scaleA, newScaleAType);
-    }
-    if (scaleBType.getElementType() != f8e8m0Type) {
-      auto newScaleBType = RankedTensorType::get(scaleBShape, f8e8m0Type);
-      scaleB = createTypeConversionOp(rw, loc, scaleB, newScaleBType);
-    }
+        padMatrix(scaleB, rw, loc, "gemmN", extraPad.n, "gemmK", padScaleK);
   }
 
   if (failed(computeGridSize(rw, op, a, b))) {
@@ -736,7 +722,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   auto newOutputType = RankedTensorType::get(
       cast<ShapedType>(outputViews[0].getType()).getShape(), op.getCType());
   auto gridwiseOp =
-      GridwiseGemmOp::create(rw, loc, newOutputType, a, b, scaleA, scaleB,
+      GridwiseGemmOp::create(rw, loc, newOutputType, a, b, scaleA, scaleB, op.getQuantBlockSizeAttr(), 
                              cast<GemmParamsAttr>(params));
   Value result = gridwiseOp.getResult();
 

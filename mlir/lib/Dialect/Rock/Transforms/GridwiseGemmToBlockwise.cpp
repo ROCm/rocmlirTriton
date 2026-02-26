@@ -163,6 +163,14 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     int64_t nPerBlock = tuningParams.getNPerBlock();
     int64_t mBlocks = M / mPerBlock;
     int64_t nBlocks = N / nPerBlock;
+    std::optional<int64_t> quantBlockSize = op.getQuantBlockSize();
+    int64_t quantKPerBlock = 0;
+    if (quantBlockSize.has_value() && kPerBlock % quantBlockSize.value() != 0) {
+      return op->emitOpError()
+             << "kPerBlock is not a multiple of quantBlockSize";
+    }
+    if (quantBlockSize.has_value())
+      quantKPerBlock = kPerBlock / quantBlockSize.value();
 
     LLVM_DEBUG(llvm::dbgs() << "gridSize: " << gridSize << "\n"
                             << "blockSize: " << blockSize << "\n"
@@ -223,26 +231,29 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
       // Load from global memory to registers
       Value loadedB =
           rock::loadTile(b, loc, matB, /*kiter=*/iv, "n", gridCoords, kPerBlock,
-                         nPerBlock, bidGridLengths);
+                         nPerBlock, /*isKFirst=*/true, bidGridLengths);
       Value loadedA =
           rock::loadTile(b, loc, matA, /*kiter=*/iv, "m", gridCoords, kPerBlock,
-                         mPerBlock, bidGridLengths);
+                         mPerBlock, /*isKFirst=*/false, bidGridLengths);
 
       Value loadedScaleA, loadedScaleB;
       if (isScaledGemm) {
-        loadedScaleB =
-            rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
-                           kPerBlock, nPerBlock, bidGridLengths);
-        loadedScaleA =
-            rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
-                           kPerBlock, mPerBlock, bidGridLengths);
+        // Note we load with dName="m" here because the shape of scaleB is [B,
+        // N, K] instead of [B, K, N]. This is because tt.dot_scaled expected
+        // scaleB transposed
+        loadedScaleB = rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n",
+                                      gridCoords, quantKPerBlock, nPerBlock,
+                                      /*isKFirst=*/false, bidGridLengths);
+        loadedScaleA = rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m",
+                                      gridCoords, quantKPerBlock, mPerBlock,
+                                      /*isKFirst=*/false, bidGridLengths);
       }
 
       // Emit blockwise GEMM. This will load data from LDS (or registers) and
       // compute the MMA at the same time
-      Value newAcc =
-          BlockwiseGemmOp::create(b, loc, accArg.getType(), loadedA, loadedB,
-                                  accArg, loadedScaleA, loadedScaleB);
+      Value newAcc = BlockwiseGemmOp::create(
+          b, loc, accArg.getType(), loadedA, loadedB, accArg, loadedScaleA,
+          loadedScaleB, op.getQuantBlockSizeAttr());
 
       // Yield the new accumulator
       scf::YieldOp::create(b, loc, ValueRange{newAcc});

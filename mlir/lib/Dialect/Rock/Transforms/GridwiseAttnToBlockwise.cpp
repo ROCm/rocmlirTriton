@@ -956,9 +956,10 @@ struct GridwiseAttentionRewritePattern
           rewriter, loc, bid, gemm0MBlocks, zero, gridSize, arch,
           rock::getNumCUValue(op), splitKVConst);
 
-      loadedQ = rock::loadTile(rewriter, loc, inQ, /*kiter=*/zero, "m",
-                               gridCoordsGemm0LoadQ, gemm0KPerBlock,
-                               gemm0MPerBlock, gemm0BidGridLengths);
+      loadedQ =
+          rock::loadTile(rewriter, loc, inQ, /*kiter=*/zero, "m",
+                         gridCoordsGemm0LoadQ, gemm0KPerBlock, gemm0MPerBlock,
+                         /*isKFirst=*/false, gemm0BidGridLengths);
     }
 
     Type accType = rock::getAccType(elemTypeQ, elemTypeK);
@@ -1005,19 +1006,22 @@ struct GridwiseAttentionRewritePattern
         // if gemm0K is equal to gemm0KPerBlock, the Q tile
         // is already prefetched into regs. See above.
         if (!prefetchQTile) {
-          loadedQ = rock::loadTile(rewriter, loc, inQ, /*kiter=*/kLoopIV, "m",
-                                   gridCoordsGemm0, gemm0KPerBlock,
-                                   gemm0MPerBlock, gemm0BidGridLengths);
+          loadedQ =
+              rock::loadTile(rewriter, loc, inQ, /*kiter=*/kLoopIV, "m",
+                             gridCoordsGemm0, gemm0KPerBlock, gemm0MPerBlock,
+                             /*isKFirst=*/false, gemm0BidGridLengths);
         }
 
-        Value loadedK = rock::loadTile(rewriter, loc, inK, /*kiter=*/kLoopIV,
-                                       "n", gridCoordsGemm0, gemm0KPerBlock,
-                                       gemm0NPerBlock, gemm0BidGridLengths);
+        Value loadedK =
+            rock::loadTile(rewriter, loc, inK, /*kiter=*/kLoopIV, "n",
+                           gridCoordsGemm0, gemm0KPerBlock, gemm0NPerBlock,
+                           /*isKFirst=*/true, gemm0BidGridLengths);
 
         // TODO(roctriton): scaled gemm
-        Value newAcc =
-            BlockwiseGemmOp::create(rewriter, loc, accArg.getType(), loadedQ,
-                                    loadedK, accArg, nullptr, nullptr);
+        Value newAcc = BlockwiseGemmOp::create(
+            rewriter, loc, accArg.getType(), loadedQ, loadedK, accArg,
+            /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
+            /*quantBlockSize=*/nullptr);
 
         // Yield the new accumulator
         scf::YieldOp::create(rewriter, loc, ValueRange{newAcc});
@@ -1189,15 +1193,16 @@ struct GridwiseAttentionRewritePattern
           rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
           rock::getNumCUValue(op), splitKVConst);
 
-      Value loadedV =
-          rock::loadTile(rewriter, loc, inV,
-                         /*kIter=*/nLoopIV, "n", gridCoordsGemm1,
-                         gemm1KPerBlock, gemm1NPerBlock, gemm1BidGridLengths);
+      Value loadedV = rock::loadTile(rewriter, loc, inV,
+                                     /*kIter=*/nLoopIV, "n", gridCoordsGemm1,
+                                     gemm1KPerBlock, gemm1NPerBlock,
+                                     /*isKFirst=*/true, gemm1BidGridLengths);
 
       // TODO(roctriton): scaled gemm
       Value gemm1Out = BlockwiseGemmOp::create(
           rewriter, loc, gemm1InitAcc.getType(), gemm0Out, loadedV,
-          gemm1InitAcc, nullptr, nullptr);
+          gemm1InitAcc, /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
+          /*quantBlockSize=*/nullptr);
 
       // Apply flash attention correction
       if (op.getEnableSoftmax()) {

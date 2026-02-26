@@ -57,7 +57,7 @@ FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
                                             Value globalBuffer, StringRef dName,
                                             ArrayRef<int64_t> bidGridLengths,
                                             int64_t kPerBlock,
-                                            int64_t dPerBlock);
+                                            int64_t dPerBlock, bool isKFirst);
 
 bool isWrWAtomicKernel(StringRef arch, Type dataType, bool requiredPadding);
 
@@ -185,7 +185,7 @@ Type getAccType(Type elemA, Type elemB);
 
 Value loadTile(PatternRewriter &rewriter, Location loc, Value in, Value kIter,
                StringRef dName, rock::layout::GridCoordinates gridCoords,
-               int64_t kPerBlock, int64_t dPerBlock,
+               int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
                SmallVector<int64_t, 3> &bidGridLengths);
 
 Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,

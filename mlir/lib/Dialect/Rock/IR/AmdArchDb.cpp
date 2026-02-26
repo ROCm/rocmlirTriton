@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -60,39 +61,6 @@ static std::tuple<ISAFamily, StringRef> getArch(StringRef arch) {
 //===----------------------------------------------------------------------===//
 // Matrix Acceleration Support Detection (using Triton APIs)
 //===----------------------------------------------------------------------===//
-
-namespace {
-
-// getMfmaVersion and getWmmaVersion are internal triton functions in
-// AccelerateAMDMatmul.cpp keep them in sync.
-
-/// Get MFMA version from ISA family
-int getMfmaVersion(ISAFamily isaFamily) {
-  switch (isaFamily) {
-  case ISAFamily::CDNA1:
-    return 1;
-  case ISAFamily::CDNA2:
-    return 2;
-  case ISAFamily::CDNA3:
-    return 3;
-  case ISAFamily::CDNA4:
-    return 4;
-  default:
-    return 0;
-  }
-}
-
-/// Get WMMA version from architecture string
-int getWmmaVersion(StringRef arch) {
-  if (arch.starts_with("gfx11"))
-    return 1; // RDNA3
-  if (arch.starts_with("gfx12") && !arch.ends_with("50"))
-    return 2; // RDNA4
-  if (arch == "gfx1250")
-    return 3; // GFX1250
-  return 0;
-}
-} // anonymous namespace
 
 /// Check if MFMA is supported for the given types on the specified version.
 /// Triton's MfmaIntrinsic::selectFor() requires tile dimensions, but we only
@@ -197,7 +165,7 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   bool hasScales = static_cast<bool>(scaleAType) || static_cast<bool>(scaleBType);
 
   // Check MFMA support (CDNA architectures)
-  int mfmaVersion = getMfmaVersion(isaFamily);
+  int mfmaVersion = rock::getMfmaVersion(isaFamily);
   if (mfmaVersion > 0) {
     // Scaled MFMA requires: CDNA4 (version 4) + F8/F6/F4 input types
     // This mirrors AccelerateAMDMatmul.cpp:
@@ -215,7 +183,7 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   }
 
   // Check WMMA support (RDNA architectures)
-  int wmmaVersion = getWmmaVersion(chip);
+  int wmmaVersion = rock::getWmmaVersion(chip);
   if (wmmaVersion > 0) {
     // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2, E2M1)
     // Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops.
