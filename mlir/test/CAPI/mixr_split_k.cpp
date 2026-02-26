@@ -262,9 +262,12 @@ MlirModule makeAndDumpMIXR(MlirContext ctx, MlirLocation location,
 
   // set additional attributes
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString("rock.kernel"), mlirUnitAttrGet(ctx));
+      func,
+      mlirStringRefCreateFromCString(mlir::rock::KernelAttr::getMnemonic().data()),
+      mlirUnitAttrGet(ctx));
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString("rock.arch"),
+      func,
+      mlirStringRefCreateFromCString(mlir::rock::ArchAttr::getMnemonic().data()),
       mlirStringAttrGet(
           ctx, mlirStringRefCreateFromCString(options.targetArch.c_str())));
 
