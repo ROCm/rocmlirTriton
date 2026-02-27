@@ -71,8 +71,8 @@ static FailureOr<Value> getGemmSpaceEquiv(Value v, RegularizeContext &ctx) {
     FailureOr<Value> result = getGemmSpaceEquiv(tOp.getInput(), ctx);
     if (failed(result))
       return failure();
-    ctx.gemmEquiv[v] = *result;
-    return *result;
+    ctx.gemmEquiv[v] = result.value();
+    return result.value();
   }
 
   // Must be a fusion op if it's rootReachable and not root/transform.
@@ -151,6 +151,100 @@ static FailureOr<Value> getGemmSpaceEquiv(Value v, RegularizeContext &ctx) {
   return result;
 }
 
+/// Phase 1: Flood-fill from root through TransformOps and fusion ops.
+/// Discovers all reachable values, their accumulated transform stacks from
+/// root, and any StoreOps that consume reachable values.
+static void
+floodFillFromRoot(Value root, DenseSet<Value> &rootReachable,
+                  DenseMap<Value, SmallVector<Attribute>> &transformsFromRoot,
+                  SmallVector<StoreOp> &stores) {
+  struct FloodItem {
+    Value val;
+    SmallVector<Attribute> transforms;
+  };
+  SmallVector<FloodItem> work;
+  work.push_back({root, {}});
+
+  while (!work.empty()) {
+    auto [v, tfAttrs] = work.pop_back_val();
+    if (!rootReachable.insert(v).second)
+      continue;
+    transformsFromRoot[v] = tfAttrs;
+
+    for (OpOperand &use : v.getUses()) {
+      Operation *owner = use.getOwner();
+      if (auto tOp = dyn_cast<TransformOp>(owner)) {
+        SmallVector<Attribute> newTf(tfAttrs);
+        newTf.push_back(tOp.getTransform());
+        work.push_back({tOp.getResult(), newTf});
+      } else if (isFusionOp(owner)) {
+        for (Value res : owner->getResults())
+          work.push_back({res, tfAttrs});
+      } else if (auto storeOp = dyn_cast<StoreOp>(owner);
+                 storeOp && use.getOperandNumber() == 0) {
+        stores.push_back(storeOp);
+      }
+    }
+  }
+}
+
+/// Phase 2: Rewire stores to use gemm-space fused values.
+/// Lazily resolves fusion ops to gemm space via getGemmSpaceEquiv, then
+/// updates each store's source and (if needed) destination.
+static LogicalResult rewireStoresToGemmSpace(ArrayRef<StoreOp> stores,
+                                             RegularizeContext &ctx) {
+  for (StoreOp storeOp : stores) {
+    Value storeSource = storeOp.getSource();
+    FailureOr<Value> newSource = getGemmSpaceEquiv(storeSource, ctx);
+    if (failed(newSource))
+      return failure();
+
+    storeOp.getSourceMutable().assign(*newSource);
+
+    auto tfIt = ctx.transformsFromRoot.find(storeSource);
+    if (tfIt != ctx.transformsFromRoot.end() && !tfIt->second.empty()) {
+      ArrayAttr inv = ctx.getInverse(tfIt->second);
+      if (!inv) {
+        ctx.rootOp->emitError(
+            "cannot regularize: transforms are not invertible "
+            "for store destination rewrite");
+        return failure();
+      }
+      ctx.builder.setInsertionPoint(storeOp);
+      Value dest = storeOp.getDest();
+      Value newDest = rock::transform(ctx.builder, dest, inv);
+      storeOp.getDestMutable().assign(newDest);
+    }
+  }
+  return success();
+}
+
+/// Phase 3: Erase dead original ops left behind by the cloning in Phase 2.
+/// Ops that define rootReachable values (excluding root and live gemmEquiv
+/// results) are erased in reverse program order.
+static void eraseDeadOps(const DenseSet<Value> &rootReachable, Value root,
+                         const DenseMap<Value, Value> &gemmEquiv) {
+  DenseSet<Operation *> liveOps;
+  for (auto &[_, liveVal] : gemmEquiv)
+    if (Operation *op = liveVal.getDefiningOp())
+      liveOps.insert(op);
+
+  SmallVector<Operation *> deadOps;
+  for (Value v : rootReachable) {
+    if (v == root)
+      continue;
+    Operation *op = v.getDefiningOp();
+    if (op && !liveOps.contains(op))
+      deadOps.push_back(op);
+  }
+  llvm::sort(deadOps,
+             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  for (Operation *op : llvm::reverse(deadOps)) {
+    if (op->use_empty())
+      op->erase();
+  }
+}
+
 struct RockRegularizeOutput
     : public rock::impl::RockRegularizeOutputPassBase<RockRegularizeOutput> {
   void runOnOperation() override;
@@ -199,49 +293,17 @@ void RockRegularizeOutput::runOnOperation() {
     for (Value root : rootOp->getResults()) {
       auto rootType = cast<RankedTensorType>(root.getType());
 
-      // === Phase 1: Flood-fill from root ===
-      // Walk through TransformOps and fusion ops to discover all reachable
-      // values, their accumulated transform stacks from root, and stores.
-      // This replaces traceRootOutputToStoreOps which only follows fusion
-      // ops and would miss transforms that haven't been regularized yet.
+      // Phase 1: Discover reachable values, transform stacks, and stores.
       DenseSet<Value> rootReachable;
       DenseMap<Value, SmallVector<Attribute>> transformsFromRoot;
       SmallVector<StoreOp> stores;
+      floodFillFromRoot(root, rootReachable, transformsFromRoot, stores);
 
-      {
-        struct FloodItem {
-          Value val;
-          SmallVector<Attribute> transforms;
-        };
-        SmallVector<FloodItem> floodWork;
-        floodWork.push_back({root, {}});
-
-        while (!floodWork.empty()) {
-          auto [v, tfAttrs] = floodWork.pop_back_val();
-          // skip if already added
-          if (!rootReachable.insert(v).second)
-            continue;
-          transformsFromRoot[v] = tfAttrs;
-
-          for (OpOperand &use : v.getUses()) {
-            Operation *owner = use.getOwner();
-            if (auto tOp = dyn_cast<TransformOp>(owner)) {
-              SmallVector<Attribute> newTf(tfAttrs);
-              newTf.push_back(tOp.getTransform());
-              floodWork.push_back({tOp.getResult(), newTf});
-            } else if (isFusionOp(owner)) {
-              for (Value res : owner->getResults())
-                floodWork.push_back({res, tfAttrs});
-            } else if (auto storeOp = dyn_cast<StoreOp>(owner);
-                       storeOp && use.getOperandNumber() == 0) {
-              stores.push_back(storeOp);
-            }
-          }
-        }
+      // we assume all root ops must lead to a rock.store
+      if (stores.empty()) {
+        rootOp->emitError("No stores found for fusion root");
+        return signalPassFailure();
       }
-
-      if (stores.empty())
-        continue;
 
       // if there are no transforms, no work to do!
       bool anyTransforms = llvm::any_of(
@@ -249,13 +311,7 @@ void RockRegularizeOutput::runOnOperation() {
       if (!anyTransforms)
         continue;
 
-      // === Phase 2: Recursive resolution of gemm-space equivalents ===
-      // For each reachable value, compute a new value in gemm space by:
-      //   - Looking through TransformOps (they don't change data, just shape)
-      //   - Cloning fusion ops with resolved operands in gemm-space types
-      // The cache (gemmEquiv) ensures each value is resolved at most once,
-      // naturally handling DAGs where both operands of a fusion op are the
-      // same value or trace back to root through different paths.
+      // Phase 2: Resolve gemm-space equivalents and rewire stores.
       DenseMap<Value, Value> gemmEquiv;
       gemmEquiv[root] = root;
 
@@ -263,58 +319,11 @@ void RockRegularizeOutput::runOnOperation() {
                             rootType, rootReachable, transformsFromRoot,
                             gemmEquiv};
 
-      // === Phase 3: Rewire stores to use gemm-space fused values ===
-      for (StoreOp storeOp : stores) {
-        Value storeSource = storeOp.getSource();
-        FailureOr<Value> newSource = getGemmSpaceEquiv(storeSource, ctx);
-        if (failed(newSource))
-          return signalPassFailure();
+      if (failed(rewireStoresToGemmSpace(stores, ctx)))
+        return signalPassFailure();
 
-        storeOp.getSourceMutable().assign(*newSource);
-
-        auto tfIt = transformsFromRoot.find(storeSource);
-        if (tfIt != transformsFromRoot.end() && !tfIt->second.empty()) {
-          ArrayAttr inv = ctx.getInverse(tfIt->second);
-          if (!inv) {
-            rootOp->emitError(
-                "cannot regularize: transforms are not invertible "
-                "for store destination rewrite");
-            return signalPassFailure();
-          }
-          builder.setInsertionPoint(storeOp);
-          Value dest = storeOp.getDest();
-          Value newDest = rock::transform(builder, dest, inv);
-          storeOp.getDestMutable().assign(newDest);
-        }
-      }
-
-      // === Phase 4: Erase dead original ops ===
-      // The cloning left the original fusion/transform ops in place. They are
-      // now dead (no live users) and must be removed so downstream passes
-      // (e.g. gemm-to-gridwise) don't see them via root's use-list.
-      // Collect ops that define rootReachable values (excluding root itself
-      // and ops that are in the live gemmEquiv result set).
-      DenseSet<Operation *> liveOps;
-      for (auto &[_, liveVal] : gemmEquiv)
-        if (Operation *op = liveVal.getDefiningOp())
-          liveOps.insert(op);
-
-      SmallVector<Operation *> deadOps;
-      for (Value v : rootReachable) {
-        if (v == root)
-          continue;
-        Operation *op = v.getDefiningOp();
-        if (op && !liveOps.contains(op))
-          deadOps.push_back(op);
-      }
-      // Erase in reverse program order so uses are erased before defs.
-      llvm::sort(deadOps, [](Operation *a, Operation *b) {
-        return a->isBeforeInBlock(b);
-      });
-      for (Operation *op : llvm::reverse(deadOps)) {
-        if (op->use_empty())
-          op->erase();
-      }
+      // Phase 3: Erase dead original ops left behind by cloning.
+      eraseDeadOps(rootReachable, root, gemmEquiv);
     } // for each result of rootOp
   }
 }
