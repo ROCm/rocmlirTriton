@@ -281,44 +281,64 @@ def RockInsertOutputFusionLoadsPass : Pass<"rock-insert-output-fusion-loads", ":
                            "arith::ArithDialect", "math::MathDialect"];
 }
 
+def RockRegularizeInputPass
+    : Pass<"rock-regularize-input", "::mlir::func::FuncOp"> {
+  let summary =
+      "Push input fusions past load_markers to simplify load lowering";
+  let description = [{
+    This pass runs AFTER InsertOutputFusionLoads and BEFORE RockLowerLoads.
+    It ensures that each rock.load_marker's source is a pure transform chain
+    (no fusion ops), by distributing load_markers past any fusions in their
+    source chain.
+
+    For each rock.load_marker whose source traces through fusion ops:
+    1. Walk backwards collecting transforms between the marker and the fusions
+    2. For each leaf of the fusion DAG (transform chains to block args):
+       apply the collected transforms, isolate the chain, create a new
+       rock.load_marker
+    3. For splat constants: create a tile-shaped constant (no load_marker)
+    4. Clone the fusion ops after the load_markers, operating on tile types
+    5. Replace the original load_marker with the cloned fusion result
+
+    Example:
+      Before:
+        %Ta = rock.transform %arg0 by <T0>
+        %Tb = rock.transform %arg1 by <T1>
+        %fused = arith.addf %Ta, %Tb
+        %a = rock.transform %fused by <T2>
+        %res = rock.load_marker %a views [<tiling>] [indices]
+
+      After:
+        %Ta2 = rock.transform %arg0 by <T0>  // isolated chain
+        %Ta2 = rock.transform %Ta by <T2>
+        %Tb2 = rock.transform %arg1 by <T1>  // isolated chain
+        %Tb2 = rock.transform %Tb by <T2>
+        %A0 = rock.load_marker %Ta2 views [<tiling>] [indices]
+        %A1 = rock.load_marker %Tb2 views [<tiling>] [indices]
+        %res = arith.addf %A0, %A1
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect", "math::MathDialect"];
+}
+
 def RockLowerLoadsPass : Pass<"rock-lower-loads", "::mlir::func::FuncOp"> {
   let summary = "Lower rock.load_marker ops to rock.blockwise_load";
   let description = [{
-    This pass runs AFTER GridwiseGemmToBlockwise and InsertOutputFusionLoads.
-    It converts rock.load_marker ops into rock.blockwise_load ops by tracing
-    back through rock.transform ops and fusion ops (arith/math) to func block
-    arguments (the kernel's tensor inputs).
+    This pass runs AFTER RockRegularizeInput.
+    Each rock.load_marker's source is guaranteed to be a pure transform chain
+    (no fusions) by the preceding RegularizeInput pass.
 
-    For each rock.load_marker, the pass recursively walks its source:
-    - rock.transform: accumulates the transform and recurses on its input
-    - Fusion ops (arith/math): recurses on each operand, clones the op with
-      tile-typed operands
-    - Func block argument: applies the accumulated transforms and creates a
-      rock.blockwise_load
-    - Splat arith.constant: reshaped to tile type
+    For each rock.load_marker, the pass applies the marker's extraViews
+    transforms on top of the source and creates a rock.blockwise_load.
 
-    Example (no fusion):
+    Example:
       Before:
         %t = rock.transform %arg0 by <pre_transform>
         %tile = rock.load_marker %t views [<tiling>] [%kIter, %g, %m, %n]
 
       After:
-        %combined = rock.transform %arg0 by <pre_transform + tiling>
+        %combined = rock.transform %t by <tiling>
         %tile = rock.blockwise_load %combined[%kIter, %g, %m, %n]
-
-    Fusion example:
-      Before:
-        %t1 = rock.transform %arg0 by <pre1>
-        %t2 = rock.transform %arg1 by <pre2>
-        %fused = arith.addf %t1, %t2
-        %tile = rock.load_marker %fused views [<tiling>] [indices]
-
-      After:
-        %combined1 = rock.transform %arg0 by <pre1 + tiling>
-        %loaded1 = rock.blockwise_load %combined1[indices]
-        %combined2 = rock.transform %arg1 by <pre2 + tiling>
-        %loaded2 = rock.blockwise_load %combined2[indices]
-        %fused_tile = arith.addf %loaded1, %loaded2
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }

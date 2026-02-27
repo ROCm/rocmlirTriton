@@ -372,9 +372,12 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm.addPass(rock::createRockGridwiseAttnToBlockwisePass());
   funcPm.addPass(rock::createRockGridwiseGemmToBlockwisePass());
   funcPm.addPass(rock::createRockInsertOutputFusionLoadsPass());
-  
-  // Both LowerLoads and LowerStores passes create dead values that need to be cleaned up
-  addWithCSE(rock::createRockLowerLoadsPass());
+
+  // RegularizeInput creates dead values that need to be cleaned up
+  addWithCSE(rock::createRockRegularizeInputPass());
+  funcPm.addPass(rock::createRockLowerLoadsPass());
+
+  // LowerStores creates dead values that need to be cleaned up
   addWithCSE(rock::createRockLowerStoresPass());
 
   // Serialize and erase host functions BEFORE any func-level pass that
