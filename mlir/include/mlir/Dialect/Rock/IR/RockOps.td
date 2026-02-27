@@ -55,8 +55,8 @@ class Rock_ConvOpBase<string mnemonic>
   let results = (outs AnyRankedTensor:$result);
 }
 
-defvar GemmInputTypes = [F32, F16, BF16, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M2,
-                         F8E4M3FN, F4E2M1FN, F8E8M0FNU];
+defvar GemmInputTypes = [F32, F16, BF16, I<4>, I8, F8E5M2FNUZ, F8E4M3FNUZ,
+                         F8E5M2, F8E4M3FN, F4E2M1FN, F8E8M0FNU];
 // This can be extended for quantization.
 defvar GemmOutputTypes = [F32, F16, BF16, I32, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M2, F8E4M3FN];
 defvar GemmAccumulatorTypes = [F32, F16, BF16, I32];
@@ -644,6 +644,12 @@ def Rock_BlockwiseGemmOp
     `matrixAOrigElemType` or `matrixBOrigElemType` are defined. This is to avoid
     using `tt.dot` if we changed the datatype of A or B, it would be represented
     as i8 but it's really `matrixAOrigElemType`/`matrixBOrigElemType`.
+    
+    When LegalizeFloatTypes converts sub-byte float types (e.g.
+    f4E2M1FN) to integer types (i4, then packed to i8),
+    `matrixAOrigElemType`/`matrixBOrigElemType` preserve the original float type
+    for tt.dot_scaled. `matrixAKPack`/`matrixBKPack` indicate whether the
+    packing dimension was K (true) or D (false).
   }];
   let assemblyFormat = [{
     `(` $matrixA  (`scaled` `by` $matrixScaleA^)? `,`

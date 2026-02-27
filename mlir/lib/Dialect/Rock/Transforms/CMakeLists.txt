@@ -11,6 +11,8 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   FusionSplitkRegularizationPass.cpp
   LegalizeFloatTypes.cpp
   LowerBlockwiseToPtr.cpp
+  ConvertNarrowTypeSignatures.cpp
+  EmulateNarrowTypes.cpp
   MaskNonZeroPreservingFusions.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp

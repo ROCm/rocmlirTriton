@@ -151,6 +151,43 @@ def RockLowerBlockwiseToPtrPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockConvertNarrowTypeSignaturesPass
+    : Pass<"rock-convert-narrow-type-signatures", "::mlir::func::FuncOp"> {
+  let summary = "Convert sub-byte types in function signatures to packed i8";
+  let description = [{
+    Converts function signatures containing sub-byte memref types
+    (e.g. memref<Nxi4>, memref<Nxf4E2M1FN>) to packed wider-type storage
+    (e.g. memref<ceil(N/2)xi8>).  Runs before RockEmulateNarrowTypesPass so
+    that the block arguments are already converted when the upstream memref
+    narrow-type emulation patterns rewrite loads and stores.
+  }];
+  let dependentDialects = ["arith::ArithDialect", "memref::MemRefDialect",
+                           "func::FuncDialect"];
+}
+
+def RockEmulateNarrowTypesPass
+    : Pass<"rock-emulate-narrow-types", "::mlir::func::FuncOp"> {
+  let summary = "Emulate sub-byte types (i4) into packed i8 storage";
+  let description = [{
+    Uses NarrowTypeEmulationConverter + upstream memref/arith narrow type
+    emulation patterns to convert sub-byte memref operations
+    (e.g. memref<Nxi4>) into packed wider-type storage (e.g. memref<N/2xi8>)
+    with proper bit-manipulation for load/store.
+
+    Must run after RockConvertNarrowTypeSignaturesPass, which converts
+    function signatures first.  This ordering avoids a crash in the upstream
+    ConvertMemRefLoad/ConvertMemrefStore patterns that call
+    extract_strided_metadata on the original (pre-conversion) memref value.
+  }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "memref::MemRefDialect",
+    "func::FuncDialect",
+    "scf::SCFDialect"
+  ];
+}
+
 def RockMaskNonZeroPreservingFusionsPass
     : Pass<"rock-mask-non-zero-preserving-fusions", "::mlir::func::FuncOp"> {
   let summary = "Insert arith.select masks after non-zero-preserving fusions "

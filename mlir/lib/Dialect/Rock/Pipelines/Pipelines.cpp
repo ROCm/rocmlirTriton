@@ -386,8 +386,12 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                       StringRef dumpCpuSchedules = "") {
+
   // CPU optimization phase.
   // This transforms the function body but keeps tensor types at boundaries.
+  // The pass internally skips verifier functions that involve non-TT float
+  // types (f8E8M0FNU, f4E2M1FN) used by scaled GEMMs, because those conflict
+  // with ConvertNarrowTypeSignatures / EmulateNarrowTypes passes below.
   cpu::CpuLowerVerifierPassOptions cpuOpts;
   cpuOpts.dumpSchedulesPath = dumpCpuSchedules.str();
   cpuOpts.phase = cpu::CPU_PHASE_OPTIMIZE;
@@ -412,19 +416,30 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
   // Expand strided metadata (handles memref.expand_shape, etc.)
   pm.addPass(memref::createExpandStridedMetadataPass());
 
-  // Lower affine to standard arithmetic (must be after ExpandStridedMetadata
-  // which can generate affine.apply ops)
-  pm.addPass(createLowerAffinePass());
-
-  // Lower SCF to control flow
-  pm.addPass(createSCFToControlFlowPass());
-
   // Expand f8E8M0FNU/f4E2M1FN extf/truncf to bitwise ops first, so that
   // arith operations using these types are lowered before type conversion.
   arith::ArithExpandOpsPassOptions expandOpts;
   expandOpts.includeF8E8M0 = true;
   expandOpts.includeF4E2M1 = true;
   pm.addPass(arith::createArithExpandOpsPass(expandOpts));
+
+  // Emulate sub-byte types (f4E2M1FN -> i4 -> packed i8) after ArithExpandOps
+  // has lowered the arithmetic.  Split into two passes:
+  //   1. Convert function signatures (memref<Nxi4> args -> memref<N/2xi8>)
+  //   2. Rewrite loads/stores/allocs using upstream narrow-type emulation
+  // The split avoids a crash in the upstream patterns that call
+  // extract_strided_metadata on the original (pre-conversion) block argument.
+  pm.addNestedPass<func::FuncOp>(
+      rock::createRockConvertNarrowTypeSignaturesPass());
+  pm.addNestedPass<func::FuncOp>(rock::createRockEmulateNarrowTypesPass());
+
+  // Lower affine to standard arithmetic.  Must be after ExpandStridedMetadata
+  // and the narrow-type emulation passes, both of which generate affine.apply.
+  pm.addPass(createLowerAffinePass());
+
+  // Lower SCF to control flow (must be after lower-affine, which creates
+  // scf.for from affine.for)
+  pm.addPass(createSCFToControlFlowPass());
 
   // Make GPU operations async - required by GpuToLLVMConversionPass patterns
   pm.addNestedPass<func::FuncOp>(createGpuAsyncRegionPass());

@@ -1541,16 +1541,12 @@ LogicalResult BlockwiseGemmOp::verify() {
   auto aShape = cast<ShapedType>(getMatrixA().getType()).getShape();
   auto bShape = cast<ShapedType>(getMatrixB().getType()).getShape();
 
-  bool hasAOrigElemType = getMatrixAOrigElemType().has_value();
-  bool hasBOrigElemType = getMatrixBOrigElemType().has_value();
-  if (hasAOrigElemType != hasBOrigElemType)
-    return emitOpError()
-           << "If one of matrixAOrigElemType and matrixBOrigElemType is set, "
-              "the other needs to be set as well";
-
   auto verifyMatrixAndScale = [&](Value scale, ArrayRef<int64_t> matrixShape,
                                   bool isA) -> LogicalResult {
     bool hasScale = scale != nullptr;
+
+    if (matrixShape.size() != 2)
+      return emitOpError() << "matrix shape must be 2D";
 
     StringRef matrixName = isA ? "A" : "B";
     if (hasScale) {
@@ -1562,11 +1558,40 @@ LogicalResult BlockwiseGemmOp::verify() {
           normalizeScaleShape(cast<ShapedType>(scale.getType()).getShape(),
                               quantBlockSize.value(), isA);
 
-      if (matrixShape != ArrayRef<int64_t>(scaleShape)) {
-        return emitOpError(
-            llvm::formatv("If scale{0} is non-null, its shape must match "
-                          "{0}'s shape.",
-                          matrixName));
+      TypeAttr origElemType =
+          isA ? getMatrixAOrigElemTypeAttr() : getMatrixBOrigElemTypeAttr();
+      if (origElemType != nullptr) {
+        // After sub-byte packing (f4->i8), one matrix dimension was halved.
+        // Verify that doubling the packed dimension recovers the scale shape.
+        bool kPack = isA ? getMatrixAKPack().value_or(true)
+                         : getMatrixBKPack().value_or(true);
+        int64_t origLen = origElemType.getValue().getIntOrFloatBitWidth();
+        int64_t currLen = isA ? cast<ShapedType>(getMatrixA().getType())
+                                    .getElementTypeBitWidth()
+                              : cast<ShapedType>(getMatrixB().getType())
+                                    .getElementTypeBitWidth();
+        if (currLen % origLen != 0)
+          return emitOpError(
+              "unexpected error: currLen is not divisible by origLen");
+
+        // matrixA is MxK: K is dim 1, M is dim 0.
+        // matrixB is KxN: K is dim 0, N is dim 1.
+        int64_t packedDim = (isA == kPack) ? 1 : 0;
+        SmallVector<int64_t> expectedShape(matrixShape);
+        expectedShape[packedDim] *= currLen / origLen;
+        if (expectedShape != scaleShape) {
+          return emitOpError(llvm::formatv(
+              "Packed matrix{0} shape (with dim {1} {2}x) must match "
+              "normalized scale{0} shape.",
+              matrixName, packedDim, currLen / origLen));
+        }
+      } else {
+        if (matrixShape != ArrayRef<int64_t>(scaleShape)) {
+          return emitOpError(
+              llvm::formatv("If scale{0} is non-null, its shape must match "
+                            "{0}'s shape.",
+                            matrixName));
+        }
       }
     }
 
