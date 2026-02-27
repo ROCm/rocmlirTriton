@@ -17,36 +17,37 @@
 // =============================================================================
 //
 // This pass runs AFTER GridwiseGemmToBlockwise and BEFORE RockLowerLoads.
-// It creates rock.blockwise_load_tile for rock.load ops used in output fusions.
+// It creates rock.load_marker + rock.untile for extra fusion inputs in output
+// fusions.
 //
-// Output fusion loads are rock.load ops that:
-// 1. Are NOT reachable from any existing rock.blockwise_load_tile (input loads)
-// 2. Feed into fusion ops (arith/math) that operate on the GEMM result
+// Extra fusion inputs are operands of fusion ops (arith/math) that are NOT
+// part of the GEMM-result chain — e.g., a bias tensor added to the GEMM
+// output. These come from func block arguments through rock.transform chains.
 //
 // Example:
 //   Before (after GridwiseGemmToBlockwise):
 //     %result = scf.for ... {
-//       %loadedA = rock.blockwise_load_tile %a[indices]
+//       %loadedA = rock.blockwise_load %a[indices]
 //       ...
 //     }
 //     %fusionRoot = rock.store_marker %result views [...] [%g, %m, %n]
 //                     : tensor<64x64xf16> -> tensor<1x128x128xf16>
-//     %bias_t = rock.transform %bias
-//     %bias_loaded = rock.load %bias_t
-//     %fused = arith.addf %fusionRoot, %bias_loaded
+//     %bias_t = rock.transform %bias_arg
+//     %fused = arith.addf %fusionRoot, %bias_t
 //     %out = rock.store %fused to %dest
 //
 //   After:
 //     %result = scf.for ... { ... }
 //     %fusionRoot = rock.store_marker %result views [...] [%g, %m, %n]
 //                     : tensor<64x64xf16> -> tensor<1x128x128xf16>
-//     %bias_t = rock.transform %bias
-//     %bias_loaded = rock.load %bias_t
-//     %bias_wrapped = rock.transform %bias_loaded by <output_grid_subtile>
-//     %bias_tile = rock.blockwise_load_tile %bias_wrapped[g, m, n]
-//     %bias_full = rock.store_marker %bias_tile views [] : tile -> full
-//     %fused = arith.addf %fusionRoot, %bias_full
-//     %out = rock.store %fused to %dest
+//     %bias_t = rock.transform %bias_arg
+//     %bias_tile = rock.load_marker %bias_t views [<output_tiling>] [%g, %m,
+//     %n] %bias_full = rock.untile %bias_tile : tile -> full %fused =
+//     arith.addf %fusionRoot, %bias_full %out = rock.store %fused to %dest
+//
+// The chain block_argument -> transform(s) -> rock.load_marker -> rock.untile
+// allows LowerLoads to trace back to the block argument and combine the
+// pre-existing transforms with the output tiling transforms.
 //
 //===----------------------------------------------------------------------===//
 

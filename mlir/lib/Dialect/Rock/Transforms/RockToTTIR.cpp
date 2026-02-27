@@ -116,10 +116,10 @@ struct RockBlockwiseReduceOpRewritePattern
 };
 
 //===----------------------------------------------------------------------===//
-// RockLoadTilePtrOpRewritePattern - Convert rock.blockwise_load_tile_ptr to
+// RockLoadPtrOpRewritePattern - Convert rock.blockwise_load_ptr to
 // tt.load
 //===----------------------------------------------------------------------===//
-struct RockLoadTilePtrOpRewritePattern
+struct RockLoadPtrOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseLoadPtrOp> {
   using OpRewritePattern<rock::BlockwiseLoadPtrOp>::OpRewritePattern;
 
@@ -219,7 +219,7 @@ struct RockBlockwiseGemmOpRewritePattern
   }
 };
 
-struct RockStoreTilePtrOpRewritePattern
+struct RockStorePtrOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseStorePtrOp> {
   using OpRewritePattern<rock::BlockwiseStorePtrOp>::OpRewritePattern;
 
@@ -362,9 +362,9 @@ void RockToTTIRPass::runOnOperation() {
 
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
-  patterns.add<RockLoadTilePtrOpRewritePattern>(ctx);
+  patterns.add<RockLoadPtrOpRewritePattern>(ctx);
   patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
-  patterns.add<RockStoreTilePtrOpRewritePattern>(ctx);
+  patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ReturnOpRewritePattern>(ctx);
 
   // Apply partial conversion - convert tensor.splat and Rock ops to Triton ops

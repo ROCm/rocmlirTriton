@@ -1,4 +1,4 @@
-//===- LowerStores.cpp - Lower rock.store ops to blockwise_store_tile -----===//
+//===- LowerStores.cpp - Lower rock.store ops to blockwise_store -----===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -16,7 +16,7 @@
 // =============================================================================
 //
 // This pass runs AFTER RockLowerLoads and converts rock.store to
-// rock.blockwise_store_tile.
+// rock.blockwise_store.
 //
 // At this point, the IR has:
 // - StoreMarkerOp mapping tiles to full tensors for fusion ops
@@ -44,7 +44,7 @@
 //     %gemm_tile = scf.for ... -> tensor<16x16xf32>
 //     %fused_tile = arith.addf %gemm_tile, %bias_tile : tensor<16x16xf32>
 //     %combined_dest = rock.transform %arg2 by <dest_transforms +
-//     tile_transforms> %out = rock.blockwise_store_tile %fused_tile ->
+//     tile_transforms> %out = rock.blockwise_store %fused_tile ->
 //     %combined_dest[%g, %m, %n] by set
 //
 //===----------------------------------------------------------------------===//

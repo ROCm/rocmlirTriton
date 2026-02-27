@@ -444,7 +444,7 @@ def Rock_StoreMarkerOp
     3. Carries the grid coordinates (extraIndices) for the tile position
 
     In LowerStores, this op is combined with rock.store to create the final
-    rock.blockwise_store_tile with proper transform chains.
+    rock.blockwise_store with proper transform chains.
 
     Example:
       %tile = scf.for ... -> tensor<16x16xf32>  // GEMM loop result
@@ -469,7 +469,7 @@ def Rock_LoadMarkerOp
   let description = [{
     The rock.load_marker op is the dual of rock.store_marker. It marks a source
     tensor (which may be the result of transforms and/or fusion ops tracing back
-    to rock.load) with the tiling information needed to create an actual
+    to a block argument) with the tiling information needed to create an actual
     rock.blockwise_load.
 
     This op is a placeholder introduced by:
@@ -484,19 +484,17 @@ def Rock_LoadMarkerOp
        type is the full tensor type (consumed by fusion ops).
 
     LowerLoads converts this op into an actual rock.blockwise_load by tracing
-    back through the source chain (transforms, fusion ops, rock.load markers)
+    back through the source chain (transforms, fusion ops, block argument)
     and combining all transforms.
 
     Example (GEMM input, tile result):
       %a = rock.transform %arg0 by <pre_transforms>
-      %loaded = rock.load %a
-      %tile = rock.load_marker %loaded views [<tiling>] [%kIter, %g, %m, %n]
+      %tile = rock.load_marker %a views [<tiling>] [%kIter, %g, %m, %n]
                 : tensor<1x128x128xf16> -> tensor<64x64xf16>
 
     Example (output fusion extra input, full result):
       %bias_t = rock.transform %arg_bias by <transforms>
-      %bias_loaded = rock.load %bias_t
-      %bias = rock.load_marker %bias_loaded views [<output_tiling>] [%g, %m, %n]
+      %bias = rock.load_marker %bias_t views [<output_tiling>] [%g, %m, %n]
                 : tensor<1x128x128xf16> -> tensor<1x128x128xf16>
       %fused = arith.addf %gemm_full, %bias
   }];
