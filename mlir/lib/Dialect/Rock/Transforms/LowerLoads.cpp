@@ -23,16 +23,16 @@
 // 2. InsertOutputFusionLoads for output fusion extra inputs
 //
 // The LoadMarkerOp's source is the tensor (possibly through
-// a fusion chain with rock.load markers). The tiling transforms are carried
-// as metadata in extraViews. This pass applies those views and traces back
-// through the source chain (transforms, fusion ops, rock.load markers) to
-// create BlockwiseLoadOp for each rock.load encountered.
+// a fusion chain with rock.transform ops) that traces back to a func block
+// argument. The tiling transforms are carried as metadata in extraViews.
+// This pass applies those views and traces back through the source chain
+// (transforms, fusion ops) to func block arguments, creating a
+// BlockwiseLoadOp for each block argument encountered.
 //
 // Example (no fusion):
 //   Before:
 //     %t1 = rock.transform %arg0 by <pre_transform>
-//     %l1 = rock.load %t1
-//     %tile = rock.load_marker %l1 views [<tiling>] [%kIter, %g, %m, %n]
+//     %tile = rock.load_marker %t1 views [<tiling>] [%kIter, %g, %m, %n]
 //               : tensor<...> -> tensor<tile>
 //
 //   After:
@@ -41,9 +41,9 @@
 //
 // Fusion example:
 //   Before:
-//     %t1 = rock.transform %arg0, %l1 = rock.load %t1
-//     %t2 = rock.transform %arg1, %l2 = rock.load %t2
-//     %fused = arith.addf %l1, %l2
+//     %t1 = rock.transform %arg0 by <pre1>
+//     %t2 = rock.transform %arg1 by <pre2>
+//     %fused = arith.addf %t1, %t2
 //     %tile = rock.load_marker %fused views [<tiling>] [indices]
 //               : tensor<...> -> tensor<tile>
 //
@@ -57,9 +57,7 @@
 // Output fusion example (LoadMarkerOp + UntileOp):
 //   Before:
 //     %bias_t = rock.transform %arg_bias by <transforms>
-//     %bias_loaded = rock.load %bias_t
-//     %tile = rock.load_marker %bias_loaded views [<output_tiling>] [%g, %m,
-//     %n]
+//     %tile = rock.load_marker %bias_t views [<output_tiling>] [%g, %m, %n]
 //               : tensor<full> -> tensor<tile>
 //     %full = rock.untile %tile : tensor<tile> -> tensor<full>
 //
@@ -105,14 +103,15 @@ using namespace mlir::rock;
 namespace {
 
 /// Recursively reconstruct a value for blockwise loading.
-/// Traces through transforms, rock.load ops, and fusion ops.
+/// Traces through transforms, fusion ops, and func block arguments.
 static FailureOr<Value> reconstructForBlockwiseLoad(
     OpBuilder &builder, Location loc, Value originalVal,
     ArrayRef<TransformMapAttr> postTransforms, // Transforms in [last_to_apply,
                                                // ..., first_to_apply] order
     ValueRange blockIndices, // Indices for blockwise_load_tile
     Type tileType,           // Result type of blockwise_load_tile
-    IRMapping &valueMapping  // Maps original values to loaded values
+    IRMapping &valueMapping, // Maps original values to loaded values
+    func::FuncOp funcOp      // The kernel function (for block arg validation)
 ) {
   // Check if we've already processed this value
   if (valueMapping.contains(originalVal)) {
@@ -120,32 +119,23 @@ static FailureOr<Value> reconstructForBlockwiseLoad(
   }
 
   Operation *defOp = originalVal.getDefiningOp();
+
+  // Case 1: Block argument of the kernel function — create a BlockwiseLoadOp.
+  // The recursion has traced through transforms and accumulated them in
+  // postTransforms; apply them all to the block arg and emit the load.
   if (!defOp) {
-    // Block argument without rock.load - shouldn't happen in normal flow
-    return failure();
-  }
+    auto blockArg = cast<BlockArgument>(originalVal);
+    if (blockArg.getOwner() != &funcOp.front())
+      return failure();
 
-  // Case 1: rock.load - trace through to get actual source and create load
-  if (auto loadOp = dyn_cast<LoadOp>(defOp)) {
-    Value loadSource = loadOp.getSource();
-    
-    // Collect transforms from load source to root (in reverse order)
-    SmallVector<TransformMapAttr> preTransforms;
-    auto [source, _] = rock::untransform(loadSource, preTransforms);
-
-    // Combine: post-transforms then pre-transforms
-    // rock::transform expects [last_to_apply, ..., first_to_apply] order
-    SmallVector<Attribute> combinedTransforms;
-    combinedTransforms.append(postTransforms.begin(), postTransforms.end());
-    combinedTransforms.append(preTransforms.begin(), preTransforms.end());
-    
-    // Apply combined transforms using rock::transform utility
-    if (!combinedTransforms.empty()) {
-      ArrayAttr transformsAttr = builder.getArrayAttr(combinedTransforms);
+    Value source = originalVal;
+    if (!postTransforms.empty()) {
+      SmallVector<Attribute> transforms(postTransforms.begin(),
+                                        postTransforms.end());
+      ArrayAttr transformsAttr = builder.getArrayAttr(transforms);
       source = rock::transform(builder, source, transformsAttr);
     }
-    
-    // Create blockwise_load_tile
+
     auto loadTileOp =
         BlockwiseLoadOp::create(builder, loc, tileType, source, blockIndices);
     valueMapping.map(originalVal, loadTileOp.getResult());
@@ -153,7 +143,7 @@ static FailureOr<Value> reconstructForBlockwiseLoad(
   }
 
   // Case 2: rock.transform - accumulate and recurse
-  // We walk backwards: load_marker -> tiling -> pad -> fusion/load.
+  // We walk backwards: load_marker -> tiling -> pad -> ... -> block arg.
   // rock::transform expects [last_to_apply, ..., first_to_apply].
   // So we append each transform we encounter (tiling first, pad second)
   // giving [tiling, pad], which applies as pad then tiling -- correct.
@@ -164,7 +154,7 @@ static FailureOr<Value> reconstructForBlockwiseLoad(
 
     FailureOr<Value> result = reconstructForBlockwiseLoad(
         builder, loc, transformOp.getInput(), newPostTransforms, blockIndices,
-        tileType, valueMapping);
+        tileType, valueMapping, funcOp);
     if (succeeded(result))
       valueMapping.map(originalVal, result.value());
     return result;
@@ -183,7 +173,7 @@ static FailureOr<Value> reconstructForBlockwiseLoad(
       auto operandTileType = RankedTensorType::get(tileShape, operandElemType);
       FailureOr<Value> reconstructed = reconstructForBlockwiseLoad(
           builder, loc, operand, postTransforms, blockIndices, operandTileType,
-          valueMapping);
+          valueMapping, funcOp);
       if (failed(reconstructed))
         return failure();
       fusionMapping.map(operand, reconstructed.value());
@@ -261,7 +251,7 @@ void RockLowerLoadsPass::runOnOperation() {
     IRMapping valueMapping;
     FailureOr<Value> maybeTileResult =
         reconstructForBlockwiseLoad(builder, loc, source, initialTransforms,
-                                    indices, tileType, valueMapping);
+                                    indices, tileType, valueMapping, funcOp);
     if (failed(maybeTileResult)) {
       markerOp->emitError("Couldn't lower to BlockwiseLoad");
       return signalPassFailure();

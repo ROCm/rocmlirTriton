@@ -240,25 +240,6 @@ def RockRestoreHostCodePass : Pass<"rock-restore-host-code", "::mlir::ModuleOp">
   ];
 }
 
-def RockInsertLoadsPass : Pass<"rock-insert-loads", "::mlir::func::FuncOp"> {
-  let summary = "Insert rock.load ops for tensor arguments used by non-viewlike ops";
-  let description = [{
-    This pass traverses the IR and for each operation that is NOT view-like
-    (such as rock.transform), it traces the input operands back to the function
-    arguments. For each unique tensor argument that is consumed by a non-viewlike
-    operation (possibly through a chain of transforms), a rock.load operation is
-    inserted.
-
-    The rock.load operation is a placeholder that marks where actual loads from
-    global memory must happen. This is used in later passes for proper memory
-    access scheduling.
-
-    If multiple operations load the same tensor argument, only a single rock.load
-    is created for that tensor to avoid redundant loads.
-  }];
-  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
-}
-
 def RockInsertOutputFusionLoadsPass : Pass<"rock-insert-output-fusion-loads", "::mlir::func::FuncOp"> {
   let summary = "Insert BlockwiseLoadOp for output fusion loads";
   let description = [{

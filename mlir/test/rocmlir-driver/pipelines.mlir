@@ -21,7 +21,6 @@
 // GPU-NEXT:rock-gemm-linalg-splitk-normalization,
 // GPU-NEXT:rock-gemm-to-gridwise,
 // GPU-NEXT:rock-shuffle-gemm-for-reductions,
-// GPU-NEXT:rock-insert-loads,
 // GPU-NEXT:rock-gridwise-attn-to-blockwise,
 // GPU-NEXT:rock-gridwise-gemm-to-blockwise,
 // GPU-NEXT:rock-insert-output-fusion-loads,

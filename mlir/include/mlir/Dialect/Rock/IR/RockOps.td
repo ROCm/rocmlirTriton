@@ -506,22 +506,6 @@ def Rock_LoadMarkerOp
   }];
 }
 
-// load
-def Rock_LoadOp : Rock_Op<"load", [AllTypesMatch<["source", "result"]>, Pure]>,
-                  Arguments<(ins AnyRankedTensor:$source)>,
-                  Results<(outs AnyRankedTensor:$result)> {
-  let summary = "Placeholder (used by fusion passes) to mark where loads from global memory will happen";
-  let description = [{
-    The rock.load op is a placeholder marking where loads from global memory
-    need to happen. It takes a tensor (typically a function argument) and
-    returns a tensor of the same type. This operation is used by passes that
-    need to track where data is loaded from global memory (for fusions).
-  }];
-  let assemblyFormat = [{
-    $source attr-dict `:` type($result)
-  }];
-}
-
 // store
 def Rock_StoreOp : Rock_Op<"store">,
                    Arguments<(ins AnyRankedTensor:$source,
