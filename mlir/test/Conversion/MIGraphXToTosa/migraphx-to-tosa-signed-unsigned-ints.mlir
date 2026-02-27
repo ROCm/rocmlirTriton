@@ -203,23 +203,22 @@ func.func @basic_add_si32(%arg0: !migraphx.shaped<1x112x112x64xsi32, 802816x7168
   return %1 : !migraphx.shaped<1x112x112x64xsi32, 802816x7168x64x1>
 }
 
-// TODO(rocmlirTriton): 'tosa.conv2d' op expected input_height - 1 + pad_top + pad_bottom - (kernel_height - 1) * dilation_y to be wholly divisible by stride_y
-// DISABLED-CHECK-LABEL: func @conv_with_quant_si8
-// DISABLED-CHECK: tosa.conv2d{{.*}}(tensor<1x224x224x3xi8>, tensor<64x7x7x3xi8>, tensor<64xi32>, tensor<1xi8>, tensor<1xi8>) -> tensor<1x112x112x64xi32>
-// DISABLED-CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xf32>
-// DISABLED-CHECK: tosa.cast{{.*}}(tensor<1x64x1x1xi32>) -> tensor<1x64x1x1xf32>
-// DISABLED-CHECK: tosa.sub{{.*}}(tensor<1x64x112x112xf32>, tensor<1x64x1x1xf32>) -> tensor<1x64x112x112xf32>
-// DISABLED-CHECK: tosa.mul{{.*}}(tensor<1x64x112x112xf32>, tensor<1x64x1x1xf32>, tensor<1xi8>) -> tensor<1x64x112x112xf32>
-// DISABLED-CHECK: tosa.reciprocal{{.*}}(tensor<1x64x1x1xf32>) -> tensor<1x64x1x1xf32>
-// DISABLED-CHECK: tosa.mul{{.*}}(tensor<1x64x112x112xf32>, tensor<1x64x1x1xf32>, tensor<1xi8>) -> tensor<1x64x112x112xf32>
-// DISABLED-CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xf32>) -> tensor<1x64x112x112xi32>
-// DISABLED-CHECK: tosa.cast{{.*}}(tensor<1x64x1x1xi8>) -> tensor<1x64x1x1xi32>
-// DISABLED-CHECK: tosa.add{{.*}}(tensor<1x64x112x112xi32>, tensor<1x64x1x1xi32>) -> tensor<1x64x112x112xi32>
-// DISABLED-CHECK: tosa.clamp{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xi32>
-// DISABLED-CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xi8>
-// func.func @conv_with_quant_si8(%arg1: !migraphx.shaped<1x3x224x224xsi8, 150528x50176x224x1>, %arg2: !migraphx.shaped<64x3x7x7xsi8, 147x49x7x1>, %scale: !migraphx.shaped<1x64x1x1xf32, 64x1x1x1>, %bias: !migraphx.shaped<1x64x1x1xsi32, 64x1x1x1>, %bias2: !migraphx.shaped<1x64x1x1xsi8, 64x1x1x1>) -> !migraphx.shaped<1x64x112x112xsi8, 802816x12544x112x1> attributes {kernel = "mixr"} {
-//   %1 = migraphx.quant_convolution %arg1, %arg2 {dilation = [1, 1], group = 1 : i64, padding = [3, 3, 3, 3], padding_mode = 0 : i64, stride = [2, 2]} : <1x3x224x224xsi8, 150528x50176x224x1>, <64x3x7x7xsi8, 147x49x7x1> -> <1x64x112x112xsi32, 802816x12544x112x1>
-//   %2 = migraphx.dequantizelinear %1, %scale, %bias : <1x64x112x112xsi32, 802816x12544x112x1>, <1x64x1x1xf32, 64x1x1x1>, !migraphx.shaped<1x64x1x1xsi32, 64x1x1x1> -> <1x64x112x112xf32, 802816x12544x112x1>
-//   %3 = migraphx.quantizelinear %2, %scale, %bias2 : <1x64x112x112xf32, 802816x12544x112x1>, <1x64x1x1xf32, 64x1x1x1>, !migraphx.shaped<1x64x1x1xsi8, 64x1x1x1> -> <1x64x112x112xsi8, 802816x12544x112x1>
-//   return %3 : !migraphx.shaped<1x64x112x112xsi8, 802816x12544x112x1>
-// }
+// CHECK-LABEL: func @conv_with_quant_si8
+// CHECK: tosa.conv2d{{.*}}(tensor<1x224x224x3xi8>, tensor<64x7x7x3xi8>, tensor<64xi32>, tensor<1xi8>, tensor<1xi8>) -> tensor<1x112x112x64xi32>
+// CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xf32>
+// CHECK: tosa.cast{{.*}}(tensor<1x64x1x1xi32>) -> tensor<1x64x1x1xf32>
+// CHECK: tosa.sub{{.*}}(tensor<1x64x112x112xf32>, tensor<1x64x1x1xf32>) -> tensor<1x64x112x112xf32>
+// CHECK: tosa.mul{{.*}}(tensor<1x64x112x112xf32>, tensor<1x64x1x1xf32>, tensor<1xi8>) -> tensor<1x64x112x112xf32>
+// CHECK: tosa.reciprocal{{.*}}(tensor<1x64x1x1xf32>) -> tensor<1x64x1x1xf32>
+// CHECK: tosa.mul{{.*}}(tensor<1x64x112x112xf32>, tensor<1x64x1x1xf32>, tensor<1xi8>) -> tensor<1x64x112x112xf32>
+// CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xf32>) -> tensor<1x64x112x112xi32>
+// CHECK: tosa.cast{{.*}}(tensor<1x64x1x1xi8>) -> tensor<1x64x1x1xi32>
+// CHECK: tosa.add{{.*}}(tensor<1x64x112x112xi32>, tensor<1x64x1x1xi32>) -> tensor<1x64x112x112xi32>
+// CHECK: tosa.clamp{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xi32>
+// CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xi8>
+func.func @conv_with_quant_si8(%arg1: !migraphx.shaped<1x3x224x224xsi8, 150528x50176x224x1>, %arg2: !migraphx.shaped<64x3x7x7xsi8, 147x49x7x1>, %scale: !migraphx.shaped<1x64x1x1xf32, 64x1x1x1>, %bias: !migraphx.shaped<1x64x1x1xsi32, 64x1x1x1>, %bias2: !migraphx.shaped<1x64x1x1xsi8, 64x1x1x1>) -> !migraphx.shaped<1x64x112x112xsi8, 802816x12544x112x1> attributes {kernel = "mixr"} {
+  %1 = migraphx.quant_convolution %arg1, %arg2 {dilation = [1, 1], group = 1 : i64, padding = [3, 3, 3, 3], padding_mode = 0 : i64, stride = [2, 2]} : <1x3x224x224xsi8, 150528x50176x224x1>, <64x3x7x7xsi8, 147x49x7x1> -> <1x64x112x112xsi32, 802816x12544x112x1>
+  %2 = migraphx.dequantizelinear %1, %scale, %bias : <1x64x112x112xsi32, 802816x12544x112x1>, <1x64x1x1xf32, 64x1x1x1>, !migraphx.shaped<1x64x1x1xsi32, 64x1x1x1> -> <1x64x112x112xf32, 802816x12544x112x1>
+  %3 = migraphx.quantizelinear %2, %scale, %bias2 : <1x64x112x112xf32, 802816x12544x112x1>, <1x64x1x1xf32, 64x1x1x1>, !migraphx.shaped<1x64x1x1xsi8, 64x1x1x1> -> <1x64x112x112xsi8, 802816x12544x112x1>
+  return %3 : !migraphx.shaped<1x64x112x112xsi8, 802816x12544x112x1>
+}

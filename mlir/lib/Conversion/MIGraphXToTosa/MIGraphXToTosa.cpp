@@ -372,6 +372,20 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
     pads.push_back(0);
   }
 
+  // MIGraphX uses floor-mode output sizes where partial windows are dropped.
+  // TOSA requires exact divisibility by stride. Trim the high-side padding
+  // to satisfy this, the removed padding never affects floor-mode output.
+  if (!isBwdDataConvOp) {
+    auto inputShape = cast<ShapedType>(input.getType()).getShape();
+    auto filterShape = cast<ShapedType>(filter.getType()).getShape();
+    for (int i = 0, e = pads.size() / 2; i < e; i++) {
+      int64_t fullExtent = inputShape[i + 1] - 1 + pads[2 * i] +
+                           pads[2 * i + 1] -
+                           (filterShape[i + 1] - 1) * dilations[i];
+      pads[2 * i + 1] -= fullExtent % strides[i];
+    }
+  }
+
   // Set attributes common to both forwards and backwards conv
   cop->setAttr("dilation", rewriter.getDenseI64ArrayAttr(dilations));
   cop->setAttr("stride", rewriter.getDenseI64ArrayAttr(strides));
