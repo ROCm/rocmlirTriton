@@ -362,20 +362,20 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     funcPm.addPass(createCSEPass());
   };
 
-  funcPm.addPass(rock::createRockAffixTuningParametersPass(
+  addWithCSE(rock::createRockAffixTuningParametersPass(
       rock::RockAffixTuningParametersPassOptions{options.tuningFallback}));
-  funcPm.addPass(rock::createRockRegularizeOutputPass());
-  funcPm.addPass(rock::createRockConvToGemmPass());
-  funcPm.addPass(rock::createRockGemmLinalgSplitkNormalizationPass());
-  funcPm.addPass(rock::createRockGemmToGridwisePass());
-  funcPm.addPass(rock::createRockShuffleGemmForReductions());
-  funcPm.addPass(rock::createRockGridwiseAttnToBlockwisePass());
-  funcPm.addPass(rock::createRockGridwiseGemmToBlockwisePass());
-  funcPm.addPass(rock::createRockInsertOutputFusionLoadsPass());
+  addWithCSE(rock::createRockRegularizeOutputPass());
+  addWithCSE(rock::createRockConvToGemmPass());
+  addWithCSE(rock::createRockGemmLinalgSplitkNormalizationPass());
+  addWithCSE(rock::createRockGemmToGridwisePass());
+  addWithCSE(rock::createRockShuffleGemmForReductions());
+  addWithCSE(rock::createRockGridwiseAttnToBlockwisePass());
+  addWithCSE(rock::createRockGridwiseGemmToBlockwisePass());
+  addWithCSE(rock::createRockInsertOutputFusionLoadsPass());
 
   // RegularizeInput creates dead values that need to be cleaned up
   addWithCSE(rock::createRockRegularizeInputPass());
-  funcPm.addPass(rock::createRockLowerLoadsPass());
+  addWithCSE(rock::createRockLowerLoadsPass());
 
   // LowerStores creates dead values that need to be cleaned up
   addWithCSE(rock::createRockLowerStoresPass());
