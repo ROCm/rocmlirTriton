@@ -374,15 +374,35 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
 
   // MIGraphX uses floor-mode output sizes where partial windows are dropped.
   // TOSA requires exact divisibility by stride. Trim the high-side padding
-  // to satisfy this, the removed padding never affects floor-mode output.
+  // to satisfy this; the removed padding never affects floor-mode output.
+  // When reducing padding would make it negative, shrink the input instead.
   if (!isBwdDataConvOp) {
     auto inputShape = cast<ShapedType>(input.getType()).getShape();
     auto filterShape = cast<ShapedType>(filter.getType()).getShape();
+    SmallVector<int64_t> sliceSizes(inputShape.begin(), inputShape.end());
+    bool needSlice = false;
     for (int i = 0, e = pads.size() / 2; i < e; i++) {
       int64_t fullExtent = inputShape[i + 1] - 1 + pads[2 * i] +
                            pads[2 * i + 1] -
                            (filterShape[i + 1] - 1) * dilations[i];
-      pads[2 * i + 1] -= fullExtent % strides[i];
+      int64_t remainder = fullExtent % strides[i];
+      // Absorb remainder from padding first, then from input if needed.
+      int64_t fromPad = std::min(pads[2 * i + 1], remainder);
+      pads[2 * i + 1] -= fromPad;
+      int64_t fromInput = remainder - fromPad;
+      if (fromInput > 0) {
+        sliceSizes[i + 1] -= fromInput;
+        needSlice = true;
+      }
+    }
+    if (needSlice) {
+      SmallVector<int64_t> starts(sliceSizes.size(), 0);
+      auto startsValue = tosa::getTosaConstShape(rewriter, loc, starts);
+      auto sizesValue = tosa::getTosaConstShape(rewriter, loc, sliceSizes);
+      auto slicedType = RankedTensorType::get(
+          sliceSizes, cast<ShapedType>(input.getType()).getElementType());
+      input = tosa::SliceOp::create(rewriter, loc, slicedType, input,
+                                    startsValue, sizesValue);
     }
   }
 
