@@ -403,6 +403,7 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
           sliceSizes, cast<ShapedType>(input.getType()).getElementType());
       input = tosa::SliceOp::create(rewriter, loc, slicedType, input,
                                     startsValue, sizesValue);
+      cop->setOperand(0, input);
     }
   }
 
