@@ -246,7 +246,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(ModuleOp mod) {
 
 LogicalResult mlir::rock::testFusionLegalityReduce(func::FuncOp func) {
   WalkResult walkResult = func.walk([&](rock::ReduceOp reduceOp) -> WalkResult {
-    auto outElemType = reduceOp.getOut().getType().getElementType();
+    auto outElemType = reduceOp.getResult().getType().getElementType();
     if (reduceOp.getReduceMethod() == ReduceMethod::Max) {
       if (!isFastAtomicMaxSupported(rock::getArchValue(reduceOp), outElemType))
         return WalkResult::interrupt();

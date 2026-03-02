@@ -1105,7 +1105,7 @@ LogicalResult ReduceOp::verify() {
   APInt axis = getAxis();
   ArrayRef<int64_t> inpShape = cast<ShapedType>(getIn().getType()).getShape();
   for (const auto &dimAndSize :
-       llvm::enumerate(cast<ShapedType>(getOut().getType()).getShape())) {
+       llvm::enumerate(cast<ShapedType>(getResult().getType()).getShape())) {
     size_t dim = dimAndSize.index();
     int64_t dimSize = dimAndSize.value();
     if (dim == axis) {
@@ -1121,12 +1121,9 @@ LogicalResult ReduceOp::verify() {
   }
 
   auto inElemType = getIn().getType().getElementType();
-  auto outElemType = getOut().getType().getElementType();
+  auto outElemType = getResult().getType().getElementType();
   if (inElemType != outElemType)
     return emitError("element type of input and output is different");
-
-  if (getReduceMethod() == ReduceMethod::Max && !outElemType.isF32())
-    return emitError("reduce max only supports f32");
 
   return success();
 }

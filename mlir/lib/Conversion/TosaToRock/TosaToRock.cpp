@@ -3049,13 +3049,10 @@ typename std::enable_if_t<
     gridSize = std::min((int32_t)(20 * numCU.value()), gridSize);
   }
 
-  auto rockReduce = rock::ReduceOp::create(
-      rw, loc, outputType, op.getInput(), output,
-      rw.getAttr<rock::ReduceMethodAttr>(rMethod),
-      rw.getIndexAttr(op.getAxis()), rw.getI32IntegerAttr(blockSize),
-      rw.getI32IntegerAttr(gridSize),
-      /*useLDS=*/nullptr,
-      /*useDPP=*/nullptr);
+  auto rockReduce =
+      rock::ReduceOp::create(rw, loc, outputType, op.getInput(),
+                             rw.getAttr<rock::ReduceMethodAttr>(rMethod),
+                             rw.getIndexAttr(op.getAxis()));
 
   func::FuncOp func = op->template getParentOfType<func::FuncOp>();
   SetVector<int64_t> resIndices = traceToRes(op.getOutput(), func);
