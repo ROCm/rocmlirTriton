@@ -183,6 +183,10 @@ private:
   LogicalResult lowerSingleFunction(func::FuncOp func,
                                     ModuleOp optimizationModule,
                                     ModuleOp loweringModule);
+
+  /// Update call sites in the module to use memref arguments instead of tensors
+  /// after the function has been bufferized with bufferize_function_boundaries=true
+  void updateCallSites(ModuleOp module, StringRef funcName);
 };
 
 } // end anonymous namespace
@@ -242,6 +246,95 @@ RockLowerCpuVerifierPass::applyTransformSequence(ModuleOp tempModule,
   return success();
 }
 
+void RockLowerCpuVerifierPass::updateCallSites(ModuleOp module,
+                                               StringRef funcName) {
+  // Find the lowered function to get its signature
+  auto loweredFunc = module.lookupSymbol<func::FuncOp>(funcName);
+  if (!loweredFunc) {
+    LLVM_DEBUG(llvm::dbgs() << "  Could not find lowered function " << funcName
+                            << "\n");
+    return;
+  }
+
+  // Find all call ops that call the target function
+  SmallVector<func::CallOp> callsToUpdate;
+  module.walk([&](func::CallOp callOp) {
+    if (callOp.getCallee() == funcName)
+      callsToUpdate.push_back(callOp);
+  });
+
+  if (callsToUpdate.empty()) {
+    LLVM_DEBUG(llvm::dbgs() << "  No call sites found for " << funcName << "\n");
+    return;
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "  Updating " << callsToUpdate.size()
+                          << " call site(s) for " << funcName << "\n");
+
+  for (func::CallOp callOp : callsToUpdate) {
+    OpBuilder builder(callOp);
+    Location loc = callOp.getLoc();
+
+    // Collect the source memrefs from the to_tensor operands
+    SmallVector<Value> memrefArgs;
+    SmallVector<bufferization::ToTensorOp> toTensorOps;
+
+    for (Value operand : callOp.getOperands()) {
+      auto toTensorOp = operand.getDefiningOp<bufferization::ToTensorOp>();
+      if (toTensorOp) {
+        memrefArgs.push_back(toTensorOp.getOperand());
+        toTensorOps.push_back(toTensorOp);
+      } else {
+        // If the operand is not from a to_tensor, it might already be a memref
+        // or something else - this shouldn't happen in our expected pattern
+        LLVM_DEBUG(llvm::dbgs()
+                   << "  Warning: operand is not from to_tensor: " << operand
+                   << "\n");
+        memrefArgs.push_back(operand);
+      }
+    }
+
+    // Create a new call with the lowered function's return types
+    // With bufferize_function_boundaries=true, the function signature changes
+    // from (tensor, tensor, tensor) -> tensor to (memref, memref, memref) -> memref
+    auto newCall = builder.create<func::CallOp>(
+        loc, funcName, loweredFunc.getResultTypes(), memrefArgs);
+
+    // Find and remove the to_buffer and copy ops that use the old result
+    // The new call returns a memref directly, so we don't need to_buffer anymore
+    if (!callOp.getResults().empty()) {
+      Value oldResult = callOp.getResult(0);
+      for (Operation *user : llvm::make_early_inc_range(oldResult.getUsers())) {
+        if (auto toBufferOp = dyn_cast<bufferization::ToBufferOp>(user)) {
+          // Replace uses of to_buffer result with the new call's result
+          // (if the function returns a memref)
+          if (!newCall.getResults().empty()) {
+            toBufferOp.getResult().replaceAllUsesWith(newCall.getResult(0));
+          }
+          // Find and remove the copy that uses the to_buffer result
+          Value buffer = toBufferOp.getResult();
+          for (Operation *bufUser :
+               llvm::make_early_inc_range(buffer.getUsers())) {
+            if (auto copyOp = dyn_cast<memref::CopyOp>(bufUser)) {
+              copyOp.erase();
+            }
+          }
+          toBufferOp.erase();
+        }
+      }
+    }
+
+    // Erase the old call
+    callOp.erase();
+
+    // Erase the to_tensor ops if they have no other uses
+    for (auto toTensorOp : toTensorOps) {
+      if (toTensorOp.use_empty())
+        toTensorOp.erase();
+    }
+  }
+}
+
 LogicalResult
 RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
                                               ModuleOp optimizationModule,
@@ -289,8 +382,86 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
   }
 
   // Step 6: Replace the original function with the lowered one
-  // Clone the lowered function back to the original module
+  ModuleOp parentModule = func->getParentOfType<ModuleOp>();
   OpBuilder builder(ctx);
+
+  // Step 6a: Copy any globals created during lowering to the parent module
+  // These can be either memref.global (if not fully lowered to LLVM) or
+  // llvm.mlir.global (if fully lowered)
+
+  // First, copy memref.global operations
+  tempModule->walk([&](memref::GlobalOp globalOp) {
+    StringRef globalName = globalOp.getSymName();
+    // Only copy if not already present in parent module
+    if (!parentModule.lookupSymbol(globalName)) {
+      builder.setInsertionPointToStart(parentModule.getBody());
+      builder.clone(*globalOp.getOperation());
+      LLVM_DEBUG(llvm::dbgs() << "  Copied memref.global: " << globalName << "\n");
+    }
+  });
+
+  // Then, copy llvm.mlir.global operations
+  tempModule->walk([&](LLVM::GlobalOp globalOp) {
+    StringRef globalName = globalOp.getSymName();
+    // Only copy if not already present in parent module
+    if (!parentModule.lookupSymbol(globalName)) {
+      builder.setInsertionPointToStart(parentModule.getBody());
+      builder.clone(*globalOp.getOperation());
+      LLVM_DEBUG(llvm::dbgs() << "  Copied llvm.mlir.global: " << globalName << "\n");
+    }
+  });
+
+  // Step 6b: Copy any external function declarations created during lowering
+  // (e.g., memrefCopy, malloc, free) - but skip the lowered function itself
+
+  // First, copy func.func declarations (these are external functions like memrefCopy)
+  // Only copy if no func.func with that name exists (avoid duplicates)
+  tempModule->walk([&](func::FuncOp funcOp) {
+    StringRef funcOpName = funcOp.getName();
+    // Only copy declarations (external functions) and skip the lowered function
+    if (funcOp.isDeclaration() && funcOpName != funcName) {
+      // Check if there's already a func.func with this name
+      if (!parentModule.lookupSymbol<func::FuncOp>(funcOpName)) {
+        builder.setInsertionPointToStart(parentModule.getBody());
+        builder.clone(*funcOp.getOperation());
+        LLVM_DEBUG(llvm::dbgs()
+                   << "  Copied func.func declaration: " << funcOpName << "\n");
+      }
+    }
+  });
+
+  // Then, copy llvm.func declarations
+  // If a func.func with the same name exists, erase it first (the llvm.func
+  // version is more appropriate since we've already lowered to LLVM)
+  tempModule->walk([&](LLVM::LLVMFuncOp llvmFuncOp) {
+    StringRef llvmFuncName = llvmFuncOp.getSymName();
+    // Only copy declarations (empty body) and skip the lowered function
+    if (llvmFuncOp.isDeclaration() && llvmFuncName != funcName) {
+      // Check if there's already an llvm.func with this name
+      if (auto existingLlvmFunc =
+              parentModule.lookupSymbol<LLVM::LLVMFuncOp>(llvmFuncName)) {
+        // Already have an llvm.func, skip
+        LLVM_DEBUG(llvm::dbgs() << "  Skipped llvm.func (already exists): "
+                                << llvmFuncName << "\n");
+      } else {
+        // Check if there's a func.func with this name that we need to replace
+        if (auto existingFuncOp =
+                parentModule.lookupSymbol<func::FuncOp>(llvmFuncName)) {
+          // Erase the func.func - the llvm.func is the correct version
+          LLVM_DEBUG(llvm::dbgs()
+                     << "  Erasing func.func to replace with llvm.func: "
+                     << llvmFuncName << "\n");
+          existingFuncOp.erase();
+        }
+        builder.setInsertionPointToStart(parentModule.getBody());
+        builder.clone(*llvmFuncOp.getOperation());
+        LLVM_DEBUG(llvm::dbgs()
+                   << "  Copied llvm.func declaration: " << llvmFuncName << "\n");
+      }
+    }
+  });
+
+  // Clone the lowered function back to the original module
   builder.setInsertionPoint(func);
   IRMapping backMapping;
   Operation *finalOp = loweredFunc->clone(backMapping);
@@ -298,6 +469,11 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
 
   // Erase the original function
   func.erase();
+
+  // Step 7: Update call sites to use memref arguments instead of tensors
+  // This is needed because bufferize_function_boundaries=true changes the
+  // function signature from tensors to memrefs
+  updateCallSites(parentModule, funcName);
 
   LLVM_DEBUG(llvm::dbgs() << "Successfully lowered: " << funcName << "\n");
   return success();
@@ -350,20 +526,28 @@ void RockLowerCpuVerifierPass::runOnOperation() {
     }
   }
 
-  // THIS IS A HUGE HACK.
-  // Add declaration for memrefCopy runtime function if not already present
-  // This is needed because memref.copy lowers to a call to this function
-  if (!module.lookupSymbol("memrefCopy")) {
+  // Ensure memrefCopy declaration exists if any llvm.call @memrefCopy was generated
+  // The MemRefToLLVM conversion generates calls to memrefCopy but doesn't create
+  // the declaration automatically
+  bool hasMemrefCopyCall = false;
+  module.walk([&](LLVM::CallOp callOp) {
+    if (callOp.getCallee() && *callOp.getCallee() == "memrefCopy")
+      hasMemrefCopyCall = true;
+  });
+
+  if (hasMemrefCopyCall && !module.lookupSymbol<LLVM::LLVMFuncOp>("memrefCopy")) {
     OpBuilder builder(ctx);
     builder.setInsertionPointToStart(module.getBody());
 
-    auto i64Type = builder.getI64Type();
+    // memrefCopy signature: void memrefCopy(i64 elemSize, ptr src, ptr dst)
     auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto i64Type = IntegerType::get(ctx, 64);
     auto voidType = LLVM::LLVMVoidType::get(ctx);
     auto funcType = LLVM::LLVMFunctionType::get(voidType, {i64Type, ptrType, ptrType});
 
     builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "memrefCopy", funcType,
                                      LLVM::Linkage::External);
+    LLVM_DEBUG(llvm::dbgs() << "Created memrefCopy declaration\n");
   }
 
   LLVM_DEBUG(llvm::dbgs() << "CPU verifier lowering completed\n");
