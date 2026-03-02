@@ -473,22 +473,9 @@ struct ElementwiseRegionFinder {
       auto newBlockArg = addBlockArgument(regionBuilder, v, block, loc);
       mapper.map(v, newBlockArg);
     }
-    // make sure firstGemmBasedVal is passed as blockArgument for it is always
-    // present
-    Value lastRes = mapper.lookup(firstGemmBasedVal);
     for (Operation *op : visitedOps) {
-      auto *newOp = regionBuilder.clone(*op, mapper);
-      lastRes = newOp->getResult(0);
-      mapper.map(lastRes, newOp->getResult(0));
+      regionBuilder.clone(*op, mapper);
     }
-    RankedTensorType resTensorType = cast<RankedTensorType>(lastRes.getType());
-    MemRefType resMemRefType = MemRefType::get(resTensorType.getShape(),
-                                               resTensorType.getElementType());
-    Value resMemref = bufferization::ToBufferOp::create(
-        regionBuilder, loc,
-        cast<mlir::bufferization::BufferLikeType>(resMemRefType), lastRes);
-    Value outMemref = block->addArgument(resMemRefType, loc);
-    memref::CopyOp::create(regionBuilder, loc, resMemref, outMemref);
     rock::YieldOp::create(regionBuilder, loc);
   }
 
@@ -2898,7 +2885,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     auto outputType = cast<RankedTensorType>(op.getType());
     RankedTensorType lseType;
     Value lse = attentionMatcherValues.lse;
-    Value lseOut, lseOrig;
+    Value lseOrig;
     SmallVector<ReassociationIndices> reassocIndicesLSE;
 
     if (lse) {
@@ -2921,8 +2908,6 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
                                             reassocIndicesLSE);
 
       lseType = cast<RankedTensorType>(lse.getType());
-      lseOut = bufferization::AllocTensorOp::create(rewriter, loc, lseType,
-                                                    ValueRange{});
     }
     ElementwiseRegionFinder<tosa::MatMulOp> preSoftmaxElementwiseFinder =
         attentionMatcherValues.preSoftmaxElementwiseFinder;
