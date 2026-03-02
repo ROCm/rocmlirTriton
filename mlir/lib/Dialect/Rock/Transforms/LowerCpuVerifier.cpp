@@ -75,15 +75,17 @@ namespace {
 constexpr const char *kOptimizationSequence = R"mlir(
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
+    %0 = transform.structured.match attributes {rock.matmul} in %arg0 : (!transform.any_op) -> !transform.any_op
 
-    // %0 = transform.structured.match attributes{"rock.matmul"} in %arg0 : (!transform.any_op) -> !transform.any_op
-    // %1, %loops:4 = transform.structured.tile_using_for %0 tile_sizes [3, 32, 32, 1] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
+    %transformed, %loops:3 = transform.structured.fuse %0 tile_sizes [1, 256, 64] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
+    %xxx, %loop = transform.structured.tile_using_for %transformed tile_sizes [0, 0, 0, 64] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
-    %func1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
-    %2 = transform.apply_registered_pass "canonicalize" to %func1 : (!transform.any_op) -> !transform.any_op
+    %microkernel, %microkernel_loops:3 = transform.structured.tile_using_for %xxx tile_sizes [0, 8, 8, 1] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
+
+    %1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %2 = transform.apply_registered_pass "canonicalize" to %1 : (!transform.any_op) -> !transform.any_op
     %3 = transform.apply_registered_pass "lower-affine" to %2 : (!transform.any_op) -> !transform.any_op
-
-    transform.yield
+    transform.yield 
   }
 }
 )mlir";
@@ -99,7 +101,12 @@ module attributes {transform.with_named_sequence} {
     // Lowering to LLVM
 
     %func = transform.structured.match ops{["func.func"]} in %10 : (!transform.any_op) -> !transform.any_op
-    %f = transform.apply_registered_pass "convert-vector-to-scf" to %func : (!transform.any_op) -> !transform.any_op
+    // Bufferization is quite dumb, so it will probably insert unnecesary memref copies.
+    // We use CSE + canonicalize to remove them.
+    %3 = transform.apply_registered_pass "cse" to %func : (!transform.any_op) -> !transform.any_op
+    %4 = transform.apply_registered_pass "canonicalize" to %3 : (!transform.any_op) -> !transform.any_op
+
+    %f = transform.apply_registered_pass "convert-vector-to-scf" to %4 : (!transform.any_op) -> !transform.any_op
     %f2 = transform.apply_registered_pass "convert-linalg-to-loops" to %f : (!transform.any_op) -> !transform.any_op
     %f3 = transform.apply_registered_pass "convert-scf-to-cf" to %f2 : (!transform.any_op) -> !transform.any_op
     %f4 = transform.apply_registered_pass "expand-strided-metadata" to %f3 : (!transform.any_op) -> !transform.any_op
@@ -188,6 +195,12 @@ private:
   /// Update call sites in the module to use memref arguments instead of tensors
   /// after the function has been bufferized with bufferize_function_boundaries=true
   void updateCallSites(ModuleOp module, StringRef funcName);
+
+  /// Unwrap nested module structure if present
+  /// Some transforms may wrap their result in an additional module, which would
+  /// cause subsequent transforms like one_shot_bufferize to not process the
+  /// inner function
+  void unwrapNestedModule(OwningOpRef<ModuleOp> &module, StringRef funcName);
 };
 
 } // end anonymous namespace
@@ -245,6 +258,50 @@ RockLowerCpuVerifierPass::applyTransformSequence(ModuleOp tempModule,
   }
 
   return success();
+}
+
+void RockLowerCpuVerifierPass::unwrapNestedModule(OwningOpRef<ModuleOp> &module,
+                                                  StringRef funcName) {
+  // Check if there's a nested module inside the outer module
+  // This can happen when some transforms wrap their result in a new module
+  ModuleOp nestedModule = nullptr;
+  for (Operation &op : module->getBody()->getOperations()) {
+    if (auto nested = dyn_cast<ModuleOp>(&op)) {
+      nestedModule = nested;
+      break;
+    }
+  }
+
+  if (!nestedModule) {
+    return; // No nested module, nothing to do
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "  Unwrapping nested module structure\n");
+
+  // Find the function inside the nested module
+  func::FuncOp funcOp = nullptr;
+  nestedModule.walk([&](func::FuncOp f) {
+    if (f.getName() == funcName)
+      funcOp = f;
+  });
+
+  if (!funcOp) {
+    // Function not found in nested module, leave as-is
+    return;
+  }
+
+  // Create a new clean module with just the function
+  MLIRContext *ctx = module->getContext();
+  Location loc = module->getLoc();
+  OwningOpRef<ModuleOp> newModule = ModuleOp::create(loc);
+
+  // Clone the function into the new module
+  OpBuilder builder(ctx);
+  builder.setInsertionPointToStart(newModule->getBody());
+  builder.clone(*funcOp.getOperation());
+
+  // Replace the old module with the new one
+  module = std::move(newModule);
 }
 
 void RockLowerCpuVerifierPass::updateCallSites(ModuleOp module,
@@ -364,6 +421,12 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
                                     "optimization"))) {
     return func.emitError("Optimization transform failed for function");
   }
+
+  // Step 3b: Unwrap any nested module structure created by the transform
+  // Some transforms may wrap the result in an additional module, which would
+  // cause subsequent transforms like one_shot_bufferize to not process the
+  // inner function
+  unwrapNestedModule(tempModule, funcName);
 
   // Step 4: Apply the lowering sequence (bufferization + LLVM lowering)
   LLVM_DEBUG(llvm::dbgs() << "  Applying lowering sequence...\n");
