@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include <cassert>
+#include <chrono>
 #include <iostream>
 #include <mutex>
 #include <numeric>
@@ -23,6 +24,19 @@
 #include <array>
 #include <cmath>
 #include <unordered_map>
+
+// Timing utilities for CPU validation functions
+static std::chrono::steady_clock::time_point timerStartPoint;
+
+extern "C" void cpuTimerStart() {
+  timerStartPoint = std::chrono::steady_clock::now();
+}
+
+extern "C" void cpuTimerStop() {
+  auto endPoint = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - timerStartPoint).count();
+  printf("CPU validation time: %.3f ms\n", elapsed);
+}
 
 extern "C" void seedRandomValues(uint32_t seed) {
   if (seed == 0)
