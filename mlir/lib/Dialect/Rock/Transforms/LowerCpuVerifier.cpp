@@ -47,6 +47,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 
@@ -384,82 +385,39 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
   // Step 6: Replace the original function with the lowered one
   ModuleOp parentModule = func->getParentOfType<ModuleOp>();
   OpBuilder builder(ctx);
+  builder.setInsertionPointToStart(parentModule.getBody());
 
-  // Step 6a: Copy any globals created during lowering to the parent module
-  // These can be either memref.global (if not fully lowered to LLVM) or
-  // llvm.mlir.global (if fully lowered)
+  // Copy all top-level operations from tempModule to parentModule
+  // (globals, function declarations, etc.) using SymbolOpInterface for genericity
+  for (Operation &op : tempModule->getBody()->getOperations()) {
+    // Skip module terminator
+    if (op.hasTrait<OpTrait::IsTerminator>())
+      continue;
 
-  // First, copy memref.global operations
-  tempModule->walk([&](memref::GlobalOp globalOp) {
-    StringRef globalName = globalOp.getSymName();
-    // Only copy if not already present in parent module
-    if (!parentModule.lookupSymbol(globalName)) {
-      builder.setInsertionPointToStart(parentModule.getBody());
-      builder.clone(*globalOp.getOperation());
-      LLVM_DEBUG(llvm::dbgs() << "  Copied memref.global: " << globalName << "\n");
-    }
-  });
+    // Check if this is a symbol-defining operation
+    if (auto symbolOp = dyn_cast<SymbolOpInterface>(&op)) {
+      StringRef symName = symbolOp.getName();
 
-  // Then, copy llvm.mlir.global operations
-  tempModule->walk([&](LLVM::GlobalOp globalOp) {
-    StringRef globalName = globalOp.getSymName();
-    // Only copy if not already present in parent module
-    if (!parentModule.lookupSymbol(globalName)) {
-      builder.setInsertionPointToStart(parentModule.getBody());
-      builder.clone(*globalOp.getOperation());
-      LLVM_DEBUG(llvm::dbgs() << "  Copied llvm.mlir.global: " << globalName << "\n");
-    }
-  });
+      // Skip the lowered function itself (we handle it separately below)
+      if (symName == funcName)
+        continue;
 
-  // Step 6b: Copy any external function declarations created during lowering
-  // (e.g., memrefCopy, malloc, free) - but skip the lowered function itself
-
-  // First, copy func.func declarations (these are external functions like memrefCopy)
-  // Only copy if no func.func with that name exists (avoid duplicates)
-  tempModule->walk([&](func::FuncOp funcOp) {
-    StringRef funcOpName = funcOp.getName();
-    // Only copy declarations (external functions) and skip the lowered function
-    if (funcOp.isDeclaration() && funcOpName != funcName) {
-      // Check if there's already a func.func with this name
-      if (!parentModule.lookupSymbol<func::FuncOp>(funcOpName)) {
-        builder.setInsertionPointToStart(parentModule.getBody());
-        builder.clone(*funcOp.getOperation());
-        LLVM_DEBUG(llvm::dbgs()
-                   << "  Copied func.func declaration: " << funcOpName << "\n");
-      }
-    }
-  });
-
-  // Then, copy llvm.func declarations
-  // If a func.func with the same name exists, erase it first (the llvm.func
-  // version is more appropriate since we've already lowered to LLVM)
-  tempModule->walk([&](LLVM::LLVMFuncOp llvmFuncOp) {
-    StringRef llvmFuncName = llvmFuncOp.getSymName();
-    // Only copy declarations (empty body) and skip the lowered function
-    if (llvmFuncOp.isDeclaration() && llvmFuncName != funcName) {
-      // Check if there's already an llvm.func with this name
-      if (auto existingLlvmFunc =
-              parentModule.lookupSymbol<LLVM::LLVMFuncOp>(llvmFuncName)) {
-        // Already have an llvm.func, skip
-        LLVM_DEBUG(llvm::dbgs() << "  Skipped llvm.func (already exists): "
-                                << llvmFuncName << "\n");
-      } else {
-        // Check if there's a func.func with this name that we need to replace
-        if (auto existingFuncOp =
-                parentModule.lookupSymbol<func::FuncOp>(llvmFuncName)) {
-          // Erase the func.func - the llvm.func is the correct version
-          LLVM_DEBUG(llvm::dbgs()
-                     << "  Erasing func.func to replace with llvm.func: "
-                     << llvmFuncName << "\n");
-          existingFuncOp.erase();
+      // Check if symbol already exists in parent module
+      Operation *existing = parentModule.lookupSymbol(symName);
+      if (existing) {
+        // Special case: replace func.func with llvm.func (LLVM version is preferred)
+        if (isa<func::FuncOp>(existing) && isa<LLVM::LLVMFuncOp>(&op)) {
+          existing->erase();
+        } else {
+          // Symbol already exists, skip to avoid duplicates
+          continue;
         }
-        builder.setInsertionPointToStart(parentModule.getBody());
-        builder.clone(*llvmFuncOp.getOperation());
-        LLVM_DEBUG(llvm::dbgs()
-                   << "  Copied llvm.func declaration: " << llvmFuncName << "\n");
       }
+
+      builder.clone(op);
+      LLVM_DEBUG(llvm::dbgs() << "  Copied symbol: " << symName << "\n");
     }
-  });
+  }
 
   // Clone the lowered function back to the original module
   builder.setInsertionPoint(func);
