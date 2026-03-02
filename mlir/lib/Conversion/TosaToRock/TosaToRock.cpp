@@ -308,21 +308,6 @@ static LogicalResult setSplitKAttrs(OpT op,
       Attribute outputInitVal = rw.getFloatAttr(elementType, 0.0);
       func.setResultAttr(resNumber, rock::PrefillAttr::getMnemonic(),
                          outputInitVal);
-      func.setResultAttr(resNumber, "read_access", rw.getUnitAttr());
-      // The original function also need the read access attr for the output.
-      if (func->hasAttr("original_func")) {
-        if (ModuleOp rootMod = func->getParentOfType<ModuleOp>()
-                                   ->getParentOfType<ModuleOp>()) {
-          SymbolTable symTable(rootMod);
-          SymbolRefAttr originalFuncAttr =
-              func->getAttrOfType<SymbolRefAttr>("original_func");
-          if (func::FuncOp originalFunc = dyn_cast<func::FuncOp>(
-                  symTable.lookupSymbolIn(rootMod, originalFuncAttr))) {
-            originalFunc.setResultAttr(resNumber, "read_access",
-                                       rw.getUnitAttr());
-          }
-        }
-      }
     }
   }
   return success();
@@ -995,8 +980,6 @@ public:
       scaleB = reshapeIfNeeded(scaleB, targetShape, loc, rw);
       matB = cast<TypedValue<TensorType>>(matBBeforeCast);
     }
-    Value output =
-        bufferization::AllocTensorOp::create(rw, loc, outputType, ValueRange{});
 
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
@@ -1518,8 +1501,6 @@ struct GemmElementwiseGemmRewritePattern
     Location loc = op.getLoc();
 
     auto outputType = cast<RankedTensorType>(op.getType());
-    Value output = bufferization::AllocTensorOp::create(
-        rewriter, loc, outputType, ValueRange{});
     SmallVector<Value> elementwiseOtherArgs =
         elemwiseFinder.getElementwiseArgs();
     // This is guranteed by the matcher
@@ -2890,8 +2871,6 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
                PatternRewriter &rewriter) const {
     Location loc = op.getLoc();
     auto outputType = cast<RankedTensorType>(op.getType());
-    Value output = bufferization::AllocTensorOp::create(
-        rewriter, loc, outputType, ValueRange{});
     RankedTensorType lseType;
     Value lse = attentionMatcherValues.lse;
     Value lseOut, lseOrig;
@@ -3066,21 +3045,6 @@ typename std::enable_if_t<
   for (int64_t resNumber : resIndices) {
     func.setResultAttr(resNumber, rock::PrefillAttr::getMnemonic(),
                        outputInitVal);
-    func.setResultAttr(resNumber, "read_access", rw.getUnitAttr());
-    // The original function also need the read access attr for the output.
-    if (func->hasAttr("original_func")) {
-      if (ModuleOp rootMod =
-              func->getParentOfType<ModuleOp>()->getParentOfType<ModuleOp>()) {
-        SymbolTable symTable(rootMod);
-        SymbolRefAttr originalFuncAttr =
-            func->getAttrOfType<SymbolRefAttr>("original_func");
-        if (func::FuncOp originalFunc = dyn_cast<func::FuncOp>(
-                symTable.lookupSymbolIn(rootMod, originalFuncAttr))) {
-          originalFunc.setResultAttr(resNumber, "read_access",
-                                     rw.getUnitAttr());
-        }
-      }
-    }
   }
   rw.replaceOp(op, rockReduce.getResult());
   return success();
