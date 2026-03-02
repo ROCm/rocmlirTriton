@@ -127,7 +127,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     auto elementTypeBLoad = failed(maybeElementTypeBLoad)
                                 ? elementTypeB
                                 : maybeElementTypeBLoad.value();
-    auto destType = op.getResult().getType().getElementType();
+    auto elemTypeOut = op.getResult().getType().getElementType();
     auto scaleA = op.getScaleA();
     auto scaleB = op.getScaleB();
     bool hasScaleA = scaleA != nullptr;
@@ -183,7 +183,8 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     auto gridCoords = layout::makeGroupedGridLayout(
         b, loc, bid,
         {G, mBlocks, nBlocks, rock::getNumCUValue(op),
-         rock::getNumChipletsValue(op), elementTypeA, destType, gridGroupSize},
+         rock::getNumChipletsValue(op), elementTypeA, elemTypeOut,
+         gridGroupSize},
         arch);
 
     int64_t numWaves = tuningParams.getNumWaves();
@@ -259,19 +260,20 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
 
     ArrayAttr idToMatrixCMaps = maybeOutputViews.value();
 
+    // convert to expected output type
+    auto outAccTensorType = cast<RankedTensorType>(loopResult.getType());
+    auto destType =
+        RankedTensorType::get(outAccTensorType.getShape(), elemTypeOut);
+    loopResult = createTypeConversionOp(b, loc, loopResult, destType);
+
     // Create StoreMarkerOp to mark the tile with output transforms for later
-    // store lowering The StoreMarkerOp preserves the tile type for fusion ops
-    // to operate on, while carrying the transform information needed by
-    // LowerStores
+    // store lowering. The result type is the full tensor type so that fusion
+    // ops can operate on it directly.
     auto storeMarkerOp = StoreMarkerOp::create(
-        b, loc, loopResult.getType(), loopResult, idToMatrixCMaps,
+        b, loc, op.getResult().getType(), loopResult, idToMatrixCMaps,
         ValueRange{gridCoords.g_block, gridCoords.m_block, gridCoords.n_block});
 
-    // Create UntileOp to convert tile back to full tensor type for
-    // compatibility with existing fusion ops that expect full tensor types
-    auto untileResult = rock::UntileOp::create(b, loc, op.getResult().getType(),
-                                               storeMarkerOp.getResult());
-    b.replaceOp(op, untileResult);
+    b.replaceOp(op, storeMarkerOp);
     return success();
   }
 };

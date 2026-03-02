@@ -412,12 +412,15 @@ def Rock_TensorUntransformCastOp :
 }
 
 // untile
-def Rock_UntileOp :
-    Rock_Op<"untile", []>,
-    Arguments<(ins AnyRankedTensor:$source)>,
-    Results<(outs AnyRankedTensor:$result)> {
-  let summary = "Op to `untile` a tensor, needed temporarily during lowering from gridwise to blockwise IRs";
+def Rock_UntileOp : Rock_Op<"untile", [Pure]>,
+                    Arguments<(ins AnyRankedTensor:$source)>,
+                    Results<(outs AnyRankedTensor:$result)> {
+  let summary = "Convert a tile tensor back to a full tensor type";
   let description = [{
+    The rock.untile op maps a tile tensor (e.g., from a BlockwiseLoadOp) to a
+    full tensor type. It is used in InsertOutputFusionLoads to bridge loaded
+    tiles back to full tensor types so that fusion ops can operate on them.
+    LowerStores removes these ops when converting back to tile-level operations.
   }];
   let assemblyFormat = [{
     $source attr-dict `:` type($source) `->` type($result)
@@ -426,49 +429,78 @@ def Rock_UntileOp :
 
 // store_marker
 def Rock_StoreMarkerOp
-    : Rock_Op<"store_marker", [AllTypesMatch<["source", "result"]>]>,
+    : Rock_Op<"store_marker", [Pure]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
           Variadic<I32>:$extraIndices)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary =
-      "Mark a tile tensor with output transforms for later store lowering";
+      "Mark a tile tensor with output transforms and map to full tensor type";
   let description = [{
     The rock.store_marker op marks a tile tensor (e.g., from a GEMM loop result)
-    with the transform information needed to write it to global memory. This op
-    is a placeholder that:
-    1. Preserves the tile tensor type for fusion ops to operate on
+    with the transform information needed to write it to global memory, and
+    produces the corresponding full tensor type. This op is a placeholder that:
+    1. Maps from tile type (source) to full tensor type (result)
     2. Carries the output transforms (extraViews) computed during ToBlockwise
     3. Carries the grid coordinates (extraIndices) for the tile position
 
     In LowerStores, this op is combined with rock.store to create the final
-    rock.blockwise_store_tile with proper transform chains.
+    rock.blockwise_store with proper transform chains.
 
     Example:
       %tile = scf.for ... -> tensor<16x16xf32>  // GEMM loop result
-      %marked = rock.store_marker %tile views [<transforms>] [%g, %m, %n]
-      %fused = arith.addf %marked, %bias : tensor<16x16xf32>
+      %full = rock.store_marker %tile views [<transforms>] [%g, %m, %n]
+                : tensor<16x16xf32> -> tensor<1x128x128xf32>
+      %fused = arith.addf %full, %bias : tensor<1x128x128xf32>
       %out = rock.store %fused to %dest by set
   }];
   let assemblyFormat = [{
     $source `views` $extraViews (`[` $extraIndices^ `]`)? attr-dict
-    `:` type($result)
+    `:` type($source) `->` type($result)
   }];
 }
 
-// load
-def Rock_LoadOp :
-    Rock_Op<"load", [AllTypesMatch<["source", "result"]>]>,
-    Arguments<(ins AnyRankedTensor:$source)>,
-    Results<(outs AnyRankedTensor:$result)> {
-  let summary = "Placeholder (used by fusion passes) to mark where loads from global memory will hapen";
+// load_marker
+def Rock_LoadMarkerOp
+    : Rock_Op<"load_marker", [Pure]>,
+      Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
+          Variadic<I32>:$extraIndices)>,
+      Results<(outs AnyRankedTensor:$result)> {
+  let summary = "Mark a tensor with tiling transforms for later load lowering";
   let description = [{
-    The rock.load op is a placeholder marking where loads from global memory
-    need to happen. It takes a tensor (typically a function argument) and
-    returns a tensor of the same type. This operation is used by passes that
-    need to track where data is loaded from global memory (for fusions).
+    The rock.load_marker op is the dual of rock.store_marker. It marks a source
+    tensor (which may be the result of transforms and/or fusion ops tracing back
+    to a block argument) with the tiling information needed to create an actual
+    rock.blockwise_load.
+
+    This op is a placeholder introduced by:
+    1. ToBlockwise passes (GridwiseGemmToBlockwise, GridwiseAttnToBlockwise)
+       for the GEMM/Attention input loads. In this case, the source is the
+       GEMM input (possibly through a fusion chain), extraViews are the tiling
+       transforms, extraIndices are grid coordinates, and the result type is
+       the tile type (consumed by rock.blockwise_gemm).
+    2. InsertOutputFusionLoads for extra fusion inputs in the output chain.
+       In this case, the source is the extra input, extraViews are the output
+       tiling transforms, extraIndices are grid coordinates, and the result
+       type is the full tensor type (consumed by fusion ops).
+
+    LowerLoads converts this op into an actual rock.blockwise_load by tracing
+    back through the source chain (transforms, fusion ops, block argument)
+    and combining all transforms.
+
+    Example (GEMM input, tile result):
+      %a = rock.transform %arg0 by <pre_transforms>
+      %tile = rock.load_marker %a views [<tiling>] [%kIter, %g, %m, %n]
+                : tensor<1x128x128xf16> -> tensor<64x64xf16>
+
+    Example (output fusion extra input, full result):
+      %bias_t = rock.transform %arg_bias by <transforms>
+      %bias = rock.load_marker %bias_t views [<output_tiling>] [%g, %m, %n]
+                : tensor<1x128x128xf16> -> tensor<1x128x128xf16>
+      %fused = arith.addf %gemm_full, %bias
   }];
   let assemblyFormat = [{
-    $source attr-dict `:` type($result)
+    $source `views` $extraViews (`[` $extraIndices^ `]`)? attr-dict
+    `:` type($source) `->` type($result)
   }];
 }
 

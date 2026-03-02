@@ -24,7 +24,7 @@ func.func @test_blockwise_load(%arg0: tensor<32768xf16>) -> tensor<64x64xf16> at
 
 // -----
 
-// CHECK-LABEL: @test_blockwise_store_tile
+// CHECK-LABEL: @test_blockwise_store
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xf32>, %[[ARG1:.*]]: tensor<8192xf32>)
 //      CHECK:   %[[TRANS0:.*]] = rock.transform %[[ARG1]] by
 //      CHECK:   %[[TRANS1:.*]] = rock.transform %[[TRANS0]] by
@@ -33,7 +33,7 @@ func.func @test_blockwise_load(%arg0: tensor<32768xf16>) -> tensor<64x64xf16> at
 //      CHECK:   return %[[RESULT]] : tensor<8192xf32>
 //  CHECK-NOT:   rock.blockwise_load
 //  CHECK-NOT:   rock.blockwise_store
-func.func @test_blockwise_store_tile(%arg0: tensor<64x64xf32>, %arg1: tensor<8192xf32>) -> tensor<8192xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @test_blockwise_store(%arg0: tensor<64x64xf32>, %arg1: tensor<8192xf32>) -> tensor<8192xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
 

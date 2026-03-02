@@ -16,10 +16,11 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   SerializeHostFuncs.cpp
   FuncToTritonFunc.cpp
   RestoreHostCode.cpp
-  InsertLoads.cpp
   InsertOutputFusionLoads.cpp
+  RegularizeInput.cpp
   LowerLoads.cpp
   LowerStores.cpp
+  RegularizeOutput.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/Rock

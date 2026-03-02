@@ -522,11 +522,18 @@ static mlir::Value expandAffineExpr(OpBuilder &builder, Location loc,
 
 /// Create a sequence of operations that implement the `affineMap` applied to
 /// the given `operands` (as it it were an AffineApplyOp).
-static std::optional<SmallVector<Value, 8>>
-expandAffineMap(OpBuilder &builder, Location loc, AffineMap affineMap,
-                ValueRange operands) {
+static FailureOr<SmallVector<Value>> expandAffineMap(OpBuilder &builder,
+                                                     Location loc,
+                                                     AffineMap affineMap,
+                                                     ValueRange operands) {
   auto numDims = affineMap.getNumDims();
-  auto expanded = llvm::to_vector<8>(
+  // rocMLIR currently uses static strides/shapes, so symbols are always 0.
+  assert(affineMap.getNumSymbols() == 0 &&
+         "dynamic shapes (affine symbols) not yet supported");
+  if (operands.size() < numDims)
+    return failure();
+
+  auto expanded = llvm::to_vector(
       llvm::map_range(affineMap.getResults(),
                       [numDims, &builder, loc, operands](AffineExpr expr) {
                         return expandAffineExpr(builder, loc, expr,
@@ -535,7 +542,7 @@ expandAffineMap(OpBuilder &builder, Location loc, AffineMap affineMap,
                       }));
   if (llvm::all_of(expanded, [](Value v) { return v; }))
     return expanded;
-  return std::nullopt;
+  return failure();
 }
 
 static Value updateValidityAfter(OpBuilder &b, Location loc,
@@ -627,8 +634,6 @@ struct TransformsToPtrRewritePattern
 
     // TODO(roctriton): check rangeIndices match `pointers` and `mask` shapes
 
-    ////// Init
-
     // For each domain, store the sequence of composed affine maps needed to
     // compute the result coordinate, along with the transform map that
     // triggered each break in the chain. Such a break is created at any point
@@ -648,10 +653,6 @@ struct TransformsToPtrRewritePattern
     AffineMap finalComposed = composeTransforms(toCompose);
     composedMaps.emplace_back(finalComposed, nullptr);
 
-    //////
-
-    //////
-
     // Create code to actually transform the coordinates
     AffineResults computed(initValues);
     Value isValid = createArithOp(b, loc, b.getI1Type(), "ConstantIntOp",
@@ -659,10 +660,10 @@ struct TransformsToPtrRewritePattern
     for (const auto &[composedMap, transform] : composedMaps) {
       if (!composedMap) // empty transformations
         continue;
-      std::optional<AffineResults> transformed =
+      FailureOr<AffineResults> transformed =
           expandAffineMap(b, loc, composedMap, computed);
-      if (!transformed)
-        return failure();
+      if (failed(transformed))
+        return op.emitOpError("Transforms are not well formed");
       computed.assign(*transformed);
       if (transform) { // Time for bounds checks or other validity updates
         Value validityUpdate = updateValidityAfter(b, loc, transform, computed);

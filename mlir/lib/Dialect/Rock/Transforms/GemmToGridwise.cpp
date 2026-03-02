@@ -76,7 +76,8 @@ struct GemmRewritePattern : public OpConversionPattern<GemmOp> {
   struct SplitKTransformedOperands {
     Value a;
     Value b;
-    Value c;
+    SmallVector<Value> outputViews;
+    DenseMap<Value, Value> fusionInputMap;
     Value scaleA;
     Value scaleB;
   };
@@ -89,7 +90,9 @@ struct GemmRewritePattern : public OpConversionPattern<GemmOp> {
 
   FailureOr<SplitKTransformedOperands>
   arrangeSplitKTransform(OpBuilder &builder, GemmOp op, Location loc,
-                         int64_t splitKFactor, Value a, Value b, Value c,
+                         int64_t splitKFactor, Value a, Value b,
+                         ArrayRef<Value> outputViews,
+                         const DenseMap<Value, Value> &fusionInputMap,
                          Value scaleA, Value scaleB) const;
 };
 
@@ -314,8 +317,7 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
 
   // set the prefill attribute
   auto func = llvm::cast<func::FuncOp>(op->getParentOp());
-  FailureOr<SmallVector<BlockArgument>> args =
-      traceGemmOutputToArgs(out, func);
+  FailureOr<SmallVector<BlockArgument>> args = traceRootOutputToArgs(out, func);
   if (failed(args)) {
     return op->emitError("can't trace gemm output to output argument");
   }
@@ -596,22 +598,6 @@ commonAttentionGemmElmtGemm(
   rw.replaceOp(op, newOp);
   return std::make_tuple(newOp, out, lse);
 }
-
-// returns accumulator type
-static ShapedType getAccumulatorType(Value a, Value b, Value c, OpBuilder &builder,
-                            Location loc) {
-  auto aElementType = cast<ShapedType>(a.getType()).getElementType();
-  auto bElementType = cast<ShapedType>(b.getType()).getElementType();
-  auto cElementType = cast<ShapedType>(c.getType()).getElementType();
-  auto accumulatorType = cast<ShapedType>(c.getType());
-
-  auto accumulatorElementType = rock::getAccType(aElementType, bElementType);
-
-  if (accumulatorElementType != cElementType) {
-    accumulatorType = RankedTensorType::get(accumulatorType.getShape(), accumulatorElementType);
-  }
-  return accumulatorType;
-}
 } // end namespace
 
 LogicalResult
@@ -626,20 +612,21 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
 
   Value a = adaptor.getA(), b = adaptor.getB();
 
-  // TODO: we can find fusions before rock.store
-  Value c;
-  rock::StoreOp storeOp = nullptr;
-  for (Operation *user : op.getResult().getUsers()) {
-    if (auto sop = dyn_cast<rock::StoreOp>(user)) {
-      storeOp = sop;
-      c = storeOp.getDest();
-      break;
-    }
+  auto maybeStores = rock::traceRootOutputToStoreOps(op.getResult());
+  if (failed(maybeStores)) {
+    return op.emitOpError("cannot trace to rock::StoreOp");
   }
-  if (!c) {
-    return op.emitOpError("GemmOp result must be used by a StoreOp to provide "
-                          "the output tensor");
+  SetVector<StoreOp> stores = maybeStores.value();
+  SmallVector<Value> outputViews;
+  for (auto storeOp : stores) {
+    outputViews.push_back(storeOp.getDest());
   }
+
+  // Collect extra fusion inputs (operands of fusion ops that are not in the
+  // gemm-result chain, e.g. the second operand of arith.addf). These need the
+  // same normalize+pad treatment as outputViews.
+  auto fusionInputMap = rock::collectFusionExtraInputs(op.getResult());
+
   Value scaleA = adaptor.getScaleA(), scaleB = adaptor.getScaleB();
 
   ShapedType typeA = cast<ShapedType>(a.getType());
@@ -671,7 +658,21 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   a = normalizeMatrix(a, rw, loc, op.getATransposed(), "gemmM", "gemmK");
   b = normalizeMatrix(b, rw, loc, op.getBTransposed(), "gemmK", "gemmN");
   // Result is always in [G, M, N] order (not transposed)
-  c = normalizeMatrix(c, rw, loc, /*doTranspose=*/false, "gemmM", "gemmN");
+  auto transformViews = [&](auto fn) {
+    auto apply = [&](Value &view) {
+      OpBuilder::InsertionGuard guard(rw);
+      if (Operation *defOp = view.getDefiningOp())
+        rw.setInsertionPointAfter(defOp);
+      view = fn(view);
+    };
+    for (auto &outputView : outputViews)
+      apply(outputView);
+    for (auto &[orig, view] : fusionInputMap)
+      apply(view);
+  };
+  transformViews([&](Value v) {
+    return normalizeMatrix(v, rw, loc, /*doTranspose=*/false, "gemmM", "gemmN");
+  });
   aShape = cast<ShapedType>(a.getType()).getShape();
   bShape = cast<ShapedType>(b.getType()).getShape();
   if (scaleA && scaleB) {
@@ -692,15 +693,17 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
 
   const int64_t splitKFactor = op.getParams()->getSplitKFactor();
   if (splitKFactor > 1) {
-    auto maybeSplitk = arrangeSplitKTransform(rw, op, loc, splitKFactor, a, b,
-                                              c, scaleA, scaleB);
+    auto maybeSplitk =
+        arrangeSplitKTransform(rw, op, loc, splitKFactor, a, b, outputViews,
+                               fusionInputMap, scaleA, scaleB);
     if (failed(maybeSplitk))
       return maybeSplitk;
 
     auto &transformed = maybeSplitk.value();
     a = transformed.a;
     b = transformed.b;
-    c = transformed.c;
+    outputViews = transformed.outputViews;
+    fusionInputMap = std::move(transformed.fusionInputMap);
     scaleA = transformed.scaleA;
     scaleB = transformed.scaleB;
     aShape = cast<ShapedType>(a.getType()).getShape();
@@ -720,7 +723,9 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
 
   a = padMatrix(a, rw, loc, "gemmM", extraPad.m, "gemmK", extraPad.k);
   b = padMatrix(b, rw, loc, "gemmK", extraPad.k, "gemmN", extraPad.n);
-  c = padMatrix(c, rw, loc, "gemmM", extraPad.m, "gemmN", extraPad.n);
+  transformViews([&](Value v) {
+    return padMatrix(v, rw, loc, "gemmM", extraPad.m, "gemmN", extraPad.n);
+  });
   if (scaleA && scaleB) {
     scaleA =
         padMatrix(scaleA, rw, loc, "gemmM", extraPad.m, "gemmK", extraPad.k);
@@ -745,40 +750,40 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     return op.emitError("failed to compute the grid size of `GemmOp`");
   }
 
-  auto accumulatorType = getAccumulatorType(a, b, c, rw, loc);
+  auto newOutputType = RankedTensorType::get(
+      cast<ShapedType>(outputViews[0].getType()).getShape(), op.getCType());
   auto gridwiseOp =
-      GridwiseGemmOp::create(rw, loc, accumulatorType, a, b, scaleA, scaleB,
+      GridwiseGemmOp::create(rw, loc, newOutputType, a, b, scaleA, scaleB,
                              cast<GemmParamsAttr>(params));
-  Value gridwiseResult = gridwiseOp.getResult();
+  Value result = gridwiseOp.getResult();
 
-  // If accumulator type differs from output type, convert
-  Value result = gridwiseResult;
-  auto resultTensorType = cast<RankedTensorType>(op.getResult().getType());
-  if (accumulatorType.getElementType() != resultTensorType.getElementType()) {
-    // Type conversion should preserve the (potentially padded) shape from
-    // gridwiseResult and only change the element type.
-    auto gridwiseResultType = cast<RankedTensorType>(gridwiseResult.getType());
-    auto targetType = RankedTensorType::get(gridwiseResultType.getShape(),
-                                            resultTensorType.getElementType());
-    result = createTypeConversionOp(rw, loc, result, targetType);
-  }
+  // Propagate the new (potentially padded) output type through any fusion ops
+  // between the gemm result and the store ops. This replaces uses of the old
+  // gemm result inside fusion ops with the gridwise result and updates their
+  // result types to match the new shape.
+  rock::propagateOutputType(op.getResult(), result);
 
-  // Update the StoreOp to use the new result type (which may be different)
-  // TODO(roctriton): In case of padded result, we need to do this, otherwise we don't...this should be done in a cleaner way.
-  // TODO(roctriton): Note that for fusions, we should be able to propagate the shapes, example:
-  // c = rock.gridwise_gemm(a, b)
-  // c2 = arith.addf(c, otherTensor) -> propagate c and shape to otherTensor
-  // rock.store c2, newTransform ... -> propagate c and new transforms
-  if (storeOp) {
-    // Preserve the original store method, but force AtomicAdd for split-K
+  // Replace extra fusion input operands with their padded versions.
+  rock::replaceFusionExtraInputs(result, fusionInputMap);
+
+  for (size_t i = 0; i < stores.size(); ++i) {
+    StoreOp storeOp = stores[i];
+    Value view = outputViews[i];
+    // adjust the store method
     StoreMethodAttr storeMethod = storeOp.getStoreMethodAttr();
     if (splitKFactor > 1)
       storeMethod =
           rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
+    // If the store's source is the gemm result directly (no fusions),
+    // use the gridwise result. Otherwise, propagateOutputType has already
+    // updated the fusion chain, and storeOp.getSource() has the correct type.
+    Value source = storeOp.getSource();
+    if (source == op.getResult())
+      source = result;
     rw.setInsertionPoint(storeOp);
     auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
                                             storeOp.getResult().getType(),
-                                            result, c, storeMethod);
+                                            source, view, storeMethod);
     rw.replaceOp(storeOp, newStoreOp.getResult());
   }
 
@@ -787,16 +792,17 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
 }
 
 FailureOr<GemmRewritePattern::SplitKTransformedOperands>
-GemmRewritePattern::arrangeSplitKTransform(OpBuilder &builder, GemmOp op,
-                                           Location loc, int64_t splitKFactor,
-                                           Value a, Value b, Value c,
-                                           Value scaleA, Value scaleB) const {
+GemmRewritePattern::arrangeSplitKTransform(
+    OpBuilder &builder, GemmOp op, Location loc, int64_t splitKFactor, Value a,
+    Value b, ArrayRef<Value> outputViews,
+    const DenseMap<Value, Value> &fusionInputMap, Value scaleA,
+    Value scaleB) const {
   // set the prefill attribute
   // Use the result since GemmOp no longer has C as input
   Value matC = op.getResult();
   auto func = llvm::cast<func::FuncOp>(op->getParentOp());
   FailureOr<SmallVector<BlockArgument>> args =
-      traceGemmOutputToArgs(matC, func);
+      traceRootOutputToArgs(matC, func);
   if (failed(args)) {
     return op->emitError("can't trace gemm output to output argument");
   }
@@ -838,11 +844,18 @@ GemmRewritePattern::arrangeSplitKTransform(OpBuilder &builder, GemmOp op,
   }
 
   // perform coordinate transformations
-  Value aNew{nullptr}, bNew{nullptr}, cNew{nullptr};
+  Value aNew{nullptr}, bNew{nullptr};
+  SmallVector<Value> outputViewsNew;
+  DenseMap<Value, Value> fusionInputMapNew(fusionInputMap);
   Value scaleANew{nullptr}, scaleBNew{nullptr};
   ArrayRef<int64_t> aShape = cast<RankedTensorType>(a.getType()).getShape();
   ArrayRef<int64_t> bShape = cast<RankedTensorType>(b.getType()).getShape();
-  ArrayRef<int64_t> cShape = cast<RankedTensorType>(c.getType()).getShape();
+  ArrayRef<int64_t> cShape =
+      cast<RankedTensorType>(outputViews[0].getType()).getShape();
+  for (auto outputView : outputViews) {
+    if (cast<RankedTensorType>(outputView.getType()).getShape() != cShape)
+      return op->emitError("all output views must have the same shape");
+  }
 
   const int64_t K = aShape[2];
 
@@ -947,9 +960,20 @@ GemmRewritePattern::arrangeSplitKTransform(OpBuilder &builder, GemmOp op,
     transformAttrs.push_back(ignoreTransformAttr);
 
     ArrayAttr arrayTransformAttrs = builder.getArrayAttr(transformAttrs);
-    cNew = mlir::rock::transform(builder, c, arrayTransformAttrs);
+    for (auto view : outputViews) {
+      outputViewsNew.push_back(
+          mlir::rock::transform(builder, view, arrayTransformAttrs));
+    }
+    // Apply the same transforms to fusion extra inputs.
+    // Set insertion point after each value's defining op to maintain dominance.
+    for (auto &[orig, view] : fusionInputMapNew) {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointAfter(view.getDefiningOp());
+      view = mlir::rock::transform(builder, view, arrayTransformAttrs);
+    }
   }
-  return SplitKTransformedOperands{aNew, bNew, cNew, scaleANew, scaleBNew};
+  return SplitKTransformedOperands{
+      aNew, bNew, outputViewsNew, fusionInputMapNew, scaleANew, scaleBNew};
 }
 
 LogicalResult GemmRewritePattern::computeGridSize(ConversionPatternRewriter &rw,

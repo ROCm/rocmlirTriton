@@ -20,6 +20,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 
@@ -115,10 +116,10 @@ struct RockBlockwiseReduceOpRewritePattern
 };
 
 //===----------------------------------------------------------------------===//
-// RockLoadTilePtrOpRewritePattern - Convert rock.blockwise_load_tile_ptr to
+// RockLoadPtrOpRewritePattern - Convert rock.blockwise_load_ptr to
 // tt.load
 //===----------------------------------------------------------------------===//
-struct RockLoadTilePtrOpRewritePattern
+struct RockLoadPtrOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseLoadPtrOp> {
   using OpRewritePattern<rock::BlockwiseLoadPtrOp>::OpRewritePattern;
 
@@ -218,7 +219,7 @@ struct RockBlockwiseGemmOpRewritePattern
   }
 };
 
-struct RockStoreTilePtrOpRewritePattern
+struct RockStorePtrOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseStorePtrOp> {
   using OpRewritePattern<rock::BlockwiseStorePtrOp>::OpRewritePattern;
 
@@ -355,14 +356,15 @@ void RockToTTIRPass::runOnOperation() {
   target.addLegalDialect<rock::RockDialect>();
   target.addLegalDialect<func::FuncDialect>();
   target.addLegalDialect<arith::ArithDialect>();
+  target.addLegalDialect<math::MathDialect>();
   target.addDynamicallyLegalOp<func::ReturnOp>(
       [](func::ReturnOp op) { return op.getOperands().empty(); });
 
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
-  patterns.add<RockLoadTilePtrOpRewritePattern>(ctx);
+  patterns.add<RockLoadPtrOpRewritePattern>(ctx);
   patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
-  patterns.add<RockStoreTilePtrOpRewritePattern>(ctx);
+  patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ReturnOpRewritePattern>(ctx);
 
   // Apply partial conversion - convert tensor.splat and Rock ops to Triton ops
