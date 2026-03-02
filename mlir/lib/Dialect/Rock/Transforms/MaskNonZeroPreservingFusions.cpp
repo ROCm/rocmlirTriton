@@ -161,6 +161,7 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
   builder.setInsertionPointAfter(leafOp);
   IRMapping mapping;
   SmallVector<Operation *> toErase;
+  bool anyFoldFailed = false;
 
   for (Operation *op : chainOps) {
     for (Value operand : op->getOperands()) {
@@ -201,6 +202,8 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
         mapping.map(op->getResult(0), val);
         continue;
       }
+    } else {
+      anyFoldFailed = true;
     }
     mapping.map(op->getResult(0), cloned->getResult(0));
   }
@@ -210,7 +213,7 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
                 matchPattern(clonedLeaf, m_Zero());
 
   LLVM_DEBUG(llvm::dbgs() << "  Zero-preservation test: "
-                          << (isZero ? "PRESERVES" : "DOES NOT preserve")
+                          << (isZero ? "PRESERVES" : (anyFoldFailed ? "Fold failed!" : "DOES NOT preserve"))
                           << " zero\n");
 
   for (auto it = toErase.rbegin(); it != toErase.rend(); ++it) {
