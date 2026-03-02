@@ -51,6 +51,8 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
 namespace rock {
@@ -66,24 +68,32 @@ using namespace mlir::rock;
 
 namespace {
 
-/// The transform sequence to lower CPU verifier functions.
-/// This is equivalent to running:
-///   mlir-opt --transform-interpreter
-/// with this transform module.
-constexpr const char *kTransformSequence = R"mlir(
-module attributes {transform.with_named_sequence} {    
-  transform.named_sequence @__basic_lowering(%arg0: !transform.any_op {transform.consumed}) {
+/// Transform sequence for optimization (tiling) of CPU verifier functions.
+/// This sequence tiles the matmul and applies canonicalization.
+/// It ends before bufferization.
+constexpr const char *kOptimizationSequence = R"mlir(
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
 
-    %0 = transform.structured.match attributes{"rock.matmul"} in %arg0 : (!transform.any_op) -> !transform.any_op
-    %1, %loops:4 = transform.structured.tile_using_for %0 tile_sizes [3, 32, 32, 1] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
+    // %0 = transform.structured.match attributes{"rock.matmul"} in %arg0 : (!transform.any_op) -> !transform.any_op
+    // %1, %loops:4 = transform.structured.tile_using_for %0 tile_sizes [3, 32, 32, 1] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
 
     %func1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
     %2 = transform.apply_registered_pass "canonicalize" to %func1 : (!transform.any_op) -> !transform.any_op
     %3 = transform.apply_registered_pass "lower-affine" to %2 : (!transform.any_op) -> !transform.any_op
 
-    %10 = transform.bufferization.one_shot_bufferize layout{IdentityLayoutMap} %arg0 {bufferize_function_boundaries = false} : (!transform.any_op) -> !transform.any_op
-    //%11 = transform.structured.match ops{["linalg.generic"]} in %0 : (!transform.any_op) -> !transform.any_op
-    //%12 = transform.structured.convert_to_loops %1 : (!transform.any_op) -> !transform.any_op      
+    transform.yield
+  }
+}
+)mlir";
+
+/// Transform sequence for lowering CPU verifier functions to LLVM.
+/// This sequence starts with bufferization and lowers to LLVM dialect.
+constexpr const char *kLoweringSequence = R"mlir(
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
+
+    %10 = transform.bufferization.one_shot_bufferize layout{IdentityLayoutMap} %arg0 {bufferize_function_boundaries = true} : (!transform.any_op) -> !transform.any_op
 
     // Lowering to LLVM
 
@@ -117,17 +127,13 @@ module attributes {transform.with_named_sequence} {
     //   1. applying reconcile-unrealized-casts on the whole module yields the
     //      transform applies to transform, when called from a named sequence, at
     //      this time.
-    //   2. apply_conversion patterns consumes the func but does not produce 
+    //   2. apply_conversion patterns consumes the func but does not produce
     //      a new llvm.func.
-    %f6 = transform.structured.match ops{["llvm.func"]} in %10 
+    %f6 = transform.structured.match ops{["llvm.func"]} in %10
       : (!transform.any_op) -> !transform.any_op
     %f7 = transform.apply_registered_pass "reconcile-unrealized-casts" to %f6
       : (!transform.any_op) -> !transform.any_op
 
-    transform.yield 
-  }
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
-    transform.include @__basic_lowering failures(propagate) (%arg0) : (!transform.any_op) -> ()
     transform.yield
   }
 }
@@ -164,16 +170,82 @@ struct RockLowerCpuVerifierPass
   void runOnOperation() override;
 
 private:
+  /// Dump the IR and transform sequence to /tmp for debugging
+  void dumpBeforeTransform(ModuleOp targetModule, ModuleOp transformModule,
+                           StringRef funcName, StringRef phaseName);
+
+  /// Apply a single transform sequence to the temporary module
+  LogicalResult applyTransformSequence(ModuleOp tempModule,
+                                       ModuleOp transformModule,
+                                       StringRef sequenceName);
+
   /// Lower a single CPU verifier function using the transform interpreter
   LogicalResult lowerSingleFunction(func::FuncOp func,
-                                    ModuleOp transformModule);
+                                    ModuleOp optimizationModule,
+                                    ModuleOp loweringModule);
 };
 
 } // end anonymous namespace
 
+void RockLowerCpuVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
+                                                   ModuleOp transformModule,
+                                                   StringRef funcName,
+                                                   StringRef phaseName) {
+  // Create filename: /tmp/cpu_verifier_<funcname>_<phase>.mlir
+  std::string filename =
+      "/tmp/cpu_verifier_" + funcName.str() + "_" + phaseName.str() + ".mlir";
+
+  std::error_code ec;
+  llvm::raw_fd_ostream outFile(filename, ec, llvm::sys::fs::OF_Text);
+
+  if (ec) {
+    LLVM_DEBUG(llvm::dbgs() << "Warning: Could not open dump file " << filename
+                            << ": " << ec.message() << "\n");
+    return;
+  }
+
+  outFile << "// =============================================================\n";
+  outFile << "// CPU Verifier Dump: " << funcName << " - " << phaseName << " phase\n";
+  outFile << "// =============================================================\n\n";
+
+  outFile << "// --- Target IR (before " << phaseName << ") ---\n";
+  targetModule.print(outFile);
+  outFile << "\n\n";
+
+  outFile << "// --- Transform Sequence (" << phaseName << ") ---\n";
+  transformModule.print(outFile);
+  outFile << "\n";
+
+  LLVM_DEBUG(llvm::dbgs() << "Dumped IR and transform to: " << filename << "\n");
+}
+
+LogicalResult
+RockLowerCpuVerifierPass::applyTransformSequence(ModuleOp tempModule,
+                                                 ModuleOp transformModule,
+                                                 StringRef sequenceName) {
+  // Find the transform entry point
+  transform::TransformOpInterface entryPoint =
+      transform::detail::findTransformEntryPoint(tempModule, transformModule);
+  if (!entryPoint) {
+    return tempModule.emitError("Could not find transform entry point for ")
+           << sequenceName;
+  }
+
+  // Apply the transform sequence to the temporary module
+  transform::TransformOptions options;
+  if (failed(transform::applyTransformNamedSequence(
+          tempModule, entryPoint, transformModule, options))) {
+    return tempModule.emitError("Transform interpreter failed for ")
+           << sequenceName;
+  }
+
+  return success();
+}
+
 LogicalResult
 RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
-                                              ModuleOp transformModule) {
+                                              ModuleOp optimizationModule,
+                                              ModuleOp loweringModule) {
   MLIRContext *ctx = &getContext();
   Location loc = func.getLoc();
   StringRef funcName = func.getName();
@@ -190,18 +262,21 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
   auto clonedFunc = cast<func::FuncOp>(clonedOp);
   tempModule->push_back(clonedFunc);
 
-  // Step 3: Find the transform entry point
-  transform::TransformOpInterface entryPoint =
-      transform::detail::findTransformEntryPoint(*tempModule, transformModule);
-  if (!entryPoint) {
-    return func.emitError("Could not find transform entry point");
+  // Step 3: Apply the optimization sequence (tiling)
+  LLVM_DEBUG(llvm::dbgs() << "  Applying optimization sequence...\n");
+  dumpBeforeTransform(tempModule.get(), optimizationModule, funcName,
+                      "optimization");
+  if (failed(applyTransformSequence(tempModule.get(), optimizationModule,
+                                    "optimization"))) {
+    return func.emitError("Optimization transform failed for function");
   }
 
-  // Step 4: Apply the transform sequence to the temporary module
-  transform::TransformOptions options;
-  if (failed(transform::applyTransformNamedSequence(
-          tempModule.get(), entryPoint, transformModule, options))) {
-    return func.emitError("Transform interpreter failed for function");
+  // Step 4: Apply the lowering sequence (bufferization + LLVM lowering)
+  LLVM_DEBUG(llvm::dbgs() << "  Applying lowering sequence...\n");
+  dumpBeforeTransform(tempModule.get(), loweringModule, funcName, "lowering");
+  if (failed(applyTransformSequence(tempModule.get(), loweringModule,
+                                    "lowering"))) {
+    return func.emitError("Lowering transform failed for function");
   }
 
   // Step 5: Get the lowered function from the temporary module
@@ -248,19 +323,29 @@ void RockLowerCpuVerifierPass::runOnOperation() {
   LLVM_DEBUG(llvm::dbgs() << "Found " << cpuVerifierFuncs.size()
                           << " CPU verifier function(s)\n");
 
-  // Parse the transform module once for all functions
+  // Parse the optimization transform module (tiling)
   // The transform dialect extensions are registered in getDependentDialects()
-  OwningOpRef<ModuleOp> transformModule =
-      parseSourceString<ModuleOp>(kTransformSequence, ctx);
-  if (!transformModule) {
+  OwningOpRef<ModuleOp> optimizationModule =
+      parseSourceString<ModuleOp>(kOptimizationSequence, ctx);
+  if (!optimizationModule) {
     emitError(UnknownLoc::get(ctx))
-        << "Failed to parse transform sequence for CPU verifier lowering";
+        << "Failed to parse optimization transform sequence for CPU verifier";
+    return signalPassFailure();
+  }
+
+  // Parse the lowering transform module (bufferization + LLVM)
+  OwningOpRef<ModuleOp> loweringModule =
+      parseSourceString<ModuleOp>(kLoweringSequence, ctx);
+  if (!loweringModule) {
+    emitError(UnknownLoc::get(ctx))
+        << "Failed to parse lowering transform sequence for CPU verifier";
     return signalPassFailure();
   }
 
   // Lower each function in isolation using the transform interpreter
   for (func::FuncOp func : cpuVerifierFuncs) {
-    if (failed(lowerSingleFunction(func, transformModule.get()))) {
+    if (failed(lowerSingleFunction(func, optimizationModule.get(),
+                                   loweringModule.get()))) {
       return signalPassFailure();
     }
   }
