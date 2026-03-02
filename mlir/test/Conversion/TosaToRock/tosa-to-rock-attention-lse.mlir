@@ -1,10 +1,6 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s
 
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Disabling this test because it still generates bufferized IR
-
 // CHECK-LABEL: func @mlir_lse_attention
-// CHECK: %[[lseBuffer:.+]] = tensor.empty() : tensor<8x32xf32>
 // CHECK: %{{.*}}, %[[lseOut:.*]] = rock.attention
 // CHECK: %[[lseExpanded:.*]] = tensor.expand_shape %[[lseOut]]
 // CHECK: %[[lseCollapsed:.*]] = tensor.collapse_shape %[[lseExpanded]]
@@ -46,7 +42,6 @@ func.func @mlir_lse_attention(%arg0: tensor<4096xf32>, %arg1: tensor<8192xf32>, 
 }
 
 // CHECK-LABEL: func @mlir_lse_attention_fusion
-// CHECK: %[[lseBuffer:.+]] = tensor.empty() : tensor<8x32xf32>
 // CHECK: %{{.*}}, %[[lseOut:.*]] = rock.attention
 // CHECK: %[[lseExpanded:.*]] = tensor.expand_shape %[[lseOut]]
 // CHECK: %[[lseFusion:.*]] = tosa.add %[[lseExpanded]], %{{.*}} : (tensor<2x4x32x1xf32>, tensor<2x4x32x1xf32>) -> tensor<2x4x32x1xf32>
@@ -103,7 +98,6 @@ func.func @mlir_lse_attention_fusion(%arg0: tensor<4096xf32>, %arg1: tensor<8192
 }
 
 // CHECK-LABEL: func @mlir_lse_attention_kvcache_fusion
-// CHECK: %[[lseBuffer:.+]] = tensor.empty() : tensor<32x1xf16>
 // CHECK: %{{.*}}, %[[lseOut:.*]] = rock.attention
 // CHECK: currentSeqLen = (%{{.*}} : tensor<32xi32>)
 // CHECK: %[[lseExpanded:.*]] = tensor.expand_shape %[[lseOut]]
@@ -181,7 +175,6 @@ func.func @mlir_lse_attention_kvcache_fusion(%arg0: tensor<12288xf16>, %arg1: te
 }
 
 // CHECK-LABEL: func @mlir_lse_attention_broadcasts
-// CHECK: %[[lseBuffer:.+]] = tensor.empty() : tensor<2x5xf16>
 // CHECK: %{{.*}}, %[[lseOut:.*]] = rock.attention
 // CHECK: %[[lseExpanded:.*]] = tensor.expand_shape %[[lseOut]]
 // CHECK: %[[lseFusion:.*]] = tosa.mul %[[lseExpanded]], %{{.*}}, %{{.*}} : (tensor<2x1x5x1xf16>, tensor<2x1x5x1xf16>, tensor<1xi8>) -> tensor<2x1x5x1xf16>
@@ -241,7 +234,6 @@ func.func @mlir_lse_attention_broadcasts(%arg0: tensor<640xf16> {mhal.read_acces
 
 
 // CHECK-LABEL: func @mlir_lse_attention_broadcasts_f32
-// CHECK: %[[lseBuffer:.+]] = tensor.empty() : tensor<2x5xf32>
 // CHECK: %{{.*}}, %[[lseOut:.*]] = rock.attention
 // CHECK: %[[lseExpanded:.*]] = tensor.expand_shape %[[lseOut]]
 // CHECK: %[[lseFusion:.*]] = tosa.mul %[[lseExpanded]], %{{.*}}, %{{.*}} : (tensor<2x1x5x1xf32>, tensor<2x1x5x1xf32>, tensor<1xi8>) -> tensor<2x1x5x1xf32>
@@ -302,7 +294,6 @@ func.func @mlir_lse_attention_broadcasts_f32(%arg0: tensor<640xf16> {mhal.read_a
 }
 
 // CHECK-LABEL: func @mlir_attention_single_token
-// CHECK: %[[lseBuffer:.+]] = tensor.empty() : tensor<8x1xf32>
 // CHECK: %{{.*}}, %[[lseOut:.*]] = rock.attention
 // CHECK: %[[lseExpanded:.*]] = tensor.expand_shape %[[lseOut]]
 // CHECK: %[[lseCollapsed:.*]] = tensor.collapse_shape %[[lseExpanded]]
@@ -344,7 +335,6 @@ func.func @mlir_attention_single_token(%arg0: tensor<128xf32>, %arg1: tensor<256
 }
 
 // CHECK-LABEL: @mlir_attention_lse_unfolded
-// CHECK: %[[lseBuffer:.+]] = tensor.empty() : tensor<8x1xf32>
 // CHECK: %{{.*}}, %[[lseOut:.*]] = rock.attention
 // CHECK: %[[lseExpanded:.*]] = tensor.expand_shape %[[lseOut]]
 // CHECK: %[[lseCollapsed:.*]] = tensor.collapse_shape %[[lseExpanded]]

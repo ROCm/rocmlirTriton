@@ -1,8 +1,5 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s
 
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Disabling this test because it still generates bufferized IR
-
 // CHECK-LABEL: func @mlir_softmaxf32_attention
 // CHECK: rock.attention
 // CHECK: softmaxType = f32
@@ -94,7 +91,6 @@ func.func @mlir_softmaxf64_attention(%arg0: tensor<786432xf16>, %arg1: tensor<78
 }
 
 // CHECK-LABEL: func @mlir_softmaxf32_lse_attention
-// CHECK: %[[lseBuffer:.+]] = tensor.empty() : tensor<12x256xf16>
 // CHECK: %{{.*}}, %[[lseOut:.*]] = rock.attention
 // CHECK: softmaxType = f32
 // CHECK: %[[lseExpanded:.*]] = tensor.expand_shape %[[lseOut]]
@@ -460,8 +456,8 @@ func.func @mlir_attention_scale_bias_kvcache_convert_softmax_convert(%arg0: tens
 // CHECK-LABEL: func @mlir_attention_i8_convert_softmax_convert_f16
 // CHECK: rock.attention
 // CHECK: qk = {{.*}} * {{.*}} : tensor<1x64x32xi8>, tensor<1x32x64xi8>
-// CHECK: %1 = softmax(qk) * {{.*}} : tensor<1x64x32xf16>  -> tensor<1x64x32xf16>
-// CHECK: softmaxType = f32
+// CHECK: softmax(qk) * {{.*}} : tensor<1x64x32xf16>
+// CHECK: softmaxType = f32{{.*}} -> tensor<1x64x32xf16>
 func.func @mlir_attention_i8_convert_softmax_convert_f16(%arg0: tensor<2048xi8>, %arg1: tensor<2048xi8>, %arg2: tensor<2048xf16>, %arg3: tensor<4096xf16>, %arg4: tensor<1xf16>) -> tensor<2048xf16> attributes {rock.arch = "gfx942",rock.kernel} {
   %0 = tosa.const_shape  {values = dense<2048> : tensor<1xindex>} : () -> !tosa.shape<1>
   %1 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf16>}> : () -> tensor<1xf16>
