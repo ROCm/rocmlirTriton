@@ -204,7 +204,10 @@ func.func @basic_add_si32(%arg0: !migraphx.shaped<1x112x112x64xsi32, 802816x7168
 }
 
 // CHECK-LABEL: func @conv_with_quant_si8
-// CHECK: tosa.conv2d{{.*}}(tensor<1x224x224x3xi8>, tensor<64x7x7x3xi8>, tensor<64xi32>, tensor<1xi8>, tensor<1xi8>) -> tensor<1x112x112x64xi32>
+// CHECK: tosa.conv2d
+// CHECK-SAME: pad = array<i64: 3, 2, 3, 2>
+// CHECK-SAME: stride = array<i64: 2, 2>
+// CHECK-SAME: (tensor<1x224x224x3xi8>, tensor<64x7x7x3xi8>, tensor<64xi32>, tensor<1xi8>, tensor<1xi8>) -> tensor<1x112x112x64xi32>
 // CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xf32>
 // CHECK: tosa.cast{{.*}}(tensor<1x64x1x1xi32>) -> tensor<1x64x1x1xf32>
 // CHECK: tosa.sub{{.*}}(tensor<1x64x112x112xf32>, tensor<1x64x1x1xf32>) -> tensor<1x64x112x112xf32>

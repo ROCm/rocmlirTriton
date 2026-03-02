@@ -396,6 +396,8 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
       }
     }
     if (needSlice) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(cop);
       SmallVector<int64_t> starts(sliceSizes.size(), 0);
       auto startsValue = tosa::getTosaConstShape(rewriter, loc, starts);
       auto sizesValue = tosa::getTosaConstShape(rewriter, loc, sliceSizes);
