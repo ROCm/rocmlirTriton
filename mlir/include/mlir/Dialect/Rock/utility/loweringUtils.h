@@ -152,6 +152,12 @@ TypedValue<MemRefType> viewBufferAs(OpBuilder &b, Value buffer,
 
 FailureOr<SetVector<StoreOp>> traceRootOutputToStoreOps(Value output);
 
+// Check that `newStoreMethod` is compatible with the store's current method,
+// then set a prefill attribute on the function argument that the store
+// destination traces back to.  AtomicAdd -> zero, AtomicMax -> -inf/INT_MIN.
+LogicalResult setStoreMethodAndPrefill(OpBuilder &builder, StoreOp storeOp,
+                                       StoreMethod newStoreMethod);
+
 // Trace root output back to its function arguments by
 // tracing through rock.store operations to find the
 // destination tensor, then traces that back to function arguments.

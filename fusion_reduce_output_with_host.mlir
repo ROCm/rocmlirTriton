@@ -28,7 +28,7 @@
 #transform_flat_to_reduced = #rock.transform_map<#map_flat_100 by [<Unmerge{1, 100} ["m_red", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1, 100] -> [100]>
 module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
   // ---- GPU kernel ----
-  func.func @rock_gemm(%arg_a: tensor<10000xf16>, %arg_b: tensor<10000xf16>, %extra1: tensor<10000xf16>, %extra2: tensor<10000xf16>, %arg_c: tensor<100xf16>) -> tensor<100xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.enable_splitk_for_tuning, rock.kernel, rock.num_chiplets = 1 : i64, rock.num_cu = 96 : i64} {
+  func.func @rock_gemm(%arg_a: tensor<10000xf16>, %arg_b: tensor<10000xf16>, %extra1: tensor<10000xf16>, %extra2: tensor<10000xf16>, %arg_c: tensor<100xf32>) -> tensor<100xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.enable_splitk_for_tuning, rock.kernel, rock.num_chiplets = 1 : i64, rock.num_cu = 96 : i64} {
     %a = rock.transform %arg_a by #transform_map_a : tensor<10000xf16> to tensor<1x100x100xf16>
     %b = rock.transform %arg_b by #transform_map_b : tensor<10000xf16> to tensor<1x100x100xf16>
     %gemm = rock.gemm %a * %b : tensor<1x100x100xf16> * tensor<1x100x100xf16> -> tensor<1x100x100xf16>
@@ -42,12 +42,14 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
     // Second fusion in 3D space
     %ext2 = rock.transform %extra2 by #transform_flat_to_3d : tensor<10000xf16> to tensor<1x100x100xf16>
     %fused2 = arith.addf %fused1_3d, %ext2 : tensor<1x100x100xf16>
+    // Extend to f32 before reduce so atomic accumulation is in f32
+    %fused2_f32 = arith.extf %fused2 : tensor<1x100x100xf16> to tensor<1x100x100xf32>
     // Reduce sum along axis=1 (M dimension): [1,100,100] → [1,1,100]
-    %reduced = rock.reduce sum %fused2 {axis = 1 : index} : tensor<1x100x100xf16> -> tensor<1x1x100xf16>
+    %reduced = rock.reduce sum %fused2_f32 {axis = 1 : index} : tensor<1x100x100xf32> -> tensor<1x1x100xf32>
     // Store
-    %c = rock.transform %arg_c by #transform_flat_to_reduced : tensor<100xf16> to tensor<1x1x100xf16>
-    %result = rock.store %reduced to %c by set : tensor<1x1x100xf16> -> tensor<100xf16> to tensor<1x1x100xf16>
-    return %result : tensor<100xf16>
+    %c = rock.transform %arg_c by #transform_flat_to_reduced : tensor<100xf32> to tensor<1x1x100xf32>
+    %result = rock.store %reduced to %c by set : tensor<1x1x100xf32> -> tensor<100xf32> to tensor<1x1x100xf32>
+    return %result : tensor<100xf32>
   }
 
   // ---- Main entry point ----
@@ -72,14 +74,17 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
     %alloc_extra2_ref = memref.alloc() : memref<10000xf16>
     memref.copy %alloc_extra2, %alloc_extra2_ref : memref<10000xf16> to memref<10000xf16>
 
-    %alloc_C = memref.alloc() : memref<100xf16>
-    call @_init_buffer_100(%alloc_C) : (memref<100xf16>) -> ()
-    %alloc_C_ref = memref.alloc() : memref<100xf16>
-    memref.copy %alloc_C, %alloc_C_ref : memref<100xf16> to memref<100xf16>
+    // Output buffer must be zero-initialized: rock.reduce is lowered to
+    // atomic_add on the store, so the kernel accumulates into this buffer.
+    %cst_zero_f32 = arith.constant 0.000000e+00 : f32
+    %alloc_C = memref.alloc() : memref<100xf32>
+    linalg.fill ins(%cst_zero_f32 : f32) outs(%alloc_C : memref<100xf32>)
+    %alloc_C_ref = memref.alloc() : memref<100xf32>
+    linalg.fill ins(%cst_zero_f32 : f32) outs(%alloc_C_ref : memref<100xf32>)
 
-    call @rock_gemm_gpu(%alloc_A, %alloc_B, %alloc_extra1, %alloc_extra2, %alloc_C) : (memref<10000xf16>, memref<10000xf16>, memref<10000xf16>, memref<10000xf16>, memref<100xf16>) -> ()
-    call @host_naive_fused_gemm_reduce(%alloc_A_ref, %alloc_B_ref, %alloc_extra1_ref, %alloc_extra2_ref, %alloc_C_ref) : (memref<10000xf16>, memref<10000xf16>, memref<10000xf16>, memref<10000xf16>, memref<100xf16>) -> ()
-    call @rock_gemm_verify(%alloc_C, %alloc_C_ref) : (memref<100xf16>, memref<100xf16>) -> ()
+    call @rock_gemm_gpu(%alloc_A, %alloc_B, %alloc_extra1, %alloc_extra2, %alloc_C) : (memref<10000xf16>, memref<10000xf16>, memref<10000xf16>, memref<10000xf16>, memref<100xf32>) -> ()
+    call @host_naive_fused_gemm_reduce(%alloc_A_ref, %alloc_B_ref, %alloc_extra1_ref, %alloc_extra2_ref, %alloc_C_ref) : (memref<10000xf16>, memref<10000xf16>, memref<10000xf16>, memref<10000xf16>, memref<100xf32>) -> ()
+    call @rock_gemm_verify(%alloc_C, %alloc_C_ref) : (memref<100xf32>, memref<100xf32>) -> ()
 
     memref.dealloc %alloc_A : memref<10000xf16>
     memref.dealloc %alloc_A_ref : memref<10000xf16>
@@ -89,8 +94,8 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
     memref.dealloc %alloc_extra1_ref : memref<10000xf16>
     memref.dealloc %alloc_extra2 : memref<10000xf16>
     memref.dealloc %alloc_extra2_ref : memref<10000xf16>
-    memref.dealloc %alloc_C : memref<100xf16>
-    memref.dealloc %alloc_C_ref : memref<100xf16>
+    memref.dealloc %alloc_C : memref<100xf32>
+    memref.dealloc %alloc_C_ref : memref<100xf32>
     return
   }
 
@@ -130,7 +135,7 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
   // ---- CPU reference ----
   // fused[g,m,n] = gemm(A,B)[g,m,n] + extra1[g,m,n] + extra2[g,m,n]
   // C[n] = sum_m( fused[0,m,n] )
-  func.func @host_naive_fused_gemm_reduce(%arg0: memref<10000xf16>, %arg1: memref<10000xf16>, %arg2: memref<10000xf16>, %arg3: memref<10000xf16>, %arg4: memref<100xf16>) {
+  func.func @host_naive_fused_gemm_reduce(%arg0: memref<10000xf16>, %arg1: memref<10000xf16>, %arg2: memref<10000xf16>, %arg3: memref<10000xf16>, %arg4: memref<100xf32>) {
     %A_f32 = memref.alloc() : memref<10000xf32>
     call @_memcpy_f16_f32_10000(%arg0, %A_f32) : (memref<10000xf16>, memref<10000xf32>) -> ()
     %B_f32 = memref.alloc() : memref<10000xf32>
@@ -182,7 +187,7 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
       }
     }
 
-    call @_memcpy_f32_f16_100(%result_f32, %arg4) : (memref<100xf32>, memref<100xf16>) -> ()
+    memref.copy %result_f32, %arg4 : memref<100xf32> to memref<100xf32>
     memref.dealloc %A_f32 : memref<10000xf32>
     memref.dealloc %B_f32 : memref<10000xf32>
     memref.dealloc %extra1_f32 : memref<10000xf32>
@@ -216,21 +221,13 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
     return
   }
 
-  func.func @rock_gemm_verify(%arg0: memref<100xf16>, %arg1: memref<100xf16>) {
+  func.func @rock_gemm_verify(%arg0: memref<100xf32>, %arg1: memref<100xf32>) {
     %c1_i8 = arith.constant 1 : i8
-    %alloc = memref.alloc() : memref<100xf32>
-    call @_memcpy_f16_f32_100(%arg0, %alloc) : (memref<100xf16>, memref<100xf32>) -> ()
-    %cast = memref.cast %alloc : memref<100xf32> to memref<100xf32>
-    %alloc_0 = memref.alloc() : memref<100xf32>
-    call @_memcpy_f16_f32_100(%arg1, %alloc_0) : (memref<100xf16>, memref<100xf32>) -> ()
-    %cast_1 = memref.cast %alloc_0 : memref<100xf32> to memref<100xf32>
     %cst = arith.constant 1.000000e-03 : f32
     %cst_2 = arith.constant 1.000000e+02 : f32
     %cst_4 = arith.constant 1.000000e+02 : f32
     %false = arith.constant false
-    call @mcpuVerifyFloat(%cast, %cast_1, %cst, %cst_2, %cst_4, %c1_i8, %false) : (memref<100xf32>, memref<100xf32>, f32, f32, f32, i8, i1) -> ()
-    memref.dealloc %alloc : memref<100xf32>
-    memref.dealloc %alloc_0 : memref<100xf32>
+    call @mcpuVerifyFloat(%arg0, %arg1, %cst, %cst_2, %cst_4, %c1_i8, %false) : (memref<100xf32>, memref<100xf32>, f32, f32, f32, i8, i1) -> ()
     return
   }
 
@@ -248,7 +245,7 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 
   func.func private @mcpuVerifyFloat(memref<100xf32>, memref<100xf32>, f32, f32, f32, i8, i1)
 
-  func.func @rock_gemm_gpu(%arg0: memref<10000xf16>, %arg1: memref<10000xf16>, %arg2: memref<10000xf16>, %arg3: memref<10000xf16>, %arg4: memref<100xf16>) {
+  func.func @rock_gemm_gpu(%arg0: memref<10000xf16>, %arg1: memref<10000xf16>, %arg2: memref<10000xf16>, %arg3: memref<10000xf16>, %arg4: memref<100xf32>) {
     %memref_A = gpu.alloc() : memref<10000xf16>
     gpu.memcpy %memref_A, %arg0 : memref<10000xf16>, memref<10000xf16>
     %memref_B = gpu.alloc() : memref<10000xf16>
@@ -257,19 +254,19 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
     gpu.memcpy %memref_extra1, %arg2 : memref<10000xf16>, memref<10000xf16>
     %memref_extra2 = gpu.alloc() : memref<10000xf16>
     gpu.memcpy %memref_extra2, %arg3 : memref<10000xf16>, memref<10000xf16>
-    %memref_C = gpu.alloc() : memref<100xf16>
-    gpu.memcpy %memref_C, %arg4 : memref<100xf16>, memref<100xf16>
+    %memref_C = gpu.alloc() : memref<100xf32>
+    gpu.memcpy %memref_C, %arg4 : memref<100xf32>, memref<100xf32>
 
     %0 = bufferization.to_tensor %memref_A restrict writable : memref<10000xf16> to tensor<10000xf16>
     %1 = bufferization.to_tensor %memref_B restrict writable : memref<10000xf16> to tensor<10000xf16>
     %2 = bufferization.to_tensor %memref_extra1 restrict writable : memref<10000xf16> to tensor<10000xf16>
     %3 = bufferization.to_tensor %memref_extra2 restrict writable : memref<10000xf16> to tensor<10000xf16>
-    %4 = bufferization.to_tensor %memref_C restrict writable : memref<100xf16> to tensor<100xf16>
+    %4 = bufferization.to_tensor %memref_C restrict writable : memref<100xf32> to tensor<100xf32>
 
-    %5 = call @rock_gemm(%0, %1, %2, %3, %4) : (tensor<10000xf16>, tensor<10000xf16>, tensor<10000xf16>, tensor<10000xf16>, tensor<100xf16>) -> tensor<100xf16>
+    %5 = call @rock_gemm(%0, %1, %2, %3, %4) : (tensor<10000xf16>, tensor<10000xf16>, tensor<10000xf16>, tensor<10000xf16>, tensor<100xf32>) -> tensor<100xf32>
 
-    %6 = bufferization.to_buffer %5 : tensor<100xf16> to memref<100xf16>
-    memref.copy %6, %memref_C : memref<100xf16> to memref<100xf16>
+    %6 = bufferization.to_buffer %5 : tensor<100xf32> to memref<100xf32>
+    memref.copy %6, %memref_C : memref<100xf32> to memref<100xf32>
 
     gpu.memcpy %arg0, %memref_A : memref<10000xf16>, memref<10000xf16>
     gpu.dealloc %memref_A : memref<10000xf16>
@@ -279,8 +276,8 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
     gpu.dealloc %memref_extra1 : memref<10000xf16>
     gpu.memcpy %arg3, %memref_extra2 : memref<10000xf16>, memref<10000xf16>
     gpu.dealloc %memref_extra2 : memref<10000xf16>
-    gpu.memcpy %arg4, %memref_C : memref<100xf16>, memref<100xf16>
-    gpu.dealloc %memref_C : memref<100xf16>
+    gpu.memcpy %arg4, %memref_C : memref<100xf32>, memref<100xf32>
+    gpu.dealloc %memref_C : memref<100xf32>
     return
   }
 }

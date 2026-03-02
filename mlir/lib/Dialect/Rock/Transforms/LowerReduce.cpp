@@ -35,6 +35,7 @@
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -103,23 +104,6 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
 
     StoreOp storeOp = storeOps[0];
 
-    // check if existing StoreMethod is compatible
-    switch (storeMethod) {
-    case StoreMethod::AtomicAdd:
-      if (storeOp.getStoreMethod() == StoreMethod::AtomicMax)
-        return reduceOp.emitError("we can't lower rock.reduce add to a "
-                                  "rock.store that has atomic_max");
-      break;
-    case StoreMethod::AtomicMax:
-      if (storeOp.getStoreMethod() == StoreMethod::AtomicAdd)
-        return reduceOp.emitError("we can't lower rock.reduce max to a "
-                                  "rock.store that has atomic_add");
-      break;
-    case StoreMethod::Set:
-      // we can set whatever we need here, because it was Set
-      break;
-    }
-
     // Build a Broadcast transform on the store destination.
     // The destination has the reduced shape (axis dim = 1).
     // We broadcast that axis to match the unreduced input shape.
@@ -145,15 +129,17 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     TransformMapAttr broadcastMap = tmBuilder.get();
 
     rewriter.setInsertionPoint(storeOp);
-    // Create the transform op on the store destination.
     ArrayAttr transformsArr = rewriter.getArrayAttr({broadcastMap});
     Value transformedDest = rock::transform(rewriter, storeDest, transformsArr);
 
-    // Create a new store with the reduce input as source, the
-    // broadcast-transformed dest, and the atomic store method.
+    // Create a new store with the old store method, then update it
+    // via setStoreMethodAndPrefill which sets the atomic method + prefill.
     auto newStore =
         StoreOp::create(rewriter, loc, storeOp.getResult().getType(),
-                        reduceInput, transformedDest, storeMethod);
+                        reduceInput, transformedDest, storeOp.getStoreMethod());
+
+    if (failed(setStoreMethodAndPrefill(rewriter, newStore, storeMethod)))
+      return storeOp.emitError("failed to set store method and prefill");
 
     rewriter.replaceOp(storeOp, newStore);
     rewriter.eraseOp(reduceOp);
