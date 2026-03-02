@@ -1655,10 +1655,9 @@ static LogicalResult populateTensorFillLogic(OpBuilder &b, Location loc,
   return success();
 }
 
-static LogicalResult populateRandomTensorFillLogic(OpBuilder &b, Location loc,
-                                                   ModuleOp module,
-                                                   Type elemType, Value toFill,
-                                                   int idx, bool zeroInit) {
+static LogicalResult populateRandomTensorFillLogic(
+    OpBuilder &b, Location loc, ModuleOp module, Type elemType, Value toFill,
+    int idx, std::optional<float> prefillValue) {
   llvm::SmallDenseMap<short, Value> i16vals;
   auto getI16Val = [&](short v) {
     if (i16vals.find(v) == i16vals.end()) {
@@ -1700,11 +1699,17 @@ static LogicalResult populateRandomTensorFillLogic(OpBuilder &b, Location loc,
 
   affine::buildAffineLoopNest(
       b, loc, lowerBounds, upperBounds, steps,
-      [zeroInit, elemType, randFunc, toFillFlat, minConst,
+      [prefillValue, elemType, randFunc, toFillFlat, minConst,
        maxConst](OpBuilder &b, Location loc, ValueRange ivs) {
         Value randVal;
-        if (zeroInit) {
-          randVal = rock::createZeroConstantOp(b, loc, elemType);
+        if (prefillValue.has_value()) {
+          if (elemType.isIntOrIndex())
+            randVal = rock::createConstantIntOp(
+                b, loc, elemType, elemType,
+                static_cast<int64_t>(*prefillValue));
+          else
+            randVal = rock::createConstantFloatOp(b, loc, elemType, elemType,
+                                                  *prefillValue);
         } else {
           auto randFloatCall = func::CallOp::create(
               b, loc, randFunc, ValueRange{minConst, maxConst});
@@ -5215,6 +5220,43 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
   }
 }
 
+// Check if a given argument index needs prefill initialization.
+// Returns the prefill value if initialization is needed, or std::nullopt
+// otherwise. This covers:
+//   - Output args when splitK is used (prefilled with 0.0)
+//   - Any kernel arg with a rock.prefill attribute (uses the attribute's
+//     stored init value, e.g., backward weight atomic convolutions)
+static FailureOr<std::optional<float>>
+getPrefillValue(size_t argIdx, ArrayRef<int32_t> outIndices, bool isSplitK,
+                const SmallVector<KernelIF, 8> &kernels) {
+  if (llvm::is_contained(outIndices, argIdx) && isSplitK)
+    return std::optional<float>(0.0f);
+
+  for (const auto &kernel : kernels) {
+    func::FuncOp func = kernel.func;
+    if (argIdx >= func.getNumArguments())
+      continue;
+
+    auto initAttr =
+        func.getArgAttr(argIdx, rock::PrefillAttr::getMnemonic());
+    if (!initAttr)
+      continue;
+
+    if (auto floatAttr = dyn_cast<FloatAttr>(initAttr))
+      return std::optional<float>(
+          static_cast<float>(floatAttr.getValueAsDouble()));
+
+    if (auto intAttr = dyn_cast<IntegerAttr>(initAttr))
+      return std::optional<float>(static_cast<float>(intAttr.getInt()));
+
+    llvm::errs() << "error: unsupported rock.prefill attribute type on arg "
+                 << argIdx << "\n";
+    return failure();
+  }
+
+  return std::optional<float>{};
+}
+
 static LogicalResult populateHostHarnessLogic(
     ModuleOp module, const SmallVector<KernelIF, 8> &kernels,
     const SmallVector<KernelIF, 8> &roots, const GenParams &genParams) {
@@ -5329,6 +5371,7 @@ static LogicalResult populateHostHarnessLogic(
     ++offsetFromEnd;
   const int64_t expectedCurrSeqLenIdx =
       !currentSeqLen.empty() ? (root0.params.size() - offsetFromEnd - 1) : -1;
+
   for (auto [idx, paramType] : llvm::enumerate(root0.params)) {
     auto paramShapedType = dyn_cast<ShapedType>(paramType);
     assert(paramShapedType &&
@@ -5366,17 +5409,21 @@ static LogicalResult populateHostHarnessLogic(
                static_cast<int64_t>(idx) == expectedPrefixOffsetIdx) {
       fillWithI32Values(prefixOffset);
     } else if (!isRandom) {
-      bool zeroInit = llvm::is_contained(outIndices, idx) && isSplitK;
-      SmallVector<float> zeroPattern = {0.0f};
+      auto prefillResult = getPrefillValue(idx, outIndices, isSplitK, kernels);
+      if (failed(prefillResult))
+        return failure();
+      auto prefill = *prefillResult;
       SmallVector<float> tensorPattern = getTensorInitPattern(elemType, idx);
-      auto initPattern = zeroInit ? zeroPattern : tensorPattern;
+      auto initPattern = prefill ? SmallVector<float>{*prefill} : tensorPattern;
 
       if (failed(populateTensorFillLogic(b, loc, initPattern, elemType, lvar)))
         return failure();
     } else {
-      bool zeroInit = llvm::is_contained(outIndices, idx) && isSplitK;
+      auto prefillResult = getPrefillValue(idx, outIndices, isSplitK, kernels);
+      if (failed(prefillResult))
+        return failure();
       if (failed(populateRandomTensorFillLogic(b, loc, module, elemType, lvar,
-                                               idx, zeroInit)))
+                                               idx, *prefillResult)))
         return failure();
     }
 
