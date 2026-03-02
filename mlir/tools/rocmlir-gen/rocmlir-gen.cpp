@@ -5170,8 +5170,16 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
         llvm::errs() << "External gemm validator is not available\n";
         exit(1);
       }
+      // Start CPU timer
+      auto cpuTimerStartFunc = makeFuncDecl(module, "cpuTimerStart", {});
+      func::CallOp::create(b, loc, cpuTimerStartFunc, ValueRange{});
+
       auto cpuGemmFunc = createCpuGemmKernelWithMlir(module, genParams);
       callTensorFuncWithMemrefs(b, loc, cpuGemmFunc, valVars, outIndices);
+
+      // Stop CPU timer and print elapsed time
+      auto cpuTimerStopFunc = makeFuncDecl(module, "cpuTimerStop", {});
+      func::CallOp::create(b, loc, cpuTimerStopFunc, ValueRange{});
     } else if (genParams.operation == rock::KernelType::Attention) {
       if (validationType == "cpp") {
         llvm::errs() << "External attention validator is not available\n";
