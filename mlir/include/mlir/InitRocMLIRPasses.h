@@ -51,6 +51,8 @@ inline void registerUpstreamPasses() {
   registerTosaToLinalgNamed();
   registerTosaToSCFPass();
   registerConvertControlFlowToLLVMPass();
+  registerConvertVectorToSCFPass();
+  registerConvertLinalgToLoopsPass();
 
   // TODO: These require GPU/ROCDL dialects - evaluate for Triton backend
   // registerArithToAMDGPUConversionPass();

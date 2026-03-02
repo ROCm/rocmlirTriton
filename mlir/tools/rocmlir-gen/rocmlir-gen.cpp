@@ -2485,6 +2485,8 @@ createCPUConvWithMLIR(ModuleOp module,
 
   auto func = func::FuncOp::create(
       b, loc, funcName, b.getFunctionType(funcArgTypes, {resultFlatType}));
+  // Mark as CPU verifier so buildHostLoweringPipeline can identify it
+  func->setAttr("rock.cpu_verifier", b.getUnitAttr());    
   module.push_back(func);
 
   Block *block = func.addEntryBlock();
@@ -3885,6 +3887,8 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   constexpr llvm::StringLiteral cpuKernName("host_naive_gemm");
   auto func = func::FuncOp::create(
       b, loc, cpuKernName, b.getFunctionType(flatArgTypes, {resultType}));
+  // Mark as CPU verifier so buildHostLoweringPipeline can identify it
+  func->setAttr("rock.cpu_verifier", b.getUnitAttr());
   module.push_back(func);
 
   Block *block = func.addEntryBlock();
