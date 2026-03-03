@@ -5229,9 +5229,10 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
 static FailureOr<std::optional<float>>
 getPrefillValue(size_t argIdx, ArrayRef<int32_t> outIndices, bool isSplitK,
                 const SmallVector<KernelIF, 8> &kernels) {
-  if (llvm::is_contained(outIndices, argIdx) && isSplitK)
-    return std::optional<float>(0.0f);
-
+  // Check for an explicit rock.prefill attribute first as it carries the
+  // correct identity element for the store method (0 for atomic_add,
+  // -inf for atomic_max, etc.) and must take precedence over the generic
+  // splitK zero-init default.
   for (const auto &kernel : kernels) {
     func::FuncOp func = kernel.func;
     if (argIdx >= func.getNumArguments())
@@ -5253,6 +5254,10 @@ getPrefillValue(size_t argIdx, ArrayRef<int32_t> outIndices, bool isSplitK,
                  << argIdx << "\n";
     return failure();
   }
+
+  // Fall back: splitK outputs without an explicit prefill need zero init.
+  if (llvm::is_contained(outIndices, argIdx) && isSplitK)
+    return std::optional<float>(0.0f);
 
   return std::optional<float>{};
 }
