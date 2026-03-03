@@ -78,7 +78,7 @@ def RockLowerReducePass : Pass<"rock-lower-reduce", "::mlir::func::FuncOp"> {
     Example (reduce sum on axis=1):
       Before:
         %fused : tensor<1x100x100xf16>
-        %reduced = rock.reduce sum %fused into %out {axis = 1}
+        %reduced = rock.reduce sum %fused {axis = 1}
         %result = rock.store %reduced to %dest by set
 
       After:
