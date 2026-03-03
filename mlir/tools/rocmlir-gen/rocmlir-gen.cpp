@@ -1657,9 +1657,10 @@ static LogicalResult populateTensorFillLogic(OpBuilder &b, Location loc,
   return success();
 }
 
-static LogicalResult populateRandomTensorFillLogic(
-    OpBuilder &b, Location loc, ModuleOp module, Type elemType, Value toFill,
-    int idx, std::optional<float> prefillValue) {
+static LogicalResult
+populateRandomTensorFillLogic(OpBuilder &b, Location loc, ModuleOp module,
+                              Type elemType, Value toFill, int idx,
+                              std::optional<float> prefillValue) {
   llvm::SmallDenseMap<short, Value> i16vals;
   auto getI16Val = [&](short v) {
     if (i16vals.find(v) == i16vals.end()) {
@@ -1708,20 +1709,17 @@ static LogicalResult populateRandomTensorFillLogic(
           if (elemType.isIntOrIndex()) {
             if (std::isinf(*prefillValue) || std::isnan(*prefillValue) ||
                 *prefillValue >
-                    static_cast<float>(
-                        std::numeric_limits<int64_t>::max()) ||
+                    static_cast<float>(std::numeric_limits<int64_t>::max()) ||
                 *prefillValue <
-                    static_cast<float>(
-                        std::numeric_limits<int64_t>::min())) {
+                    static_cast<float>(std::numeric_limits<int64_t>::min())) {
               llvm::report_fatal_error(
                   "prefill value cannot be cast to int64_t for "
                   "integer element type");
             }
-            randVal = rock::createConstantIntOp(
-                b, loc, elemType, elemType,
-                static_cast<int64_t>(*prefillValue));
-          }
-          else
+            randVal =
+                rock::createConstantIntOp(b, loc, elemType, elemType,
+                                          static_cast<int64_t>(*prefillValue));
+          } else
             randVal = rock::createConstantFloatOp(b, loc, elemType, elemType,
                                                   *prefillValue);
         } else {
@@ -5252,8 +5250,7 @@ getPrefillValue(size_t argIdx, ArrayRef<int32_t> outIndices, bool isSplitK,
     if (argIdx >= func.getNumArguments())
       continue;
 
-    auto initAttr =
-        func.getArgAttr(argIdx, rock::PrefillAttr::getMnemonic());
+    auto initAttr = func.getArgAttr(argIdx, rock::PrefillAttr::getMnemonic());
     if (!initAttr)
       continue;
 
