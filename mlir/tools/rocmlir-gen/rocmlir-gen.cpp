@@ -5256,8 +5256,7 @@ getPrefillValue(size_t argIdx, ArrayRef<int32_t> outIndices, bool isSplitK,
 
     // Verify the prefill attribute type matches the kernel argument's element
     // type (float attr for float args, integer attr for integer args).
-    Type argElemType =
-        getElementTypeOrSelf(func.getArgument(argIdx).getType());
+    Type argElemType = getElementTypeOrSelf(func.getArgument(argIdx).getType());
     if (isa<FloatAttr>(initAttr) && !isa<FloatType>(argElemType)) {
       llvm::errs() << "error: rock.prefill has float attribute but arg "
                    << argIdx << " has non-float element type " << argElemType
@@ -5286,9 +5285,8 @@ getPrefillValue(size_t argIdx, ArrayRef<int32_t> outIndices, bool isSplitK,
     // splitK, since splitK normally expects zero-init for atomic_add
     // accumulation.
     if (isSplitK && prefillVal != 0.0f) {
-      llvm::errs() << "warning: rock.prefill value " << prefillVal
-                   << " on arg " << argIdx
-                   << " is non-zero but isSplitK is true; "
+      llvm::errs() << "warning: rock.prefill value " << prefillVal << " on arg "
+                   << argIdx << " is non-zero but isSplitK is true; "
                    << "this may indicate incompatible store methods\n";
     }
 
