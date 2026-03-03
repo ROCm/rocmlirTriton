@@ -14,7 +14,7 @@ static bool testReduceFusible(MlirContext ctx) {
   // clang-format off
   const char *mlirModuleText = R"mlir(
     module {
-      func.func @mlir_convolution_reshape_reshape_broadcast_add_mul_reshape_reduce_max_reshape_mul_mul_reshape_reduce_max_reshape(%arg0: tensor<32768xf32>, %arg1: tensor<11520xf32>, %arg2: tensor<320xf32>, %arg3: tensor<64xf32> {rock.prefill = 0xFF800000 : f32}, %arg4: tensor<64xf32> {rock.prefill = 0xFF800000 : f32}, %arg5: tensor<2621440xf32>) -> (tensor<64xf32>, tensor<64xf32>, tensor<2621440xf32>) attributes {rock.arch = "gfx942:sramecc+:xnack-", rock.enable_splitk_for_tuning, rock.kernel = "mixr", rock.num_cu = 304 : i64, rock.num_chiplets = 8 : i64} {
+      func.func @mlir_convolution_reshape_reshape_broadcast_add_mul_reshape_reduce_sum_reshape_mul_mul_reshape_reduce_sum_reshape(%arg0: tensor<32768xf32>, %arg1: tensor<11520xf32>, %arg2: tensor<320xf32>, %arg3: tensor<64xf32> {rock.prefill = 0.000000e+00 : f32}, %arg4: tensor<64xf32> {rock.prefill = 0.000000e+00 : f32}, %arg5: tensor<2621440xf32>) -> (tensor<64xf32>, tensor<64xf32>, tensor<2621440xf32>) attributes {rock.arch = "gfx942:sramecc+:xnack-", rock.enable_splitk_for_tuning, rock.kernel = "mixr", rock.num_cu = 304 : i64, rock.num_chiplets = 8 : i64} {
         %cst = arith.constant dense<2.44140629E-5> : tensor<2x32x10x64x64xf32>
         %0 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3) -> (((d0 * 4 + d1) * 3 + d2) * 3 + d3)> by [<Unmerge{320, 4, 3, 3} ["exp0", "exp1", "exp2", "exp3"] at [0, 1, 2, 3] -> ["dim0"] at [0]>] bounds = [320, 4, 3, 3] -> [11520]> : tensor<11520xf32> to tensor<320x4x3x3xf32>
         %1 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3) -> (((d0 * 4 + d1) * 64 + d2) * 64 + d3)> by [<Unmerge{2, 4, 64, 64} ["exp0", "exp1", "exp2", "exp3"] at [0, 1, 2, 3] -> ["dim0"] at [0]>] bounds = [2, 4, 64, 64] -> [32768]> : tensor<32768xf32> to tensor<2x4x64x64xf32>
@@ -30,12 +30,12 @@ static bool testReduceFusible(MlirContext ctx) {
         %10 = rock.transform %fused_add by <affine_map<(d0) -> (d0 floordiv 1310720, (d0 mod 1310720) floordiv 40960, (d0 mod 40960) floordiv 4096, (d0 mod 4096) floordiv 64, d0 mod 64)> by [<Merge{2, 32, 10, 64, 64} ["dim0"] at [0] -> ["col0", "col1", "col2", "col3", "col4"] at [0, 1, 2, 3, 4]>] bounds = [2621440] -> [2, 32, 10, 64, 64]> : tensor<2x32x10x64x64xf32> to tensor<2621440xf32>
         %scaled = arith.mulf %fused_add, %cst : tensor<2x32x10x64x64xf32>
         %11 = rock.transform %scaled by <affine_map<(d0, d1, d2) -> (d0, d1, d2 floordiv 4096, (d2 mod 4096) floordiv 64, d2 mod 64)> by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [1]>, <Merge{10, 64, 64} ["dim2"] at [2] -> ["col2", "col3", "col4"] at [2, 3, 4]>] bounds = [2, 32, 40960] -> [2, 32, 10, 64, 64]> : tensor<2x32x10x64x64xf32> to tensor<2x32x40960xf32>
-        %reduced_0 = rock.reduce max %11 {axis = 2 : index} : tensor<2x32x40960xf32> -> tensor<2x32x1xf32>
+        %reduced_0 = rock.reduce sum %11 {axis = 2 : index} : tensor<2x32x40960xf32> -> tensor<2x32x1xf32>
         %12 = rock.transform %reduced_0 by <affine_map<(d0) -> (d0 floordiv 32, d0 mod 32, 0)> by [<Merge{2, 32, 1} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [64] -> [2, 32, 1]> : tensor<2x32x1xf32> to tensor<64xf32>
         %squared = arith.mulf %fused_add, %fused_add : tensor<2x32x10x64x64xf32>
         %squared_scaled = arith.mulf %squared, %cst : tensor<2x32x10x64x64xf32>
         %13 = rock.transform %squared_scaled by <affine_map<(d0, d1, d2) -> (d0, d1, d2 floordiv 4096, (d2 mod 4096) floordiv 64, d2 mod 64)> by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [1]>, <Merge{10, 64, 64} ["dim2"] at [2] -> ["col2", "col3", "col4"] at [2, 3, 4]>] bounds = [2, 32, 40960] -> [2, 32, 10, 64, 64]> : tensor<2x32x10x64x64xf32> to tensor<2x32x40960xf32>
-        %reduced_1 = rock.reduce max %13 {axis = 2 : index} : tensor<2x32x40960xf32> -> tensor<2x32x1xf32>
+        %reduced_1 = rock.reduce sum %13 {axis = 2 : index} : tensor<2x32x40960xf32> -> tensor<2x32x1xf32>
         %14 = rock.transform %reduced_1 by <affine_map<(d0) -> (d0 floordiv 32, d0 mod 32, 0)> by [<Merge{2, 32, 1} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [64] -> [2, 32, 1]> : tensor<2x32x1xf32> to tensor<64xf32>
         %out3 = rock.store %12 to %arg3 by set : tensor<64xf32> -> tensor<64xf32> to tensor<64xf32>
         %out4 = rock.store %14 to %arg4 by set : tensor<64xf32> -> tensor<64xf32> to tensor<64xf32>
@@ -56,7 +56,7 @@ static bool testReduceFusible(MlirContext ctx) {
   }
 
   // Create performance configuration string
-  std::string perfConfigStr = "v3:64,64,16,32,32,4,4,1,2,1,1";
+  std::string perfConfigStr = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0";
   MlirStringRef perfStr = mlirStringRefCreateFromCString(perfConfigStr.c_str());
 
   // Test whether the module is fusible
@@ -64,7 +64,7 @@ static bool testReduceFusible(MlirContext ctx) {
   // Clean up
   mlirModuleDestroy(moduleOp);
 
-  return !isFusible;
+  return isFusible;
 }
 int main(int argc, char *argv[]) {
   // Create MLIR context and register dialects
