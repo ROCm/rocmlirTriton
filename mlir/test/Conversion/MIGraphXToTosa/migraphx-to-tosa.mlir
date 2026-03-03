@@ -1,20 +1,40 @@
 // RUN: rocmlir-opt -split-input-file --migraphx-to-tosa %s | FileCheck %s
 
-// TODO(rocmlirTriton): 'tosa.conv2d' op expected input_height - 1 + pad_top + pad_bottom - (kernel_height - 1) * dilation_y to be wholly divisible by stride_y
-// module  {
-//   // DISABLED-CHECK-LABEL: func.func @ConvNoBias
-//   // DISABLED-CHECK-SAME: ([[arg0:%.+]]: tensor<200704xf32>) -> tensor<200704xf32>
-//   func.func @ConvNoBias(%arg0: !migraphx.shaped<1x64x56x56xf32, 200704x3136x56x1>) -> !migraphx.shaped<1x64x56x56xf32, 200704x3136x56x1> {
-//     // DISABLED-CHECK: [[inExp:%.+]] = tosa.reshape [[arg0]], %{{.*}} : (tensor<200704xf32>, !tosa.shape<4>) -> tensor<1x64x56x56xf32>
-//     %0 = migraphx.literal (dense<3.000000e+00> : tensor<64x64x1x1xf32>) : <1x64x56x56xf32, 200704x3136x56x1>
-//     // DISABLED-CHECK: [[trIn:%.+]] = tosa.transpose {{.*}}[[inExp]]{{.*}} : (tensor<1x64x56x56xf32>) -> tensor<1x56x56x64xf32>
-//     // DISABLED-CHECK: [[conv:%.+]] = tosa.conv2d {{.*}}[[trIn]]
-//     %1 = migraphx.convolution %arg0, %0 {dilation = [1, 1], group = 1 : i64, padding = [0, 0, 0, 0], padding_mode = 0 : i64, stride = [1, 1]} : <1x64x56x56xf32, 200704x3136x56x1>, <1x64x56x56xf32, 200704x3136x56x1> -> <1x64x56x56xf32, 200704x3136x56x1>
-//     // DISABLED-CHECK: [[trOut:%.+]] = tosa.transpose {{.*}}[[conv]]
-//     // DISABLED-CHECK: [[outFlat:%.+]] = tosa.reshape [[trOut]], %{{.*}} : (tensor<1x64x56x56xf32>, !tosa.shape<1>) -> tensor<200704xf32>
-//      return %1 : !migraphx.shaped<1x64x56x56xf32, 200704x3136x56x1>
-//   }
-// }
+module  {
+  // CHECK-LABEL: func.func @ConvNoBias
+  // CHECK-SAME: ([[arg0:%.+]]: tensor<200704xf32>) -> tensor<53824xf32>
+  func.func @ConvNoBias(%arg0: !migraphx.shaped<1x64x56x56xf32, 200704x3136x56x1>) -> !migraphx.shaped<1x64x29x29xf32, 53824x841x29x1> {
+    // CHECK: [[inExp:%.+]] = tosa.reshape [[arg0]], %{{.*}} : (tensor<200704xf32>, !tosa.shape<4>) -> tensor<1x64x56x56xf32>
+    %0 = migraphx.literal (dense<3.000000e+00> : tensor<64x64x1x1xf32>) : <64x64x1x1xf32, 64x1x1x1>
+    // CHECK: [[trIn:%.+]] = tosa.transpose {{.*}}[[inExp]]{{.*}} : (tensor<1x64x56x56xf32>) -> tensor<1x56x56x64xf32>
+    // CHECK-NOT: tosa.slice
+    // CHECK: [[conv:%.+]] = tosa.conv2d {{.*}}[[trIn]]
+    // CHECK-SAME: pad = array<i64: 1, 0, 1, 0>
+    // CHECK-SAME: stride = array<i64: 2, 2>
+    %1 = migraphx.convolution %arg0, %0 {dilation = [1, 1], group = 1 : i64, padding = [1, 1, 1, 1], padding_mode = 0 : i64, stride = [2, 2]} : <1x64x56x56xf32, 200704x3136x56x1>, <64x64x1x1xf32, 64x1x1x1> -> <1x64x29x29xf32, 53824x841x29x1>
+    // CHECK: [[trOut:%.+]] = tosa.transpose {{.*}}[[conv]]
+    // CHECK: [[outFlat:%.+]] = tosa.reshape [[trOut]], %{{.*}} : (tensor<1x64x29x29xf32>, !tosa.shape<1>) -> tensor<53824xf32>
+     return %1 : !migraphx.shaped<1x64x29x29xf32, 53824x841x29x1>
+  }
+}
+
+// -----
+
+// CHECK-LABEL: func.func @ConvNoBiasSlice
+// CHECK-SAME: ([[arg0:%.+]]: tensor<200704xf32>) -> tensor<50176xf32>
+func.func @ConvNoBiasSlice(%arg0: !migraphx.shaped<1x64x56x56xf32, 200704x3136x56x1>) -> !migraphx.shaped<1x64x28x28xf32, 50176x784x28x1> {
+  // CHECK: [[inExp:%.+]] = tosa.reshape [[arg0]], %{{.*}} : (tensor<200704xf32>, !tosa.shape<4>) -> tensor<1x64x56x56xf32>
+  %0 = migraphx.literal (dense<3.000000e+00> : tensor<64x64x1x1xf32>) : <64x64x1x1xf32, 64x1x1x1>
+  // CHECK: [[trIn:%.+]] = tosa.transpose {{.*}}[[inExp]]{{.*}} : (tensor<1x64x56x56xf32>) -> tensor<1x56x56x64xf32>
+  // CHECK: [[sliced:%.+]] = tosa.slice [[trIn]], %{{.*}}, %{{.*}} : (tensor<1x56x56x64xf32>, !tosa.shape<4>, !tosa.shape<4>) -> tensor<1x55x55x64xf32>
+  // CHECK: [[conv:%.+]] = tosa.conv2d {{.*}}[[sliced]]
+  // CHECK-SAME: pad = array<i64: 0, 0, 0, 0>
+  // CHECK-SAME: stride = array<i64: 2, 2>
+  %1 = migraphx.convolution %arg0, %0 {dilation = [1, 1], group = 1 : i64, padding = [0, 0, 0, 0], padding_mode = 0 : i64, stride = [2, 2]} : <1x64x56x56xf32, 200704x3136x56x1>, <64x64x1x1xf32, 64x1x1x1> -> <1x64x28x28xf32, 50176x784x28x1>
+  // CHECK: [[trOut:%.+]] = tosa.transpose {{.*}}[[conv]]
+  // CHECK: [[outFlat:%.+]] = tosa.reshape [[trOut]], %{{.*}} : (tensor<1x64x28x28xf32>, !tosa.shape<1>) -> tensor<50176xf32>
+    return %1 : !migraphx.shaped<1x64x28x28xf32, 50176x784x28x1>
+}
 
 // -----
 
