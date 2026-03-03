@@ -69,6 +69,33 @@ using namespace mlir::rock;
 
 namespace {
 
+constexpr const char *kPreSequence = R"mlir(
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
+    %1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %2 = transform.apply_registered_pass "canonicalize" to %1 : (!transform.any_op) -> !transform.any_op
+    transform.apply_cse to %2 : !transform.any_op
+    transform.yield 
+  }
+}
+)mlir";  
+
+constexpr const char *kPostSequence = R"mlir(
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
+    %1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %2 = transform.structured.match interface{LoopLikeInterface} in %1 : (!transform.any_op) -> !transform.any_op
+    transform.apply_licm to %2 : !transform.any_op
+    
+    %func = transform.structured.match ops{["func.func"]} in %1 : (!transform.any_op) -> !transform.any_op
+    %3 = transform.structured.hoist_redundant_vector_transfers %func : (!transform.any_op) -> !transform.any_op
+    %4 = transform.structured.hoist_redundant_vector_broadcasts %3 : (!transform.any_op) -> !transform.any_op
+    %5 = transform.apply_registered_pass "canonicalize" to %4 : (!transform.any_op) -> !transform.any_op
+    transform.yield 
+  }
+}
+)mlir";  
+
 /// Transform sequence for optimization (tiling) of CPU verifier functions.
 /// This sequence tiles the matmul and applies canonicalization.
 /// It ends before bufferization.
@@ -82,10 +109,23 @@ module attributes {transform.with_named_sequence} {
 
     %microkernel, %microkernel_loops:3 = transform.structured.tile_using_for %xxx tile_sizes [0, 8, 8, 1] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
 
+    // TODO: We will probably need padding and/or packing here.
+
     %1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
     %2 = transform.apply_registered_pass "canonicalize" to %1 : (!transform.any_op) -> !transform.any_op
     %3 = transform.apply_registered_pass "lower-affine" to %2 : (!transform.any_op) -> !transform.any_op
     transform.yield 
+  }
+}
+)mlir";
+
+constexpr const char *kVectorizationSequence = R"mlir(
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
+    %0 = transform.structured.match attributes {rock.matmul} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %1 = transform.get_parent_op %0 {IsolatedFromAbove} : (!transform.any_op) -> !transform.any_op
+    // %2 = transform.structured.vectorize_children_and_apply_patterns %1 {vectorize_nd_extract, vectorize_padding} : (!transform.any_op) -> !transform.any_op
+    transform.yield
   }
 }
 )mlir";
@@ -189,7 +229,10 @@ private:
 
   /// Lower a single CPU verifier function using the transform interpreter
   LogicalResult lowerSingleFunction(func::FuncOp func,
+                                    ModuleOp preModule,
                                     ModuleOp optimizationModule,
+                                    ModuleOp postModule,
+                                    ModuleOp vectorizationModule,
                                     ModuleOp loweringModule);
 
   /// Update call sites in the module to use memref arguments instead of tensors
@@ -395,7 +438,10 @@ void RockLowerCpuVerifierPass::updateCallSites(ModuleOp module,
 
 LogicalResult
 RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
+                                              ModuleOp preModule,
                                               ModuleOp optimizationModule,
+                                              ModuleOp postModule,
+                                              ModuleOp vectorizationModule,
                                               ModuleOp loweringModule) {
   MLIRContext *ctx = &getContext();
   Location loc = func.getLoc();
@@ -413,8 +459,18 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
   auto clonedFunc = cast<func::FuncOp>(clonedOp);
   tempModule->push_back(clonedFunc);
 
-  // Step 3: Apply the optimization sequence (tiling)
-  LLVM_DEBUG(llvm::dbgs() << "  Applying optimization sequence...\n");
+  // ===== Phase 1: Pre → Optimization → Post =====
+  LLVM_DEBUG(llvm::dbgs() << "  Phase 1: Optimization\n");
+
+  // Pre-sequence (canonicalize + cse)
+  LLVM_DEBUG(llvm::dbgs() << "    Applying pre sequence...\n");
+  dumpBeforeTransform(tempModule.get(), preModule, funcName, "pre_optimization");
+  if (failed(applyTransformSequence(tempModule.get(), preModule, "pre"))) {
+    return func.emitError("Pre transform failed before optimization");
+  }
+
+  // Optimization sequence (tiling)
+  LLVM_DEBUG(llvm::dbgs() << "    Applying optimization sequence...\n");
   dumpBeforeTransform(tempModule.get(), optimizationModule, funcName,
                       "optimization");
   if (failed(applyTransformSequence(tempModule.get(), optimizationModule,
@@ -422,18 +478,68 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
     return func.emitError("Optimization transform failed for function");
   }
 
-  // Step 3b: Unwrap any nested module structure created by the transform
-  // Some transforms may wrap the result in an additional module, which would
-  // cause subsequent transforms like one_shot_bufferize to not process the
-  // inner function
+  // Unwrap any nested module structure created by the transform
   unwrapNestedModule(tempModule, funcName);
 
-  // Step 4: Apply the lowering sequence (bufferization + LLVM lowering)
-  LLVM_DEBUG(llvm::dbgs() << "  Applying lowering sequence...\n");
+  // Post-sequence (tiling canonicalization + LICM + hoisting)
+  LLVM_DEBUG(llvm::dbgs() << "    Applying post sequence...\n");
+  dumpBeforeTransform(tempModule.get(), postModule, funcName, "post_optimization");
+  if (failed(applyTransformSequence(tempModule.get(), postModule, "post"))) {
+    return func.emitError("Post transform failed after optimization");
+  }
+
+  // ===== Phase 2: Pre → Vectorization → Post =====
+  LLVM_DEBUG(llvm::dbgs() << "  Phase 2: Vectorization\n");
+
+  // Pre-sequence
+  LLVM_DEBUG(llvm::dbgs() << "    Applying pre sequence...\n");
+  dumpBeforeTransform(tempModule.get(), preModule, funcName, "pre_vectorization");
+  if (failed(applyTransformSequence(tempModule.get(), preModule, "pre"))) {
+    return func.emitError("Pre transform failed before vectorization");
+  }
+
+  // Vectorization sequence
+  LLVM_DEBUG(llvm::dbgs() << "    Applying vectorization sequence...\n");
+  dumpBeforeTransform(tempModule.get(), vectorizationModule, funcName,
+                      "vectorization");
+  if (failed(applyTransformSequence(tempModule.get(), vectorizationModule,
+                                    "vectorization"))) {
+    return func.emitError("Vectorization transform failed for function");
+  }
+
+  // Unwrap any nested module structure
+  unwrapNestedModule(tempModule, funcName);
+
+  // Post-sequence
+  LLVM_DEBUG(llvm::dbgs() << "    Applying post sequence...\n");
+  dumpBeforeTransform(tempModule.get(), postModule, funcName, "post_vectorization");
+  if (failed(applyTransformSequence(tempModule.get(), postModule, "post"))) {
+    return func.emitError("Post transform failed after vectorization");
+  }
+
+  // ===== Phase 3: Pre → Lowering → Post =====
+  LLVM_DEBUG(llvm::dbgs() << "  Phase 3: Lowering\n");
+
+  // Pre-sequence
+  LLVM_DEBUG(llvm::dbgs() << "    Applying pre sequence...\n");
+  dumpBeforeTransform(tempModule.get(), preModule, funcName, "pre_lowering");
+  if (failed(applyTransformSequence(tempModule.get(), preModule, "pre"))) {
+    return func.emitError("Pre transform failed before lowering");
+  }
+
+  // Lowering sequence (bufferization + LLVM lowering)
+  LLVM_DEBUG(llvm::dbgs() << "    Applying lowering sequence...\n");
   dumpBeforeTransform(tempModule.get(), loweringModule, funcName, "lowering");
   if (failed(applyTransformSequence(tempModule.get(), loweringModule,
                                     "lowering"))) {
     return func.emitError("Lowering transform failed for function");
+  }
+
+  // Post-sequence after lowering
+  LLVM_DEBUG(llvm::dbgs() << "    Applying post sequence...\n");
+  dumpBeforeTransform(tempModule.get(), postModule, funcName, "post_lowering");
+  if (failed(applyTransformSequence(tempModule.get(), postModule, "post"))) {
+    return func.emitError("Post transform failed after lowering");
   }
 
   // Step 5: Get the lowered function from the temporary module
@@ -520,8 +626,28 @@ void RockLowerCpuVerifierPass::runOnOperation() {
   LLVM_DEBUG(llvm::dbgs() << "Found " << cpuVerifierFuncs.size()
                           << " CPU verifier function(s)\n");
 
-  // Parse the optimization transform module (tiling)
+  // Parse all transform modules
   // The transform dialect extensions are registered in getDependentDialects()
+
+  // Pre-sequence (canonicalize + cse)
+  OwningOpRef<ModuleOp> preModule =
+      parseSourceString<ModuleOp>(kPreSequence, ctx);
+  if (!preModule) {
+    emitError(UnknownLoc::get(ctx))
+        << "Failed to parse pre transform sequence for CPU verifier";
+    return signalPassFailure();
+  }
+
+  // Post-sequence (tiling canonicalization + LICM + hoisting)
+  OwningOpRef<ModuleOp> postModule =
+      parseSourceString<ModuleOp>(kPostSequence, ctx);
+  if (!postModule) {
+    emitError(UnknownLoc::get(ctx))
+        << "Failed to parse post transform sequence for CPU verifier";
+    return signalPassFailure();
+  }
+
+  // Optimization transform module (tiling)
   OwningOpRef<ModuleOp> optimizationModule =
       parseSourceString<ModuleOp>(kOptimizationSequence, ctx);
   if (!optimizationModule) {
@@ -530,7 +656,16 @@ void RockLowerCpuVerifierPass::runOnOperation() {
     return signalPassFailure();
   }
 
-  // Parse the lowering transform module (bufferization + LLVM)
+  // Vectorization transform module
+  OwningOpRef<ModuleOp> vectorizationModule =
+      parseSourceString<ModuleOp>(kVectorizationSequence, ctx);
+  if (!vectorizationModule) {
+    emitError(UnknownLoc::get(ctx))
+        << "Failed to parse vectorization transform sequence for CPU verifier";
+    return signalPassFailure();
+  }
+
+  // Lowering transform module (bufferization + LLVM)
   OwningOpRef<ModuleOp> loweringModule =
       parseSourceString<ModuleOp>(kLoweringSequence, ctx);
   if (!loweringModule) {
@@ -540,8 +675,11 @@ void RockLowerCpuVerifierPass::runOnOperation() {
   }
 
   // Lower each function in isolation using the transform interpreter
+  // Pipeline: Pre → Optimization → Post → Pre → Vectorization → Post → Pre → Lowering → Post
   for (func::FuncOp func : cpuVerifierFuncs) {
-    if (failed(lowerSingleFunction(func, optimizationModule.get(),
+    if (failed(lowerSingleFunction(func, preModule.get(),
+                                   optimizationModule.get(), postModule.get(),
+                                   vectorizationModule.get(),
                                    loweringModule.get()))) {
       return signalPassFailure();
     }
