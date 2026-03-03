@@ -5254,16 +5254,45 @@ getPrefillValue(size_t argIdx, ArrayRef<int32_t> outIndices, bool isSplitK,
     if (!initAttr)
       continue;
 
+    // Verify the prefill attribute type matches the kernel argument's element
+    // type (float attr for float args, integer attr for integer args).
+    Type argElemType =
+        getElementTypeOrSelf(func.getArgument(argIdx).getType());
+    if (isa<FloatAttr>(initAttr) && !isa<FloatType>(argElemType)) {
+      llvm::errs() << "error: rock.prefill has float attribute but arg "
+                   << argIdx << " has non-float element type " << argElemType
+                   << "\n";
+      return failure();
+    }
+    if (isa<IntegerAttr>(initAttr) && !isa<IntegerType>(argElemType)) {
+      llvm::errs() << "error: rock.prefill has integer attribute but arg "
+                   << argIdx << " has non-integer element type " << argElemType
+                   << "\n";
+      return failure();
+    }
+
+    float prefillVal;
     if (auto floatAttr = dyn_cast<FloatAttr>(initAttr))
-      return std::optional<float>(
-          static_cast<float>(floatAttr.getValueAsDouble()));
+      prefillVal = static_cast<float>(floatAttr.getValueAsDouble());
+    else if (auto intAttr = dyn_cast<IntegerAttr>(initAttr))
+      prefillVal = static_cast<float>(intAttr.getInt());
+    else {
+      llvm::errs() << "error: unsupported rock.prefill attribute type on arg "
+                   << argIdx << "\n";
+      return failure();
+    }
 
-    if (auto intAttr = dyn_cast<IntegerAttr>(initAttr))
-      return std::optional<float>(static_cast<float>(intAttr.getInt()));
+    // Warn if a non-zero prefill (e.g. -inf for atomic_max) is combined with
+    // splitK, since splitK normally expects zero-init for atomic_add
+    // accumulation.
+    if (isSplitK && prefillVal != 0.0f) {
+      llvm::errs() << "warning: rock.prefill value " << prefillVal
+                   << " on arg " << argIdx
+                   << " is non-zero but isSplitK is true; "
+                   << "this may indicate incompatible store methods\n";
+    }
 
-    llvm::errs() << "error: unsupported rock.prefill attribute type on arg "
-                 << argIdx << "\n";
-    return failure();
+    return std::optional<float>(prefillVal);
   }
 
   // Fall back: splitK outputs without an explicit prefill need zero init.
