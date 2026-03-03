@@ -81,31 +81,29 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     case ReduceMethod::Max:
       storeMethod = StoreMethod::AtomicMax;
       break;
+    default:
+      return reduceOp.emitError("unexpected reduce method");
     }
 
     // Find the rock.store that directly consumes the reduce result.
     Value reduceResult = reduceOp.getResult();
-    SmallVector<StoreOp> storeOps;
-    for (OpOperand &use : reduceResult.getUses()) {
-      if (auto store = dyn_cast<StoreOp>(use.getOwner())) {
-        if (use.getOperandNumber() == 0) {
-          storeOps.push_back(store);
-        }
-      } else {
-      return reduceOp.emitError(
-          "rock.reduce result can be used by rock.store only");
-      }
-    }
+    FailureOr<SetVector<StoreOp>> maybeStores =
+        rock::traceRootOutputToStoreOps(reduceResult);
 
-    if (storeOps.empty())
+    if (failed(maybeStores)) {
+      return reduceOp.emitError("cannot trace to rock::StoreOp");
+    }
+    SetVector<StoreOp> &stores = maybeStores.value();
+
+    if (stores.empty())
       return reduceOp.emitError(
           "rock.reduce result does not feed into a rock.store");
 
-    if (storeOps.size() != 1)
+    if (stores.size() != 1)
       return reduceOp.emitError(
           "Expected exactly one rock.store to consume the reduce result");
 
-    StoreOp storeOp = storeOps[0];
+    StoreOp storeOp = stores[0];
 
     // Build a Broadcast transform on the store destination.
     // The destination has the reduced shape (axis dim = 1).

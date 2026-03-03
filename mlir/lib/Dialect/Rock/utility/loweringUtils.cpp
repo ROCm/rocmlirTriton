@@ -781,9 +781,8 @@ LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
     return storeOp->emitError("expecting float or int element type");
   }
 
-  auto attrName = PrefillAttr::getMnemonic();
-  func.setArgAttrs(destArg->getArgNumber(),
-                   builder.getNamedAttr(attrName, prefillValue));
+  func.setArgAttr(destArg->getArgNumber(), PrefillAttr::getMnemonic(),
+                  prefillValue);
   return success();
 }
 
