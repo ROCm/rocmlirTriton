@@ -72,6 +72,8 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cmath>
+#include <limits>
 #include <tuple>
 #include <unordered_map>
 
@@ -1703,10 +1705,22 @@ static LogicalResult populateRandomTensorFillLogic(
        maxConst](OpBuilder &b, Location loc, ValueRange ivs) {
         Value randVal;
         if (prefillValue.has_value()) {
-          if (elemType.isIntOrIndex())
+          if (elemType.isIntOrIndex()) {
+            if (std::isinf(*prefillValue) || std::isnan(*prefillValue) ||
+                *prefillValue >
+                    static_cast<float>(
+                        std::numeric_limits<int64_t>::max()) ||
+                *prefillValue <
+                    static_cast<float>(
+                        std::numeric_limits<int64_t>::min())) {
+              llvm::report_fatal_error(
+                  "prefill value cannot be cast to int64_t for "
+                  "integer element type");
+            }
             randVal = rock::createConstantIntOp(
                 b, loc, elemType, elemType,
                 static_cast<int64_t>(*prefillValue));
+          }
           else
             randVal = rock::createConstantFloatOp(b, loc, elemType, elemType,
                                                   *prefillValue);
