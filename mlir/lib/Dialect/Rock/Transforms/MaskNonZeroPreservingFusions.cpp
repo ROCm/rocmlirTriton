@@ -44,6 +44,7 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -244,7 +245,7 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
   // zero. Record the mask contribution for the rest.
   // Result: leafMasks[leaf] = set of non-trivial masks from contributing loads
   //         that need re-masking.
-  DenseMap<Value, DenseSet<Value>> leafMasks;
+  DenseMap<Value, SetVector<Value>> leafMasks;
   DenseSet<Value> zeroPreserving;
   OpBuilder builder(funcOp.getContext());
 
