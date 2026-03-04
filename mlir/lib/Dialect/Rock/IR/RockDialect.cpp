@@ -94,33 +94,6 @@ struct rank : rank<N - 1> {};
 template <>
 struct rank<0> {};
 
-static void
-getConvEffects(ConvOp &op,
-               SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &op.getFilterMutable(),
-                       transform::TransformMappingResource::get());
-  effects.emplace_back(MemoryEffects::Read::get(), &op.getInputMutable(),
-                       transform::TransformMappingResource::get());
-}
-
-static void
-getConvEffects(ConvBwdDataOp &op,
-               SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &op.getFilterMutable(),
-                       transform::TransformMappingResource::get());
-  effects.emplace_back(MemoryEffects::Read::get(), &op.getGradientMutable(),
-                       transform::TransformMappingResource::get());
-}
-
-static void
-getConvEffects(ConvBwdWeightOp &op,
-               SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &op.getInputMutable(),
-                       transform::TransformMappingResource::get());
-  effects.emplace_back(MemoryEffects::Read::get(), &op.getGradientMutable(),
-                       transform::TransformMappingResource::get());
-}
-
 template <typename OpType>
 static void
 getCommonEffects(OpType &op,
