@@ -740,12 +740,11 @@ def Rock_TransformsToPtrOp
 }
 
 // blockwise_reduction
-def Rock_BlockwiseReduceOp:
-    Rock_Op<"blockwise_reduce">,
-    Arguments<(ins AnyRankedTensor:$input,
-                   IndexAttr:$axis,
-                   ReduceMethodAttr:$reduceMethod
-                   )>,
+def Rock_BlockwiseReduceOp
+    : Rock_Op<"blockwise_reduce">,
+      AllElementTypesMatch<["input", "result"]>,
+      Arguments<(ins AnyRankedTensor:$input, IndexAttr:$axis,
+          ReduceMethodAttr:$reduceMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Blockwise reduce operation";
   let description = [{
