@@ -682,7 +682,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
   // 2. Set up compilation options (shared across all threads)
   rock::KernelOptions compilationKernOpts;
-  compilationKernOpts.tuningFallback = false;
 
   RocmDeviceName deviceName;
   StringRef archName =

@@ -17,12 +17,23 @@ using namespace mlir::rock;
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
 #undef GemmGemm_DEFINITIONS_GEN
 
+StringAttr PopulateParamsGemmGemm::obtainTuningParameters(
+    OpBuilder &b, RockGemmGemmWrapperInterface op) {
+  // default perfConfig
+  StringAttr perfConfig = b.getStringAttr("attn:v1:32,32,32,1,1,4,0,1,1,0,0");
+  if (StringAttr mayBePerfConfig =
+          dyn_cast_or_null<StringAttr>(op->getAttr("perf_config"))) {
+    perfConfig = mayBePerfConfig;
+  }
+  return perfConfig;
+}
+
 std::vector<GemmGemmParamsAttr>
 PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
                                             RockGemmGemmWrapperInterface op) {
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
       rock::getArchValue(op), op.getKernelType(),
-      cast<MemRefType>(op.getAType()).getElementType());
+      cast<ShapedType>(op.getAType()).getElementType());
   return deserializePerfConfigs(b, op, perfConfigs);
 }
 

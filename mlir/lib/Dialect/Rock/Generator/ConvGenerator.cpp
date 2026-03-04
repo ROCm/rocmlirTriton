@@ -357,10 +357,10 @@ LogicalResult ConvGenerator::needExtraPadBwdWeight(OpBuilder &builder,
                           /*numCU=*/getNumCU()};
 
   auto populateParamsPtr = std::make_unique<PopulateParams>();
-  GemmParamsAttr validParams;
-  auto res = populateParamsPtr->obtainTuningParameters(
-      builder, info, config.perfConfig, validParams);
-  if (succeeded(res)) {
+  auto perfConfigAttr = populateParamsPtr->obtainTuningParameters(
+      builder, info, config.perfConfig);
+  GemmParamsAttr validParams = GemmParamsAttr::get(perfConfigAttr);
+  if (validParams) {
     needExtraPad = (populateParamsPtr->calculatePaddingAmount(
                         validParams, gemmSize) != 0);
     return success();

@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
+#include "mlir/IR/Attributes.h"
 
 namespace mlir {
 namespace rock {
@@ -28,6 +29,9 @@ public:
   static FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
   getGemmParams(OpBuilder &b, RockGemmGemmWrapperInterface op,
                      GemmGemmParamsAttr params);
+
+  static StringAttr obtainTuningParameters(OpBuilder &b,
+                                           RockGemmGemmWrapperInterface op);
 
 protected:
   static GemmGemmParamsAttr

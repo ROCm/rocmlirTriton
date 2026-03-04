@@ -184,51 +184,44 @@ PopulateParamsAccel::couldBePerformant(const PopulateParamsInfo &info,
   return specificCouldBePerformant(params, info.gemmAType, info.gemmBType);
 }
 
-LogicalResult PopulateParamsAccel::obtainTuningParameters(
-    OpBuilder &b, const PopulateParamsInfo &info, const StringRef perfConfig,
-    GemmParamsAttr &validParams) {
+StringAttr PopulateParamsAccel::obtainTuningParameters(
+    OpBuilder &b, const PopulateParamsInfo &info, const StringRef perfConfig) {
 
   if (!perfConfig.empty()) {
     // Under two scenarios can we receive a perfConfig:
     // 1. This is tuning mode
     // 2. This is running mode and we have succeeded with a perfdb load
     auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
-    auto parsedParams = GemmParamsAttr::get(perfConfigAttr);
-    if (parsedParams) {
-      validParams = parsedParams;
-      LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
-      return success();
-    }
-    // Signal the client if perfConfig is passed in but is invalid
-    LLVM_DEBUG(llvm::dbgs() << "obtainTuningParameters: Invalid perf config: "
-                            << perfConfig << "\n");
-    return failure();
+    return perfConfigAttr;
   }
 
   auto paramSets = getTuningParameters(b, info.kernelType, info.gemmAType,
                                        info.gemmBType, info.arch);
 
   auto orderedParams = orderParams(paramSets, info.gemmSize);
-  if (orderedParams.empty()) {
-    return failure();
-  }
+  if (orderedParams.empty())
+    llvm_unreachable("Quick tuning list is empty!");
 
-  validParams = orderedParams.front();
+  GemmParamsAttr validParams = orderedParams.front();
   LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
-  return success();
+  SmallVector<char, 64> perfConfigBuf;
+  validParams.getPerfConfigStr(perfConfigBuf);
+  auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfigBuf);
+
+  return perfConfigAttr;
 }
 
-LogicalResult PopulateParamsAccel::obtainTuningParameters(
-    OpBuilder &b, RockGemmWrapperInterface op, const StringRef perfConfig,
-    GemmParamsAttr &validParams) {
+StringAttr
+PopulateParamsAccel::obtainTuningParameters(OpBuilder &b,
+                                            RockGemmWrapperInterface op) {
   PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
-  auto res = obtainTuningParameters(b, info, perfConfig, validParams);
-  if (failed(res)) {
-    LLVM_DEBUG(llvm::dbgs() << "Couldn't pick heuristic values for ");
-    LLVM_DEBUG(op->print(llvm::dbgs()));
-    LLVM_DEBUG(llvm::dbgs() << "\n");
+
+  StringRef perfConfig;
+  if (auto perfConfigAttr =
+          op->template getAttrOfType<StringAttr>("perf_config")) {
+    perfConfig = perfConfigAttr.getValue();
   }
-  return res;
+  return obtainTuningParameters(b, info, perfConfig);
 }
 
 std::vector<GemmParamsAttr>
