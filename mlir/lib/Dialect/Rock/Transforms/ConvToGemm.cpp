@@ -317,8 +317,8 @@ static LogicalResult makeToLayoutLikeFromLayoutAlong(
 
 // Build a mapping from input layout dimension names to filter layout
 // dimension names, used for layout regularization.
-static llvm::StringMap<StringAttr>
-buildInputToFilterMapping(PatternRewriter &b, int rank) {
+static llvm::StringMap<StringAttr> buildInputToFilterMapping(PatternRewriter &b,
+                                                             int rank) {
   llvm::StringMap<StringAttr> mapping = {{"ci", b.getStringAttr("c")},
                                          {"hi", b.getStringAttr("y")},
                                          {"wi", b.getStringAttr("x")}};
@@ -330,8 +330,8 @@ buildInputToFilterMapping(PatternRewriter &b, int rank) {
 
 // Build a mapping from input layout dimension names to output layout
 // dimension names, used for layout regularization.
-static llvm::StringMap<StringAttr>
-buildInputToOutputMapping(PatternRewriter &b, int rank) {
+static llvm::StringMap<StringAttr> buildInputToOutputMapping(PatternRewriter &b,
+                                                             int rank) {
   llvm::StringMap<StringAttr> mapping = {{"ni", b.getStringAttr("no")},
                                          {"hi", b.getStringAttr("ho")},
                                          {"wi", b.getStringAttr("wo")}};
@@ -347,10 +347,11 @@ buildInputToOutputMapping(PatternRewriter &b, int rank) {
 // order. If reordering is needed, creates a PassThrough transform and
 // updates `names` in-place to reflect the new ordering.
 // Returns the (possibly transformed) value.
-static Value regularizeDestLayout(
-    PatternRewriter &b, Location loc, ArrayAttr fromLayout, Value destValue,
-    ArrayAttr toLayout, const llvm::StringMap<StringAttr> &mapping,
-    SmallVectorImpl<StringRef> &names) {
+static Value regularizeDestLayout(PatternRewriter &b, Location loc,
+                                  ArrayAttr fromLayout, Value destValue,
+                                  ArrayAttr toLayout,
+                                  const llvm::StringMap<StringAttr> &mapping,
+                                  SmallVectorImpl<StringRef> &names) {
   // Determine expected order of mapped dimensions.
   SmallVector<StringAttr> expectedOrder;
   for (StringRef fromName : fromLayout.getAsValueRange<StringAttr>()) {
@@ -565,8 +566,7 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
     addKBlockWrap.passThrough(throughDims);
 
     TransformMapAttr addKBlockTransformAttr = addKBlockTransform.get();
-    Value filterTensorInUse =
-        (hasWorkspace) ? op.getWorkspace() : filterDest;
+    Value filterTensorInUse = (hasWorkspace) ? op.getWorkspace() : filterDest;
     Value withKBlock = rock::TransformOp::create(b, loc, filterTensorInUse,
                                                  addKBlockTransformAttr);
 
@@ -743,7 +743,8 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
   ShapedType filterType = op.getFilter().getType();
   ArrayRef<int64_t> filterShape = filterType.getShape();
 
-  // Get shape of result tensor (gradient w.r.t. input, same shape as fwd input).
+  // Get shape of result tensor (gradient w.r.t. input, same shape as fwd
+  // input).
   ShapedType resultType = cast<ShapedType>(op.getResult().getType());
   ArrayRef<int64_t> resultShape = resultType.getShape();
 
@@ -1210,7 +1211,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       }
     }
 
-    // For BwdWeight, the filter value is the StoreOp dest (filter is the result)
+    // For BwdWeight, the filter value is the StoreOp dest (filter is the
+    // result)
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>)
       filterValue = destBuffer;
 
@@ -1244,9 +1246,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       auto mapping = buildInputToFilterMapping(b, rank);
       destBuffer = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
-          destBuffer,
-          op->template getAttrOfType<ArrayAttr>("filter_layout"), mapping,
-          filterNames);
+          destBuffer, op->template getAttrOfType<ArrayAttr>("filter_layout"),
+          mapping, filterNames);
       filterValue = destBuffer;
       filterShape = cast<ShapedType>(filterValue.getType()).getShape();
     } else {
@@ -1254,9 +1255,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       auto mapping = buildInputToOutputMapping(b, rank);
       destBuffer = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
-          destBuffer,
-          op->template getAttrOfType<ArrayAttr>("output_layout"), mapping,
-          outputNames);
+          destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
+          mapping, outputNames);
     }
   }
 
@@ -1417,7 +1417,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   if constexpr (notConvGemm) {
     // Determine the output tensor value.
     // For ConvOp: the output is the GEMM C matrix dest (from StoreOp dest).
-    // For BwdWeight: the output is the gradient operand (a computational input).
+    // For BwdWeight: the output is the gradient operand (a computational
+    // input).
     Value outputValue;
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>)
       outputValue = op.getGradient();
@@ -1458,8 +1459,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     }
 
     TransformMapAttr outputTransformAttr = outputTransform.get();
-    gemmOutput =
-        TransformOp::create(b, loc, outputValue, outputTransformAttr);
+    gemmOutput = TransformOp::create(b, loc, outputValue, outputTransformAttr);
   }
 
   return std::make_tuple(gemmFilter, gemmInput, gemmOutput);

@@ -204,10 +204,9 @@ static ConvFields commonConv(PatternRewriter &rw, Operation *op, Value input,
         expandedShape.push_back(shape[i]);
       }
     }
-    res.outputLayout =
-        (Twine(res.outputLayout.substr(0, kDim)) + "g" +
-         res.outputLayout.substr(kDim))
-            .str();
+    res.outputLayout = (Twine(res.outputLayout.substr(0, kDim)) + "g" +
+                        res.outputLayout.substr(kDim))
+                           .str();
     res.expandedOutputType =
         RankedTensorType::get(expandedShape, outputType.getElementType());
   }
@@ -262,14 +261,12 @@ static void addConvAttributes(PatternRewriter &rw, Operation *cop,
 
 static FailureOr<rock::RockConvInterface>
 makeRockConv(ConversionPatternRewriter &rw, Operation *op, Value input,
-             Value filter, RankedTensorType outputType,
-             DenseI64ArrayAttr pad, DenseI64ArrayAttr stride,
-             DenseI64ArrayAttr dilation, int64_t group,
-             std::optional<std::string> convBackwardKind) {
+             Value filter, RankedTensorType outputType, DenseI64ArrayAttr pad,
+             DenseI64ArrayAttr stride, DenseI64ArrayAttr dilation,
+             int64_t group, std::optional<std::string> convBackwardKind) {
   Location loc = op->getLoc();
-  ConvFields convFields =
-      commonConv(rw, op, input, filter, outputType, pad, stride, dilation,
-                 group);
+  ConvFields convFields = commonConv(rw, op, input, filter, outputType, pad,
+                                     stride, dilation, group);
 
   Operation *cop = nullptr;
   if (convBackwardKind.has_value() &&
@@ -287,10 +284,10 @@ makeRockConv(ConversionPatternRewriter &rw, Operation *op, Value input,
     assert((!convBackwardKind.has_value() ||
             convBackwardKind.value() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT) &&
            "bwd_weight currently not implemented");
-    cop = rock::ConvOp::create(
-        rw, loc, convFields.expandedOutputType, convFields.filterExp,
-        convFields.inputExp, convFields.pad,
-        convFields.stride, convFields.dilation, /*params=*/nullptr);
+    cop = rock::ConvOp::create(rw, loc, convFields.expandedOutputType,
+                               convFields.filterExp, convFields.inputExp,
+                               convFields.pad, convFields.stride,
+                               convFields.dilation, /*params=*/nullptr);
   }
 
   addConvAttributes(rw, cop, convFields);
@@ -752,9 +749,9 @@ public:
           "TosaToRock lowering support for bwd_weight not supported");
     }
 
-    FailureOr<rock::RockConvInterface> rockConv = makeRockConv(
-        rw, op, input, filter, outputType, padAttr, strideAttr, dilationAttr,
-        group, ROCK_CUSTOMOP_CONV_BWD_DATA);
+    FailureOr<rock::RockConvInterface> rockConv =
+        makeRockConv(rw, op, input, filter, outputType, padAttr, strideAttr,
+                     dilationAttr, group, ROCK_CUSTOMOP_CONV_BWD_DATA);
 
     if (failed(rockConv))
       return failure();
@@ -1495,7 +1492,7 @@ struct ConvElementwiseGemmRewritePattern
     Location loc = op.getLoc();
     auto outputType = cast<RankedTensorType>(op.getType());
     Value output = bufferization::AllocTensorOp::create(
-      rewriter, loc, outputType, ValueRange{});
+        rewriter, loc, outputType, ValueRange{});
 
     // This is guaranteed by the matcher
     tosa::Conv2DOp firstConv =
@@ -1507,11 +1504,10 @@ struct ConvElementwiseGemmRewritePattern
     int64_t group = 1;
     if (auto attr = op->template getAttrOfType<IntegerAttr>("group"))
       group = attr.getInt(); // Use op.getGroup() when all OpT have it.
-    ConvFields convFields =
-        commonConv(rewriter, op, firstConv.getInput(), firstConv.getWeight(),
-                   /*outputType=*/RankedTensorType(), firstConv.getPadAttr(),
-                   firstConv.getStrideAttr(), firstConv.getDilationAttr(),
-                   group);
+    ConvFields convFields = commonConv(
+        rewriter, op, firstConv.getInput(), firstConv.getWeight(),
+        /*outputType=*/RankedTensorType(), firstConv.getPadAttr(),
+        firstConv.getStrideAttr(), firstConv.getDilationAttr(), group);
     auto firstGemmBlockIndex = elementwiseRegionFinder.getFirstGemmBlockIndex();
 
     if (failed(setSplitKAttrs(op, rewriter)))

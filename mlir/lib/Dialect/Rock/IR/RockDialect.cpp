@@ -511,7 +511,8 @@ ConvolutionDims ConvolutionDims::fromOp(Operation *op, bool enableOutput) {
   }
   ArrayRef<int64_t> filterShape = filterType.getShape();
   ArrayRef<int64_t> inputShape = inputType.getShape();
-  ArrayRef<int64_t> outputShape = enableOutput ? outputType.getShape() : ArrayRef<int64_t>{};
+  ArrayRef<int64_t> outputShape =
+      enableOutput ? outputType.getShape() : ArrayRef<int64_t>{};
 
   int64_t y, x, z, ho, wo, dout, hi, wi, di, k, c, n, g;
   y = x = z = ho = wo = dout = hi = wi = di = k = c = n = g = 0;
@@ -661,7 +662,9 @@ Type ConvBwdWeightOp::getBType() {
 
 Type ConvOp::getCType() { return getResult().getType().getElementType(); }
 
-Type ConvBwdDataOp::getCType() { return getResult().getType().getElementType(); }
+Type ConvBwdDataOp::getCType() {
+  return getResult().getType().getElementType();
+}
 
 Type ConvBwdWeightOp::getCType() {
   return getResult().getType().getElementType();

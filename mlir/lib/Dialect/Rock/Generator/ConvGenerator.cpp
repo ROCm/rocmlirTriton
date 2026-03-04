@@ -901,8 +901,8 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   case ConvOpType::Fwd: {
     Type resultType = logicalFuncArgTypes[2];
     SmallVector<Value, 2> convArgs = {args[0], args[1]};
-    auto convOp = ConvOp::create(builder, builder.getUnknownLoc(),
-                                 resultType, convArgs, attributes);
+    auto convOp = ConvOp::create(builder, builder.getUnknownLoc(), resultType,
+                                 convArgs, attributes);
     convResult = convOp.getResult();
     storeDest = args[2];
   } break;

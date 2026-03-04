@@ -79,10 +79,9 @@ defvar GemmOutputTypes = [F32, F16, BF16, I32, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M
 defvar GemmAccumulatorTypes = [F32, F16, BF16, I32];
 
 def Rock_ConvOp : Rock_ConvOpBase<"conv"> {
-  let arguments = !con(
-      (ins TensorOrMemRefOf<GemmInputTypes>:$filter,
-           TensorOrMemRefOf<GemmInputTypes>:$input),
-      commonConvAttrs);
+  let arguments = !con((ins TensorOrMemRefOf<GemmInputTypes>:$filter,
+                           TensorOrMemRefOf<GemmInputTypes>:$input),
+                       commonConvAttrs);
   let summary = "N-D convolution forward";
   let description = [{
     The `rock.conv` op computes N-D forward convolution.
@@ -96,10 +95,9 @@ def Rock_ConvOp : Rock_ConvOpBase<"conv"> {
 
 def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
 {
-  let arguments = !con(
-      (ins TensorOrMemRefOf<GemmInputTypes>:$filter,
-           TensorOrMemRefOf<GemmInputTypes>:$gradient),
-      commonConvAttrs);
+  let arguments = !con((ins TensorOrMemRefOf<GemmInputTypes>:$filter,
+                           TensorOrMemRefOf<GemmInputTypes>:$gradient),
+                       commonConvAttrs);
   let summary = "N-D convolution backward data";
   let description = [{
     The `rock.conv_bwd_data` op computes N-D convolution backward data.
@@ -120,12 +118,11 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
 
 def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
 {
-  let arguments = !con(
-      (ins TensorOrMemRefOf<GemmInputTypes>:$input,
-           TensorOrMemRefOf<GemmInputTypes>:$gradient),
-      commonConvAttrs,
-      (ins Optional<TensorOrMemRefOf<[F32]>>:$workspace,
-           OptionalAttr<IndexAttr>:$kBlocks));
+  let arguments = !con((ins TensorOrMemRefOf<GemmInputTypes>:$input,
+                           TensorOrMemRefOf<GemmInputTypes>:$gradient),
+                       commonConvAttrs,
+                       (ins Optional<TensorOrMemRefOf<[F32]>>:$workspace,
+                           OptionalAttr<IndexAttr>:$kBlocks));
   let summary = "N-D convolution backward weight";
   let description = [{
     The `rock.conv_bwd_weight` op computes N-D convolution backward weight.

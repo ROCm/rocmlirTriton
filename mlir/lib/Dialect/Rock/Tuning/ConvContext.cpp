@@ -93,17 +93,15 @@ ConvolutionContext mlir::rock::populateConvContext(Operation *op) {
       extractFromIntegerArrayAttr<int64_t>(convOp.getDilations());
   auto paddingVal = extractFromIntegerArrayAttr<int64_t>(convOp.getPadding());
 
-  populateDimIndexAndSize(
-      filterLayoutAttr,
-      convOp.getConvFilter().getType().getShape(),
-      dimIndexAndSize);
-  populateDimIndexAndSize(
-      inputLayoutAttr, convOp.getConvInput().getType().getShape(),
-      dimIndexAndSize);
-  populateDimIndexAndSize(
-      outputLayoutAttr,
-      convOp.getConvOutput().getType().getShape(),
-      dimIndexAndSize);
+  populateDimIndexAndSize(filterLayoutAttr,
+                          convOp.getConvFilter().getType().getShape(),
+                          dimIndexAndSize);
+  populateDimIndexAndSize(inputLayoutAttr,
+                          convOp.getConvInput().getType().getShape(),
+                          dimIndexAndSize);
+  populateDimIndexAndSize(outputLayoutAttr,
+                          convOp.getConvOutput().getType().getShape(),
+                          dimIndexAndSize);
 
   auto gemmIface = cast<RockGemmWrapperInterface>(op);
   Type dataTypeA = gemmIface.getAType(), dataTypeB = gemmIface.getBType();
