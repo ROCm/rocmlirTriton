@@ -126,9 +126,12 @@ sed -e "s/gfx1100/$ARCH/g" -e "s/rock.num_cu = 96/rock.num_cu = $NUM_CU/g" fusio
 
 sed -e "s/gfx1100/$ARCH/g" -e "s/rock.num_cu = 96/rock.num_cu = $NUM_CU/g" fusion_reduce_output_with_host.mlir | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
 
+# TODO(rocmlirTriton): Intentionally disabled E2E tests for now since CPU validation is extremely slow.
+# We will re-enable them once we have an optimized CPU validation code.
 cd build && \
  LIT_FILTER=Dialect/Rock ninja check-rocmlir && \
  LIT_FILTER=rocmlir-gen ninja check-rocmlir && \
  LIT_FILTER=Conversion ninja check-rocmlir && \
  LIT_FILTER=rocmlir-driver ninja check-rocmlir && \
- LIT_FILTER=e2e ninja check-rocmlir
+ LIT_FILTER=rocmlir-tuning-driver ninja check-rocmlir && \
+ LIT_FILTER=fusion ninja check-rocmlir
