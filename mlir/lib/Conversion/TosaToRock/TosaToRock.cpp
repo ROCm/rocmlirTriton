@@ -1021,6 +1021,7 @@ public:
     if (transposeC) {
       SmallVector<int64_t> gemmShape(outputType.getShape());
       size_t rank = gemmShape.size();
+      assert(rank >= 2 && "expected output to have at least 2 dimensions");
       std::swap(gemmShape[rank - 2], gemmShape[rank - 1]);
       gemmOutputType =
           RankedTensorType::get(gemmShape, outputType.getElementType());

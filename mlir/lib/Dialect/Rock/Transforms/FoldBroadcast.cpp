@@ -257,7 +257,15 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
     // because batch was merged into M or N), insert a rock.transform to
     // reshape back to the original result type.
     if (newResultType != origResultType) {
+      // After folding, both mergeBatch and unbroadcastBatch produce rank-2
+      // outputs, so newResultShape is always [mergedDim, otherDim].
+      assert(newResultShape.size() == 2 &&
+             "expected rank-2 result after batch fold");
+      // The original result is always rank 3 ([G, M, N]) because
+      // isBatchDimFoldable requires 3 upper bounds (a batch dimension).
       ArrayRef<int64_t> origShape = origResultType.getShape();
+      assert(origShape.size() == 3 &&
+             "expected rank-3 original result with batch dimension");
       if (isBBatchBroadcast) {
         // Result is [G*M, N], need to unmerge dim 0 back to [G, M]
         rock::BottomUpTMBuilder reshaper(

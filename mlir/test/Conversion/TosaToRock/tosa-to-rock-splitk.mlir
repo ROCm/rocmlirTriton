@@ -6,7 +6,7 @@ func.func @test_basic(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> ten
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
-  // CHECK: rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xf32> * tensor<2x64x256xf32> -> tensor<2x128x256xf32>
+  // CHECK: %{{.*}} = rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xf32> * tensor<2x64x256xf32> -> tensor<2x128x256xf32>
   return %c : tensor<2x128x256xf32>
 }
 
@@ -15,7 +15,7 @@ func.func @test_basic(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> ten
 // CHECK-LABEL: @test_basic_f16
 // CHECK-SAME: -> (tensor<2x128x256xf16> {rock.prefill = 0.000000e+00 : f16})
 func.func @test_basic_f16(%a: tensor<2x128x64xf16>, %b: tensor<2x64x256xf16>) -> tensor<2x128x256xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // CHECK: rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xf16> * tensor<2x64x256xf16> -> tensor<2x128x256xf16>
+  // CHECK: %{{.*}} = rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xf16> * tensor<2x64x256xf16> -> tensor<2x128x256xf16>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
   %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf16>, tensor<2x64x256xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<2x128x256xf16>
@@ -27,7 +27,7 @@ func.func @test_basic_f16(%a: tensor<2x128x64xf16>, %b: tensor<2x64x256xf16>) ->
 // CHECK-LABEL: @test_basic_bf16
 // CHECK-SAME: -> (tensor<2x128x256xbf16> {rock.prefill = 0.000000e+00 : bf16})
 func.func @test_basic_bf16(%a: tensor<2x128x64xbf16>, %b: tensor<2x64x256xbf16>) -> tensor<2x128x256xbf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // CHECK: rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xbf16> * tensor<2x64x256xbf16> -> tensor<2x128x256xbf16>
+  // CHECK: %{{.*}} = rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xbf16> * tensor<2x64x256xbf16> -> tensor<2x128x256xbf16>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xbf16>}> : () -> tensor<1xbf16>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xbf16>}> : () -> tensor<1xbf16>
   %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xbf16>, tensor<2x64x256xbf16>, tensor<1xbf16>, tensor<1xbf16>) -> tensor<2x128x256xbf16>

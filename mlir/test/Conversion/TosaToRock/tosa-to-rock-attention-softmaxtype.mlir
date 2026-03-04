@@ -1,7 +1,7 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s
 
 // CHECK-LABEL: func @mlir_softmaxf32_attention
-// CHECK: rock.attention
+// CHECK: %{{.*}} = rock.attention
 // CHECK: softmaxType = f32
 func.func @mlir_softmaxf32_attention(%arg0: tensor<786432xf16>, %arg1: tensor<786432xf16>, %arg2: tensor<786432xi8>, %arg3: tensor<786432xf16>, %arg4: tensor<786432xf16>) -> (tensor<786432xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = tosa.const_shape  {values = dense<[12, 256, 256]> : tensor<3xindex>} : () -> !tosa.shape<3>
@@ -46,7 +46,7 @@ func.func @mlir_softmaxf32_attention(%arg0: tensor<786432xf16>, %arg1: tensor<78
 }
 
 // CHECK-LABEL: func @mlir_softmaxf64_attention
-// CHECK: rock.attention
+// CHECK: %{{.*}} = rock.attention
 // CHECK: softmaxType = f64
 func.func @mlir_softmaxf64_attention(%arg0: tensor<786432xf16>, %arg1: tensor<786432xf16>, %arg2: tensor<786432xi8>, %arg3: tensor<786432xf16>, %arg4: tensor<786432xf16>) -> (tensor<786432xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = tosa.const_shape  {values = dense<[12, 256, 256]> : tensor<3xindex>} : () -> !tosa.shape<3>
@@ -145,7 +145,7 @@ func.func @mlir_softmaxf32_lse_attention(%arg0: tensor<786432xf16>, %arg1: tenso
 }
 
 // CHECK-LABEL: func @mlir_softmaxf32_attention_with_scaling
-// CHECK: rock.attention
+// CHECK: %{{.*}} = rock.attention
 // CHECK: softmaxType = f32
 func.func @mlir_softmaxf32_attention_with_scaling(%arg0: tensor<48225280xf16>, %arg1: tensor<48225280xf16>, %arg2: tensor<48225280xf16>) -> tensor<48225280xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr", num_cu = 304 : i64} {
   %0 = tosa.const_shape  {values = dense<[1, 75352, 5, 128]> : tensor<4xindex>} : () -> !tosa.shape<4>
@@ -194,7 +194,7 @@ func.func @mlir_softmaxf32_attention_with_scaling(%arg0: tensor<48225280xf16>, %
 }
 
 // CHECK-LABEL: func @mlir_softmaxf32_attention_with_scaling_multiple_converts
-// CHECK: rock.attention
+// CHECK: %{{.*}} = rock.attention
 // CHECK: softmaxType = f32
 func.func @mlir_softmaxf32_attention_with_scaling_multiple_converts(%arg0: tensor<48225280xf16>, %arg1: tensor<48225280xf16>, %arg2: tensor<48225280xf16>) -> tensor<48225280xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr", num_cu = 304 : i64} {
   %0 = tosa.const_shape  {values = dense<[1, 75352, 5, 128]> : tensor<4xindex>} : () -> !tosa.shape<4>
@@ -245,7 +245,7 @@ func.func @mlir_softmaxf32_attention_with_scaling_multiple_converts(%arg0: tenso
 }
 
 // CHECK-LABEL: func @mlir_softmaxf32_attention_with_scaling_with_one_convert
-// CHECK: rock.attention
+// CHECK: %{{.*}} = rock.attention
 // CHECK: softmaxType = f32
 // COM: here scale is already converted to f32 and order of operands to mul is changed
 func.func @mlir_softmaxf32_attention_with_scaling_with_one_convert(%arg0: tensor<48225280xf16>, %arg1: tensor<48225280xf16>, %arg2: tensor<48225280xf16>) -> tensor<48225280xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr", num_cu = 304 : i64} {
@@ -292,7 +292,7 @@ func.func @mlir_softmaxf32_attention_with_scaling_with_one_convert(%arg0: tensor
 }
 
 // CHECK-LABEL: func @mlir_attention_convert_scale_bias_kvcache_softmax_convert
-// CHECK: rock.attention
+// CHECK: %{{.*}} = rock.attention
 // CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
 // CHECK: softmaxType = f32
 func.func @mlir_attention_convert_scale_bias_kvcache_softmax_convert(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>, %arg4: tensor<32768xf32>, %arg5: tensor<32768xf32>) -> tensor<4096xf16> attributes {rock.arch = "gfx942",rock.kernel} {
@@ -346,7 +346,7 @@ func.func @mlir_attention_convert_scale_bias_kvcache_softmax_convert(%arg0: tens
 }
 
 // CHECK-LABEL: func @mlir_attention_scale_bias_convert_kvcache_softmax_convert
-// CHECK: rock.attention
+// CHECK: %{{.*}} = rock.attention
 // CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
 // CHECK: softmaxType = f32
 func.func @mlir_attention_scale_bias_convert_kvcache_softmax_convert(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>, %arg4: tensor<32768xf16>, %arg5: tensor<32768xf16>) -> tensor<4096xf16> attributes {rock.arch = "gfx942",rock.kernel} {
@@ -400,7 +400,7 @@ func.func @mlir_attention_scale_bias_convert_kvcache_softmax_convert(%arg0: tens
 }
 
 // CHECK-LABEL: func @mlir_attention_scale_bias_kvcache_convert_softmax_convert
-// CHECK: rock.attention
+// CHECK: %{{.*}} = rock.attention
 // CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
 // CHECK: softmaxType = f32
 func.func @mlir_attention_scale_bias_kvcache_convert_softmax_convert(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>, %arg4: tensor<32768xf16>, %arg5: tensor<32768xf16>) -> tensor<4096xf16> attributes {rock.arch = "gfx942",rock.kernel} {
@@ -454,7 +454,7 @@ func.func @mlir_attention_scale_bias_kvcache_convert_softmax_convert(%arg0: tens
 }
 
 // CHECK-LABEL: func @mlir_attention_i8_convert_softmax_convert_f16
-// CHECK: rock.attention
+// CHECK: %{{.*}} = rock.attention
 // CHECK: qk = {{.*}} * {{.*}} : tensor<1x64x32xi8>, tensor<1x32x64xi8>
 // CHECK: softmax(qk) * {{.*}} : tensor<1x64x32xf16>
 // CHECK: softmaxType = f32{{.*}} -> tensor<1x64x32xf16>
