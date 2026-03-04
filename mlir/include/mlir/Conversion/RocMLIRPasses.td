@@ -49,7 +49,7 @@ def RocmlirCustomTosaToLinalgPass : Pass<"rocmlir-custom-tosa-to-linalg", ""> {
 def TosaToRockPass : Pass<"tosa-to-rock", "::mlir::func::FuncOp"> {
   let summary = "Lower TOSA to Rock";
   let description = [{
-    Pass that converts TOSA operations to bufferized Rock operations.
+    Pass that converts TOSA operations to Rock operations.
   }];
   let dependentDialects = [
     "bufferization::BufferizationDialect",

@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Rock/Generator/ConvGenerator.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/IR/RockConvInterface.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
@@ -85,6 +86,49 @@ static SmallVector<int64_t> normalizeScaleShape(ArrayRef<int64_t> scaleShape,
               modifiedScaleShape[scaleShape.size() - 1]);
 
   return modifiedScaleShape;
+}
+
+template <int N>
+struct rank : rank<N - 1> {};
+
+template <>
+struct rank<0> {};
+
+static void
+getConvEffects(ConvOp &op,
+               SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &op.getFilterMutable(),
+                       transform::TransformMappingResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &op.getInputMutable(),
+                       transform::TransformMappingResource::get());
+}
+
+static void
+getConvEffects(ConvBwdDataOp &op,
+               SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &op.getFilterMutable(),
+                       transform::TransformMappingResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &op.getGradientMutable(),
+                       transform::TransformMappingResource::get());
+}
+
+static void
+getConvEffects(ConvBwdWeightOp &op,
+               SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &op.getInputMutable(),
+                       transform::TransformMappingResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &op.getGradientMutable(),
+                       transform::TransformMappingResource::get());
+}
+
+template <typename OpType>
+static void
+getCommonEffects(OpType &op,
+                 SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  auto *read = MemoryEffects::Read::get();
+  auto *write = MemoryEffects::Write::get();
+  effects.emplace_back(read, &op.getSourceMutable());
+  effects.emplace_back(write, &op.getDestMutable());
 }
 
 template <typename OpType>
@@ -449,17 +493,25 @@ ConvolutionDims ConvolutionDims::fromOp(Operation *op, bool enableOutput) {
   if (enableOutput)
     outputLayoutAttr = op->template getAttrOfType<ArrayAttr>("output_layout");
 
-  // Get shape of filter tensor.
-  auto filterType = cast<ShapedType>(op->getOperand(0).getType());
+  // Use the RockConvInterface to get tensor shapes with consistent semantics.
+  // Fall back to operand indices for ops that don't implement the interface
+  // (e.g. ConvElementwiseGemmOp).
+  ShapedType filterType, inputType;
+  ShapedType outputType;
+  if (auto convIF = dyn_cast<RockConvInterface>(op)) {
+    filterType = convIF.getConvFilter().getType();
+    inputType = convIF.getConvInput().getType();
+    if (enableOutput)
+      outputType = convIF.getConvOutput().getType();
+  } else {
+    filterType = cast<ShapedType>(op->getOperand(0).getType());
+    inputType = cast<ShapedType>(op->getOperand(1).getType());
+    if (enableOutput)
+      outputType = cast<ShapedType>(op->getOperand(2).getType());
+  }
   ArrayRef<int64_t> filterShape = filterType.getShape();
-
-  // Get shape of input tensor.
-  auto inputType = cast<ShapedType>(op->getOperand(1).getType());
   ArrayRef<int64_t> inputShape = inputType.getShape();
-
-  // Get shape of output tensor.
-  auto outputType = cast<ShapedType>(op->getOperand(2).getType());
-  ArrayRef<int64_t> outputShape = outputType.getShape();
+  ArrayRef<int64_t> outputShape = enableOutput ? outputType.getShape() : ArrayRef<int64_t>{};
 
   int64_t y, x, z, ho, wo, dout, hi, wi, di, k, c, n, g;
   y = x = z = ho = wo = dout = hi = wi = di = k = c = n = g = 0;
@@ -594,25 +646,46 @@ Type ConvBwdDataOp::getAType() {
 }
 
 Type ConvBwdWeightOp::getAType() {
-  return getOutput().getType().getElementType();
+  return getGradient().getType().getElementType();
 }
 
 Type ConvOp::getBType() { return getInput().getType().getElementType(); }
 
 Type ConvBwdDataOp::getBType() {
-  return getOutput().getType().getElementType();
+  return getGradient().getType().getElementType();
 }
 
 Type ConvBwdWeightOp::getBType() {
   return getInput().getType().getElementType();
 }
 
-Type ConvOp::getCType() { return getOutput().getType().getElementType(); }
+Type ConvOp::getCType() { return getResult().getType().getElementType(); }
 
-Type ConvBwdDataOp::getCType() { return getInput().getType().getElementType(); }
+Type ConvBwdDataOp::getCType() { return getResult().getType().getElementType(); }
 
 Type ConvBwdWeightOp::getCType() {
-  return getFilter().getType().getElementType();
+  return getResult().getType().getElementType();
+}
+
+// RockConvInterface implementations
+TypedValue<ShapedType> ConvOp::getConvFilter() { return getFilter(); }
+TypedValue<ShapedType> ConvOp::getConvInput() { return getInput(); }
+TypedValue<ShapedType> ConvOp::getConvOutput() {
+  return cast<TypedValue<ShapedType>>(getResult());
+}
+
+TypedValue<ShapedType> ConvBwdDataOp::getConvFilter() { return getFilter(); }
+TypedValue<ShapedType> ConvBwdDataOp::getConvInput() {
+  return cast<TypedValue<ShapedType>>(getResult());
+}
+TypedValue<ShapedType> ConvBwdDataOp::getConvOutput() { return getGradient(); }
+
+TypedValue<ShapedType> ConvBwdWeightOp::getConvFilter() {
+  return cast<TypedValue<ShapedType>>(getResult());
+}
+TypedValue<ShapedType> ConvBwdWeightOp::getConvInput() { return getInput(); }
+TypedValue<ShapedType> ConvBwdWeightOp::getConvOutput() {
+  return getGradient();
 }
 
 GemmSize ConvOp::getGemmSize() {

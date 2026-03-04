@@ -890,16 +890,21 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   expandFlatFunctionArguments(builder, func, argDimNameRefs,
                               logicalFuncArgTypes, args);
 
-  // Get the result type from the output argument type
-  // TODO(roctriton): Is 2 always the right index?
-  Type outputResultType = logicalFuncArgTypes[2];
+  // Each conv variant takes different operands and stores to a different dest:
+  //   ConvOp:         (filter=args[0], input=args[1]) → store to args[2]
+  //   ConvBwdDataOp:  (filter=args[0], gradient=args[2]) → store to args[1]
+  //   ConvBwdWeightOp:(input=args[1], gradient=args[2]) → store to args[0]
 
   Value convResult;
+  Value storeDest;
   switch (config.operation.value()) {
   case ConvOpType::Fwd: {
+    Type resultType = logicalFuncArgTypes[2];
+    SmallVector<Value, 2> convArgs = {args[0], args[1]};
     auto convOp = ConvOp::create(builder, builder.getUnknownLoc(),
-                                 outputResultType, args, attributes);
+                                 resultType, convArgs, attributes);
     convResult = convOp.getResult();
+    storeDest = args[2];
   } break;
   case ConvOpType::BwdData: {
     if (!rock::isEveryElementWrittenBwdData(
@@ -912,9 +917,12 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
       // arg 1 is going to be the input tensor.
       zeroInitArg(builder, func, 1);
     }
+    Type resultType = logicalFuncArgTypes[1];
+    SmallVector<Value, 2> convArgs = {args[0], args[2]};
     auto convOp = ConvBwdDataOp::create(builder, builder.getUnknownLoc(),
-                                        outputResultType, args, attributes);
+                                        resultType, convArgs, attributes);
     convResult = convOp.getResult();
+    storeDest = args[1];
   } break;
   case ConvOpType::BwdWeight: {
     int kernelCount = 0;
@@ -945,17 +953,23 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
       if (needsZeroInit) {
         zeroInitArg(builder, func, hasWorkspace ? 3 : 0);
       }
+      Type resultType = logicalFuncArgTypes[0];
+      SmallVector<Value, 4> convArgs;
+      convArgs.push_back(args[1]); // input
+      convArgs.push_back(args[2]); // gradient
+      if (hasWorkspace)
+        convArgs.push_back(args[3]); // workspace
       auto convOp = ConvBwdWeightOp::create(builder, builder.getUnknownLoc(),
-                                            outputResultType, args, attributes);
+                                            resultType, convArgs, attributes);
       convResult = convOp.getResult();
     }
+    storeDest = args[0];
   } break;
   }
 
-  // Store the result to the transformed output tensor (args[2])
-  // TODO(roctriton): Is 2 always the output tensor?
+  // Store the result to the appropriate destination buffer.
   Value storedVal = rock::StoreOp::create(
-      builder, builder.getUnknownLoc(), outputFlatType, convResult, args[2],
+      builder, builder.getUnknownLoc(), outputFlatType, convResult, storeDest,
       builder.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set));
 
   func::ReturnOp::create(builder, builder.getUnknownLoc(), storedVal);

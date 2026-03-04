@@ -1,9 +1,9 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file --tosa-to-rock --rock-view-to-transform -verify-diagnostics -o -| FileCheck %s
 
 // CHECK-LABEL: test_fusion
-// CHECK: %[[convRes:.*]] = rock.conv(%{{.*}}, %{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x128x3x3x8xf32>, tensor<128x32x32x1x8xf32>, tensor<128x30x30x1x128xf32> -> tensor<128x30x30x1x128xf32>
-// CHECK-NEXT: %[[castRes:.*]] = rock.tensor_untransform_cast %[[convRes]] aka %{{.*}} : tensor<128x30x30x1x128xf32> to tensor<128x30x30x128xf32>
-// CHECK-NEXT: tosa.abs %[[castRes]]
+// CHECK: %[[convRes:.*]] = rock.conv(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x128x3x3x8xf32>, tensor<128x32x32x1x8xf32> -> tensor<128x30x30x1x128xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<128x30x30x1x128xf32> to tensor<128x30x30x128xf32>
+// CHECK-NEXT: tosa.abs %[[collapsed]]
 
 func.func @test_fusion(%arg0: tensor<128x32x32x8xf32>, %arg1: tensor<128x3x3x8xf32>) -> tensor<128x30x30x128xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %zero = arith.constant dense<0.0> : tensor<128xf32>
@@ -19,8 +19,8 @@ func.func @test_fusion(%arg0: tensor<128x32x32x8xf32>, %arg1: tensor<128x3x3x8xf
 // -----
 
 // CHECK-LABEL: mlir_conv3d
-// CHECK: %[[convRes:.*]] = rock.conv(%{{.*}}, %{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "2", "c"], input_layout = ["ni", "0i", "1i", "2i", "gi", "ci"], output_layout = ["no", "0o", "1o", "2o", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index, 1 : index]} : tensor<1x4x2x2x2x3xf32>, tensor<2x3x3x3x1x3xf32>, tensor<2x2x2x2x1x4xf32> -> tensor<2x2x2x2x1x4xf32>
-// CHECK-NEXT: %[[castRes:.*]] = rock.tensor_untransform_cast %[[convRes]] aka %{{.*}} : tensor<2x2x2x2x1x4xf32> to tensor<2x2x2x2x4xf32>
+// CHECK: %[[convRes:.*]] = rock.conv(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "2", "c"], input_layout = ["ni", "0i", "1i", "2i", "gi", "ci"], output_layout = ["no", "0o", "1o", "2o", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index, 1 : index]} : tensor<1x4x2x2x2x3xf32>, tensor<2x3x3x3x1x3xf32> -> tensor<2x2x2x2x1x4xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<2x2x2x2x1x4xf32> to tensor<2x2x2x2x4xf32>
 
 func.func private @mlir_conv3d(%arg0: tensor<4x1x1x1x1xf32>, %arg1: tensor<2x3x3x3x3xf32>, %arg2: tensor<4x2x2x2x3xf32>) -> tensor<2x2x2x2x4xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %7 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<4xf32>}> : () -> tensor<4xf32>
@@ -31,9 +31,9 @@ func.func private @mlir_conv3d(%arg0: tensor<4x1x1x1x1xf32>, %arg1: tensor<2x3x3
 }
 
 // CHECK-LABEL: mlir_conv1d
-// CHECK: %[[convRes:.*]] = rock.conv(%{{.*}}, %{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [3 : index, 3 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x64x7x1x3xf32>, tensor<1x224x1x1x3xf32>, tensor<1x224x1x1x64xf32> -> tensor<1x224x1x1x64xf32>
-// CHECK-NEXT: %[[castRes:.*]] = rock.tensor_untransform_cast %[[convRes]] aka %{{.*}} : tensor<1x224x1x1x64xf32> to tensor<1x224x1x64xf32>
-// CHECK-NEXT: %[[reshapeRes:.*]] = tosa.reshape %[[castRes]], %{{.*}} : (tensor<1x224x1x64xf32>, !tosa.shape<3>) -> tensor<1x224x64xf32>
+// CHECK: %[[convRes:.*]] = rock.conv(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [3 : index, 3 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x64x7x1x3xf32>, tensor<1x224x1x1x3xf32> -> tensor<1x224x1x1x64xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<1x224x1x1x64xf32> to tensor<1x224x1x64xf32>
+// CHECK-NEXT: %[[reshapeRes:.*]] = tosa.reshape %[[collapsed]], %{{.*}} : (tensor<1x224x1x64xf32>, !tosa.shape<3>) -> tensor<1x224x64xf32>
 
 func.func private @mlir_conv1d(%arg0: tensor<64xf32>, %arg1: tensor<672xf32>, %arg2: tensor<1344xf32>) -> tensor<14336xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
     %const_shape = tosa.const_shape {values = dense<[64, 1, 1]> : tensor<3xindex>} : () -> !tosa.shape<3>
@@ -68,10 +68,9 @@ func.func private @mlir_conv1d(%arg0: tensor<64xf32>, %arg1: tensor<672xf32>, %a
 // -----
 
 // CHECK-LABEL: mlir_bwd_conv1d
-// CHECK: %[[buf:.*]] = bufferization.alloc_tensor() : tensor<1x224x1x64xf32>
-// CHECK: %[[bufTransformed:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x224x1x64xf32> to tensor<1x224x1x1x64xf32>
-// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %[[bufTransformed]], %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x64x1x1x3xf32>, tensor<1x224x1x1x64xf32>, tensor<1x224x1x1x3xf32> -> tensor<1x224x1x1x64xf32>
-// CHECK-NEXT: %[[reshapeRes:.*]] = tosa.reshape %[[buf]]
+// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x64x1x1x3xf32>, tensor<1x224x1x1x3xf32> -> tensor<1x224x1x1x64xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<1x224x1x1x64xf32> to tensor<1x224x1x64xf32>
+// CHECK: %[[reshapeRes:.*]] = tosa.reshape %[[collapsed]]
 // CHECK-NEXT: %[[transRes:.*]] = rock.transform %[[reshapeRes]] by #{{.*}} : tensor<1x224x64xf32> to tensor<1x64x224xf32>
 
 func.func @mlir_bwd_conv1d(%arg0: tensor<64xf32>, %arg1: tensor<672xf32>, %arg2: tensor<192xf32>) -> tensor<14336xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
@@ -101,10 +100,9 @@ func.func @mlir_bwd_conv1d(%arg0: tensor<64xf32>, %arg1: tensor<672xf32>, %arg2:
 // -----
 
 // CHECK-LABEL: mlir_bwd_conv2d
-// CHECK: %[[buf:.*]] = bufferization.alloc_tensor() : tensor<1x32x32x512xf32>
-// CHECK: %[[bufTransformed:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x32x32x1x512xf32>    
-// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %[[bufTransformed]], %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]} : tensor<1x512x4x4x512xf32>, tensor<1x32x32x1x512xf32>, tensor<1x16x16x1x512xf32> -> tensor<1x32x32x1x512xf32>    
-// CHECK-NEXT: %[[transRes:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x512x32x32xf32>
+// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]} : tensor<1x512x4x4x512xf32>, tensor<1x16x16x1x512xf32> -> tensor<1x32x32x1x512xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<1x32x32x1x512xf32> to tensor<1x32x32x512xf32>
+// CHECK: %[[transRes:.*]] = rock.transform %[[collapsed]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x512x32x32xf32>
 // CHECK-NEXT: %[[reshapeRes:.*]] = tosa.reshape %[[transRes]]
 func.func @mlir_bwd_conv2d(%arg0: tensor<131072xf32>, %arg1: tensor<4194304xf32>) -> tensor<524288xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = tosa.const_shape  {values = dense<[512, 512, 4, 4]> : tensor<4xindex>} : () -> !tosa.shape<4>
@@ -126,10 +124,9 @@ func.func @mlir_bwd_conv2d(%arg0: tensor<131072xf32>, %arg1: tensor<4194304xf32>
 // -----
 
 // CHECK-LABEL: mlir_bwd_conv2d_stride
-// CHECK: %[[buf:.*]] = bufferization.alloc_tensor() : tensor<1x32x32x512xf32>
-// CHECK: %[[bufTransformed:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x32x32x1x512xf32>
-// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %[[bufTransformed]], %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [2 : index, 2 : index]} : tensor<1x512x4x4x512xf32>, tensor<1x32x32x1x512xf32>, tensor<1x16x16x1x512xf32> -> tensor<1x32x32x1x512xf32>
-// CHECK-NEXT: %[[transRes:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x512x32x32xf32>
+// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [2 : index, 2 : index]} : tensor<1x512x4x4x512xf32>, tensor<1x16x16x1x512xf32> -> tensor<1x32x32x1x512xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<1x32x32x1x512xf32> to tensor<1x32x32x512xf32>
+// CHECK: %[[transRes:.*]] = rock.transform %[[collapsed]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x512x32x32xf32>
 // CHECK-NEXT: %[[reshapeRes:.*]] = tosa.reshape %[[transRes]]
 func.func @mlir_bwd_conv2d_stride(%arg0: tensor<131072xf32>, %arg1: tensor<4194304xf32>) -> tensor<524288xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = tosa.const_shape  {values = dense<[512, 512, 4, 4]> : tensor<4xindex>} : () -> !tosa.shape<4>
@@ -150,10 +147,9 @@ func.func @mlir_bwd_conv2d_stride(%arg0: tensor<131072xf32>, %arg1: tensor<41943
 
 // -----
 // CHECK-LABEL: mlir_bwd_conv2d_group
-// CHECK: %[[buf:.*]] = bufferization.alloc_tensor() : tensor<1x32x32x512xf32>
-// CHECK: %[[bufTransformed:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x32x32x2x256xf32>
-// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %[[bufTransformed]], %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]} : tensor<2x256x4x4x512xf32>, tensor<1x32x32x2x256xf32>, tensor<1x16x16x2x256xf32> -> tensor<1x32x32x2x256xf32>
-// CHECK-NEXT: %[[transRes:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x512x32x32xf32>
+// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]} : tensor<2x256x4x4x512xf32>, tensor<1x16x16x2x256xf32> -> tensor<1x32x32x2x256xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<1x32x32x2x256xf32> to tensor<1x32x32x512xf32>
+// CHECK: %[[transRes:.*]] = rock.transform %[[collapsed]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x512x32x32xf32>
 // CHECK-NEXT: %[[reshapeRes:.*]] = tosa.reshape %[[transRes]]
 func.func @mlir_bwd_conv2d_group(%arg0: tensor<131072xf32>, %arg1: tensor<4194304xf32>) -> tensor<524288xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = tosa.const_shape  {values = dense<[512, 512, 4, 4]> : tensor<4xindex>} : () -> !tosa.shape<4>
@@ -174,10 +170,9 @@ func.func @mlir_bwd_conv2d_group(%arg0: tensor<131072xf32>, %arg1: tensor<419430
 
 // -----
 // CHECK-LABEL: mlir_bwd_conv2d_dilation
-// CHECK: %[[buf:.*]] = bufferization.alloc_tensor() : tensor<1x32x32x512xf32>
-// CHECK: %[[bufTransformed:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x32x32x1x512xf32>
-// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %[[bufTransformed]], %{{.*}}) {dilations = [2 : index, 2 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]} : tensor<1x512x4x4x512xf32>, tensor<1x32x32x1x512xf32>, tensor<1x16x16x1x512xf32> -> tensor<1x32x32x1x512xf32>
-// CHECK-NEXT: %[[transRes:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x512x32x32xf32>
+// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %{{.*}}) {dilations = [2 : index, 2 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]} : tensor<1x512x4x4x512xf32>, tensor<1x16x16x1x512xf32> -> tensor<1x32x32x1x512xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<1x32x32x1x512xf32> to tensor<1x32x32x512xf32>
+// CHECK: %[[transRes:.*]] = rock.transform %[[collapsed]] by #{{.*}} : tensor<1x32x32x512xf32> to tensor<1x512x32x32xf32>
 // CHECK-NEXT: %[[reshapeRes:.*]] = tosa.reshape %[[transRes]]
 func.func @mlir_bwd_conv2d_dilation(%arg0: tensor<131072xf32>, %arg1: tensor<4194304xf32>) -> tensor<524288xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = tosa.const_shape  {values = dense<[512, 512, 4, 4]> : tensor<4xindex>} : () -> !tosa.shape<4>
@@ -199,10 +194,9 @@ func.func @mlir_bwd_conv2d_dilation(%arg0: tensor<131072xf32>, %arg1: tensor<419
 // -----
 
 // CHECK-LABEL: mlir_bwd_conv3d
-// CHECK: %[[buf:.*]] = bufferization.alloc_tensor() : tensor<1x4x4x4x16xf32>
-// CHECK: %[[bufTransformed:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x4x4x4x16xf32> to tensor<1x4x4x4x1x16xf32>
-// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %[[bufTransformed]], %{{.*}}) {dilations = [1 : index, 1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "2", "c"], input_layout = ["ni", "0i", "1i", "2i", "gi", "ci"], output_layout = ["no", "0o", "1o", "2o", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index, 1 : index]} : tensor<1x1x4x4x4x16xf32>, tensor<1x4x4x4x1x16xf32>, tensor<16x1x1x1x1x16xf32> -> tensor<1x4x4x4x1x16xf32>
-// CHECK-NEXT: %[[transRes:.*]] = rock.transform %[[buf]] by #{{.*}} : tensor<1x4x4x4x16xf32> to tensor<1x16x4x4x4xf32>
+// CHECK: %[[convRes:.*]] = rock.conv_bwd_data(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "2", "c"], input_layout = ["ni", "0i", "1i", "2i", "gi", "ci"], output_layout = ["no", "0o", "1o", "2o", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index, 1 : index]} : tensor<1x1x4x4x4x16xf32>, tensor<16x1x1x1x1x16xf32> -> tensor<1x4x4x4x1x16xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<1x4x4x4x1x16xf32> to tensor<1x4x4x4x16xf32>
+// CHECK: %[[transRes:.*]] = rock.transform %[[collapsed]] by #{{.*}} : tensor<1x4x4x4x16xf32> to tensor<1x16x4x4x4xf32>
 // CHECK-NEXT: %[[reshapeRes:.*]] = tosa.reshape %[[transRes]]
 func.func @mlir_bwd_conv3d(%arg0: tensor<1024xf32>, %arg1: tensor<256xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = tosa.const_shape  {values = dense<[16, 1, 1, 1, 16]> : tensor<5xindex>} : () -> !tosa.shape<5>
@@ -247,10 +241,10 @@ func.func private @mlir_dot_transpose_add(%arg0: tensor<20xf32>, %arg1: tensor<2
 // -----
 
 // CHECK-LABEL: mlir_conv_transpose_add
-// CHECK: %[[convRes:.*]] = rock.conv(%{{.*}}, %{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x128x3x3x8xf32>, tensor<128x32x32x1x8xf32>, tensor<128x30x30x1x128xf32> -> tensor<128x30x30x1x128xf32>
-// CHECK-NEXT: %[[castRes:.*]] = rock.tensor_untransform_cast %[[convRes]] aka %{{.*}} : tensor<128x30x30x1x128xf32> to tensor<128x30x30x128xf32>
-// CHECK-NEXT: %{{.*}} = tosa.reshape %[[castRes]]
-// CHECK-NEXT: %[[transRes:.*]] = rock.transform %[[castRes]] by #{{.*}} : tensor<128x30x30x128xf32> to tensor<128x30x128x30xf32>
+// CHECK: %[[convRes:.*]] = rock.conv(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "ho", "wo", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x128x3x3x8xf32>, tensor<128x32x32x1x8xf32> -> tensor<128x30x30x1x128xf32>
+// CHECK-NEXT: %[[collapsed:.*]] = rock.transform %[[convRes]] by {{.*}} : tensor<128x30x30x1x128xf32> to tensor<128x30x30x128xf32>
+// CHECK-NEXT: %{{.*}} = tosa.reshape %[[collapsed]]
+// CHECK-NEXT: %[[transRes:.*]] = rock.transform %[[collapsed]] by #{{.*}} : tensor<128x30x30x128xf32> to tensor<128x30x128x30xf32>
 
 func.func @mlir_conv_transpose_add(%arg0: tensor<128x32x32x8xf32>, %arg1: tensor<128x3x3x8xf32>, %arg2: tensor<128x30x128x30xf32>) -> (tensor<14745600xf32>, tensor<14745600xf32>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %zero = arith.constant dense<0.0> : tensor<128xf32>

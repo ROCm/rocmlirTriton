@@ -4,6 +4,7 @@
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/IR/RockConvInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -94,14 +95,14 @@ ConvolutionContext mlir::rock::populateConvContext(Operation *op) {
 
   populateDimIndexAndSize(
       filterLayoutAttr,
-      cast<ShapedType>(op->getOperand(0).getType()).getShape(),
+      convOp.getConvFilter().getType().getShape(),
       dimIndexAndSize);
   populateDimIndexAndSize(
-      inputLayoutAttr, cast<ShapedType>(op->getOperand(1).getType()).getShape(),
+      inputLayoutAttr, convOp.getConvInput().getType().getShape(),
       dimIndexAndSize);
   populateDimIndexAndSize(
       outputLayoutAttr,
-      cast<ShapedType>(op->getOperand(2).getType()).getShape(),
+      convOp.getConvOutput().getType().getShape(),
       dimIndexAndSize);
 
   auto gemmIface = cast<RockGemmWrapperInterface>(op);

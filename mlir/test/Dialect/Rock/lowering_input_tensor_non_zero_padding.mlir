@@ -8,14 +8,14 @@
 // CHECK-LABEL: func.func @rock_conv_gcyxk_gcnhw_gknhw
 // CHECK: rock.transform %arg1 by #[[$MAP]] : tensor<1x8x128x32x32xf32> to tensor<1x8x128x34x34xf32>
 func.func @rock_conv_gcyxk_gcnhw_gknhw(%filter : tensor<1x8x3x3x128xf32>, %input : tensor<1x8x128x32x32xf32>, %output : tensor<1x128x128x32x32xf32>) -> tensor<1x128x128x32x32xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
-  %result = rock.conv(%filter, %input, %output) {
+  %result = rock.conv(%filter, %input) {
     filter_layout = ["g", "c", "0", "1", "k"],
     input_layout = ["gi", "ci", "ni", "0i", "1i"],
     output_layout = ["go", "ko", "no", "0o", "1o"],
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
     padding = [1 : index,  1 : index,  1 : index,  1 : index]
-  } : tensor<1x8x3x3x128xf32>, tensor<1x8x128x32x32xf32>, tensor<1x128x128x32x32xf32> -> tensor<1x128x128x32x32xf32>
+  } : tensor<1x8x3x3x128xf32>, tensor<1x8x128x32x32xf32> -> tensor<1x128x128x32x32xf32>
   %stored = rock.store %result to %output by set : tensor<1x128x128x32x32xf32> -> tensor<1x128x128x32x32xf32> to tensor<1x128x128x32x32xf32>
   return %stored : tensor<1x128x128x32x32xf32>
 }
