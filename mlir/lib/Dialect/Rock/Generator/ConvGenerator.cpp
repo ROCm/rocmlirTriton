@@ -891,9 +891,9 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
                               logicalFuncArgTypes, args);
 
   // Each conv variant takes different operands and stores to a different dest:
-  //   ConvOp:         (filter=args[0], input=args[1]) → store to args[2]
-  //   ConvBwdDataOp:  (filter=args[0], gradient=args[2]) → store to args[1]
-  //   ConvBwdWeightOp:(input=args[1], gradient=args[2]) → store to args[0]
+  //   ConvOp:         (filter=args[0], input=args[1]) -> store to args[2]
+  //   ConvBwdDataOp:  (filter=args[0], gradient=args[2]) -> store to args[1]
+  //   ConvBwdWeightOp:(input=args[1], gradient=args[2]) -> store to args[0]
 
   Value convResult;
   Value storeDest;
