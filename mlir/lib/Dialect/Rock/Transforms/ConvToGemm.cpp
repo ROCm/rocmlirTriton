@@ -315,8 +315,8 @@ static LogicalResult makeToLayoutLikeFromLayoutAlong(
   return success();
 }
 
-/// Build a mapping from input layout dimension names to filter layout
-/// dimension names, used for layout regularization.
+// Build a mapping from input layout dimension names to filter layout
+// dimension names, used for layout regularization.
 static llvm::StringMap<StringAttr>
 buildInputToFilterMapping(PatternRewriter &b, int rank) {
   llvm::StringMap<StringAttr> mapping = {{"ci", b.getStringAttr("c")},
@@ -328,8 +328,8 @@ buildInputToFilterMapping(PatternRewriter &b, int rank) {
   return mapping;
 }
 
-/// Build a mapping from input layout dimension names to output layout
-/// dimension names, used for layout regularization.
+// Build a mapping from input layout dimension names to output layout
+// dimension names, used for layout regularization.
 static llvm::StringMap<StringAttr>
 buildInputToOutputMapping(PatternRewriter &b, int rank) {
   llvm::StringMap<StringAttr> mapping = {{"ni", b.getStringAttr("no")},
@@ -347,15 +347,6 @@ buildInputToOutputMapping(PatternRewriter &b, int rank) {
 // order. If reordering is needed, creates a PassThrough transform and
 // updates `names` in-place to reflect the new ordering.
 // Returns the (possibly transformed) value.
-
-// This is the dest-buffer counterpart of makeToLayoutLikeFromLayoutAlong:
-// while that function handles operand regularization (inserting a transform
-// before the op and updating the op's operand and attribute), this function
-// handles result regularization where the dest buffer is obtained from a
-// StoreOp and used locally for building GEMM transforms. Unlike
-// makeToLayoutLikeFromLayoutAlong, this does NOT modify the conv op's
-// attributes, since that would cause a mismatch with the (unchangeable)
-// result type in ConvolutionDims::fromOp.
 static Value regularizeDestLayout(
     PatternRewriter &b, Location loc, ArrayAttr fromLayout, Value destValue,
     ArrayAttr toLayout, const llvm::StringMap<StringAttr> &mapping,
@@ -448,10 +439,7 @@ struct MatchLayoutsToInput final
     }
 
     // Only re-layout the filter/output if it's an input operand of this op,
-    // not if it's the op's own result. For ConvBwdWeightOp the filter is the
-    // result; for ConvOp/ConvBwdDataOp the output (or input) is the result.
-    // We check getDefiningOp() != this op; a BlockArgument has
-    // getDefiningOp() == nullptr, so it will always be re-layouted.
+    // not if it's the op's own result.
     LogicalResult didReLayoutFilter = failure();
     if (filter.getDefiningOp() != op.getOperation())
       didReLayoutFilter = makeToLayoutLikeFromLayoutAlong(
@@ -1212,7 +1200,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   }
 
   // For non-ConvElementwiseGemmOp, find the StoreOp dest to get the output
-  // buffer (the DPS dest was removed from conv ops).
+  // buffer
   Value destBuffer;
   if constexpr (notConvGemm) {
     for (auto *user : op.getResult().getUsers()) {
@@ -1249,10 +1237,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // Apply layout regularization to the dest buffer for result tensors.
   // MatchLayoutsToInput handles operand regularization; for result values
   // (filter for BwdWeight, output for ConvOp) we regularize the StoreOp
-  // dest buffer here. op.getGemmSize() must be called before this point
-  // as it reads the (un-regularized) layout attributes from the conv op.
-  // BwdData does not need regularization because the input layout is the
-  // reference layout.
+  // dest buffer here.
   if constexpr (notConvGemm) {
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {

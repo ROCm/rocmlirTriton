@@ -116,7 +116,7 @@ struct ConvFields {
   SmallString<8> outputLayout;
   Value inputExp;
   Value filterExp;
-  RankedTensorType expandedOutputType; // output type with 'g' dim inserted
+  RankedTensorType expandedOutputType;
   ArrayAttr pad;
   ArrayAttr stride;
   ArrayAttr dilation;
@@ -214,7 +214,7 @@ static ConvFields commonConv(PatternRewriter &rw, Operation *op, Value input,
 
   // Expand filter and input tensors from rank 4 (NHWC) to rank 5 (NHWCG)
   // and add 'g' into the layout. Output expansion is handled above as a
-  // pure type computation — no IR ops needed since the output is a result.
+  // pure type computation
   res.inputExp = expandTensor(rw, op, input, res.inputLayout, "c", group);
   res.filterExp = expandTensor(rw, op, filter, res.filterLayout, "k", group);
 
@@ -264,7 +264,7 @@ static FailureOr<rock::RockConvInterface>
 makeRockConv(ConversionPatternRewriter &rw, Operation *op, Value input,
              Value filter, RankedTensorType outputType,
              DenseI64ArrayAttr pad, DenseI64ArrayAttr stride,
-             DenseI64ArrayAttr dilation, int64_t group, int64_t kernelID,
+             DenseI64ArrayAttr dilation, int64_t group,
              std::optional<std::string> convBackwardKind) {
   Location loc = op->getLoc();
   ConvFields convFields =
@@ -675,8 +675,7 @@ public:
 
     FailureOr<rock::RockConvInterface> rockConv =
         makeRockConv(rw, op, input, filter, outputType, padAttr,
-                     op.getStrideAttr(), dilationAttr, group, /*kernelID=*/0,
-                     "");
+                     op.getStrideAttr(), dilationAttr, group, "");
 
     if (failed(rockConv))
       return failure();
@@ -755,7 +754,7 @@ public:
 
     FailureOr<rock::RockConvInterface> rockConv = makeRockConv(
         rw, op, input, filter, outputType, padAttr, strideAttr, dilationAttr,
-        group, /*kernelID=*/0, ROCK_CUSTOMOP_CONV_BWD_DATA);
+        group, ROCK_CUSTOMOP_CONV_BWD_DATA);
 
     if (failed(rockConv))
       return failure();
@@ -1508,8 +1507,6 @@ struct ConvElementwiseGemmRewritePattern
     int64_t group = 1;
     if (auto attr = op->template getAttrOfType<IntegerAttr>("group"))
       group = attr.getInt(); // Use op.getGroup() when all OpT have it.
-    // Pass null outputType — ConvElementwiseGemmOp doesn't use output_layout
-    // for the conv part (the output is the GEMM result, not the conv result).
     ConvFields convFields =
         commonConv(rewriter, op, firstConv.getInput(), firstConv.getWeight(),
                    /*outputType=*/RankedTensorType(), firstConv.getPadAttr(),
