@@ -648,8 +648,8 @@ static LogicalResult extractFuncOps(ModuleOp op,
 
 static bool doesModuleHaveFusions(ModuleOp module) {
   WalkResult result = module.walk([](Operation *op) {
-    // Check for linalg.generic or rock.reduce (standalone fusion ops)
-    if (isa<linalg::GenericOp>(op) || isa<rock::ReduceOp>(op)) {
+    // Check for fusion op or rock.reduce (standalone fusion ops)
+    if (rock::isFusionOp(op) || isa<rock::ReduceOp>(op)) {
       return WalkResult::interrupt();
     }
 

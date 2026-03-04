@@ -61,6 +61,34 @@ def RockFoldBroadcastPass: Pass<"rock-fold-broadcast", "::mlir::func::FuncOp"> {
   let dependentDialects = ["rock::RockDialect"];
 }
 
+def RockLowerReducePass : Pass<"rock-lower-reduce", "::mlir::func::FuncOp"> {
+  let summary =
+      "Lower rock.reduce into a Broadcast transform on the store destination";
+  let description = [{
+    This pass converts rock.reduce ops into an equivalent representation using
+    a Broadcast transform on the rock.store destination. For sum reductions,
+    this means:
+    1. Bypassing the rock.reduce (passing its input directly to rock.store)
+    2. Adding a Broadcast transform on the reduced axis of the store destination
+    3. Changing the store method from `set` to `atomic_add`
+
+    This allows the existing blockwise store pipeline to handle reductions
+    without a dedicated reduction lowering.
+
+    Example (reduce sum on axis=1):
+      Before:
+        %fused : tensor<1x100x100xf16>
+        %reduced = rock.reduce sum %fused {axis = 1}
+        %result = rock.store %reduced to %dest by set
+
+      After:
+        %fused : tensor<1x100x100xf16>
+        %dest_bc = rock.transform %dest by <Broadcast{1} on axis 1>
+        %result = rock.store %fused to %dest_bc by atomic_add
+  }];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
+}
+
 def RockRegularizeOutputPass
     : Pass<"rock-regularize-output", "::mlir::func::FuncOp"> {
   let summary = "Move output fusions to operate directly in gemm output space";
@@ -103,11 +131,6 @@ def RockGridwiseAttnToBlockwisePass
                            "gpu::GPUDialect", "vector::VectorDialect",
                            "linalg::LinalgDialect", "scf::SCFDialect",
                            "triton::TritonDialect"];
-}
-
-def RockShuffleGemmForReductions : Pass<"rock-shuffle-gemm-for-reductions", "::mlir::func::FuncOp"> {
-  let summary = "This pass shuffles parallel gemm dimensions for equally block splits for fused reductions (if any)";
-  let dependentDialects = ["rock::RockDialect", "memref::MemRefDialect"];
 }
 
 def RockGemmLinalgSplitkNormalizationPass : Pass<"rock-gemm-linalg-splitk-normalization", "::mlir::func::FuncOp"> {

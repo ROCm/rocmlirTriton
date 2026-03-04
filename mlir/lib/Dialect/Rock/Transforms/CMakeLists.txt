@@ -8,7 +8,6 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   GridwiseAttnToBlockwise.cpp
   GridLayoutEmitter.cpp
   ViewToTransform.cpp
-  ShuffleGemmForReductions.cpp
   GemmLinalgSplitkNormalizationPass.cpp
   TransformsToPtr.cpp
   MaskNonZeroPreservingFusions.cpp
@@ -20,6 +19,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   InsertOutputFusionLoads.cpp
   RegularizeInput.cpp
   LowerLoads.cpp
+  LowerReduce.cpp
   LowerStores.cpp
   RegularizeOutput.cpp
 

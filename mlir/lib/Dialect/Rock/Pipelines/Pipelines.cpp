@@ -368,11 +368,11 @@ void rock::buildKernelPipeline(OpPassManager &pm,
 
   addWithDCE(rock::createRockAffixTuningParametersPass(
       rock::RockAffixTuningParametersPassOptions{options.tuningFallback}));
+  addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
   addWithDCE(rock::createRockConvToGemmPass());
   addWithDCE(rock::createRockGemmLinalgSplitkNormalizationPass());
   addWithDCE(rock::createRockGemmToGridwisePass());
-  addWithDCE(rock::createRockShuffleGemmForReductions());
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());

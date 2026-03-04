@@ -163,18 +163,17 @@ def Rock_GemmOp
 }
 
 def Rock_ReduceOp
-    : Rock_Op<"reduce", [AllElementTypesMatch<["in", "out"]>]>,
+    : Rock_Op<"reduce", []>,
       Arguments<(ins Arg<TensorOrMemRefOf<[BF16, F16, F32]>, "input">:$in,
-          Arg<TensorOrMemRefOf<[BF16, F16, F32]>, "output">:$out,
-          ReduceMethodAttr:$reduceMethod, IndexAttr:$axis, I32Attr:$blockSize,
-          I32Attr:$gridSize, UnitAttr:$useLDS, UnitAttr:$useDPP)>,
-      Results<(outs Optional<TensorOf<[BF16, F16, F32]>>:$result)> {
+          ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
+      Results<(outs TensorOf<[BF16, F16, F32]>:$result)> {
   let summary = "Axes-wide reduction operation";
   let hasVerifier = 1;
   let assemblyFormat = [{
-    $reduceMethod $in `into` $out attr-dict `:` type($in) `into` type($out) (`->` type($result)^)?
+    `` $reduceMethod $in attr-dict `:` type($in) `->` type($result)
   }];
 }
+
 def Rock_AttentionOp
     : Rock_Op<
           "attention", [DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
@@ -741,12 +740,11 @@ def Rock_TransformsToPtrOp
 }
 
 // blockwise_reduction
-def Rock_BlockwiseReduceOp:
-    Rock_Op<"blockwise_reduce">,
-    Arguments<(ins AnyRankedTensor:$input,
-                   IndexAttr:$axis,
-                   ReduceMethodAttr:$reduceMethod
-                   )>,
+def Rock_BlockwiseReduceOp
+    : Rock_Op<"blockwise_reduce">,
+      AllElementTypesMatch<["input", "result"]>,
+      Arguments<(ins AnyRankedTensor:$input, IndexAttr:$axis,
+          ReduceMethodAttr:$reduceMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Blockwise reduce operation";
   let description = [{

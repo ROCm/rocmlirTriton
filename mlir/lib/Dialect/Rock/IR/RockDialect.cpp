@@ -1102,11 +1102,18 @@ LogicalResult GridwiseAttentionOp::verify() {
 // ReduceOp
 //===-----------------------------------------------------===//
 LogicalResult ReduceOp::verify() {
-  APInt axis = getAxis();
+  int64_t axis = getAxis().getSExtValue();
   ArrayRef<int64_t> inpShape = cast<ShapedType>(getIn().getType()).getShape();
-  for (const auto &dimAndSize :
-       llvm::enumerate(cast<ShapedType>(getOut().getType()).getShape())) {
-    size_t dim = dimAndSize.index();
+  ArrayRef<int64_t> outShape =
+      cast<ShapedType>(getResult().getType()).getShape();
+  if (axis < 0 || axis >= int64_t(inpShape.size())) {
+    return emitError("Axis is out of range");
+  }
+  if (inpShape.size() != outShape.size()) {
+    return emitError("Input and output rank is not the same");
+  }
+  for (const auto &dimAndSize : llvm::enumerate(outShape)) {
+    int64_t dim = dimAndSize.index();
     int64_t dimSize = dimAndSize.value();
     if (dim == axis) {
       if (dimSize != 1) {
@@ -1119,14 +1126,6 @@ LogicalResult ReduceOp::verify() {
       }
     }
   }
-
-  auto inElemType = getIn().getType().getElementType();
-  auto outElemType = getOut().getType().getElementType();
-  if (inElemType != outElemType)
-    return emitError("element type of input and output is different");
-
-  if (getReduceMethod() == ReduceMethod::Max && !outElemType.isF32())
-    return emitError("reduce max only supports f32");
 
   return success();
 }

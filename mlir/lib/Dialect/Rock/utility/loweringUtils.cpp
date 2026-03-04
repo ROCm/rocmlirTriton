@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -23,6 +24,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
@@ -730,6 +732,58 @@ void mlir::rock::replaceFusionExtraInputs(
         worklist.push_back(result);
     }
   }
+}
+
+LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
+                                                   StoreOp storeOp,
+                                                   StoreMethod newStoreMethod) {
+  StoreMethod existing = storeOp.getStoreMethod();
+  if (newStoreMethod == StoreMethod::AtomicAdd &&
+      existing == StoreMethod::AtomicMax)
+    return storeOp->emitError(
+        "incompatible store methods: can't set atomic_add on atomic_max store");
+  if (newStoreMethod == StoreMethod::AtomicMax &&
+      existing == StoreMethod::AtomicAdd)
+    return storeOp->emitError(
+        "incompatible store methods: can't set atomic_max on atomic_add store");
+
+  if (newStoreMethod == StoreMethod::Set)
+    return success();
+
+  storeOp.setStoreMethodAttr(builder.getAttr<StoreMethodAttr>(newStoreMethod));
+
+  auto func = storeOp->getParentOfType<func::FuncOp>();
+  if (!func)
+    return storeOp->emitError("store op not inside a function");
+
+  FailureOr<BlockArgument> destArg = findBlockArgument(storeOp.getDest());
+  if (failed(destArg))
+    return storeOp->emitError(
+        "can't trace store destination to function argument");
+
+  auto elementType = cast<ShapedType>(destArg->getType()).getElementType();
+  bool isMax = (newStoreMethod == StoreMethod::AtomicMax);
+  Attribute prefillValue;
+  if (auto floatTy = dyn_cast<FloatType>(elementType)) {
+    if (isMax)
+      prefillValue = builder.getFloatAttr(
+          floatTy,
+          APFloat::getInf(floatTy.getFloatSemantics(), /*Negative=*/true));
+    else
+      prefillValue = builder.getFloatAttr(floatTy, 0.0);
+  } else if (auto intTy = dyn_cast<IntegerType>(elementType)) {
+    if (isMax)
+      prefillValue = builder.getIntegerAttr(
+          intTy, APInt::getSignedMinValue(intTy.getWidth()));
+    else
+      prefillValue = builder.getIntegerAttr(intTy, 0);
+  } else {
+    return storeOp->emitError("expecting float or int element type");
+  }
+
+  func.setArgAttr(destArg->getArgNumber(), PrefillAttr::getMnemonic(),
+                  prefillValue);
+  return success();
 }
 
 void mlir::rock::propagateOutputType(Value oldRoot, Value newRoot) {

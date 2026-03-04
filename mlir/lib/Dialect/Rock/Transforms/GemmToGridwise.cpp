@@ -310,31 +310,14 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
                                RockGemmGemmWrapperInterface op, Location loc,
                                int64_t splitNFactor, Value a, Value b, Value c,
                                Value out) {
-  // adjust the store method
-  auto storeMethod =
-      builder.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
-  op.setStoreMethodAttr(storeMethod);
-
-  // set the prefill attribute
-  auto func = llvm::cast<func::FuncOp>(op->getParentOp());
-  FailureOr<SmallVector<BlockArgument>> args = traceRootOutputToArgs(out, func);
-  if (failed(args)) {
-    return op->emitError("can't trace gemm output to output argument");
-  }
-
-  auto attrName = rock::PrefillAttr::getMnemonic();
-  for (auto arg : args.value()) {
-    // initialize to zeros
-    auto elementType = cast<ShapedType>(arg.getType()).getElementType();
-    Attribute zero;
-    if (llvm::isa<FloatType>(elementType)) {
-      zero = builder.getFloatAttr(elementType, 0.0f);
-    } else if (llvm::isa<IntegerType>(elementType)) {
-      zero = builder.getIntegerAttr(elementType, 0);
-    } else {
-      return op->emitError("expecting `float` or `int` element type");
-    }
-    func.setArgAttrs(arg.getArgNumber(), builder.getNamedAttr(attrName, zero));
+  // set the store method and prefill attribute on output store ops
+  FailureOr<SetVector<StoreOp>> storeOps = traceRootOutputToStoreOps(out);
+  if (failed(storeOps))
+    return op->emitError("can't trace gemm output to store ops");
+  for (StoreOp storeOp : storeOps.value()) {
+    if (failed(
+            setStoreMethodAndPrefill(builder, storeOp, StoreMethod::AtomicAdd)))
+      return failure();
   }
 
   const int64_t origN = cast<RankedTensorType>(b.getType()).getShape()[2];
@@ -797,29 +780,15 @@ GemmRewritePattern::arrangeSplitKTransform(
     Value b, ArrayRef<Value> outputViews,
     const DenseMap<Value, Value> &fusionInputMap, Value scaleA,
     Value scaleB) const {
-  // set the prefill attribute
-  // Use the result since GemmOp no longer has C as input
+  // Set the store method and prefill attribute on output store ops
   Value matC = op.getResult();
-  auto func = llvm::cast<func::FuncOp>(op->getParentOp());
-  FailureOr<SmallVector<BlockArgument>> args =
-      traceRootOutputToArgs(matC, func);
-  if (failed(args)) {
-    return op->emitError("can't trace gemm output to output argument");
-  }
-
-  auto attrName = rock::PrefillAttr::getMnemonic();
-  for (auto arg : args.value()) {
-    // initialize to zeros
-    auto elementType = cast<ShapedType>(arg.getType()).getElementType();
-    Attribute zero;
-    if (llvm::isa<FloatType>(elementType)) {
-      zero = builder.getFloatAttr(elementType, 0.0f);
-    } else if (llvm::isa<IntegerType>(elementType)) {
-      zero = builder.getIntegerAttr(elementType, 0);
-    } else {
-      return op->emitError("expecting `float` or `int` element type");
-    }
-    func.setArgAttrs(arg.getArgNumber(), builder.getNamedAttr(attrName, zero));
+  FailureOr<SetVector<StoreOp>> storeOps = traceRootOutputToStoreOps(matC);
+  if (failed(storeOps))
+    return op->emitError("can't trace gemm output to store ops");
+  for (StoreOp storeOp : storeOps.value()) {
+    if (failed(
+            setStoreMethodAndPrefill(builder, storeOp, StoreMethod::AtomicAdd)))
+      return failure();
   }
 
   const int64_t origK = cast<RankedTensorType>(a.getType()).getShape()[2];
