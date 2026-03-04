@@ -39,6 +39,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   LINK_LIBS PUBLIC
   MLIRAffineTransforms
   MLIRArithTransforms
+  MLIRArithValueBoundsOpInterfaceImpl
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
   MLIRBufferizationTransformOps

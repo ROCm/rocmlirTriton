@@ -12,6 +12,8 @@ set(LIBS
   ${rocmlir_test_libs}
   MLIRAnalysis
   MLIRFuncInlinerExtension
+  MLIRVectorToLLVM
+  MLIRVectorToLLVMPass
 
   TritonIR
   TritonGPUIR

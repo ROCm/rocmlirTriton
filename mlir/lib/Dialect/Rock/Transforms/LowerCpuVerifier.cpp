@@ -34,11 +34,17 @@
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/TransformOps/MemRefTransformOps.h"
+#include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h"
+#include "mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/SCF/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/Dialect/Vector/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Vector/Transforms/SubsetOpInterfaceImpl.h"
 #include "mlir/Dialect/Vector/TransformOps/VectorTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
@@ -102,6 +108,7 @@ module attributes {transform.with_named_sequence} {
 constexpr const char *kOptimizationSequence = R"mlir(
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
+    // TODO: Get rid of unit dims (for batch mamtul)
     %0 = transform.structured.match attributes {rock.matmul} in %arg0 : (!transform.any_op) -> !transform.any_op
 
     %transformed, %loops:3 = transform.structured.fuse %0 tile_sizes [1, 256, 64] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
@@ -123,8 +130,8 @@ constexpr const char *kVectorizationSequence = R"mlir(
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
     %0 = transform.structured.match attributes {rock.matmul} in %arg0 : (!transform.any_op) -> !transform.any_op
-    %1 = transform.get_parent_op %0 {IsolatedFromAbove} : (!transform.any_op) -> !transform.any_op
-    // %2 = transform.structured.vectorize_children_and_apply_patterns %1 {vectorize_nd_extract, vectorize_padding} : (!transform.any_op) -> !transform.any_op
+    %1 = transform.get_parent_op %0 {isolated_from_above} : (!transform.any_op) -> !transform.any_op
+    %2 = transform.structured.vectorize_children_and_apply_patterns %1 {vectorize_nd_extract, vectorize_padding} : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }
@@ -146,13 +153,47 @@ module attributes {transform.with_named_sequence} {
     %3 = transform.apply_registered_pass "cse" to %func : (!transform.any_op) -> !transform.any_op
     %4 = transform.apply_registered_pass "canonicalize" to %3 : (!transform.any_op) -> !transform.any_op
 
-    %f = transform.apply_registered_pass "convert-vector-to-scf" to %4 : (!transform.any_op) -> !transform.any_op
+    // Add these after bufferization to hoist allocations out of loops
+    %b10 = transform.apply_registered_pass "buffer-hoisting" to %4 : (!transform.any_op) -> !transform.any_op
+    %c10 = transform.apply_registered_pass "buffer-loop-hoisting" to %b10 : (!transform.any_op) -> !transform.any_op
+    // %d10 = transform.apply_registered_pass "buffer-deallocation" to %c10 : (!transform.any_op) -> !transform.any_op
+
+
+    // Now time to lower vectors.
+    %fff = transform.structured.match ops{["func.func"]} in %c10 : (!transform.any_op) -> !transform.any_op
+
+    // TODO: group these lower-level controls into various properly named vector
+    // lowering TD macros.
+    transform.apply_patterns to %fff {
+      transform.apply_patterns.vector.lower_contraction lowering_strategy = "outerproduct"
+      transform.apply_patterns.vector.lower_outerproduct
+      transform.apply_patterns.vector.transfer_permutation_patterns
+      // transform.apply_patterns.vector.reorder_and_expand_multi_reduction_dims lowering_strategy = "innerparallel"
+      // transform.apply_patterns.vector.multi_reduction_flattening lowering_strategy = "innerparallel"
+      // transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerparallel"
+      transform.apply_patterns.vector.split_transfer_full_partial split_transfer_strategy = "linalg-copy"
+      transform.apply_patterns.vector.transfer_to_scf max_transfer_rank = 4 full_unroll = true
+      transform.apply_patterns.vector.lower_transfer max_transfer_rank = 1
+      transform.apply_patterns.vector.lower_shape_cast
+      transform.apply_patterns.vector.lower_transpose lowering_strategy = "shuffle_1d"
+    } : !transform.any_op
+
+    // Now time to lower to LLVM
+    %f = transform.apply_registered_pass "convert-vector-to-scf" to %fff : (!transform.any_op) -> !transform.any_op
     %f2 = transform.apply_registered_pass "convert-linalg-to-loops" to %f : (!transform.any_op) -> !transform.any_op
-    %f3 = transform.apply_registered_pass "convert-scf-to-cf" to %f2 : (!transform.any_op) -> !transform.any_op
+
+    // IMPORTANT: convert-vector-to-scf creates new allocations for vector transfers.
+    // We must run buffer-loop-hoisting again to move these out of loops,
+    // otherwise we get stack overflow from allocas inside loops.
+    %fh1 = transform.apply_registered_pass "buffer-loop-hoisting" to %f2 : (!transform.any_op) -> !transform.any_op
+    %fh2 = transform.apply_registered_pass "promote-buffers-to-stack" to %fh1 : (!transform.any_op) -> !transform.any_op
+
+    %f3 = transform.apply_registered_pass "convert-scf-to-cf" to %fh2 : (!transform.any_op) -> !transform.any_op
     %f4 = transform.apply_registered_pass "expand-strided-metadata" to %f3 : (!transform.any_op) -> !transform.any_op
     %f5 = transform.apply_registered_pass "lower-affine" to %f4 : (!transform.any_op) -> !transform.any_op
+    %f5b = transform.apply_registered_pass "convert-vector-to-llvm" with options = {"reassociate-fp-reductions" = false} to %f5 : (!transform.any_op) -> !transform.any_op
 
-    transform.apply_conversion_patterns to %f5 {
+    transform.apply_conversion_patterns to %f5b {
       transform.apply_conversion_patterns.dialect_to_llvm "math"
       transform.apply_conversion_patterns.vector.vector_to_llvm
       transform.apply_conversion_patterns.dialect_to_llvm "memref"
@@ -210,9 +251,21 @@ struct RockLowerCpuVerifierPass
     func::registerTransformDialectExtension(registry);
     memref::registerTransformDialectExtension(registry);
 
-    // Register ValueBoundsOpInterface for SCF dialect, required by
-    // transform.structured.tile_using_for
+    // Register ValueBoundsOpInterface for dialects, required by
+    // transform.structured.tile_using_for and other tiling transforms
+    affine::registerValueBoundsOpInterfaceExternalModels(registry);
+    arith::registerValueBoundsOpInterfaceExternalModels(registry);
     scf::registerValueBoundsOpInterfaceExternalModels(registry);
+    tensor::registerValueBoundsOpInterfaceExternalModels(registry);
+
+    // Register BufferizableOpInterface and SubsetOpInterface for vector dialect,
+    // required by one_shot_bufferize when vector ops are present
+    vector::registerBufferizableOpInterfaceExternalModels(registry);
+    vector::registerSubsetOpInterfaceExternalModels(registry);
+
+    // Register AllocationOpInterface for memref dialect,
+    // required by buffer-hoisting and buffer-loop-hoisting passes
+    memref::registerAllocationOpInterfaceExternalModels(registry);
   }
 
   void runOnOperation() override;

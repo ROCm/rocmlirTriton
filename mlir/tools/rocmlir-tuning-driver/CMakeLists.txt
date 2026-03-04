@@ -13,6 +13,8 @@ set(LIBS
   MLIRParser
   MLIRAnalysis
   MLIRFuncInlinerExtension
+  MLIRVectorToLLVM
+  MLIRVectorToLLVMPass
 
   TritonIR
   TritonGPUIR

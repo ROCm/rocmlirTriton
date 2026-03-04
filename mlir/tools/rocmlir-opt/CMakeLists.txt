@@ -19,6 +19,8 @@ set(LIBS
   MLIROptLib
   MLIRAnalysis
   MLIRFuncInlinerExtension
+  MLIRVectorToLLVM
+  MLIRVectorToLLVMPass
 
   TritonIR
   TritonGPUIR
