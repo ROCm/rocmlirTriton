@@ -476,7 +476,9 @@ struct ElementwiseRegionFinder {
     for (Operation *op : visitedOps) {
       regionBuilder.clone(*op, mapper);
     }
-    rock::YieldOp::create(regionBuilder, loc);
+    // Yield the final value of the elementwise chain, consistent with
+    // rocmlir-gen which yields the result from preSecondGemmBody regions.
+    rock::YieldOp::create(regionBuilder, loc, mapper.lookupOrDefault(input));
   }
 
 private:
