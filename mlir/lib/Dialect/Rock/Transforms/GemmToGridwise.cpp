@@ -1104,6 +1104,10 @@ LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
 }
 
 void RockGemmToGridwisePass::runOnOperation() {
+  func::FuncOp funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
 

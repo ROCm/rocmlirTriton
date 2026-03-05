@@ -2,7 +2,7 @@
 // TODO(rocmlirTriton): Fusions need rework
 
 
-// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
+// RUN: rocmlir-driver -pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
 // CHECK: gfx942
 // CHECK-SAME: 304
 // CHECK-SAME: -t f16 -transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 32 -num_heads_kv 8 -g 1 -seq_len_q 1 -seq_len_k 64 -head_dim_qk 128 -head_dim_v 128

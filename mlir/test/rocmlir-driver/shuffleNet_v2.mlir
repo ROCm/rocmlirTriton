@@ -1,5 +1,5 @@
 // The test was extracted from the ShuffleNet_V2 model of MIGraphX. https://github.com/ROCm/AMDMIGraphX/issues/2315
-// RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | rocmlir-opt
+// RUN: rocmlir-driver -pipeline migraphx,highlevel %s | rocmlir-opt
 
 module {
   func.func @mlir_reshape_transpose_reshape_convolution_add_relu(%arg0: !migraphx.shaped<1x116x1x1xf32, 116x1x1x1>, %arg1: !migraphx.shaped<1x116x28x28xf32, 90944x784x28x1>, %arg2: !migraphx.shaped<116x116x1x1xf32, 116x1x1x1>) -> !migraphx.shaped<1x116x28x28xf32, 90944x784x28x1> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", rock.num_cu = 48 : i64} {

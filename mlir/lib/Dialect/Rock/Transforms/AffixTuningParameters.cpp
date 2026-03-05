@@ -58,6 +58,9 @@ private:
 
 void AffixTuningParameters::runOnOperation() {
   func::FuncOp func = getOperation();
+  if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
   // currently, in rocMLIR we only support one Fusion Root per function.
   // Therefore we check for that here. Note that rocMLIR does generate multiple
   // kernels for the conv_bwd_data but that decomposition happens later in the

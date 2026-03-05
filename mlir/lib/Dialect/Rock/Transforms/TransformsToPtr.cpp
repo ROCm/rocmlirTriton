@@ -130,6 +130,10 @@ struct BlockwiseStoreTileRewritePattern
 } // end anonymous namespace
 
 void RockTransformsToPtrPass::runOnOperation() {
+  func::FuncOp funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
   target.addIllegalOp<BlockwiseLoadOp, BlockwiseStoreOp>();

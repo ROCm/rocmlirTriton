@@ -1291,6 +1291,10 @@ struct GridwiseAttentionRewritePattern
 } // end anonymous namespace
 
 void RockGridwiseAttnToBlockwisePass::runOnOperation() {
+  func::FuncOp funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
   target.addIllegalOp<GridwiseAttentionOp>();

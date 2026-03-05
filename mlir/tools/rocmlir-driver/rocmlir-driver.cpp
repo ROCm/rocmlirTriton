@@ -49,24 +49,17 @@ static cl::opt<std::string> outputFilename("o", cl::desc("Output filename"),
                                            cl::value_desc("filename"),
                                            cl::init("-"));
 
-static cl::opt<std::string> kernelPipeline(
-    "kernel-pipeline", cl::desc("rocmlir-driver kernel pipeline list"),
+static cl::opt<std::string> pipeline(
+    "pipeline", cl::desc("rocmlir-driver pipeline list"),
     cl::value_desc("comma separated list of rock pipelines: "
                    "migraphx,highlevel,gpu,rocdl,binary or full"),
     cl::init(""));
-
-static cl::opt<std::string>
-    hostPipeline("host-pipeline", cl::desc("rocmlir-driver host pipeline list"),
-                 cl::value_desc("comma separated list of rock pipelines: "
-                                "migraphx,highlevel,runner or full"),
-                 cl::init(""));
 
 static cl::opt<bool> legacyRockPipeline("c", cl::Hidden, cl::init(false),
                                         cl::Optional,
                                         cl::cb<void, bool>([](bool v) {
                                           if (v) {
-                                            kernelPipeline.setValue("full");
-                                            hostPipeline.setValue("runner");
+                                            pipeline.setValue("full");
                                           }
                                         }));
 
@@ -84,16 +77,6 @@ static cl::opt<int> gpuOpt("gO",
                            cl::desc("Optimization level for GPU compilation"),
                            cl::value_desc("Integer from 0 to 3"), cl::init(3));
 
-static cl::opt<bool> barePointers(
-    "bare-ptr-memref-kernels",
-    cl::desc("Use bare pointers to represent memrefs when calling kernels"),
-    cl::init(true));
-
-static cl::opt<bool> hostAsyncCoroutines(
-    "host-async-coroutines",
-    cl::desc("Use coroutines when lowering async ops to LLVM"),
-    // FIXME: This should be true to match upstream
-    cl::init(false));
 
 static cl::opt<std::string> targets("targets", cl::desc("list of target"),
                                     cl::init(""));
@@ -130,42 +113,15 @@ parsePipeline(StringRef pipeline, llvm::SmallDenseSet<StringRef> &pipelineSet,
   return success();
 }
 
-static LogicalResult runHostHighLevelPipeline(ModuleOp m) {
-  // Setup pass manager
-  PassManager pm(m->getName(), PassManager::Nesting::Implicit);
-  if (failed(applyPassManagerCLOptions(pm)))
-    return failure();
-
-  // Add verification passes
-  pm.enableVerifier(verifyPasses);
-
-  // Set disableRock to true since we are just running on the host
-  rock::BufferizeOptions opts;
-  opts.disableRock = true;
-
-  // Run the bufferize pipeline
-  rock::buildBufferizePipeline(pm, opts);
-
-  if (dumpPipelines) {
-    llvm::errs() << "Host pipeline:\n";
-    pm.printAsTextualPipeline(llvm::errs());
-    llvm::errs() << "\n";
-    if (m.getBody()->empty())
-      return success();
-  }
-
-  return pm.run(m);
-}
-
 static LogicalResult
-runKernelPipeline(StringRef arch, ModuleOp m,
-                  llvm::SmallDenseSet<StringRef> &kernelPipelineSet) {
+runPipeline(StringRef arch, ModuleOp m,
+            llvm::SmallDenseSet<StringRef> &pipelineSet) {
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
   pm.enableVerifier(verifyPasses);
-  bool needArch = kernelPipelineSet.contains("rocdl") ||
-                  kernelPipelineSet.contains("binary");
+  bool needArch = pipelineSet.contains("rocdl") ||
+                  pipelineSet.contains("binary");
   RocmDeviceName devName;
   if (arch.empty() && needArch) {
     llvm::errs()
@@ -178,11 +134,11 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     return failure();
   }
 
-  if (kernelPipelineSet.contains("migraphx")) {
+  if (pipelineSet.contains("migraphx")) {
     migraphx::addHighLevelPipeline(pm);
   }
 
-  if (kernelPipelineSet.contains("highlevel")) {
+  if (pipelineSet.contains("highlevel")) {
     rock::buildBufferizePipeline(pm);
   }
   rock::TritonOptions tritonOpts;
@@ -198,8 +154,8 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     return failure();
   }
   backendOpts.optLevel = optLevel;
-  bool isRocdlOnly = kernelPipelineSet.contains("rocdl") &&
-                     !kernelPipelineSet.contains("binary");
+  bool isRocdlOnly = pipelineSet.contains("rocdl") &&
+                     !pipelineSet.contains("binary");
   backendOpts.compile = !isRocdlOnly;
 
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
@@ -236,23 +192,23 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   }
 
   // Set up lowering pipeline.
-  if (kernelPipelineSet.contains("gpu")) {
+  if (pipelineSet.contains("gpu")) {
     // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
     opts.arch = arch.str();
     rock::buildKernelPipeline(pm, opts);
   }
-  if (kernelPipelineSet.contains("triton")) {
+  if (pipelineSet.contains("triton")) {
 
     rock::buildTritonPipeline(pm, tritonOpts);
   }
-  if (kernelPipelineSet.contains("binary") || isRocdlOnly) {
+  if (pipelineSet.contains("binary") || isRocdlOnly) {
 
     rock::buildBackendPipeline(pm, backendOpts);
   }
 
   if (dumpPipelines) {
-    llvm::errs() << "Kernel pipeline:\n";
+    llvm::errs() << "Pipeline:\n";
     pm.printAsTextualPipeline(llvm::errs());
     llvm::errs() << "\n";
 
@@ -298,34 +254,15 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     arch = canonicalArch.str().str();
   }
 
-  llvm::SmallDenseSet<StringRef> kernelPipelineOptions{
+  llvm::SmallDenseSet<StringRef> pipelineOptions{
       "migraphx", "highlevel", "gpu", "rocdl", "binary", "triton"};
-  llvm::SmallDenseSet<StringRef> kernelFullPipeline{"gpu", "triton", "binary"};
-  llvm::SmallDenseSet<StringRef> kernelPipelineSet;
-  std::string kernelPipelineStr = kernelPipeline.getValue();
-  if (failed(parsePipeline(kernelPipelineStr, kernelPipelineSet,
-                           kernelPipelineOptions, kernelFullPipeline))) {
+  llvm::SmallDenseSet<StringRef> fullPipeline{"gpu", "triton", "binary"};
+  llvm::SmallDenseSet<StringRef> pipelineSet;
+  std::string pipelineStr = pipeline.getValue();
+  if (failed(parsePipeline(pipelineStr, pipelineSet,
+                           pipelineOptions, fullPipeline))) {
     return failure();
   }
-  llvm::SmallDenseSet<StringRef> hostPipelineOptions{"migraphx", "highlevel",
-                                                     "runner"};
-  llvm::SmallDenseSet<StringRef> hostPipelineSet;
-  std::string hostPipelineStr = hostPipeline.getValue();
-  if (failed(parsePipeline(hostPipelineStr, hostPipelineSet,
-                           hostPipelineOptions, hostPipelineOptions))) {
-    return failure();
-  }
-
-  if (hostPipelineSet.contains("migraphx")) {
-    PassManager pm(module->getName(), PassManager::Nesting::Implicit);
-    migraphx::addHighLevelPipeline(pm);
-    if (failed(pm.run(module))) {
-      return failure();
-    }
-  }
-
-  bool isHighLevel = hostPipelineSet.contains("highlevel") ||
-                     kernelPipelineSet.contains("highlevel");
 
   StringRef onlyArch;
   if (!targetList.empty())
@@ -333,33 +270,22 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   else
     onlyArch = arch;
 
-  StringRef targetArch = onlyArch;
   bool hasKernels = false;
-  // Right now we need to update the target architecture used when we
-  // are running the kernel pipeline, or if we are running the highlevel host
-  // pipeline.
-  bool needsTargetArchUpdate =
-      !kernelPipelineSet.empty() || hostPipelineSet.contains("highlevel");
-  if (needsTargetArchUpdate) {
-    LogicalResult kernelResult = success();
-    // If sub-modules exists with kernel.chip specified and in set
-    // of targetChips, run KernelPipeline
-    module->walk([&](ModuleOp kernelModule) {
-      auto archAttr = kernelModule->getAttrOfType<StringAttr>(
+  if (!pipelineSet.empty()) {
+    LogicalResult pipelineResult = success();
+    // If sub-modules exist with rock.arch specified and in set
+    // of targetChips, run pipeline on those sub-modules
+    module->walk([&](ModuleOp subModule) {
+      auto archAttr = subModule->getAttrOfType<StringAttr>(
           rock::ArchAttr::getMnemonic());
       hasKernels |= (bool)archAttr;
       if (archAttr && llvm::find(targetList, archAttr.getValue())) {
-        kernelResult = runKernelPipeline(archAttr.getValue(), kernelModule,
-                                         kernelPipelineSet);
-        // Run host high-level pipeline if specified
-        if (hostPipelineSet.contains("highlevel"))
-          kernelResult = runHostHighLevelPipeline(kernelModule);
-
-        targetArch = archAttr.getValue();
+        pipelineResult = runPipeline(archAttr.getValue(), subModule,
+                                     pipelineSet);
       }
     });
     if (!hasKernels) {
-      // If no sub-modules, run KernelPipeline on top-level module
+      // If no sub-modules, run pipeline on top-level module
       if (onlyArch.empty()) {
         if (module->hasAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic())) {
           onlyArch =
@@ -367,15 +293,10 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                   .getValue();
         }
       }
-      targetArch = onlyArch;
-      kernelResult = runKernelPipeline(onlyArch, module, kernelPipelineSet);
-
-      // Run host high-level pipeline if specified
-      if (hostPipelineSet.contains("highlevel"))
-        kernelResult = runHostHighLevelPipeline(module);
+      pipelineResult = runPipeline(onlyArch, module, pipelineSet);
     }
-    if (failed(kernelResult))
-      return kernelResult;
+    if (failed(pipelineResult))
+      return pipelineResult;
   } else {
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
     if (failed(applyPassManagerCLOptions(pm)))
@@ -401,77 +322,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       return failure();
     }
   }
-
-  // Run Bufferization on the top module
-  if (isHighLevel && hasKernels) {
-    PassManager pm(module->getName(), PassManager::Nesting::Implicit);
-    if (failed(applyPassManagerCLOptions(pm)))
-      return failure();
-    pm.enableVerifier(verifyPasses);
-    rock::BufferizeOptions opts;
-    opts.disableRock = true;
-    rock::buildBufferizePipeline(pm, opts);
-
-    if (dumpPipelines) {
-      llvm::errs() << "Bufferization pipeline:\n";
-      pm.printAsTextualPipeline(llvm::errs());
-      llvm::errs() << "\n";
-      if (module.getBody()->empty())
-        return success();
-    }
-    if (failed(pm.run(module))) {
-      return failure();
-    }
-  }
-
-  // Run MHAL generation on the top module
-  /*
-  if (hostPipelineSet.contains("mhal")) {
-    PassManager pm(module.getContext());
-    if (failed(applyPassManagerCLOptions(pm)))
-      return failure();
-    pm.enableVerifier(verifyPasses);
-    mhal::buildPackagePipeline(pm);
-    if (dumpPipelines) {
-      llvm::errs() << "MHAL package pipeline:\n";
-      pm.printAsTextualPipeline(llvm::errs());
-      llvm::errs() << "\n";
-    }
-    if (failed(pm.run(module))) {
-      return failure();
-    }
-  }*/
-
-  // Run host code lowering that makes the result of this operation accetable
-  // to mlir-runner. Explicitly aborts in the case of multiple mhal
-  // targets to prevent confusing behavior.
-  /*if (hostPipelineSet.contains("runner")) {
-    if (targetList.size() > 1) {
-      llvm::errs() << "Expected at most one mhal target when compling from "
-                      "within rocmlir-driver\n";
-      return failure();
-    }
-    PassManager pm(module->getName(), PassManager::Nesting::Implicit);
-    if (failed(applyPassManagerCLOptions(pm)))
-      return failure();
-    pm.enableVerifier(verifyPasses);
-    mhal::RunnerOptions runnerOptions;
-    runnerOptions.barePtrMemrefs = barePointers.getValue();
-    runnerOptions.enableCoroutines = hostAsyncCoroutines.getValue();
-    SmallVector<std::string, 4> targetTypes{"GPU"};
-    SmallVector<std::string, 4> targetArchs;
-    targetArchs.push_back(targetArch.str());
-    runnerOptions.targetTypes = targetTypes;
-    runnerOptions.targetArchs = targetArchs;
-    mhal::buildRunnerPipeline(pm, runnerOptions);
-    if (dumpPipelines) {
-      llvm::errs() << "Host runner pipeline:\n";
-      pm.printAsTextualPipeline(llvm::errs());
-      llvm::errs() << "\n";
-    }
-    if (failed(pm.run(module)))
-      return failure();
-  }*/
 
   // Clean up
   module->walk(

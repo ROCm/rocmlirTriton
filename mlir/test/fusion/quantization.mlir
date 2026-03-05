@@ -1,7 +1,7 @@
 // UNSUPPORTED: true
 // TODO(rocmlirTriton): Fusions need rework
 
-// RUN: rocmlir-driver -kernel-pipeline highlevel -arch gfx906 %s | FileCheck %s
+// RUN: rocmlir-driver -pipeline highlevel -arch gfx906 %s | FileCheck %s
 
 // CHECK-LABEL: test_conv_with_cast
 // CHECK: arith.sitofp {{.*}} : i32 to f32

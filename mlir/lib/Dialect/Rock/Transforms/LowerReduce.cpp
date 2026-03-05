@@ -161,6 +161,10 @@ struct RockLowerReduce
 } // namespace
 
 void RockLowerReduce::runOnOperation() {
+  func::FuncOp funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
   MLIRContext *ctx = &getContext();
 
   ConversionTarget target(*ctx);

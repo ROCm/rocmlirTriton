@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | FileCheck %s
+// RUN: rocmlir-driver -pipeline migraphx,highlevel %s | FileCheck %s
 
 // CHECK-LABEL: @convNHWC
 // CHECK-SAME: tensor<100xf32>

@@ -38,7 +38,7 @@ public:
   void runOnOperation() override {
     auto func = getOperation();
     if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
-      llvm::report_fatal_error("func op does not have the kernel attribute");
+      return; // Skip non-kernel functions gracefully
     }
     auto &ctx = getContext();
     // Split patterns into two stages by bufferization

@@ -279,6 +279,9 @@ struct RockRegularizeOutput
 // so identical operands (e.g. arith.addf %x, %x) share the same result.
 void RockRegularizeOutput::runOnOperation() {
   func::FuncOp funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
   OpBuilder builder(funcOp.getContext());
 
   SmallVector<Operation *> fusionRoots;

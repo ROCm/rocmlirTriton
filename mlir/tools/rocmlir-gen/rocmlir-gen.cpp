@@ -4810,23 +4810,67 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       exit(1);
     }
   } else { // clone
-    // Clone the kernel-calling function.  EmulateFp8ExtTrunc3
-    //  will call the appropriate
-    // binary kernel from the mhal.launch ops;  here, we'll replace those with
-    // func.call which will get the MLIR kernel.  No redirection of callees
-    // needed.
+    // Clone the wrapper function for CPU verification.
+    // The original wrapper calls the GPU kernel; the clone must call
+    // the _cpu version instead so it runs on the host for comparison.
     auto *cloneFunc = func->clone();
     insertPrefills(static_cast<func::FuncOp>(func));
-    undoAsyncLaunchPass(cloneFunc);
     SymbolOpInterface cloneFuncOp = dyn_cast<SymbolOpInterface>(cloneFunc);
     SmallString<128> nameBuffer(cloneFuncOp.getName());
     nameBuffer += "_cloned";
     cloneFuncOp.setName(nameBuffer);
     cloneFunc->removeAttr(rock::KernelAttr::getMnemonic());
+
+    // Redirect any func.call ops inside the clone from @kernel to @kernel_cpu
+    // so the clone runs on CPU instead of GPU.
+    cloneFunc->walk([&](func::CallOp callOp) {
+      StringRef callee = callOp.getCallee();
+      // Look up the callee; if it has rock.kernel, redirect to _cpu version
+      if (auto calledFunc = module.lookupSymbol<func::FuncOp>(callee)) {
+        if (calledFunc->hasAttr(rock::KernelAttr::getMnemonic())) {
+          std::string cpuName = (callee + "_cpu").str();
+          if (module.lookupSymbol<func::FuncOp>(cpuName)) {
+            callOp.setCallee(cpuName);
+          }
+        }
+      }
+    });
+
     SymbolTable symbolTable(module);
     symbolTable.insert(cloneFunc);
-    func::CallOp::create(b, loc, SymbolRefAttr::get(cloneFunc), TypeRange{},
-                         valVars);
+
+    // Call the cloned function with proper type conversion.
+    // After the highlevel pipeline, the clone has tensor-typed parameters
+    // but valVars are memref-typed, so we need memref->tensor conversion.
+    auto clonedFuncOp = dyn_cast<func::FuncOp>(cloneFunc);
+    bool cloneExpectsTensors =
+        clonedFuncOp && !clonedFuncOp.getArgumentTypes().empty() &&
+        isa<TensorType>(clonedFuncOp.getArgumentTypes().front());
+    if (cloneExpectsTensors) {
+      // Only pass the function's actual arguments, not extra output buffers.
+      size_t numCloneArgs = clonedFuncOp.getNumArguments();
+      SmallVector<Value, 8> tensorArgs;
+      for (size_t idx = 0; idx < numCloneArgs && idx < valVars.size(); ++idx) {
+        bool isWritable = llvm::is_contained(outIndices, idx);
+        tensorArgs.push_back(
+            rock::getAsTensor(b, loc, valVars[idx], isWritable));
+      }
+      auto callOp =
+          func::CallOp::create(b, loc, clonedFuncOp, tensorArgs);
+      for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
+        if (resultIdx < static_cast<size_t>(outIndices.size())) {
+          int32_t outIdx = outIndices[resultIdx];
+          auto outMemrefType =
+              cast<MemRefType>(valVars[outIdx].getType());
+          Value resultMemref = bufferization::ToBufferOp::create(
+              b, loc, outMemrefType, result);
+          memref::CopyOp::create(b, loc, resultMemref, valVars[outIdx]);
+        }
+      }
+    } else {
+      func::CallOp::create(b, loc, SymbolRefAttr::get(cloneFunc), TypeRange{},
+                           valVars);
+    }
   }
 
   // Emit call to verifier
@@ -5034,38 +5078,63 @@ static LogicalResult populateHostHarnessLogic(
 
   // capture result index
   if (outIndices.empty()) {
-    outIndices.push_back(localVars.size() - 1);
+    if (!root0.resultTypes.empty()) {
+      // Function returns results (tensor-based).
+      // Allocate output memrefs matching the result types and add them
+      // to localVars/valVars so the verifier can compare them.
+      for (Type resultType : root0.resultTypes) {
+        auto shapedType = dyn_cast<ShapedType>(resultType);
+        assert(shapedType && "result type must be shaped");
+        auto outMemrefType =
+            MemRefType::get(shapedType.getShape(), shapedType.getElementType());
+        outIndices.push_back(localVars.size());
+        auto outVar = memref::AllocOp::create(b, loc, outMemrefType);
+        localVars.push_back(outVar);
+        if (hasValidation) {
+          auto valOutVar = memref::AllocOp::create(b, loc, outMemrefType);
+          valVars.push_back(valOutVar);
+        }
+      }
+    } else {
+      outIndices.push_back(localVars.size() - 1);
+    }
   }
 
-  // Helper to call a function with appropriate type conversions
-  // Handles both tensor-based (new) and memref-based (legacy) kernel interfaces
-  // If willBeWrapped is true, the call will be redirected to a GPU wrapper that
-  // expects memref arguments and handles tensor conversion internally.
+  // Helper to call a function with appropriate type conversions.
+  // Handles both tensor-based and memref-based function interfaces.
+  // If the callee expects tensors, converts memref args to tensors,
+  // calls the function, and copies results back to output memrefs.
+  // RestoreHostCode will later replace func.call @kernel with gpu.launch_func.
   auto callFuncWithConversion = [&](func::FuncOp callee,
                                     SmallVectorImpl<Value> &memrefArgs,
-                                    ArrayRef<int32_t> outputIndices,
-                                    bool willBeWrapped = false) {
+                                    ArrayRef<int32_t> outputIndices) {
     // Check if the function expects tensor arguments by looking at first arg
     bool expectsTensors =
-        !willBeWrapped && !callee.getArgumentTypes().empty() &&
+        !callee.getArgumentTypes().empty() &&
         isa<TensorType>(callee.getArgumentTypes().front());
 
     if (expectsTensors) {
-      // Convert memrefs to tensors for the call
+      // Convert memrefs to tensors for the call.
+      // Only pass the function's actual arguments (memrefArgs may contain
+      // extra output buffers for storing function results).
+      size_t numCalleeArgs = callee.getNumArguments();
       SmallVector<Value, 8> tensorArgs;
-      for (auto [idx, memrefArg] : llvm::enumerate(memrefArgs)) {
+      for (size_t idx = 0; idx < numCalleeArgs && idx < memrefArgs.size();
+           ++idx) {
         bool isWritable = llvm::is_contained(outputIndices, idx);
-        tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, isWritable));
+        tensorArgs.push_back(
+            rock::getAsTensor(b, loc, memrefArgs[idx], isWritable));
       }
 
       // Call the function with tensor arguments
       auto callOp = func::CallOp::create(b, loc, callee, tensorArgs);
 
-      // If the function returns results, store them back to output memrefs
+      // If the function returns results, store them back to output memrefs.
+      // The output memrefs may be at indices >= numCalleeArgs (allocated
+      // for function return values) or at argument indices (in-place outputs).
       for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-        if (resultIdx < outputIndices.size()) {
+        if (resultIdx < static_cast<size_t>(outputIndices.size())) {
           int32_t outIdx = outputIndices[resultIdx];
-          // Convert result tensor to memref and copy to output
           auto outMemrefType =
               cast<MemRefType>(memrefArgs[outIdx].getType());
           Value resultMemref = bufferization::ToBufferOp::create(
@@ -5073,12 +5142,8 @@ static LogicalResult populateHostHarnessLogic(
           memref::CopyOp::create(b, loc, resultMemref, memrefArgs[outIdx]);
         }
       }
-    } else if (willBeWrapped) {
-      // Call will be redirected to GPU wrapper which expects memrefs
-      // Create call with explicit memref types (callee signature is tensor-based)
-      func::CallOp::create(b, loc, callee.getSymName(), TypeRange{}, memrefArgs);
     } else {
-      // Legacy memref-based interface - call directly
+      // Memref-based interface - call directly
       func::CallOp::create(b, loc, callee, memrefArgs);
     }
   };
@@ -5091,9 +5156,17 @@ static LogicalResult populateHostHarnessLogic(
           return k.func == root.func;
         }) != kernels.end();
     if (rootKernel) {
-      // rootKernel calls will be redirected to GPU wrapper, which expects memrefs
-      callFuncWithConversion(root.func, localVars, outIndices,
-                             /*willBeWrapped=*/true);
+      // Create a direct call with memref args. This call targets the kernel
+      // by name but will be redirected to the GPU wrapper (which has
+      // memref-typed parameters) after the wrapper is created below.
+      func::FuncOp rootFunc = root.func;
+      func::CallOp::create(b, loc, rootFunc.getName(), TypeRange{},
+                           localVars);
+    } else if (hasCloneValidation) {
+      // Clone validation: call the root (wrapper) with localVars so that
+      // GPU output goes to localVars. The clone will be called with valVars
+      // by insertValidationCalls, so we can compare localVars vs valVars.
+      callFuncWithConversion(root.func, localVars, outIndices);
     } else if (!valVars.empty()) {
       callFuncWithConversion(root.func, valVars, outIndices);
       if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {
@@ -5505,43 +5578,34 @@ static void populateCloneHarnessLogic(ModuleOp module) {
 
   MLIRContext *context = module.getContext();
   OpBuilder b(context);
-
-  originalFunc->removeAttr(rock::KernelAttr::getMnemonic());
   StringAttr archAttr = b.getStringAttr(arch);
-  if (originalFunc->hasAttr(rock::ArchAttr::getMnemonic()))
-    originalFunc->setAttr(rock::ArchAttr::getMnemonic(), archAttr);
-  // TODO(roctriton): mhal
-  // auto readAttr = b.getNamedAttr(mhal::MHALDialect::getReadAccessAttrName(),
-  //                                b.getUnitAttr());
-  // auto writeAttr =
-  // b.getNamedAttr(mhal::MHALDialect::getWriteAccessAttrName(),
-  //                                 b.getUnitAttr());
-  // for (size_t index = 0; index < originalFunc.getArguments().size(); index++)
-  //   originalFunc.setArgAttrs(index, readAttr);
-  // for (size_t index = 0; index < originalFunc.getNumResults(); index++)
-  //   originalFunc.setResultAttrs(index, writeAttr);
   auto loc = originalFunc->getLoc();
+
+  // Mark the original function as a GPU kernel.
+  // It keeps its rock.arch (set it if not already present).
+  originalFunc->setAttr(rock::KernelAttr::getMnemonic(), b.getUnitAttr());
+  originalFunc->setAttr(rock::ArchAttr::getMnemonic(), archAttr);
+
+  // Create a CPU clone for verification (no kernel attr).
+  // The highlevel pipeline will lower this through linalg instead of rock.
+  auto *cpuClone = originalFunc->clone();
+  auto cpuFunc = dyn_cast<func::FuncOp>(cpuClone);
+  cpuFunc.setName(testFuncName + "_cpu");
+  cpuFunc->removeAttr(rock::KernelAttr::getMnemonic());
+  cpuFunc->removeAttr(rock::ArchAttr::getMnemonic());
+  module.push_back(cpuFunc);
+
+  // Create a wrapper that calls the GPU kernel.
+  // SerializeHostFuncs/RestoreHostCode will later convert this func.call
+  // to gpu.launch_func for GPU dispatch.
   auto wrapperFunc = func::FuncOp::create(loc, testFuncName + "_wrapper",
                                           originalFunc.getFunctionType());
   Block *block = wrapperFunc.addEntryBlock();
   b.setInsertionPointToStart(block);
-  // TODO(roctriton): mhal
-  // auto launchOp = mhal::LaunchOp::create(b, loc, originalFunc, ValueRange{},
-  //                                        block->getArguments());
-  // auto results = launchOp->getResults();
-  // mhal::AwaitOp::create(b, loc, results.front());
-  // func::ReturnOp::create(b, loc, ValueRange{results.drop_front()});
+  auto callOp =
+      func::CallOp::create(b, loc, originalFunc, block->getArguments());
+  func::ReturnOp::create(b, loc, callOp.getResults());
   module.push_back(wrapperFunc);
-
-  auto xmoduleOp = ModuleOp::create(loc, "__xmodule_");
-  xmoduleOp->setAttr(rock::ArchAttr::getMnemonic(), archAttr);
-  xmoduleOp->setAttr("mhal.module", b.getUnitAttr());
-  auto *cloneFunc = originalFunc->clone();
-  auto cloneFuncOp = dyn_cast<func::FuncOp>(cloneFunc);
-  cloneFuncOp->setAttr(rock::KernelAttr::getMnemonic(), b.getUnitAttr());
-  cloneFuncOp->setAttr("original_func", SymbolRefAttr::get(originalFunc));
-  xmoduleOp.push_back(cloneFuncOp);
-  module.push_back(xmoduleOp);
 }
 
 int main(int argc, char **argv) {
@@ -5723,7 +5787,10 @@ int main(int argc, char **argv) {
   } else if (!genCloneHarness.getValue()) {
     auto func = module->lookupSymbol<func::FuncOp>(testFuncName);
     assert(func && "does -fut point to the wrong function?");
-    kernels.emplace_back(func); // +++pf: should it be a kernel?
+    // Only add to kernels if it actually has the rock.kernel attribute.
+    // The wrapper function (e.g. mlir_convolution_wrapper) is not a kernel.
+    if (func->hasAttr(rock::KernelAttr::getMnemonic()))
+      kernels.emplace_back(func);
     rootIFs.emplace_back(func);
   }
 

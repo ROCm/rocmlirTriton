@@ -1,4 +1,4 @@
-// RUN: rocmlir-gen -fut add --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline highlevel | rocmlir-gen -print-results -ph -fut add -rand 1 -rand_type float - | rocmlir-driver -host-pipeline mhal | xmir-runner --mlir-disable-threading --target-type cpu --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext -entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut add --arch %arch --clone-harness %s | rocmlir-driver -pipeline=highlevel | rocmlir-gen -print-results -ph -fut add -rand 1 -rand_type float - | rocmlir-driver | xmir-runner --mlir-disable-threading --target-type cpu --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext -entry-point-result=void | FileCheck %s
 
 
 module {

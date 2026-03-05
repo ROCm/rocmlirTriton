@@ -1378,6 +1378,10 @@ template struct ConvRewritePattern<ConvBwdDataOp>;
 template struct ConvRewritePattern<ConvBwdWeightOp>;
 
 void RockConvToGemmPass::runOnOperation() {
+  func::FuncOp funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
   MLIRContext *ctx = &getContext();
   RewritePatternSet preConvToGemmPatterns(ctx);
   preConvToGemmPatterns.add<MatchLayoutsToInput, MatchFilterToInput>(ctx);

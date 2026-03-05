@@ -1,5 +1,5 @@
 // REQUIRES: rocm-runner
-// RUN: rocmlir-driver -dump-pipelines -host-pipeline=runner -arch=gfx90a /dev/null -o /dev/null 2>&1 | FileCheck %s --check-prefix=RUNNER
+// RUN: rocmlir-driver -dump-pipelines -arch=gfx90a /dev/null -o /dev/null 2>&1 | FileCheck %s --check-prefix=RUNNER
 
 // UNSUPPORTED: true
 // TODO(rocmlirTriton): move the host passes to the runner pipeline

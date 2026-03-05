@@ -11,7 +11,7 @@
 // XXX:    -rock-gridwise-gemm-to-blockwise -rock-blockwise-load-tile-to-threadwise -rock-blockwise-gemm-to-threadwise \
 // XXX:    -canonicalize -rock-threadwise-gemm-lowering -rock-analyze-memory-use \
 // XXX: | FileCheck %s --check-prefixes=ANALYZE
-// XXX: rocmlir-opt %s -split-input-file -rock-kernel-pipeline | FileCheck %s --check-prefixes=GPU
+// XXX: rocmlir-opt %s -split-input-file -rock-pipeline | FileCheck %s --check-prefixes=GPU
 
 // Arbitrary testcase: the tuning parameters are set to prevent needing to go
 // through `-rock-affix-params` and can be replaced as needed.

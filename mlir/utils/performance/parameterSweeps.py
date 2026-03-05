@@ -235,7 +235,7 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
     os.close(gen_to_applicable)
 
     applicability = await asyncio.create_subprocess_exec(paths.mlir_paths.rocmlir_driver_path,
-                                                         '--kernel-pipeline=applicability',
+                                                         '-pipeline=applicability',
                                                          '-',
                                                          stdin=applicable_from_gen,
                                                          stdout=asyncio.subprocess.PIPE,
@@ -264,8 +264,8 @@ Errors = {tune_errs.decode('utf-8')}
 
     runner_from_lowering, lowering_to_runner = os.pipe()
     lowering = await asyncio.create_subprocess_exec(paths.mlir_paths.rocmlir_driver_path,
-                                                    '--kernel-pipeline=full',
-                                                    '--host-pipeline=runner',
+                                                    '-pipeline=full',
+                                                    
                                                     '-',
                                                     stdin=asyncio.subprocess.PIPE,
                                                     stdout=lowering_to_runner,

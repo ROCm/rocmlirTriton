@@ -737,6 +737,10 @@ struct TransformsToPtrRewritePattern
 } // end anonymous namespace
 
 void RockTransformsToPointerArithPass::runOnOperation() {
+  func::FuncOp funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
   target.addIllegalOp<rock::TransformsToPtrOp>();

@@ -2,7 +2,7 @@
 // TODO(rocmlirTriton): Fusions need rework
 
 // RUN: rocmlir-opt --rock-regularize --mlir-print-local-scope %s | FileCheck %s
-// RUN: rocmlir-driver --kernel-pipeline=gpu --arch "gfx908:sramecc+:xnack-"
+// RUN: rocmlir-driver --pipeline=gpu --arch "gfx908:sramecc+:xnack-"
 
 // -----// IR Dump After RockGemmToGridwisePass (rock-gemm-to-gridwise) //----- //
 // CHECK-LABEL: @mlir_dot_mul

@@ -21,6 +21,7 @@
 //
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
@@ -133,6 +134,8 @@ static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
 
 void RockFusionSplitkRegularizationPass::runOnOperation() {
   func::FuncOp func = getOperation();
+  if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
 
   if (failed(rewriteFusionForSplitK(func))) {
     return signalPassFailure();
