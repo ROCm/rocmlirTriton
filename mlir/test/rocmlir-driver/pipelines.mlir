@@ -17,6 +17,8 @@
 // GPU:Kernel pipeline:
 // GPU-NEXT:builtin.module(func.func(rock-affix-params{fallback=false},
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:rock-lower-reduce,
+// GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-regularize-output,
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-conv-to-gemm,
@@ -24,8 +26,6 @@
 // GPU-NEXT:rock-gemm-linalg-splitk-normalization,
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-gemm-to-gridwise,
-// GPU-NEXT:remove-dead-values{canonicalize=true},
-// GPU-NEXT:rock-shuffle-gemm-for-reductions,
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-gridwise-attn-to-blockwise,
 // GPU-NEXT:remove-dead-values{canonicalize=true},

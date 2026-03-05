@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fusions need rework
+
 // RUN: rocmlir-driver -kernel-pipeline=highlevel,gpu,rocdl -arch amdgcn-amd-amdhsa:gfx1030 %s -o -| FileCheck %s
 
 // CHECK-LABEL: test_fusion

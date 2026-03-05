@@ -95,7 +95,6 @@ set(ROCMLIR_TEST_DEPENDS
   rocmlir-lsp-server
   rocmlir-driver
   rocmlir-gen
-  rocmlir-lib-test
   rocmlir-common-python-test-utils
 
   opt

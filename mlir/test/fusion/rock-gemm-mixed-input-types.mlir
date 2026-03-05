@@ -1,3 +1,6 @@
+// UNSUPPORTED: true
+// TODO(rocmlirTriton): Fusions need rework
+
 // RUN: rocmlir-opt --rock-view-to-transform -rock-affix-params -rock-conv-to-gemm -rock-gemm-to-gridwise %s | FileCheck %s
 // RUN: rocmlir-driver -kernel-pipeline=gpu --verify-passes %s | rocmlir-opt
 

@@ -19,7 +19,10 @@ config.test_exec_root = os.path.join(config.mlir_obj_root, 'mlir', 'unittests')
 config.test_source_root = config.test_exec_root
 
 # testFormat: The test format to use to interpret tests.
-config.test_format = lit.formats.GoogleTest(config.llvm_build_mode, 'Tests')
+# GoogleTest format doesn't search recursively, so we need to specify
+# all subdirectories where test executables are located.
+test_sub_dirs = ';'.join([config.llvm_build_mode, 'Dialect/Rock'])
+config.test_format = lit.formats.GoogleTest(test_sub_dirs, 'Tests')
 
 # Propagate the temp directory. Windows requires this because it uses \Windows\
 # if none of these are present.
