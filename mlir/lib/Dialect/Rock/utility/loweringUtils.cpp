@@ -23,6 +23,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseSet.h"
@@ -667,7 +668,7 @@ bool mlir::rock::isFusionOp(Operation *op) {
   return op->getNumOperands() > 0 && op->getNumResults() == 1;
 }
 
-DenseMap<Value, Value> mlir::rock::collectFusionExtraInputs(Value root) {
+FusionInfo mlir::rock::collectFusionInfo(Value root) {
   DenseSet<Value> chainValues;
   chainValues.insert(root);
 
@@ -686,9 +687,12 @@ DenseMap<Value, Value> mlir::rock::collectFusionExtraInputs(Value root) {
     Value current = worklist.pop_back_val();
     for (OpOperand &use : current.getUses()) {
       Operation *owner = use.getOwner();
-      if (!isFusionOp(owner) || !visited.insert(owner).second)
+      if (!(isFusionOp(owner) || isa<ViewLikeOpInterface>(owner)) ||
+          !visited.insert(owner).second)
         continue;
-      fusionOps.push_back(owner);
+      if (isFusionOp(owner))
+        fusionOps.push_back(owner);
+
       for (Value result : owner->getResults()) {
         chainValues.insert(result);
         worklist.push_back(result);
@@ -705,7 +709,11 @@ DenseMap<Value, Value> mlir::rock::collectFusionExtraInputs(Value root) {
     }
   }
 
-  return extraInputs;
+  return {extraInputs, chainValues, fusionOps};
+}
+
+DenseMap<Value, Value> mlir::rock::collectFusionExtraInputs(Value root) {
+  return collectFusionInfo(root).extraInputs;
 }
 
 void mlir::rock::replaceFusionExtraInputs(

@@ -1,5 +1,5 @@
-// RUN: rocmlir-gen -emit-module-fusibility-for=v3:16,128,8,16,16,4,1,1,2,1,1 - < %s | FileCheck %s --check-prefix=NOSPLITK
-// RUN: rocmlir-gen -emit-module-fusibility-for=v3:16,128,8,16,16,4,4,1,2,1,1 - < %s | FileCheck %s --check-prefix=SPLITK
+// RUN: rocmlir-gen -emit-module-fusibility-for=gemm:v1:64,64,16,1,1,4,16,1,2,0,0 - < %s | FileCheck %s --check-prefix=NOSPLITK
+// RUN: rocmlir-gen -emit-module-fusibility-for=gemm:v1:64,64,16,1,1,4,16,4,2,0,0 - < %s | FileCheck %s --check-prefix=SPLITK
 // NOSPLITK: fusible:0
 // SPLITK: fusible:0
 module {

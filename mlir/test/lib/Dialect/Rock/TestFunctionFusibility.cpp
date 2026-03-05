@@ -7,7 +7,6 @@
 // Copyright (c) 2024 Advanced Micro Devices Inc.
 //===-----------------------------------------------------===//
 
-#include "mlir/Analysis/BufferDependencyAnalysis.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"

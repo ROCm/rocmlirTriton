@@ -1026,12 +1026,12 @@ AttentionRewritePattern::matchAndRewrite(AttentionOp op,
   // Update the StoreOp to use the new result type (which may be different)
   // TODO(roctriton): In case of padded result, we need to do this, otherwise we
   // dont...this should be done in a cleaner way.
-  
-  // TODO(roctriton): split-k for g+g!
+
   StoreMethodAttr storeMethod =
       rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set);
   if (storeOp) {
     rw.setInsertionPoint(storeOp);
+
     auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
                                             storeOp.getResult().getType(),
                                             newOp.getResult(), newOut, storeMethod);
@@ -1086,11 +1086,15 @@ LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
   // Update the StoreOp to use the new result type (which may be different)
   // TODO(roctriton): In case of padded result, we need to do this, otherwise we
   // dont...this should be done in a cleaner way.
-  // TODO(roctriton): split-k for g+g!
-  StoreMethodAttr storeMethod =
-      rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set);
   if (storeOp) {
     rw.setInsertionPoint(storeOp);
+    StoreMethodAttr storeMethod = storeOp.getStoreMethodAttr();
+    GemmParamsAttr params1 = cast<GemmParamsAttr>(op.getGemm1Params().value());
+    const int64_t splitKFactor = params1.getSplitKFactor();
+    if (splitKFactor > 1)
+      storeMethod =
+          rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
+
     auto newStoreOp = rock::StoreOp::create(
         rw, storeOp.getLoc(), storeOp.getResult().getType(), newOp.getResult(),
         newOut, storeMethod);

@@ -1,4 +1,4 @@
-//===- GemmLinalgSplitkNormalizationPass.cpp ------------===//
+//===- FusionSplitkRegularizationPass.cpp ------------===//
 //
 // Copyright 2025 Advanced Micro Devices.
 //
@@ -15,18 +15,18 @@
 // limitations under the License.
 // ============================================================
 //
-// This pass modifies linalg.generic for split-k fusions. It converts any
+// This pass modifies fusion ops for split-k fusions. It converts any
 // arith.addf/arith.subf gemmOut, other to arith.addf gemmOut,
 // other/splitkFactor.
 //
 //===-----------------------------------------------------===//
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/Support/Debug.h"
@@ -34,42 +34,42 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKGEMMLINALGSPLITKNORMALIZATIONPASS
+#define GEN_PASS_DEF_ROCKFUSIONSPLITKREGULARIZATIONPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-gemm-linalg-splitk-normalization"
+#define DEBUG_TYPE "rock-fusion-splitk-regularization"
 
 using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-class RockGemmLinalgSplitkNormalizationPass
-    : public rock::impl::RockGemmLinalgSplitkNormalizationPassBase<
-          RockGemmLinalgSplitkNormalizationPass> {
+class RockFusionSplitkRegularizationPass
+    : public rock::impl::RockFusionSplitkRegularizationPassBase<
+          RockFusionSplitkRegularizationPass> {
   void runOnOperation() override;
 };
 } // end namespace
 
-static LogicalResult divideAddBySplitkFactor(linalg::GenericOp genericOp,
-                                             Value gemmResult,
-                                             int64_t splitKFactor,
-                                             IRRewriter &b) {
+static LogicalResult
+divideAddBySplitkFactor(Value gemmResult, int64_t splitKFactor, IRRewriter &b) {
   SmallVector<std::tuple<Operation *, int>> adds;
-  if (failed(checkValidOutputFusion(genericOp, gemmResult, adds)))
+  if (failed(checkValidOutputFusion(gemmResult, adds)))
     return failure();
 
   for (auto [arithOp, gemmOutIndex] : adds) {
+    assert(arithOp->getNumOperands() == 2);
     assert(gemmOutIndex == 0 || gemmOutIndex == 1);
     LLVM_DEBUG(llvm::dbgs() << "Op to modify: " << arithOp << "\n");
     b.setInsertionPoint(arithOp);
     Value gemmOut = arithOp->getOperand(gemmOutIndex);
     Value otherValue =
         (gemmOutIndex == 0) ? arithOp->getOperand(1) : arithOp->getOperand(0);
-    auto splitKFactorValue = createConstantFloatOp(
-        b, arithOp->getLoc(), otherValue.getType(), otherValue.getType(),
-        static_cast<float>(splitKFactor));
+    Type otherElmType = cast<ShapedType>(otherValue.getType()).getElementType();
+    auto splitKFactorValue =
+        createConstantFloatOp(b, arithOp->getLoc(), otherValue.getType(),
+                              otherElmType, static_cast<float>(splitKFactor));
     Value otherBySplitk = b.createOrFold<arith::DivFOp>(
         arithOp->getLoc(), otherValue, splitKFactorValue);
     if (isa<arith::AddFOp>(arithOp)) {
@@ -86,8 +86,9 @@ static LogicalResult divideAddBySplitkFactor(linalg::GenericOp genericOp,
   return success();
 }
 
-static LogicalResult rewriteLinalgForSplitK(func::FuncOp &func) {
+static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
   IRRewriter rewriter(func->getContext());
+  // TODO: extend this for gemm+gemm
   SmallVector<GemmOp> gemmOps;
   bool foundGemmWithoutParams = false;
 
@@ -104,52 +105,36 @@ static LogicalResult rewriteLinalgForSplitK(func::FuncOp &func) {
   });
 
   if (foundGemmWithoutParams) {
-    func->emitError("rewriteLinalgForSplitK: found gemm op without params");
+    func->emitError("rewriteFusionForSplitK: found gemm op without params");
     return failure();
   }
 
-  if (gemmOps.size() > 1)
-    return failure();
+  // This is relevant for backward convs (where we have multiple gemms in the
+  // same kernel)
+  // TODO: fix this when we allow fusions for backward convs
+  if (gemmOps.size() > 1) {
+    LLVM_DEBUG(
+        llvm::dbgs()
+        << "More than once GEMM found, skipping rewriteFusionForSplitK\n");
+    return success();
+  }
 
   if (gemmOps.size() == 1) {
     GemmOp gemmOp = gemmOps[0];
-    // GemmOp no longer has an output argument - use the result directly
-    auto gemmResult = gemmOp.getResult();
     int64_t splitKFactor = gemmOp.getParams()->getSplitKFactor();
 
-    // save all `linalg::GenericOp` that read from a gemm output
-    auto genericOpOperands =
-        traceGemmOutputToGenericOps(gemmResult, func);
-
-    // GEMM result could come from a block argument, so if it fails, we return
-    // success()
-    if (failed(genericOpOperands))
-      return success();
-
-    // check if generic ops are valid fusions
-    for (OpOperand *genericOpOperand : genericOpOperands.value()) {
-      auto genericOp = cast<linalg::GenericOp>(genericOpOperand->getOwner());
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Found linalg::GenericOp that reads GEMM output, let's "
-                    "modify it if it has addf and/or subf. Op="
-                 << genericOp << "\n");
-      auto inputAlloc = findMemrefAlloc(genericOpOperand->get());
-      if (failed(inputAlloc))
-        return failure();
-
-      if (failed(divideAddBySplitkFactor(genericOp, inputAlloc.value(),
-                                         splitKFactor, rewriter)))
-        return failure();
-    }
+    if (failed(divideAddBySplitkFactor(gemmOp.getResult(), splitKFactor,
+                                       rewriter)))
+      return failure();
   }
 
   return success();
 }
 
-void RockGemmLinalgSplitkNormalizationPass::runOnOperation() {
+void RockFusionSplitkRegularizationPass::runOnOperation() {
   func::FuncOp func = getOperation();
 
-  if (failed(rewriteLinalgForSplitK(func))) {
+  if (failed(rewriteFusionForSplitK(func))) {
     return signalPassFailure();
   }
 } // namespace

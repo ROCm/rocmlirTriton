@@ -133,8 +133,9 @@ def RockGridwiseAttnToBlockwisePass
                            "triton::TritonDialect"];
 }
 
-def RockGemmLinalgSplitkNormalizationPass : Pass<"rock-gemm-linalg-splitk-normalization", "::mlir::func::FuncOp"> {
-  let summary = "This pass modifies linalg.generic for split-k fusions. It converts any arith.addf/arith.subf gemmOut, other to arith.addf gemmOut, other/splitkFactor";
+def RockFusionSplitkRegularizationPass
+    : Pass<"rock-fusion-splitk-regularization", "::mlir::func::FuncOp"> {
+  let summary = "This pass modifies fusion ops for split-k fusions. It converts any arith.addf/arith.subf gemmOut, other to arith.addf gemmOut, other/splitkFactor";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 

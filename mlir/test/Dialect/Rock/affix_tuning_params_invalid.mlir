@@ -98,50 +98,32 @@ func.func @two_gemms(
 //   return
 // }
 
-// TODO(roctriton): gemm_elementwise_gemm are broken
-// func.func @rock_gemm_gemm_splitk(%arg0: memref<1474560xf16>, %arg1: memref<1474560xf16>, %arg2: memref<1474560xf16>, %arg3: memref<1474560xf16>) attributes {enable_splitk_for_tuning, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
-//     %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 360 + d2)> by [<Unmerge{4096, 360} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : memref<1474560xf16> to memref<1x4096x360xf16>
-//     %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 4096 + d2)> by [<Unmerge{360, 4096} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 360, 4096] -> [1474560]> : memref<1474560xf16> to memref<1x360x4096xf16>
-//     %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 360 + d2)> by [<Unmerge{4096, 360} ["n", "gemmO"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : memref<1474560xf16> to memref<1x4096x360xf16>
-//     %3 = rock.transform %arg3 by <affine_map<(d0, d1, d2) -> (d1 * 1 + d2)> by [<Unmerge{4096, 360} ["m", "gemmO"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : memref<1474560xf16> to memref<1x4096x360xf16>
-//     %alloc = memref.alloc() {alignment = 64 : i64} : memref<1x4096x360xf16>
-//     // expected-disabled-error @+1 {{Fusion with SplitK perfConfig is not legal}}
-//     rock.gemm_elementwise_gemm{
-//      ab = %0 * %1 : memref<1x4096x360xf16>, memref<1x360x4096xf16>
-//      ab = elementwise {
-//     ^bb0(%arg4: memref<1x4096x4096xf16>, %arg5: memref<1x4096x4096xf16>):
-//       memref.copy %arg4, %arg5 : memref<1x4096x4096xf16> to memref<1x4096x4096xf16>
-//       rock.yield
-//     }
-//      %alloc = ab * %2 : memref<1x4096x360xf16> -> memref<1x4096x360xf16>
-//     } {firstGemmIndices = array<i64: 0>, storeMethod = #rock<StoreMethod set>, perf_config="attn:v3:32,32,32,32,32,32,16,1,2,1,2,0,1"}
-//     %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<1x4096x360xf16>
-//
-//     linalg.generic {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>, affine_map<(d0, d1, d2) -> (d0, d1, d2)>], iterator_types = ["parallel", "parallel", "parallel"]} ins(%alloc : memref<1x4096x360xf16>) outs(%alloc_1 : memref<1x4096x360xf16>) {
-//     ^bb0(%in: f16, %out: f16):
-//       %5 = arith.fptoui %in : f16 to i8
-//       %6 = arith.sitofp %5 : i8 to f16
-//       linalg.yield %6 : f16
-//     }
-//     memref.copy %alloc_1, %3 : memref<1x4096x360xf16> to memref<1x4096x360xf16>
-//     return
-//   }
+func.func @rock_gemm_gemm_splitk(%arg0: tensor<1474560xf16>, %arg1: tensor<1474560xf16>, %arg2: tensor<1474560xf16>, %arg3: tensor<1474560xf16>)  -> tensor<1474560xf16> attributes {rock.enable_splitk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
+    %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 360 + d2)> by [<Unmerge{4096, 360} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : tensor<1474560xf16> to tensor<1x4096x360xf16>
+    %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 4096 + d2)> by [<Unmerge{360, 4096} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 360, 4096] -> [1474560]> : tensor<1474560xf16> to tensor<1x360x4096xf16>
+    %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 360 + d2)> by [<Unmerge{4096, 360} ["n", "gemmO"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : tensor<1474560xf16> to tensor<1x4096x360xf16>
+    %3 = rock.transform %arg3 by <affine_map<(d0, d1, d2) -> (d1 * 1 + d2)> by [<Unmerge{4096, 360} ["m", "gemmO"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : tensor<1474560xf16> to tensor<1x4096x360xf16>
+    // expected-error @+1 {{Fusion with SplitK perfConfig is not legal}}
+    %out = rock.gemm_elementwise_gemm{
+     ab = %0 * %1 : tensor<1x4096x360xf16>, tensor<1x360x4096xf16>
+     ab = elementwise {
+    ^bb0(%arg4: tensor<1x4096x4096xf16>, %arg5: tensor<1x4096x4096xf16>):
+      rock.yield
+    }
+     ab * %2 : tensor<1x4096x360xf16>
+    } {firstGemmIndices = array<i64: 0>, perf_config="attn:v1:32,32,32,1,1,4,0,3,1,0,0"}  -> tensor<1x4096x360xf16>
 
-// TODO(rocmlirTriton): This fails due to a bug in rocmlirTriton
-// func.func @mlir_dot_max_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280x320xf32>, %arg3: tensor<1x2x320xf32>) -> tensor<1x2x320xf32> attributes {enable_splitk_for_tuning, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
-//     %cst = arith.constant 0.000000e+00 : f32
-//     %empty = tensor.empty() : tensor<1x2x320xf32>
-//     // expected-disabled-error @+1 {{Fusion with SplitK perfConfig is not legal}}
-//     %gemm_result = rock.gemm %arg1 * %arg2 {rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-", perf_config = "v4:16,16,4,16,16,16,1,5,1,2,0,0,1,1"} : tensor<1x2x1280xf32> * tensor<1x1280x320xf32> -> tensor<1x2x320xf32>
-//     %alloc = rock.store %gemm_result to %empty by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
-//     %0 = rock.transform %alloc by <affine_map<(d0, d1) -> (0, d0, d1)> by [<Merge{1, 2} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>] bounds = [2, 320] -> [1, 2, 320]> : tensor<1x2x320xf32> to tensor<2x320xf32>
-//     %empty_0 = tensor.empty() : tensor<2x320xf32>
-//     %1 = linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%0: tensor<2x320xf32>) outs(%empty_0 : tensor<2x320xf32>) {
-//     ^bb0(%in: f32, %out: f32):
-//       %3 = arith.maximumf %in, %cst : f32
-//       linalg.yield %3 : f32
-//     } -> tensor<2x320xf32>
-//     %2 = rock.transform %1 by <affine_map<(d0, d1, d2) -> (d0 * 2 + d1, d2)> by [<Unmerge{1, 2} ["exp0", "exp1"] at [0, 1] -> ["dim0"] at [0]>, <PassThrough ["dim1"] at [2] -> ["dim1"] at [1]>] bounds = [1, 2, 320] -> [2, 320]> : tensor<2x320xf32> to tensor<1x2x320xf32>
-//     %out = rock.store %2 to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
-//     return %out : tensor<1x2x320xf32>
-//   }
+    %5 = arith.fptoui %out : tensor<1x4096x360xf16> to tensor<1x4096x360xi8>
+    %6 = arith.sitofp %5 : tensor<1x4096x360xi8> to tensor<1x4096x360xf16>
+    %7 = rock.store %6 to %3 by  set : tensor<1x4096x360xf16> -> tensor<1474560xf16> to tensor<1x4096x360xf16>
+    return %7 : tensor<1474560xf16>
+  }
+
+func.func @mlir_dot_max_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280x320xf32>, %arg3: tensor<1x2x320xf32>) -> tensor<1x2x320xf32> attributes {rock.enable_splitk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
+    %cst = arith.constant dense<0.000000e+00> : tensor<1x2x320xf32>
+    // expected-error @+1 {{Fusion with SplitK perfConfig is not legal}}
+    %gemm_result = rock.gemm %arg1 * %arg2 {perf_config = "gemm:v1:64,64,64,1,1,4,16,3,2,0,0"} : tensor<1x2x1280xf32> * tensor<1x1280x320xf32> -> tensor<1x2x320xf32>
+    %res = arith.maximumf %gemm_result, %cst : tensor<1x2x320xf32>
+    %out = rock.store %res to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
+    return %out : tensor<1x2x320xf32>
+  }
