@@ -1,28 +1,15 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Fusions need rework
-
-// RUN: rocmlir-gen -emit-module-fusibility-for=v3:16,16,4,16,16,1,5,1,2,1,1 - < %s | FileCheck %s --check-prefixes=CHECK-SPLITK
+// RUN: rocmlir-gen -emit-module-fusibility-for=gemm:v1:64,64,16,1,1,4,16,5,2,0,0 - < %s | FileCheck %s --check-prefixes=CHECK-SPLITK
 // CHECK-SPLITK: fusible:0
-// RUN: rocmlir-gen -emit-module-fusibility-for=v3:16,16,4,16,16,1,1,1,2,1,1 - < %s | FileCheck %s --check-prefixes=CHECK-NONSPLITK
+// RUN: rocmlir-gen -emit-module-fusibility-for=gemm:v1:64,64,16,1,1,4,16,1,2,0,0 - < %s | FileCheck %s --check-prefixes=CHECK-NONSPLITK
 // CHECK-NONSPLITK: fusible:1
 module {
-  func.func @mlir_dot_add(%arg0: memref<1x2x320xf16>, %arg1: memref<1x2x1280xi8>, %arg2: memref<1x1280x320xi8>, %arg3: memref<1x2x320xi8>, %arg4: memref<1x2x1xf16>) attributes {enable_splitk_for_tuning, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-", features = #rock<GemmFeatures mfma|dot|atomic_add|atomic_add_f16>} {
-    %alloc = memref.alloc() {alignment = 64 : i64} : memref<1x2x320xi8>
-    rock.gemm %alloc = %arg1 * %arg2 storeMethod =  set : memref<1x2x320xi8> = memref<1x2x1280xi8> * memref<1x1280x320xi8>
-    %0 = rock.transform %alloc by <affine_map<(d0, d1) -> (0, d0, d1)> by [<Merge{1, 2} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>] bounds = [2, 320] -> [1, 2, 320]> : memref<1x2x320xi8> to memref<2x320xi8>
-    %1 = rock.transform %arg0 by <affine_map<(d0, d1) -> (0, d0, d1)> by [<Merge{1, 2} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>] bounds = [2, 320] -> [1, 2, 320]> : memref<1x2x320xf16> to memref<2x320xf16>
-    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<2x320xf16>
-    linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%0, %1 : memref<2x320xi8>, memref<2x320xf16>) outs(%alloc_0 : memref<2x320xf16>) {
-    ^bb0(%in: i8, %in_1: f16, %out: f16):
-      %3 = arith.sitofp %in : i8 to f16
-      %4 = arith.addf %3, %in_1 : f16
-      linalg.yield %4 : f16
-    }
-    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<2x1xf16>
-    rock.reduce  sum %alloc_0 into %alloc_1 {axis = 1 : index, blockSize = 256 : i32, gridSize = 2 : i32} : memref<2x320xf16> into memref<2x1xf16>
-    %5 = rock.transform %alloc_1 by <affine_map<(d0, d1, d2) -> (d0 * 2 + d1, d2)> by [<Unmerge{1, 2} ["exp0", "exp1"] at [0, 1] -> ["dim0"] at [0]>, <PassThrough ["dim1"] at [2] -> ["dim1"] at [1]>] bounds = [1, 2, 1] -> [2, 1]> : memref<2x1xf16> to memref<1x2x1xf16>
-    memref.copy %alloc, %arg3 : memref<1x2x320xi8> to memref<1x2x320xi8>
-    memref.copy %5, %arg4 : memref<1x2x1xf16> to memref<1x2x1xf16>
-    return
+  func.func @mlir_dot_add(%arg0: tensor<1x2x320xf16>, %arg1: tensor<1x2x1280xi8>, %arg2: tensor<1x1280x320xi8>, %arg3: tensor<1x2x320xi8>, %arg4: tensor<1x2x1xf16>) -> (tensor<1x2x320xi8>, tensor<1x2x1xf16>) attributes {rock.enable_splitk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
+    %0 = rock.gemm %arg1 * %arg2 : tensor<1x2x1280xi8> * tensor<1x1280x320xi8> -> tensor<1x2x320xi8>
+    %1 = arith.sitofp %0 : tensor<1x2x320xi8> to tensor<1x2x320xf16>
+    %2 = arith.addf %1, %arg0 : tensor<1x2x320xf16>
+    %3 = rock.reduce sum %2 {axis = 2 : index} : tensor<1x2x320xf16> -> tensor<1x2x1xf16>
+    %4 = rock.store %0 to %arg3 by  set : tensor<1x2x320xi8> -> tensor<1x2x320xi8> to tensor<1x2x320xi8>
+    %5 = rock.store %3 to %arg4 by  set : tensor<1x2x1xf16> -> tensor<1x2x1xf16> to tensor<1x2x1xf16>
+    return %4, %5 : tensor<1x2x320xi8>, tensor<1x2x1xf16>
   }
 }

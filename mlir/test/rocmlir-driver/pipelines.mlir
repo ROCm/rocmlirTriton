@@ -23,7 +23,7 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-conv-to-gemm,
 // GPU-NEXT:remove-dead-values{canonicalize=true},
-// GPU-NEXT:rock-gemm-linalg-splitk-normalization,
+// GPU-NEXT:rock-fusion-splitk-regularization,
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-gemm-to-gridwise,
 // GPU-NEXT:remove-dead-values{canonicalize=true},

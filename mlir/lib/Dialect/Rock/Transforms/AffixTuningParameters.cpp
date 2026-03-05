@@ -78,20 +78,14 @@ void AffixTuningParameters::runOnOperation() {
     affixTuningParametersImpl(op);
     // Make sure the op has a params attribute
     if (!op.getGemmParams().has_value()) {
-      op->emitError(
-          "AffixTuningParameters: RockGemmWrapperInterface op has no params");
-      signalPassFailure();
-      return;
+      return signalPassFailure();
     }
   });
   func.walk([&](RockGemmGemmWrapperInterface op) {
     affixTuningParametersImpl(op);
     // Make sure the op has a params attribute
     if (!op.getGemm0Params().has_value() || !op.getGemm1Params().has_value()) {
-      op->emitError("AffixTuningParameters: RockGemmGemmWrapperInterface op "
-                    "has no params");
-      signalPassFailure();
-      return;
+      return signalPassFailure();
     }
   });
 }
@@ -186,7 +180,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Set attributes on the function.
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           b.getI32IntegerAttr(blockSize));
-  // check for fusion legality with SplitK for both accel and non-accel path
+  // check for fusion legality with split-k
   // this check should happen after perfConfig is picked either through
   // heuristics or user provided
   if (rock::isSplitKRequested(b.getStringAttr(perfConfig))) {

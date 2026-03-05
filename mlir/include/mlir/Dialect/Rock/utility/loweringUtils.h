@@ -198,6 +198,14 @@ bool isFusionOp(Operation *op);
 /// are "extra inputs" to output fusions (e.g., the second operand of
 /// `arith.addf %gemm_result, %extra_input`). Returns a map from original
 /// value to itself; callers update the mapped values after normalize+pad.
+
+struct FusionInfo {
+  DenseMap<Value, Value> extraInputs;
+  DenseSet<Value> chainValues;
+  SmallVector<Operation *> fusionOps;
+};
+
+FusionInfo collectFusionInfo(Value root);
 DenseMap<Value, Value> collectFusionExtraInputs(Value root);
 
 /// After propagateOutputType has updated the FusionRoot-chain operands and

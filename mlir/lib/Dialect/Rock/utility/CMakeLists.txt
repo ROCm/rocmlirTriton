@@ -19,7 +19,6 @@ add_rocmlir_dialect_library(MLIRRockUtility
   MLIRIR
   MLIRMemRefDialect
   MLIRSupport
-  MLIRRockAnalysis
   MLIRLLVMDialect
   MLIRGPUDialect
   MLIRROCDLDialect

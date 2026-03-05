@@ -23,7 +23,6 @@ void registerSideEffectTestPasses();
 namespace rock {
 void registerCollapseContiguousMergesTestPass();
 void registerVectorizationInferenceTestPass();
-void registerBufferDependencyAnalysisTestPass();
 void registerFusibilityTestPass();
 void registerTransformMapsUtilsTestPass();
 } // end namespace rock
@@ -33,7 +32,6 @@ void registerTransformMapsUtilsTestPass();
 void registerRockTestPasses() {
   rock::registerCollapseContiguousMergesTestPass();
   rock::registerVectorizationInferenceTestPass();
-  rock::registerBufferDependencyAnalysisTestPass();
   rock::registerFusibilityTestPass();
   rock::registerTransformMapsUtilsTestPass();
   registerSideEffectTestPasses();
