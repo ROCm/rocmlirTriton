@@ -308,21 +308,6 @@ static LogicalResult setSplitKAttrs(OpT op,
       Attribute outputInitVal = rw.getFloatAttr(elementType, 0.0);
       func.setResultAttr(resNumber, rock::PrefillAttr::getMnemonic(),
                          outputInitVal);
-      func.setResultAttr(resNumber, "read_access", rw.getUnitAttr());
-      // The original function also need the read access attr for the output.
-      if (func->hasAttr("original_func")) {
-        if (ModuleOp rootMod = func->getParentOfType<ModuleOp>()
-                                   ->getParentOfType<ModuleOp>()) {
-          SymbolTable symTable(rootMod);
-          SymbolRefAttr originalFuncAttr =
-              func->getAttrOfType<SymbolRefAttr>("original_func");
-          if (func::FuncOp originalFunc = dyn_cast<func::FuncOp>(
-                  symTable.lookupSymbolIn(rootMod, originalFuncAttr))) {
-            originalFunc.setResultAttr(resNumber, "read_access",
-                                       rw.getUnitAttr());
-          }
-        }
-      }
     }
   }
   return success();
@@ -488,23 +473,12 @@ struct ElementwiseRegionFinder {
       auto newBlockArg = addBlockArgument(regionBuilder, v, block, loc);
       mapper.map(v, newBlockArg);
     }
-    // make sure firstGemmBasedVal is passed as blockArgument for it is always
-    // present
-    Value lastRes = mapper.lookup(firstGemmBasedVal);
     for (Operation *op : visitedOps) {
-      auto *newOp = regionBuilder.clone(*op, mapper);
-      lastRes = newOp->getResult(0);
-      mapper.map(lastRes, newOp->getResult(0));
+      regionBuilder.clone(*op, mapper);
     }
-    RankedTensorType resTensorType = cast<RankedTensorType>(lastRes.getType());
-    MemRefType resMemRefType = MemRefType::get(resTensorType.getShape(),
-                                               resTensorType.getElementType());
-    Value resMemref = bufferization::ToBufferOp::create(
-        regionBuilder, loc,
-        cast<mlir::bufferization::BufferLikeType>(resMemRefType), lastRes);
-    Value outMemref = block->addArgument(resMemRefType, loc);
-    memref::CopyOp::create(regionBuilder, loc, resMemref, outMemref);
-    rock::YieldOp::create(regionBuilder, loc);
+    // Yield the final value of the elementwise chain, consistent with
+    // rocmlir-gen which yields the result from preSecondGemmBody regions.
+    rock::YieldOp::create(regionBuilder, loc, mapper.lookupOrDefault(input));
   }
 
 private:
@@ -995,8 +969,6 @@ public:
       scaleB = reshapeIfNeeded(scaleB, targetShape, loc, rw);
       matB = cast<TypedValue<TensorType>>(matBBeforeCast);
     }
-    Value output =
-        bufferization::AllocTensorOp::create(rw, loc, outputType, ValueRange{});
 
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
@@ -1045,15 +1017,41 @@ public:
       setLastDims(nullptr, bScaleShape, {kDim, nDim});
       brBScale = insertBroadcast(scaleB, bScaleShape, loc, rw);
     }
+    // When transposeC is set, rock.gemm needs the un-transposed output type
+    // (G x M x N), since rock.gemm doesn't support output transpose.
+    RankedTensorType gemmOutputType = outputType;
+    if (transposeC) {
+      SmallVector<int64_t> gemmShape(outputType.getShape());
+      size_t rank = gemmShape.size();
+      assert(rank >= 2 && "expected output to have at least 2 dimensions");
+      std::swap(gemmShape[rank - 2], gemmShape[rank - 1]);
+      gemmOutputType =
+          RankedTensorType::get(gemmShape, outputType.getElementType());
+    }
+
     auto rockGemm = rock::GemmOp::create(
-        rw, loc, outputType, brA, brB, brAScale, brBScale, transposeA,
+        rw, loc, gemmOutputType, brA, brB, brAScale, brBScale, transposeA,
         transposeB, /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
         /*params=*/nullptr);
 
     if (auto attr = op->getAttrOfType<StringAttr>("perf_config"))
       rockGemm->setAttr("perf_config", attr);
 
-    rw.replaceOp(op, rockGemm.getResult());
+    Value result = rockGemm.getResult();
+
+    // If the output was transposed, insert a transpose after the gemm
+    // to produce the expected transposed shape.
+    if (transposeC) {
+      size_t rank = gemmOutputType.getRank();
+      SmallVector<int32_t> perms;
+      for (size_t i = 0; i < rank - 2; ++i)
+        perms.push_back(i);
+      perms.push_back(rank - 1);
+      perms.push_back(rank - 2);
+      result = rock::tosa::getTransposeOp(rw, loc, result, perms);
+    }
+
+    rw.replaceOp(op, result);
 
     return success();
   }
@@ -1518,8 +1516,6 @@ struct GemmElementwiseGemmRewritePattern
     Location loc = op.getLoc();
 
     auto outputType = cast<RankedTensorType>(op.getType());
-    Value output = bufferization::AllocTensorOp::create(
-        rewriter, loc, outputType, ValueRange{});
     SmallVector<Value> elementwiseOtherArgs =
         elemwiseFinder.getElementwiseArgs();
     // This is guranteed by the matcher
@@ -2890,11 +2886,9 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
                PatternRewriter &rewriter) const {
     Location loc = op.getLoc();
     auto outputType = cast<RankedTensorType>(op.getType());
-    Value output = bufferization::AllocTensorOp::create(
-        rewriter, loc, outputType, ValueRange{});
     RankedTensorType lseType;
     Value lse = attentionMatcherValues.lse;
-    Value lseOut, lseOrig;
+    Value lseOrig;
     SmallVector<ReassociationIndices> reassocIndicesLSE;
 
     if (lse) {
@@ -2917,8 +2911,6 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
                                             reassocIndicesLSE);
 
       lseType = cast<RankedTensorType>(lse.getType());
-      lseOut = bufferization::AllocTensorOp::create(rewriter, loc, lseType,
-                                                    ValueRange{});
     }
     ElementwiseRegionFinder<tosa::MatMulOp> preSoftmaxElementwiseFinder =
         attentionMatcherValues.preSoftmaxElementwiseFinder;
@@ -3063,21 +3055,6 @@ typename std::enable_if_t<
   for (int64_t resNumber : resIndices) {
     func.setResultAttr(resNumber, rock::PrefillAttr::getMnemonic(),
                        outputInitVal);
-    func.setResultAttr(resNumber, "read_access", rw.getUnitAttr());
-    // The original function also need the read access attr for the output.
-    if (func->hasAttr("original_func")) {
-      if (ModuleOp rootMod =
-              func->getParentOfType<ModuleOp>()->getParentOfType<ModuleOp>()) {
-        SymbolTable symTable(rootMod);
-        SymbolRefAttr originalFuncAttr =
-            func->getAttrOfType<SymbolRefAttr>("original_func");
-        if (func::FuncOp originalFunc = dyn_cast<func::FuncOp>(
-                symTable.lookupSymbolIn(rootMod, originalFuncAttr))) {
-          originalFunc.setResultAttr(resNumber, "read_access",
-                                     rw.getUnitAttr());
-        }
-      }
-    }
   }
   rw.replaceOp(op, rockReduce.getResult());
   return success();

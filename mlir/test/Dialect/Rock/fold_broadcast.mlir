@@ -1,9 +1,41 @@
 // RUN: rocmlir-opt --rock-fold-broadcast %s | FileCheck %s
 
-// TODO(rocmlirTriton): This fails due to a bug in rocmlirTriton
-// TODO(rocmlirTriton): Add dumy DISABLED-CHECK to make FileCheck happy
-// CHECK: module
+// CHECK-LABEL: func.func @fold_broadcast_b
+// CHECK:         %[[MERGE_A:.*]] = rock.transform %arg0 by {{.*}} : tensor<4x8x16xf16> to tensor<32x16xf16>
+// CHECK:         %[[UNBCAST_B:.*]] = rock.transform %{{.*}} by {{.*}} : tensor<4x16x32xf16> to tensor<16x32xf16>
+// CHECK:         %[[GEMM:.*]] = rock.gemm %[[MERGE_A]] * %[[UNBCAST_B]] : tensor<32x16xf16> * tensor<16x32xf16> -> tensor<32x32xf16>
+// CHECK:         %[[RESHAPE:.*]] = rock.transform %[[GEMM]] by {{.*}} : tensor<32x32xf16> to tensor<4x8x32xf16>
+// CHECK:         return %[[RESHAPE]] : tensor<4x8x32xf16>
+#map_bcast = affine_map<(d0, d1, d2) -> (0, d1, d2)>
+#bcast_b = #rock.transform_map<#map_bcast by [
+  <Broadcast{1} ["dim0"] at [0] -> ["dim0"] at [0]>,
+  <PassThrough ["dim1"] at [1] -> ["dim1"] at [1]>,
+  <PassThrough ["dim2"] at [2] -> ["dim2"] at [2]>
+] bounds = [4, 16, 32] -> [1, 16, 32]>
+func.func @fold_broadcast_b(%arg0: tensor<4x8x16xf16>, %arg1: tensor<1x16x32xf16>) -> tensor<4x8x32xf16> attributes {rock.kernel} {
+  %0 = rock.transform %arg1 by #bcast_b : tensor<1x16x32xf16> to tensor<4x16x32xf16>
+  %1 = rock.gemm %arg0 * %0 : tensor<4x8x16xf16> * tensor<4x16x32xf16> -> tensor<4x8x32xf16>
+  return %1 : tensor<4x8x32xf16>
+}
 
+// CHECK-LABEL: func.func @fold_broadcast_a
+// CHECK:         %[[UNBCAST_A:.*]] = rock.transform %{{.*}} by {{.*}} : tensor<4x8x16xf16> to tensor<8x16xf16>
+// CHECK:         %[[MERGE_B:.*]] = rock.transform %arg1 by {{.*}} : tensor<4x16x32xf16> to tensor<16x128xf16>
+// CHECK:         %[[GEMM:.*]] = rock.gemm %[[UNBCAST_A]] * %[[MERGE_B]] : tensor<8x16xf16> * tensor<16x128xf16> -> tensor<8x128xf16>
+// CHECK:         %[[RESHAPE:.*]] = rock.transform %[[GEMM]] by {{.*}} : tensor<8x128xf16> to tensor<4x8x32xf16>
+// CHECK:         return %[[RESHAPE]] : tensor<4x8x32xf16>
+#bcast_a = #rock.transform_map<#map_bcast by [
+  <Broadcast{1} ["dim0"] at [0] -> ["dim0"] at [0]>,
+  <PassThrough ["dim1"] at [1] -> ["dim1"] at [1]>,
+  <PassThrough ["dim2"] at [2] -> ["dim2"] at [2]>
+] bounds = [4, 8, 16] -> [1, 8, 16]>
+func.func @fold_broadcast_a(%arg0: tensor<1x8x16xf16>, %arg1: tensor<4x16x32xf16>) -> tensor<4x8x32xf16> attributes {rock.kernel} {
+  %0 = rock.transform %arg0 by #bcast_a : tensor<1x8x16xf16> to tensor<4x8x16xf16>
+  %1 = rock.gemm %0 * %arg1 : tensor<4x8x16xf16> * tensor<4x16x32xf16> -> tensor<4x8x32xf16>
+  return %1 : tensor<4x8x32xf16>
+}
+
+// TODO(rocmlirTriton): The tests below fail due to a bug in rocmlirTriton
 //#map = affine_map<(d0, d1, d2) -> (d1, d2, d0)>
 //#map1 = affine_map<(d0, d1, d2) -> (0, d1, d2)>
 //#map2 = affine_map<(d0, d1, d2) -> (d0 * 16 + d1, d2)>

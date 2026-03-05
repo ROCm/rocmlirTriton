@@ -225,12 +225,21 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
     auto newAType = cast<ShapedType>(newA.getType());
     auto newBType = cast<ShapedType>(newB.getType());
     auto origResultType = cast<RankedTensorType>(op.getResult().getType());
-    // New result shape: [G from A/B, M from A, N from B]
-    int64_t newG = newAType.getShape()[0];
-    int64_t newM = newAType.getShape()[op.getATransposed() ? 2 : 1];
-    int64_t newN = newBType.getShape()[op.getBTransposed() ? 1 : 2];
+
+    int64_t offsetA = newAType.getRank() == 2 ? 0 : 1;
+    int64_t offsetB = newBType.getRank() == 2 ? 0 : 1;
+
+    int64_t newM = newAType.getShape()[offsetA + (op.getATransposed() ? 1 : 0)];
+    int64_t newN = newBType.getShape()[offsetB + (op.getBTransposed() ? 0 : 1)];
+
+    SmallVector<int64_t> newResultShape;
+    if (newAType.getRank() == 3)
+      newResultShape.push_back(newAType.getShape()[0]);
+    newResultShape.push_back(newM);
+    newResultShape.push_back(newN);
+
     auto newResultType = RankedTensorType::get(
-        {newG, newM, newN}, origResultType.getElementType());
+        newResultShape, origResultType.getElementType());
 
     // Create the new GemmOp
     auto gemm = rock::GemmOp::create(
@@ -242,12 +251,44 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
     if (auto attr = (*op).template getAttrOfType<StringAttr>("perf_config"))
       gemm->setAttr("perf_config", attr);
 
-    // The result needs to be converted back to the original result type
-    // Since we don't have a C input anymore, we need to create a transform
-    // that represents how to convert from the new shape to the original shape
-    // For now, we use a direct replacement since the shapes should be compatible
-    // after the broadcast folding
-    rw.replaceOp(op, gemm.getResult());
+    Value result = gemm.getResult();
+
+    // If the new result type differs from the original (e.g., rank 2 vs 3
+    // because batch was merged into M or N), insert a rock.transform to
+    // reshape back to the original result type.
+    if (newResultType != origResultType) {
+      // After folding, both mergeBatch and unbroadcastBatch produce rank-2
+      // outputs, so newResultShape is always [mergedDim, otherDim].
+      assert(newResultShape.size() == 2 &&
+             "expected rank-2 result after batch fold");
+      // The original result is always rank 3 ([G, M, N]) because
+      // isBatchDimFoldable requires 3 upper bounds (a batch dimension).
+      ArrayRef<int64_t> origShape = origResultType.getShape();
+      assert(origShape.size() == 3 &&
+             "expected rank-3 original result with batch dimension");
+      if (isBBatchBroadcast) {
+        // Result is [G*M, N], need to unmerge dim 0 back to [G, M]
+        rock::BottomUpTMBuilder reshaper(
+            rw, {"gm", "n"}, {newResultShape[0], newResultShape[1]}, loc);
+        reshaper.unmerge({"g", "m"}, {0, 1}, "gm",
+                         {origShape[0], origShape[1]});
+        reshaper.passThrough({"n"}, {2}, {"n"});
+        result = rock::transform(rw, result,
+                                 rw.getArrayAttr({reshaper.get()}));
+      } else {
+        // Result is [M, G*N], need to unmerge dim 1 back to [G, N]
+        // and reorder to [G, M, N]
+        rock::BottomUpTMBuilder reshaper(
+            rw, {"m", "gn"}, {newResultShape[0], newResultShape[1]}, loc);
+        reshaper.passThrough({"m"}, {1}, {"m"});
+        reshaper.unmerge({"g", "n"}, {0, 2}, "gn",
+                         {origShape[0], origShape[2]});
+        result = rock::transform(rw, result,
+                                 rw.getArrayAttr({reshaper.get()}));
+      }
+    }
+
+    rw.replaceOp(op, result);
 
     return success();
   }
