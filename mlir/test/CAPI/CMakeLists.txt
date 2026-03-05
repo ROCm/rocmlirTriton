@@ -3,7 +3,7 @@ set(LLVM_OPTIONAL_SOURCES
   tosa_miir.cc
   mixr_cobj.cc
   mixr_split_k.cpp
-  mixr_full.c
+  mixr_full.cpp
   reduce_fusible.cpp
 )
 
@@ -56,7 +56,7 @@ target_link_libraries(mlir-mixr-capi-test
 
 add_llvm_executable(mlir-mixr-fullc-test
   EXCLUDE_FROM_ALL
-  mixr_full.c
+  mixr_full.cpp
   )
 llvm_update_compile_flags(mlir-mixr-fullc-test)
 

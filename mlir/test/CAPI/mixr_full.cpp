@@ -19,11 +19,13 @@
 #include "mlir-c/RegisterRocMLIR.h"
 #include "mlir-c/Support.h"
 
-#include <assert.h>
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "mlir/Dialect/Rock/IR/Rock.h"
+
+#include <cassert>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 MlirModule makeAndDumpMIXR(MlirContext ctx, MlirLocation loc) {
   MlirModule module = mlirModuleCreateEmpty(loc);
@@ -78,9 +80,9 @@ MlirModule makeAndDumpMIXR(MlirContext ctx, MlirLocation loc) {
   mlirOperationStateAddOwnedRegions(&funcState, 1, &funcBodyRegion);
   MlirOperation func = mlirOperationCreate(&funcState);
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString("rock.kernel"), mlirUnitAttrGet(ctx));
+      func, mlirStringRefCreateFromCString(mlir::rock::KernelAttr::getMnemonic().data()), mlirUnitAttrGet(ctx));
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString("rock.arch"),
+      func, mlirStringRefCreateFromCString(mlir::rock::ArchAttr::getMnemonic().data()),
       mlirStringAttrGet(
           ctx, mlirStringRefCreateFromCString("gfx908:sramecc+:xnack-")));
   mlirBlockInsertOwnedOperation(moduleBody, 0, func);
@@ -307,7 +309,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   }
   printf("bin size : %lu\n", binSize);
 
-  char *compiledBin = malloc(binSize);
+  char *compiledBin = static_cast<char *>(malloc(binSize));
   // Initialize the memory to hold binary, just for verification, not necessary.
   memset(compiledBin, '\0', binSize);
 
