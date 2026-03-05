@@ -103,6 +103,11 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
       return reduceOp.emitError(
           "Expected exactly one rock.store to consume the reduce result");
 
+    if(reduceResult.getNumUses() != 1) {
+      return reduceOp.emitError(
+          "Expected exactly one use of the ReduceOp");
+    }
+
     StoreOp storeOp = stores[0];
 
     // Build a Broadcast transform on the store destination.
