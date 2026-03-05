@@ -40,8 +40,7 @@ func.func @test_basic_bf16(%a: tensor<2x128x64xbf16>, %b: tensor<2x64x256xbf16>)
 // CHECK-SAME: -> (tensor<2x128x1xf32> {rock.prefill = 0.000000e+00 : f32})
 func.func @test_reduce(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> tensor<2x128x1xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // CHECK: %[[gemmOut:.*]] = rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xf32> * tensor<2x64x256xf32> -> tensor<2x128x256xf32>
-  // CHECK: %[[outBuf2:.*]] = bufferization.alloc_tensor() : tensor<2x128x1xf32>
-  // CHECK: rock.reduce  sum %[[gemmOut]] into %[[outBuf2]] {axis = 2 : index, blockSize = 256 : i32, gridSize = 256 : i32} : tensor<2x128x256xf32> into tensor<2x128x1xf32> -> tensor<2x128x1xf32>
+  // CHECK: rock.reduce sum %[[gemmOut]] {axis = 2 : index} : tensor<2x128x256xf32> -> tensor<2x128x1xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
@@ -56,10 +55,8 @@ func.func @test_reduce(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> te
 // CHECK-SAME: tensor<2x1x256xf32> {rock.prefill = 0.000000e+00 : f32})
 func.func @test_reduce_two_outputs(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> (tensor<2x128x1xf32>, tensor<2x1x256xf32>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // CHECK: %[[outGemm:.*]] = rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xf32> * tensor<2x64x256xf32> -> tensor<2x128x256xf32>
-  // CHECK: %[[outBuf2:.*]] = bufferization.alloc_tensor() : tensor<2x128x1xf32>
-  // CHECK: rock.reduce  sum %[[outGemm]] into %[[outBuf2]] {axis = 2 : index, blockSize = 256 : i32, gridSize = 256 : i32} : tensor<2x128x256xf32> into tensor<2x128x1xf32> -> tensor<2x128x1xf32>
-  // CHECK: %[[outBuf3:.*]] = bufferization.alloc_tensor() : tensor<2x1x256xf32>
-  // CHECK: rock.reduce  sum %[[outGemm]] into %[[outBuf3]] {axis = 1 : index, blockSize = 256 : i32, gridSize = 256 : i32} : tensor<2x128x256xf32> into tensor<2x1x256xf32> -> tensor<2x1x256xf32>
+  // CHECK: rock.reduce sum %[[outGemm]] {axis = 2 : index} : tensor<2x128x256xf32> -> tensor<2x128x1xf32>
+  // CHECK: rock.reduce sum %[[outGemm]] {axis = 1 : index} : tensor<2x128x256xf32> -> tensor<2x1x256xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
@@ -75,8 +72,7 @@ func.func @test_reduce_two_outputs(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256
 // CHECK-SAME: tensor<2x128x256xf32> {rock.prefill = 0.000000e+00 : f32})
 func.func @test_reduce_two_outputs2(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> (tensor<2x128x1xf32>, tensor<2x128x256xf32>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // CHECK: %[[outGemm:.*]] = rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xf32> * tensor<2x64x256xf32> -> tensor<2x128x256xf32>
-  // CHECK: %[[outBuf2:.*]] = bufferization.alloc_tensor() : tensor<2x128x1xf32>
-  // CHECK: rock.reduce  sum %[[outGemm]] into %[[outBuf2]] {axis = 2 : index, blockSize = 256 : i32, gridSize = 256 : i32} : tensor<2x128x256xf32> into tensor<2x128x1xf32> -> tensor<2x128x1xf32>
+  // CHECK: rock.reduce sum %[[outGemm]] {axis = 2 : index} : tensor<2x128x256xf32> -> tensor<2x128x1xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
@@ -133,7 +129,7 @@ func.func @mlir_convolution_multi_reduce(%arg0: tensor<320xf16>, %arg1: tensor<3
   %18 = tosa.const_shape  {values = dense<[2, 32, 40960, 1]> : tensor<4xindex>} : () -> !tosa.shape<4>
   %collapsed_3 = tensor.collapse_shape %17 [[0], [1], [2, 3, 4]] : tensor<2x32x10x64x64xf16> into tensor<2x32x40960xf16>
   %expanded_4 = tensor.expand_shape %collapsed_3 [[0], [1], [2, 3]] output_shape [2, 32, 40960, 1] : tensor<2x32x40960xf16> into tensor<2x32x40960x1xf16>
-  // CHECK: rock.reduce  sum {{.*}} {axis = 2 : index, blockSize = 256 : i32, gridSize = 10240 : i32} : tensor<2x32x40960x1xf16> into tensor<2x32x1x1xf16> -> tensor<2x32x1x1xf16>
+  // CHECK: rock.reduce sum {{.*}} {axis = 2 : index} : tensor<2x32x40960x1xf16> -> tensor<2x32x1x1xf16>
   %19 = tosa.reduce_sum %expanded_4 {axis = 2 : i32} : (tensor<2x32x40960x1xf16>) -> tensor<2x32x1x1xf16>
   %20 = tosa.const_shape  {values = dense<[2, 32, 1, 1, 1]> : tensor<5xindex>} : () -> !tosa.shape<5>
   %expanded_5 = tensor.expand_shape %19 [[0], [1], [2], [3, 4]] output_shape [2, 32, 1, 1, 1] : tensor<2x32x1x1xf16> into tensor<2x32x1x1x1xf16>
