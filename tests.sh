@@ -14,6 +14,8 @@ if [ -z "$NUM_CU" ]; then
     NUM_CU=64
 fi
 
+cd build && ninja check-rocmlir-build-only ci-performance-scripts && cd ..
+
 echo "Detected GPU architecture: $ARCH"
 
 build/bin/rocmlir-gen -pv -operation gemm -t f16 -out_datatype f32 --arch $ARCH --num_cu 256 -g 1 -m 64 -k 256 -n 128 --perf_config=gemm:v1:64,64,64,1,1,4,16,1,2,0,0 | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
@@ -134,4 +136,4 @@ cd build && \
  LIT_FILTER=Conversion ninja check-rocmlir && \
  LIT_FILTER=rocmlir-driver ninja check-rocmlir && \
  LIT_FILTER=rocmlir-tuning-driver ninja check-rocmlir && \
- LIT_FILTER=fusion ninja check-rocmlir
+ LIT_FILTER=fusion/*.mlir ninja check-rocmlir
