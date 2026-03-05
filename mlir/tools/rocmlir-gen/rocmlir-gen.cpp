@@ -2854,10 +2854,6 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   Value storedVal = rock::StoreOp::create(b, loc, cFlatType, gemm.getResult(),
                                           cVal, storeMethod);
 
-  // Convert back to flat type for function return
-  // Value result =
-  //     rock::TensorUntransformCastOp::create(b, loc, cFlatType, storedVal, cVal);
-
   func::ReturnOp::create(b, loc, storedVal);
 
   if (!disableSplitKForTuning)

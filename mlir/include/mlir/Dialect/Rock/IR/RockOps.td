@@ -399,37 +399,6 @@ def Rock_TransformOp :
   }];
 }
 
-def Rock_TensorUntransformCastOp :
-    Rock_Op<"tensor_untransform_cast",
-      [Pure, AllTypesMatch<["transformedResult", "transformedArg"]>]>,
-    Arguments<(ins AnyRankedTensor:$transformedResult,
-                      AnyRankedTensor:$transformedArg)>,
-    Results<(outs AnyRankedTensor:$untransformed)> {
-  let summary = "Cast transformed tensor 'result' back to underlying allocation";
-  let description = [{
-    This operation exists to enable bufferization where we have the pattern
-    ```mlir
-    %buf = bufferization.alloc_tensor : T
-    %t1 = rock.transform %buf : T to I1
-    ...
-    %output = rock.transform %tK : TK to U
-    %result = rock.conv(..., %output) : ..., U
-    op(%result, ...)
-    ```
-    where op required a value of type %T.
-
-    This op
-    Thi op must be eliminated during bufferization.
-
-    If the alleged result type is not equal to the type of untransform(transformArg),
-    it is in error.
-  }];
-  let assemblyFormat = [{
-    attr-dict $transformedResult `aka` $transformedArg
-    `:` type($transformedResult) `to` type($untransformed)
-  }];
-}
-
 // untile
 def Rock_UntileOp : Rock_Op<"untile", [Pure]>,
                     Arguments<(ins AnyRankedTensor:$source)>,

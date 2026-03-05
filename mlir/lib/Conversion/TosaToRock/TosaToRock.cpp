@@ -311,10 +311,6 @@ static Value traceToRes(Value tensor, DenseMap<Value, Value> &cache,
     } else if (auto collapse =
                    tensor.getDefiningOp<tensor::CollapseShapeOp>()) {
       res = traceToRes(collapse.getSrc(), cache, expectedTensor);
-    } else if (auto untransform =
-                   tensor.getDefiningOp<rock::TensorUntransformCastOp>()) {
-      res =
-          traceToRes(untransform.getTransformedResult(), cache, expectedTensor);
     } else if (auto tosaOp = tensor.getDefiningOp<tosa::TosaOp>()) {
       for (auto operand : tosaOp->getOperands()) {
         if (llvm::isa<TensorType>(operand.getType())) {
