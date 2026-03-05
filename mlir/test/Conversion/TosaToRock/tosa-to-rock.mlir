@@ -395,7 +395,6 @@ func.func @mlir_scaled_gemm_with_transpose_b(%arg0: tensor<1x128x256xf4E2M1FN>, 
 
 // -----
 
-// TODO(roctriton): Scaled gemm tests need rework
 // CHECK-LABEL: mlir_scaled_gemm_with_a_broadcast
 // CHECK-DAG: %[[A_BROADCAST:.*]] = rock.transform %{{.*}} by #{{.*}} : tensor<1x1x512xf4E2M1FN> to tensor<1x16x512xf4E2M1FN>
 // CHECK-DAG: %[[A_SCALE_BROADCAST:.*]] = rock.transform %{{.*}} by #{{.*}} : tensor<1x1x512xf8E8M0FNU> to tensor<1x16x512xf8E8M0FNU>
