@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | rocmlir-gen -ph -print-results -rand none - | rocmlir-driver -kernel-pipeline full  -arch gfx1100 --verify-passes | rocmlir-opt
+// RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | rocmlir-gen -ph -print-results -rand none - | rocmlir-driver -kernel-pipeline full  -arch gfx1100 | rocmlir-opt
 
 // UNSUPPORTED: true
 // TODO(rocmlirTriton): Looks like a issue in rocmlir-gen -ph: error: shapes do not match

@@ -6,8 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -29,7 +28,7 @@ struct TestEnv {
 
   TestEnv() : builder(&ctx) {
     DialectRegistry reg;
-    reg.insert<memref::MemRefDialect, gpu::GPUDialect, RockDialect>();
+    reg.insert<arith::ArithDialect, RockDialect>();
     ctx.appendDialectRegistry(reg);
     ctx.loadAllAvailableDialects();
     module = ModuleOp::create(builder.getUnknownLoc());
@@ -37,13 +36,13 @@ struct TestEnv {
   }
 };
 
-// Helper to create a transformed memref with a simple identity transformation
-Value createTransformedMemRef(OpBuilder &b, Location loc,
-                              ArrayRef<int64_t> shape, Type elemType,
-                              Attribute memorySpace = nullptr) {
-  // Create base memref
-  auto baseType = MemRefType::get(shape, elemType, nullptr, memorySpace);
-  Value base = memref::AllocOp::create(b, loc, baseType);
+// Helper to create a transformed tensor with a simple identity transformation
+Value createTransformedTensor(OpBuilder &b, Location loc,
+                              ArrayRef<int64_t> shape, Type elemType) {
+  // Create base tensor
+  auto tensorType = RankedTensorType::get(shape, elemType);
+  Value base = arith::ConstantOp::create(
+      b, loc, DenseElementsAttr::get(tensorType, b.getZeroAttr(elemType)));
 
   // Create an identity transform to get a transformed value
   BottomUpTMBuilder builder(b, shape, loc);
@@ -67,17 +66,14 @@ TEST(AddPassThroughIndicesTest, AddAtPositionZero) {
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
 
-  // Create a simple 1D memref<16xf16>
-  auto privateSpace =
-      gpu::AddressSpaceAttr::get(&env.ctx, gpu::AddressSpace::Private);
-  Value transformed =
-      createTransformedMemRef(b, loc, {16}, b.getF16Type(), privateSpace);
+  // Create a simple 1D tensor<16xf16>
+  Value transformed = createTransformedTensor(b, loc, {16}, b.getF16Type());
 
   // Add 2 dimensions at position 0 with sizes [2, 8]
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {2, 8}, 0);
 
   ASSERT_TRUE(succeeded(result));
-  auto resultType = cast<MemRefType>(result.value().getType());
+  auto resultType = cast<ShapedType>(result.value().getType());
 
   // Result should have shape [2, 8, 16] (new dims prepended)
   EXPECT_EQ(resultType.getRank(), 3);
@@ -93,17 +89,14 @@ TEST(AddPassThroughIndicesTest, AddAtPositionMiddle) {
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
 
-  // Create a 2D memref<8x2xf16>
-  auto privateSpace =
-      gpu::AddressSpaceAttr::get(&env.ctx, gpu::AddressSpace::Private);
-  Value transformed =
-      createTransformedMemRef(b, loc, {8, 2}, b.getF16Type(), privateSpace);
+  // Create a 2D tensor<8x2xf16>
+  Value transformed = createTransformedTensor(b, loc, {8, 2}, b.getF16Type());
 
   // Add 1 dimension at position 1 with size [4]
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {4}, 1);
 
   ASSERT_TRUE(succeeded(result));
-  auto resultType = cast<MemRefType>(result.value().getType());
+  auto resultType = cast<ShapedType>(result.value().getType());
 
   // Result should have shape [8, 4, 2] (new dim inserted in middle)
   EXPECT_EQ(resultType.getRank(), 3);
@@ -118,17 +111,14 @@ TEST(AddPassThroughIndicesTest, AddAtPositionEnd) {
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
 
-  // Create a 2D memref<8x2xf16>
-  auto privateSpace =
-      gpu::AddressSpaceAttr::get(&env.ctx, gpu::AddressSpace::Private);
-  Value transformed =
-      createTransformedMemRef(b, loc, {8, 2}, b.getF16Type(), privateSpace);
+  // Create a 2D tensor<8x2xf16>
+  Value transformed = createTransformedTensor(b, loc, {8, 2}, b.getF16Type());
 
   // Add 2 dimensions at position 2 (end) with sizes [3, 4]
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {3, 4}, 2);
 
   ASSERT_TRUE(succeeded(result));
-  auto resultType = cast<MemRefType>(result.value().getType());
+  auto resultType = cast<ShapedType>(result.value().getType());
 
   // Result should have shape [8, 2, 3, 4] (new dims appended)
   EXPECT_EQ(resultType.getRank(), 4);
@@ -144,11 +134,8 @@ TEST(AddPassThroughIndicesTest, AddEmptyIndices) {
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
 
-  // Create a simple 1D memref<16xf16>
-  auto privateSpace =
-      gpu::AddressSpaceAttr::get(&env.ctx, gpu::AddressSpace::Private);
-  Value transformed =
-      createTransformedMemRef(b, loc, {16}, b.getF16Type(), privateSpace);
+  // Create a simple 1D tensor<16xf16>
+  Value transformed = createTransformedTensor(b, loc, {16}, b.getF16Type());
 
   // Add 0 dimensions - should return the original value
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {}, 0);
@@ -158,23 +145,21 @@ TEST(AddPassThroughIndicesTest, AddEmptyIndices) {
   EXPECT_EQ(result.value(), transformed);
 }
 
-// Test: Multi-buffer case - add indices at position 0 for a 2D memref
+// Test: Multi-buffer case - add indices at position 0 for a 2D tensor
 TEST(AddPassThroughIndicesTest, MultiBufferAtPositionZero) {
   TestEnv env;
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
 
-  // Create a 2D memref<2x16xf16> (multi-buffer case)
-  auto privateSpace =
-      gpu::AddressSpaceAttr::get(&env.ctx, gpu::AddressSpace::Private);
+  // Create a 2D tensor<2x16xf16> (multi-buffer case)
   Value transformed =
-      createTransformedMemRef(b, loc, {2, 16}, b.getF16Type(), privateSpace);
+      createTransformedTensor(b, loc, {2, 16}, b.getF16Type());
 
   // Add extra indices at position 0 with sizes [2]
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {2}, 0);
 
   ASSERT_TRUE(succeeded(result));
-  auto resultType = cast<MemRefType>(result.value().getType());
+  auto resultType = cast<ShapedType>(result.value().getType());
 
   // Result should have shape [2, 2, 16]
   EXPECT_EQ(resultType.getRank(), 3);
@@ -189,15 +174,16 @@ TEST(AddPassThroughIndicesTest, MultipleDimensionsAtPositionZero) {
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
 
-  // Create a 3D memref<8x2x4xf32>
+  // Create a 3D tensor<8x2x4xf32>
   Value transformed =
-      createTransformedMemRef(b, loc, {8, 2, 4}, b.getF32Type());
+      createTransformedTensor(b, loc, {8, 2, 4}, b.getF32Type());
 
   // Add 3 dimensions at position 0 with sizes [1, 2, 3]
-  FailureOr<Value> result = addPassThroughIndices(b, transformed, {1, 2, 3}, 0);
+  FailureOr<Value> result =
+      addPassThroughIndices(b, transformed, {1, 2, 3}, 0);
 
   ASSERT_TRUE(succeeded(result));
-  auto resultType = cast<MemRefType>(result.value().getType());
+  auto resultType = cast<ShapedType>(result.value().getType());
 
   // Result should have shape [1, 2, 3, 8, 2, 4]
   EXPECT_EQ(resultType.getRank(), 6);
@@ -209,38 +195,19 @@ TEST(AddPassThroughIndicesTest, MultipleDimensionsAtPositionZero) {
   EXPECT_EQ(resultType.getShape()[5], 4);
 }
 
-// Test: Verify memory space is preserved
-TEST(AddPassThroughIndicesTest, PreservesMemorySpace) {
-  TestEnv env;
-  OpBuilder &b = env.builder;
-  Location loc = b.getUnknownLoc();
-
-  // Create with workgroup memory space
-  auto workgroupSpace =
-      gpu::AddressSpaceAttr::get(&env.ctx, gpu::AddressSpace::Workgroup);
-  Value transformed =
-      createTransformedMemRef(b, loc, {16}, b.getF16Type(), workgroupSpace);
-
-  FailureOr<Value> result = addPassThroughIndices(b, transformed, {2, 8}, 0);
-
-  ASSERT_TRUE(succeeded(result));
-  auto resultType = cast<MemRefType>(result.value().getType());
-  EXPECT_EQ(resultType.getMemorySpace(), workgroupSpace);
-}
-
 // Test: Single dimension addition at position 0
 TEST(AddPassThroughIndicesTest, SingleDimensionAtPositionZero) {
   TestEnv env;
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
 
-  Value transformed = createTransformedMemRef(b, loc, {16}, b.getF16Type());
+  Value transformed = createTransformedTensor(b, loc, {16}, b.getF16Type());
 
   // Add just 1 dimension at position 0
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {5}, 0);
 
   ASSERT_TRUE(succeeded(result));
-  auto resultType = cast<MemRefType>(result.value().getType());
+  auto resultType = cast<ShapedType>(result.value().getType());
 
   EXPECT_EQ(resultType.getRank(), 2);
   EXPECT_EQ(resultType.getShape()[0], 5);
@@ -254,7 +221,7 @@ TEST(AddPassThroughIndicesTest, ValidTransformStack) {
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
 
-  Value transformed = createTransformedMemRef(b, loc, {16}, b.getF16Type());
+  Value transformed = createTransformedTensor(b, loc, {16}, b.getF16Type());
 
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {2, 8}, 0);
 
@@ -289,11 +256,8 @@ TEST(AddPassThroughIndicesTest, InvalidPositionOutOfBounds) {
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
 
-  // Create a 2D memref<8x2xf16>
-  auto privateSpace =
-      gpu::AddressSpaceAttr::get(&env.ctx, gpu::AddressSpace::Private);
-  Value transformed =
-      createTransformedMemRef(b, loc, {8, 2}, b.getF16Type(), privateSpace);
+  // Create a 2D tensor<8x2xf16>
+  Value transformed = createTransformedTensor(b, loc, {8, 2}, b.getF16Type());
 
   // Try to add dimensions at position 5, which is out of bounds (rank is 2)
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {3, 4}, 5);

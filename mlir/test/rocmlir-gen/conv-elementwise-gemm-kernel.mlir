@@ -3,15 +3,15 @@
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // CHECK-LABEL: func.func @rock_conv_gemm
-// CHECK-SAME: (%[[filterRaw:.*0]]: memref<32768xf32>,
-// CHECK-SAME: %[[inputRaw:.*1]]: memref<524288xf32>,
-// CHECK-SAME: %[[cRaw:.*2]]: memref<16384xf32>,
-// CHECK-SAME: %[[outputRaw:.*3]]: memref<262144xf32>)
+// CHECK-SAME: (%[[filterRaw:.*0]]: tensor<32768xf32>,
+// CHECK-SAME: %[[inputRaw:.*1]]: tensor<524288xf32>,
+// CHECK-SAME: %[[cRaw:.*2]]: tensor<16384xf32>,
+// CHECK-SAME: %[[outputRaw:.*3]]: tensor<262144xf32>)
 // CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.enable_splitk_for_tuning, rock.kernel}
-// CHECK-NEXT: %[[filter:.*]] = rock.transform %[[filterRaw]] {{.*}} : memref<32768xf32> to memref<1x128x256x1x1xf32>
-// CHECK-NEXT: %[[input:.*]] = rock.transform %[[inputRaw]] {{.*}} : memref<524288xf32> to memref<2x1x256x32x32xf32>
-// CHECK-NEXT: %[[c:.*]] = rock.transform %[[cRaw]] {{.*}} : memref<16384xf32> to memref<1x128x128xf32>
-// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : memref<262144xf32> to memref<1x2048x128xf32>
+// CHECK-NEXT: %[[filter:.*]] = rock.transform %[[filterRaw]] {{.*}} : tensor<32768xf32> to tensor<1x128x256x1x1xf32>
+// CHECK-NEXT: %[[input:.*]] = rock.transform %[[inputRaw]] {{.*}} : tensor<524288xf32> to tensor<2x1x256x32x32xf32>
+// CHECK-NEXT: %[[c:.*]] = rock.transform %[[cRaw]] {{.*}} : tensor<16384xf32> to tensor<1x128x128xf32>
+// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<262144xf32> to tensor<1x2048x128xf32>
 
 // CHECK-NEXT: rock.conv_elementwise_gemm
 // CHECK-NEXT: ab = conv(%[[filter]], %[[input]])

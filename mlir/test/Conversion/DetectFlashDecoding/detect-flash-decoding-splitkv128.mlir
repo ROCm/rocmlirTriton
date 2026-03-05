@@ -13,7 +13,7 @@
 #map6 = affine_map<(d0, d1, d2) -> (0, d0 floordiv 128, d0 mod 128, d1, d2)>
 #map7 = affine_map<(d0) -> (0, d0 floordiv 8192, (d0 mod 8192) floordiv 64, d0 mod 64)>
 #map8 = affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) * 1 + d2)>
-#map9 = affine_map<(d0, d1, d2) -> (0, d0 floordiv 128, d1, d0 mod 128, d2)>
+#map9 = affine_map<(d0, d1, d2) -> (0, d0 floordiv 128, d0 mod 128, d1, d2)>
 #map10 = affine_map<(d0, d1, d2, d3, d4) -> (d1 * 128 + d3, d2, d4)>
 #map11 = affine_map<(d0, d1, d2, d3, d4) -> (d1 * 128 + d2, d3)>
 #map14 = affine_map<(d0) -> (d0 floordiv 8192, (d0 mod 8192) floordiv 64, d0 mod 64)>
@@ -29,7 +29,7 @@
 #transform_map6 = #rock.transform_map<#map6 by [<Merge{1, 8, 128} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [3]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [4]>] bounds = [1024, 128, 64] -> [1, 8, 128, 128, 64]>
 #transform_map7 = #rock.transform_map<#map7 by [<Merge{1, 8, 64, 128} ["dim0"] at [0] -> ["col0", "col1", "col2", "col3"] at [0, 1, 2, 3]>] bounds = [65536] -> [1, 8, 64, 128]>
 #transform_map8 = #rock.transform_map<#map8 by [<Unmerge{1024, 64, 1} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1024, 64, 1] -> [65536]>
-#transform_map9 = #rock.transform_map<#map9 by [<Merge{1, 8, 128} ["dim0"] at [0] -> ["col0", "col1", "col3"] at [0, 1, 3]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [4]>] bounds = [1024, 1, 64] -> [1, 8, 1, 128, 64]>
+#transform_map9 = #rock.transform_map<#map9 by [<Merge{1, 8, 128} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [3]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [4]>] bounds = [1024, 1, 64] -> [1, 8, 128, 1, 64]>
 #transform_map10 = #rock.transform_map<#map10 by [<Unmerge{8, 128} ["exp1", "exp3"] at [1, 3] -> ["dim0"] at [0]>, <PassThrough ["dim1"] at [2] -> ["dim1"] at [1]>, <PassThrough ["dim2"] at [4] -> ["dim2"] at [2]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 8, 1, 128, 64] -> [1024, 1, 64]>
 #transform_map11 = #rock.transform_map<#map11 by [<Unmerge{8, 128} ["exp1", "exp2"] at [1, 2] -> ["dim0"] at [0]>, <Unmerge{128} ["exp3"] at [3] -> ["dim1"] at [1]>, <AddDim{1} ["unit0"] at [0] -> [] at []>, <AddDim{1} ["unit4"] at [4] -> [] at []>] bounds = [1, 8, 128, 128, 1] -> [1024, 128]>
 #transform_map12 = #rock.transform_map<#map12 by [<Merge{1, 8, 128, 128, 1} ["dim0"] at [0] -> ["col0", "col1", "col2", "col3", "col4"] at [0, 1, 2, 3, 4]>] bounds = [131072] -> [1, 8, 128, 128, 1]>

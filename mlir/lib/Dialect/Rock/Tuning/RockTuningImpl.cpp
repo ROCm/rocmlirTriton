@@ -92,11 +92,11 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
     numCUs = opNumCUs.value();
 
   SmallVector<int64_t, 3> aShape =
-      llvm::to_vector<3>(cast<MemRefType>(gemmGemmOp.getAType()).getShape());
+      llvm::to_vector<3>(cast<ShapedType>(gemmGemmOp.getAType()).getShape());
   SmallVector<int64_t, 3> bShape =
-      llvm::to_vector<3>(cast<MemRefType>(gemmGemmOp.getBType()).getShape());
+      llvm::to_vector<3>(cast<ShapedType>(gemmGemmOp.getBType()).getShape());
   SmallVector<int64_t, 3> cShape =
-      llvm::to_vector<3>(cast<MemRefType>(gemmGemmOp.getCType()).getShape());
+      llvm::to_vector<3>(cast<ShapedType>(gemmGemmOp.getCType()).getShape());
 
   GemmSize gemm0Size(/*g=*/aShape[0], /*m=*/bShape[2],
                      /*k=*/aShape[1],
@@ -645,14 +645,14 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
   // Number of chiplets
   problemOS << numChiplets << tab;
 
-  ArrayRef<int64_t> qShape = cast<MemRefType>(gemmGemmOp.getAType()).getShape();
-  ArrayRef<int64_t> kShape = cast<MemRefType>(gemmGemmOp.getBType()).getShape();
-  ArrayRef<int64_t> vShape = cast<MemRefType>(gemmGemmOp.getCType()).getShape();
+  ArrayRef<int64_t> qShape = cast<ShapedType>(gemmGemmOp.getAType()).getShape();
+  ArrayRef<int64_t> kShape = cast<ShapedType>(gemmGemmOp.getBType()).getShape();
+  ArrayRef<int64_t> vShape = cast<ShapedType>(gemmGemmOp.getCType()).getShape();
 
   bool isAttention = isa<AttentionOp>(gemmGemmOp);
   bool isConvGemm = isa<ConvElementwiseGemmOp>(gemmGemmOp);
 
-  Type elemTypeQ = cast<MemRefType>(gemmGemmOp.getAType()).getElementType();
+  Type elemTypeQ = cast<ShapedType>(gemmGemmOp.getAType()).getElementType();
   problemOS << "-t ";
   if (elemTypeQ.isF32()) {
     problemOS << "f32" << sep;

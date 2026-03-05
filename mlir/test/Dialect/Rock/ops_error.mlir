@@ -1101,3 +1101,421 @@ func.func @gridwise_gemm_scaleB_type_invalid(%A: tensor<1x8x32xf4E2M1FN>, %B: te
 //   return
 // }
 
+// =============================================================================
+// rock.store tests
+// =============================================================================
+
+// Element type mismatch between source, dest, and result
+func.func @store_elem_type_mismatch(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf16> {
+  // expected-error @+1 {{failed to verify that all of {source, dest, result} have same element type}}
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf16> to tensor<4x4xf32>
+  return %out : tensor<4x4xf16>
+}
+
+// Shape mismatch between source and dest
+func.func @store_shape_mismatch(
+    %source: tensor<4x4xf32>, %dest: tensor<8x8xf32>) -> tensor<4x4xf32> {
+  // expected-error @+1 {{source and dest shapes must match}}
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<8x8xf32>
+  return %out : tensor<4x4xf32>
+}
+
+// Result used by a non-return op
+func.func @store_result_not_returned(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> {
+  // expected-error @+1 {{result must be used directly by a func.return}}
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %neg = arith.negf %out : tensor<4x4xf32>
+  return %neg : tensor<4x4xf32>
+}
+
+// Result has multiple uses
+func.func @store_result_multiple_uses(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> (tensor<4x4xf32>, tensor<4x4xf32>) {
+  // expected-error @+1 {{result must have at most one use (a func.return)}}
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %out, %out : tensor<4x4xf32>, tensor<4x4xf32>
+}
+
+// =============================================================================
+// rock.cast_to_ptr tests
+// =============================================================================
+
+// Source is not i32
+func.func @cast_to_ptr_src_not_i32(%src: tensor<64x64xf32>) -> tensor<64x64x!tt.ptr<f16>> {
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  %0 = rock.cast_to_ptr %src : tensor<64x64xf32> -> tensor<64x64x!tt.ptr<f16>>
+  return %0 : tensor<64x64x!tt.ptr<f16>>
+}
+
+// Result is not a pointer tensor
+func.func @cast_to_ptr_result_not_ptr(%src: tensor<64x64xi32>) -> tensor<64x64xf16> {
+  // expected-error @+1 {{result must be a tensor of !tt.ptr}}
+  %0 = rock.cast_to_ptr %src : tensor<64x64xi32> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Shape mismatch between src and result
+func.func @cast_to_ptr_shape_mismatch(%src: tensor<32x64xi32>) -> tensor<64x64x!tt.ptr<f16>> {
+  // expected-error @+1 {{failed to verify that all of {src, result} have same shape}}
+  %0 = rock.cast_to_ptr %src : tensor<32x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  return %0 : tensor<64x64x!tt.ptr<f16>>
+}
+
+// =============================================================================
+// rock.extract_ptr tests
+// =============================================================================
+
+// Source is not a block argument
+func.func @extract_ptr_not_block_arg(%src: tensor<64x64xf32>) -> i32 {
+  %cst = arith.constant dense<0.0> : tensor<64x64xf32>
+  // expected-error @+1 {{source must be a block argument}}
+  %0 = rock.extract_ptr %cst : tensor<64x64xf32> -> i32
+  return %0 : i32
+}
+
+// =============================================================================
+// rock.blockwise_reduce tests
+// =============================================================================
+
+// Axis out of range
+func.func @blockwise_reduce_axis_oob(%input: tensor<64x64xf32>) -> tensor<64xf32> {
+  // expected-error @+1 {{axis is out of range}}
+  %0 = rock.blockwise_reduce sum %input {axis = 3 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  return %0 : tensor<64xf32>
+}
+
+// Rank mismatch (output rank must be input rank - 1)
+func.func @blockwise_reduce_rank_mismatch(%input: tensor<64x64xf32>) -> tensor<64x64xf32> {
+  // expected-error @+1 {{output rank must be input rank - 1}}
+  %0 = rock.blockwise_reduce sum %input {axis = 0 : index} : tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Non-reduction dimension mismatch
+func.func @blockwise_reduce_non_red_dim_mismatch(%input: tensor<64x64xf32>) -> tensor<32xf32> {
+  // expected-error @+1 {{non-reduction dimension size mismatch at output dim 0}}
+  %0 = rock.blockwise_reduce sum %input {axis = 1 : index} : tensor<64x64xf32> -> tensor<32xf32>
+  return %0 : tensor<32xf32>
+}
+
+// Element type mismatch
+func.func @blockwise_reduce_elem_type_mismatch(%input: tensor<64x64xf32>) -> tensor<64xf16> {
+  // expected-error @+1 {{failed to verify that all of {input, result} have same element type}}
+  %0 = rock.blockwise_reduce sum %input {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// =============================================================================
+// rock.transforms_to_ptr tests
+// =============================================================================
+
+// Pointers element type not i32
+func.func @transforms_to_ptr_ptr_not_i32(%src: tensor<64x64xf32>) -> (tensor<64x64xf16>, tensor<64x64xi1>) {
+  // expected-error @+1 {{result #0 must be ranked tensor of 32-bit signless integer values}}
+  %ptrs, %mask = rock.transforms_to_ptr %src : tensor<64x64xf32> -> tensor<64x64xf16>, tensor<64x64xi1>
+  return %ptrs, %mask : tensor<64x64xf16>, tensor<64x64xi1>
+}
+
+// Mask element type not i1
+func.func @transforms_to_ptr_mask_not_i1(%src: tensor<64x64xf32>) -> (tensor<64x64xi32>, tensor<64x64xi32>) {
+  // expected-error @+1 {{result #1 must be ranked tensor of 1-bit signless integer values}}
+  %ptrs, %mask = rock.transforms_to_ptr %src : tensor<64x64xf32> -> tensor<64x64xi32>, tensor<64x64xi32>
+  return %ptrs, %mask : tensor<64x64xi32>, tensor<64x64xi32>
+}
+
+// Shape mismatch between pointers and mask
+func.func @transforms_to_ptr_shape_mismatch(%src: tensor<64x64xf32>) -> (tensor<32x32xi32>, tensor<64x64xi1>) {
+  // expected-error @+1 {{failed to verify that all of {pointers, mask} have same shape}}
+  %ptrs, %mask = rock.transforms_to_ptr %src : tensor<64x64xf32> -> tensor<32x32xi32>, tensor<64x64xi1>
+  return %ptrs, %mask : tensor<32x32xi32>, tensor<64x64xi1>
+}
+
+// Rank mismatch: extraIndices + pointers.rank != source.rank
+func.func @transforms_to_ptr_rank_mismatch(
+    %src: tensor<4x1x1x2x64x64xf16>, %i0: i32) -> (tensor<64x64xi32>, tensor<64x64xi1>) {
+  // expected-error @+1 {{extraIndices.size() + pointers rank must equal source rank}}
+  %ptrs, %mask = rock.transforms_to_ptr %src[%i0] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
+  return %ptrs, %mask : tensor<64x64xi32>, tensor<64x64xi1>
+}
+
+// Source last dimensions mismatch with pointers shape
+func.func @transforms_to_ptr_last_dims_mismatch(
+    %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> (tensor<32x64xi32>, tensor<32x64xi1>) {
+  // expected-error @+1 {{Source last dimensions must match with pointers shape}}
+  %ptrs, %mask = rock.transforms_to_ptr %src[%i0, %i1, %i2, %i3] : tensor<4x1x1x2x64x64xf16> -> tensor<32x64xi32>, tensor<32x64xi1>
+  return %ptrs, %mask : tensor<32x64xi32>, tensor<32x64xi1>
+}
+
+// =============================================================================
+// rock.blockwise_store tests
+// =============================================================================
+
+// Element type mismatch (source vs result)
+func.func @blockwise_store_elem_type_mismatch(
+    %src: tensor<16x16xf32>, %dest: tensor<3x4x32x16x16xf32>,
+    %i0: i32, %i1: i32, %i2: i32) -> tensor<32768xf16> {
+  // expected-error @+1 {{failed to verify that all of {source, dest, result} have same element type}}
+  %0 = rock.blockwise_store %src -> %dest[%i0, %i1, %i2] by set
+    : tensor<16x16xf32> -> tensor<3x4x32x16x16xf32> -> tensor<32768xf16>
+  return %0 : tensor<32768xf16>
+}
+
+// Rank mismatch: extraIndices + source.rank != dest.rank
+func.func @blockwise_store_rank_mismatch(
+    %src: tensor<16x16xf32>, %dest: tensor<3x4x32x16x16xf32>,
+    %i0: i32) -> tensor<32768xf32> {
+  // expected-error @+1 {{extraIndices.size() + source rank must equal dest rank}}
+  %0 = rock.blockwise_store %src -> %dest[%i0] by set
+    : tensor<16x16xf32> -> tensor<3x4x32x16x16xf32> -> tensor<32768xf32>
+  return %0 : tensor<32768xf32>
+}
+
+// Result not used by return
+func.func @blockwise_store_not_returned(
+    %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
+    %i0: i32) -> tensor<768xf32> {
+  // expected-error @+1 {{result must be used directly by a func.return}}
+  %0 = rock.blockwise_store %src -> %dest[%i0] by set
+    : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
+  %neg = arith.negf %0 : tensor<768xf32>
+  return %neg : tensor<768xf32>
+}
+
+// Result has multiple uses
+func.func @blockwise_store_multiple_uses(
+    %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
+    %i0: i32) -> (tensor<768xf32>, tensor<768xf32>) {
+  // expected-error @+1 {{result must have at most one use (a func.return)}}
+  %0 = rock.blockwise_store %src -> %dest[%i0] by set
+    : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
+  return %0, %0 : tensor<768xf32>, tensor<768xf32>
+}
+
+// Dest last dimensions shape mismatch
+func.func @blockwise_store_shape_mismatch(
+    %src: tensor<16x32xf32>, %dest: tensor<3x4x32x16x16xf32>,
+    %i0: i32, %i1: i32, %i2: i32) -> tensor<32768xf32> {
+  // expected-error @+1 {{Dest last dimensions must match with input shape}}
+  %0 = rock.blockwise_store %src -> %dest[%i0, %i1, %i2] by set
+    : tensor<16x32xf32> -> tensor<3x4x32x16x16xf32> -> tensor<32768xf32>
+  return %0 : tensor<32768xf32>
+}
+
+// =============================================================================
+// rock.blockwise_load tests
+// =============================================================================
+
+// Element type mismatch between source and result
+func.func @blockwise_load_elem_type_mismatch(
+    %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x64xf32> {
+  // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Rank mismatch: sourceIndices.size() + result.rank != source.rank
+func.func @blockwise_load_rank_mismatch(
+    %src: tensor<4x1x1x2x64x64xf16>, %i0: i32) -> tensor<64x64xf16> {
+  // expected-error @+1 {{sourceIndices.size() + result rank must equal source rank}}
+  %0 = rock.blockwise_load %src[%i0] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Input last dimensions shape mismatch
+func.func @blockwise_load_shape_mismatch(
+    %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x32xf16> {
+  // expected-error @+1 {{Input last dimensions must match with result shape}}
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] : tensor<4x1x1x2x64x64xf16> -> tensor<64x32xf16>
+  return %0 : tensor<64x32xf16>
+}
+
+// =============================================================================
+// rock.blockwise_load_ptr tests
+// =============================================================================
+
+// Pointer tensor element type not i32
+func.func @blockwise_load_ptr_ptr_not_i32(
+    %ptrs: tensor<64x64xf32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> {
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xf32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Mask tensor element type not i1
+func.func @blockwise_load_ptr_mask_not_i1(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi32>) -> tensor<64x64xf16> {
+  // expected-error @+1 {{operand #1 must be ranked tensor of 1-bit signless integer values}}
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi32> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Shape mismatch between pointers and result
+func.func @blockwise_load_ptr_shape_mismatch(
+    %ptrs: tensor<32x32xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> {
+  // expected-error @+1 {{failed to verify that all of {pointerTensor, maskTensor, result} have same shape}}
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] : tensor<32x32xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// =============================================================================
+// rock.blockwise_store_ptr tests
+// =============================================================================
+
+// Pointer tensor element type not i32
+func.func @blockwise_store_ptr_ptr_not_i32(
+    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xf16>, %mask: tensor<64x64xi1>) -> tensor<64x64xf32> {
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<64x64xf16>(tensor<64x64xi1>) -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Mask tensor element type not i1
+func.func @blockwise_store_ptr_mask_not_i1(
+    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi32>) -> tensor<64x64xf32> {
+  // expected-error @+1 {{operand #1 must be ranked tensor of 1-bit signless integer values}}
+  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi32>) -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Shape mismatch between pointers, mask, and source
+func.func @blockwise_store_ptr_shape_mismatch(
+    %src: tensor<64x64xf32>, %ptrs: tensor<32x32xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf32> {
+  // expected-error @+1 {{failed to verify that all of {pointerTensor, maskTensor, source} have same shape}}
+  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<32x32xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Element type mismatch between source and result
+func.func @blockwise_store_ptr_elem_mismatch(
+    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> {
+  // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
+  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Result not used by return
+func.func @blockwise_store_ptr_not_returned(
+    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf32> {
+  // expected-error @+1 {{result must be used directly by a func.return}}
+  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
+  %neg = arith.negf %0 : tensor<64x64xf32>
+  return %neg : tensor<64x64xf32>
+}
+
+// =============================================================================
+// rock.load_marker tests
+// =============================================================================
+
+#load_marker_tmap = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0 * 64 + d1, d2)> by [<Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 1] -> ["k"] at [0]>, <PassThrough ["n"] at [2] -> ["n"] at [1]>] bounds = [4, 64, 128] -> [256, 128]>
+
+// Element type mismatch between source and result
+func.func @load_marker_elem_type_mismatch(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf32> {
+  // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] : tensor<256x128xf16> -> tensor<64x128xf32>
+  return %0 : tensor<64x128xf32>
+}
+
+// Upper dims != result rank + extraIndices count
+func.func @load_marker_rank_mismatch(%src: tensor<256x128xf16>, %i0: i32, %i1: i32) -> tensor<64x128xf16> {
+  // expected-error @+1 {{upper bounds must equal tensor rank + extraIndices count}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0, %i1] : tensor<256x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
+// Upper bounds last dimensions mismatch with result shape
+// #load_marker_tmap upper bounds = [4, 64, 128], result rank 2 → take_back(2) = [64, 128]
+func.func @load_marker_upper_shape_mismatch(%src: tensor<256x128xf16>, %i0: i32) -> tensor<32x128xf16> {
+  // expected-error @+1 {{Upper bounds last dimensions must match with result shape}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] : tensor<256x128xf16> -> tensor<32x128xf16>
+  return %0 : tensor<32x128xf16>
+}
+
+// Lower bounds mismatch with source shape
+// #load_marker_tmap lower bounds = [256, 128], source is [128, 128]
+func.func @load_marker_lower_shape_mismatch(%src: tensor<128x128xf16>, %i0: i32) -> tensor<64x128xf16> {
+  // expected-error @+1 {{Lower bounds must match with input shape}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] : tensor<128x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
+// =============================================================================
+// rock.store_marker tests
+// =============================================================================
+
+#store_marker_tmap = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 64 + d3, d2 * 64 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 64} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 1, 2, 64, 64] -> [1, 64, 128]>
+
+// Element type mismatch between source and result
+func.func @store_marker_elem_type_mismatch(%src: tensor<64x64xf32>, %i0: i32, %i1: i32, %i2: i32) -> tensor<1x64x128xf16> {
+  // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
+  %0 = rock.store_marker %src views [#store_marker_tmap] [%i0, %i1, %i2] : tensor<64x64xf32> -> tensor<1x64x128xf16>
+  return %0 : tensor<1x64x128xf16>
+}
+
+// Upper dims != source rank + extraIndices count
+func.func @store_marker_rank_mismatch(%src: tensor<64x64xf32>, %i0: i32) -> tensor<1x64x128xf32> {
+  // expected-error @+1 {{upper bounds must equal tensor rank + extraIndices count}}
+  %0 = rock.store_marker %src views [#store_marker_tmap] [%i0] : tensor<64x64xf32> -> tensor<1x64x128xf32>
+  return %0 : tensor<1x64x128xf32>
+}
+
+// Upper bounds last dimensions mismatch with source shape
+// #store_marker_tmap upper bounds = [1, 1, 2, 64, 64], source rank 2 → take_back(2) = [64, 64]
+func.func @store_marker_upper_shape_mismatch(%src: tensor<32x32xf32>, %i0: i32, %i1: i32, %i2: i32) -> tensor<1x64x128xf32> {
+  // expected-error @+1 {{Upper bounds last dimensions must match with result shape}}
+  %0 = rock.store_marker %src views [#store_marker_tmap] [%i0, %i1, %i2] : tensor<32x32xf32> -> tensor<1x64x128xf32>
+  return %0 : tensor<1x64x128xf32>
+}
+
+// Lower bounds mismatch with result shape
+// #store_marker_tmap lower bounds = [1, 64, 128], result is [2, 64, 128]
+func.func @store_marker_lower_shape_mismatch(%src: tensor<64x64xf32>, %i0: i32, %i1: i32, %i2: i32) -> tensor<2x64x128xf32> {
+  // expected-error @+1 {{Lower bounds must match with input shape}}
+  %0 = rock.store_marker %src views [#store_marker_tmap] [%i0, %i1, %i2] : tensor<64x64xf32> -> tensor<2x64x128xf32>
+  return %0 : tensor<2x64x128xf32>
+}
+
+// =============================================================================
+// rock.untile tests
+// =============================================================================
+
+// Source rank greater than result rank
+func.func @untile_source_rank_greater(%src: tensor<4x64x128xf16>) -> tensor<64x128xf16> {
+  // expected-error @+1 {{source rank is greater than result rank}}
+  %0 = rock.untile %src : tensor<4x64x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
+// =============================================================================
+// rock.transform tests
+// =============================================================================
+
+#xform = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0 * 64 + d1, d2)> by [<Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 1] -> ["k"] at [0]>, <PassThrough ["n"] at [2] -> ["n"] at [1]>] bounds = [4, 64, 128] -> [256, 128]>
+
+// Element type mismatch
+func.func @transform_elem_type_mismatch(%arg0: tensor<256x128xf16>) -> tensor<4x64x128xf32> {
+  // expected-error @+1 {{failed to verify that all of {input, output} have same element type}}
+  %0 = rock.transform %arg0 by #xform : tensor<256x128xf16> to tensor<4x64x128xf32>
+  return %0 : tensor<4x64x128xf32>
+}
+
+// Input shape doesn't match lower bounds
+func.func @transform_input_shape_mismatch(%arg0: tensor<128x128xf16>) -> tensor<4x64x128xf16> {
+  // expected-error @+1 {{input shape must match transform lower bounds}}
+  %0 = rock.transform %arg0 by #xform : tensor<128x128xf16> to tensor<4x64x128xf16>
+  return %0 : tensor<4x64x128xf16>
+}
+
+// Output shape doesn't match upper bounds
+func.func @transform_output_shape_mismatch(%arg0: tensor<256x128xf16>) -> tensor<8x32x128xf16> {
+  // expected-error @+1 {{output shape must match transform upper bounds}}
+  %0 = rock.transform %arg0 by #xform : tensor<256x128xf16> to tensor<8x32x128xf16>
+  return %0 : tensor<8x32x128xf16>
+}
+

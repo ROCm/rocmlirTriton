@@ -54,6 +54,7 @@ target_link_libraries(MLIRRockOps
   MLIRSupport
   MLIRLinalgTransformOps
   PRIVATE
+  TritonIR
   TritonAMDGPUTransforms
   )
 

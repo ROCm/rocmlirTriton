@@ -2,7 +2,7 @@
 // TODO(rocmlirTriton): Fusions need rework
 
 // RUN: rocmlir-opt --rock-view-to-transform -rock-affix-params -rock-conv-to-gemm -rock-gemm-to-gridwise %s | FileCheck %s
-// RUN: rocmlir-driver -kernel-pipeline=gpu --verify-passes %s | rocmlir-opt
+// RUN: rocmlir-driver -kernel-pipeline=gpu %s | rocmlir-opt
 
 module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
   func.func @rock_gemm(%arg0: memref<1x1024x769xf16>, %arg1: memref<1x769x512xf32>, %arg2: memref<1x1024x512xf32>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
