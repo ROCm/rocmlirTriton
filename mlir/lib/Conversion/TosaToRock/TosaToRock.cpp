@@ -130,33 +130,40 @@ struct ConvFields {
 static Value collapseGroupDim(PatternRewriter &rw, Location loc,
                               Value convResult, RankedTensorType outputType,
                               Operation *convOp) {
-  // If the types already match, no collapse needed.
-  if (convResult.getType() == outputType)
+  // If the shapes already match, no collapse needed.
+  if (cast<RankedTensorType>(convResult.getType()).getShape() ==
+      outputType.getShape())
     return convResult;
 
   auto expandedType = cast<RankedTensorType>(convResult.getType());
   auto outputLayoutAttr = convOp->getAttrOfType<ArrayAttr>("output_layout");
   assert(outputLayoutAttr && "expected output_layout attribute on conv op");
 
-  // Find the 'g' dimension position in the output layout.
+  // Find the 'g' and 'k' dimension positions in the output layout.
   // Layout entries have an "o" suffix (e.g., "no", "ho", "go", "ko").
   int64_t gDimPos = -1;
+  int64_t kDimPos = -1;
   for (auto [i, attr] : llvm::enumerate(outputLayoutAttr)) {
     StringRef dimName = cast<StringAttr>(attr).getValue();
-    if (dimName == "go") {
+    if (dimName == "go")
       gDimPos = static_cast<int64_t>(i);
-      break;
-    }
+    else if (dimName == "ko")
+      kDimPos = static_cast<int64_t>(i);
   }
   assert(gDimPos >= 0 && "expected 'go' dimension in output layout");
+  assert(kDimPos >= 0 && "expected 'ko' dimension in output layout");
 
-  // Build reassociation to merge 'g' with the next dimension.
+  // Build reassociation to merge 'g' back with 'k'.
   int64_t expandedRank = expandedType.getRank();
   SmallVector<ReassociationIndices> reassociation;
+  int64_t firstGK = std::min(gDimPos, kDimPos);
+  int64_t secondGK = std::max(gDimPos, kDimPos);
   for (int64_t i = 0; i < expandedRank; i++) {
-    if (i == gDimPos) {
-      reassociation.push_back({i, i + 1});
-      i++; // skip the dimension that was merged with 'g'
+    if (i == firstGK) {
+      reassociation.push_back({firstGK, secondGK});
+      assert(secondGK == firstGK + 1 &&
+             "expected 'g' and 'k' to be adjacent dimensions");
+      i++; // skip the second of the g/k pair
     } else {
       reassociation.push_back({i});
     }

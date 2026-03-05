@@ -360,27 +360,9 @@ static Value regularizeDestLayout(PatternRewriter &b, Location loc,
       expectedOrder.push_back(it->getValue());
   }
 
-  // Check if already in the correct relative order.
-  llvm::SmallDenseMap<StringAttr, size_t> toLayoutIdxs;
-  for (auto [idx, name] : llvm::enumerate(toLayout.getAsRange<StringAttr>()))
-    toLayoutIdxs.insert({name, idx});
-
-  bool inOrder = true;
-  size_t prevIndex = 0;
-  for (StringAttr expected : expectedOrder) {
-    auto it = toLayoutIdxs.find(expected);
-    if (it == toLayoutIdxs.end())
-      return destValue;
-    if (it->second < prevIndex) {
-      inOrder = false;
-      break;
-    }
-    prevIndex = it->second;
-  }
-  if (inOrder)
-    return destValue;
-
   // Compute new layout by inserting mapped dims in expected order.
+  // If already in the correct order this produces an identity PassThrough,
+  // which has no effect on indexing arithmetic.
   SmallVector<StringRef> newNames;
   llvm::SmallDenseSet<StringAttr> permutedSet{expectedOrder.begin(),
                                               expectedOrder.end()};
@@ -522,13 +504,11 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
     return failure();
 
   // Find the StoreOp dest buffer for the filter result.
-  Value filterDest;
-  for (auto *user : op.getResult().getUsers()) {
-    if (auto sop = dyn_cast<StoreOp>(user)) {
-      filterDest = sop.getDest();
-      break;
-    }
-  }
+  auto maybeStores = traceRootOutputToStoreOps(op.getResult());
+  if (failed(maybeStores))
+    return op.emitOpError("cannot trace bwd_weight result to rock::StoreOp");
+  StoreOp firstStore = maybeStores->front();
+  Value filterDest = firstStore.getDest();
 
   // Regularize filter dest layout to match input layout ordering.
   // This must happen before building transforms so that filterNames,
@@ -1204,12 +1184,11 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // buffer
   Value destBuffer;
   if constexpr (notConvGemm) {
-    for (auto *user : op.getResult().getUsers()) {
-      if (auto sop = dyn_cast<StoreOp>(user)) {
-        destBuffer = sop.getDest();
-        break;
-      }
-    }
+    auto maybeStores = traceRootOutputToStoreOps(op.getResult());
+    if (failed(maybeStores))
+      return op.emitOpError("cannot trace conv result to rock::StoreOp");
+    StoreOp firstStore = maybeStores->front();
+    destBuffer = firstStore.getDest();
 
     // For BwdWeight, the filter value is the StoreOp dest (filter is the
     // result)
