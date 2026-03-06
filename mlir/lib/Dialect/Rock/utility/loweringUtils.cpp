@@ -490,9 +490,7 @@ mlir::rock::traceRootOutputToStoreOps(Value output) {
       } else if (auto reduceOp = dyn_cast<ReduceOp>(owner)) {
         worklist.push_back(reduceOp.getResult());
       } else if (isa<ViewLikeOpInterface>(owner)) {
-        for (Value result : owner->getResults()) {
-          worklist.push_back(result);
-        }
+        worklist.push_back(cast<ViewLikeOpInterface>(owner).getViewDest());
       } else if (isFusionOp(owner)) {
         for (Value result : owner->getResults()) {
           worklist.push_back(result);
