@@ -61,11 +61,6 @@ using namespace mlir::cpu;
 
 namespace {
 
-/// Check if a function has the cpu_verifier attribute
-static bool isCpuVerifierFunc(func::FuncOp func) {
-  return func->hasAttr("rock.cpu_verifier");
-}
-
 struct CpuLowerVerifierPass
     : public cpu::impl::CpuLowerVerifierPassBase<CpuLowerVerifierPass> {
   using CpuLowerVerifierPassBase::CpuLowerVerifierPassBase;
@@ -92,12 +87,6 @@ private:
   /// Update call sites in the module to use memref arguments instead of tensors
   /// after the function has been bufferized with bufferize_function_boundaries=true
   void updateCallSites(ModuleOp module, StringRef funcName);
-
-  /// Unwrap nested module structure if present
-  /// Some transforms may wrap their result in an additional module, which would
-  /// cause subsequent transforms like one_shot_bufferize to not process the
-  /// inner function
-  void unwrapNestedModule(OwningOpRef<ModuleOp> &module, StringRef funcName);
 };
 
 } // end anonymous namespace
@@ -132,50 +121,6 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
   outFile << "\n";
 
   LLVM_DEBUG(llvm::dbgs() << "Dumped IR and transform to: " << filename << "\n");
-}
-
-void CpuLowerVerifierPass::unwrapNestedModule(OwningOpRef<ModuleOp> &module,
-                                              StringRef funcName) {
-  // Check if there's a nested module inside the outer module
-  // This can happen when some transforms wrap their result in a new module
-  ModuleOp nestedModule = nullptr;
-  for (Operation &op : module->getBody()->getOperations()) {
-    if (auto nested = dyn_cast<ModuleOp>(&op)) {
-      nestedModule = nested;
-      break;
-    }
-  }
-
-  if (!nestedModule) {
-    return; // No nested module, nothing to do
-  }
-
-  LLVM_DEBUG(llvm::dbgs() << "  Unwrapping nested module structure\n");
-
-  // Find the function inside the nested module
-  func::FuncOp funcOp = nullptr;
-  nestedModule.walk([&](func::FuncOp f) {
-    if (f.getName() == funcName)
-      funcOp = f;
-  });
-
-  if (!funcOp) {
-    // Function not found in nested module, leave as-is
-    return;
-  }
-
-  // Create a new clean module with just the function
-  MLIRContext *ctx = module->getContext();
-  Location loc = module->getLoc();
-  OwningOpRef<ModuleOp> newModule = ModuleOp::create(loc);
-
-  // Clone the function into the new module
-  OpBuilder builder(ctx);
-  builder.setInsertionPointToStart(newModule->getBody());
-  builder.clone(*funcOp.getOperation());
-
-  // Replace the old module with the new one
-  module = std::move(newModule);
 }
 
 void CpuLowerVerifierPass::updateCallSites(ModuleOp module,
@@ -267,6 +212,12 @@ void CpuLowerVerifierPass::updateCallSites(ModuleOp module,
   }
 }
 
+/// Describes a single transform step in the lowering pipeline.
+struct TransformStep {
+  ModuleOp module;  // The transform module to apply
+  StringRef name;   // Name of this step (e.g., "optimization", "vectorization")
+};
+
 LogicalResult
 CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
                                           const TransformSchedules &schedules) {
@@ -286,103 +237,43 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   auto clonedFunc = cast<func::FuncOp>(clonedOp);
   tempModule->push_back(clonedFunc);
 
-  // ===== Phase 1: Pre → Optimization → Post =====
-  LLVM_DEBUG(llvm::dbgs() << "  Phase 1: Optimization\n");
+  // Step 3: Build the pipeline of main transform steps
+  // For each step, we apply: Pre → Main → Post
+  SmallVector<TransformStep> pipeline = {
+      {schedules.optimizationModule.get(), "optimization"},
+      {schedules.vectorizationModule.get(), "vectorization"},
+      {schedules.loweringModule.get(), "lowering"},
+  };
 
-  // Pre-sequence (canonicalize + cse)
-  LLVM_DEBUG(llvm::dbgs() << "    Applying pre sequence...\n");
-  dumpBeforeTransform(tempModule.get(), schedules.preModule.get(), funcName,
-                      "pre_optimization");
-  if (failed(applyTransformSequence(tempModule.get(), schedules.preModule.get(),
-                                    "pre"))) {
-    return func.emitError("Pre transform failed before optimization");
-  }
+  // Step 4: Apply each transform step with pre/post sequences
+  for (const TransformStep &step : pipeline) {
+    // 4.1. Pre-sequence
+    std::string prePhaseName = "pre_" + step.name.str();
+    LLVM_DEBUG(llvm::dbgs() << "    Applying " << prePhaseName << "...\n");
+    dumpBeforeTransform(tempModule.get(), schedules.preModule.get(), funcName,
+                        prePhaseName);
+    if (failed(applyTransformSequence(tempModule, schedules.preModule.get(),
+                                      "pre", funcName))) {
+      return func.emitError("Pre transform failed before ") << step.name;
+    }
 
-  // Optimization sequence (tiling)
-  LLVM_DEBUG(llvm::dbgs() << "    Applying optimization sequence...\n");
-  dumpBeforeTransform(tempModule.get(), schedules.optimizationModule.get(),
-                      funcName, "optimization");
-  if (failed(applyTransformSequence(tempModule.get(),
-                                    schedules.optimizationModule.get(),
-                                    "optimization"))) {
-    return func.emitError("Optimization transform failed for function");
-  }
+    // 4.2. Main transform
+    LLVM_DEBUG(llvm::dbgs() << "    Applying " << step.name << "...\n");
+    dumpBeforeTransform(tempModule.get(), step.module, funcName, step.name);
+    if (failed(applyTransformSequence(tempModule, step.module, step.name,
+                                      funcName))) {
+      return func.emitError("Transform failed at ") << step.name;
+    }
 
-  // Unwrap any nested module structure created by the transform
-  unwrapNestedModule(tempModule, funcName);
-
-  // Post-sequence (tiling canonicalization + LICM + hoisting)
-  LLVM_DEBUG(llvm::dbgs() << "    Applying post sequence...\n");
-  dumpBeforeTransform(tempModule.get(), schedules.postModule.get(), funcName,
-                      "post_optimization");
-  if (failed(applyTransformSequence(tempModule.get(),
-                                    schedules.postModule.get(), "post"))) {
-    return func.emitError("Post transform failed after optimization");
-  }
-
-  // ===== Phase 2: Pre → Vectorization → Post =====
-  LLVM_DEBUG(llvm::dbgs() << "  Phase 2: Vectorization\n");
-
-  // Pre-sequence
-  LLVM_DEBUG(llvm::dbgs() << "    Applying pre sequence...\n");
-  dumpBeforeTransform(tempModule.get(), schedules.preModule.get(), funcName,
-                      "pre_vectorization");
-  if (failed(applyTransformSequence(tempModule.get(), schedules.preModule.get(),
-                                    "pre"))) {
-    return func.emitError("Pre transform failed before vectorization");
-  }
-
-  // Vectorization sequence
-  LLVM_DEBUG(llvm::dbgs() << "    Applying vectorization sequence...\n");
-  dumpBeforeTransform(tempModule.get(), schedules.vectorizationModule.get(),
-                      funcName, "vectorization");
-  if (failed(applyTransformSequence(tempModule.get(),
-                                    schedules.vectorizationModule.get(),
-                                    "vectorization"))) {
-    return func.emitError("Vectorization transform failed for function");
-  }
-
-  // Unwrap any nested module structure
-  unwrapNestedModule(tempModule, funcName);
-
-  // Post-sequence
-  LLVM_DEBUG(llvm::dbgs() << "    Applying post sequence...\n");
-  dumpBeforeTransform(tempModule.get(), schedules.postModule.get(), funcName,
-                      "post_vectorization");
-  if (failed(applyTransformSequence(tempModule.get(),
-                                    schedules.postModule.get(), "post"))) {
-    return func.emitError("Post transform failed after vectorization");
-  }
-
-  // ===== Phase 3: Pre → Lowering → Post =====
-  LLVM_DEBUG(llvm::dbgs() << "  Phase 3: Lowering\n");
-
-  // Pre-sequence
-  LLVM_DEBUG(llvm::dbgs() << "    Applying pre sequence...\n");
-  dumpBeforeTransform(tempModule.get(), schedules.preModule.get(), funcName,
-                      "pre_lowering");
-  if (failed(applyTransformSequence(tempModule.get(), schedules.preModule.get(),
-                                    "pre"))) {
-    return func.emitError("Pre transform failed before lowering");
-  }
-
-  // Lowering sequence (bufferization + LLVM lowering)
-  LLVM_DEBUG(llvm::dbgs() << "    Applying lowering sequence...\n");
-  dumpBeforeTransform(tempModule.get(), schedules.loweringModule.get(),
-                      funcName, "lowering");
-  if (failed(applyTransformSequence(tempModule.get(),
-                                    schedules.loweringModule.get(),
-                                    "lowering"))) {
-    return func.emitError("Lowering transform failed for function");
-  }
-
-  // Post-sequence after lowering
-  LLVM_DEBUG(llvm::dbgs() << "    Applying post sequence...\n");
-  dumpBeforeTransform(tempModule.get(), schedules.postModule.get(), funcName,
-                      "post_lowering");
-  if (failed(applyTransformSequence(tempModule.get(),
-                                    schedules.postModule.get(), "post"))) {
-    return func.emitError("Post transform failed after lowering");
+    // 4.3. Post-sequence
+    std::string postPhaseName = "post_" + step.name.str();
+    LLVM_DEBUG(llvm::dbgs() << "    Applying " << postPhaseName << "...\n");
+    dumpBeforeTransform(tempModule.get(), schedules.postModule.get(), funcName,
+                        postPhaseName);
+    if (failed(applyTransformSequence(tempModule, schedules.postModule.get(),
+                                      "post", funcName))) {
+      return func.emitError("Post transform failed after ") << step.name;
+    }
   }
 
   // Step 5: Get the lowered function from the temporary module
@@ -457,7 +348,7 @@ void CpuLowerVerifierPass::runOnOperation() {
   // We collect them first because we'll be modifying the module
   SmallVector<func::FuncOp> cpuVerifierFuncs;
   module.walk([&](func::FuncOp func) {
-    if (isCpuVerifierFunc(func))
+    if (func->hasAttr("rock.cpu_verifier"))
       cpuVerifierFuncs.push_back(func);
   });
 
