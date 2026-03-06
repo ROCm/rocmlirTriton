@@ -1,5 +1,6 @@
 add_rocmlir_dialect_library(MLIRCpuTransforms
   LowerCpuVerifier.cpp
+  Schedules.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/CPU
