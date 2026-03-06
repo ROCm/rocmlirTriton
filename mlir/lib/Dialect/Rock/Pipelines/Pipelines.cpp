@@ -40,6 +40,7 @@
 
 #include "mlir/Conversion/RocMLIRPasses.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Dialect/CPU/Passes.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Tosa/IR/TargetEnv.h"
@@ -386,7 +387,7 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
   // leaving other functions (main, wrappers) unchanged.
   // Note: The pass uses bufferize_function_boundaries=false to keep tensor
   // signatures, so callers don't need to be updated.
-  pm.addPass(rock::createRockLowerCpuVerifierPass());
+  pm.addPass(cpu::createCpuLowerVerifierPass());
   
   // Bufferize tensor ops to memref ops - required before linalg-to-loops
   // The host functions restored from attributes contain tensor operations

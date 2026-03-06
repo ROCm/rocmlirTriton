@@ -35,7 +35,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/TransformOps/MemRefTransformOps.h"
 #include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"
-#include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/CPU/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h"
@@ -62,16 +62,16 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
-namespace rock {
-#define GEN_PASS_DEF_ROCKLOWERCPUVERIFIERPASS
-#include "mlir/Dialect/Rock/Passes.h.inc"
-} // namespace rock
+namespace cpu {
+#define GEN_PASS_DEF_CPULOWERVERIFIERPASS
+#include "mlir/Dialect/CPU/Passes.h.inc"
+} // namespace cpu
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-lower-cpu-verifier"
+#define DEBUG_TYPE "cpu-lower-verifier"
 
 using namespace mlir;
-using namespace mlir::rock;
+using namespace mlir::cpu;
 
 namespace {
 
@@ -233,13 +233,13 @@ static bool isCpuVerifierFunc(func::FuncOp func) {
   return func->hasAttr("rock.cpu_verifier");
 }
 
-struct RockLowerCpuVerifierPass
-    : public rock::impl::RockLowerCpuVerifierPassBase<RockLowerCpuVerifierPass> {
-  using RockLowerCpuVerifierPassBase::RockLowerCpuVerifierPassBase;
+struct CpuLowerVerifierPass
+    : public cpu::impl::CpuLowerVerifierPassBase<CpuLowerVerifierPass> {
+  using CpuLowerVerifierPassBase::CpuLowerVerifierPassBase;
 
   void getDependentDialects(DialectRegistry &registry) const override {
     // Call base class to include dialects from Passes.td
-    RockLowerCpuVerifierPassBase::getDependentDialects(registry);
+    CpuLowerVerifierPassBase::getDependentDialects(registry);
 
     // Register transform dialect extensions needed for parsing the transform
     // sequence. This must be done here (not in runOnOperation) to avoid
@@ -301,7 +301,7 @@ private:
 
 } // end anonymous namespace
 
-void RockLowerCpuVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
+void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
                                                    ModuleOp transformModule,
                                                    StringRef funcName,
                                                    StringRef phaseName) {
@@ -334,7 +334,7 @@ void RockLowerCpuVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
 }
 
 LogicalResult
-RockLowerCpuVerifierPass::applyTransformSequence(ModuleOp tempModule,
+CpuLowerVerifierPass::applyTransformSequence(ModuleOp tempModule,
                                                  ModuleOp transformModule,
                                                  StringRef sequenceName) {
   // Find the transform entry point
@@ -356,7 +356,7 @@ RockLowerCpuVerifierPass::applyTransformSequence(ModuleOp tempModule,
   return success();
 }
 
-void RockLowerCpuVerifierPass::unwrapNestedModule(OwningOpRef<ModuleOp> &module,
+void CpuLowerVerifierPass::unwrapNestedModule(OwningOpRef<ModuleOp> &module,
                                                   StringRef funcName) {
   // Check if there's a nested module inside the outer module
   // This can happen when some transforms wrap their result in a new module
@@ -400,7 +400,7 @@ void RockLowerCpuVerifierPass::unwrapNestedModule(OwningOpRef<ModuleOp> &module,
   module = std::move(newModule);
 }
 
-void RockLowerCpuVerifierPass::updateCallSites(ModuleOp module,
+void CpuLowerVerifierPass::updateCallSites(ModuleOp module,
                                                StringRef funcName) {
   // Find the lowered function to get its signature
   auto loweredFunc = module.lookupSymbol<func::FuncOp>(funcName);
@@ -490,7 +490,7 @@ void RockLowerCpuVerifierPass::updateCallSites(ModuleOp module,
 }
 
 LogicalResult
-RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
+CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
                                               ModuleOp preModule,
                                               ModuleOp optimizationModule,
                                               ModuleOp postModule,
@@ -659,7 +659,7 @@ RockLowerCpuVerifierPass::lowerSingleFunction(func::FuncOp func,
   return success();
 }
 
-void RockLowerCpuVerifierPass::runOnOperation() {
+void CpuLowerVerifierPass::runOnOperation() {
   ModuleOp module = getOperation();
   MLIRContext *ctx = &getContext();
 
