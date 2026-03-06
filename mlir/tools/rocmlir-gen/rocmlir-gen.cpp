@@ -1779,10 +1779,13 @@ static ConvTensorDimInfo parseConvTensorLayout(StringRef layout,
                            gDim,       gLen,       imageDims,  imageLens};
 }
 
-static SmallVector<Value> arrangeByConvLayout(const ConvTensorDimInfo &layout,
-                                              Value nonImg1, Value nonImg2,
-                                              Value g, ValueRange image) {
-  SmallVector<Value> result;
+/// Arrange values/expressions according to a convolution tensor layout.
+/// Works with both Value (for runtime indices) and AffineExpr (for indexing maps).
+template <typename T>
+static SmallVector<T> arrangeByConvLayout(const ConvTensorDimInfo &layout,
+                                          T nonImg1, T nonImg2, T g,
+                                          ArrayRef<T> image) {
+  SmallVector<T> result;
   result.resize_for_overwrite(image.size() + 3);
   result[layout.nonImg1Dim] = nonImg1;
   result[layout.nonImg2Dim] = nonImg2;
@@ -1925,376 +1928,741 @@ static void emitMemcpy(OpBuilder &b, Value src, Value dst) {
   }
 }
 
-// If the ref is float and not F32, make an F32 buffer and copy into it.
-// Used when a CPU kernel will have parameters that it can't handle natively.
-static Value ensureFloatIsF32(OpBuilder &b, Location loc, Value ref,
+/// Converts tensor element type to f32 if needed (handles both float and integer types).
+static Value ensureFloatIsF32(OpBuilder &b, Location loc, Value tensor,
                               Type floatType) {
-  auto refType = dyn_cast<MemRefType>(ref.getType());
-  assert(refType && "ensureFloatIsF32 expects memref type");
-  Type refElemType = refType.getElementType();
-  if (!isa<FloatType>(refElemType) || refElemType.isF32())
-    return ref;
-  Value refFlat = makeNDMemRef(b, ref, 1);
-  auto f32NewType = MemRefType::get(refType.getShape(), floatType);
-  auto refNew = memref::AllocOp::create(b, loc, f32NewType);
-  Value refNewFlat = makeNDMemRef(b, refNew, 1);
-  emitMemcpy(b, refFlat, refNewFlat);
-  return refNew;
-}
+  auto tensorType = dyn_cast<RankedTensorType>(tensor.getType());
+  assert(tensorType && "ensureFloatIsF32 expects tensor type");
+  Type elemType = tensorType.getElementType();
+  if (elemType.isF32())
+    return tensor;
 
-static AffineMap getLinearIndexingMap(OpBuilder &b, ArrayRef<int64_t> lengths) {
-  size_t n = lengths.size();
-  AffineExpr res = b.getAffineConstantExpr(0);
-  for (auto [i, len] : llvm::enumerate(lengths)) {
-    res = res * b.getAffineConstantExpr(len) + b.getAffineDimExpr(i);
+  // Ensure we're not accidentally truncating from larger types
+  if (auto floatElemType = dyn_cast<FloatType>(elemType)) {
+    assert(floatElemType.getWidth() <= 32 &&
+           "ensureFloatIsF32 does not support types larger than f32");
+  } else if (auto intElemType = dyn_cast<IntegerType>(elemType)) {
+    // Allow i64 for i8 GEMM/conv verification which uses i64 accumulation
+    assert(intElemType.getWidth() <= 64 &&
+           "ensureFloatIsF32 does not support integer types larger than i64");
   }
-  return AffineMap::get(n, 0, res, b.getContext());
+
+  // Create a new tensor with f32 elements and convert
+  auto f32TensorType = RankedTensorType::get(tensorType.getShape(), floatType);
+  Value emptyTensor =
+      tensor::EmptyOp::create(b, loc, f32TensorType, ValueRange{});
+
+  // Use linalg.generic to convert each element
+  AffineMap identityMap =
+      AffineMap::getMultiDimIdentityMap(tensorType.getRank(), b.getContext());
+  SmallVector<utils::IteratorType> iteratorTypes(tensorType.getRank(),
+                                                 utils::IteratorType::parallel);
+  auto genericOp = linalg::GenericOp::create(
+      b, loc, f32TensorType, ValueRange{tensor}, ValueRange{emptyTensor},
+      ArrayRef<AffineMap>{identityMap, identityMap}, iteratorTypes,
+      [elemType](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
+        Value result;
+        if (isa<IntegerType>(elemType)) {
+          result = arith::SIToFPOp::create(nestedB, nestedLoc,
+                                           nestedB.getF32Type(), args[0]);
+        } else {
+          result = arith::ExtFOp::create(nestedB, nestedLoc,
+                                         nestedB.getF32Type(), args[0]);
+        }
+        linalg::YieldOp::create(nestedB, nestedLoc, result);
+      });
+  return genericOp.getResult(0);
 }
 
-static void
-createCPUConvWithMLIR(ModuleOp module, func::FuncOp func,
-                      const rock::ConvGenerator::Config &genConfig) {
-  OpBuilder b(module.getContext());
+/// Helper function for linalg.generic convolution body (MAC operation) - f32
+static void convBodyBuilderF32(OpBuilder &b, Location loc,
+                               ValueRange blockArgs) {
+  assert(blockArgs.size() == 3 && "convBodyBuilder expects 3 arguments");
+  Value inputVal = blockArgs[0];
+  Value filterVal = blockArgs[1];
+  Value outputVal = blockArgs[2];
+  Value mul = arith::MulFOp::create(b, loc, inputVal, filterVal);
+  Value add = arith::AddFOp::create(b, loc, outputVal, mul);
+  linalg::YieldOp::create(b, loc, add);
+}
+
+/// Helper function for linalg.generic convolution body (MAC operation) - i64
+/// Used for i8 inputs to detect overflow by accumulating in i64.
+static void convBodyBuilderI64(OpBuilder &b, Location loc,
+                               ValueRange blockArgs) {
+  assert(blockArgs.size() == 3 && "convBodyBuilder expects 3 arguments");
+  Value inputVal = blockArgs[0];   // i8
+  Value filterVal = blockArgs[1];  // i8
+  Value outputVal = blockArgs[2];  // i64
+  // Extend i8 inputs to i64 for multiplication
+  Type i64Type = b.getIntegerType(64);
+  Value inputExt = arith::ExtSIOp::create(b, loc, i64Type, inputVal);
+  Value filterExt = arith::ExtSIOp::create(b, loc, i64Type, filterVal);
+  Value mul = arith::MulIOp::create(b, loc, inputExt, filterExt);
+  Value add = arith::AddIOp::create(b, loc, outputVal, mul);
+  linalg::YieldOp::create(b, loc, add);
+}
+
+/// Emit a grouped convolution using linalg.generic.
+/// Builds indexing maps based on actual tensor layouts - no transposes needed!
+/// The layout info tells us where each dimension is in the original tensor.
+using ConvBodyBuilder = void (*)(OpBuilder &, Location, ValueRange);
+static Value emitConvGeneric(OpBuilder &b, Location loc,
+                                    RankedTensorType resultType, Value input,
+                                    Value filter, Value zero,
+                                    const ConvTensorDimInfo &inputInfo,
+                                    const ConvTensorDimInfo &filterInfo,
+                                    const ConvTensorDimInfo &outputInfo,
+                                    ArrayRef<int64_t> strides,
+                                    ArrayRef<int64_t> dilations,
+                                    ConvBodyBuilder bodyBuilder = convBodyBuilderF32) {
+  MLIRContext *ctx = b.getContext();
+  int64_t rank = cast<RankedTensorType>(input.getType()).getRank();
+  assert(rank >= 3 && "emitConvGeneric expects at least 3 dimensions");
+  int64_t dim = rank - 3;  // number of spatial dimensions
+
+  // Iteration domain:
+  //   parallel:  batch, group, filter (k), oh_0 .. oh_{dim-1}
+  //   reduction: channel (c), kh_0 .. kh_{dim-1}
+  int64_t totalDims = 4 + 2 * dim;
+  SmallVector<AffineExpr> d;
+  for (int64_t i = 0; i < totalDims; ++i)
+    d.push_back(getAffineDimExpr(i, ctx));
+
+  AffineExpr batch = d[0], group = d[1], filterExpr = d[2];
+  AffineExpr channel = d[3 + dim];
+
+  // Build input indexing map based on actual input layout
+  // ih_i = oh_i * stride + kh_i * dilation
+  SmallVector<AffineExpr> inputImageExprs;
+  for (int64_t i = 0; i < dim; ++i)
+    inputImageExprs.push_back(d[3 + i] * strides[i] + d[4 + dim + i] * dilations[i]);
+  SmallVector<AffineExpr> inputExprs =
+      arrangeByConvLayout(inputInfo, batch, channel, group,
+                          ArrayRef<AffineExpr>(inputImageExprs));
+
+  // Build filter indexing map based on actual filter layout
+  SmallVector<AffineExpr> filterImageExprs;
+  for (int64_t i = 0; i < dim; ++i)
+    filterImageExprs.push_back(d[4 + dim + i]);
+  SmallVector<AffineExpr> filterExprs =
+      arrangeByConvLayout(filterInfo, filterExpr, channel, group,
+                          ArrayRef<AffineExpr>(filterImageExprs));
+
+  // Build output indexing map based on actual output layout
+  SmallVector<AffineExpr> outputImageExprs;
+  for (int64_t i = 0; i < dim; ++i)
+    outputImageExprs.push_back(d[3 + i]);
+  SmallVector<AffineExpr> outputExprs =
+      arrangeByConvLayout(outputInfo, batch, filterExpr, group,
+                          ArrayRef<AffineExpr>(outputImageExprs));
+
+  SmallVector<AffineMap> indexingMaps = {
+      AffineMap::get(totalDims, 0, inputExprs, ctx),
+      AffineMap::get(totalDims, 0, filterExprs, ctx),
+      AffineMap::get(totalDims, 0, outputExprs, ctx)};
+
+  SmallVector<utils::IteratorType> iteratorTypes(3 + dim,
+                                                 utils::IteratorType::parallel);
+  iteratorTypes.append(1 + dim, utils::IteratorType::reduction);
+
+  return linalg::GenericOp::create(b, loc, resultType,
+                                   ValueRange{input, filter}, zero,
+                                   indexingMaps, iteratorTypes,
+                                   bodyBuilder)
+      .getResult(0);
+}
+
+/// Emit backward weight convolution using linalg.generic.
+/// Builds indexing maps based on actual tensor layouts - no transposes needed!
+/// Computes: filter_grad = sum_{n,oh,ow} output_grad * input
+static Value emitBwdWeightConvGeneric(OpBuilder &b, Location loc,
+                                      RankedTensorType resultType, Value input,
+                                      Value outputGrad, Value zero,
+                                      const ConvTensorDimInfo &inputInfo,
+                                      const ConvTensorDimInfo &outputInfo,
+                                      const ConvTensorDimInfo &filterInfo,
+                                      ArrayRef<int64_t> strides,
+                                      ArrayRef<int64_t> dilations) {
+  MLIRContext *ctx = b.getContext();
+  int64_t rank = cast<RankedTensorType>(input.getType()).getRank();
+  int64_t dim = rank - 3;
+
+  // Iteration domain for backward weight:
+  //   parallel:  group, k, c, kh_0 .. kh_{dim-1}
+  //   reduction: n, oh_0 .. oh_{dim-1}
+  int64_t totalDims = 4 + 2 * dim;
+  SmallVector<AffineExpr> d;
+  for (int64_t i = 0; i < totalDims; ++i)
+    d.push_back(getAffineDimExpr(i, ctx));
+
+  AffineExpr group = d[0], k = d[1], c = d[2];
+  AffineExpr n = d[3 + dim];
+
+  // Build input indexing map based on actual input layout
+  // ih_i = oh_i * stride + kh_i * dilation
+  SmallVector<AffineExpr> inputImageExprs;
+  for (int64_t i = 0; i < dim; ++i)
+    inputImageExprs.push_back(d[4 + dim + i] * strides[i] + d[3 + i] * dilations[i]);
+  SmallVector<AffineExpr> inputExprs =
+      arrangeByConvLayout(inputInfo, n, c, group,
+                          ArrayRef<AffineExpr>(inputImageExprs));
+
+  // Build output grad indexing map based on actual output layout
+  SmallVector<AffineExpr> outputImageExprs;
+  for (int64_t i = 0; i < dim; ++i)
+    outputImageExprs.push_back(d[4 + dim + i]);
+  SmallVector<AffineExpr> outputGradExprs =
+      arrangeByConvLayout(outputInfo, n, k, group,
+                          ArrayRef<AffineExpr>(outputImageExprs));
+
+  // Build filter grad (result) indexing map based on actual filter layout
+  SmallVector<AffineExpr> filterImageExprs;
+  for (int64_t i = 0; i < dim; ++i)
+    filterImageExprs.push_back(d[3 + i]);
+  SmallVector<AffineExpr> filterGradExprs =
+      arrangeByConvLayout(filterInfo, k, c, group,
+                          ArrayRef<AffineExpr>(filterImageExprs));
+
+  SmallVector<AffineMap> indexingMaps = {
+      AffineMap::get(totalDims, 0, inputExprs, ctx),
+      AffineMap::get(totalDims, 0, outputGradExprs, ctx),
+      AffineMap::get(totalDims, 0, filterGradExprs, ctx)};
+
+  SmallVector<utils::IteratorType> iteratorTypes(3 + dim,
+                                                 utils::IteratorType::parallel);
+  iteratorTypes.append(1 + dim, utils::IteratorType::reduction);
+
+  return linalg::GenericOp::create(b, loc, resultType,
+                                   ValueRange{input, outputGrad}, zero,
+                                   indexingMaps, iteratorTypes,
+                                   convBodyBuilderF32)
+      .getResult(0);
+}
+
+/// Dilate a tensor by inserting zeros between elements in spatial dimensions.
+/// Layout-aware: uses actual spatial dimension positions from layout info.
+static Value dilateTensor(OpBuilder &b, Location loc, Value tensor,
+                          ArrayRef<int64_t> strides,
+                          ArrayRef<unsigned> spatialDimPositions) {
+  auto tensorType = cast<RankedTensorType>(tensor.getType());
+  ArrayRef<int64_t> shape = tensorType.getShape();
+  int64_t dim = spatialDimPositions.size();
+
+  // Check if dilation is needed (all strides == 1 means no dilation)
+  bool needsDilation = !llvm::all_of(strides, [](int64_t s) { return s == 1; });
+  if (!needsDilation)
+    return tensor;
+
+  // Compute dilated shape at actual spatial positions
+  SmallVector<int64_t> dilatedShape(shape.begin(), shape.end());
+  for (int64_t i = 0; i < dim; ++i) {
+    unsigned pos = spatialDimPositions[i];
+    dilatedShape[pos] = (shape[pos] - 1) * strides[i] + 1;
+  }
+
+  auto dilatedType =
+      RankedTensorType::get(dilatedShape, tensorType.getElementType());
+  Value zeroVal = arith::ConstantOp::create(
+      b, loc, b.getZeroAttr(tensorType.getElementType()));
+
+  // Use tensor.generate to create the dilated tensor
+  // This avoids the non-invertible indexing map issue with linalg.generic
+  SmallVector<Value> dynamicSizes; // all static, so empty
+  return tensor::GenerateOp::create(
+             b, loc, dilatedType, dynamicSizes,
+             [&](OpBuilder &nestedB, Location nestedLoc, ValueRange indices) {
+               // Check if all spatial indices are divisible by their strides
+               // If so, extract from original tensor; otherwise return zero
+               Value allDivisible = arith::ConstantOp::create(
+                   nestedB, nestedLoc, nestedB.getBoolAttr(true));
+               SmallVector<Value> srcIndices(indices.begin(), indices.end());
+
+               for (int64_t i = 0; i < dim; ++i) {
+                 unsigned pos = spatialDimPositions[i];
+                 Value strideVal = arith::ConstantIndexOp::create(
+                     nestedB, nestedLoc, strides[i]);
+                 Value rem = arith::RemUIOp::create(nestedB, nestedLoc,
+                                                    indices[pos], strideVal);
+                 Value zero = arith::ConstantIndexOp::create(nestedB, nestedLoc, 0);
+                 Value isDivisible = arith::CmpIOp::create(
+                     nestedB, nestedLoc, arith::CmpIPredicate::eq, rem, zero);
+                 allDivisible = arith::AndIOp::create(nestedB, nestedLoc,
+                                                      allDivisible, isDivisible);
+                 // Compute source index: indices[pos] / stride
+                 srcIndices[pos] = arith::DivUIOp::create(nestedB, nestedLoc,
+                                                          indices[pos], strideVal);
+               }
+
+               // Extract from original tensor or return zero
+               Value elem = tensor::ExtractOp::create(nestedB, nestedLoc,
+                                                      tensor, srcIndices);
+               Value result = arith::SelectOp::create(nestedB, nestedLoc,
+                                                      allDivisible, elem, zeroVal);
+               tensor::YieldOp::create(nestedB, nestedLoc, result);
+             })
+      .getResult();
+}
+
+/// Flip (reverse) the spatial dimensions of a filter tensor.
+/// Layout-aware: uses actual spatial dimension positions from layout info.
+static Value flipFilterSpatial(OpBuilder &b, Location loc, Value filter,
+                               ArrayRef<int64_t> filterSpatialSizes,
+                               ArrayRef<unsigned> spatialDimPositions) {
+  auto filterType = cast<RankedTensorType>(filter.getType());
+  int64_t dim = spatialDimPositions.size();
+
+  // Use tensor.generate to create the flipped filter
+  // This avoids the non-invertible indexing map issue with linalg.generic
+  SmallVector<Value> dynamicSizes; // all static, so empty
+  return tensor::GenerateOp::create(
+             b, loc, filterType, dynamicSizes,
+             [&](OpBuilder &nestedB, Location nestedLoc, ValueRange indices) {
+               SmallVector<Value> srcIndices(indices.begin(), indices.end());
+               // Flip only the spatial indices at their actual positions
+               for (int64_t i = 0; i < dim; ++i) {
+                 unsigned pos = spatialDimPositions[i];
+                 Value maxIdx = arith::ConstantIndexOp::create(
+                     nestedB, nestedLoc, filterSpatialSizes[i] - 1);
+                 Value flipped =
+                     arith::SubIOp::create(nestedB, nestedLoc, maxIdx, indices[pos]);
+                 srcIndices[pos] = flipped;
+               }
+               Value elem =
+                   tensor::ExtractOp::create(nestedB, nestedLoc, filter, srcIndices);
+               tensor::YieldOp::create(nestedB, nestedLoc, elem);
+             })
+      .getResult();
+}
+
+/// Emit backward data convolution using linalg.generic.
+/// Layout-aware: builds indexing maps based on actual tensor layouts.
+/// This is a transposed convolution implemented as:
+/// 1. Dilate output grad by inserting (stride-1) zeros between elements
+/// 2. Pad the dilated output grad
+/// 3. Flip the filter spatially
+/// 4. Convolve with flipped filter
+static Value emitBwdDataConvGeneric(OpBuilder &b, Location loc,
+                                    RankedTensorType resultType,
+                                    Value outputGrad, Value filter, Value zero,
+                                    const ConvTensorDimInfo &outputInfo,
+                                    const ConvTensorDimInfo &filterInfo,
+                                    const ConvTensorDimInfo &inputInfo,
+                                    ArrayRef<int64_t> strides,
+                                    ArrayRef<int64_t> dilations,
+                                    ArrayRef<int64_t> filterSpatialSizes,
+                                    ArrayRef<int64_t> paddingLeft,
+                                    ArrayRef<int64_t> paddingRight) {
+  MLIRContext *ctx = b.getContext();
+  int64_t dim = outputInfo.imageDims.size();
+
+  // Get spatial dimension positions from output layout
+  SmallVector<unsigned> outputSpatialPos(outputInfo.imageDims.begin(),
+                                         outputInfo.imageDims.end());
+  SmallVector<unsigned> filterSpatialPos(filterInfo.imageDims.begin(),
+                                         filterInfo.imageDims.end());
+
+  // Step 1: Dilate the output gradient at actual spatial positions
+  Value dilatedOutputGrad =
+      dilateTensor(b, loc, outputGrad, strides, outputSpatialPos);
+
+  // Step 2: Pad/crop the dilated output gradient to match convolution requirements
+  // For transposed conv, we need: paddedSize = inputSize + (filterSize-1)*dilation
+  // The adjustment from forward padding may require cropping (negative) or padding.
+  auto dilatedType = cast<RankedTensorType>(dilatedOutputGrad.getType());
+  int64_t tensorRank = dilatedType.getRank();
+  ArrayRef<int64_t> inputShape = resultType.getShape();
+  SmallVector<int64_t> dilatedShape(dilatedType.getShape());
+
+  // Compute target shape: what the padded tensor needs to be for convolution
+  SmallVector<int64_t> targetShape(dilatedShape);
+  for (int64_t i = 0; i < dim; ++i) {
+    unsigned pos = outputSpatialPos[i];
+    int64_t inputSpatialSize = inputShape[inputInfo.imageDims[i]];
+    targetShape[pos] = inputSpatialSize + (filterSpatialSizes[i] - 1) * dilations[i];
+  }
+
+  // Compute pad/crop amounts per side
+  // Low side: (filterSize-1)*dilation - paddingLeft
+  // High side: targetSize - dilatedSize - lowDelta
+  SmallVector<int64_t> lowDelta(dim), highDelta(dim);
+  for (int64_t i = 0; i < dim; ++i) {
+    unsigned pos = outputSpatialPos[i];
+    int64_t filterPad = (filterSpatialSizes[i] - 1) * dilations[i];
+    lowDelta[i] = filterPad - paddingLeft[i];
+    highDelta[i] = targetShape[pos] - dilatedShape[pos] - lowDelta[i];
+  }
+
+  // Apply crop if any delta is negative (extract_slice)
+  Value processed = dilatedOutputGrad;
+  SmallVector<int64_t> currentShape(dilatedShape);
+  bool needsCrop = llvm::any_of(llvm::seq<int64_t>(0, dim), [&](int64_t i) {
+    return lowDelta[i] < 0 || highDelta[i] < 0;
+  });
+
+  if (needsCrop) {
+    SmallVector<OpFoldResult> offsets(tensorRank, b.getIndexAttr(0));
+    SmallVector<OpFoldResult> sizes(tensorRank);
+    SmallVector<OpFoldResult> unitStrides(tensorRank, b.getIndexAttr(1));
+
+    for (int64_t i = 0; i < dim; ++i) {
+      unsigned pos = outputSpatialPos[i];
+      int64_t lowCrop = std::max(-lowDelta[i], int64_t(0));
+      int64_t highCrop = std::max(-highDelta[i], int64_t(0));
+      offsets[pos] = b.getIndexAttr(lowCrop);
+      currentShape[pos] -= lowCrop + highCrop;
+    }
+    for (int64_t i = 0; i < tensorRank; ++i)
+      sizes[i] = b.getIndexAttr(currentShape[i]);
+
+    auto croppedType =
+        RankedTensorType::get(currentShape, dilatedType.getElementType());
+    processed = tensor::ExtractSliceOp::create(b, loc, croppedType, processed,
+                                               offsets, sizes, unitStrides);
+  }
+
+  // Apply pad if any delta is positive (tensor.pad)
+  bool needsPad = llvm::any_of(llvm::seq<int64_t>(0, dim), [&](int64_t i) {
+    return lowDelta[i] > 0 || highDelta[i] > 0;
+  });
+
+  if (needsPad) {
+    SmallVector<OpFoldResult> lowPad(tensorRank, b.getIndexAttr(0));
+    SmallVector<OpFoldResult> highPad(tensorRank, b.getIndexAttr(0));
+    for (int64_t i = 0; i < dim; ++i) {
+      unsigned pos = outputSpatialPos[i];
+      lowPad[pos] = b.getIndexAttr(std::max(lowDelta[i], int64_t(0)));
+      highPad[pos] = b.getIndexAttr(std::max(highDelta[i], int64_t(0)));
+    }
+    Value padValue = arith::ConstantOp::create(
+        b, loc, b.getZeroAttr(dilatedType.getElementType()));
+    auto paddedType =
+        RankedTensorType::get(targetShape, dilatedType.getElementType());
+    processed = tensor::PadOp::create(b, loc, paddedType, processed, lowPad,
+                                      highPad, padValue)
+                    .getResult();
+  }
+
+  Value paddedOutputGrad = processed;
+
+  // Step 3: Flip the filter spatially at actual spatial positions
+  Value flippedFilter =
+      flipFilterSpatial(b, loc, filter, filterSpatialSizes, filterSpatialPos);
+
+  // Step 4: Perform convolution with flipped filter using layout-aware indexing
+  // Iteration domain: (n, g, c, ih_0..., k, kh_0...)
+  int64_t totalDims = 4 + 2 * dim;
+  SmallVector<AffineExpr> d;
+  for (int64_t i = 0; i < totalDims; ++i)
+    d.push_back(getAffineDimExpr(i, ctx));
+
+  AffineExpr n = d[0], group = d[1], c = d[2];
+  AffineExpr k = d[3 + dim];
+
+  // Build padded output grad indexing map based on actual output layout
+  SmallVector<AffineExpr> outputImageExprs;
+  for (int64_t i = 0; i < dim; ++i)
+    outputImageExprs.push_back(d[3 + i] + d[4 + dim + i] * dilations[i]);
+  SmallVector<AffineExpr> outputGradExprs =
+      arrangeByConvLayout(outputInfo, n, k, group,
+                          ArrayRef<AffineExpr>(outputImageExprs));
+
+  // Build flipped filter indexing map based on actual filter layout
+  SmallVector<AffineExpr> filterImageExprs;
+  for (int64_t i = 0; i < dim; ++i)
+    filterImageExprs.push_back(d[4 + dim + i]);
+  SmallVector<AffineExpr> filterExprs =
+      arrangeByConvLayout(filterInfo, k, c, group,
+                          ArrayRef<AffineExpr>(filterImageExprs));
+
+  // Build input grad (result) indexing map based on actual input layout
+  SmallVector<AffineExpr> inputImageExprs;
+  for (int64_t i = 0; i < dim; ++i)
+    inputImageExprs.push_back(d[3 + i]);
+  SmallVector<AffineExpr> inputGradExprs =
+      arrangeByConvLayout(inputInfo, n, c, group,
+                          ArrayRef<AffineExpr>(inputImageExprs));
+
+  SmallVector<AffineMap> indexingMaps = {
+      AffineMap::get(totalDims, 0, outputGradExprs, ctx),
+      AffineMap::get(totalDims, 0, filterExprs, ctx),
+      AffineMap::get(totalDims, 0, inputGradExprs, ctx)};
+
+  SmallVector<utils::IteratorType> iteratorTypes(3 + dim,
+                                                 utils::IteratorType::parallel);
+  iteratorTypes.append(1 + dim, utils::IteratorType::reduction);
+
+  return linalg::GenericOp::create(b, loc, resultType,
+                                   ValueRange{paddedOutputGrad, flippedFilter},
+                                   zero, indexingMaps, iteratorTypes,
+                                   convBodyBuilderF32)
+      .getResult(0);
+}
+
+/// Create a tensor-based CPU convolution kernel using linalg.generic.
+/// This function handles forward, backward data, and backward weight operations.
+static func::FuncOp
+createCPUConvWithMLIR(ModuleOp module,
+                            const rock::ConvGenerator::Config &genConfig) {
+  assert(genConfig.operation.has_value());
+  MLIRContext *ctx = module.getContext();
+  OpBuilder b(ctx);
+  Location loc = module->getLoc();
+
+  // Determine element types
+  Type inputElemType = typeFromString(genConfig.inputDataTypeStr, ctx);
+  Type filterElemType = typeFromString(genConfig.filterDataTypeStr, ctx);
+  Type outputElemType = typeFromString(genConfig.outputDataTypeStr, ctx);
+
+  if (genConfig.inputDataTypeStr == "i8") {
+    inputElemType = b.getI8Type();
+    filterElemType = b.getI8Type();
+    outputElemType = b.getIntegerType(64);
+    assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
+  }
+
+  // Create flat tensor types for function signature
+  int64_t filterElems = computeProduct(genConfig.filterDimension);
+  int64_t inputElems = computeProduct(genConfig.inputDimension);
+  int64_t outputElems = computeProduct(genConfig.outputDimension);
+
+  auto filterFlatType = RankedTensorType::get({filterElems}, filterElemType);
+  auto inputFlatType = RankedTensorType::get({inputElems}, inputElemType);
+  auto outputFlatType = RankedTensorType::get({outputElems}, outputElemType);
+
+  rock::ConvGenerator convGenerator(genConfig);
+  bool hasWorkspace = false;
+  if (failed(convGenerator.hasWorkspace(b, hasWorkspace))) {
+    assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
+  }
+
+  SmallVector<Type, 4> funcArgTypes = {filterFlatType, inputFlatType,
+                                       outputFlatType};
+  if (hasWorkspace) {
+    auto workspaceType = RankedTensorType::get({filterElems}, b.getF32Type());
+    funcArgTypes.push_back(workspaceType);
+  }
+
+  // Determine result type based on operation
+  Type resultFlatType;
+  switch (genConfig.operation.value()) {
+  case rock::ConvOpType::Fwd:
+    resultFlatType = outputFlatType;
+    break;
+  case rock::ConvOpType::BwdData:
+    resultFlatType = inputFlatType;
+    break;
+  case rock::ConvOpType::BwdWeight:
+    resultFlatType = filterFlatType;
+    break;
+  }
+
+  std::string funcName =
+      rock::getNameForConvOpType(genConfig.operation.value()).str();
+
+  funcName += "_cpu";
+
+  // Check if function already exists
+  if (auto existingFunc = module.lookupSymbol<func::FuncOp>(funcName))
+    return existingFunc;
+
+  auto func = func::FuncOp::create(
+      b, loc, funcName, b.getFunctionType(funcArgTypes, {resultFlatType}));
+  module.push_back(func);
 
   Block *block = func.addEntryBlock();
-  b.setInsertionPoint(block, block->begin());
+  b.setInsertionPointToStart(block);
 
-  Location loc = b.getUnknownLoc();
+  Value filterFlat = block->getArgument(0);
+  Value inputFlat = block->getArgument(1);
+  Value outputFlat = block->getArgument(2);
 
-  // Initialize the result tensor
-  BlockArgument resultTensor;
-  switch (genConfig.operation.value()) {
-  case rock::ConvOpType::Fwd:
-    resultTensor = block->getArgument(2);
-    break;
-  case rock::ConvOpType::BwdData:
-    resultTensor = block->getArgument(1);
-    break;
-  case rock::ConvOpType::BwdWeight:
-    resultTensor = block->getArgument(0);
-    break;
-  }
-  auto resultType = dyn_cast<MemRefType>(resultTensor.getType());
-  Type elemType = resultType.getElementType();
-  SmallVector<float, 1> zeroPattern = {0.0};
-  if (failed(
-          populateTensorFillLogic(b, loc, zeroPattern, elemType, resultTensor)))
-    llvm_unreachable("Tensor fill logic population shouldn't fail");
+  // i8 convolutions use i64 accumulation to detect overflow, f32 otherwise
+  bool isI8Conv = genConfig.inputDataTypeStr == "i8";
+  Type computeType = isI8Conv ? Type(b.getIntegerType(64)) : Type(b.getF32Type());
+  size_t nSpatialDims = genConfig.strideDims.size();
 
-  // Create affine maps
-  size_t nImageDims = genConfig.strideDims.size();
-  SmallVector<AffineMap, 3> inputImageDimMaps;
-  // Extra maps used for backward data.
-  SmallVector<AffineMap> imageDimMaps2(nImageDims, AffineMap{});
-  inputImageDimMaps.resize_for_overwrite(nImageDims);
-  for (auto [stride, dilation, paddingLeft, map, map2] :
-       llvm::zip(genConfig.strideDims, genConfig.dilationDims,
-                 genConfig.paddingLeftDims, inputImageDimMaps, imageDimMaps2)) {
-    switch (genConfig.operation.value()) {
-    case rock::ConvOpType::Fwd:
-    case rock::ConvOpType::BwdWeight:
-      // d0 * stride + d1 * dilation - padding
-      map = AffineMap::get(2, 0,
-                           b.getAffineDimExpr(0) * stride +
-                               b.getAffineDimExpr(1) * dilation - paddingLeft);
-      break;
-    case rock::ConvOpType::BwdData:
-      // d0 + padding - d1 * dilation
-      map = AffineMap::get(2, 0,
-                           b.getAffineDimExpr(0) + paddingLeft -
-                               b.getAffineDimExpr(1) * dilation);
-      // d0 / stride
-      map2 = AffineMap::get(1, 0, b.getAffineDimExpr(0).floorDiv(stride));
-      break;
-    }
-  }
-
-  ConvTensorDimInfo filterInfo = parseConvTensorLayout(
-                        genConfig.filterLayout, genConfig.filterDimension, 'k',
-                        'c'),
-                    inputInfo = parseConvTensorLayout(genConfig.inputLayout,
-                                                      genConfig.inputDimension,
-                                                      'n', 'c'),
-                    outputInfo = parseConvTensorLayout(
-                        genConfig.outputLayout, genConfig.outputDimension, 'n',
-                        'k');
-
-  // Create constraints for boundary checks
-  SmallVector<AffineExpr, 6> exprs;
-  SmallVector<bool, 6> eqFlags;
-  bool isBwdData = genConfig.operation.value() == rock::ConvOpType::BwdData;
-  for (size_t i = 0; i < nImageDims; ++i) {
-    size_t inputDIdx = i;
-    if (isBwdData) {
-      // out_D_tmp % stride_D == 0 for all D
-      exprs.push_back(b.getAffineDimExpr(2 * i) % genConfig.strideDims[i]);
-      eqFlags.push_back(true);
-      inputDIdx = 2 * i + 1;
-    }
-    // input_D_idx >= 0, input_D_idx < input_D for all D
-    exprs.push_back(b.getAffineDimExpr(inputDIdx));
-    eqFlags.push_back(false);
-    int64_t upperBound =
-        isBwdData ? outputInfo.imageLens[i] : inputInfo.imageLens[i];
-    exprs.push_back(upperBound - b.getAffineDimExpr(inputDIdx) - 1);
-    eqFlags.push_back(false);
-  }
-  IntegerSet condition =
-      IntegerSet::get(nImageDims * (isBwdData ? 2 : 1), 0, exprs, eqFlags);
-
-  SmallVector<int64_t, 8> lowerBounds(2 * nImageDims + 4, 0);
-  SmallVector<int64_t, 8> upperBounds;
-  SmallVector<int64_t, 8> steps(2 * nImageDims + 4, 1);
-
-  // Create the upper bounds
-  switch (genConfig.operation.value()) {
-  case rock::ConvOpType::Fwd:
-    upperBounds.append(genConfig.outputDimension);
-    upperBounds.push_back(filterInfo.nonImg2Len); // input channels 'c'
-    upperBounds.append(filterInfo.imageLens);
-    break;
-  case rock::ConvOpType::BwdData:
-    upperBounds.append(genConfig.inputDimension);
-    upperBounds.push_back(filterInfo.nonImg1Len); // output channels 'k'
-    upperBounds.append(filterInfo.imageLens);
-    break;
-  case rock::ConvOpType::BwdWeight:
-    upperBounds.append(genConfig.filterDimension);
-    upperBounds.push_back(outputInfo.nonImg1Len); // batch size 'n'
-    upperBounds.append(outputInfo.imageLens);
-    break;
-  }
-
-  Value opd1, opd2, result;
-  AffineMap opd1Map, opd2Map, resultStoreMap;
-  ConvTensorDimInfo resultInfo;
-
-  switch (genConfig.operation.value()) {
-  case rock::ConvOpType::Fwd:
-    opd1 = block->getArgument(0);
-    opd2 = block->getArgument(1);
-    result = block->getArgument(2);
-    opd1Map = getLinearIndexingMap(b, genConfig.filterDimension);
-    opd2Map = getLinearIndexingMap(b, genConfig.inputDimension);
-    resultStoreMap = getLinearIndexingMap(b, genConfig.outputDimension);
-    resultInfo = outputInfo;
-    break;
-  case rock::ConvOpType::BwdWeight:
-    opd1 = block->getArgument(2);
-    opd2 = block->getArgument(1);
-    result = block->getArgument(0);
-    opd1Map = getLinearIndexingMap(b, genConfig.outputDimension);
-    opd2Map = getLinearIndexingMap(b, genConfig.inputDimension);
-    resultStoreMap = getLinearIndexingMap(b, genConfig.filterDimension);
-    resultInfo = filterInfo;
-    break;
-  case rock::ConvOpType::BwdData:
-    opd1 = block->getArgument(0);
-    opd2 = block->getArgument(2);
-    result = block->getArgument(1);
-    opd1Map = getLinearIndexingMap(b, genConfig.filterDimension);
-    opd2Map = getLinearIndexingMap(b, genConfig.outputDimension);
-    resultStoreMap = getLinearIndexingMap(b, genConfig.inputDimension);
-    resultInfo = inputInfo;
-    break;
-  }
-
-  auto floatType = b.getF32Type();
-
-  opd1 = ensureFloatIsF32(b, loc, opd1, floatType);
-  opd2 = ensureFloatIsF32(b, loc, opd2, floatType);
-  result = ensureFloatIsF32(b, loc, result, floatType);
-
-  auto createConvLoopNest = [&](OpBuilder &b, Location loc, ValueRange ivs) {
-    Value resultNonImg1 = ivs[resultInfo.nonImg1Dim];
-    Value resultNonImg2 = ivs[resultInfo.nonImg2Dim];
-    Value g = ivs[resultInfo.gDim];
-    Value reductionNonImg = ivs[nImageDims + 3];
-    // Drop result coordinates and the reduction channels.
-    ValueRange reductionImage = ivs.drop_front(nImageDims + 3 + 1);
-    SmallVector<Value> resultImage = llvm::map_to_vector(
-        resultInfo.imageDims, [&](unsigned i) { return ivs[i]; });
-
-    // Note: for backward data, this is the 'output' tensor
-    SmallVector<Value> inputImageComputed;
-    inputImageComputed.resize_for_overwrite(nImageDims);
-    SmallVector<Value> conditionArgs;
-    conditionArgs.reserve(isBwdData ? 2 * nImageDims : nImageDims);
-
-    for (auto [resultD, reduceD, dMap, dMap2, applied] :
-         llvm::zip(resultImage, reductionImage, inputImageDimMaps,
-                   imageDimMaps2, inputImageComputed)) {
-      switch (genConfig.operation.value()) {
-      case rock::ConvOpType::Fwd:
-        // in_D_idx = out_D_idx * stride_D + fil_D_idx * dilation_D -
-        // padding_D_l;
-        applied = affine::AffineApplyOp::create(b, loc, dMap,
-                                                ValueRange{resultD, reduceD});
-        break;
-      case rock::ConvOpType::BwdData: {
-        // out_D_tmp = in_D_idx + padding_D_l - fil_D_idx * dilation_D;
-        Value tmpIdx = affine::AffineApplyOp::create(
-            b, loc, dMap, ValueRange{resultD, reduceD});
-        conditionArgs.push_back(tmpIdx);
-        // out_D_idx = out_D_tmp / stride_D;
-        applied =
-            affine::AffineApplyOp::create(b, loc, dMap2, ValueRange{tmpIdx});
-        break;
-      }
-      case rock::ConvOpType::BwdWeight:
-        // in_D_idx = out_D_idx * stride_h + fil_D_idx * dilation_h -
-        // padding_D_l;
-        applied = affine::AffineApplyOp::create(b, loc, dMap,
-                                                ValueRange{reduceD, resultD});
-        break;
-      }
-      conditionArgs.push_back(applied);
-    }
-
-    affine::AffineIfOp ifOp =
-        affine::AffineIfOp::create(b, loc, condition, conditionArgs, false);
-    auto thenBody = ifOp.getThenBodyBuilder();
-
-    // Perform MAC operation
-    SmallVector<Value> idx1, idx2;
-    switch (genConfig.operation.value()) {
-    case rock::ConvOpType::Fwd:
-      // K, C, G, fil_h, fil_w, ...
-      idx1 = arrangeByConvLayout(filterInfo, resultNonImg2, reductionNonImg, g,
-                                 reductionImage);
-      // N, C, G, in_h, in_w, ...
-      idx2 = arrangeByConvLayout(inputInfo, resultNonImg1, reductionNonImg, g,
-                                 inputImageComputed);
-      break;
-    case rock::ConvOpType::BwdWeight:
-      // N, K, G, out_h, out_w, ...
-      idx1 = arrangeByConvLayout(outputInfo, reductionNonImg, resultNonImg1, g,
-                                 reductionImage);
-      // N, C, G, in_h, in_w, ...
-      idx2 = arrangeByConvLayout(inputInfo, reductionNonImg, resultNonImg2, g,
-                                 inputImageComputed);
-      break;
-    case rock::ConvOpType::BwdData:
-      // K, C, G, fil_h, fil_w, ...
-      idx1 = arrangeByConvLayout(filterInfo, reductionNonImg, resultNonImg2, g,
-                                 reductionImage);
-      // N, K, G, out_h (stored as in_h), out_w (stored as in_w), ...
-      idx2 = arrangeByConvLayout(outputInfo, resultNonImg1, reductionNonImg, g,
-                                 inputImageComputed);
-      break;
-    }
-
-    auto loadOp1 =
-        affine::AffineLoadOp::create(thenBody, loc, opd1, opd1Map, idx1);
-    auto loadOp2 =
-        affine::AffineLoadOp::create(thenBody, loc, opd2, opd2Map, idx2);
-    size_t nIVs = genConfig.inputDimension.size();
-    auto loadOutput = affine::AffineLoadOp::create(
-        thenBody, loc, result, resultStoreMap, ivs.take_front(nIVs));
-    if (elemType.isIntOrIndex()) {
-      auto muliOp = arith::MulIOp::create(thenBody, loc, loadOp1, loadOp2);
-      auto extsiOp = arith::ExtSIOp::create(thenBody, loc, elemType, muliOp);
-      auto addiOp = arith::AddIOp::create(thenBody, loc, loadOutput, extsiOp);
-      affine::AffineStoreOp::create(thenBody, loc, addiOp, result,
-                                    resultStoreMap, ivs.take_front(nIVs));
-    } else {
-      auto mulfOp = arith::MulFOp::create(thenBody, loc, loadOp1, loadOp2);
-      auto addfOp = arith::AddFOp::create(thenBody, loc, loadOutput, mulfOp);
-      affine::AffineStoreOp::create(thenBody, loc, addfOp, result,
-                                    resultStoreMap, ivs.take_front(nIVs));
-    }
+  // Helper to expand flat tensor to logical shape
+  auto expandToLogicalShape = [&](Value flat,
+                                  ArrayRef<int64_t> logicalShape) -> Value {
+    auto flatType = cast<RankedTensorType>(flat.getType());
+    Type elemType = flatType.getElementType();
+    auto logicalType = RankedTensorType::get(logicalShape, elemType);
+    ReassociationIndices allDims = llvm::to_vector(
+        llvm::iota_range<int64_t>(0, logicalShape.size(), false));
+    return tensor::ExpandShapeOp::create(b, loc, logicalType, flat, allDims);
   };
 
-  // Generate the loop nest
-  affine::buildAffineLoopNest(b, loc, lowerBounds, upperBounds, steps,
-                              createConvLoopNest);
+  // Helper to expand flat tensor to logical shape with f32 elements
+  auto expandAndConvertToF32 = [&](Value flat,
+                                   ArrayRef<int64_t> logicalShape) -> Value {
+    Value expanded = expandToLogicalShape(flat, logicalShape);
+    return ensureFloatIsF32(b, loc, expanded, b.getF32Type());
+  };
 
-  if (!isa<BlockArgument>(opd1))
-    memref::DeallocOp::create(b, loc, opd1);
-  if (!isa<BlockArgument>(opd2))
-    memref::DeallocOp::create(b, loc, opd2);
-  if (!isa<BlockArgument>(result)) {
-    BlockArgument resultBlockArg;
-    switch (genConfig.operation.value()) {
-    case rock::ConvOpType::Fwd:
-      resultBlockArg = block->getArgument(2);
-      break;
-    case rock::ConvOpType::BwdWeight:
-      resultBlockArg = block->getArgument(0);
-      break;
-    case rock::ConvOpType::BwdData:
-      resultBlockArg = block->getArgument(1);
-      break;
-    }
-
-    Value resultFlat = makeNDMemRef(b, result, 1);
-    emitMemcpy(b, resultFlat, resultBlockArg);
-    memref::DeallocOp::create(b, loc, result);
+  // Expand tensors to logical shapes
+  // For i8, keep original element types; for others, convert to f32
+  Value filter, input, output;
+  if (isI8Conv) {
+    filter = expandToLogicalShape(filterFlat, genConfig.filterDimension);
+    input = expandToLogicalShape(inputFlat, genConfig.inputDimension);
+    output = expandToLogicalShape(outputFlat, genConfig.outputDimension);
+  } else {
+    filter = expandAndConvertToF32(filterFlat, genConfig.filterDimension);
+    input = expandAndConvertToF32(inputFlat, genConfig.inputDimension);
+    output = expandAndConvertToF32(outputFlat, genConfig.outputDimension);
   }
 
-  func::ReturnOp::create(b, loc, ValueRange{});
+  // Parse tensor layouts - these tell us where each dimension is
+  ConvTensorDimInfo filterInfo = parseConvTensorLayout(
+      genConfig.filterLayout, genConfig.filterDimension, 'k', 'c');
+  ConvTensorDimInfo inputInfo = parseConvTensorLayout(
+      genConfig.inputLayout, genConfig.inputDimension, 'n', 'c');
+  ConvTensorDimInfo outputInfo = parseConvTensorLayout(
+      genConfig.outputLayout, genConfig.outputDimension, 'n', 'k');
+
+  // Get tensor types in original layout
+  auto inputType = cast<RankedTensorType>(input.getType());
+  auto filterType = cast<RankedTensorType>(filter.getType());
+  auto outputType = cast<RankedTensorType>(output.getType());
+
+  // Apply padding to input for Forward and BwdWeight
+  // Uses actual spatial dimension positions (no transpose needed)
+  bool needsPadding =
+      (genConfig.operation.value() == rock::ConvOpType::Fwd ||
+       genConfig.operation.value() == rock::ConvOpType::BwdWeight) &&
+      (!llvm::all_of(genConfig.paddingLeftDims,
+                     [](int64_t p) { return p == 0; }) ||
+       !llvm::all_of(genConfig.paddingRightDims,
+                     [](int64_t p) { return p == 0; }));
+
+  if (needsPadding) {
+    // Pad at actual spatial dimension positions from layout
+    SmallVector<OpFoldResult> lowPad(inputType.getRank(), b.getIndexAttr(0));
+    SmallVector<OpFoldResult> highPad(inputType.getRank(), b.getIndexAttr(0));
+    SmallVector<int64_t> newShape(inputType.getShape());
+
+    for (size_t i = 0; i < nSpatialDims; ++i) {
+      int64_t lowP = genConfig.paddingLeftDims[i];
+      int64_t highP = genConfig.paddingRightDims[i];
+      unsigned pos = inputInfo.imageDims[i];  // actual spatial dim position
+      lowPad[pos] = b.getIndexAttr(lowP);
+      highPad[pos] = b.getIndexAttr(highP);
+      newShape[pos] += lowP + highP;
+    }
+
+    Type inputElemType = inputType.getElementType();
+    auto paddedType = RankedTensorType::get(newShape, inputElemType);
+    Value padValue =
+        arith::ConstantOp::create(b, loc, b.getZeroAttr(inputElemType));
+    input = tensor::PadOp::create(b, loc, paddedType, input, lowPad, highPad,
+                                  padValue)
+                .getResult();
+    inputType = paddedType;
+  }
+
+  // Determine result shape in original layout and create zero tensor
+  ArrayRef<int64_t> resultShape;
+  switch (genConfig.operation.value()) {
+  case rock::ConvOpType::Fwd:
+    resultShape = outputType.getShape();
+    break;
+  case rock::ConvOpType::BwdData:
+    resultShape = inputType.getShape();
+    break;
+  case rock::ConvOpType::BwdWeight:
+    resultShape = filterType.getShape();
+    break;
+  }
+
+  auto resultType = RankedTensorType::get(resultShape, computeType);
+  // Use tensor.empty + linalg.fill instead of arith.constant to avoid
+  // memref copy during bufferization
+  Value zeroVal = rock::createZeroConstantOp(b, loc, computeType);
+  Value emptyResult = tensor::EmptyOp::create(b, loc, resultType, ValueRange{});
+  Value zeroResult = linalg::FillOp::create(b, loc, zeroVal, emptyResult).getResult(0);
+
+  // Emit the convolution using linalg.generic with layout-aware indexing
+  // No transposes needed - the indexing maps use actual dimension positions!
+  // Use i64 body builder for i8 inputs, f32 otherwise.
+  Value result;
+  ConvBodyBuilder bodyBuilder = isI8Conv ? convBodyBuilderI64 : convBodyBuilderF32;
+  switch (genConfig.operation.value()) {
+  case rock::ConvOpType::Fwd:
+    result = emitConvGeneric(b, loc, resultType, input, filter,
+                                    zeroResult, inputInfo, filterInfo,
+                                    outputInfo, genConfig.strideDims,
+                                    genConfig.dilationDims, bodyBuilder);
+    break;
+  case rock::ConvOpType::BwdWeight:
+    result = emitBwdWeightConvGeneric(b, loc, resultType, input, output,
+                                      zeroResult, inputInfo, outputInfo,
+                                      filterInfo, genConfig.strideDims,
+                                      genConfig.dilationDims);
+    break;
+  case rock::ConvOpType::BwdData:
+    result = emitBwdDataConvGeneric(b, loc, resultType, output, filter,
+                                    zeroResult, outputInfo, filterInfo,
+                                    inputInfo, genConfig.strideDims,
+                                    genConfig.dilationDims, filterInfo.imageLens,
+                                    genConfig.paddingLeftDims,
+                                    genConfig.paddingRightDims);
+    break;
+  }
+
+  // Result is already in original layout (no transpose needed)
+  Value resultOrigLayout = result;
+
+  // Convert back to original element type if needed
+  auto resultFlatTensorType = cast<RankedTensorType>(resultFlatType);
+  ArrayRef<int64_t> finalResultShape =
+      cast<RankedTensorType>(resultOrigLayout.getType()).getShape();
+  if (resultFlatTensorType.getElementType() != computeType) {
+    auto resultOrigType = RankedTensorType::get(
+        finalResultShape, resultFlatTensorType.getElementType());
+    Value emptyConvert =
+        tensor::EmptyOp::create(b, loc, resultOrigType, ValueRange{});
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(finalResultShape.size(), ctx);
+    SmallVector<utils::IteratorType> iteratorTypes(
+        finalResultShape.size(), utils::IteratorType::parallel);
+    auto convertOp = linalg::GenericOp::create(
+        b, loc, resultOrigType, ValueRange{resultOrigLayout},
+        ValueRange{emptyConvert}, ArrayRef<AffineMap>{identityMap, identityMap},
+        iteratorTypes,
+        [](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
+          Value src = args[0];
+          Type dstType = args[1].getType();
+          Value converted;
+          if (isa<IntegerType>(dstType)) {
+            converted =
+                arith::FPToSIOp::create(nestedB, nestedLoc, dstType, src);
+          } else {
+            converted =
+                arith::TruncFOp::create(nestedB, nestedLoc, dstType, src);
+          }
+          linalg::YieldOp::create(nestedB, nestedLoc, converted);
+        });
+    resultOrigLayout = convertOp.getResult(0);
+  }
+
+  // Collapse to flat 1D tensor
+  ArrayRef<int64_t> finalShape =
+      cast<RankedTensorType>(resultOrigLayout.getType()).getShape();
+  ReassociationIndices allDims =
+      llvm::to_vector(llvm::iota_range<int64_t>(0, finalShape.size(), false));
+  Value flatResult = tensor::CollapseShapeOp::create(
+      b, loc, resultFlatTensorType, resultOrigLayout, allDims);
+
+  func::ReturnOp::create(b, loc, flatResult);
+  return func;
 }
 
 static func::FuncOp
 createCPUConvFunc(ModuleOp module,
                   const rock::ConvGenerator::Config &genConfig) {
-  assert(genConfig.operation.has_value());
-  std::string funcName =
-      rock::getNameForConvOpType(genConfig.operation.value()).str();
-
-  funcName += "_cpu";
-  func::FuncOp func = module.lookupSymbol<func::FuncOp>(funcName);
-  if (func) // already exists
-    return func;
-
-  OpBuilder b(module.getContext());
-  auto loc = b.getUnknownLoc();
-
-  Type inputElemType =
-      typeFromString(genConfig.inputDataTypeStr, module.getContext());
-  Type filterElemType =
-      typeFromString(genConfig.filterDataTypeStr, module.getContext());
-  Type outputElemType =
-      typeFromString(genConfig.outputDataTypeStr, module.getContext());
-
-  if (genConfig.inputDataTypeStr == "i8") {
-    inputElemType = b.getI8Type();
-    filterElemType = b.getI8Type();
-    // Compute the output in int64_t to detect overflow
-    outputElemType = b.getIntegerType(64);
-    assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
-  }
-
-  int64_t filterElems = computeProduct(genConfig.filterDimension);
-  int64_t inputElems = computeProduct(genConfig.inputDimension);
-  int64_t outputElems = computeProduct(genConfig.outputDimension);
-
-  auto filterType = MemRefType::get(filterElems, filterElemType);
-  auto inputType = MemRefType::get(inputElems, inputElemType);
-  auto outputType = MemRefType::get(outputElems, outputElemType);
-
-  // Create conv_host function
-  rock::ConvGenerator convGenerator(genConfig);
-
-  bool hasWorkspace = false;
-  if (failed(convGenerator.hasWorkspace(b, hasWorkspace))) {
-    assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
-  }
-  Type workspaceArgType;
-  if (hasWorkspace) {
-    workspaceArgType = MemRefType::get(filterElems, b.getF32Type());
-  }
-  SmallVector<Type, 4> funcArgTypes = {filterType, inputType, outputType};
-  if (hasWorkspace) {
-    funcArgTypes.push_back(workspaceArgType);
-  }
-
-  func =
-      func::FuncOp::create(loc, funcName, b.getFunctionType(funcArgTypes, {}));
-  module.push_back(func);
-
-  createCPUConvWithMLIR(module, func, genConfig);
-  return func;
+  // Delegate to the tensor-based implementation
+  return createCPUConvWithMLIR(module, genConfig);
 }
 
 static void getGemmTypes(ArrayRef<Type> elemTypes,
@@ -3493,21 +3861,18 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   auto cpuTypes = params.types;
   SmallVector<Type, 3> argTypes;
   getGemmTypes(cpuTypes, argTypes, /*isCpuVerifier=*/true);
-  // Convert tensor types to memref types for CPU verifier
+
   SmallVector<Type> flatArgTypes;
   for (Type t : argTypes) {
-    Type flatType = rock::getFlattenedType(t);
-    if (auto tensorType = dyn_cast<RankedTensorType>(flatType)) {
-      flatArgTypes.push_back(
-          MemRefType::get(tensorType.getShape(), tensorType.getElementType()));
-    } else {
-      flatArgTypes.push_back(flatType);
-    }
+    flatArgTypes.push_back(rock::getFlattenedType(t));
   }
 
+  // Result type is the C tensor
+  Type resultType = flatArgTypes[2];
+
   constexpr llvm::StringLiteral cpuKernName("host_naive_gemm");
-  auto func = func::FuncOp::create(b, loc, cpuKernName,
-                                   b.getFunctionType(flatArgTypes, {}));
+  auto func = func::FuncOp::create(
+      b, loc, cpuKernName, b.getFunctionType(flatArgTypes, {resultType}));
   module.push_back(func);
 
   Block *block = func.addEntryBlock();
@@ -3517,6 +3882,7 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
 
   auto floatType = b.getF32Type();
 
+  // Convert to f32 if needed
   aVal = ensureFloatIsF32(b, loc, aVal, floatType);
   bVal = ensureFloatIsF32(b, loc, bVal, floatType);
 
@@ -3533,25 +3899,21 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   }
   cVal = ensureFloatIsF32(b, loc, cVal, floatType);
 
-  auto cType = cast<MemRefType>(cVal.getType());
-  Value zeroOut = rock::createZeroConstantOp(b, loc, cType.getElementType());
-
-  linalg::FillOp::create(b, loc, zeroOut, cVal);
-
-  auto expandArg = [&loc, &b](Value arg, Type rawLogicalType) -> Value {
-    // rawLogicalType may be a tensor type, convert to memref for processing
+  // Expand flat tensors to logical 3D shapes
+  auto expandTensorArg = [&loc, &b](Value arg, Type rawLogicalType) -> Value {
     auto shapedType = cast<ShapedType>(rawLogicalType);
-    auto logicalType =
-        MemRefType::get(shapedType.getShape(), shapedType.getElementType());
-    // Replicate the effect of ensureFloatIsF32()
-    if (isa<FloatType>(logicalType.getElementType()))
-      logicalType = cast<MemRefType>(
-          logicalType.clone(Float32Type::get(arg.getContext())));
+    auto flatType = cast<RankedTensorType>(arg.getType());
+    Type elemType = flatType.getElementType();
+    // Use f32 element type if it's a float
+    if (isa<FloatType>(elemType))
+      elemType = Float32Type::get(arg.getContext());
+    auto logicalType = RankedTensorType::get(shapedType.getShape(), elemType);
     ArrayRef<int64_t> logicalShape = logicalType.getShape();
     ReassociationIndices allDims = llvm::to_vector(
         llvm::iota_range<int64_t>(0, logicalShape.size(), false));
-    return memref::ExpandShapeOp::create(b, loc, logicalType, arg, allDims);
+    return tensor::ExpandShapeOp::create(b, loc, logicalType, arg, allDims);
   };
+
   AffineExpr g = b.getAffineDimExpr(0), m = b.getAffineDimExpr(1),
              n = b.getAffineDimExpr(2), k = b.getAffineDimExpr(3);
   AffineMap aMap = AffineMap::get(
@@ -3561,97 +3923,140 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
             cMap = AffineMap::get(
                 4, 0, {g, transposeC ? n : m, transposeC ? m : n}, ctx);
   int cArgIdx = scaledGemm ? 4 : 2;
-  Value aExpVal = expandArg(aVal, argTypes[0]),
-        bExpVal = expandArg(bVal, argTypes[1]),
-        cExpVal = expandArg(cVal, argTypes[cArgIdx]);
+  Value aExpVal = expandTensorArg(aVal, argTypes[0]),
+        bExpVal = expandTensorArg(bVal, argTypes[1]),
+        cExpVal = expandTensorArg(cVal, argTypes[cArgIdx]);
+
   Value aExpValScaled = nullptr, bExpValScaled = nullptr;
+  if (scaledGemm) {
+    aExpValScaled = expandTensorArg(aScaleVal, argTypes[3]);
+    bExpValScaled = expandTensorArg(bScaleVal, argTypes[4]);
+  }
+
+  // Initialize output with zeros using linalg.fill
+  auto cExpType = cast<RankedTensorType>(cExpVal.getType());
+  Value zeroVal = rock::createZeroConstantOp(b, loc, cExpType.getElementType());
+  Value emptyC = tensor::EmptyOp::create(b, loc, cExpType, ValueRange{});
+  Value zeroC = linalg::FillOp::create(b, loc, zeroVal, emptyC).getResult(0);
+
+  // Perform GEMM using linalg.generic with tensor semantics
+  Value result;
   if (scaledGemm) {
     // Create scaled AffineMaps
     // (g, m, n, k) -> (g, m, k // blockSize)  for A if not transposed
     // (g, m, n, k) -> (g, k // blockSize, n)  for B if not transposed
     auto scaleAffineMap = [&](bool transposeFlag, AffineExpr d) -> AffineMap {
-      // Create constant for blockSize
       auto cBlockSize = getAffineConstantExpr(quantBlockSize, b.getContext());
-      auto kFloorDiv32 = k.floorDiv(cBlockSize);
-      SmallVector<AffineExpr> resultExprs = {g, transposeFlag ? kFloorDiv32 : d,
-                                             transposeFlag ? d : kFloorDiv32};
+      auto kFloorDiv = k.floorDiv(cBlockSize);
+      SmallVector<AffineExpr> resultExprs = {g, transposeFlag ? kFloorDiv : d,
+                                             transposeFlag ? d : kFloorDiv};
       return AffineMap::get(4, 0, resultExprs, b.getContext());
     };
     AffineMap aMapScaled = scaleAffineMap(transposeScaleA, m);
     AffineMap bMapScaled = scaleAffineMap(transposeScaleB, n);
 
-    aExpValScaled = expandArg(aScaleVal, argTypes[2]);
-    bExpValScaled = expandArg(bScaleVal, argTypes[3]);
-    linalg::GenericOp::create(
-        b, loc, ValueRange{aExpVal, bExpVal, aExpValScaled, bExpValScaled},
-        ValueRange{cExpVal},
+    aExpValScaled = expandTensorArg(aScaleVal, argTypes[2]);
+    bExpValScaled = expandTensorArg(bScaleVal, argTypes[3]);
+    
+    auto genericOp = linalg::GenericOp::create(
+        b, loc, cExpType,
+        ValueRange{aExpVal, bExpVal, aExpValScaled, bExpValScaled},
+        ValueRange{zeroC},
         ArrayRef<AffineMap>{aMap, bMap, aMapScaled, bMapScaled, cMap},
         ArrayRef<utils::IteratorType>{
             utils::IteratorType::parallel, utils::IteratorType::parallel,
             utils::IteratorType::parallel, utils::IteratorType::reduction},
         /*doc=*/"", /*library_call=*/"",
         [](OpBuilder &builder, Location loc, ValueRange elems) {
-          Value a = elems[0], b = elems[1], aScale = elems[2],
+          Value a = elems[0], bArg = elems[1], aScale = elems[2],
                 bScale = elems[3];
           Value c = elems[4];
           Type cType = c.getType();
           if (isa<IntegerType>(cType)) {
             Value aExt = rock::createTypeConversionOp(builder, loc, a, cType);
-            Value bExt = rock::createTypeConversionOp(builder, loc, b, cType);
+            Value bExt =
+                rock::createTypeConversionOp(builder, loc, bArg, cType);
             Value mul = arith::MulIOp::create(builder, loc, aExt, bExt);
             Value add = arith::AddIOp::create(builder, loc, mul, c);
             linalg::YieldOp::create(builder, loc, add);
           } else {
             a = arith::MulFOp::create(builder, loc, a, aScale);
-            b = arith::MulFOp::create(builder, loc, b, bScale);
-            Value mul = arith::MulFOp::create(builder, loc, a, b);
+            bArg = arith::MulFOp::create(builder, loc, bArg, bScale);
+            Value mul = arith::MulFOp::create(builder, loc, a, bArg);
             Value add = arith::AddFOp::create(builder, loc, mul, c);
             linalg::YieldOp::create(builder, loc, add);
           }
         });
-    if (!isa<BlockArgument>(aScaleVal))
-      memref::DeallocOp::create(b, loc, aScaleVal);
-    if (!isa<BlockArgument>(bScaleVal))
-      memref::DeallocOp::create(b, loc, bScaleVal);
+    result = genericOp.getResult(0);
   } else {
-    linalg::GenericOp::create(
-        b, loc, ValueRange{aExpVal, bExpVal}, ValueRange{cExpVal},
+    auto genericOp = linalg::GenericOp::create(
+        b, loc, cExpType, ValueRange{aExpVal, bExpVal}, ValueRange{zeroC},
         ArrayRef<AffineMap>{aMap, bMap, cMap},
         ArrayRef<utils::IteratorType>{
             utils::IteratorType::parallel, utils::IteratorType::parallel,
             utils::IteratorType::parallel, utils::IteratorType::reduction},
         /*doc=*/"", /*library_call=*/"",
         [](OpBuilder &builder, Location loc, ValueRange elems) {
-          Value a = elems[0], b = elems[1];
+          Value a = elems[0], bArg = elems[1];
           Value c = elems[2];
           Type cType = c.getType();
           if (isa<IntegerType>(cType)) {
             Value aExt = rock::createTypeConversionOp(builder, loc, a, cType);
-            Value bExt = rock::createTypeConversionOp(builder, loc, b, cType);
+            Value bExt =
+                rock::createTypeConversionOp(builder, loc, bArg, cType);
             Value mul = arith::MulIOp::create(builder, loc, aExt, bExt);
             Value add = arith::AddIOp::create(builder, loc, mul, c);
             linalg::YieldOp::create(builder, loc, add);
           } else {
-            Value mul = arith::MulFOp::create(builder, loc, a, b);
+            Value mul = arith::MulFOp::create(builder, loc, a, bArg);
             Value add = arith::AddFOp::create(builder, loc, mul, c);
             linalg::YieldOp::create(builder, loc, add);
           }
         });
+    result = genericOp.getResult(0);
   }
 
-  if (!isa<BlockArgument>(aVal))
-    memref::DeallocOp::create(b, loc, aVal);
-  if (!isa<BlockArgument>(bVal))
-    memref::DeallocOp::create(b, loc, bVal);
-  if (!isa<BlockArgument>(cVal)) {
-    int cBlockArgIdx = scaledGemm ? 4 : 2;
-    BlockArgument resultBlockArg = block->getArgument(cBlockArgIdx);
-    Value resultFlat = makeNDMemRef(b, cVal, 1);
-    emitMemcpy(b, resultFlat, resultBlockArg);
-    memref::DeallocOp::create(b, loc, cVal);
+  // Collapse back to flat shape for return
+  auto resultFlatType = cast<RankedTensorType>(resultType);
+  // If element types differ (f32 vs original), we need to convert back
+  if (resultFlatType.getElementType() != cExpType.getElementType()) {
+    // Convert f32 result back to original type (keep 3D shape, collapse later)
+    auto resultExpType = cExpType.cloneWith(cExpType.getShape(),
+                                            resultFlatType.getElementType());
+    Value emptyResult =
+        tensor::EmptyOp::create(b, loc, resultExpType, ValueRange{});
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(cExpType.getRank(), b.getContext());
+    SmallVector<utils::IteratorType> iteratorTypes(
+        cExpType.getRank(), utils::IteratorType::parallel);
+    auto convertOp = linalg::GenericOp::create(
+        b, loc, resultExpType, ValueRange{result}, ValueRange{emptyResult},
+        ArrayRef<AffineMap>{identityMap, identityMap}, iteratorTypes,
+        [](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
+          Value src = args[0];
+          Type dstType = args[1].getType();
+          Value converted;
+          if (isa<IntegerType>(dstType)) {
+            converted =
+                arith::FPToSIOp::create(nestedB, nestedLoc, dstType, src);
+          } else {
+            converted =
+                arith::TruncFOp::create(nestedB, nestedLoc, dstType, src);
+          }
+          linalg::YieldOp::create(nestedB, nestedLoc, converted);
+        });
+    result = convertOp.getResult(0);
   }
 
-  func::ReturnOp::create(b, loc);
+  // Collapse to flat 1D tensor
+  ArrayRef<int64_t> resultShape =
+      cast<RankedTensorType>(result.getType()).getShape();
+  ReassociationIndices allDims =
+      llvm::to_vector(llvm::iota_range<int64_t>(0, resultShape.size(), false));
+  Value flatResult =
+      tensor::CollapseShapeOp::create(b, loc, resultFlatType, result, allDims);
+
+  func::ReturnOp::create(b, loc, flatResult);
   return func;
 }
 
@@ -4599,6 +5004,29 @@ static void undoAsyncLaunchPass(Operation *cloneFunc) {
   }
 }
 
+/// Helper to call a tensor-based function with memref arguments.
+/// Converts memrefs to tensors, calls the function, and copies results back.
+static void callTensorFuncWithMemrefs(OpBuilder &b, Location loc,
+                                      func::FuncOp callee,
+                                      SmallVectorImpl<Value> &memrefArgs,
+                                      ArrayRef<int32_t> outputIndices) {
+  SmallVector<Value, 8> tensorArgs;
+  for (auto [idx, memrefArg] : llvm::enumerate(memrefArgs)) {
+    bool isWritable = llvm::is_contained(outputIndices, idx);
+    tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, isWritable));
+  }
+  auto callOp = func::CallOp::create(b, loc, callee, tensorArgs);
+  for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
+    if (resultIdx < outputIndices.size()) {
+      int32_t outIdx = outputIndices[resultIdx];
+      auto outMemrefType = cast<MemRefType>(memrefArgs[outIdx].getType());
+      Value resultMemref =
+          bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
+      memref::CopyOp::create(b, loc, resultMemref, memrefArgs[outIdx]);
+    }
+  }
+}
+
 static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
                                   ModuleOp module,
                                   SmallVectorImpl<Value> &valVars,
@@ -4719,8 +5147,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       func::CallOp::create(b, loc, cpuConvElementwiseGemmFunc, valVars);
     } else if (genParams.convConfig.has_value()) {
       const auto &genConfig = **genParams.convConfig;
-      auto cpuConvFunc = createCPUConvFunc(module, genConfig);
-      func::CallOp::create(b, loc, cpuConvFunc, valVars);
+      auto cpuConvFunc = createCPUConvWithMLIR(module, genConfig);
+      callTensorFuncWithMemrefs(b, loc, cpuConvFunc, valVars, outIndices);
     } else if (genParams.operation == rock::KernelType::Gemm) {
       // Emit call to host gemm
       if (validationType == "cpp") {
@@ -4728,7 +5156,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
         exit(1);
       }
       auto cpuGemmFunc = createCpuGemmKernelWithMlir(module, genParams);
-      func::CallOp::create(b, loc, cpuGemmFunc, valVars);
+      callTensorFuncWithMemrefs(b, loc, cpuGemmFunc, valVars, outIndices);
     } else if (genParams.operation == rock::KernelType::Attention) {
       if (validationType == "cpp") {
         llvm::errs() << "External attention validator is not available\n";
@@ -5005,16 +5433,16 @@ static LogicalResult populateHostHarnessLogic(
       // Call the function with tensor arguments
       auto callOp = func::CallOp::create(b, loc, callee, tensorArgs);
 
-      // If the function returns results, store them back to output memrefs
+      // If the function returns results, use them directly instead of copying
       for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
         if (resultIdx < outputIndices.size()) {
           int32_t outIdx = outputIndices[resultIdx];
-          // Convert result tensor to memref and copy to output
+          // Convert result tensor to memref
           auto outMemrefType =
               cast<MemRefType>(memrefArgs[outIdx].getType());
           Value resultMemref = bufferization::ToBufferOp::create(
               b, loc, outMemrefType, result);
-          memref::CopyOp::create(b, loc, resultMemref, memrefArgs[outIdx]);
+          memrefArgs[outIdx] = resultMemref;
         }
       }
     } else if (willBeWrapped) {

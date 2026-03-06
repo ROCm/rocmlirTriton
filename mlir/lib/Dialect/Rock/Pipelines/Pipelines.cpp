@@ -427,11 +427,12 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());
 
-  // Lower affine to standard loops
-  pm.addPass(createLowerAffinePass());
-
   // Expand strided metadata (handles memref.expand_shape, etc.)
   pm.addPass(memref::createExpandStridedMetadataPass());
+
+  // Lower affine to standard arithmetic (must be after ExpandStridedMetadata
+  // which can generate affine.apply ops)
+  pm.addPass(createLowerAffinePass());
 
   // Lower SCF to control flow
   pm.addPass(createSCFToControlFlowPass());
