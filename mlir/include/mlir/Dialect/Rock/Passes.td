@@ -169,6 +169,23 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   ];
 }
 
+def RockInsertOutputStoresPass
+    : Pass<"rock-insert-output-stores", "::mlir::ModuleOp"> {
+  let summary = "Insert rock.store ops for kernel outputs and convert returns "
+                "to output arguments";
+  let description = [{
+    For each kernel function (marked with `rock.kernel`), this pass
+    flood-fills forward from each FusionRoot result to identify return
+    operands that need stores. For each such return operand:
+    1. A new output argument is added to the function and callers are
+       updated with tensor.empty.
+    2. A rock.store op is inserted before the return.
+    3. The stored return value is removed from the function signature.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "tensor::TensorDialect", "linalg::LinalgDialect"];
+}
+
 def RockSerializeHostFuncsPass
     : Pass<"rock-serialize-host-funcs", "::mlir::ModuleOp"> {
   let summary = "Serialize and erase host functions before kernel lowering";

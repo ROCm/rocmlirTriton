@@ -323,6 +323,8 @@ void rock::buildBufferizePipeline(OpPassManager &pm,
   // funcPm2.addPass(createCSEPass());
 
   pm.addPass(createConvertTensorToLinalgPass());
+  pm.addPass(rock::createRockInsertOutputStoresPass());
+
   // auto &funcPm3 = pm.nest<func::FuncOp>();
   // funcPm3.addPass(bufferization::createEmptyTensorToAllocTensorPass());
   // funcPm3.addPass(createLinalgFoldUnitExtentDimsPass());

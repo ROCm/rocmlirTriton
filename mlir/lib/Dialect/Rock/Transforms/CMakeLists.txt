@@ -16,6 +16,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   SerializeHostFuncs.cpp
   FuncToTritonFunc.cpp
   RestoreHostCode.cpp
+  InsertOutputStores.cpp
   InsertOutputFusionLoads.cpp
   RegularizeInput.cpp
   LowerLoads.cpp
