@@ -89,7 +89,6 @@ void cpu::registerScheduleDialectExtensions(DialectRegistry &registry) {
 FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
   TransformSchedules schedules;
 
-  // Pre-sequence (canonicalize + cse) - built via C++ API
   schedules.preModule = buildPreSchedule(ctx);
   if (!schedules.preModule) {
     emitError(UnknownLoc::get(ctx))
@@ -97,7 +96,6 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
     return failure();
   }
 
-  // Post-sequence (LICM + hoisting) - built via C++ API
   schedules.postModule = buildPostSchedule(ctx);
   if (!schedules.postModule) {
     emitError(UnknownLoc::get(ctx))
@@ -105,7 +103,6 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
     return failure();
   }
 
-  // Optimization sequence (tiling) - built via C++ API
   schedules.optimizationModule = buildTilingSchedule(ctx);
   if (!schedules.optimizationModule) {
     emitError(UnknownLoc::get(ctx))
@@ -113,7 +110,6 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
     return failure();
   }
 
-  // Vectorization sequence - built via C++ API
   schedules.vectorizationModule = buildVectorizationSchedule(ctx);
   if (!schedules.vectorizationModule) {
     emitError(UnknownLoc::get(ctx))
@@ -121,7 +117,6 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
     return failure();
   }
 
-  // Lowering sequence (bufferization + LLVM) - built via C++ API
   schedules.loweringModule = buildLowerToLLVMSchedule(ctx);
   if (!schedules.loweringModule) {
     emitError(UnknownLoc::get(ctx))
