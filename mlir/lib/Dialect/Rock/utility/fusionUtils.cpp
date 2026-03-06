@@ -25,6 +25,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Support/WalkResult.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/LogicalResult.h"
@@ -83,14 +84,14 @@ LogicalResult mlir::rock::checkValidOutputFusion(
 
 bool mlir::rock::gemmGemmHasPreSecondGemmFusion(
     RockGemmGemmWrapperInterface gemmGemmOp) {
-  bool fusionsFound = false;
-  gemmGemmOp.getPreSecondGemmRegion().walk(
-      [&fusionsFound](Operation *fusionOp) {
+  WalkResult res = gemmGemmOp.getPreSecondGemmRegion().walk(
+      [](Operation *fusionOp) -> WalkResult {
         if (rock::isFusionOp(fusionOp))
-          fusionsFound = true;
+          return WalkResult::interrupt();
+        return WalkResult::advance();
       });
 
-  return fusionsFound;
+  return res.wasInterrupted();
 }
 
 LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {

@@ -48,6 +48,7 @@ LogicalResult testFusionLegalityReduce(ModuleOp mod);
 // Same as above, overload of `testFusionLegalityBwdDataConv` for `ModuleOp`.
 LogicalResult testFusionLegalityBwdDataConv(ModuleOp mod);
 
+// Whether a gemm+gemm-like operation has any pre-second-GEMM fusions.
 bool gemmGemmHasPreSecondGemmFusion(RockGemmGemmWrapperInterface op);
 
 // Checks whether the output fusion linalg::GenericOp is valid. Assuming a

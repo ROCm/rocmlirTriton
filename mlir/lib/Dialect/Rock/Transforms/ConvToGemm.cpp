@@ -1074,6 +1074,14 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
   return std::pair<Value, Value>(gemm.getResult(), gemmInput);
 }
 
+// Lower a conv op (forward, backward-weight, or backward-data) into one or
+// more rock.gemm ops by computing the necessary layout transforms for the
+// filter, input, and output tensors. For BwdData, the conv is expanded into
+// multiple gemms (one per kernel ID) inline and the function returns early.
+// For Fwd and BwdWeight, it builds gemm-compatible views (gemmG/gemmM/gemmK/
+// gemmN) of the three conv operands and returns them as (filter, input,
+// output). When Fwd, `outputViews` and `fusionInputMap` are also transformed
+// to carry the output layout so the caller can wire up fusion stores.
 template <typename T>
 static FailureOr<std::tuple<Value, Value, Value>>
 commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
@@ -1468,6 +1476,10 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
           view = TransformOp::create(b, loc, view, outputTransformAttr);
         }
       }
+      // All of them have the same shape, so get the first one.
+      // Note that we always have at least one outputView, otherwise
+      // traceRootOutputToStoreOps() would have failed
+      assert(!outputViews.empty() && "outputViews is empty!");
       gemmOutput = outputViews[0];
     } else {
       gemmOutput =
@@ -1487,6 +1499,7 @@ struct ConvGemmRewritePattern : public OpRewritePattern<ConvElementwiseGemmOp> {
     ConvolutionContext ctx = populateConvContextFromConvGemm(op);
 
     // pass empty tensors because it's not used for conv+gemm
+    // because conv+gemm doesn't support fusions
     DenseMap<Value, Value> fusionInputMap;
     SmallVector<Value> outputViews;
     auto maybeArgs = commonConvRewrite(op, b, ctx, ConvOpType::Fwd,
