@@ -356,14 +356,18 @@ void rock::buildKernelPipeline(OpPassManager &pm,
    *   --rock-regularize --rock-gridwise-gemm-to-blockwise
    * --rock-blockwise-load-tile-to-threadwise
    */
-  auto &funcPm = pm.nest<func::FuncOp>();
-  auto addWithDCE = [&funcPm](std::unique_ptr<Pass> pass) {
-    funcPm.addPass(std::move(pass));
-    funcPm.addPass(createRemoveDeadValuesPass());
+
+  // We must use pm.nest<func::FuncOp>() inside the lambdas instead of a
+  // single shared funcPm, because DCE needs to run at the module level
+  // to see function callers. Running it at function level causes it to
+  // incorrectly remove the host function, which breaks the IR.
+  auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
+    pm.nest<func::FuncOp>().addPass(std::move(pass));
+    pm.addPass(createRemoveDeadValuesPass());
   };
-  auto addWithCSE = [&funcPm](std::unique_ptr<Pass> pass) {
-    funcPm.addPass(std::move(pass));
-    funcPm.addPass(createCSEPass());
+  auto addWithCSE = [&pm](std::unique_ptr<Pass> pass) {
+    pm.nest<func::FuncOp>().addPass(std::move(pass));
+    pm.addPass(createCSEPass());
   };
 
   addWithDCE(rock::createRockAffixTuningParametersPass(
@@ -427,11 +431,12 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());
 
-  // Lower affine to standard loops
-  pm.addPass(createLowerAffinePass());
-
   // Expand strided metadata (handles memref.expand_shape, etc.)
   pm.addPass(memref::createExpandStridedMetadataPass());
+
+  // Lower affine to standard arithmetic (must be after ExpandStridedMetadata
+  // which can generate affine.apply ops)
+  pm.addPass(createLowerAffinePass());
 
   // Lower SCF to control flow
   pm.addPass(createSCFToControlFlowPass());

@@ -46,23 +46,26 @@
 // CHECK-NEXT: return
 
 // CHECK-LABEL: func.func @host_naive_gemm
-// CHECK-SAME: (%[[aRaw:.*]]: memref<2362368xf32>, %[[bRaw:.*]]: memref<1181184xf32>, %[[cRaw:.*]]: memref<1572864xf32>)
+// CHECK-SAME: (%[[aRaw:.*]]: tensor<2362368xf32>, %[[bRaw:.*]]: tensor<1181184xf32>, %[[cRaw:.*]]: tensor<1572864xf32>) -> tensor<1572864xf32>
+// CHECK-NEXT: %[[a:.*]] = tensor.expand_shape %[[aRaw]] [{{\s*}}[0, 1, 2]]
+// NOTRA-SAME: into tensor<3x1024x769xf32>
+// TRA-SAME:   into tensor<3x769x1024xf32>
+// CHECK-NEXT: %[[b:.*]] = tensor.expand_shape %[[bRaw]] [{{\s*}}[0, 1, 2]]
+// NOTRB-SAME: into tensor<3x769x512xf32>
+// TRB-SAME:   into tensor<3x512x769xf32>
+// CHECK-NEXT: %[[cExp:.*]] = tensor.expand_shape %[[cRaw]] [{{\s*}}[0, 1, 2]]
+// NOTRC-SAME: into tensor<3x1024x512xf32>
+// TRC-SAME:   into tensor<3x512x1024xf32>
 // CHECK-NEXT: %[[cst:.*]] = arith.constant 0.0{{.*}} : f32
-// CHECK-NEXT: linalg.fill ins(%[[cst]] : f32) outs(%[[cRaw]] : {{.*}})
-// CHECK-NEXT: %[[a:.*]] = memref.expand_shape %[[aRaw]] [{{\s*}}[0, 1, 2]]
-// NOTRA-SAME: into memref<3x1024x769xf32>
-// TRA-SAME:   into memref<3x769x1024xf32>
-// CHECK-NEXT: %[[b:.*]] = memref.expand_shape %[[bRaw]] [{{\s*}}[0, 1, 2]]
-// NOTRB-SAME: into memref<3x769x512xf32>
-// TRB-SAME:   into memref<3x512x769xf32>
-// CHECK-NEXT: %[[c:.*]] = memref.expand_shape %[[cRaw]] [{{\s*}}[0, 1, 2]]
-// NOTRC-SAME: into memref<3x1024x512xf32>
-// TRC-SAME:   into memref<3x512x1024xf32>
-// CHECK-NEXT: linalg.generic
+// CHECK-NEXT: %[[empty:.*]] = tensor.empty()
+// CHECK-NEXT: %[[zero:.*]] = linalg.fill ins(%[[cst]] : f32) outs(%[[empty]] : {{.*}}) -> {{.*}}
+// CHECK-NEXT: %[[gemm:.*]] = linalg.generic
 // CHECK-SAME: indexing_maps = [#[[$mapAHost]], #[[$mapBHost]], #[[$mapCHost]]]
 // CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "reduction"]
-// CHECK-SAME: ins(%[[a]], %[[b]] : memref<{{.*}}>, memref<{{.*}}>) outs(%[[c]] : memref<{{.*}}>)
+// CHECK-SAME: ins(%[[a]], %[[b]] : tensor<{{.*}}>, tensor<{{.*}}>) outs(%[[zero]] : tensor<{{.*}}>)
 // CHECK-NEXT: (%[[aElem:.*]]: f32, %[[bElem:.*]]: f32, %[[cElem:.*]]: f32)
 // CHECK-NEXT: %[[mul:.*]] = arith.mulf %[[aElem]], %[[bElem]]
 // CHECK-NEXT: %[[add:.*]] = arith.addf %[[mul]], %[[cElem]]
 // CHECK-NEXT: linalg.yield %[[add]]
+// CHECK:      %[[result:.*]] = tensor.collapse_shape %[[gemm]] [{{\s*}}[0, 1, 2]]
+// CHECK-NEXT: return %[[result]]
