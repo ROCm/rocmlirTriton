@@ -1,0 +1,41 @@
+//===- ScheduleUtils.cpp - Common utilities for transform schedules -------===//
+//
+// Copyright 2026 Advanced Micro Devices.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// =============================================================================
+//
+// This file implements common utility functions used by transform schedule
+// builders.
+//
+//===----------------------------------------------------------------------===//
+
+#include "ScheduleUtils.h"
+
+#include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/IR/BuiltinAttributes.h"
+
+using namespace mlir;
+using namespace mlir::cpu;
+
+OwningOpRef<ModuleOp> cpu::createTransformModule(MLIRContext *ctx) {
+  auto loc = UnknownLoc::get(ctx);
+  OwningOpRef<ModuleOp> module = ModuleOp::create(loc);
+  (*module)->setAttr(transform::TransformDialect::kWithNamedSequenceAttrName,
+                     UnitAttr::get(ctx));
+  return module;
+}
+
+transform::AnyOpType cpu::getAnyOpType(MLIRContext *ctx) {
+  return transform::AnyOpType::get(ctx);
+}
