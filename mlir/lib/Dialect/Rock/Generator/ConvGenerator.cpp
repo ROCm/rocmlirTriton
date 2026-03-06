@@ -27,6 +27,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
@@ -357,12 +358,11 @@ LogicalResult ConvGenerator::needExtraPadBwdWeight(OpBuilder &builder,
                           /*numCU=*/getNumCU()};
 
   auto populateParamsPtr = std::make_unique<PopulateParams>();
-  auto perfConfigAttr = populateParamsPtr->obtainTuningParameters(
+  auto maybeValidParams = populateParamsPtr->obtainTuningParameters(
       builder, info, config.perfConfig);
-  GemmParamsAttr validParams = GemmParamsAttr::get(perfConfigAttr);
-  if (validParams) {
+  if (succeeded(maybeValidParams)) {
     needExtraPad = (populateParamsPtr->calculatePaddingAmount(
-                        validParams, gemmSize) != 0);
+                        maybeValidParams.value(), gemmSize) != 0);
     return success();
   }
   return failure();

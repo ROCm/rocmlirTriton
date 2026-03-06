@@ -184,34 +184,38 @@ PopulateParamsAccel::couldBePerformant(const PopulateParamsInfo &info,
   return specificCouldBePerformant(params, info.gemmAType, info.gemmBType);
 }
 
-StringAttr PopulateParamsAccel::obtainTuningParameters(
+FailureOr<GemmParamsAttr> PopulateParamsAccel::obtainTuningParameters(
     OpBuilder &b, const PopulateParamsInfo &info, const StringRef perfConfig) {
 
+  StringAttr perfConfigAttr;
   if (!perfConfig.empty()) {
     // Under two scenarios can we receive a perfConfig:
     // 1. This is tuning mode
     // 2. This is running mode and we have succeeded with a perfdb load
-    auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
-    return perfConfigAttr;
+    perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
+  } else {
+    auto paramSets = getTuningParameters(b, info.kernelType, info.gemmAType,
+                                         info.gemmBType, info.arch);
+
+    auto orderedParams = orderParams(paramSets, info.gemmSize);
+    if (orderedParams.empty())
+      return failure();
+
+    GemmParamsAttr validParams = orderedParams.front();
+    LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
+    SmallVector<char, 64> perfConfigBuf;
+    validParams.getPerfConfigStr(perfConfigBuf);
+    perfConfigAttr = StringAttr::get(b.getContext(), perfConfigBuf);
   }
 
-  auto paramSets = getTuningParameters(b, info.kernelType, info.gemmAType,
-                                       info.gemmBType, info.arch);
+  GemmParamsAttr params = GemmParamsAttr::get(perfConfigAttr);
+  if (!params)
+    return failure();
 
-  auto orderedParams = orderParams(paramSets, info.gemmSize);
-  if (orderedParams.empty())
-    llvm_unreachable("Quick tuning list is empty!");
-
-  GemmParamsAttr validParams = orderedParams.front();
-  LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
-  SmallVector<char, 64> perfConfigBuf;
-  validParams.getPerfConfigStr(perfConfigBuf);
-  auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfigBuf);
-
-  return perfConfigAttr;
+  return params;
 }
 
-StringAttr
+FailureOr<GemmParamsAttr>
 PopulateParamsAccel::obtainTuningParameters(OpBuilder &b,
                                             RockGemmWrapperInterface op) {
   PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);

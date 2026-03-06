@@ -209,11 +209,17 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   auto fillCompilationRes =
       m.walk([&](mlir::rock::RockGemmWrapperInterface op) -> WalkResult {
         auto populateParamsPtr = std::make_unique<rock::PopulateParams>();
-        auto perfConfigAttr =
+        auto maybeGemmParams =
             populateParamsPtr->obtainTuningParameters(builder, op);
-        if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
+        if (failed(maybeGemmParams)) {
+          llvm::errs() << "Failed to obtain perfConfig\n";
+          return WalkResult::interrupt();
+        }
+
+        if (failed(fillCompilationConfigs(maybeGemmParams.value(), tritonOpts,
                                           backendOpts))) {
-          llvm::errs() << "Failed to process perfConfig: " << perfConfigAttr << "\n";
+          llvm::errs() << "Failed to process perfConfig: "
+                       << maybeGemmParams.value() << "\n";
           return WalkResult::interrupt();
         }
         return WalkResult::advance();
@@ -223,11 +229,16 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   }
   auto fillCompilationResGemmGemm =
       m.walk([&](mlir::rock::RockGemmGemmWrapperInterface op) -> WalkResult {
-        StringAttr perfConfigAttr =
+        auto maybeGemmGemmParams =
             rock::PopulateParamsGemmGemm::obtainTuningParameters(builder, op);
-        if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
-                                          backendOpts))) {
-          llvm::errs() << "Failed to process perfConfig for gemm_gemm op\n";
+        if (failed(maybeGemmGemmParams)) {
+          llvm::errs() << "Failed to obtain perfConfig\n";
+          return WalkResult::interrupt();
+        }
+        if (failed(fillCompilationConfigs(maybeGemmGemmParams.value(),
+                                          tritonOpts, backendOpts))) {
+          llvm::errs() << "Failed to process perfConfig: "
+                       << maybeGemmGemmParams.value() << "\n";
           return WalkResult::interrupt();
         }
         return WalkResult::advance();

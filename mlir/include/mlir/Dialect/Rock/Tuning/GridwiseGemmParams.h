@@ -150,11 +150,12 @@ public:
 //
 class PopulateParamsAccel : public BasePopulateParams<GemmParamsAttr> {
 public:
-  StringAttr obtainTuningParameters(OpBuilder &b, RockGemmWrapperInterface op);
+  FailureOr<GemmParamsAttr> obtainTuningParameters(OpBuilder &b,
+                                                   RockGemmWrapperInterface op);
 
-  StringAttr obtainTuningParameters(OpBuilder &b,
-                                    const PopulateParamsInfo &info,
-                                    const StringRef perfConfig);
+  FailureOr<GemmParamsAttr>
+  obtainTuningParameters(OpBuilder &b, const PopulateParamsInfo &info,
+                         const StringRef perfConfig);
 
   int64_t calculatePaddingAmount(GemmParamsAttr params,
                                  const GemmSize &gemmSize) const override;

@@ -119,16 +119,17 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto funcParent = op->getParentOfType<func::FuncOp>();
 
   auto populateParamsPtr = std::make_unique<PopulateParams>();
-  auto perfConfigAttr = populateParamsPtr->obtainTuningParameters(b, op);
+  auto maybeValidParams = populateParamsPtr->obtainTuningParameters(b, op);
 
-  LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
-                          << perfConfigAttr << "\n");
-
-  GemmParamsAttr validParams = GemmParamsAttr::get(perfConfigAttr);
-  if (!validParams) {
+  if (failed(maybeValidParams)) {
     LLVM_DEBUG(llvm::dbgs() << "obtainTuningParameters call fails.\n");
     return signalPassFailure();
   }
+  GemmParamsAttr validParams = maybeValidParams.value();
+  StringAttr perfConfigAttr = validParams.getPerfConfigAttr();
+
+  LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
+                          << perfConfigAttr << "\n");
 
   auto origGemmSize = op.getGemmSize();
   auto paddedGemmSize = calculatePaddedGemmSize(
@@ -183,13 +184,14 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto funcParent = op->getParentOfType<func::FuncOp>();
 
   // set a default one if params is not provided
-  StringAttr perfConfigStrAttr =
+  auto maybeAttnPerfConfig =
       PopulateParamsGemmGemm::obtainTuningParameters(builder, op);
-  auto attnPerfConfig = GemmGemmParamsAttr::get(perfConfigStrAttr);
-  if (!attnPerfConfig) {
+  if (failed(maybeAttnPerfConfig)) {
     op.emitError("perf config string has an incorrect format.");
     return signalPassFailure();
   }
+  auto attnPerfConfig = maybeAttnPerfConfig.value();
+  StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
   auto accelParams =
       PopulateParamsGemmGemm::getGemmParams(builder, op, attnPerfConfig);
@@ -198,7 +200,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
     return signalPassFailure();
   }
   // check for splitK legality
-  if (rock::isSplitKRequested(perfConfigStrAttr)) {
+  if (rock::isSplitKRequested(perfConfigAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
       op->emitError("Fusion with SplitK perfConfig is not legal");
       return signalPassFailure();

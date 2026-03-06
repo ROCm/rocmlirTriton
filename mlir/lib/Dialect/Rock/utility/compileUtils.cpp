@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
@@ -120,11 +121,11 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
   return success();
 }
 
-LogicalResult fillCompilationConfigs(StringAttr perfConfig,
+LogicalResult fillCompilationConfigs(Attribute perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts) {
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
-  if (auto gemmParams = rock::GemmParamsAttr::get(perfConfig)) {
+  if (auto gemmParams = dyn_cast<GemmParamsAttr>(perfConfig)) {
     tritonOpts.numWarps = gemmParams.getNumWaves();
     tritonOpts.numCTAs = gemmParams.getNumCTAs();
     tritonOpts.numStages = gemmParams.getNumStages();
@@ -136,7 +137,7 @@ LogicalResult fillCompilationConfigs(StringAttr perfConfig,
     backendOpts.wavesPerEU = gemmParams.getWavesPerEU();
     return success();
   }
-  if (auto gemmGemmParams = rock::GemmGemmParamsAttr::get(perfConfig)) {
+  if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(perfConfig)) {
     tritonOpts.numWarps = gemmGemmParams.getNumWaves();
     tritonOpts.numCTAs = gemmGemmParams.getNumCTAs();
     tritonOpts.numStages = gemmGemmParams.getNumStages();
