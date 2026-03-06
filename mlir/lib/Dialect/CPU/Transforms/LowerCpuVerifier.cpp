@@ -24,37 +24,23 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Schedules.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/Bufferization/TransformOps/BufferizationTransformOps.h"
+#include "mlir/Dialect/CPU/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Func/TransformOps/FuncTransformOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/MemRef/TransformOps/MemRefTransformOps.h"
-#include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"
-#include "mlir/Dialect/CPU/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h"
-#include "mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h"
-#include "mlir/Dialect/SCF/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Tensor/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
-#include "mlir/Dialect/Vector/Transforms/BufferizableOpInterfaceImpl.h"
-#include "mlir/Dialect/Vector/Transforms/SubsetOpInterfaceImpl.h"
-#include "mlir/Dialect/Vector/TransformOps/VectorTransformOps.h"
-#include "mlir/Dialect/Transform/IR/TransformOps.h"
-#include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
-#include "mlir/Dialect/Transform/Transforms/TransformInterpreterUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
-#include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/Support/Debug.h"
@@ -75,159 +61,6 @@ using namespace mlir::cpu;
 
 namespace {
 
-constexpr const char *kPreSequence = R"mlir(
-module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
-    %1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
-    %2 = transform.apply_registered_pass "canonicalize" to %1 : (!transform.any_op) -> !transform.any_op
-    transform.apply_cse to %2 : !transform.any_op
-    transform.yield 
-  }
-}
-)mlir";  
-
-constexpr const char *kPostSequence = R"mlir(
-module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
-    %1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
-    %2 = transform.structured.match interface{LoopLikeInterface} in %1 : (!transform.any_op) -> !transform.any_op
-    transform.apply_licm to %2 : !transform.any_op
-    
-    %func = transform.structured.match ops{["func.func"]} in %1 : (!transform.any_op) -> !transform.any_op
-    %3 = transform.structured.hoist_redundant_vector_transfers %func : (!transform.any_op) -> !transform.any_op
-    %4 = transform.structured.hoist_redundant_vector_broadcasts %3 : (!transform.any_op) -> !transform.any_op
-    %5 = transform.apply_registered_pass "canonicalize" to %4 : (!transform.any_op) -> !transform.any_op
-    transform.yield 
-  }
-}
-)mlir";  
-
-/// Transform sequence for optimization (tiling) of CPU verifier functions.
-/// This sequence tiles the matmul and applies canonicalization.
-/// It ends before bufferization.
-constexpr const char *kOptimizationSequence = R"mlir(
-module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
-    // TODO: Get rid of unit dims (for batch mamtul)
-    %0 = transform.structured.match attributes {rock.matmul} in %arg0 : (!transform.any_op) -> !transform.any_op
-
-    %transformed, %loops:3 = transform.structured.fuse %0 tile_sizes [1, 256, 64] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-    %xxx, %loop = transform.structured.tile_using_for %transformed tile_sizes [0, 0, 0, 64] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-
-    %microkernel, %microkernel_loops:3 = transform.structured.tile_using_for %xxx tile_sizes [0, 8, 8, 1] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-
-    // TODO: We will probably need padding and/or packing here.
-
-    %1 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
-    %2 = transform.apply_registered_pass "canonicalize" to %1 : (!transform.any_op) -> !transform.any_op
-    %3 = transform.apply_registered_pass "lower-affine" to %2 : (!transform.any_op) -> !transform.any_op
-    transform.yield 
-  }
-}
-)mlir";
-
-constexpr const char *kVectorizationSequence = R"mlir(
-module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
-    %0 = transform.structured.match attributes {rock.matmul} in %arg0 : (!transform.any_op) -> !transform.any_op
-    %1 = transform.get_parent_op %0 {isolated_from_above} : (!transform.any_op) -> !transform.any_op
-    %2 = transform.structured.vectorize_children_and_apply_patterns %1 {vectorize_nd_extract, vectorize_padding} : (!transform.any_op) -> !transform.any_op
-    transform.yield
-  }
-}
-)mlir";
-
-/// Transform sequence for lowering CPU verifier functions to LLVM.
-/// This sequence starts with bufferization and lowers to LLVM dialect.
-constexpr const char *kLoweringSequence = R"mlir(
-module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.consumed}) {
-
-    %10 = transform.bufferization.one_shot_bufferize layout{IdentityLayoutMap} %arg0 {bufferize_function_boundaries = true} : (!transform.any_op) -> !transform.any_op
-
-    // Lowering to LLVM
-
-    %func = transform.structured.match ops{["func.func"]} in %10 : (!transform.any_op) -> !transform.any_op
-    // Bufferization is quite dumb, so it will probably insert unnecesary memref copies.
-    // We use CSE + canonicalize to remove them.
-    %3 = transform.apply_registered_pass "cse" to %func : (!transform.any_op) -> !transform.any_op
-    %4 = transform.apply_registered_pass "canonicalize" to %3 : (!transform.any_op) -> !transform.any_op
-
-    // Add these after bufferization to hoist allocations out of loops
-    %b10 = transform.apply_registered_pass "buffer-hoisting" to %4 : (!transform.any_op) -> !transform.any_op
-    %c10 = transform.apply_registered_pass "buffer-loop-hoisting" to %b10 : (!transform.any_op) -> !transform.any_op
-    // %d10 = transform.apply_registered_pass "buffer-deallocation" to %c10 : (!transform.any_op) -> !transform.any_op
-
-
-    // Now time to lower vectors.
-    %fff = transform.structured.match ops{["func.func"]} in %c10 : (!transform.any_op) -> !transform.any_op
-
-    // TODO: group these lower-level controls into various properly named vector
-    // lowering TD macros.
-    transform.apply_patterns to %fff {
-      transform.apply_patterns.vector.lower_contraction lowering_strategy = "outerproduct"
-      transform.apply_patterns.vector.lower_outerproduct
-      transform.apply_patterns.vector.transfer_permutation_patterns
-      // transform.apply_patterns.vector.reorder_and_expand_multi_reduction_dims lowering_strategy = "innerparallel"
-      // transform.apply_patterns.vector.multi_reduction_flattening lowering_strategy = "innerparallel"
-      // transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerparallel"
-      transform.apply_patterns.vector.split_transfer_full_partial split_transfer_strategy = "linalg-copy"
-      transform.apply_patterns.vector.transfer_to_scf max_transfer_rank = 4 full_unroll = true
-      transform.apply_patterns.vector.lower_transfer max_transfer_rank = 1
-      transform.apply_patterns.vector.lower_shape_cast
-      transform.apply_patterns.vector.lower_transpose lowering_strategy = "shuffle_1d"
-    } : !transform.any_op
-
-    // Now time to lower to LLVM
-    %f = transform.apply_registered_pass "convert-vector-to-scf" to %fff : (!transform.any_op) -> !transform.any_op
-    %f2 = transform.apply_registered_pass "convert-linalg-to-loops" to %f : (!transform.any_op) -> !transform.any_op
-
-    // IMPORTANT: convert-vector-to-scf creates new allocations for vector transfers.
-    // We must run buffer-loop-hoisting again to move these out of loops,
-    // otherwise we get stack overflow from allocas inside loops.
-    %fh1 = transform.apply_registered_pass "buffer-loop-hoisting" to %f2 : (!transform.any_op) -> !transform.any_op
-    %fh2 = transform.apply_registered_pass "promote-buffers-to-stack" to %fh1 : (!transform.any_op) -> !transform.any_op
-
-    %f3 = transform.apply_registered_pass "convert-scf-to-cf" to %fh2 : (!transform.any_op) -> !transform.any_op
-    %f4 = transform.apply_registered_pass "expand-strided-metadata" to %f3 : (!transform.any_op) -> !transform.any_op
-    %f5 = transform.apply_registered_pass "lower-affine" to %f4 : (!transform.any_op) -> !transform.any_op
-    %f5b = transform.apply_registered_pass "convert-vector-to-llvm" with options = {"reassociate-fp-reductions" = false} to %f5 : (!transform.any_op) -> !transform.any_op
-
-    transform.apply_conversion_patterns to %f5b {
-      transform.apply_conversion_patterns.dialect_to_llvm "math"
-      transform.apply_conversion_patterns.vector.vector_to_llvm
-      transform.apply_conversion_patterns.dialect_to_llvm "memref"
-      // transform.apply_conversion_patterns.func.func_to_llvm
-      transform.apply_conversion_patterns.dialect_to_llvm "index"
-      transform.apply_conversion_patterns.dialect_to_llvm "arith"
-      transform.apply_conversion_patterns.dialect_to_llvm "cf"
-    } with type_converter {
-      transform.apply_conversion_patterns.memref.memref_to_llvm_type_converter
-        {index_bitwidth = 64,
-        use_bare_ptr = false,
-        use_bare_ptr_memref_call_conv = false,
-        use_opaque_pointers = true}
-    } {
-      legal_dialects = ["llvm"],
-      partial_conversion
-    } : !transform.any_op
-
-    // Need to rematch here because:
-    //   1. applying reconcile-unrealized-casts on the whole module yields the
-    //      transform applies to transform, when called from a named sequence, at
-    //      this time.
-    //   2. apply_conversion patterns consumes the func but does not produce
-    //      a new llvm.func.
-    %f6 = transform.structured.match ops{["llvm.func"]} in %10
-      : (!transform.any_op) -> !transform.any_op
-    %f7 = transform.apply_registered_pass "reconcile-unrealized-casts" to %f6
-      : (!transform.any_op) -> !transform.any_op
-
-    transform.yield
-  }
-}
-)mlir";
-
 /// Check if a function has the cpu_verifier attribute
 static bool isCpuVerifierFunc(func::FuncOp func) {
   return func->hasAttr("rock.cpu_verifier");
@@ -241,31 +74,8 @@ struct CpuLowerVerifierPass
     // Call base class to include dialects from Passes.td
     CpuLowerVerifierPassBase::getDependentDialects(registry);
 
-    // Register transform dialect extensions needed for parsing the transform
-    // sequence. This must be done here (not in runOnOperation) to avoid
-    // thread-safety issues. The extensions provide ops like
-    // transform.structured.match, transform.bufferization.one_shot_bufferize.
-    linalg::registerTransformDialectExtension(registry);
-    bufferization::registerTransformDialectExtension(registry);
-    vector::registerTransformDialectExtension(registry);
-    func::registerTransformDialectExtension(registry);
-    memref::registerTransformDialectExtension(registry);
-
-    // Register ValueBoundsOpInterface for dialects, required by
-    // transform.structured.tile_using_for and other tiling transforms
-    affine::registerValueBoundsOpInterfaceExternalModels(registry);
-    arith::registerValueBoundsOpInterfaceExternalModels(registry);
-    scf::registerValueBoundsOpInterfaceExternalModels(registry);
-    tensor::registerValueBoundsOpInterfaceExternalModels(registry);
-
-    // Register BufferizableOpInterface and SubsetOpInterface for vector dialect,
-    // required by one_shot_bufferize when vector ops are present
-    vector::registerBufferizableOpInterfaceExternalModels(registry);
-    vector::registerSubsetOpInterfaceExternalModels(registry);
-
-    // Register AllocationOpInterface for memref dialect,
-    // required by buffer-hoisting and buffer-loop-hoisting passes
-    memref::registerAllocationOpInterfaceExternalModels(registry);
+    // Register all transform dialect extensions needed for the schedules
+    registerScheduleDialectExtensions(registry);
   }
 
   void runOnOperation() override;
@@ -275,18 +85,9 @@ private:
   void dumpBeforeTransform(ModuleOp targetModule, ModuleOp transformModule,
                            StringRef funcName, StringRef phaseName);
 
-  /// Apply a single transform sequence to the temporary module
-  LogicalResult applyTransformSequence(ModuleOp tempModule,
-                                       ModuleOp transformModule,
-                                       StringRef sequenceName);
-
   /// Lower a single CPU verifier function using the transform interpreter
   LogicalResult lowerSingleFunction(func::FuncOp func,
-                                    ModuleOp preModule,
-                                    ModuleOp optimizationModule,
-                                    ModuleOp postModule,
-                                    ModuleOp vectorizationModule,
-                                    ModuleOp loweringModule);
+                                    const TransformSchedules &schedules);
 
   /// Update call sites in the module to use memref arguments instead of tensors
   /// after the function has been bufferized with bufferize_function_boundaries=true
@@ -302,9 +103,9 @@ private:
 } // end anonymous namespace
 
 void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
-                                                   ModuleOp transformModule,
-                                                   StringRef funcName,
-                                                   StringRef phaseName) {
+                                               ModuleOp transformModule,
+                                               StringRef funcName,
+                                               StringRef phaseName) {
   // Create filename: /tmp/cpu_verifier_<funcname>_<phase>.mlir
   std::string filename =
       "/tmp/cpu_verifier_" + funcName.str() + "_" + phaseName.str() + ".mlir";
@@ -333,31 +134,8 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
   LLVM_DEBUG(llvm::dbgs() << "Dumped IR and transform to: " << filename << "\n");
 }
 
-LogicalResult
-CpuLowerVerifierPass::applyTransformSequence(ModuleOp tempModule,
-                                                 ModuleOp transformModule,
-                                                 StringRef sequenceName) {
-  // Find the transform entry point
-  transform::TransformOpInterface entryPoint =
-      transform::detail::findTransformEntryPoint(tempModule, transformModule);
-  if (!entryPoint) {
-    return tempModule.emitError("Could not find transform entry point for ")
-           << sequenceName;
-  }
-
-  // Apply the transform sequence to the temporary module
-  transform::TransformOptions options;
-  if (failed(transform::applyTransformNamedSequence(
-          tempModule, entryPoint, transformModule, options))) {
-    return tempModule.emitError("Transform interpreter failed for ")
-           << sequenceName;
-  }
-
-  return success();
-}
-
 void CpuLowerVerifierPass::unwrapNestedModule(OwningOpRef<ModuleOp> &module,
-                                                  StringRef funcName) {
+                                              StringRef funcName) {
   // Check if there's a nested module inside the outer module
   // This can happen when some transforms wrap their result in a new module
   ModuleOp nestedModule = nullptr;
@@ -401,7 +179,7 @@ void CpuLowerVerifierPass::unwrapNestedModule(OwningOpRef<ModuleOp> &module,
 }
 
 void CpuLowerVerifierPass::updateCallSites(ModuleOp module,
-                                               StringRef funcName) {
+                                           StringRef funcName) {
   // Find the lowered function to get its signature
   auto loweredFunc = module.lookupSymbol<func::FuncOp>(funcName);
   if (!loweredFunc) {
@@ -491,11 +269,7 @@ void CpuLowerVerifierPass::updateCallSites(ModuleOp module,
 
 LogicalResult
 CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
-                                              ModuleOp preModule,
-                                              ModuleOp optimizationModule,
-                                              ModuleOp postModule,
-                                              ModuleOp vectorizationModule,
-                                              ModuleOp loweringModule) {
+                                          const TransformSchedules &schedules) {
   MLIRContext *ctx = &getContext();
   Location loc = func.getLoc();
   StringRef funcName = func.getName();
@@ -517,16 +291,19 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
 
   // Pre-sequence (canonicalize + cse)
   LLVM_DEBUG(llvm::dbgs() << "    Applying pre sequence...\n");
-  dumpBeforeTransform(tempModule.get(), preModule, funcName, "pre_optimization");
-  if (failed(applyTransformSequence(tempModule.get(), preModule, "pre"))) {
+  dumpBeforeTransform(tempModule.get(), schedules.preModule.get(), funcName,
+                      "pre_optimization");
+  if (failed(applyTransformSequence(tempModule.get(), schedules.preModule.get(),
+                                    "pre"))) {
     return func.emitError("Pre transform failed before optimization");
   }
 
   // Optimization sequence (tiling)
   LLVM_DEBUG(llvm::dbgs() << "    Applying optimization sequence...\n");
-  dumpBeforeTransform(tempModule.get(), optimizationModule, funcName,
-                      "optimization");
-  if (failed(applyTransformSequence(tempModule.get(), optimizationModule,
+  dumpBeforeTransform(tempModule.get(), schedules.optimizationModule.get(),
+                      funcName, "optimization");
+  if (failed(applyTransformSequence(tempModule.get(),
+                                    schedules.optimizationModule.get(),
                                     "optimization"))) {
     return func.emitError("Optimization transform failed for function");
   }
@@ -536,8 +313,10 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
 
   // Post-sequence (tiling canonicalization + LICM + hoisting)
   LLVM_DEBUG(llvm::dbgs() << "    Applying post sequence...\n");
-  dumpBeforeTransform(tempModule.get(), postModule, funcName, "post_optimization");
-  if (failed(applyTransformSequence(tempModule.get(), postModule, "post"))) {
+  dumpBeforeTransform(tempModule.get(), schedules.postModule.get(), funcName,
+                      "post_optimization");
+  if (failed(applyTransformSequence(tempModule.get(),
+                                    schedules.postModule.get(), "post"))) {
     return func.emitError("Post transform failed after optimization");
   }
 
@@ -546,16 +325,19 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
 
   // Pre-sequence
   LLVM_DEBUG(llvm::dbgs() << "    Applying pre sequence...\n");
-  dumpBeforeTransform(tempModule.get(), preModule, funcName, "pre_vectorization");
-  if (failed(applyTransformSequence(tempModule.get(), preModule, "pre"))) {
+  dumpBeforeTransform(tempModule.get(), schedules.preModule.get(), funcName,
+                      "pre_vectorization");
+  if (failed(applyTransformSequence(tempModule.get(), schedules.preModule.get(),
+                                    "pre"))) {
     return func.emitError("Pre transform failed before vectorization");
   }
 
   // Vectorization sequence
   LLVM_DEBUG(llvm::dbgs() << "    Applying vectorization sequence...\n");
-  dumpBeforeTransform(tempModule.get(), vectorizationModule, funcName,
-                      "vectorization");
-  if (failed(applyTransformSequence(tempModule.get(), vectorizationModule,
+  dumpBeforeTransform(tempModule.get(), schedules.vectorizationModule.get(),
+                      funcName, "vectorization");
+  if (failed(applyTransformSequence(tempModule.get(),
+                                    schedules.vectorizationModule.get(),
                                     "vectorization"))) {
     return func.emitError("Vectorization transform failed for function");
   }
@@ -565,8 +347,10 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
 
   // Post-sequence
   LLVM_DEBUG(llvm::dbgs() << "    Applying post sequence...\n");
-  dumpBeforeTransform(tempModule.get(), postModule, funcName, "post_vectorization");
-  if (failed(applyTransformSequence(tempModule.get(), postModule, "post"))) {
+  dumpBeforeTransform(tempModule.get(), schedules.postModule.get(), funcName,
+                      "post_vectorization");
+  if (failed(applyTransformSequence(tempModule.get(),
+                                    schedules.postModule.get(), "post"))) {
     return func.emitError("Post transform failed after vectorization");
   }
 
@@ -575,23 +359,29 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
 
   // Pre-sequence
   LLVM_DEBUG(llvm::dbgs() << "    Applying pre sequence...\n");
-  dumpBeforeTransform(tempModule.get(), preModule, funcName, "pre_lowering");
-  if (failed(applyTransformSequence(tempModule.get(), preModule, "pre"))) {
+  dumpBeforeTransform(tempModule.get(), schedules.preModule.get(), funcName,
+                      "pre_lowering");
+  if (failed(applyTransformSequence(tempModule.get(), schedules.preModule.get(),
+                                    "pre"))) {
     return func.emitError("Pre transform failed before lowering");
   }
 
   // Lowering sequence (bufferization + LLVM lowering)
   LLVM_DEBUG(llvm::dbgs() << "    Applying lowering sequence...\n");
-  dumpBeforeTransform(tempModule.get(), loweringModule, funcName, "lowering");
-  if (failed(applyTransformSequence(tempModule.get(), loweringModule,
+  dumpBeforeTransform(tempModule.get(), schedules.loweringModule.get(),
+                      funcName, "lowering");
+  if (failed(applyTransformSequence(tempModule.get(),
+                                    schedules.loweringModule.get(),
                                     "lowering"))) {
     return func.emitError("Lowering transform failed for function");
   }
 
   // Post-sequence after lowering
   LLVM_DEBUG(llvm::dbgs() << "    Applying post sequence...\n");
-  dumpBeforeTransform(tempModule.get(), postModule, funcName, "post_lowering");
-  if (failed(applyTransformSequence(tempModule.get(), postModule, "post"))) {
+  dumpBeforeTransform(tempModule.get(), schedules.postModule.get(), funcName,
+                      "post_lowering");
+  if (failed(applyTransformSequence(tempModule.get(),
+                                    schedules.postModule.get(), "post"))) {
     return func.emitError("Post transform failed after lowering");
   }
 
@@ -679,61 +469,17 @@ void CpuLowerVerifierPass::runOnOperation() {
   LLVM_DEBUG(llvm::dbgs() << "Found " << cpuVerifierFuncs.size()
                           << " CPU verifier function(s)\n");
 
-  // Parse all transform modules
-  // The transform dialect extensions are registered in getDependentDialects()
-
-  // Pre-sequence (canonicalize + cse)
-  OwningOpRef<ModuleOp> preModule =
-      parseSourceString<ModuleOp>(kPreSequence, ctx);
-  if (!preModule) {
-    emitError(UnknownLoc::get(ctx))
-        << "Failed to parse pre transform sequence for CPU verifier";
+  // Create all transform schedules
+  auto schedulesOrErr = createTransformSchedules(ctx);
+  if (failed(schedulesOrErr)) {
     return signalPassFailure();
   }
-
-  // Post-sequence (tiling canonicalization + LICM + hoisting)
-  OwningOpRef<ModuleOp> postModule =
-      parseSourceString<ModuleOp>(kPostSequence, ctx);
-  if (!postModule) {
-    emitError(UnknownLoc::get(ctx))
-        << "Failed to parse post transform sequence for CPU verifier";
-    return signalPassFailure();
-  }
-
-  // Optimization transform module (tiling)
-  OwningOpRef<ModuleOp> optimizationModule =
-      parseSourceString<ModuleOp>(kOptimizationSequence, ctx);
-  if (!optimizationModule) {
-    emitError(UnknownLoc::get(ctx))
-        << "Failed to parse optimization transform sequence for CPU verifier";
-    return signalPassFailure();
-  }
-
-  // Vectorization transform module
-  OwningOpRef<ModuleOp> vectorizationModule =
-      parseSourceString<ModuleOp>(kVectorizationSequence, ctx);
-  if (!vectorizationModule) {
-    emitError(UnknownLoc::get(ctx))
-        << "Failed to parse vectorization transform sequence for CPU verifier";
-    return signalPassFailure();
-  }
-
-  // Lowering transform module (bufferization + LLVM)
-  OwningOpRef<ModuleOp> loweringModule =
-      parseSourceString<ModuleOp>(kLoweringSequence, ctx);
-  if (!loweringModule) {
-    emitError(UnknownLoc::get(ctx))
-        << "Failed to parse lowering transform sequence for CPU verifier";
-    return signalPassFailure();
-  }
+  TransformSchedules &schedules = *schedulesOrErr;
 
   // Lower each function in isolation using the transform interpreter
   // Pipeline: Pre → Optimization → Post → Pre → Vectorization → Post → Pre → Lowering → Post
   for (func::FuncOp func : cpuVerifierFuncs) {
-    if (failed(lowerSingleFunction(func, preModule.get(),
-                                   optimizationModule.get(), postModule.get(),
-                                   vectorizationModule.get(),
-                                   loweringModule.get()))) {
+    if (failed(lowerSingleFunction(func, schedules))) {
       return signalPassFailure();
     }
   }
