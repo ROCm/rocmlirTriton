@@ -79,8 +79,8 @@ defvar GemmOutputTypes = [F32, F16, BF16, I32, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M
 defvar GemmAccumulatorTypes = [F32, F16, BF16, I32];
 
 def Rock_ConvOp : Rock_ConvOpBase<"conv"> {
-  let arguments = !con((ins TensorOrMemRefOf<GemmInputTypes>:$filter,
-                           TensorOrMemRefOf<GemmInputTypes>:$input),
+  let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$filter,
+                           RankedTensorOf<GemmInputTypes>:$input),
                        commonConvAttrs);
   let summary = "N-D convolution forward";
   let description = [{
@@ -95,8 +95,8 @@ def Rock_ConvOp : Rock_ConvOpBase<"conv"> {
 
 def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
 {
-  let arguments = !con((ins TensorOrMemRefOf<GemmInputTypes>:$filter,
-                           TensorOrMemRefOf<GemmInputTypes>:$gradient),
+  let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$filter,
+                           RankedTensorOf<GemmInputTypes>:$gradient),
                        commonConvAttrs);
   let summary = "N-D convolution backward data";
   let description = [{
@@ -118,10 +118,10 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
 
 def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
 {
-  let arguments = !con((ins TensorOrMemRefOf<GemmInputTypes>:$input,
-                           TensorOrMemRefOf<GemmInputTypes>:$gradient),
+  let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$input,
+                           RankedTensorOf<GemmInputTypes>:$gradient),
                        commonConvAttrs,
-                       (ins Optional<TensorOrMemRefOf<[F32]>>:$workspace,
+                       (ins Optional<RankedTensorOf<[F32]>>:$workspace,
                            OptionalAttr<IndexAttr>:$kBlocks));
   let summary = "N-D convolution backward weight";
   let description = [{
