@@ -56,10 +56,13 @@ struct TransformSchedules {
 FailureOr<TransformSchedules> createTransformSchedules(MLIRContext *ctx);
 
 /// Apply a transform sequence module to a target module.
+/// After applying the transform, any nested module structure is automatically
+/// unwrapped (some transforms wrap their result in an additional module).
 /// Returns failure if the transform interpreter fails.
-LogicalResult applyTransformSequence(ModuleOp targetModule,
+LogicalResult applyTransformSequence(OwningOpRef<ModuleOp> &targetModule,
                                      ModuleOp transformModule,
-                                     StringRef sequenceName);
+                                     StringRef sequenceName,
+                                     StringRef funcName);
 
 /// Register all transform dialect extensions needed for the schedules.
 /// This should be called from getDependentDialects().

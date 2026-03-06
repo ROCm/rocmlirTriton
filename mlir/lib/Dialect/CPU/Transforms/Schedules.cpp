@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Bufferization/TransformOps/BufferizationTransformOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/TransformOps/FuncTransformOps.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/MemRef/TransformOps/MemRefTransformOps.h"
@@ -40,6 +41,7 @@
 #include "mlir/Dialect/Vector/TransformOps/VectorTransformOps.h"
 #include "mlir/Dialect/Vector/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Vector/Transforms/SubsetOpInterfaceImpl.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/Debug.h"
@@ -296,24 +298,75 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
   return schedules;
 }
 
-LogicalResult cpu::applyTransformSequence(ModuleOp targetModule,
+/// Unwrap nested module structure if present.
+/// Some transforms may wrap their result in an additional module, which would
+/// cause subsequent transforms to not process the inner function properly.
+static void unwrapNestedModule(OwningOpRef<ModuleOp> &module,
+                               StringRef funcName) {
+  // Check if there's a nested module inside the outer module
+  ModuleOp nestedModule = nullptr;
+  for (Operation &op : module->getBody()->getOperations()) {
+    if (auto nested = dyn_cast<ModuleOp>(&op)) {
+      nestedModule = nested;
+      break;
+    }
+  }
+
+  if (!nestedModule) {
+    return; // No nested module, nothing to do
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "  Unwrapping nested module structure\n");
+
+  // Find the function inside the nested module
+  func::FuncOp funcOp = nullptr;
+  nestedModule.walk([&](func::FuncOp f) {
+    if (f.getName() == funcName)
+      funcOp = f;
+  });
+
+  if (!funcOp) {
+    // Function not found in nested module, leave as-is
+    return;
+  }
+
+  // Create a new clean module with just the function
+  MLIRContext *ctx = module->getContext();
+  Location loc = module->getLoc();
+  OwningOpRef<ModuleOp> newModule = ModuleOp::create(loc);
+
+  // Clone the function into the new module
+  OpBuilder builder(ctx);
+  builder.setInsertionPointToStart(newModule->getBody());
+  builder.clone(*funcOp.getOperation());
+
+  // Replace the old module with the new one
+  module = std::move(newModule);
+}
+
+LogicalResult cpu::applyTransformSequence(OwningOpRef<ModuleOp> &targetModule,
                                           ModuleOp transformModule,
-                                          StringRef sequenceName) {
+                                          StringRef sequenceName,
+                                          StringRef funcName) {
   // Find the transform entry point
   transform::TransformOpInterface entryPoint =
-      transform::detail::findTransformEntryPoint(targetModule, transformModule);
+      transform::detail::findTransformEntryPoint(targetModule.get(),
+                                                 transformModule);
   if (!entryPoint) {
-    return targetModule.emitError("Could not find transform entry point for ")
+    return targetModule->emitError("Could not find transform entry point for ")
            << sequenceName;
   }
 
   // Apply the transform sequence to the target module
   transform::TransformOptions options;
-  if (failed(transform::applyTransformNamedSequence(targetModule, entryPoint,
-                                                    transformModule, options))) {
-    return targetModule.emitError("Transform interpreter failed for ")
+  if (failed(transform::applyTransformNamedSequence(
+          targetModule.get(), entryPoint, transformModule, options))) {
+    return targetModule->emitError("Transform interpreter failed for ")
            << sequenceName;
   }
+
+  // Unwrap any nested module structure created by the transform
+  unwrapNestedModule(targetModule, funcName);
 
   return success();
 }
