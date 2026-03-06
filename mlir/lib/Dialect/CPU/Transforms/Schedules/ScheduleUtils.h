@@ -25,12 +25,21 @@
 
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/OwningOpRef.h"
+
+#include <functional>
 
 namespace mlir {
 class MLIRContext;
 
 namespace cpu {
+
+/// Callback type for building the body of a transform sequence.
+/// The callback receives the ImplicitLocOpBuilder and the block argument
+/// (the root handle).
+using TransformBodyBuilder =
+    std::function<void(ImplicitLocOpBuilder &, BlockArgument)>;
 
 /// Create a module with the transform.with_named_sequence attribute.
 /// This is the standard setup for transform schedule modules.
@@ -38,6 +47,12 @@ OwningOpRef<ModuleOp> createTransformModule(MLIRContext *ctx);
 
 /// Get the !transform.any_op type, commonly used for transform handles.
 transform::AnyOpType getAnyOpType(MLIRContext *ctx);
+
+/// Create a complete transform module with a named sequence called
+/// "__transform_main". The bodyBuilder callback is invoked to populate
+/// the sequence body. YieldOp is automatically added at the end.
+OwningOpRef<ModuleOp> buildTransformModule(MLIRContext *ctx,
+                                           TransformBodyBuilder bodyBuilder);
 
 } // namespace cpu
 } // namespace mlir

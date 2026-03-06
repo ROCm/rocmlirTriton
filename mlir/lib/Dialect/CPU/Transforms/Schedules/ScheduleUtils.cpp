@@ -23,6 +23,7 @@
 #include "ScheduleUtils.h"
 
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
 using namespace mlir;
@@ -38,4 +39,27 @@ OwningOpRef<ModuleOp> cpu::createTransformModule(MLIRContext *ctx) {
 
 transform::AnyOpType cpu::getAnyOpType(MLIRContext *ctx) {
   return transform::AnyOpType::get(ctx);
+}
+
+OwningOpRef<ModuleOp> cpu::buildTransformModule(MLIRContext *ctx,
+                                                TransformBodyBuilder bodyBuilder) {
+  OwningOpRef<ModuleOp> module = createTransformModule(ctx);
+  auto loc = UnknownLoc::get(ctx);
+  ImplicitLocOpBuilder builder(loc, ctx);
+  builder.setInsertionPointToStart(module->getBody());
+
+  auto anyOpType = getAnyOpType(ctx);
+
+  builder.create<transform::NamedSequenceOp>(
+      "__transform_main",
+      /*rootType=*/anyOpType,
+      /*resultTypes=*/TypeRange{},
+      /*bodyBuilder=*/
+      [&](OpBuilder &b, Location loc, BlockArgument arg) {
+        ImplicitLocOpBuilder ib(loc, b);
+        bodyBuilder(ib, arg);
+        ib.create<transform::YieldOp>();
+      });
+
+  return module;
 }
