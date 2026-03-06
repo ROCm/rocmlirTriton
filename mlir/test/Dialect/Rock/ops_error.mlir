@@ -102,7 +102,7 @@
 
 // Test case: Matrix A with invalid rank (rank 1)
 func.func @gemm_matrixA_wrong_rank(%a: tensor<64xf32>, %b: tensor<128x32xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  // expected-error @+1 {{Matrix A must be a rank 2 or rank 3 tensor representing [G,] M, K}}
+  // expected-error @+1 {{Matrix A must be a rank 2 or rank 3 tensor representing [G,] D, K}}
   rock.gemm %a * %b
     : tensor<64xf32> * tensor<128x32xf32> -> tensor<64x32xf32>
   func.return
@@ -110,7 +110,7 @@ func.func @gemm_matrixA_wrong_rank(%a: tensor<64xf32>, %b: tensor<128x32xf32>) a
 
 // Test case: Matrix A with invalid rank (rank 4)
 func.func @gemm_matrixA_rank4(%a: tensor<1x2x64x128xf32>, %b: tensor<128x32xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  // expected-error @+1 {{Matrix A must be a rank 2 or rank 3 tensor representing [G,] M, K}}
+  // expected-error @+1 {{Matrix A must be a rank 2 or rank 3 tensor representing [G,] D, K}}
   rock.gemm %a * %b
     : tensor<1x2x64x128xf32> * tensor<128x32xf32> -> tensor<64x32xf32>
   func.return
@@ -118,7 +118,7 @@ func.func @gemm_matrixA_rank4(%a: tensor<1x2x64x128xf32>, %b: tensor<128x32xf32>
 
 // Test case: Matrix B with invalid rank (rank 1)
 func.func @gemm_matrixB_wrong_rank(%a: tensor<64x128xf32>, %b: tensor<32xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  // expected-error @+1 {{Matrix B must be a rank 2 or rank 3 tensor representing [G,] M, K}}
+  // expected-error @+1 {{Matrix B must be a rank 2 or rank 3 tensor representing [G,] D, K}}
   rock.gemm %a * %b
     : tensor<64x128xf32> * tensor<32xf32> -> tensor<64x32xf32>
   func.return
@@ -126,7 +126,7 @@ func.func @gemm_matrixB_wrong_rank(%a: tensor<64x128xf32>, %b: tensor<32xf32>) a
 
 // Test case: Matrix B with invalid rank (rank 4)
 func.func @gemm_matrixB_rank4(%a: tensor<64x128xf32>, %b: tensor<1x2x128x32xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  // expected-error @+1 {{Matrix B must be a rank 2 or rank 3 tensor representing [G,] M, K}}
+  // expected-error @+1 {{Matrix B must be a rank 2 or rank 3 tensor representing [G,] D, K}}
   rock.gemm %a * %b
     : tensor<64x128xf32> * tensor<1x2x128x32xf32> -> tensor<64x32xf32>
   func.return
@@ -134,7 +134,7 @@ func.func @gemm_matrixB_rank4(%a: tensor<64x128xf32>, %b: tensor<1x2x128x32xf32>
 
 // Test case: Matrix C with invalid rank (rank 1)
 func.func @gemm_matrixC_wrong_rank(%a: tensor<64x128xf32>, %b: tensor<128x32xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  // expected-error @+1 {{op Result must be a rank 2 or rank 3 tensor representing [G,] M, K}}
+  // expected-error @+1 {{op Result must be a rank 2 or rank 3 tensor representing [G,] D, K}}
   rock.gemm %a * %b
     : tensor<64x128xf32> * tensor<128x32xf32> -> tensor<64xf32>
   func.return
@@ -142,7 +142,7 @@ func.func @gemm_matrixC_wrong_rank(%a: tensor<64x128xf32>, %b: tensor<128x32xf32
 
 // Test case: Matrix C with invalid rank (rank 4)
 func.func @gemm_matrixC_rank4(%a: tensor<64x128xf32>, %b: tensor<128x32xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  // expected-error @+1 {{op Result must be a rank 2 or rank 3 tensor representing [G,] M, K}}
+  // expected-error @+1 {{op Result must be a rank 2 or rank 3 tensor representing [G,] D, K}}
   rock.gemm %a * %b
     : tensor<64x128xf32> * tensor<128x32xf32> -> tensor<1x2x64x32xf32>
   func.return
@@ -164,152 +164,149 @@ func.func @gemm_mixed_ranks2(%a: tensor<64x128xf32>, %b: tensor<2x128x32xf32>) a
   func.return
 }
 
-// TODO(roctriton): Scaled gemm tests need rework
+// Test case: missing quantBlockSize
+func.func @gemm_scaleA_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
+                                  %scaleA: tensor<64x4xf8E8M0FNU>,
+                                  %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{quantBlockSize not defined}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
 // Test case: ScaleA with invalid rank (rank 1)
 func.func @gemm_scaleA_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
-                                  %scaleA: tensor<128xf8E8M0FNU>,
-                                  %scaleB: tensor<128x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{scaleA must be a rank 2 or rank 3 tensor representing [G,] M, K}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB
-    : tensor<64x128xf4E2M1FN> scaled by tensor<128xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<128x32xf8E8M0FNU> -> tensor<64x32xf32>
+                                  %scaleA: tensor<64xf8E8M0FNU>,
+                                  %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{scaleA must be a rank 2 or rank 3 tensor representing [G,] D, K}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
   func.return
 }
 
 // Test case: ScaleA with invalid rank (rank 4)
 func.func @gemm_scaleA_rank4(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
                              %scaleA: tensor<1x2x64x128xf8E8M0FNU>,
-                             %scaleB: tensor<128x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{scaleA must be a rank 2 or rank 3 tensor representing [G,] M, K}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB
-    : tensor<64x128xf4E2M1FN> scaled by tensor<1x2x64x128xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<128x32xf8E8M0FNU> -> tensor<64x32xf32>
+                             %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{scaleA must be a rank 2 or rank 3 tensor representing [G,] D, K}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<1x2x64x128xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
   func.return
 }
 
 // Test case: ScaleB with invalid rank (rank 1)
 func.func @gemm_scaleB_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
-                                  %scaleA: tensor<64x128xf8E8M0FNU>,
+                                  %scaleA: tensor<64x4xf8E8M0FNU>,
                                   %scaleB: tensor<32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{scaleB must be a rank 2 or rank 3 tensor representing [G,] M, K}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB
-    : tensor<64x128xf4E2M1FN> scaled by tensor<64x128xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32xf8E8M0FNU> -> tensor<64x32xf32>
+  // expected-error @+1 {{scaleB must be a rank 2 or rank 3 tensor representing [G,] D, K}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32xf8E8M0FNU> -> tensor<64x32xf32>
   func.return
 }
 
 // Test case: ScaleB with invalid rank (rank 4)
 func.func @gemm_scaleB_rank4(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
-                             %scaleA: tensor<64x128xf8E8M0FNU>,
+                             %scaleA: tensor<64x4xf8E8M0FNU>,
                              %scaleB: tensor<1x2x128x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{scaleB must be a rank 2 or rank 3 tensor representing [G,] M, K}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB
-    : tensor<64x128xf4E2M1FN> scaled by tensor<64x128xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<1x2x128x32xf8E8M0FNU> -> tensor<64x32xf32>
+  // expected-error @+1 {{scaleB must be a rank 2 or rank 3 tensor representing [G,] D, K}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<1x2x128x32xf8E8M0FNU> -> tensor<64x32xf32>
   func.return
 }
 
 func.func @gemm_scale_presence_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA: tensor<2x64x128xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %scaleA: tensor<2x64x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{both scaleA and scaleB must be provided or neither}}
-  rock.gemm %a scaled by %scaleA * %b
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x128xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> -> tensor<2x64x32xf32>
-  func.return
-}
-
-func.func @gemm_scaleA_type_invalid(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA_bad: tensor<2x64x128xf8E4M3FN>, %scaleB: tensor<2x128x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{'rock.gemm' op operand #2 must be Constraints the type to be either a Tensor or MemRef of certain types of elements., but got 'tensor<2x64x128xf8E4M3FN>'}}
-  rock.gemm %a scaled by %scaleA_bad * %b scaled by %scaleB
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x128xf8E4M3FN> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x128x32xf8E8M0FNU> -> tensor<2x64x32xf32>
+  rock.gemm %a scaled by %scaleA * %b {quantBlockSize = 32 : i64}
+  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x4xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> -> tensor<2x64x32xf32>
   func.return
 }
 
 func.func @gemm_scaleA_k_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA_kbad: tensor<2x64x127xf8E8M0FNU>, %scaleB: tensor<2x128x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %scaleA_kbad: tensor<2x64x3xf8E8M0FNU>, %scaleB: tensor<2x32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{scaleA's K dimension must match matrix A's K dimension}}
-  rock.gemm %a scaled by %scaleA_kbad * %b scaled by %scaleB
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x127xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x128x32xf8E8M0FNU> -> tensor<2x64x32xf32>
+  rock.gemm %a scaled by %scaleA_kbad * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x3xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x32x4xf8E8M0FNU> -> tensor<2x64x32xf32>
   func.return
 }
 
 func.func @gemm_scaleA_m_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA_mbad: tensor<2x63x128xf8E8M0FNU>, %scaleB: tensor<2x128x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %scaleA_mbad: tensor<2x63x4xf8E8M0FNU>, %scaleB: tensor<2x32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{scaleA's M dimension must match matrix A's M dimension}}
-  rock.gemm %a scaled by %scaleA_mbad * %b scaled by %scaleB
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x63x128xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x128x32xf8E8M0FNU> -> tensor<2x64x32xf32>
+  rock.gemm %a scaled by %scaleA_mbad * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x63x4xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x32x4xf8E8M0FNU> -> tensor<2x64x32xf32>
   func.return
 }
 
 func.func @gemm_scaleA_g_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA_gbad: tensor<3x64x128xf8E8M0FNU>, %scaleB: tensor<2x128x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %scaleA_gbad: tensor<3x64x4xf8E8M0FNU>, %scaleB: tensor<2x32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{scaleA's G dimension must match matrix A's G dimension}}
-  rock.gemm %a scaled by %scaleA_gbad * %b scaled by %scaleB
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<3x64x128xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x128x32xf8E8M0FNU> -> tensor<2x64x32xf32>
+  rock.gemm %a scaled by %scaleA_gbad * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+  : tensor<2x64x128xf4E2M1FN> scaled by tensor<3x64x4xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x32x4xf8E8M0FNU> -> tensor<2x64x32xf32>
   func.return
 }
 
 func.func @gemm_scaleB_k_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA: tensor<2x64x128xf8E8M0FNU>, %scaleB_kbad: tensor<2x127x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %scaleA: tensor<2x64x4xf8E8M0FNU>, %scaleB_kbad: tensor<2x32x3xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{scaleB's K dimension must match matrix B's K dimension}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_kbad
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x128xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x127x32xf8E8M0FNU> -> tensor<2x64x32xf32>
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_kbad {quantBlockSize = 32 : i64}
+  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x4xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x32x3xf8E8M0FNU> -> tensor<2x64x32xf32>
   func.return
 }
 
 func.func @gemm_scaleB_n_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA: tensor<2x64x128xf8E8M0FNU>, %scaleB_nbad: tensor<2x128x31xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %scaleA: tensor<2x64x4xf8E8M0FNU>, %scaleB_nbad: tensor<2x31x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{scaleB's N dimension must match matrix B's N dimension}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_nbad
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x128xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x128x31xf8E8M0FNU> -> tensor<2x64x32xf32>
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_nbad {quantBlockSize = 32 : i64}
+  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x4xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x31x4xf8E8M0FNU> -> tensor<2x64x32xf32>
   func.return
 }
 
 func.func @gemm_scaleB_g_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA: tensor<2x64x128xf8E8M0FNU>, %scaleB_gbad: tensor<3x128x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %scaleA: tensor<2x64x4xf8E8M0FNU>, %scaleB_gbad: tensor<3x32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{scaleB's G dimension must match matrix B's G dimension}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_gbad
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x128xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<3x128x32xf8E8M0FNU> -> tensor<2x64x32xf32>
-  func.return
-}
-
-func.func @gemm_scaleB_type_invalid(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA : tensor<2x64x128xf8E8M0FNU>, %scaleB_bad : tensor<2x128x32xf8E4M3FN>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{'rock.gemm' op operand #3 must be Constraints the type to be either a Tensor or MemRef of certain types of elements., but got 'tensor<2x128x32xf8E4M3FN>'}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_bad
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x128xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x128x32xf8E4M3FN> -> tensor<2x64x32xf32>
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_gbad {quantBlockSize = 32 : i64}
+  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x4xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<3x32x4xf8E8M0FNU> -> tensor<2x64x32xf32>
   func.return
 }
 
 func.func @gemm_scaleA_transposed_k_mismatch(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
-  %scaleA_tbad: tensor<127x64xf8E8M0FNU>, %scaleB: tensor<128x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %scaleA_tbad: tensor<3x64xf8E8M0FNU>, %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{scaleA's K dimension must match matrix A's K dimension}}
-  rock.gemm %a scaled by tr %scaleA_tbad * %b scaled by %scaleB
-  : tensor<64x128xf4E2M1FN> scaled by tensor<127x64xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<128x32xf8E8M0FNU> -> tensor<64x32xf32>
+  rock.gemm %a scaled by tr %scaleA_tbad * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+  : tensor<64x128xf4E2M1FN> scaled by tensor<3x64xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
   func.return
 }
 
 func.func @gemm_scaleB_transposed_k_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: tensor<2x128x32xf4E2M1FN>,
-  %scaleA: tensor<2x64x128xf8E8M0FNU>, %scaleB_kbad: tensor<2x32x127xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %scaleA: tensor<2x64x4xf8E8M0FNU>, %scaleB_kbad: tensor<2x3x32xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{scaleB's K dimension must match matrix B's K dimension}}
-  rock.gemm %a scaled by %scaleA * %b scaled by tr %scaleB_kbad
-  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x128xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x32x127xf8E8M0FNU> -> tensor<2x64x32xf32>
+  rock.gemm %a scaled by %scaleA * %b scaled by tr %scaleB_kbad {quantBlockSize = 32 : i64}
+  : tensor<2x64x128xf4E2M1FN> scaled by tensor<2x64x4xf8E8M0FNU> * tensor<2x128x32xf4E2M1FN> scaled by tensor<2x3x32xf8E8M0FNU> -> tensor<2x64x32xf32>
   func.return
 }
 
-func.func @gemm_scaled_inputs_not_float4e2m1(%a: tensor<2x64x128xf16>,
-                                            %b: tensor<2x128x32xf16>,
-                                            %scaleA: tensor<2x64x128xf8E8M0FNU>,
-                                            %scaleB: tensor<2x128x32xf8E8M0FNU>)
-    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{Scaled GEMMs are only supported for Float4E2M1FN input type}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB
-    : tensor<2x64x128xf16> scaled by tensor<2x64x128xf8E8M0FNU> *
-      tensor<2x128x32xf16> scaled by tensor<2x128x32xf8E8M0FNU> -> tensor<2x64x32xf32>
+// scaleA type must be f8E8M0FNU
+func.func @gemm_scaleA_type_invalid(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
+  %scaleA_bad: tensor<64x4xf8E4M3FN>, %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{'rock.gemm' op operand #2 must be Constraints the type to be either a Tensor or MemRef of certain types of elements., but got 'tensor<64x4xf8E4M3FN>'}}
+  rock.gemm %a scaled by %scaleA_bad * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+  : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
+// scaleB type must be f8E8M0FNU
+func.func @gemm_scaleB_type_invalid(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
+  %scaleA: tensor<64x4xf8E8M0FNU>, %scaleB_bad: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{'rock.gemm' op operand #3 must be Constraints the type to be either a Tensor or MemRef of certain types of elements., but got 'tensor<32x4xf8E4M3FN>'}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_bad {quantBlockSize = 32 : i64}
+  : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
   func.return
 }
 
 // -----------------------------------------------------------------------------
 // Gridwise gemm tests 
 // -----------------------------------------------------------------------------
-
-// TODO(roctriton): Scaled gemm tests need rework
 #common_params = #rock.gemm_params<
   kPerBlock = 4,
   kpack = 1,
@@ -345,74 +342,56 @@ func.func @gridwise_gemm_accel_scale_presence_b_only(%A: tensor<1x4x8xf4E2M1FN>,
   func.return
 }
 
-// scaleA type invalid
-func.func @gridwise_gemm_accel_scaleA_type_invalid(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad: tensor<1x4x8xf8E4M3FN>, %scaleB: tensor<1x4x16xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{'rock.gridwise_gemm' op operand #2 must be 3D tensor of f8E8M0FNU type values, but got 'tensor<1x4x8xf8E4M3FN>'}}
-  %result = rock.gridwise_gemm(%A, %B, %scaleA_bad, %scaleB) {
-    blockSize = 64 : i32,
-    gridSize = 1 : i32,
-    params = #common_params
-  } : tensor<1x4x8xf4E2M1FN>, tensor<1x4x16xf4E2M1FN>, tensor<1x4x8xf8E4M3FN>, tensor<1x4x16xf8E8M0FNU> -> tensor<1x8x16xf32>
-  %stored = rock.store %result to %C by set : tensor<1x8x16xf32> -> tensor<1x8x16xf32> to tensor<1x8x16xf32>
-  func.return
-}
-
 // scaleA dims mismatch
-func.func @gridwise_gemm_accel_scaleA_dims_mismatch(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x4x7xf8E8M0FNU>, %scaleB: tensor<1x4x16xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+func.func @gridwise_gemm_accel_scaleA_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x7xf8E8M0FNU>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{ScaleA shape must match matrixA shape.}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA_bad_dims, %scaleB) {
     blockSize = 64 : i32,
     gridSize = 1 : i32,
+    quantBlockSize = 32 : i64,
     params = #common_params
-  } : tensor<1x4x8xf4E2M1FN>, tensor<1x4x16xf4E2M1FN>, tensor<1x4x7xf8E8M0FNU>, tensor<1x4x16xf8E8M0FNU> -> tensor<1x8x16xf32>
-  %stored = rock.store %result to %C by set : tensor<1x8x16xf32> -> tensor<1x8x16xf32> to tensor<1x8x16xf32>
-  func.return
-}
-
-// scaleA input type invalid
-func.func @gridwise_gemm_accel_scaleA_input_type_invalid(%A: tensor<1x4x8xf16>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA: tensor<1x4x8xf8E8M0FNU>, %scaleB: tensor<1x4x16xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{For the scaled GEMMs, matrixA must be of type Float4E2M1FNType.}}
-  %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB) {
-    blockSize = 64 : i32,
-    gridSize = 1 : i32,
-    params = #common_params
-  } : tensor<1x4x8xf16>, tensor<1x4x16xf4E2M1FN>, tensor<1x4x8xf8E8M0FNU>, tensor<1x4x16xf8E8M0FNU> -> tensor<1x8x16xf32>
-  %stored = rock.store %result to %C by set : tensor<1x8x16xf32> -> tensor<1x8x16xf32> to tensor<1x8x16xf32>
-  func.return
-}
-
-// scaleB type invalid
-func.func @gridwise_gemm_accel_scaleB_type_invalid(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA: tensor<1x4x8xf8E8M0FNU>, %scaleB_bad: tensor<1x4x16xf8E4M3FN>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{'rock.gridwise_gemm' op operand #3 must be 3D tensor of f8E8M0FNU type values, but got 'tensor<1x4x16xf8E4M3FN>'}}
-  %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB_bad) {
-    blockSize = 64 : i32,
-    gridSize = 1 : i32,
-    params = #common_params
-  } : tensor<1x4x8xf4E2M1FN>, tensor<1x4x16xf4E2M1FN>, tensor<1x4x8xf8E8M0FNU>, tensor<1x4x16xf8E4M3FN> -> tensor<1x8x16xf32>
+  } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x7xf8E8M0FNU>, tensor<1x16x1xf8E8M0FNU> -> tensor<1x8x16xf32>
   %stored = rock.store %result to %C by set : tensor<1x8x16xf32> -> tensor<1x8x16xf32> to tensor<1x8x16xf32>
   func.return
 }
 
 // scaleB dims mismatch
-func.func @gridwise_gemm_accel_scaleB_dims_mismatch(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA: tensor<1x4x8xf8E8M0FNU>, %scaleB_bad_dims: tensor<1x4x15xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+func.func @gridwise_gemm_accel_scaleB_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x1xf8E8M0FNU>, %scaleB: tensor<1x16x2xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{ScaleB shape must match matrixB shape.}}
-  %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB_bad_dims) {
+  %result = rock.gridwise_gemm(%A, %B, %scaleA_bad_dims, %scaleB) {
     blockSize = 64 : i32,
     gridSize = 1 : i32,
+    quantBlockSize = 32 : i64,
     params = #common_params
-  } : tensor<1x4x8xf4E2M1FN>, tensor<1x4x16xf4E2M1FN>, tensor<1x4x8xf8E8M0FNU>, tensor<1x4x15xf8E8M0FNU> -> tensor<1x8x16xf32>
+  } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x1xf8E8M0FNU>, tensor<1x16x2xf8E8M0FNU> -> tensor<1x8x16xf32>
   %stored = rock.store %result to %C by set : tensor<1x8x16xf32> -> tensor<1x8x16xf32> to tensor<1x8x16xf32>
   func.return
 }
 
-// scaleB input type invalid
-func.func @gridwise_gemm_accel_scaleB_input_type_invalid(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf16>, %C: tensor<1x8x16xf32>, %scaleA: tensor<1x4x8xf8E8M0FNU>, %scaleB: tensor<1x4x16xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{For the scaled GEMMs, matrixB must be of type Float4E2M1FNType.}}
-  %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB) {
+// scaleA type must be f8E8M0FNU
+func.func @gridwise_gemm_scaleA_type_invalid(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>,
+    %scaleA_bad: tensor<1x8x1xf8E4M3FN>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{'rock.gridwise_gemm' op operand #2 must be 3D tensor of f8E8M0FNU type values, but got 'tensor<1x8x1xf8E4M3FN>'}}
+  %result = rock.gridwise_gemm(%A, %B, %scaleA_bad, %scaleB) {
     blockSize = 64 : i32,
     gridSize = 1 : i32,
+    quantBlockSize = 32 : i64,
     params = #common_params
-  } : tensor<1x4x8xf4E2M1FN>, tensor<1x4x16xf16>, tensor<1x4x8xf8E8M0FNU>, tensor<1x4x16xf8E8M0FNU> -> tensor<1x8x16xf32>
+  } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x1xf8E4M3FN>, tensor<1x16x1xf8E8M0FNU> -> tensor<1x8x16xf32>
+  %stored = rock.store %result to %C by set : tensor<1x8x16xf32> -> tensor<1x8x16xf32> to tensor<1x8x16xf32>
+  func.return
+}
+
+// scaleB type must be f8E8M0FNU
+func.func @gridwise_gemm_scaleB_type_invalid(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>,
+    %scaleA: tensor<1x8x1xf8E8M0FNU>, %scaleB_bad: tensor<1x16x1xf8E4M3FN>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{'rock.gridwise_gemm' op operand #3 must be 3D tensor of f8E8M0FNU type values, but got 'tensor<1x16x1xf8E4M3FN>'}}
+  %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB_bad) {
+    blockSize = 64 : i32,
+    gridSize = 1 : i32,
+    quantBlockSize = 32 : i64,
+    params = #common_params
+  } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x1xf8E8M0FNU>, tensor<1x16x1xf8E4M3FN> -> tensor<1x8x16xf32>
   %stored = rock.store %result to %C by set : tensor<1x8x16xf32> -> tensor<1x8x16xf32> to tensor<1x8x16xf32>
   func.return
 }

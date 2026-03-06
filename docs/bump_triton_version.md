@@ -61,6 +61,7 @@ git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/backend/compiler.py > c
 git diff ${OLD_COMMIT}..${NEW_COMMIT} -- python/src/llvm.cc > llvm.cc.diff
 git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/python/triton_amd.cc > triton_amd.cc.diff
 git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp > AccelerateAMDMatmul.cpp.diff
+git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h > TargetUtils.h.diff
 ```
 
 ## Step 5: Synchronize C++ Implementations
@@ -88,14 +89,20 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 | `createTargetMachine()` | `TritonToHsaco.cpp::createTargetMachine()` |
 | `optimize_module()` | `TritonToHsaco.cpp::optimizeModule()` |
 
-### 5.4 Architecture Database (from `AccelerateAMDMatmul.cpp`)
+### 5.4 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
+
+All Triton-internal helper functions that we replicate are centralized in a
+single module for easy updating:
 
 | Triton Function | C++ Location in rocmlirTriton |
 |----------------|-------------------------------|
-| `getMfmaVersion()` | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
-| `getWmmaVersion()` | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
+| `getMfmaVersion()` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
+| `getWmmaVersion()` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
+| `mlirTypeToScaledElemType()` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` (as `mlirTypeToScaleDotElemType`, extended with BF16/FP16) |
 
-If there are any new architecture not handled by our rocmlirTrion functions we should see warnings/errors because the switch would not be handling all cases.
+Header: `mlir/include/mlir/Dialect/Rock/utility/tritonUtils.h`
+
+If there are any new architecture not handled by our rocmlirTriton functions we should see warnings/errors because the switch would not be handling all cases.
 
 **Example mapping:**
 
@@ -118,7 +125,38 @@ pm->addNestedPass<mlir::triton::FuncOp>(
     mlir::createTritonAMDGPUMoveUpPrologueLoads());
 ```
 
-### 5.5 Hardware feature detection
+### 5.5 Architecture Database (`AmdArchDb.cpp`)
+
+`mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` maps AMD GPU architectures to hardware
+capabilities using Triton APIs (`ISAFamily`, `MfmaIntrinsic::selectFor`,
+`WmmaIntrinsic::selectFor`, `TargetInfo`). When a new architecture is added
+upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
+
+| Function | What to check |
+|----------|---------------|
+| `getMatrixAccelKind()` | Does the new arch support MFMA, WMMA, or scaled variants? Update the selection logic (version thresholds, `isF8F6F4`, `isScaledWmmaType`). |
+| `isFastAtomicAddSupported()` | Add the new `ISAFamily` case if atomic f32/f16/bf16 adds are supported. |
+| `isFastAtomicMaxSupported()` | Add the new `ISAFamily` case if atomic f32 max is supported. |
+| `getMaxNumChiplets()` | Update if the new arch has multi-chiplet GPUs. |
+| `getMinNumCU()` | Add the new `ISAFamily` case with the minimum CU count. |
+| `getMaxWavesPerEU()` | Add the new `ISAFamily` case with the correct occupancy limit. |
+| `getWaveSize()` / `getLDSSize()` | These delegate to `TargetInfo`, so they should work automatically if Triton adds the arch. Verify. |
+| `supportsTDM()` | Delegates to `TargetInfo`. Verify it returns the correct value for the new arch. |
+
+Also check that `tritonUtils.cpp::getMfmaVersion()` and
+`tritonUtils.cpp::getWmmaVersion()` handle the new `ISAFamily` / chip string.
+
+**How to detect needed changes:** Triton uses exhaustive `switch` statements over
+`ISAFamily`. If a new variant is added, our switches (which use `default:`) will
+silently return a fallback value. Diff `TargetUtils.h` for new `ISAFamily`
+entries:
+
+```bash
+cd external/triton
+git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h
+```
+
+### 5.6 Hardware feature detection
 Python code will usually add certain passes only if hardware supports it. For example:
 
 ```python
@@ -202,13 +240,16 @@ Use this checklist to track progress:
 - [ ] Generate diff for `python/src/llvm.cc`
 - [ ] Generate diff for `third_party/amd/python/triton_amd.cc`
 - [ ] Generate diff for `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp`
+- [ ] Generate diff for `third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h`
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
 - [ ] Update `TritonToHsaco.cpp` for LLVM function changes (`initializeLLVMTargets`, `createTargetMachine`, `optimizeModule`)
-- [ ] Update `AmdArchDb.cpp::getMfmaVersion()` if changed
-- [ ] Update `AmdArchDb.cpp::getWmmaVersion()` if changed
+- [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed
+- [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
+- [ ] Update `tritonUtils.cpp::mlirTypeToScaleDotElemType()` if changed
+- [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
 - [ ] Build project with `cmake.sh`
 - [ ] Run tests with `tests.sh`
 - [ ] All tests pass
@@ -260,6 +301,7 @@ If new Triton headers are needed:
 | TTIR/TTGIR/LLIR pipelines | `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` |
 | HSACO translation | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
 | Architecture database | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
+| Triton utility replicas | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
 | Triton compiler.py | `external/triton/third_party/amd/backend/compiler.py` |
 | Triton llvm.cc | `external/triton/python/src/llvm.cc` |
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |

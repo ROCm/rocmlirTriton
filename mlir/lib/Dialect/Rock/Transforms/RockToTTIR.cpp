@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -184,7 +185,7 @@ struct RockLoadPtrOpRewritePattern
 };
 
 //===----------------------------------------------------------------------===//
-// RockBlockwiseGemmOpRewritePattern - Convert rock.blockwise_gemm_accel to
+// RockBlockwiseGemmOpRewritePattern - Convert rock.blockwise_gemm to
 // tt.dot
 //===----------------------------------------------------------------------===//
 struct RockBlockwiseGemmOpRewritePattern
@@ -199,6 +200,8 @@ struct RockBlockwiseGemmOpRewritePattern
     Value a = op.getMatrixA();
     Value b = op.getMatrixB();
     Value c = op.getMatrixC();
+    Value scaledA = op.getMatrixScaleA();
+    Value scaledB = op.getMatrixScaleB();
 
     // Get the tensor types
     auto aTensorType = dyn_cast<RankedTensorType>(a.getType());
@@ -207,11 +210,25 @@ struct RockBlockwiseGemmOpRewritePattern
     if (!aTensorType || !bTensorType || !cTensorType)
       return failure();
 
-    // Create tt.dot operation
-    Value result = triton::DotOp::create(
-        rewriter, loc, cTensorType, a, b, c,
-        /*inputPrecision=*/triton::InputPrecision::IEEE,
-        /*maxNumImpreciseAcc=*/0);
+    Value result;
+    if (scaledA && scaledB) {
+      auto aElemTy = rock::mlirTypeToScaleDotElemType(
+          cast<RankedTensorType>(a.getType()).getElementType());
+      auto bElemTy = rock::mlirTypeToScaleDotElemType(
+          cast<RankedTensorType>(b.getType()).getElementType());
+      if (failed(aElemTy) || failed(bElemTy))
+        return failure();
+
+      result = triton::DotScaledOp::create(rewriter, loc, cTensorType, a, b, c,
+                                           scaledA, scaledB, aElemTy.value(),
+                                           bElemTy.value(), /*fastMath=*/false);
+    } else {
+      // Create tt.dot operation
+      result =
+          triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
+                                /*inputPrecision=*/triton::InputPrecision::IEEE,
+                                /*maxNumImpreciseAcc=*/0);
+    }
 
     // We dont use replaceOp because result has one result whereas op has none.
     rewriter.replaceOp(op, result);

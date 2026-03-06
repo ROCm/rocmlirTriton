@@ -131,10 +131,11 @@ def Rock_GemmOp
                        RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins Arg<TensorOrMemRefOf<GemmInputTypes>, "matrix A">:$a,
           Arg<TensorOrMemRefOf<GemmInputTypes>, "matrix B">:$b,
-          Optional<TensorOrMemRefOf<[F8E8M0FNU, F32]>>:$scaleA,
-          Optional<TensorOrMemRefOf<[F8E8M0FNU, F32]>>:$scaleB,
+          Optional<TensorOrMemRefOf<[F8E8M0FNU]>>:$scaleA,
+          Optional<TensorOrMemRefOf<[F8E8M0FNU]>>:$scaleB,
           UnitAttr:$aTransposed, UnitAttr:$bTransposed,
           UnitAttr:$aScaleTransposed, UnitAttr:$bScaleTransposed,
+          OptionalAttr<I64Attr>:$quantBlockSize,
           OptionalAttr<RockTuningParamAttrInterface>:$params)>,
       Results<(outs AnyRankedTensor:$c)> {
   let summary = "General matrix multiplication (GEMM)";
@@ -148,6 +149,16 @@ def Rock_GemmOp
     The transpose attributes allow for the non-group dimensions of the matrix to be
     transposed. For example, if `aTransposed` is set, then the argument A should be
     a [G] x K x M memory.
+
+    When `scaleA` and `scaleB` are present, this op performs a block-scaled GEMM
+    (MXFP-style). The `quantBlockSize` attribute specifies the number of
+    consecutive elements along the K dimension that share a single scale factor.
+    The scale tensors have shape [G] x M x ceil(K / quantBlockSize) for `scaleA`
+    and [G] x N x ceil(K / quantBlockSize) for `scaleB`.
+    The scale type should be f8E8M0FNU (E8M0), where each byte encodes a
+    power-of-two exponent: value = 2^(byte - 127). This matches the MXFP block
+    scaling convention used by hardware instructions such as
+    V_MFMA_SCALE_F32_*_F8F6F4 on AMD gfx950.
 
     The parameters `derivedBlockSize`, `gridSize`, and `params` are optional as
     they can be inferred by a tuning process or a heuristic, but they must be
@@ -529,11 +540,19 @@ def Rock_GridwiseGemmOp
           Arg<TensorRankOf<GemmInputTypes, [3]>, "matrix B view">:$b,
           Optional<TensorRankOf<[F8E8M0FNU], [3]>>:$scaleA,
           Optional<TensorRankOf<[F8E8M0FNU], [3]>>:$scaleB,
-          Rock_GemmParamsAttr:$params)>,
+          OptionalAttr<I64Attr>:$quantBlockSize, Rock_GemmParamsAttr:$params)>,
       Results<(outs AnyRankedTensor:$c)> {
   let summary = "Gridwise GEMM";
   let description = [{
     The `rock.gridwise_gemm` op computes gridwise GEMM.
+
+    When `scaleA` and `scaleB` are present, this op performs a block-scaled GEMM.
+    The `quantBlockSize` attribute specifies the number of consecutive elements
+    along the K dimension that share a single scale factor. Each scale tensor
+    has its K dimension reduced by a factor of `quantBlockSize` relative to the
+    corresponding data tensor (i.e., kScale = ceil(K / quantBlockSize)).
+    The scale type should be f8E8M0FNU (E8M0), encoding a power-of-two
+    exponent per block: value = 2^(byte - 127).
   }];
   let assemblyFormat = [{
     `(` $a `,` $b
@@ -621,8 +640,9 @@ def Rock_BlockwiseGemmOp
     : Rock_Op<"blockwise_gemm", [AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<GemmInputTypes>:$matrixA,
           TensorOf<GemmInputTypes>:$matrixB, TensorOf<GemmOutputTypes>:$matrixC,
-          Optional<TensorOf<GemmInputTypes>>:$matrixScaleA,
-          Optional<TensorOf<GemmInputTypes>>:$matrixScaleB)>,
+          Optional<TensorOf<[F8E8M0FNU]>>:$matrixScaleA,
+          Optional<TensorOf<[F8E8M0FNU]>>:$matrixScaleB,
+          OptionalAttr<I64Attr>:$quantBlockSize)>,
       Results<(outs TensorOf<GemmOutputTypes>:$result)> {
   let summary = "Blockwise GEMM";
   let description = [{
@@ -632,6 +652,19 @@ def Rock_BlockwiseGemmOp
 
     The elements of matrices A and B should be vectors of length kpack, or
     scalars when kpack is 1.
+
+    When `matrixScaleA` and `matrixScaleB` are present, this op performs a
+    block-scaled GEMM. The `quantBlockSize` attribute specifies the number of
+    consecutive elements along the K dimension that share a single scale factor.
+    Each scale tensor has its K dimension reduced by a factor of `quantBlockSize`
+    relative to the corresponding data tensor (i.e., kScale = ceil(K / quantBlockSize)).
+    The scale type should be f8E8M0FNU (E8M0), encoding a power-of-two
+    exponent per block: value = 2^(byte - 127).
+
+    During RockToTTIR lowering, this op maps to `tt.dot_scaled` when scales are
+    present, where the Triton hardware instruction (e.g.,
+    V_MFMA_SCALE_F32_*_F8F6F4 on gfx950) consumes F8/F6/F4 data with E8M0
+    scales natively.
   }];
   let assemblyFormat = [{
     `(` $matrixA  (`scaled` `by` $matrixScaleA^)? `,`

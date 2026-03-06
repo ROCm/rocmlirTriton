@@ -586,11 +586,12 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
 
   // This kernel is not run when there is padding on the GEMM
   auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::AtomicAdd);
-  auto gemm = GemmOp::create(b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
-                 /*scaleA=*/nullptr, /*scaleB=*/nullptr,
-                 /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
-                 /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-                 op.getParamsAttr());
+  auto gemm = GemmOp::create(
+      b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
+      /*scaleA=*/nullptr, /*scaleB=*/nullptr,
+      /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
+      /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
+      /*quantBlockSize=*/nullptr, op.getParamsAttr());
 
   // Update any StoreOp that uses the conv result to use the gemm result.
   updateStoreOpForGemm(b, loc, op.getResult(), gemm.getResult(), gemmFilter,
@@ -954,7 +955,7 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
       /*scaleA=*/nullptr, /*scaleB=*/nullptr,
       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
       /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-      op.getParamsAttr());
+      /*quantBlockSize=*/nullptr, op.getParamsAttr());
 
   return std::pair<Value, Value>(gemm.getResult(), gemmInput);
 }
@@ -1325,12 +1326,12 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
     Location loc = op.getLoc();
     auto tuningParams = op.getParamsAttr();
     auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::Set);
-    auto newGemmOp =
-        GemmOp::create(b, loc, getResultType(op, gemmC), gemmA, gemmB,
-                       /*scaleA=*/nullptr, /*scaleB=*/nullptr,
-                       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
-                       /*aScaleTransposed=*/nullptr,
-                       /*bScaleTransposed=*/nullptr, tuningParams);
+    auto newGemmOp = GemmOp::create(
+        b, loc, getResultType(op, gemmC), gemmA, gemmB,
+        /*scaleA=*/nullptr, /*scaleB=*/nullptr,
+        /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
+        /*aScaleTransposed=*/nullptr,
+        /*bScaleTransposed=*/nullptr, /*quantBlockSize=*/nullptr, tuningParams);
 
     // Update any StoreOp that uses the conv result to use the gemm result.
     // TODO(roctriton): This will break with fusions

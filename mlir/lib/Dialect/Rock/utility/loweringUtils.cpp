@@ -183,16 +183,14 @@ Type mlir::rock::vectorTypeOrSelf(Type elementType, int64_t len) {
 
 FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
     OpBuilder &b, Location loc, Value globalBuffer, StringRef dName,
-    ArrayRef<int64_t> bidGridLengths, int64_t kPerBlock, int64_t dPerBlock) {
+    ArrayRef<int64_t> bidGridLengths, int64_t kPerBlock, int64_t dPerBlock,
+    bool isKFirst) {
   SmallVector<StringRef, 3> bidGridOrder = {"g_block", "m_block", "n_block"};
   if (dName != "m" && dName != "n") {
     return emitError(loc, "expected dName to be m or n but got " + dName);
   }
   StringRef thisBlockDim = dName == "m" ? "m_block" : "n_block";
   StringRef otherBlockDim = dName == "m" ? "n_block" : "m_block";
-  // Matrix A has shape [g, m, k] (isKFirst=false), Matrix B has shape [g, k, n]
-  // (isKFirst=true)
-  bool isKFirst = dName != "m";
 
   ShapedType matrixType = cast<ShapedType>(globalBuffer.getType());
   ArrayRef<int64_t> matrixShape = matrixType.getShape();
@@ -626,10 +624,10 @@ Type mlir::rock::getAccType(Type elemA, Type elemB) {
 Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
                            Value kIter, StringRef dName,
                            rock::layout::GridCoordinates gridCoords,
-                           int64_t kPerBlock, int64_t dPerBlock,
+                           int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
                            SmallVector<int64_t, 3> &bidGridLengths) {
   FailureOr<ArrayAttr> maybeBufferViews = getLoadRegsAsTileViews(
-      rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock);
+      rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock, isKFirst);
   assert(succeeded(maybeBufferViews));
   ArrayAttr bufferViews = maybeBufferViews.value();
 

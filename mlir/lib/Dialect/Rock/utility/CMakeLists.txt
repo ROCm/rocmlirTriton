@@ -6,6 +6,7 @@ add_rocmlir_dialect_library(MLIRRockUtility
   tosaUtils.cpp
   RocmDeviceName.cpp
   compileUtils.cpp
+  tritonUtils.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/Rock
@@ -22,4 +23,20 @@ add_rocmlir_dialect_library(MLIRRockUtility
   MLIRLLVMDialect
   MLIRGPUDialect
   MLIRROCDLDialect
+
+  PRIVATE
+  TritonIR
+  TritonAMDGPUTransforms
+)
+
+# Triton include directories needed by tritonUtils.cpp
+target_include_directories(MLIRRockUtility PRIVATE
+  ${CMAKE_SOURCE_DIR}/external/triton/third_party/amd/include
+  ${TRITON_PROJECT_DIR}/include
+  ${TRITON_BINARY_DIR}/include
+)
+target_include_directories(obj.MLIRRockUtility PRIVATE
+  ${CMAKE_SOURCE_DIR}/external/triton/third_party/amd/include
+  ${TRITON_PROJECT_DIR}/include
+  ${TRITON_BINARY_DIR}/include
 )

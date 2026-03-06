@@ -1029,9 +1029,11 @@ public:
           RankedTensorType::get(gemmShape, outputType.getElementType());
     }
 
+    // TODO(rocmlirTriton): quantBlockSize
     auto rockGemm = rock::GemmOp::create(
         rw, loc, gemmOutputType, brA, brB, brAScale, brBScale, transposeA,
         transposeB, /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
+        /*quantBlockSize=*/nullptr,
         /*params=*/nullptr);
 
     if (auto attr = op->getAttrOfType<StringAttr>("perf_config"))

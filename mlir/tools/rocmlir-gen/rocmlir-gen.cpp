@@ -344,7 +344,7 @@ static llvm::cl::opt<bool> transposeScaleA(
 
 static llvm::cl::opt<bool> transposeScaleB(
     "transScaleB",
-    llvm::cl::desc("whether matrix B is GxKxN (default) or GxNxK"),
+    llvm::cl::desc("whether matrix B is GxNxK (default) or GxKxN"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool>
@@ -2305,23 +2305,17 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
   if (elemTypes[0].isInteger(8) && isCpuVerifier)
     cElemType = IntegerType::get(cElemType.getContext(), 64);
 
-  if (scaledGemm && gemmK % quantBlockSize != 0) {
-    llvm::errs() << "GEMM K dimension must be multiple of quantBlockSize "
-                    "("
-                 << quantBlockSize << ")\n";
-    exit(1);
-  }
-  SmallVector<int64_t>
-      aDims = {groupSize, transposeA ? gemmK : gemmM,
-               transposeA ? gemmM : gemmK},
-      bDims = {groupSize, transposeB ? gemmN : gemmK,
-               transposeB ? gemmK : gemmN},
-      cDims = {groupSize, transposeC ? gemmN : gemmM,
-               transposeC ? gemmM : gemmN},
-      aScale = {groupSize, transposeScaleA ? gemmK / quantBlockSize : gemmM,
-                transposeScaleA ? gemmM : gemmK / quantBlockSize},
-      bScale = {groupSize, transposeScaleB ? gemmN : gemmK / quantBlockSize,
-                transposeScaleB ? gemmK / quantBlockSize : gemmN};
+  int64_t quantK = llvm::divideCeil(gemmK, quantBlockSize);
+  SmallVector<int64_t> aDims = {groupSize, transposeA ? gemmK : gemmM,
+                                transposeA ? gemmM : gemmK},
+                       bDims = {groupSize, transposeB ? gemmN : gemmK,
+                                transposeB ? gemmK : gemmN},
+                       cDims = {groupSize, transposeC ? gemmN : gemmM,
+                                transposeC ? gemmM : gemmN},
+                       aScale = {groupSize, transposeScaleA ? quantK : gemmM,
+                                 transposeScaleA ? gemmM : quantK},
+                       bScale = {groupSize, transposeScaleB ? quantK : gemmN,
+                                 transposeScaleB ? gemmN : quantK};
 
   RankedTensorType aType = RankedTensorType::get(aDims, elemTypes[0]),
                    bType = RankedTensorType::get(bDims, elemTypes[1]),
@@ -2330,96 +2324,34 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
                    bScaleType = RankedTensorType::get(bScale, elemTypes[4]);
   result.push_back(aType);
   result.push_back(bType);
-  result.push_back(cType);
   if (scaledGemm) {
     result.push_back(aScaleType);
     result.push_back(bScaleType);
   }
+  result.push_back(cType);
 }
 
-static Value buildBroadcastedScales(OpBuilder b, Location loc, Value scale,
-                                    bool transpose, bool isA) {
+static Value normalizeScaleShape(OpBuilder b, Location loc, Value scale,
+                                 bool transpose, bool isA) {
   // Initial logical dim order for A or B scale
   SmallVector<StringRef, 3> initDims;
+  StringRef dDim = isA ? "m" : "n";
   if (transpose) {
-    if (isA)
-      initDims = {"g", "kScale", "m"};
-    else
-      initDims = {"g", "n", "kScale"};
+    initDims = {"g", "kScale", dDim};
   } else {
-    if (isA)
-      initDims = {"g", "m", "kScale"};
-    else
-      initDims = {"g", "kScale", "n"};
+    initDims = {"g", dDim, "kScale"};
   }
-  rock::BottomUpTMBuilder addDimB(
+  rock::BottomUpTMBuilder transposeScale(
       b, initDims, cast<ShapedType>(scale.getType()).getShape(), loc);
 
-  // Position where the added "block" dim will go
-  uint32_t blockDim = isA ? (transpose ? 2 : 3) : (transpose ? 3 : 2);
-
   if (transpose) {
-    if (isA)
-      addDimB.passThrough({"g", "kScale", "m"}, {0, 1, 3},
-                          {"g", "kScale", "m"});
-    else
-      addDimB.passThrough({"g", "n", "kScale"});
-    addDimB.addDim("block", blockDim, 1);
+    transposeScale.passThrough({"g", "kScale", dDim}, {0, 1, 2},
+                               {"g", "kScale", dDim});
   } else {
-    addDimB.addDim("block", blockDim, 1);
-    if (isA)
-      addDimB.passThrough({"g", "m", "kScale"});
-    else
-      addDimB.passThrough({"g", "kScale", "n"}, {0, 1, 3},
-                          {"g", "kScale", "n"});
+    transposeScale.passThrough({"g", dDim, "kScale"});
   }
-  auto addDimAttr = addDimB.get();
-  scale = rock::TransformOp::create(b, loc, scale, addDimAttr);
-
-  // Broadcast the newly added block dim to blockSize.
-  rock::BottomUpTMBuilder broadcastB =
-      rock::BottomUpTMBuilder::above(addDimB, addDimAttr);
-  broadcastB.broadcast({blockDim}, {quantBlockSize});
-  if (transpose) {
-    if (isA)
-      broadcastB.passThrough({"g", "kScale", "m"});
-    else
-      broadcastB.passThrough({"g", "n", "kScale"});
-  } else {
-    if (isA)
-      broadcastB.passThrough({"g", "m", "kScale"});
-    else
-      broadcastB.passThrough({"g", "kScale", "n"});
-  }
-  auto broadcastAttr = broadcastB.get();
-  scale = rock::TransformOp::create(b, loc, scale, broadcastAttr);
-
-  // Merge kScale + block into k; pass through the remaining dims.
-  rock::BottomUpTMBuilder mergeB =
-      rock::BottomUpTMBuilder::above(broadcastB, broadcastAttr);
-  if (isA) {
-    if (transpose) {
-      // dims: g, kScale, m, block
-      mergeB.passThrough({"g", "m"}, {0, 2}, {"g", "m"});
-      mergeB.merge("k", 1, {"kScale", "block"});
-    } else {
-      // dims: g, m, kScale, block
-      mergeB.merge("k", 2, {"kScale", "block"});
-      mergeB.passThrough({"g", "m"});
-    }
-  } else { // B scale
-    if (transpose) {
-      // dims: g, n, kScale, block
-      mergeB.passThrough({"g", "n"}, {0, 1}, {"g", "n"});
-      mergeB.merge("k", 2, {"kScale", "block"});
-    } else {
-      // dims: g, kScale, block, n
-      mergeB.passThrough({"g", "n"}, {0, 2}, {"g", "n"});
-      mergeB.merge("k", 1, {"kScale", "block"});
-    }
-  }
-  auto finalAttr = mergeB.get();
-  return rock::TransformOp::create(b, loc, scale, finalAttr);
+  auto transposeScaleAttr = transposeScale.get();
+  return rock::TransformOp::create(b, loc, scale, transposeScaleAttr);
 }
 
 static func::FuncOp createGpuGemmKernel(ModuleOp module,
@@ -2471,32 +2403,32 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
         SmallVector<StringRef>{gName, transposeScaleA ? kName : mName,
                                transposeScaleA ? mName : kName});
     allArgNames.emplace_back(
-        SmallVector<StringRef>{gName, transposeScaleB ? nName : kName,
-                               transposeScaleB ? kName : nName});
+        SmallVector<StringRef>{gName, transposeScaleB ? kName : nName,
+                               transposeScaleB ? nName : kName});
   }
 
-  // Function takes flattened (a, b, c, [aScale, bScale]) as inputs and returns flattened c
+  // Function takes flattened (a, b, [aScale, bScale,] c) as inputs and returns flattened c
   SmallVector<Type, 5> funcArgTypes;
   SmallVector<Type, 5> funcArgLogicalTypes;
-  Type cType = argTypes[2];
+  int cIdx = scaledGemm ? 4 : 2;
+  Type cType = argTypes[cIdx];
   Type cFlatType = rock::getFlattenedType(cType);
-
-  // Add dimension names for C argument
-  allArgNames.emplace_back(SmallVector<StringRef>{
-      gName, transposeC ? nName : mName, transposeC ? mName : nName});
 
   funcArgTypes.push_back(rock::getFlattenedType(argTypes[0]));
   funcArgTypes.push_back(rock::getFlattenedType(argTypes[1]));
-  funcArgTypes.push_back(cFlatType);
   funcArgLogicalTypes.push_back(argTypes[0]);
   funcArgLogicalTypes.push_back(argTypes[1]);
-  funcArgLogicalTypes.push_back(cType);
   if (scaledGemm) {
+    funcArgTypes.push_back(rock::getFlattenedType(argTypes[2]));
     funcArgTypes.push_back(rock::getFlattenedType(argTypes[3]));
-    funcArgTypes.push_back(rock::getFlattenedType(argTypes[4]));
+    funcArgLogicalTypes.push_back(argTypes[2]);
     funcArgLogicalTypes.push_back(argTypes[3]);
-    funcArgLogicalTypes.push_back(argTypes[4]);
   }
+  // C is always last
+  allArgNames.emplace_back(SmallVector<StringRef>{
+      gName, transposeC ? nName : mName, transposeC ? mName : nName});
+  funcArgTypes.push_back(cFlatType);
+  funcArgLogicalTypes.push_back(cType);
 
   auto func =
       func::FuncOp::create(b, loc, isVerifier ? kernelNameVerifier : kernelName,
@@ -2510,20 +2442,25 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   rock::expandFlatFunctionArguments(b, func, allArgNames, funcArgLogicalTypes,
                                     expandedArgs);
 
-  Value aVal = expandedArgs[0], bVal = expandedArgs[1], cVal = expandedArgs[2];
+  Value aVal = expandedArgs[0], bVal = expandedArgs[1];
   Value aScale = nullptr, bScale = nullptr;
+  Value cVal;
 
   if (scaledGemm) {
-    aScale = buildBroadcastedScales(b, loc, expandedArgs[3], transposeScaleA,
-                                    /*isA=*/true);
-    bScale = buildBroadcastedScales(b, loc, expandedArgs[4], transposeScaleB,
-                                    /*isA=*/false);
+    aScale = normalizeScaleShape(b, loc, expandedArgs[2], transposeScaleA,
+                                 /*isA=*/true);
+    bScale = normalizeScaleShape(b, loc, expandedArgs[3], transposeScaleB,
+                                 /*isA=*/false);
+    cVal = expandedArgs[4];
+  } else {
+    cVal = expandedArgs[2];
   }
 
-  auto gemm = rock::GemmOp::create(b, loc, cVal.getType(), aVal, bVal, aScale,
-                                   bScale, transposeA, transposeB,
-                                   transposeScaleA, transposeScaleB,
-                                   /*params=*/nullptr);
+  auto gemm = rock::GemmOp::create(
+      b, loc, cVal.getType(), aVal, bVal, aScale, bScale, transposeA,
+      transposeB, transposeScaleA, transposeScaleB,
+      scaledGemm ? b.getI64IntegerAttr(quantBlockSize) : nullptr,
+      /*params=*/nullptr);
 
   if (!params.perfConfig.empty())
     gemm->setAttr("perf_config", b.getStringAttr(params.perfConfig));
@@ -3576,22 +3513,25 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   Block *block = func.addEntryBlock();
   b.setInsertionPointToStart(block);
 
-  Value aVal = block->getArgument(0), bVal = block->getArgument(1),
-        cVal = block->getArgument(2);
+  Value aVal = block->getArgument(0), bVal = block->getArgument(1);
 
   auto floatType = b.getF32Type();
 
   aVal = ensureFloatIsF32(b, loc, aVal, floatType);
   bVal = ensureFloatIsF32(b, loc, bVal, floatType);
-  cVal = ensureFloatIsF32(b, loc, cVal, floatType);
 
   Value aScaleVal = nullptr, bScaleVal = nullptr;
+  Value cVal;
   if (scaledGemm) {
-    aScaleVal = block->getArgument(3);
-    bScaleVal = block->getArgument(4);
+    aScaleVal = block->getArgument(2);
+    bScaleVal = block->getArgument(3);
     aScaleVal = ensureFloatIsF32(b, loc, aScaleVal, floatType);
     bScaleVal = ensureFloatIsF32(b, loc, bScaleVal, floatType);
+    cVal = block->getArgument(4);
+  } else {
+    cVal = block->getArgument(2);
   }
+  cVal = ensureFloatIsF32(b, loc, cVal, floatType);
 
   auto cType = cast<MemRefType>(cVal.getType());
   Value zeroOut = rock::createZeroConstantOp(b, loc, cType.getElementType());
@@ -3620,9 +3560,10 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
                 4, 0, {g, transposeB ? n : k, transposeB ? k : n}, ctx),
             cMap = AffineMap::get(
                 4, 0, {g, transposeC ? n : m, transposeC ? m : n}, ctx);
+  int cArgIdx = scaledGemm ? 4 : 2;
   Value aExpVal = expandArg(aVal, argTypes[0]),
         bExpVal = expandArg(bVal, argTypes[1]),
-        cExpVal = expandArg(cVal, argTypes[2]);
+        cExpVal = expandArg(cVal, argTypes[cArgIdx]);
   Value aExpValScaled = nullptr, bExpValScaled = nullptr;
   if (scaledGemm) {
     // Create scaled AffineMaps
@@ -3637,10 +3578,10 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
       return AffineMap::get(4, 0, resultExprs, b.getContext());
     };
     AffineMap aMapScaled = scaleAffineMap(transposeScaleA, m);
-    AffineMap bMapScaled = scaleAffineMap(!transposeScaleB, n);
+    AffineMap bMapScaled = scaleAffineMap(transposeScaleB, n);
 
-    aExpValScaled = expandArg(aScaleVal, argTypes[3]);
-    bExpValScaled = expandArg(bScaleVal, argTypes[4]);
+    aExpValScaled = expandArg(aScaleVal, argTypes[2]);
+    bExpValScaled = expandArg(bScaleVal, argTypes[3]);
     linalg::GenericOp::create(
         b, loc, ValueRange{aExpVal, bExpVal, aExpValScaled, bExpValScaled},
         ValueRange{cExpVal},
@@ -3703,7 +3644,8 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   if (!isa<BlockArgument>(bVal))
     memref::DeallocOp::create(b, loc, bVal);
   if (!isa<BlockArgument>(cVal)) {
-    BlockArgument resultBlockArg = block->getArgument(2);
+    int cBlockArgIdx = scaledGemm ? 4 : 2;
+    BlockArgument resultBlockArg = block->getArgument(cBlockArgIdx);
     Value resultFlat = makeNDMemRef(b, cVal, 1);
     emitMemcpy(b, resultFlat, resultBlockArg);
     memref::DeallocOp::create(b, loc, cVal);
@@ -4900,8 +4842,10 @@ static LogicalResult populateHostHarnessLogic(
   if (genParams.operation.has_value()) {
     switch (genParams.operation.value()) {
     case rock::KernelType::Conv:
-    case rock::KernelType::Gemm:
       outIndices.push_back(2);
+      break;
+    case rock::KernelType::Gemm:
+      outIndices.push_back(scaledGemm ? 4 : 2);
       break;
     case rock::KernelType::ConvBwdData:
       outIndices.push_back(1);

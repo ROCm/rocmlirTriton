@@ -62,6 +62,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <optional>
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -73,61 +74,35 @@ using namespace mlir::rock;
 // Utility Functions
 //===----------------------------------------------------------------------===//
 
-static Type getElementTypeOrSelfRecursive(Type type) {
-  while (auto shapedType = dyn_cast<ShapedType>(type)) {
-    type = shapedType.getElementType();
-  }
-  return type;
-}
+// This function changes the shape of scaleA/scaleB to match the shape of A/B
+static SmallVector<int64_t> normalizeScaleShape(ArrayRef<int64_t> scaleShape,
+                                                uint64_t quantBlockSize,
+                                                bool isA) {
+  SmallVector<int64_t> modifiedScaleShape(scaleShape);
+  modifiedScaleShape[scaleShape.size() - 1] *= quantBlockSize;
+  if (!isA)
+    std::swap(modifiedScaleShape[scaleShape.size() - 2],
+              modifiedScaleShape[scaleShape.size() - 1]);
 
-template <int N>
-struct rank : rank<N - 1> {};
-
-template <>
-struct rank<0> {};
-
-template <typename OpType>
-static void
-getConvEffects(OpType &op,
-               SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &op.getInputMutable(),
-                       transform::TransformMappingResource::get());
-  effects.emplace_back(MemoryEffects::Read::get(), &op.getFilterMutable(),
-                       transform::TransformMappingResource::get());
-  effects.emplace_back(MemoryEffects::Read::get(), &op.getOutputMutable(),
-                       transform::TransformMappingResource::get());
-}
-
-template <typename OpType>
-static void
-getCommonEffects(OpType &op,
-                 SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  auto *read = MemoryEffects::Read::get();
-  auto *write = MemoryEffects::Write::get();
-  effects.emplace_back(read, &op.getSourceMutable());
-  effects.emplace_back(write, &op.getDestMutable());
+  return modifiedScaleShape;
 }
 
 template <typename OpType>
 static LogicalResult verifyScales(OpType op, Value matrix, Value scale,
-                                  StringRef matrixName) {
+                                  std::optional<uint64_t> quantBlockSize,
+                                  bool isA) {
   if (scale != nullptr) {
-    ShapedType matrixType = cast<ShapedType>(matrix.getType());
-    ShapedType scaleType = cast<ShapedType>(scale.getType());
-    Type matrixElemType = getElementTypeOrSelfRecursive(matrixType);
-    Type scaleElemType = getElementTypeOrSelfRecursive(scaleType);
+    if (!quantBlockSize.has_value())
+      return op.emitError("quantBlockSize is not defined");
 
-    if (!isa<Float8E8M0FNUType>(scaleElemType)) {
-      return op.emitError(
-          llvm::formatv("Scale{0} must be of type Float8E8M0FNU.", matrixName));
-    }
-    if (!isa<Float4E2M1FNType>(matrixElemType)) {
-      return op.emitError(
-          llvm::formatv("For the scaled GEMMs, matrix{0} must be of "
-                        "type Float4E2M1FNType.",
-                        matrixName));
-    }
-    if (matrixType.getShape() != scaleType.getShape()) {
+    ArrayRef<int64_t> matrixShape =
+        cast<ShapedType>(matrix.getType()).getShape();
+    SmallVector<int64_t> scaleShape =
+        normalizeScaleShape(cast<ShapedType>(scale.getType()).getShape(),
+                            quantBlockSize.value(), /*isA=*/isA);
+
+    StringRef matrixName = isA ? "A" : "B";
+    if (matrixShape != ArrayRef<int64_t>(scaleShape)) {
       return op.emitError(llvm::formatv(
           "Scale{0} shape must match matrix{0} shape.", matrixName));
     }
@@ -148,7 +123,7 @@ struct RockOpAsmDialectInterface : public OpAsmDialectInterface {
       return AliasResult::OverridableAlias;
     }
     if (isa<GemmParamsAttr>(attr)) {
-      os << "accel_gemm_params";
+      os << "gemm_params";
       return AliasResult::OverridableAlias;
     }
     return AliasResult::NoAlias;
@@ -771,7 +746,7 @@ LogicalResult GemmOp::verify() {
     if (dims.size() != 2 && dims.size() != 3) {
       return emitOpError()
              << name
-             << " must be a rank 2 or rank 3 tensor representing [G,] M, K";
+             << " must be a rank 2 or rank 3 tensor representing [G,] D, K";
     }
     return success();
   };
@@ -815,12 +790,13 @@ LogicalResult GemmOp::verify() {
     ShapedType ty = cast<ShapedType>(scale.getType());
     ArrayRef<int64_t> dims = ty.getShape();
     StringRef scaleName = isA ? "scaleA" : "scaleB";
+    if (!getQuantBlockSizeAttr())
+      return emitOpError("quantBlockSize not defined");
+
     if (failed(rankCheck(dims, scaleName)))
       return failure();
-    Type elemType = ty.getElementType();
-    if (!isa<Float8E8M0FNUType>(elemType) && !elemType.isF32())
-      return emitOpError() << scaleName
-                           << " must be of type Float8E8M0FNUType or f32";
+
+    int64_t quantBlockSize = getQuantBlockSize().value();
 
     bool transposed = isA ? getAScaleTransposed() : getBScaleTransposed();
     int64_t offset = dims.size() == 2 ? 0 : 1;
@@ -829,28 +805,28 @@ LogicalResult GemmOp::verify() {
     int64_t second = dims[offset + (transposed ? 0 : 1)];
 
     int64_t expectedG = isA ? gA : gB;
-    int64_t expectedFirst = isA ? mA : kB;  // scaleA: M; scaleB: K
-    int64_t expectedSecond = isA ? kA : nB; // scaleA: K; scaleB: N
+    int64_t expectedFirst = isA ? mA : nB; // scaleA: M; scaleB: N
+    int64_t expectedSecond =
+        llvm::divideCeil(isA ? kA : kB, quantBlockSize); // scaleA: K; scaleB: K
 
-    StringRef firstName = isA ? "M" : "K";
-    StringRef secondName = isA ? "K" : "N";
+    StringRef dDim = isA ? "M" : "N";
+    StringRef dDimLower = isA ? "m" : "n";
 
     if (second != expectedSecond)
-      return emitOpError() << scaleName << "'s " << secondName
-                           << " dimension must match matrix "
-                           << (isA ? "A" : "B") << "'s " << secondName
-                           << " dimension"
-                           << " " << scaleName << "_" << secondName.lower()
-                           << " = " << second << " " << (isA ? "k_a" : "n_b")
+      return emitOpError() << scaleName << "'s "
+                           << "K dimension must match matrix "
+                           << (isA ? "A" : "B") << "'s "
+                           << "K dimension"
+                           << " " << scaleName << "_"
+                           << "k = " << second << " " << (isA ? "k_a" : "k_b")
                            << " = " << expectedSecond;
     if (first != expectedFirst)
-      return emitOpError() << scaleName << "'s " << firstName
+      return emitOpError() << scaleName << "'s " << dDim
                            << " dimension must match matrix "
-                           << (isA ? "A" : "B") << "'s " << firstName
-                           << " dimension"
-                           << " " << scaleName << "_" << firstName.lower()
-                           << " = " << first << " " << (isA ? "m_a" : "k_b")
-                           << " = " << expectedFirst;
+                           << (isA ? "A" : "B") << "'s " << dDim << " dimension"
+                           << " " << scaleName << "_" << dDimLower << " = "
+                           << first << " " << (isA ? "m_a" : "n_b") << " = "
+                           << expectedFirst;
     if (g != expectedG)
       return emitOpError() << scaleName << "'s G dimension must match matrix "
                            << (isA ? "A" : "B") << "'s G dimension"
@@ -862,10 +838,12 @@ LogicalResult GemmOp::verify() {
   if (failed(verifyScale(getScaleA(), /*isA=*/true)) ||
       failed(verifyScale(getScaleB(), /*isA=*/false)))
     return failure();
-  if (hasScaleA && hasScaleB) {
-    if (!isa<Float4E2M1FNType>(inElems)) {
-      return emitOpError(
-          "Scaled GEMMs are only supported for Float4E2M1FN input type");
+
+  if (getParams().has_value() && getQuantBlockSize().has_value()) {
+    int64_t quantBlockSize = getQuantBlockSize().value();
+    auto params = cast<GemmParamsAttr>(getParams().value());
+    if (params.getKPerBlock() % quantBlockSize != 0) {
+      return emitOpError() << "kPerBlock must be divisible by quantBlockSize";
     }
   }
 
@@ -943,8 +921,10 @@ LogicalResult GridwiseGemmOp::verify() {
   if (hasScaleA ^ hasScaleB) {
     return emitOpError("both scaleA and scaleB must be provided or neither");
   }
-  if (failed(verifyScales(*this, getA(), scaleA, "A")) ||
-      failed(verifyScales(*this, getB(), scaleB, "B"))) {
+  if (failed(verifyScales(*this, getA(), scaleA, getQuantBlockSize(),
+                          /*isA=*/true)) ||
+      failed(verifyScales(*this, getB(), scaleB, getQuantBlockSize(),
+                          /*isA=*/false))) {
     return failure();
   }
   return verifyGridwiseGemm(*this);
@@ -1008,33 +988,27 @@ LogicalResult BlockwiseStoreOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult BlockwiseGemmOp::verify() {
-  bool hasScaleABuffer = getMatrixScaleA() != nullptr;
-  bool hasScaleBBuffer = getMatrixScaleB() != nullptr;
-  ShapedType aBufferType = cast<ShapedType>(getMatrixA().getType());
-  ShapedType bBufferType = cast<ShapedType>(getMatrixB().getType());
+  bool hasScaleA = getMatrixScaleA() != nullptr;
+  bool hasScaleB = getMatrixScaleB() != nullptr;
+  auto aShape = cast<ShapedType>(getMatrixA().getType()).getShape();
+  auto bShape = cast<ShapedType>(getMatrixB().getType()).getShape();
 
-  auto verifyMatrixAndScale = [&](Value bufferScale, ShapedType bufferType,
-                                  const char *matrixName) -> LogicalResult {
-    bool hasBufferScale = bufferScale != nullptr;
+  auto verifyMatrixAndScale = [&](Value scale, ArrayRef<int64_t> matrixShape,
+                                  bool isA) -> LogicalResult {
+    bool hasScale = scale != nullptr;
 
-    if (hasBufferScale) {
-      ShapedType bufferScaleType = cast<ShapedType>(bufferScale.getType());
-      if (bufferType.getShape() != bufferScaleType.getShape()) {
-        return emitOpError(llvm::formatv(
-            "If scale{0} buffer is non-null, its shape must match "
-            "buffer{0}'s shape.",
-            matrixName));
-      }
-      Type bufferScaleElemType = getElementTypeOrSelfRecursive(bufferScaleType);
-      if (!isa<Float8E8M0FNUType>(bufferScaleElemType)) {
-        return emitOpError(llvm::formatv(
-            "Scale{0} buffer must be of type Float8E8M0FNU.", matrixName));
-      }
-      Type bufferElemType = getElementTypeOrSelfRecursive(bufferType);
-      if (!isa<Float4E2M1FNType>(bufferElemType)) {
+    StringRef matrixName = isA ? "A" : "B";
+    if (hasScale) {
+      std::optional<int64_t> quantBlockSize = getQuantBlockSize();
+      if (!quantBlockSize.has_value())
+        return emitOpError() << "quantBlockSize is not set but we found scale";
+      SmallVector<int64_t> scaleShape =
+          normalizeScaleShape(cast<ShapedType>(scale.getType()).getShape(),
+                              quantBlockSize.value(), isA);
+      if (matrixShape != ArrayRef<int64_t>(scaleShape)) {
         return emitOpError(
-            llvm::formatv("For the scaled GEMMs, buffer{0} must be of "
-                          "type Float4E2M1FNType.",
+            llvm::formatv("If scale{0} is non-null, its shape must match "
+                          "buffer{0}'s shape.",
                           matrixName));
       }
     }
@@ -1043,16 +1017,16 @@ LogicalResult BlockwiseGemmOp::verify() {
   };
 
   // Verify matrix A and its scales
-  if (failed(verifyMatrixAndScale(getMatrixScaleA(), aBufferType, "A")))
+  if (failed(verifyMatrixAndScale(getMatrixScaleA(), aShape, true)))
     return failure();
 
   // Verify matrix B and its scales
-  if (failed(verifyMatrixAndScale(getMatrixScaleB(), bBufferType, "B")))
+  if (failed(verifyMatrixAndScale(getMatrixScaleB(), bShape, false)))
     return failure();
 
-  if (hasScaleABuffer ^ hasScaleBBuffer)
+  if (hasScaleA ^ hasScaleB)
     return emitOpError(
-        "scaleA and scaleB buffers must both be present or both be null.");
+        "scaleA and scaleB must both be present or both be null.");
 
   return success();
 }
