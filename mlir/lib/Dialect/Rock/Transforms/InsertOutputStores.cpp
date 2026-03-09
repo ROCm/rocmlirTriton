@@ -17,8 +17,8 @@
 //
 // This pass inserts rock.store ops for kernel functions that return values
 // but lack explicit stores. For each return value from a FusionRoot chain,
-// it adds a new output argument, inserts a rock.store, removes the return
-// value from the function signature, and updates all callers accordingly.
+// it adds a new output argument, inserts a rock.store, and updates the
+// func.return to use the store results.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,11 +27,9 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 
-#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
@@ -49,14 +47,6 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-
-// Returns true if the operation should be followed during flood-fill.
-// This includes fusion ops (arith/math elementwise), linalg.generic,
-// rock.transform, and rock.reduce.
-static bool isFloodFillOp(Operation *op) {
-  return isFusionOp(op) || isa<TransformOp>(op) || isa<ReduceOp>(op) ||
-         isa<linalg::GenericOp>(op);
-}
 
 // Forward flood-fill from a FusionRoot result.
 // Collects all reachable values into `chainSet`. If a rock.store is found
@@ -84,7 +74,7 @@ static void floodFillFromRoot(Value root, DenseSet<Value> &chainSet,
       }
 
       // Follow through fusion-like ops
-      if (isFloodFillOp(owner)) {
+      if (isForwardTraceOp(owner)) {
         for (Value res : owner->getResults())
           worklist.push_back(res);
       }
@@ -144,35 +134,37 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
 }
 
 // Add a new output argument to the kernel for each return value that needs a
-// store. Transfers rock.prefill attributes from results to new arguments.
-// Returns the types of the newly added arguments.
-static FailureOr<SmallVector<Type>>
+// store. Transfers all result attributes (e.g. rock.prefill) to new arguments.
+static LogicalResult
 addOutputArguments(func::FuncOp funcOp,
                    SmallVectorImpl<ReturnStoreInfo> &storeInfos) {
-  SmallVector<Type> newArgTypes;
+  // Sort by returnIndex so output arguments are added in the same order as the
+  // original return operands: return %a, %b -> func(inputs..., %a, %b).
+  llvm::sort(storeInfos,
+             [](const ReturnStoreInfo &a, const ReturnStoreInfo &b) {
+               return a.returnIndex < b.returnIndex;
+             });
+
   for (auto &info : storeInfos) {
     Type retType = info.returnOperand.getType();
     unsigned newArgIdx = funcOp.getNumArguments();
 
+    // Transfer all result attributes (e.g. rock.prefill) to the new argument.
+    DictionaryAttr resultAttrs = funcOp.getResultAttrDict(info.returnIndex);
+
     if (failed(funcOp.insertArgument(newArgIdx, retType,
-                                     /*argAttrs=*/DictionaryAttr(),
+                                     resultAttrs ? resultAttrs
+                                                 : DictionaryAttr(),
                                      funcOp.getLoc())))
       return failure();
     info.storeArg = funcOp.getArgument(newArgIdx);
-    newArgTypes.push_back(retType);
 
     LLVM_DEBUG(llvm::dbgs()
                << "Return " << info.returnIndex
                << ": created output arg " << newArgIdx
                << " with type " << retType << "\n");
-
-    // Transfer rock.prefill from result attr to the new argument attr
-    if (Attribute prefillAttr = funcOp.getResultAttr(
-            info.returnIndex, PrefillAttr::getMnemonic())) {
-      funcOp.setArgAttr(newArgIdx, PrefillAttr::getMnemonic(), prefillAttr);
-    }
   }
-  return newArgTypes;
+  return success();
 }
 
 // Insert rock.store ops just before func.return for each identified return
@@ -187,109 +179,15 @@ static void insertStoreOps(func::FuncOp funcOp, func::ReturnOp returnOp,
 
     auto storeMethodAttr =
         builder.getAttr<StoreMethodAttr>(StoreMethod::Set);
-    StoreOp::create(builder, returnOp.getLoc(),
-                    /*resultType=*/info.returnOperand.getType(),
-                    /*source=*/info.returnOperand,
-                    /*dest=*/info.storeArg,
-                    /*storeMethod=*/storeMethodAttr);
+    auto storeOp = StoreOp::create(builder, returnOp.getLoc(),
+                                   /*result=*/info.returnOperand.getType(),
+                                   /*source=*/info.returnOperand,
+                                   /*dest=*/info.storeArg,
+                                   /*storeMethod=*/storeMethodAttr);
+    returnOp.setOperand(info.returnIndex, storeOp.getResult());
   }
 }
 
-// Remove stored values from the func.return operands and erase the
-// corresponding result types from the function's type signature.
-static LogicalResult
-removeStoredReturns(func::FuncOp funcOp, func::ReturnOp returnOp,
-                    ArrayRef<ReturnStoreInfo> storeInfos,
-                    unsigned origNumResults) {
-  DenseSet<unsigned> storedIndices;
-  for (const auto &info : storeInfos)
-    storedIndices.insert(info.returnIndex);
-
-  // Remove return operands in reverse order for index stability
-  SmallVector<unsigned> sortedStoredIndices(storedIndices.begin(),
-                                            storedIndices.end());
-  llvm::sort(sortedStoredIndices);
-  for (int i = sortedStoredIndices.size() - 1; i >= 0; --i)
-    returnOp.getOperation()->eraseOperand(sortedStoredIndices[i]);
-
-  // Remove function result types (handles type and result attributes)
-  llvm::BitVector resultsToRemove(origNumResults);
-  for (unsigned idx : storedIndices)
-    resultsToRemove.set(idx);
-  return funcOp.eraseResults(resultsToRemove);
-}
-
-// Update all callers of a kernel function after adding output arguments and
-// removing stored return values. New output operands are filled with
-// tensor.empty, and uses of removed call results are replaced with the
-// corresponding tensor.empty operand.
-static LogicalResult
-updateCallers(func::FuncOp funcOp, ModuleOp moduleOp, unsigned origNumResults,
-              ArrayRef<ReturnStoreInfo> storeInfos,
-              ArrayRef<Type> newArgTypes) {
-  StringRef kernelName = funcOp.getName();
-
-  // Build a map from removed return indices to their store arg indices.
-  DenseSet<unsigned> removedReturnIndices;
-  DenseMap<unsigned, unsigned> returnToArgIdx;
-  for (const auto &info : storeInfos) {
-    removedReturnIndices.insert(info.returnIndex);
-    returnToArgIdx[info.returnIndex] = info.storeArg.getArgNumber();
-  }
-
-  // Walk the module for all func.call ops that call this kernel
-  SmallVector<func::CallOp> callsToUpdate;
-  moduleOp.walk([&](func::CallOp callOp) {
-    if (callOp.getCallee() == kernelName)
-      callsToUpdate.push_back(callOp);
-  });
-
-  for (func::CallOp callOp : callsToUpdate) {
-    OpBuilder builder(callOp);
-
-    // Build new operand list: original operands + tensor.empty for new args
-    SmallVector<Value> newOperands(callOp.getOperands());
-    for (Type argType : newArgTypes) {
-      auto tensorType = cast<RankedTensorType>(argType);
-      Value empty = tensor::EmptyOp::create(builder, callOp.getLoc(),
-                                            tensorType.getShape(),
-                                            tensorType.getElementType());
-      newOperands.push_back(empty);
-    }
-
-    // Compute new result types
-    SmallVector<Type> newResultTypes;
-    for (unsigned i = 0; i < origNumResults; ++i) {
-      if (!removedReturnIndices.contains(i))
-        newResultTypes.push_back(callOp.getResultTypes()[i]);
-    }
-
-    // Create a new call with updated operands and result types
-    auto newCallOp = func::CallOp::create(
-        builder, callOp.getLoc(), callOp.getCallee(),
-        newResultTypes, newOperands);
-
-    // Replace uses of old call results:
-    // - Removed results: replace with the tensor.empty output operand
-    // - Kept results: replace with the new call's result at adjusted index
-    unsigned newResIdx = 0;
-    for (unsigned i = 0; i < origNumResults; ++i) {
-      if (removedReturnIndices.contains(i)) {
-        // This result was stored, replace uses with the output operand
-        unsigned argIdx = returnToArgIdx[i];
-        callOp.getResult(i).replaceAllUsesWith(newOperands[argIdx]);
-      } else {
-        // This result is kept, replace with the new call's result
-        callOp.getResult(i).replaceAllUsesWith(newCallOp.getResult(newResIdx));
-        newResIdx++;
-      }
-    }
-
-    callOp.erase();
-  }
-
-  return success();
-}
 
 struct RockInsertOutputStoresPass
     : public rock::impl::RockInsertOutputStoresPassBase<
@@ -316,27 +214,26 @@ RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
 
   auto returnOp = cast<func::ReturnOp>(funcOp.getBody().back().getTerminator());
 
-  auto storeInfosOr = identifyReturnStores(fusionRoots, returnOp);
-  if (failed(storeInfosOr))
+  auto maybeStoreInfos = identifyReturnStores(fusionRoots, returnOp);
+  if (failed(maybeStoreInfos))
     return failure();
-  auto &storeInfos = *storeInfosOr;
+  auto &storeInfos = *maybeStoreInfos;
 
   if (storeInfos.empty())
     return success();
 
-  unsigned origNumResults = funcOp.getNumResults();
+  // This pass runs before wrapper generation, so the kernel must not have
+  // any call sites yet.
+  if (!funcOp.symbolKnownUseEmpty(moduleOp))
+    return funcOp.emitError(
+        "kernel has callers; InsertOutputStores expects no call sites");
 
-  auto newArgTypesOr = addOutputArguments(funcOp, storeInfos);
-  if (failed(newArgTypesOr))
+  if (failed(addOutputArguments(funcOp, storeInfos)))
     return failure();
 
   insertStoreOps(funcOp, returnOp, storeInfos);
 
-  if (failed(removeStoredReturns(funcOp, returnOp, storeInfos, origNumResults)))
-    return failure();
-
-  return updateCallers(funcOp, moduleOp, origNumResults, storeInfos,
-                       *newArgTypesOr);
+  return success();
 }
 
 void RockInsertOutputStoresPass::runOnOperation() {
