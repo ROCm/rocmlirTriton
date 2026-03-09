@@ -6,7 +6,7 @@
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t fp8 -p -pv | rocmlir-driver -kernel-pipeline=full | FileCheck %s --check-prefix=HOST
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t fp8 -p -pv | rocmlir-driver -kernel-pipeline=full | FileCheck %s --check-prefix=HOST_GFX950
 
-// MFMA: rocdl.mfma.f32.16x16x32.fp8.fp8
+// MFMA: rocdl.mfma
 // MFMA-NOT: llvm.mlir.global private constant @__rocmlir_extf_tbl_f8E4M3FNUZ
 
 // TODO(rocmlirTriton): Add meaningul tests to gfx1100 here

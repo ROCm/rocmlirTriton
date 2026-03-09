@@ -153,7 +153,6 @@ mlirMIGraphXAddApplicabilityPipeline(MlirPassManager pm) {
   // TODO: fix applicability
   // opts.applicabilityMode = mlir::rock::ApplicabilityMode::Applicability;
   // This is the default, but we set it paranoidly.
-  opts.tuningFallback = false;
   mlir::rock::buildKernelPipeline(*passMan, opts);
 }
 
@@ -166,7 +165,6 @@ MLIR_CAPI_EXPORTED bool mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
   mlir::rock::KernelOptions kOpts;
   // TODO: fix applicability
   // kOpts.applicabilityMode = mlir::rock::ApplicabilityMode::Full;
-  kOpts.tuningFallback = false;
   mlir::rock::buildKernelPipeline(*passMan, kOpts);
   llvm::StringRef archStr(arch);
   mlir::RocmDeviceName devName;

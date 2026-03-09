@@ -41,12 +41,7 @@ def RockConvToGemmPass : Pass<"rock-conv-to-gemm", "::mlir::func::FuncOp"> {
 
 def RockAffixTuningParametersPass : Pass<"rock-affix-params", "::mlir::func::FuncOp"> {
   let summary = "populate tuning parameters for gemm and convolution ops";
-  let dependentDialects = ["rock::RockDialect",
-                           "func::FuncDialect"];
-  let options = [
-    Option<"fallBackNoConfig", "fallback", "bool", "false",
-      "Fall back to a heuristic system when hand-specified tuning parameters are invalid">
-  ];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
 def RockGemmToGridwisePass : Pass<"rock-gemm-to-gridwise", "::mlir::func::FuncOp"> {

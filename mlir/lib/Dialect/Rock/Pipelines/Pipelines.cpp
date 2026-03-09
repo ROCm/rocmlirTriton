@@ -370,8 +370,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.addPass(createCSEPass());
   };
 
-  addWithDCE(rock::createRockAffixTuningParametersPass(
-      rock::RockAffixTuningParametersPassOptions{options.tuningFallback}));
+  addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
   addWithDCE(rock::createRockConvToGemmPass());

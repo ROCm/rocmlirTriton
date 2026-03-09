@@ -17,6 +17,8 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/IR/AsmState.h"
@@ -203,16 +205,22 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   backendOpts.compile = !isRocdlOnly;
 
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
+  OpBuilder builder(m.getContext());
   auto fillCompilationRes =
       m.walk([&](mlir::rock::RockGemmWrapperInterface op) -> WalkResult {
-        if (auto perfConfigAttr =
-                op->template getAttrOfType<StringAttr>("perf_config")) {
-          if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
-                                            backendOpts))) {
-            llvm::errs() << "Failed to process perfConfig: " << optLevel
-                         << "\n";
-            return WalkResult::interrupt();
-          }
+        auto populateParamsPtr = std::make_unique<rock::PopulateParams>();
+        auto maybeGemmParams =
+            populateParamsPtr->obtainTuningParameters(builder, op);
+        if (failed(maybeGemmParams)) {
+          llvm::errs() << "Failed to obtain perfConfig\n";
+          return WalkResult::interrupt();
+        }
+
+        if (failed(fillCompilationConfigs(maybeGemmParams.value(), tritonOpts,
+                                          backendOpts))) {
+          llvm::errs() << "Failed to process perfConfig: "
+                       << maybeGemmParams.value() << "\n";
+          return WalkResult::interrupt();
         }
         return WalkResult::advance();
       });
@@ -221,13 +229,17 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   }
   auto fillCompilationResGemmGemm =
       m.walk([&](mlir::rock::RockGemmGemmWrapperInterface op) -> WalkResult {
-        if (auto perfConfigAttr =
-                op->template getAttrOfType<StringAttr>("perf_config")) {
-          if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
-                                            backendOpts))) {
-            llvm::errs() << "Failed to process perfConfig for gemm_gemm op\n";
-            return WalkResult::interrupt();
-          }
+        auto maybeGemmGemmParams =
+            rock::PopulateParamsGemmGemm::obtainTuningParameters(builder, op);
+        if (failed(maybeGemmGemmParams)) {
+          llvm::errs() << "Failed to obtain perfConfig\n";
+          return WalkResult::interrupt();
+        }
+        if (failed(fillCompilationConfigs(maybeGemmGemmParams.value(),
+                                          tritonOpts, backendOpts))) {
+          llvm::errs() << "Failed to process perfConfig: "
+                       << maybeGemmGemmParams.value() << "\n";
+          return WalkResult::interrupt();
         }
         return WalkResult::advance();
       });

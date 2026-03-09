@@ -55,7 +55,7 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
 /// numStages, matrixInstrNonkdim, kpack) and `backendOpts` (numWarps,
 /// numCTAs, wavesPerEU) accordingly.
 /// Returns failure if `perfConfig` does not match any known parameter format.
-LogicalResult fillCompilationConfigs(StringAttr perfConfig,
+LogicalResult fillCompilationConfigs(Attribute perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts);
 

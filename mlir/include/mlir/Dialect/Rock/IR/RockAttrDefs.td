@@ -257,6 +257,12 @@ def Rock_GemmParamsAttr
         + Twine(getGridGroupSize())) 
         .toVector(perfStr);
     }
+
+    StringAttr getPerfConfigAttr() {
+        SmallVector<char, 64> buf;
+        getPerfConfigStr(buf);
+        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
+    }
   }];
 
   let builders = [AttrBuilderWithInferredContext<(
@@ -312,6 +318,12 @@ def Rock_GemmGemmParamsAttr
       + Twine(getWavesPerEU()) + ","
       + Twine(getGridGroupSize()))
       .toVector(perfStr);
+    }
+
+    StringAttr getPerfConfigAttr() {
+        SmallVector<char, 64> buf;
+        getPerfConfigStr(buf);
+        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
     }
   }];
 

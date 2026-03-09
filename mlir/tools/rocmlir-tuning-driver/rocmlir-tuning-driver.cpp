@@ -682,7 +682,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
   // 2. Set up compilation options (shared across all threads)
   rock::KernelOptions compilationKernOpts;
-  compilationKernOpts.tuningFallback = false;
 
   RocmDeviceName deviceName;
   StringRef archName =
@@ -859,7 +858,11 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       rock::TritonOptions tritonOpts;
       tritonOpts.arch = backendOpts.chip;
 
-      StringAttr perfConfigAttr = StringAttr::get(ctx.get(), result.perfConfig);
+      StringAttr perfConfigStrAttr =
+          StringAttr::get(ctx.get(), result.perfConfig);
+      Attribute perfConfigAttr = rock::GemmParamsAttr::get(perfConfigStrAttr);
+      if (!perfConfigAttr)
+        perfConfigAttr = rock::GemmGemmParamsAttr::get(perfConfigStrAttr);
       // Parse perfConfig
       if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
                                         backendOpts))) {
@@ -875,7 +878,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       // Applicability check - clone the pre-parsed module
       // TODO: find a more robust way to check for applicability
       OwningOpRef<ModuleOp> sourceCopy =
-          copyIR(sourceModule.get(), perfConfigAttr);
+          copyIR(sourceModule.get(), perfConfigStrAttr);
       if (failed(applicabilityPM.run(sourceCopy.get()))) {
         result.status = CompilationStatus::NotApplicable;
         return result;
