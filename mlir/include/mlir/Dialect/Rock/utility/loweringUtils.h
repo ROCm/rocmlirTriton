@@ -10,7 +10,6 @@
 #define ROCK_UTILITY_LOWERINGUTILS_H
 
 #include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
@@ -24,10 +23,6 @@
 namespace mlir {
 class Operation;
 class Type;
-
-namespace gpu {
-enum class AddressSpace : uint32_t;
-}
 
 namespace rock {
 struct ConvolutionDims;
@@ -102,10 +97,6 @@ SmallVector<int64_t> backwardDataKernelIds(ArrayRef<int64_t> strideDims,
                                            ArrayRef<int64_t> dilationDims,
                                            ArrayRef<int64_t> filterDims);
 
-/// Return a vector type of length `len` if `len` is more than 1, otherwise,
-/// return `type`.
-Type vectorTypeOrSelf(Type elementType, int64_t len);
-
 /// Apply padding to a matrix in its `firstDim` and `secondDim` if applicable.
 Value padMatrix(Value matrix, OpBuilder &b, Location loc, StringRef firstDim,
                 int64_t firstDimPad, StringRef secondDim, int64_t secondDimPad);
@@ -124,31 +115,11 @@ Value normalizeMatrix(Value matrix, OpBuilder &b, Location loc,
                       bool doTranspose, StringRef firstDim,
                       StringRef secondDim);
 
-// Given a `value` traverses its "views" until it finds the real
-// `memref::AllocOp` or fails.
-FailureOr<memref::AllocOp> findMemrefAlloc(Value value);
-
 // Get gridSize
 FailureOr<IntegerAttr> getGridSize(Operation *op);
 
 // Get blockSize
 FailureOr<IntegerAttr> getBlockSize(Operation *op);
-
-// helper to create ReassociationIndices for flattening
-ReassociationIndices getReassociationForFlattening(ShapedType srcTp);
-
-// helper to obtain a flattened memref
-Value getFlattenedMemref(OpBuilder &b, Value nonFlatMemRef);
-
-/// Construct a `memref.view` operation that interprets the buffer `buffer`,
-/// whose elements are bytes, as a buffer of `type`.
-TypedValue<MemRefType> viewBufferAs(OpBuilder &b, Value buffer,
-                                    Type elementType);
-
-/// Same as above but the user provides output dimensions.
-TypedValue<MemRefType> viewBufferAs(OpBuilder &b, Value buffer,
-                                    Type elementType,
-                                    ArrayRef<int64_t> dimensions);
 
 FailureOr<SetVector<StoreOp>> traceRootOutputToStoreOps(Value output);
 
@@ -166,12 +137,6 @@ FailureOr<SmallVector<BlockArgument>> traceRootOutputToArgs(Value output,
 
 // Trace value to a block argument, going through view-like operations
 FailureOr<BlockArgument> findBlockArgument(Value value);
-
-// Trace gemm output to all linalg.generic that happen after it (output fusions)
-// TODO(roctriton):this returns an empty list as there are no linalg.generic
-// output fusions in the tensor-based IR flow.
-FailureOr<SmallVector<OpOperand *>>
-traceGemmOutputToGenericOps(Value matC, func::FuncOp func);
 
 llvm::FailureOr<ArrayAttr>
 computeOutputTransforms(OpBuilder &b, Location loc, int64_t mPerBlock,
