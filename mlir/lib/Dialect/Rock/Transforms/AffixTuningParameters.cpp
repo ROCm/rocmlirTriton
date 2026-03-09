@@ -170,13 +170,16 @@ void AffixTuningParameters::affixTuningParametersImpl(
 
   // Check fusion legality. These checks should happen after perfConfig is
   // picked either through heuristics or user provided.
-  if (failed(testFusionLegalityReduce(funcParent))) {
-    op->emitError("Fusion with reduce ops is not legal on this target");
-    return signalPassFailure();
-  }
-  if (failed(testFusionLegalityBwdDataConv(funcParent))) {
-    op->emitError("Fusion with backward data convolution is not legal");
-    return signalPassFailure();
+  auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
+  if (!fusionInfo.fusionOps.empty()) {
+    if (failed(testFusionLegalityReduce(funcParent))) {
+      op->emitError("Fusion with reduce ops is not legal on this target");
+      return signalPassFailure();
+    }
+    if (failed(testFusionLegalityBwdDataConv(funcParent))) {
+      op->emitError("Fusion with backward data convolution is not legal");
+      return signalPassFailure();
+    }
   }
   if (rock::isSplitKRequested(perfConfigAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
@@ -208,13 +211,16 @@ void AffixTuningParameters::affixTuningParametersImpl(
     return signalPassFailure();
   }
   // Check fusion legality.
-  if (failed(testFusionLegalityReduce(funcParent))) {
-    op->emitError("Fusion with reduce ops is not legal on this target");
-    return signalPassFailure();
-  }
-  if (failed(testFusionLegalityBwdDataConv(funcParent))) {
-    op->emitError("Fusion with backward data convolution is not legal");
-    return signalPassFailure();
+  auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
+  if (!fusionInfo.fusionOps.empty()) {
+    if (failed(testFusionLegalityReduce(funcParent))) {
+      op->emitError("Fusion with reduce ops is not legal on this target");
+      return signalPassFailure();
+    }
+    if (failed(testFusionLegalityBwdDataConv(funcParent))) {
+      op->emitError("Fusion with backward data convolution is not legal");
+      return signalPassFailure();
+    }
   }
   if (rock::isSplitKRequested(perfConfigAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
