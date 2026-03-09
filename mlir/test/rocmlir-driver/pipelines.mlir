@@ -81,6 +81,7 @@
 // HIGHLEVEL-NEXT:fp8e5m2,
 // HIGHLEVEL-NEXT:mxfp} level=none profiles={pro_int,
 // HIGHLEVEL-NEXT:pro_fp} specification_version=1.0})),
+// HIGHLEVEL-NEXT:rock-tosa-to-elementwise),
 // HIGHLEVEL-NEXT:func.func(tosa-optional-decompositions),
 // HIGHLEVEL-NEXT:func.func(canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}),
 // HIGHLEVEL-NEXT:func.func(tosa-infer-shapes),

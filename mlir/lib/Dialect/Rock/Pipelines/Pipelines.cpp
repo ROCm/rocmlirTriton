@@ -274,6 +274,10 @@ void rock::buildBufferizePipeline(OpPassManager &pm,
 
   funcPm.addPass(tosa::createTosaAttachTarget(tosaOptions));
 
+  if (!noRock) {
+    funcPm.addPass(rock::createRockTosaToElementwisePass());
+  }
+
   // use tosa conversion pipeline
   // (see mlir/lib/Conversion/TosaToLinalg/TosaToLinalgPass.cpp)
   TosaToLinalgOptions tosaToLinalgOptions;
