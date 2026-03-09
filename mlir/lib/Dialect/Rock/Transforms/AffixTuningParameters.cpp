@@ -167,9 +167,20 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Set attributes on the function.
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           b.getI32IntegerAttr(blockSize));
-  // check for fusion legality with split-k
-  // this check should happen after perfConfig is picked either through
-  // heuristics or user provided
+
+  // Check fusion legality. These checks should happen after perfConfig is
+  // picked either through heuristics or user provided.
+  auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
+  if (!fusionInfo.fusionOps.empty()) {
+    if (failed(testFusionLegalityReduce(funcParent))) {
+      op->emitError("Fusion with reduce ops is not legal on this target");
+      return signalPassFailure();
+    }
+    if (failed(testFusionLegalityBwdDataConv(funcParent))) {
+      op->emitError("Fusion with backward data convolution is not legal");
+      return signalPassFailure();
+    }
+  }
   if (rock::isSplitKRequested(perfConfigAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
       op->emitError("Fusion with SplitK perfConfig is not legal");
@@ -199,7 +210,18 @@ void AffixTuningParameters::affixTuningParametersImpl(
     op.emitError("The provided perf config is not valid");
     return signalPassFailure();
   }
-  // check for splitK legality
+  // Check fusion legality.
+  auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
+  if (!fusionInfo.fusionOps.empty()) {
+    if (failed(testFusionLegalityReduce(funcParent))) {
+      op->emitError("Fusion with reduce ops is not legal on this target");
+      return signalPassFailure();
+    }
+    if (failed(testFusionLegalityBwdDataConv(funcParent))) {
+      op->emitError("Fusion with backward data convolution is not legal");
+      return signalPassFailure();
+    }
+  }
   if (rock::isSplitKRequested(perfConfigAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
       op->emitError("Fusion with SplitK perfConfig is not legal");

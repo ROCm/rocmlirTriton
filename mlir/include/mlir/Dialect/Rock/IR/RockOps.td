@@ -61,16 +61,14 @@ class TensorOrMemRefOf<list<Type> allowedTypes> :
 
 class IndexArrayLength<int n> : ConfinedAttr<IndexArrayAttr, [ArrayMinCount<n>]>;
 
-class Rock_ConvOpBase<string mnemonic, list<Type> inputTypes = [F32, F16, BF16],
-                      list<Type> outputTypes = [F32, F16, BF16]>
+defvar commonConvAttrs = (ins IndexArrayLength<4>:$padding,
+    IndexArrayLength<2>:$strides, IndexArrayLength<2>:$dilations,
+    OptionalAttr<RockTuningParamAttrInterface>:$params);
+
+class Rock_ConvOpBase<string mnemonic>
     : Rock_Op<mnemonic, [DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
                          DeclareOpInterfaceMethods<RockConvInterface>,
                          RockFusionRoot]> {
-  dag commonConvArgs = (ins TensorOrMemRefOf<inputTypes>:$filter,
-      TensorOrMemRefOf<inputTypes>:$input,
-      TensorOrMemRefOf<outputTypes>:$output, IndexArrayLength<4>:$padding,
-      IndexArrayLength<2>:$strides, IndexArrayLength<2>:$dilations,
-      OptionalAttr<RockTuningParamAttrInterface>:$params);
   let results = (outs AnyRankedTensor:$result);
 }
 
@@ -80,11 +78,14 @@ defvar GemmInputTypes = [F32, F16, BF16, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M2,
 defvar GemmOutputTypes = [F32, F16, BF16, I32, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M2, F8E4M3FN];
 defvar GemmAccumulatorTypes = [F32, F16, BF16, I32];
 
-def Rock_ConvOp : Rock_ConvOpBase<"conv", GemmInputTypes, GemmOutputTypes> {
-  let arguments = commonConvArgs;
+def Rock_ConvOp : Rock_ConvOpBase<"conv"> {
+  let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$filter,
+                           RankedTensorOf<GemmInputTypes>:$input),
+                       commonConvAttrs);
   let summary = "N-D convolution forward";
   let description = [{
-    The `rock.conv` op computes N-D convolution forward.
+    The `rock.conv` op computes N-D forward convolution.
+    Takes filter and input tensors, produces the output feature map as $result.
   }];
   let assemblyFormat = [{
     `(` operands `)` attr-dict
@@ -94,10 +95,14 @@ def Rock_ConvOp : Rock_ConvOpBase<"conv", GemmInputTypes, GemmOutputTypes> {
 
 def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
 {
-  let arguments = commonConvArgs;
+  let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$filter,
+                           RankedTensorOf<GemmInputTypes>:$gradient),
+                       commonConvAttrs);
   let summary = "N-D convolution backward data";
   let description = [{
     The `rock.conv_bwd_data` op computes N-D convolution backward data.
+    Takes filter and gradient (from the forward output) tensors, produces the
+    gradient with respect to the input as $result.
 
     Multiple implicit GEMM kernels may be needed for the correct computation
     of the result (e.g. when stride > 1). The ConvToGemm pass expands a single
@@ -113,12 +118,16 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
 
 def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
 {
-  dag additionalArgs = (ins Optional<TensorOrMemRefOf<[F32]>>:$workspace,
-      OptionalAttr<IndexAttr>:$kBlocks);
-  let arguments = !con(commonConvArgs, additionalArgs);
+  let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$input,
+                           RankedTensorOf<GemmInputTypes>:$gradient),
+                       commonConvAttrs,
+                       (ins Optional<RankedTensorOf<[F32]>>:$workspace,
+                           OptionalAttr<IndexAttr>:$kBlocks));
   let summary = "N-D convolution backward weight";
   let description = [{
     The `rock.conv_bwd_weight` op computes N-D convolution backward weight.
+    Takes input and gradient (from the forward output) tensors, produces the
+    gradient with respect to the filter weights as $result.
   }];
   let assemblyFormat = [{
     `(` operands `)` attr-dict
@@ -387,37 +396,6 @@ def Rock_TransformOp :
 
   let extraClassDeclaration = [{
     Value getViewSource() { return getInput(); }
-  }];
-}
-
-def Rock_TensorUntransformCastOp :
-    Rock_Op<"tensor_untransform_cast",
-      [Pure, AllTypesMatch<["transformedResult", "transformedArg"]>]>,
-    Arguments<(ins AnyRankedTensor:$transformedResult,
-                      AnyRankedTensor:$transformedArg)>,
-    Results<(outs AnyRankedTensor:$untransformed)> {
-  let summary = "Cast transformed tensor 'result' back to underlying allocation";
-  let description = [{
-    This operation exists to enable bufferization where we have the pattern
-    ```mlir
-    %buf = bufferization.alloc_tensor : T
-    %t1 = rock.transform %buf : T to I1
-    ...
-    %output = rock.transform %tK : TK to U
-    %result = rock.conv(..., %output) : ..., U
-    op(%result, ...)
-    ```
-    where op required a value of type %T.
-
-    This op
-    Thi op must be eliminated during bufferization.
-
-    If the alleged result type is not equal to the type of untransform(transformArg),
-    it is in error.
-  }];
-  let assemblyFormat = [{
-    attr-dict $transformedResult `aka` $transformedArg
-    `:` type($transformedResult) `to` type($untransformed)
   }];
 }
 

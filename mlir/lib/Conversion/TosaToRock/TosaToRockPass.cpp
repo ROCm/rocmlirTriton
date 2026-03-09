@@ -41,7 +41,6 @@ public:
       llvm::report_fatal_error("func op does not have the kernel attribute");
     }
     auto &ctx = getContext();
-    // Split patterns into two stages by bufferization
     RewritePatternSet attentionPatterns(&ctx);
     mlir::tosa::populateTosaToRockAttentionConversionPatterns(
         &ctx, attentionPatterns);

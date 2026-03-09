@@ -12,7 +12,7 @@ module attributes {rock.arch = "gfx950:sramecc+:xnack-"} {
     %0 = rock.transform %arg0 by #transform_map : tensor<4608xf16> to tensor<1x24x12x4x4xf16>
     %1 = rock.transform %arg1 by #transform_map1 : tensor<1728xf16> to tensor<1x1x12x12x12xf16>
     %2 = rock.transform %arg2 by #transform_map2 : tensor<864xf16> to tensor<1x1x24x6x6xf16>
-    %3 = rock.conv_bwd_data(%0, %1, %2) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [1 : index, 1 : index, 1 : index, 1 : index], perf_config = "gemm:v1:64,64,64,1,1,4,16,2,2,0,0", strides = [2 : index, 2 : index]} : tensor<1x24x12x4x4xf16>, tensor<1x1x12x12x12xf16>, tensor<1x1x24x6x6xf16> -> tensor<1x1x12x12x12xf16>
+    %3 = rock.conv_bwd_data(%0, %2) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [1 : index, 1 : index, 1 : index, 1 : index], perf_config = "gemm:v1:64,64,64,1,1,4,16,2,2,0,0", strides = [2 : index, 2 : index]} : tensor<1x24x12x4x4xf16>, tensor<1x1x24x6x6xf16> -> tensor<1x1x12x12x12xf16>
     %4 = rock.store %3 to %1 by  set : tensor<1x1x12x12x12xf16> -> tensor<1x1x12x12x12xf16> to tensor<1x1x12x12x12xf16>
     return %4 : tensor<1x1x12x12x12xf16>
   }

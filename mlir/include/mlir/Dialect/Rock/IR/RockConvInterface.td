@@ -18,54 +18,58 @@
 include "mlir/IR/OpBase.td"
 
 def RockConvInterface : OpInterface<"RockConvInterface"> {
-  let description = [{}];
+  let description = [{
+    Interface for convolution operations. Provides uniform access to the three
+    tensors in the mathematical convolution equation: output = conv(filter, input).
+
+    Each method returns the appropriate Value regardless of whether it is an
+    operand or the computed result of the operation:
+    - ConvOp:          filter=operand, input=operand,  output=result
+    - ConvBwdDataOp:   filter=operand, input=result,   output=operand($gradient)
+    - ConvBwdWeightOp: filter=result,  input=operand,  output=operand($gradient)
+  }];
   let cppNamespace = "::mlir::rock";
 
-  let methods = [
-    InterfaceMethod<
-        /*desc=*/[{Return filter tensor.}],
-        /*retType=*/"::mlir::TypedValue<::mlir::ShapedType>",
-        /*methodName=*/"getFilter",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{ return $_op.getFilter(); }]>,
-    InterfaceMethod<
-        /*desc=*/[{Return input tensor.}],
-        /*retType=*/"::mlir::TypedValue<::mlir::ShapedType>",
-        /*methodName=*/"getInput",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{ return $_op.getInput(); }]>,
-    InterfaceMethod<
-        /*desc=*/[{Return output tensor.}],
-        /*retType=*/"::mlir::TypedValue<::mlir::ShapedType>",
-        /*methodName=*/"getOutput",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{ return $_op.getOutput(); }]>,
-    InterfaceMethod<
-        /*desc=*/[{Return convolution padding values.}],
-        /*retType=*/"ArrayAttr",
-        /*methodName=*/"getPadding",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{ return $_op.getPadding(); }]>,
-    InterfaceMethod<
-        /*desc=*/[{Return convolution stride values.}],
-        /*retType=*/"ArrayAttr",
-        /*methodName=*/"getStrides",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{ return $_op.getStrides(); }]>,
-    InterfaceMethod<
-        /*desc=*/[{Return convolution dilation values.}],
-        /*retType=*/"ArrayAttr",
-        /*methodName=*/"getDilations",
-        /*args=*/(ins),
-        /*methodBody=*/"",
-        /*defaultImplementation=*/[{ return $_op.getDilations(); }]>,
-
-    // TODO: more methods here as needed
+  let methods =
+      [InterfaceMethod<
+           /*desc=*/
+           [{Return the filter/weights tensor in convolution semantics.}],
+           /*retType=*/"::mlir::TypedValue<::mlir::ShapedType>",
+           /*methodName=*/"getConvFilter",
+           /*args=*/(ins)>,
+       InterfaceMethod<
+           /*desc=*/
+           [{Return the forward-input tensor in convolution semantics.}],
+           /*retType=*/"::mlir::TypedValue<::mlir::ShapedType>",
+           /*methodName=*/"getConvInput",
+           /*args=*/(ins)>,
+       InterfaceMethod<
+           /*desc=*/
+           [{Return the forward-output tensor in convolution semantics.}],
+           /*retType=*/"::mlir::TypedValue<::mlir::ShapedType>",
+           /*methodName=*/"getConvOutput",
+           /*args=*/(ins)>,
+       InterfaceMethod<
+           /*desc=*/[{Return convolution padding values.}],
+           /*retType=*/"ArrayAttr",
+           /*methodName=*/"getPadding",
+           /*args=*/(ins),
+           /*methodBody=*/"",
+           /*defaultImplementation=*/[{ return $_op.getPadding(); }]>,
+       InterfaceMethod<
+           /*desc=*/[{Return convolution stride values.}],
+           /*retType=*/"ArrayAttr",
+           /*methodName=*/"getStrides",
+           /*args=*/(ins),
+           /*methodBody=*/"",
+           /*defaultImplementation=*/[{ return $_op.getStrides(); }]>,
+       InterfaceMethod<
+           /*desc=*/[{Return convolution dilation values.}],
+           /*retType=*/"ArrayAttr",
+           /*methodName=*/"getDilations",
+           /*args=*/(ins),
+           /*methodBody=*/"",
+           /*defaultImplementation=*/[{ return $_op.getDilations(); }]>,
   ];
 }
 

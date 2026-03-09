@@ -13,7 +13,6 @@
 #include "mlir/Conversion/TosaToRock/TosaToRock.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/Bufferization/IR/BufferizationTypeInterfaces.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
@@ -117,16 +116,66 @@ struct ConvFields {
   SmallString<8> outputLayout;
   Value inputExp;
   Value filterExp;
-  Value outputExp;
+  RankedTensorType expandedOutputType;
   ArrayAttr pad;
   ArrayAttr stride;
   ArrayAttr dilation;
   StringAttr perfConfig;
 };
 
+// Collapse the group dimension from a conv result back to the original
+// output type. The expandTensor function inserts a 'g' dimension by splitting
+// one of the existing dimensions (e.g., K -> [g, K/g]). This function undoes
+// that by creating a tensor.collapse_shape that merges those dimensions back.
+static Value collapseGroupDim(PatternRewriter &rw, Location loc,
+                              Value convResult, RankedTensorType outputType,
+                              Operation *convOp) {
+  // If the shapes already match, no collapse needed.
+  if (cast<RankedTensorType>(convResult.getType()).getShape() ==
+      outputType.getShape())
+    return convResult;
+
+  auto expandedType = cast<RankedTensorType>(convResult.getType());
+  auto outputLayoutAttr = convOp->getAttrOfType<ArrayAttr>("output_layout");
+  assert(outputLayoutAttr && "expected output_layout attribute on conv op");
+
+  // Find the 'g' and 'k' dimension positions in the output layout.
+  // Layout entries have an "o" suffix (e.g., "no", "ho", "go", "ko").
+  int64_t gDimPos = -1;
+  int64_t kDimPos = -1;
+  for (auto [i, attr] : llvm::enumerate(outputLayoutAttr)) {
+    StringRef dimName = cast<StringAttr>(attr).getValue();
+    if (dimName == "go")
+      gDimPos = static_cast<int64_t>(i);
+    else if (dimName == "ko")
+      kDimPos = static_cast<int64_t>(i);
+  }
+  assert(gDimPos >= 0 && "expected 'go' dimension in output layout");
+  assert(kDimPos >= 0 && "expected 'ko' dimension in output layout");
+
+  // Build reassociation to merge 'g' back with 'k'.
+  int64_t expandedRank = expandedType.getRank();
+  SmallVector<ReassociationIndices> reassociation;
+  int64_t firstGK = std::min(gDimPos, kDimPos);
+  int64_t secondGK = std::max(gDimPos, kDimPos);
+  for (int64_t i = 0; i < expandedRank; i++) {
+    if (i == firstGK) {
+      reassociation.push_back({firstGK, secondGK});
+      assert(secondGK == firstGK + 1 &&
+             "expected 'g' and 'k' to be adjacent dimensions");
+      i++; // skip the second of the g/k pair
+    } else {
+      reassociation.push_back({i});
+    }
+  }
+
+  return tensor::CollapseShapeOp::create(rw, loc, outputType, convResult,
+                                         reassociation);
+}
+
 static ConvFields commonConv(PatternRewriter &rw, Operation *op, Value input,
-                             Value filter, Value output, DenseI64ArrayAttr pad,
-                             DenseI64ArrayAttr stride,
+                             Value filter, RankedTensorType outputType,
+                             DenseI64ArrayAttr pad, DenseI64ArrayAttr stride,
                              DenseI64ArrayAttr dilation, int64_t group) {
   ConvFields res;
 
@@ -141,20 +190,39 @@ static ConvFields commonConv(PatternRewriter &rw, Operation *op, Value input,
     res.inputLayout = attr.getValue();
   else if (cast<ShapedType>(input.getType()).getRank() > 4)
     res.inputLayout = "n012c";
-  if (output) {
+
+  if (outputType) {
     res.outputLayout = "nhwk";
     if (auto attr = op->getAttrOfType<StringAttr>("output_layout"))
       res.outputLayout = attr.getValue();
-    else if (cast<ShapedType>(output.getType()).getRank() > 4)
+    else if (outputType.getRank() > 4)
       res.outputLayout = "n012k";
+
+    // Insert 'g' dimension into the layout and compute the expanded shape,
+    // mirroring what expandTensor does but without creating IR ops.
+    auto shape = outputType.getShape();
+    size_t kDim = res.outputLayout.find('k');
+    SmallVector<int64_t> expandedShape;
+    for (size_t i = 0; i < shape.size(); i++) {
+      if (i == kDim) {
+        expandedShape.push_back(group);
+        expandedShape.push_back(shape[i] / group);
+      } else {
+        expandedShape.push_back(shape[i]);
+      }
+    }
+    res.outputLayout = (Twine(res.outputLayout.substr(0, kDim)) + "g" +
+                        res.outputLayout.substr(kDim))
+                           .str();
+    res.expandedOutputType =
+        RankedTensorType::get(expandedShape, outputType.getElementType());
   }
 
-  // expand tensors from rank 4 (NHWC) to rank 5 (NHWCG)
-  // and add 'g into the layout
+  // Expand filter and input tensors from rank 4 (NHWC) to rank 5 (NHWCG)
+  // and add 'g' into the layout. Output expansion is handled above as a
+  // pure type computation
   res.inputExp = expandTensor(rw, op, input, res.inputLayout, "c", group);
   res.filterExp = expandTensor(rw, op, filter, res.filterLayout, "k", group);
-  if (output)
-    res.outputExp = expandTensor(rw, op, output, res.outputLayout, "k", group);
 
   res.pad = rw.getIndexArrayAttr(pad);
   res.stride = rw.getIndexArrayAttr(stride);
@@ -175,7 +243,7 @@ static void addConvAttributes(PatternRewriter &rw, Operation *cop,
         rw.getStringAttr(convFields.filterLayout.substr(i, 1)));
     inputLayoutSpec.push_back(
         rw.getStringAttr(convFields.inputLayout.substr(i, 1) + "i"));
-    if (convFields.outputExp)
+    if (!convFields.outputLayout.empty())
       outputLayoutSpec.push_back(
           rw.getStringAttr(convFields.outputLayout.substr(i, 1) + "o"));
   }
@@ -192,7 +260,7 @@ static void addConvAttributes(PatternRewriter &rw, Operation *cop,
   cop->setAttr("input_layout",
                rw.getArrayAttr(ArrayRef<Attribute>(inputLayoutSpec.begin(),
                                                    inputLayoutSpec.end())));
-  if (convFields.outputExp)
+  if (!convFields.outputLayout.empty())
     cop->setAttr("output_layout",
                  rw.getArrayAttr(ArrayRef<Attribute>(outputLayoutSpec.begin(),
                                                      outputLayoutSpec.end())));
@@ -200,31 +268,33 @@ static void addConvAttributes(PatternRewriter &rw, Operation *cop,
 
 static FailureOr<rock::RockConvInterface>
 makeRockConv(ConversionPatternRewriter &rw, Operation *op, Value input,
-             Value filter, Value output, DenseI64ArrayAttr pad,
+             Value filter, RankedTensorType outputType, DenseI64ArrayAttr pad,
              DenseI64ArrayAttr stride, DenseI64ArrayAttr dilation,
-             int64_t group, int64_t kernelID,
-             std::optional<std::string> convBackwardKind) {
+             int64_t group, std::optional<std::string> convBackwardKind) {
   Location loc = op->getLoc();
-  ConvFields convFields =
-      commonConv(rw, op, input, filter, output, pad, stride, dilation, group);
+  ConvFields convFields = commonConv(rw, op, input, filter, outputType, pad,
+                                     stride, dilation, group);
 
   Operation *cop = nullptr;
   if (convBackwardKind.has_value() &&
       convBackwardKind.value() == ROCK_CUSTOMOP_CONV_BWD_DATA) {
+    // ConvBwdDataOp takes (filter, gradient) and produces gradient w.r.t.
+    // input. convFields.inputExp is the expanded gradient from TOSA operands.
     cop = rock::ConvBwdDataOp::create(
-        rw, loc, convFields.outputExp.getType(), convFields.filterExp,
-        convFields.outputExp, convFields.inputExp, rw.getIndexArrayAttr(pad),
+        rw, loc, convFields.expandedOutputType, convFields.filterExp,
+        convFields.inputExp, rw.getIndexArrayAttr(pad),
         rw.getIndexArrayAttr(stride), rw.getIndexArrayAttr(dilation),
         /*params=*/nullptr);
   } else {
-    // Handle forwards convolution
+    // Handle forwards convolution.
+    // ConvOp takes (filter, input) and produces the output as the result.
     assert((!convBackwardKind.has_value() ||
             convBackwardKind.value() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT) &&
            "bwd_weight currently not implemented");
-    cop = rock::ConvOp::create(
-        rw, loc, convFields.outputExp.getType(), convFields.filterExp,
-        convFields.inputExp, convFields.outputExp, convFields.pad,
-        convFields.stride, convFields.dilation, /*params=*/nullptr);
+    cop = rock::ConvOp::create(rw, loc, convFields.expandedOutputType,
+                               convFields.filterExp, convFields.inputExp,
+                               convFields.pad, convFields.stride,
+                               convFields.dilation, /*params=*/nullptr);
   }
 
   addConvAttributes(rw, cop, convFields);
@@ -248,10 +318,6 @@ static Value traceToRes(Value tensor, DenseMap<Value, Value> &cache,
     } else if (auto collapse =
                    tensor.getDefiningOp<tensor::CollapseShapeOp>()) {
       res = traceToRes(collapse.getSrc(), cache, expectedTensor);
-    } else if (auto untransform =
-                   tensor.getDefiningOp<rock::TensorUntransformCastOp>()) {
-      res =
-          traceToRes(untransform.getTransformedResult(), cache, expectedTensor);
     } else if (auto tosaOp = tensor.getDefiningOp<tosa::TosaOp>()) {
       for (auto operand : tosaOp->getOperands()) {
         if (llvm::isa<TensorType>(operand.getType())) {
@@ -589,9 +655,6 @@ public:
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
-    Value output =
-        bufferization::AllocTensorOp::create(rw, loc, outputType, ValueRange{});
-
     auto groupAttr = op->template getAttrOfType<IntegerAttr>("group");
     auto padAttr = op->template getAttrOfType<DenseI64ArrayAttr>("pad");
     auto dilationAttr =
@@ -611,16 +674,15 @@ public:
           "Expected 'dilation' attribute to be present on the operation");
 
     FailureOr<rock::RockConvInterface> rockConv =
-        makeRockConv(rw, op, input, filter, output, padAttr, op.getStrideAttr(),
-                     dilationAttr, group, /*kernelID=*/0, "");
+        makeRockConv(rw, op, input, filter, outputType, padAttr,
+                     op.getStrideAttr(), dilationAttr, group, "");
 
     if (failed(rockConv))
       return failure();
 
-    Value result;
     Operation *rockConvOp = rockConv->getOperation();
-    result = rock::TensorUntransformCastOp::create(
-        rw, loc, outputType, rockConvOp->getResult(0), rockConv->getOutput());
+    Value result = collapseGroupDim(rw, loc, rockConvOp->getResult(0),
+                                    outputType, rockConvOp);
 
     // test for zero bias, and ignore
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
@@ -674,9 +736,6 @@ public:
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
-    Value output =
-        bufferization::AllocTensorOp::create(rw, loc, outputType, ValueRange{});
-
     auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
     auto padAttr = op->getAttrOfType<DenseI64ArrayAttr>("pad");
     auto strideAttr = op->getAttrOfType<DenseI64ArrayAttr>("stride");
@@ -693,16 +752,18 @@ public:
           "TosaToRock lowering support for bwd_weight not supported");
     }
 
-    FailureOr<rock::RockConvInterface> rockConv = makeRockConv(
-        rw, op, input, filter, output, padAttr, strideAttr, dilationAttr, group,
-        /*kernelID=*/0, ROCK_CUSTOMOP_CONV_BWD_DATA);
-
-    addZeroInitPrefillAttribute(op, rockConv->getOperation());
+    FailureOr<rock::RockConvInterface> rockConv =
+        makeRockConv(rw, op, input, filter, outputType, padAttr, strideAttr,
+                     dilationAttr, group, ROCK_CUSTOMOP_CONV_BWD_DATA);
 
     if (failed(rockConv))
       return failure();
 
-    Value result = output;
+    Operation *rockConvOp = rockConv->getOperation();
+    addZeroInitPrefillAttribute(op, rockConvOp);
+
+    Value result = collapseGroupDim(rw, loc, rockConvOp->getResult(0),
+                                    outputType, rockConvOp);
 
     // test for zero bias, and ignore
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
@@ -1446,10 +1507,10 @@ struct ConvElementwiseGemmRewritePattern
     int64_t group = 1;
     if (auto attr = op->template getAttrOfType<IntegerAttr>("group"))
       group = attr.getInt(); // Use op.getGroup() when all OpT have it.
-    ConvFields convFields =
-        commonConv(rewriter, op, firstConv.getInput(), firstConv.getWeight(),
-                   output, firstConv.getPadAttr(), firstConv.getStrideAttr(),
-                   firstConv.getDilationAttr(), group);
+    ConvFields convFields = commonConv(
+        rewriter, op, firstConv.getInput(), firstConv.getWeight(),
+        /*outputType=*/RankedTensorType(), firstConv.getPadAttr(),
+        firstConv.getStrideAttr(), firstConv.getDilationAttr(), group);
     auto firstGemmBlockIndex = elementwiseRegionFinder.getFirstGemmBlockIndex();
 
     if (failed(setSplitKAttrs(op, rewriter)))

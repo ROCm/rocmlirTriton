@@ -834,9 +834,9 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
       opType == KernelType::ConvBwdWeight) { // conv cases
     RockConvInterface convIF = dyn_cast<RockConvInterface>(gemmOp);
 
-    ShapedType inType = convIF.getInput().getType();
+    ShapedType inType = convIF.getConvInput().getType();
     ArrayRef<int64_t> inShape = inType.getShape();
-    ShapedType filType = convIF.getFilter().getType();
+    ShapedType filType = convIF.getConvFilter().getType();
     ArrayRef<int64_t> filShape = filType.getShape();
 
     // Extract layout information
