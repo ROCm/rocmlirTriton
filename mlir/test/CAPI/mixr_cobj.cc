@@ -210,7 +210,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   module.walk([&](mlir::func::FuncOp f) {
     auto args = f.getArguments();
     for (auto arg : args) {
-      argIdx += 3; // 3 per tensors : allocated ptr, aligned ptr, offset
+      argIdx += 3; // 3 per tensor : allocated ptr, aligned ptr, offset
       auto sType = mlir::cast<mlir::ShapedType>(arg.getType());
       long long rank = sType.getRank();
       printf("rank:%lld, dim:", rank);

@@ -1064,54 +1064,6 @@ AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
 // Converting general MLIR to transformations.
 //===----------------------------------------------------------------------===//
 
-// This function will create a permutation that will permute the originalMap to
-// be a MinorIdentityWithBroadcast. This is used to add a permutation later in
-// the chain.
-// e.g. :
-// (d0, d1, d2, d4) -> (0, d1) was the map
-// This function will return a permutation : [0, 3, 2, 1] s.t.
-// apply it to the original map would result in
-// (d0, d4, d2, d1) -> (0, d1) in effect.
-static void createPermutationForMinorIdentityWithBroadcast(
-    const AffineMap &originalMap, SmallVectorImpl<uint32_t> &perm) {
-  for (uint32_t i = 0; i < originalMap.getNumInputs(); ++i) {
-    perm.push_back(i);
-  }
-
-  llvm::SmallSet<uint32_t, 4> foundInputDims;
-  for (const auto &idxAndValue : llvm::enumerate(originalMap.getResults())) {
-    auto idx = idxAndValue.index();
-    AffineExpr resultExpr = idxAndValue.value();
-    if (isa<AffineDimExpr>(resultExpr)) {
-      foundInputDims.insert(originalMap.getDimPosition(idx));
-    }
-  }
-
-  for (const auto &idxAndValue : llvm::enumerate(originalMap.getResults())) {
-    auto idx = idxAndValue.index();
-    AffineExpr resultExpr = idxAndValue.value();
-    if (isa<AffineDimExpr>(resultExpr)) {
-      auto swap1 = originalMap.getDimPosition(idx);
-      auto swap2 =
-          originalMap.getNumInputs() - originalMap.getNumResults() + idx;
-      perm[swap1] = swap2;
-      // Only do swap if the output expr does not define another place for the
-      // other input dim
-      if (!foundInputDims.contains(swap2)) {
-        perm[swap2] = swap1;
-      }
-    }
-  }
-}
-
-static unsigned getResultPosition(AffineMap map, unsigned input) {
-  for (unsigned i = 0, numResults = map.getNumResults(); i < numResults; i++)
-    if (map.getDimPosition(i) == input)
-      return i;
-  llvm_unreachable("incorrect result request");
-  return 0;
-}
-
 TransformMapAttr mlir::rock::invertTransformMap(
     OpBuilder &b, mlir::rock::TransformMapAttr transformMap, Location loc) {
   ArrayRef<int64_t> lowShape = transformMap.getLowerBounds();
@@ -2322,7 +2274,7 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
         continue;
       } else {
         LLVM_DEBUG(llvm::dbgs()
-                   << "getInputFusionElementType: Found non expected op = "
+                   << "getInputFusionElementType: Found unexpected op = "
                    << value.getDefiningOp() << "\n");
         return failure();
       }
@@ -2337,14 +2289,12 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
 
   // The FusionRoot input can come from N tensors, choose the biggest as a proxy
   // of the dominant load element type
-  TypedValue<ShapedType> biggestTensor =
-      cast<TypedValue<ShapedType>>(kernelArgs[0]);
+  Value biggestTensor = kernelArgs[0];
   for (auto tensor : kernelArgs) {
-    if (auto shapedType = cast<ShapedType>(tensor.getType())) {
+    if (auto shapedType = dyn_cast<ShapedType>(tensor.getType())) {
       if (shapedType.getNumElements() >
-          biggestTensor.getType().getNumElements()) {
-        biggestTensor = cast<TypedValue<ShapedType>>(tensor);
-      }
+          cast<ShapedType>(biggestTensor.getType()).getNumElements())
+        biggestTensor = tensor;
     } else {
       LLVM_DEBUG(llvm::dbgs()
                  << "getInputFusionElementType: Found a non-tensor kernel arg "
@@ -2353,5 +2303,5 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
     }
   }
 
-  return biggestTensor.getType().getElementType();
+  return cast<ShapedType>(biggestTensor.getType()).getElementType();
 }
