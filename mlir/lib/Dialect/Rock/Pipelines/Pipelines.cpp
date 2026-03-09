@@ -273,10 +273,7 @@ void rock::buildBufferizePipeline(OpPassManager &pm,
   tosaOptions.extensions.push_back("mxfp");
 
   funcPm.addPass(tosa::createTosaAttachTarget(tosaOptions));
-
-  if (!noRock) {
-    funcPm.addPass(rock::createRockTosaToElementwisePass());
-  }
+  funcPm.addPass(rock::createRockTosaToElementwisePass());
 
   // use tosa conversion pipeline
   // (see mlir/lib/Conversion/TosaToLinalg/TosaToLinalgPass.cpp)

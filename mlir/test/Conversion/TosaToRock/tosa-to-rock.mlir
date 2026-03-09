@@ -263,6 +263,41 @@ func.func @mlir_conv_transpose_add(%arg0: tensor<128x32x32x8xf32>, %arg1: tensor
 
 // -----
 
+// CHECK-LABEL: @add_broadcast_trailing
+// CHECK:       %[[BCAST:.*]] = rock.transform %arg1 by
+// CHECK-SAME:  tensor<1x512x1x1xf32> to tensor<1x512x28x28xf32>
+// CHECK:       tosa.add %arg0, %[[BCAST]]
+func.func @add_broadcast_trailing(%arg0: tensor<1x512x28x28xf32>, %arg1: tensor<1x512x1x1xf32>) -> tensor<1x512x28x28xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<1x512x28x28xf32>, tensor<1x512x1x1xf32>) -> tensor<1x512x28x28xf32>
+  return %0 : tensor<1x512x28x28xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @add_broadcast_one_dim
+// CHECK:       %[[BCAST:.*]] = rock.transform %arg1 by
+// CHECK-SAME:  tensor<1x8xf32> to tensor<4x8xf32>
+// CHECK:       tosa.add %arg0, %[[BCAST]]
+func.func @add_broadcast_one_dim(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<4x8xf32>, tensor<1x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @add_broadcast_both
+// CHECK-DAG:   %[[BCAST0:.*]] = rock.transform %arg0 by
+// CHECK-SAME:  tensor<1x8xf32> to tensor<4x8xf32>
+// CHECK-DAG:   %[[BCAST1:.*]] = rock.transform %arg1 by
+// CHECK-SAME:  tensor<4x1xf32> to tensor<4x8xf32>
+// CHECK:       tosa.add %[[BCAST0]], %[[BCAST1]]
+func.func @add_broadcast_both(%arg0: tensor<1x8xf32>, %arg1: tensor<4x1xf32>) -> tensor<4x8xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<1x8xf32>, tensor<4x1xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
 // CHECK-LABEL-DISABLED: mlir_scaled_gemm_both_scales
 // CHECK-DISABLED: rock.gemm %{{.*}} scaled by %{{.*}} * %{{.*}} scaled by %{{.*}}
 

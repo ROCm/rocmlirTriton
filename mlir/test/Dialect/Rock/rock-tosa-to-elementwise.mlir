@@ -1,0 +1,452 @@
+// RUN: rocmlir-opt --rock-tosa-to-elementwise --split-input-file %s | FileCheck %s
+
+// CHECK-LABEL: @add_f32
+// CHECK-NOT:   tosa.add
+// CHECK:       arith.addf %arg0, %arg1 : tensor<64x128xf32>
+func.func @add_f32(%arg0: tensor<64x128xf32>, %arg1: tensor<64x128xf32>) -> tensor<64x128xf32> attributes {rock.kernel} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<64x128xf32>, tensor<64x128xf32>) -> tensor<64x128xf32>
+  return %0 : tensor<64x128xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @add_i32
+// CHECK-NOT:   tosa.add
+// CHECK:       arith.addi %arg0, %arg1 : tensor<32x64xi32>
+func.func @add_i32(%arg0: tensor<32x64xi32>, %arg1: tensor<32x64xi32>) -> tensor<32x64xi32> attributes {rock.kernel} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<32x64xi32>, tensor<32x64xi32>) -> tensor<32x64xi32>
+  return %0 : tensor<32x64xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @sub_f16
+// CHECK-NOT:   tosa.sub
+// CHECK:       arith.subf %arg0, %arg1 : tensor<8x16xf16>
+func.func @sub_f16(%arg0: tensor<8x16xf16>, %arg1: tensor<8x16xf16>) -> tensor<8x16xf16> attributes {rock.kernel} {
+  %0 = tosa.sub %arg0, %arg1 : (tensor<8x16xf16>, tensor<8x16xf16>) -> tensor<8x16xf16>
+  return %0 : tensor<8x16xf16>
+}
+
+// -----
+
+// CHECK-LABEL: @maximum_f32
+// CHECK-NOT:   tosa.maximum
+// CHECK:       arith.maximumf %arg0, %arg1 : tensor<4x8xf32>
+func.func @maximum_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.maximum %arg0, %arg1 : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @maximum_i32
+// CHECK-NOT:   tosa.maximum
+// CHECK:       arith.maxsi %arg0, %arg1 : tensor<4x8xi32>
+func.func @maximum_i32(%arg0: tensor<4x8xi32>, %arg1: tensor<4x8xi32>) -> tensor<4x8xi32> attributes {rock.kernel} {
+  %0 = tosa.maximum %arg0, %arg1 : (tensor<4x8xi32>, tensor<4x8xi32>) -> tensor<4x8xi32>
+  return %0 : tensor<4x8xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @minimum_f32
+// CHECK-NOT:   tosa.minimum
+// CHECK:       arith.minimumf %arg0, %arg1 : tensor<4x8xf32>
+func.func @minimum_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.minimum %arg0, %arg1 : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @exp_f32
+// CHECK-NOT:   tosa.exp
+// CHECK:       math.exp %arg0 : tensor<64xf32>
+func.func @exp_f32(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
+  %0 = tosa.exp %arg0 : (tensor<64xf32>) -> tensor<64xf32>
+  return %0 : tensor<64xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @log_f32
+// CHECK-NOT:   tosa.log
+// CHECK:       math.log %arg0 : tensor<32xf32>
+func.func @log_f32(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
+  %0 = tosa.log %arg0 : (tensor<32xf32>) -> tensor<32xf32>
+  return %0 : tensor<32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @rsqrt_f32
+// CHECK-NOT:   tosa.rsqrt
+// CHECK:       math.rsqrt %arg0 : tensor<16xf32>
+func.func @rsqrt_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.rsqrt %arg0 : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @ceil_f32
+// CHECK-NOT:   tosa.ceil
+// CHECK:       math.ceil %arg0 : tensor<16xf32>
+func.func @ceil_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.ceil %arg0 : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @floor_f32
+// CHECK-NOT:   tosa.floor
+// CHECK:       math.floor %arg0 : tensor<16xf32>
+func.func @floor_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.floor %arg0 : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @tanh_f32
+// CHECK-NOT:   tosa.tanh
+// CHECK:       math.tanh %arg0 : tensor<64xf32>
+func.func @tanh_f32(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
+  %0 = tosa.tanh %arg0 : (tensor<64xf32>) -> tensor<64xf32>
+  return %0 : tensor<64xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @erf_f32
+// CHECK-NOT:   tosa.erf
+// CHECK:       math.erf %arg0 : tensor<64xf32>
+func.func @erf_f32(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
+  %0 = tosa.erf %arg0 : (tensor<64xf32>) -> tensor<64xf32>
+  return %0 : tensor<64xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @abs_f32
+// CHECK-NOT:   tosa.abs
+// CHECK:       math.absf %arg0 : tensor<32xf32>
+func.func @abs_f32(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
+  %0 = tosa.abs %arg0 : (tensor<32xf32>) -> tensor<32xf32>
+  return %0 : tensor<32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @abs_i32
+// CHECK-NOT:   tosa.abs
+// CHECK:       %[[ZERO:.*]] = arith.constant dense<0> : tensor<32xi32>
+// CHECK:       %[[NEG:.*]] = arith.subi %[[ZERO]], %arg0 : tensor<32xi32>
+// CHECK:       arith.maxsi %arg0, %[[NEG]] : tensor<32xi32>
+func.func @abs_i32(%arg0: tensor<32xi32>) -> tensor<32xi32> attributes {rock.kernel} {
+  %0 = tosa.abs %arg0 : (tensor<32xi32>) -> tensor<32xi32>
+  return %0 : tensor<32xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @negate_f32
+// CHECK-NOT:   tosa.negate
+// CHECK:       arith.negf %arg0 : tensor<16xf32>
+func.func @negate_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %in_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
+  %out_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
+  %0 = tosa.negate %arg0, %in_zp, %out_zp : (tensor<16xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @negate_i32
+// CHECK-NOT:   tosa.negate
+// CHECK:       %[[ZERO:.*]] = arith.constant dense<0> : tensor<16xi32>
+// CHECK:       arith.subi %[[ZERO]], %arg0 : tensor<16xi32>
+func.func @negate_i32(%arg0: tensor<16xi32>) -> tensor<16xi32> attributes {rock.kernel} {
+  %in_zp = "tosa.const"() {values = dense<0> : tensor<1xi32>} : () -> tensor<1xi32>
+  %out_zp = "tosa.const"() {values = dense<0> : tensor<1xi32>} : () -> tensor<1xi32>
+  %0 = tosa.negate %arg0, %in_zp, %out_zp : (tensor<16xi32>, tensor<1xi32>, tensor<1xi32>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @mul_f32
+// CHECK-NOT:   tosa.mul
+// CHECK:       arith.mulf %arg0, %arg1 : tensor<4x8xf32>
+func.func @mul_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %shift = "tosa.const"() {values = dense<0> : tensor<1xi8>} : () -> tensor<1xi8>
+  %0 = "tosa.mul"(%arg0, %arg1, %shift) : (tensor<4x8xf32>, tensor<4x8xf32>, tensor<1xi8>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @mul_i32
+// CHECK-NOT:   tosa.mul
+// CHECK:       arith.muli %arg0, %arg1 : tensor<4x8xi32>
+func.func @mul_i32(%arg0: tensor<4x8xi32>, %arg1: tensor<4x8xi32>) -> tensor<4x8xi32> attributes {rock.kernel} {
+  %shift = "tosa.const"() {values = dense<0> : tensor<1xi8>} : () -> tensor<1xi8>
+  %0 = "tosa.mul"(%arg0, %arg1, %shift) : (tensor<4x8xi32>, tensor<4x8xi32>, tensor<1xi8>) -> tensor<4x8xi32>
+  return %0 : tensor<4x8xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @reciprocal_f32
+// CHECK-NOT:   tosa.reciprocal
+// CHECK:       %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<32xf32>
+// CHECK:       arith.divf %[[ONE]], %arg0 : tensor<32xf32>
+func.func @reciprocal_f32(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
+  %0 = tosa.reciprocal %arg0 : (tensor<32xf32>) -> tensor<32xf32>
+  return %0 : tensor<32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @sigmoid_f32
+// CHECK-NOT:   tosa.sigmoid
+// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<16xf32>
+// CHECK:       %[[NEG:.*]] = arith.negf %arg0 : tensor<16xf32>
+// CHECK:       %[[EXP:.*]] = math.exp %[[NEG]] : tensor<16xf32>
+// CHECK:       %[[DENOM:.*]] = arith.addf %[[ONE]], %[[EXP]] : tensor<16xf32>
+// CHECK:       arith.divf %[[ONE]], %[[DENOM]] : tensor<16xf32>
+func.func @sigmoid_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.sigmoid %arg0 : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @select_op
+// CHECK-NOT:   tosa.select
+// CHECK:       arith.select %arg0, %arg1, %arg2 : tensor<4x8xi1>, tensor<4x8xf32>
+func.func @select_op(%arg0: tensor<4x8xi1>, %arg1: tensor<4x8xf32>, %arg2: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.select %arg0, %arg1, %arg2 : (tensor<4x8xi1>, tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @clamp_f32
+// CHECK-NOT:   tosa.clamp
+// CHECK-DAG:   %[[MIN:.*]] = arith.constant dense<0.000000e+00> : tensor<16xf32>
+// CHECK-DAG:   %[[MAX:.*]] = arith.constant dense<6.000000e+00> : tensor<16xf32>
+// CHECK:       %[[CLAMPED:.*]] = arith.minimumf %arg0, %[[MAX]] : tensor<16xf32>
+// CHECK:       arith.maximumf %[[CLAMPED]], %[[MIN]] : tensor<16xf32>
+func.func @clamp_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.clamp %arg0 {min_val = 0.0 : f32, max_val = 6.0 : f32} : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @clamp_i32
+// CHECK-NOT:   tosa.clamp
+// CHECK-DAG:   %[[MIN:.*]] = arith.constant dense<-128> : tensor<16xi32>
+// CHECK-DAG:   %[[MAX:.*]] = arith.constant dense<127> : tensor<16xi32>
+// CHECK:       %[[CLAMPED:.*]] = arith.minsi %arg0, %[[MAX]] : tensor<16xi32>
+// CHECK:       arith.maxsi %[[CLAMPED]], %[[MIN]] : tensor<16xi32>
+func.func @clamp_i32(%arg0: tensor<16xi32>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.clamp %arg0 {min_val = -128 : i32, max_val = 127 : i32} : (tensor<16xi32>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @cast_f16_to_f32
+// CHECK-NOT:   tosa.cast
+// CHECK:       arith.extf %arg0 : tensor<32xf16> to tensor<32xf32>
+func.func @cast_f16_to_f32(%arg0: tensor<32xf16>) -> tensor<32xf32> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<32xf16>) -> tensor<32xf32>
+  return %0 : tensor<32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @cast_f32_to_f16
+// CHECK-NOT:   tosa.cast
+// CHECK:       arith.truncf %arg0 : tensor<32xf32> to tensor<32xf16>
+func.func @cast_f32_to_f16(%arg0: tensor<32xf32>) -> tensor<32xf16> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<32xf32>) -> tensor<32xf16>
+  return %0 : tensor<32xf16>
+}
+
+// -----
+
+// CHECK-LABEL: @cast_i32_to_f32
+// CHECK-NOT:   tosa.cast
+// CHECK:       arith.sitofp %arg0 : tensor<16xi32> to tensor<16xf32>
+func.func @cast_i32_to_f32(%arg0: tensor<16xi32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xi32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @cast_f32_to_i32
+// CHECK-NOT:   tosa.cast
+// CHECK:       arith.fptosi %arg0 : tensor<16xf32> to tensor<16xi32>
+func.func @cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @cast_identity
+// CHECK-NOT:   tosa.cast
+// CHECK:       return %arg0 : tensor<16xf32>
+func.func @cast_identity(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @cast_i8_to_i32
+// CHECK-NOT:   tosa.cast
+// CHECK:       arith.extsi %arg0 : tensor<16xi8> to tensor<16xi32>
+func.func @cast_i8_to_i32(%arg0: tensor<16xi8>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xi8>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @cast_i32_to_i8
+// CHECK-NOT:   tosa.cast
+// CHECK:       arith.trunci %arg0 : tensor<16xi32> to tensor<16xi8>
+func.func @cast_i32_to_i8(%arg0: tensor<16xi32>) -> tensor<16xi8> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xi32>) -> tensor<16xi8>
+  return %0 : tensor<16xi8>
+}
+
+// -----
+
+// CHECK-LABEL: @greater_f32
+// CHECK-NOT:   tosa.greater
+// CHECK:       arith.cmpf ogt, %arg0, %arg1 : tensor<4x8xf32>
+func.func @greater_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xi1> attributes {rock.kernel} {
+  %0 = tosa.greater %arg0, %arg1 : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xi1>
+  return %0 : tensor<4x8xi1>
+}
+
+// -----
+
+// CHECK-LABEL: @greater_equal_f32
+// CHECK-NOT:   tosa.greater_equal
+// CHECK:       arith.cmpf oge, %arg0, %arg1 : tensor<4x8xf32>
+func.func @greater_equal_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xi1> attributes {rock.kernel} {
+  %0 = tosa.greater_equal %arg0, %arg1 : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xi1>
+  return %0 : tensor<4x8xi1>
+}
+
+// -----
+
+// CHECK-LABEL: @equal_f32
+// CHECK-NOT:   tosa.equal
+// CHECK:       arith.cmpf oeq, %arg0, %arg1 : tensor<4x8xf32>
+func.func @equal_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xi1> attributes {rock.kernel} {
+  %0 = tosa.equal %arg0, %arg1 : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xi1>
+  return %0 : tensor<4x8xi1>
+}
+
+// -----
+
+// CHECK-LABEL: @bitwise_and_i32
+// CHECK-NOT:   tosa.bitwise_and
+// CHECK:       arith.andi %arg0, %arg1 : tensor<8xi32>
+func.func @bitwise_and_i32(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> attributes {rock.kernel} {
+  %0 = tosa.bitwise_and %arg0, %arg1 : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
+  return %0 : tensor<8xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @bitwise_or_i32
+// CHECK-NOT:   tosa.bitwise_or
+// CHECK:       arith.ori %arg0, %arg1 : tensor<8xi32>
+func.func @bitwise_or_i32(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> attributes {rock.kernel} {
+  %0 = tosa.bitwise_or %arg0, %arg1 : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
+  return %0 : tensor<8xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @logical_left_shift
+// CHECK-NOT:   tosa.logical_left_shift
+// CHECK:       arith.shli %arg0, %arg1 : tensor<8xi32>
+func.func @logical_left_shift(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> attributes {rock.kernel} {
+  %0 = tosa.logical_left_shift %arg0, %arg1 : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
+  return %0 : tensor<8xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @const_legal
+// CHECK:       tosa.const
+// CHECK:       arith.addf
+func.func @const_legal(%arg0: tensor<4xf32>) -> tensor<4xf32> attributes {rock.kernel} {
+  %cst = "tosa.const"() {values = dense<1.0> : tensor<4xf32>} : () -> tensor<4xf32>
+  %0 = tosa.add %arg0, %cst : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xf32>
+  return %0 : tensor<4xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @non_kernel_untouched
+// CHECK:       tosa.add
+func.func @non_kernel_untouched(%arg0: tensor<64xf32>, %arg1: tensor<64xf32>) -> tensor<64xf32> {
+  %0 = tosa.add %arg0, %arg1 : (tensor<64xf32>, tensor<64xf32>) -> tensor<64xf32>
+  return %0 : tensor<64xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @chained_ops
+// CHECK-NOT:   tosa.
+// CHECK-DAG:   %[[ADD:.*]] = arith.addf %arg0, %arg1 : tensor<8xf32>
+// CHECK-DAG:   %[[EXP:.*]] = math.exp %[[ADD]] : tensor<8xf32>
+// CHECK:       return %[[EXP]]
+func.func @chained_ops(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>) -> tensor<8xf32> attributes {rock.kernel} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<8xf32>, tensor<8xf32>) -> tensor<8xf32>
+  %1 = tosa.exp %0 : (tensor<8xf32>) -> tensor<8xf32>
+  return %1 : tensor<8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @sin_f32
+// CHECK-NOT:   tosa.sin
+// CHECK:       math.sin %arg0 : tensor<16xf32>
+func.func @sin_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.sin %arg0 : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @cos_f32
+// CHECK-NOT:   tosa.cos
+// CHECK:       math.cos %arg0 : tensor<16xf32>
+func.func @cos_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.cos %arg0 : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @intdiv
+// CHECK-NOT:   tosa.intdiv
+// CHECK:       arith.divsi %arg0, %arg1 : tensor<8xi32>
+func.func @intdiv(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> attributes {rock.kernel} {
+  %0 = tosa.intdiv %arg0, %arg1 : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
+  return %0 : tensor<8xi32>
+}

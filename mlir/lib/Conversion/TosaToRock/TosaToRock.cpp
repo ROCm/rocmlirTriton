@@ -3194,6 +3194,46 @@ public:
   }
 };
 
+// Insert rock.transform (broadcast) on TOSA elementwise op operands whose
+// shapes don't match the result shape.
+class ElementwiseBroadcastInserter final : public RewritePattern {
+public:
+  ElementwiseBroadcastInserter(MLIRContext *ctx)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, ctx) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    // Only handle TOSA elementwise ops with 2+ operands.
+    if (!isElementwiseOp(op) || op->getNumOperands() < 2)
+      return failure();
+
+    auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!resultType)
+      return failure();
+
+    bool changed = false;
+    for (OpOperand &operand : op->getOpOperands()) {
+      auto operandType = dyn_cast<RankedTensorType>(operand.get().getType());
+      if (!operandType)
+        continue;
+      // Skip if shapes already match.
+      if (operandType.getShape() == resultType.getShape())
+        continue;
+      // Only broadcast same-rank operands (TOSA requires same rank).
+      if (operandType.getRank() != resultType.getRank())
+        continue;
+
+      Value broadcasted = insertBroadcast(operand.get(), resultType.getShape(),
+                                          op->getLoc(), rewriter);
+      if (broadcasted != operand.get()) {
+        rewriter.modifyOpInPlace(op, [&]() { operand.set(broadcasted); });
+        changed = true;
+      }
+    }
+    return success(changed);
+  }
+};
+
 } // namespace
 
 void tosa::populateTosaToRockConversionPatterns(MLIRContext *context,
@@ -3222,5 +3262,6 @@ void tosa::populateTosaToRockConvGemmConversionPatterns(
 void tosa::populateTosaToRockTensorConversionPatterns(
     MLIRContext *context, RewritePatternSet &patterns) {
   patterns.add<TransposeRewritePattern, CollapseExpandRewritePattern,
-               MulSplatOneRewritePattern>(context);
+               MulSplatOneRewritePattern, ElementwiseBroadcastInserter>(
+      context);
 }

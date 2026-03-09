@@ -12,7 +12,7 @@
 // tensors.  For example:
 //
 //   %r = tosa.add %a, %b : tensor<64x128xf16>
-//     →
+//     ->
 //   %r = arith.addf %a, %b : tensor<64x128xf16>
 //
 // This pass only runs on kernel functions (those with the rock.kernel attr).
@@ -43,7 +43,7 @@ using namespace mlir;
 namespace {
 
 // ===--------------------------------------------------------------------=== //
-// Generic templates for 1:1 TOSA → arith/math replacement on tensors.
+// Generic templates for 1:1 TOSA -> arith/math replacement on tensors.
 // ===--------------------------------------------------------------------=== //
 
 // Binary op that dispatches on float vs integer element type.
@@ -290,7 +290,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
     bool bitExtend =
         srcTy.getIntOrFloatBitWidth() < dstTy.getIntOrFloatBitWidth();
 
-    // float → float
+    // float -> float
     if (isa<FloatType>(srcTy) && isa<FloatType>(dstTy)) {
       if (bitExtend)
         rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, op.getType(),
@@ -300,7 +300,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
                                                      op.getInput());
       return success();
     }
-    // int → float
+    // int -> float
     if (isa<IntegerType>(srcTy) && isa<FloatType>(dstTy)) {
       if (srcTy.isInteger(1) || srcTy.isUnsignedInteger())
         rewriter.replaceOpWithNewOp<arith::UIToFPOp>(op, op.getType(),
@@ -310,13 +310,13 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
                                                      op.getInput());
       return success();
     }
-    // float → int
+    // float -> int
     if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
       rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, op.getType(),
                                                    op.getInput());
       return success();
     }
-    // int → int
+    // int -> int
     if (isa<IntegerType>(srcTy) && isa<IntegerType>(dstTy)) {
       if (bitExtend)
         rewriter.replaceOpWithNewOp<arith::ExtSIOp>(op, op.getType(),
