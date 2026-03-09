@@ -27,8 +27,10 @@ FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
     perfConfig = mayBePerfConfig;
   }
   GemmGemmParamsAttr params = GemmGemmParamsAttr::get(perfConfig);
-  if (!params)
+  if (!params) {
+    LLVM_DEBUG(llvm::dbgs() << "Invalid perfConfig: " << perfConfig << "\n");
     return failure();
+  }
   return params;
 }
 

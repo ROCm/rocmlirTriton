@@ -198,8 +198,10 @@ FailureOr<GemmParamsAttr> PopulateParamsAccel::obtainTuningParameters(
                                          info.gemmBType, info.arch);
 
     auto orderedParams = orderParams(paramSets, info.gemmSize);
-    if (orderedParams.empty())
+    if (orderedParams.empty()) {
+      LLVM_DEBUG(llvm::dbgs() << "Quick tuning list is empty\n");
       return failure();
+    }
 
     GemmParamsAttr validParams = orderedParams.front();
     LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
@@ -209,8 +211,10 @@ FailureOr<GemmParamsAttr> PopulateParamsAccel::obtainTuningParameters(
   }
 
   GemmParamsAttr params = GemmParamsAttr::get(perfConfigAttr);
-  if (!params)
+  if (!params) {
+    LLVM_DEBUG(llvm::dbgs() << "Invalid perfConfig: " << perfConfigAttr << "\n");
     return failure();
+  }
 
   return params;
 }
