@@ -271,7 +271,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
 
   int idx = 1;
   for (int i = 0; i < argData[0]; i++) {
-    // iterate per each memref argument
+    // iterate per each tensor argument
     int rank = argData[idx++];
     printf("arg#%d (rank %d): ", i, rank);
     for (int j = 0; j < rank; j++) {

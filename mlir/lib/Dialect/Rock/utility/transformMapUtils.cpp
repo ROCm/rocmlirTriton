@@ -139,29 +139,6 @@ bool mlir::rock::needs64BitIndices(TransformMapAttr map) {
          llvm::any_of(map.getLowerBounds().asArrayRef(), isBig);
 }
 
-TransformOp mlir::rock::reshapeBuffer(OpBuilder &b, Location loc, Value buffer,
-                                      ArrayRef<StringRef> names,
-                                      ArrayRef<int64_t> shape) {
-  MemRefType bufferType = cast<MemRefType>(buffer.getType());
-  ArrayRef<int64_t> outShape = bufferType.getShape();
-  assert(outShape.size() == 1 && "Buffer being reshaped must start linear");
-
-  SmallVector<int64_t> strides;
-  strides.reserve(shape.size());
-  int64_t stride = 1;
-  for (int64_t v : llvm::reverse(shape)) {
-    stride *= v;
-  }
-  assert(stride == outShape[0] && "Strides must multiply to buffer length");
-
-  TopDownTMBuilder transform(b, names, shape, loc);
-  transform.unmerge("raw", 0, names, shape);
-
-  TransformMapAttr transformAttr = transform.get();
-  auto ret = TransformOp::create(b, loc, buffer, transformAttr);
-  return ret;
-}
-
 //===----------------------------------------------------------------------===//
 // Vectorization inference.
 //===----------------------------------------------------------------------===//
@@ -1135,191 +1112,6 @@ static unsigned getResultPosition(AffineMap map, unsigned input) {
   return 0;
 }
 
-Value mlir::rock::insertTransposeAndBroadcastTransforms(
-    OpBuilder &b, ArrayRef<int64_t> outShape, Value inp, AffineMap inpIdxMap) {
-  if (!inpIdxMap.isIdentity()) {
-    Location loc = inp.getLoc();
-    auto inpType = cast<ShapedType>(inp.getType());
-    ArrayRef<int64_t> inpShape = inpType.getShape();
-
-    int64_t diff = outShape.size() - inpShape.size();
-    LLVM_DEBUG(llvm::dbgs() << "Reached makeBroadcast with map " << inpIdxMap
-                            << " and diff = " << diff << "\n");
-
-    // first expand/collapse the input to match the output rank
-    if (diff < 0) {
-      // collapse non-dim exprs
-      // inp = rock.transform(inp) {[0, 1], 2, 3}
-      MutableAffineMap newInpIdxMap = AffineMap::getMinorIdentityMap(
-          outShape.size(), outShape.size(), b.getContext());
-      uint32_t newIdx = 0;
-      SmallVector<int64_t> newInpShape;
-      int64_t newInpDimSize = 1;
-      SmallVector<SmallVector<uint32_t>> merges;
-      SmallVector<uint32_t> mergeDims;
-      for (const auto &idxAndValue : llvm::enumerate(inpIdxMap.getResults())) {
-        uint32_t idx = idxAndValue.index();
-        newInpDimSize *= inpShape[idx];
-        AffineExpr resultExpr = idxAndValue.value();
-        mergeDims.push_back(idx);
-        if (diff != 0 && isa<AffineConstantExpr>(resultExpr) &&
-            inpShape[idx] == 1) {
-          diff++;
-        } else {
-          newInpIdxMap.setResult(newIdx++, resultExpr);
-          merges.push_back(mergeDims);
-          mergeDims.clear();
-          newInpShape.push_back(newInpDimSize);
-          newInpDimSize = 1;
-        }
-      }
-      if (mergeDims.size())
-        merges.back().append(mergeDims);
-
-      TopDownTMBuilder collapseTransform(b, newInpShape, loc);
-      for (auto idxAndMerge : llvm::enumerate(merges)) {
-        uint32_t idx = idxAndMerge.index();
-        auto merge = idxAndMerge.value();
-        if (merge.size() == 1) {
-          collapseTransform.passThrough({merge[0]}, {idx});
-        } else {
-          SmallVector<SmallString<8>> mergeNames;
-          SmallVector<int64_t> mergeSizes;
-          SmallVector<StringRef> mergeNameRefs;
-          for (auto midx : merge) {
-            SmallString<8> mname(Twine("m" + Twine(midx)).str());
-            mergeNames.push_back(mname);
-            mergeNameRefs.push_back(mergeNames.back());
-            mergeSizes.push_back(inpShape[midx]);
-          }
-          collapseTransform.merge(mergeNameRefs, merge,
-                                  collapseTransform.startName(idx), mergeSizes);
-        }
-      }
-      inp = TransformOp::create(b, loc, inp, collapseTransform.get());
-      inpType = cast<ShapedType>(inp.getType());
-      inpShape = inpType.getShape();
-      inpIdxMap = newInpIdxMap.getAffineMap();
-    } else if (diff > 0) {
-      // map = (d0, d1, d2) -> (d1)
-      assert(inpIdxMap.getNumInputs() - inpIdxMap.getNumResults() == diff);
-      MutableAffineMap newInpIdxMap(b.getMultiDimIdentityMap(outShape.size()));
-      BottomUpTMBuilder addDimtransform(b, inpShape, loc);
-      for (uint32_t i = 0; i < outShape.size(); ++i) {
-        if (inpIdxMap.isFunctionOfDim(i)) {
-          // find location in results
-          auto inpIdx = getResultPosition(inpIdxMap, i);
-          addDimtransform.passThrough({i}, {inpIdx});
-          newInpIdxMap.setResult(i, b.getAffineDimExpr(i));
-        } else {
-          SmallString<8> name;
-          ("exp" + Twine(i)).toVector(name);
-          addDimtransform.addDim(name, i, 1);
-          newInpIdxMap.setResult(i, b.getAffineConstantExpr(0));
-        }
-      }
-      inp = TransformOp::create(b, loc, inp, addDimtransform.get());
-      inpShape = cast<ShapedType>(inp.getType()).getShape();
-      inpIdxMap = newInpIdxMap.getAffineMap();
-    }
-
-    SmallVector<uint32_t> bcastDims;
-    SmallVector<uint32_t> bcastInDims;
-    SmallVector<uint32_t> passThroughInDims;
-    SmallVector<uint32_t> perm;
-    createPermutationForMinorIdentityWithBroadcast(inpIdxMap, perm);
-    auto permMap = AffineMap::getPermutationMap(perm, b.getContext());
-    inpIdxMap = inpIdxMap.compose(permMap);
-    bool isIdentity = inpIdxMap.isMinorIdentityWithBroadcasting(&bcastDims);
-    assert(
-        isIdentity &&
-        "this is guaranteed by createPermutationForMinorIdentityWithBroadcast");
-
-    // Broadcast those dimensions that the original linalg.generic map specifies
-    // are broadcast and collect their locations, accounting for the leading
-    // dimensions not represented in that map but which are present in the gemm
-    // coordinates
-    BottomUpTMBuilder bcastTransform(b, inpShape, loc);
-    bool hasBcast = false;
-    for (uint32_t i = 0; i < inpShape.size(); ++i) {
-      if (!llvm::is_contained(bcastDims, i)) {
-        // Here the diff correspond to leading dropped dimensions when going
-        // from output co-ordinates to input co-ordinates.
-        assert(inpIdxMap.getDimPosition(i) == i);
-        passThroughInDims.push_back(i);
-        bcastTransform.passThrough({i}, {i});
-      } else if (outShape[perm[i]] == 1) {
-        // We can pass-through if the outshape is 1 and it is not realistically
-        // a broadcast.
-        passThroughInDims.push_back(i);
-        bcastTransform.passThrough({i}, {i});
-      } else {
-        hasBcast = true;
-        bcastInDims.push_back(i);
-        bcastTransform.broadcast({i}, {outShape[perm[i]]});
-      }
-    }
-    if (hasBcast) {
-      inp = TransformOp::create(b, loc, inp, bcastTransform.get());
-    }
-
-    // Permute the dimensions of the fusion argument to match those of the gemm
-    // writeback by applying the inverse of the permutation that would have made
-    // the original indexing map into a minor identity with broadcast. The
-    // inverse of that permutation takes the gemm writeback coordinates and
-    // scatters them into positions that match the non-identity indexing pattern
-    // of the fusion argument.
-    if (!permMap.isIdentity()) {
-      BottomUpTMBuilder permtransform(
-          b, cast<ShapedType>(inp.getType()).getShape(), loc);
-      llvm::SmallVector<uint32_t, 4> identityVec;
-      for (uint32_t i = 0; i < outShape.size(); ++i) {
-        identityVec.push_back(i);
-      }
-      permtransform.passThrough(identityVec, perm);
-      inp = TransformOp::create(b, loc, inp, permtransform.get());
-    }
-  }
-  return inp;
-}
-
-LogicalResult
-mlir::rock::makeLinalgGenericWithIdentityAffMaps(PatternRewriter &b,
-                                                 linalg::GenericOp laOp) {
-  auto idxMaps = laOp.getIndexingMapsArray();
-  auto outIdxMap = idxMaps.back();
-
-  auto outs = laOp.getOutputs();
-  if (outs.size() > 1)
-    return laOp.emitError("Only 1 output supported");
-  Value out = outs[0];
-  auto outType = cast<ShapedType>(out.getType());
-
-  SmallVector<Value> inps(laOp.getInputs());
-  for (auto pair : llvm::zip(inps, idxMaps)) {
-    if (auto inp = std::get<0>(pair)) {
-      auto imap = std::get<1>(pair);
-
-      if (imap != outIdxMap) {
-        // inject a broadcast
-        auto invertOutIdxMap = inversePermutation(outIdxMap);
-        auto outToInpMap = imap.compose(invertOutIdxMap);
-        Value regInp = rock::insertTransposeAndBroadcastTransforms(
-            b, outType.getShape(), inp, outToInpMap);
-        laOp->replaceUsesOfWith(inp, regInp);
-      }
-    }
-  }
-
-  // reset idxmaps
-  b.modifyOpInPlace(laOp, [&]() {
-    SmallVector<AffineMap, 5> newIdxMaps(idxMaps.size(), outIdxMap);
-    laOp.setIndexingMapsAttr(b.getAffineMapArrayAttr(newIdxMaps));
-  });
-
-  return success();
-}
-
 TransformMapAttr mlir::rock::invertTransformMap(
     OpBuilder &b, mlir::rock::TransformMapAttr transformMap, Location loc) {
   ArrayRef<int64_t> lowShape = transformMap.getLowerBounds();
@@ -1555,41 +1347,6 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
   return transform.get();
 }
 
-TopDownTMBuilder mlir::rock::rotateIf(bool condition, TopDownTMBuilder &builder,
-                                      TransformMapAttr &attr, int64_t stride,
-                                      StringRef dName, int64_t d, int64_t dPos,
-                                      StringRef kName, int64_t kOuter,
-                                      ArrayRef<StringRef> beforeDims,
-                                      ArrayRef<StringRef> afterDims,
-                                      SmallVector<Attribute> &transformAttrs) {
-  if (condition) {
-    // d = (d+stride*k_outer)
-    TopDownTMBuilder rotateD0 = TopDownTMBuilder::below(builder, attr);
-    if (!beforeDims.empty())
-      rotateD0.passThrough(beforeDims);
-    rotateD0.embed(dName, dPos, d * kOuter, {kName, dName}, {stride, 1});
-    if (!afterDims.empty())
-      rotateD0.passThrough(afterDims);
-    TransformMapAttr rotateD0Attr = rotateD0.get();
-    transformAttrs.push_back(rotateD0Attr);
-
-    // d = (d+stride*k_outer) % d
-    TopDownTMBuilder rotateD1 = TopDownTMBuilder::below(rotateD0, rotateD0Attr);
-    if (!beforeDims.empty())
-      rotateD1.passThrough(beforeDims);
-    rotateD1.takeRemainder(dName, d);
-    if (!afterDims.empty())
-      rotateD1.passThrough(afterDims);
-    TransformMapAttr rotateD1Attr = rotateD1.get();
-    transformAttrs.push_back(rotateD1Attr);
-    TopDownTMBuilder rotated = TopDownTMBuilder::below(rotateD1, rotateD1Attr);
-    return rotated;
-  } else {
-    TopDownTMBuilder unrotated = TopDownTMBuilder::below(builder, attr);
-    return unrotated;
-  }
-}
-
 void mlir::rock::expandFlatFunctionArguments(
     OpBuilder &b, func::FuncOp func, ArrayRef<SmallVector<StringRef>> names,
     TypeRange logicalTypes, SmallVectorImpl<Value> &expanded) {
@@ -1634,20 +1391,6 @@ void mlir::rock::expandFlatFunctionArguments(
     }
     TransformMapAttr expandMap = flattener.get();
     logicalVal = rock::TransformOp::create(b, loc, arg, expandMap);
-  }
-}
-
-void mlir::rock::convertDimStridestoSizes(ArrayRef<int64_t> orderedDimStrides,
-                                          int64_t numElements,
-                                          SmallVectorImpl<int64_t> &dimSizes) {
-  for (auto [idx, dimStride] : llvm::enumerate(orderedDimStrides)) {
-    int64_t immLargerCoeff;
-    if (idx != 0) {
-      immLargerCoeff = orderedDimStrides[idx - 1];
-    } else {
-      immLargerCoeff = numElements;
-    }
-    dimSizes.push_back(immLargerCoeff / dimStride);
   }
 }
 
@@ -2557,86 +2300,58 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
   return subDimInfo;
 }
 
-SmallVector<SmallString<8>> mlir::rock::createDimNames(int64_t len,
-                                                       StringRef prefix) {
-  SmallVector<SmallString<8>> names;
-  for (unsigned d = 0; d < len; d++) {
-    SmallString<8> dimName(prefix.str() + Twine(d).str());
-    names.push_back(dimName);
-  }
-  return names;
-}
+FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
+  SmallVector<BlockArgument> kernelArgs;
+  SmallVector<Value> worklist;
+  worklist.push_back(value);
 
-SmallVector<StringRef>
-mlir::rock::getStringRefsFor(ArrayRef<SmallString<8>> strings) {
-  SmallVector<StringRef> nameRefs;
-  nameRefs.reserve(strings.size());
-  for (const SmallString<8> &str : strings) {
-    nameRefs.push_back(str);
-  }
-  return nameRefs;
-}
-
-FailureOr<Type> mlir::rock::getInputFusionElementType(Value transformed) {
-  FailureOr<memref::AllocOp> maybeAlloc = findMemrefAlloc(transformed);
-  if (failed(maybeAlloc))
-    return failure();
-  auto memref = maybeAlloc.value().getMemref();
-
-  // find input fusion
-  Value newTransformed = nullptr;
-  for (Operation *user : memref.getUsers()) {
-    Value candidate = nullptr;
-    if (auto genericOp = dyn_cast<linalg::GenericOp>(user)) {
-      if (genericOp.getOutputs().size() != 1) {
-        LLVM_DEBUG(llvm::dbgs() << "getInputFusionElementType: linalg.generic "
-                                   "with multiple outputs are unsupported\n");
-        return failure();
-      }
-      Value genericOut = genericOp.getOutputs().front();
-      if (genericOut == memref) {
-        if (auto index = genericOp->getAttrOfType<IntegerAttr>(
-                "rock.majorTensorNumber")) {
-          candidate = genericOp.getInputs()[index.getInt()];
-        } else {
-          LLVM_DEBUG(llvm::dbgs() << "can't analyze linalg.generic "
-                                     "without rock.majorTensorNumber\n");
-          return failure();
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    if (auto maybeBlockArg = dyn_cast<BlockArgument>(value)) {
+      kernelArgs.push_back(maybeBlockArg);
+    } else {
+      if (auto viewOp = dyn_cast<ViewLikeOpInterface>(value.getDefiningOp())) {
+        worklist.push_back(viewOp.getViewSource());
+      } else if (isFusionOp(value.getDefiningOp())) {
+        for (auto operand : value.getDefiningOp()->getOperands()) {
+          worklist.push_back(operand);
         }
+      } else if (auto constantOp =
+                     dyn_cast<arith::ConstantOp>(value.getDefiningOp())) {
+        // nothing to do with constants, just skip them
+        continue;
       } else {
         LLVM_DEBUG(llvm::dbgs()
-                   << "getInputFusionElementType: found a linalg.generic that "
-                      "takes as input the gemm A or B\n");
+                   << "getInputFusionElementType: Found non expected op = "
+                   << value.getDefiningOp() << "\n");
         return failure();
       }
-    } else {
-      continue;
     }
+  }
 
-    if (newTransformed) {
-      LLVM_DEBUG(
-          llvm::dbgs()
-          << "getInputFusionElementType: found multiple linalg.generic that "
-             "could be the next one\n");
+  if (kernelArgs.empty()) {
+    LLVM_DEBUG(llvm::dbgs() << "getInputFusionElementType: Can't trace "
+                               "FusionRoot input to kernel argument\n");
+    return failure();
+  }
+
+  // The FusionRoot input can come from N tensors, choose the biggest as a proxy
+  // of the dominant load element type
+  TypedValue<ShapedType> biggestTensor =
+      cast<TypedValue<ShapedType>>(kernelArgs[0]);
+  for (auto tensor : kernelArgs) {
+    if (auto shapedType = cast<ShapedType>(tensor.getType())) {
+      if (shapedType.getNumElements() >
+          biggestTensor.getType().getNumElements()) {
+        biggestTensor = cast<TypedValue<ShapedType>>(tensor);
+      }
+    } else {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "getInputFusionElementType: Found a non-tensor kernel arg "
+                    "traced from FusionRoot input\n");
       return failure();
     }
-    newTransformed = candidate;
-  }
-  newTransformed = newTransformed ? newTransformed : memref;
-
-  auto blockArg = findBlockArgument(newTransformed);
-  if (failed(blockArg)) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "getInputFusionElementType: findBlockArgument failed\n");
-    return failure();
   }
 
-  auto shapedTy = dyn_cast<ShapedType>(blockArg.value().getType());
-  if (!shapedTy) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "getInputFusionElementType: failed to get ShapedType\n");
-    return failure();
-  }
-
-  return shapedTy.getElementType();
+  return biggestTensor.getType().getElementType();
 }

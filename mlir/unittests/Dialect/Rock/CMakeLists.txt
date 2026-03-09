@@ -1,7 +1,6 @@
 set(ROCK_UNITTEST_SOURCES
   TransformMapBuilderTests.cpp
   TosaUtilsTests.cpp
-  loweringUtilsTests.cpp
   transformMapUtilsTests.cpp
   ParamLookupTableTests.cpp
 )

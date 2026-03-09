@@ -39,7 +39,7 @@ class TransformOp;
 /// The third return value indicates whether evaluating these maps will impose
 /// 64-bit indexing requirements - that is, if any coordinate could overflow
 /// a signed 32-bit integer during the computation or if the underlying value
-/// is a memref that points to more than 4 GB of data.
+/// is a tensor that points to more than 4 GB of data.
 std::tuple<Value, ArrayAttr, bool> untransform(OpBuilder &b, Value transformed,
                                                ArrayAttr existing = nullptr);
 std::tuple<Value, ArrayAttr, bool> untransform(OpBuilder &b, Value transformed,
@@ -59,7 +59,7 @@ std::tuple<Value, bool> untransform(Value transformed,
 /// overflow a signed 32-bit integer.
 bool needs64BitIndices(TransformMapAttr map);
 
-/// Apply a chain of transforms on a memref and return the final view
+/// Apply a chain of transforms on a tensor and return the final view
 Value transform(OpBuilder &b, Value toBeTransformed, ArrayAttr transforms);
 
 /// Returns a version of `transformed` where all the `rock.transform`
@@ -72,11 +72,6 @@ Value isolateTransforms(OpBuilder &b, Value transformed);
 
 /// A helper to invert a chain of views
 ArrayAttr invertTransforms(OpBuilder &b, Location loc, ArrayAttr transforms);
-
-/// Return a `rock.transform` op that reshapes a given 1D buffer `buffer`
-/// into `shape`, using `names` as the names of the reshaped dimensions.
-TransformOp reshapeBuffer(OpBuilder &b, Location loc, Value buffer,
-                          ArrayRef<StringRef> names, ArrayRef<int64_t> shape);
 
 //// Structure for reporting the results of the vectorization analysis.
 /// `max` is the maximum length by which loads from or stores to a buffer
@@ -156,19 +151,6 @@ bool embedCanBeInvalid(TransformMapAttr map, TransformAttr op);
 /// Returns null when passed an empty array.
 AffineMap composeTransforms(ArrayRef<TransformMapAttr> transforms);
 
-// This function will take a input Value and a index map that represents the
-// coordinate mapping that could be a combination of tranposes and broadcasts
-// and insert the necessary TransformOps
-Value insertTransposeAndBroadcastTransforms(OpBuilder &b,
-                                            ArrayRef<int64_t> outShape,
-                                            Value inp, AffineMap inpIdxMap);
-
-// This function will pull non identity affine maps in the indexing of a
-// linalg generic maps as rock.transform ops, in effect making the linalg
-// generic use identity maps.
-LogicalResult makeLinalgGenericWithIdentityAffMaps(PatternRewriter &b,
-                                                   linalg::GenericOp laOp);
-
 // This function will take an input TransformMapAttr and invert the
 // shapes and transforms.
 TransformMapAttr invertTransformMap(OpBuilder &b,
@@ -192,7 +174,7 @@ TransformMapAttr transformExtractSlice(OpBuilder &b, Location loc,
                                        ArrayRef<int64_t> sizes);
 
 /// Restore the logical shapes of the arguments to `func`, which were flattened
-/// to 1-D memrefs to improve indexing performance. The logical types in
+/// to 1-D tensors to improve indexing performance. The logical types in
 /// question are given in `logicalTypes`. `builder` should be placed at the
 /// front of `func`, and its insertion point will be updated after the function
 /// returns. The names of the logical dimensions for each argument will be taken
@@ -201,27 +183,11 @@ TransformMapAttr transformExtractSlice(OpBuilder &b, Location loc,
 /// This is done to improve indexing performance, especially in cases where
 /// buffer loads are used, so that, for example, we don't have to mask all the
 /// non-final coordinates to 0 before feeding the index into the N-D row-major
-/// indexing map that's implicit with `memref`.
+/// indexing map that's implicit with `tensor`.
 void expandFlatFunctionArguments(OpBuilder &b, func::FuncOp func,
                                  ArrayRef<SmallVector<StringRef>> names,
                                  TypeRange logicalTypes,
                                  SmallVectorImpl<Value> &expanded);
-
-// If the condition is satified, rotate the dimension `d` by `k` using
-// `d = (d+k*stride) % len(d)`
-rock::TopDownTMBuilder
-rotateIf(bool condition, TopDownTMBuilder &builder, TransformMapAttr &attr,
-         int64_t stride, StringRef dName, int64_t d, int64_t dPos,
-         StringRef kName, int64_t k, ArrayRef<StringRef> beforeDims,
-         ArrayRef<StringRef> afterDims, SmallVector<Attribute> &transformAttrs);
-
-// This utility function will take an ordered decreasing dimension strides and
-// total number of elements to produce an array of dimension sizes. This
-// particularly useful to convert a embed transform to a unmerge/merge
-// transform.
-void convertDimStridestoSizes(ArrayRef<int64_t> orderedDimStrides,
-                              int64_t numElements,
-                              SmallVectorImpl<int64_t> &dimSizes);
 
 // This utility function will prepend a given set of the views onto
 // a set of existing views
@@ -278,9 +244,6 @@ FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>>>
 getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
                       ArrayRef<int64_t> dims);
 
-SmallVector<SmallString<8>> createDimNames(int64_t len, StringRef prefix);
-SmallVector<StringRef> getStringRefsFor(ArrayRef<SmallString<8>> strings);
-
 // Given a mlir::Value as input (representing the operand of a kernel,
 // such as gemm, attention, etc), returns the underlying data type of the tensor
 // before any fusions, or failure if it cannot be determined.
@@ -294,7 +257,7 @@ SmallVector<StringRef> getStringRefsFor(ArrayRef<SmallString<8>> strings);
 // chain of operators from the input mlir::Value to the function block
 // argument. If the pattern match succeds, the function returns the
 // type of the block argument, otherwise it returns failure.
-FailureOr<Type> getInputFusionElementType(Value transformed);
+FailureOr<Type> getInputFusionElementType(Value value);
 
 } // end namespace rock
 } // end namespace mlir

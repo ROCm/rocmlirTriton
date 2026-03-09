@@ -289,7 +289,7 @@ func.func @gemm_scaleB_transposed_k_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: 
 // scaleA type must be f8E8M0FNU
 func.func @gemm_scaleA_type_invalid(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
   %scaleA_bad: tensor<64x4xf8E4M3FN>, %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{'rock.gemm' op operand #2 must be Constraints the type to be either a Tensor or MemRef of certain types of elements., but got 'tensor<64x4xf8E4M3FN>'}}
+  // expected-error @+1 {{'rock.gemm' op operand #2 must be tensor of f8E8M0FNU type values, but got 'tensor<64x4xf8E4M3FN>'}}
   rock.gemm %a scaled by %scaleA_bad * %b scaled by %scaleB {quantBlockSize = 32 : i64}
   : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
   func.return
@@ -298,7 +298,7 @@ func.func @gemm_scaleA_type_invalid(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x
 // scaleB type must be f8E8M0FNU
 func.func @gemm_scaleB_type_invalid(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
   %scaleA: tensor<64x4xf8E8M0FNU>, %scaleB_bad: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{'rock.gemm' op operand #3 must be Constraints the type to be either a Tensor or MemRef of certain types of elements., but got 'tensor<32x4xf8E4M3FN>'}}
+  // expected-error @+1 {{'rock.gemm' op operand #3 must be tensor of f8E8M0FNU type values, but got 'tensor<32x4xf8E4M3FN>'}}
   rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_bad {quantBlockSize = 32 : i64}
   : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
   func.return
