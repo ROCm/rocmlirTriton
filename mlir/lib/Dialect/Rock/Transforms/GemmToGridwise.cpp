@@ -654,7 +654,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
       apply(view);
   };
   transformViews([&](Value v) {
-    return normalizeMatrix(v, rw, loc, op.getCTransposed(), "gemmM", "gemmN");
+    return normalizeMatrix(v, rw, loc, op.getOTransposed(), "gemmM", "gemmN");
   });
   aShape = cast<ShapedType>(a.getType()).getShape();
   bShape = cast<ShapedType>(b.getType()).getShape();

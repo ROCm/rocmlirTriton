@@ -99,7 +99,7 @@ func.func @gemm_transposed_from_gridwise(%a: tensor<1x128x72xf32>, %b: tensor<1x
   %result = rock.gemm %a * tr %b {
     gridSize = 4 : i32,
     params = #general_gemm_params0,
-    cTransposed
+    oTransposed
   } : tensor<1x128x72xf32> * tensor<1x512x72xf32> -> tensor<1x512x128xf32>
   %out = rock.store %result to %c by set : tensor<1x512x128xf32> -> tensor<1x512x128xf32> to tensor<1x512x128xf32>
   func.return %out : tensor<1x512x128xf32>

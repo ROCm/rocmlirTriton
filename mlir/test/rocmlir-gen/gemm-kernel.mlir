@@ -41,7 +41,7 @@
 // NOTRB-SAME: %[[b]]
 // TRB-SAME:   tr %[[b]]
 // NOTRC-SAME: :
-// TRC-SAME:   {cTransposed} :
+// TRC-SAME:   {oTransposed} :
 // CHECK-NEXT: rock.store
 // CHECK-NEXT: return
 

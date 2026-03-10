@@ -235,7 +235,7 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
     SmallVector<int64_t> newResultShape;
     if (newAType.getRank() == 3)
       newResultShape.push_back(newAType.getShape()[0]);
-    if (op.getCTransposed()) {
+    if (op.getOTransposed()) {
       newResultShape.push_back(newN);
       newResultShape.push_back(newM);
     } else {
@@ -249,7 +249,7 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
     // Create the new GemmOp
     auto gemm = rock::GemmOp::create(
         rw, op.getLoc(), newResultType, newA, newB, newScaleA, newScaleB,
-        op.getATransposed(), op.getBTransposed(), op.getCTransposed(),
+        op.getATransposed(), op.getBTransposed(), op.getOTransposed(),
         op.getAScaleTransposed(), op.getBScaleTransposed(),
         op.getQuantBlockSizeAttr(), op.getParamsAttr());
 

@@ -164,10 +164,10 @@ func.func @gemm_mixed_ranks2(%a: tensor<64x128xf32>, %b: tensor<2x128x32xf32>) a
   func.return
 }
 
-// Test case: cTransposed but result is in non-transposed order (G x M x N instead of G x N x M)
+// Test case: oTransposed but result is in non-transposed order (G x M x N instead of G x N x M)
 func.func @gemm_cTransposed_wrong_result(%a: tensor<2x64x128xf32>, %b: tensor<2x128x32xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
   // expected-error @+1 {{M dimensions don't match m_a = 64 m_result = 32}}
-  rock.gemm %a * %b {cTransposed}
+  rock.gemm %a * %b {oTransposed}
     : tensor<2x64x128xf32> * tensor<2x128x32xf32> -> tensor<2x64x32xf32>
   func.return
 }

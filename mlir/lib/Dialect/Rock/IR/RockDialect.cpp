@@ -1047,8 +1047,8 @@ LogicalResult GemmOp::verify() {
           kA = dimsA[offsetA + (getATransposed() ? 0 : 1)],
           kB = dimsB[offsetB + (getBTransposed() ? 1 : 0)],
           nB = dimsB[offsetB + (getBTransposed() ? 0 : 1)],
-          mResult = dimsResult[offsetResult + (getCTransposed() ? 1 : 0)],
-          nResult = dimsResult[offsetResult + (getCTransposed() ? 0 : 1)];
+          mResult = dimsResult[offsetResult + (getOTransposed() ? 1 : 0)],
+          nResult = dimsResult[offsetResult + (getOTransposed() ? 0 : 1)];
   if (gA != gB || gA != gResult)
     return emitOpError("group dimensions don't match")
            << " g_a = " << gA << " g_b = " << gB << " g_result = " << gResult;
