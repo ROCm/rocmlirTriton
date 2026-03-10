@@ -22,19 +22,6 @@ func.func @gemm_arith_fusion(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, 
   return %1 : tensor<8x32xf32>
 }
 
-// Pass should skip: rock.store already exists
-// CHECK-LABEL: func.func @gemm_existing_store
-// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>)
-// CHECK-SAME: -> tensor<8x32xf32>
-// CHECK: rock.gemm
-// CHECK-COUNT-1: rock.store
-// CHECK: return
-func.func @gemm_existing_store(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel} {
-  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
-  %1 = rock.store %0 to %arg2 by set : tensor<8x32xf32> -> tensor<8x32xf32> to tensor<8x32xf32>
-  return %1 : tensor<8x32xf32>
-}
-
 // Pass should skip: no FusionRoot ops
 // CHECK-LABEL: func.func @no_fusion_root
 // CHECK-SAME: (%arg0: tensor<8x32xf32>)
@@ -120,20 +107,6 @@ func.func @attention_with_transforms(%arg0: tensor<1x32x32xf32>, %arg1: tensor<1
   %0 = rock.transform %result by #merge3_map : tensor<1x32x32xf32> to tensor<1024xf32>
   %1 = rock.transform %lse by #merge2_map : tensor<1x32xf32> to tensor<32xf32>
   return %0, %1 : tensor<1024xf32>, tensor<32xf32>
-}
-
-// Mixed returns: gemm result stored, passthrough also gets store
-// CHECK-LABEL: func.func @mixed_returns
-// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<4xf32>, %arg3: tensor<8x32xf32>, %arg4: tensor<4xf32>)
-// CHECK-SAME: -> (tensor<8x32xf32>, tensor<4xf32>)
-// CHECK-SAME: attributes {rock.kernel}
-// CHECK: %[[GEMM:.*]] = rock.gemm
-// CHECK: %[[STORE1:.*]] = rock.store %[[GEMM]] to %arg3 by set
-// CHECK: %[[STORE2:.*]] = rock.store %arg2 to %arg4 by set
-// CHECK: return %[[STORE1]], %[[STORE2]]
-func.func @mixed_returns(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<4xf32>) -> (tensor<8x32xf32>, tensor<4xf32>) attributes {rock.kernel} {
-  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
-  return %0, %arg2 : tensor<8x32xf32>, tensor<4xf32>
 }
 
 // Gemm -> arith fusion -> transform -> return: new arg has transformed type
@@ -237,43 +210,6 @@ func.func @gemm_fusion_fanout_transforms(%arg0: tensor<8x16xf32>, %arg1: tensor<
   return %3, %2 : tensor<256xf32>, tensor<256xf32>
 }
 
-// Gemm fans out to an existing rock.store and a fusion chain without a store.
-// The existing store return is left alone; only the fusion path gets a new store.
-// CHECK-LABEL: func.func @gemm_partial_store
-// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x32xf32>, %arg4: tensor<8x32xf32>)
-// CHECK-SAME: -> (tensor<8x32xf32>, tensor<8x32xf32>)
-// CHECK-SAME: attributes {rock.kernel}
-// CHECK: %[[GEMM:.*]] = rock.gemm
-// CHECK: %[[EXISTING:.*]] = rock.store %[[GEMM]] to %arg2 by set
-// CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %arg3
-// CHECK: %[[NEW_STORE:.*]] = rock.store %[[ADD]] to %arg4 by set
-// CHECK: return %[[EXISTING]], %[[NEW_STORE]]
-func.func @gemm_partial_store(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x32xf32>) -> (tensor<8x32xf32>, tensor<8x32xf32>) attributes {rock.kernel} {
-  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
-  %1 = rock.store %0 to %arg2 by set : tensor<8x32xf32> -> tensor<8x32xf32> to tensor<8x32xf32>
-  %2 = arith.addf %0, %arg3 : tensor<8x32xf32>
-  return %1, %2 : tensor<8x32xf32>, tensor<8x32xf32>
-}
-
-// Reversed partial store: existing store at return index 1, new store needed
-// at return index 0. The new output arg must be inserted before the existing
-// store's dest arg so output args follow return-index order.
-// CHECK-LABEL: func.func @gemm_partial_store_reversed
-// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x32xf32>, %arg4: tensor<8x32xf32>)
-// CHECK-SAME: -> (tensor<8x32xf32>, tensor<8x32xf32>)
-// CHECK-SAME: attributes {rock.kernel}
-// CHECK: %[[GEMM:.*]] = rock.gemm
-// CHECK: %[[EXISTING:.*]] = rock.store %[[GEMM]] to %arg3 by set
-// CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %arg4
-// CHECK: %[[NEW_STORE:.*]] = rock.store %[[ADD]] to %arg2 by set
-// CHECK: return %[[NEW_STORE]], %[[EXISTING]]
-func.func @gemm_partial_store_reversed(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x32xf32>) -> (tensor<8x32xf32>, tensor<8x32xf32>) attributes {rock.kernel} {
-  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
-  %1 = rock.store %0 to %arg2 by set : tensor<8x32xf32> -> tensor<8x32xf32> to tensor<8x32xf32>
-  %2 = arith.addf %0, %arg3 : tensor<8x32xf32>
-  return %2, %1 : tensor<8x32xf32>, tensor<8x32xf32>
-}
-
 // Fusion op uses the gemm output twice (both operands): exercises the
 // duplicate-user path in floodFillFromRoot.
 // CHECK-LABEL: func.func @gemm_fusion_same_operand_twice
@@ -291,21 +227,21 @@ func.func @gemm_fusion_same_operand_twice(%arg0: tensor<8x16xf32>, %arg1: tensor
 
 // -----
 
-// A return operand that is not a block argument and not reachable from any
-// FusionRoot should be flagged as an error.
+// A return operand not reachable from any FusionRoot should be flagged as
+// an error.
 func.func @uncovered_return_operand(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -> (tensor<8x32xf32>, tensor<8x32xf32>) attributes {rock.kernel} {
   %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
   %cst = arith.constant dense<0.0> : tensor<8x32xf32>
-  // expected-error @below {{return operand 1 is not a block argument and is not reachable from any FusionRoot}}
+  // expected-error @below {{return operand 1 is not reachable from any FusionRoot}}
   return %0, %cst : tensor<8x32xf32>, tensor<8x32xf32>
 }
 
 // -----
 
-// A FusionRoot result that is unused and has no store is an error.
+// A FusionRoot result that does not reach a return is an error.
 func.func @root_not_reaching_return(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<16x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel} {
   %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
-  // expected-error @below {{FusionRoot result has no rock.store and does not reach a function return}}
+  // expected-error @below {{FusionRoot result does not reach a function return}}
   %1 = rock.gemm %arg0 * %arg2 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
   return %0 : tensor<8x32xf32>
 }
@@ -313,12 +249,31 @@ func.func @root_not_reaching_return(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32
 // -----
 
 // A chain value used by an op that is not a fusion op, transform, reduce,
-// store, or return is an error.
+// or return is an error.
 func.func @unexpected_chain_use(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel} {
   %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
   // expected-error @below {{unexpected use of FusionRoot chain value by tosa.abs}}
   %1 = "tosa.abs"(%0) {} : (tensor<8x32xf32>) -> tensor<8x32xf32>
   return %1 : tensor<8x32xf32>
+}
+
+// -----
+
+// Existing rock.store is an error — this pass must run before stores exist.
+func.func @gemm_existing_store(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  // expected-error @below {{existing rock.store found; InsertOutputStores must run before stores are inserted}}
+  %1 = rock.store %0 to %arg2 by set : tensor<8x32xf32> -> tensor<8x32xf32> to tensor<8x32xf32>
+  return %1 : tensor<8x32xf32>
+}
+
+// -----
+
+// Block argument passthrough not reachable from any FusionRoot is an error.
+func.func @mixed_returns(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<4xf32>) -> (tensor<8x32xf32>, tensor<4xf32>) attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  // expected-error @below {{return operand 1 is not reachable from any FusionRoot}}
+  return %0, %arg2 : tensor<8x32xf32>, tensor<4xf32>
 }
 
 // -----

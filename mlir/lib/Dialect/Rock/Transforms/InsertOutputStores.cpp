@@ -15,10 +15,11 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 //
-// This pass inserts rock.store ops for kernel functions that return values
-// but lack explicit stores. For each return value from a FusionRoot chain,
-// it adds a new output argument, inserts a rock.store, and updates the
-// func.return to use the store results.
+// This pass inserts rock.store ops for kernel functions that return values.
+// It must run before any rock.store ops are inserted. For each return value
+// from a FusionRoot chain, it adds a new output argument, inserts a
+// rock.store, and updates the func.return to use the store results.
+// Every return operand must be reachable from a FusionRoot.
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,13 +50,10 @@ using namespace mlir::rock;
 namespace {
 
 // Forward flood-fill from a FusionRoot result.
-// Collects all reachable values into `chainSet`. For any rock.store found
-// whose source is in the chain, the store result is added to `storedValues`
-// (and to `chainSet`) but the flood-fill does not follow past the store.
-// This lets the caller distinguish return operands that already have stores
-// from those that still need one.
-static LogicalResult floodFillFromRoot(Value root, DenseSet<Value> &chainSet,
-                                       DenseSet<Value> &storedValues) {
+// Collects all reachable values into `chainSet` by following through
+// fusion-like ops (isForwardTraceOp).  This pass assumes no rock.store ops
+// exist yet, so encountering one is treated as an error.
+static LogicalResult floodFillFromRoot(Value root, DenseSet<Value> &chainSet) {
   SmallVector<Value> worklist;
   worklist.push_back(root);
 
@@ -66,18 +64,6 @@ static LogicalResult floodFillFromRoot(Value root, DenseSet<Value> &chainSet,
 
     for (OpOperand &use : v.getUses()) {
       Operation *owner = use.getOwner();
-
-      // For an existing rock.store whose source is in the chain, record its
-      // result as already-stored and add it to the chain (so it can match a
-      // return operand), but don't flood-fill past the store.
-      if (auto storeOp = dyn_cast<StoreOp>(owner)) {
-        if (use.getOperandNumber() == 0) { // source operand
-          Value storeResult = storeOp.getResult();
-          chainSet.insert(storeResult);
-          storedValues.insert(storeResult);
-        }
-        continue;
-      }
 
       // Follow through fusion-like ops
       if (isForwardTraceOp(owner)) {
@@ -106,13 +92,9 @@ struct ReturnStoreInfo {
 };
 
 // For each FusionRoot, flood-fill forward and identify which return operands
-// need stores. A return operand that is already the result of a rock.store is
-// left alone; all other return operands reachable from the root get a new
-// store. If a root result has neither an existing store nor a path to a
-// func.return operand, an error is emitted. After processing all roots,
-// block argument passthroughs also get stores (so every return value is
-// written to an output buffer). Any other uncovered return operand is an
-// error.
+// need stores. Every return operand must be reachable from some FusionRoot
+// chain; any uncovered return operand is an error. If a root result does not
+// reach a func.return operand, an error is emitted.
 static FailureOr<SmallVector<ReturnStoreInfo>>
 identifyReturnStores(ArrayRef<Operation *> fusionRoots,
                      func::ReturnOp returnOp) {
@@ -124,8 +106,7 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
   for (Operation *rootOp : fusionRoots) {
     for (Value rootResult : rootOp->getResults()) {
       DenseSet<Value> chainSet;
-      DenseSet<Value> storedValues;
-      if (failed(floodFillFromRoot(rootResult, chainSet, storedValues)))
+      if (failed(floodFillFromRoot(rootResult, chainSet)))
         return failure();
 
       // Check which return operands are in this chain
@@ -138,47 +119,26 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
         foundReturnOperand = true;
         coveredReturnIndices.insert(i);
 
-        // Skip return operands that are already the result of a rock.store.
-        if (storedValues.contains(retVal)) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "Return " << i << " already has store, skipping\n");
-          continue;
-        }
-
         ReturnStoreInfo info;
         info.returnIndex = i;
         info.returnOperand = retVal;
         storeInfos.push_back(info);
       }
 
-      // A FusionRoot result with no store and no path to a return is an error.
+      // A FusionRoot result with no path to a return is an error.
       if (!foundReturnOperand) {
         return rootOp->emitError(
-            "FusionRoot result has no rock.store and does not "
-            "reach a function return");
+            "FusionRoot result does not reach a function return");
       }
     }
   }
 
-  // Handle return operands not covered by any FusionRoot chain.
-  // Block argument passthroughs get stores too (so every return value is
-  // written into an output buffer). Any other uncovered value is an error.
+  // Every return operand must be reachable from some FusionRoot chain.
   for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
     if (coveredReturnIndices.contains(i))
       continue;
-    Value retVal = returnOp.getOperand(i);
-    // Block argument passthroughs also need a rock.store so that every
-    // return value is written into an output buffer.
-    if (isa<BlockArgument>(retVal)) {
-      ReturnStoreInfo info;
-      info.returnIndex = i;
-      info.returnOperand = retVal;
-      storeInfos.push_back(info);
-      continue;
-    }
     return returnOp.emitError("return operand ")
-           << i << " is not a block argument and is not reachable from any "
-           << "FusionRoot";
+           << i << " is not reachable from any FusionRoot";
   }
 
   return storeInfos;
@@ -186,9 +146,10 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
 
 // Add a new output argument to the kernel for each return value that needs a
 // store. Transfers all result attributes (e.g. rock.prefill) to new arguments.
-static LogicalResult addOutputArguments(
-    func::FuncOp funcOp, SmallVectorImpl<ReturnStoreInfo> &storeInfos,
-    const DenseMap<unsigned, unsigned> &existingStoreArgPositions) {
+// New arguments are appended in return-index order.
+static LogicalResult
+addOutputArguments(func::FuncOp funcOp,
+                   SmallVectorImpl<ReturnStoreInfo> &storeInfos) {
   // Sort by returnIndex so output arguments are added in the same order as the
   // original return operands: return %a, %b -> func(inputs..., %a, %b).
   llvm::sort(storeInfos,
@@ -196,29 +157,9 @@ static LogicalResult addOutputArguments(
                return a.returnIndex < b.returnIndex;
              });
 
-  unsigned insertionsDone = 0;
   for (auto &info : storeInfos) {
     Type retType = info.returnOperand.getType();
-
-    // Find the existing store dest arg with the smallest return index
-    // that is still greater than ours, and insert just before it so
-    // output args maintain return-index order. If no such existing
-    // store exists, append at the end.
-    std::optional<unsigned> nextExistingOrigArgIdx;
-    for (auto &[retIdx, argIdx] : existingStoreArgPositions) {
-      if (retIdx > info.returnIndex) {
-        if (!nextExistingOrigArgIdx || argIdx < *nextExistingOrigArgIdx)
-          nextExistingOrigArgIdx = argIdx;
-      }
-    }
-    unsigned newArgIdx;
-    if (nextExistingOrigArgIdx) {
-      // All prior insertions were for smaller return indices and thus at
-      // positions <= this existing arg, so they all shifted it.
-      newArgIdx = *nextExistingOrigArgIdx + insertionsDone;
-    } else {
-      newArgIdx = funcOp.getNumArguments();
-    }
+    unsigned newArgIdx = funcOp.getNumArguments();
 
     // Transfer all result attributes (e.g. rock.prefill) to the new argument.
     DictionaryAttr resultAttrs = funcOp.getResultAttrDict(info.returnIndex);
@@ -228,7 +169,6 @@ static LogicalResult addOutputArguments(
             funcOp.getLoc())))
       return failure();
     info.storeArg = funcOp.getArgument(newArgIdx);
-    ++insertionsDone;
 
     LLVM_DEBUG(llvm::dbgs()
                << "Return " << info.returnIndex << ": created output arg "
@@ -279,6 +219,15 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
   if (fusionRoots.empty())
     return success();
 
+  // This pass must run before any rock.store ops are inserted.
+  WalkResult storeCheck = funcOp.walk([](StoreOp storeOp) {
+    storeOp.emitError("existing rock.store found; InsertOutputStores must run "
+                      "before stores are inserted");
+    return WalkResult::interrupt();
+  });
+  if (storeCheck.wasInterrupted())
+    return failure();
+
   auto returnOp = cast<func::ReturnOp>(funcOp.getBody().back().getTerminator());
 
   auto maybeStoreInfos = identifyReturnStores(fusionRoots, returnOp);
@@ -295,22 +244,7 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
     return funcOp.emitError(
         "kernel has callers; InsertOutputStores expects no call sites");
 
-  // Collect arg positions of existing rock.store destinations so that new
-  // output arguments are interleaved in the correct (return-index) order.
-  // A return operand that is a store result is always the direct result of
-  // that store. floodFillFromRoot stops at rock.store and does not follow
-  // past it, so any downstream value would not be in the chain and would
-  // have been rejected by identifyReturnStores.
-  DenseMap<unsigned, unsigned> existingStoreArgPositions;
-  for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
-    Value retVal = returnOp.getOperand(i);
-    if (auto storeOp = retVal.getDefiningOp<StoreOp>()) {
-      if (auto destArg = dyn_cast<BlockArgument>(storeOp.getDest()))
-        existingStoreArgPositions[i] = destArg.getArgNumber();
-    }
-  }
-
-  if (failed(addOutputArguments(funcOp, storeInfos, existingStoreArgPositions)))
+  if (failed(addOutputArguments(funcOp, storeInfos)))
     return failure();
 
   insertStoreOps(funcOp, returnOp, storeInfos);
