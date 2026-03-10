@@ -99,4 +99,5 @@
 // HIGHLEVEL-NEXT:rock-view-to-transform,
 // HIGHLEVEL-NEXT:rock-fold-broadcast,
 // HIGHLEVEL-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}),
-// HIGHLEVEL-NEXT:convert-tensor-to-linalg)
+// HIGHLEVEL-NEXT:convert-tensor-to-linalg,
+// HIGHLEVEL-NEXT:rock-insert-output-stores)
