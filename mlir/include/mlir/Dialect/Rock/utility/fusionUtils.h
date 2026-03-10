@@ -14,9 +14,6 @@
 #include "mlir/Support/LogicalResult.h"
 
 namespace mlir {
-namespace memref {
-class AllocOp;
-} // namespace memref
 
 namespace func {
 class FuncOp;
@@ -47,7 +44,7 @@ LogicalResult testFusionLegalityReduce(ModuleOp mod);
 // Same as above, overload of `testFusionLegalityBwdDataConv` for `ModuleOp`.
 LogicalResult testFusionLegalityBwdDataConv(ModuleOp mod);
 
-// Checks whether the output fusion linalg::GenericOp is valid. Assuming a
+// Checks whether the output fusion is valid. Assuming a
 // split-k kernel.
 LogicalResult
 checkValidOutputFusion(Value gemmResult,
