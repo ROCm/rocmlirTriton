@@ -91,9 +91,8 @@ static LogicalResult floodFillFromRoot(Value root, DenseSet<Value> &chainSet,
         continue;
 
       // Any other use of a FusionRoot chain value is unexpected.
-      return owner->emitError(
-          "unexpected use of FusionRoot chain value by ")
-          << owner->getName();
+      return owner->emitError("unexpected use of FusionRoot chain value by ")
+             << owner->getName();
     }
   }
   return success();
@@ -101,9 +100,9 @@ static LogicalResult floodFillFromRoot(Value root, DenseSet<Value> &chainSet,
 
 // Information about a return value that needs a rock.store.
 struct ReturnStoreInfo {
-  unsigned returnIndex;    // Index in the func.return operand list
-  Value returnOperand;     // The value being returned
-  BlockArgument storeArg;  // New output arg (set by addOutputArguments)
+  unsigned returnIndex;   // Index in the func.return operand list
+  Value returnOperand;    // The value being returned
+  BlockArgument storeArg; // New output arg (set by addOutputArguments)
 };
 
 // For each FusionRoot, flood-fill forward and identify which return operands
@@ -142,8 +141,7 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
         // Skip return operands that are already the result of a rock.store.
         if (storedValues.contains(retVal)) {
           LLVM_DEBUG(llvm::dbgs()
-                     << "Return " << i
-                     << " already has store, skipping\n");
+                     << "Return " << i << " already has store, skipping\n");
           continue;
         }
 
@@ -188,10 +186,9 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
 
 // Add a new output argument to the kernel for each return value that needs a
 // store. Transfers all result attributes (e.g. rock.prefill) to new arguments.
-static LogicalResult
-addOutputArguments(func::FuncOp funcOp,
-                   SmallVectorImpl<ReturnStoreInfo> &storeInfos,
-                   const DenseMap<unsigned, unsigned> &existingStoreArgPositions) {
+static LogicalResult addOutputArguments(
+    func::FuncOp funcOp, SmallVectorImpl<ReturnStoreInfo> &storeInfos,
+    const DenseMap<unsigned, unsigned> &existingStoreArgPositions) {
   // Sort by returnIndex so output arguments are added in the same order as the
   // original return operands: return %a, %b -> func(inputs..., %a, %b).
   llvm::sort(storeInfos,
@@ -226,18 +223,16 @@ addOutputArguments(func::FuncOp funcOp,
     // Transfer all result attributes (e.g. rock.prefill) to the new argument.
     DictionaryAttr resultAttrs = funcOp.getResultAttrDict(info.returnIndex);
 
-    if (failed(funcOp.insertArgument(newArgIdx, retType,
-                                     resultAttrs ? resultAttrs
-                                                 : DictionaryAttr(),
-                                     funcOp.getLoc())))
+    if (failed(funcOp.insertArgument(
+            newArgIdx, retType, resultAttrs ? resultAttrs : DictionaryAttr(),
+            funcOp.getLoc())))
       return failure();
     info.storeArg = funcOp.getArgument(newArgIdx);
     ++insertionsDone;
 
     LLVM_DEBUG(llvm::dbgs()
-               << "Return " << info.returnIndex
-               << ": created output arg " << newArgIdx
-               << " with type " << retType << "\n");
+               << "Return " << info.returnIndex << ": created output arg "
+               << newArgIdx << " with type " << retType << "\n");
   }
   return success();
 }
@@ -245,15 +240,14 @@ addOutputArguments(func::FuncOp funcOp,
 // Insert rock.store ops just before func.return for each identified return
 // value, storing the result into the corresponding output argument.
 static void insertStoreOps(func::FuncOp funcOp, func::ReturnOp returnOp,
-                            ArrayRef<ReturnStoreInfo> storeInfos) {
+                           ArrayRef<ReturnStoreInfo> storeInfos) {
   OpBuilder builder(funcOp.getContext());
   builder.setInsertionPoint(returnOp);
 
   for (const auto &info : storeInfos) {
     assert(info.storeArg && "store destination must be set by now");
 
-    auto storeMethodAttr =
-        builder.getAttr<StoreMethodAttr>(StoreMethod::Set);
+    auto storeMethodAttr = builder.getAttr<StoreMethodAttr>(StoreMethod::Set);
     auto storeOp = StoreOp::create(builder, returnOp.getLoc(),
                                    /*result=*/info.returnOperand.getType(),
                                    /*source=*/info.returnOperand,
@@ -262,7 +256,6 @@ static void insertStoreOps(func::FuncOp funcOp, func::ReturnOp returnOp,
     returnOp.setOperand(info.returnIndex, storeOp.getResult());
   }
 }
-
 
 struct RockInsertOutputStoresPass
     : public rock::impl::RockInsertOutputStoresPassBase<
@@ -275,9 +268,8 @@ private:
 
 } // namespace
 
-LogicalResult
-RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
-                                          ModuleOp moduleOp) {
+LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
+                                                        ModuleOp moduleOp) {
   SmallVector<Operation *> fusionRoots;
   funcOp.walk([&](Operation *op) {
     if (op->hasTrait<OpTrait::rock::FusionRoot>())
