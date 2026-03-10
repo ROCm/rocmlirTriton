@@ -1482,6 +1482,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       assert(!outputViews.empty() && "outputViews is empty!");
       gemmOutput = outputViews[0];
     } else {
+      // Note that we don't support backward conv fusions!
       gemmOutput =
           TransformOp::create(b, loc, outputValue, outputTransformAttr);
     }
