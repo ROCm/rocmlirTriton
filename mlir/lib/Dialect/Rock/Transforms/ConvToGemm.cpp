@@ -121,6 +121,17 @@ void matchUnderlyingOrder(SmallVectorImpl<StringRef> &names,
             });
 }
 
+// If `dest` is defined after `op` (e.g. because RegularizeOutput added
+// transforms to the store dest after the conv), move the builder's insertion
+// point past `dest`'s definition so that new ops don't violate dominance.
+static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
+                                    Value dest) {
+  if (Operation *defOp = dest.getDefiningOp()) {
+    if (defOp->getBlock() == op->getBlock() && op->isBeforeInBlock(defOp))
+      b.setInsertionPointAfter(defOp);
+  }
+}
+
 // TODO(rocmlirTriton): Propagate the type to fusions as well.
 /// Update any StoreOp that uses the conv result to use the gemm result instead.
 /// The conv result type differs from the gemm result type (due to shape
@@ -512,6 +523,7 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
     return op.emitOpError("cannot trace bwd_weight result to rock::StoreOp");
   StoreOp firstStore = maybeStores->front();
   Value filterDest = firstStore.getDest();
+  ensureInsertionAfterDef(b, op, filterDest);
 
   // Regularize filter dest layout to match input layout ordering.
   // This must happen before building transforms so that filterNames,
@@ -1132,6 +1144,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // because it represents the input gradient, and the input layout is the
     // reference layout that everything else is regularized against.
     Value destBuffer = originalStoreOp.getDest();
+    ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
+
     Value lastStoreResult;
     for (int64_t kid : kernelIds) {
       auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
@@ -1225,6 +1239,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // (filter for BwdWeight, output for ConvOp) we regularize the StoreOp
   // dest buffer here.
   if constexpr (notConvGemm) {
+    ensureInsertionAfterDef(b, op, destBuffer);
+
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
       auto mapping = buildInputToFilterMapping(b, rank);
@@ -1587,6 +1603,40 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
 
     // Replace extra fusion input operands with their gemm versions.
     rock::replaceFusionExtraInputs(result, fusionInputMap);
+
+    // propagateOutputType rewired fusion ops (arith/math ops between the
+    // conv and the stores) to consume the gemm result, but
+    // ensureInsertionAfterDef may have placed the gemm *after* those ops
+    // in the block (when RegularizeOutput added transforms to the store
+    // dest past the fusion chain).  Move any such ops to just after the
+    // gemm so that SSA dominance holds.
+    {
+      DenseSet<Operation *> fusionOpSet;
+      SmallVector<Value> worklist;
+      worklist.push_back(result);
+      while (!worklist.empty()) {
+        Value current = worklist.pop_back_val();
+        for (OpOperand &use : current.getUses()) {
+          Operation *owner = use.getOwner();
+          if (!rock::isFusionOp(owner) || !fusionOpSet.insert(owner).second)
+            continue;
+          for (Value res : owner->getResults())
+            worklist.push_back(res);
+        }
+      }
+      SmallVector<Operation *> toMove;
+      for (Operation &blockOp : *newGemmOp->getBlock()) {
+        if (&blockOp == newGemmOp.getOperation())
+          break;
+        if (fusionOpSet.count(&blockOp))
+          toMove.push_back(&blockOp);
+      }
+      Operation *insertAfter = newGemmOp.getOperation();
+      for (Operation *fusionOp : toMove) {
+        fusionOp->moveAfter(insertAfter);
+        insertAfter = fusionOp;
+      }
+    }
 
     for (size_t i = 0; i < stores.size(); ++i) {
       StoreOp storeOp = stores[i];

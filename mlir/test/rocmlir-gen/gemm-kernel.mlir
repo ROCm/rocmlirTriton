@@ -13,8 +13,6 @@
 // TRA-DAG:   #[[mapAUnmerge:.*]] = affine_map<(d0, d1, d2) -> ((d0 * 769 + d1) * 1024 + d2)>
 // NOTRB-DAG: #[[mapBUnmerge:.*]] = affine_map<(d0, d1, d2) -> ((d0 * 769 + d1) * 512 + d2)>
 // TRB-DAG:   #[[mapBUnmerge:.*]] = affine_map<(d0, d1, d2) -> ((d0 * 512 + d1) * 769 + d2)>
-// NOTRC-DAG: #[[mapCUnmerge:.*]] = affine_map<(d0, d1, d2) -> ((d0 * 1024 + d1) * 512 + d2)>
-// TRC-DAG:   #[[mapCUnmerge:.*]] = affine_map<(d0, d1, d2) -> ((d0 * 512 + d1) * 1024 + d2)>
 // NOTRA-DAG: #[[$mapAHost:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
 // TRA-DAG:   #[[$mapAHost:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d3, d1)>
 // NOTRB-DAG: #[[$mapBHost:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
@@ -25,8 +23,6 @@
 // TRA-DAG:   #[[$trMapAUnmerge:.*]] = #rock.transform_map<#[[mapAUnmerge]] by [<Unmerge{3, 769, 1024} ["g", "k", "m"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [3, 769, 1024] -> [2362368]>
 // NOTRB-DAG: #[[$trMapBUnmerge:.*]] = #rock.transform_map<#[[mapBUnmerge]] by [<Unmerge{3, 769, 512} ["g", "k", "n"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [3, 769, 512] -> [1181184]>
 // TRB-DAG:   #[[$trMapBUnmerge:.*]] = #rock.transform_map<#[[mapBUnmerge]] by [<Unmerge{3, 512, 769} ["g", "n", "k"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [3, 512, 769] -> [1181184]>
-// NOTRC-DAG: #[[$trMapCUnmerge:.*]] = #rock.transform_map<#[[mapCUnmerge]] by [<Unmerge{3, 1024, 512} ["g", "m", "n"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [3, 1024, 512] -> [1572864]>
-// TRC-DAG:   #[[$trMapCUnmerge:.*]] = #rock.transform_map<#[[mapCUnmerge]] by [<Unmerge{3, 512, 1024} ["g", "n", "m"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [3, 512, 1024] -> [1572864]>
 
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 // CHECK-LABEL: func.func @rock_gemm
@@ -34,7 +30,6 @@
 // CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.enable_splitk_for_tuning, rock.kernel
 // CHECK-NEXT: %[[a:.*]] = rock.transform %[[aRaw]] by #[[$trMapAUnmerge]]
 // CHECK-NEXT: %[[b:.*]] = rock.transform %[[bRaw]] by #[[$trMapBUnmerge]]
-// CHECK-NEXT: %[[c:.*]] = rock.transform %[[cRaw]] by #[[$trMapCUnmerge]]
 // CHECK-NEXT: rock.gemm
 // NOTRA-SAME: %[[a]] *
 // TRA-SAME:   tr %[[a]] *
@@ -42,6 +37,7 @@
 // TRB-SAME:   tr %[[b]]
 // NOTRC-SAME: :
 // TRC-SAME:   {oTransposed} :
+// CHECK-NEXT: rock.transform
 // CHECK-NEXT: rock.store
 // CHECK-NEXT: return
 

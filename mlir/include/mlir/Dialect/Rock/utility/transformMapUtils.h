@@ -187,7 +187,24 @@ TransformMapAttr transformExtractSlice(OpBuilder &b, Location loc,
 void expandFlatFunctionArguments(OpBuilder &b, func::FuncOp func,
                                  ArrayRef<SmallVector<StringRef>> names,
                                  TypeRange logicalTypes,
-                                 SmallVectorImpl<Value> &expanded);
+                                 SmallVectorImpl<Value> &expanded,
+                                 ArrayRef<unsigned> skipIndices = {});
+
+/// Build a TransformMapAttr that maps between a logical multi-dimensional
+/// shape and a flattened 1-D representation.
+TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
+                                          ArrayRef<StringRef> dimNames,
+                                          ArrayRef<int64_t> shape,
+                                          int64_t numElements);
+
+/// Apply a flattening transform to a value in logical shape, producing
+/// a 1-D tensor. Internally this builds the expand map (Unmerge + AddDim,
+/// flat->logical) via buildFlattenTransformMap and then inverts it, so the
+/// applied TransformOp carries a Merge + RemoveDim map (logical->flat).
+/// This is the inverse direction of what expandFlatFunctionArguments does
+/// per argument.
+Value flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
+                    ArrayRef<StringRef> dimNames);
 
 // This utility function will prepend a given set of the views onto
 // a set of existing views

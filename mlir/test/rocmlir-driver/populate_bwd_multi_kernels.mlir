@@ -12,10 +12,9 @@
 
 // STRIDE2_GKYXC: {{rock.gemm.*}}
 
-// STRIDE2_1x1_TOP_LEVEL: %arg1: tensor<{{.*}}xf32> {rock.prefill = 0.000000e+00 : f32}
+// STRIDE2_1x1_TOP_LEVEL: %arg2: tensor<{{.*}}xf32> {rock.prefill = 0.000000e+00 : f32}
 // STRIDE2_1x1_TOP_LEVEL: [[exp0:%.+]] = rock.transform %arg0 by {{.*}} : tensor<1024xf32> to tensor<1x32x32x1x1xf32>
-// STRIDE2_1x1_TOP_LEVEL: [[exp1:%.+]] = rock.transform %arg1 by {{.*}} : tensor<200704xf32> to tensor<32x1x32x14x14xf32>
-// STRIDE2_1x1_TOP_LEVEL: [[exp2:%.+]] = rock.transform %arg2 by {{.*}} : tensor<65536xf32> to tensor<32x1x32x8x8xf32>
-// STRIDE2_1x1_TOP_LEVEL: {{.*}} = rock.conv_bwd_data([[exp0]], [[exp1]], [[exp2]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [2 : index, 2 : index]} : tensor<1x32x32x1x1xf32>, tensor<32x1x32x14x14xf32>, tensor<32x1x32x8x8xf32>
+// STRIDE2_1x1_TOP_LEVEL: [[exp1:%.+]] = rock.transform %arg1 by {{.*}} : tensor<65536xf32> to tensor<32x1x32x8x8xf32>
+// STRIDE2_1x1_TOP_LEVEL: {{.*}} = rock.conv_bwd_data([[exp0]], [[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [2 : index, 2 : index]} : tensor<1x32x32x1x1xf32>, tensor<32x1x32x8x8xf32>
 
 // STRIDE2_1x1_LOWERING: {{rock.gemm.*}}
