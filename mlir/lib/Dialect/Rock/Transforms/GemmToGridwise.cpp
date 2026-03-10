@@ -607,31 +607,21 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     outputViews.push_back(storeOp.getDest());
   }
 
-  // If the output view is flat (1D), expand it to match the gemm result shape.
-  // This happens when the output arg expansion is deferred (e.g., when
-  // flattenOutput is applied after the gemm op in the code generator).
+  // If the output view is flat (1D), expand it to match the gemm result shape
+  // (always 3D: G x M x N). This happens because the code generator defers
+  // the output arg expansion and applies flattenOutput after the gemm op.
   auto gemmResultType = cast<ShapedType>(op.getResult().getType());
-  if (gemmResultType.getRank() > 1) {
-    for (auto &view : outputViews) {
-      auto viewType = cast<ShapedType>(view.getType());
-      if (viewType.getRank() == 1) {
-        OpBuilder::InsertionGuard guard(rw);
-        if (Operation *defOp = view.getDefiningOp())
-          rw.setInsertionPointAfter(defOp);
-        SmallVector<StringRef> dimNames;
-        for (int64_t i = 0; i < gemmResultType.getRank(); ++i) {
-          if (i == 0)
-            dimNames.push_back("gemmG");
-          else if (i == 1)
-            dimNames.push_back("gemmM");
-          else
-            dimNames.push_back("gemmN");
-        }
-        TransformMapAttr expandMap = buildFlattenTransformMap(
-            rw, loc, dimNames, gemmResultType.getShape(),
-            viewType.getNumElements());
-        view = rock::TransformOp::create(rw, loc, view, expandMap);
-      }
+  for (auto &view : outputViews) {
+    auto viewType = cast<ShapedType>(view.getType());
+    if (viewType.getRank() == 1) {
+      OpBuilder::InsertionGuard guard(rw);
+      if (Operation *defOp = view.getDefiningOp())
+        rw.setInsertionPointAfter(defOp);
+      SmallVector<StringRef> dimNames = {"gemmG", "gemmM", "gemmN"};
+      TransformMapAttr expandMap = buildFlattenTransformMap(
+          rw, loc, dimNames, gemmResultType.getShape(),
+          viewType.getNumElements());
+      view = rock::TransformOp::create(rw, loc, view, expandMap);
     }
   }
 
@@ -805,11 +795,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     rw.replaceOp(storeOp, newStoreOp.getResult());
   }
 
-  // Erase dead intermediate transforms (in reverse to handle dependencies).
-  // Note: ConversionPatternRewriter::eraseOp does not require use_empty() —
-  // it maps results to null and defers erasure. The old store (the only user
-  // of these transforms) is already marked for replacement, so the framework
-  // won't try to update a replaced op's operands with stale type mappings.
+  // Erase dead intermediate transforms (in reverse to handle dependencies)
   for (auto transformOp : llvm::reverse(deadTransforms))
     rw.eraseOp(transformOp);
 
