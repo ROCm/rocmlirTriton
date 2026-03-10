@@ -15,6 +15,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/math.h"
@@ -173,6 +174,13 @@ mlir::rock::backwardDataKernelIds(ArrayRef<int64_t> strideDims,
   return kernelIds;
 }
 
+// TODO(kdrewnia): Could rank-0 vectors clear some of this up?
+Type mlir::rock::vectorTypeOrSelf(Type elementType, int64_t len) {
+  if (len == 1)
+    return elementType;
+  return VectorType::get({len}, elementType);
+}
+
 FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
     OpBuilder &b, Location loc, Value globalBuffer, StringRef dName,
     ArrayRef<int64_t> bidGridLengths, int64_t kPerBlock, int64_t dPerBlock,
@@ -293,6 +301,30 @@ Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
   return TransformOp::create(b, loc, matrix, padAttr);
 }
 
+template <typename AllocType>
+static FailureOr<AllocType> findAlloc(Value value) {
+  auto *curOp = value.getDefiningOp();
+  auto maybeAllocOp = dyn_cast_or_null<AllocType>(curOp);
+  while (!maybeAllocOp) {
+    // Keep going until the operation that defines the value is a
+    // view-like operation
+    if (auto viewOp = dyn_cast_or_null<ViewLikeOpInterface>(curOp)) {
+      curOp = viewOp.getViewSource().getDefiningOp();
+    } else {
+      return failure();
+    }
+    maybeAllocOp = dyn_cast_or_null<AllocType>(curOp);
+  }
+  if (!maybeAllocOp)
+    return failure();
+
+  return maybeAllocOp;
+}
+
+FailureOr<memref::AllocOp> mlir::rock::findMemrefAlloc(Value value) {
+  return findAlloc<memref::AllocOp>(value);
+}
+
 FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {
   auto maybeBlockArg = dyn_cast_or_null<BlockArgument>(value);
   while (!maybeBlockArg) {
@@ -359,6 +391,82 @@ FailureOr<IntegerAttr> mlir::rock::getGridSize(Operation *op) {
 FailureOr<IntegerAttr> mlir::rock::getBlockSize(Operation *op) {
   return getAttrFromOpOrParents<IntegerAttr>(
       op, rock::BlockSizeAttr::getMnemonic());
+}
+
+ReassociationIndices
+mlir::rock::getReassociationForFlattening(ShapedType srcTp) {
+  ReassociationIndices reassociation;
+  for (int i = 0, e = srcTp.getRank(); i < e; i++)
+    reassociation.push_back(i);
+  return reassociation;
+}
+
+Value mlir::rock::getFlattenedMemref(OpBuilder &b, Value nonFlatMemRef) {
+  Location loc = nonFlatMemRef.getLoc();
+  MemRefType nonFlatMemRefType = cast<MemRefType>(nonFlatMemRef.getType());
+  int64_t numElements = nonFlatMemRefType.getNumElements();
+  if (nonFlatMemRefType.getRank() > 1) {
+    Type nonFlatMemRefElType = nonFlatMemRefType.getElementType();
+    auto flatMemRefType =
+        MemRefType::get({numElements}, nonFlatMemRefElType, AffineMap{},
+                        nonFlatMemRefType.getMemorySpace());
+    auto reassociation = getReassociationForFlattening(nonFlatMemRefType);
+    return memref::CollapseShapeOp::create(b, loc, flatMemRefType,
+                                           nonFlatMemRef, reassociation);
+  }
+  return nonFlatMemRef;
+}
+
+TypedValue<MemRefType> mlir::rock::viewBufferAs(OpBuilder &b, Value buffer,
+                                                Type elementType,
+                                                ArrayRef<int64_t> dimensions) {
+  Location loc = buffer.getLoc();
+  Value zeroByteOffset = b.createOrFold<arith::ConstantIndexOp>(loc, 0);
+  auto bufferType = cast<MemRefType>(buffer.getType());
+  assert(bufferType.getRank() == 1 &&
+         "Buffer type must be a 1D memref for viewBufferAs");
+  assert(bufferType.getElementType() == b.getI8Type() &&
+         "Buffer type must be a i8 memref for viewBufferAs");
+
+  int64_t numBytes = bufferType.getShape()[0];
+  int64_t numElements = std::accumulate(dimensions.begin(), dimensions.end(),
+                                        int64_t{1}, std::multiplies<>());
+  int64_t elementBitWidth =
+      getElementTypeOrSelf(elementType).getIntOrFloatBitWidth();
+  int64_t vectorLength = isa<VectorType>(elementType)
+                             ? cast<VectorType>(elementType).getNumElements()
+                             : 1;
+  int64_t totalBitWidthRequested = elementBitWidth * numElements * vectorLength;
+  int64_t bufferBitWidth = numBytes * 8;
+  assert(bufferBitWidth == totalBitWidthRequested &&
+         "Can't evenly fit type into buffer");
+
+  auto newBufferType = MemRefType::get(dimensions, elementType, nullptr,
+                                       bufferType.getMemorySpace());
+  auto view =
+      memref::ViewOp::create(b, loc, newBufferType, buffer, zeroByteOffset,
+                             /*dynamic dim sizes=*/ValueRange{});
+  return TypedValue<MemRefType>(view.getResult());
+}
+
+TypedValue<MemRefType> mlir::rock::viewBufferAs(OpBuilder &b, Value buffer,
+                                                Type elementType) {
+  auto bufferType = cast<MemRefType>(buffer.getType());
+  assert(bufferType.getRank() == 1 &&
+         "Buffer type must be a 1D memref for viewBufferAs");
+  assert(bufferType.getElementType() == b.getI8Type() &&
+         "Buffer type must be a i8 memref for viewBufferAs");
+  int64_t numBytes = bufferType.getShape()[0];
+  int64_t bufferBitWidth = numBytes * 8;
+  int64_t elementBitWidth =
+      getElementTypeOrSelf(elementType).getIntOrFloatBitWidth();
+  int64_t vectorLength = isa<VectorType>(elementType)
+                             ? cast<VectorType>(elementType).getNumElements()
+                             : 1;
+  assert(bufferBitWidth % (elementBitWidth * vectorLength) == 0 &&
+         "Can't evenly fit type into buffer");
+  int64_t length = bufferBitWidth / (elementBitWidth * vectorLength);
+  return viewBufferAs(b, buffer, elementType, {length});
 }
 
 FailureOr<SetVector<StoreOp>>
@@ -428,6 +536,24 @@ mlir::rock::traceRootOutputToArgs(Value output, func::FuncOp func) {
     return SmallVector<BlockArgument>(args.begin(), args.end());
 
   LLVM_DEBUG(llvm::dbgs() << "traceRootOutputToArgs: no arguments found!\n");
+  return failure();
+}
+
+FailureOr<SmallVector<OpOperand *>>
+mlir::rock::traceGemmOutputToGenericOps(Value matC, func::FuncOp func) {
+  auto funcArgs = func.getArguments();
+  // Check if matC can be directly traced to a kernel argument
+  FailureOr<BlockArgument> directArg = findBlockArgument(matC);
+  if (succeeded(directArg)) {
+    for (auto arg : funcArgs) {
+      // no possible linalg.generic output fusion if matC is a block arg
+      if (directArg.value() == arg)
+        return failure();
+    }
+  }
+
+  // For tensor IR: there are no linalg.generic output fusions
+  // in the tensor-based IR flow, so return empty.
   return failure();
 }
 

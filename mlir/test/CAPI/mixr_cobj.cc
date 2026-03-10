@@ -210,7 +210,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   module.walk([&](mlir::func::FuncOp f) {
     auto args = f.getArguments();
     for (auto arg : args) {
-      argIdx += 3; // 3 per tensor : allocated ptr, aligned ptr, offset
+      argIdx += 3; // 3 per memref : allocated ptr, aligned ptr, offset
       auto sType = mlir::cast<mlir::ShapedType>(arg.getType());
       long long rank = sType.getRank();
       printf("rank:%lld, dim:", rank);
@@ -228,8 +228,8 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   // CHECK: rank:4, dim:<1><64><56><56>
   // CHECK: Kernel name : main
 
-  // 4 tensors in this example : input, filter, bias and result
-  // example : tensor<1x64x56x56xf32>
+  // 4 memref in this example : input, filter, bias and result
+  // example : memref<1x64x56x56xf32>
   // uses 11 params : ptr, ptr, 0 /*offset */, 1, 64, 56, 56, 1, 64, 56, 56
   // printf("Estimated #kernel params : %d\n", argIdx);
 

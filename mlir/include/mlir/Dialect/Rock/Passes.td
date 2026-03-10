@@ -35,8 +35,8 @@ def RockConvToGemmPass : Pass<"rock-conv-to-gemm", "::mlir::func::FuncOp"> {
   let summary = "expand convolution into coordinate transformations and gemm. "
                 "Additionally, it also convert rock.conv_elementwise_gemm into "
                 "rock.gemm_elementwise_gemm";
-  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
-                           "scf::SCFDialect", "gpu::GPUDialect"];
+  let dependentDialects = ["rock::RockDialect", "memref::MemRefDialect", "arith::ArithDialect",
+    "scf::SCFDialect", "gpu::GPUDialect"];
 }
 
 def RockAffixTuningParametersPass : Pass<"rock-affix-params", "::mlir::func::FuncOp"> {
@@ -47,7 +47,8 @@ def RockAffixTuningParametersPass : Pass<"rock-affix-params", "::mlir::func::Fun
 def RockGemmToGridwisePass : Pass<"rock-gemm-to-gridwise", "::mlir::func::FuncOp"> {
   let summary = "convert gemm to gridwise gemm, adding padding";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "linalg::LinalgDialect", "arith::ArithDialect"];
+                           "memref::MemRefDialect", "linalg::LinalgDialect",
+                           "arith::ArithDialect"];
 }
 
 def RockFoldBroadcastPass: Pass<"rock-fold-broadcast", "::mlir::func::FuncOp"> {

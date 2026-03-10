@@ -32,6 +32,14 @@ Value createZeroConstantOp(OpBuilder &b, Location loc, Type type);
 Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
                              Type destType);
 
+// Utility function to perform cast
+// and copy to another memref using a vector store. This flattens the vectors.
+void createTypeConversionFlatAndStore(PatternRewriter &rewriter, Location loc,
+                                      Value src, Value dst);
+
+/// Utility function to collapse an multi-dimensional memref to 1D.
+Value createCollapseShapeOp(OpBuilder &b, Location loc, Value source);
+
 /// Utility function to get the number of bytes a value of type `type` takes up.
 /// For the sub-byte types like f4E2M1FN, it returns the number of packed Bytes
 /// with padding.

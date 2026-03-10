@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines Rock attributes and operations.
+// This file defines Rock memref attributes and operations.
 //
 //===----------------------------------------------------------------------===//
 

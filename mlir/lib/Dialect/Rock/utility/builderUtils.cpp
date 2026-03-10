@@ -20,7 +20,6 @@
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
-#include "llvm/Support/ErrorHandling.h"
 
 using mlir::arith::ConstantOp;
 
@@ -144,6 +143,53 @@ Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
   return result;
 }
 
+void createTypeConversionFlatAndStore(PatternRewriter &rewriter, Location loc,
+                                      Value src, Value dst) {
+  src = getFlattenedMemref(rewriter, src);
+  dst = getFlattenedMemref(rewriter, dst);
+  auto zeroConstantOp = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  MemRefType srcMemRefType = cast<MemRefType>(src.getType());
+  MemRefType dstMemRefType = cast<MemRefType>(dst.getType());
+  auto superSrcVecType =
+      VectorType::get(srcMemRefType.getShape(), srcMemRefType.getElementType());
+  auto superDestVecType =
+      VectorType::get(dstMemRefType.getShape(), dstMemRefType.getElementType());
+  SmallVector<Value, 2> zeros{(size_t)srcMemRefType.getRank(), zeroConstantOp};
+  auto vectorSrc =
+      vector::LoadOp::create(rewriter, loc, superSrcVecType, src, zeros);
+  auto vectorSrcCast =
+      createTypeConversionOp(rewriter, loc, vectorSrc, superDestVecType);
+  vector::StoreOp::create(rewriter, loc, vectorSrcCast, dst, zeros);
+}
+
+Value createCollapseShapeOp(OpBuilder &b, Location loc, Value source) {
+  auto ctx = b.getContext();
+  auto sourceType = cast<ShapedType>(source.getType());
+  assert(sourceType.hasStaticShape() &&
+         "Only memrefs with static shapes are allowed");
+
+  auto shape = sourceType.getShape();
+  if (shape.size() == 1)
+    return source;
+  uint64_t collapsedDim = 1;
+  SmallVector<AffineExpr, 2> exprs;
+  for (uint32_t dim = 0; dim < shape.size(); ++dim) {
+    collapsedDim *= shape[dim];
+    exprs.push_back(getAffineDimExpr(dim, ctx));
+  }
+
+  SmallVector<int64_t, 1> collapsedShape;
+  SmallVector<ReassociationExprs, 1> reassocs;
+  collapsedShape.push_back(collapsedDim);
+  reassocs.push_back(exprs);
+
+  auto collapsedType =
+      MemRefType::get(collapsedShape, sourceType.getElementType());
+  Value result =
+      memref::CollapseShapeOp::create(b, loc, collapsedType, source, reassocs);
+  return result;
+}
+
 int64_t getByteWidth(Type type) {
   if (auto vecType = dyn_cast<VectorType>(type))
     return llvm::divideCeil(
@@ -160,9 +206,13 @@ int64_t getPackedByteSize(uint64_t numElements, Type type) {
 }
 
 Type getFlattenedType(Type type) {
+  if (auto mt = dyn_cast<MemRefType>(type)) {
+    return MemRefType::get(mt.getNumElements(), mt.getElementType(), nullptr,
+                           mt.getMemorySpace());
+  }
   if (auto st = dyn_cast<ShapedType>(type))
     return st.cloneWith(st.getNumElements(), st.getElementType());
-  llvm_unreachable("not a ShapedType");
+  return type;
 }
 
 Value getAsTensor(OpBuilder &builder, Location loc, mlir::Value value,

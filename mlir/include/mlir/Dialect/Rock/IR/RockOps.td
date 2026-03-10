@@ -42,6 +42,23 @@ def ArgTransformsAttr : TypedArrayAttrBase<TransformMapArrayAttr,
 
 class ArgTransforms<int n> : ConfinedAttr<ArgTransformsAttr, [ArrayCount<n>]>;
 
+def AnyTensorOrMemRef :
+  AnyTypeOf<[AnyTensor, AnyMemRef],
+             /*summary=*/"",
+             "::mlir::ShapedType">;
+
+class TensorOrMemRefRankOf<list<Type> allowedTypes, list<int> ranks> :
+  AnyTypeOf<[TensorRankOf<allowedTypes, ranks>,
+             MemRefRankOf<allowedTypes, ranks>],
+             /*summary=*/"",
+             "::mlir::ShapedType">;
+
+class TensorOrMemRefOf<list<Type> allowedTypes> :
+  AnyTypeOf<[TensorOf<allowedTypes>,
+             MemRefOf<allowedTypes>],
+             /*summary=*/"Constraints the type to be either a Tensor or MemRef of certain types of elements.",
+             "::mlir::ShapedType">;
+
 class IndexArrayLength<int n> : ConfinedAttr<IndexArrayAttr, [ArrayMinCount<n>]>;
 
 defvar commonConvAttrs = (ins IndexArrayLength<4>:$padding,
@@ -124,12 +141,13 @@ def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
 def Rock_GemmOp
     : Rock_Op<"gemm", [DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
                        RockFusionRoot, AttrSizedOperandSegments]>,
-      Arguments<(ins Arg<TensorOf<GemmInputTypes>, "matrix A">:$a,
-          Arg<TensorOf<GemmInputTypes>, "matrix B">:$b,
-          Optional<TensorOf<[F8E8M0FNU]>>:$scaleA,
-          Optional<TensorOf<[F8E8M0FNU]>>:$scaleB, UnitAttr:$aTransposed,
-          UnitAttr:$bTransposed, UnitAttr:$aScaleTransposed,
-          UnitAttr:$bScaleTransposed, OptionalAttr<I64Attr>:$quantBlockSize,
+      Arguments<(ins Arg<TensorOrMemRefOf<GemmInputTypes>, "matrix A">:$a,
+          Arg<TensorOrMemRefOf<GemmInputTypes>, "matrix B">:$b,
+          Optional<TensorOrMemRefOf<[F8E8M0FNU]>>:$scaleA,
+          Optional<TensorOrMemRefOf<[F8E8M0FNU]>>:$scaleB,
+          UnitAttr:$aTransposed, UnitAttr:$bTransposed,
+          UnitAttr:$aScaleTransposed, UnitAttr:$bScaleTransposed,
+          OptionalAttr<I64Attr>:$quantBlockSize,
           OptionalAttr<RockTuningParamAttrInterface>:$params)>,
       Results<(outs AnyRankedTensor:$c)> {
   let summary = "General matrix multiplication (GEMM)";
@@ -169,7 +187,7 @@ def Rock_GemmOp
 
 def Rock_ReduceOp
     : Rock_Op<"reduce", [AllElementTypesMatch<["in", "result"]>]>,
-      Arguments<(ins Arg<TensorOf<[BF16, F16, F32]>, "input">:$in,
+      Arguments<(ins Arg<TensorOrMemRefOf<[BF16, F16, F32]>, "input">:$in,
           ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
       Results<(outs TensorOf<[BF16, F16, F32]>:$result)> {
   let summary = "Axes-wide reduction operation";
@@ -183,12 +201,12 @@ def Rock_AttentionOp
     : Rock_Op<
           "attention", [DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
                         RockFusionRoot, AttrSizedOperandSegments]>,
-      Arguments<(ins TensorOf<[F32, F16, BF16, I8]>:$queries,
-          TensorOf<[F32, F16, BF16, I8]>:$keys,
-          TensorOf<[F32, F16, BF16]>:$values,
-          Variadic<AnyTensor>:$preSoftmaxElemWiseInputs,
-          Optional<TensorOf<[I32]>>:$currentSeqLen,
-          Optional<TensorOf<[I32]>>:$prefixOffset, I32Attr:$numHeadsQ,
+      Arguments<(ins TensorOrMemRefOf<[F32, F16, BF16, I8]>:$queries,
+          TensorOrMemRefOf<[F32, F16, BF16, I8]>:$keys,
+          TensorOrMemRefOf<[F32, F16, BF16]>:$values,
+          Variadic<AnyTensorOrMemRef>:$preSoftmaxElemWiseInputs,
+          Optional<TensorOrMemRefOf<[I32]>>:$currentSeqLen,
+          Optional<TensorOrMemRefOf<[I32]>>:$prefixOffset, I32Attr:$numHeadsQ,
           I32Attr:$numHeadsKV, UnitAttr:$qTransposed, UnitAttr:$kTransposed,
           UnitAttr:$vTransposed, UnitAttr:$oTransposed, UnitAttr:$causal,
           I32Attr:$splitKV, OptionalAttr<TypeAttr>:$softmaxType,
@@ -258,9 +276,10 @@ def Rock_GemmElementwiseGemmOp
                                             RockGemmGemmWrapperInterface>,
                                         RockFusionRoot]>,
       AllElementTypesMatch<["a", "b"]>,
-      Arguments<(ins TensorOf<[F32, F16, BF16]>:$a,
-          TensorOf<[F32, F16, BF16]>:$b, TensorOf<[F32, F16, BF16]>:$c,
-          Variadic<AnyTensor>:$elemwiseInputs, UnitAttr:$aTransposed,
+      Arguments<(ins TensorOrMemRefOf<[F32, F16, BF16]>:$a,
+          TensorOrMemRefOf<[F32, F16, BF16]>:$b,
+          TensorOrMemRefOf<[F32, F16, BF16]>:$c,
+          Variadic<AnyTensorOrMemRef>:$elemwiseInputs, UnitAttr:$aTransposed,
           UnitAttr:$bTransposed, UnitAttr:$cTransposed, UnitAttr:$oTransposed,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
@@ -302,12 +321,13 @@ def Rock_ConvElementwiseGemmOp
                                             RockGemmGemmWrapperInterface>,
                                         RockFusionRoot]>,
       AllElementTypesMatch<["filter", "input"]>,
-      Arguments<(ins TensorOf<[F32, F16, BF16]>:$filter,
-          TensorOf<[F32, F16, BF16]>:$input, TensorOf<[F32, F16, BF16]>:$c,
-          Variadic<AnyTensor>:$elemwiseInputs, TensorOf<[F32, F16, BF16]>:$out,
-          UnitAttr:$cTransposed, UnitAttr:$oTransposed,
-          IndexArrayLength<4>:$padding, IndexArrayLength<2>:$strides,
-          IndexArrayLength<2>:$dilations,
+      Arguments<(ins TensorOrMemRefOf<[F32, F16, BF16]>:$filter,
+          TensorOrMemRefOf<[F32, F16, BF16]>:$input,
+          TensorOrMemRefOf<[F32, F16, BF16]>:$c,
+          Variadic<AnyTensorOrMemRef>:$elemwiseInputs,
+          TensorOrMemRefOf<[F32, F16, BF16]>:$out, UnitAttr:$cTransposed,
+          UnitAttr:$oTransposed, IndexArrayLength<4>:$padding,
+          IndexArrayLength<2>:$strides, IndexArrayLength<2>:$dilations,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           DenseI64ArrayAttr:$firstGemmIndices)>,

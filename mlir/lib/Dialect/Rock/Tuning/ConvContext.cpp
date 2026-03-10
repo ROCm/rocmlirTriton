@@ -7,7 +7,6 @@
 #include "mlir/Dialect/Rock/IR/RockConvInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/IR/Builders.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace mlir;
@@ -131,9 +130,9 @@ mlir::rock::populateConvContextFromConvGemm(ConvElementwiseGemmOp op) {
 
   populateDimIndexAndSize(
       filterLayoutAttr,
-      cast<ShapedType>(op->getOperand(0).getType()).getShape(),
+      cast<MemRefType>(op->getOperand(0).getType()).getShape(),
       dimIndexAndSize);
-  auto inputShape = cast<ShapedType>(op->getOperand(1).getType()).getShape();
+  auto inputShape = cast<MemRefType>(op->getOperand(1).getType()).getShape();
   populateDimIndexAndSize(inputLayoutAttr, inputShape, dimIndexAndSize);
 
   // ["ni", "gi", "ci", "0i", "1i"] -> ["no", "go", "ko", "0o", "1o"]

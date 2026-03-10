@@ -390,7 +390,7 @@ def Rock_PrefillAttr : Rock_Attr<"Prefill"> {
       A user interface parameter for initializing specific memory buffers
 
       The attribute is a way to describe which specific kernel parameter
-      (tensor) must be initialized with specific value before
+      (typically memref) must be initialized with specific value before
       a kernel invocation.
 
   }];
