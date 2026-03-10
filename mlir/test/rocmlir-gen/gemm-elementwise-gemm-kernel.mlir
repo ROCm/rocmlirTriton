@@ -11,7 +11,6 @@
 // CHECK-NEXT: %[[a:.*]] = rock.transform %[[aRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
 // CHECK-NEXT: %[[b:.*]] = rock.transform %[[bRaw]] {{.*}} : tensor<32768xf32> to tensor<1x32x1024xf32>
 // CHECK-NEXT: %[[c:.*]] = rock.transform %[[cRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
-// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
 
 // CHECK-NEXT: rock.gemm_elementwise_gemm
 // CHECK-NEXT: ab = %[[a]] * %[[b]]

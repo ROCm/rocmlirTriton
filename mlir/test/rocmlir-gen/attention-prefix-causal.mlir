@@ -13,7 +13,6 @@
 // CHECK: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<2048xf32> to tensor<4x32x16xf32>
 // CHECK: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<2048xf32> to tensor<4x16x32xf32>
 // CHECK: %[[prefixOffset:.*]] = rock.transform %[[prefixOffsetRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
-// CHECK: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<1024xf32> to tensor<4x8x32xf32>
 
 // Verify rock.attention has causal attribute and prefixOffset
 // CHECK: rock.attention

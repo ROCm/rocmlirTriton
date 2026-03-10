@@ -13,7 +13,6 @@
 // CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<32768xf32> to tensor<1x32x1024xf32>
 // CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
 // CHECK-NEXT: %[[scale:.*]] = rock.transform %[[scaleRaw]] {{.*}} : tensor<524288xf32> to tensor<1x512x1024xf32>
-// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<16384xf32> to tensor<1x512x32xf32>
 
 // CHECK-NEXT: %[[output:.*]] = rock.attention
 // CHECK-NEXT: qk = %[[queries]] * %[[keys]]

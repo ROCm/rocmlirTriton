@@ -18,12 +18,9 @@
 // ALLUNIT-SAME: <Unmerge{1} ["n"]
 // ALLUNIT-SAME: <AddDim{1} ["g"]
 // ALLUNIT-SAME: <AddDim{1} ["k"]
-// ALLUNIT-NEXT: [[gemmOut:%.+]] = rock.transform [[arg2]]
-// ALLUNIT-SAME: <Unmerge{1} ["n"]
-// ALLUNIT-SAME: <AddDim{1} ["g"]
-// ALLUNIT-SAME: <AddDim{1} ["m"]
 // ALLUNIT-NEXT: [[result:%.+]] = rock.gemm [[gemmA]] * [[gemmB]] : tensor<1x1x1x[[$ITYPE]]> * tensor<1x1x1x[[$ITYPE]]> -> tensor<1x1x1x[[$OTYPE]]>
-// ALLUNIT-NEXT: rock.store [[result]] to [[gemmOut]] by set
+// ALLUNIT-NEXT: [[flat:%.+]] = rock.transform [[result]]
+// ALLUNIT-NEXT: rock.store [[flat]] to [[arg2]] by set
 
 // ONLYG-LABEL: module
 // ONLYG-NEXT: func.func @rock_gemm
@@ -37,12 +34,9 @@
 // ONLYG-SAME: <Unmerge{2} ["g"]
 // ONLYG-SAME: <AddDim{1} ["k"]
 // ONLYG-SAME: <AddDim{1} ["n"]
-// ONLYG-NEXT: [[gemmOut:%.+]] = rock.transform [[arg2]]
-// ONLYG-SAME: <Unmerge{2} ["g"]
-// ONLYG-SAME: <AddDim{1} ["m"]
-// ONLYG-SAME: <AddDim{1} ["n"]
 // ONLYG-NEXT: [[result:%.+]] = rock.gemm [[gemmA]] * [[gemmB]] : tensor<2x1x1x[[$ITYPE]]> * tensor<2x1x1x[[$ITYPE]]> -> tensor<2x1x1x[[$OTYPE]]>
-// ONLYG-NEXT: rock.store [[result]] to [[gemmOut]] by set
+// ONLYG-NEXT: [[flat:%.+]] = rock.transform [[result]]
+// ONLYG-NEXT: rock.store [[flat]] to [[arg2]] by set
 
 // ONLYM-LABEL: module
 // ONLYM-NEXT: func.func @rock_gemm
@@ -56,12 +50,9 @@
 // ONLYM-SAME: <Unmerge{1} ["n"]
 // ONLYM-SAME: <AddDim{1} ["g"]
 // ONLYM-SAME: <AddDim{1} ["k"]
-// ONLYM-NEXT: [[gemmOut:%.+]] = rock.transform [[arg2]]
-// ONLYM-SAME: <Unmerge{2} ["m"]
-// ONLYM-SAME: <AddDim{1} ["g"]
-// ONLYM-SAME: <AddDim{1} ["n"]
 // ONLYM-NEXT: [[result:%.+]] = rock.gemm [[gemmA]] * [[gemmB]] : tensor<1x2x1x[[$ITYPE]]> * tensor<1x1x1x[[$ITYPE]]> -> tensor<1x2x1x[[$OTYPE]]>
-// ONLYM-NEXT: rock.store [[result]] to [[gemmOut]] by set
+// ONLYM-NEXT: [[flat:%.+]] = rock.transform [[result]]
+// ONLYM-NEXT: rock.store [[flat]] to [[arg2]] by set
 
 // ONLYK-LABEL: module
 // ONLYK-NEXT: func.func @rock_gemm
@@ -75,12 +66,9 @@
 // ONLYK-SAME: <Unmerge{2} ["k"]
 // ONLYK-SAME: <AddDim{1} ["g"]
 // ONLYK-SAME: <AddDim{1} ["n"]
-// ONLYK-NEXT: [[gemmOut:%.+]] = rock.transform [[arg2]]
-// ONLYK-SAME: <Unmerge{1} ["n"]
-// ONLYK-SAME: <AddDim{1} ["g"]
-// ONLYK-SAME: <AddDim{1} ["m"]
 // ONLYK-NEXT: [[result:%.+]] = rock.gemm [[gemmA]] * [[gemmB]] : tensor<1x1x2x[[$ITYPE]]> * tensor<1x2x1x[[$ITYPE]]> -> tensor<1x1x1x[[$OTYPE]]>
-// ONLYK-NEXT: rock.store [[result]] to [[gemmOut]] by set
+// ONLYK-NEXT: [[flat:%.+]] = rock.transform [[result]]
+// ONLYK-NEXT: rock.store [[flat]] to [[arg2]] by set
 
 // ONLYN-LABEL: module
 // ONLYN-NEXT: func.func @rock_gemm
@@ -94,9 +82,6 @@
 // ONLYN-SAME: <Unmerge{2} ["n"]
 // ONLYN-SAME: <AddDim{1} ["g"]
 // ONLYN-SAME: <AddDim{1} ["k"]
-// ONLYN-NEXT: [[gemmOut:%.+]] = rock.transform [[arg2]]
-// ONLYN-SAME: <Unmerge{2} ["n"]
-// ONLYN-SAME: <AddDim{1} ["g"]
-// ONLYN-SAME: <AddDim{1} ["m"]
 // ONLYN-NEXT: [[result:%.+]] = rock.gemm [[gemmA]] * [[gemmB]] : tensor<1x1x1x[[$ITYPE]]> * tensor<1x1x2x[[$ITYPE]]> -> tensor<1x1x2x[[$OTYPE]]>
-// ONLYN-NEXT: rock.store [[result]] to [[gemmOut]] by set
+// ONLYN-NEXT: [[flat:%.+]] = rock.transform [[result]]
+// ONLYN-NEXT: rock.store [[flat]] to [[arg2]] by set

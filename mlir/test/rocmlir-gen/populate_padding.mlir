@@ -12,9 +12,6 @@
 // Padding_One-NEXT: [[exp1:%.+]] = rock.transform [[arg1]] by
 // Padding_One-SAME: Unmerge{32, 32, 14, 14}
 // Padding_One-SAME: AddDim{1} ["gi"]
-// Padding_One-NEXT: [[exp2:%.+]] = rock.transform [[arg2]] by
-// Padding_One-SAME: Unmerge{32, 256, 14, 17}
-// Padding_One-SAME: AddDim{1} ["go"]
 // Padding_One-NEXT: rock.conv([[exp0]], [[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 1 : index, 2 : index], strides = [1 : index, 1 : index]} : tensor<1x256x32x1x1xf32>, tensor<32x1x32x14x14xf32> -> tensor<32x1x256x14x17xf32>
 
 // Padding_Two-LABEL: func.func @rock_conv_gkc01_ngc01_ngk01_0
@@ -28,7 +25,4 @@
 // Padding_Two-NEXT: [[exp1:%.+]] = rock.transform [[arg1]] by
 // Padding_Two-SAME: Unmerge{32, 32, 14, 14}
 // Padding_Two-SAME: AddDim{1} ["gi"]
-// Padding_Two-NEXT: [[exp2:%.+]] = rock.transform [[arg2]] by
-// Padding_Two-SAME: Unmerge{32, 256, 20, 17}
-// Padding_Two-SAME: AddDim{1} ["go"]
 // Padding_Two-NEXT: rock.conv([[exp0]], [[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [3 : index, 3 : index, 1 : index, 2 : index], strides = [1 : index, 1 : index]} : tensor<1x256x32x1x1xf32>, tensor<32x1x32x14x14xf32> -> tensor<32x1x256x20x17xf32>
