@@ -118,25 +118,30 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     // Obtain data types of inputs.
     auto elementTypeA = op.getA().getType().getElementType();
     auto maybeElementTypeALoad = getInputFusionElementType(op.getA());
-    auto elementTypeALoad = failed(maybeElementTypeALoad)
-                                ? elementTypeA
-                                : maybeElementTypeALoad.value();
+    if (failed(maybeElementTypeALoad))
+      return op->emitOpError()
+             << "Could not determine the underlying data type of A";
+    auto elementTypeALoad = maybeElementTypeALoad.value();
 
     auto elementTypeB = op.getB().getType().getElementType();
     auto maybeElementTypeBLoad = getInputFusionElementType(op.getB());
-    auto elementTypeBLoad = failed(maybeElementTypeBLoad)
-                                ? elementTypeB
-                                : maybeElementTypeBLoad.value();
+    if (failed(maybeElementTypeBLoad))
+      return op->emitOpError()
+             << "Could not determine the underlying data type of B";
+    auto elementTypeBLoad = maybeElementTypeBLoad.value();
     auto elemTypeOut = op.getResult().getType().getElementType();
+    auto maybeElemTypeOutStore = getOutputFusionElementType(op.getResult());
+    if (failed(maybeElemTypeOutStore))
+      return op->emitOpError()
+             << "Could not determine the underlying data type of output";
+
+    auto elemTypeOutStore = maybeElemTypeOutStore.value();
+
     auto scaleA = op.getScaleA();
     auto scaleB = op.getScaleB();
     bool hasScaleA = scaleA != nullptr;
     bool hasScaleB = scaleB != nullptr;
     bool isScaledGemm = hasScaleA && hasScaleB;
-    auto elementTypeScaleA =
-        isScaledGemm ? scaleA.getType().getElementType() : nullptr;
-    auto elementTypeScaleB =
-        isScaledGemm ? scaleB.getType().getElementType() : nullptr;
 
     // Prepare some useful constants.
     Value matA = op.getA();
@@ -191,7 +196,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     auto gridCoords = layout::makeGroupedGridLayout(
         b, loc, bid,
         {G, mBlocks, nBlocks, rock::getNumCUValue(op),
-         rock::getNumChipletsValue(op), elementTypeA, elemTypeOut,
+         rock::getNumChipletsValue(op), elementTypeALoad, elemTypeOutStore,
          gridGroupSize},
         arch);
 
