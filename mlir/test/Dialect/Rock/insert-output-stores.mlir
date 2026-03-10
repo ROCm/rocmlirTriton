@@ -122,14 +122,15 @@ func.func @attention_with_transforms(%arg0: tensor<1x32x32xf32>, %arg1: tensor<1
   return %0, %1 : tensor<1024xf32>, tensor<32xf32>
 }
 
-// Mixed returns: gemm result stored, passthrough kept, return updated
+// Mixed returns: gemm result stored, passthrough also gets store
 // CHECK-LABEL: func.func @mixed_returns
-// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<4xf32>, %arg3: tensor<8x32xf32>)
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<4xf32>, %arg3: tensor<8x32xf32>, %arg4: tensor<4xf32>)
 // CHECK-SAME: -> (tensor<8x32xf32>, tensor<4xf32>)
 // CHECK-SAME: attributes {rock.kernel}
 // CHECK: %[[GEMM:.*]] = rock.gemm
-// CHECK: %[[STORE:.*]] = rock.store %[[GEMM]] to %arg3 by set
-// CHECK: return %[[STORE]], %arg2
+// CHECK: %[[STORE1:.*]] = rock.store %[[GEMM]] to %arg3 by set
+// CHECK: %[[STORE2:.*]] = rock.store %arg2 to %arg4 by set
+// CHECK: return %[[STORE1]], %[[STORE2]]
 func.func @mixed_returns(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<4xf32>) -> (tensor<8x32xf32>, tensor<4xf32>) attributes {rock.kernel} {
   %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
   return %0, %arg2 : tensor<8x32xf32>, tensor<4xf32>
@@ -252,6 +253,25 @@ func.func @gemm_partial_store(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>,
   %1 = rock.store %0 to %arg2 by set : tensor<8x32xf32> -> tensor<8x32xf32> to tensor<8x32xf32>
   %2 = arith.addf %0, %arg3 : tensor<8x32xf32>
   return %1, %2 : tensor<8x32xf32>, tensor<8x32xf32>
+}
+
+// Reversed partial store: existing store at return index 1, new store needed
+// at return index 0. The new output arg must be inserted before the existing
+// store's dest arg so output args follow return-index order.
+// CHECK-LABEL: func.func @gemm_partial_store_reversed
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x32xf32>, %arg4: tensor<8x32xf32>)
+// CHECK-SAME: -> (tensor<8x32xf32>, tensor<8x32xf32>)
+// CHECK-SAME: attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[EXISTING:.*]] = rock.store %[[GEMM]] to %arg3 by set
+// CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %arg4
+// CHECK: %[[NEW_STORE:.*]] = rock.store %[[ADD]] to %arg2 by set
+// CHECK: return %[[NEW_STORE]], %[[EXISTING]]
+func.func @gemm_partial_store_reversed(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x32xf32>) -> (tensor<8x32xf32>, tensor<8x32xf32>) attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<8x32xf32> -> tensor<8x32xf32> to tensor<8x32xf32>
+  %2 = arith.addf %0, %arg3 : tensor<8x32xf32>
+  return %2, %1 : tensor<8x32xf32>, tensor<8x32xf32>
 }
 
 // Fusion op uses the gemm output twice (both operands): exercises the

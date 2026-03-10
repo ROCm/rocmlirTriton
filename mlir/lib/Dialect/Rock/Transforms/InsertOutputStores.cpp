@@ -110,9 +110,10 @@ struct ReturnStoreInfo {
 // need stores. A return operand that is already the result of a rock.store is
 // left alone; all other return operands reachable from the root get a new
 // store. If a root result has neither an existing store nor a path to a
-// func.return operand, an error is emitted. After processing all roots, any
-// return operand not covered by a root chain must be a block argument
-// passthrough; otherwise it is an error.
+// func.return operand, an error is emitted. After processing all roots,
+// block argument passthroughs also get stores (so every return value is
+// written to an output buffer). Any other uncovered return operand is an
+// error.
 static FailureOr<SmallVector<ReturnStoreInfo>>
 identifyReturnStores(ArrayRef<Operation *> fusionRoots,
                      func::ReturnOp returnOp) {
@@ -161,15 +162,22 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
     }
   }
 
-  // Verify every return operand is either covered by a FusionRoot chain or is
-  // a block argument passthrough. An uncovered non-argument return value would
-  // mean a computed result is silently dropped without a store.
+  // Handle return operands not covered by any FusionRoot chain.
+  // Block argument passthroughs get stores too (so every return value is
+  // written into an output buffer). Any other uncovered value is an error.
   for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
     if (coveredReturnIndices.contains(i))
       continue;
     Value retVal = returnOp.getOperand(i);
-    if (isa<BlockArgument>(retVal))
+    // Block argument passthroughs also need a rock.store so that every
+    // return value is written into an output buffer.
+    if (isa<BlockArgument>(retVal)) {
+      ReturnStoreInfo info;
+      info.returnIndex = i;
+      info.returnOperand = retVal;
+      storeInfos.push_back(info);
       continue;
+    }
     return returnOp.emitError("return operand ")
            << i << " is not a block argument and is not reachable from any "
            << "FusionRoot";
@@ -182,7 +190,8 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
 // store. Transfers all result attributes (e.g. rock.prefill) to new arguments.
 static LogicalResult
 addOutputArguments(func::FuncOp funcOp,
-                   SmallVectorImpl<ReturnStoreInfo> &storeInfos) {
+                   SmallVectorImpl<ReturnStoreInfo> &storeInfos,
+                   const DenseMap<unsigned, unsigned> &existingStoreArgPositions) {
   // Sort by returnIndex so output arguments are added in the same order as the
   // original return operands: return %a, %b -> func(inputs..., %a, %b).
   llvm::sort(storeInfos,
@@ -190,9 +199,29 @@ addOutputArguments(func::FuncOp funcOp,
                return a.returnIndex < b.returnIndex;
              });
 
+  unsigned insertionsDone = 0;
   for (auto &info : storeInfos) {
     Type retType = info.returnOperand.getType();
-    unsigned newArgIdx = funcOp.getNumArguments();
+
+    // Find the existing store dest arg with the smallest return index
+    // that is still greater than ours, and insert just before it so
+    // output args maintain return-index order. If no such existing
+    // store exists, append at the end.
+    std::optional<unsigned> nextExistingOrigArgIdx;
+    for (auto &[retIdx, argIdx] : existingStoreArgPositions) {
+      if (retIdx > info.returnIndex) {
+        if (!nextExistingOrigArgIdx || argIdx < *nextExistingOrigArgIdx)
+          nextExistingOrigArgIdx = argIdx;
+      }
+    }
+    unsigned newArgIdx;
+    if (nextExistingOrigArgIdx) {
+      // All prior insertions were for smaller return indices and thus at
+      // positions <= this existing arg, so they all shifted it.
+      newArgIdx = *nextExistingOrigArgIdx + insertionsDone;
+    } else {
+      newArgIdx = funcOp.getNumArguments();
+    }
 
     // Transfer all result attributes (e.g. rock.prefill) to the new argument.
     DictionaryAttr resultAttrs = funcOp.getResultAttrDict(info.returnIndex);
@@ -203,6 +232,7 @@ addOutputArguments(func::FuncOp funcOp,
                                      funcOp.getLoc())))
       return failure();
     info.storeArg = funcOp.getArgument(newArgIdx);
+    ++insertionsDone;
 
     LLVM_DEBUG(llvm::dbgs()
                << "Return " << info.returnIndex
@@ -273,7 +303,22 @@ RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
     return funcOp.emitError(
         "kernel has callers; InsertOutputStores expects no call sites");
 
-  if (failed(addOutputArguments(funcOp, storeInfos)))
+  // Collect arg positions of existing rock.store destinations so that new
+  // output arguments are interleaved in the correct (return-index) order.
+  // A return operand that is a store result is always the direct result of
+  // that store. floodFillFromRoot stops at rock.store and does not follow
+  // past it, so any downstream value would not be in the chain and would
+  // have been rejected by identifyReturnStores.
+  DenseMap<unsigned, unsigned> existingStoreArgPositions;
+  for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
+    Value retVal = returnOp.getOperand(i);
+    if (auto storeOp = retVal.getDefiningOp<StoreOp>()) {
+      if (auto destArg = dyn_cast<BlockArgument>(storeOp.getDest()))
+        existingStoreArgPositions[i] = destArg.getArgNumber();
+    }
+  }
+
+  if (failed(addOutputArguments(funcOp, storeInfos, existingStoreArgPositions)))
     return failure();
 
   insertStoreOps(funcOp, returnOp, storeInfos);
