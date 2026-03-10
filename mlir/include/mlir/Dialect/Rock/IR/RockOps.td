@@ -142,7 +142,7 @@ def Rock_GemmOp
 
     The transpose attributes allow for the non-group dimensions of the matrix to be
     transposed. For example, if `aTransposed` is set, then the argument A should be
-    a [G] x K x M memory.
+    a [G] x K x M memory. Note that `cTransposed` transposes the result of this op.
 
     When `scaleA` and `scaleB` are present, this op performs a block-scaled GEMM
     (MXFP-style). The `quantBlockSize` attribute specifies the number of
