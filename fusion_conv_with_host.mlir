@@ -22,7 +22,7 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
     %a = arith.addf %1, %input : tensor<2x1x8x8x8xf16>
     %2 = rock.transform %arg2 by #transform_map2 : tensor<512xf16> to tensor<2x1x4x8x8xf16>
     %3 = rock.transform %arg3 by #transform_map2 : tensor<512xf16> to tensor<2x1x4x8x8xf16>
-    %4 = rock.conv(%0, %a, %3) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]} : tensor<1x4x3x3x8xf16>, tensor<2x1x8x8x8xf16>, tensor<2x1x4x8x8xf16> -> tensor<2x1x4x8x8xf16>
+    %4 = rock.conv(%0, %a) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]} : tensor<1x4x3x3x8xf16>, tensor<2x1x8x8x8xf16> -> tensor<2x1x4x8x8xf16>
     %fusion = arith.addf %4, %2 : tensor<2x1x4x8x8xf16>
     %5 = rock.store %fusion to %3 by  set : tensor<2x1x4x8x8xf16> -> tensor<512xf16> to tensor<2x1x4x8x8xf16>
     return %5 : tensor<512xf16>

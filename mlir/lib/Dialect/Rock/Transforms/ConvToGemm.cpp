@@ -1407,15 +1407,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
 
   Value gemmOutput;
   if constexpr (notConvGemm) {
-    // Determine the output tensor value.
-    // For ConvOp: the output is the GEMM C matrix dest (from StoreOp dest).
-    // For BwdWeight: the output is the gradient operand (a computational
-    // input).
-    Value outputValue;
-    if constexpr (std::is_same_v<T, ConvBwdWeightOp>)
-      outputValue = op.getGradient();
-    else
-      outputValue = destBuffer;
+    Value outputValue = op.getConvOutput();
 
     ArrayRef<int64_t> outputShape =
         cast<ShapedType>(outputValue.getType()).getShape();
