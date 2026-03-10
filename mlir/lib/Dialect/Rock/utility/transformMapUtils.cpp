@@ -1407,7 +1407,7 @@ void mlir::rock::expandFlatFunctionArguments(
 }
 
 Value mlir::rock::flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
-                                ArrayRef<StringRef> dimNames, Type flatType) {
+                                ArrayRef<StringRef> dimNames) {
   auto shapedType = cast<ShapedType>(logicalVal.getType());
   // buildFlattenTransformMap builds a map with upper=logical, lower=flat
   // (the "expand" direction). We need to invert it so that the TransformOp

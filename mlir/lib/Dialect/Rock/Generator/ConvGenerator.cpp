@@ -766,11 +766,27 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
                            workspaceArgType};
   }
 
+  // Determine the output argument index (store destination) based on the
+  // operation type. We need this early so the function return type matches the
+  // actual store destination's flattened type (not always the conv "output").
+  unsigned storeDestIdx = 0;
+  switch (config.operation.value()) {
+  case ConvOpType::Fwd:
+    storeDestIdx = 2;
+    break;
+  case ConvOpType::BwdData:
+    storeDestIdx = 1;
+    break;
+  case ConvOpType::BwdWeight:
+    storeDestIdx = 0;
+    break;
+  }
+
   SmallVector<Type, 3> physicalFuncArgTypes =
       llvm::map_to_vector(logicalFuncArgTypes, getFlattenedType);
-  Type outputFlatType = getFlattenedType(outputArgType);
+  Type resultFlatType = physicalFuncArgTypes[storeDestIdx];
   auto funcType =
-      builder.getFunctionType(physicalFuncArgTypes, {outputFlatType});
+      builder.getFunctionType(physicalFuncArgTypes, {resultFlatType});
 
   std::string kernelName = config.kernelBaseName;
   if (isVerifier) {
@@ -888,22 +904,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   if (hasWorkspace)
     referenceNames(filterLayoutSpec);
 
-  // Determine the output argument index (store destination) based on the
-  // operation type. We need this before expansion so we can skip expanding
-  // the output argument, its transform will be applied after the conv op.
-  unsigned storeDestIdx = 0;
-  switch (config.operation.value()) {
-  case ConvOpType::Fwd:
-    storeDestIdx = 2;
-    break;
-  case ConvOpType::BwdData:
-    storeDestIdx = 1;
-    break;
-  case ConvOpType::BwdWeight:
-    storeDestIdx = 0;
-    break;
-  }
-
   // Expand all function arguments from flat 1D to their logical shapes,
   // except the output arg whose transform is applied after the conv op.
   SmallVector<Value, 4> args;
@@ -986,13 +986,12 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
   // Apply the output transform to flatten the conv result, then store to
   // the flat destination argument.
-  Type storeDestFlatType = getFlattenedType(logicalFuncArgTypes[storeDestIdx]);
   Value flatResult = flattenOutput(
       builder, builder.getUnknownLoc(), convResult,
-      argDimNameRefs[storeDestIdx], storeDestFlatType);
+      argDimNameRefs[storeDestIdx]);
   Value flatStoreDest = func.getArgument(storeDestIdx);
   Value storedVal = rock::StoreOp::create(
-      builder, builder.getUnknownLoc(), outputFlatType, flatResult,
+      builder, builder.getUnknownLoc(), resultFlatType, flatResult,
       flatStoreDest,
       builder.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set));
 

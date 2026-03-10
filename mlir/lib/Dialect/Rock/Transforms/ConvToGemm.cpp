@@ -127,7 +127,7 @@ void matchUnderlyingOrder(SmallVectorImpl<StringRef> &names,
 static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
                                     Value dest) {
   if (Operation *defOp = dest.getDefiningOp()) {
-    if (op->isBeforeInBlock(defOp))
+    if (defOp->getBlock() == op->getBlock() && op->isBeforeInBlock(defOp))
       b.setInsertionPointAfter(defOp);
   }
 }

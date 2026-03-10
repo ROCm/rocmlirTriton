@@ -44,6 +44,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Errc.h"
@@ -755,8 +756,8 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
 
   // Collect intermediate TransformOps between the gemm result and the stores.
   // These flatten transforms may become dead after we bypass them in the new
-  // stores, and must be erased before rw.replaceOp to avoid stale type refs.
-  SmallVector<TransformOp> deadTransforms;
+  // stores.
+  SetVector<TransformOp> candidateTransforms;
 
   for (size_t i = 0; i < stores.size(); ++i) {
     StoreOp storeOp = stores[i];
@@ -773,21 +774,24 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     // split-K or padding changes the output shape.
     Value source = storeOp.getSource();
     Value traced = source;
+    SmallVector<TransformOp> localTransforms;
     while (auto transformOp = traced.getDefiningOp<TransformOp>()) {
-      deadTransforms.push_back(transformOp);
+      localTransforms.push_back(transformOp);
       traced = transformOp.getInput();
     }
     if (traced == op.getResult()) {
       // Chain: gemm -> [transforms] -> store. Use gridwise result directly.
       source = result;
+      candidateTransforms.insert(localTransforms.begin(),
+                                 localTransforms.end());
     } else if (traced != source) {
       // Chain: gemm -> fusions -> transforms -> store. propagateOutputType
       // already updated the fusion chain; use the pre-transform value.
       source = traced;
-    } else {
-      // No intermediate transforms; clear any collected transforms.
-      deadTransforms.clear();
+      candidateTransforms.insert(localTransforms.begin(),
+                                 localTransforms.end());
     }
+    // else: No intermediate transforms; nothing to collect for this store.
     rw.setInsertionPoint(storeOp);
     auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
                                             storeOp.getResult().getType(),
@@ -795,9 +799,21 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     rw.replaceOp(storeOp, newStoreOp.getResult());
   }
 
-  // Erase dead intermediate transforms (in reverse to handle dependencies)
-  for (auto transformOp : llvm::reverse(deadTransforms))
-    rw.eraseOp(transformOp);
+  // Erase bypassed transforms that are safe to remove (reverse order to
+  // respect def-use chains within the transform chain).
+  DenseSet<Operation *> handledOps;
+  for (StoreOp s : stores)
+    handledOps.insert(s.getOperation());
+  for (TransformOp t : candidateTransforms)
+    handledOps.insert(t.getOperation());
+
+  for (auto transformOp : llvm::reverse(candidateTransforms)) {
+    bool safeToErase = llvm::all_of(
+        transformOp->getUsers(),
+        [&](Operation *user) { return handledOps.count(user); });
+    if (safeToErase)
+      rw.eraseOp(transformOp);
+  }
 
   rw.replaceOp(op, result);
   return success();

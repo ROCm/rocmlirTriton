@@ -198,12 +198,13 @@ TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
                                           int64_t numElements);
 
 /// Apply a flattening transform to a value in logical shape, producing
-/// a 1-D tensor. This builds an Unmerge + AddDim transform map
-/// that collapses the non-unit dimensions and adds back unit dimensions.
+/// a 1-D tensor. Internally this builds the expand map (Unmerge + AddDim,
+/// flat->logical) via buildFlattenTransformMap and then inverts it, so the
+/// applied TransformOp carries a Merge + RemoveDim map (logical->flat).
 /// This is the inverse direction of what expandFlatFunctionArguments does
 /// per argument.
 Value flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
-                    ArrayRef<StringRef> dimNames, Type flatType);
+                    ArrayRef<StringRef> dimNames);
 
 // If the condition is satified, rotate the dimension `d` by `k` using
 // `d = (d+k*stride) % len(d)`
