@@ -118,23 +118,25 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     // Obtain data types of inputs.
     auto elementTypeA = op.getA().getType().getElementType();
     auto maybeElementTypeALoad = getInputFusionElementType(op.getA());
-    if (failed(maybeElementTypeALoad))
-      return op->emitOpError()
-             << "Could not determine the underlying data type of A";
-    auto elementTypeALoad = maybeElementTypeALoad.value();
+    auto elementTypeALoad = failed(maybeElementTypeALoad)
+                                ? elementTypeA
+                                : maybeElementTypeALoad.value();
 
     auto elementTypeB = op.getB().getType().getElementType();
     auto maybeElementTypeBLoad = getInputFusionElementType(op.getB());
-    if (failed(maybeElementTypeBLoad))
-      return op->emitOpError()
-             << "Could not determine the underlying data type of B";
-    auto elementTypeBLoad = maybeElementTypeBLoad.value();
+    auto elementTypeBLoad = failed(maybeElementTypeBLoad)
+                                ? elementTypeB
+                                : maybeElementTypeBLoad.value();
     auto elemTypeOut = op.getResult().getType().getElementType();
     auto scaleA = op.getScaleA();
     auto scaleB = op.getScaleB();
     bool hasScaleA = scaleA != nullptr;
     bool hasScaleB = scaleB != nullptr;
     bool isScaledGemm = hasScaleA && hasScaleB;
+    auto elementTypeScaleA =
+        isScaledGemm ? scaleA.getType().getElementType() : nullptr;
+    auto elementTypeScaleB =
+        isScaledGemm ? scaleB.getType().getElementType() : nullptr;
 
     // Prepare some useful constants.
     Value matA = op.getA();
@@ -189,7 +191,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     auto gridCoords = layout::makeGroupedGridLayout(
         b, loc, bid,
         {G, mBlocks, nBlocks, rock::getNumCUValue(op),
-         rock::getNumChipletsValue(op), elementTypeALoad, elemTypeOut,
+         rock::getNumChipletsValue(op), elementTypeA, elemTypeOut,
          gridGroupSize},
         arch);
 
