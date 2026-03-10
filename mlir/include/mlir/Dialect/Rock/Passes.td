@@ -378,6 +378,23 @@ def RockLowerLoadsPass : Pass<"rock-lower-loads", "::mlir::func::FuncOp"> {
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockTosaToElementwisePass
+    : Pass<"rock-tosa-to-elementwise", "::mlir::func::FuncOp"> {
+  let summary =
+      "Convert TOSA elementwise ops directly to arith/math on tensors";
+  let description = [{
+    This pass converts TOSA pointwise/elementwise operations (e.g. tosa.add,
+    tosa.exp, tosa.mul) directly to the corresponding arith and math dialect
+    operations on tensor types.  No linalg.generic wrapper is produced.
+
+    The pass only runs on kernel functions (those with the rock.kernel
+    attribute).  Non-kernel (CPU) functions are left untouched so the normal
+    tosa-to-linalg pipeline can lower them through linalg.generic later.
+  }];
+  let dependentDialects = ["arith::ArithDialect", "math::MathDialect",
+                           "tensor::TensorDialect", "tosa::TosaDialect"];
+}
+
 def RockLowerStoresPass : Pass<"rock-lower-stores", "::mlir::func::FuncOp"> {
   let summary = "Lower rock.store ops and handle output fusions";
   let description = [{
