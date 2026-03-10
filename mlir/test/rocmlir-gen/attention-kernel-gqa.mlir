@@ -19,6 +19,8 @@
 // CHECK_SCALE-NEXT: qk = elementwise otherIns(%[[scale]]
 // CHECK_SCALE: softmax(qk) * %[[values]]
 // CHECK_SCALE-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
+// CHECK_SCALE: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
+// CHECK_SCALE-NEXT: rock.store %[[flatOutput]] to %[[outputRaw]] by {{.*}}set
 // CHECK_SCALE: return
 
 // CHECK_SCALE-LABEL: func.func @host_naive_attention
@@ -61,6 +63,8 @@
 // CHECK_NO_SCALE-NEXT: qk = %[[queries]] * %[[keys]]
 // CHECK_NO_SCALE: softmax(qk) * %[[values]]
 // CHECK_NO_SCALE-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
+// CHECK_NO_SCALE: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
+// CHECK_NO_SCALE-NEXT: rock.store %[[flatOutput]] to %[[outputRaw]] by {{.*}}set
 // CHECK_NO_SCALE: return
 
 // CHECK_NO_SCALE-LABEL: func.func @host_naive_attention

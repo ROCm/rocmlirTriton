@@ -23,6 +23,10 @@
 // CHECK-NEXT: currentSeqLen = (%[[currentSeqLenMerge]] : tensor<4xi32>)
 // CHECK: softmax(qk) * %[[values]]
 // CHECK-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
+// CHECK: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
+// CHECK-NEXT: rock.store %[[flatOutput]] to %[[outputRaw]] by {{.*}}set
+// CHECK-NEXT: %[[flatLse:.*]] = rock.transform %{{.*}} {{.*}}
+// CHECK-NEXT: rock.store %[[flatLse]] to %[[lseRaw]] by {{.*}}set
 // CHECK: return
 
 // CHECK-LABEL: func.func @host_naive_attention

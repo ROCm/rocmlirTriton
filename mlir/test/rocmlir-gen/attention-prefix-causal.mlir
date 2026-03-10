@@ -20,6 +20,8 @@
 // CHECK: prefixOffset = (%{{.*}} : tensor<4xi32>)
 // CHECK: causal
 // CHECK: softmax(qk) * %[[values]]
+// CHECK: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
+// CHECK-NEXT: rock.store %[[flatOutput]] to %[[outputRaw]] by {{.*}}set
 // CHECK: return
 
 // Verify the host verification function uses prefix causal masking

@@ -32,6 +32,8 @@
 // CHECK-NEXT: qk = %[[queries]] * %[[keys]]
 // CHECK-NEXT: qk = elementwise otherIns(%[[scale]]
 // CHECK: softmax(qk) * %[[values]]
+// CHECK: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
+// CHECK-NEXT: rock.store %[[flatOutput]] to %[[outputRaw]] by {{.*}}set
 // CHECK: return
 
 // CHECK-LABEL: func.func @host_naive_attention
