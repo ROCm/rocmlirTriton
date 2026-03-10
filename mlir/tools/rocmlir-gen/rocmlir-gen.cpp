@@ -2843,7 +2843,7 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
 
   auto gemm = rock::GemmOp::create(
       b, loc, cVal.getType(), aVal, bVal, aScale, bScale, transposeA,
-      transposeB, transposeScaleA, transposeScaleB,
+      transposeB, transposeC, transposeScaleA, transposeScaleB,
       scaledGemm ? b.getI64IntegerAttr(quantBlockSize) : nullptr,
       /*params=*/nullptr);
 

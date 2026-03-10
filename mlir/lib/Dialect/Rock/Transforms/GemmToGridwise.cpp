@@ -641,7 +641,6 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   // Note: the gridwise ops take M x K and K x N
   a = normalizeMatrix(a, rw, loc, op.getATransposed(), "gemmM", "gemmK");
   b = normalizeMatrix(b, rw, loc, op.getBTransposed(), "gemmK", "gemmN");
-  // Result is always in [G, M, N] order (not transposed)
   auto transformViews = [&](auto fn) {
     auto apply = [&](Value &view) {
       OpBuilder::InsertionGuard guard(rw);
@@ -655,7 +654,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
       apply(view);
   };
   transformViews([&](Value v) {
-    return normalizeMatrix(v, rw, loc, /*doTranspose=*/false, "gemmM", "gemmN");
+    return normalizeMatrix(v, rw, loc, op.getCTransposed(), "gemmM", "gemmN");
   });
   aShape = cast<ShapedType>(a.getType()).getShape();
   bShape = cast<ShapedType>(b.getType()).getShape();

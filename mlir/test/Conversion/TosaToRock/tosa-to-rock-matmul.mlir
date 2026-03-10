@@ -27,8 +27,7 @@ func.func @test_quant(%a: tensor<2x128x64xi8>, %b: tensor<2x64x256xi8>) -> tenso
 // CHECK: @test_transpose
 // CHECK-SAME: (%[[a:.*]]: tensor<2x64x128xf32>, %[[b:.*]]: tensor<2x64x256xf32>)
 func.func @test_transpose(%a: tensor<2x64x128xf32>, %b: tensor<2x64x256xf32>) -> tensor<2x256x128xf32> attributes {rock.kernel} {
-  // CHECK: %[[gemm:.*]] = rock.gemm tr %[[a]] * %[[b]]
-  // CHECK: %[[res:.*]] = tosa.transpose %[[gemm]] {perms = array<i32: 0, 2, 1>}
+  // CHECK: %[[res:.*]] = rock.gemm tr %[[a]] * %[[b]] {cTransposed}
   // CHECK: return %[[res]] : tensor<2x256x128xf32>
   %a_tr = "tosa.transpose"(%a) {perms = array<i32: 0, 2, 1>} : (tensor<2x64x128xf32>) -> tensor<2x128x64xf32>
   %b_tr = "tosa.transpose"(%b) {perms = array<i32: 0, 1, 2>} : (tensor<2x64x256xf32>) -> tensor<2x64x256xf32>

@@ -128,7 +128,7 @@ def Rock_GemmOp
           Arg<TensorOf<GemmInputTypes>, "matrix B">:$b,
           Optional<TensorOf<[F8E8M0FNU]>>:$scaleA,
           Optional<TensorOf<[F8E8M0FNU]>>:$scaleB, UnitAttr:$aTransposed,
-          UnitAttr:$bTransposed, UnitAttr:$aScaleTransposed,
+          UnitAttr:$bTransposed, UnitAttr:$cTransposed, UnitAttr:$aScaleTransposed,
           UnitAttr:$bScaleTransposed, OptionalAttr<I64Attr>:$quantBlockSize,
           OptionalAttr<RockTuningParamAttrInterface>:$params)>,
       Results<(outs AnyRankedTensor:$c)> {
