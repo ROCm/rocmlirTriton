@@ -888,9 +888,42 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   if (hasWorkspace)
     referenceNames(filterLayoutSpec);
 
-  SmallVector<Value, 4> args;
-  expandFlatFunctionArguments(builder, func, argDimNameRefs,
-                              logicalFuncArgTypes, args);
+  // Determine the output argument index (store destination) based on the
+  // operation type. We need this before expansion so we can skip expanding
+  // the output argument — its transform will be applied after the conv op.
+  unsigned storeDestIdx = 0;
+  switch (config.operation.value()) {
+  case ConvOpType::Fwd:
+    storeDestIdx = 2;
+    break;
+  case ConvOpType::BwdData:
+    storeDestIdx = 1;
+    break;
+  case ConvOpType::BwdWeight:
+    storeDestIdx = 0;
+    break;
+  }
+
+  // Expand all arguments EXCEPT the output argument. The output argument
+  // will be handled after the conv op via flattenOutput.
+  SmallVector<Value, 4> args(argDimNameRefs.size());
+  for (unsigned i = 0; i < argDimNameRefs.size(); ++i) {
+    Value arg = func.getArgument(i);
+    if (i == storeDestIdx) {
+      // Leave the output arg as the flat function argument.
+      args[i] = arg;
+      continue;
+    }
+    auto logicalShapedTy = dyn_cast<ShapedType>(logicalFuncArgTypes[i]);
+    if (!logicalShapedTy) {
+      args[i] = arg;
+      continue;
+    }
+    TransformMapAttr expandMap = buildFlattenTransformMap(
+        builder, arg.getLoc(), argDimNameRefs[i], logicalShapedTy.getShape(),
+        logicalShapedTy.getNumElements());
+    args[i] = rock::TransformOp::create(builder, arg.getLoc(), arg, expandMap);
+  }
 
   // Each conv variant takes different operands and stores to a different dest:
   //   ConvOp:         (filter=args[0], input=args[1]) -> store to args[2]
@@ -898,7 +931,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   //   ConvBwdWeightOp:(input=args[1], gradient=args[2]) -> store to args[0]
 
   Value convResult;
-  Value storeDest;
   switch (config.operation.value()) {
   case ConvOpType::Fwd: {
     Type resultType = logicalFuncArgTypes[2];
@@ -906,7 +938,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
     auto convOp = ConvOp::create(builder, builder.getUnknownLoc(), resultType,
                                  convArgs, attributes);
     convResult = convOp.getResult();
-    storeDest = args[2];
   } break;
   case ConvOpType::BwdData: {
     if (!rock::isEveryElementWrittenBwdData(
@@ -924,7 +955,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
     auto convOp = ConvBwdDataOp::create(builder, builder.getUnknownLoc(),
                                         resultType, convArgs, attributes);
     convResult = convOp.getResult();
-    storeDest = args[1];
   } break;
   case ConvOpType::BwdWeight: {
     int kernelCount = 0;
@@ -965,13 +995,19 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
                                             resultType, convArgs, attributes);
       convResult = convOp.getResult();
     }
-    storeDest = args[0];
   } break;
   }
 
-  // Store the result to the appropriate destination buffer.
+  // Apply the output transform to flatten the conv result, then store to
+  // the flat destination argument.
+  Type storeDestFlatType = getFlattenedType(logicalFuncArgTypes[storeDestIdx]);
+  Value flatResult = flattenOutput(
+      builder, builder.getUnknownLoc(), convResult,
+      argDimNameRefs[storeDestIdx], storeDestFlatType);
+  Value flatStoreDest = func.getArgument(storeDestIdx);
   Value storedVal = rock::StoreOp::create(
-      builder, builder.getUnknownLoc(), outputFlatType, convResult, storeDest,
+      builder, builder.getUnknownLoc(), outputFlatType, flatResult,
+      flatStoreDest,
       builder.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set));
 
   func::ReturnOp::create(builder, builder.getUnknownLoc(), storedVal);

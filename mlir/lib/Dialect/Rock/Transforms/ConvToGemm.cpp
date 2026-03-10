@@ -513,6 +513,16 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   StoreOp firstStore = maybeStores->front();
   Value filterDest = firstStore.getDest();
 
+  // If filterDest is defined after the conv op (e.g., when the output
+  // arg's expansion is deferred to post-conv by the code generator),
+  // move the insertion point after filterDest's definition. Otherwise,
+  // keep the default insertion point (at the conv op) so that new ops
+  // are placed after all conv operands.
+  if (Operation *defOp = filterDest.getDefiningOp()) {
+    if (op->isBeforeInBlock(defOp))
+      b.setInsertionPointAfter(defOp);
+  }
+
   // Regularize filter dest layout to match input layout ordering.
   // This must happen before building transforms so that filterNames,
   // filterShape, and filterDest are all consistent.
@@ -1132,6 +1142,17 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // because it represents the input gradient, and the input layout is the
     // reference layout that everything else is regularized against.
     Value destBuffer = originalStoreOp.getDest();
+
+    // If destBuffer is defined after the conv op (e.g., when the output
+    // arg's expansion is deferred to post-conv by the code generator),
+    // move the insertion point after destBuffer's definition. Otherwise,
+    // keep the default insertion point (at the conv op) so that new ops
+    // are placed after all conv operands.
+    if (Operation *defOp = destBuffer.getDefiningOp()) {
+      if (bwdDataOp->isBeforeInBlock(defOp))
+        b.setInsertionPointAfter(defOp);
+    }
+
     Value lastStoreResult;
     for (int64_t kid : kernelIds) {
       auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
@@ -1225,6 +1246,16 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // (filter for BwdWeight, output for ConvOp) we regularize the StoreOp
   // dest buffer here.
   if constexpr (notConvGemm) {
+    // If destBuffer is defined after the conv op (e.g., when the output
+    // arg's expansion is deferred to post-conv by the code generator),
+    // move the insertion point after destBuffer's definition. Otherwise,
+    // keep the default insertion point (at the conv op) so that new ops
+    // are placed after all conv operands.
+    if (Operation *defOp = destBuffer.getDefiningOp()) {
+      if (op->isBeforeInBlock(defOp))
+        b.setInsertionPointAfter(defOp);
+    }
+
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
       auto mapping = buildInputToFilterMapping(b, rank);
