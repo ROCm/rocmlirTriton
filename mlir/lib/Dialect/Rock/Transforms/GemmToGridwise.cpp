@@ -32,6 +32,7 @@
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/math.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -606,6 +607,34 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     outputViews.push_back(storeOp.getDest());
   }
 
+  // If the output view is flat (1D), expand it to match the gemm result shape.
+  // This happens when the output arg expansion is deferred (e.g., when
+  // flattenOutput is applied after the gemm op in the code generator).
+  auto gemmResultType = cast<ShapedType>(op.getResult().getType());
+  if (gemmResultType.getRank() > 1) {
+    for (auto &view : outputViews) {
+      auto viewType = cast<ShapedType>(view.getType());
+      if (viewType.getRank() == 1) {
+        OpBuilder::InsertionGuard guard(rw);
+        if (Operation *defOp = view.getDefiningOp())
+          rw.setInsertionPointAfter(defOp);
+        SmallVector<StringRef> dimNames;
+        for (int64_t i = 0; i < gemmResultType.getRank(); ++i) {
+          if (i == 0)
+            dimNames.push_back("gemmG");
+          else if (i == 1)
+            dimNames.push_back("gemmM");
+          else
+            dimNames.push_back("gemmN");
+        }
+        TransformMapAttr expandMap = buildFlattenTransformMap(
+            rw, loc, dimNames, gemmResultType.getShape(),
+            viewType.getNumElements());
+        view = rock::TransformOp::create(rw, loc, view, expandMap);
+      }
+    }
+  }
+
   // Collect extra fusion inputs (operands of fusion ops that are not in the
   // gemm-result chain, e.g. the second operand of arith.addf). These need the
   // same normalize+pad treatment as outputViews.
@@ -734,6 +763,11 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   // Replace extra fusion input operands with their padded versions.
   rock::replaceFusionExtraInputs(result, fusionInputMap);
 
+  // Collect intermediate TransformOps between the gemm result and the stores.
+  // These flatten transforms may become dead after we bypass them in the new
+  // stores, and must be erased before rw.replaceOp to avoid stale type refs.
+  SmallVector<TransformOp> deadTransforms;
+
   for (size_t i = 0; i < stores.size(); ++i) {
     StoreOp storeOp = stores[i];
     Value view = outputViews[i];
@@ -742,18 +776,42 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     if (splitKFactor > 1)
       storeMethod =
           rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
-    // If the store's source is the gemm result directly (no fusions),
-    // use the gridwise result. Otherwise, propagateOutputType has already
-    // updated the fusion chain, and storeOp.getSource() has the correct type.
+    // Determine the correct source for the new store. In the new code gen
+    // flow, a flatten TransformOp may sit between the gemm result (or
+    // fusion chain) and the store. We trace back through TransformOps to
+    // bypass any stale flatten transforms whose types may not match after
+    // split-K or padding changes the output shape.
     Value source = storeOp.getSource();
-    if (source == op.getResult())
+    Value traced = source;
+    while (auto transformOp = traced.getDefiningOp<TransformOp>()) {
+      deadTransforms.push_back(transformOp);
+      traced = transformOp.getInput();
+    }
+    if (traced == op.getResult()) {
+      // Chain: gemm → [transforms] → store. Use gridwise result directly.
       source = result;
+    } else if (traced != source) {
+      // Chain: gemm → fusions → transforms → store. propagateOutputType
+      // already updated the fusion chain; use the pre-transform value.
+      source = traced;
+    } else {
+      // No intermediate transforms; clear any collected transforms.
+      deadTransforms.clear();
+    }
     rw.setInsertionPoint(storeOp);
     auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
                                             storeOp.getResult().getType(),
                                             source, view, storeMethod);
     rw.replaceOp(storeOp, newStoreOp.getResult());
   }
+
+  // Erase dead intermediate transforms (in reverse to handle dependencies).
+  // Note: ConversionPatternRewriter::eraseOp does not require use_empty() —
+  // it maps results to null and defers erasure. The old store (the only user
+  // of these transforms) is already marked for replacement, so the framework
+  // won't try to update a replaced op's operands with stale type mappings.
+  for (auto transformOp : llvm::reverse(deadTransforms))
+    rw.eraseOp(transformOp);
 
   rw.replaceOp(op, result);
   return success();
