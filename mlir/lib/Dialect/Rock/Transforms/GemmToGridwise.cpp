@@ -788,10 +788,10 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
       traced = transformOp.getInput();
     }
     if (traced == op.getResult()) {
-      // Chain: gemm → [transforms] → store. Use gridwise result directly.
+      // Chain: gemm -> [transforms] -> store. Use gridwise result directly.
       source = result;
     } else if (traced != source) {
-      // Chain: gemm → fusions → transforms → store. propagateOutputType
+      // Chain: gemm -> fusions -> transforms -> store. propagateOutputType
       // already updated the fusion chain; use the pre-transform value.
       source = traced;
     } else {

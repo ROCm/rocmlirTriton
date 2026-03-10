@@ -121,6 +121,17 @@ void matchUnderlyingOrder(SmallVectorImpl<StringRef> &names,
             });
 }
 
+// If `dest` is defined after `op` (e.g. because RegularizeOutput added
+// transforms to the store dest after the conv), move the builder's insertion
+// point past `dest`'s definition so that new ops don't violate dominance.
+static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
+                                    Value dest) {
+  if (Operation *defOp = dest.getDefiningOp()) {
+    if (op->isBeforeInBlock(defOp))
+      b.setInsertionPointAfter(defOp);
+  }
+}
+
 // TODO(rocmlirTriton): Propagate the type to fusions as well.
 /// Update any StoreOp that uses the conv result to use the gemm result instead.
 /// The conv result type differs from the gemm result type (due to shape
@@ -512,16 +523,7 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
     return op.emitOpError("cannot trace bwd_weight result to rock::StoreOp");
   StoreOp firstStore = maybeStores->front();
   Value filterDest = firstStore.getDest();
-
-  // If filterDest is defined after the conv op (e.g., when the output
-  // arg's expansion is deferred to post-conv by the code generator),
-  // move the insertion point after filterDest's definition. Otherwise,
-  // keep the default insertion point (at the conv op) so that new ops
-  // are placed after all conv operands.
-  if (Operation *defOp = filterDest.getDefiningOp()) {
-    if (op->isBeforeInBlock(defOp))
-      b.setInsertionPointAfter(defOp);
-  }
+  ensureInsertionAfterDef(b, op, filterDest);
 
   // Regularize filter dest layout to match input layout ordering.
   // This must happen before building transforms so that filterNames,
@@ -1142,16 +1144,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // because it represents the input gradient, and the input layout is the
     // reference layout that everything else is regularized against.
     Value destBuffer = originalStoreOp.getDest();
-
-    // If destBuffer is defined after the conv op (e.g., when the output
-    // arg's expansion is deferred to post-conv by the code generator),
-    // move the insertion point after destBuffer's definition. Otherwise,
-    // keep the default insertion point (at the conv op) so that new ops
-    // are placed after all conv operands.
-    if (Operation *defOp = destBuffer.getDefiningOp()) {
-      if (bwdDataOp->isBeforeInBlock(defOp))
-        b.setInsertionPointAfter(defOp);
-    }
+    ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
 
     Value lastStoreResult;
     for (int64_t kid : kernelIds) {
@@ -1246,15 +1239,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // (filter for BwdWeight, output for ConvOp) we regularize the StoreOp
   // dest buffer here.
   if constexpr (notConvGemm) {
-    // If destBuffer is defined after the conv op (e.g., when the output
-    // arg's expansion is deferred to post-conv by the code generator),
-    // move the insertion point after destBuffer's definition. Otherwise,
-    // keep the default insertion point (at the conv op) so that new ops
-    // are placed after all conv operands.
-    if (Operation *defOp = destBuffer.getDefiningOp()) {
-      if (op->isBeforeInBlock(defOp))
-        b.setInsertionPointAfter(defOp);
-    }
+    ensureInsertionAfterDef(b, op, destBuffer);
 
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {

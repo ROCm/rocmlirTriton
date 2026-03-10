@@ -890,7 +890,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
   // Determine the output argument index (store destination) based on the
   // operation type. We need this before expansion so we can skip expanding
-  // the output argument — its transform will be applied after the conv op.
+  // the output argument, its transform will be applied after the conv op.
   unsigned storeDestIdx = 0;
   switch (config.operation.value()) {
   case ConvOpType::Fwd:
@@ -904,26 +904,12 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
     break;
   }
 
-  // Expand all arguments EXCEPT the output argument. The output argument
-  // will be handled after the conv op via flattenOutput.
-  SmallVector<Value, 4> args(argDimNameRefs.size());
-  for (unsigned i = 0; i < argDimNameRefs.size(); ++i) {
-    Value arg = func.getArgument(i);
-    if (i == storeDestIdx) {
-      // Leave the output arg as the flat function argument.
-      args[i] = arg;
-      continue;
-    }
-    auto logicalShapedTy = dyn_cast<ShapedType>(logicalFuncArgTypes[i]);
-    if (!logicalShapedTy) {
-      args[i] = arg;
-      continue;
-    }
-    TransformMapAttr expandMap = buildFlattenTransformMap(
-        builder, arg.getLoc(), argDimNameRefs[i], logicalShapedTy.getShape(),
-        logicalShapedTy.getNumElements());
-    args[i] = rock::TransformOp::create(builder, arg.getLoc(), arg, expandMap);
-  }
+  // Expand all function arguments from flat 1D to their logical shapes,
+  // except the output arg whose transform is applied after the conv op.
+  SmallVector<Value, 4> args;
+  expandFlatFunctionArguments(builder, func, argDimNameRefs,
+                              logicalFuncArgTypes, args,
+                              /*skipIndices=*/{storeDestIdx});
 
   // Each conv variant takes different operands and stores to a different dest:
   //   ConvOp:         (filter=args[0], input=args[1]) -> store to args[2]

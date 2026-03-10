@@ -187,17 +187,18 @@ TransformMapAttr transformExtractSlice(OpBuilder &b, Location loc,
 void expandFlatFunctionArguments(OpBuilder &b, func::FuncOp func,
                                  ArrayRef<SmallVector<StringRef>> names,
                                  TypeRange logicalTypes,
-                                 SmallVectorImpl<Value> &expanded);
+                                 SmallVectorImpl<Value> &expanded,
+                                 ArrayRef<unsigned> skipIndices = {});
 
 /// Build a TransformMapAttr that maps between a logical multi-dimensional
-/// shape and a flattened 1-D "raw" representation.
+/// shape and a flattened 1-D representation.
 TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
                                           ArrayRef<StringRef> dimNames,
                                           ArrayRef<int64_t> shape,
                                           int64_t numElements);
 
 /// Apply a flattening transform to a value in logical shape, producing
-/// a 1-D "raw" tensor. This builds an Unmerge + AddDim transform map
+/// a 1-D tensor. This builds an Unmerge + AddDim transform map
 /// that collapses the non-unit dimensions and adds back unit dimensions.
 /// This is the inverse direction of what expandFlatFunctionArguments does
 /// per argument.

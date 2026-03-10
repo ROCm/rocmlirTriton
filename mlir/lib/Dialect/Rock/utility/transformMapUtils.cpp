@@ -1376,21 +1376,33 @@ TransformMapAttr mlir::rock::buildFlattenTransformMap(
 
 void mlir::rock::expandFlatFunctionArguments(
     OpBuilder &b, func::FuncOp func, ArrayRef<SmallVector<StringRef>> names,
-    TypeRange logicalTypes, SmallVectorImpl<Value> &expanded) {
+    TypeRange logicalTypes, SmallVectorImpl<Value> &expanded,
+    ArrayRef<unsigned> skipIndices) {
   expanded.resize_for_overwrite(names.size());
+  // Use llvm::zip (not enumerate) because some callers pass fewer names than
+  // func arguments, relying on zip's stop-at-shortest behavior.
+  unsigned idx = 0;
   for (auto [arg, nameList, logicalType, logicalVal] :
        llvm::zip(func.getArguments(), names, logicalTypes, expanded)) {
+    // If this index is in the skip list, pass the raw flat arg through.
+    if (llvm::is_contained(skipIndices, idx)) {
+      logicalVal = arg;
+      ++idx;
+      continue;
+    }
     Location loc = arg.getLoc();
     auto logicalShapedTy = dyn_cast<ShapedType>(logicalType);
     // Pass scalars through unaltered
     if (!logicalShapedTy) {
       logicalVal = arg;
+      ++idx;
       continue;
     }
     TransformMapAttr expandMap = buildFlattenTransformMap(
         b, loc, nameList, logicalShapedTy.getShape(),
         logicalShapedTy.getNumElements());
     logicalVal = rock::TransformOp::create(b, loc, arg, expandMap);
+    ++idx;
   }
 }
 
