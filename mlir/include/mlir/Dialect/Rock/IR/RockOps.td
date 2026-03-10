@@ -128,8 +128,9 @@ def Rock_GemmOp
           Arg<TensorOf<GemmInputTypes>, "matrix B">:$b,
           Optional<TensorOf<[F8E8M0FNU]>>:$scaleA,
           Optional<TensorOf<[F8E8M0FNU]>>:$scaleB, UnitAttr:$aTransposed,
-          UnitAttr:$bTransposed, UnitAttr:$aScaleTransposed,
-          UnitAttr:$bScaleTransposed, OptionalAttr<I64Attr>:$quantBlockSize,
+          UnitAttr:$bTransposed, UnitAttr:$oTransposed,
+          UnitAttr:$aScaleTransposed, UnitAttr:$bScaleTransposed,
+          OptionalAttr<I64Attr>:$quantBlockSize,
           OptionalAttr<RockTuningParamAttrInterface>:$params)>,
       Results<(outs AnyRankedTensor:$c)> {
   let summary = "General matrix multiplication (GEMM)";
@@ -142,7 +143,7 @@ def Rock_GemmOp
 
     The transpose attributes allow for the non-group dimensions of the matrix to be
     transposed. For example, if `aTransposed` is set, then the argument A should be
-    a [G] x K x M memory.
+    a [G] x K x M memory. Note that `oTransposed` transposes the result of this op.
 
     When `scaleA` and `scaleB` are present, this op performs a block-scaled GEMM
     (MXFP-style). The `quantBlockSize` attribute specifies the number of

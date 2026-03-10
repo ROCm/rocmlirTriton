@@ -89,23 +89,21 @@ func.func @gemm_in_standard_form(%a: tensor<128x72xf32>, %b: tensor<72x512xf32>,
   func.return %out : tensor<128x512xf32>
 }
 
-// TODO(roctriton): We need to fix cTransposed
-// DISABLED-CHECK-LABEL: func.func @gemm_transposed_from_gridwise
-// DISABLED-CHECK-SAME: (%[[a:.*]]: tensor<1x128x72xf32>, %[[b:.*]]: tensor<1x512x72xf32>, %[[c:.*]]: tensor<1x512x128xf32>)
-// DISABLED-CHECK-SAME: grid_size = 4
-// func.func @gemm_transposed_from_gridwise(%a: tensor<1x128x72xf32>, %b: tensor<1x512x72xf32>, %c: tensor<1x512x128xf32>) -> tensor<1x512x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-//   // DISABLED-CHECK-DAG: %[[normalizeA:.*]] = rock.transform %[[a]] {{.*}} : tensor<1x128x72xf32> to tensor<1x72x128xf32{{.*}}>
-//   // DISABLED-CHECK-DAG: %[[normalizeB:.*]] = rock.transform %[[b]] {{.*}} : tensor<1x512x72xf32> to tensor<1x72x512xf32{{.*}}>
-//   // DISABLED-CHECK-DAG: %[[normalizeC:.*]] = rock.transform %[[c]] {{.*}} : tensor<1x512x128xf32> to tensor<1x128x512xf32{{.*}}>
-//   // DISABLED-CHECK: rock.gridwise_gemm %[[normalizeC]] = %[[normalizeA]] * %[[normalizeB]]
-//   %result = rock.gemm %a * tr %b {
-//     gridSize = 4 : i32,
-//     params = #general_gemm_params0,
-//     cTransposed
-//   } : tensor<1x128x72xf32> * tensor<1x512x72xf32> -> tensor<1x512x128xf32>
-//   %out = rock.store %result to %c by set : tensor<1x512x128xf32> -> tensor<1x512x128xf32> to tensor<1x512x128xf32>
-//   func.return %out : tensor<1x512x128xf32>
-// }
+// CHECK-LABEL: func.func @gemm_transposed_from_gridwise
+// CHECK-SAME: (%[[a:.*]]: tensor<1x128x72xf32>, %[[b:.*]]: tensor<1x512x72xf32>, %[[c:.*]]: tensor<1x512x128xf32>)
+// CHECK-SAME: grid_size = 4
+func.func @gemm_transposed_from_gridwise(%a: tensor<1x128x72xf32>, %b: tensor<1x512x72xf32>, %c: tensor<1x512x128xf32>) -> tensor<1x512x128xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
+  // CHECK-DAG: %[[normalizeB:.*]] = rock.transform %[[b]] {{.*}} : tensor<1x512x72xf32> to tensor<1x72x512xf32{{.*}}>
+  // CHECK-DAG: %[[normalizeC:.*]] = rock.transform %[[c]] {{.*}} : tensor<1x512x128xf32> to tensor<1x128x512xf32{{.*}}>
+  // CHECK: rock.gridwise_gemm(%[[a]], %[[normalizeB]])
+  %result = rock.gemm %a * tr %b {
+    gridSize = 4 : i32,
+    params = #general_gemm_params0,
+    oTransposed
+  } : tensor<1x128x72xf32> * tensor<1x512x72xf32> -> tensor<1x512x128xf32>
+  %out = rock.store %result to %c by set : tensor<1x512x128xf32> -> tensor<1x512x128xf32> to tensor<1x512x128xf32>
+  func.return %out : tensor<1x512x128xf32>
+}
 
 // CHECK-LABEL: func.func @gemm_pad_for_split_k
 // CHECK-SAME: (%[[a:.*]]: tensor<1x128x238xf32>, %[[b:.*]]: tensor<1x238x512xf32>, %[[c:.*]]: tensor<1x128x512xf32> {rock.prefill = {{.*}} : f32})

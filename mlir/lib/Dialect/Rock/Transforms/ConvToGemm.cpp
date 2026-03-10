@@ -702,6 +702,7 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
       b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
       /*scaleA=*/nullptr, /*scaleB=*/nullptr,
       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
+      /*cTransposed=*/nullptr,
       /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
       /*quantBlockSize=*/nullptr, op.getParamsAttr());
 
@@ -1068,6 +1069,7 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
       b, loc, getResultType(op, gemmInput), gemmFilter, gemmOutput,
       /*scaleA=*/nullptr, /*scaleB=*/nullptr,
       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
+      /*cTransposed=*/nullptr,
       /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
       /*quantBlockSize=*/nullptr, op.getParamsAttr());
 
@@ -1571,12 +1573,13 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
     // Emit rock.gemm op.
     Location loc = op.getLoc();
     auto tuningParams = op.getParamsAttr();
-    auto newGemmOp =
-        GemmOp::create(b, loc, getResultType(op, gemmC), gemmA, gemmB,
-                       /*scaleA=*/nullptr, /*scaleB=*/nullptr,
-                       /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
-                       /*aScaleTransposed=*/nullptr,
-                       /*bScaleTransposed=*/nullptr, /*quantBlockSize=*/nullptr, tuningParams);
+    auto newGemmOp = GemmOp::create(
+        b, loc, getResultType(op, gemmC), gemmA, gemmB,
+        /*scaleA=*/nullptr, /*scaleB=*/nullptr,
+        /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
+        /*cTransposed=*/nullptr,
+        /*aScaleTransposed=*/nullptr,
+        /*bScaleTransposed=*/nullptr, /*quantBlockSize=*/nullptr, tuningParams);
 
     Value result = newGemmOp.getResult();
 

@@ -235,8 +235,13 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
     SmallVector<int64_t> newResultShape;
     if (newAType.getRank() == 3)
       newResultShape.push_back(newAType.getShape()[0]);
-    newResultShape.push_back(newM);
-    newResultShape.push_back(newN);
+    if (op.getOTransposed()) {
+      newResultShape.push_back(newN);
+      newResultShape.push_back(newM);
+    } else {
+      newResultShape.push_back(newM);
+      newResultShape.push_back(newN);
+    }
 
     auto newResultType = RankedTensorType::get(
         newResultShape, origResultType.getElementType());
@@ -244,9 +249,9 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
     // Create the new GemmOp
     auto gemm = rock::GemmOp::create(
         rw, op.getLoc(), newResultType, newA, newB, newScaleA, newScaleB,
-        op.getATransposed(), op.getBTransposed(), op.getAScaleTransposed(),
-        op.getBScaleTransposed(), op.getQuantBlockSizeAttr(),
-        op.getParamsAttr());
+        op.getATransposed(), op.getBTransposed(), op.getOTransposed(),
+        op.getAScaleTransposed(), op.getBScaleTransposed(),
+        op.getQuantBlockSizeAttr(), op.getParamsAttr());
 
     // Convert optional attributes
     if (auto attr = (*op).template getAttrOfType<StringAttr>("perf_config"))

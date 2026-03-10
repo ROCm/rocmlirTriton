@@ -1077,22 +1077,12 @@ public:
       setLastDims(nullptr, bScaleShape, {kDim, nDim});
       brBScale = insertBroadcast(scaleB, bScaleShape, loc, rw);
     }
-    // When transposeC is set, rock.gemm needs the un-transposed output type
-    // (G x M x N), since rock.gemm doesn't support output transpose.
-    RankedTensorType gemmOutputType = outputType;
-    if (transposeC) {
-      SmallVector<int64_t> gemmShape(outputType.getShape());
-      size_t rank = gemmShape.size();
-      assert(rank >= 2 && "expected output to have at least 2 dimensions");
-      std::swap(gemmShape[rank - 2], gemmShape[rank - 1]);
-      gemmOutputType =
-          RankedTensorType::get(gemmShape, outputType.getElementType());
-    }
 
     // TODO(rocmlirTriton): quantBlockSize
     auto rockGemm = rock::GemmOp::create(
-        rw, loc, gemmOutputType, brA, brB, brAScale, brBScale, transposeA,
-        transposeB, /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
+        rw, loc, outputType, brA, brB, brAScale, brBScale, transposeA,
+        transposeB, transposeC, /*aScaleTransposed=*/nullptr,
+        /*bScaleTransposed=*/nullptr,
         /*quantBlockSize=*/nullptr,
         /*params=*/nullptr);
 
@@ -1100,18 +1090,6 @@ public:
       rockGemm->setAttr("perf_config", attr);
 
     Value result = rockGemm.getResult();
-
-    // If the output was transposed, insert a transpose after the gemm
-    // to produce the expected transposed shape.
-    if (transposeC) {
-      size_t rank = gemmOutputType.getRank();
-      SmallVector<int32_t> perms;
-      for (size_t i = 0; i < rank - 2; ++i)
-        perms.push_back(i);
-      perms.push_back(rank - 1);
-      perms.push_back(rank - 2);
-      result = rock::tosa::getTransposeOp(rw, loc, result, perms);
-    }
 
     rw.replaceOp(op, result);
 

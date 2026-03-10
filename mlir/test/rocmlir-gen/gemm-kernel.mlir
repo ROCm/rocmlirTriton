@@ -1,15 +1,13 @@
 // The extra rocmlir-opt calls check IR validity
 
-// TODO(rocmlirTriton): Commented out runs (with XXX) fail with: 'rock.gemm' op M dimensions don't match m_a = 1024 m_result = 512
-
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,NOTRC
-// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,TRC
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,TRC
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transB | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,TRB,NOTRC
-// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transB -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,TRB,TRC
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transB -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,TRB,TRC
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transA | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,NOTRB,NOTRC
-// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transA -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,NOTRB,TRC
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transA -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,NOTRB,TRC
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transA -transB | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,TRB,NOTRC
-// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transA -transB -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,TRB,TRC
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv -transA -transB -transC | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,TRA,TRB,TRC
 
 // NOTRA-DAG: #[[mapAUnmerge:.*]] = affine_map<(d0, d1, d2) -> ((d0 * 1024 + d1) * 769 + d2)>
 // TRA-DAG:   #[[mapAUnmerge:.*]] = affine_map<(d0, d1, d2) -> ((d0 * 769 + d1) * 1024 + d2)>
@@ -40,8 +38,10 @@
 // CHECK-NEXT: rock.gemm
 // NOTRA-SAME: %[[a]] *
 // TRA-SAME:   tr %[[a]] *
-// NOTRB-SAME: %[[b]] :
-// TRB-SAME:   tr %[[b]] :
+// NOTRB-SAME: %[[b]]
+// TRB-SAME:   tr %[[b]]
+// NOTRC-SAME: :
+// TRC-SAME:   {oTransposed} :
 // CHECK-NEXT: rock.store
 // CHECK-NEXT: return
 
