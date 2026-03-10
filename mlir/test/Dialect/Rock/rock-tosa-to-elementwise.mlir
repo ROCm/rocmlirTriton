@@ -320,6 +320,28 @@ func.func @cast_i8_to_i32(%arg0: tensor<16xi8>) -> tensor<16xi32> attributes {ro
 
 // -----
 
+// i1 is treated as unsigned: sign-extending i1 would give 0/-1 instead of 0/1.
+// CHECK-LABEL: @cast_i1_to_i32
+// CHECK-NOT:   tosa.cast
+// CHECK:       arith.extui %arg0 : tensor<16xi1> to tensor<16xi32>
+func.func @cast_i1_to_i32(%arg0: tensor<16xi1>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xi1>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// i1 -> float should also zero-extend (uitofp gives 0.0/1.0).
+// CHECK-LABEL: @cast_i1_to_f32
+// CHECK-NOT:   tosa.cast
+// CHECK:       arith.uitofp %arg0 : tensor<16xi1> to tensor<16xf32>
+func.func @cast_i1_to_f32(%arg0: tensor<16xi1>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xi1>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
 // CHECK-LABEL: @cast_i32_to_i8
 // CHECK-NOT:   tosa.cast
 // CHECK:       arith.trunci %arg0 : tensor<16xi32> to tensor<16xi8>

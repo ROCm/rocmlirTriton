@@ -3203,8 +3203,10 @@ public:
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    // Only handle TOSA elementwise ops with 2+ operands.
-    if (!isElementwiseOp(op) || op->getNumOperands() < 2)
+    // Only handle TOSA elementwise ops with 2+ operands and a single result.
+    if (!isa<tosa::TosaDialect>(op->getDialect()) ||
+        !isElementwiseOp(op) || op->getNumOperands() < 2 ||
+        op->getNumResults() != 1)
       return failure();
 
     auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());

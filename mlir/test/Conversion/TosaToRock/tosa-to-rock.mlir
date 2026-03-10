@@ -298,6 +298,18 @@ func.func @add_broadcast_both(%arg0: tensor<1x8xf32>, %arg1: tensor<4x1xf32>) ->
 
 // -----
 
+// CHECK-LABEL: @mul_broadcast
+// CHECK:       %[[BCAST:.*]] = rock.transform %arg1 by
+// CHECK-SAME:  tensor<1x8xf32> to tensor<4x8xf32>
+// CHECK:       tosa.mul %arg0, %[[BCAST]],
+func.func @mul_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %shift = "tosa.const"() {values = dense<0> : tensor<1xi8>} : () -> tensor<1xi8>
+  %0 = "tosa.mul"(%arg0, %arg1, %shift) : (tensor<4x8xf32>, tensor<1x8xf32>, tensor<1xi8>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
 // CHECK-LABEL-DISABLED: mlir_scaled_gemm_both_scales
 // CHECK-DISABLED: rock.gemm %{{.*}} scaled by %{{.*}} * %{{.*}} scaled by %{{.*}}
 

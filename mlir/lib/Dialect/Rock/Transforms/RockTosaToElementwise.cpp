@@ -318,10 +318,14 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
     }
     // int -> int
     if (isa<IntegerType>(srcTy) && isa<IntegerType>(dstTy)) {
-      if (bitExtend)
-        rewriter.replaceOpWithNewOp<arith::ExtSIOp>(op, op.getType(),
-                                                    op.getInput());
-      else
+      if (bitExtend) {
+        if (srcTy.isInteger(1) || srcTy.isUnsignedInteger())
+          rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, op.getType(),
+                                                      op.getInput());
+        else
+          rewriter.replaceOpWithNewOp<arith::ExtSIOp>(op, op.getType(),
+                                                      op.getInput());
+      } else
         rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, op.getType(),
                                                      op.getInput());
       return success();
@@ -424,3 +428,4 @@ struct RockTosaToElementwise
 };
 
 } // namespace
+
