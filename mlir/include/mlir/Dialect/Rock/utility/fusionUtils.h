@@ -9,6 +9,7 @@
 #define ROCK_UTILITY_FUSION_H
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -46,6 +47,9 @@ LogicalResult testFusionLegalityReduce(ModuleOp mod);
 
 // Same as above, overload of `testFusionLegalityBwdDataConv` for `ModuleOp`.
 LogicalResult testFusionLegalityBwdDataConv(ModuleOp mod);
+
+// Whether a gemm+gemm-like operation has any pre-second-GEMM fusions.
+bool gemmGemmHasPreSecondGemmFusion(RockGemmGemmWrapperInterface op);
 
 // Checks whether the output fusion linalg::GenericOp is valid. Assuming a
 // split-k kernel.

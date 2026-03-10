@@ -25,6 +25,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Support/WalkResult.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/LogicalResult.h"
@@ -79,6 +80,18 @@ LogicalResult mlir::rock::checkValidOutputFusion(
     }
   }
   return success();
+}
+
+bool mlir::rock::gemmGemmHasPreSecondGemmFusion(
+    RockGemmGemmWrapperInterface gemmGemmOp) {
+  WalkResult res = gemmGemmOp.getPreSecondGemmRegion().walk(
+      [](Operation *fusionOp) -> WalkResult {
+        if (rock::isFusionOp(fusionOp))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      });
+
+  return res.wasInterrupted();
 }
 
 LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
@@ -145,12 +158,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
           return WalkResult::interrupt();
 
         // fusions between gemm0 and gemm1 are not allowed
-        bool fusionsFound = false;
-        gemmGemmOp.getPreSecondGemmRegion().walk(
-            [&fusionsFound](Operation *fusionOp) {
-              if (rock::isFusionOp(fusionOp))
-                fusionsFound = true;
-            });
+        bool fusionsFound = gemmGemmHasPreSecondGemmFusion(gemmGemmOp);
         if (fusionsFound)
           return WalkResult::interrupt();
 

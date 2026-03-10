@@ -60,6 +60,10 @@ build/bin/rocmlir-gen -operation gemm -t f16 -out_datatype f32 --arch $ARCH --nu
 
 build/bin/rocmlir-gen -pv --arch $ARCH --operation gemm_gemm -t f32 -m 64 -n 64 -k 64 -gemmO 64 -g 1 | build/bin/rocmlir-driver --host-pipeline=highlevel | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
 
+# conv+gemm
+
+build/bin/rocmlir-gen --operation conv_gemm -t f16 --arch $ARCH --fil_layout k01c --in_layout nc01 --out_layout nk01 --batchsize 2 --in_channels 256 --in_h 32 --in_w 32 --out_channels 128 --fil_h 3 --fil_w 3 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1 -gemmO 16 -pv | build/bin/rocmlir-driver --host-pipeline=highlevel | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
+
 # basic attention
 
 build/bin/rocmlir-gen -rand 1 -pv --arch $ARCH --operation attention -t f16 -seq_len_q 64 -seq_len_k 64 -head_dim_qk 64 -head_dim_v 64 -g 1 | build/bin/rocmlir-driver --host-pipeline=highlevel | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
@@ -131,6 +135,10 @@ sed -e "s/gfx1100/$ARCH/g" -e "s/rock.num_cu = 96/rock.num_cu = $NUM_CU/g" fusio
 # fusion test with split-k
 
 sed -e "s/gfx1100/$ARCH/g" -e "s/rock.num_cu = 96/rock.num_cu = $NUM_CU/g" fusion_splitk_with_host.mlir | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
+
+# fusion conv test
+
+sed -e "s/gfx1100/$ARCH/g" -e "s/rock.num_cu = 96/rock.num_cu = $NUM_CU/g" fusion_conv_with_host.mlir | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
 
 # TODO(rocmlirTriton): Intentionally disabled E2E tests for now since CPU validation is extremely slow.
 # We will re-enable them once we have an optimized CPU validation code.
