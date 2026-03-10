@@ -2,7 +2,7 @@
 // TODO(rocmlirTriton): Fusions need rework
 
 // RUN: rocmlir-driver --rock-regularize %s | FileCheck %s
-// RUN: rocmlir-driver --rock-regularize --rock-gridwise-gemm-to-blockwise --rock-blockwise-load-tile-to-threadwise --rock-blockwise-gemm-to-threadwise --rock-linalg-align --verify-passes %s | rocmlir-opt
+// RUN: rocmlir-driver --rock-regularize --rock-gridwise-gemm-to-blockwise --rock-blockwise-load-tile-to-threadwise --rock-blockwise-gemm-to-threadwise --rock-linalg-align %s | rocmlir-opt
 
 func.func @rock_gemm(%arg0: memref<64x64x64xf16>, %arg1: memref<64x64x64xf32>, %arg2: memref<64x64x64xf32>, %arg3: memref<64x64x64xf32>) attributes {block_size = 256 : i32, grid_size = 64 : i32, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100", wave_size = 32 : i32} {
   %alloc = memref.alloc() : memref<64x64x64xf32>

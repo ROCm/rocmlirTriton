@@ -87,6 +87,7 @@ def Rock_ConvOp : Rock_ConvOpBase<"conv"> {
     The `rock.conv` op computes N-D forward convolution.
     Takes filter and input tensors, produces the output feature map as $result.
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     `(` operands `)` attr-dict
     `:` type(operands) `->` type($result)
@@ -109,6 +110,7 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
     `conv_bwd_data` into the required set of GEMM + store pairs within the
     same function.
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     `(` operands `)` attr-dict
     `:` type(operands) `->` type($result)
@@ -129,6 +131,7 @@ def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
     Takes input and gradient (from the forward output) tensors, produces the
     gradient with respect to the filter weights as $result.
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     `(` operands `)` attr-dict
     `:` type(operands) `->` type($result)
@@ -183,7 +186,7 @@ def Rock_GemmOp
 }
 
 def Rock_ReduceOp
-    : Rock_Op<"reduce", []>,
+    : Rock_Op<"reduce", [AllElementTypesMatch<["in", "result"]>]>,
       Arguments<(ins Arg<TensorOrMemRefOf<[BF16, F16, F32]>, "input">:$in,
           ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
       Results<(outs TensorOf<[BF16, F16, F32]>:$result)> {
@@ -361,35 +364,30 @@ def Rock_ConvElementwiseGemmOp
 }
 
 def Rock_TransformOp :
-    Rock_Op<"transform", [Pure, ViewLikeOpInterface]>,
+    Rock_Op<"transform", [Pure, ViewLikeOpInterface,
+                          AllElementTypesMatch<["input", "output"]>]>,
     Arguments<(ins AnyShaped:$input, Rock_TransformMapAttr:$transform)>,
     Results<(outs AnyShaped:$output)> {
   let summary = "Tensor transformation";
   let description = [{
-    Create a viee `output` of the tensor `input` with the same element type
+    Create a view `output` of the tensor `input` with the same element type
     such that, when the coordinates used to index into `output` are passed through
     the coordinate transformations `transforms` from left to right,
     they become coordinates into the `input` tensor.
   }];
   let builders = [
-   // Custom builder to populate bounds of input and output memrefs as attributes.
+   // Custom builder to populate bounds of input and output tensors as attributes.
    OpBuilder<(ins "Value":$input, "TransformMapAttr":$transform),
    [{
      $_state.addOperands({input});
      ShapedType lowerType = cast<ShapedType>(input.getType());
      Type elemType = lowerType.getElementType();
-     ShapedType upperType;
-     if (auto mrType = dyn_cast<MemRefType>(lowerType)) {
-       auto memorySpace = dyn_cast_or_null<gpu::AddressSpaceAttr>(mrType.getMemorySpace());
-       upperType = MemRefType::get(transform.getUpperBounds(), elemType,
-        MemRefLayoutAttrInterface{}, memorySpace);
-     } else {
-       upperType = lowerType.cloneWith(transform.getUpperBounds().asArrayRef(), elemType);
-     }
+     ShapedType upperType = lowerType.cloneWith(transform.getUpperBounds().asArrayRef(), elemType);
      $_state.addAttribute("transform", transform);
      $_state.addTypes(upperType);
    }]>,
   ];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     $input `by` $transform attr-dict `:` type($input) `to` type($output)
   }];
@@ -400,7 +398,8 @@ def Rock_TransformOp :
 }
 
 // untile
-def Rock_UntileOp : Rock_Op<"untile", [Pure]>,
+def Rock_UntileOp : Rock_Op<"untile",
+                            [Pure, AllElementTypesMatch<["source", "result"]>]>,
                     Arguments<(ins AnyRankedTensor:$source)>,
                     Results<(outs AnyRankedTensor:$result)> {
   let summary = "Convert a tile tensor back to a full tensor type";
@@ -410,6 +409,7 @@ def Rock_UntileOp : Rock_Op<"untile", [Pure]>,
     tiles back to full tensor types so that fusion ops can operate on them.
     LowerStores removes these ops when converting back to tile-level operations.
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     $source attr-dict `:` type($source) `->` type($result)
   }];
@@ -417,7 +417,8 @@ def Rock_UntileOp : Rock_Op<"untile", [Pure]>,
 
 // store_marker
 def Rock_StoreMarkerOp
-    : Rock_Op<"store_marker", [Pure]>,
+    : Rock_Op<"store_marker",
+              [Pure, AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
           Variadic<I32>:$extraIndices)>,
       Results<(outs AnyRankedTensor:$result)> {
@@ -441,6 +442,7 @@ def Rock_StoreMarkerOp
       %fused = arith.addf %full, %bias : tensor<1x128x128xf32>
       %out = rock.store %fused to %dest by set
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     $source `views` $extraViews (`[` $extraIndices^ `]`)? attr-dict
     `:` type($source) `->` type($result)
@@ -449,7 +451,8 @@ def Rock_StoreMarkerOp
 
 // load_marker
 def Rock_LoadMarkerOp
-    : Rock_Op<"load_marker", [Pure]>,
+    : Rock_Op<"load_marker",
+              [Pure, AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
           Variadic<I32>:$extraIndices)>,
       Results<(outs AnyRankedTensor:$result)> {
@@ -486,6 +489,7 @@ def Rock_LoadMarkerOp
                 : tensor<1x128x128xf16> -> tensor<1x128x128xf16>
       %fused = arith.addf %gemm_full, %bias
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     $source `views` $extraViews (`[` $extraIndices^ `]`)? attr-dict
     `:` type($source) `->` type($result)
@@ -493,7 +497,8 @@ def Rock_LoadMarkerOp
 }
 
 // store
-def Rock_StoreOp : Rock_Op<"store">,
+def Rock_StoreOp : Rock_Op<"store",
+                           [AllElementTypesMatch<["source", "dest", "result"]>]>,
                    Arguments<(ins AnyRankedTensor:$source,
                        AnyRankedTensor:$dest, StoreMethodAttr:$storeMethod)>,
                    Results<(outs AnyRankedTensor:$result)> {
@@ -506,6 +511,7 @@ def Rock_StoreOp : Rock_Op<"store">,
     not take into account the rock.transform ops, so rock.store ops allow us to indicate that writing to 
     the output will occur according to what the rock.transform op indicates.
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     $source `to` $dest `by` $storeMethod attr-dict `:` type($source) `->` type ($result) `to` type($dest)
   }];
@@ -658,7 +664,8 @@ def Rock_BlockwiseGemmOp
 
 // blockwise_load
 def Rock_BlockwiseLoadOp
-    : Rock_Op<"blockwise_load", []>,
+    : Rock_Op<"blockwise_load",
+              [AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source global memory">:$source,
           Variadic<I32>:$sourceIndices)>,
@@ -668,6 +675,7 @@ def Rock_BlockwiseLoadOp
     The `rock.blockwise_load` op loads at workgroup (block) level.
     We will load data from global memory.
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     $source (`[` $sourceIndices^ `]`)? attr-dict
     `:` type($source) `->` type($result)
@@ -676,9 +684,10 @@ def Rock_BlockwiseLoadOp
 
 // blockwise_load_ptr
 def Rock_BlockwiseLoadPtrOp
-    : Rock_Op<"blockwise_load_ptr", []>,
-      Arguments<(ins Arg<AnyRankedTensor, "Pointer tensor">:$pointerTensor,
-          Arg<AnyRankedTensor, "Mask tensor">:$maskTensor)>,
+    : Rock_Op<"blockwise_load_ptr",
+              [AllShapesMatch<["pointerTensor", "maskTensor", "result"]>]>,
+      Arguments<(ins Arg<RankedTensorOf<[I32]>, "Pointer tensor">:$pointerTensor,
+          Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor)>,
       Results<(outs TensorOf<NativeMemoryOpTypes>:$result)> {
   let summary = "Blockwise load from global memory";
   let description = [{
@@ -693,8 +702,8 @@ def Rock_BlockwiseLoadPtrOp
 def Rock_BlockwiseStoreOp
     : Rock_Op<"blockwise_store",
               [DeclareOpInterfaceMethods<RockAcceptingViewOpInterface>,
-               DeclareOpInterfaceMethods<RockWriterOpInterface>]>,
-      AllElementTypesMatch<["source", "dest"]>,
+               DeclareOpInterfaceMethods<RockWriterOpInterface>,
+               AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Arg<TensorOf<NativeMemoryOpTypes>, "destination view">:$dest,
           Variadic<I32>:$extraIndices, StoreMethodAttr:$storeMethod)>,
@@ -713,9 +722,11 @@ def Rock_BlockwiseStoreOp
 
 // blockwise_store_ptr
 def Rock_BlockwiseStorePtrOp
-    : Rock_Op<"blockwise_store_ptr", []>,
-      Arguments<(ins Arg<AnyRankedTensor, "Pointer tensor">:$pointerTensor,
-          Arg<AnyRankedTensor, "Mask tensor">:$maskTensor,
+    : Rock_Op<"blockwise_store_ptr",
+              [AllShapesMatch<["pointerTensor", "maskTensor", "source"]>,
+               AllElementTypesMatch<["source", "result"]>]>,
+      Arguments<(ins Arg<RankedTensorOf<[I32]>, "Pointer tensor">:$pointerTensor,
+          Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           StoreMethodAttr:$storeMethod)>,
       Results<(outs TensorOf<NativeMemoryOpTypes>:$result)> {
@@ -724,6 +735,7 @@ def Rock_BlockwiseStorePtrOp
   let description = [{
   }];
 
+  let hasVerifier = 1;
   let assemblyFormat = [{
     attr-dict $source  `->` $pointerTensor `(` $maskTensor `)` `by` $storeMethod
     `:` type($source) `->` type($pointerTensor) `(` type($maskTensor) `)` `->` type($result)
@@ -732,11 +744,12 @@ def Rock_BlockwiseStorePtrOp
 
 def Rock_TransformsToPtrOp
     : Rock_Op<"transforms_to_ptr",
-              []>,
+              [AllShapesMatch<["pointers", "mask"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source">:$source,
           Variadic<I32>:$extraIndices)>,
-      Results<(outs AnyRankedTensor:$pointers, AnyRankedTensor:$mask)> {
+      Results<(outs RankedTensorOf<[I32]>:$pointers,
+               RankedTensorOf<[I1]>:$mask)> {
   let summary = "Convert transforms to pointer and mask tensors";
 
   let description = [{
@@ -744,6 +757,7 @@ def Rock_TransformsToPtrOp
     The pointer tensor contains i32 offsets and the mask tensor contains i1 validity flags.
   }];
 
+  let hasVerifier = 1;
   let assemblyFormat = [{
     attr-dict $source (`[` $extraIndices^ `]`)?
     `:` type($source) `->` type($pointers) `,` type($mask)
@@ -752,8 +766,8 @@ def Rock_TransformsToPtrOp
 
 // blockwise_reduction
 def Rock_BlockwiseReduceOp
-    : Rock_Op<"blockwise_reduce">,
-      AllElementTypesMatch<["input", "result"]>,
+    : Rock_Op<"blockwise_reduce",
+              [AllElementTypesMatch<["input", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$input, IndexAttr:$axis,
           ReduceMethodAttr:$reduceMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
@@ -762,22 +776,25 @@ def Rock_BlockwiseReduceOp
     The `rock.blockwise_reduce` op does reduce at a blockwise level and
     to fill all elements of the input tensor with reduced values. 
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     $reduceMethod $input attr-dict `:` type($input) `->` type($result)
   }];
 }
 
-def Rock_CastToPtrOp : Rock_Op<"cast_to_ptr", [Pure]> {
+def Rock_CastToPtrOp : Rock_Op<"cast_to_ptr",
+                               [Pure, AllShapesMatch<["src", "result"]>]> {
   let summary = "Cast a tensor to a pointer tensor";
 
   let description = [{
     Casts a tensor to a pointer tensor representation.
   }];
 
-  let arguments = (ins AnyRankedTensor:$src);
+  let arguments = (ins RankedTensorOf<[I32]>:$src);
 
   let results = (outs AnyRankedTensor:$result);
 
+  let hasVerifier = 1;
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
 }
 
@@ -797,6 +814,7 @@ def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {
 
   let results = (outs I32:$result);
 
+  let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
 

@@ -72,9 +72,9 @@ static cl::opt<bool> legacyRockPipeline("c", cl::Hidden, cl::init(false),
                                           }
                                         }));
 
-static cl::opt<bool> verifyPasses(
-    "verify-passes", cl::init(false),
-    cl::desc("Have the pass manager(s) run verification after each pass"));
+static cl::opt<bool> disableVerifyPasses(
+    "disable-verify-passes", cl::init(false),
+    cl::desc("Have the pass manager(s) not run verification after each pass"));
 
 static cl::opt<bool> dumpPipelines(
     "dump-pipelines", cl::init(false),
@@ -139,7 +139,7 @@ static LogicalResult runHostHighLevelPipeline(ModuleOp m) {
     return failure();
 
   // Add verification passes
-  pm.enableVerifier(verifyPasses);
+  pm.enableVerifier(!disableVerifyPasses);
 
   // Set disableRock to true since we are just running on the host
   rock::BufferizeOptions opts;
@@ -165,7 +165,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
-  pm.enableVerifier(verifyPasses);
+  pm.enableVerifier(!disableVerifyPasses);
   bool needArch = kernelPipelineSet.contains("rocdl") ||
                   kernelPipelineSet.contains("binary");
   RocmDeviceName devName;
@@ -330,6 +330,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
 
   if (hostPipelineSet.contains("migraphx")) {
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
+    pm.enableVerifier(!disableVerifyPasses);
     migraphx::addHighLevelPipeline(pm);
     if (failed(pm.run(module))) {
       return failure();
@@ -392,7 +393,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
-    pm.enableVerifier(verifyPasses);
+    pm.enableVerifier(!disableVerifyPasses);
     auto errorHandler = [&](const Twine &msg) {
       emitError(UnknownLoc::get(module.getContext())) << msg;
       return failure();
@@ -419,7 +420,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
-    pm.enableVerifier(verifyPasses);
+    pm.enableVerifier(!disableVerifyPasses);
     rock::BufferizeOptions opts;
     opts.disableRock = true;
     rock::buildBufferizePipeline(pm, opts);
@@ -442,7 +443,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     PassManager pm(module.getContext());
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
-    pm.enableVerifier(verifyPasses);
+    pm.enableVerifier(!disableVerifyPasses);
     mhal::buildPackagePipeline(pm);
     if (dumpPipelines) {
       llvm::errs() << "MHAL package pipeline:\n";
@@ -466,7 +467,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
-    pm.enableVerifier(verifyPasses);
+    pm.enableVerifier(!disableVerifyPasses);
     mhal::RunnerOptions runnerOptions;
     runnerOptions.barePtrMemrefs = barePointers.getValue();
     runnerOptions.enableCoroutines = hostAsyncCoroutines.getValue();

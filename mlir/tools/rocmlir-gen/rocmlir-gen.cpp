@@ -3021,10 +3021,10 @@ getConvElementwiseGemmTypes(SmallVectorImpl<Type> &result,
       outDims = {1, transposeO ? gemmO : gemmSize.n,
                  transposeO ? gemmSize.n : gemmO};
 
-  MemRefType filterType = MemRefType::get(filterDims, elemTypes[0]),
-             inputType = MemRefType::get(inputDims, elemTypes[1]),
-             cType = MemRefType::get(cDims, elemTypes[2]),
-             outType = MemRefType::get(outDims, elemTypes[3]);
+  RankedTensorType filterType = RankedTensorType::get(filterDims, elemTypes[0]),
+                   inputType = RankedTensorType::get(inputDims, elemTypes[1]),
+                   cType = RankedTensorType::get(cDims, elemTypes[2]),
+                   outType = RankedTensorType::get(outDims, elemTypes[3]);
   result.push_back(filterType);
   result.push_back(inputType);
   result.push_back(cType);
@@ -3727,19 +3727,10 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
     ShapedType aType = cast<ShapedType>(filter.getType());
     ArrayRef<int64_t> aShape = aType.getShape();
     Type abElemType = aType.getElementType();
-    MemRefType abMemRefType = MemRefType::get(
+    RankedTensorType abTensorType = RankedTensorType::get(
         {aShape[0], firstGemmSize.m, firstGemmSize.n}, abElemType);
-    Value abMemRef = preSecondGemmBlock->addArgument(abMemRefType, loc);
-    Value abTensor = rock::getAsTensor(builder, loc, abMemRef);
-    MemRefType resMemRefType =
-        MemRefType::get({aShape[0], firstGemmSize.m, firstGemmSize.n},
-                        cast<ShapedType>(abTensor.getType()).getElementType());
-    Value resMemref = bufferization::ToBufferOp::create(
-        builder, loc, cast<mlir::bufferization::BufferLikeType>(resMemRefType),
-        abTensor);
-    Value outMemref = preSecondGemmBlock->addArgument(resMemRefType, loc);
-    memref::CopyOp::create(builder, loc, resMemref, outMemref);
-    rock::YieldOp::create(builder, loc);
+    Value abTensor = preSecondGemmBlock->addArgument(abTensorType, loc);
+    rock::YieldOp::create(builder, loc, abTensor);
   }
 
   if (!params.perfConfig.empty())

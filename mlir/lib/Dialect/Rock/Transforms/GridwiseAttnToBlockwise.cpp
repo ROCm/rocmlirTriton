@@ -338,14 +338,14 @@ struct GridwiseAttentionRewritePattern
   Value setGemm0OutputOutOfScope(
       PatternRewriter &rewriter, Location loc, OutOfScopeType outOfScopeType,
       layout::GridCoordinates gridCoords, Value firstGemmResult,
-      Value fakeTensor, Value negInfTensor, ArrayAttr tileView, bool enabled,
+      Value fakeTensorM, Value fakeTensorN, Value negInfTensor, ArrayAttr tileView, bool enabled,
       Value nLoopIV, Value gemm0NBlocksLastIter, Value currentSeqLen,
       Value prefixOffset) const {
     if (enabled) {
       ArrayAttr nView = outputViewToN(rewriter, loc, tileView);
       ArrayAttr mView = outputViewToM(rewriter, loc, tileView);
-      Value fakeTensorN = transform(rewriter, fakeTensor, nView);
-      Value fakeTensorM = transform(rewriter, fakeTensor, mView);
+      Value fakeTensorNview = transform(rewriter, fakeTensorN, nView);
+      Value fakeTensorMview = transform(rewriter, fakeTensorM, mView);
 
       auto tileShape = cast<ShapedType>(firstGemmResult.getType()).getShape();
       auto pointerTensorType =
@@ -354,13 +354,13 @@ struct GridwiseAttentionRewritePattern
           RankedTensorType::get(tileShape, rewriter.getI1Type());
 
       auto transformsToPtrN = TransformsToPtrOp::create(
-          rewriter, loc, pointerTensorType, maskTensorType, fakeTensorN,
+          rewriter, loc, pointerTensorType, maskTensorType, fakeTensorNview,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block});
       Value nIndex = transformsToPtrN.getPointers();
 
       auto transformsToPtrM = TransformsToPtrOp::create(
-          rewriter, loc, pointerTensorType, maskTensorType, fakeTensorM,
+          rewriter, loc, pointerTensorType, maskTensorType, fakeTensorMview,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block});
       Value mIndex = transformsToPtrM.getPointers();
@@ -528,11 +528,23 @@ struct GridwiseAttentionRewritePattern
       auto resultType = RankedTensorType::get({1},
                                           cast<ShapedType>(tensor.getType()).getElementType());
 
+      // add dim 1 for load_marker to make sense
+      ArrayRef<int64_t> inpShape =
+          cast<ShapedType>(tensor.getType()).getShape();
+      assert(inpShape.size() == 1 && "Expected rank to be one");
+      SmallVector<StringRef> startNames = {"gemmG"};
+      rock::BottomUpTMBuilder addDim(rewriter, startNames, inpShape);
+      addDim.addDim("dummy", 1, 1);
+      addDim.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
+      auto addDimAttr = addDim.get();
+      Value tensorAddDim =
+          rock::TransformOp::create(rewriter, loc, tensor, addDimAttr);
+
       // Create a LoadMarkerOp placeholder for a scalar-like load.
       ArrayAttr emptyViews = rewriter.getArrayAttr({});
       auto markerOp =
-          LoadMarkerOp::create(rewriter, loc, resultType, tensor, emptyViews,
-                               ValueRange{gridCoordsGemm0.g_block});
+          LoadMarkerOp::create(rewriter, loc, resultType, tensorAddDim,
+                               emptyViews, ValueRange{gridCoordsGemm0.g_block});
 
       return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
@@ -1099,11 +1111,16 @@ struct GridwiseAttentionRewritePattern
         // TransformsToPtrOp It represents the Q*K matrix (that is never written
         // to global memory)
         ArrayRef<int64_t> lowerShape = getLowerShape(gemm0OutTileViewUnPadded);
+        assert(lowerShape.size() == 3);
         int64_t tensorSize =
             std::accumulate(lowerShape.begin(), lowerShape.end(), 1LL,
                             std::multiplies<int64_t>());
         Value fakeTensor =
             rock::createZeroAccBuffer(rewriter, loc, {tensorSize}, accType);
+        Value fakeTensorM =
+            rock::createZeroAccBuffer(rewriter, loc, {lowerShape[1]}, accType);
+        Value fakeTensorN =
+            rock::createZeroAccBuffer(rewriter, loc, {lowerShape[2]}, accType);
         Value negInfTensor = createConstantFloatOp(
             rewriter, loc, softmaxInput.getType(),
             cast<ShapedType>(softmaxInput.getType()).getElementType(),
@@ -1124,7 +1141,7 @@ struct GridwiseAttentionRewritePattern
         // cache is enabled, regardless of causal/prefix-causal mode.
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::KVCache, gridCoordsGemm0,
-            softmaxInput, fakeTensor, negInfTensor, gemm0OutTileViewUnPadded,
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor, gemm0OutTileViewUnPadded,
             isKVCache, nLoopIV, gemm0NBlocksLastIter, currentSeqLen,
             /*prefixOffset=*/nullptr);
 
@@ -1133,14 +1150,14 @@ struct GridwiseAttentionRewritePattern
         // This combines causal masking with a prefix offset
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::PrefixCausal, gridCoordsGemm0,
-            softmaxInput, fakeTensor, negInfTensor, gemm0OutTileViewUnPadded,
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor, gemm0OutTileViewUnPadded,
             isPrefixCausal, nLoopIV, gemm0NBlocksLastIter,
             /*currentSeqLen=*/nullptr, prefixOffset);
 
         // Standard causal masking: mask when key > query
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::Causal, gridCoordsGemm0,
-            softmaxInput, fakeTensor, negInfTensor, gemm0OutTileViewUnPadded,
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor, gemm0OutTileViewUnPadded,
             isCausal && !isPrefixCausal, nLoopIV, gemm0NBlocksLastIter,
             /*currentSeqLen=*/nullptr,
             /*prefixOffset=*/nullptr);

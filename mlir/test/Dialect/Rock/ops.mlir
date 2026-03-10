@@ -174,17 +174,16 @@ func.func @rock_transform_n_to_1(%tensor : tensor<1x128x64x32x16xf32>) -> tensor
 //  CHECK-NEXT: rock.transform
 
 // test 1 source dimension map to multiple target dimensions.
-func.func @rock_transform_1_to_n(%tensor : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?x?x?xf32, #map2> {
+func.func @rock_transform_1_to_n(%tensor : tensor<1x128x64x32x16xf32>) -> tensor<128x1x64x32x1x16x1xf32, #map2> {
   %transformed_tensor = rock.transform %tensor by
     <#map2 by [
       #rock.transform<PassThrough ["n", "g", "c"] at [0, 1, 2] ->
         ["n", "g", "c"] at [1, 0, 2]>,
       #rock.transform<Embed{1, 1} ["0", "0o"] at [3, 4] -> ["0ipad"] at [3]>,
       #rock.transform<Embed{1, 1} ["1", "1o"] at [5, 6] -> ["1ipad"] at [4]>
-      // Note: fake data should work fine for now
-     ] bounds = [0, 0, 0, 0, 0, 0, 0] -> [0, 0, 0, 0, 0]>
-  : tensor<?x?x?x?x?xf32> to tensor<?x?x?x?x?x?x?xf32, #map2>
-  return %transformed_tensor : tensor<?x?x?x?x?x?x?xf32, #map2>
+     ] bounds = [128, 1, 64, 32, 1, 16, 1] -> [1, 128, 64, 32, 16]>
+  : tensor<1x128x64x32x16xf32> to tensor<128x1x64x32x1x16x1xf32, #map2>
+  return %transformed_tensor : tensor<128x1x64x32x1x16x1xf32, #map2>
 }
 
 // CHECK-LABEL: func.func @rock_transform_1_to_n

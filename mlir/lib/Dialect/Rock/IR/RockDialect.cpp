@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Rock/utility/math.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
@@ -774,6 +775,239 @@ GemmSize ConvBwdWeightOp::getGemmSize() {
 }
 
 //===-----------------------------------------------------===//
+// Conv Op Verification
+//===-----------------------------------------------------===//
+
+static LogicalResult verifyConvLikeOp(RockConvInterface op) {
+  auto filterType = cast<ShapedType>(op.getConvFilter().getType());
+  auto inputType = cast<ShapedType>(op.getConvInput().getType());
+  auto outputType = cast<ShapedType>(op.getConvOutput().getType());
+
+  if (filterType.getRank() != inputType.getRank() ||
+      inputType.getRank() != outputType.getRank()) {
+    return op.emitOpError("filter, input, and output must have the same rank")
+           << " (filter rank = " << filterType.getRank()
+           << ", input rank = " << inputType.getRank()
+           << ", output rank = " << outputType.getRank() << ")";
+  }
+  int64_t rank = filterType.getRank();
+
+  Type filterElemType = filterType.getElementType();
+  Type inputElemType = inputType.getElementType();
+  Type outputElemType = outputType.getElementType();
+
+  // we can't enforce the same type (example: f8 * bf8)
+  if (isa<FloatType>(filterElemType) != isa<FloatType>(inputElemType))
+    return op.emitOpError(
+        "filter and input must both be float or both be integer types");
+  if (isa<FloatType>(filterElemType) && !isa<FloatType>(outputElemType))
+    return op.emitOpError(
+        "float-valued inputs must have a floating-point output type");
+  if (isa<IntegerType>(filterElemType) && !isa<IntegerType>(outputElemType))
+    return op.emitOpError(
+        "integer-valued inputs must have an integer output type");
+
+  auto padding = extractFromIntegerArrayAttr<int64_t>(op.getPadding());
+  auto strides = extractFromIntegerArrayAttr<int64_t>(op.getStrides());
+  auto dilations = extractFromIntegerArrayAttr<int64_t>(op.getDilations());
+
+  if (strides.size() != dilations.size())
+    return op.emitOpError("strides and dilations must have the same size");
+  if (padding.size() != 2 * strides.size())
+    return op.emitOpError(
+        "padding must have twice as many elements as strides");
+
+  int64_t numSpatialDims = rank - 3;
+  if (static_cast<int64_t>(strides.size()) != numSpatialDims)
+    return op.emitOpError(
+               "number of strides must match number of spatial dimensions")
+           << " (strides = " << strides.size()
+           << ", spatial dims = " << numSpatialDims << ")";
+
+  // TODO: verify layouts
+  // TODO: verify output shape (with ConvGenerator::outputDim)
+  return success();
+}
+
+LogicalResult ConvOp::verify() { return verifyConvLikeOp(*this); }
+
+LogicalResult ConvBwdDataOp::verify() { return verifyConvLikeOp(*this); }
+
+LogicalResult ConvBwdWeightOp::verify() {
+  if (failed(verifyConvLikeOp(*this)))
+    return failure();
+
+  // TODO: verify workspace size
+
+  return success();
+}
+
+//===-----------------------------------------------------===//
+// StoreOp
+//===-----------------------------------------------------===//
+
+static LogicalResult verifySingleReturnUse(Operation *op, Value result) {
+  if (result.use_empty())
+    return success();
+  if (!result.hasOneUse())
+    return op->emitOpError(
+        "result must have at most one use (a func.return)");
+  Operation *user = *result.getUsers().begin();
+  if (!isa<func::ReturnOp>(user))
+    return op->emitOpError("result must be used directly by a func.return");
+  return success();
+}
+
+LogicalResult StoreOp::verify() {
+  auto sourceType = cast<ShapedType>(getSource().getType());
+  auto destType = cast<ShapedType>(getDest().getType());
+
+  if (sourceType.getShape() != destType.getShape())
+    return emitOpError("source and dest shapes must match")
+           << " (source: " << sourceType << ", dest: " << destType << ")";
+
+  return verifySingleReturnUse(*this, getResult());
+}
+
+//===-----------------------------------------------------===//
+// CastToPtrOp
+//===-----------------------------------------------------===//
+
+LogicalResult CastToPtrOp::verify() {
+  auto resultType = cast<RankedTensorType>(getResult().getType());
+  if (!isa<triton::PointerType>(resultType.getElementType()))
+    return emitOpError("result must be a tensor of !tt.ptr");
+  return success();
+}
+
+//===-----------------------------------------------------===//
+// ExtractPtrOp
+//===-----------------------------------------------------===//
+
+LogicalResult ExtractPtrOp::verify() {
+  if (!isa<BlockArgument>(getSource()))
+    return emitOpError("source must be a block argument");
+  return success();
+}
+
+//===-----------------------------------------------------===//
+// TransformOp
+//===-----------------------------------------------------===//
+
+LogicalResult TransformOp::verify() {
+  auto inputType = cast<ShapedType>(getInput().getType());
+  auto outputType = cast<ShapedType>(getOutput().getType());
+  TransformMapAttr tmap = getTransform();
+
+  ArrayRef<int64_t> lowerBounds = tmap.getLowerBounds();
+  ArrayRef<int64_t> upperBounds = tmap.getUpperBounds();
+
+  ArrayRef<int64_t> inputShape = inputType.getShape();
+  if (inputShape.size() != lowerBounds.size())
+    return emitOpError("input rank must match transform lower bounds rank");
+  for (size_t i = 0; i < inputShape.size(); ++i) {
+    if (inputShape[i] != lowerBounds[i])
+      return emitOpError()
+             << "input shape must match transform lower bounds (input shape="
+             << inputShape << ", lower bounds=" << lowerBounds << ")";
+  }
+
+  ArrayRef<int64_t> outputShape = outputType.getShape();
+  if (outputShape.size() != upperBounds.size())
+    return emitOpError() << "output rank must match transform upper bounds "
+                            "rank (output shape="
+                         << outputShape << ", upper bounds=" << upperBounds
+                         << ")";
+  for (size_t i = 0; i < outputShape.size(); ++i) {
+    if (outputShape[i] != upperBounds[i])
+      return emitOpError("output shape must match transform upper bounds");
+  }
+
+  return success();
+}
+
+//===-----------------------------------------------------===//
+// UntileOp
+//===-----------------------------------------------------===//
+
+LogicalResult UntileOp::verify() {
+  int64_t sourceRank = getSource().getType().getRank();
+  int64_t resultRank = getResult().getType().getRank();
+  if (sourceRank > resultRank) {
+    return emitOpError("source rank is greater than result rank")
+           << " (" << sourceRank << " > " << resultRank << ")";
+  }
+  return success();
+}
+
+//===-----------------------------------------------------===//
+// LoadMarkerOp / StoreMarkerOp
+//===-----------------------------------------------------===//
+
+static LogicalResult verifyMarkerOp(Operation *op, ArrayAttr views,
+                                    ArrayRef<int64_t> inputTensorShape,
+                                    ArrayRef<int64_t> resultTensorShape,
+                                    size_t extraIndicesCount) {
+  // The upper bounds rank must match result.rank + extraIndices.size().
+  // Whatever happens after the upper view doesn't have to be consistent in
+  // terms of rank or overall shapes, because we can merge/unmerge, broadcast
+  // slice, etc.
+  ArrayRef<int64_t> upperBounds =
+      views.empty()
+          ? inputTensorShape
+          : cast<TransformMapAttr>(views[0]).getUpperBounds().asArrayRef();
+  size_t upperRank = upperBounds.size();
+  size_t resultTensorRank = resultTensorShape.size();
+  size_t expectedRank = resultTensorRank + extraIndicesCount;
+  if (upperRank != expectedRank)
+    return op->emitOpError("upper bounds must equal tensor rank + "
+                           "extraIndices count")
+           << " (" << upperRank << " != " << resultTensorRank << " + "
+           << extraIndicesCount << ")";
+
+  // We can check the shape of the result tensor (after removing extra indices)
+  // is the same as the upper view bounds. Example, rock.load_marker ... bounds
+  // = [2, 1, 2, 2, 64, 64] -> [1, 128, 128]>][%arg5, %12, %19, %21] :
+  // tensor<1x128x128xf16> -> tensor<64x64xf16> So, [X, X, X, X, 64, 64] and
+  // tensor<64x64xf16> must match.
+  if (upperBounds.take_back(resultTensorRank) != resultTensorShape) {
+    return op->emitOpError(
+               "Upper bounds last dimensions must match with result shape ")
+           << " (" << upperBounds.take_back(resultTensorRank)
+           << " != " << resultTensorShape << ")";
+  }
+
+  ArrayRef<int64_t> lowerBounds =
+      views.empty() ? inputTensorShape
+                    : cast<TransformMapAttr>(views[views.size() - 1])
+                          .getLowerBounds()
+                          .asArrayRef();
+  if (lowerBounds != inputTensorShape) {
+    return op->emitOpError("Lower bounds must match with input shape ")
+           << " (" << lowerBounds << " != " << inputTensorShape << ")";
+  }
+
+  return success();
+}
+
+LogicalResult LoadMarkerOp::verify() {
+  return verifyMarkerOp(
+      *this, getExtraViews(),
+      cast<RankedTensorType>(getSource().getType()).getShape(),
+      cast<RankedTensorType>(getResult().getType()).getShape(),
+      getExtraIndices().size());
+}
+
+LogicalResult StoreMarkerOp::verify() {
+  // Note that input <-> result are swapped wrt LoadMarkerOp
+  return verifyMarkerOp(
+      *this, getExtraViews(),
+      cast<RankedTensorType>(getResult().getType()).getShape(),
+      cast<RankedTensorType>(getSource().getType()).getShape(),
+      getExtraIndices().size());
+}
+
+//===-----------------------------------------------------===//
 // GemmOp
 //===-----------------------------------------------------===//
 
@@ -980,6 +1214,32 @@ LogicalResult GridwiseGemmOp::verify() {
 }
 
 //===-----------------------------------------------------===//
+// BlockwiseLoadOp
+//===-----------------------------------------------------===//
+
+LogicalResult BlockwiseLoadOp::verify() {
+  auto sourceType = cast<RankedTensorType>(getSource().getType());
+  auto resultType = cast<RankedTensorType>(getResult().getType());
+
+  size_t idxCount = getSourceIndices().size();
+  if (idxCount + resultType.getRank() !=
+      static_cast<size_t>(sourceType.getRank()))
+    return emitOpError(
+               "sourceIndices.size() + result rank must equal source rank")
+           << " (" << idxCount << " + " << resultType.getRank()
+           << " != " << sourceType.getRank() << ")";
+
+  if (sourceType.getShape().take_back(resultType.getRank()) !=
+      resultType.getShape()) {
+    return emitOpError("Input last dimensions must match with result shape ")
+           << " (" << sourceType.getShape().take_back(resultType.getRank())
+           << " != " << resultType.getShape() << ")";
+  }
+
+  return success();
+}
+
+//===-----------------------------------------------------===//
 // BlockwiseStoreOp
 //===-----------------------------------------------------===//
 
@@ -1013,24 +1273,33 @@ BlockwiseStoreOp::cloneWithExtraIndices(OpBuilder &builder, OpOperand &operand,
 }
 
 LogicalResult BlockwiseStoreOp::verify() {
-  ArrayRef<int64_t> outputShape = getDest().getType().getShape();
+  auto sourceType = cast<RankedTensorType>(getSource().getType());
+  auto destType = cast<RankedTensorType>(getDest().getType());
 
   size_t extraIdxCount = getExtraIndices().size();
-  if (outputShape.empty()) {
-    if (extraIdxCount != 0)
-      return emitOpError("write to a scalar must have no coordinates");
-  }
-  // TODO(roctriton): check that it matches the register allocation!
+  if (extraIdxCount + sourceType.getRank() !=
+      static_cast<size_t>(destType.getRank()))
+    return emitOpError("extraIndices.size() + source rank must equal dest rank")
+           << " (" << extraIdxCount << " + " << sourceType.getRank()
+           << " != " << destType.getRank() << ")";
 
-  // } else if (outputShape.size() != extraIdxCount + 1) {
-  //   return emitOpError("dest view must be extraIndices + 1");
-  // }
-  return success();
+  if (destType.getShape().take_back(sourceType.getRank()) !=
+      sourceType.getShape()) {
+    return emitOpError("Dest last dimensions must match with input shape ")
+           << " (" << destType.getShape().take_back(sourceType.getRank())
+           << " != " << sourceType.getShape() << ")";
+  }
+
+  return verifySingleReturnUse(*this, getResult());
 }
 
 //===-----------------------------------------------------===//
 // BlockwiseStorePtrOp
 //===-----------------------------------------------------===//
+
+LogicalResult BlockwiseStorePtrOp::verify() {
+  return verifySingleReturnUse(*this, getResult());
+}
 
 //===----------------------------------------------------------------------===//
 // BlockwiseGemmOp
@@ -1122,34 +1391,79 @@ LogicalResult GridwiseAttentionOp::verify() {
 }
 
 //===-----------------------------------------------------===//
-// ReduceOp
+// TransformsToPtrOp
 //===-----------------------------------------------------===//
-LogicalResult ReduceOp::verify() {
-  int64_t axis = getAxis().getSExtValue();
-  ArrayRef<int64_t> inpShape = cast<ShapedType>(getIn().getType()).getShape();
-  ArrayRef<int64_t> outShape =
-      cast<ShapedType>(getResult().getType()).getShape();
-  if (axis < 0 || axis >= int64_t(inpShape.size())) {
-    return emitError("Axis is out of range");
-  }
-  if (inpShape.size() != outShape.size()) {
-    return emitError("Input and output rank is not the same");
-  }
-  for (const auto &dimAndSize : llvm::enumerate(outShape)) {
-    int64_t dim = dimAndSize.index();
-    int64_t dimSize = dimAndSize.value();
-    if (dim == axis) {
-      if (dimSize != 1) {
-        return emitError("The size of the reduction dimension should be 1.");
-      }
-    } else {
-      if (dimSize != inpShape[dim]) {
-        return emitError("The size of the non-reduction dimension should "
-                         "match the input.");
-      }
-    }
+
+LogicalResult TransformsToPtrOp::verify() {
+  // No need to check source shapes match mask shapes, because
+  // AllShapesMatch<["pointers", "mask"]> in RockOps.td
+  auto sourceType = cast<RankedTensorType>(getSource().getType());
+  auto ptrType = cast<RankedTensorType>(getPointers().getType());
+
+  size_t idxCount = getExtraIndices().size();
+  if (idxCount + ptrType.getRank() !=
+      static_cast<size_t>(sourceType.getRank()))
+    return emitOpError(
+               "extraIndices.size() + pointers rank must equal source rank")
+           << " (" << idxCount << " + " << ptrType.getRank()
+           << " != " << sourceType.getRank() << ")";
+
+  if (sourceType.getShape().take_back(ptrType.getRank()) !=
+      ptrType.getShape()) {
+    return emitOpError("Source last dimensions must match with pointers shape ")
+           << " (" << sourceType.getShape().take_back(ptrType.getRank())
+           << " != " << ptrType.getShape() << ")";
   }
 
+  return success();
+}
+
+//===-----------------------------------------------------===//
+// ReduceOp
+//===-----------------------------------------------------===//
+
+LogicalResult ReduceOp::verify() {
+  auto inpShape = cast<ShapedType>(getIn().getType()).getShape();
+  auto outShape = cast<ShapedType>(getResult().getType()).getShape();
+  int64_t axis = getAxis().getSExtValue();
+  if (axis < 0 || axis >= int64_t(inpShape.size()))
+    return emitError("Axis is out of range");
+  if (inpShape.size() != outShape.size())
+    return emitError("Input and output rank is not the same");
+  for (const auto &[dim, dimSize] : llvm::enumerate(outShape)) {
+    if (int64_t(dim) == axis) {
+      if (dimSize != 1)
+        return emitError("The size of the reduction dimension should be 1.");
+    } else {
+      if (dimSize != inpShape[dim])
+        return emitError("The size of the non-reduction dimension should "
+                         "match the input.");
+    }
+  }
+  return success();
+}
+
+//===-----------------------------------------------------===//
+// BlockwiseReduceOp
+//===-----------------------------------------------------===//
+
+LogicalResult BlockwiseReduceOp::verify() {
+  auto inpShape = cast<ShapedType>(getInput().getType()).getShape();
+  auto outShape = cast<ShapedType>(getResult().getType()).getShape();
+  int64_t axis = getAxis().getSExtValue();
+  if (axis < 0 || axis >= int64_t(inpShape.size()))
+    return emitError("axis is out of range");
+  if (outShape.size() + 1 != inpShape.size())
+    return emitError("output rank must be input rank - 1");
+  for (size_t inDim = 0, outDim = 0; inDim < inpShape.size(); ++inDim) {
+    if (int64_t(inDim) == axis)
+      continue;
+    if (outShape[outDim] != inpShape[inDim])
+      return emitError(
+          "non-reduction dimension size mismatch at output dim ")
+             << outDim;
+    ++outDim;
+  }
   return success();
 }
 
@@ -1320,7 +1634,7 @@ Type ConvElementwiseGemmOp::getAType() {
   auto elementType = getInput().getType().getElementType();
   int64_t dim1 = getTransposedA() ? size.k : size.n;
   int64_t dim2 = getTransposedA() ? size.n : size.k;
-  return MemRefType::get({size.g, dim1, dim2}, elementType);
+  return RankedTensorType::get({size.g, dim1, dim2}, elementType);
 }
 
 Type ConvElementwiseGemmOp::getBType() {
@@ -1328,7 +1642,7 @@ Type ConvElementwiseGemmOp::getBType() {
   auto elementType = getFilter().getType().getElementType();
   int64_t dim1 = getTransposedB() ? size.m : size.k;
   int64_t dim2 = getTransposedB() ? size.k : size.m;
-  return MemRefType::get({size.g, dim1, dim2}, elementType);
+  return RankedTensorType::get({size.g, dim1, dim2}, elementType);
 }
 
 Type ConvElementwiseGemmOp::getCType() { return getC().getType(); }

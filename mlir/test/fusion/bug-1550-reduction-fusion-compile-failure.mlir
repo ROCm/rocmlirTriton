@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -c -arch "gfx908:sramecc+:xnack-" -verify-passes %s
+// RUN: rocmlir-driver -c -arch "gfx908:sramecc+:xnack-"  %s
 
 // CHECK-LABEL: @mlir_convolution_reshape_mul_reshape_reduce_sum_reshape_mul_mul_reshape_reduce_sum_reshape
 func.func @mlir_convolution_reshape_mul_reshape_reduce_sum_reshape_mul_mul_reshape_reduce_sum_reshape(%arg0: tensor<320xf32>, %arg1: tensor<32768xf32>, %arg2: tensor<11520xf32>, %arg3: tensor<64xf32> {rock.prefill = 0.000000e+00 : f32}, %arg4: tensor<64xf32> {rock.prefill = 0.000000e+00 : f32}, %arg5: tensor<2621440xf32>) -> (tensor<64xf32>, tensor<64xf32>, tensor<2621440xf32>) attributes {rock.arch = "gfx908:sramecc+:xnack-", rock.kernel = "mixr", rock.num_cu = 120 : i64} {

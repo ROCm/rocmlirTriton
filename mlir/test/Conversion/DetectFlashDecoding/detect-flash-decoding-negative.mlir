@@ -3,7 +3,9 @@
 #map = affine_map<(d0, d1, d2) -> ((d0 * 256 + d1) * 128 + d2)>
 #map1 = affine_map<(d0, d1, d2) -> ((d0 * 128 + d1) * 256 + d2)>
 #map2 = affine_map<(d0, d1, d2) -> ((d0 * 256 + d1) * 128 + d2)>
+#map_flat = affine_map<(d0) -> (d0 floordiv 32768, (d0 mod 32768) floordiv 128, d0 mod 128)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{12, 256, 128} ["b", "m", "k"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [12, 256, 128] -> [393216]>
+#transform_map_flat = #rock.transform_map<#map_flat by [<Merge{12, 256, 128} ["flat"] at [0] -> ["b", "m", "k"] at [0, 1, 2]>] bounds = [393216] -> [12, 256, 128]>
 #transform_map1 = #rock.transform_map<#map1 by [<Unmerge{12, 128, 256} ["b", "k", "n"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [12, 128, 256] -> [393216]>
 #transform_map2 = #rock.transform_map<#map2 by [<Unmerge{12, 256, 128} ["b", "n", "d"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [12, 256, 128] -> [393216]>
 module {
@@ -21,7 +23,7 @@ module {
      qk = %q * %k : tensor<12x256x128xf16>, tensor<12x128x256xf16>
      softmax(qk) * %v : tensor<12x256x128xf16>
     } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<12x256x128xf16>
-    %flat = rock.transform %result by #transform_map : tensor<12x256x128xf16> to tensor<393216xf16>
+    %flat = rock.transform %result by #transform_map_flat : tensor<12x256x128xf16> to tensor<393216xf16>
     return %flat : tensor<393216xf16>
   }
 
@@ -39,7 +41,7 @@ module {
      qk = %q * %k : tensor<12x256x128xf16>, tensor<12x128x256xf16>
      softmax(qk) * %v : tensor<12x256x128xf16>
     } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<12x256x128xf16>, tensor<12x256xf32>
-    %flat_result = rock.transform %result by #transform_map : tensor<12x256x128xf16> to tensor<393216xf16>
+    %flat_result = rock.transform %result by #transform_map_flat : tensor<12x256x128xf16> to tensor<393216xf16>
     %flat_lse = rock.transform %lseOut by <affine_map<(d0) -> (d0 floordiv 256, d0 mod 256)> by [<Merge{12, 256} ["flat"] at [0] -> ["b", "m"] at [0, 1]>] bounds = [3072] -> [12, 256]> : tensor<12x256xf32> to tensor<3072xf32>
     return %flat_result, %flat_lse : tensor<393216xf16>, tensor<3072xf32>
   }
