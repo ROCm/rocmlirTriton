@@ -15,9 +15,6 @@
 #include "mlir/Support/LogicalResult.h"
 
 namespace mlir {
-namespace memref {
-class AllocOp;
-} // namespace memref
 
 namespace func {
 class FuncOp;
@@ -51,7 +48,7 @@ LogicalResult testFusionLegalityBwdDataConv(ModuleOp mod);
 // Whether a gemm+gemm-like operation has any pre-second-GEMM fusions.
 bool gemmGemmHasPreSecondGemmFusion(RockGemmGemmWrapperInterface op);
 
-// Checks whether the output fusion linalg::GenericOp is valid. Assuming a
+// Checks whether the output fusion is valid. Assuming a
 // split-k kernel.
 LogicalResult
 checkValidOutputFusion(Value gemmResult,
