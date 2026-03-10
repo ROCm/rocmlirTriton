@@ -49,10 +49,13 @@ using namespace mlir::rock;
 namespace {
 
 // Forward flood-fill from a FusionRoot result.
-// Collects all reachable values into `chainSet`. If a rock.store is found
-// whose source is in the chain, sets `hasExistingStore` to true.
-static void floodFillFromRoot(Value root, DenseSet<Value> &chainSet,
-                              bool &hasExistingStore) {
+// Collects all reachable values into `chainSet`. For any rock.store found
+// whose source is in the chain, the store result is added to `storedValues`
+// (and to `chainSet`) but the flood-fill does not follow past the store.
+// This lets the caller distinguish return operands that already have stores
+// from those that still need one.
+static LogicalResult floodFillFromRoot(Value root, DenseSet<Value> &chainSet,
+                                       DenseSet<Value> &storedValues) {
   SmallVector<Value> worklist;
   worklist.push_back(root);
 
@@ -64,11 +67,14 @@ static void floodFillFromRoot(Value root, DenseSet<Value> &chainSet,
     for (OpOperand &use : v.getUses()) {
       Operation *owner = use.getOwner();
 
-      // Check for existing rock.store
+      // For an existing rock.store whose source is in the chain, record its
+      // result as already-stored and add it to the chain (so it can match a
+      // return operand), but don't flood-fill past the store.
       if (auto storeOp = dyn_cast<StoreOp>(owner)) {
         if (use.getOperandNumber() == 0) { // source operand
-          hasExistingStore = true;
-          return;
+          Value storeResult = storeOp.getResult();
+          chainSet.insert(storeResult);
+          storedValues.insert(storeResult);
         }
         continue;
       }
@@ -77,9 +83,20 @@ static void floodFillFromRoot(Value root, DenseSet<Value> &chainSet,
       if (isForwardTraceOp(owner)) {
         for (Value res : owner->getResults())
           worklist.push_back(res);
+        continue;
       }
+
+      // func.return is an expected terminal use.
+      if (isa<func::ReturnOp>(owner))
+        continue;
+
+      // Any other use of a FusionRoot chain value is unexpected.
+      return owner->emitError(
+          "unexpected use of FusionRoot chain value by ")
+          << owner->getName();
     }
   }
+  return success();
 }
 
 // Information about a return value that needs a rock.store.
@@ -90,23 +107,26 @@ struct ReturnStoreInfo {
 };
 
 // For each FusionRoot, flood-fill forward and identify which return operands
-// need stores. Each FusionRoot result must either already have a rock.store or
-// trace forward to a func.return operand. If neither is true, emits an error.
+// need stores. A return operand that is already the result of a rock.store is
+// left alone; all other return operands reachable from the root get a new
+// store. If a root result has neither an existing store nor a path to a
+// func.return operand, an error is emitted. After processing all roots, any
+// return operand not covered by a root chain must be a block argument
+// passthrough; otherwise it is an error.
 static FailureOr<SmallVector<ReturnStoreInfo>>
 identifyReturnStores(ArrayRef<Operation *> fusionRoots,
                      func::ReturnOp returnOp) {
   SmallVector<ReturnStoreInfo> storeInfos;
+
+  // Track which return operand indices are covered by some FusionRoot chain.
+  DenseSet<unsigned> coveredReturnIndices;
+
   for (Operation *rootOp : fusionRoots) {
     for (Value rootResult : rootOp->getResults()) {
       DenseSet<Value> chainSet;
-      bool hasExistingStore = false;
-      floodFillFromRoot(rootResult, chainSet, hasExistingStore);
-
-      if (hasExistingStore) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "Root already has store, skipping: " << *rootOp << "\n");
-        continue;
-      }
+      DenseSet<Value> storedValues;
+      if (failed(floodFillFromRoot(rootResult, chainSet, storedValues)))
+        return failure();
 
       // Check which return operands are in this chain
       bool foundReturnOperand = false;
@@ -116,6 +136,16 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
           continue;
 
         foundReturnOperand = true;
+        coveredReturnIndices.insert(i);
+
+        // Skip return operands that are already the result of a rock.store.
+        if (storedValues.contains(retVal)) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Return " << i
+                     << " already has store, skipping\n");
+          continue;
+        }
+
         ReturnStoreInfo info;
         info.returnIndex = i;
         info.returnOperand = retVal;
@@ -130,6 +160,21 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
       }
     }
   }
+
+  // Verify every return operand is either covered by a FusionRoot chain or is
+  // a block argument passthrough. An uncovered non-argument return value would
+  // mean a computed result is silently dropped without a store.
+  for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
+    if (coveredReturnIndices.contains(i))
+      continue;
+    Value retVal = returnOp.getOperand(i);
+    if (isa<BlockArgument>(retVal))
+      continue;
+    return returnOp.emitError("return operand ")
+           << i << " is not a block argument and is not reachable from any "
+           << "FusionRoot";
+  }
+
   return storeInfos;
 }
 

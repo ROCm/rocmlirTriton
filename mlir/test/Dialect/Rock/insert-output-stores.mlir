@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -rock-insert-output-stores %s | FileCheck %s
+// RUN: rocmlir-opt -rock-insert-output-stores -split-input-file -verify-diagnostics %s | FileCheck %s
 
 // CHECK-LABEL: func.func @simple_gemm
 // CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel}
@@ -134,3 +134,183 @@ func.func @mixed_returns(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg
   %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
   return %0, %arg2 : tensor<8x32xf32>, tensor<4xf32>
 }
+
+// Gemm -> arith fusion -> transform -> return: new arg has transformed type
+// CHECK-LABEL: func.func @gemm_fusion_then_transform
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<256xf32>) -> tensor<256xf32> attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %arg2
+// CHECK: %[[TR:.*]] = rock.transform %[[ADD]]
+// CHECK: %[[STORE:.*]] = rock.store %[[TR]] to %arg3 by set
+// CHECK: return %[[STORE]]
+func.func @gemm_fusion_then_transform(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>) -> tensor<256xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %1 = arith.addf %0, %arg2 : tensor<8x32xf32>
+  %2 = rock.transform %1 by #merge_map : tensor<8x32xf32> to tensor<256xf32>
+  return %2 : tensor<256xf32>
+}
+
+// Gemm -> transform -> arith fusion -> return: new arg has fused transformed type
+// CHECK-LABEL: func.func @gemm_transform_then_fusion
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<256xf32>, %arg3: tensor<256xf32>) -> tensor<256xf32> attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[TR:.*]] = rock.transform %[[GEMM]]
+// CHECK: %[[ADD:.*]] = arith.addf %[[TR]], %arg2
+// CHECK: %[[STORE:.*]] = rock.store %[[ADD]] to %arg3 by set
+// CHECK: return %[[STORE]]
+func.func @gemm_transform_then_fusion(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<256xf32>) -> tensor<256xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %1 = rock.transform %0 by #merge_map : tensor<8x32xf32> to tensor<256xf32>
+  %2 = arith.addf %1, %arg2 : tensor<256xf32>
+  return %2 : tensor<256xf32>
+}
+
+// Gemm -> arith fusion -> reduce -> return: new arg has reduced type
+// CHECK-LABEL: func.func @gemm_fusion_then_reduce
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x1xf32>) -> tensor<8x1xf32> attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %arg2
+// CHECK: %[[RED:.*]] = rock.reduce sum %[[ADD]]
+// CHECK: %[[STORE:.*]] = rock.store %[[RED]] to %arg3 by set
+// CHECK: return %[[STORE]]
+func.func @gemm_fusion_then_reduce(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>) -> tensor<8x1xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %1 = arith.addf %0, %arg2 : tensor<8x32xf32>
+  %2 = rock.reduce sum %1 {axis = 1 : index} : tensor<8x32xf32> -> tensor<8x1xf32>
+  return %2 : tensor<8x1xf32>
+}
+
+// Gemm -> reduce -> transform -> return: new arg has final transformed type
+// CHECK-LABEL: func.func @gemm_reduce_then_transform
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8xf32>) -> tensor<8xf32> attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[RED:.*]] = rock.reduce sum %[[GEMM]]
+// CHECK: %[[TR:.*]] = rock.transform %[[RED]]
+// CHECK: %[[STORE:.*]] = rock.store %[[TR]] to %arg2 by set
+// CHECK: return %[[STORE]]
+#map_merge_8x1 = affine_map<(d0) -> (d0, 0)>
+#merge_8x1_map = #rock.transform_map<#map_merge_8x1 by [<Merge{8, 1} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>] bounds = [8] -> [8, 1]>
+func.func @gemm_reduce_then_transform(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -> tensor<8xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %1 = rock.reduce sum %0 {axis = 1 : index} : tensor<8x32xf32> -> tensor<8x1xf32>
+  %2 = rock.transform %1 by #merge_8x1_map : tensor<8x1xf32> to tensor<8xf32>
+  return %2 : tensor<8xf32>
+}
+
+// Gemm -> arith fusion -> reduce -> transform -> return: all three combined
+// CHECK-LABEL: func.func @gemm_fusion_reduce_transform
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8xf32>) -> tensor<8xf32> attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[MUL:.*]] = arith.mulf %[[GEMM]], %arg2
+// CHECK: %[[RED:.*]] = rock.reduce sum %[[MUL]]
+// CHECK: %[[TR:.*]] = rock.transform %[[RED]]
+// CHECK: %[[STORE:.*]] = rock.store %[[TR]] to %arg3 by set
+// CHECK: return %[[STORE]]
+func.func @gemm_fusion_reduce_transform(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>) -> tensor<8xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %1 = arith.mulf %0, %arg2 : tensor<8x32xf32>
+  %2 = rock.reduce sum %1 {axis = 1 : index} : tensor<8x32xf32> -> tensor<8x1xf32>
+  %3 = rock.transform %2 by #merge_8x1_map : tensor<8x1xf32> to tensor<8xf32>
+  return %3 : tensor<8xf32>
+}
+
+// Gemm -> fusion -> fan-out to two transforms -> return both:
+// chainSet from the single gemm root covers both return operands,
+// so both get separate output args and stores.
+// CHECK-LABEL: func.func @gemm_fusion_fanout_transforms
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<256xf32>, %arg4: tensor<256xf32>)
+// CHECK-SAME: -> (tensor<256xf32>, tensor<256xf32>)
+// CHECK-SAME: attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %arg2
+// CHECK: %[[TR1:.*]] = rock.transform %[[ADD]]
+// CHECK: %[[TR2:.*]] = rock.transform %[[ADD]]
+// CHECK: %[[STORE1:.*]] = rock.store %[[TR2]] to %arg3 by set
+// CHECK: %[[STORE2:.*]] = rock.store %[[TR1]] to %arg4 by set
+// CHECK: return %[[STORE1]], %[[STORE2]]
+func.func @gemm_fusion_fanout_transforms(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>) -> (tensor<256xf32>, tensor<256xf32>) attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %1 = arith.addf %0, %arg2 : tensor<8x32xf32>
+  %2 = rock.transform %1 by #merge_map : tensor<8x32xf32> to tensor<256xf32>
+  %3 = rock.transform %1 by #merge_map : tensor<8x32xf32> to tensor<256xf32>
+  return %3, %2 : tensor<256xf32>, tensor<256xf32>
+}
+
+// Gemm fans out to an existing rock.store and a fusion chain without a store.
+// The existing store return is left alone; only the fusion path gets a new store.
+// CHECK-LABEL: func.func @gemm_partial_store
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x32xf32>, %arg4: tensor<8x32xf32>)
+// CHECK-SAME: -> (tensor<8x32xf32>, tensor<8x32xf32>)
+// CHECK-SAME: attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[EXISTING:.*]] = rock.store %[[GEMM]] to %arg2 by set
+// CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %arg3
+// CHECK: %[[NEW_STORE:.*]] = rock.store %[[ADD]] to %arg4 by set
+// CHECK: return %[[EXISTING]], %[[NEW_STORE]]
+func.func @gemm_partial_store(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x32xf32>) -> (tensor<8x32xf32>, tensor<8x32xf32>) attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<8x32xf32> -> tensor<8x32xf32> to tensor<8x32xf32>
+  %2 = arith.addf %0, %arg3 : tensor<8x32xf32>
+  return %1, %2 : tensor<8x32xf32>, tensor<8x32xf32>
+}
+
+// Fusion op uses the gemm output twice (both operands): exercises the
+// duplicate-user path in floodFillFromRoot.
+// CHECK-LABEL: func.func @gemm_fusion_same_operand_twice
+// CHECK-SAME: (%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<8x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %[[GEMM]]
+// CHECK: %[[STORE:.*]] = rock.store %[[ADD]] to %arg2 by set
+// CHECK-NOT: rock.store
+// CHECK: return
+func.func @gemm_fusion_same_operand_twice(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %1 = arith.addf %0, %0 : tensor<8x32xf32>
+  return %1 : tensor<8x32xf32>
+}
+
+// -----
+
+// A return operand that is not a block argument and not reachable from any
+// FusionRoot should be flagged as an error.
+func.func @uncovered_return_operand(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -> (tensor<8x32xf32>, tensor<8x32xf32>) attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  %cst = arith.constant dense<0.0> : tensor<8x32xf32>
+  // expected-error @below {{return operand 1 is not a block argument and is not reachable from any FusionRoot}}
+  return %0, %cst : tensor<8x32xf32>, tensor<8x32xf32>
+}
+
+// -----
+
+// A FusionRoot result that is unused and has no store is an error.
+func.func @root_not_reaching_return(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<16x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  // expected-error @below {{FusionRoot result has no rock.store and does not reach a function return}}
+  %1 = rock.gemm %arg0 * %arg2 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  return %0 : tensor<8x32xf32>
+}
+
+// -----
+
+// A chain value used by an op that is not a fusion op, transform, reduce,
+// store, or return is an error.
+func.func @unexpected_chain_use(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  // expected-error @below {{unexpected use of FusionRoot chain value by tosa.abs}}
+  %1 = "tosa.abs"(%0) {} : (tensor<8x32xf32>) -> tensor<8x32xf32>
+  return %1 : tensor<8x32xf32>
+}
+
+// -----
+
+// A kernel with callers should error — the pass expects no call sites.
+// expected-error @below {{kernel has callers; InsertOutputStores expects no call sites}}
+func.func @kernel_with_caller(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -> tensor<8x32xf32> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>
+  return %0 : tensor<8x32xf32>
+}
+func.func @caller(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -> tensor<8x32xf32> {
+  %0 = func.call @kernel_with_caller(%arg0, %arg1) : (tensor<8x16xf32>, tensor<16x32xf32>) -> tensor<8x32xf32>
+  return %0 : tensor<8x32xf32>
+}
+

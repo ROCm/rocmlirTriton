@@ -178,7 +178,8 @@ def RockInsertOutputStoresPass
     flood-fills forward from each FusionRoot result to identify return
     operands that need stores. For each such return operand:
     1. A new output argument is added to the function.
-    2. A rock.store op is inserted before the return.
+    2. A rock.store op is inserted before the return that writes to the new
+       output argument added in step 1.
     3. The func.return operand is updated to use the rock.store result.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
