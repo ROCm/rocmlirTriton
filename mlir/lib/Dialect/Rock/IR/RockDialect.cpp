@@ -906,8 +906,6 @@ LogicalResult TransformOp::verify() {
   if (inputShape.size() != lowerBounds.size())
     return emitOpError("input rank must match transform lower bounds rank");
   for (size_t i = 0; i < inputShape.size(); ++i) {
-    if (ShapedType::isDynamic(inputShape[i]))
-      continue;
     if (inputShape[i] != lowerBounds[i])
       return emitOpError()
              << "input shape must match transform lower bounds (input shape="
@@ -921,8 +919,6 @@ LogicalResult TransformOp::verify() {
                          << outputShape << ", upper bounds=" << upperBounds
                          << ")";
   for (size_t i = 0; i < outputShape.size(); ++i) {
-    if (ShapedType::isDynamic(outputShape[i]))
-      continue;
     if (outputShape[i] != upperBounds[i])
       return emitOpError("output shape must match transform upper bounds");
   }
