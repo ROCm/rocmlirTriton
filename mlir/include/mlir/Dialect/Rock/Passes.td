@@ -182,8 +182,7 @@ def RockInsertOutputStoresPass
        output argument added in step 1.
     3. The func.return operand is updated to use the rock.store result.
   }];
-  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "linalg::LinalgDialect"];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
 def RockSerializeHostFuncsPass

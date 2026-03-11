@@ -99,9 +99,7 @@ static FailureOr<SmallVector<ReturnStoreInfo>>
 identifyReturnStores(ArrayRef<Operation *> fusionRoots,
                      func::ReturnOp returnOp) {
   SmallVector<ReturnStoreInfo> storeInfos;
-
-  // Track which return operand indices are covered by some FusionRoot chain.
-  DenseSet<unsigned> coveredReturnIndices;
+  DenseSet<Value> allChainValues;
 
   for (Operation *rootOp : fusionRoots) {
     for (Value rootResult : rootOp->getResults()) {
@@ -109,36 +107,28 @@ identifyReturnStores(ArrayRef<Operation *> fusionRoots,
       if (failed(floodFillFromRoot(rootResult, chainSet)))
         return failure();
 
-      // Check which return operands are in this chain
-      bool foundReturnOperand = false;
-      for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
-        Value retVal = returnOp.getOperand(i);
-        if (!chainSet.contains(retVal))
-          continue;
-
-        foundReturnOperand = true;
-        coveredReturnIndices.insert(i);
-
-        ReturnStoreInfo info;
-        info.returnIndex = i;
-        info.returnOperand = retVal;
-        storeInfos.push_back(info);
-      }
-
       // A FusionRoot result with no path to a return is an error.
-      if (!foundReturnOperand) {
+      if (!llvm::any_of(returnOp.getOperands(),
+                        [&](Value v) { return chainSet.contains(v); })) {
         return rootOp->emitError(
             "FusionRoot result does not reach a function return");
       }
+
+      allChainValues.insert(chainSet.begin(), chainSet.end());
     }
   }
 
   // Every return operand must be reachable from some FusionRoot chain.
   for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
-    if (coveredReturnIndices.contains(i))
-      continue;
-    return returnOp.emitError("return operand ")
-           << i << " is not reachable from any FusionRoot";
+    Value retVal = returnOp.getOperand(i);
+    if (!allChainValues.contains(retVal))
+      return returnOp.emitError("return operand ")
+             << i << " is not reachable from any FusionRoot";
+
+    ReturnStoreInfo info;
+    info.returnIndex = i;
+    info.returnOperand = retVal;
+    storeInfos.push_back(info);
   }
 
   return storeInfos;
@@ -235,8 +225,10 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
     return failure();
   auto &storeInfos = *maybeStoreInfos;
 
-  if (storeInfos.empty())
-    return success();
+  if (storeInfos.size() != returnOp.getNumOperands())
+    return returnOp.emitError("expected ")
+           << returnOp.getNumOperands() << " store infos but got "
+           << storeInfos.size();
 
   // This pass runs before wrapper generation, so the kernel must not have
   // any call sites yet.
