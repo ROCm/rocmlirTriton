@@ -91,10 +91,10 @@ struct ReturnStoreInfo {
   BlockArgument storeArg; // New output arg (set by addOutputArguments)
 };
 
-// For each FusionRoot, flood-fill forward and identify which return operands
-// need stores. Every return operand must be reachable from some FusionRoot
-// chain; any uncovered return operand is an error. If a root result does not
-// reach a func.return operand, an error is emitted.
+// For each FusionRoot, flood-fill forward to collect all reachable values.
+// Every FusionRoot result must reach at least one func.return operand, and
+// every return operand must be reachable from some FusionRoot chain.
+// Returns a ReturnStoreInfo for each return operand.
 static FailureOr<SmallVector<ReturnStoreInfo>>
 identifyReturnStores(ArrayRef<Operation *> fusionRoots,
                      func::ReturnOp returnOp) {
