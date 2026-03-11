@@ -786,21 +786,27 @@ struct GridwiseAttentionRewritePattern
     ArrayRef<int64_t> qShape = cast<ShapedType>(inQ.getType()).getShape();
     Type elemTypeQ = cast<ShapedType>(inQ.getType()).getElementType();
     FailureOr<Type> maybeElemTypeQLoad = getInputFusionElementType(inQ);
-    Type elemTypeQLoad =
-        failed(maybeElemTypeQLoad) ? elemTypeQ : maybeElemTypeQLoad.value();
+    if (failed(maybeElemTypeQLoad))
+      return op->emitOpError()
+             << "Could not determine the underlying data type of Q";
+    Type elemTypeQLoad = maybeElemTypeQLoad.value();
 
     TypedValue<ShapedType> inK = op.getKeys();
     ArrayRef<int64_t> kShape = cast<ShapedType>(inK.getType()).getShape();
     Type elemTypeK = cast<ShapedType>(inK.getType()).getElementType();
     FailureOr<Type> maybeElemTypeKLoad = getInputFusionElementType(inK);
-    Type elemTypeKLoad =
-        failed(maybeElemTypeKLoad) ? elemTypeK : maybeElemTypeKLoad.value();
+    if (failed(maybeElemTypeKLoad))
+      return op->emitOpError()
+             << "Could not determine the underlying data type of K";
+    Type elemTypeKLoad = maybeElemTypeKLoad.value();
 
     TypedValue<ShapedType> inV = op.getValues();
     Type elemTypeV = inV.getType().getElementType();
     FailureOr<Type> maybeElemTypeVLoad = getInputFusionElementType(inV);
-    Type elemTypeVLoad =
-        failed(maybeElemTypeVLoad) ? elemTypeV : maybeElemTypeVLoad.value();
+    if (failed(maybeElemTypeVLoad))
+      return op->emitOpError()
+             << "Could not determine the underlying data type of V";
+    Type elemTypeVLoad = maybeElemTypeVLoad.value();
 
     // Get output shape - transpose dims 1 and 2 of the result type
     auto outType = cast<ShapedType>(op.getResult().getType());

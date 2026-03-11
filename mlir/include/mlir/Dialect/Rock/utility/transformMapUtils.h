@@ -257,7 +257,10 @@ getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
 // chain of operators from the input mlir::Value to the function block
 // argument. If the pattern match succeds, the function returns the
 // type of the block argument, otherwise it returns failure.
-FailureOr<Type> getInputFusionElementType(Value transformed);
+FailureOr<Type> getInputFusionElementType(Value value);
+
+// Same as above but for output fusions
+FailureOr<Type> getOutputFusionElementType(Value value);
 
 } // end namespace rock
 } // end namespace mlir

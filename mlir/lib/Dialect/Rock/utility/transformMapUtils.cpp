@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -17,7 +18,10 @@
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Value.h"
+#include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/IndexedMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -25,6 +29,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -2252,91 +2257,102 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
   return subDimInfo;
 }
 
-// TODO(rocmlirTriton): remove findAlloc once getInputFusionElementType is fixed
-template <typename AllocType>
-static FailureOr<AllocType> findAlloc(Value value) {
-  auto *curOp = value.getDefiningOp();
-  auto maybeAllocOp = dyn_cast_or_null<AllocType>(curOp);
-  while (!maybeAllocOp) {
-    // Keep going until the operation that defines the value is a
-    // view-like operation
-    if (auto viewOp = dyn_cast_or_null<ViewLikeOpInterface>(curOp)) {
-      curOp = viewOp.getViewSource().getDefiningOp();
+static FailureOr<Type>
+getElementTypeOfBiggestTensor(ArrayRef<BlockArgument> kernelArgs,
+                              bool isInput) {
+  StringRef funcName =
+      isInput ? "getInputFusionElementType" : "getOutputFusionElementType";
+  StringRef inputOrOut = isInput ? "input" : "output";
+  if (kernelArgs.empty()) {
+    LLVM_DEBUG(llvm::dbgs() << funcName
+                            << ": Can't trace "
+                               "FusionRoot "
+                            << inputOrOut << " to kernel argument\n");
+    return failure();
+  }
+  // The FusionRoot input/output can come from N tensors, choose the biggest as
+  // a proxy of the dominant load/store element type. This is used for groupSize
+  // heuristic in GridLayoutEmitter.cpp
+  Value biggestTensor = kernelArgs[0];
+  for (auto tensor : kernelArgs) {
+    if (auto shapedType = dyn_cast<ShapedType>(tensor.getType())) {
+      if (shapedType.getNumElements() >
+          cast<ShapedType>(biggestTensor.getType()).getNumElements())
+        biggestTensor = tensor;
     } else {
+      LLVM_DEBUG(llvm::dbgs() << funcName
+                              << ": Found a non-tensor kernel arg "
+                                 "traced from FusionRoot "
+                              << inputOrOut << "\n");
       return failure();
     }
-    maybeAllocOp = dyn_cast_or_null<AllocType>(curOp);
   }
-  if (!maybeAllocOp)
-    return failure();
 
-  return maybeAllocOp;
+  return cast<ShapedType>(biggestTensor.getType()).getElementType();
 }
 
-static FailureOr<memref::AllocOp> findMemrefAlloc(Value value) {
-  return findAlloc<memref::AllocOp>(value);
-}
+FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
+  SmallVector<BlockArgument> kernelArgs;
+  SmallVector<Value> worklist;
+  DenseSet<Value> visited;
+  worklist.push_back(value);
+  visited.insert(value);
 
-FailureOr<Type> mlir::rock::getInputFusionElementType(Value transformed) {
-  FailureOr<memref::AllocOp> maybeAlloc = findMemrefAlloc(transformed);
-  if (failed(maybeAlloc))
-    return failure();
-  auto memref = maybeAlloc.value().getMemref();
-
-  // find input fusion
-  Value newTransformed = nullptr;
-  for (Operation *user : memref.getUsers()) {
-    Value candidate = nullptr;
-    if (auto genericOp = dyn_cast<linalg::GenericOp>(user)) {
-      if (genericOp.getOutputs().size() != 1) {
-        LLVM_DEBUG(llvm::dbgs() << "getInputFusionElementType: linalg.generic "
-                                   "with multiple outputs are unsupported\n");
-        return failure();
+  while (!worklist.empty()) {
+    Value currValue = worklist.pop_back_val();
+    if (auto maybeBlockArg = dyn_cast<BlockArgument>(currValue)) {
+      kernelArgs.push_back(maybeBlockArg);
+    } else if (auto viewOp =
+                   dyn_cast<ViewLikeOpInterface>(currValue.getDefiningOp())) {
+      Value src = viewOp.getViewSource();
+      if (visited.insert(src).second)
+        worklist.push_back(src);
+    } else if (isFusionOp(currValue.getDefiningOp())) {
+      for (auto operand : currValue.getDefiningOp()->getOperands()) {
+        if (visited.insert(operand).second)
+          worklist.push_back(operand);
       }
-      Value genericOut = genericOp.getOutputs().front();
-      if (genericOut == memref) {
-        if (auto index = genericOp->getAttrOfType<IntegerAttr>(
-                "rock.majorTensorNumber")) {
-          candidate = genericOp.getInputs()[index.getInt()];
-        } else {
-          LLVM_DEBUG(llvm::dbgs() << "can't analyze linalg.generic "
-                                     "without rock.majorTensorNumber\n");
-          return failure();
-        }
-      } else {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "getInputFusionElementType: found a linalg.generic that "
-                      "takes as input the gemm A or B\n");
-        return failure();
-      }
-    } else {
+    } else if (isa<arith::ConstantOp>(currValue.getDefiningOp())) {
+      // nothing to do with constants, just skip them
       continue;
-    }
-
-    if (newTransformed) {
-      LLVM_DEBUG(
-          llvm::dbgs()
-          << "getInputFusionElementType: found multiple linalg.generic that "
-             "could be the next one\n");
+    } else {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "getInputFusionElementType: Found unexpected op = "
+                 << currValue.getDefiningOp() << "\n");
       return failure();
     }
-    newTransformed = candidate;
   }
-  newTransformed = newTransformed ? newTransformed : memref;
 
-  auto blockArg = findBlockArgument(newTransformed);
-  if (failed(blockArg)) {
+  FailureOr<Type> maybeElemType =
+      getElementTypeOfBiggestTensor(kernelArgs, /*isInput=*/true);
+  if (failed(maybeElemType))
+    return failure();
+
+  return maybeElemType.value();
+}
+
+FailureOr<Type> mlir::rock::getOutputFusionElementType(Value value) {
+  if (!value.getDefiningOp()) {
     LLVM_DEBUG(llvm::dbgs()
-               << "getInputFusionElementType: findBlockArgument failed\n");
+               << "getOutputFusionElementType: No definingOp for value\n");
     return failure();
   }
-
-  auto shapedTy = dyn_cast<ShapedType>(blockArg.value().getType());
-  if (!shapedTy) {
+  auto funcOp = value.getDefiningOp()->getParentOfType<func::FuncOp>();
+  if (!funcOp) {
     LLVM_DEBUG(llvm::dbgs()
-               << "getInputFusionElementType: failed to get ShapedType\n");
+               << "getOutputFusionElementType: No parent FuncOp found\n");
     return failure();
   }
+  FailureOr<SmallVector<BlockArgument>> maybeArgs =
+      rock::traceRootOutputToArgs(value, funcOp);
+  if (failed(maybeArgs))
+    return failure();
+  SmallVector<BlockArgument> &kernelArgs = maybeArgs.value();
 
-  return shapedTy.getElementType();
+  FailureOr<Type> maybeElemType =
+      getElementTypeOfBiggestTensor(kernelArgs, /*isInput=*/false);
+  if (failed(maybeElemType))
+    return failure();
+
+  return maybeElemType.value();
 }
