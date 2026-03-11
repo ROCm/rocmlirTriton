@@ -298,55 +298,11 @@ void rock::buildBufferizePipeline(OpPassManager &pm,
   funcPm2.addPass(createLinalgFoldUnitExtentDimsPass());
   funcPm2.addPass(rock::createRockViewToTransformPass());
   funcPm2.addPass(rock::createRockFoldBroadcastPass());
-
-  // bufferization
-  /* rocmlir-opt --canonicalize -convert-tensor-to-linalg --cse
-        --one-shot-bufferize="allow-return-allocs=1
-     create-deallocs=0 bufferize-function-boundaries=1
-     unknown-type-conversion=identity-layout-map
-     function-boundary-type-conversion=identity-layout-map"
-        --buffer-results-to-out-params
-   */
   funcPm2.addPass(createCanonicalizerPass());
-  // Note: this is a workaround for an impedance mismatch between bufferization
-  // and our fusion code. Specifically, if there are two identical
-  // tensor.empty's
-  //, they can be CSE'd together, and then, if the bufferizer notices that the
-  // allocation that that empty tensor has two independent uses (that is,
-  // if op1 and op2 both have the "initial output" %x, and the values produces
-  // by op1 are dead by the time op2 rolls around), it'll reuse the buffer.
-  // This breaks rocMLIR's fusion code, which assumes allocations aren't reused
-  // like this. So, until we move bufferization after rock.regularize (so that
-  // we can do the alloc_tensor introductions ourselves), we have to do it up
-  // here before CSE.
-  // funcPm2.addPass(bufferization::createEmptyTensorToAllocTensorPass());
-  // funcPm2.addPass(createCSEPass());
 
   pm.addPass(createConvertTensorToLinalgPass());
-  // auto &funcPm3 = pm.nest<func::FuncOp>();
-  // funcPm3.addPass(bufferization::createEmptyTensorToAllocTensorPass());
-  // funcPm3.addPass(createLinalgFoldUnitExtentDimsPass());
-
-  // bufferization::OneShotBufferizePassOptions bufOpts;
-  // bufOpts.allowReturnAllocsFromLoops = true;
-  // bufOpts.bufferizeFunctionBoundaries = true;
-  // bufOpts.functionBoundaryTypeConversion =
-  //     bufferization::LayoutMapOption::IdentityLayoutMap;
-  // bufOpts.unknownTypeConversion =
-  //     bufferization::LayoutMapOption::IdentityLayoutMap;
-
-  // pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
-  // bufferization::BufferResultsToOutParamsPassOptions bufferResultToOutOptions;
-  // bufferResultToOutOptions.modifyPublicFunctions = true;
-  // pm.addPass(bufferization::createBufferResultsToOutParamsPass(
-  //     bufferResultToOutOptions));
-
-  // Sort dimensions according to the underlying memory layout strides
-  // TODO(roctriton): RockFindFirstGemmIndexPass for attention fusion support
-  // if (!noRock) {
-  //   auto &funcPm4 = pm.nest<func::FuncOp>();
-  //   funcPm4.addPass(createRockFindFirstGemmIndexPass());
-  // }
+  if (!noRock)
+    pm.addPass(rock::createRockInsertOutputStoresPass());
 }
 
 void rock::buildKernelPipeline(OpPassManager &pm,

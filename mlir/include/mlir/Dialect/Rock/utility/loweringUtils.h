@@ -158,6 +158,12 @@ Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
 
 bool isFusionOp(Operation *op);
 
+// Returns true if `op` should be followed during forward tracing from a
+// FusionRoot result through the fusion chain. This includes fusion ops
+// (arith/math elementwise), view-like ops (rock.transform, etc.), and
+// rock.reduce.
+bool isForwardTraceOp(Operation *op);
+
 /// Walk the fusion chain from `root` (the FusionRoot result) and collect
 /// operands of fusion ops that are NOT in the FusionRoot-result chain. These
 /// are "extra inputs" to output fusions (e.g., the second operand of

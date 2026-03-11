@@ -377,14 +377,9 @@ mlir::rock::traceRootOutputToStoreOps(Value output) {
       Operation *owner = use.getOwner();
       if (auto storeOp = dyn_cast<StoreOp>(owner)) {
         stores.insert(storeOp);
-      } else if (auto reduceOp = dyn_cast<ReduceOp>(owner)) {
-        worklist.push_back(reduceOp.getResult());
-      } else if (auto viewOp = dyn_cast<ViewLikeOpInterface>(owner)) {
-        worklist.push_back(viewOp.getViewDest());
-      } else if (isFusionOp(owner)) {
-        for (Value result : owner->getResults()) {
+      } else if (isForwardTraceOp(owner)) {
+        for (Value result : owner->getResults())
           worklist.push_back(result);
-        }
       }
     }
   }
@@ -538,6 +533,10 @@ bool mlir::rock::isFusionOp(Operation *op) {
   // Exclude zero-operand ops like arith.constant — they don't participate
   // in data-flow fusion chains.
   return op->getNumOperands() > 0 && op->getNumResults() == 1;
+}
+
+bool mlir::rock::isForwardTraceOp(Operation *op) {
+  return isFusionOp(op) || isa<ViewLikeOpInterface>(op) || isa<ReduceOp>(op);
 }
 
 FusionInfo mlir::rock::collectFusionInfo(Value root) {
