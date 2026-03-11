@@ -301,7 +301,8 @@ void rock::buildBufferizePipeline(OpPassManager &pm,
   funcPm2.addPass(createCanonicalizerPass());
 
   pm.addPass(createConvertTensorToLinalgPass());
-  pm.addPass(rock::createRockInsertOutputStoresPass());
+  if (!noRock)
+    pm.addPass(rock::createRockInsertOutputStoresPass());
 }
 
 void rock::buildKernelPipeline(OpPassManager &pm,
