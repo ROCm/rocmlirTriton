@@ -431,6 +431,8 @@ pipeline {
                                                             sh '''
                                                                 cd external/triton
                                                                 bash scripts/build-llvm-project.sh
+                                                                cmake -DMLIR_ENABLE_ROCM_RUNNER=ON llvm-project/build
+                                                                ninja -C llvm-project/build mlir_rocm_runtime
                                                             '''
                                                         }
                                                     }
