@@ -1561,20 +1561,33 @@ static int getRandomSeed() {
 static std::tuple<short, short> getRandomTestData(int idx, bool isRandFloat) {
   short min = 1, max = 1;
 
+  // Map the logical tensor name from -rand_side to the argument index.
+  // The kernel arg layout puts the store destination last:
+  //   Fwd:       [filter(0), input(1), output(2)]
+  //   BwdData:   [filter(0), output(1), input(2)]
+  //   BwdWeight: [input(0), output(1), filter(2)]
   int32_t idxSpec = -1;
-  switch (randomSide.getValue()[0]) {
-  case 'f':
-    idxSpec = 0;
-    break;
-  case 'i':
-    idxSpec = 1;
-    break;
-  case 'o':
-    idxSpec = 2;
-    break;
-  case 'b':
-  default:
-    break;
+  char side = randomSide.getValue()[0];
+  if (operation.getNumOccurrences() > 0 &&
+      operation.getValue() == rock::KernelType::ConvBwdData) {
+    switch (side) {
+    case 'f': idxSpec = 0; break;
+    case 'o': idxSpec = 1; break;
+    case 'i': idxSpec = 2; break;
+    }
+  } else if (operation.getNumOccurrences() > 0 &&
+             operation.getValue() == rock::KernelType::ConvBwdWeight) {
+    switch (side) {
+    case 'i': idxSpec = 0; break;
+    case 'o': idxSpec = 1; break;
+    case 'f': idxSpec = 2; break;
+    }
+  } else {
+    switch (side) {
+    case 'f': idxSpec = 0; break;
+    case 'i': idxSpec = 1; break;
+    case 'o': idxSpec = 2; break;
+    }
   }
 
   if (randomSeed != "none" && randomSeed != "fixed") {
@@ -2468,23 +2481,27 @@ createCPUConvWithMLIR(ModuleOp module,
     assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
   }
 
-  SmallVector<Type, 4> funcArgTypes = {filterFlatType, inputFlatType,
-                                       outputFlatType};
-  if (hasWorkspace) {
-    auto workspaceType = RankedTensorType::get({filterElems}, b.getF32Type());
-    funcArgTypes.push_back(workspaceType);
-  }
-
-  // Determine result type based on operation
+  // Build argument types with the store destination (result) last,
+  // matching the GPU kernel's argument ordering from ConvGenerator.
+  SmallVector<Type, 4> funcArgTypes;
   Type resultFlatType;
   switch (genConfig.operation.value()) {
   case rock::ConvOpType::Fwd:
+    funcArgTypes = {filterFlatType, inputFlatType, outputFlatType};
     resultFlatType = outputFlatType;
     break;
   case rock::ConvOpType::BwdData:
+    funcArgTypes = {filterFlatType, outputFlatType, inputFlatType};
     resultFlatType = inputFlatType;
     break;
   case rock::ConvOpType::BwdWeight:
+    funcArgTypes = {inputFlatType, outputFlatType};
+    if (hasWorkspace) {
+      auto workspaceType =
+          RankedTensorType::get({filterElems}, b.getF32Type());
+      funcArgTypes.push_back(workspaceType);
+    }
+    funcArgTypes.push_back(filterFlatType);
     resultFlatType = filterFlatType;
     break;
   }
@@ -2507,9 +2524,25 @@ createCPUConvWithMLIR(ModuleOp module,
   Block *block = func.addEntryBlock();
   b.setInsertionPointToStart(block);
 
-  Value filterFlat = block->getArgument(0);
-  Value inputFlat = block->getArgument(1);
-  Value outputFlat = block->getArgument(2);
+  // Argument positions match the GPU kernel ordering (store dest is last).
+  Value filterFlat, inputFlat, outputFlat;
+  switch (genConfig.operation.value()) {
+  case rock::ConvOpType::Fwd:
+    filterFlat = block->getArgument(0);
+    inputFlat = block->getArgument(1);
+    outputFlat = block->getArgument(2);
+    break;
+  case rock::ConvOpType::BwdData:
+    filterFlat = block->getArgument(0);
+    outputFlat = block->getArgument(1);
+    inputFlat = block->getArgument(2);
+    break;
+  case rock::ConvOpType::BwdWeight:
+    inputFlat = block->getArgument(0);
+    outputFlat = block->getArgument(1);
+    filterFlat = block->getArgument(hasWorkspace ? 3 : 2);
+    break;
+  }
 
   // i8 convolutions use i64 accumulation to detect overflow, f32 otherwise
   bool isI8Conv = genConfig.inputDataTypeStr == "i8";
@@ -5416,16 +5449,12 @@ static LogicalResult populateHostHarnessLogic(
   if (genParams.operation.has_value()) {
     switch (genParams.operation.value()) {
     case rock::KernelType::Conv:
+    case rock::KernelType::ConvBwdData:
+    case rock::KernelType::ConvBwdWeight:
       outIndices.push_back(2);
       break;
     case rock::KernelType::Gemm:
       outIndices.push_back(scaledGemm ? 4 : 2);
-      break;
-    case rock::KernelType::ConvBwdData:
-      outIndices.push_back(1);
-      break;
-    case rock::KernelType::ConvBwdWeight:
-      outIndices.push_back(0);
       break;
     case rock::KernelType::GemmElementwiseGemm:
       outIndices.push_back(3);
@@ -5967,10 +5996,15 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
       genParams.types.push_back(convGenerator.getFilterDataType(builder));
       genParams.types.push_back(convGenerator.getInputDataType(builder));
       genParams.types.push_back(convGenerator.getOutputDataType(builder));
+      // Reorder types to match the kernel arg ordering (store dest last).
+      if (operation.getValue() == rock::KernelType::ConvBwdData)
+        std::swap(genParams.types[1], genParams.types[2]);
+      else if (operation.getValue() == rock::KernelType::ConvBwdWeight)
+        std::rotate(genParams.types.begin(), genParams.types.begin() + 1,
+                    genParams.types.end());
     }
     genParams.convConfig = &convGenerator.getConfig();
   }
-  
 
   // TODO: Extract isApplicable check to be its own component
   if (isConv && failed(convGenerator.isApplicable())) {

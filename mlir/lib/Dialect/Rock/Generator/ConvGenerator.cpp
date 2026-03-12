@@ -759,28 +759,30 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
                               builder.getF32Type());
   }
 
-  SmallVector<Type, 3> logicalFuncArgTypes = {filterArgType, inputArgType,
+  // Build argument types in standard order, then reorder so the store
+  // destination (the result of the conv) is always the last argument.
+  // This simplifies downstream passes and host code that assume outputs
+  // are at the end of the kernel argument list.
+  SmallVector<Type, 4> logicalFuncArgTypes = {filterArgType, inputArgType,
                                               outputArgType};
-  if (hasWorkspace) {
-    logicalFuncArgTypes = {filterArgType, inputArgType, outputArgType,
-                           workspaceArgType};
-  }
+  if (hasWorkspace)
+    logicalFuncArgTypes.push_back(workspaceArgType);
 
-  // Determine the output argument index (store destination) based on the
-  // operation type. We need this early so the function return type matches the
-  // actual store destination's flattened type (not always the conv "output").
-  unsigned storeDestIdx = 0;
   switch (config.operation.value()) {
   case ConvOpType::Fwd:
-    storeDestIdx = 2;
+    // [filter, input, output] — output (store dest) is already last.
     break;
   case ConvOpType::BwdData:
-    storeDestIdx = 1;
+    // [filter, input, output] → [filter, output, input]
+    std::swap(logicalFuncArgTypes[1], logicalFuncArgTypes[2]);
     break;
   case ConvOpType::BwdWeight:
-    storeDestIdx = 0;
+    // [filter, input, output, workspace?] → [input, output, workspace?, filter]
+    std::rotate(logicalFuncArgTypes.begin(),
+                logicalFuncArgTypes.begin() + 1, logicalFuncArgTypes.end());
     break;
   }
+  unsigned storeDestIdx = logicalFuncArgTypes.size() - 1;
 
   SmallVector<Type, 3> physicalFuncArgTypes =
       llvm::map_to_vector(logicalFuncArgTypes, getFlattenedType);
@@ -898,11 +900,24 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
     argDimNameRefs.push_back(llvm::map_to_vector(
         layout, [](StringAttr sa) { return sa.getValue(); }));
   };
+  // Build in standard [filter, input, output, workspace?] order, then
+  // apply the same reordering used for logicalFuncArgTypes.
   referenceNames(filterLayoutSpec);
   referenceNames(inputLayoutSpec);
   referenceNames(outputLayoutSpec);
   if (hasWorkspace)
     referenceNames(filterLayoutSpec);
+  switch (config.operation.value()) {
+  case ConvOpType::Fwd:
+    break;
+  case ConvOpType::BwdData:
+    std::swap(argDimNameRefs[1], argDimNameRefs[2]);
+    break;
+  case ConvOpType::BwdWeight:
+    std::rotate(argDimNameRefs.begin(), argDimNameRefs.begin() + 1,
+                argDimNameRefs.end());
+    break;
+  }
 
   // Expand all function arguments from flat 1D to their logical shapes,
   // except the output arg whose transform is applied after the conv op.
@@ -911,15 +926,15 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
                               logicalFuncArgTypes, args,
                               /*skipIndices=*/{storeDestIdx});
 
-  // Each conv variant takes different operands and stores to a different dest:
-  //   ConvOp:         (filter=args[0], input=args[1]) -> store to args[2]
-  //   ConvBwdDataOp:  (filter=args[0], gradient=args[2]) -> store to args[1]
-  //   ConvBwdWeightOp:(input=args[1], gradient=args[2]) -> store to args[0]
-
+  // After reordering, the two conv input operands are always args[0] and
+  // args[1], and the store destination is args[storeDestIdx] (the last arg).
+  //   ConvOp:         (filter=args[0], input=args[1])   -> store to output
+  //   ConvBwdDataOp:  (filter=args[0], gradient=args[1]) -> store to input
+  //   ConvBwdWeightOp:(input=args[0], gradient=args[1])  -> store to filter
+  Type resultType = logicalFuncArgTypes[storeDestIdx];
   Value convResult;
   switch (config.operation.value()) {
   case ConvOpType::Fwd: {
-    Type resultType = logicalFuncArgTypes[2];
     SmallVector<Value, 2> convArgs = {args[0], args[1]};
     auto convOp = ConvOp::create(builder, builder.getUnknownLoc(), resultType,
                                  convArgs, attributes);
@@ -928,16 +943,11 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   case ConvOpType::BwdData: {
     if (!rock::isEveryElementWrittenBwdData(
             config.strideDims, config.dilationDims, config.filterDims)) {
-      // For all backwards data convolution ops that don't write to every pixel,
-      // we want to zeroinitialize the buffer in the second argument
-      // (input tensor).
-      // TODO: This is okay for right now since we are not doing any fusions.
-      // When we do handle fusions in the future there is no guarantee that
-      // arg 1 is going to be the input tensor.
-      zeroInitArg(builder, func, 1);
+      // Zero-initialize the store destination (input tensor) for backward
+      // data convolutions that don't write to every pixel.
+      zeroInitArg(builder, func, storeDestIdx);
     }
-    Type resultType = logicalFuncArgTypes[1];
-    SmallVector<Value, 2> convArgs = {args[0], args[2]};
+    SmallVector<Value, 2> convArgs = {args[0], args[1]};
     auto convOp = ConvBwdDataOp::create(builder, builder.getUnknownLoc(),
                                         resultType, convArgs, attributes);
     convResult = convOp.getResult();
@@ -961,22 +971,21 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
       // Workspace -> filter tensor
       // ConvertingCopyKernelOp::create(
       //     builder, builder.getUnknownLoc(), /*resultType=*/TypeRange{},
-      //     func.getArgument(3), func.getArgument(0),
+      //     func.getArgument(storeDestIdx - 1),
+      //     func.getArgument(storeDestIdx),
       //     /*blockSize=*/nullptr, /*gridSize=*/nullptr,
       //     /*elemsPerThread=*/nullptr);
     } else {
-      // TODO: This is okay for right now since we are not doing any fusions.
-      // When we do handle fusions in the future there is no guarantee that
-      // these specific args are going to be the input tensor.
       if (needsZeroInit) {
-        zeroInitArg(builder, func, hasWorkspace ? 3 : 0);
+        // Zero the workspace (before filter) or the filter (store dest).
+        unsigned zeroIdx = hasWorkspace ? storeDestIdx - 1 : storeDestIdx;
+        zeroInitArg(builder, func, zeroIdx);
       }
-      Type resultType = logicalFuncArgTypes[0];
       SmallVector<Value, 4> convArgs;
-      convArgs.push_back(args[1]); // input
-      convArgs.push_back(args[2]); // gradient
+      convArgs.push_back(args[0]); // input
+      convArgs.push_back(args[1]); // gradient
       if (hasWorkspace)
-        convArgs.push_back(args[3]); // workspace
+        convArgs.push_back(args[2]); // workspace
       auto convOp = ConvBwdWeightOp::create(builder, builder.getUnknownLoc(),
                                             resultType, convArgs, attributes);
       convResult = convOp.getResult();

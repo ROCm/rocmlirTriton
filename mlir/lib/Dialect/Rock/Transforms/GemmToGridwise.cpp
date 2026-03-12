@@ -754,11 +754,6 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   // Replace extra fusion input operands with their padded versions.
   rock::replaceFusionExtraInputs(result, fusionInputMap);
 
-  // Collect intermediate TransformOps between the gemm result and the stores.
-  // These flatten transforms may become dead after we bypass them in the new
-  // stores.
-  SetVector<TransformOp> candidateTransforms;
-
   for (size_t i = 0; i < stores.size(); ++i) {
     StoreOp storeOp = stores[i];
     Value view = outputViews[i];
@@ -767,52 +762,18 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     if (splitKFactor > 1)
       storeMethod =
           rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
-    // Determine the correct source for the new store. In the new code gen
-    // flow, a flatten TransformOp may sit between the gemm result (or
-    // fusion chain) and the store. We trace back through TransformOps to
-    // bypass any stale flatten transforms whose types may not match after
-    // split-K or padding changes the output shape.
+  
+    // After RegularizeOutput, the store source is the raw gemm result.
+    // Use the new gridwise result directly to match the padded output type.
     Value source = storeOp.getSource();
-    Value traced = source;
-    SmallVector<TransformOp> localTransforms;
-    while (auto transformOp = traced.getDefiningOp<TransformOp>()) {
-      localTransforms.push_back(transformOp);
-      traced = transformOp.getInput();
-    }
-    if (traced == op.getResult()) {
-      // Chain: gemm -> [transforms] -> store. Use gridwise result directly.
+    if (source == op.getResult()) {
       source = result;
-      candidateTransforms.insert(localTransforms.begin(),
-                                 localTransforms.end());
-    } else if (traced != source) {
-      // Chain: gemm -> fusions -> transforms -> store. propagateOutputType
-      // already updated the fusion chain; use the pre-transform value.
-      source = traced;
-      candidateTransforms.insert(localTransforms.begin(),
-                                 localTransforms.end());
     }
-    // else: No intermediate transforms; nothing to collect for this store.
     rw.setInsertionPoint(storeOp);
     auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
                                             storeOp.getResult().getType(),
                                             source, view, storeMethod);
     rw.replaceOp(storeOp, newStoreOp.getResult());
-  }
-
-  // Erase bypassed transforms that are safe to remove (reverse order to
-  // respect def-use chains within the transform chain).
-  DenseSet<Operation *> handledOps;
-  for (StoreOp s : stores)
-    handledOps.insert(s.getOperation());
-  for (TransformOp t : candidateTransforms)
-    handledOps.insert(t.getOperation());
-
-  for (auto transformOp : llvm::reverse(candidateTransforms)) {
-    bool safeToErase = llvm::all_of(
-        transformOp->getUsers(),
-        [&](Operation *user) { return handledOps.count(user); });
-    if (safeToErase)
-      rw.eraseOp(transformOp);
   }
 
   rw.replaceOp(op, result);
