@@ -2,6 +2,7 @@ add_rocmlir_dialect_library(MLIRCpuTransforms
   LowerCpuVerifier.cpp
   Schedules.cpp
   Schedules/LowerToLLVMSchedule.cpp
+  Schedules/UnrollSchedule.cpp
   Schedules/PrePostSchedules.cpp
   Schedules/ScheduleUtils.cpp
   Schedules/TilingSchedule.cpp
@@ -34,6 +35,7 @@ add_rocmlir_dialect_library(MLIRCpuTransforms
   MLIRPass
   MLIRReconcileUnrealizedCasts
   MLIRSCFTransforms
+  MLIRSCFTransformOps
   MLIRSCFToControlFlow
   MLIRSupport
   MLIRTensorToLinalg

@@ -23,6 +23,7 @@
 
 #include "Schedules.h"
 #include "Schedules/LowerToLLVMSchedule.h"
+#include "Schedules/UnrollSchedule.h"
 #include "Schedules/PrePostSchedules.h"
 #include "Schedules/TilingSchedule.h"
 #include "Schedules/VectorizationSchedule.h"
@@ -35,6 +36,7 @@
 #include "mlir/Dialect/Func/TransformOps/FuncTransformOps.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/MemRef/TransformOps/MemRefTransformOps.h"
+#include "mlir/Dialect/SCF/TransformOps/SCFTransformOps.h"
 #include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"
 #include "mlir/Dialect/SCF/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/ValueBoundsOpInterfaceImpl.h"
@@ -68,6 +70,7 @@ void cpu::registerScheduleDialectExtensions(DialectRegistry &registry) {
   vector::registerTransformDialectExtension(registry);
   func::registerTransformDialectExtension(registry);
   memref::registerTransformDialectExtension(registry);
+  scf::registerTransformDialectExtension(registry);
 
   // Register ValueBoundsOpInterface for dialects, required by
   // transform.structured.tile_using_for and other tiling transforms
@@ -114,6 +117,13 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
   if (!schedules.vectorizationModule) {
     emitError(UnknownLoc::get(ctx))
         << "Failed to build vectorization transform sequence for CPU verifier";
+    return failure();
+  }
+
+  schedules.unrollModule = buildUnrollSchedule(ctx);
+  if (!schedules.unrollModule) {
+    emitError(UnknownLoc::get(ctx))
+        << "Failed to build unroll transform sequence for CPU verifier";
     return failure();
   }
 

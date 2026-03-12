@@ -41,12 +41,13 @@ struct TransformSchedules {
   OwningOpRef<ModuleOp> postModule;         // LICM + hoisting
   OwningOpRef<ModuleOp> optimizationModule; // tiling
   OwningOpRef<ModuleOp> vectorizationModule;// vectorization
+  OwningOpRef<ModuleOp> unrollModule;       // loop unrolling
   OwningOpRef<ModuleOp> loweringModule;     // bufferization + LLVM lowering
 
   /// Check if all modules were parsed successfully
   bool isValid() const {
     return preModule && postModule && optimizationModule &&
-           vectorizationModule && loweringModule;
+           vectorizationModule && unrollModule && loweringModule;
   }
 };
 
