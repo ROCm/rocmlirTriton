@@ -95,11 +95,19 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
                                                ModuleOp transformModule,
                                                StringRef funcName,
                                                StringRef phaseName) {
-  // Create filename: /tmp/cpu_verifier_<funcname>_<phase>.mlir
-  std::string filename =
-      "/tmp/cpu_verifier_" + funcName.str() + "_" + phaseName.str() + ".mlir";
+  // Create the cpu_dump directory if it doesn't exist
+  std::string dumpDir = "cpu_dump";
+  std::error_code ec = llvm::sys::fs::create_directory(dumpDir);
+  if (ec && ec != std::errc::file_exists) {
+    LLVM_DEBUG(llvm::dbgs() << "Warning: Could not create dump directory "
+                            << dumpDir << ": " << ec.message() << "\n");
+    return;
+  }
 
-  std::error_code ec;
+  // Create filename: cpu_dump/cpu_verifier_<funcname>_<phase>.mlir
+  std::string filename =
+      dumpDir + "/cpu_verifier_" + funcName.str() + "_" + phaseName.str() + ".mlir";
+
   llvm::raw_fd_ostream outFile(filename, ec, llvm::sys::fs::OF_Text);
 
   if (ec) {
