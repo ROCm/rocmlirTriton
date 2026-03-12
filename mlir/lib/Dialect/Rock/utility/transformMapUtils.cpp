@@ -1364,8 +1364,7 @@ TransformMapAttr mlir::rock::buildFlattenTransformMap(
   }
 
   BottomUpTMBuilder flattener(b, {"raw"}, numElements, loc);
-  flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw",
-                    nonUnitUpperSize);
+  flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw", nonUnitUpperSize);
   for (auto dim : upperDims) {
     if (!llvm::is_contained(nonUnitUpperDim, dim)) {
       flattener.addDim(dimNames[dim], dim, shape[dim]);
@@ -1398,9 +1397,9 @@ void mlir::rock::expandFlatFunctionArguments(
       ++idx;
       continue;
     }
-    TransformMapAttr expandMap = buildFlattenTransformMap(
-        b, loc, nameList, logicalShapedTy.getShape(),
-        logicalShapedTy.getNumElements());
+    TransformMapAttr expandMap =
+        buildFlattenTransformMap(b, loc, nameList, logicalShapedTy.getShape(),
+                                 logicalShapedTy.getNumElements());
     logicalVal = rock::TransformOp::create(b, loc, arg, expandMap);
     ++idx;
   }

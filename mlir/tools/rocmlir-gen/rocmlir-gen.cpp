@@ -1441,8 +1441,8 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
           size_t outIdx = gpuMem.size() - 1 - resultIdx;
           auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
-          Value resultMemref = bufferization::ToBufferOp::create(
-              b, loc, outMemrefType, result);
+          Value resultMemref =
+              bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
           memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
         }
       } else {
@@ -1567,22 +1567,40 @@ static std::tuple<short, short> getRandomTestData(int idx, bool isRandFloat) {
   if (operation.getNumOccurrences() > 0 &&
       operation.getValue() == rock::KernelType::ConvBwdData) {
     switch (side) {
-    case 'f': idxSpec = 0; break;
-    case 'o': idxSpec = 1; break;
-    case 'i': idxSpec = 2; break;
+    case 'f':
+      idxSpec = 0;
+      break;
+    case 'o':
+      idxSpec = 1;
+      break;
+    case 'i':
+      idxSpec = 2;
+      break;
     }
   } else if (operation.getNumOccurrences() > 0 &&
              operation.getValue() == rock::KernelType::ConvBwdWeight) {
     switch (side) {
-    case 'i': idxSpec = 0; break;
-    case 'o': idxSpec = 1; break;
-    case 'f': idxSpec = 2; break;
+    case 'i':
+      idxSpec = 0;
+      break;
+    case 'o':
+      idxSpec = 1;
+      break;
+    case 'f':
+      idxSpec = 2;
+      break;
     }
   } else {
     switch (side) {
-    case 'f': idxSpec = 0; break;
-    case 'i': idxSpec = 1; break;
-    case 'o': idxSpec = 2; break;
+    case 'f':
+      idxSpec = 0;
+      break;
+    case 'i':
+      idxSpec = 1;
+      break;
+    case 'o':
+      idxSpec = 2;
+      break;
     }
   }
 
@@ -2493,8 +2511,7 @@ createCPUConvWithMLIR(ModuleOp module,
   case rock::ConvOpType::BwdWeight:
     funcArgTypes = {inputFlatType, outputFlatType};
     if (hasWorkspace) {
-      auto workspaceType =
-          RankedTensorType::get({filterElems}, b.getF32Type());
+      auto workspaceType = RankedTensorType::get({filterElems}, b.getF32Type());
       funcArgTypes.push_back(workspaceType);
     }
     funcArgTypes.push_back(filterFlatType);
@@ -2857,8 +2874,8 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
     funcArgLogicalTypes.push_back(argTypes[3]);
   }
 
-  SmallVector<StringRef> cDimNames = {
-      gName, transposeC ? nName : mName, transposeC ? mName : nName};
+  SmallVector<StringRef> cDimNames = {gName, transposeC ? nName : mName,
+                                      transposeC ? mName : nName};
   funcArgTypes.push_back(cFlatType);
 
   auto func =
@@ -2885,8 +2902,8 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
 
   // GEMM produces result in logical shape (e.g., tensor<1x64x64xf32>)
   auto gemm = rock::GemmOp::create(
-      b, loc, cType, aVal, bVal, aScale, bScale, transposeA,
-      transposeB, transposeC, transposeScaleA, transposeScaleB,
+      b, loc, cType, aVal, bVal, aScale, bScale, transposeA, transposeB,
+      transposeC, transposeScaleA, transposeScaleB,
       scaledGemm ? b.getI64IntegerAttr(quantBlockSize) : nullptr,
       /*params=*/nullptr);
 
@@ -2898,8 +2915,8 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
 
   // Store the flat result to the C argument
   Value cArg = func.getArgument(scaledGemm ? 4 : 2);
-  Value storedVal = rock::StoreOp::create(b, loc, cFlatType, flatResult,
-                                          cArg, storeMethod);
+  Value storedVal =
+      rock::StoreOp::create(b, loc, cFlatType, flatResult, cArg, storeMethod);
 
   func::ReturnOp::create(b, loc, storedVal);
 
@@ -3639,8 +3656,7 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   auto softmaxType =
       TypeAttr::get(typeFromString(softmaxDataType.getValue(), ctx));
   auto attention = rock::AttentionOp::create(
-      builder, loc, outputLogicalType,
-      returnLSE ? lseLogicalType : nullptr,
+      builder, loc, outputLogicalType, returnLSE ? lseLogicalType : nullptr,
       queries, keys, values, elemwiseInputs, currentSeqLenTensor,
       prefixOffsetTensor, numHeadsQ, numHeadsKV, transposeQ, transposeK,
       transposeV, transposeO, actualCausal, splitKV, softmaxType,
@@ -3696,20 +3712,19 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     attention->setAttr("perf_config", builder.getStringAttr(params.perfConfig));
 
   // Apply output transform to flatten the attention result, then store
-  Value flatResult = rock::flattenOutput(builder, loc, attention.getResult(),
-                                        outputDimNames);
+  Value flatResult =
+      rock::flattenOutput(builder, loc, attention.getResult(), outputDimNames);
   Value outputArg = func.getArgument(outputArgIdx);
   Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
                                           flatResult, outputArg, storeMethod);
 
   SmallVector<Value> returnOperands = {storedOut};
   if (returnLSE) {
-    Value flatLSE = rock::flattenOutput(builder, loc, attention.getLse(),
-                                       lseDimNames);
+    Value flatLSE =
+        rock::flattenOutput(builder, loc, attention.getLse(), lseDimNames);
     Value lseArg = func.getArgument(lseArgIdx);
-    Value storedLSE = rock::StoreOp::create(builder, loc, lseFlatType,
-                                            flatLSE, lseArg,
-                                            rock::StoreMethod::Set);
+    Value storedLSE = rock::StoreOp::create(builder, loc, lseFlatType, flatLSE,
+                                            lseArg, rock::StoreMethod::Set);
     returnOperands.push_back(storedLSE);
   }
 
@@ -3925,9 +3940,8 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
                           builder.getStringAttr(params.perfConfig));
 
   // Apply the output transform to flatten the result, then store
-  Value flatResult = rock::flattenOutput(builder, loc,
-                                        gemmElntGemm.getResult(),
-                                        outputDimNames);
+  Value flatResult = rock::flattenOutput(builder, loc, gemmElntGemm.getResult(),
+                                         outputDimNames);
   Value outputArg = func.getArgument(3);
   Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
                                           flatResult, outputArg, storeMethod);
@@ -5189,9 +5203,9 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       if (originalHasWorkspace && !verifierHasWorkspace) {
         valVars.resize(valVars.size() - 1);
       }
-      auto kernelWrapperFunc = createGPUWrapper(module, kernelBaseName + "_ver",
-                                                kernelIFFuncs, genParams,
-                                                outIndices);
+      auto kernelWrapperFunc =
+          createGPUWrapper(module, kernelBaseName + "_ver", kernelIFFuncs,
+                           genParams, outIndices);
       func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
       convGenerator.setKernelName(kernelBaseName);
     } else { // gemm GPU validation
@@ -5214,8 +5228,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       KernelIF kernel(
           createGpuGemmKernel(module, newParams, /*isVerifier=*/true));
       auto kernelWrapperFunc = createGPUWrapper(
-          module, kernel.func.getName().str(), {kernel}, genParams,
-          outIndices);
+          module, kernel.func.getName().str(), {kernel}, genParams, outIndices);
       func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
     }
   } else if (validationType != "clone") { // -pv_with_cpp or -pv_with_mlir (-pv)
@@ -5740,9 +5753,8 @@ static LogicalResult populateHostHarnessLogic(
   }
   func::FuncOp gpuWrapperFunc;
   if (!kernelsSet.empty())
-    gpuWrapperFunc =
-        createGPUWrapper(module, kernelBaseName, kernels, genParams,
-                         outIndices);
+    gpuWrapperFunc = createGPUWrapper(module, kernelBaseName, kernels,
+                                      genParams, outIndices);
   // Redirect calls to kernel functions to point at wrapped functions.
   func.walk([&](CallOpInterface callOp) -> WalkResult {
     // If the callee matches a wrapped function, update the call.

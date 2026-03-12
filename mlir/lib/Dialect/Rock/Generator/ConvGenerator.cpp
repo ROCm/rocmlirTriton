@@ -778,8 +778,8 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
     break;
   case ConvOpType::BwdWeight:
     // [filter, input, output, workspace?] → [input, output, workspace?, filter]
-    std::rotate(logicalFuncArgTypes.begin(),
-                logicalFuncArgTypes.begin() + 1, logicalFuncArgTypes.end());
+    std::rotate(logicalFuncArgTypes.begin(), logicalFuncArgTypes.begin() + 1,
+                logicalFuncArgTypes.end());
     break;
   }
   unsigned storeDestIdx = logicalFuncArgTypes.size() - 1;
@@ -995,9 +995,8 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
   // Apply the output transform to flatten the conv result, then store to
   // the flat destination argument.
-  Value flatResult = flattenOutput(
-      builder, builder.getUnknownLoc(), convResult,
-      argDimNameRefs[storeDestIdx]);
+  Value flatResult = flattenOutput(builder, builder.getUnknownLoc(), convResult,
+                                   argDimNameRefs[storeDestIdx]);
   Value flatStoreDest = func.getArgument(storeDestIdx);
   Value storedVal = rock::StoreOp::create(
       builder, builder.getUnknownLoc(), resultFlatType, flatResult,

@@ -619,9 +619,9 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
       if (Operation *defOp = view.getDefiningOp())
         rw.setInsertionPointAfter(defOp);
       SmallVector<StringRef> dimNames = {"gemmG", "gemmM", "gemmN"};
-      TransformMapAttr expandMap = buildFlattenTransformMap(
-          rw, loc, dimNames, gemmResultType.getShape(),
-          viewType.getNumElements());
+      TransformMapAttr expandMap =
+          buildFlattenTransformMap(rw, loc, dimNames, gemmResultType.getShape(),
+                                   viewType.getNumElements());
       view = rock::TransformOp::create(rw, loc, view, expandMap);
     }
   }
@@ -762,7 +762,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     if (splitKFactor > 1)
       storeMethod =
           rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
-  
+
     // After RegularizeOutput, the store source is the raw gemm result.
     // Use the new gridwise result directly to match the padded output type.
     Value source = storeOp.getSource();
