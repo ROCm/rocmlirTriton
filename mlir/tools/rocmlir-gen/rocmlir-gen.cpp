@@ -1562,47 +1562,19 @@ static std::tuple<short, short> getRandomTestData(int idx, bool isRandFloat) {
   //   Fwd:       [filter(0), input(1), output(2)]
   //   BwdData:   [filter(0), output(1), input(2)]
   //   BwdWeight: [input(0), output(1), filter(2)]
-  int32_t idxSpec = -1;
-  char side = randomSide.getValue()[0];
-  if (operation.getNumOccurrences() > 0 &&
-      operation.getValue() == rock::KernelType::ConvBwdData) {
-    switch (side) {
-    case 'f':
-      idxSpec = 0;
-      break;
-    case 'o':
-      idxSpec = 1;
-      break;
-    case 'i':
-      idxSpec = 2;
-      break;
-    }
-  } else if (operation.getNumOccurrences() > 0 &&
-             operation.getValue() == rock::KernelType::ConvBwdWeight) {
-    switch (side) {
-    case 'i':
-      idxSpec = 0;
-      break;
-    case 'o':
-      idxSpec = 1;
-      break;
-    case 'f':
-      idxSpec = 2;
-      break;
-    }
-  } else {
-    switch (side) {
-    case 'f':
-      idxSpec = 0;
-      break;
-    case 'i':
-      idxSpec = 1;
-      break;
-    case 'o':
-      idxSpec = 2;
-      break;
-    }
+  // Each string encodes the kernel arg order as [arg0, arg1, arg2] where
+  // the characters 'f', 'i', 'o' denote filter, input, output respectively.
+  // Finding the -rand_side character in the string gives its arg index.
+  StringRef argOrder = "fio"; // default (Fwd / Gemm)
+  if (operation.getNumOccurrences() > 0) {
+    if (operation.getValue() == rock::KernelType::ConvBwdData)
+      argOrder = "foi";
+    else if (operation.getValue() == rock::KernelType::ConvBwdWeight)
+      argOrder = "iof";
   }
+  char side = randomSide.getValue()[0];
+  size_t pos = argOrder.find(side);
+  int32_t idxSpec = (pos != StringRef::npos) ? static_cast<int32_t>(pos) : -1;
 
   if (randomSeed != "none" && randomSeed != "fixed") {
     if ((idxSpec >= 0) && (idxSpec != idx)) {
