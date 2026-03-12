@@ -250,6 +250,7 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   SmallVector<TransformStep> pipeline = {
       {schedules.optimizationModule.get(), "optimization"},
       {schedules.vectorizationModule.get(), "vectorization"},
+      {schedules.unrollModule.get(), "unroll"},
       {schedules.loweringModule.get(), "lowering"},
   };
 
