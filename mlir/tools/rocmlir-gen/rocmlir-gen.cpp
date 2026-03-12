@@ -1416,9 +1416,9 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   // Emit kernel function call, repeating it if needed.
   // We assume that the repeated atomic add usages in a wrw kernel will not
   // substantially impact performance as the result becomes large
-  auto emitWrappedCall = [&kernels, &gpuMem,
-                          &outIndices](OpBuilder &b, Location loc,
-                                      Value ignoredIv, ValueRange noArgs) {
+  auto emitWrappedCall = [&kernels, &gpuMem](OpBuilder &b, Location loc,
+                                             Value ignoredIv,
+                                             ValueRange noArgs) {
     for (const auto &kernel : kernels) {
       // Check if kernel expects tensor arguments
       // Use kernel.params which stores the function argument types
@@ -1434,20 +1434,16 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
         auto callOp = func::CallOp::create(b, loc, kernel.func, tensorArgs);
 
-        // Store returned tensors back to the correct output memrefs.
-        // outIndices maps each result (in reverse order) to its argument
-        // index. For example, for attention the kernel returns (Output, LSE)
-        // and outIndices is [lseIdx, outputIdx], so result 0 (Output) maps
-        // to outIndices[last] and result 1 (LSE) maps to outIndices[first].
+        // Result should be stored back to the corresponding output memref.
+        // Kernel returns (Output, LSE, ...) while args are (..., LSE,
+        // Output), so map result i to the (numResults - 1 - i)-th-from-last
+        // argument.
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-          if (resultIdx < outIndices.size()) {
-            int32_t outIdx =
-                outIndices[outIndices.size() - 1 - resultIdx];
-            auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
-            Value resultMemref = bufferization::ToBufferOp::create(
-                b, loc, outMemrefType, result);
-            memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
-          }
+          size_t outIdx = gpuMem.size() - 1 - resultIdx;
+          auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
+          Value resultMemref = bufferization::ToBufferOp::create(
+              b, loc, outMemrefType, result);
+          memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
         }
       } else {
         // Legacy memref-based kernel - call directly
