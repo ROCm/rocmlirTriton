@@ -269,9 +269,18 @@ static GQAResult processGQA(ConversionPatternRewriter &rw, Location loc,
     if (prefixOffset)
       prefixOffset =
           moveNumHeadsToSeqLenCurrSeqLen(rw, loc, prefixOffset, numRepeats);
-    out = moveNumHeadsToSeqLenOut(rw, loc, out, numRepeats, splitKV);
-    if (lse)
+    {
+      OpBuilder::InsertionGuard guard(rw);
+      if (auto *defOp = out.getDefiningOp())
+        rw.setInsertionPointAfter(defOp);
+      out = moveNumHeadsToSeqLenOut(rw, loc, out, numRepeats, splitKV);
+    }
+    if (lse) {
+      OpBuilder::InsertionGuard guard(rw);
+      if (auto *defOp = lse.getDefiningOp())
+        rw.setInsertionPointAfter(defOp);
       lse = moveNumHeadsToSeqLenOut(rw, loc, lse, numRepeats, splitKV);
+    }
   }
 
   return GQAResult{numRepeatsAttr, queries,     keys, values, out, lse,
@@ -455,6 +464,10 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
     transformAttrs.push_back(ignoreTransformAttr);
 
     ArrayAttr arrayTransformAttrs = builder.getArrayAttr(transformAttrs);
+    // Set insertion point after out's defining op to maintain dominance.
+    OpBuilder::InsertionGuard guard(builder);
+    if (auto *defOp = out.getDefiningOp())
+      builder.setInsertionPointAfter(defOp);
     outNew = mlir::rock::transform(builder, out, arrayTransformAttrs);
   }
   return std::make_tuple(aNew, bNew, cNew, outNew);
@@ -481,12 +494,24 @@ commonAttentionGemmElmtGemm(
   }
   GemmParamsAttr params1 = cast<GemmParamsAttr>(op.getGemm1Params().value());
 
+  // Helper: transform a value at its defining op's location to maintain
+  // dominance. The output/LSE views may be defined after the matched op,
+  // so transforms on them must be inserted after their defining ops.
+  auto transformAtDef = [&](Value &v, auto fn) {
+    OpBuilder::InsertionGuard guard(rw);
+    if (auto *defOp = v.getDefiningOp())
+      rw.setInsertionPointAfter(defOp);
+    v = fn(v);
+  };
+
   // Note: the gridwise ops take M x K, K x N and K x N
   a = normalizeMatrix(a, rw, loc, op.getTransposedA(), "gemm0M", "gemm0K");
   b = normalizeMatrix(b, rw, loc, op.getTransposedB(), "gemm0K", "gemm0N");
   c = normalizeMatrix(c, rw, loc, op.getTransposedC(), "gemm1K", "gemm1N");
-  out =
-      normalizeMatrix(out, rw, loc, op.getTransposedOut(), "gemm1M", "gemm1N");
+  transformAtDef(out, [&](Value v) {
+    return normalizeMatrix(v, rw, loc, op.getTransposedOut(), "gemm1M",
+                           "gemm1N");
+  });
 
   const int64_t splitKFactor = params1.getSplitKFactor();
   if (splitKFactor > 1) {
@@ -546,10 +571,14 @@ commonAttentionGemmElmtGemm(
                 gemm0ExtraPad.n);
   c = padMatrix(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1N",
                 gemm1ExtraPad.n);
-  out = padMatrix(out, rw, loc, "gemm1M", gemm1ExtraPad.m, "gemm1N",
-                  gemm1ExtraPad.n);
+  transformAtDef(out, [&](Value v) {
+    return padMatrix(v, rw, loc, "gemm1M", gemm1ExtraPad.m, "gemm1N",
+                     gemm1ExtraPad.n);
+  });
   if (lse)
-    lse = padVector(lse, rw, loc, "gemm1M", gemm1ExtraPad.m);
+    transformAtDef(lse, [&](Value v) {
+      return padVector(v, rw, loc, "gemm1M", gemm1ExtraPad.m);
+    });
 
   if (failed(
           computeGridSizeAttentionGemmElmtGemm(rw, op, a, b, c, splitKVNum))) {
@@ -936,6 +965,9 @@ GemmRewritePattern::arrangeSplitKTransform(
 
     ArrayAttr arrayTransformAttrs = builder.getArrayAttr(transformAttrs);
     for (auto view : outputViews) {
+      OpBuilder::InsertionGuard guard(builder);
+      if (Operation *defOp = view.getDefiningOp())
+        builder.setInsertionPointAfter(defOp);
       outputViewsNew.push_back(
           mlir::rock::transform(builder, view, arrayTransformAttrs));
     }
