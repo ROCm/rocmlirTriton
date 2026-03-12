@@ -3878,8 +3878,9 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
     flatArgTypes.push_back(rock::getFlattenedType(t));
   }
 
-  // Result type is the C tensor
-  Type resultType = flatArgTypes[2];
+  // Result type is the C tensor (index 4 for scaled gemm, 2 otherwise)
+  int cArgIdx = scaledGemm ? 4 : 2;
+  Type resultType = flatArgTypes[cArgIdx];
 
   constexpr llvm::StringLiteral cpuKernName("host_naive_gemm");
   auto func = func::FuncOp::create(
@@ -3933,16 +3934,11 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
                 4, 0, {g, transposeB ? n : k, transposeB ? k : n}, ctx),
             cMap = AffineMap::get(
                 4, 0, {g, transposeC ? n : m, transposeC ? m : n}, ctx);
-  int cArgIdx = scaledGemm ? 4 : 2;
   Value aExpVal = expandTensorArg(aVal, argTypes[0]),
         bExpVal = expandTensorArg(bVal, argTypes[1]),
         cExpVal = expandTensorArg(cVal, argTypes[cArgIdx]);
 
   Value aExpValScaled = nullptr, bExpValScaled = nullptr;
-  if (scaledGemm) {
-    aExpValScaled = expandTensorArg(aScaleVal, argTypes[3]);
-    bExpValScaled = expandTensorArg(bScaleVal, argTypes[4]);
-  }
 
   // Initialize output with zeros using linalg.fill
   auto cExpType = cast<RankedTensorType>(cExpVal.getType());
@@ -5191,7 +5187,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       exit(1);
     }
   } else { // clone
-    // Clone the kernel-calling function.  EmulateFp8ExtTrunc3
+    // Clone the kernel-calling function.  
     //  will call the appropriate
     // binary kernel from the mhal.launch ops;  here, we'll replace those with
     // func.call which will get the MLIR kernel.  No redirection of callees

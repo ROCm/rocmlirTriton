@@ -258,7 +258,9 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
       // compute the MMA at the same time
       Value newAcc = BlockwiseGemmOp::create(
           b, loc, accArg.getType(), loadedA, loadedB, accArg, loadedScaleA,
-          loadedScaleB, op.getQuantBlockSizeAttr());
+          loadedScaleB, op.getQuantBlockSizeAttr(),
+          /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+          /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
 
       // Yield the new accumulator
       scf::YieldOp::create(b, loc, ValueRange{newAcc});

@@ -340,6 +340,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
 
+  // This pass converts unsupported float types to int8, take that into account
+  // for next passes (e.g. integer arithmetic optimizations)
+  addWithDCE(rock::createRockLegalizeFloatTypesPass());
+
   // Serialize and erase host functions BEFORE any func-level pass that
   // changes the kernel signature (e.g. RockToTTIRPass sets return to void).
   // Must use a new nest<func::FuncOp>() so these passes go into a separate
@@ -382,6 +386,8 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
   // that need to be converted to memref operations first.
   bufferization::OneShotBufferizePassOptions bufOpts;
   bufOpts.bufferizeFunctionBoundaries = true;
+  bufOpts.functionBoundaryTypeConversion =
+      bufferization::LayoutMapOption::IdentityLayoutMap;
   pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
 
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
@@ -396,6 +402,13 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
 
   // Lower SCF to control flow
   pm.addPass(createSCFToControlFlowPass());
+
+  // Expand f8E8M0FNU/f4E2M1FN extf/truncf to bitwise ops first, so that
+  // arith operations using these types are lowered before type conversion.
+  arith::ArithExpandOpsPassOptions expandOpts;
+  expandOpts.includeF8E8M0 = true;
+  expandOpts.includeF4E2M1 = true;
+  pm.addPass(arith::createArithExpandOpsPass(expandOpts));
 
   // Make GPU operations async - required by GpuToLLVMConversionPass patterns
   pm.addNestedPass<func::FuncOp>(createGpuAsyncRegionPass());

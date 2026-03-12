@@ -262,3 +262,46 @@ func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: te
   %19 = rock.blockwise_store_ptr %3 -> %18(%12) by  set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64xf32>
   return %19 : tensor<64xf32>
 }
+
+// -----
+
+// Test: f8 GEMM without scales lowers to tt.dot (not tt.dot_scaled).
+// f8E4M3FN is a TT_Float type, so LegalizeFloatTypes does not set
+// matrixAOrigElemType/matrixBOrigElemType and no scales are present.
+
+// CHECK-LABEL: @test_unscaled_gemm_f8
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf8E4M3FN>, %[[B:.*]]: tensor<64x64xf8E4M3FN>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xf8E4M3FN> * tensor<64x64xf8E4M3FN> -> tensor<64x64xf32>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_unscaled_gemm_f8(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf8E4M3FN>, tensor<64x64xf8E4M3FN>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: Scaled GEMM with f8 data and i8 scales lowers to tt.dot_scaled.
+
+// CHECK-LABEL: @test_scaled_gemm_f8
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf8E4M3FN>, %[[B:.*]]: tensor<64x64xf8E4M3FN>, %[[C:.*]]: tensor<64x64xf32>, %[[SA:.*]]: tensor<64x2xi8>, %[[SB:.*]]: tensor<64x2xi8>)
+//      CHECK:   tt.dot_scaled %[[A]] scale %[[SA]], %[[B]] scale %[[SB]], %[[C]]
+// CHECK-SAME:     lhs = e4m3 rhs = e4m3
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_scaled_gemm_f8(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %c: tensor<64x64xf32>,
+    %scaleA: tensor<64x2xi8>, %scaleB: tensor<64x2xi8>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 32 : i64}
+    : tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}

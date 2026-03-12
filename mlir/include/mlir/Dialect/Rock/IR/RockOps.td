@@ -605,18 +605,17 @@ def Rock_BlockwiseGemmOp
     : Rock_Op<"blockwise_gemm", [AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<GemmInputTypes>:$matrixA,
           TensorOf<GemmInputTypes>:$matrixB, TensorOf<GemmOutputTypes>:$matrixC,
-          Optional<TensorOf<[F8E8M0FNU]>>:$matrixScaleA,
-          Optional<TensorOf<[F8E8M0FNU]>>:$matrixScaleB,
-          OptionalAttr<I64Attr>:$quantBlockSize)>,
+          Optional<TensorOf<[F8E8M0FNU, I8]>>:$matrixScaleA,
+          Optional<TensorOf<[F8E8M0FNU, I8]>>:$matrixScaleB,
+          OptionalAttr<I64Attr>:$quantBlockSize,
+          OptionalAttr<TypeAttr>:$matrixAOrigElemType,
+          OptionalAttr<TypeAttr>:$matrixBOrigElemType,
+          OptionalAttr<BoolAttr>:$matrixAKPack,
+          OptionalAttr<BoolAttr>:$matrixBKPack)>,
       Results<(outs TensorOf<GemmOutputTypes>:$result)> {
   let summary = "Blockwise GEMM";
   let description = [{
     The `rock.blockwise_gemm` op does GEMM at workgroup (block) level.
-    - Matrix A and Matrix B shall reside on registers.
-    - Matrix C shall be vectors.
-
-    The elements of matrices A and B should be vectors of length kpack, or
-    scalars when kpack is 1.
 
     When `matrixScaleA` and `matrixScaleB` are present, this op performs a
     block-scaled GEMM. The `quantBlockSize` attribute specifies the number of
@@ -630,6 +629,11 @@ def Rock_BlockwiseGemmOp
     present, where the Triton hardware instruction (e.g.,
     V_MFMA_SCALE_F32_*_F8F6F4 on gfx950) consumes F8/F6/F4 data with E8M0
     scales natively.
+
+    We might lower to `tt.dot_scaled` even if there are no scales as well, when
+    `matrixAOrigElemType` or `matrixBOrigElemType` are defined. This is to avoid
+    using `tt.dot` if we changed the datatype of A or B, it would be represented
+    as i8 but it's really `matrixAOrigElemType`/`matrixBOrigElemType`.
   }];
   let assemblyFormat = [{
     `(` $matrixA  (`scaled` `by` $matrixScaleA^)? `,`

@@ -1311,6 +1311,13 @@ LogicalResult BlockwiseGemmOp::verify() {
   auto aShape = cast<ShapedType>(getMatrixA().getType()).getShape();
   auto bShape = cast<ShapedType>(getMatrixB().getType()).getShape();
 
+  bool hasAOrigElemType = getMatrixAOrigElemType().has_value();
+  bool hasBOrigElemType = getMatrixBOrigElemType().has_value();
+  if (hasAOrigElemType != hasBOrigElemType)
+    return emitOpError()
+           << "If one of matrixAOrigElemType and matrixBOrigElemType is set, "
+              "the other needs to be set as well";
+
   auto verifyMatrixAndScale = [&](Value scale, ArrayRef<int64_t> matrixShape,
                                   bool isA) -> LogicalResult {
     bool hasScale = scale != nullptr;
@@ -1320,13 +1327,15 @@ LogicalResult BlockwiseGemmOp::verify() {
       std::optional<int64_t> quantBlockSize = getQuantBlockSize();
       if (!quantBlockSize.has_value())
         return emitOpError() << "quantBlockSize is not set but we found scale";
+
       SmallVector<int64_t> scaleShape =
           normalizeScaleShape(cast<ShapedType>(scale.getType()).getShape(),
                               quantBlockSize.value(), isA);
+
       if (matrixShape != ArrayRef<int64_t>(scaleShape)) {
         return emitOpError(
             llvm::formatv("If scale{0} is non-null, its shape must match "
-                          "buffer{0}'s shape.",
+                          "{0}'s shape.",
                           matrixName));
       }
     }

@@ -40,6 +40,11 @@ int getMfmaVersion(triton::AMD::ISAFamily isaFamily);
 /// Mirrors the internal getWmmaVersion() in AccelerateAMDMatmul.cpp.
 int getWmmaVersion(StringRef arch);
 
+/// Return true if `t` is one of the types in Triton's TT_Float set.
+/// Mirrors the TT_Float type constraint from TritonTypes.td:
+///   {F8E4M3FN, F8E4M3FNUZ, F8E5M2, F8E5M2FNUZ, F16, BF16, F32, F64}
+bool isTTFloat(Type t);
+
 /// Map an MLIR element type to the corresponding triton::ScaleDotElemType.
 /// Covers F8 (E4M3, E5M2), F6 (E2M3, E3M2), F4 (E2M1), BF16, and FP16.
 /// Returns failure() for unsupported types.

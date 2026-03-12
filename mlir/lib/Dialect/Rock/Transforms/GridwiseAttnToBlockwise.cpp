@@ -1038,8 +1038,10 @@ struct GridwiseAttentionRewritePattern
         // TODO(roctriton): scaled gemm
         Value newAcc = BlockwiseGemmOp::create(
             rewriter, loc, accArg.getType(), loadedQ, loadedK, accArg,
-            /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
-            /*quantBlockSize=*/nullptr);
+            /*matrixScaleA=*/nullptr,
+            /*matrixScaleB=*/nullptr, /*quantBlockSize=*/nullptr,
+            /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+            /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
 
         // Yield the new accumulator
         scf::YieldOp::create(rewriter, loc, ValueRange{newAcc});
@@ -1225,7 +1227,9 @@ struct GridwiseAttentionRewritePattern
       Value gemm1Out = BlockwiseGemmOp::create(
           rewriter, loc, gemm1InitAcc.getType(), gemm0Out, loadedV,
           gemm1InitAcc, /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
-          /*quantBlockSize=*/nullptr);
+          /*quantBlockSize=*/nullptr,
+          /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+          /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
 
       // Apply flash attention correction
       if (op.getEnableSoftmax()) {
