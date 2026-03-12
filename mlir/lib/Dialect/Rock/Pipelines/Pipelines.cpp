@@ -247,16 +247,12 @@ void rock::buildBufferizePipeline(OpPassManager &pm,
   bool noRock = options.disableRock;
 
   auto &funcPm = pm.nest<func::FuncOp>();
-  // TOSA conversion to rock and/or linalg with mhal.launch's
-  if (!noRock) {
-    // convert tosa.conv2d/matmul to rock.conv
-    /* rocmlir-opt --tosa-to-tensor --tosa-to-rock --rock-view-to-transform
-     */
-    funcPm.addPass(createTosaToTensorPass());
-    funcPm.addPass(createTosaToRockPass());
-    funcPm.addPass(rock::createRockViewToTransformPass());
-    funcPm.addPass(rock::createRockDetectFlashDecodingPass());
-  }
+
+  // convert tosa -> rock for kernels with rock.kernel attribute
+  funcPm.addPass(createTosaToTensorPass());
+  funcPm.addPass(createTosaToRockPass());
+  funcPm.addPass(rock::createRockViewToTransformPass());
+  funcPm.addPass(rock::createRockDetectFlashDecodingPass());
 
   funcPm.addPass(createRocmlirCustomTosaDecomposePass());
   funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
@@ -301,8 +297,7 @@ void rock::buildBufferizePipeline(OpPassManager &pm,
   funcPm2.addPass(createCanonicalizerPass());
 
   pm.addPass(createConvertTensorToLinalgPass());
-  if (!noRock)
-    pm.addPass(rock::createRockInsertOutputStoresPass());
+  pm.addPass(rock::createRockInsertOutputStoresPass());
 }
 
 void rock::buildKernelPipeline(OpPassManager &pm,
