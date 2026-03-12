@@ -437,15 +437,12 @@ pipeline {
                                                         }
                                                     }
 
-                                                    stage('Configure rocmlirTriton') {
+                                                    stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 10, activity: true, unit: 'MINUTES') {
                                                             sh '''
-                                                                cmake -G Ninja -B build \
-                                                                    -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
-                                                                    -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
-                                                                    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                                                                    -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
-                                                                    -DBUILD_FAT_LIBROCKCOMPILER=ON
+                                                                export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+                                                                export C_COMPILER=/opt/rocm/llvm/bin/clang
+                                                                bash cmake.sh
                                                             '''
                                                         }
                                                     }
@@ -459,12 +456,6 @@ pipeline {
                                                                     --base-commit origin/develop \
                                                                     --ignore-external
                                                             '''
-                                                        }
-                                                    }
-
-                                                    stage('Build rocmlirTriton') {
-                                                        timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            sh 'ninja -C build check-rocmlir-build-only'
                                                         }
                                                     }
 
