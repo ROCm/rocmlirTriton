@@ -5901,38 +5901,20 @@ static void populateCloneHarnessLogic(ModuleOp module) {
   StringAttr archAttr = b.getStringAttr(arch);
   if (originalFunc->hasAttr(rock::ArchAttr::getMnemonic()))
     originalFunc->setAttr(rock::ArchAttr::getMnemonic(), archAttr);
-  // TODO(roctriton): mhal
-  // auto readAttr = b.getNamedAttr(mhal::MHALDialect::getReadAccessAttrName(),
-  //                                b.getUnitAttr());
-  // auto writeAttr =
-  // b.getNamedAttr(mhal::MHALDialect::getWriteAccessAttrName(),
-  //                                 b.getUnitAttr());
-  // for (size_t index = 0; index < originalFunc.getArguments().size(); index++)
-  //   originalFunc.setArgAttrs(index, readAttr);
-  // for (size_t index = 0; index < originalFunc.getNumResults(); index++)
-  //   originalFunc.setResultAttrs(index, writeAttr);
-  auto loc = originalFunc->getLoc();
-  auto wrapperFunc = func::FuncOp::create(loc, testFuncName + "_wrapper",
-                                          originalFunc.getFunctionType());
-  Block *block = wrapperFunc.addEntryBlock();
-  b.setInsertionPointToStart(block);
-  // TODO(roctriton): mhal
-  // auto launchOp = mhal::LaunchOp::create(b, loc, originalFunc, ValueRange{},
-  //                                        block->getArguments());
-  // auto results = launchOp->getResults();
-  // mhal::AwaitOp::create(b, loc, results.front());
-  // func::ReturnOp::create(b, loc, ValueRange{results.drop_front()});
-  module.push_back(wrapperFunc);
 
-  auto xmoduleOp = ModuleOp::create(loc, "__xmodule_");
-  xmoduleOp->setAttr(rock::ArchAttr::getMnemonic(), archAttr);
-  xmoduleOp->setAttr("mhal.module", b.getUnitAttr());
+  // Clone the function to create the GPU kernel version before renaming.
   auto *cloneFunc = originalFunc->clone();
   auto cloneFuncOp = dyn_cast<func::FuncOp>(cloneFunc);
   cloneFuncOp->setAttr(rock::KernelAttr::getMnemonic(), b.getUnitAttr());
-  cloneFuncOp->setAttr("original_func", SymbolRefAttr::get(originalFunc));
-  xmoduleOp.push_back(cloneFuncOp);
-  module.push_back(xmoduleOp);
+
+  // Rename the original (CPU) copy to <name>_cpu_host.
+  originalFunc.setSymName(testFuncName + "_cpu_host");
+
+  // Add clone directly to top-level module (flat structure).
+  module.push_back(cloneFuncOp);
+
+  // Set arch on top-level module.
+  module->setAttr(rock::ArchAttr::getMnemonic(), archAttr);
 }
 
 int main(int argc, char **argv) {
