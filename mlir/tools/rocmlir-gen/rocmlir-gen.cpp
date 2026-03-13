@@ -5714,7 +5714,7 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
   // Scenario 1: We use conv config to initialize everything
   if (!convConfigStr.empty()) {
     if (failed(convGenerator.parseConvConfig(builder, convConfigStr.c_str()))) {
-      llvm::errs() << "Module population failed 2.\n";
+      llvm::errs() << "Module population failed.\n";
       exit(1);
     }
     genParams.types.push_back(convGenerator.getFilterDataType(builder));
