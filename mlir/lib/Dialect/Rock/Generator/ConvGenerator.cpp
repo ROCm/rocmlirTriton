@@ -768,16 +768,24 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   if (hasWorkspace)
     logicalFuncArgTypes.push_back(workspaceArgType);
 
+  // Reorder args so the tensor being computed (the "actual output") is last.
+  // The last element becomes the store destination (storeDestIdx).
+  //   Fwd:       computes output activations  -> output is already last
+  //   BwdData:   computes input gradient       -> swap input to last
+  //   BwdWeight: computes filter/weight gradient -> rotate filter to last
   switch (config.operation.value()) {
   case ConvOpType::Fwd:
-    // [filter, input, output] — output (store dest) is already last.
+    // [filter, input, output]
     break;
   case ConvOpType::BwdData:
-    // [filter, input, output] → [filter, output, input]
+    // [filter, input, output] -> [filter, output, input]
     std::swap(logicalFuncArgTypes[1], logicalFuncArgTypes[2]);
     break;
   case ConvOpType::BwdWeight:
-    // [filter, input, output, workspace?] → [input, output, workspace?, filter]
+    // [filter, input, output, workspace?] -> [input, output, workspace?, filter]
+    // TODO(rocmlirTriton): The optional workspace is an fp32 intermediate
+    // buffer used for fp16 BwdWeight. This is not a path that is supported yet
+    // in rocmlirTriton.
     std::rotate(logicalFuncArgTypes.begin(), logicalFuncArgTypes.begin() + 1,
                 logicalFuncArgTypes.end());
     break;

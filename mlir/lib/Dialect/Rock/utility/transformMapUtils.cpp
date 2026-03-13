@@ -1304,41 +1304,6 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
   return transform.get();
 }
 
-TopDownTMBuilder mlir::rock::rotateIf(bool condition, TopDownTMBuilder &builder,
-                                      TransformMapAttr &attr, int64_t stride,
-                                      StringRef dName, int64_t d, int64_t dPos,
-                                      StringRef kName, int64_t kOuter,
-                                      ArrayRef<StringRef> beforeDims,
-                                      ArrayRef<StringRef> afterDims,
-                                      SmallVector<Attribute> &transformAttrs) {
-  if (condition) {
-    // d = (d+stride*k_outer)
-    TopDownTMBuilder rotateD0 = TopDownTMBuilder::below(builder, attr);
-    if (!beforeDims.empty())
-      rotateD0.passThrough(beforeDims);
-    rotateD0.embed(dName, dPos, d * kOuter, {kName, dName}, {stride, 1});
-    if (!afterDims.empty())
-      rotateD0.passThrough(afterDims);
-    TransformMapAttr rotateD0Attr = rotateD0.get();
-    transformAttrs.push_back(rotateD0Attr);
-
-    // d = (d+stride*k_outer) % d
-    TopDownTMBuilder rotateD1 = TopDownTMBuilder::below(rotateD0, rotateD0Attr);
-    if (!beforeDims.empty())
-      rotateD1.passThrough(beforeDims);
-    rotateD1.takeRemainder(dName, d);
-    if (!afterDims.empty())
-      rotateD1.passThrough(afterDims);
-    TransformMapAttr rotateD1Attr = rotateD1.get();
-    transformAttrs.push_back(rotateD1Attr);
-    TopDownTMBuilder rotated = TopDownTMBuilder::below(rotateD1, rotateD1Attr);
-    return rotated;
-  } else {
-    TopDownTMBuilder unrotated = TopDownTMBuilder::below(builder, attr);
-    return unrotated;
-  }
-}
-
 TransformMapAttr mlir::rock::buildFlattenTransformMap(
     OpBuilder &b, Location loc, ArrayRef<StringRef> dimNames,
     ArrayRef<int64_t> shape, int64_t numElements) {
@@ -1415,20 +1380,6 @@ Value mlir::rock::flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
       b, loc, dimNames, shapedType.getShape(), shapedType.getNumElements());
   TransformMapAttr flattenMap = invertTransformMap(b, expandMap, loc);
   return rock::TransformOp::create(b, loc, logicalVal, flattenMap);
-}
-
-void mlir::rock::convertDimStridestoSizes(ArrayRef<int64_t> orderedDimStrides,
-                                          int64_t numElements,
-                                          SmallVectorImpl<int64_t> &dimSizes) {
-  for (auto [idx, dimStride] : llvm::enumerate(orderedDimStrides)) {
-    int64_t immLargerCoeff;
-    if (idx != 0) {
-      immLargerCoeff = orderedDimStrides[idx - 1];
-    } else {
-      immLargerCoeff = numElements;
-    }
-    dimSizes.push_back(immLargerCoeff / dimStride);
-  }
 }
 
 ArrayAttr mlir::rock::prependUpperViews(OpBuilder &b, ArrayAttr viewsToPrepend,

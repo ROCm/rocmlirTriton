@@ -637,24 +637,6 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     outputViews.push_back(storeOp.getDest());
   }
 
-  // If the output view is flat (1D), expand it to match the gemm result shape
-  // (always 3D: G x M x N). This happens because the code generator defers
-  // the output arg expansion and applies flattenOutput after the gemm op.
-  auto gemmResultType = cast<ShapedType>(op.getResult().getType());
-  for (auto &view : outputViews) {
-    auto viewType = cast<ShapedType>(view.getType());
-    if (viewType.getRank() == 1) {
-      OpBuilder::InsertionGuard guard(rw);
-      if (Operation *defOp = view.getDefiningOp())
-        rw.setInsertionPointAfter(defOp);
-      SmallVector<StringRef> dimNames = {"gemmG", "gemmM", "gemmN"};
-      TransformMapAttr expandMap =
-          buildFlattenTransformMap(rw, loc, dimNames, gemmResultType.getShape(),
-                                   viewType.getNumElements());
-      view = rock::TransformOp::create(rw, loc, view, expandMap);
-    }
-  }
-
   // Collect extra fusion inputs (operands of fusion ops that are not in the
   // gemm-result chain, e.g. the second operand of arith.addf). These need the
   // same normalize+pad treatment as outputViews.

@@ -206,22 +206,6 @@ TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
 Value flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
                     ArrayRef<StringRef> dimNames);
 
-// If the condition is satified, rotate the dimension `d` by `k` using
-// `d = (d+k*stride) % len(d)`
-rock::TopDownTMBuilder
-rotateIf(bool condition, TopDownTMBuilder &builder, TransformMapAttr &attr,
-         int64_t stride, StringRef dName, int64_t d, int64_t dPos,
-         StringRef kName, int64_t k, ArrayRef<StringRef> beforeDims,
-         ArrayRef<StringRef> afterDims, SmallVector<Attribute> &transformAttrs);
-
-// This utility function will take an ordered decreasing dimension strides and
-// total number of elements to produce an array of dimension sizes. This
-// particularly useful to convert a embed transform to a unmerge/merge
-// transform.
-void convertDimStridestoSizes(ArrayRef<int64_t> orderedDimStrides,
-                              int64_t numElements,
-                              SmallVectorImpl<int64_t> &dimSizes);
-
 // This utility function will prepend a given set of the views onto
 // a set of existing views
 ArrayAttr prependUpperViews(OpBuilder &b, ArrayAttr viewsToPrepend,
