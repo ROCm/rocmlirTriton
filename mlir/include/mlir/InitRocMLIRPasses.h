@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 
 // MLIR includes
+#include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
 #include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
@@ -60,7 +61,9 @@ inline void registerUpstreamPasses() {
   // registerArithToAMDGPUConversionPass();
   // registerConvertAMDGPUToROCDLPass();
   // registerConvertGpuOpsToROCDLOps();
-  // registerFinalizeMemRefToLLVMConversionPass();
+
+  // Register memref-to-llvm pass for CPU verifier lowering
+  registerFinalizeMemRefToLLVMConversionPass();
 
   // MLIR passes
   registerTransformsPasses();

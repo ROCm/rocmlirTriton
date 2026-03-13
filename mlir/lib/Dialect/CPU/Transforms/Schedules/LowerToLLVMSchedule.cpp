@@ -57,6 +57,16 @@ OwningOpRef<ModuleOp> cpu::buildLowerToLLVMSchedule(MLIRContext *ctx) {
         anyOpType, bufferize.getTransformed(),
         ArrayRef<StringRef>{"func.func"});
 
+    // Get the target module (parent of the func) for later module-level operations
+    auto targetModule = ib.create<transform::GetParentOp>(
+        /*resultType=*/anyOpType,
+        /*target=*/matchFunc.getResults(),
+        /*isolated_from_above=*/false,
+        /*allow_empty_results=*/false,
+        /*op_name=*/StringAttr::get(ctx, "builtin.module"),
+        /*deduplicate=*/false,
+        /*nth_parent=*/1);
+
     auto cse = ib.create<transform::ApplyRegisteredPassOp>(
         anyOpType, matchFunc.getResults(),
         /*passName=*/"cse", emptyOptions, emptyDynamic);
@@ -143,14 +153,26 @@ OwningOpRef<ModuleOp> cpu::buildLowerToLLVMSchedule(MLIRContext *ctx) {
     auto convertVectorToLLVMOptions = DictionaryAttr::get(
         ctx, {NamedAttribute(StringAttr::get(ctx, "reassociate-fp-reductions"),
                              BoolAttr::get(ctx, false))});
-    auto convertVectorToLLVM = ib.create<transform::ApplyRegisteredPassOp>(
+    ib.create<transform::ApplyRegisteredPassOp>(
         anyOpType, lowerAffine.getResult(),
         /*passName=*/"convert-vector-to-llvm", convertVectorToLLVMOptions,
         emptyDynamic);
 
-    // Step 6: Apply conversion patterns to LLVM
+    // Step 6: Convert memref.global at module level
+    // This must happen before conversion patterns so llvm.mlir.addressof can reference
+    // the converted llvm.mlir.global
+    auto updatedModule = ib.create<transform::ApplyRegisteredPassOp>(
+        anyOpType, targetModule.getResult(),
+        /*passName=*/"finalize-memref-to-llvm", emptyOptions, emptyDynamic);
+
+    // Step 7: Apply conversion patterns to LLVM
+    // Re-match func from updated module (previous handles invalidated by module transform)
+    auto funcForConversion = ib.create<transform::MatchOp>(
+        anyOpType, updatedModule.getResult(),
+        ArrayRef<StringRef>{"func.func"});
+
     auto applyConversion = transform::ApplyConversionPatternsOp::create(
-        ib, convertVectorToLLVM.getResult(),
+        ib, funcForConversion.getResults(),
         /*patternsBodyBuilder=*/
         [&](OpBuilder &pib, Location ploc) {
           ImplicitLocOpBuilder pbuilder(ploc, pib);
@@ -162,7 +184,7 @@ OwningOpRef<ModuleOp> cpu::buildLowerToLLVMSchedule(MLIRContext *ctx) {
               /*force_32bit_vector_indices=*/true,
               /*use_vector_alignment=*/false);
 
-          transform::ApplyToLLVMConversionPatternsOp::create(pbuilder, "memref");
+          // memref conversion handled by finalize-memref-to-llvm above
           transform::ApplyToLLVMConversionPatternsOp::create(pbuilder, "index");
           transform::ApplyToLLVMConversionPatternsOp::create(pbuilder, "arith");
           transform::ApplyToLLVMConversionPatternsOp::create(pbuilder, "cf");
@@ -184,9 +206,9 @@ OwningOpRef<ModuleOp> cpu::buildLowerToLLVMSchedule(MLIRContext *ctx) {
         ArrayAttr::get(ctx, {StringAttr::get(ctx, "llvm")}));
     applyConversion.setPartialConversionAttr(UnitAttr::get(ctx));
 
-    // Step 7: Final reconciliation
+    // Step 8: Final reconciliation
     auto matchLLVMFunc = ib.create<transform::MatchOp>(
-        anyOpType, bufferize.getTransformed(),
+        anyOpType, updatedModule.getResult(),
         ArrayRef<StringRef>{"llvm.func"});
 
     ib.create<transform::ApplyRegisteredPassOp>(
