@@ -1158,18 +1158,14 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // For BwdWeight, the filter is the result (dest comes from StoreOp) and
   // the gradient is the "output" in convolution terms.
   Value filterValue, inputValue;
-  if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
-    // For bwd_weight: the filter is the result, so we get its shape from
-    // the result type and will get its dest buffer from the StoreOp later.
-    // Use the result type for filter shape.
-    filterValue = Value(); // will be set from StoreOp dest below
-    inputValue = op.getInput();
-  } else if constexpr (std::is_same_v<T, ConvBwdDataOp>) {
+  if constexpr (std::is_same_v<T, ConvBwdDataOp>) {
     llvm_unreachable("BwdData should have been handled above");
-  } else {
-    // ConvOp or ConvElementwiseGemmOp
+  } else if constexpr (std::is_same_v<T, ConvElementwiseGemmOp>) {
     filterValue = op.getFilter();
     inputValue = op.getInput();
+  } else {
+    filterValue = op.getConvFilter();
+    inputValue = op.getConvInput();
   }
 
   // Get shapes — for BwdWeight, filter shape comes from the result type.
@@ -1199,16 +1195,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // buffer
   Value destBuffer;
   if constexpr (notConvGemm) {
-    auto maybeStores = traceRootOutputToStoreOps(op.getResult());
-    if (failed(maybeStores))
-      return op.emitOpError("cannot trace conv result to rock::StoreOp");
-    StoreOp firstStore = maybeStores->front();
-    destBuffer = firstStore.getDest();
-
-    // For BwdWeight, the filter value is the StoreOp dest (filter is the
-    // result)
-    if constexpr (std::is_same_v<T, ConvBwdWeightOp>)
-      filterValue = destBuffer;
+    destBuffer = outputViews[0];
 
     auto tuningParams = op.getParamsAttr();
     GemmSize gemmSize = op.getGemmSize();
@@ -1238,11 +1225,11 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
       auto mapping = buildInputToFilterMapping(b, rank);
-      destBuffer = regularizeDestLayout(
+      filterValue = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
-          destBuffer, op->template getAttrOfType<ArrayAttr>("filter_layout"),
-          mapping, filterNames);
-      filterValue = destBuffer;
+          outputViews[0],
+          op->template getAttrOfType<ArrayAttr>("filter_layout"), mapping,
+          filterNames);
       filterShape = cast<ShapedType>(filterValue.getType()).getShape();
     } else {
       // ConvOp: regularize output dest buffer.
@@ -1251,6 +1238,12 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
           destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
           mapping, outputNames);
+      auto relayoutAttr =
+          cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
+      for (auto &view : outputViews)
+        view = TransformOp::create(b, loc, view, relayoutAttr);
+      for (auto &[orig, view] : fusionInputMap)
+        view = TransformOp::create(b, loc, view, relayoutAttr);
     }
   }
 
@@ -1409,7 +1402,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
 
   Value gemmOutput;
   if constexpr (notConvGemm) {
-    Value outputValue = op.getConvOutput();
+    Value outputValue = destBuffer;
 
     ArrayRef<int64_t> outputShape =
         cast<ShapedType>(outputValue.getType()).getShape();
