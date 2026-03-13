@@ -334,8 +334,11 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
       // Check if symbol already exists in parent module
       Operation *existing = parentModule.lookupSymbol(symName);
       if (existing) {
-        // Special case: replace func.func with llvm.func (LLVM version is preferred)
+        // Replace func.func with llvm.func (LLVM version is preferred)
         if (isa<func::FuncOp>(existing) && isa<LLVM::LLVMFuncOp>(&op)) {
+          existing->erase();
+        // Replace memref.global with llvm.mlir.global (LLVM version is preferred)
+        } else if (isa<memref::GlobalOp>(existing) && isa<LLVM::GlobalOp>(&op)) {
           existing->erase();
         } else {
           // Symbol already exists, skip to avoid duplicates
