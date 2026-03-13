@@ -1195,7 +1195,10 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // buffer
   Value destBuffer;
   if constexpr (notConvGemm) {
-    destBuffer = outputViews[0];
+    if constexpr (std::is_same_v<T, ConvBwdWeightOp>)
+      destBuffer = op.getConvOutput();
+    else
+      destBuffer = outputViews[0];
 
     auto tuningParams = op.getParamsAttr();
     GemmSize gemmSize = op.getGemmSize();
