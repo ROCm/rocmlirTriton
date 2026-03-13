@@ -30,8 +30,7 @@ OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
   return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
     auto anyOpType = getAnyOpType(ctx);
 
-    auto matchMatmul = ib.create<transform::MatchOp>(
-      anyOpType, arg, ArrayRef<StringRef>{"linalg.generic"});
+    auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
 
     auto getParent = ib.create<transform::GetParentOp>(
         /*resultType=*/anyOpType,

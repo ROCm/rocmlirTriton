@@ -22,8 +22,10 @@
 
 #include "ScheduleUtils.h"
 
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
 using namespace mlir;
@@ -62,4 +64,32 @@ OwningOpRef<ModuleOp> cpu::buildTransformModule(MLIRContext *ctx,
       });
 
   return module;
+}
+
+DictionaryAttr cpu::getMatmulIteratorTypesAttr(MLIRContext *ctx) {
+  // Create iterator_types attribute to match matmul pattern:
+  // [parallel, parallel, parallel, reduction]
+  SmallVector<Attribute> iteratorTypeAttrs = {
+      linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel),
+      linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel),
+      linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel),
+      linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::reduction)};
+  auto iteratorTypesAttr = ArrayAttr::get(ctx, iteratorTypeAttrs);
+  return DictionaryAttr::get(
+      ctx, {NamedAttribute(StringAttr::get(ctx, "iterator_types"),
+                           iteratorTypesAttr)});
+}
+
+transform::MatchOp cpu::createMatchMatmulOp(ImplicitLocOpBuilder &ib,
+                                            MLIRContext *ctx, Value target) {
+  auto anyOpType = getAnyOpType(ctx);
+  auto opAttrs = getMatmulIteratorTypesAttr(ctx);
+  return ib.create<transform::MatchOp>(
+      /*resultTypes=*/anyOpType,
+      /*target=*/target,
+      /*ops=*/ArrayAttr::get(ctx, {StringAttr::get(ctx, "linalg.generic")}),
+      /*interface=*/transform::MatchInterfaceEnumAttr{},
+      /*opAttrs=*/opAttrs,
+      /*filterResultType=*/TypeAttr{},
+      /*filterOperandTypes=*/ArrayAttr{});
 }
