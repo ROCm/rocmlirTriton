@@ -782,7 +782,8 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
     std::swap(logicalFuncArgTypes[1], logicalFuncArgTypes[2]);
     break;
   case ConvOpType::BwdWeight:
-    // [filter, input, output, workspace?] -> [input, output, workspace?, filter]
+    // [filter, input, output, workspace?] -> [input, output, workspace?,
+    // filter]
     // TODO(rocmlirTriton): The optional workspace is an fp32 intermediate
     // buffer used for fp16 BwdWeight. This is not a path that is supported yet
     // in rocmlirTriton.
