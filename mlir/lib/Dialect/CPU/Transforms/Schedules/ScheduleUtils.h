@@ -23,6 +23,8 @@
 #ifndef MLIR_DIALECT_CPU_TRANSFORMS_SCHEDULES_SCHEDULEUTILS_H
 #define MLIR_DIALECT_CPU_TRANSFORMS_SCHEDULES_SCHEDULEUTILS_H
 
+#include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
+#include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
@@ -53,6 +55,16 @@ transform::AnyOpType getAnyOpType(MLIRContext *ctx);
 /// the sequence body. YieldOp is automatically added at the end.
 OwningOpRef<ModuleOp> buildTransformModule(MLIRContext *ctx,
                                            TransformBodyBuilder bodyBuilder);
+
+/// Create a DictionaryAttr containing the iterator_types attribute for
+/// matching matmul-like operations (pattern: [parallel, parallel, parallel,
+/// reduction]).
+DictionaryAttr getMatmulIteratorTypesAttr(MLIRContext *ctx);
+
+/// Create a transform::MatchOp that matches linalg.generic ops with matmul
+/// iterator types pattern [parallel, parallel, parallel, reduction].
+transform::MatchOp createMatchMatmulOp(ImplicitLocOpBuilder &ib,
+                                       MLIRContext *ctx, Value target);
 
 } // namespace cpu
 } // namespace mlir
