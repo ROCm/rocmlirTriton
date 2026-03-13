@@ -31,7 +31,11 @@
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/SourceMgr.h"
@@ -132,31 +136,184 @@ parsePipeline(StringRef pipeline, llvm::SmallDenseSet<StringRef> &pipelineSet,
   return success();
 }
 
-static LogicalResult runHostHighLevelPipeline(ModuleOp m) {
-  // Setup pass manager
-  PassManager pm(m->getName(), PassManager::Nesting::Implicit);
+//===----------------------------------------------------------------------===//
+// Module isolation helpers for buildBufferizePipeline
+//===----------------------------------------------------------------------===//
+
+/// Move functions matching `shouldHide` into a temporary nested module,
+/// leaving declaration stubs behind. Returns the nested module.
+static ModuleOp
+isolateFuncs(ModuleOp module,
+             mlir::function_ref<bool(func::FuncOp)> shouldHide) {
+  OpBuilder builder(module.getBody(), module.getBody()->end());
+  auto hiddenModule =
+      ModuleOp::create(builder, module.getLoc(), "__rock_hidden");
+
+  for (auto funcOp :
+       llvm::make_early_inc_range(module.getOps<func::FuncOp>())) {
+    if (!shouldHide(funcOp))
+      continue;
+
+    // Create a declaration stub with matching name + type.
+    OpBuilder stubBuilder(funcOp);
+    auto stub = func::FuncOp::create(stubBuilder, funcOp.getLoc(),
+                                     funcOp.getName(),
+                                     funcOp.getFunctionType());
+    // Declarations must be private (MLIR verifier rejects public decls).
+    stub.setVisibility(SymbolTable::Visibility::Private);
+    stub->setAttr("__rock_stub", builder.getUnitAttr());
+
+    // Move the real function into the nested module.
+    funcOp->moveBefore(hiddenModule.getBody(), hiddenModule.getBody()->end());
+  }
+
+  return hiddenModule;
+}
+
+/// Fix up call sites in `module` when a restored function has additional
+/// input arguments compared to the stub it replaces.
+///
+/// InsertOutputStoresPass appends output tensor arguments to the kernel.
+/// For each new argument, this inserts a `tensor.empty` at the call site.
+static void fixupCallSites(ModuleOp module, StringRef funcName,
+                           mlir::FunctionType oldType,
+                           mlir::FunctionType newType) {
+  unsigned oldNumInputs = oldType.getNumInputs();
+  unsigned newNumInputs = newType.getNumInputs();
+
+  if (oldNumInputs == newNumInputs)
+    return; // No signature change
+
+  assert(newNumInputs > oldNumInputs &&
+         "restored function has fewer arguments than stub");
+
+  module.walk([&](func::CallOp callOp) {
+    if (callOp.getCallee() != funcName)
+      return;
+
+    OpBuilder builder(callOp);
+    SmallVector<mlir::Value> newOperands(callOp.getOperands());
+
+    // Add tensor.empty for each new output argument.
+    for (unsigned i = oldNumInputs; i < newNumInputs; ++i) {
+      mlir::Type argType = newType.getInput(i);
+      auto tensorType = cast<RankedTensorType>(argType);
+      mlir::Value empty = tensor::EmptyOp::create(
+          builder, callOp.getLoc(), tensorType, ValueRange{});
+      newOperands.push_back(empty);
+    }
+
+    // Create replacement call with updated operands.
+    auto newCall = func::CallOp::create(
+        builder, callOp.getLoc(), funcName, newType.getResults(),
+        static_cast<ValueRange>(newOperands));
+    callOp.replaceAllUsesWith(newCall.getResults());
+    callOp.erase();
+  });
+}
+
+/// Move functions back from the nested module and erase stubs.
+static void restoreFuncs(ModuleOp module, ModuleOp hiddenModule) {
+  // Build a map from function name -> real function in the hidden module.
+  llvm::StringMap<func::FuncOp> hiddenFuncs;
+  for (auto funcOp : hiddenModule.getOps<func::FuncOp>())
+    hiddenFuncs[funcOp.getName()] = funcOp;
+
+  // Replace each stub with the corresponding real function.
+  SmallVector<func::FuncOp> stubs;
+  for (auto funcOp : module.getOps<func::FuncOp>()) {
+    if (funcOp->hasAttr("__rock_stub"))
+      stubs.push_back(funcOp);
+  }
+  for (auto stub : stubs) {
+    auto it = hiddenFuncs.find(stub.getName());
+    assert(it != hiddenFuncs.end() && "stub without matching hidden func");
+    func::FuncOp realFunc = it->second;
+
+    // Fix up call sites if the kernel's signature changed.
+    mlir::FunctionType oldType = stub.getFunctionType();
+    mlir::FunctionType newType = realFunc.getFunctionType();
+    if (oldType != newType)
+      fixupCallSites(module, stub.getName(), oldType, newType);
+
+    // Move the real function to just before the stub, preserving order.
+    realFunc->moveBefore(stub);
+    stub.erase();
+  }
+
+  // The hidden module should now be empty.
+  assert(hiddenModule.getBody()->empty() &&
+         "hidden module still has functions after restore");
+  hiddenModule.erase();
+}
+
+/// Run buildBufferizePipeline with temporary module isolation.
+///
+/// When the module contains both kernel and host functions, kernel
+/// functions are moved into a temporary nested module. The pipeline
+/// runs on either the outer module (host: disableRock=true) or the
+/// nested module (kernel: disableRock=false).
+///
+/// When only one kind of function is present, no isolation is needed.
+static LogicalResult
+runBufferizePipelineWithIsolation(ModuleOp module,
+                                  const rock::BufferizeOptions &opts = {}) {
+  auto isKernel = [](func::FuncOp f) {
+    return f->hasAttr(rock::KernelAttr::getMnemonic());
+  };
+
+  bool hasKernels =
+      llvm::any_of(module.getOps<func::FuncOp>(), isKernel);
+  bool hasHosts = llvm::any_of(module.getOps<func::FuncOp>(),
+                               [&](func::FuncOp f) { return !isKernel(f); });
+
+  // If only one kind of function, no isolation needed — run directly.
+  if (!hasKernels || !hasHosts) {
+    PassManager pm(module->getName(), PassManager::Nesting::Implicit);
+    if (failed(applyPassManagerCLOptions(pm)))
+      return failure();
+    pm.enableVerifier(!disableVerifyPasses);
+    rock::buildBufferizePipeline(pm, opts);
+    if (dumpPipelines) {
+      llvm::errs() << "Highlevel pipeline:\n";
+      pm.printAsTextualPipeline(llvm::errs());
+      llvm::errs() << "\n";
+    }
+    return pm.run(module);
+  }
+
+  // Both kernel and host functions present: isolate kernels.
+  ModuleOp kernelModule = isolateFuncs(module, isKernel);
+
+  // disableRock=true  (host pipeline)   → outer module (hosts + stubs)
+  // disableRock=false (kernel pipeline) → nested module (kernels only)
+  ModuleOp target = opts.disableRock ? module : kernelModule;
+
+  PassManager pm(target->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
-
-  // Add verification passes
   pm.enableVerifier(!disableVerifyPasses);
-
-  // Set disableRock to true since we are just running on the host
-  rock::BufferizeOptions opts;
-  opts.disableRock = true;
-
-  // Run the bufferize pipeline
   rock::buildBufferizePipeline(pm, opts);
 
   if (dumpPipelines) {
-    llvm::errs() << "Host pipeline:\n";
+    llvm::errs() << (opts.disableRock ? "Host" : "Kernel")
+                 << " highlevel pipeline:\n";
     pm.printAsTextualPipeline(llvm::errs());
     llvm::errs() << "\n";
-    if (m.getBody()->empty())
-      return success();
   }
 
-  return pm.run(m);
+  LogicalResult result = pm.run(target);
+
+  // Always restore, even on failure, to leave the module consistent.
+  restoreFuncs(module, kernelModule);
+
+  return result;
+}
+
+static LogicalResult runHostHighLevelPipeline(ModuleOp m) {
+  rock::BufferizeOptions opts;
+  opts.disableRock = true;
+  return runBufferizePipelineWithIsolation(m, opts);
 }
 
 static LogicalResult
@@ -417,24 +574,10 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
 
   // Run Bufferization on the top module
   if (isHighLevel && hasKernels) {
-    PassManager pm(module->getName(), PassManager::Nesting::Implicit);
-    if (failed(applyPassManagerCLOptions(pm)))
-      return failure();
-    pm.enableVerifier(!disableVerifyPasses);
     rock::BufferizeOptions opts;
     opts.disableRock = true;
-    rock::buildBufferizePipeline(pm, opts);
-
-    if (dumpPipelines) {
-      llvm::errs() << "Bufferization pipeline:\n";
-      pm.printAsTextualPipeline(llvm::errs());
-      llvm::errs() << "\n";
-      if (module.getBody()->empty())
-        return success();
-    }
-    if (failed(pm.run(module))) {
+    if (failed(runBufferizePipelineWithIsolation(module, opts)))
       return failure();
-    }
   }
 
   // Run MHAL generation on the top module
