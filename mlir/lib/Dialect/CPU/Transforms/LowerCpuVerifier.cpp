@@ -239,6 +239,25 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   // Step 1: Create a temporary module containing only this function
   OwningOpRef<ModuleOp> tempModule = ModuleOp::create(loc);
 
+  // Step 1.5: Find and copy all referenced globals to the temporary module
+  // The function may use memref.get_global which requires the global to exist
+  ModuleOp parentModule = func->getParentOfType<ModuleOp>();
+  OpBuilder builder(ctx);
+  builder.setInsertionPointToStart(tempModule->getBody());
+
+  // Collect all global symbols referenced by the function
+  func->walk([&](memref::GetGlobalOp getGlobalOp) {
+    StringRef globalName = getGlobalOp.getName();
+    // Check if we already copied this global
+    if (tempModule->lookupSymbol(globalName))
+      return;
+    // Look up the global in the parent module and clone it
+    if (auto globalOp = parentModule.lookupSymbol<memref::GlobalOp>(globalName)) {
+      builder.clone(*globalOp);
+      LLVM_DEBUG(llvm::dbgs() << "  Copied global: " << globalName << "\n");
+    }
+  });
+
   // Step 2: Clone the function into the temporary module
   IRMapping mapping;
   Operation *clonedOp = func->clone(mapping);
@@ -295,8 +314,6 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   }
 
   // Step 6: Replace the original function with the lowered one
-  ModuleOp parentModule = func->getParentOfType<ModuleOp>();
-  OpBuilder builder(ctx);
   builder.setInsertionPointToStart(parentModule.getBody());
 
   // Copy all top-level operations from tempModule to parentModule
