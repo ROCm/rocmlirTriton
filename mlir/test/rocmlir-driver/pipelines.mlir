@@ -6,7 +6,7 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=highlevel -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=HIGHLEVEL --match-full-lines --strict-whitespace
 
 // COM: Do not put a leading space between the colon and the pass you're looking for
-// MIGRAPHX:Kernel pipeline:
+// MIGRAPHX:Kernel MIGraphX pipeline:
 // MIGRAPHX-NEXT:builtin.module(func.func(migraphx-realize-int4,
 // MIGRAPHX-NEXT:migraphx-transform,
 // MIGRAPHX-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
@@ -71,7 +71,7 @@
 // BINARY-NEXT:cse,
 // BINARY-NEXT:reconcile-unrealized-casts)
 
-// HIGHLEVEL:Kernel pipeline:
+// HIGHLEVEL:Kernel Highlevel pipeline:
 // HIGHLEVEL-NEXT:builtin.module(func.func(tosa-to-tensor,
 // HIGHLEVEL-NEXT:tosa-to-rock,
 // HIGHLEVEL-NEXT:rock-view-to-transform,
