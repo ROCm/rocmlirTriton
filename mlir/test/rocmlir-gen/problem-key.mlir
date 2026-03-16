@@ -1,7 +1,3 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): This crashes with:
-// external/triton/llvm-project/llvm/include/llvm/Support/Casting.h:560: decltype(auto) llvm::cast(const From &) [To = mlir::MemRefType, From = mlir::Type]: Assertion `isa<To>(Val) && "cast<Ty>() argument of incompatible type!"' failed.
-
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f32 -g 1 | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=CHECK_1
 // CHECK_1: -t f32 -transQ false -transK false -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 4 | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=CHECK_2
