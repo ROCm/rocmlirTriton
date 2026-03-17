@@ -390,6 +390,13 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   return 1;
 }
 
+int64_t mlir::rock::getMaxNumCTAs(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  if (isaFamily == ISAFamily::GFX1250)
+    return 2;
+  return 1;
+}
+
 bool mlir::rock::supportsTDM(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());

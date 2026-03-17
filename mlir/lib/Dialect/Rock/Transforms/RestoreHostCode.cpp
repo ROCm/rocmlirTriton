@@ -227,8 +227,8 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
 
     // Create grid and block dimensions
     Value one = arith::ConstantIndexOp::create(builder, callLoc, 1);
-    Value gridX =
-        arith::ConstantIndexOp::create(builder, callLoc, kernel.gridSize);
+    Value gridX = arith::ConstantIndexOp::create(
+        builder, callLoc, kernel.gridSize * kernel.numCTAs);
     Value blockX =
         arith::ConstantIndexOp::create(builder, callLoc, kernel.blockSize);
 

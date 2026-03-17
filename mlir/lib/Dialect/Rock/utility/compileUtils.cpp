@@ -88,6 +88,11 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     return failure();
   }
 
+  int64_t numCTAs = 1;
+  if (auto numCTAsAttr =
+          moduleOp->getAttrOfType<IntegerAttr>("ttg.num-ctas"))
+    numCTAs = numCTAsAttr.getInt();
+
   int64_t tritonBlockSize = numWarps * warpSize;
 
   // Walk LLVM functions with KernelAttr
@@ -99,6 +104,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     info.name = funcOp.getName().str();
     info.llvmFunc = funcOp;
     info.blockSize = tritonBlockSize; // Use Triton's block size (matches HSACO)
+    info.numCTAs = numCTAs;
     info.sharedMemorySize = sharedMemory;
 
     // Get grid_size from module attribute (set by FuncToTritonFunc)

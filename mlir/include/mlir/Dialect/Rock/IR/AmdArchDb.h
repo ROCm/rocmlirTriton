@@ -82,6 +82,9 @@ int64_t getWaveSize(StringRef arch);
 /// Get LDS size
 int64_t getLDSSize(StringRef arch);
 
+/// Get maximum number of CTAs per cluster (1 = no clustering)
+int64_t getMaxNumCTAs(StringRef arch);
+
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 

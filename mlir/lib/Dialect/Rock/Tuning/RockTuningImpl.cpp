@@ -230,8 +230,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
   auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getAccelRangeGemmGemm(gemmGemmOp, waveSize, kind);
-  // TODO(roctriton): numCTAs for gfx1250
-  int64_t numCTAs{1};
+  int64_t numCTAs = rock::getMaxNumCTAs(rock::getArchValue(gemmGemmOp));
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
     for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
@@ -369,9 +368,7 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
 
   auto tuningInfo = std::make_unique<PopulateParams>();
 
-  // hardcode to use heuristics
-  // TODO(roctriton): numCTAs for gfx1250
-  int64_t numCTAs{1};
+  int64_t numCTAs = rock::getMaxNumCTAs(rock::getArchValue(gemmOp));
   OpBuilder b(gemmOp.getContext());
   for (uint32_t gemmMPerBlock : accelParams[0]) {
     for (uint32_t gemmNPerBlock : accelParams[1]) {

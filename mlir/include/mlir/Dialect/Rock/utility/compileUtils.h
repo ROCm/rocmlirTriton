@@ -21,6 +21,7 @@ struct KernelInfo {
   LLVM::LLVMFuncOp llvmFunc;
   int64_t gridSize;
   int64_t blockSize;
+  int64_t numCTAs = 1;
   int64_t sharedMemorySize;
   SmallVector<Type> argTypes; // Original func argument types
 };

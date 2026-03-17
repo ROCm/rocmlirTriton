@@ -321,6 +321,7 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
                    ArrayRef<uint32_t> sharedMemSizes,
+                   ArrayRef<uint32_t> numCTAsList,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements, double &smallKernelCpuMs,
                    bool benchmarkMode) {
@@ -338,11 +339,12 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
         return failure();
       }
     }
-    for (auto [func, blockSize, gridSize, sharedMem] :
-         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
+    for (auto [func, blockSize, gridSize, sharedMem, numCTAs] :
+         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes,
+                   numCTAsList)) {
       HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
-          argPointers.data(), nullptr, nullptr, nullptr));
+          func, gridSize * numCTAs * blockSize, 1, 1, blockSize, 1, 1,
+          sharedMem, stream, argPointers.data(), nullptr, nullptr, nullptr));
     }
   }
 
@@ -359,6 +361,7 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
                    ArrayRef<uint32_t> sharedMemSizes,
+                   ArrayRef<uint32_t> numCTAsList,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements) {
   // Measure runs normally.
@@ -372,15 +375,17 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
 
     double totalMilliseconds = 0.0;
 
-    for (auto [func, blockSize, gridSize, sharedMem] :
-         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
+    for (auto [func, blockSize, gridSize, sharedMem, numCTAs] :
+         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes,
+                   numCTAsList)) {
       hipEvent_t startEvent, stopEvent;
       HIPCHECK(hipEventCreate(&startEvent));
       HIPCHECK(hipEventCreate(&stopEvent));
 
       HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
-          argPointers.data(), nullptr, startEvent, stopEvent));
+          func, gridSize * numCTAs * blockSize, 1, 1, blockSize, 1, 1,
+          sharedMem, stream, argPointers.data(), nullptr, startEvent,
+          stopEvent));
       HIPCHECK(hipEventSynchronize(stopEvent));
 
       float currentMilliseconds = 0.0;
@@ -481,12 +486,13 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     functions.push_back(func);
   }
 
-  // Extract block, grid, and shared memory sizes from kernel info
-  SmallVector<uint32_t> blockSizes, gridSizes, sharedMemSizes;
+  // Extract block, grid, shared memory sizes and numCTAs from kernel info
+  SmallVector<uint32_t> blockSizes, gridSizes, sharedMemSizes, numCTAsList;
   for (const rock::KernelInfo &kernel : kernels) {
     blockSizes.push_back(static_cast<uint32_t>(kernel.blockSize));
     gridSizes.push_back(static_cast<uint32_t>(kernel.gridSize));
     sharedMemSizes.push_back(static_cast<uint32_t>(kernel.sharedMemorySize));
+    numCTAsList.push_back(static_cast<uint32_t>(kernel.numCTAs));
   }
 
   // Sleep guard to avoid GPU throttling
@@ -505,15 +511,17 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     // not.
     double totalMillisecondsWarmup = 0.0;
     for (unsigned iter = 0; iter < params.warmupIterations; ++iter) {
-      for (auto [func, blockSize, gridSize, sharedMem] :
-           llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
+      for (auto [func, blockSize, gridSize, sharedMem, numCTAs] :
+           llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes,
+                     numCTAsList)) {
         hipEvent_t startEvent, stopEvent;
         HIPCHECK(hipEventCreate(&startEvent));
         HIPCHECK(hipEventCreate(&stopEvent));
 
         HIPCHECK(hipExtModuleLaunchKernel(
-            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
-            argPointers.data(), nullptr, startEvent, stopEvent));
+            func, gridSize * numCTAs * blockSize, 1, 1, blockSize, 1, 1,
+            sharedMem, stream, argPointers.data(), nullptr, startEvent,
+            stopEvent));
 
         HIPCHECK(hipStreamSynchronize(stream));
 
@@ -563,12 +571,14 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
 
   if (isSmallKernel) {
     if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, sharedMemSizes, argPointers,
-                                  measurements, smallKernelCpuMs, benchmarkMode)))
+                                  gridSizes, sharedMemSizes, numCTAsList,
+                                  argPointers, measurements, smallKernelCpuMs,
+                                  benchmarkMode)))
       return failure();
   } else {
     if (failed(measureLargeKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, sharedMemSizes, argPointers,
+                                  gridSizes, sharedMemSizes, numCTAsList,
+                                  argPointers,
                                   measurements)))
       return failure();
   }
