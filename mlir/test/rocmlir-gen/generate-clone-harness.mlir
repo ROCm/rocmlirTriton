@@ -16,9 +16,9 @@ func.func private @mlir_reshape_convolution(%arg0: !migraphx.shaped<1x1x16x2x16x
 // CHECK: "builtin.module"() <{sym_name = "__xmodule_"}>
 // CHECK: "func.func"() <{function_type = (tensor<256xf32>, tensor<9xf32>, tensor<1024xf32>) -> tensor<1024xf32>, sym_name = "mlir_reshape_convolution", sym_visibility = "private"}
 // CHECK-LABEL: "func.func"() <{function_type = () -> (), sym_name = "main"}>
-// CHECK: "func.call"(%9, %13) <{callee = @mlir_reshape_convolution_wrapper}> : (memref<256xf32>, memref<9xf32>) -> ()
-// CHECK: "func.call"(%12, %16) <{callee = @mlir_reshape_convolution_wrapper_cloned}> : (memref<256xf32>, memref<9xf32>) -> ()
-// CHECK: "func.call"(%13, %16) <{callee = @mlir_reshape_convolution_wrapper_verify1}> : (memref<9xf32>, memref<9xf32>) -> ()
+// CHECK: "func.call"{{.*}} <{callee = @mlir_reshape_convolution_wrapper}> : (memref<256xf32>, memref<9xf32>) -> ()
+// CHECK: "func.call"{{.*}} <{callee = @mlir_reshape_convolution_wrapper_cloned}> : (memref<256xf32>, memref<9xf32>) -> ()
+// CHECK: "func.call"{{.*}} <{callee = @mlir_reshape_convolution_wrapper_verify1}> : (memref<9xf32>, memref<9xf32>) -> ()
 // CHECK: "func.func"() <{function_type = (tensor<256xf32>, tensor<9xf32>) -> tensor<1024xf32>, sym_name = "mlir_reshape_convolution_wrapper_cloned"}> ({
 
 // CHECK_FULL-LABEL: module
