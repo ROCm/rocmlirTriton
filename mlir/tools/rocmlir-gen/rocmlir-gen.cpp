@@ -5987,6 +5987,11 @@ static void populateCloneHarnessLogic(ModuleOp module) {
   // auto results = launchOp->getResults();
   // mhal::AwaitOp::create(b, loc, results.front());
   // func::ReturnOp::create(b, loc, ValueRange{results.drop_front()});
+
+  auto callOp =
+      b.create<func::CallOp>(loc, originalFunc, block->getArguments());
+  b.create<func::ReturnOp>(loc, callOp.getResults());
+
   module.push_back(wrapperFunc);
 
   auto xmoduleOp = ModuleOp::create(loc, "__xmodule_");

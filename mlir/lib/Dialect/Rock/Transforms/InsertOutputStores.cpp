@@ -232,7 +232,16 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
 
   // This pass runs before wrapper generation, so the kernel must not have
   // any call sites yet.
-  if (!funcOp.symbolKnownUseEmpty(moduleOp))
+  ModuleOp scopeModule = funcOp->getParentOfType<ModuleOp>();
+  if (!scopeModule)
+    scopeModule = moduleOp;
+
+  bool hasCallSites = false;
+  scopeModule->walk([&](func::CallOp callOp) {
+    if (callOp.getCalleeAttr().getValue() == funcOp.getName())
+      hasCallSites = true;
+  });
+  if (hasCallSites)
     return funcOp.emitError(
         "kernel has callers; InsertOutputStores expects no call sites");
 
