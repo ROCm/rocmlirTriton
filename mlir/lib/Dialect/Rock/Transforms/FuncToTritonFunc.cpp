@@ -128,10 +128,22 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     argElementTypes[info.argIndex] = info.elementType;
   }
 
+  DenseSet<unsigned> deadTensorArgs;
   for (unsigned i = 0; i < funcType.getNumInputs(); ++i) {
     auto it = argElementTypes.find(i);
     if (it != argElementTypes.end()) {
       newInputTypes.push_back(triton::PointerType::get(it->second, 1));
+    } else if (auto tensorType =
+                   dyn_cast<RankedTensorType>(funcType.getInput(i))) {
+      // Tensor arguments without rock.extract_ptr (e.g. dead fusion inputs)
+      // must still become pointers. Triton kernels cannot have bare tensor
+      // arguments.  We convert rather than remove to preserve the positional
+      // ABI: RockSerializeHostFuncsPass has already frozen the host-side
+      // func.call with the original argument list, so dropping an argument
+      // here would cause a host/kernel argument mismatch at launch time.
+      newInputTypes.push_back(
+          triton::PointerType::get(tensorType.getElementType(), 1));
+      deadTensorArgs.insert(i);
     } else {
       newInputTypes.push_back(funcType.getInput(i));
     }
@@ -183,6 +195,15 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
 
     // Update the block argument type
     blockArg.setType(ptrType);
+  }
+
+  // Update block argument types for dead tensor args (those without
+  // rock.extract_ptr patterns that were converted to pointers above).
+  for (unsigned i : deadTensorArgs) {
+    BlockArgument blockArg = entryBlock.getArgument(i);
+    auto tensorType = cast<RankedTensorType>(blockArg.getType());
+    blockArg.setType(
+        triton::PointerType::get(tensorType.getElementType(), 1));
   }
 
   // Erase the ops in the chain (users first, producers last)
@@ -376,14 +397,32 @@ void RockFuncToTritonFuncPass::runOnOperation() {
       funcsToProcess.push_back(funcOp);
   });
 
-  // Store kernel grid/block sizes as module attributes BEFORE converting to
-  // tt.func (which erases the func::FuncOp). These will be used later for
-  // gpu.launch_func.
+  // Store kernel metadata as module attributes BEFORE converting to
+  // tt.func (which erases the func::FuncOp). These will be used later by
+  // collectKernelInfo / RestoreHostCodePass.
+  OpBuilder builder(&getContext());
   for (func::FuncOp funcOp : funcsToProcess) {
     std::string kernelName = funcOp.getName().str();
     if (auto gridAttr = funcOp->getAttrOfType<IntegerAttr>(
             rock::GridSizeAttr::getMnemonic())) {
       moduleOp->setAttr("rock.grid_size." + kernelName, gridAttr);
+    }
+
+    // Collect rock.prefill arg attributes.
+    SmallVector<Attribute> prefillEntries;
+    for (unsigned i = 0, e = funcOp.getNumArguments(); i < e; ++i) {
+      if (auto initVal =
+              funcOp.getArgAttr(i, rock::PrefillAttr::getMnemonic())) {
+        SmallVector<NamedAttribute> entry;
+        entry.push_back(
+            builder.getNamedAttr("index", builder.getI64IntegerAttr(i)));
+        entry.push_back(builder.getNamedAttr("value", initVal));
+        prefillEntries.push_back(builder.getDictionaryAttr(entry));
+      }
+    }
+    if (!prefillEntries.empty()) {
+      moduleOp->setAttr("rock.prefill_args." + kernelName,
+                         builder.getArrayAttr(prefillEntries));
     }
   }
 

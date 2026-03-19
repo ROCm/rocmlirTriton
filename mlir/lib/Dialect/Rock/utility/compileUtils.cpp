@@ -106,6 +106,20 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
       info.gridSize = gridAttr.getInt();
 
+    // Get prefill arg info from module attribute (set by FuncToTritonFunc)
+    std::string prefillAttrName = "rock.prefill_args." + info.name;
+    if (auto prefillArr =
+            moduleOp->getAttrOfType<ArrayAttr>(prefillAttrName)) {
+      for (Attribute entry : prefillArr) {
+        auto dict = cast<DictionaryAttr>(entry);
+        PrefillInfo pi;
+        pi.argIndex =
+            cast<IntegerAttr>(dict.get("index")).getValue().getZExtValue();
+        pi.initValue = dict.get("value");
+        info.prefillArgs.push_back(pi);
+      }
+    }
+
     // Get argument types from LLVM function signature
     auto llvmFuncType = funcOp.getFunctionType();
     unsigned numParams = llvmFuncType.getNumParams();

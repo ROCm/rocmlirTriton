@@ -15,6 +15,12 @@
 namespace mlir {
 namespace rock {
 
+/// A kernel argument that must be pre-initialized before launch.
+struct PrefillInfo {
+  unsigned argIndex;
+  Attribute initValue;
+};
+
 /// Information about a compiled kernel
 struct KernelInfo {
   std::string name;
@@ -22,7 +28,8 @@ struct KernelInfo {
   int64_t gridSize;
   int64_t blockSize;
   int64_t sharedMemorySize;
-  SmallVector<Type> argTypes; // Original func argument types
+  SmallVector<Type> argTypes;
+  SmallVector<PrefillInfo> prefillArgs;
 };
 
 /// Collect kernel information from a compiled module.

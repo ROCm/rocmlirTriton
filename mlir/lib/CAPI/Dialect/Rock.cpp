@@ -169,15 +169,18 @@ size_t mlirGetNumPrefillArgs(MlirModule module) {
   auto mod = unwrap(module);
   assert(mod.getRegion().getBlocks().size() == 1 &&
          "expected a single block/function in a module");
-  std::optional<gpu::BinaryOp> binary = std::nullopt;
-  mod.walk([&](gpu::BinaryOp op) { binary = op; });
-  if (!binary.has_value())
-    return 0;
-
-  // TODO(roctriton): fix this
-  return 0;
-  // auto attrs = mhal::getStoredPrefillAttributes(binary.value());
-  // return attrs.size();
+  size_t count = 0;
+  mod.walk([&](gpu::BinaryOp binary) {
+    auto kernelTable =
+        mlir::cast<gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
+    for (auto kernel : kernelTable) {
+      if (auto arr = kernel.getAttr<mlir::ArrayAttr>(
+              mlir::rock::PrefillAttr::getMnemonic())) {
+        count = arr.size();
+      }
+    }
+  });
+  return count;
 }
 
 MLIR_CAPI_EXPORTED
@@ -187,18 +190,23 @@ void mlirGetPrefillArgsInfo(MlirModule module, size_t *indices,
   assert(mod.getRegion().getBlocks().size() == 1 &&
          "expected a single block/function in a module");
 
-  std::optional<gpu::BinaryOp> binary = std::nullopt;
-  mod.walk([&](gpu::BinaryOp op) { binary = op; });
-  if (!binary.has_value())
-    return;
-  // TODO(roctriton): fix this
-  // auto attrs = mhal::getStoredPrefillAttributes(binary.value());
-
-  // assert(attrs.size() >= length && "length cannot exceed the attr size");
-  // for (size_t i = 0; i < length; ++i) {
-  //   indices[i] = attrs[i].getArgIndex();
-  //   initValues[i] = wrap(attrs[i].getInitValue());
-  // }
+  mod.walk([&](gpu::BinaryOp binary) {
+    auto kernelTable =
+        mlir::cast<gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
+    for (auto kernel : kernelTable) {
+      if (auto arr = kernel.getAttr<mlir::ArrayAttr>(
+              mlir::rock::PrefillAttr::getMnemonic())) {
+        assert(arr.size() >= length && "length cannot exceed the attr size");
+        for (size_t i = 0; i < length; ++i) {
+          auto dict = mlir::cast<mlir::DictionaryAttr>(arr[i]);
+          indices[i] = mlir::cast<mlir::IntegerAttr>(dict.get("index"))
+                           .getValue()
+                           .getZExtValue();
+          initValues[i] = wrap(dict.get("value"));
+        }
+      }
+    }
+  });
 }
 
 MLIR_CAPI_EXPORTED
