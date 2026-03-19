@@ -80,13 +80,37 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
     SmallVector<Type> argTypes(kernel.argTypes.size(), ptrType);
     auto kernelFuncType = FunctionType::get(ctx, argTypes, {});
 
-    // Create metadata for this kernel
-    // KernelMetadataAttr::get(StringAttr name, Type functionType, ...)
+    // Build metadata dictionary with block/grid sizes and prefill info so
+    // that downstream consumers can retrieve them.
+    SmallVector<NamedAttribute> metadataEntries;
+    metadataEntries.push_back(
+        builder.getNamedAttr(rock::BlockSizeAttr::getMnemonic(),
+                             builder.getI64IntegerAttr(kernel.blockSize)));
+    metadataEntries.push_back(
+        builder.getNamedAttr(rock::GridSizeAttr::getMnemonic(),
+                             builder.getI64IntegerAttr(kernel.gridSize)));
+
+    if (!kernel.prefillArgs.empty()) {
+      SmallVector<Attribute> prefillEntries;
+      for (const PrefillInfo &pi : kernel.prefillArgs) {
+        SmallVector<NamedAttribute> entry;
+        entry.push_back(builder.getNamedAttr(
+            "index", builder.getI64IntegerAttr(pi.argIndex)));
+        entry.push_back(builder.getNamedAttr("value", pi.initValue));
+        prefillEntries.push_back(builder.getDictionaryAttr(entry));
+      }
+      metadataEntries.push_back(
+          builder.getNamedAttr(rock::PrefillAttr::getMnemonic(),
+                               builder.getArrayAttr(prefillEntries)));
+    }
+
+    auto metadataDict = builder.getDictionaryAttr(metadataEntries);
+
     auto metadata =
         gpu::KernelMetadataAttr::get(builder.getStringAttr(kernel.name),
                                      /*functionType=*/kernelFuncType,
                                      /*argAttrs=*/nullptr,
-                                     /*metadata=*/nullptr);
+                                     /*metadata=*/metadataDict);
     kernelMetadata.push_back(metadata);
   }
 
@@ -364,19 +388,24 @@ void RockRestoreHostCodePass::runOnOperation() {
   int maxSharedMemPerWG = rock::getLDSSize(arch);
   // Collect kernel information from LLVM functions
   SmallVector<KernelInfo> kernels;
-  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels)))
+  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels))) {
     signalPassFailure();
-
-  // Restore host functions from the serialized attribute
-  if (!restoreHostFunctions(moduleOp)) {
-    // No host functions to restore
     return;
   }
 
-  // If we have kernels, create gpu.binary and convert calls to gpu.launch_func
+  // Restore host functions from the serialized attribute (if any).
+  bool hasHostFuncs = restoreHostFunctions(moduleOp);
+
+  // Create gpu.binary and (if host functions were restored) convert calls
+  // to gpu.launch_func. The gpu.binary is needed even without host functions
+  // so that downstream consumers (e.g. mlirGetKernelAttrs) can find kernel
+  // metadata.
   if (!kernels.empty()) {
     if (failed(createGpuBinaryAndLaunchFuncs(moduleOp, options, kernels)))
       signalPassFailure();
-    removeKernelFunctions(kernels);
+    // Only remove LLVM kernel functions when host functions were restored
+    // (gpu.launch_func now references the kernel via gpu.binary).
+    if (hasHostFuncs)
+      removeKernelFunctions(kernels);
   }
 }
