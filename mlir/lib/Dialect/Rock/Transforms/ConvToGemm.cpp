@@ -1604,6 +1604,40 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
     // Replace extra fusion input operands with their gemm versions.
     rock::replaceFusionExtraInputs(result, fusionInputMap);
 
+    // propagateOutputType rewired fusion ops (arith/math ops between the
+    // conv and the stores) to consume the gemm result, but
+    // ensureInsertionAfterDef may have placed the gemm *after* those ops
+    // in the block (when RegularizeOutput added transforms to the store
+    // dest past the fusion chain).  Move any such ops to just after the
+    // gemm so that SSA dominance holds.
+    {
+      DenseSet<Operation *> fusionOpSet;
+      SmallVector<Value> worklist;
+      worklist.push_back(result);
+      while (!worklist.empty()) {
+        Value current = worklist.pop_back_val();
+        for (OpOperand &use : current.getUses()) {
+          Operation *owner = use.getOwner();
+          if (!rock::isFusionOp(owner) || !fusionOpSet.insert(owner).second)
+            continue;
+          for (Value res : owner->getResults())
+            worklist.push_back(res);
+        }
+      }
+      SmallVector<Operation *> toMove;
+      for (Operation &blockOp : *newGemmOp->getBlock()) {
+        if (&blockOp == newGemmOp.getOperation())
+          break;
+        if (fusionOpSet.count(&blockOp))
+          toMove.push_back(&blockOp);
+      }
+      Operation *insertAfter = newGemmOp.getOperation();
+      for (Operation *fusionOp : toMove) {
+        fusionOp->moveAfter(insertAfter);
+        insertAfter = fusionOp;
+      }
+    }
+
     for (size_t i = 0; i < stores.size(); ++i) {
       StoreOp storeOp = stores[i];
       // For Fwd, the store destination has been output-transformed.
