@@ -392,7 +392,7 @@ void RockRestoreHostCodePass::runOnOperation() {
     signalPassFailure();
 
   // Restore host functions from the serialized attribute (if any).
-  restoreHostFunctions(moduleOp);
+  bool hasHostFuncs = restoreHostFunctions(moduleOp);
 
   // Create gpu.binary and (if host functions were restored) convert calls
   // to gpu.launch_func. The gpu.binary is needed even without host functions
@@ -401,6 +401,9 @@ void RockRestoreHostCodePass::runOnOperation() {
   if (!kernels.empty()) {
     if (failed(createGpuBinaryAndLaunchFuncs(moduleOp, options, kernels)))
       signalPassFailure();
-    removeKernelFunctions(kernels);
+    // Only remove LLVM kernel functions when host functions were restored
+    // (gpu.launch_func now references the kernel via gpu.binary).
+    if (hasHostFuncs)
+      removeKernelFunctions(kernels);
   }
 }
