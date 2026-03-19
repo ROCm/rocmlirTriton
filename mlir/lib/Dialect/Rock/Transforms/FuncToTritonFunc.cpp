@@ -397,7 +397,7 @@ void RockFuncToTritonFuncPass::runOnOperation() {
       funcsToProcess.push_back(funcOp);
   });
 
-  // Store kernel metadata as module attributes BEFORE converting to
+  // Store kernel metadata as module attributes before converting to
   // tt.func (which erases the func::FuncOp). These will be used later by
   // collectKernelInfo / RestoreHostCodePass.
   OpBuilder builder(&getContext());

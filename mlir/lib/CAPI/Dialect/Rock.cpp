@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
+#include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Support/LogicalResult.h"
 #include <cassert>
@@ -166,47 +167,24 @@ bool mlirIsModuleFusible(MlirModule module, MlirStringRef perfStr) {
 
 MLIR_CAPI_EXPORTED
 size_t mlirGetNumPrefillArgs(MlirModule module) {
-  auto mod = unwrap(module);
-  assert(mod.getRegion().getBlocks().size() == 1 &&
-         "expected a single block/function in a module");
-  size_t count = 0;
-  mod.walk([&](gpu::BinaryOp binary) {
-    auto kernelTable =
-        mlir::cast<gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
-    for (auto kernel : kernelTable) {
-      if (auto arr = kernel.getAttr<mlir::ArrayAttr>(
-              mlir::rock::PrefillAttr::getMnemonic())) {
-        count = arr.size();
-      }
-    }
-  });
-  return count;
+  auto arr = rock::getPrefillArrayFromBinary(unwrap(module));
+  return arr ? arr.size() : 0;
 }
 
 MLIR_CAPI_EXPORTED
 void mlirGetPrefillArgsInfo(MlirModule module, size_t *indices,
                             MlirAttribute *initValues, size_t length) {
-  auto mod = unwrap(module);
-  assert(mod.getRegion().getBlocks().size() == 1 &&
-         "expected a single block/function in a module");
-
-  mod.walk([&](gpu::BinaryOp binary) {
-    auto kernelTable =
-        mlir::cast<gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
-    for (auto kernel : kernelTable) {
-      if (auto arr = kernel.getAttr<mlir::ArrayAttr>(
-              mlir::rock::PrefillAttr::getMnemonic())) {
-        assert(arr.size() >= length && "length cannot exceed the attr size");
-        for (size_t i = 0; i < length; ++i) {
-          auto dict = mlir::cast<mlir::DictionaryAttr>(arr[i]);
-          indices[i] = mlir::cast<mlir::IntegerAttr>(dict.get("index"))
-                           .getValue()
-                           .getZExtValue();
-          initValues[i] = wrap(dict.get("value"));
-        }
-      }
-    }
-  });
+  auto arr = rock::getPrefillArrayFromBinary(unwrap(module));
+  if (!arr)
+    return;
+  assert(arr.size() >= length && "length cannot exceed the attr size");
+  for (size_t i = 0; i < length; ++i) {
+    auto dict = mlir::cast<mlir::DictionaryAttr>(arr[i]);
+    indices[i] = mlir::cast<mlir::IntegerAttr>(dict.get("index"))
+                     .getValue()
+                     .getZExtValue();
+    initValues[i] = wrap(dict.get("value"));
+  }
 }
 
 MLIR_CAPI_EXPORTED

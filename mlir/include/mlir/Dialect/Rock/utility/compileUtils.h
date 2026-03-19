@@ -56,6 +56,10 @@ FailureOr<std::pair<gpu::ObjectAttr, DenseMap<StringRef, size_t>>>
 createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
                 SmallVectorImpl<KernelInfo> &kernels);
 
+/// Retrieve the prefill argument array from the first kernel in the module's
+/// gpu.binary, or nullptr if none exists.
+ArrayAttr getPrefillArrayFromBinary(ModuleOp moduleOp);
+
 /// Parse a performance-config string into Triton and backend compilation
 /// options. Attempts to interpret `perfConfig` as a GemmParamsAttr or
 /// GemmGemmParamsAttr and populates `tritonOpts` (numWarps, numCTAs,

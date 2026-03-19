@@ -134,6 +134,20 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
   return success();
 }
 
+ArrayAttr getPrefillArrayFromBinary(ModuleOp moduleOp) {
+  ArrayAttr result;
+  moduleOp.walk([&](gpu::BinaryOp binary) {
+    auto kernelTable =
+        cast<gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
+    for (auto kernel : kernelTable) {
+      if (auto arr =
+              kernel.getAttr<ArrayAttr>(rock::PrefillAttr::getMnemonic()))
+        result = arr;
+    }
+  });
+  return result;
+}
+
 LogicalResult fillCompilationConfigs(Attribute perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts) {
