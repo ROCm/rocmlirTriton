@@ -28,86 +28,51 @@
 using namespace mlir;
 using namespace mlir::cpu;
 
+/// Match and tile N-dimensional elementwise ops (linalg.generic with N parallel
+/// iterator types) using tile size 8 for each dimension.
+static void tileElementwiseOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
+                               Value target, unsigned numDims) {
+  auto anyOpType = getAnyOpType(ctx);
+  auto parallelIterType =
+      linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel);
+
+  // Create iterator_types = [parallel, parallel, ...] with numDims elements
+  SmallVector<Attribute> iteratorTypes(numDims, parallelIterType);
+  auto opAttrs = DictionaryAttr::get(
+      ctx, {NamedAttribute(StringAttr::get(ctx, "iterator_types"),
+                           ArrayAttr::get(ctx, iteratorTypes))});
+
+  // Match linalg.generic ops with the specified iterator types
+  auto matchOp = ib.create<transform::MatchOp>(
+      /*resultTypes=*/anyOpType,
+      /*target=*/target,
+      /*ops=*/ArrayAttr::get(ctx, {StringAttr::get(ctx, "linalg.generic")}),
+      /*interface=*/transform::MatchInterfaceEnumAttr{},
+      /*opAttrs=*/opAttrs,
+      /*filterResultType=*/TypeAttr{},
+      /*filterOperandTypes=*/ArrayAttr{});
+
+  // Tile with size 8 for each dimension
+  SmallVector<Type> loopTypes(numDims, anyOpType);
+  SmallVector<int64_t> tileSizes(numDims, 8);
+  ib.create<transform::TileUsingForOp>(
+      /*loopTypes=*/loopTypes,
+      /*target=*/matchOp.getResult(),
+      /*staticTileSizes=*/tileSizes,
+      /*interchange=*/ArrayRef<int64_t>{},
+      /*scalableSizes=*/std::nullopt);
+}
+
 OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
   return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
     auto anyOpType = getAnyOpType(ctx);
 
-    // Helper to create parallel iterator type attribute
-    auto parallelIterType =
-        linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel);
-    auto linalgGenericOps =
-        ArrayAttr::get(ctx, {StringAttr::get(ctx, "linalg.generic")});
+    // Tile elementwise ops of different dimensions to prevent huge vectors
+    tileElementwiseOps(ib, ctx, arg, /*numDims=*/1);
+    tileElementwiseOps(ib, ctx, arg, /*numDims=*/2);
+    tileElementwiseOps(ib, ctx, arg, /*numDims=*/3);
 
-    // Match 1D elementwise ops: iterator_types = [parallel]
-    auto elemwise1DOpAttrs = DictionaryAttr::get(
-        ctx, {NamedAttribute(StringAttr::get(ctx, "iterator_types"),
-                             ArrayAttr::get(ctx, {parallelIterType}))});
-    auto matchElemwise1D = ib.create<transform::MatchOp>(
-        /*resultTypes=*/anyOpType,
-        /*target=*/arg,
-        /*ops=*/linalgGenericOps,
-        /*interface=*/transform::MatchInterfaceEnumAttr{},
-        /*opAttrs=*/elemwise1DOpAttrs,
-        /*filterResultType=*/TypeAttr{},
-        /*filterOperandTypes=*/ArrayAttr{});
-
-    // Tile 1D elementwise ops: tile_sizes [8]
-    SmallVector<Type> tile1DLoopTypes(1, anyOpType);
-    ib.create<transform::TileUsingForOp>(
-        /*loopTypes=*/tile1DLoopTypes,
-        /*target=*/matchElemwise1D.getResult(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{8},
-        /*interchange=*/ArrayRef<int64_t>{},
-        /*scalableSizes=*/std::nullopt);
-
-    // Match 2D elementwise ops: iterator_types = [parallel, parallel]
-    auto elemwise2DOpAttrs = DictionaryAttr::get(
-        ctx,
-        {NamedAttribute(
-            StringAttr::get(ctx, "iterator_types"),
-            ArrayAttr::get(ctx, {parallelIterType, parallelIterType}))});
-    auto matchElemwise2D = ib.create<transform::MatchOp>(
-        /*resultTypes=*/anyOpType,
-        /*target=*/arg,
-        /*ops=*/linalgGenericOps,
-        /*interface=*/transform::MatchInterfaceEnumAttr{},
-        /*opAttrs=*/elemwise2DOpAttrs,
-        /*filterResultType=*/TypeAttr{},
-        /*filterOperandTypes=*/ArrayAttr{});
-
-    // Tile 2D elementwise ops: tile_sizes [8, 8]
-    SmallVector<Type> tile2DLoopTypes(2, anyOpType);
-    ib.create<transform::TileUsingForOp>(
-        /*loopTypes=*/tile2DLoopTypes,
-        /*target=*/matchElemwise2D.getResult(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{8, 8},
-        /*interchange=*/ArrayRef<int64_t>{},
-        /*scalableSizes=*/std::nullopt);
-
-    // Match 3D elementwise ops: iterator_types = [parallel, parallel, parallel]
-    auto elemwise3DOpAttrs = DictionaryAttr::get(
-        ctx, {NamedAttribute(StringAttr::get(ctx, "iterator_types"),
-                             ArrayAttr::get(ctx, {parallelIterType,
-                                                  parallelIterType,
-                                                  parallelIterType}))});
-    auto matchElemwise3D = ib.create<transform::MatchOp>(
-        /*resultTypes=*/anyOpType,
-        /*target=*/arg,
-        /*ops=*/linalgGenericOps,
-        /*interface=*/transform::MatchInterfaceEnumAttr{},
-        /*opAttrs=*/elemwise3DOpAttrs,
-        /*filterResultType=*/TypeAttr{},
-        /*filterOperandTypes=*/ArrayAttr{});
-
-    // Tile 3D elementwise ops: tile_sizes [8, 8, 8]
-    SmallVector<Type> tile3DLoopTypes(3, anyOpType);
-    ib.create<transform::TileUsingForOp>(
-        /*loopTypes=*/tile3DLoopTypes,
-        /*target=*/matchElemwise3D.getResult(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{8, 8, 8},
-        /*interchange=*/ArrayRef<int64_t>{},
-        /*scalableSizes=*/std::nullopt);
-
+    // Now tile (and optionally fuse) the matmul
     auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
 
     SmallVector<Type> fuseLoopTypes(3, anyOpType);
