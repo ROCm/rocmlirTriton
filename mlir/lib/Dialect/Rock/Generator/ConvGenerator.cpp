@@ -475,9 +475,8 @@ LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,
     }
   };
 
-  // Conv-config uses CLI keys (e.g. --arch) so argMap has "arch", not "rock.arch"
   std::string arch;
-  strToStr("arch", arch);
+  strToStr(rock::ArchAttr::getMnemonic().str(), arch);
   RocmDeviceName splitter;
   if (failed(splitter.parse(arch))) {
     return failure();
@@ -500,8 +499,8 @@ LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,
   }
 
   strToStr("perf_config", config.perfConfig);
-  strToInt("num_cu", config.num_cu);
-  strToInt("num_chiplets", config.num_chiplets);
+  strToInt(rock::NumCUAttr::getMnemonic().str(), config.num_cu);
+  strToInt(rock::NumChipletsAttr::getMnemonic().str(), config.num_chiplets);
 
   // conv settings
   auto const op = getConvOpTypeForName(argMap["operation"]);
@@ -674,6 +673,8 @@ LogicalResult ConvGenerator::parseConvDims(int64_t batchSize, int64_t groupSize,
 void ConvGenerator::setKernelName(const std::string &newName) {
   config.kernelBaseName = newName;
 }
+
+void ConvGenerator::setKernelId(int id) { config.kernelId = id; }
 
 void ConvGenerator::setDataTypes(const std::string &dataTypeStr) {
   config.filterDataTypeStr = config.inputDataTypeStr =
