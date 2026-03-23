@@ -384,9 +384,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
   // Lower CPU verifier functions (host_naive_*) to LLVM.
   // This pass only affects functions marked with "rock.cpu_verifier" attribute,
-  // leaving other functions (main, wrappers) unchanged.
-  // Note: The pass uses bufferize_function_boundaries=false to keep tensor
-  // signatures, so callers don't need to be updated.
+  // leaving other functions (main, wrappers) unchanged.  
   pm.addPass(cpu::createCpuLowerVerifierPass());
   
   // Bufferize tensor ops to memref ops - required before linalg-to-loops
