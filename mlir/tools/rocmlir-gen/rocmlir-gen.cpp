@@ -5315,6 +5315,10 @@ static LogicalResult populateHostHarnessLogic(
   Block *block = func.addEntryBlock();
   b.setInsertionPoint(block, block->begin());
 
+  // Timer to measure JIT compilation time (time from library load to main start)
+  auto programStartFunc = makeFuncDecl(module, "programStart", {});
+  func::CallOp::create(b, loc, programStartFunc, ValueRange{});
+
   auto floatType = b.getF32Type();
   auto validationType = genValidation.getValue();
 
@@ -5417,6 +5421,11 @@ static LogicalResult populateHostHarnessLogic(
   const int64_t expectedCurrSeqLenIdx =
       !currentSeqLen.empty() ? (root0.params.size() - offsetFromEnd - 1) : -1;
 
+  // Timer for memory initialization
+  auto initTimerStartFunc = makeFuncDecl(module, "initTimerStart", {});
+  auto initTimerStopFunc = makeFuncDecl(module, "initTimerStop", {});
+  func::CallOp::create(b, loc, initTimerStartFunc, ValueRange{});
+
   for (auto [idx, paramType] : llvm::enumerate(root0.params)) {
     auto paramShapedType = dyn_cast<ShapedType>(paramType);
     assert(paramShapedType &&
@@ -5496,6 +5505,9 @@ static LogicalResult populateHostHarnessLogic(
     }
   }
 
+  // Stop memory initialization timer
+  func::CallOp::create(b, loc, initTimerStopFunc, ValueRange{});
+
   // capture result index
   if (outIndices.empty()) {
     outIndices.push_back(localVars.size() - 1);
@@ -5547,6 +5559,10 @@ static LogicalResult populateHostHarnessLogic(
     }
   };
 
+  // Timer for GPU kernel execution
+  auto gpuTimerStartFunc = makeFuncDecl(module, "gpuTimerStart", {});
+  auto gpuTimerStopFunc = makeFuncDecl(module, "gpuTimerStop", {});
+
   // Call the roots.
   for (auto &root : roots) {
     // Is the root also a kernel?
@@ -5555,9 +5571,15 @@ static LogicalResult populateHostHarnessLogic(
           return k.func == root.func;
         }) != kernels.end();
     if (rootKernel) {
+      // Start GPU timer before kernel execution
+      func::CallOp::create(b, loc, gpuTimerStartFunc, ValueRange{});
+
       // rootKernel calls will be redirected to GPU wrapper, which expects memrefs
       callFuncWithConversion(root.func, localVars, outIndices,
                              /*willBeWrapped=*/true);
+
+      // Stop GPU timer after kernel execution
+      func::CallOp::create(b, loc, gpuTimerStopFunc, ValueRange{});
     } else if (!valVars.empty()) {
       callFuncWithConversion(root.func, valVars, outIndices);
       if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {
