@@ -444,6 +444,9 @@ struct RockDetectFlashDecodingPass
           RockDetectFlashDecodingPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
+    if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
+      return;
+
     MLIRContext *ctx = &getContext();
 
     RewritePatternSet patterns(ctx);

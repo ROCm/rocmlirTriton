@@ -337,9 +337,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     }
   }
 
-  bool isHighLevel = hostPipelineSet.contains("highlevel") ||
-                     kernelPipelineSet.contains("highlevel");
-
   StringRef onlyArch;
   if (!targetList.empty())
     onlyArch = targetList.front();
@@ -347,46 +344,29 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     onlyArch = arch;
 
   StringRef targetArch = onlyArch;
-  bool hasKernels = false;
   // Right now we need to update the target architecture used when we
   // are running the kernel pipeline, or if we are running the highlevel host
   // pipeline.
   bool needsTargetArchUpdate =
       !kernelPipelineSet.empty() || hostPipelineSet.contains("highlevel");
   if (needsTargetArchUpdate) {
-    LogicalResult kernelResult = success();
-    // If sub-modules exists with kernel.chip specified and in set
-    // of targetChips, run KernelPipeline
-    module->walk([&](ModuleOp kernelModule) {
-      auto archAttr = kernelModule->getAttrOfType<StringAttr>(
-          rock::ArchAttr::getMnemonic());
-      hasKernels |= (bool)archAttr;
-      if (archAttr && llvm::find(targetList, archAttr.getValue())) {
-        kernelResult = runKernelPipeline(archAttr.getValue(), kernelModule,
-                                         kernelPipelineSet);
-        // Run host high-level pipeline if specified
-        if (hostPipelineSet.contains("highlevel"))
-          kernelResult = runHostHighLevelPipeline(kernelModule);
-
-        targetArch = archAttr.getValue();
+    // Determine arch from module attribute or command line.
+    if (onlyArch.empty()) {
+      if (module->hasAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic())) {
+        onlyArch =
+            module->getAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic())
+                .getValue();
       }
-    });
-    if (!hasKernels) {
-      // If no sub-modules, run KernelPipeline on top-level module
-      if (onlyArch.empty()) {
-        if (module->hasAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic())) {
-          onlyArch =
-              module->getAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic())
-                  .getValue();
-        }
-      }
-      targetArch = onlyArch;
-      kernelResult = runKernelPipeline(onlyArch, module, kernelPipelineSet);
-
-      // Run host high-level pipeline if specified
-      if (hostPipelineSet.contains("highlevel"))
-        kernelResult = runHostHighLevelPipeline(module);
     }
+    targetArch = onlyArch;
+
+    LogicalResult kernelResult =
+        runKernelPipeline(onlyArch, module, kernelPipelineSet);
+
+    // Run host high-level pipeline if specified
+    if (hostPipelineSet.contains("highlevel"))
+      kernelResult = runHostHighLevelPipeline(module);
+
     if (failed(kernelResult))
       return kernelResult;
   } else {
@@ -405,28 +385,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     }
     if (dumpPipelines) {
       llvm::errs() << "Custom pipeline:\n";
-      pm.printAsTextualPipeline(llvm::errs());
-      llvm::errs() << "\n";
-      if (module.getBody()->empty())
-        return success();
-    }
-    if (failed(pm.run(module))) {
-      return failure();
-    }
-  }
-
-  // Run Bufferization on the top module
-  if (isHighLevel && hasKernels) {
-    PassManager pm(module->getName(), PassManager::Nesting::Implicit);
-    if (failed(applyPassManagerCLOptions(pm)))
-      return failure();
-    pm.enableVerifier(!disableVerifyPasses);
-    rock::BufferizeOptions opts;
-    opts.disableRock = true;
-    rock::buildBufferizePipeline(pm, opts);
-
-    if (dumpPipelines) {
-      llvm::errs() << "Bufferization pipeline:\n";
       pm.printAsTextualPipeline(llvm::errs());
       llvm::errs() << "\n";
       if (module.getBody()->empty())
