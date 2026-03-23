@@ -25,17 +25,66 @@
 #include <cmath>
 #include <unordered_map>
 
+// Get program load time using function-local static (initialized on first call)
+// This measures time from first access, which happens at library load via constructor
+static std::chrono::steady_clock::time_point& getProgramLoadTime() {
+  static std::chrono::steady_clock::time_point loadTime = std::chrono::steady_clock::now();
+  return loadTime;
+}
+
+// Force initialization at library load via constructor attribute
+// Disable global-constructors warning for this specific function
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wglobal-constructors"
+static struct ProgramLoadTimeInitializer {
+  ProgramLoadTimeInitializer() { (void)getProgramLoadTime(); }
+} programLoadTimeInit;
+#pragma clang diagnostic pop
+
+// Called at the start of main() to measure JIT compilation time
+extern "C" void programStart() {
+  auto now = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration<double, std::milli>(now - getProgramLoadTime()).count();
+  printf("JIT compilation time: %.3f ms\n", elapsed);
+}
+
 // Timing utilities for CPU validation functions
-static std::chrono::steady_clock::time_point timerStartPoint;
+static std::chrono::steady_clock::time_point cpuTimerStartPoint;
 
 extern "C" void cpuTimerStart() {
-  timerStartPoint = std::chrono::steady_clock::now();
+  cpuTimerStartPoint = std::chrono::steady_clock::now();
 }
 
 extern "C" void cpuTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - timerStartPoint).count();
+  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - cpuTimerStartPoint).count();
   printf("CPU validation time: %.3f ms\n", elapsed);
+}
+
+// Timing utilities for GPU kernel execution
+static std::chrono::steady_clock::time_point gpuTimerStartPoint;
+
+extern "C" void gpuTimerStart() {
+  gpuTimerStartPoint = std::chrono::steady_clock::now();
+}
+
+extern "C" void gpuTimerStop() {
+  auto endPoint = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - gpuTimerStartPoint).count();
+  printf("GPU kernel time: %.3f ms\n", elapsed);
+}
+
+// Timing utilities for memory initialization
+static std::chrono::steady_clock::time_point initTimerStartPoint;
+
+extern "C" void initTimerStart() {
+  initTimerStartPoint = std::chrono::steady_clock::now();
+}
+
+extern "C" void initTimerStop() {
+  auto endPoint = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - initTimerStartPoint).count();
+  printf("Memory init time: %.3f ms\n", elapsed);
 }
 
 extern "C" void seedRandomValues(uint32_t seed) {
