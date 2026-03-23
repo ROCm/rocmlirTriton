@@ -3,6 +3,13 @@ https://arxiv.org/pdf/2003.00532
 https://arxiv.org/pdf/2404.15204
 https://arxiv.org/pdf/2409.03864
 
+## Large JIT time
+With certain IR inputs, we can get huge JIT times if we are not careful (in order of several seconds).
+This is because we unconditionally vectorize all IR in the `VectorizationSchedule`. 
+So, if the `linalg.generic` was not tiled, it can be vectorized with huge vector sizes, so the JIT will have a very hard time with this IR.
+
+To overcome this issue, in `TilingSchedule`, we make sure that we tile all the `linalg.generic` in the IR to a reasonable vector size (8).
+
 ## Loop Pipelining 
 
 I tried pipelining but it does not work
