@@ -702,6 +702,13 @@ static llvm::cl::opt<bool>
 static llvm::cl::alias aliasGenCPUKernel("prc",
                                          llvm::cl::aliasopt(genCPUKernel));
 
+static llvm::cl::opt<bool>
+    cpuTimers("cpu-timers",
+              llvm::cl::desc("Enable CPU timing instrumentation for JIT "
+                             "compilation, memory init, GPU kernel, and CPU "
+                             "validation"),
+              llvm::cl::init(false));
+
 // Input data spec
 static llvm::cl::opt<std::string> randomSeed(
     "rand",
@@ -5167,15 +5174,19 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
         exit(1);
       }
       // Start CPU timer
-      auto cpuTimerStartFunc = makeFuncDecl(module, "cpuTimerStart", {});
-      func::CallOp::create(b, loc, cpuTimerStartFunc, ValueRange{});
+      if (cpuTimers) {
+        auto cpuTimerStartFunc = makeFuncDecl(module, "cpuTimerStart", {});
+        func::CallOp::create(b, loc, cpuTimerStartFunc, ValueRange{});
+      }
 
       auto cpuGemmFunc = createCpuGemmKernelWithMlir(module, genParams);
       callTensorFuncWithMemrefs(b, loc, cpuGemmFunc, valVars, outIndices);
 
       // Stop CPU timer and print elapsed time
-      auto cpuTimerStopFunc = makeFuncDecl(module, "cpuTimerStop", {});
-      func::CallOp::create(b, loc, cpuTimerStopFunc, ValueRange{});
+      if (cpuTimers) {
+        auto cpuTimerStopFunc = makeFuncDecl(module, "cpuTimerStop", {});
+        func::CallOp::create(b, loc, cpuTimerStopFunc, ValueRange{});
+      }
     } else if (genParams.operation == rock::KernelType::Attention) {
       if (validationType == "cpp") {
         llvm::errs() << "External attention validator is not available\n";
@@ -5316,8 +5327,10 @@ static LogicalResult populateHostHarnessLogic(
   b.setInsertionPoint(block, block->begin());
 
   // Timer to measure JIT compilation time (time from library load to main start)
-  auto programStartFunc = makeFuncDecl(module, "programStart", {});
-  func::CallOp::create(b, loc, programStartFunc, ValueRange{});
+  if (cpuTimers) {
+    auto programStartFunc = makeFuncDecl(module, "programStart", {});
+    func::CallOp::create(b, loc, programStartFunc, ValueRange{});
+  }
 
   auto floatType = b.getF32Type();
   auto validationType = genValidation.getValue();
@@ -5422,9 +5435,12 @@ static LogicalResult populateHostHarnessLogic(
       !currentSeqLen.empty() ? (root0.params.size() - offsetFromEnd - 1) : -1;
 
   // Timer for memory initialization
-  auto initTimerStartFunc = makeFuncDecl(module, "initTimerStart", {});
-  auto initTimerStopFunc = makeFuncDecl(module, "initTimerStop", {});
-  func::CallOp::create(b, loc, initTimerStartFunc, ValueRange{});
+  func::FuncOp initTimerStopFunc;
+  if (cpuTimers) {
+    auto initTimerStartFunc = makeFuncDecl(module, "initTimerStart", {});
+    initTimerStopFunc = makeFuncDecl(module, "initTimerStop", {});
+    func::CallOp::create(b, loc, initTimerStartFunc, ValueRange{});
+  }
 
   for (auto [idx, paramType] : llvm::enumerate(root0.params)) {
     auto paramShapedType = dyn_cast<ShapedType>(paramType);
@@ -5506,7 +5522,9 @@ static LogicalResult populateHostHarnessLogic(
   }
 
   // Stop memory initialization timer
-  func::CallOp::create(b, loc, initTimerStopFunc, ValueRange{});
+  if (cpuTimers) {
+    func::CallOp::create(b, loc, initTimerStopFunc, ValueRange{});
+  }
 
   // capture result index
   if (outIndices.empty()) {
@@ -5560,8 +5578,11 @@ static LogicalResult populateHostHarnessLogic(
   };
 
   // Timer for GPU kernel execution
-  auto gpuTimerStartFunc = makeFuncDecl(module, "gpuTimerStart", {});
-  auto gpuTimerStopFunc = makeFuncDecl(module, "gpuTimerStop", {});
+  func::FuncOp gpuTimerStartFunc, gpuTimerStopFunc;
+  if (cpuTimers) {
+    gpuTimerStartFunc = makeFuncDecl(module, "gpuTimerStart", {});
+    gpuTimerStopFunc = makeFuncDecl(module, "gpuTimerStop", {});
+  }
 
   // Call the roots.
   for (auto &root : roots) {
@@ -5572,14 +5593,18 @@ static LogicalResult populateHostHarnessLogic(
         }) != kernels.end();
     if (rootKernel) {
       // Start GPU timer before kernel execution
-      func::CallOp::create(b, loc, gpuTimerStartFunc, ValueRange{});
+      if (cpuTimers) {
+        func::CallOp::create(b, loc, gpuTimerStartFunc, ValueRange{});
+      }
 
       // rootKernel calls will be redirected to GPU wrapper, which expects memrefs
       callFuncWithConversion(root.func, localVars, outIndices,
                              /*willBeWrapped=*/true);
 
       // Stop GPU timer after kernel execution
-      func::CallOp::create(b, loc, gpuTimerStopFunc, ValueRange{});
+      if (cpuTimers) {
+        func::CallOp::create(b, loc, gpuTimerStopFunc, ValueRange{});
+      }
     } else if (!valVars.empty()) {
       callFuncWithConversion(root.func, valVars, outIndices);
       if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {
@@ -6091,6 +6116,11 @@ int main(int argc, char **argv) {
     llvm::errs()
         << "--kernel-repeats is only supported with host harness (-ph) or "
            "CPU validation (-pv).\n";
+    return EXIT_FAILURE;
+  }
+
+  if (cpuTimers && !genHostHarness) {
+    llvm::errs() << "--cpu-timers requires host harness generation\n";
     return EXIT_FAILURE;
   }
 
