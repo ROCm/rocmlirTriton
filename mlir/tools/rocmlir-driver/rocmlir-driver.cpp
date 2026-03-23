@@ -337,9 +337,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     }
   }
 
-  bool isHighLevel = hostPipelineSet.contains("highlevel") ||
-                     kernelPipelineSet.contains("highlevel");
-
   StringRef onlyArch;
   if (!targetList.empty())
     onlyArch = targetList.front();
@@ -347,7 +344,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     onlyArch = arch;
 
   StringRef targetArch = onlyArch;
-  bool hasKernels = false;
   // Right now we need to update the target architecture used when we
   // are running the kernel pipeline, or if we are running the highlevel host
   // pipeline.
@@ -363,8 +359,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       }
     }
     targetArch = onlyArch;
-    hasKernels =
-        module->hasAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic());
 
     LogicalResult kernelResult =
         runKernelPipeline(onlyArch, module, kernelPipelineSet);
