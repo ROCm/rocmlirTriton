@@ -1,6 +1,7 @@
 ## 1. Introduction
 The code is under `mlir/lib/Dialect/CPU/Transforms`.
 We use the [Transform dialect](https://mlir.llvm.org/docs/Dialects/Transform/) to optimize the CPU code.
+You can use the `--cpu-timers` option to measure different parts of CPU runtime.
 
 ## 1.1 Directory Structure
 
