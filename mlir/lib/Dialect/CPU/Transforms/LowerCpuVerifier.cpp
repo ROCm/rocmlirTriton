@@ -401,35 +401,10 @@ void CpuLowerVerifierPass::runOnOperation() {
   TransformSchedules &schedules = maybeSchedules.value();
 
   // Lower each function in isolation using the transform interpreter
-  // Pipeline: Pre → Optimization → Post → Pre → Vectorization → Post → Pre → Lowering → Post
   for (func::FuncOp func : cpuVerifierFuncs) {
     if (failed(lowerSingleFunction(func, schedules))) {
       return signalPassFailure();
     }
-  }
-
-  // Ensure memrefCopy declaration exists if any llvm.call @memrefCopy was generated
-  // The MemRefToLLVM conversion generates calls to memrefCopy but doesn't create
-  // the declaration automatically
-  bool hasMemrefCopyCall = false;
-  module.walk([&](LLVM::CallOp callOp) {
-    if (callOp.getCallee() && *callOp.getCallee() == "memrefCopy")
-      hasMemrefCopyCall = true;
-  });
-
-  if (hasMemrefCopyCall && !module.lookupSymbol<LLVM::LLVMFuncOp>("memrefCopy")) {
-    OpBuilder builder(ctx);
-    builder.setInsertionPointToStart(module.getBody());
-
-    // memrefCopy signature: void memrefCopy(i64 elemSize, ptr src, ptr dst)
-    auto ptrType = LLVM::LLVMPointerType::get(ctx);
-    auto i64Type = IntegerType::get(ctx, 64);
-    auto voidType = LLVM::LLVMVoidType::get(ctx);
-    auto funcType = LLVM::LLVMFunctionType::get(voidType, {i64Type, ptrType, ptrType});
-
-    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "memrefCopy", funcType,
-                                     LLVM::Linkage::External);
-    LLVM_DEBUG(llvm::dbgs() << "Created memrefCopy declaration\n");
   }
 
   LLVM_DEBUG(llvm::dbgs() << "CPU verifier lowering completed\n");
