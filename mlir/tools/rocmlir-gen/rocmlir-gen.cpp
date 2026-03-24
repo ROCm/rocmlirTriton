@@ -650,7 +650,7 @@ static llvm::cl::alias
 static llvm::cl::opt<std::string> genValidation(
     "verifier",
     llvm::cl::desc(
-        "Select verification from: none(default), cpu, gpu, mlir, clone"),
+        "Select verification from: none(default), cpu, mlir, clone"),
     llvm::cl::cb<void, std::string>([](const std::string &v) {
       if (!v.empty())
         genHostHarness = true;
@@ -2726,8 +2726,7 @@ static Value normalizeScaleShape(OpBuilder b, Location loc, Value scale,
 }
 
 static func::FuncOp createGpuGemmKernel(ModuleOp module,
-                                        const GenParams &params,
-                                        bool isVerifier = false) {
+                                        const GenParams &params) {
   MLIRContext *ctx = module.getContext();
   Location loc = module->getLoc();
   OpBuilder b(ctx);
@@ -2741,7 +2740,6 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   getGemmTypes(params.types, argTypes,
                /*isCpuVerifier=*/false);
   constexpr StringLiteral kernelName("rock_gemm");
-  constexpr StringLiteral kernelNameVerifier("rock_gemm_ver");
   IntegerAttr numCUAttr =
       (num_cu.getNumOccurrences() > 0
            ? b.getI64IntegerAttr(num_cu)
@@ -2801,9 +2799,9 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   funcArgTypes.push_back(cFlatType);
   funcArgLogicalTypes.push_back(cType);
 
-  auto func =
-      func::FuncOp::create(b, loc, isVerifier ? kernelNameVerifier : kernelName,
-                           b.getFunctionType(funcArgTypes, {cFlatType}), funcAttrs);
+  auto func = func::FuncOp::create(b, loc, kernelName,
+                                   b.getFunctionType(funcArgTypes, {cFlatType}),
+                                   funcAttrs);
 
   Block *block = func.addEntryBlock();
   b.setInsertionPointToStart(block);
@@ -5028,101 +5026,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
                                   KernelIF &root0) {
   auto validationType = genValidation.getValue();
   auto loc = b.getUnknownLoc();
-  bool heuristicValidation =
-      !genVerifierKeepPerfConfig && !genParams.perfConfig.empty();
-  bool isSmallFloatIn = false;
-  if (!genParams.types.empty()) {
-    FloatType ftype, itype;
-    if ((ftype = dyn_cast<FloatType>(genParams.types[0])) &&
-        (itype = dyn_cast<FloatType>(genParams.types[1])))
-      isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
-  }
-  bool gpuValidation = validationType == "gpu" &&
-                        (isSmallFloatIn || heuristicValidation);
-  // TODO(roctriton): remove gpuValidation
-  if (gpuValidation) {
-    if (genParams.convConfig.has_value()) { // conv GPU validation
-      // generate generic kernels
-      const auto &genConfig = **genParams.convConfig;
-      rock::ConvGenerator convGenerator(genConfig);
-      if (heuristicValidation) {
-        convGenerator.setPerfConfig("");
-      }
-      // use non-accel kernels to verify accel kernels except when
-      // verifying a tuning case
-      // convGenerator.flipAccel();
-      if (!(heuristicValidation) &&
-            genConfig.inputDataTypeStr == "i8")
-        // use f32 data type to verify non-f32 or xdlops f32 kernels
-        // except that i8 xdlops or tuned is verified with i8 non-xdlops.
-        convGenerator.setDataTypes("f32");
 
-      int kernelStart = genConfig.kernelId;
-      int kernelCount = 0;
-      if (failed(convGenerator.getKernelCount(b, kernelCount))) {
-        llvm::errs() << "Getting kernel count failed.\n";
-        exit(1);
-      }
-      if (kernelStart < 0) {
-        kernelStart = 0;
-      } else {
-        kernelCount = kernelStart + 1;
-      }
-      // generate all sub-kernels, and get corresponding gemmId
-      std::string kernelBaseName = genConfig.kernelBaseName;
-      SmallVector<KernelIF, 8> kernelIFFuncs;
-      for (int i = kernelStart; i < kernelCount; ++i) {
-        convGenerator.setKernelName(kernelBaseName + "_" + std::to_string(i));
-        if (failed(convGenerator.genConvModule(module, i, true,
-                                               /*ignoreTuning=*/true))) {
-          llvm::errs() << "Module population failed.\n";
-          exit(1);
-        }
-        kernelIFFuncs.push_back(convGenerator.getKernelFunc());
-      }
-      // Decide whether to trim the last workspace argument to the verifier
-      // GPU kernel.
-      rock::ConvGenerator originalConvGenerator(genConfig);
-      bool originalHasWorkspace = false, verifierHasWorkspace = false;
-      if (failed(originalConvGenerator.hasWorkspace(b, originalHasWorkspace))) {
-        llvm::errs() << "Getting workspace failed.\n";
-        exit(1);
-      }
-      if (failed(convGenerator.hasWorkspace(b, verifierHasWorkspace))) {
-        llvm::errs() << "Getting workspace failed.\n";
-        exit(1);
-      }
-      if (originalHasWorkspace && !verifierHasWorkspace) {
-        valVars.resize(valVars.size() - 1);
-      }
-      auto kernelWrapperFunc = createGPUWrapper(module, kernelBaseName + "_ver",
-                                                kernelIFFuncs, genParams);
-      func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
-      convGenerator.setKernelName(kernelBaseName);
-    } else { // gemm GPU validation
-      // TODO(roctriton): remove gpu validation
-      GenParams newParams = genParams;
-
-      if (heuristicValidation)
-        newParams.perfConfig = "";
-      // newParams.features = bitEnumClear(genParams.features,
-      //                                   mlir::rock::GemmFeatures::mfma |
-      //                                       mlir::rock::GemmFeatures::wmma);
-
-      if (!heuristicValidation && genParams.types[0].isInteger(8)) {
-        // use f32 data type to verify non-f32 or xdlops f32 kernels
-        // except that i8 xdops is verified with i8 non-xdolps and tuned i8 is
-        // verified with itself in heuristic mode.
-        newParams.types = SmallVector<Type>(5, b.getF32Type());
-      }
-
-      KernelIF kernel(
-          createGpuGemmKernel(module, newParams, /*isVerifier=*/true));
-      auto kernelWrapperFunc = createGPUWrapper(
-          module, kernel.func.getName().str(), {kernel}, genParams);
-      func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
-    }
-  } else if (validationType != "clone") { // -pv_with_cpp or -pv_with_mlir (-pv)
+  if (validationType != "clone") { // -pv_with_cpp or -pv_with_mlir (-pv)
     // Emit call to host_<conv>
     if (genParams.operation == rock::KernelType::ConvElementwiseGemm) {
       if (validationType == "cpp") {
