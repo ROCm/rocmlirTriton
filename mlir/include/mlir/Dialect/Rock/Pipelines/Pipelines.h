@@ -26,7 +26,8 @@ namespace rock {
 // Building and Registering.
 //===----------------------------------------------------------------------===//
 
-//===--- Highlevel Pipeline ------------------------------------------------===//
+//===--- Highlevel Pipeline
+//------------------------------------------------===//
 struct HighlevelOptions : public PassPipelineOptions<HighlevelOptions> {
 
   PassOptions::Option<bool> disableRock{

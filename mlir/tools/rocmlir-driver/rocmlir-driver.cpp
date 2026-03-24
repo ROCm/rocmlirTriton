@@ -52,11 +52,12 @@ static cl::opt<std::string> outputFilename("o", cl::desc("Output filename"),
                                            cl::value_desc("filename"),
                                            cl::init("-"));
 
-static cl::opt<std::string> kernelPipeline(
-    "kernel-pipeline", cl::desc("rocmlir-driver kernel pipeline list"),
-    cl::value_desc("comma separated list of rock pipelines: "
-                   "migraphx,highlevel,gpu,binary or full"),
-    cl::init(""));
+static cl::opt<std::string>
+    kernelPipeline("kernel-pipeline",
+                   cl::desc("rocmlir-driver kernel pipeline list"),
+                   cl::value_desc("comma separated list of rock pipelines: "
+                                  "migraphx,highlevel,gpu,binary or full"),
+                   cl::init(""));
 
 static cl::opt<std::string>
     hostPipeline("host-pipeline", cl::desc("rocmlir-driver host pipeline list"),
@@ -149,9 +150,9 @@ detachFuncs(ModuleOp module,
       continue;
 
     OpBuilder stubBuilder(funcOp);
-    auto stub = func::FuncOp::create(stubBuilder, funcOp.getLoc(),
-                                     funcOp.getName(),
-                                     funcOp.getFunctionType());
+    auto stub =
+        func::FuncOp::create(stubBuilder, funcOp.getLoc(), funcOp.getName(),
+                             funcOp.getFunctionType());
     stub.setVisibility(SymbolTable::Visibility::Private);
 
     funcOp->remove();
@@ -190,9 +191,9 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
               mlir::function_ref<void(PassManager &)> buildPipeline) {
   DetachedFuncs detached = detachFuncs(module, detachPredicate);
 
-  bool hasTargetFuncs = llvm::any_of(
-      module.getOps<func::FuncOp>(),
-      [](func::FuncOp f) { return !f.isDeclaration(); });
+  bool hasTargetFuncs =
+      llvm::any_of(module.getOps<func::FuncOp>(),
+                   [](func::FuncOp f) { return !f.isDeclaration(); });
 
   PassManager pm(module->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
@@ -361,17 +362,15 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
 
   // Phase 1: MIGraphX lowering (host and kernel independently)
   if (hostPipelineSet.contains("migraphx")) {
-    if (failed(runWithDetach(module, "Host MIGraphX", isKernel,
-                             [](PassManager &pm) {
-                               migraphx::addHighLevelPipeline(pm);
-                             })))
+    if (failed(runWithDetach(
+            module, "Host MIGraphX", isKernel,
+            [](PassManager &pm) { migraphx::addHighLevelPipeline(pm); })))
       return failure();
   }
   if (kernelPipelineSet.contains("migraphx")) {
-    if (failed(runWithDetach(module, "Kernel MIGraphX", isHost,
-                             [](PassManager &pm) {
-                               migraphx::addHighLevelPipeline(pm);
-                             })))
+    if (failed(runWithDetach(
+            module, "Kernel MIGraphX", isHost,
+            [](PassManager &pm) { migraphx::addHighLevelPipeline(pm); })))
       return failure();
   }
 
@@ -385,10 +384,9 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       return failure();
   }
   if (kernelPipelineSet.contains("highlevel")) {
-    if (failed(runWithDetach(module, "Kernel Highlevel", isHost,
-                             [](PassManager &pm) {
-                               rock::buildHighlevelPipeline(pm);
-                             })))
+    if (failed(runWithDetach(
+            module, "Kernel Highlevel", isHost,
+            [](PassManager &pm) { rock::buildHighlevelPipeline(pm); })))
       return failure();
   }
 
