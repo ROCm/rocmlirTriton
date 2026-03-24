@@ -39,14 +39,14 @@ namespace cpu {
 struct TransformSchedules {
   OwningOpRef<ModuleOp> preModule;          // canonicalize + cse
   OwningOpRef<ModuleOp> postModule;         // LICM + hoisting
-  OwningOpRef<ModuleOp> optimizationModule; // tiling
+  OwningOpRef<ModuleOp> tilingModule;       // tiling
   OwningOpRef<ModuleOp> vectorizationModule;// vectorization
   OwningOpRef<ModuleOp> unrollModule;       // loop unrolling
   OwningOpRef<ModuleOp> loweringModule;     // bufferization + LLVM lowering
 
   /// Check if all modules were parsed successfully
   bool isValid() const {
-    return preModule && postModule && optimizationModule &&
+    return preModule && postModule && tilingModule &&
            vectorizationModule && unrollModule && loweringModule;
   }
 };
