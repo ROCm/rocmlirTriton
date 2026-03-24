@@ -116,11 +116,16 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     }
   });
 
-  if (argsToConvert.empty())
-    return;
-
   // Step 2: Build new function type with tt.ptr arguments
   FunctionType funcType = funcOp.getFunctionType();
+
+  bool hasTensorArgs = llvm::any_of(
+      funcType.getInputs(),
+      [](Type t) { return isa<RankedTensorType>(t); });
+
+  if (argsToConvert.empty() && !hasTensorArgs)
+    return;
+
   SmallVector<Type> newInputTypes;
   DenseMap<unsigned, Type> argElementTypes;
 

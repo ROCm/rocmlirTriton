@@ -388,8 +388,10 @@ void RockRestoreHostCodePass::runOnOperation() {
   int maxSharedMemPerWG = rock::getLDSSize(arch);
   // Collect kernel information from LLVM functions
   SmallVector<KernelInfo> kernels;
-  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels)))
+  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels))) {
     signalPassFailure();
+    return;
+  }
 
   // Restore host functions from the serialized attribute (if any).
   bool hasHostFuncs = restoreHostFunctions(moduleOp);

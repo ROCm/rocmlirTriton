@@ -25,9 +25,9 @@ struct PrefillInfo {
 struct KernelInfo {
   std::string name;
   LLVM::LLVMFuncOp llvmFunc;
-  int64_t gridSize;
-  int64_t blockSize;
-  int64_t sharedMemorySize;
+  int64_t gridSize = -1;
+  int64_t blockSize = -1;
+  int64_t sharedMemorySize = 0;
   SmallVector<Type> argTypes;
   SmallVector<PrefillInfo> prefillArgs;
 };
@@ -56,8 +56,9 @@ FailureOr<std::pair<gpu::ObjectAttr, DenseMap<StringRef, size_t>>>
 createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
                 SmallVectorImpl<KernelInfo> &kernels);
 
-/// Retrieve the prefill argument array from the first kernel in the module's
-/// gpu.binary, or nullptr if none exists.
+/// Retrieve the prefill argument array from the module's gpu.binary, or
+/// nullptr if none exists. Asserts that at most one kernel carries prefill
+//  args.
 ArrayAttr getPrefillArrayFromBinary(ModuleOp moduleOp);
 
 /// Parse a performance-config string into Triton and backend compilation

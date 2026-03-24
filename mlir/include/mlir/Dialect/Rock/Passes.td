@@ -288,10 +288,12 @@ def RockRestoreHostCodePass : Pass<"rock-restore-host-code", "::mlir::ModuleOp">
     This allows the full test harness to work with the Triton-compiled kernel.
   }];
   let dependentDialects = [
+    "bufferization::BufferizationDialect",
     "func::FuncDialect",
     "gpu::GPUDialect",
     "arith::ArithDialect",
     "memref::MemRefDialect",
+    "ROCDL::ROCDLDialect",
   ];
   let options = [
     Option<"triple", "triple", "std::string", "\"amdgcn-amd-amdhsa\"",
