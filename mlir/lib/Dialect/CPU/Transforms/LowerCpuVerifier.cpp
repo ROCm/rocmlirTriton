@@ -181,17 +181,21 @@ LogicalResult CpuLowerVerifierPass::updateCallSites(ModuleOp module,
     auto newCall = builder.create<func::CallOp>(
         loc, funcName, loweredFunc.getResultTypes(), memrefArgs);
 
-    // Find and remove the to_buffer and copy ops that use the old result
-    // The new call returns a memref directly, so we don't need to_buffer anymore
-    if (!callOp.getResults().empty()) {
-      Value oldResult = callOp.getResult(0);
+    // Verify result counts match - bufferization should preserve the number of results
+    if (callOp.getNumResults() != newCall.getNumResults()) {
+      return callOp.emitError("result count mismatch after bufferization: ")
+             << "original call has " << callOp.getNumResults()
+             << " results, but lowered function has " << newCall.getNumResults();
+    }
+
+    // Find and remove the to_buffer and copy ops that use the old results
+    // The new call returns memrefs directly, so we don't need to_buffer anymore
+    for (unsigned i = 0; i < callOp.getNumResults(); ++i) {
+      Value oldResult = callOp.getResult(i);
       for (Operation *user : llvm::make_early_inc_range(oldResult.getUsers())) {
         if (auto toBufferOp = dyn_cast<bufferization::ToBufferOp>(user)) {
-          // Replace uses of to_buffer result with the new call's result
-          // (if the function returns a memref)
-          if (!newCall.getResults().empty()) {
-            toBufferOp.getResult().replaceAllUsesWith(newCall.getResult(0));
-          }
+          // Replace uses of to_buffer result with the new call's corresponding result
+          toBufferOp.getResult().replaceAllUsesWith(newCall.getResult(i));
           // Find and remove the copy that uses the to_buffer result
           Value buffer = toBufferOp.getResult();
           for (Operation *bufUser :
