@@ -4,7 +4,7 @@
 // TODO(rocmlirTriton): Add dummy check to make FileCheck happy
 // CHECK: module
 
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -targets %arch |  rocmlir-driver -arch %arch -c --mlir-print-ir-after=rock-transforms-to-ptr -o /dev/null 2>&1 | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch |  rocmlir-driver -arch %arch -c --mlir-print-ir-after=rock-transforms-to-ptr -o /dev/null 2>&1 | FileCheck %s
 
 // TODO(rocmlirTriton): Fix this test
 

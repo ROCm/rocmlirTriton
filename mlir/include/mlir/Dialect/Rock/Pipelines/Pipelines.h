@@ -26,17 +26,17 @@ namespace rock {
 // Building and Registering.
 //===----------------------------------------------------------------------===//
 
-//===--- Bufferize Pipeline -----------------------------------------------===//
-struct BufferizeOptions : public PassPipelineOptions<BufferizeOptions> {
+//===--- Highlevel Pipeline ------------------------------------------------===//
+struct HighlevelOptions : public PassPipelineOptions<HighlevelOptions> {
 
   PassOptions::Option<bool> disableRock{
       *this, "disable-rock",
       desc("Disable Rock dialect targeting when bufferizing"), init(false)};
 };
 
-/// Adds the `bufferize` pipeline to the `OpPassManager`.
-void buildBufferizePipeline(OpPassManager &pm,
-                            const BufferizeOptions &options = {});
+/// Adds the `highlevel` pipeline to the `OpPassManager`.
+void buildHighlevelPipeline(OpPassManager &pm,
+                            const HighlevelOptions &options = {});
 
 //===--- Kernel Pipeline --------------------------------------------------===//
 struct KernelOptions : public PassPipelineOptions<KernelOptions> {

@@ -32,8 +32,6 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -57,7 +55,7 @@ static cl::opt<std::string> outputFilename("o", cl::desc("Output filename"),
 static cl::opt<std::string> kernelPipeline(
     "kernel-pipeline", cl::desc("rocmlir-driver kernel pipeline list"),
     cl::value_desc("comma separated list of rock pipelines: "
-                   "migraphx,highlevel,gpu,rocdl,binary or full"),
+                   "migraphx,highlevel,gpu,binary or full"),
     cl::init(""));
 
 static cl::opt<std::string>
@@ -92,15 +90,6 @@ static cl::opt<bool> barePointers(
     "bare-ptr-memref-kernels",
     cl::desc("Use bare pointers to represent memrefs when calling kernels"),
     cl::init(true));
-
-static cl::opt<bool> hostAsyncCoroutines(
-    "host-async-coroutines",
-    cl::desc("Use coroutines when lowering async ops to LLVM"),
-    // FIXME: This should be true to match upstream
-    cl::init(false));
-
-static cl::opt<std::string> targets("targets", cl::desc("list of target"),
-                                    cl::init(""));
 
 static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
@@ -153,7 +142,6 @@ static DetachedFuncs
 detachFuncs(ModuleOp module,
             mlir::function_ref<bool(func::FuncOp)> shouldDetach) {
   DetachedFuncs detached;
-  OpBuilder builder(module.getContext());
 
   for (auto funcOp :
        llvm::make_early_inc_range(module.getOps<func::FuncOp>())) {
@@ -165,7 +153,6 @@ detachFuncs(ModuleOp module,
                                      funcOp.getName(),
                                      funcOp.getFunctionType());
     stub.setVisibility(SymbolTable::Visibility::Private);
-    stub->setAttr("__rock_stub", builder.getUnitAttr());
 
     funcOp->remove();
     detached.entries.push_back({funcOp, stub});
@@ -174,56 +161,19 @@ detachFuncs(ModuleOp module,
   return detached;
 }
 
-// Fix up call sites when a reattached function has additional input
-// arguments compared to the stub it replaces (e.g. InsertOutputStoresPass
-// appends output tensor arguments to the kernel signature).
-static void fixupCallSites(ModuleOp module, StringRef funcName,
-                           mlir::FunctionType oldType,
-                           mlir::FunctionType newType) {
-  unsigned oldNumInputs = oldType.getNumInputs();
-  unsigned newNumInputs = newType.getNumInputs();
-
-  if (oldNumInputs == newNumInputs)
-    return;
-
-  assert(newNumInputs > oldNumInputs &&
-         "reattached function has fewer arguments than stub");
-
-  module.walk([&](func::CallOp callOp) {
-    if (callOp.getCallee() != funcName)
-      return;
-
-    OpBuilder builder(callOp);
-    SmallVector<mlir::Value> newOperands(callOp.getOperands());
-
-    for (unsigned i = oldNumInputs; i < newNumInputs; ++i) {
-      mlir::Type argType = newType.getInput(i);
-      auto tensorType = cast<RankedTensorType>(argType);
-      mlir::Value empty = tensor::EmptyOp::create(
-          builder, callOp.getLoc(), tensorType, ValueRange{});
-      newOperands.push_back(empty);
-    }
-
-    auto newCall = func::CallOp::create(
-        builder, callOp.getLoc(), funcName, newType.getResults(),
-        static_cast<ValueRange>(newOperands));
-    callOp.replaceAllUsesWith(newCall.getResults());
-    callOp.erase();
-  });
-}
-
 // Re-insert previously detached functions into the module, replacing
-// their stubs. Fixes up call sites if signatures changed.
+// their stubs.
 static void reattachFuncs(ModuleOp module, DetachedFuncs &detached) {
   for (auto &entry : detached.entries) {
     auto *realFunc = entry.realFunc;
     auto stub = entry.stub;
 
-    mlir::FunctionType oldType = stub.getFunctionType();
-    mlir::FunctionType newType =
+    mlir::FunctionType stubType = stub.getFunctionType();
+    mlir::FunctionType realType =
         cast<func::FuncOp>(realFunc).getFunctionType();
-    if (oldType != newType)
-      fixupCallSites(module, stub.getName(), oldType, newType);
+    assert(stubType == realType &&
+           "detached function signature changed during pipeline execution; "
+           "no callers should exist to fixup");
 
     stub->getBlock()->getOperations().insert(stub->getIterator(), realFunc);
     stub.erase();
@@ -242,7 +192,7 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
 
   bool hasTargetFuncs = llvm::any_of(
       module.getOps<func::FuncOp>(),
-      [](func::FuncOp f) { return !f->hasAttr("__rock_stub"); });
+      [](func::FuncOp f) { return !f.isDeclaration(); });
 
   PassManager pm(module->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
@@ -273,8 +223,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
   pm.enableVerifier(!disableVerifyPasses);
-  bool needArch = kernelPipelineSet.contains("rocdl") ||
-                  kernelPipelineSet.contains("binary");
+  bool needArch = kernelPipelineSet.contains("binary");
   RocmDeviceName devName;
   if (arch.empty() && needArch) {
     llvm::errs()
@@ -300,9 +249,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     return failure();
   }
   backendOpts.optLevel = optLevel;
-  bool isRocdlOnly = kernelPipelineSet.contains("rocdl") &&
-                     !kernelPipelineSet.contains("binary");
-  backendOpts.compile = !isRocdlOnly;
 
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
   OpBuilder builder(m.getContext());
@@ -358,8 +304,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
 
     rock::buildTritonPipeline(pm, tritonOpts);
   }
-  if (kernelPipelineSet.contains("binary") || isRocdlOnly) {
-
+  if (kernelPipelineSet.contains("binary")) {
     rock::buildBackendPipeline(pm, backendOpts);
   }
 
@@ -380,24 +325,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
 static LogicalResult runMLIRPasses(ModuleOp &module,
                                    mlir::PassPipelineCLParser &passPipeline) {
 
-  llvm::SmallVector<std::string, 4> targetList;
-  StringRef targetsStr = targets.getValue();
-  SmallVector<StringRef, 4> tokens;
-  targetsStr.split(tokens, ',');
-  for (auto str : tokens) {
-    auto target = str.trim();
-    if (!target.empty()) {
-      RocmDeviceName targetDevName;
-      if (failed(targetDevName.parse(target))) {
-        llvm::errs() << "Invalid target " << target << " in --targets\n";
-        return failure();
-      }
-      SmallString<64> canonicalTarget;
-      targetDevName.getFullName(canonicalTarget);
-      targetList.push_back(canonicalTarget.str().str());
-    }
-  }
-
   // Canonicalize arch name
   if (!arch.empty()) {
     RocmDeviceName devName;
@@ -411,7 +338,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   }
 
   llvm::SmallDenseSet<StringRef> kernelPipelineOptions{
-      "migraphx", "highlevel", "gpu", "rocdl", "binary", "triton"};
+      "migraphx", "highlevel", "gpu", "binary", "triton"};
   llvm::SmallDenseSet<StringRef> kernelFullPipeline{"gpu", "triton", "binary"};
   llvm::SmallDenseSet<StringRef> kernelPipelineSet;
   std::string kernelPipelineStr = kernelPipeline.getValue();
@@ -448,19 +375,19 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       return failure();
   }
 
-  // Phase 2: Highlevel / Bufferize (host and kernel independently)
+  // Phase 2: Highlevel (host and kernel independently)
   if (hostPipelineSet.contains("highlevel")) {
-    rock::BufferizeOptions opts;
+    rock::HighlevelOptions opts;
     opts.disableRock = true;
     if (failed(runWithDetach(
             module, "Host Highlevel", isKernel,
-            [&](PassManager &pm) { rock::buildBufferizePipeline(pm, opts); })))
+            [&](PassManager &pm) { rock::buildHighlevelPipeline(pm, opts); })))
       return failure();
   }
   if (kernelPipelineSet.contains("highlevel")) {
     if (failed(runWithDetach(module, "Kernel Highlevel", isHost,
                              [](PassManager &pm) {
-                               rock::buildBufferizePipeline(pm);
+                               rock::buildHighlevelPipeline(pm);
                              })))
       return failure();
   }
@@ -468,14 +395,9 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   // Phase 3: GPU / Triton / Backend (kernel pipeline only)
   bool needsKernelBackend = kernelPipelineSet.contains("gpu") ||
                             kernelPipelineSet.contains("triton") ||
-                            kernelPipelineSet.contains("binary") ||
-                            kernelPipelineSet.contains("rocdl");
+                            kernelPipelineSet.contains("binary");
   if (needsKernelBackend) {
-    StringRef onlyArch;
-    if (!targetList.empty())
-      onlyArch = targetList.front();
-    else
-      onlyArch = arch;
+    StringRef onlyArch = arch;
     if (onlyArch.empty()) {
       if (module->hasAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic())) {
         onlyArch =
@@ -512,9 +434,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       return failure();
   }
 
-  // Clean up
-  module->walk(
-      [&](LLVM::LLVMFuncOp func) { func->removeAttr("xmodel.targets"); });
   return success();
 }
 

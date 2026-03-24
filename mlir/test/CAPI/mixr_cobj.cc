@@ -202,7 +202,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   (void)pm0.run(module);
   mlirOperationDump(moduleMO);
 
-  mlir::rock::buildBufferizePipeline(pm);
+  mlir::rock::buildHighlevelPipeline(pm);
   (void)pm.run(module);
   mlirOperationDump(moduleMO);
 

@@ -142,7 +142,7 @@ void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm) {
     llvm::errs() << "Failed to apply command-line options.\n";
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
   mlir::migraphx::addHighLevelPipeline(*passMan);
-  mlir::rock::buildBufferizePipeline(*passMan);
+  mlir::rock::buildHighlevelPipeline(*passMan);
 }
 
 MLIR_CAPI_EXPORTED void

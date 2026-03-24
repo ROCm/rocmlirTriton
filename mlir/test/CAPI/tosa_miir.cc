@@ -233,7 +233,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
 
   mlir::PassManager pm(module->getName(), mlir::PassManager::Nesting::Implicit);
 
-  mlir::rock::buildBufferizePipeline(pm);
+  mlir::rock::buildHighlevelPipeline(pm);
 
   mlir::rock::buildKernelPipeline(pm);
 

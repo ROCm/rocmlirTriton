@@ -242,8 +242,8 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
 
 //===- Consolidate the Rock Pipelines here ---------------------===//
 
-void rock::buildBufferizePipeline(OpPassManager &pm,
-                                  const rock::BufferizeOptions &options) {
+void rock::buildHighlevelPipeline(OpPassManager &pm,
+                                  const rock::HighlevelOptions &options) {
   bool noRock = options.disableRock;
 
   auto &funcPm = pm.nest<func::FuncOp>();
@@ -481,10 +481,10 @@ void rock::buildBackendPipeline(OpPassManager &pm,
 //===----------------------------------------------------------------------===//
 
 void rock::registerPipelines() {
-  PassPipelineRegistration<rock::BufferizeOptions>(
-      "rock-bufferize-pipeline",
+  PassPipelineRegistration<rock::HighlevelOptions>(
+      "rock-highlevel-pipeline",
       " representations and algorithms for sparse tensors.",
-      buildBufferizePipeline);
+      buildHighlevelPipeline);
   PassPipelineRegistration<rock::KernelOptions>(
       "rock-kernel-pipeline",
       " representations and algorithms for sparse tensors.",
