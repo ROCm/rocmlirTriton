@@ -267,7 +267,7 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
       {schedules.tilingModule.get(), "tiling"},
       {schedules.vectorizationModule.get(), "vectorization"},
       {schedules.unrollModule.get(), "unroll"},
-      {schedules.loweringModule.get(), "lowering"},
+      {schedules.lowerToLLVMModule.get(), "lowerToLLVM"},
   };
 
   // Step 4: Apply each transform step with pre/post sequences

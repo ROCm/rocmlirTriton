@@ -42,12 +42,12 @@ struct TransformSchedules {
   OwningOpRef<ModuleOp> tilingModule;       // tiling
   OwningOpRef<ModuleOp> vectorizationModule;// vectorization
   OwningOpRef<ModuleOp> unrollModule;       // loop unrolling
-  OwningOpRef<ModuleOp> loweringModule;     // bufferization + LLVM lowering
+  OwningOpRef<ModuleOp> lowerToLLVMModule;  // bufferization + LLVM lowering
 
   /// Check if all modules were parsed successfully
   bool isValid() const {
     return preModule && postModule && tilingModule &&
-           vectorizationModule && unrollModule && loweringModule;
+           vectorizationModule && unrollModule && lowerToLLVMModule;
   }
 };
 
