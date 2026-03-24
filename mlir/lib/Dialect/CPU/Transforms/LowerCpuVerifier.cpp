@@ -86,7 +86,7 @@ private:
 
   /// Update call sites in the module to use memref arguments instead of tensors
   /// after the function has been bufferized with bufferize_function_boundaries=true
-  void updateCallSites(ModuleOp module, StringRef funcName);
+  LogicalResult updateCallSites(ModuleOp module, StringRef funcName);
 };
 
 } // end anonymous namespace
@@ -131,14 +131,12 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
   LLVM_DEBUG(llvm::dbgs() << "Dumped IR and transform to: " << filename << "\n");
 }
 
-void CpuLowerVerifierPass::updateCallSites(ModuleOp module,
-                                           StringRef funcName) {
+LogicalResult CpuLowerVerifierPass::updateCallSites(ModuleOp module,
+                                                    StringRef funcName) {
   // Find the lowered function to get its signature
   auto loweredFunc = module.lookupSymbol<func::FuncOp>(funcName);
   if (!loweredFunc) {
-    LLVM_DEBUG(llvm::dbgs() << "  Could not find lowered function " << funcName
-                            << "\n");
-    return;
+    return module.emitError("Could not find lowered function ") << funcName;
   }
 
   // Find all call ops that call the target function
@@ -150,7 +148,7 @@ void CpuLowerVerifierPass::updateCallSites(ModuleOp module,
 
   if (callsToUpdate.empty()) {
     LLVM_DEBUG(llvm::dbgs() << "  No call sites found for " << funcName << "\n");
-    return;
+    return success();
   }
 
   LLVM_DEBUG(llvm::dbgs() << "  Updating " << callsToUpdate.size()
@@ -172,10 +170,7 @@ void CpuLowerVerifierPass::updateCallSites(ModuleOp module,
       } else {
         // If the operand is not from a to_tensor, it might already be a memref
         // or something else - this shouldn't happen in our expected pattern
-        LLVM_DEBUG(llvm::dbgs()
-                   << "  Warning: operand is not from to_tensor: " << operand
-                   << "\n");
-        memrefArgs.push_back(operand);
+        return callOp.emitError("operand is not from to_tensor: ") << operand;
       }
     }
 
@@ -218,6 +213,8 @@ void CpuLowerVerifierPass::updateCallSites(ModuleOp module,
         toTensorOp.erase();
     }
   }
+
+  return success();
 }
 
 /// Describes a single transform step in the lowering pipeline.
@@ -363,7 +360,9 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   // Step 7: Update call sites to use memref arguments instead of tensors
   // This is needed because bufferize_function_boundaries=true changes the
   // function signature from tensors to memrefs
-  updateCallSites(parentModule, funcName);
+  if (failed(updateCallSites(parentModule, funcName))) {
+    return failure();
+  }
 
   LLVM_DEBUG(llvm::dbgs() << "Successfully lowered: " << funcName << "\n");
   return success();
