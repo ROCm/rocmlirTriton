@@ -31,6 +31,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/CPU/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -376,7 +377,7 @@ void CpuLowerVerifierPass::runOnOperation() {
   // We collect them first because we'll be modifying the module
   SmallVector<func::FuncOp> cpuVerifierFuncs;
   module.walk([&](func::FuncOp func) {
-    if (func->hasAttr("rock.cpu_verifier"))
+    if (func->hasAttr(rock::CpuVerifierAttr::getMnemonic()))
       cpuVerifierFuncs.push_back(func);
   });
 
