@@ -38,22 +38,18 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   LINK_LIBS PUBLIC
   MLIRAffineTransforms
   MLIRArithTransforms
-  MLIRArithValueBoundsOpInterfaceImpl
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
-  MLIRBufferizationTransformOps
   MLIRDialect
   MLIRFuncDialect
   MLIRIR
-  MLIRLinalgTransformOps
+  MLIRPass
   MLIRLinalgUtils
   MLIRLinalgTransforms
   MLIRLLVMDialect
   MLIRMathToLLVM
   MLIRMemRefTransforms
   MLIRAffineToStandard
-  MLIRParser
-  MLIRPass
   MLIRReconcileUnrealizedCasts
   MLIRRockOps
   MLIRRockTuning
@@ -63,20 +59,9 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   MLIRAMDGPUUtils
   MLIRSCFToControlFlow
   MLIRSupport
-  MLIRTensorToLinalg
   MLIRTosaDialect
-  MLIRTosaToArith
-  MLIRTosaToLinalg
-  MLIRTosaToSCF
-  MLIRTosaToTensor
-  MLIRTosaTransforms
-  MLIRTransformDialect
-  MLIRTransformDialectTransforms
   MLIRUBDialect
   MLIRVectorTransforms
-  MLIRVectorTransformOps
-  MLIRFuncTransformOps
-  MLIRMemRefTransformOps
 
   # Triton dependencies
   # TritonIR depends on TritonGPUIR because Traits.cpp uses MemDescType
