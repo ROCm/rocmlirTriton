@@ -1076,6 +1076,63 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
   return std::pair<Value, Value>(gemm.getResult(), gemmInput);
 }
 
+/// Conv lowering may insert the gemm + transforms after output-buffer layout
+/// ops (lastViewDef). Elementwise fusion may still sit *before* that point in
+/// the block while taking the conv result, which yields use-before-def on the
+/// gemm result. Move the forward fusion subgraph that precedes the gemm to
+/// just after the gemm, preserving block order among moved ops.
+static void moveForwardFusionUsersAfterGemm(Operation *convOp,
+                                            Operation *gemmOp) {
+  assert(convOp->getBlock() == gemmOp->getBlock());
+  Block *block = convOp->getBlock();
+
+  llvm::SmallDenseSet<Operation *> toMove;
+  SmallVector<Operation *> stack;
+
+  auto pushUsersBeforeGemm = [&](Operation *defOp) {
+    for (Value v : defOp->getResults()) {
+      for (Operation *user : v.getUsers()) {
+        if (user == gemmOp || user == convOp)
+          continue;
+        if (user->getBlock() != block || !user->isBeforeInBlock(gemmOp))
+          continue;
+        if (isa<StoreOp>(user))
+          continue;
+        stack.push_back(user);
+      }
+    }
+  };
+
+  for (Operation *user : convOp->getResult(0).getUsers()) {
+    if (user == gemmOp)
+      continue;
+    if (user->getBlock() == block && user->isBeforeInBlock(gemmOp) &&
+        !isa<StoreOp>(user))
+      stack.push_back(user);
+  }
+
+  while (!stack.empty()) {
+    Operation *current = stack.pop_back_val();
+    if (!toMove.insert(current).second)
+      continue;
+    pushUsersBeforeGemm(current);
+  }
+
+  if (toMove.empty())
+    return;
+
+  SmallVector<Operation *, 8> ordered(toMove.begin(), toMove.end());
+  llvm::sort(ordered, [](Operation *a, Operation *b) {
+    return a->isBeforeInBlock(b);
+  });
+
+  Operation *anchor = gemmOp;
+  for (Operation *mov : ordered) {
+    mov->moveAfter(anchor);
+    anchor = mov;
+  }
+}
+
 // Lower a conv op (forward, backward-weight, or backward-data) into one or
 // more rock.gemm ops by computing the necessary layout transforms for the
 // filter, input, and output tensors. For BwdData, the conv is expanded into
@@ -1237,6 +1294,43 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     } else {
       // ConvOp: regularize output dest buffer.
       auto mapping = buildInputToOutputMapping(b, rank);
+      // Store destinations and fusion views may be defined after the conv in
+      // the fusion chain. Emit dest regularization and relayout transforms
+      // only after the last such definition so operands dominate their uses,
+      // and keep the insertion point there for filter/input/gemm output so
+      // those results dominate GemmOp and stores.
+      Operation *lastViewDef = nullptr;
+      Block *block = op->getBlock();
+      for (Value view : outputViews) {
+        if (Operation *defOp = view.getDefiningOp()) {
+          Operation *ancestor = block->findAncestorOpInBlock(*defOp);
+          if (ancestor &&
+              (!lastViewDef || lastViewDef->isBeforeInBlock(ancestor)))
+            lastViewDef = ancestor;
+        }
+      }
+      for (const auto &[orig, view] : fusionInputMap) {
+        (void)orig;
+        if (Operation *defOp = view.getDefiningOp()) {
+          Operation *ancestor = block->findAncestorOpInBlock(*defOp);
+          if (ancestor &&
+              (!lastViewDef || lastViewDef->isBeforeInBlock(ancestor)))
+            lastViewDef = ancestor;
+        }
+      }
+      // MatchLayoutsToInput may insert a layout transform on the filter (or
+      // input) immediately before the conv. Those values must be defined
+      // before we emit the gemm filter/input transforms at this insertion
+      // point; extend lastViewDef to cover conv operands as well as views.
+      for (Value v : {filterValue, inputValue}) {
+        if (Operation *defOp = v.getDefiningOp()) {
+          if (Operation *ancestor = block->findAncestorOpInBlock(*defOp))
+            if (!lastViewDef || lastViewDef->isBeforeInBlock(ancestor))
+              lastViewDef = ancestor;
+        }
+      }
+      if (lastViewDef)
+        b.setInsertionPointAfter(lastViewDef);
       destBuffer = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
           destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
@@ -1446,26 +1540,11 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // inputs with the output transform. For BwdWeight, the store destination
     // is the filter (not the output), so the caller uses gemmC instead.
     if (convOpType == ConvOpType::Fwd) {
-      for (auto &outputView : outputViews) {
-        if (Operation *defOp = outputView.getDefiningOp()) {
-          OpBuilder::InsertionGuard guard(b);
-          b.setInsertionPointAfter(defOp);
-          outputView =
-              TransformOp::create(b, loc, outputView, outputTransformAttr);
-        } else {
-          outputView =
-              TransformOp::create(b, loc, outputView, outputTransformAttr);
-        }
-      }
-      for (auto &[orig, view] : fusionInputMap) {
-        if (Operation *defOp = view.getDefiningOp()) {
-          OpBuilder::InsertionGuard guard(b);
-          b.setInsertionPointAfter(defOp);
-          view = TransformOp::create(b, loc, view, outputTransformAttr);
-        } else {
-          view = TransformOp::create(b, loc, view, outputTransformAttr);
-        }
-      }
+      for (auto &outputView : outputViews)
+        outputView =
+            TransformOp::create(b, loc, outputView, outputTransformAttr);
+      for (auto &[orig, view] : fusionInputMap)
+        view = TransformOp::create(b, loc, view, outputTransformAttr);
       // All of them have the same shape, so get the first one.
       // Note that we always have at least one outputView, otherwise
       // traceRootOutputToStoreOps() would have failed
@@ -1576,6 +1655,10 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
         /*cTransposed=*/nullptr,
         /*aScaleTransposed=*/nullptr,
         /*bScaleTransposed=*/nullptr, /*quantBlockSize=*/nullptr, tuningParams);
+
+    if (convOpType == ConvOpType::Fwd)
+      moveForwardFusionUsersAfterGemm(op.getOperation(),
+                                      newGemmOp.getOperation());
 
     Value result = newGemmOp.getResult();
 
