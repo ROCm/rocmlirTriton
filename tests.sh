@@ -56,9 +56,13 @@ fi
 # Tuning driver
 build/bin/rocmlir-gen -operation gemm -t f16 -out_datatype f32 --arch $ARCH --num_cu $NUM_CU -g 1 -m 1024 -k 1024 -n 1024 -transA=False -transB=False --perf_config= | build/bin/rocmlir-tuning-driver --tuning-space=quick --num-iterations=10 --warmup-iterations=1 --sleep-us=100 --use-median --show-all-measurements=false
 
-# scaled gemm f8
+# scaled gemm f8 (enable for all archs with the next triton bump)
 
-build/bin/rocmlir-gen -pv -quantBlockSize 32 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -scaledGemm -operation gemm -t f8E4M3FN -out_datatype f32 --arch $ARCH --num_cu $NUM_CU -g 1 -m 64 -k 256 -n 128 --perf_config=gemm:v1:64,64,64,1,1,4,16,1,2,0,0 | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so --entry-point-result=void 
+if [[ "$ARCH" == gfx950* ]]; then
+build/bin/rocmlir-gen -pv -quantBlockSize 32 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -scaledGemm -operation gemm -t f8E4M3FN -out_datatype f32 --arch $ARCH --num_cu $NUM_CU -g 1 -m 64 -k 256 -n 128 --perf_config=gemm:v1:64,64,64,1,1,4,16,1,2,0,0 | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so --entry-point-result=void
+else
+echo "Skipping scaled gemm f8 test (requires gfx950, detected $ARCH)"
+fi
 
 # gemm+gemm
 
