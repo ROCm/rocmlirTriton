@@ -57,11 +57,6 @@ inline void registerUpstreamPasses() {
   registerConvertVectorToLLVMPass();
   registerConvertLinalgToLoopsPass();
 
-  // TODO: These require GPU/ROCDL dialects - evaluate for Triton backend
-  // registerArithToAMDGPUConversionPass();
-  // registerConvertAMDGPUToROCDLPass();
-  // registerConvertGpuOpsToROCDLOps();
-
   // Register memref-to-llvm pass for CPU verifier lowering
   registerFinalizeMemRefToLLVMConversionPass();
 
