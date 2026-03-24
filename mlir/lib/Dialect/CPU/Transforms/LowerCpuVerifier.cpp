@@ -394,11 +394,11 @@ void CpuLowerVerifierPass::runOnOperation() {
                           << " CPU verifier function(s)\n");
 
   // Create all transform schedules
-  auto schedulesOrErr = createTransformSchedules(ctx);
-  if (failed(schedulesOrErr)) {
+  auto maybeSchedules = createTransformSchedules(ctx);
+  if (failed(maybeSchedules)) {
     return signalPassFailure();
   }
-  TransformSchedules &schedules = *schedulesOrErr;
+  TransformSchedules &schedules = maybeSchedules.value();
 
   // Lower each function in isolation using the transform interpreter
   // Pipeline: Pre → Optimization → Post → Pre → Vectorization → Post → Pre → Lowering → Post
