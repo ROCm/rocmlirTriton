@@ -127,10 +127,10 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
     return failure();
   }
 
-  schedules.loweringModule = buildLowerToLLVMSchedule(ctx);
-  if (!schedules.loweringModule) {
+  schedules.lowerToLLVMModule = buildLowerToLLVMSchedule(ctx);
+  if (!schedules.lowerToLLVMModule) {
     emitError(UnknownLoc::get(ctx))
-        << "Failed to build lowering transform sequence for CPU verifier";
+        << "Failed to build lowerToLLVM transform sequence for CPU verifier";
     return failure();
   }
 
