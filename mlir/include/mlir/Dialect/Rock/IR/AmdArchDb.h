@@ -10,6 +10,7 @@
 #define MLIR_DIALECT_ROCK_IR_AMDARCHDB_H
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 
 namespace mlir {
@@ -82,8 +83,16 @@ int64_t getWaveSize(StringRef arch);
 /// Get LDS size
 int64_t getLDSSize(StringRef arch);
 
-/// Get maximum number of CTAs per cluster (1 = no clustering)
+/// Whether the architecture supports multi-CTA
+bool supportsMultiCTALaunch(StringRef arch);
+
+/// Get maximum number of CTAs for cluster launch.
+/// Returns 1 if multi-CTA is not supported.
 int64_t getMaxNumCTAs(StringRef arch);
+
+/// Get the number of CTAs from the module's ttg.num-ctas attribute.
+/// Wraps triton::gpu::TritonGPUDialect::getNumCTAs.
+int getNumCTAs(ModuleOp mod);
 
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);

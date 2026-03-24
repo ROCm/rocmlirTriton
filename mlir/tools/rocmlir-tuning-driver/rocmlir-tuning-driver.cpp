@@ -208,6 +208,34 @@ static benchmark::DataType getDataType(Type inputType) {
     }                                                                          \
   } while (0)
 
+// Launch a kernel with CTA cluster dimensions using hipDrvLaunchKernelEx,
+// matching Triton's _launch() in driver.c. Only call when numCTAs > 1.
+static LogicalResult launchClusterKernel(hipFunction_t func, uint32_t gridSize,
+                                         uint32_t blockSize, uint32_t sharedMem,
+                                         uint32_t numCTAs, hipStream_t stream,
+                                         void **kernelParams,
+                                         hipEvent_t startEvent = nullptr,
+                                         hipEvent_t stopEvent = nullptr) {
+  if (startEvent)
+    HIPCHECK(hipEventRecord(startEvent, stream));
+
+  hipLaunchAttribute attributes[1];
+  attributes[0].id = static_cast<hipLaunchAttributeID>(4);
+  int *clusterDims = reinterpret_cast<int *>(attributes[0].val.pad);
+  clusterDims[0] = numCTAs;
+  clusterDims[1] = 1;
+  clusterDims[2] = 1;
+
+  HIP_LAUNCH_CONFIG config = {
+      gridSize * numCTAs, 1,      1,          blockSize, 1, 1,
+      sharedMem,          stream, attributes, 1};
+  HIPCHECK(hipDrvLaunchKernelEx(&config, func, kernelParams, 0));
+
+  if (stopEvent)
+    HIPCHECK(hipEventRecord(stopEvent, stream));
+  return success();
+}
+
 static double computeMedian(const std::vector<double> &values) {
   if (values.empty())
     return 0.0;
@@ -342,9 +370,15 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
     for (auto [func, blockSize, gridSize, sharedMem, numCTAs] :
          llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes,
                    numCTAsList)) {
-      HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * numCTAs * blockSize, 1, 1, blockSize, 1, 1,
-          sharedMem, stream, argPointers.data(), nullptr, nullptr, nullptr));
+      if (numCTAs > 1) {
+        if (failed(launchClusterKernel(func, gridSize, blockSize, sharedMem,
+                                       numCTAs, stream, argPointers.data())))
+          return failure();
+      } else {
+        HIPCHECK(hipExtModuleLaunchKernel(
+            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem,
+            stream, argPointers.data(), nullptr, nullptr, nullptr));
+      }
     }
   }
 
@@ -382,10 +416,16 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
       HIPCHECK(hipEventCreate(&startEvent));
       HIPCHECK(hipEventCreate(&stopEvent));
 
-      HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * numCTAs * blockSize, 1, 1, blockSize, 1, 1,
-          sharedMem, stream, argPointers.data(), nullptr, startEvent,
-          stopEvent));
+      if (numCTAs > 1) {
+        if (failed(launchClusterKernel(func, gridSize, blockSize, sharedMem,
+                                       numCTAs, stream, argPointers.data(),
+                                       startEvent, stopEvent)))
+          return failure();
+      } else {
+        HIPCHECK(hipExtModuleLaunchKernel(
+            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem,
+            stream, argPointers.data(), nullptr, startEvent, stopEvent));
+      }
       HIPCHECK(hipEventSynchronize(stopEvent));
 
       float currentMilliseconds = 0.0;
@@ -518,10 +558,16 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
         HIPCHECK(hipEventCreate(&startEvent));
         HIPCHECK(hipEventCreate(&stopEvent));
 
-        HIPCHECK(hipExtModuleLaunchKernel(
-            func, gridSize * numCTAs * blockSize, 1, 1, blockSize, 1, 1,
-            sharedMem, stream, argPointers.data(), nullptr, startEvent,
-            stopEvent));
+        if (numCTAs > 1) {
+          if (failed(launchClusterKernel(func, gridSize, blockSize, sharedMem,
+                                         numCTAs, stream, argPointers.data(),
+                                         startEvent, stopEvent)))
+            return failure();
+        } else {
+          HIPCHECK(hipExtModuleLaunchKernel(
+              func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem,
+              stream, argPointers.data(), nullptr, startEvent, stopEvent));
+        }
 
         HIPCHECK(hipStreamSynchronize(stream));
 

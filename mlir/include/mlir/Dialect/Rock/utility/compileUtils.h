@@ -21,7 +21,7 @@ struct KernelInfo {
   LLVM::LLVMFuncOp llvmFunc;
   int64_t gridSize;
   int64_t blockSize;
-  int64_t numCTAs = 1;
+  int64_t numCTAs;
   int64_t sharedMemorySize;
   SmallVector<Type> argTypes; // Original func argument types
 };
@@ -55,7 +55,8 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
 /// GemmGemmParamsAttr and populates `tritonOpts` (numWarps, numCTAs,
 /// numStages, matrixInstrNonkdim, kpack) and `backendOpts` (numWarps,
 /// numCTAs, wavesPerEU) accordingly.
-/// Returns failure if `perfConfig` does not match any known parameter format.
+/// Returns failure if `perfConfig` does not match any known parameter format
+/// or if numCTAs exceeds the maximum for the target architecture.
 LogicalResult fillCompilationConfigs(Attribute perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts);

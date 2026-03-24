@@ -158,8 +158,22 @@ void AffixTuningParameters::affixTuningParametersImpl(
   if (auto bwdOp = dyn_cast<ConvBwdWeightOp>(op.getOperation()))
     bwdOp->setAttr(bwdOp.getKBlocksAttrName(), b.getIndexAttr(gemmKBlocks));
 
-  int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
   GemmParamsAttr gemmParams = cast<GemmParamsAttr>(validParams);
+
+  if (gemmParams.getNumCTAs() > 1 &&
+      !rock::supportsMultiCTALaunch(rock::getArchValue(op))) {
+    LLVM_DEBUG(llvm::dbgs() << "Clamping numCTAs to 1: multi-CTA not supported "
+                               "on "
+                            << rock::getArchValue(op) << "\n");
+    gemmParams = GemmParamsAttr::get(
+        b.getContext(), gemmParams.getMPerBlock(), gemmParams.getNPerBlock(),
+        gemmParams.getKPerBlock(), gemmParams.getKpack(), /*numCTAs=*/1,
+        gemmParams.getNumWaves(), gemmParams.getMatrixInstrNonkdim(),
+        gemmParams.getSplitKFactor(), gemmParams.getNumStages(),
+        gemmParams.getWavesPerEU(), gemmParams.getGridGroupSize());
+  }
+
+  int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
   int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
   assert(blockSize > 0);
   op.setGemmParamsAttr(gemmParams);
@@ -203,6 +217,20 @@ void AffixTuningParameters::affixTuningParametersImpl(
   }
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
+
+  if (attnPerfConfig.getNumCTAs() > 1 &&
+      !rock::supportsMultiCTALaunch(rock::getArchValue(op))) {
+    LLVM_DEBUG(llvm::dbgs() << "Clamping numCTAs to 1: multi-CTA not supported "
+                               "on "
+                            << rock::getArchValue(op) << "\n");
+    attnPerfConfig = GemmGemmParamsAttr::get(
+        builder.getContext(), attnPerfConfig.getMPerBlockG0(),
+        attnPerfConfig.getNPerBlockG0(), attnPerfConfig.getKPerBlock(),
+        attnPerfConfig.getKpack(), /*numCTAs=*/1,
+        attnPerfConfig.getNumWaves(), attnPerfConfig.getMatrixInstrNonkdim(),
+        attnPerfConfig.getSplitKFactor(), attnPerfConfig.getNumStages(),
+        attnPerfConfig.getWavesPerEU(), attnPerfConfig.getGridGroupSize());
+  }
 
   auto accelParams =
       PopulateParamsGemmGemm::getGemmParams(builder, op, attnPerfConfig);

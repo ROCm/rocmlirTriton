@@ -88,10 +88,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     return failure();
   }
 
-  int64_t numCTAs = 1;
-  if (auto numCTAsAttr =
-          moduleOp->getAttrOfType<IntegerAttr>("ttg.num-ctas"))
-    numCTAs = numCTAsAttr.getInt();
+  int64_t numCTAs = rock::getNumCTAs(moduleOp);
 
   int64_t tritonBlockSize = numWarps * warpSize;
 
@@ -126,11 +123,24 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
   return success();
 }
 
+static LogicalResult validateNumCTAs(int64_t numCTAs, StringRef arch) {
+  int64_t maxNumCTAs = rock::getMaxNumCTAs(arch);
+  if (numCTAs > maxNumCTAs) {
+    LLVM_DEBUG(llvm::dbgs() << "Invalid numCTAs=" << numCTAs << " for " << arch
+                            << " (max: " << maxNumCTAs << ")\n");
+    return failure();
+  }
+  return success();
+}
+
 LogicalResult fillCompilationConfigs(Attribute perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts) {
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
   if (auto gemmParams = dyn_cast<GemmParamsAttr>(perfConfig)) {
+    if (failed(validateNumCTAs(gemmParams.getNumCTAs(), tritonOpts.arch)))
+      return failure();
+
     tritonOpts.numWarps = gemmParams.getNumWaves();
     tritonOpts.numCTAs = gemmParams.getNumCTAs();
     tritonOpts.numStages = gemmParams.getNumStages();
@@ -143,6 +153,9 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
     return success();
   }
   if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(perfConfig)) {
+    if (failed(validateNumCTAs(gemmGemmParams.getNumCTAs(), tritonOpts.arch)))
+      return failure();
+
     tritonOpts.numWarps = gemmGemmParams.getNumWaves();
     tritonOpts.numCTAs = gemmGemmParams.getNumCTAs();
     tritonOpts.numStages = gemmGemmParams.getNumStages();

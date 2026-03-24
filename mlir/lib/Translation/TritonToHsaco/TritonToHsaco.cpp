@@ -643,10 +643,12 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     numWarps = totalNumWarps.getInt();
   }
 
+  int numCTAs = rock::getNumCTAs(module);
+
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
-  setKernelAttributes(*llvmModule, arch, features, numWarps,
-                      options.wavesPerEU, options.numCTAs, options.allowFlushDenorm,
-                      enableAsan, options.scheduleHint);
+  setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
+                      numCTAs, options.allowFlushDenorm, enableAsan,
+                      options.scheduleHint);
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
   // compiler.py lines 412-423
