@@ -106,10 +106,10 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
     return failure();
   }
 
-  schedules.optimizationModule = buildTilingSchedule(ctx);
-  if (!schedules.optimizationModule) {
+  schedules.tilingModule = buildTilingSchedule(ctx);
+  if (!schedules.tilingModule) {
     emitError(UnknownLoc::get(ctx))
-        << "Failed to build optimization transform sequence for CPU verifier";
+        << "Failed to build tiling transform sequence for CPU verifier";
     return failure();
   }
 

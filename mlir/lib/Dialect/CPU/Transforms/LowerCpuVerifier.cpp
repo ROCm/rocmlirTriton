@@ -264,7 +264,7 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   // Step 3: Build the pipeline of main transform steps
   // For each step, we apply: Pre → Main → Post
   SmallVector<TransformStep> pipeline = {
-      {schedules.optimizationModule.get(), "optimization"},
+      {schedules.tilingModule.get(), "tiling"},
       {schedules.vectorizationModule.get(), "vectorization"},
       {schedules.unrollModule.get(), "unroll"},
       {schedules.loweringModule.get(), "lowering"},
