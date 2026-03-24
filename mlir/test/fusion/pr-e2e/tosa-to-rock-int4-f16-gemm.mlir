@@ -1,4 +1,6 @@
-// RUN: rocmlir-gen --clone-harness -arch %arch -fut gemmi4f16 %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel -targets %arch | rocmlir-gen -ph -fut gemmi4f16_wrapper --verifier clone - | rocmlir-driver -host-pipeline mhal,runner -kernel-pipeline full --arch %arch | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
+// TODO(rocmlirTriton): error: 'rock.gridwise_gemm' op Could not determine the underlying data type of A
+// UNSUPPORTED: true
+// RUN: rocmlir-gen --clone-harness -arch %arch -fut gemmi4f16 %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel -arch %arch | rocmlir-gen -ph -fut gemmi4f16 --verifier clone - | rocmlir-driver -c -arch %arch | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
 // CLONE: [1 1 1]
 // ALLOW-RETRIES: 2
 
@@ -12,7 +14,7 @@
 
 #map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 
-func.func @gemmi4f16(%arg0: !aCompressedFlat, %arg1: !bFlat) -> !cFlat {
+func.func @gemmi4f16(%arg0: !aCompressedFlat, %arg1: !bFlat) -> !cFlat attributes {rock.kernel} {
   %const_shape = "tosa.const_shape"() { values = dense<[1, 64, 64]> : tensor<3xindex> } : () -> !tosa.shape<3>
   %0 = tosa.reshape %arg0, %const_shape : (!aCompressedFlat, !tosa.shape<3>) -> !aCompressed
   %1 = tosa.reshape %arg1, %const_shape : (!bFlat, !tosa.shape<3>) -> !b

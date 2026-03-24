@@ -1,5 +1,3 @@
-// TODO(rocmlirTriton): operand #0 does not dominate this use error when running `rocmlir-driver -c`
-// UNSUPPORTED: true
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_convolution_add_clip --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
 module attributes {rock.arch = "##TOKEN_ARCH##"} {

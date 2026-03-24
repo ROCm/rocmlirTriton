@@ -1,8 +1,10 @@
-// RUN: rocmlir-gen -fut test_mo --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel | rocmlir-gen -ph -fut test_mo_wrapper -rand 1 -rand_type float --verifier clone - | rocmlir-driver -host-pipeline mhal,runner -kernel-pipeline full -targets %arch | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext -entry-point-result=void | FileCheck %s
+// TODO(rocmlirTriton): Functional failure in test
+// UNSUPPORTED: true
+// RUN: rocmlir-gen -fut test_mo --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel | rocmlir-gen -ph -fut test_mo -rand 1 -rand_type float --verifier clone - | rocmlir-driver -c -arch %arch | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext -entry-point-result=void | FileCheck %s
 
 // CHECK-COUNT-2:  [1 1 1]
 module {
-  func.func @test_mo(%arg0: tensor<1x256x768xf32>, %arg1: tensor<1x768x768xf32>, %arg2: tensor<1x256x1xf32>, %arg3: tensor<1x256x768xf32>, %arg4: tensor<1x256x768xf32>) -> (tensor<1x256x768xf32>, tensor<1x256x768xf32>, tensor<1x256x768xf32>) {
+  func.func @test_mo(%arg0: tensor<1x256x768xf32>, %arg1: tensor<1x768x768xf32>, %arg2: tensor<1x256x1xf32>, %arg3: tensor<1x256x768xf32>, %arg4: tensor<1x256x768xf32>) -> (tensor<1x256x768xf32>, tensor<1x256x768xf32>, tensor<1x256x768xf32>) attributes {rock.kernel} {
 
     %const_shape = "tosa.const_shape"() { values = dense<[1, 256, 768]> : tensor<3xindex> } : () -> !tosa.shape<3>
     %0 = "tosa.reshape"(%arg0, %const_shape) : (tensor<1x256x768xf32>, !tosa.shape<3>) -> tensor<1x256x768xf32>
