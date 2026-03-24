@@ -405,7 +405,67 @@ func.func @gridwise_gemm_scaleB_type_invalid(%A: tensor<1x8x32xf4E2M1FN>, %B: te
 }
 
 // -----------------------------------------------------------------------------
-// Blockwise gemm tests 
+// Blockwise gemm tests (scaled gemm, active)
+// -----------------------------------------------------------------------------
+
+// scaleA and scaleB must both be present or both null
+func.func @blockwise_gemm_scale_mismatch(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %scaleA: tensor<64x2xi8>, %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{scaleA and scaleB must both be present or both be null.}}
+  %0 = rock.blockwise_gemm(%a scaled by %scaleA, %b, %c)
+    {quantBlockSize = 32 : i64}
+    : tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf8E4M3FN>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// matrixAOrigElemType and matrixBOrigElemType must both be set or both absent
+func.func @blockwise_gemm_orig_elem_type_mismatch(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{If one of matrixAOrigElemType and matrixBOrigElemType is set, the other needs to be set as well}}
+  %0 = rock.blockwise_gemm(%a, %b, %c)
+    {matrixAOrigElemType = f8E4M3FN}
+    : tensor<64x64xf8E4M3FN>, tensor<64x64xf8E4M3FN>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// quantBlockSize is required when scales are present
+func.func @blockwise_gemm_no_quantblocksize(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %scaleA: tensor<64x2xi8>, %scaleB: tensor<64x2xi8>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{quantBlockSize is not set but we found scale}}
+  %0 = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    : tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Scale shape must match matrix shape (non-packed case)
+func.func @blockwise_gemm_scale_shape_mismatch(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %scaleA: tensor<64x3xi8>, %scaleB: tensor<64x2xi8>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{its shape must match A's shape}}
+  %0 = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 32 : i64}
+    : tensor<64x64xf8E4M3FN> scaled by tensor<64x3xi8>,
+      tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// -----------------------------------------------------------------------------
+// Blockwise gemm tests (old, commented out)
 // -----------------------------------------------------------------------------
 // TODO(roctriton): Scaled gemm tests need rework
 // #blockwise_params = #rock.gemm_params<

@@ -46,6 +46,13 @@ int getWmmaVersion(StringRef arch) {
   return 0;
 }
 
+// Keep in sync with TT_Float in TritonTypes.td.
+bool isTTFloat(Type t) {
+  return isa<Float8E4M3FNType, Float8E4M3FNUZType, Float8E5M2Type,
+             Float8E5M2FNUZType, Float16Type, BFloat16Type, Float32Type,
+             Float64Type>(t);
+}
+
 // Keep in sync with AccelerateAMDMatmul.cpp::mlirTypeToScaledElemType()
 // Extended with BF16/FP16 coverage.
 FailureOr<triton::ScaleDotElemType> mlirTypeToScaleDotElemType(Type type) {
