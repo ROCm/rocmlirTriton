@@ -145,6 +145,9 @@ sed -e "s/gfx1100/$ARCH/g" -e "s/rock.num_cu = 96/rock.num_cu = $NUM_CU/g" fusio
 
 cd build && \
  LIT_FILTER=fusion/fusability ninja check-rocmlir && \
+ LIT_FILTER=fusion/pr-e2e/ ninja check-rocmlir && \
+ LIT_FILTER=fusion/nightly-misc-e2e/ ninja check-rocmlir && \
+ LIT_FILTER=fusion/resnet50-e2e/ ninja check-rocmlir && \
  LIT_FILTER=Dialect/Rock ninja check-rocmlir && \
  LIT_FILTER=rocmlir-gen ninja check-rocmlir && \
  LIT_FILTER=Conversion ninja check-rocmlir && \

@@ -1,10 +1,10 @@
 // The test case that was used to reproduce https://github.com/ROCm/rocMLIR-internal/issues/940
-// RUN: rocmlir-gen -fut mlir_dot --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -print-results -rand 1 -rand_type float -fut mlir_dot_wrapper --verifier clone - | rocmlir-driver -host-pipeline mhal,runner -kernel-pipeline full -targets %arch | xmir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut mlir_dot --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -print-results -rand 1 -rand_type float -fut mlir_dot --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 
 
 // CHECK: [1 1 1]
 module {
-  func.func @mlir_dot(%arg0: !migraphx.shaped<1x384x2304xf32, 884736x2304x1>, %arg1: !migraphx.shaped<1x384x2304xf32, 884736x2304x1>) -> !migraphx.shaped<1x12x384x384xf32, 1769472x147456x384x1> {
+  func.func @mlir_dot(%arg0: !migraphx.shaped<1x384x2304xf32, 884736x2304x1>, %arg1: !migraphx.shaped<1x384x2304xf32, 884736x2304x1>) -> !migraphx.shaped<1x12x384x384xf32, 1769472x147456x384x1> attributes {rock.kernel} {
     %0 = migraphx.literal (dense<1.250000e-01> : tensor<1xf32>) : <1xf32, 0>
     %1 = migraphx.multibroadcast %0 {out_dyn_dims = [], out_lens = [1, 12, 384, 384]} : <1xf32, 0> -> <1x12x384x384xf32, 0x0x0x0>
     %2 = migraphx.reshape %arg0 {dims = [1, 384, 36, 64]} : <1x384x2304xf32, 884736x2304x1> -> <1x384x36x64xf32, 884736x2304x64x1>
