@@ -1405,17 +1405,15 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   // Emit kernel function call, repeating it if needed.
   // We assume that the repeated atomic add usages in a wrw kernel will not
   // substantially impact performance as the result becomes large
-  auto emitWrappedCall = [&kernels, &gpuMem](OpBuilder &b, Location loc,
-                                             Value ignoredIv,
-                                             ValueRange noArgs) {
+  auto emitWrappedCall = [&kernels, &gpuMem, &outIndices](OpBuilder &b,
+                                                           Location loc,
+                                                           Value ignoredIv,
+                                                           ValueRange noArgs) {
     for (const auto &kernel : kernels) {
-      // Check if kernel expects tensor arguments
-      // Use kernel.params which stores the function argument types
       bool expectsTensors =
           !kernel.params.empty() && isa<TensorType>(kernel.params.front());
 
       if (expectsTensors) {
-        // Convert gpuMem (memrefs) to tensors for the kernel call
         SmallVector<Value, 4> tensorArgs;
         for (Value memrefArg : gpuMem) {
           tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, true));
@@ -1423,16 +1421,14 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
         auto callOp = func::CallOp::create(b, loc, kernel.func, tensorArgs);
 
-        // Result should be stored back to the corresponding output memref.
-        // Kernel returns (Output, LSE, ...) while args are (..., LSE,
-        // Output), so map result i to the (numResults - 1 - i)-th-from-last
-        // argument.
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-          size_t outIdx = gpuMem.size() - 1 - resultIdx;
-          auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
-          Value resultMemref =
-              bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
-          memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
+          if (resultIdx < outIndices.size()) {
+            int32_t outIdx = outIndices[resultIdx];
+            auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
+            Value resultMemref =
+                bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
+            memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
+          }
         }
       } else {
         // Legacy memref-based kernel - call directly
@@ -5363,15 +5359,17 @@ static LogicalResult populateHostHarnessLogic(
         ++optionalArgsCounter;
       if (!prefixOffset.empty())
         ++optionalArgsCounter;
-      // if split-kv is > 1, we use the LSE to compute the final result.
-      // There's no need to verify it, and it's expected to be different
-      // cpu vs gpu (sometimes).
       if (returnLSE) {
-        if (splitKV == 1)
-          outIndices.push_back(optionalArgsCounter);
+        int32_t lseArgIdx = optionalArgsCounter;
         ++optionalArgsCounter;
+        outIndices.push_back(optionalArgsCounter);
+        // Only verify LSE when splitKV == 1; with splitKV > 1, the LSE
+        // is an intermediate used to compute the final result.
+        if (splitKV == 1)
+          outIndices.push_back(lseArgIdx);
+      } else {
+        outIndices.push_back(optionalArgsCounter);
       }
-      outIndices.push_back(optionalArgsCounter);
     }
   } else {
     outIndices = root0.outIndices;
@@ -5473,7 +5471,10 @@ static LogicalResult populateHostHarnessLogic(
 
   // capture result index
   if (outIndices.empty()) {
-    outIndices.push_back(localVars.size() - 1);
+    size_t numResults = std::max<size_t>(root0.resultTypes.size(), 1);
+    for (size_t i = 0; i < numResults; ++i) {
+      outIndices.push_back(localVars.size() - numResults + i);
+    }
   }
 
   // Helper to call a function with appropriate type conversions
