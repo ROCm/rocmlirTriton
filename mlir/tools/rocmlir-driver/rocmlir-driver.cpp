@@ -81,6 +81,11 @@ static cl::opt<bool> dumpPipelines(
     "dump-pipelines", cl::init(false),
     cl::desc("Print out a textual form of the requested pipelines"));
 
+cl::opt<std::string> dumpCpuSchedules(
+    "dump-cpu-schedules", cl::init(""),
+    cl::value_desc("path"),
+    cl::desc("Dump CPU verifier IR and transform schedules to the specified directory"));
+
 /////////////////////////////////////////////////////////////////////////////
 //// Backend target spec
 static cl::opt<int> gpuOpt("gO",
@@ -250,6 +255,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     return failure();
   }
   backendOpts.optLevel = optLevel;
+  backendOpts.dumpCpuSchedules = dumpCpuSchedules.getValue();
 
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
   OpBuilder builder(m.getContext());

@@ -47,6 +47,10 @@ def CpuLowerVerifierPass : Pass<"cpu-lower-verifier", "::mlir::ModuleOp"> {
     "tensor::TensorDialect",
     "transform::TransformDialect"
   ];
+  let options = [
+    Option<"dumpSchedulesPath", "dump-schedules-path", "std::string", /*default=*/"\"\"",
+           "Path to dump CPU verifier IR and transform schedules (empty = no dump)">
+  ];
 }
 
 #endif // MLIR_CONVERSION_CPU_PASSES

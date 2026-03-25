@@ -96,8 +96,12 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
                                                ModuleOp transformModule,
                                                StringRef funcName,
                                                StringRef phaseName) {
-  // Create the cpu_dump directory if it doesn't exist
-  std::string dumpDir = "cpu_dump";
+  // Only dump if dump-schedules-path option was specified
+  if (dumpSchedulesPath.empty())
+    return;
+
+  // Use the path specified by the pass option
+  std::string dumpDir = dumpSchedulesPath;
   std::error_code ec = llvm::sys::fs::create_directory(dumpDir);
   if (ec && ec != std::errc::file_exists) {
     LLVM_DEBUG(llvm::dbgs() << "Warning: Could not create dump directory "
