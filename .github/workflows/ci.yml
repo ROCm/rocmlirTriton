@@ -7,16 +7,14 @@ on:
       - 'release/**'
     paths:
       - "mlir/**"
-      - "external/**"
-      - "!external/llvm-project/**"
+      - "!external/**"
   push:
     branches:
       - develop
       - 'release/**'
     paths:
       - "mlir/**"
-      - "external/**"
-      - "!external/llvm-project/**"
+      - "!external/**"
 jobs:
   py-checks:
     runs-on: ubuntu-latest
