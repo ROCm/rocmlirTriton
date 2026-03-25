@@ -410,8 +410,7 @@ static bool isElementwiseOp(Operation *op) {
   // clang-format on
 }
 
-static Value addBlockArgument(OpBuilder &b, Value val, Block *block,
-                              Location loc) {
+static Value addBlockArgument(Value val, Block *block, Location loc) {
   RankedTensorType valType = cast<RankedTensorType>(val.getType());
   val = block->addArgument(valType, loc);
   return val;
@@ -532,7 +531,7 @@ struct ElementwiseRegionFinder {
       mapper.map(v, newConstOp->getResult(0));
     }
     for (Value v : blockArgCandidates) {
-      auto newBlockArg = addBlockArgument(regionBuilder, v, block, loc);
+      auto newBlockArg = addBlockArgument(v, block, loc);
       mapper.map(v, newBlockArg);
     }
     for (Operation *op : visitedOps) {

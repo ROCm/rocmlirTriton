@@ -312,7 +312,7 @@ def Rock_ConvElementwiseGemmOp
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           DenseI64ArrayAttr:$firstGemmIndices)>,
-      Results<(outs Optional<TensorOf<[F32, F16, BF16]>>:$result)> {
+      Results<(outs TensorOf<[F32, F16, BF16]>:$result)> {
   let summary = "CONV-elementwise-GEMM operation";
   let description = [{
     Performs the operation out = preSecondGemmBody(conv_forward(filter, input), elemwiseInputs) * c.
@@ -340,7 +340,7 @@ def Rock_ConvElementwiseGemmOp
         ` ` `ab` `=` `conv` `(` $filter `,` $input `)` `:` type($filter) `,` type($input) `\n`
         (`ab` `=` `elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
         (`tr` $oTransposed^)? `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
-    `}` attr-dict (`->` type($result)^)?
+    `}` attr-dict `->` type($result)
   }];
 }
 
