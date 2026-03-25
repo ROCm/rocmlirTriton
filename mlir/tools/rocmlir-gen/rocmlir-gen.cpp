@@ -5349,8 +5349,7 @@ static LogicalResult populateHostHarnessLogic(
       Type valElemType = floatType;
       if (genParams.operation.has_value() && isa<IntegerType>(elemType)) {
         valElemType = elemType;
-        if (idx == 2)
-          // -pv_with_mlir or -pv_with_cpp: validate in int64_t to detect overflow
+        if (llvm::is_contained(outIndices, idx))
           valElemType = b.getIntegerType(64);
       } else if ((genValidation == "clone") || elemType.isInteger(8) ||
                  elemType.isInteger(32)) {
