@@ -52,7 +52,6 @@ def TosaToRockPass : Pass<"tosa-to-rock", "::mlir::func::FuncOp"> {
     Pass that converts TOSA operations to Rock operations.
   }];
   let dependentDialects = [
-    "bufferization::BufferizationDialect",
     "func::FuncDialect",
     "rock::RockDialect",
     "tensor::TensorDialect"

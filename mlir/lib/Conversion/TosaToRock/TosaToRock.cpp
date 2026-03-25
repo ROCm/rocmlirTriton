@@ -12,7 +12,6 @@
 
 #include "mlir/Conversion/TosaToRock/TosaToRock.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
@@ -1450,8 +1449,6 @@ struct ConvElementwiseGemmRewritePattern
       PatternRewriter &rewriter) const {
     Location loc = op.getLoc();
     auto outputType = cast<RankedTensorType>(op.getType());
-    Value output = bufferization::AllocTensorOp::create(
-        rewriter, loc, outputType, ValueRange{});
 
     // This is guaranteed by the matcher
     tosa::Conv2DOp firstConv =
@@ -1474,7 +1471,7 @@ struct ConvElementwiseGemmRewritePattern
 
     auto convElentwiseGemmOp = rock::ConvElementwiseGemmOp::create(
         rewriter, loc, outputType, convFields.filterExp, convFields.inputExp,
-        op.getB(), elementwiseOtherArgs, output,
+        op.getB(), elementwiseOtherArgs,
         /*cTransposed=*/nullptr,
         /*oTransposed=*/nullptr, convFields.pad, convFields.stride,
         convFields.dilation,
@@ -3048,8 +3045,6 @@ typename std::enable_if_t<
                                                         &rw) {
   Location loc = op->getLoc();
   auto outputType = cast<RankedTensorType>(op.getType());
-  Value output =
-      bufferization::AllocTensorOp::create(rw, loc, outputType, ValueRange{});
 
   int32_t blockSize = 256;
   auto elementCount =

@@ -1866,7 +1866,7 @@ LogicalResult GemmElementwiseGemmOp::verify() {
 //===-----------------------------------------------------===//
 // ConvElementwiseGemmOp
 //===-----------------------------------------------------===//
-Type ConvElementwiseGemmOp::getOutType() { return getOut().getType(); }
+Type ConvElementwiseGemmOp::getOutType() { return getResult().getType(); }
 
 Type ConvElementwiseGemmOp::getAType() {
   auto size = getGemmGemmSize();
