@@ -165,13 +165,13 @@ LogicalResult CpuLowerVerifierPass::updateCallSites(ModuleOp module,
 
     // Collect the source memrefs from the to_tensor operands
     SmallVector<Value> memrefArgs;
-    SmallVector<bufferization::ToTensorOp> toTensorOps;
+    SetVector<bufferization::ToTensorOp> toTensorOps;
 
     for (Value operand : callOp.getOperands()) {
       auto toTensorOp = operand.getDefiningOp<bufferization::ToTensorOp>();
       if (toTensorOp) {
         memrefArgs.push_back(toTensorOp.getOperand());
-        toTensorOps.push_back(toTensorOp);
+        toTensorOps.insert(toTensorOp);
       } else {
         // If the operand is not from a to_tensor, it might already be a memref
         // or something else - this shouldn't happen in our expected pattern
@@ -217,7 +217,7 @@ LogicalResult CpuLowerVerifierPass::updateCallSites(ModuleOp module,
     callOp.erase();
 
     // Erase the to_tensor ops if they have no other uses
-    for (auto toTensorOp : toTensorOps) {
+    for (auto toTensorOp : llvm::to_vector(toTensorOps)) {
       if (toTensorOp.use_empty())
         toTensorOp.erase();
     }
