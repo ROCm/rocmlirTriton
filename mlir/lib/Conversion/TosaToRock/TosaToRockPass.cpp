@@ -38,7 +38,7 @@ public:
   void runOnOperation() override {
     auto func = getOperation();
     if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
-      return;
+      llvm::report_fatal_error("func op does not have the kernel attribute");
     }
     auto &ctx = getContext();
     RewritePatternSet attentionPatterns(&ctx);

@@ -31,6 +31,7 @@
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -51,16 +52,17 @@ static cl::opt<std::string> outputFilename("o", cl::desc("Output filename"),
                                            cl::value_desc("filename"),
                                            cl::init("-"));
 
-static cl::opt<std::string> kernelPipeline(
-    "kernel-pipeline", cl::desc("rocmlir-driver kernel pipeline list"),
-    cl::value_desc("comma separated list of rock pipelines: "
-                   "migraphx,highlevel,gpu,rocdl,binary or full"),
-    cl::init(""));
+static cl::opt<std::string>
+    kernelPipeline("kernel-pipeline",
+                   cl::desc("rocmlir-driver kernel pipeline list"),
+                   cl::value_desc("comma separated list of rock pipelines: "
+                                  "migraphx,highlevel,gpu,binary or full"),
+                   cl::init(""));
 
 static cl::opt<std::string>
     hostPipeline("host-pipeline", cl::desc("rocmlir-driver host pipeline list"),
                  cl::value_desc("comma separated list of rock pipelines: "
-                                "migraphx,highlevel,runner or full"),
+                                "migraphx,highlevel or full"),
                  cl::init(""));
 
 static cl::opt<bool> legacyRockPipeline("c", cl::Hidden, cl::init(false),
@@ -68,7 +70,6 @@ static cl::opt<bool> legacyRockPipeline("c", cl::Hidden, cl::init(false),
                                         cl::cb<void, bool>([](bool v) {
                                           if (v) {
                                             kernelPipeline.setValue("full");
-                                            hostPipeline.setValue("runner");
                                           }
                                         }));
 
@@ -90,15 +91,6 @@ static cl::opt<bool> barePointers(
     "bare-ptr-memref-kernels",
     cl::desc("Use bare pointers to represent memrefs when calling kernels"),
     cl::init(true));
-
-static cl::opt<bool> hostAsyncCoroutines(
-    "host-async-coroutines",
-    cl::desc("Use coroutines when lowering async ops to LLVM"),
-    // FIXME: This should be true to match upstream
-    cl::init(false));
-
-static cl::opt<std::string> targets("targets", cl::desc("list of target"),
-                                    cl::init(""));
 
 static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
@@ -132,31 +124,97 @@ parsePipeline(StringRef pipeline, llvm::SmallDenseSet<StringRef> &pipelineSet,
   return success();
 }
 
-static LogicalResult runHostHighLevelPipeline(ModuleOp m) {
-  // Setup pass manager
-  PassManager pm(m->getName(), PassManager::Nesting::Implicit);
-  if (failed(applyPassManagerCLOptions(pm)))
-    return failure();
+//===----------------------------------------------------------------------===//
+// Function detach/reattach helpers for pipeline isolation
+//===----------------------------------------------------------------------===//
 
-  // Add verification passes
-  pm.enableVerifier(!disableVerifyPasses);
+struct DetachedFuncs {
+  struct Entry {
+    Operation *realFunc;
+    func::FuncOp stub;
+  };
+  SmallVector<Entry> entries;
+};
 
-  // Set disableRock to true since we are just running on the host
-  rock::BufferizeOptions opts;
-  opts.disableRock = true;
+// Physically remove functions matching `shouldDetach` from the module,
+// leaving private declaration stubs behind so that symbol references
+// (e.g. func.call) remain valid during pass execution.
+static DetachedFuncs
+detachFuncs(ModuleOp module,
+            mlir::function_ref<bool(func::FuncOp)> shouldDetach) {
+  DetachedFuncs detached;
 
-  // Run the bufferize pipeline
-  rock::buildBufferizePipeline(pm, opts);
+  for (auto funcOp :
+       llvm::make_early_inc_range(module.getOps<func::FuncOp>())) {
+    if (!shouldDetach(funcOp))
+      continue;
 
-  if (dumpPipelines) {
-    llvm::errs() << "Host pipeline:\n";
-    pm.printAsTextualPipeline(llvm::errs());
-    llvm::errs() << "\n";
-    if (m.getBody()->empty())
-      return success();
+    OpBuilder stubBuilder(funcOp);
+    auto stub =
+        func::FuncOp::create(stubBuilder, funcOp.getLoc(), funcOp.getName(),
+                             funcOp.getFunctionType());
+    stub.setVisibility(SymbolTable::Visibility::Private);
+
+    funcOp->remove();
+    detached.entries.push_back({funcOp, stub});
   }
 
-  return pm.run(m);
+  return detached;
+}
+
+// Re-insert previously detached functions into the module, replacing
+// their stubs.
+static void reattachFuncs(ModuleOp module, DetachedFuncs &detached) {
+  for (auto &entry : detached.entries) {
+    auto *realFunc = entry.realFunc;
+    auto stub = entry.stub;
+
+    mlir::FunctionType stubType = stub.getFunctionType();
+    mlir::FunctionType realType =
+        cast<func::FuncOp>(realFunc).getFunctionType();
+    assert(stubType == realType &&
+           "detached function signature changed during pipeline execution; "
+           "no callers should exist to fixup");
+
+    stub->getBlock()->getOperations().insert(stub->getIterator(), realFunc);
+    stub.erase();
+  }
+  detached.entries.clear();
+}
+
+// Detach functions matching `detachPredicate`, run a pipeline on the
+// remaining functions, then reattach. Skips the pipeline entirely if
+// no target functions remain after detaching.
+static LogicalResult
+runWithDetach(ModuleOp module, StringRef pipelineName,
+              mlir::function_ref<bool(func::FuncOp)> detachPredicate,
+              mlir::function_ref<void(PassManager &)> buildPipeline) {
+  DetachedFuncs detached = detachFuncs(module, detachPredicate);
+
+  bool hasTargetFuncs =
+      llvm::any_of(module.getOps<func::FuncOp>(),
+                   [](func::FuncOp f) { return !f.isDeclaration(); });
+
+  PassManager pm(module->getName(), PassManager::Nesting::Implicit);
+  if (failed(applyPassManagerCLOptions(pm)))
+    return failure();
+  pm.enableVerifier(!disableVerifyPasses);
+  buildPipeline(pm);
+
+  if (dumpPipelines) {
+    llvm::errs() << pipelineName << " pipeline:\n";
+    pm.printAsTextualPipeline(llvm::errs());
+    llvm::errs() << "\n";
+  }
+
+  if (!hasTargetFuncs) {
+    reattachFuncs(module, detached);
+    return success();
+  }
+
+  LogicalResult result = pm.run(module);
+  reattachFuncs(module, detached);
+  return result;
 }
 
 static LogicalResult
@@ -166,8 +224,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
   pm.enableVerifier(!disableVerifyPasses);
-  bool needArch = kernelPipelineSet.contains("rocdl") ||
-                  kernelPipelineSet.contains("binary");
+  bool needArch = kernelPipelineSet.contains("binary");
   RocmDeviceName devName;
   if (arch.empty() && needArch) {
     llvm::errs()
@@ -180,13 +237,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     return failure();
   }
 
-  if (kernelPipelineSet.contains("migraphx")) {
-    migraphx::addHighLevelPipeline(pm);
-  }
-
-  if (kernelPipelineSet.contains("highlevel")) {
-    rock::buildBufferizePipeline(pm);
-  }
   rock::TritonOptions tritonOpts;
   tritonOpts.arch = devName.getChip().str();
   rock::BackendOptions backendOpts;
@@ -200,9 +250,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     return failure();
   }
   backendOpts.optLevel = optLevel;
-  bool isRocdlOnly = kernelPipelineSet.contains("rocdl") &&
-                     !kernelPipelineSet.contains("binary");
-  backendOpts.compile = !isRocdlOnly;
 
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
   OpBuilder builder(m.getContext());
@@ -258,8 +305,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
 
     rock::buildTritonPipeline(pm, tritonOpts);
   }
-  if (kernelPipelineSet.contains("binary") || isRocdlOnly) {
-
+  if (kernelPipelineSet.contains("binary")) {
     rock::buildBackendPipeline(pm, backendOpts);
   }
 
@@ -280,24 +326,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
 static LogicalResult runMLIRPasses(ModuleOp &module,
                                    mlir::PassPipelineCLParser &passPipeline) {
 
-  llvm::SmallVector<std::string, 4> targetList;
-  StringRef targetsStr = targets.getValue();
-  SmallVector<StringRef, 4> tokens;
-  targetsStr.split(tokens, ',');
-  for (auto str : tokens) {
-    auto target = str.trim();
-    if (!target.empty()) {
-      RocmDeviceName targetDevName;
-      if (failed(targetDevName.parse(target))) {
-        llvm::errs() << "Invalid target " << target << " in --targets\n";
-        return failure();
-      }
-      SmallString<64> canonicalTarget;
-      targetDevName.getFullName(canonicalTarget);
-      targetList.push_back(canonicalTarget.str().str());
-    }
-  }
-
   // Canonicalize arch name
   if (!arch.empty()) {
     RocmDeviceName devName;
@@ -311,7 +339,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   }
 
   llvm::SmallDenseSet<StringRef> kernelPipelineOptions{
-      "migraphx", "highlevel", "gpu", "rocdl", "binary", "triton"};
+      "migraphx", "highlevel", "gpu", "binary", "triton"};
   llvm::SmallDenseSet<StringRef> kernelFullPipeline{"gpu", "triton", "binary"};
   llvm::SmallDenseSet<StringRef> kernelPipelineSet;
   std::string kernelPipelineStr = kernelPipeline.getValue();
@@ -319,8 +347,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                            kernelPipelineOptions, kernelFullPipeline))) {
     return failure();
   }
-  llvm::SmallDenseSet<StringRef> hostPipelineOptions{"migraphx", "highlevel",
-                                                     "runner"};
+  llvm::SmallDenseSet<StringRef> hostPipelineOptions{"migraphx", "highlevel"};
   llvm::SmallDenseSet<StringRef> hostPipelineSet;
   std::string hostPipelineStr = hostPipeline.getValue();
   if (failed(parsePipeline(hostPipelineStr, hostPipelineSet,
@@ -328,29 +355,47 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     return failure();
   }
 
+  auto isKernel = [](func::FuncOp f) {
+    return f->hasAttr(rock::KernelAttr::getMnemonic());
+  };
+  auto isHost = [&](func::FuncOp f) { return !isKernel(f); };
+
+  // Phase 1: MIGraphX lowering (host and kernel independently)
   if (hostPipelineSet.contains("migraphx")) {
-    PassManager pm(module->getName(), PassManager::Nesting::Implicit);
-    pm.enableVerifier(!disableVerifyPasses);
-    migraphx::addHighLevelPipeline(pm);
-    if (failed(pm.run(module))) {
+    if (failed(runWithDetach(
+            module, "Host MIGraphX", isKernel,
+            [](PassManager &pm) { migraphx::addMIGraphXPipeline(pm); })))
       return failure();
-    }
+  }
+  if (kernelPipelineSet.contains("migraphx")) {
+    if (failed(runWithDetach(
+            module, "Kernel MIGraphX", isHost,
+            [](PassManager &pm) { migraphx::addMIGraphXPipeline(pm); })))
+      return failure();
   }
 
-  StringRef onlyArch;
-  if (!targetList.empty())
-    onlyArch = targetList.front();
-  else
-    onlyArch = arch;
+  // Phase 2: Highlevel (host and kernel independently)
+  if (hostPipelineSet.contains("highlevel")) {
+    rock::HighlevelOptions opts;
+    opts.disableRock = true;
+    if (failed(runWithDetach(
+            module, "Host Highlevel", isKernel,
+            [&](PassManager &pm) { rock::buildHighlevelPipeline(pm, opts); })))
+      return failure();
+  }
+  if (kernelPipelineSet.contains("highlevel")) {
+    if (failed(runWithDetach(
+            module, "Kernel Highlevel", isHost,
+            [](PassManager &pm) { rock::buildHighlevelPipeline(pm); })))
+      return failure();
+  }
 
-  StringRef targetArch = onlyArch;
-  // Right now we need to update the target architecture used when we
-  // are running the kernel pipeline, or if we are running the highlevel host
-  // pipeline.
-  bool needsTargetArchUpdate =
-      !kernelPipelineSet.empty() || hostPipelineSet.contains("highlevel");
-  if (needsTargetArchUpdate) {
-    // Determine arch from module attribute or command line.
+  // Phase 3: GPU / Triton / Backend (kernel pipeline only)
+  bool needsKernelBackend = kernelPipelineSet.contains("gpu") ||
+                            kernelPipelineSet.contains("triton") ||
+                            kernelPipelineSet.contains("binary");
+  if (needsKernelBackend) {
+    StringRef onlyArch = arch;
     if (onlyArch.empty()) {
       if (module->hasAttrOfType<StringAttr>(rock::ArchAttr::getMnemonic())) {
         onlyArch =
@@ -358,18 +403,12 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                 .getValue();
       }
     }
-    targetArch = onlyArch;
+    if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet)))
+      return failure();
+  }
 
-    LogicalResult kernelResult =
-        runKernelPipeline(onlyArch, module, kernelPipelineSet);
-
-    // Run host high-level pipeline if specified
-    if (hostPipelineSet.contains("highlevel"))
-      kernelResult = runHostHighLevelPipeline(module);
-
-    if (failed(kernelResult))
-      return kernelResult;
-  } else {
+  // Custom pipeline fallback (when no named pipelines are requested)
+  if (kernelPipelineSet.empty() && hostPipelineSet.empty()) {
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
@@ -379,10 +418,9 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       return failure();
     };
 
-    // Use lowering pipeline specified at command line.
-    if (failed(passPipeline.addToPipeline(pm, errorHandler))) {
+    if (failed(passPipeline.addToPipeline(pm, errorHandler)))
       return failure();
-    }
+
     if (dumpPipelines) {
       llvm::errs() << "Custom pipeline:\n";
       pm.printAsTextualPipeline(llvm::errs());
@@ -390,63 +428,10 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       if (module.getBody()->empty())
         return success();
     }
-    if (failed(pm.run(module))) {
-      return failure();
-    }
-  }
-
-  // Run MHAL generation on the top module
-  /*
-  if (hostPipelineSet.contains("mhal")) {
-    PassManager pm(module.getContext());
-    if (failed(applyPassManagerCLOptions(pm)))
-      return failure();
-    pm.enableVerifier(!disableVerifyPasses);
-    mhal::buildPackagePipeline(pm);
-    if (dumpPipelines) {
-      llvm::errs() << "MHAL package pipeline:\n";
-      pm.printAsTextualPipeline(llvm::errs());
-      llvm::errs() << "\n";
-    }
-    if (failed(pm.run(module))) {
-      return failure();
-    }
-  }*/
-
-  // Run host code lowering that makes the result of this operation accetable
-  // to mlir-runner. Explicitly aborts in the case of multiple mhal
-  // targets to prevent confusing behavior.
-  /*if (hostPipelineSet.contains("runner")) {
-    if (targetList.size() > 1) {
-      llvm::errs() << "Expected at most one mhal target when compling from "
-                      "within rocmlir-driver\n";
-      return failure();
-    }
-    PassManager pm(module->getName(), PassManager::Nesting::Implicit);
-    if (failed(applyPassManagerCLOptions(pm)))
-      return failure();
-    pm.enableVerifier(!disableVerifyPasses);
-    mhal::RunnerOptions runnerOptions;
-    runnerOptions.barePtrMemrefs = barePointers.getValue();
-    runnerOptions.enableCoroutines = hostAsyncCoroutines.getValue();
-    SmallVector<std::string, 4> targetTypes{"GPU"};
-    SmallVector<std::string, 4> targetArchs;
-    targetArchs.push_back(targetArch.str());
-    runnerOptions.targetTypes = targetTypes;
-    runnerOptions.targetArchs = targetArchs;
-    mhal::buildRunnerPipeline(pm, runnerOptions);
-    if (dumpPipelines) {
-      llvm::errs() << "Host runner pipeline:\n";
-      pm.printAsTextualPipeline(llvm::errs());
-      llvm::errs() << "\n";
-    }
     if (failed(pm.run(module)))
       return failure();
-  }*/
+  }
 
-  // Clean up
-  module->walk(
-      [&](LLVM::LLVMFuncOp func) { func->removeAttr("xmodel.targets"); });
   return success();
 }
 
