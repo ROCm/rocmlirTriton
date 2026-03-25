@@ -66,6 +66,12 @@ DictionaryAttr getMatmulIteratorTypesAttr(MLIRContext *ctx);
 transform::MatchOp createMatchMatmulOp(ImplicitLocOpBuilder &ib,
                                        MLIRContext *ctx, Value target);
 
+/// Create a transform::MatchOp that matches func.func ops with the
+/// rock.cpu_verifier attribute. This ensures we only transform CPU verifier
+/// functions and not other functions (like external function declarations).
+transform::MatchOp createMatchCpuVerifierFuncOp(ImplicitLocOpBuilder &ib,
+                                                MLIRContext *ctx, Value target);
+
 } // namespace cpu
 } // namespace mlir
 

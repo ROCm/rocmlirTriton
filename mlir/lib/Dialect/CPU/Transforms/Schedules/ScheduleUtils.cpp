@@ -93,3 +93,21 @@ transform::MatchOp cpu::createMatchMatmulOp(ImplicitLocOpBuilder &ib,
       /*filterResultType=*/TypeAttr{},
       /*filterOperandTypes=*/ArrayAttr{});
 }
+
+transform::MatchOp cpu::createMatchCpuVerifierFuncOp(ImplicitLocOpBuilder &ib,
+                                                     MLIRContext *ctx,
+                                                     Value target) {
+  auto anyOpType = getAnyOpType(ctx);
+  // Create attribute filter for rock.cpu_verifier
+  auto cpuVerifierAttr = DictionaryAttr::get(
+      ctx, {NamedAttribute(StringAttr::get(ctx, "rock.cpu_verifier"),
+                           UnitAttr::get(ctx))});
+  return ib.create<transform::MatchOp>(
+      /*resultTypes=*/anyOpType,
+      /*target=*/target,
+      /*ops=*/ArrayAttr::get(ctx, {StringAttr::get(ctx, "func.func")}),
+      /*interface=*/transform::MatchInterfaceEnumAttr{},
+      /*opAttrs=*/cpuVerifierAttr,
+      /*filterResultType=*/TypeAttr{},
+      /*filterOperandTypes=*/ArrayAttr{});
+}
