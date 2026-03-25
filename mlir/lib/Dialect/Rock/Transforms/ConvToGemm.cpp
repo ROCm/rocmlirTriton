@@ -1243,19 +1243,35 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       // ConvOp: regularize at the dest buffer's location, then restore the
       // insertion point to the conv so filter/input transforms and the gemm
       // are placed there. The gemm doesn't take gemmOutput as an SSA operand.
-      OpBuilder::InsertionGuard guard(b);
-      ensureInsertionAfterDef(b, op, destBuffer);
-      auto mapping = buildInputToOutputMapping(b, rank);
-      destBuffer = regularizeDestLayout(
-          b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
-          destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
-          mapping, outputNames);
-      auto relayoutAttr =
-          cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
+      TransformMapAttr relayoutAttr;
+      {
+        OpBuilder::InsertionGuard guard(b);
+        ensureInsertionAfterDef(b, op, destBuffer);
+        auto mapping = buildInputToOutputMapping(b, rank);
+        destBuffer = regularizeDestLayout(
+            b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
+            destBuffer,
+            op->template getAttrOfType<ArrayAttr>("output_layout"), mapping,
+            outputNames);
+        relayoutAttr =
+            cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
+      }
+      // Apply the relayout to each output view and fusion extra input,
+      // placing each transform right after its input's defining op so it
+      // dominates all consumers (fusion ops, stores).
+      auto applyRelayout = [&](Value &v) {
+        if (Operation *defOp = v.getDefiningOp()) {
+          OpBuilder::InsertionGuard vg(b);
+          b.setInsertionPointAfter(defOp);
+          v = TransformOp::create(b, loc, v, relayoutAttr);
+        } else {
+          v = TransformOp::create(b, loc, v, relayoutAttr);
+        }
+      };
       for (auto &view : outputViews)
-        view = TransformOp::create(b, loc, view, relayoutAttr);
+        applyRelayout(view);
       for (auto &[orig, view] : fusionInputMap)
-        view = TransformOp::create(b, loc, view, relayoutAttr);
+        applyRelayout(view);
     }
   }
 
