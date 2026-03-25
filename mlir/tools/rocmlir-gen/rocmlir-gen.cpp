@@ -5160,13 +5160,37 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
             << "Group convolution not supported for conv+gemm in rocmlir-gen\n";
         exit(1);
       }
+      // Start CPU timer
+      if (cpuTimers) {
+        auto cpuTimerStartFunc = makeFuncDecl(module, "cpuTimerStart", {});
+        func::CallOp::create(b, loc, cpuTimerStartFunc, ValueRange{});
+      }
+
       auto cpuConvElementwiseGemmFunc =
           createCpuConvElementwiseGemmKernelWithMlir(module, genParams);
       func::CallOp::create(b, loc, cpuConvElementwiseGemmFunc, valVars);
+
+      // Stop CPU timer and print elapsed time
+      if (cpuTimers) {
+        auto cpuTimerStopFunc = makeFuncDecl(module, "cpuTimerStop", {});
+        func::CallOp::create(b, loc, cpuTimerStopFunc, ValueRange{});
+      }
     } else if (genParams.convConfig.has_value()) {
       const auto &genConfig = **genParams.convConfig;
+      // Start CPU timer
+      if (cpuTimers) {
+        auto cpuTimerStartFunc = makeFuncDecl(module, "cpuTimerStart", {});
+        func::CallOp::create(b, loc, cpuTimerStartFunc, ValueRange{});
+      }
+
       auto cpuConvFunc = createCPUConvWithMLIR(module, genConfig);
       callTensorFuncWithMemrefs(b, loc, cpuConvFunc, valVars, outIndices);
+
+      // Stop CPU timer and print elapsed time
+      if (cpuTimers) {
+        auto cpuTimerStopFunc = makeFuncDecl(module, "cpuTimerStop", {});
+        func::CallOp::create(b, loc, cpuTimerStopFunc, ValueRange{});
+      }
     } else if (genParams.operation == rock::KernelType::Gemm) {
       // Emit call to host gemm
       if (validationType == "cpp") {
