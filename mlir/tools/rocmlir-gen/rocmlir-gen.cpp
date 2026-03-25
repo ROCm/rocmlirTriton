@@ -157,6 +157,12 @@ static llvm::cl::alias groupSizeShort("g",
                                       llvm::cl::desc("alias for -groupsize"),
                                       llvm::cl::aliasopt(groupSize));
 
+static llvm::cl::opt<int> convKernelId(
+    "kernel_id",
+    llvm::cl::desc("When set, emit only the sub-kernel with this index "
+                   "(0-based)"),
+    llvm::cl::value_desc("index"), llvm::cl::init(-1));
+
 // N
 static llvm::cl::opt<int64_t> batchSize("batchsize",
                                         llvm::cl::desc("Batch size"),
@@ -444,14 +450,6 @@ static llvm::cl::opt<std::string> dataTypeAlias(
       }
     }));
 llvm::cl::alias dataTypeAliasLong("dtype", llvm::cl::aliasopt(dataTypeAlias));
-
-// conv-config
-static llvm::cl::opt<std::string> populateConvConfig(
-    "conv-config",
-    llvm::cl::desc(
-        "Populate full config settings (overrides all specific settings)"),
-    llvm::cl::value_desc("config settings matching the C-API"),
-    llvm::cl::init(""));
 
 // populate default values
 static llvm::cl::opt<bool>
@@ -1178,6 +1176,12 @@ static auto getRequiredArgs(std::optional<rock::KernelType> kernelType) {
 
 static LogicalResult detectMissingArguments() {
   const static auto requiredArgs = getRequiredArgs(operation);
+
+  if (arch.getValue().empty()) {
+    llvm::errs() << "--arch is not set\n";
+    return failure();
+  }
+
   for (auto *arg : requiredArgs) {
     if (arg->getValue() <= 0) {
       llvm::errs() << "Value for: " << arg->ArgStr << " not specified\n";
@@ -5695,205 +5699,180 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
 
   // ConvElementwiseGemm is treated as convolution
   const bool isConv = !(isGemm || isAttention || isGemmElntwiseGemm);
-  const auto &convConfigStr = populateConvConfig.getValue();
 
-  if (!convConfigStr.empty() && !isConv) {
-    llvm::errs() << "Cannot use --conv-config with gemm/attention/gemm+gemm "
-                    "operations\n";
+  if (failed(detectMissingArguments())) {
     exit(1);
   }
 
-  if (convConfigStr.empty() && failed(detectMissingArguments())) {
+  RocmDeviceName targetInfo;
+  if (failed(targetInfo.parse(arch.getValue()))) {
+    llvm::errs() << "Invalid architecture name: " << arch << "\n";
     exit(1);
   }
+  std::string triple = targetInfo.getTriple().str();
+  std::string chip = targetInfo.getChip().str();
+  std::string chipFeatures = targetInfo.getFeaturesForBackend();
+  SmallString<64> canonicalArch;
+  targetInfo.getFullName(canonicalArch);
+  arch = canonicalArch.str().str();
 
-  // Scenario 1: We use conv config to initialize everything
-  if (!convConfigStr.empty()) {
-    if (failed(convGenerator.parseConvConfig(builder, convConfigStr.c_str()))) {
-      llvm::errs() << "Module population failed.\n";
-      exit(1);
+  LogicalResult status = success();
+  Type filterElemType = typeFromString(filterDataType.getValue(), context);
+  Type inputElemType = typeFromString(inputDataType.getValue(), context);
+  // for regular convolution it does filter * input = output
+  // for bwd data convolution it does filter * output = input
+  // for the bwd weight convolution it does output * input = filter
+  // therefore need to remap data types accordingly before calculating
+  // features
+  if (operation == rock::KernelType::ConvBwdData) {
+    // for the bwd data, input and output are flipped
+    inputElemType = typeFromString(outputDataType.getValue(), context);
+  } else if (operation == rock::KernelType::ConvBwdWeight) {
+    filterElemType = typeFromString(outputDataType.getValue(), context);
+  }
+  genParams.operation = operation;
+  genParams.arch = arch;
+  genParams.perfConfig = perfConfig;
+  if (isGemm) {
+    for (const auto &arg :
+          {filterDataType.getValue(), inputDataType.getValue(),
+          outputDataType.getValue(), scaleADataType.getValue(),
+          scaleBDataType.getValue()})
+      genParams.types.push_back(typeFromString(arg, context));
+    genParams.convConfig = std::nullopt;
+    (void)createGpuGemmKernel(module, genParams);
+  } else if (isGemmElntwiseGemm) {
+    constexpr size_t numArgs{4};
+    // Note: In the current implementation, all operands have the same type.
+    // This behaviour enforced by `-t`. See, detectMissingArguments()
+    auto elemType = typeFromString(inputDataType.getValue(), context);
+    for (size_t argIdx{0}; argIdx < numArgs; ++argIdx) {
+      genParams.types.push_back(elemType);
     }
-    genParams.types.push_back(convGenerator.getFilterDataType(builder));
-    genParams.types.push_back(convGenerator.getInputDataType(builder));
-    genParams.types.push_back(convGenerator.getOutputDataType(builder));
-    const auto *convConfig = &convGenerator.getConfig();
-    genParams.convConfig = convConfig;
-    genParams.operation =
-        rock::kernelTypeFromConvOpType(convConfig->operation.value());
-    genParams.perfConfig = convConfig->perfConfig;
-  } else {
-    // Scenario 2: We use llvm::cl::opt to initialize everything
-    if (arch.getValue().empty()) {
-      llvm::errs() << "--arch is not set\n";
-      exit(1);
-    }
-
-    RocmDeviceName targetInfo;
-    if (failed(targetInfo.parse(arch.getValue()))) {
-      llvm::errs() << "Invalid architecture name: " << arch << "\n";
-      exit(1);
-    }
-    std::string triple = targetInfo.getTriple().str();
-    std::string chip = targetInfo.getChip().str();
-    std::string chipFeatures = targetInfo.getFeaturesForBackend();
-    SmallString<64> canonicalArch;
-    targetInfo.getFullName(canonicalArch);
-    arch = canonicalArch.str().str();
-
-    LogicalResult status = success();
-    Type filterElemType = typeFromString(filterDataType.getValue(), context);
-    Type inputElemType = typeFromString(inputDataType.getValue(), context);
-    // for regular convolution it does filter * input = output
-    // for bwd data convolution it does filter * output = input
-    // for the bwd weight convolution it does output * input = filter
-    // therefore need to remap data types accordingly before calculating
-    // features
-    if (operation == rock::KernelType::ConvBwdData) {
-      // for the bwd data, input and output are flipped
-      inputElemType = typeFromString(outputDataType.getValue(), context);
-    } else if (operation == rock::KernelType::ConvBwdWeight) {
-      filterElemType = typeFromString(outputDataType.getValue(), context);
-    }
-    genParams.operation = operation;
-    genParams.arch = arch;
-    genParams.perfConfig = perfConfig;
-    if (isGemm) {
-      for (const auto &arg :
-           {filterDataType.getValue(), inputDataType.getValue(),
-            outputDataType.getValue(), scaleADataType.getValue(),
-            scaleBDataType.getValue()})
-        genParams.types.push_back(typeFromString(arg, context));
-      genParams.convConfig = std::nullopt;
-      (void)createGpuGemmKernel(module, genParams);
-    } else if (isGemmElntwiseGemm) {
-      constexpr size_t numArgs{4};
+    genParams.convConfig = std::nullopt;
+    (void)createGpuGemmElementwiseGemmKernel(module, genParams);
+  } else if (isAttention) {
+    auto elemType = typeFromString(inputDataType.getValue(), context);
+    // We only support first-gemm i8 version of attention
+    // This will be changed when we support both gemms of i8.
+    if (elemType == IntegerType::get(context, 8)) {
+      constexpr size_t maxNumArgs{10};
+      genParams.types.resize(maxNumArgs);
+      genParams.types[AttentionQuantizedArgIndex::q] =
+          IntegerType::get(context, 8);
+      genParams.types[AttentionQuantizedArgIndex::k] =
+          IntegerType::get(context, 8);
+      genParams.types[AttentionQuantizedArgIndex::v] =
+          Float16Type::get(context);
+      genParams.types[AttentionQuantizedArgIndex::quantBias] =
+          IntegerType::get(context, 8);
+      genParams.types[AttentionQuantizedArgIndex::quantScale] =
+          Float16Type::get(context);
+      genParams.types[AttentionQuantizedArgIndex::scale] =
+          Float16Type::get(context);
+      genParams.types[AttentionQuantizedArgIndex::bias] =
+          Float16Type::get(context);
+      genParams.types[AttentionQuantizedArgIndex::currentSeqLen] =
+          IntegerType::get(context, 32);
+      genParams.types[AttentionQuantizedArgIndex::prefixOffset] =
+          IntegerType::get(context, 32);
+      genParams.types[AttentionQuantizedArgIndex::lse] =
+          Float16Type::get(context);
+    } else {
+      constexpr size_t maxNumArgs{5};
       // Note: In the current implementation, all operands have the same type.
       // This behaviour enforced by `-t`. See, detectMissingArguments()
-      auto elemType = typeFromString(inputDataType.getValue(), context);
-      for (size_t argIdx{0}; argIdx < numArgs; ++argIdx) {
+      for (size_t argIdx{0}; argIdx < maxNumArgs; ++argIdx) {
         genParams.types.push_back(elemType);
       }
-      genParams.convConfig = std::nullopt;
-      (void)createGpuGemmElementwiseGemmKernel(module, genParams);
-    } else if (isAttention) {
-      auto elemType = typeFromString(inputDataType.getValue(), context);
-      // We only support first-gemm i8 version of attention
-      // This will be changed when we support both gemms of i8.
-      if (elemType == IntegerType::get(context, 8)) {
-        constexpr size_t maxNumArgs{10};
-        genParams.types.resize(maxNumArgs);
-        genParams.types[AttentionQuantizedArgIndex::q] =
-            IntegerType::get(context, 8);
-        genParams.types[AttentionQuantizedArgIndex::k] =
-            IntegerType::get(context, 8);
-        genParams.types[AttentionQuantizedArgIndex::v] =
-            Float16Type::get(context);
-        genParams.types[AttentionQuantizedArgIndex::quantBias] =
-            IntegerType::get(context, 8);
-        genParams.types[AttentionQuantizedArgIndex::quantScale] =
-            Float16Type::get(context);
-        genParams.types[AttentionQuantizedArgIndex::scale] =
-            Float16Type::get(context);
-        genParams.types[AttentionQuantizedArgIndex::bias] =
-            Float16Type::get(context);
-        genParams.types[AttentionQuantizedArgIndex::currentSeqLen] =
-            IntegerType::get(context, 32);
-        genParams.types[AttentionQuantizedArgIndex::prefixOffset] =
-            IntegerType::get(context, 32);
-        genParams.types[AttentionQuantizedArgIndex::lse] =
-            Float16Type::get(context);
-      } else {
-        constexpr size_t maxNumArgs{5};
-        // Note: In the current implementation, all operands have the same type.
-        // This behaviour enforced by `-t`. See, detectMissingArguments()
-        for (size_t argIdx{0}; argIdx < maxNumArgs; ++argIdx) {
-          genParams.types.push_back(elemType);
-        }
-        // extra operand: currentSeqLen (i32)
-        genParams.types.push_back(IntegerType::get(context, 32));
-        // extra operand: prefixOffset (i32)
-        genParams.types.push_back(IntegerType::get(context, 32));
-        // extra operand: LSE (log-sum-exp)
-        genParams.types.push_back(elemType);
-      }
-      genParams.convConfig = std::nullopt;
-      (void)createGpuAttentionKernel(module, genParams);
-    } else {
-      int nDims = filterLayout.getValue().size() - 3; // +++pf: magic number.
-      SmallVector<int, 4> dilations;
-      SmallVector<int, 4> strides;
-      SmallVector<int, 4> paddingLeft;
-      SmallVector<int, 4> paddingRight;
-
-      // +++pf: needs generalising, coupled with command-line options.
-      dilations.push_back(dilationHeight.getValue());
-      strides.push_back(strideHeight.getValue());
-      paddingLeft.push_back(paddingHeightLeft.getValue());
-      paddingRight.push_back(paddingHeightRight.getValue());
-
-      if (nDims > 1) {
-        dilations.push_back(dilationWidth.getValue());
-        strides.push_back(strideWidth.getValue());
-        paddingLeft.push_back(paddingWidthLeft.getValue());
-        paddingRight.push_back(paddingWidthRight.getValue());
-      }
-      if (nDims > 2) {
-        dilations.push_back(dilationDepth.getValue());
-        strides.push_back(strideDepth.getValue());
-        paddingLeft.push_back(paddingDepthLeft.getValue());
-        paddingRight.push_back(paddingDepthRight.getValue());
-      }
-
-      convGenerator = rock::ConvGenerator(
-          arch, chip, disableSplitKForTuning,
-          int(gemmScheduleVersion.getValue()), triple, chipFeatures,
-          perfConfig.getValue(),
-          num_cu.getNumOccurrences() ? std::optional<int>(num_cu.getValue())
-                                     : std::nullopt,
-          numChiplets.getNumOccurrences()
-              ? std::optional<int>(numChiplets.getValue())
-              : std::nullopt,
-          rock::convOpTypeFromKernelType(operation.getValue()),
-          filterDataType.getValue(), inputDataType.getValue(),
-          outputDataType.getValue(), dilations, strides, paddingLeft,
-          paddingRight, filterLayout.getValue(), inputLayout.getValue(),
-          outputLayout.getValue());
-
-      SmallVector<int64_t> inDims{inputHeight, inputWidth};
-      if (nDims > 2) {
-        if (inputDepth < 1)
-          inputDepth = 1;
-        inDims.push_back(inputDepth);
-      }
-      SmallVector<int64_t> outDims{outputHeight, outputWidth};
-      if (nDims > 2) {
-        if (outputDepth < 1)
-          outputDepth = 1;
-        outDims.push_back(outputDepth);
-      }
-      SmallVector<int64_t> filDims{filterHeight, filterWidth};
-      if (nDims > 2) {
-        if (filterDepth < 1)
-          filterDepth = 1;
-        filDims.push_back(filterDepth);
-      }
-
-      status =
-          convGenerator.parseConvDims(batchSize, groupSize, inputChannel,
-                                      inDims, outputChannel, outDims, filDims);
-      if (failed(status)) {
-        llvm::errs() << "Could not parse convolution dimensions\n";
-        exit(1);
-      }
-
-      if (!isConvElntwiseGemm) {
-        genParams.types.push_back(convGenerator.getFilterDataType(builder));
-        genParams.types.push_back(convGenerator.getInputDataType(builder));
-        genParams.types.push_back(convGenerator.getOutputDataType(builder));
-      }
-      genParams.convConfig = &convGenerator.getConfig();
+      // extra operand: currentSeqLen (i32)
+      genParams.types.push_back(IntegerType::get(context, 32));
+      // extra operand: prefixOffset (i32)
+      genParams.types.push_back(IntegerType::get(context, 32));
+      // extra operand: LSE (log-sum-exp)
+      genParams.types.push_back(elemType);
     }
+    genParams.convConfig = std::nullopt;
+    (void)createGpuAttentionKernel(module, genParams);
+  } else {
+    int nDims = filterLayout.getValue().size() - 3; // +++pf: magic number.
+    SmallVector<int, 4> dilations;
+    SmallVector<int, 4> strides;
+    SmallVector<int, 4> paddingLeft;
+    SmallVector<int, 4> paddingRight;
+
+    // +++pf: needs generalising, coupled with command-line options.
+    dilations.push_back(dilationHeight.getValue());
+    strides.push_back(strideHeight.getValue());
+    paddingLeft.push_back(paddingHeightLeft.getValue());
+    paddingRight.push_back(paddingHeightRight.getValue());
+
+    if (nDims > 1) {
+      dilations.push_back(dilationWidth.getValue());
+      strides.push_back(strideWidth.getValue());
+      paddingLeft.push_back(paddingWidthLeft.getValue());
+      paddingRight.push_back(paddingWidthRight.getValue());
+    }
+    if (nDims > 2) {
+      dilations.push_back(dilationDepth.getValue());
+      strides.push_back(strideDepth.getValue());
+      paddingLeft.push_back(paddingDepthLeft.getValue());
+      paddingRight.push_back(paddingDepthRight.getValue());
+    }
+
+    convGenerator = rock::ConvGenerator(
+        arch, chip, disableSplitKForTuning,
+        int(gemmScheduleVersion.getValue()), triple, chipFeatures,
+        perfConfig.getValue(),
+        num_cu.getNumOccurrences() ? std::optional<int>(num_cu.getValue())
+                                    : std::nullopt,
+        numChiplets.getNumOccurrences()
+            ? std::optional<int>(numChiplets.getValue())
+            : std::nullopt,
+        rock::convOpTypeFromKernelType(operation.getValue()),
+        filterDataType.getValue(), inputDataType.getValue(),
+        outputDataType.getValue(), dilations, strides, paddingLeft,
+        paddingRight, filterLayout.getValue(), inputLayout.getValue(),
+        outputLayout.getValue());
+
+    SmallVector<int64_t> inDims{inputHeight, inputWidth};
+    if (nDims > 2) {
+      if (inputDepth < 1)
+        inputDepth = 1;
+      inDims.push_back(inputDepth);
+    }
+    SmallVector<int64_t> outDims{outputHeight, outputWidth};
+    if (nDims > 2) {
+      if (outputDepth < 1)
+        outputDepth = 1;
+      outDims.push_back(outputDepth);
+    }
+    SmallVector<int64_t> filDims{filterHeight, filterWidth};
+    if (nDims > 2) {
+      if (filterDepth < 1)
+        filterDepth = 1;
+      filDims.push_back(filterDepth);
+    }
+
+    status =
+        convGenerator.parseConvDims(batchSize, groupSize, inputChannel,
+                                    inDims, outputChannel, outDims, filDims);
+    if (failed(status)) {
+      llvm::errs() << "Could not parse convolution dimensions\n";
+      exit(1);
+    }
+
+    if (convKernelId.getNumOccurrences() > 0)
+      convGenerator.setKernelId(convKernelId.getValue());
+
+    if (!isConvElntwiseGemm) {
+      genParams.types.push_back(convGenerator.getFilterDataType(builder));
+      genParams.types.push_back(convGenerator.getInputDataType(builder));
+      genParams.types.push_back(convGenerator.getOutputDataType(builder));
+    }
+    genParams.convConfig = &convGenerator.getConfig();
   }
+  
 
   // TODO: Extract isApplicable check to be its own component
   if (isConv && failed(convGenerator.isApplicable())) {
