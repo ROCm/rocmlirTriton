@@ -38,13 +38,24 @@ OwningOpRef<ModuleOp> cpu::buildUnrollSchedule(MLIRContext *ctx) {
         /*resultType=*/anyOpType,
         /*target=*/matchContract.getResults(),
         /*isolated_from_above=*/false,
-        /*allow_empty_results=*/false,
+        /*allow_empty_results=*/true,
         /*op_name=*/StringAttr::get(ctx, "scf.for"),
         /*deduplicate=*/false,
         /*nth_parent=*/1);
 
-    ib.create<transform::LoopUnrollOp>(
-        /*target=*/getParent.getParent(),
-        /*factor=*/4);
+    auto foreachOp = ib.create<transform::ForeachOp>(
+        /*resultTypes=*/TypeRange{},
+        /*targets=*/ValueRange{getParent.getParent()},
+        /*with_zip_shortest=*/false);
+    {
+      OpBuilder::InsertionGuard guard(ib);
+      Region &bodyRegion = foreachOp.getBody();
+      Block *body = ib.createBlock(&bodyRegion, bodyRegion.end(), {anyOpType},
+                                   {ib.getLoc()});
+      ib.create<transform::LoopUnrollOp>(
+          /*target=*/body->getArgument(0),
+          /*factor=*/4);
+      ib.create<transform::YieldOp>(/*operands=*/ValueRange{});
+    }
   });
 }
