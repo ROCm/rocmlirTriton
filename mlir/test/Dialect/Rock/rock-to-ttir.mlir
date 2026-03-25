@@ -52,6 +52,19 @@ func.func @test_return_conversion(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64x
 
 // -----
 
+// CHECK-LABEL: @test_return_clears_res_attrs
+// CHECK-SAME: (%{{.*}}: tensor<64x64xf32>, %{{.*}}: tensor<64x64xi32>, %{{.*}}: tensor<64x64xi1>)
+//      CHECK:   tt.store
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_store_ptr
+//  CHECK-NOT:   res_attrs
+func.func @test_return_clears_res_attrs(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> (tensor<64x64xf32> {rock.prefill = 0.000000e+00 : f32}) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// -----
+
 // CHECK-LABEL: @test_atomic_add_store
 // CHECK-SAME: (%[[VALUE:.*]]: tensor<64x64xf32>, %[[PTRS:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>

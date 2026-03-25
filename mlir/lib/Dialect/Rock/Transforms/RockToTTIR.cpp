@@ -357,7 +357,7 @@ struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
           /*results=*/{});
       rewriter.modifyOpInPlace(funcOp, [&]() {
         funcOp.setFunctionType(newFuncType);
-        funcOp->removeAttr("res_attrs");
+        funcOp.setAllResultAttrs(ArrayRef<DictionaryAttr>{});
       });
     }
 
