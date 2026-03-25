@@ -355,8 +355,10 @@ struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
       FunctionType newFuncType = FunctionType::get(
           rewriter.getContext(), funcOp.getFunctionType().getInputs(),
           /*results=*/{});
-      rewriter.modifyOpInPlace(funcOp,
-                               [&]() { funcOp.setFunctionType(newFuncType); });
+      rewriter.modifyOpInPlace(funcOp, [&]() {
+        funcOp.setFunctionType(newFuncType);
+        funcOp->removeAttr("res_attrs");
+      });
     }
 
     rewriter.replaceOpWithNewOp<func::ReturnOp>(returnOp);
