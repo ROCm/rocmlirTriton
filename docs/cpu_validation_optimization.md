@@ -57,6 +57,36 @@ Yes, but we need to use `transform.structured.vectorize` which, in my experience
 
 We may want to use `vectorize` in the long term if we find corner cases with `vectorize_children_and_apply_patterns` since it will attempt vectorizing all ops, but in general `vectorize_children_and_apply_patterns` should be more reliable.
 
+# 4. Convolution
+
+```
+$ ./build/bin/rocmlir-gen --cpu-timers -batchsize=64 -in_channels=512 -in_h=16 -in_w=16 -out_channels=512 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=2 --conv_stride_w=2 --padding_h=0 --padding_w=0 --operation conv_bwd_data -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t bf16  --arch gfx950:sramecc+:xnack- -pv   | ./build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner -O0 --shared-libs=/home/pamartin/rocmlirTriton/external/triton/llvm-project/build/./lib/libmlir_rocm_runtime.so,/home/pamartin/rocmlirTriton/build/lib/libconv-validation-wrappers.so,/home/pamartin/rocmlirTriton/external/triton/llvm-project/build/./lib/libmlir_runner_utils.so,/home/pamartin/rocmlirTriton/external/triton/llvm-project/build/./lib/libmlir_float16_utils.so,/home/pamartin/rocmlirTriton/external/triton/llvm-project/build/./lib/libmlir_c_runner_utils.so --entry-point-result=void
+JIT compilation time: 186.891 ms
+Memory init time: 18.601 ms
+GPU kernel time: 95.314 ms
+
+
+--- CPU Verifier Per-Op Statistics ---
+Operation                        Total (ms)    Count     Avg (ms)
+------------------------------ ------------ -------- ------------
+extf (filter bf16->f32)               2.097        1        2.097
+extf (input bf16->f32)                0.000        1        0.000
+extf (output bf16->f32)               1.474        1        1.474
+fill (zero init)                      7.582        1        7.582
+generate (dilate)                     5.484        1        5.484
+pad/crop (bwd_data)                  21.274        1       21.274
+generate (flip filter)                3.348        1        3.348
+generic (convolution)            110650.496        1   110650.496
+truncf (f32->bf16)                    5.427        1        5.427
+------------------------------ ------------ -------- ------------
+Total                            110697.181
+--------------------------------------
+
+CPU validation time: 110697.810 ms
+```
+
+Seems like we just need to focus on optimizing the convolution kernel itself
+
 ## References
 [1] https://www.cs.utexas.edu/~flame/pubs/GotoTOMS_final.pdf
 [2] https://arxiv.org/pdf/2003.00532
