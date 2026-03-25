@@ -241,8 +241,9 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   // Step 1: Create a temporary module containing only this function
   OwningOpRef<ModuleOp> tempModule = ModuleOp::create(loc);
 
-  // Step 1.5: Find and copy all referenced globals to the temporary module
-  // The function may use memref.get_global which requires the global to exist
+  // Step 1.5: Find and copy all referenced symbols to the temporary module
+  // The function may use memref.get_global which requires the global to exist,
+  // and func.call which requires the callee function declaration to exist.
   ModuleOp parentModule = func->getParentOfType<ModuleOp>();
   OpBuilder builder(ctx);
   builder.setInsertionPointToStart(tempModule->getBody());
@@ -257,6 +258,22 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
     if (auto globalOp = parentModule.lookupSymbol<memref::GlobalOp>(globalName)) {
       builder.clone(*globalOp);
       LLVM_DEBUG(llvm::dbgs() << "  Copied global: " << globalName << "\n");
+    }
+  });
+
+  // Collect all function declarations referenced by func.call operations
+  func->walk([&](func::CallOp callOp) {
+    StringRef calleeName = callOp.getCallee();
+    // Check if we already copied this function
+    if (tempModule->lookupSymbol(calleeName))
+      return;
+    // Look up the function in the parent module and clone it if it's a declaration
+    if (auto calleeFunc = parentModule.lookupSymbol<func::FuncOp>(calleeName)) {
+      // Only copy declarations (functions without a body), not full definitions
+      if (calleeFunc.isDeclaration()) {
+        builder.clone(*calleeFunc);
+        LLVM_DEBUG(llvm::dbgs() << "  Copied function declaration: " << calleeName << "\n");
+      }
     }
   });
 
