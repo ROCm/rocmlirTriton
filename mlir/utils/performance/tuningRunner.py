@@ -37,7 +37,7 @@ class Options:
     num_cu: int
     num_chiplets: int
     rocmlir_gen_flags: str
-    verify_mode: str
+    verify: bool
     verify_perfconfigs: bool
     tflops: bool
     compact_print: bool
@@ -57,12 +57,10 @@ def log_error(title, message, outfile):
         outfile.flush()
 
 
-def verify_mode_flags(verify_mode: str) -> str:
-    if verify_mode == "none":
-        return ""
-    if verify_mode == "cpu":
+def verify_flags(verify: bool) -> str:
+    if verify:
         return " -pv"
-    raise ValueError("Unknown verification mode", verify_mode)
+    return ""
 
 
 # Run a gemm or conv config and verify it
@@ -71,7 +69,7 @@ def verify_kernel_with_perfconfig(perfconfig, config, paths: Paths, options: Opt
         print(f"Verifying with perfConfig = {perfconfig}", file=sys.stderr)
     config.set_perfconfig(perfconfig.strip())
     rocmlir_gen_command = paths.mlir_paths.rocmlir_gen_path + \
-        verify_mode_flags(options.verify_mode) + \
+        verify_flags(options.verify) + \
         ' -print-verify-results=summary ' + \
         config.generate_mlir_driver_commandline(options.rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS)
     rocmlir_driver_command = [paths.mlir_paths.rocmlir_driver_path, '-c']
@@ -356,7 +354,7 @@ def tune_mlir_kernels(configs, conf_class, paths: Paths, options: Options):
                 else:
                     continue
 
-            if options.verify_mode != "none":
+            if options.verify:
                 try:
                     verify_ns = verify_kernel_with_perfconfig(winning_config, config, paths,
                                                               options)
@@ -527,11 +525,12 @@ def main(args=None):
                         help="Quiet mode (don't output each test result)")
 
     parser.add_argument(
-        "--verify-mode",
-        default="cpu",
-        choices=["none", "cpu"],
+        "--verify",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=
-        "Flag to specify if verification of compiled kernel with selected PerfConfig should use CPU based implementation"
+        "Verify compiled kernels against the CPU reference (rocmlir-gen -pv). "
+        "Use --no-verify to skip.",
     )
 
     parser.add_argument(
@@ -539,7 +538,8 @@ def main(args=None):
         action='store_true',
         default=False,
         help=
-        "Compile and verify given problem with all applicable perf configs. Whether it would use CPU or GPU based verification is controlled by `--verify-mode`. Should be used in conjunction with `--verify-mode`"
+        "Compile and verify given problem with all applicable perf configs. "
+        "Use with --verify (default); not compatible with --no-verify.",
     )
 
     parser.add_argument("--test_dir",
@@ -582,9 +582,9 @@ def main(args=None):
 
     parsed_args = parser.parse_args(args)
 
-    if parsed_args.verify_perf_configs and parsed_args.verify_mode == "none":
+    if parsed_args.verify_perf_configs and not parsed_args.verify:
         print(
-            "Use of `--verify-perf-configs` is not allowed with `--verify-mode=none`. Please pass `--verify-mode=cpu`."
+            "Use of `--verify-perf-configs` is not allowed with `--no-verify`. Please pass `--verify`."
         )
         return 1
 
@@ -609,7 +609,7 @@ def main(args=None):
                       quiet=parsed_args.quiet,
                       tuning_space_kind=parsed_args.tuning_space,
                       rocmlir_gen_flags=rocmlir_gen_flags,
-                      verify_mode=parsed_args.verify_mode,
+                      verify=parsed_args.verify,
                       verify_perfconfigs=parsed_args.verify_perf_configs,
                       tflops=parsed_args.tflops,
                       compact_print=parsed_args.compact_print,
