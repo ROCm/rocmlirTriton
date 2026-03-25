@@ -30,6 +30,7 @@
 namespace mlir {
 namespace cpu {
 
+#define GEN_PASS_DECL_CPUCONVTOGEMMPASS
 #define GEN_PASS_DECL_CPULOWERVERIFIERPASS
 
 #define GEN_PASS_REGISTRATION
