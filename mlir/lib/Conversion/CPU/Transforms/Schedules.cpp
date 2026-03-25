@@ -157,27 +157,21 @@ static void unwrapNestedModule(OwningOpRef<ModuleOp> &module,
 
   LLVM_DEBUG(llvm::dbgs() << "  Unwrapping nested module structure\n");
 
-  // Find the function inside the nested module
-  func::FuncOp funcOp = nullptr;
-  nestedModule.walk([&](func::FuncOp f) {
-    if (f.getName() == funcName)
-      funcOp = f;
-  });
-
-  if (!funcOp) {
-    // Function not found in nested module, leave as-is
-    return;
-  }
-
-  // Create a new clean module with just the function
+  // Create a new clean module
   MLIRContext *ctx = module->getContext();
   Location loc = module->getLoc();
   OwningOpRef<ModuleOp> newModule = ModuleOp::create(loc);
 
-  // Clone the function into the new module
+  // Clone top-level symbols from the nested module (globals, function
+  // declarations, the target function, etc.) to preserve any dependencies
+  // that transforms may have introduced.
   OpBuilder builder(ctx);
   builder.setInsertionPointToStart(newModule->getBody());
-  builder.clone(*funcOp.getOperation());
+  for (Operation &op : nestedModule.getBody()->getOperations()) {
+    if (op.hasTrait<OpTrait::IsTerminator>())
+      continue;
+    builder.clone(op);
+  }
 
   // Replace the old module with the new one
   module = std::move(newModule);
