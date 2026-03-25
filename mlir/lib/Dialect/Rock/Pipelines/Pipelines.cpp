@@ -40,7 +40,7 @@
 
 #include "mlir/Conversion/RocMLIRPasses.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
-#include "mlir/Dialect/CPU/Passes.h"
+#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Tosa/IR/TargetEnv.h"

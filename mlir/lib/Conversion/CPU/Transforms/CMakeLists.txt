@@ -9,7 +9,7 @@ add_rocmlir_dialect_library(MLIRCpuTransforms
   Schedules/VectorizationSchedule.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/CPU
+  ${MLIR_MAIN_INCLUDE_DIR}/mlir/Conversion/CPU
 
   DEPENDS
   MLIRCpuPassIncGen

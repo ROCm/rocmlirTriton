@@ -20,8 +20,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef MLIR_DIALECT_CPU_PASSES_H_
-#define MLIR_DIALECT_CPU_PASSES_H_
+#ifndef MLIR_CONVERSION_CPU_PASSES_H_
+#define MLIR_CONVERSION_CPU_PASSES_H_
 
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
@@ -33,9 +33,9 @@ namespace cpu {
 #define GEN_PASS_DECL_CPULOWERVERIFIERPASS
 
 #define GEN_PASS_REGISTRATION
-#include "mlir/Dialect/CPU/Passes.h.inc"
+#include "mlir/Conversion/CPU/Passes.h.inc"
 
 } // namespace cpu
 } // namespace mlir
 
-#endif // MLIR_DIALECT_CPU_PASSES_H_
+#endif // MLIR_CONVERSION_CPU_PASSES_H_

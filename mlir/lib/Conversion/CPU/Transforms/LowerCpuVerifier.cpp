@@ -29,7 +29,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/CPU/Passes.h"
+#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -51,7 +51,7 @@
 namespace mlir {
 namespace cpu {
 #define GEN_PASS_DEF_CPULOWERVERIFIERPASS
-#include "mlir/Dialect/CPU/Passes.h.inc"
+#include "mlir/Conversion/CPU/Passes.h.inc"
 } // namespace cpu
 } // namespace mlir
 

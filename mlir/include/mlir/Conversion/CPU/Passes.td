@@ -15,8 +15,8 @@
 // limitations under the License.
 // =============================================================================
 
-#ifndef MLIR_DIALECT_CPU_PASSES
-#define MLIR_DIALECT_CPU_PASSES
+#ifndef MLIR_CONVERSION_CPU_PASSES
+#define MLIR_CONVERSION_CPU_PASSES
 
 include "mlir/Pass/PassBase.td"
 
@@ -49,4 +49,4 @@ def CpuLowerVerifierPass : Pass<"cpu-lower-verifier", "::mlir::ModuleOp"> {
   ];
 }
 
-#endif // MLIR_DIALECT_CPU_PASSES
+#endif // MLIR_CONVERSION_CPU_PASSES

@@ -1,12 +1,12 @@
 ## 1. Introduction
-The code is under `mlir/lib/Dialect/CPU/Transforms`.
+The code is under `mlir/lib/Conversion/CPU/Transforms`.
 We use the [Transform dialect](https://mlir.llvm.org/docs/Dialects/Transform/) to optimize the CPU code.
 You can use the `--cpu-timers` option to measure different parts of CPU runtime.
 
 ## 1.1 Directory Structure
 
 ```
-mlir/lib/Dialect/CPU/Transforms/
+mlir/lib/Conversion/CPU/Transforms/
 ├── LowerCpuVerifier.cpp          # Main pass that orchestrates the lowering pipeline
 ├── Schedules.cpp                 # Creates and applies transform schedules
 └── Schedules/                    # Individual transform schedule implementations
