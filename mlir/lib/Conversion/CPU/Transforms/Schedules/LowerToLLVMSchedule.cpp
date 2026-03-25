@@ -207,12 +207,12 @@ OwningOpRef<ModuleOp> cpu::buildLowerToLLVMSchedule(MLIRContext *ctx) {
     applyConversion.setPartialConversionAttr(UnitAttr::get(ctx));
 
     // Step 8: Final reconciliation
-    auto matchLLVMFunc = ib.create<transform::MatchOp>(
+    auto matchFunc2 = ib.create<transform::MatchOp>(
         anyOpType, updatedModule.getResult(),
-        ArrayRef<StringRef>{"llvm.func"});
+        ArrayRef<StringRef>{"func.func"});
 
     ib.create<transform::ApplyRegisteredPassOp>(
-        anyOpType, matchLLVMFunc.getResults(),
+        anyOpType, matchFunc2.getResults(),
         /*passName=*/"reconcile-unrealized-casts", emptyOptions, emptyDynamic);
   });
 }
