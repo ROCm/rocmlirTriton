@@ -83,25 +83,25 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
     // Build metadata dictionary with block/grid sizes and prefill info so
     // that downstream consumers can retrieve them.
     SmallVector<NamedAttribute> metadataEntries;
-    metadataEntries.push_back(builder.getNamedAttr(
-        rock::BlockSizeAttr::getMnemonic(),
-        builder.getI64IntegerAttr(kernel.blockSize)));
-    metadataEntries.push_back(builder.getNamedAttr(
-        rock::GridSizeAttr::getMnemonic(),
-        builder.getI64IntegerAttr(kernel.gridSize)));
+    metadataEntries.push_back(
+        builder.getNamedAttr(rock::BlockSizeAttr::getMnemonic(),
+                             builder.getI64IntegerAttr(kernel.blockSize)));
+    metadataEntries.push_back(
+        builder.getNamedAttr(rock::GridSizeAttr::getMnemonic(),
+                             builder.getI64IntegerAttr(kernel.gridSize)));
 
     if (!kernel.prefillArgs.empty()) {
       SmallVector<Attribute> prefillEntries;
       for (const PrefillInfo &pi : kernel.prefillArgs) {
         SmallVector<NamedAttribute> entry;
-        entry.push_back(
-            builder.getNamedAttr("index", builder.getI64IntegerAttr(pi.argIndex)));
+        entry.push_back(builder.getNamedAttr(
+            "index", builder.getI64IntegerAttr(pi.argIndex)));
         entry.push_back(builder.getNamedAttr("value", pi.initValue));
         prefillEntries.push_back(builder.getDictionaryAttr(entry));
       }
-      metadataEntries.push_back(builder.getNamedAttr(
-          rock::PrefillAttr::getMnemonic(),
-          builder.getArrayAttr(prefillEntries)));
+      metadataEntries.push_back(
+          builder.getNamedAttr(rock::PrefillAttr::getMnemonic(),
+                               builder.getArrayAttr(prefillEntries)));
     }
 
     auto metadataDict = builder.getDictionaryAttr(metadataEntries);

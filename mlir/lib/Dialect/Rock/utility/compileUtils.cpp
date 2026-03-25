@@ -108,25 +108,24 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
 
     // Get prefill arg info from module attribute (set by FuncToTritonFunc)
     std::string prefillAttrName = "rock.prefill_args." + info.name;
-    if (auto prefillArr =
-            moduleOp->getAttrOfType<ArrayAttr>(prefillAttrName)) {
+    if (auto prefillArr = moduleOp->getAttrOfType<ArrayAttr>(prefillAttrName)) {
       for (Attribute entry : prefillArr) {
         auto dict = dyn_cast<DictionaryAttr>(entry);
         if (!dict) {
-          funcOp.emitOpError("malformed ") << prefillAttrName
-              << ": entry is not a DictionaryAttr";
+          funcOp.emitOpError("malformed ")
+              << prefillAttrName << ": entry is not a DictionaryAttr";
           return WalkResult::interrupt();
         }
         auto indexAttr = dict.getAs<IntegerAttr>("index");
         if (!indexAttr) {
-          funcOp.emitOpError("malformed ") << prefillAttrName
-              << ": entry missing 'index' IntegerAttr";
+          funcOp.emitOpError("malformed ")
+              << prefillAttrName << ": entry missing 'index' IntegerAttr";
           return WalkResult::interrupt();
         }
         Attribute valueAttr = dict.get("value");
         if (!valueAttr) {
-          funcOp.emitOpError("malformed ") << prefillAttrName
-              << ": entry missing 'value' attribute";
+          funcOp.emitOpError("malformed ")
+              << prefillAttrName << ": entry missing 'value' attribute";
           return WalkResult::interrupt();
         }
         PrefillInfo pi;

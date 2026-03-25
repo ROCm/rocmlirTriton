@@ -122,8 +122,7 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   // Some tensor inputs may be dead (no rock.extract_ptr use) but still need
   // conversion to pointers since Triton kernels cannot have bare tensor args.
   bool hasTensorArgs = llvm::any_of(
-      funcType.getInputs(),
-      [](Type t) { return isa<RankedTensorType>(t); });
+      funcType.getInputs(), [](Type t) { return isa<RankedTensorType>(t); });
 
   if (argsToConvert.empty() && !hasTensorArgs)
     return;
@@ -209,8 +208,7 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   for (unsigned i : deadTensorArgs) {
     BlockArgument blockArg = entryBlock.getArgument(i);
     auto tensorType = cast<RankedTensorType>(blockArg.getType());
-    blockArg.setType(
-        triton::PointerType::get(tensorType.getElementType(), 1));
+    blockArg.setType(triton::PointerType::get(tensorType.getElementType(), 1));
   }
 
   // Erase the ops in the chain (users first, producers last)
@@ -429,7 +427,7 @@ void RockFuncToTritonFuncPass::runOnOperation() {
     }
     if (!prefillEntries.empty()) {
       moduleOp->setAttr("rock.prefill_args." + kernelName,
-                         builder.getArrayAttr(prefillEntries));
+                        builder.getArrayAttr(prefillEntries));
     }
   }
 
