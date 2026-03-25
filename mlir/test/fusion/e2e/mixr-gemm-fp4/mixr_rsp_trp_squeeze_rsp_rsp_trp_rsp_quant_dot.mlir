@@ -1,10 +1,10 @@
-// TODO(rocmlirTriton): bufferization.to_buffer op operand must be TensorLikeType
+// TODO(rocmlirTriton): error: 'rock.gemm' op quantBlockSize not defined
 // UNSUPPORTED: true
-// RUN: rocmlir-driver -kernel-pipeline=migraphx %s | rocmlir-gen -fut mlir_quant_dot_fp4 --arch %arch --clone-harness - | rocmlir-driver -host-pipeline=highlevel -kernel-pipeline=highlevel | rocmlir-gen -ph -fut mlir_quant_dot_fp4 --verifier clone - | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut mlir_quant_dot_fp4 --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline=migraphx,highlevel -kernel-pipeline=migraphx,highlevel | rocmlir-gen -ph -fut mlir_quant_dot_fp4 --verifier clone - | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
 
 module {
-  func.func @mlir_quant_dot_fp4(%arg0: !migraphx.shaped<2x256x256xf4E2M1FN, 65536x256x1>, %arg1: !migraphx.shaped<1x256x128xf4E2M1FN, 32768x128x1>, %arg2: !migraphx.shaped<2x8x1x256xf32, 2048x256x256x1>, %arg3: !migraphx.shaped<1x8x1x128xf32, 1024x128x128x1>) -> !migraphx.shaped<2x256x64xf32, 16384x64x1> {
+  func.func @mlir_quant_dot_fp4(%arg0: !migraphx.shaped<2x256x256xf4E2M1FN, 65536x256x1>, %arg1: !migraphx.shaped<1x256x128xf4E2M1FN, 32768x128x1>, %arg2: !migraphx.shaped<2x8x1x256xf32, 2048x256x256x1>, %arg3: !migraphx.shaped<1x8x1x128xf32, 1024x128x128x1>) -> !migraphx.shaped<2x256x64xf32, 16384x64x1> attributes {rock.kernel} {
     %0 = migraphx.reshape %arg1 {dims = [1, 256, 2, 64]} : <1x256x128xf4E2M1FN, 32768x128x1> -> <1x256x2x64xf4E2M1FN, 32768x128x64x1>
     %1 = migraphx.transpose %0 {permutation = [2, 0, 1, 3]} : <1x256x2x64xf4E2M1FN, 32768x128x64x1> -> <2x1x256x64xf4E2M1FN, 64x32768x128x1>
     %2 = migraphx.reshape %1 {dims = [2, 256, 64]} : <2x1x256x64xf4E2M1FN, 64x32768x128x1> -> <2x256x64xf4E2M1FN, 16384x64x1>

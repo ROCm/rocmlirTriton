@@ -1,10 +1,10 @@
-// TODO(rocmlirTriton): bufferization.to_buffer op operand must be TensorLikeType
+// TODO(rocmlirTriton): error: 'rock.gemm' op quantBlockSize not defined
 // UNSUPPORTED: true
-// RUN: rocmlir-driver -kernel-pipeline=migraphx %s | rocmlir-gen -fut mlir_quant_dot_fp4 --arch %arch --clone-harness - | rocmlir-driver -host-pipeline=highlevel -kernel-pipeline=highlevel | rocmlir-gen -ph -fut mlir_quant_dot_fp4 --verifier clone - | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut mlir_quant_dot_fp4 --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline=migraphx,highlevel -kernel-pipeline=migraphx,highlevel | rocmlir-gen -ph -fut mlir_quant_dot_fp4 --verifier clone - | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
 
 module {
-  func.func @mlir_quant_dot_fp4(%arg0: !migraphx.shaped<256x3072xf4E2M1FN, 3072x1>, %arg1: !migraphx.shaped<768x3072xf4E2M1FN, 3072x1>, %arg2: !migraphx.shaped<256x96x1xf32, 96x1x1>, %arg3: !migraphx.shaped<96x1x768xf32, 1x1x96>, %arg4: !migraphx.shaped<768xf32, 1>, %arg5: !migraphx.shaped<1x256x768xf32, 196608x768x1>) -> !migraphx.shaped<1x256x768xf32, 196608x768x1> {
+  func.func @mlir_quant_dot_fp4(%arg0: !migraphx.shaped<256x3072xf4E2M1FN, 3072x1>, %arg1: !migraphx.shaped<768x3072xf4E2M1FN, 3072x1>, %arg2: !migraphx.shaped<256x96x1xf32, 96x1x1>, %arg3: !migraphx.shaped<96x1x768xf32, 1x1x96>, %arg4: !migraphx.shaped<768xf32, 1>, %arg5: !migraphx.shaped<1x256x768xf32, 196608x768x1>) -> !migraphx.shaped<1x256x768xf32, 196608x768x1> attributes {rock.kernel} {
     %0 = migraphx.transpose %arg1 {permutation = [1, 0]} : <768x3072xf4E2M1FN, 3072x1> -> <3072x768xf4E2M1FN, 1x3072>
     %1 = migraphx.multibroadcast %arg2 {out_dyn_dims = [], out_lens = [256, 96, 32]} : <256x96x1xf32, 96x1x1> -> <256x96x32xf32, 96x1x0>
     %2 = migraphx.reshape %1 {dims = [256, 3072]} : <256x96x32xf32, 96x1x0> -> <256x3072xf32, 3072x1>
