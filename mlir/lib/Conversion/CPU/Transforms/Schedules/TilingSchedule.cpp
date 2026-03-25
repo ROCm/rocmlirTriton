@@ -29,9 +29,9 @@ using namespace mlir;
 using namespace mlir::cpu;
 
 /// Match and tile N-dimensional elementwise ops (linalg.generic with N parallel
-/// iterator types) using tile size 8 for each dimension.
+/// iterator types).
 static void tileElementwiseOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
-                               Value target, unsigned numDims) {
+                               Value target, int vectorSize, unsigned numDims) {
   auto anyOpType = getAnyOpType(ctx);
   auto parallelIterType =
       linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel);
@@ -52,9 +52,9 @@ static void tileElementwiseOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
       /*filterResultType=*/TypeAttr{},
       /*filterOperandTypes=*/ArrayAttr{});
 
-  // Tile with size 8 for each dimension
+  // Tile with the given vector size for each dimension
   SmallVector<Type> loopTypes(numDims, anyOpType);
-  SmallVector<int64_t> tileSizes(numDims, 8);
+  SmallVector<int64_t> tileSizes(numDims, vectorSize);
   ib.create<transform::TileUsingForOp>(
       /*loopTypes=*/loopTypes,
       /*target=*/matchOp.getResult(),
@@ -67,10 +67,14 @@ OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
   return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
     auto anyOpType = getAnyOpType(ctx);
 
+    // AVX vector width is 256 bits. 
+    // For fp32, AVX takes 8 elements.
+    int vectorSize = 8;
+
     // Tile elementwise ops of different dimensions to prevent huge vectors
-    tileElementwiseOps(ib, ctx, arg, /*numDims=*/1);
-    tileElementwiseOps(ib, ctx, arg, /*numDims=*/2);
-    tileElementwiseOps(ib, ctx, arg, /*numDims=*/3);
+    tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/1);
+    tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/2);
+    tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/3);
 
     // Now tile (and optionally fuse) the matmul
     auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
@@ -96,7 +100,7 @@ OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
     ib.create<transform::TileUsingForOp>(
         /*loopTypes=*/tile2LoopTypes,
         /*target=*/tile1.getTiledLinalgOp(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{0, 8, 8, 1},
+        /*staticTileSizes=*/ArrayRef<int64_t>{0, vectorSize, vectorSize, 1},
         /*interchange=*/ArrayRef<int64_t>{},
         /*scalableSizes=*/std::nullopt);
 
