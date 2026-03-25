@@ -39,7 +39,7 @@ using namespace mlir;
 
 //===- Consolidate the Rock Pipelines here ---------------------===//
 
-void migraphx::addHighLevelPipeline(PassManager &pm) {
+void migraphx::addMIGraphXPipeline(PassManager &pm) {
   // passes for MIXR to TOSA
   auto &funcPm = pm.nest<func::FuncOp>();
   funcPm.addPass(migraphx::createMIGraphXRealizeInt4Pass());

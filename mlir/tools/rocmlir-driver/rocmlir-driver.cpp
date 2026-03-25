@@ -364,13 +364,13 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   if (hostPipelineSet.contains("migraphx")) {
     if (failed(runWithDetach(
             module, "Host MIGraphX", isKernel,
-            [](PassManager &pm) { migraphx::addHighLevelPipeline(pm); })))
+            [](PassManager &pm) { migraphx::addMIGraphXPipeline(pm); })))
       return failure();
   }
   if (kernelPipelineSet.contains("migraphx")) {
     if (failed(runWithDetach(
             module, "Kernel MIGraphX", isHost,
-            [](PassManager &pm) { migraphx::addHighLevelPipeline(pm); })))
+            [](PassManager &pm) { migraphx::addMIGraphXPipeline(pm); })))
       return failure();
   }
 
