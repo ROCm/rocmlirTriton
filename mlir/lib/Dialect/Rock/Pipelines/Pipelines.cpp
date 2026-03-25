@@ -382,9 +382,13 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
+  // Convert convolutions in CPU verifier functions to GEMM operations.
+  // This transforms linalg.generic convolutions into im2col + matmul form.
+  pm.addPass(cpu::createCpuConvToGemmPass());
+
   // Lower CPU verifier functions (host_naive_*) to LLVM.
   // This pass only affects functions marked with "rock.cpu_verifier" attribute,
-  // leaving other functions (main, wrappers) unchanged.  
+  // leaving other functions (main, wrappers) unchanged.
   pm.addPass(cpu::createCpuLowerVerifierPass());
   
   // Bufferize tensor ops to memref ops - required before linalg-to-loops
