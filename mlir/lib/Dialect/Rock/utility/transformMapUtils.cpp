@@ -1304,7 +1304,7 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
   return transform.get();
 }
 
-TransformMapAttr mlir::rock::buildFlattenTransformMap(
+static TransformMapAttr buildFlattenTransformMap(
     OpBuilder &b, Location loc, ArrayRef<StringRef> dimNames,
     ArrayRef<int64_t> shape, int64_t numElements) {
   int64_t rank = shape.size();
@@ -1340,33 +1340,22 @@ TransformMapAttr mlir::rock::buildFlattenTransformMap(
 
 void mlir::rock::expandFlatFunctionArguments(
     OpBuilder &b, func::FuncOp func, ArrayRef<SmallVector<StringRef>> names,
-    TypeRange logicalTypes, SmallVectorImpl<Value> &expanded,
-    ArrayRef<unsigned> skipIndices) {
+    TypeRange logicalTypes, SmallVectorImpl<Value> &expanded) {
   expanded.resize_for_overwrite(names.size());
   // Use llvm::zip (not enumerate) because some callers pass fewer names than
   // func arguments, relying on zip's stop-at-shortest behavior.
-  unsigned idx = 0;
   for (auto [arg, nameList, logicalType, logicalVal] :
        llvm::zip(func.getArguments(), names, logicalTypes, expanded)) {
-    // If this index is in the skip list, pass the raw flat arg through.
-    if (llvm::is_contained(skipIndices, idx)) {
-      logicalVal = arg;
-      ++idx;
-      continue;
-    }
     Location loc = arg.getLoc();
     auto logicalShapedTy = dyn_cast<ShapedType>(logicalType);
-    // Pass scalars through unaltered
     if (!logicalShapedTy) {
       logicalVal = arg;
-      ++idx;
       continue;
     }
     TransformMapAttr expandMap =
         buildFlattenTransformMap(b, loc, nameList, logicalShapedTy.getShape(),
                                  logicalShapedTy.getNumElements());
     logicalVal = rock::TransformOp::create(b, loc, arg, expandMap);
-    ++idx;
   }
 }
 
@@ -1379,6 +1368,7 @@ Value mlir::rock::flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
   TransformMapAttr expandMap = buildFlattenTransformMap(
       b, loc, dimNames, shapedType.getShape(), shapedType.getNumElements());
   TransformMapAttr flattenMap = invertTransformMap(b, expandMap, loc);
+  assert(flattenMap && "failed to invert expand map into flatten map");
   return rock::TransformOp::create(b, loc, logicalVal, flattenMap);
 }
 

@@ -1341,8 +1341,7 @@ static Value computeFinalAttentionStage(OpBuilder builder, Location loc,
 static func::FuncOp createGPUWrapper(ModuleOp module,
                                      const std::string &funcName,
                                      const SmallVector<KernelIF, 8> &kernels,
-                                     const GenParams &params,
-                                     ArrayRef<int32_t> outIndices) {
+                                     const GenParams &params) {
   MLIRContext *context = module.getContext();
   OpBuilder b(context);
   auto loc = kernels[0].func->getLoc();
@@ -2467,29 +2466,15 @@ createCPUConvWithMLIR(ModuleOp module,
     assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
   }
 
-  // Build argument types with the store destination (result) last,
-  // matching the GPU kernel's argument ordering from ConvGenerator.
-  SmallVector<Type, 4> funcArgTypes;
-  Type resultFlatType;
-  switch (genConfig.operation.value()) {
-  case rock::ConvOpType::Fwd:
-    funcArgTypes = {filterFlatType, inputFlatType, outputFlatType};
-    resultFlatType = outputFlatType;
-    break;
-  case rock::ConvOpType::BwdData:
-    funcArgTypes = {filterFlatType, outputFlatType, inputFlatType};
-    resultFlatType = inputFlatType;
-    break;
-  case rock::ConvOpType::BwdWeight:
-    funcArgTypes = {inputFlatType, outputFlatType};
-    if (hasWorkspace) {
-      auto workspaceType = RankedTensorType::get({filterElems}, b.getF32Type());
-      funcArgTypes.push_back(workspaceType);
-    }
-    funcArgTypes.push_back(filterFlatType);
-    resultFlatType = filterFlatType;
-    break;
-  }
+  // Build argument types in standard [filter, input, output, workspace?] order,
+  // then reorder so the store destination (result) is last.
+  SmallVector<Type, 4> funcArgTypes = {filterFlatType, inputFlatType,
+                                       outputFlatType};
+  if (hasWorkspace)
+    funcArgTypes.push_back(
+        RankedTensorType::get({filterElems}, b.getF32Type()));
+  rock::reorderConvArgsForKernel(genConfig.operation.value(), funcArgTypes);
+  Type resultFlatType = funcArgTypes.back();
 
   std::string funcName =
       rock::getNameForConvOpType(genConfig.operation.value()).str();
@@ -2509,7 +2494,7 @@ createCPUConvWithMLIR(ModuleOp module,
   Block *block = func.addEntryBlock();
   b.setInsertionPointToStart(block);
 
-  // Argument positions match the GPU kernel ordering (store dest is last).
+  // Map block args back to semantic names (inverse of reorderConvArgsForKernel).
   Value filterFlat, inputFlat, outputFlat;
   switch (genConfig.operation.value()) {
   case rock::ConvOpType::Fwd:
@@ -2827,7 +2812,7 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
                                transposeScaleB ? nName : kName});
   }
 
-  // Function takes flattened (a, b, [aScale, bScale]) as inputs and returns
+  // Function takes flattened (a, b, [aScale, bScale], c) as inputs and returns
   // flattened c.
   SmallVector<Type, 5> funcArgTypes;
   SmallVector<Type, 5> funcArgLogicalTypes;
@@ -2858,7 +2843,7 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   b.setInsertionPointToStart(block);
 
   // Expand flattened arguments to logical shapes with dimension names
-  SmallVector<Value, 5> expandedArgs;
+  SmallVector<Value, 4> expandedArgs;
   rock::expandFlatFunctionArguments(b, func, allArgNames, funcArgLogicalTypes,
                                     expandedArgs);
 
@@ -2886,7 +2871,7 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   Value flatResult = rock::flattenOutput(b, loc, gemm.getResult(), cDimNames);
 
   // Store the flat result to the C argument
-  Value cArg = func.getArgument(scaledGemm ? 4 : 2);
+  Value cArg = func.getArgument(cIdx);
   Value storedVal =
       rock::StoreOp::create(b, loc, cFlatType, flatResult, cArg, storeMethod);
 
@@ -3914,7 +3899,7 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   // Apply the output transform to flatten the result, then store
   Value flatResult = rock::flattenOutput(builder, loc, gemmElntGemm.getResult(),
                                          outputDimNames);
-  Value outputArg = func.getArgument(3);
+  Value outputArg = func.getArgument(func.getNumArguments() - 1);
   Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
                                           flatResult, outputArg, storeMethod);
   func::ReturnOp::create(builder, loc, {storedOut});
@@ -5177,7 +5162,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       }
       auto kernelWrapperFunc =
           createGPUWrapper(module, kernelBaseName + "_ver", kernelIFFuncs,
-                           genParams, outIndices);
+                           genParams);
       func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
       convGenerator.setKernelName(kernelBaseName);
     } else { // gemm GPU validation
@@ -5200,7 +5185,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       KernelIF kernel(
           createGpuGemmKernel(module, newParams, /*isVerifier=*/true));
       auto kernelWrapperFunc = createGPUWrapper(
-          module, kernel.func.getName().str(), {kernel}, genParams, outIndices);
+          module, kernel.func.getName().str(), {kernel}, genParams);
       func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
     }
   } else if (validationType != "clone") { // -pv_with_cpp or -pv_with_mlir (-pv)
@@ -5726,7 +5711,7 @@ static LogicalResult populateHostHarnessLogic(
   func::FuncOp gpuWrapperFunc;
   if (!kernelsSet.empty())
     gpuWrapperFunc = createGPUWrapper(module, kernelBaseName, kernels,
-                                      genParams, outIndices);
+                                      genParams);
   // Redirect calls to kernel functions to point at wrapped functions.
   func.walk([&](CallOpInterface callOp) -> WalkResult {
     // If the callee matches a wrapped function, update the call.

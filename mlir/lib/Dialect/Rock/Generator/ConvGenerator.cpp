@@ -770,27 +770,10 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
   // Reorder args so the tensor being computed (the "actual output") is last.
   // The last element becomes the store destination (storeDestIdx).
-  //   Fwd:       computes output activations  -> output is already last
-  //   BwdData:   computes input gradient       -> swap input to last
-  //   BwdWeight: computes filter/weight gradient -> rotate filter to last
-  switch (config.operation.value()) {
-  case ConvOpType::Fwd:
-    // [filter, input, output]
-    break;
-  case ConvOpType::BwdData:
-    // [filter, input, output] -> [filter, output, input]
-    std::swap(logicalFuncArgTypes[1], logicalFuncArgTypes[2]);
-    break;
-  case ConvOpType::BwdWeight:
-    // [filter, input, output, workspace?] -> [input, output, workspace?,
-    // filter]
-    // TODO(rocmlirTriton): The optional workspace is an fp32 intermediate
-    // buffer used for fp16 BwdWeight. This is not a path that is supported yet
-    // in rocmlirTriton.
-    std::rotate(logicalFuncArgTypes.begin(), logicalFuncArgTypes.begin() + 1,
-                logicalFuncArgTypes.end());
-    break;
-  }
+  // TODO(rocmlirTriton): The optional workspace is an fp32 intermediate
+  // buffer used for fp16 BwdWeight. This is not a path that is supported yet
+  // in rocmlirTriton.
+  reorderConvArgsForKernel(config.operation.value(), logicalFuncArgTypes);
   unsigned storeDestIdx = logicalFuncArgTypes.size() - 1;
 
   SmallVector<Type, 3> physicalFuncArgTypes =
@@ -916,24 +899,14 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   referenceNames(outputLayoutSpec);
   if (hasWorkspace)
     referenceNames(filterLayoutSpec);
-  switch (config.operation.value()) {
-  case ConvOpType::Fwd:
-    break;
-  case ConvOpType::BwdData:
-    std::swap(argDimNameRefs[1], argDimNameRefs[2]);
-    break;
-  case ConvOpType::BwdWeight:
-    std::rotate(argDimNameRefs.begin(), argDimNameRefs.begin() + 1,
-                argDimNameRefs.end());
-    break;
-  }
+  reorderConvArgsForKernel(config.operation.value(), argDimNameRefs);
 
   // Expand all function arguments from flat 1D to their logical shapes,
   // except the output arg whose transform is applied after the conv op.
   SmallVector<Value, 4> args;
-  expandFlatFunctionArguments(builder, func, argDimNameRefs,
-                              logicalFuncArgTypes, args,
-                              /*skipIndices=*/{storeDestIdx});
+  expandFlatFunctionArguments(builder, func,
+                              ArrayRef(argDimNameRefs).drop_back(),
+                              ArrayRef(logicalFuncArgTypes).drop_back(), args);
 
   // After reordering, the two conv input operands are always args[0] and
   // args[1], and the store destination is args[storeDestIdx] (the last arg).

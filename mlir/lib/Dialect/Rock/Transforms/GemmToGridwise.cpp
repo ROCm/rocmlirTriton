@@ -35,7 +35,6 @@
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -194,6 +193,9 @@ static Value moveNumHeadsToSeqLenCurrSeqLen(OpBuilder builder, Location loc,
 static Value moveNumHeadsToSeqLenOut(OpBuilder builder, Location loc,
                                      Value inputTensor, int64_t numRepeats,
                                      int64_t splitKV) {
+  if (auto *defOp = inputTensor.getDefiningOp())
+    builder.setInsertionPointAfter(defOp);
+
   ArrayRef<int64_t> inpShape =
       cast<ShapedType>(inputTensor.getType()).getShape();
 
@@ -269,18 +271,9 @@ static GQAResult processGQA(ConversionPatternRewriter &rw, Location loc,
     if (prefixOffset)
       prefixOffset =
           moveNumHeadsToSeqLenCurrSeqLen(rw, loc, prefixOffset, numRepeats);
-    {
-      OpBuilder::InsertionGuard guard(rw);
-      if (auto *defOp = out.getDefiningOp())
-        rw.setInsertionPointAfter(defOp);
-      out = moveNumHeadsToSeqLenOut(rw, loc, out, numRepeats, splitKV);
-    }
-    if (lse) {
-      OpBuilder::InsertionGuard guard(rw);
-      if (auto *defOp = lse.getDefiningOp())
-        rw.setInsertionPointAfter(defOp);
+    out = moveNumHeadsToSeqLenOut(rw, loc, out, numRepeats, splitKV);
+    if (lse)
       lse = moveNumHeadsToSeqLenOut(rw, loc, lse, numRepeats, splitKV);
-    }
   }
 
   return GQAResult{numRepeatsAttr, queries,     keys, values, out, lse,
@@ -494,24 +487,12 @@ commonAttentionGemmElmtGemm(
   }
   GemmParamsAttr params1 = cast<GemmParamsAttr>(op.getGemm1Params().value());
 
-  // Helper: transform a value at its defining op's location to maintain
-  // dominance. The output/LSE views may be defined after the matched op,
-  // so transforms on them must be inserted after their defining ops.
-  auto transformAtDef = [&](Value &v, auto fn) {
-    OpBuilder::InsertionGuard guard(rw);
-    if (auto *defOp = v.getDefiningOp())
-      rw.setInsertionPointAfter(defOp);
-    v = fn(v);
-  };
-
   // Note: the gridwise ops take M x K, K x N and K x N
   a = normalizeMatrix(a, rw, loc, op.getTransposedA(), "gemm0M", "gemm0K");
   b = normalizeMatrix(b, rw, loc, op.getTransposedB(), "gemm0K", "gemm0N");
   c = normalizeMatrix(c, rw, loc, op.getTransposedC(), "gemm1K", "gemm1N");
-  transformAtDef(out, [&](Value v) {
-    return normalizeMatrix(v, rw, loc, op.getTransposedOut(), "gemm1M",
-                           "gemm1N");
-  });
+  out = normalizeMatrix(out, rw, loc, op.getTransposedOut(), "gemm1M",
+                        "gemm1N");
 
   const int64_t splitKFactor = params1.getSplitKFactor();
   if (splitKFactor > 1) {
@@ -571,14 +552,10 @@ commonAttentionGemmElmtGemm(
                 gemm0ExtraPad.n);
   c = padMatrix(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1N",
                 gemm1ExtraPad.n);
-  transformAtDef(out, [&](Value v) {
-    return padMatrix(v, rw, loc, "gemm1M", gemm1ExtraPad.m, "gemm1N",
-                     gemm1ExtraPad.n);
-  });
+  out = padMatrix(out, rw, loc, "gemm1M", gemm1ExtraPad.m, "gemm1N",
+                  gemm1ExtraPad.n);
   if (lse)
-    transformAtDef(lse, [&](Value v) {
-      return padVector(v, rw, loc, "gemm1M", gemm1ExtraPad.m);
-    });
+    lse = padVector(lse, rw, loc, "gemm1M", gemm1ExtraPad.m);
 
   if (failed(
           computeGridSizeAttentionGemmElmtGemm(rw, op, a, b, c, splitKVNum))) {
@@ -673,16 +650,10 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   a = normalizeMatrix(a, rw, loc, op.getATransposed(), "gemmM", "gemmK");
   b = normalizeMatrix(b, rw, loc, op.getBTransposed(), "gemmK", "gemmN");
   auto transformViews = [&](auto fn) {
-    auto apply = [&](Value &view) {
-      OpBuilder::InsertionGuard guard(rw);
-      if (Operation *defOp = view.getDefiningOp())
-        rw.setInsertionPointAfter(defOp);
-      view = fn(view);
-    };
     for (auto &outputView : outputViews)
-      apply(outputView);
+      outputView = fn(outputView);
     for (auto &[orig, view] : fusionInputMap)
-      apply(view);
+      view = fn(view);
   };
   transformViews([&](Value v) {
     return normalizeMatrix(v, rw, loc, op.getOTransposed(), "gemmM", "gemmN");
@@ -774,8 +745,9 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
       storeMethod =
           rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
 
-    // After RegularizeOutput, the store source is the raw gemm result.
-    // Use the new gridwise result directly to match the padded output type.
+    // If the store's source is the gemm result directly (no fusions),
+    // use the gridwise result. Otherwise, propagateOutputType has already
+    // updated the fusion chain, and storeOp.getSource() has the correct type.
     Value source = storeOp.getSource();
     if (source == op.getResult()) {
       source = result;
