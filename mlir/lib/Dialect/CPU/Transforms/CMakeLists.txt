@@ -40,6 +40,7 @@ add_rocmlir_dialect_library(MLIRCpuTransforms
   MLIRSCFToControlFlow
   MLIRSupport
   MLIRTensorToLinalg
+  MLIRTensorTransformOps
   MLIRTransformDialect
   MLIRTransformDialectTransforms
   MLIRVectorTransforms

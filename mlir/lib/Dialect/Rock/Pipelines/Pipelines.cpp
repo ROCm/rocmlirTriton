@@ -384,7 +384,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
   // Convert convolutions in CPU verifier functions to GEMM operations.
   // This transforms linalg.generic convolutions into im2col + matmul form.
-  // pm.addPass(cpu::createCpuConvToGemmPass());
+  pm.addPass(cpu::createCpuConvToGemmPass());
 
   // Lower CPU verifier functions (host_naive_*) to LLVM.
   // This pass only affects functions marked with "rock.cpu_verifier" attribute,

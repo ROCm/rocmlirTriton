@@ -37,6 +37,7 @@
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/MemRef/TransformOps/MemRefTransformOps.h"
 #include "mlir/Dialect/SCF/TransformOps/SCFTransformOps.h"
+#include "mlir/Dialect/Tensor/TransformOps/TensorTransformOps.h"
 #include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"
 #include "mlir/Dialect/SCF/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/ValueBoundsOpInterfaceImpl.h"
@@ -67,6 +68,7 @@ void cpu::registerScheduleDialectExtensions(DialectRegistry &registry) {
   // transform.structured.match, transform.bufferization.one_shot_bufferize.
   linalg::registerTransformDialectExtension(registry);
   bufferization::registerTransformDialectExtension(registry);
+  tensor::registerTransformDialectExtension(registry);
   vector::registerTransformDialectExtension(registry);
   func::registerTransformDialectExtension(registry);
   memref::registerTransformDialectExtension(registry);

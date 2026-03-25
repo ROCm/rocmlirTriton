@@ -19,8 +19,10 @@
 #include "ScheduleUtils.h"
 
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
+#include "mlir/Dialect/Tensor/TransformOps/TensorTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
+#include "mlir/Dialect/Vector/TransformOps/VectorTransformOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
 using namespace mlir;
@@ -32,20 +34,38 @@ OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
 
     auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
 
-    auto getParent = ib.create<transform::GetParentOp>(
-        /*resultType=*/anyOpType,
-        /*target=*/matchMatmul.getResults(),
-        /*isolated_from_above=*/true,
-        /*allow_empty_results=*/false,
-        /*op_name=*/StringAttr{},
-        /*deduplicate=*/false,
-        /*nth_parent=*/1);
+    // Step 1: Vectorize the matched op
+    transform::VectorizeOp::create(ib,
+        /*target=*/matchMatmul.getResult(),
+        /*vectorSizes=*/ValueRange{},
+        /*staticVectorSizes=*/ArrayRef<int64_t>{},
+        /*vectorizeNDExtract=*/ib.getUnitAttr(),
+        /*assumeDynamicDimsMatchVecSizes=*/UnitAttr{},
+        /*createNamedContraction=*/UnitAttr{},
+        /*scalableSizes=*/ArrayRef<bool>{});
 
-    ib.create<transform::VectorizeChildrenAndApplyPatternsOp>(
-        /*target=*/getParent.getParent(),
-        /*foldTypeExtensionsIntoContract=*/false,
-        /*vectorizePadding=*/true,
-        /*vectorizeNDExtract=*/true,
-        /*flatten1DDepthwise=*/false);
+    // Step 2: Match the func.func to apply patterns to
+    auto matchFunc = transform::MatchOp::create(ib,
+        /*resultTypes=*/anyOpType,
+        /*target=*/arg,
+        /*ops=*/ib.getStrArrayAttr({"func.func"}),
+        /*interface=*/transform::MatchInterfaceEnumAttr{},
+        /*opAttrs=*/DictionaryAttr{},
+        /*filterResultType=*/TypeAttr{},
+        /*filterOperandTypes=*/ArrayAttr{});
+
+    // Step 3: Apply the same patterns as vectorize_children_and_apply_patterns
+    transform::ApplyPatternsOp::create(ib,
+        matchFunc.getResult(),
+        [](OpBuilder &b, Location loc) {
+          transform::ApplyTransferPermutationPatternsOp::create(b, loc);
+          transform::ApplyVectorReductionToContractPatternsOp::create(b, loc);
+          transform::ApplySinkVectorPatternsOp::create(b, loc);
+          transform::ApplyFoldTensorSubsetOpsIntoVectorTransfersPatternsOp::create(b, loc);
+          transform::ApplyFoldArithExtensionPatternsOp::create(b, loc);
+          transform::ApplyCanonicalizationPatternsOp::create(b, loc);
+          transform::ApplyPadVectorizationPatternsOp::create(b, loc);
+          transform::ApplyDecomposeTensorPadPatternsOp::create(b, loc);
+        });
   });
 }

@@ -32,13 +32,7 @@ class MLIRContext;
 namespace cpu {
 
 /// Build the vectorization transform module.
-/// This schedule vectorizes linalg ops marked with rock.matmul attribute.
-///
-/// Equivalent to:
-///   %0 = transform.structured.match attributes {rock.matmul} in %arg0
-///   %1 = transform.get_parent_op %0 {isolated_from_above}
-///   %2 = transform.structured.vectorize_children_and_apply_patterns %1
-///        {vectorize_nd_extract, vectorize_padding}
+/// This schedule vectorizes matmul like linalg ops.
 OwningOpRef<ModuleOp> buildVectorizationSchedule(MLIRContext *ctx);
 
 } // namespace cpu
