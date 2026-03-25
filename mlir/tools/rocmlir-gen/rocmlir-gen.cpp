@@ -157,12 +157,6 @@ static llvm::cl::alias groupSizeShort("g",
                                       llvm::cl::desc("alias for -groupsize"),
                                       llvm::cl::aliasopt(groupSize));
 
-static llvm::cl::opt<std::string> convKernelName(
-    "kernel_name",
-    llvm::cl::desc("Base name for generated convolution kernels (optional; "
-                   "default is derived from operation and layouts)"),
-    llvm::cl::value_desc("string"), llvm::cl::init(""));
-
 static llvm::cl::opt<int> convKernelId(
     "kernel_id",
     llvm::cl::desc("When set, emit only the sub-kernel with this index "
@@ -456,14 +450,6 @@ static llvm::cl::opt<std::string> dataTypeAlias(
       }
     }));
 llvm::cl::alias dataTypeAliasLong("dtype", llvm::cl::aliasopt(dataTypeAlias));
-
-// REMOVED: --conv-config (keep for reference until callers migrate to explicit flags / C API).
-// static llvm::cl::opt<std::string> populateConvConfig(
-//     "conv-config",
-//     llvm::cl::desc(
-//         "Populate full config settings (overrides all specific settings)"),
-//     llvm::cl::value_desc("config settings matching the C-API"),
-//     llvm::cl::init(""));
 
 // populate default values
 static llvm::cl::opt<bool>
@@ -1190,6 +1176,12 @@ static auto getRequiredArgs(std::optional<rock::KernelType> kernelType) {
 
 static LogicalResult detectMissingArguments() {
   const static auto requiredArgs = getRequiredArgs(operation);
+
+  if (arch.getValue().empty()) {
+    llvm::errs() << "--arch is not set\n";
+    return failure();
+  }
+
   for (auto *arg : requiredArgs) {
     if (arg->getValue() <= 0) {
       llvm::errs() << "Value for: " << arg->ArgStr << " not specified\n";
@@ -5715,11 +5707,6 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
   if (failed(detectMissingArguments())) {
     exit(1);
   }
-  // Scenario: We use llvm::cl::opt to initialize everything
-  if (arch.getValue().empty()) {
-    llvm::errs() << "--arch is not set\n";
-    exit(1);
-  }
 
   RocmDeviceName targetInfo;
   if (failed(targetInfo.parse(arch.getValue()))) {
@@ -5850,7 +5837,7 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
         filterDataType.getValue(), inputDataType.getValue(),
         outputDataType.getValue(), dilations, strides, paddingLeft,
         paddingRight, filterLayout.getValue(), inputLayout.getValue(),
-        outputLayout.getValue(), convKernelName.getValue());
+        outputLayout.getValue());
 
     SmallVector<int64_t> inDims{inputHeight, inputWidth};
     if (nDims > 2) {

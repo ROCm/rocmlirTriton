@@ -1,10 +1,12 @@
-// RUN: rocmlir-gen --operation=conv --arch=amdgcn-amd-amdhsa:gfx908 --num_cu=64 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=64 --in_channels=1024 --out_channels=1024 -in_h=14 -in_w=14 -out_h=14 -out_w=14 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --groupsize=1 --kernel_name=conv_fwd --kernel_id=0 | FileCheck %s --check-prefix=KERNEL0
-// RUN: rocmlir-gen --operation=conv --arch=amdgcn-amd-amdhsa:gfx908 --num_cu=64 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=64 --in_channels=1024 --out_channels=1024 -in_h=14 -in_w=14 -out_h=14 -out_w=14 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --groupsize=1 --kernel_name=conv_fwd --kernel_id=1 | FileCheck %s --check-prefix=KERNEL1
-// RUN: rocmlir-gen --operation=conv --arch=amdgcn-amd-amdhsa:gfx908 --num_cu=64 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=64 --in_channels=1024 --out_channels=1024 -in_h=14 -in_w=14 -out_h=14 -out_w=14 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --groupsize=1 --kernel_name=conv_fwd --kernel_id=2 | FileCheck %s --check-prefix=KERNEL2
-// RUN: rocmlir-gen --operation=conv --arch=amdgcn-amd-amdhsa:gfx908 --num_cu=64 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=64 --in_channels=1024 --out_channels=1024 -in_h=14 -in_w=14 -out_h=14 -out_w=14 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --groupsize=1 --kernel_name=conv_fwd --kernel_id=3 | FileCheck %s --check-prefix=KERNEL3
+// RUN: rocmlir-gen --operation=conv --arch=amdgcn-amd-amdhsa:gfx908 --num_cu=64 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=64 --in_channels=1024 --out_channels=1024 -in_h=14 -in_w=14 -out_h=14 -out_w=14 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --groupsize=1 --kernel_id=0 | FileCheck %s --check-prefix=KERNEL0
+// RUN: rocmlir-gen --operation=conv --arch=amdgcn-amd-amdhsa:gfx908 --num_cu=64 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=64 --in_channels=1024 --out_channels=1024 -in_h=14 -in_w=14 -out_h=14 -out_w=14 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --groupsize=1 --kernel_id=1 | FileCheck %s --check-prefix=KERNEL1
+// RUN: rocmlir-gen --operation=conv --arch=amdgcn-amd-amdhsa:gfx908 --num_cu=64 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=64 --in_channels=1024 --out_channels=1024 -in_h=14 -in_w=14 -out_h=14 -out_w=14 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --groupsize=1 --kernel_id=2 | FileCheck %s --check-prefix=KERNEL2
+// RUN: rocmlir-gen --operation=conv --arch=amdgcn-amd-amdhsa:gfx908 --num_cu=64 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=64 --in_channels=1024 --out_channels=1024 -in_h=14 -in_w=14 -out_h=14 -out_w=14 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --groupsize=1 --kernel_id=3 | FileCheck %s --check-prefix=KERNEL3
+
+// Kernel base name is auto-derived (rock_conv_<layouts>); only rock.kernel and the trailing _{id} vary with --kernel_id.
 
 // KERNEL0-LABEL: module
-// KERNEL0-NEXT: func.func @conv_fwd_0(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// KERNEL0-NEXT: func.func @{{rock_conv.*_0}}(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // KERNEL0-NEXT: %[[exp0:.*]] = rock.transform %arg0 {{.*}} : tensor<1048576xf32> to tensor<1x1024x1024x1x1xf32>
 // KERNEL0-NEXT: %[[exp1:.*]] = rock.transform %arg1 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
 // KERNEL0-NEXT: %[[exp2:.*]] = rock.transform %arg2 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
@@ -12,21 +14,21 @@
 // KERNEL0-NEXT: rock.conv(%[[exp0]], %[[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x1024x1024x1x1xf32>, tensor<64x1x1024x14x14xf32> -> tensor<64x1x1024x14x14xf32>
 
 // KERNEL1-LABEL: module
-// KERNEL1-NEXT: func.func @conv_fwd_1(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 1 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// KERNEL1-NEXT: func.func @{{rock_conv.*_1}}(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 1 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // KERNEL1-NEXT: %[[exp0:.*]] = rock.transform %arg0 {{.*}} : tensor<1048576xf32> to tensor<1x1024x1024x1x1xf32>
 // KERNEL1-NEXT: %[[exp1:.*]] = rock.transform %arg1 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
 // KERNEL1-NEXT: %[[exp2:.*]] = rock.transform %arg2 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
 // KERNEL1-NEXT: rock.conv(%[[exp0]], %[[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x1024x1024x1x1xf32>, tensor<64x1x1024x14x14xf32> -> tensor<64x1x1024x14x14xf32>
 
 // KERNEL2-LABEL: module
-// KERNEL2-NEXT: func.func @conv_fwd_2(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 2 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// KERNEL2-NEXT: func.func @{{rock_conv.*_2}}(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 2 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // KERNEL2-NEXT: %[[exp0:.*]] = rock.transform %arg0 {{.*}} : tensor<1048576xf32> to tensor<1x1024x1024x1x1xf32>
 // KERNEL2-NEXT: %[[exp1:.*]] = rock.transform %arg1 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
 // KERNEL2-NEXT: %[[exp2:.*]] = rock.transform %arg2 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
 // KERNEL2-NEXT: rock.conv(%[[exp0]], %[[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x1024x1024x1x1xf32>, tensor<64x1x1024x14x14xf32> -> tensor<64x1x1024x14x14xf32>
 
 // KERNEL3-LABEL: module
-// KERNEL3-NEXT: func.func @conv_fwd_3(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 3 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// KERNEL3-NEXT: func.func @{{rock_conv.*_3}}(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 3 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // KERNEL3-NEXT: %[[exp0:.*]] = rock.transform %arg0 {{.*}} : tensor<1048576xf32> to tensor<1x1024x1024x1x1xf32>
 // KERNEL3-NEXT: %[[exp1:.*]] = rock.transform %arg1 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
 // KERNEL3-NEXT: %[[exp2:.*]] = rock.transform %arg2 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
