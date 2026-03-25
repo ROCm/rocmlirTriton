@@ -521,6 +521,8 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   auto maybeStores = traceRootOutputToStoreOps(op.getResult());
   if (failed(maybeStores))
     return op.emitOpError("cannot trace bwd_weight result to rock::StoreOp");
+  assert(maybeStores->size() == 1 &&
+         "bwd_weight has no fusions, expected exactly one store");
   StoreOp firstStore = maybeStores->front();
   Value filterDest = firstStore.getDest();
   ensureInsertionAfterDef(b, op, filterDest);
@@ -1114,27 +1116,13 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
         rock::backwardDataKernelIds(strideDims, dilationDims, filterDims);
 
     // ConvBwdData rewrite currently expects a single consuming rock.store.
-    SmallVector<StoreOp, 1> storeOps;
-    for (Operation *user : bwdDataOp.getResult().getUsers()) {
-      if (auto sop = dyn_cast<StoreOp>(user)) {
-        storeOps.push_back(sop);
-        continue;
-      }
-
-      bwdDataOp.emitOpError()
-          << "expected only rock.store users during ConvBwdData rewrite, got "
-          << user->getName();
-      return failure();
-    }
-
-    if (storeOps.size() != 1) {
-      bwdDataOp.emitOpError()
-          << "expected exactly one consuming rock.store user during "
-             "ConvBwdData rewrite, got "
-          << storeOps.size();
-      return failure();
-    }
-    StoreOp originalStoreOp = storeOps.front();
+    auto maybeStores = traceRootOutputToStoreOps(bwdDataOp.getResult());
+    if (failed(maybeStores))
+      return bwdDataOp.emitOpError(
+          "cannot trace bwd_data result to rock::StoreOp");
+    assert(maybeStores->size() == 1 &&
+           "bwd_data has no fusions, expected exactly one store");
+    StoreOp originalStoreOp = maybeStores->front();
 
     Type storeResultType = originalStoreOp.getResult().getType();
     auto storeMethod = originalStoreOp.getStoreMethodAttr();
@@ -1239,10 +1227,11 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // (filter for BwdWeight, output for ConvOp) we regularize the StoreOp
   // dest buffer here.
   if constexpr (notConvGemm) {
-    ensureInsertionAfterDef(b, op, destBuffer);
-
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
+      // BwdWeight: the regularized filterValue feeds into filter transforms
+      // that become gemm operands, so keep the insertion point moved.
+      ensureInsertionAfterDef(b, op, destBuffer);
       auto mapping = buildInputToFilterMapping(b, rank);
       filterValue = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
@@ -1251,7 +1240,11 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
           filterNames);
       filterShape = cast<ShapedType>(filterValue.getType()).getShape();
     } else {
-      // ConvOp: regularize output dest buffer.
+      // ConvOp: regularize at the dest buffer's location, then restore the
+      // insertion point to the conv so filter/input transforms and the gemm
+      // are placed there. The gemm doesn't take gemmOutput as an SSA operand.
+      OpBuilder::InsertionGuard guard(b);
+      ensureInsertionAfterDef(b, op, destBuffer);
       auto mapping = buildInputToOutputMapping(b, rank);
       destBuffer = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
@@ -1603,40 +1596,6 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
 
     // Replace extra fusion input operands with their gemm versions.
     rock::replaceFusionExtraInputs(result, fusionInputMap);
-
-    // propagateOutputType rewired fusion ops (arith/math ops between the
-    // conv and the stores) to consume the gemm result, but
-    // ensureInsertionAfterDef may have placed the gemm *after* those ops
-    // in the block (when RegularizeOutput added transforms to the store
-    // dest past the fusion chain).  Move any such ops to just after the
-    // gemm so that SSA dominance holds.
-    {
-      DenseSet<Operation *> fusionOpSet;
-      SmallVector<Value> worklist;
-      worklist.push_back(result);
-      while (!worklist.empty()) {
-        Value current = worklist.pop_back_val();
-        for (OpOperand &use : current.getUses()) {
-          Operation *owner = use.getOwner();
-          if (!rock::isFusionOp(owner) || !fusionOpSet.insert(owner).second)
-            continue;
-          for (Value res : owner->getResults())
-            worklist.push_back(res);
-        }
-      }
-      SmallVector<Operation *> toMove;
-      for (Operation &blockOp : *newGemmOp->getBlock()) {
-        if (&blockOp == newGemmOp.getOperation())
-          break;
-        if (fusionOpSet.count(&blockOp))
-          toMove.push_back(&blockOp);
-      }
-      Operation *insertAfter = newGemmOp.getOperation();
-      for (Operation *fusionOp : toMove) {
-        fusionOp->moveAfter(insertAfter);
-        insertAfter = fusionOp;
-      }
-    }
 
     for (size_t i = 0; i < stores.size(); ++i) {
       StoreOp storeOp = stores[i];
