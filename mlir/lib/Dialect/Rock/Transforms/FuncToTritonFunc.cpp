@@ -119,6 +119,8 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   // Step 2: Build new function type with tt.ptr arguments
   FunctionType funcType = funcOp.getFunctionType();
 
+  // Some tensor inputs may be dead (no rock.extract_ptr use) but still need
+  // conversion to pointers since Triton kernels cannot have bare tensor args.
   bool hasTensorArgs = llvm::any_of(
       funcType.getInputs(),
       [](Type t) { return isa<RankedTensorType>(t); });

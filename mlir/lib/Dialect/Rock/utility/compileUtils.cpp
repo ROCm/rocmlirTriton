@@ -172,13 +172,15 @@ ArrayAttr getPrefillArrayFromBinary(ModuleOp moduleOp) {
   moduleOp.walk([&](gpu::BinaryOp binary) {
     auto kernelTable =
         cast<gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
+    size_t numKernels = 0;
     for (auto kernel : kernelTable) {
+      ++numKernels;
       if (auto arr =
               kernel.getAttr<ArrayAttr>(rock::PrefillAttr::getMnemonic())) {
-        assert(!result && "multiple kernels with prefill args in module");
         result = arr;
       }
     }
+    assert(numKernels == 1 && "expected exactly one kernel in binary");
   });
   return result;
 }

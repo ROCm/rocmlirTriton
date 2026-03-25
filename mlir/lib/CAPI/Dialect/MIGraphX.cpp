@@ -174,8 +174,9 @@ MLIR_CAPI_EXPORTED bool mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
   }
 
   // TODO(rocmlirTriton): Currently we are just setting the default values
-  // for TritonOptions. Moving forwards we want figure out a way that we can
-  // set these options without changing the existing function signature.
+  // for TritonOptions, kernelOptions (above), and BackendOptions (below).
+  // Moving forwards we want figure out a way that we can set these options
+  // without changing the existing function signature to add a module op.
   mlir::rock::TritonOptions tritonOpts;
   tritonOpts.arch = devName.getChip().str();
   mlir::rock::buildTritonPipeline(*passMan, tritonOpts);
