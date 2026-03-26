@@ -210,8 +210,12 @@ struct GridwiseAttentionRewritePattern
                         Value attentionAcc,
                         Value sumRow) const {
     // Broadcast sumRow from [M] to [M, N] to match attentionAcc shape
-    auto accShape = cast<RankedTensorType>(attentionAcc.getType()).getShape();
-    Value sumRowBroadcast = broadcastRowTo2D(rewriter, loc, sumRow, accShape[1]);
+    auto accType = cast<RankedTensorType>(attentionAcc.getType());
+    Value sumRowBroadcast = broadcastRowTo2D(rewriter, loc, sumRow, accType.getShape()[1]);
+
+    // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
+    sumRowBroadcast = createTypeConversionOp(rewriter, loc, sumRowBroadcast, accType);
+
     return arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
   }
 
@@ -238,9 +242,12 @@ struct GridwiseAttentionRewritePattern
                                           Value attentionAcc,
                                           Value expMaxDiffRow) const {
     // Broadcast expMaxDiffRow from [M] to [M, N] to match attentionAcc shape
-    auto accShape = cast<RankedTensorType>(attentionAcc.getType()).getShape();
-    Value expMaxDiffBroadcast = broadcastRowTo2D(rewriter, loc, expMaxDiffRow, accShape[1]);
-    
+    auto accType = cast<RankedTensorType>(attentionAcc.getType());
+    Value expMaxDiffBroadcast = broadcastRowTo2D(rewriter, loc, expMaxDiffRow, accType.getShape()[1]);
+
+    // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
+    expMaxDiffBroadcast = createTypeConversionOp(rewriter, loc, expMaxDiffBroadcast, accType);
+
     Value scaledAttentionAcc =
         arith::MulFOp::create(rewriter, loc, attentionAcc, expMaxDiffBroadcast);
     Value newAttentionAcc = arith::AddFOp::create(
