@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Support/DetachReattach.h"
+#include "mlir/utils/DetachReattach.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"

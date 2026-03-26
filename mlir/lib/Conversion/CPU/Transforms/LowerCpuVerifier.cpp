@@ -43,7 +43,7 @@
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Support/DetachReattach.h"
+#include "mlir/utils/DetachReattach.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"

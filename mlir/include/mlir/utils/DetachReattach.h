@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef MLIR_SUPPORT_DETACHREATTACH_H
-#define MLIR_SUPPORT_DETACHREATTACH_H
+#ifndef MLIR_UTILS_DETACHREATTACH_H
+#define MLIR_UTILS_DETACHREATTACH_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -49,4 +49,4 @@ void reattachFuncs(ModuleOp module, DetachedFuncs &detached);
 
 } // namespace mlir
 
-#endif // MLIR_SUPPORT_DETACHREATTACH_H
+#endif // MLIR_UTILS_DETACHREATTACH_H

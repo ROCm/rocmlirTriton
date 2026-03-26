@@ -16,7 +16,7 @@ add_rocmlir_dialect_library(MLIRCpuTransforms
 
   LINK_LIBS PUBLIC
   MLIRAffineTransforms
-  MLIRRocMLIRSupport
+  MLIRRocMLIRUtils
   MLIRArithTransforms
   MLIRArithValueBoundsOpInterfaceImpl
   MLIRBufferizationDialect

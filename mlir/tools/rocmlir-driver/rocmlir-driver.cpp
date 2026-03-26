@@ -29,7 +29,7 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/Support/DetachReattach.h"
+#include "mlir/utils/DetachReattach.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/STLExtras.h"
