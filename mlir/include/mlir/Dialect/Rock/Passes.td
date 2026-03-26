@@ -31,6 +31,14 @@ def RockDetectFlashDecodingPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockApplyTransposesPass
+    : Pass<"rock-apply-transposes", "::mlir::func::FuncOp"> {
+  let summary = "Detect transposed operands from rock.transform chains and "
+                "set transpose attributes on AttentionOp, "
+                "GemmElementwiseGemmOp, and ConvElementwiseGemmOp";
+  let dependentDialects = ["rock::RockDialect"];
+}
+
 def RockConvToGemmPass : Pass<"rock-conv-to-gemm", "::mlir::func::FuncOp"> {
   let summary = "expand convolution into coordinate transformations and gemm. "
                 "Additionally, it also convert rock.conv_elementwise_gemm into "
