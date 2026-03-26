@@ -36,7 +36,32 @@ We also have other 2 files:
 | `PrePostSchedules` | Pre: canonicalize+CSE. Post: LICM + redundant transfer hoisting |
 | `ScheduleUtils`    | Shared helpers |
 
-## 2. Optimization strategy
+## 2. Isolating the CPU function before applying the transforms
+Before applying each transform sequence, `LowerCpuVerifier` uses `detachFuncs` and `reattachFuncs` to temporarily remove all functions from the module except the CPU host function. 
+
+This isolation is necessary because transform sequences operate on the entire module rather than individual functions, which could lead to unintended modifications of other functions.
+
+Consider loop pipelining as a concrete example. Suppose our module contains both a CPU host function and a GPU kernel function, each with their own `scf.for` loops:
+
+```mlir
+func.func @cpu_host_naive_gemm(...) {
+  scf.for %i = ... {  // We want to pipeline this loop
+    ...
+  }
+}
+
+func.func @main(...) {
+  scf.for %j = ... {  // We do NOT want to touch this loop
+    ...
+  }
+}
+```
+
+If we apply a loop pipelining transform that targets all `scf.for` operations without isolating the CPU function first, the transform would also modify the GPU kernel's loops—which is not what we want. By detaching all other functions before running the transform, we ensure that only the CPU host function is affected.
+
+Previously, in develop branch, this level of isolation wasn't necessary. The original CPU code path only performed bufferization and LLVM lowering—passes that are safe to apply to the entire module without side effects on unrelated functions. However, the transform dialect operations used for CPU optimization (such as tiling, vectorization, and loop pipelining) require more precise targeting, making function isolation neccesary.
+
+## 3. Optimization strategy
 The high-level idea is following GOTO's paper [1] while trying to be reasonably simple.
 In other words, optimize the code while keeping complexity low.
 We want our CPU verifier to be fast enough, not cutting edge performance.
@@ -44,15 +69,15 @@ We want our CPU verifier to be fast enough, not cutting edge performance.
 Using MLIR to optimize GEMM for CPU has already been studied in previous work [2] with high success.
 In particular, the last trend is to use the transform dialect [3] and upstream MLIR to do so [4].
 
-## 3. Large JIT time issue
-## 3.1 Description
+## 4. Large JIT time issue
+## 4.1 Description
 With certain IR inputs, we can get huge JIT times if we are not careful (in order of several seconds).
 This is because we unconditionally vectorize all IR in the `VectorizationSchedule`. 
 So, if the `linalg.generic` was not tiled, it can be vectorized with huge vector sizes, so the JIT will have a very hard time with this IR.
 
 To overcome this issue, in `TilingSchedule`, we make sure that we tile all the `linalg.generic` in the IR to a reasonable vector size (8).
 
-## 3.2 Can we vectorize only linalg.generics that are tiled?
+## 4.2 Can we vectorize only linalg.generics that are tiled?
 Yes, but we need to use `transform.structured.vectorize` which, in my experience, is less mature compared to `transform.structured.vectorize_children_and_apply_patterns`. The former will attempt to vectorize a specific op, whereas the latter will attempt to vectorize all ops and apply different paterns. The problem with the former is that it's very brittle in practice. If the target op is not ready for vectorization, it will fail. If the target op is ready, but needs some cleanup before vectorization, it will fail as well. The latter, however, will apply cleanup patterns before/after vectorization, so it is more likely that it will work. 
 
 We may want to use `vectorize` in the long term if we find corner cases with `vectorize_children_and_apply_patterns` since it will attempt vectorizing all ops, but in general `vectorize_children_and_apply_patterns` should be more reliable.
