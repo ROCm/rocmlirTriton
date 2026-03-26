@@ -383,12 +383,12 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                       StringRef dumpCpuSchedules = "") {
-  // Optimization phase: tiling, vectorization, unroll
+  // CPU optimization phase.
   // This transforms the function body but keeps tensor types at boundaries.
-  cpu::CpuLowerVerifierPassOptions cpuOpts1;
-  cpuOpts1.dumpSchedulesPath = dumpCpuSchedules.str();
-  cpuOpts1.phase = cpu::CPU_PHASE_OPTIMIZE;
-  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts1));
+  cpu::CpuLowerVerifierPassOptions cpuOpts;
+  cpuOpts.dumpSchedulesPath = dumpCpuSchedules.str();
+  cpuOpts.phase = cpu::CPU_PHASE_OPTIMIZE;
+  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
 
   // Bufferize tensor ops to memref ops for the whole module.
   // This handles both the CPU verifier functions and their call sites,
@@ -400,10 +400,8 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
   pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
 
   // Lower to LLVM phase (after bufferization)
-  cpu::CpuLowerVerifierPassOptions cpuOpts2;
-  cpuOpts2.dumpSchedulesPath = dumpCpuSchedules.str();
-  cpuOpts2.phase = cpu::CPU_PHASE_LOWERTOLLVM;
-  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts2));
+  cpuOpts.phase = cpu::CPU_PHASE_LOWERTOLLVM;
+  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
 
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());
