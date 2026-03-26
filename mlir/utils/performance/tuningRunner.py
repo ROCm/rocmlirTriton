@@ -528,8 +528,7 @@ def main(args=None):
         "--verify",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help=
-        "Verify compiled kernels against the CPU reference (rocmlir-gen -pv). "
+        help="Verify compiled kernels against the CPU reference (rocmlir-gen -pv). "
         "Use --no-verify to skip.",
     )
 
@@ -537,8 +536,7 @@ def main(args=None):
         "--verify-perf-configs",
         action='store_true',
         default=False,
-        help=
-        "Compile and verify given problem with all applicable perf configs. "
+        help="Compile and verify given problem with all applicable perf configs. "
         "Use with --verify (default); not compatible with --no-verify.",
     )
 
