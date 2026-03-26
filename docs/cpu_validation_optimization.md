@@ -59,7 +59,7 @@ func.func @main(...) {
 
 If we apply a loop pipelining transform that targets all `scf.for` operations without isolating the CPU function first, the transform would also modify the GPU kernel's loops—which is not what we want. By detaching all other functions before running the transform, we ensure that only the CPU host function is affected.
 
-Previously, in develop branch, this level of isolation wasn't necessary. The original CPU code path only performed bufferization and LLVM lowering—passes that are safe to apply to the entire module without side effects on unrelated functions. However, the transform dialect operations used for CPU optimization (such as tiling, vectorization, and loop pipelining) require more precise targeting, making function isolation neccesary.
+Previousl (in rocMLIR, or before the CPU optimization landed on develop), this level of isolation wasn't necessary. The original CPU code path only performed bufferization and LLVM lowering—passes that are safe to apply to the entire module without side effects on unrelated functions. However, the transform dialect operations used for CPU optimization (such as tiling, vectorization, and loop pipelining) require more precise targeting, making function isolation neccesary.
 
 ## 3. Optimization strategy
 The high-level idea is following GOTO's paper [1] while trying to be reasonably simple.
