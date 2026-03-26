@@ -30,6 +30,18 @@
 namespace mlir {
 namespace cpu {
 
+/// Phases for the CpuLowerVerifier pass.
+/// The pass runs in two phases to allow whole-module bufferization in between.
+enum CpuLowerPhase {
+  /// Phase 1: Apply optimization transforms (tiling, vectorization, unroll)
+  /// Run this before whole-module bufferization.
+  CPU_PHASE_OPTIMIZE = 1,
+
+  /// Phase 2: Lower to LLVM dialect
+  /// Run this after whole-module bufferization.
+  CPU_PHASE_LOWERTOLLVM = 2
+};
+
 #define GEN_PASS_DECL_CPULOWERVERIFIERPASS
 
 #define GEN_PASS_REGISTRATION

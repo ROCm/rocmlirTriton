@@ -158,22 +158,25 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
                           << " functions for isolation\n");
 
   // Step 2: Build the pipeline of main transform steps based on phase option
-  // Phase 1: tiling, vectorization, unroll (before whole-module bufferization)
-  // Phase 2: lowerToLLVM (after whole-module bufferization)
   SmallVector<TransformStep> pipeline;
-  if (phase == 1) {
+  if (phase == CPU_PHASE_OPTIMIZE) {
+    // Optimization phase: tiling, vectorization, unroll
+    // Run before whole-module bufferization
     pipeline = {
         {schedules.tilingModule.get(), "tiling"},
         {schedules.vectorizationModule.get(), "vectorization"},
         {schedules.unrollModule.get(), "unroll"},
     };
-  } else if (phase == 2) {
+  } else if (phase == CPU_PHASE_LOWERTOLLVM) {
+    // Lower to LLVM phase
+    // Run after whole-module bufferization
     pipeline = {
         {schedules.lowerToLLVMModule.get(), "lowerToLLVM"},
     };
   } else {
     reattachFuncs(module, detached);
-    return func.emitError("Invalid phase: ") << phase << " (must be 1 or 2)";
+    return func.emitError("Invalid phase: ")
+           << phase << " (must be CPU_PHASE_OPTIMIZE or CPU_PHASE_LOWERTOLLVM)";
   }
 
   // We need to wrap the module in OwningOpRef for applyTransformSequence

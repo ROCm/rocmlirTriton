@@ -50,7 +50,7 @@ def CpuLowerVerifierPass : Pass<"cpu-lower-verifier", "::mlir::ModuleOp"> {
     Option<"dumpSchedulesPath", "dump-schedules-path", "std::string", /*default=*/"\"\"",
            "Path to dump CPU verifier IR and transform schedules (empty = no dump)">,
     Option<"phase", "phase", "int", /*default=*/"1",
-           "Which phase to run: 1 = optimization, 2 = lowerToLLVM">
+           "Which phase to run: 1 = CPU_PHASE_OPTIMIZE, 2 = CPU_PHASE_LOWERTOLLVM">
   ];
 }
 
