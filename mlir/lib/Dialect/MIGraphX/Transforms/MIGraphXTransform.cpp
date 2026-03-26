@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/MIGraphX/Passes.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -142,7 +143,14 @@ struct MIGraphXTransforms
     if (failed(applyFullConversion(func, target, std::move(patterns)))) {
       signalPassFailure();
     }
-    {
+    // Only run with non-kernel functions. tosa.matmul_t_block_scaled doesn't
+    // have conversion to linalg in the upstream passes. Therefore for the host
+    // side non-kernel functions, we need to run the conversion manually. For
+    // the kernel side, tosa.matmul_t_block_scaled is converted to rock.gemm
+    // with scales in TosaToRock.cpp.
+    // TODO: Remove this once tosa.matmul_t_block_scaled -> linalg conversion
+    // is implemented in upstream TOSA passes.
+    if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
       RewritePatternSet patterns(&ctx);
       patterns.add<QuantDotDecompose>(&ctx);
       if (failed(applyPatternsGreedily(func, std::move(patterns))))
