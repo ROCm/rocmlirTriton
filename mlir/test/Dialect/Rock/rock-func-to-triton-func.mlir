@@ -279,3 +279,119 @@ func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: te
   tt.store %19, %3, %12 : tensor<64x64x!tt.ptr<f32>>
   return
 }
+
+// -----
+
+// Verifies a single prefill arg is serialized as a module attribute
+// CHECK: module attributes {{{.*}}rock.prefill_args.test_single_prefill = [{index = 2 : i64, value = 0.000000e+00 : f32}]
+// CHECK-LABEL: tt.func @test_single_prefill
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG1:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG2:.*]]: !tt.ptr<f32> {rock.prefill = 0.000000e+00 : f32, tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+func.func @test_single_prefill(%arg0: tensor<4096xf16>, %arg1: tensor<4096xf16>, %arg2: tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32}) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 256 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64x64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32
+  %1 = rock.extract_ptr %arg1 : tensor<4096xf16> -> i32
+  %2 = rock.extract_ptr %arg2 : tensor<4096xf32> -> i32
+  %s0 = tt.splat %0 : i32 -> tensor<64x64xi32>
+  %s1 = tt.splat %1 : i32 -> tensor<64x64xi32>
+  %s2 = tt.splat %2 : i32 -> tensor<64x64xi32>
+  %p0 = rock.cast_to_ptr %s0 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %p1 = rock.cast_to_ptr %s1 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %p2 = rock.cast_to_ptr %s2 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
+  %3 = tt.load %p0, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  %4 = tt.load %p1, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  %5 = arith.extf %3 : tensor<64x64xf16> to tensor<64x64xf32>
+  tt.store %p2, %5, %cst_mask : tensor<64x64x!tt.ptr<f32>>
+  return
+}
+
+// -----
+
+// Verifies multiple prefill args of the same type are both serialized
+// CHECK: module attributes {{{.*}}rock.prefill_args.test_multi_prefill_same_type = [{index = 2 : i64, value = 0.000000e+00 : f32}, {index = 3 : i64, value = 0.000000e+00 : f32}]
+// CHECK-LABEL: tt.func @test_multi_prefill_same_type
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f32> {{.*}}, %[[ARG1:.*]]: !tt.ptr<f32> {{.*}}, %[[ARG2:.*]]: !tt.ptr<f32> {{.*}}, %[[ARG3:.*]]: !tt.ptr<f32> {{.*}})
+func.func @test_multi_prefill_same_type(
+    %arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>,
+    %arg2: tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32},
+    %arg3: tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32})
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 256 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64x64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf32> -> i32
+  %1 = rock.extract_ptr %arg1 : tensor<4096xf32> -> i32
+  %2 = rock.extract_ptr %arg2 : tensor<4096xf32> -> i32
+  %3 = rock.extract_ptr %arg3 : tensor<4096xf32> -> i32
+  %s0 = tt.splat %0 : i32 -> tensor<64x64xi32>
+  %s1 = tt.splat %1 : i32 -> tensor<64x64xi32>
+  %s2 = tt.splat %2 : i32 -> tensor<64x64xi32>
+  %s3 = tt.splat %3 : i32 -> tensor<64x64xi32>
+  %p0 = rock.cast_to_ptr %s0 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
+  %p1 = rock.cast_to_ptr %s1 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
+  %p2 = rock.cast_to_ptr %s2 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
+  %p3 = rock.cast_to_ptr %s3 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
+  %a = tt.load %p0, %cst_mask : tensor<64x64x!tt.ptr<f32>>
+  %b = tt.load %p1, %cst_mask : tensor<64x64x!tt.ptr<f32>>
+  %c = arith.addf %a, %b : tensor<64x64xf32>
+  tt.store %p2, %c, %cst_mask : tensor<64x64x!tt.ptr<f32>>
+  tt.store %p3, %c, %cst_mask : tensor<64x64x!tt.ptr<f32>>
+  return
+}
+
+// -----
+
+// Verifies multiple prefill args with different element types (f16 and f32)
+// CHECK: module attributes {{{.*}}rock.prefill_args.test_multi_prefill_mixed_types = [{index = 2 : i64, value = 0.000000e+00 : f32}, {index = 3 : i64, value = 0.000000e+00 : f16}]
+// CHECK-LABEL: tt.func @test_multi_prefill_mixed_types
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {{.*}}, %[[ARG1:.*]]: !tt.ptr<f16> {{.*}}, %[[ARG2:.*]]: !tt.ptr<f32> {{.*}}, %[[ARG3:.*]]: !tt.ptr<f16> {{.*}})
+func.func @test_multi_prefill_mixed_types(
+    %arg0: tensor<4096xf16>, %arg1: tensor<4096xf16>,
+    %arg2: tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32},
+    %arg3: tensor<4096xf16> {rock.prefill = 0.000000e+00 : f16})
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 256 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64x64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32
+  %1 = rock.extract_ptr %arg1 : tensor<4096xf16> -> i32
+  %2 = rock.extract_ptr %arg2 : tensor<4096xf32> -> i32
+  %3 = rock.extract_ptr %arg3 : tensor<4096xf16> -> i32
+  %s0 = tt.splat %0 : i32 -> tensor<64x64xi32>
+  %s1 = tt.splat %1 : i32 -> tensor<64x64xi32>
+  %s2 = tt.splat %2 : i32 -> tensor<64x64xi32>
+  %s3 = tt.splat %3 : i32 -> tensor<64x64xi32>
+  %p0 = rock.cast_to_ptr %s0 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %p1 = rock.cast_to_ptr %s1 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %p2 = rock.cast_to_ptr %s2 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
+  %p3 = rock.cast_to_ptr %s3 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %a = tt.load %p0, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  %b = tt.load %p1, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  %a_f32 = arith.extf %a : tensor<64x64xf16> to tensor<64x64xf32>
+  %b_f32 = arith.extf %b : tensor<64x64xf16> to tensor<64x64xf32>
+  %c_f32 = arith.addf %a_f32, %b_f32 : tensor<64x64xf32>
+  %c_f16 = arith.truncf %c_f32 : tensor<64x64xf32> to tensor<64x64xf16>
+  tt.store %p2, %c_f32, %cst_mask : tensor<64x64x!tt.ptr<f32>>
+  tt.store %p3, %c_f16, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  return
+}
+
+// -----
+
+// Verifies a dead tensor input (no extract_ptr) is still converted to tt.ptr,
+// and a prefill arg on another argument is preserved
+// CHECK: module attributes {{{.*}}rock.prefill_args.test_dead_input_with_prefill = [{index = 2 : i64, value = 0.000000e+00 : f32}]
+// CHECK-LABEL: tt.func @test_dead_input_with_prefill
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[DEAD:.*]]: !tt.ptr<f16>, %[[ARG2:.*]]: !tt.ptr<f32> {rock.prefill = 0.000000e+00 : f32, tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+func.func @test_dead_input_with_prefill(
+    %arg0: tensor<4096xf16>,
+    %arg1: tensor<4096xf16>,
+    %arg2: tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32})
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 256 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64x64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32
+  %2 = rock.extract_ptr %arg2 : tensor<4096xf32> -> i32
+  %s0 = tt.splat %0 : i32 -> tensor<64x64xi32>
+  %s2 = tt.splat %2 : i32 -> tensor<64x64xi32>
+  %p0 = rock.cast_to_ptr %s0 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %p2 = rock.cast_to_ptr %s2 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
+  %a = tt.load %p0, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  %a_f32 = arith.extf %a : tensor<64x64xf16> to tensor<64x64xf32>
+  tt.store %p2, %a_f32, %cst_mask : tensor<64x64x!tt.ptr<f32>>
+  return
+}
