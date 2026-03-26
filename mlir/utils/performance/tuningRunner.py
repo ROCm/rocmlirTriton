@@ -529,7 +529,7 @@ def main(args=None):
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Verify compiled kernels against the CPU reference (rocmlir-gen -pv). "
-        "Use --no-verify to skip.",
+        "Use --verify=False to skip.",
     )
 
     parser.add_argument(
@@ -537,7 +537,7 @@ def main(args=None):
         action='store_true',
         default=False,
         help="Compile and verify given problem with all applicable perf configs. "
-        "Use with --verify (default); not compatible with --no-verify.",
+        "Use with --verify (default); not compatible with --verify=False.",
     )
 
     parser.add_argument("--test_dir",
