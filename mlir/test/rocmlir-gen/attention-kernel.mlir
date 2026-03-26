@@ -13,12 +13,13 @@
 // CHECK_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<32768xf32> to tensor<1x32x1024xf32>
 // CHECK_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
 // CHECK_SCALE-NEXT: %[[scale:.*]] = rock.transform %[[scaleRaw]] {{.*}} : tensor<1048576xf32> to tensor<1x1024x1024xf32>
-// CHECK_SCALE-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
 
 // CHECK_SCALE-NEXT: rock.attention
 // CHECK_SCALE-NEXT: qk = %[[queries]] * %[[keys]]
 // CHECK_SCALE-NEXT: qk = elementwise otherIns(%[[scale]]
 // CHECK_SCALE: softmax(qk) * %[[values]]
+// CHECK_SCALE: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
+// CHECK_SCALE-NEXT: rock.store %[[flatOutput]] to %[[outputRaw]] by {{.*}}set
 // CHECK_SCALE: return
 
 // CHECK_SCALE-LABEL: func.func @host_naive_attention
@@ -50,11 +51,12 @@
 // CHECK_NO_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
 // CHECK_NO_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<32768xf32> to tensor<1x32x1024xf32>
 // CHECK_NO_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
-// CHECK_NO_SCALE-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
 
 // CHECK_NO_SCALE-NEXT: rock.attention
 // CHECK_NO_SCALE-NEXT: qk = %[[queries]] * %[[keys]]
 // CHECK_NO_SCALE: softmax(qk) * %[[values]]
+// CHECK_NO_SCALE: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
+// CHECK_NO_SCALE-NEXT: rock.store %[[flatOutput]] to %[[outputRaw]] by {{.*}}set
 // CHECK_NO_SCALE: return
 
 // CHECK_NO_SCALE-LABEL: func.func @host_naive_attention

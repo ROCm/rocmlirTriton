@@ -1433,12 +1433,11 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
         auto callOp = func::CallOp::create(b, loc, kernel.func, tensorArgs);
 
-        // Store returned tensors back to gpu memrefs
+        // Result should be stored back to the corresponding output memref.
+        // Kernel returns (Output, LSE, ...) while args are (..., LSE,
+        // Output), so map result i to the (numResults - 1 - i)-th-from-last
+        // argument.
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-          // Result should be stored back to the corresponding output memref.
-          // Kernel returns (Output, LSE, ...) while args are (..., LSE,
-          // Output), so map result i to the (numResults - 1 - i)-th-from-last
-          // argument.
           size_t outIdx = gpuMem.size() - 1 - resultIdx;
           auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
           Value resultMemref =
@@ -1557,21 +1556,24 @@ static int getRandomSeed() {
 static std::tuple<short, short> getRandomTestData(int idx, bool isRandFloat) {
   short min = 1, max = 1;
 
-  int32_t idxSpec = -1;
-  switch (randomSide.getValue()[0]) {
-  case 'f':
-    idxSpec = 0;
-    break;
-  case 'i':
-    idxSpec = 1;
-    break;
-  case 'o':
-    idxSpec = 2;
-    break;
-  case 'b':
-  default:
-    break;
+  // Map the logical tensor name from -rand_side to the argument index.
+  // The kernel arg layout puts the store destination last:
+  //   Fwd:       [filter(0), input(1), output(2)]
+  //   BwdData:   [filter(0), output(1), input(2)]
+  //   BwdWeight: [input(0), output(1), filter(2)]
+  // Each string encodes the kernel arg order as [arg0, arg1, arg2] where
+  // the characters 'f', 'i', 'o' denote filter, input, output respectively.
+  // Finding the -rand_side character in the string gives its arg index.
+  StringRef argOrder = "fio"; // default (Fwd / Gemm)
+  if (operation.getNumOccurrences() > 0) {
+    if (operation.getValue() == rock::KernelType::ConvBwdData)
+      argOrder = "foi";
+    else if (operation.getValue() == rock::KernelType::ConvBwdWeight)
+      argOrder = "iof";
   }
+  char side = randomSide.getValue()[0];
+  size_t pos = argOrder.find(side);
+  int32_t idxSpec = (pos != StringRef::npos) ? static_cast<int32_t>(pos) : -1;
 
   if (randomSeed != "none" && randomSeed != "fixed") {
     if ((idxSpec >= 0) && (idxSpec != idx)) {
@@ -2464,26 +2466,15 @@ createCPUConvWithMLIR(ModuleOp module,
     assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
   }
 
+  // Build argument types in standard [filter, input, output, workspace?] order,
+  // then reorder so the store destination (result) is last.
   SmallVector<Type, 4> funcArgTypes = {filterFlatType, inputFlatType,
                                        outputFlatType};
-  if (hasWorkspace) {
-    auto workspaceType = RankedTensorType::get({filterElems}, b.getF32Type());
-    funcArgTypes.push_back(workspaceType);
-  }
-
-  // Determine result type based on operation
-  Type resultFlatType;
-  switch (genConfig.operation.value()) {
-  case rock::ConvOpType::Fwd:
-    resultFlatType = outputFlatType;
-    break;
-  case rock::ConvOpType::BwdData:
-    resultFlatType = inputFlatType;
-    break;
-  case rock::ConvOpType::BwdWeight:
-    resultFlatType = filterFlatType;
-    break;
-  }
+  if (hasWorkspace)
+    funcArgTypes.push_back(
+        RankedTensorType::get({filterElems}, b.getF32Type()));
+  rock::reorderConvArgsForKernel(genConfig.operation.value(), funcArgTypes);
+  Type resultFlatType = funcArgTypes.back();
 
   std::string funcName =
       rock::getNameForConvOpType(genConfig.operation.value()).str();
@@ -2503,9 +2494,26 @@ createCPUConvWithMLIR(ModuleOp module,
   Block *block = func.addEntryBlock();
   b.setInsertionPointToStart(block);
 
-  Value filterFlat = block->getArgument(0);
-  Value inputFlat = block->getArgument(1);
-  Value outputFlat = block->getArgument(2);
+  // Map block args back to semantic names (inverse of
+  // reorderConvArgsForKernel).
+  Value filterFlat, inputFlat, outputFlat;
+  switch (genConfig.operation.value()) {
+  case rock::ConvOpType::Fwd:
+    filterFlat = block->getArgument(0);
+    inputFlat = block->getArgument(1);
+    outputFlat = block->getArgument(2);
+    break;
+  case rock::ConvOpType::BwdData:
+    filterFlat = block->getArgument(0);
+    outputFlat = block->getArgument(1);
+    inputFlat = block->getArgument(2);
+    break;
+  case rock::ConvOpType::BwdWeight:
+    inputFlat = block->getArgument(0);
+    outputFlat = block->getArgument(1);
+    filterFlat = block->getArgument(hasWorkspace ? 3 : 2);
+    break;
+  }
 
   // i8 convolutions use i64 accumulation to detect overflow, f32 otherwise
   bool isI8Conv = genConfig.inputDataTypeStr == "i8";
@@ -2805,7 +2813,8 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
                                transposeScaleB ? nName : kName});
   }
 
-  // Function takes flattened (a, b, [aScale, bScale,] c) as inputs and returns flattened c
+  // Function takes flattened (a, b, [aScale, bScale], c) as inputs and returns
+  // flattened c.
   SmallVector<Type, 5> funcArgTypes;
   SmallVector<Type, 5> funcArgLogicalTypes;
   int cIdx = scaledGemm ? 4 : 2;
@@ -2822,11 +2831,10 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
     funcArgLogicalTypes.push_back(argTypes[2]);
     funcArgLogicalTypes.push_back(argTypes[3]);
   }
-  // C is always last
-  allArgNames.emplace_back(SmallVector<StringRef>{
-      gName, transposeC ? nName : mName, transposeC ? mName : nName});
+
+  SmallVector<StringRef> cDimNames = {gName, transposeC ? nName : mName,
+                                      transposeC ? mName : nName};
   funcArgTypes.push_back(cFlatType);
-  funcArgLogicalTypes.push_back(cType);
 
   auto func =
       func::FuncOp::create(b, loc, isVerifier ? kernelNameVerifier : kernelName,
@@ -2836,36 +2844,37 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   b.setInsertionPointToStart(block);
 
   // Expand flattened arguments to logical shapes with dimension names
-  SmallVector<Value, 5> expandedArgs;
+  SmallVector<Value, 4> expandedArgs;
   rock::expandFlatFunctionArguments(b, func, allArgNames, funcArgLogicalTypes,
                                     expandedArgs);
 
   Value aVal = expandedArgs[0], bVal = expandedArgs[1];
   Value aScale = nullptr, bScale = nullptr;
-  Value cVal;
 
   if (scaledGemm) {
     aScale = normalizeScaleShape(b, loc, expandedArgs[2], transposeScaleA,
                                  /*isA=*/true);
     bScale = normalizeScaleShape(b, loc, expandedArgs[3], transposeScaleB,
                                  /*isA=*/false);
-    cVal = expandedArgs[4];
-  } else {
-    cVal = expandedArgs[2];
   }
 
+  // GEMM produces result in logical shape (e.g., tensor<1x64x64xf32>)
   auto gemm = rock::GemmOp::create(
-      b, loc, cVal.getType(), aVal, bVal, aScale, bScale, transposeA,
-      transposeB, transposeC, transposeScaleA, transposeScaleB,
+      b, loc, cType, aVal, bVal, aScale, bScale, transposeA, transposeB,
+      transposeC, transposeScaleA, transposeScaleB,
       scaledGemm ? b.getI64IntegerAttr(quantBlockSize) : nullptr,
       /*params=*/nullptr);
 
   if (!params.perfConfig.empty())
     gemm->setAttr("perf_config", b.getStringAttr(params.perfConfig));
 
-  // Store the result to the transformed C tensor
-  Value storedVal = rock::StoreOp::create(b, loc, cFlatType, gemm.getResult(),
-                                          cVal, storeMethod);
+  // Apply the output transform to flatten the GEMM result
+  Value flatResult = rock::flattenOutput(b, loc, gemm.getResult(), cDimNames);
+
+  // Store the flat result to the C argument
+  Value cArg = func.getArgument(cIdx);
+  Value storedVal =
+      rock::StoreOp::create(b, loc, cFlatType, flatResult, cArg, storeMethod);
 
   func::ReturnOp::create(b, loc, storedVal);
 
@@ -3537,7 +3546,30 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   SmallVector<Value> unflattenedArgs;
   SmallVector<SmallVector<StringRef>> allNames;
   getAttentionDimNames(allNames, params.types);
-  rock::expandFlatFunctionArguments(builder, func, allNames, argTypes,
+
+  // Save output dim names/types and trim from expansion (output is last)
+  SmallVector<StringRef> outputDimNames = allNames.back();
+  Type outputLogicalType = argTypes.back();
+  Type outputFlatType = flatArgTypes.back();
+  unsigned outputArgIdx = allNames.size() - 1;
+  allNames.pop_back();
+
+  // If returnLSE, also save and trim LSE (now last after output was popped)
+  SmallVector<StringRef> lseDimNames;
+  Type lseLogicalType;
+  Type lseFlatType;
+  unsigned lseArgIdx = 0;
+  if (returnLSE) {
+    lseDimNames = allNames.back();
+    lseLogicalType = argTypes[allNames.size() - 1];
+    lseFlatType = flatArgTypes[allNames.size() - 1];
+    lseArgIdx = allNames.size() - 1;
+    allNames.pop_back();
+  }
+
+  SmallVector<Type> expandArgTypes(argTypes.begin(),
+                                   argTypes.begin() + allNames.size());
+  rock::expandFlatFunctionArguments(builder, func, allNames, expandArgTypes,
                                     unflattenedArgs);
 
   Value queries = unflattenedArgs[0];
@@ -3548,8 +3580,6 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   Value quantScale;
   Value scale;
   Value bias;
-  Value output;
-  Value lse;
   Value currentSeqLenTensor;
   Value prefixOffsetTensor;
 
@@ -3577,10 +3607,6 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     prefixOffsetTensor = broadcastBatchTensorRock(
         builder, loc, unflattenedArgs[optionalArgsCounter++]);
   }
-  if (returnLSE) {
-    lse = unflattenedArgs[optionalArgsCounter++];
-  }
-  output = unflattenedArgs[optionalArgsCounter];
 
   // Prefix causal masking requires causal to be enabled
   bool actualCausal = causalMasking || !prefixOffset.empty();
@@ -3588,7 +3614,7 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   auto softmaxType =
       TypeAttr::get(typeFromString(softmaxDataType.getValue(), ctx));
   auto attention = rock::AttentionOp::create(
-      builder, loc, output.getType(), returnLSE ? lse.getType() : nullptr,
+      builder, loc, outputLogicalType, returnLSE ? lseLogicalType : nullptr,
       queries, keys, values, elemwiseInputs, currentSeqLenTensor,
       prefixOffsetTensor, numHeadsQ, numHeadsKV, transposeQ, transposeK,
       transposeV, transposeO, actualCausal, splitKV, softmaxType,
@@ -3643,17 +3669,20 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   if (!params.perfConfig.empty())
     attention->setAttr("perf_config", builder.getStringAttr(params.perfConfig));
 
-  // Store the result to the transformed output tensor
-  Value storedOut =
-      rock::StoreOp::create(builder, loc, flatArgTypes[flatArgTypes.size() - 1],
-                            attention.getResult(), output, storeMethod);
+  // Apply output transform to flatten the attention result, then store
+  Value flatResult =
+      rock::flattenOutput(builder, loc, attention.getResult(), outputDimNames);
+  Value outputArg = func.getArgument(outputArgIdx);
+  Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
+                                          flatResult, outputArg, storeMethod);
 
   SmallVector<Value> returnOperands = {storedOut};
   if (returnLSE) {
-    // Store the result to the transformed LSE tensor
-    Value storedLSE = rock::StoreOp::create(
-        builder, loc, flatArgTypes[flatArgTypes.size() - 2], attention.getLse(),
-        lse, rock::StoreMethod::Set);
+    Value flatLSE =
+        rock::flattenOutput(builder, loc, attention.getLse(), lseDimNames);
+    Value lseArg = func.getArgument(lseArgIdx);
+    Value storedLSE = rock::StoreOp::create(builder, loc, lseFlatType, flatLSE,
+                                            lseArg, rock::StoreMethod::Set);
     returnOperands.push_back(storedLSE);
   }
 
@@ -3830,17 +3859,23 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   SmallVector<Value> unflattenedArgs;
   SmallVector<SmallVector<StringRef>> allNames;
   getGemmElementwiseGemmDimNames(allNames, params.types);
-  rock::expandFlatFunctionArguments(builder, func, allNames, argTypes,
+
+  // Save output dim names and logical type, then trim from expansion
+  SmallVector<StringRef> outputDimNames = allNames.back();
+  Type outputLogicalType = argTypes.back();
+  Type outputFlatType = flatArgTypes.back();
+  allNames.pop_back();
+  SmallVector<Type> expandArgTypes(argTypes.begin(), argTypes.end() - 1);
+  rock::expandFlatFunctionArguments(builder, func, allNames, expandArgTypes,
                                     unflattenedArgs);
 
   Value a = unflattenedArgs[0];
   Value b = unflattenedArgs[1];
   Value c = unflattenedArgs[2];
-  Value output = unflattenedArgs[3];
   SmallVector<Value> elemwiseInputs;
 
   auto gemmElntGemm = rock::GemmElementwiseGemmOp::create(
-      builder, loc, output.getType(), a, b, c, elemwiseInputs, transposeA,
+      builder, loc, outputLogicalType, a, b, c, elemwiseInputs, transposeA,
       transposeB, transposeC, transposeO,
       /*params0=*/nullptr, /*params1=*/nullptr,
       /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
@@ -3862,10 +3897,12 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
     gemmElntGemm->setAttr("perf_config",
                           builder.getStringAttr(params.perfConfig));
 
-  // Store the result to the transformed output tensor
-  Value storedOut =
-      rock::StoreOp::create(builder, loc, flatArgTypes[flatArgTypes.size() - 1],
-                            gemmElntGemm.getResult(), output, storeMethod);
+  // Apply the output transform to flatten the result, then store
+  Value flatResult = rock::flattenOutput(builder, loc, gemmElntGemm.getResult(),
+                                         outputDimNames);
+  Value outputArg = func.getArgument(func.getNumArguments() - 1);
+  Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
+                                          flatResult, outputArg, storeMethod);
   func::ReturnOp::create(builder, loc, {storedOut});
 
   if (!disableSplitKForTuning)
@@ -5378,16 +5415,12 @@ static LogicalResult populateHostHarnessLogic(
   if (genParams.operation.has_value()) {
     switch (genParams.operation.value()) {
     case rock::KernelType::Conv:
+    case rock::KernelType::ConvBwdData:
+    case rock::KernelType::ConvBwdWeight:
       outIndices.push_back(2);
       break;
     case rock::KernelType::Gemm:
       outIndices.push_back(scaledGemm ? 4 : 2);
-      break;
-    case rock::KernelType::ConvBwdData:
-      outIndices.push_back(1);
-      break;
-    case rock::KernelType::ConvBwdWeight:
-      outIndices.push_back(0);
       break;
     case rock::KernelType::GemmElementwiseGemm:
       outIndices.push_back(3);
@@ -5928,10 +5961,15 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
       genParams.types.push_back(convGenerator.getFilterDataType(builder));
       genParams.types.push_back(convGenerator.getInputDataType(builder));
       genParams.types.push_back(convGenerator.getOutputDataType(builder));
+      // Reorder types to match the kernel arg ordering (store dest last).
+      if (operation.getValue() == rock::KernelType::ConvBwdData)
+        std::swap(genParams.types[1], genParams.types[2]);
+      else if (operation.getValue() == rock::KernelType::ConvBwdWeight)
+        std::rotate(genParams.types.begin(), genParams.types.begin() + 1,
+                    genParams.types.end());
     }
     genParams.convConfig = &convGenerator.getConfig();
   }
-  
 
   // TODO: Extract isApplicable check to be its own component
   if (isConv && failed(convGenerator.isApplicable())) {

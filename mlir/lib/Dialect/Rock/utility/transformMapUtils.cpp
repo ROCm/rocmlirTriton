@@ -1304,51 +1304,73 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
   return transform.get();
 }
 
+static TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
+                                                 ArrayRef<StringRef> dimNames,
+                                                 ArrayRef<int64_t> shape,
+                                                 int64_t numElements) {
+  int64_t rank = shape.size();
+  SmallVector<uint32_t> upperDims(rank);
+  std::iota(upperDims.begin(), upperDims.end(), 0);
+
+  SmallVector<uint32_t> nonUnitUpperDim;
+  SmallVector<int64_t> nonUnitUpperSize;
+  SmallVector<StringRef> nonUnitUpperName;
+  for (auto [upperDim, name, dimLen] : llvm::zip(upperDims, dimNames, shape)) {
+    if (dimLen != 1) {
+      nonUnitUpperDim.push_back(upperDim);
+      nonUnitUpperName.push_back(name);
+      nonUnitUpperSize.push_back(dimLen);
+    }
+  }
+  // There has to be at least one dimension that is unmerged.
+  if (nonUnitUpperDim.empty()) {
+    nonUnitUpperDim.push_back(upperDims.back());
+    nonUnitUpperName.push_back(dimNames.back());
+    nonUnitUpperSize.push_back(shape.back());
+  }
+
+  BottomUpTMBuilder flattener(b, {"raw"}, numElements, loc);
+  flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw", nonUnitUpperSize);
+  for (auto dim : upperDims) {
+    if (!llvm::is_contained(nonUnitUpperDim, dim)) {
+      flattener.addDim(dimNames[dim], dim, shape[dim]);
+    }
+  }
+  return flattener.get();
+}
+
 void mlir::rock::expandFlatFunctionArguments(
     OpBuilder &b, func::FuncOp func, ArrayRef<SmallVector<StringRef>> names,
     TypeRange logicalTypes, SmallVectorImpl<Value> &expanded) {
   expanded.resize_for_overwrite(names.size());
+  // Use llvm::zip (not enumerate) because some callers pass fewer names than
+  // func arguments, relying on zip's stop-at-shortest behavior.
   for (auto [arg, nameList, logicalType, logicalVal] :
        llvm::zip(func.getArguments(), names, logicalTypes, expanded)) {
     Location loc = arg.getLoc();
     auto logicalShapedTy = dyn_cast<ShapedType>(logicalType);
-    // Pass scalars through unaltered
     if (!logicalShapedTy) {
       logicalVal = arg;
       continue;
     }
-    SmallVector<uint32_t> upperDims(logicalShapedTy.getRank());
-    std::iota(upperDims.begin(), upperDims.end(), 0);
-    SmallVector<uint32_t> nonUnitUpperDim;
-    SmallVector<int64_t> nonUnitUpperSize;
-    SmallVector<StringRef> nonUnitUpperName;
-    for (auto [upperDim, name, dimLen] :
-         llvm::zip(upperDims, nameList, logicalShapedTy.getShape())) {
-      if (dimLen != 1) {
-        nonUnitUpperDim.push_back(upperDim);
-        nonUnitUpperName.push_back(name);
-        nonUnitUpperSize.push_back(dimLen);
-      }
-    }
-    // there has to be at least one dimension that is unmerged
-    if (nonUnitUpperDim.empty()) {
-      nonUnitUpperDim.push_back(upperDims.back());
-      nonUnitUpperName.push_back(nameList.back());
-      nonUnitUpperSize.push_back(logicalShapedTy.getShape().back());
-    }
-
-    BottomUpTMBuilder flattener(b, {"raw"}, logicalShapedTy.getNumElements(),
-                                loc);
-    flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw",
-                      nonUnitUpperSize);
-    for (auto dim : upperDims) {
-      if (!llvm::is_contained(nonUnitUpperDim, dim)) {
-        flattener.addDim(nameList[dim], dim, logicalShapedTy.getShape()[dim]);
-      }
-    }
-    TransformMapAttr expandMap = flattener.get();
+    TransformMapAttr expandMap =
+        buildFlattenTransformMap(b, loc, nameList, logicalShapedTy.getShape(),
+                                 logicalShapedTy.getNumElements());
     logicalVal = rock::TransformOp::create(b, loc, arg, expandMap);
   }
+}
+
+Value mlir::rock::flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
+                                ArrayRef<StringRef> dimNames) {
+  auto shapedType = cast<ShapedType>(logicalVal.getType());
+  // buildFlattenTransformMap builds a map with upper=logical, lower=flat
+  // (the "expand" direction). We need to invert it so that the TransformOp
+  // follows the standard convention: input=lower=logical, output=upper=flat.
+  TransformMapAttr expandMap = buildFlattenTransformMap(
+      b, loc, dimNames, shapedType.getShape(), shapedType.getNumElements());
+  TransformMapAttr flattenMap = invertTransformMap(b, expandMap, loc);
+  assert(flattenMap && "failed to invert expand map into flatten map");
+  return rock::TransformOp::create(b, loc, logicalVal, flattenMap);
 }
 
 ArrayAttr mlir::rock::prependUpperViews(OpBuilder &b, ArrayAttr viewsToPrepend,

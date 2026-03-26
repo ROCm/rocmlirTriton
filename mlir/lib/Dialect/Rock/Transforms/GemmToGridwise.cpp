@@ -32,9 +32,9 @@
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/math.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -43,6 +43,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Errc.h"
@@ -192,6 +193,9 @@ static Value moveNumHeadsToSeqLenCurrSeqLen(OpBuilder builder, Location loc,
 static Value moveNumHeadsToSeqLenOut(OpBuilder builder, Location loc,
                                      Value inputTensor, int64_t numRepeats,
                                      int64_t splitKV) {
+  if (auto *defOp = inputTensor.getDefiningOp())
+    builder.setInsertionPointAfter(defOp);
+
   ArrayRef<int64_t> inpShape =
       cast<ShapedType>(inputTensor.getType()).getShape();
 
@@ -453,6 +457,10 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
     transformAttrs.push_back(ignoreTransformAttr);
 
     ArrayAttr arrayTransformAttrs = builder.getArrayAttr(transformAttrs);
+    // Set insertion point after out's defining op to maintain dominance.
+    OpBuilder::InsertionGuard guard(builder);
+    if (auto *defOp = out.getDefiningOp())
+      builder.setInsertionPointAfter(defOp);
     outNew = mlir::rock::transform(builder, out, arrayTransformAttrs);
   }
   return std::make_tuple(aNew, bNew, cNew, outNew);
@@ -642,16 +650,10 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   a = normalizeMatrix(a, rw, loc, op.getATransposed(), "gemmM", "gemmK");
   b = normalizeMatrix(b, rw, loc, op.getBTransposed(), "gemmK", "gemmN");
   auto transformViews = [&](auto fn) {
-    auto apply = [&](Value &view) {
-      OpBuilder::InsertionGuard guard(rw);
-      if (Operation *defOp = view.getDefiningOp())
-        rw.setInsertionPointAfter(defOp);
-      view = fn(view);
-    };
     for (auto &outputView : outputViews)
-      apply(outputView);
+      outputView = fn(outputView);
     for (auto &[orig, view] : fusionInputMap)
-      apply(view);
+      view = fn(view);
   };
   transformViews([&](Value v) {
     return normalizeMatrix(v, rw, loc, op.getOTransposed(), "gemmM", "gemmN");
@@ -742,12 +744,14 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     if (splitKFactor > 1)
       storeMethod =
           rw.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::AtomicAdd);
+
     // If the store's source is the gemm result directly (no fusions),
     // use the gridwise result. Otherwise, propagateOutputType has already
     // updated the fusion chain, and storeOp.getSource() has the correct type.
     Value source = storeOp.getSource();
-    if (source == op.getResult())
+    if (source == op.getResult()) {
       source = result;
+    }
     rw.setInsertionPoint(storeOp);
     auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
                                             storeOp.getResult().getType(),
@@ -915,6 +919,9 @@ GemmRewritePattern::arrangeSplitKTransform(
 
     ArrayAttr arrayTransformAttrs = builder.getArrayAttr(transformAttrs);
     for (auto view : outputViews) {
+      OpBuilder::InsertionGuard guard(builder);
+      if (Operation *defOp = view.getDefiningOp())
+        builder.setInsertionPointAfter(defOp);
       outputViewsNew.push_back(
           mlir::rock::transform(builder, view, arrayTransformAttrs));
     }
