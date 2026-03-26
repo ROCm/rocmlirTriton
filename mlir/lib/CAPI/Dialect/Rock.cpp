@@ -167,14 +167,20 @@ bool mlirIsModuleFusible(MlirModule module, MlirStringRef perfStr) {
 
 MLIR_CAPI_EXPORTED
 size_t mlirGetNumPrefillArgs(MlirModule module) {
-  auto arr = rock::getPrefillArrayFromBinary(unwrap(module));
+  auto result = rock::getPrefillArrayFromBinary(unwrap(module));
+  if (failed(result))
+    return 0;
+  auto arr = result.value();
   return arr ? arr.size() : 0;
 }
 
 MLIR_CAPI_EXPORTED
 void mlirGetPrefillArgsInfo(MlirModule module, size_t *indices,
                             MlirAttribute *initValues, size_t length) {
-  auto arr = rock::getPrefillArrayFromBinary(unwrap(module));
+  auto result = rock::getPrefillArrayFromBinary(unwrap(module));
+  if (failed(result))
+    return;
+  auto arr = result.value();
   if (!arr)
     return;
   assert(arr.size() >= length && "length cannot exceed the attr size");

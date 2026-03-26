@@ -166,8 +166,9 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
   return success();
 }
 
-ArrayAttr getPrefillArrayFromBinary(ModuleOp moduleOp) {
+FailureOr<ArrayAttr> getPrefillArrayFromBinary(ModuleOp moduleOp) {
   ArrayAttr result;
+  LogicalResult status = success();
   moduleOp.walk([&](gpu::BinaryOp binary) {
     auto kernelTable =
         cast<gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
@@ -179,8 +180,14 @@ ArrayAttr getPrefillArrayFromBinary(ModuleOp moduleOp) {
         result = arr;
       }
     }
-    assert(numKernels == 1 && "expected exactly one kernel in binary");
+    if (numKernels != 1) {
+      binary.emitOpError("expected exactly one kernel in binary, got ")
+          << numKernels;
+      status = failure();
+    }
   });
+  if (failed(status))
+    return failure();
   return result;
 }
 

@@ -57,9 +57,9 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
                 SmallVectorImpl<KernelInfo> &kernels);
 
 /// Retrieve the prefill argument array from the module's gpu.binary, or
-/// nullptr if none exists. Asserts that at most one kernel carries prefill
-//  args.
-ArrayAttr getPrefillArrayFromBinary(ModuleOp moduleOp);
+/// a default-constructed ArrayAttr if none exists. Returns failure if the
+/// binary does not contain exactly one kernel.
+FailureOr<ArrayAttr> getPrefillArrayFromBinary(ModuleOp moduleOp);
 
 /// Parse a performance-config string into Triton and backend compilation
 /// options. Attempts to interpret `perfConfig` as a GemmParamsAttr or
