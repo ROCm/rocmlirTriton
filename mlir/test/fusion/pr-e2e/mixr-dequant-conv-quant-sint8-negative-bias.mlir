@@ -1,4 +1,4 @@
-// TODO(rocmlirTriton): error: 'arith.mulf' op operand #0 must be floating-point-like, but got 'tensor<1x1x49xi8>'
+// TODO(rocmlirTriton): error: 'rock.gemm' op float-valued inputs must have a floating-point output type
 // UNSUPPORTED: true
 // RUN: rocmlir-gen -fut mlir_dequantizelinear_convolution_quantizelinear --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline=migraphx,highlevel -kernel-pipeline=migraphx,highlevel | rocmlir-gen -print-results -ph -fut mlir_dequantizelinear_convolution_quantizelinear --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]

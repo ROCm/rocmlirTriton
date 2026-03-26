@@ -1,5 +1,3 @@
-// TODO(rocmlirTriton): 'arith.mulf' op requires the same type for all operands and results
-// UNSUPPORTED: true
 // This is a design that was in the MIGraphX CI that was previously failing
 // here: https://ontrack-internal.amd.com/browse/SWDEV-558297
 
