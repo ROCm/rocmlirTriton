@@ -1402,10 +1402,9 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   // Emit kernel function call, repeating it if needed.
   // We assume that the repeated atomic add usages in a wrw kernel will not
   // substantially impact performance as the result becomes large
-  auto emitWrappedCall = [&kernels, &gpuMem, &outIndices](OpBuilder &b,
-                                                           Location loc,
-                                                           Value ignoredIv,
-                                                           ValueRange noArgs) {
+  auto emitWrappedCall = [&kernels, &gpuMem,
+                          &outIndices](OpBuilder &b, Location loc,
+                                       Value ignoredIv, ValueRange noArgs) {
     for (const auto &kernel : kernels) {
       bool expectsTensors =
           !kernel.params.empty() && isa<TensorType>(kernel.params.front());
@@ -1422,8 +1421,8 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
           if (resultIdx < outIndices.size()) {
             int32_t outIdx = outIndices[resultIdx];
             auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
-            Value resultMemref =
-                bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
+            Value resultMemref = bufferization::ToBufferOp::create(
+                b, loc, outMemrefType, result);
             memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
           }
         }
@@ -5525,8 +5524,8 @@ static LogicalResult populateHostHarnessLogic(
   }
   func::FuncOp gpuWrapperFunc;
   if (!kernelsSet.empty())
-    gpuWrapperFunc =
-        createGPUWrapper(module, kernelBaseName, kernels, genParams, outIndices);
+    gpuWrapperFunc = createGPUWrapper(module, kernelBaseName, kernels,
+                                      genParams, outIndices);
   // Redirect calls to kernel functions to point at wrapped functions.
   func.walk([&](CallOpInterface callOp) -> WalkResult {
     // If the callee matches a wrapped function, update the call.
@@ -5876,13 +5875,12 @@ int main(int argc, char **argv) {
   mlir::registerMLIRCLOptions();
   MLIRContext context(registry, MLIRContext::Threading::DISABLED);
   // LLVM dialect is temporary for the freeze trick.
-  context.loadDialect<rock::RockDialect, func::FuncDialect, scf::SCFDialect,
-                      affine::AffineDialect, memref::MemRefDialect,
-                      math::MathDialect, arith::ArithDialect,
-                      vector::VectorDialect, gpu::GPUDialect,
-                      linalg::LinalgDialect,
-                      bufferization::BufferizationDialect, tosa::TosaDialect,
-                      mlir::LLVM::LLVMDialect>();
+  context.loadDialect<
+      rock::RockDialect, func::FuncDialect, scf::SCFDialect,
+      affine::AffineDialect, memref::MemRefDialect, math::MathDialect,
+      arith::ArithDialect, vector::VectorDialect, gpu::GPUDialect,
+      linalg::LinalgDialect, bufferization::BufferizationDialect,
+      tosa::TosaDialect, mlir::LLVM::LLVMDialect>();
 
   // Parse pass names in main to ensure static initialization completed.
   llvm::cl::ParseCommandLineOptions(argc, argv,
