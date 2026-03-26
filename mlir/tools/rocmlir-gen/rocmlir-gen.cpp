@@ -1327,7 +1327,8 @@ static Value computeFinalAttentionStage(OpBuilder builder, Location loc,
 static func::FuncOp createGPUWrapper(ModuleOp module,
                                      const std::string &funcName,
                                      const SmallVector<KernelIF, 8> &kernels,
-                                     const GenParams &params) {
+                                     const GenParams &params,
+                                     ArrayRef<int32_t> outIndices) {
   MLIRContext *context = module.getContext();
   OpBuilder b(context);
   auto loc = kernels[0].func->getLoc();
@@ -5525,7 +5526,7 @@ static LogicalResult populateHostHarnessLogic(
   func::FuncOp gpuWrapperFunc;
   if (!kernelsSet.empty())
     gpuWrapperFunc =
-        createGPUWrapper(module, kernelBaseName, kernels, genParams);
+        createGPUWrapper(module, kernelBaseName, kernels, genParams, outIndices);
   // Redirect calls to kernel functions to point at wrapped functions.
   func.walk([&](CallOpInterface callOp) -> WalkResult {
     // If the callee matches a wrapped function, update the call.
