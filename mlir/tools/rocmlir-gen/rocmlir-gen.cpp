@@ -2494,7 +2494,8 @@ createCPUConvWithMLIR(ModuleOp module,
   Block *block = func.addEntryBlock();
   b.setInsertionPointToStart(block);
 
-  // Map block args back to semantic names (inverse of reorderConvArgsForKernel).
+  // Map block args back to semantic names (inverse of
+  // reorderConvArgsForKernel).
   Value filterFlat, inputFlat, outputFlat;
   switch (genConfig.operation.value()) {
   case rock::ConvOpType::Fwd:
@@ -5160,9 +5161,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       if (originalHasWorkspace && !verifierHasWorkspace) {
         valVars.resize(valVars.size() - 1);
       }
-      auto kernelWrapperFunc =
-          createGPUWrapper(module, kernelBaseName + "_ver", kernelIFFuncs,
-                           genParams);
+      auto kernelWrapperFunc = createGPUWrapper(module, kernelBaseName + "_ver",
+                                                kernelIFFuncs, genParams);
       func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
       convGenerator.setKernelName(kernelBaseName);
     } else { // gemm GPU validation
@@ -5710,8 +5710,8 @@ static LogicalResult populateHostHarnessLogic(
   }
   func::FuncOp gpuWrapperFunc;
   if (!kernelsSet.empty())
-    gpuWrapperFunc = createGPUWrapper(module, kernelBaseName, kernels,
-                                      genParams);
+    gpuWrapperFunc =
+        createGPUWrapper(module, kernelBaseName, kernels, genParams);
   // Redirect calls to kernel functions to point at wrapped functions.
   func.walk([&](CallOpInterface callOp) -> WalkResult {
     // If the callee matches a wrapped function, update the call.

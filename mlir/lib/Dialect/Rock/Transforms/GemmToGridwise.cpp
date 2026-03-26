@@ -491,8 +491,8 @@ commonAttentionGemmElmtGemm(
   a = normalizeMatrix(a, rw, loc, op.getTransposedA(), "gemm0M", "gemm0K");
   b = normalizeMatrix(b, rw, loc, op.getTransposedB(), "gemm0K", "gemm0N");
   c = normalizeMatrix(c, rw, loc, op.getTransposedC(), "gemm1K", "gemm1N");
-  out = normalizeMatrix(out, rw, loc, op.getTransposedOut(), "gemm1M",
-                        "gemm1N");
+  out =
+      normalizeMatrix(out, rw, loc, op.getTransposedOut(), "gemm1M", "gemm1N");
 
   const int64_t splitKFactor = params1.getSplitKFactor();
   if (splitKFactor > 1) {

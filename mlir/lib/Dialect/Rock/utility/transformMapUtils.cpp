@@ -1304,9 +1304,10 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
   return transform.get();
 }
 
-static TransformMapAttr buildFlattenTransformMap(
-    OpBuilder &b, Location loc, ArrayRef<StringRef> dimNames,
-    ArrayRef<int64_t> shape, int64_t numElements) {
+static TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
+                                                 ArrayRef<StringRef> dimNames,
+                                                 ArrayRef<int64_t> shape,
+                                                 int64_t numElements) {
   int64_t rank = shape.size();
   SmallVector<uint32_t> upperDims(rank);
   std::iota(upperDims.begin(), upperDims.end(), 0);

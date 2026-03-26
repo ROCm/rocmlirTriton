@@ -1250,9 +1250,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
         auto mapping = buildInputToOutputMapping(b, rank);
         destBuffer = regularizeDestLayout(
             b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
-            destBuffer,
-            op->template getAttrOfType<ArrayAttr>("output_layout"), mapping,
-            outputNames);
+            destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
+            mapping, outputNames);
         relayoutAttr =
             cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
       }
