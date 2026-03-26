@@ -383,21 +383,27 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                       StringRef dumpCpuSchedules = "") {
-  // Lower CPU verifier functions (host_naive_*) to LLVM.
-  // This pass only affects functions marked with "rock.cpu_verifier" attribute,
-  // leaving other functions (main, wrappers) unchanged.
-  cpu::CpuLowerVerifierPassOptions cpuOpts;
-  cpuOpts.dumpSchedulesPath = dumpCpuSchedules.str();
-  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
-  
-  // Bufferize tensor ops to memref ops - required before linalg-to-loops
-  // The host functions restored from attributes contain tensor operations
-  // that need to be converted to memref operations first.
+  // Phase 1: Lower CPU verifier functions (tiling, vectorization, unroll)
+  // This transforms the function body but keeps tensor types at boundaries.
+  cpu::CpuLowerVerifierPassOptions cpuOpts1;
+  cpuOpts1.dumpSchedulesPath = dumpCpuSchedules.str();
+  cpuOpts1.phase = 1;
+  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts1));
+
+  // Bufferize tensor ops to memref ops for the whole module.
+  // This handles both the CPU verifier functions and their call sites,
+  // eliminating the need for manual call site updates.
   bufferization::OneShotBufferizePassOptions bufOpts;
   bufOpts.bufferizeFunctionBoundaries = true;
   bufOpts.functionBoundaryTypeConversion =
       bufferization::LayoutMapOption::IdentityLayoutMap;
   pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
+
+  // Phase 2: Lower CPU verifier functions to LLVM (after bufferization)
+  cpu::CpuLowerVerifierPassOptions cpuOpts2;
+  cpuOpts2.dumpSchedulesPath = dumpCpuSchedules.str();
+  cpuOpts2.phase = 2;
+  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts2));
 
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());

@@ -53,9 +53,7 @@ OwningOpRef<ModuleOp> cpu::buildLowerToLLVMSchedule(MLIRContext *ctx) {
         /*memcpy_op=*/"memref.copy");
 
     // Step 2: Initial cleanup passes
-    auto matchFunc = ib.create<transform::MatchOp>(
-        anyOpType, bufferize.getTransformed(),
-        ArrayRef<StringRef>{"func.func"});
+    auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, bufferize.getTransformed());
 
     // Get the target module (parent of the func) for later module-level operations
     auto targetModule = ib.create<transform::GetParentOp>(
@@ -85,9 +83,8 @@ OwningOpRef<ModuleOp> cpu::buildLowerToLLVMSchedule(MLIRContext *ctx) {
         /*passName=*/"buffer-loop-hoisting", emptyOptions, emptyDynamic);
 
     // Step 4: Vector lowering patterns
-    auto matchFuncForVector = ib.create<transform::MatchOp>(
-        anyOpType, bufferLoopHoisting.getResult(),
-        ArrayRef<StringRef>{"func.func"});
+    auto matchFuncForVector =
+        createMatchCpuVerifierFuncOp(ib, ctx, bufferLoopHoisting.getResult());
 
     transform::ApplyPatternsOp::create(
         ib, matchFuncForVector.getResults(),
@@ -167,9 +164,8 @@ OwningOpRef<ModuleOp> cpu::buildLowerToLLVMSchedule(MLIRContext *ctx) {
 
     // Step 7: Apply conversion patterns to LLVM
     // Re-match func from updated module (previous handles invalidated by module transform)
-    auto funcForConversion = ib.create<transform::MatchOp>(
-        anyOpType, updatedModule.getResult(),
-        ArrayRef<StringRef>{"func.func"});
+    auto funcForConversion =
+        createMatchCpuVerifierFuncOp(ib, ctx, updatedModule.getResult());
 
     auto applyConversion = transform::ApplyConversionPatternsOp::create(
         ib, funcForConversion.getResults(),
@@ -207,9 +203,8 @@ OwningOpRef<ModuleOp> cpu::buildLowerToLLVMSchedule(MLIRContext *ctx) {
     applyConversion.setPartialConversionAttr(UnitAttr::get(ctx));
 
     // Step 8: Final reconciliation
-    auto matchFunc2 = ib.create<transform::MatchOp>(
-        anyOpType, updatedModule.getResult(),
-        ArrayRef<StringRef>{"func.func"});
+    auto matchFunc2 =
+        createMatchCpuVerifierFuncOp(ib, ctx, updatedModule.getResult());
 
     ib.create<transform::ApplyRegisteredPassOp>(
         anyOpType, matchFunc2.getResults(),

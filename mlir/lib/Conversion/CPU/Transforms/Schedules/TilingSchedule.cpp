@@ -104,8 +104,7 @@ OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
         /*interchange=*/ArrayRef<int64_t>{},
         /*scalableSizes=*/std::nullopt);
 
-    auto matchFunc = ib.create<transform::MatchOp>(
-        anyOpType, arg, ArrayRef<StringRef>{"func.func"});
+    auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
 
     auto canonicalize = ib.create<transform::ApplyRegisteredPassOp>(
         anyOpType, matchFunc.getResults(),

@@ -30,8 +30,7 @@ OwningOpRef<ModuleOp> cpu::buildPreSchedule(MLIRContext *ctx) {
   return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
     auto anyOpType = getAnyOpType(ctx);
 
-    auto matchFunc = ib.create<transform::MatchOp>(
-        anyOpType, arg, ArrayRef<StringRef>{"func.func"});
+    auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
 
     auto canonicalize = ib.create<transform::ApplyRegisteredPassOp>(
         anyOpType, matchFunc.getResults(),
@@ -48,8 +47,7 @@ OwningOpRef<ModuleOp> cpu::buildPostSchedule(MLIRContext *ctx) {
   return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
     auto anyOpType = getAnyOpType(ctx);
 
-    auto matchFunc = ib.create<transform::MatchOp>(
-        anyOpType, arg, ArrayRef<StringRef>{"func.func"});
+    auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
 
     auto matchLoops = ib.create<transform::MatchOp>(
         /*resultTypes=*/anyOpType,
@@ -64,8 +62,7 @@ OwningOpRef<ModuleOp> cpu::buildPostSchedule(MLIRContext *ctx) {
     ib.create<transform::ApplyLoopInvariantCodeMotionOp>(
         matchLoops.getResults());
 
-    auto matchFunc2 = ib.create<transform::MatchOp>(
-        anyOpType, matchFunc.getResults(), ArrayRef<StringRef>{"func.func"});
+    auto matchFunc2 = createMatchCpuVerifierFuncOp(ib, ctx, matchFunc.getResults());
 
     auto hoistTransfers =
         ib.create<transform::HoistRedundantVectorTransfersOp>(

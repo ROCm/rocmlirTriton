@@ -28,13 +28,12 @@ def CpuLowerVerifierPass : Pass<"cpu-lower-verifier", "::mlir::ModuleOp"> {
     verification of GPU kernel results.
 
     The pass uses the MLIR Transform Interpreter with an embedded transform
-    sequence to:
-    1. Bufferize (tensor -> memref) only the marked functions
-    2. Convert linalg.generic to loops
+    sequence. It can run in two phases:
+    - Phase 1 (default): Apply optimization transforms
+    - Phase 2: Apply lowerToLLVM transforms
 
-    This ensures that only the CPU verifier functions are transformed, leaving
-    other host functions (main, wrappers) unchanged until the general host
-    lowering pipeline runs.
+    This split allows running whole-module bufferization between phases,
+    so that call sites are updated automatically by the bufferizer.
   }];
   let dependentDialects = [
     "func::FuncDialect",
@@ -49,7 +48,9 @@ def CpuLowerVerifierPass : Pass<"cpu-lower-verifier", "::mlir::ModuleOp"> {
   ];
   let options = [
     Option<"dumpSchedulesPath", "dump-schedules-path", "std::string", /*default=*/"\"\"",
-           "Path to dump CPU verifier IR and transform schedules (empty = no dump)">
+           "Path to dump CPU verifier IR and transform schedules (empty = no dump)">,
+    Option<"phase", "phase", "int", /*default=*/"1",
+           "Which phase to run: 1 = optimization, 2 = lowerToLLVM">
   ];
 }
 

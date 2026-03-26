@@ -15,6 +15,7 @@
 #define MLIR_INITROCMLIRPASSES_H_
 
 // rocMLIR includes
+#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Conversion/RocMLIRPasses.h"
 #include "mlir/Dialect/MIGraphX/Passes.h"
 #include "mlir/Dialect/Rock/Passes.h"
@@ -86,6 +87,7 @@ inline void registerUpstreamPasses() {
 // The global registry is interesting to interact with the command-line tools.
 inline void registerRocMLIRPasses() {
   registerRocMLIRConversionPasses();
+  cpu::registerPasses();  // Register CPU verifier lowering passes
   migraphx::registerPasses();
   rock::registerPasses();
   rock::registerPipelines();
