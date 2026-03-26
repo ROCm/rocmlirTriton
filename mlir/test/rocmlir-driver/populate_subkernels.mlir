@@ -9,27 +9,22 @@
 // KERNEL0-NEXT: func.func @{{rock_conv.*_0}}(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // KERNEL0-NEXT: %[[exp0:.*]] = rock.transform %arg0 {{.*}} : tensor<1048576xf32> to tensor<1x1024x1024x1x1xf32>
 // KERNEL0-NEXT: %[[exp1:.*]] = rock.transform %arg1 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
-// KERNEL0-NEXT: %[[exp2:.*]] = rock.transform %arg2 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
-// rock.conv now has 2 operands (filter, input) and returns result; output is written via rock.store.
 // KERNEL0-NEXT: rock.conv(%[[exp0]], %[[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x1024x1024x1x1xf32>, tensor<64x1x1024x14x14xf32> -> tensor<64x1x1024x14x14xf32>
 
 // KERNEL1-LABEL: module
 // KERNEL1-NEXT: func.func @{{rock_conv.*_1}}(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 1 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // KERNEL1-NEXT: %[[exp0:.*]] = rock.transform %arg0 {{.*}} : tensor<1048576xf32> to tensor<1x1024x1024x1x1xf32>
 // KERNEL1-NEXT: %[[exp1:.*]] = rock.transform %arg1 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
-// KERNEL1-NEXT: %[[exp2:.*]] = rock.transform %arg2 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
 // KERNEL1-NEXT: rock.conv(%[[exp0]], %[[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x1024x1024x1x1xf32>, tensor<64x1x1024x14x14xf32> -> tensor<64x1x1024x14x14xf32>
 
 // KERNEL2-LABEL: module
 // KERNEL2-NEXT: func.func @{{rock_conv.*_2}}(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 2 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // KERNEL2-NEXT: %[[exp0:.*]] = rock.transform %arg0 {{.*}} : tensor<1048576xf32> to tensor<1x1024x1024x1x1xf32>
 // KERNEL2-NEXT: %[[exp1:.*]] = rock.transform %arg1 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
-// KERNEL2-NEXT: %[[exp2:.*]] = rock.transform %arg2 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
 // KERNEL2-NEXT: rock.conv(%[[exp0]], %[[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x1024x1024x1x1xf32>, tensor<64x1x1024x14x14xf32> -> tensor<64x1x1024x14x14xf32>
 
 // KERNEL3-LABEL: module
 // KERNEL3-NEXT: func.func @{{rock_conv.*_3}}(%arg0: tensor<1048576xf32>, %arg1: tensor<12845056xf32>, %arg2: tensor<12845056xf32>) -> tensor<12845056xf32> attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 3 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // KERNEL3-NEXT: %[[exp0:.*]] = rock.transform %arg0 {{.*}} : tensor<1048576xf32> to tensor<1x1024x1024x1x1xf32>
 // KERNEL3-NEXT: %[[exp1:.*]] = rock.transform %arg1 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
-// KERNEL3-NEXT: %[[exp2:.*]] = rock.transform %arg2 {{.*}} : tensor<12845056xf32> to tensor<64x1x1024x14x14xf32>
 // KERNEL3-NEXT: rock.conv(%[[exp0]], %[[exp1]]) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} : tensor<1x1024x1024x1x1xf32>, tensor<64x1x1024x14x14xf32> -> tensor<64x1x1024x14x14xf32>

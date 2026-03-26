@@ -180,6 +180,11 @@ TransformMapAttr transformExtractSlice(OpBuilder &b, Location loc,
 /// returns. The names of the logical dimensions for each argument will be taken
 /// from `names`, and the corresponding values will be placed in `expandedArgs`.
 ///
+/// `names` and `logicalTypes` may be shorter than the number of function
+/// arguments; only the first `names.size()` arguments are expanded (the rest
+/// are left untouched). Callers use this to exclude output arguments that are
+/// handled separately (e.g. via flattenOutput + StoreOp).
+///
 /// This is done to improve indexing performance, especially in cases where
 /// buffer loads are used, so that, for example, we don't have to mask all the
 /// non-final coordinates to 0 before feeding the index into the N-D row-major
@@ -188,6 +193,15 @@ void expandFlatFunctionArguments(OpBuilder &b, func::FuncOp func,
                                  ArrayRef<SmallVector<StringRef>> names,
                                  TypeRange logicalTypes,
                                  SmallVectorImpl<Value> &expanded);
+
+/// Apply a flattening transform to a value in logical shape, producing
+/// a 1-D tensor. Internally this builds the expand map (Unmerge + AddDim,
+/// flat->logical) via buildFlattenTransformMap and then inverts it, so the
+/// applied TransformOp carries a Merge + RemoveDim map (logical->flat).
+/// This is the inverse direction of what expandFlatFunctionArguments does
+/// per argument.
+Value flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
+                    ArrayRef<StringRef> dimNames);
 
 // This utility function will prepend a given set of the views onto
 // a set of existing views

@@ -40,6 +40,7 @@
 
 #include "mlir/Conversion/RocMLIRPasses.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Tosa/IR/TargetEnv.h"
@@ -380,15 +381,27 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
-static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
-  // Bufferize tensor ops to memref ops - required before linalg-to-loops
-  // The host functions restored from attributes contain tensor operations
-  // that need to be converted to memref operations first.
+static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
+                                      StringRef dumpCpuSchedules = "") {
+  // CPU optimization phase.
+  // This transforms the function body but keeps tensor types at boundaries.
+  cpu::CpuLowerVerifierPassOptions cpuOpts;
+  cpuOpts.dumpSchedulesPath = dumpCpuSchedules.str();
+  cpuOpts.phase = cpu::CPU_PHASE_OPTIMIZE;
+  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
+
+  // Bufferize tensor ops to memref ops for the whole module.
+  // This handles both the CPU verifier functions and their call sites,
+  // eliminating the need for manual call site updates.
   bufferization::OneShotBufferizePassOptions bufOpts;
   bufOpts.bufferizeFunctionBoundaries = true;
   bufOpts.functionBoundaryTypeConversion =
       bufferization::LayoutMapOption::IdentityLayoutMap;
   pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
+
+  // Lower to LLVM phase (after bufferization)
+  cpuOpts.phase = cpu::CPU_PHASE_LOWERTOLLVM;
+  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
 
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());
@@ -472,7 +485,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     pm.addPass(createEmulateFp8ExtTruncPass());
 
     // Lower host code (GPU launch + func/memref ops) to LLVM
-    buildHostLoweringPipeline(pm);
+    buildHostLoweringPipeline(pm, options.dumpCpuSchedules);
   }
 }
 

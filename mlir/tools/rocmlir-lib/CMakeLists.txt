@@ -6,6 +6,8 @@ set(LIBS
   ${rocmlir_capi_libs}
   MLIRAnalysis
   MLIRFuncInlinerExtension
+  MLIRVectorToLLVM
+  MLIRVectorToLLVMPass
 
   TritonIR
   TritonGPUIR

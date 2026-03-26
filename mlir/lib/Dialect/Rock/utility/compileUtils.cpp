@@ -91,20 +91,49 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
   int64_t tritonBlockSize = numWarps * warpSize;
 
   // Walk LLVM functions with KernelAttr
-  moduleOp.walk([&](LLVM::LLVMFuncOp funcOp) {
+  auto walkResult = moduleOp.walk([&](LLVM::LLVMFuncOp funcOp) -> WalkResult {
     if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
-      return;
+      return WalkResult::advance();
 
     KernelInfo info;
     info.name = funcOp.getName().str();
     info.llvmFunc = funcOp;
-    info.blockSize = tritonBlockSize; // Use Triton's block size (matches HSACO)
+    info.blockSize = tritonBlockSize;
     info.sharedMemorySize = sharedMemory;
 
     // Get grid_size from module attribute (set by FuncToTritonFunc)
     std::string gridAttrName = "rock.grid_size." + info.name;
     if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
       info.gridSize = gridAttr.getInt();
+
+    // Get prefill arg info from module attribute (set by FuncToTritonFunc)
+    std::string prefillAttrName = "rock.prefill_args." + info.name;
+    if (auto prefillArr = moduleOp->getAttrOfType<ArrayAttr>(prefillAttrName)) {
+      for (Attribute entry : prefillArr) {
+        auto dict = dyn_cast<DictionaryAttr>(entry);
+        if (!dict) {
+          funcOp.emitOpError("malformed ")
+              << prefillAttrName << ": entry is not a DictionaryAttr";
+          return WalkResult::interrupt();
+        }
+        auto indexAttr = dict.getAs<IntegerAttr>("index");
+        if (!indexAttr) {
+          funcOp.emitOpError("malformed ")
+              << prefillAttrName << ": entry missing 'index' IntegerAttr";
+          return WalkResult::interrupt();
+        }
+        Attribute valueAttr = dict.get("value");
+        if (!valueAttr) {
+          funcOp.emitOpError("malformed ")
+              << prefillAttrName << ": entry missing 'value' attribute";
+          return WalkResult::interrupt();
+        }
+        PrefillInfo pi;
+        pi.argIndex = indexAttr.getValue().getZExtValue();
+        pi.initValue = valueAttr;
+        info.prefillArgs.push_back(pi);
+      }
+    }
 
     // Get argument types from LLVM function signature
     auto llvmFuncType = funcOp.getFunctionType();
@@ -114,10 +143,52 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
       info.argTypes.push_back(llvmFuncType.getParamType(i));
     }
 
+    for (const PrefillInfo &pi : info.prefillArgs) {
+      assert(pi.argIndex < info.argTypes.size() &&
+             "prefill arg index out of range");
+      assert(isa<LLVM::LLVMPointerType>(info.argTypes[pi.argIndex]) &&
+             "prefill arg must be a pointer (buffer) argument");
+    }
+
     kernels.push_back(info);
+    return WalkResult::advance();
   });
+  if (walkResult.wasInterrupted())
+    return failure();
+
+  for (KernelInfo &k : kernels) {
+    if (k.gridSize <= 0) {
+      return k.llvmFunc.emitOpError("missing rock.grid_size." + k.name +
+                                    " module attribute");
+    }
+  }
 
   return success();
+}
+
+FailureOr<ArrayAttr> getPrefillArrayFromBinary(ModuleOp moduleOp) {
+  ArrayAttr result;
+  LogicalResult status = success();
+  moduleOp.walk([&](gpu::BinaryOp binary) {
+    auto kernelTable =
+        cast<gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
+    size_t numKernels = 0;
+    for (auto kernel : kernelTable) {
+      ++numKernels;
+      if (auto arr =
+              kernel.getAttr<ArrayAttr>(rock::PrefillAttr::getMnemonic())) {
+        result = arr;
+      }
+    }
+    if (numKernels != 1) {
+      binary.emitOpError("expected exactly one kernel in binary, got ")
+          << numKernels;
+      status = failure();
+    }
+  });
+  if (failed(status))
+    return failure();
+  return result;
 }
 
 LogicalResult fillCompilationConfigs(Attribute perfConfig,

@@ -233,6 +233,9 @@ Value mlir::rock::normalizeMatrix(Value matrix, OpBuilder &b, Location loc,
   bool addGroup = matrixType.getShape().size() != 3;
   if (!addGroup && !doTranspose)
     return matrix;
+  OpBuilder::InsertionGuard guard(b);
+  if (auto *defOp = matrix.getDefiningOp())
+    b.setInsertionPointAfter(defOp);
   SmallVector<StringRef, 3> bottomNames;
   if (!addGroup)
     bottomNames.push_back("gemmG");
@@ -256,6 +259,9 @@ Value mlir::rock::padVector(Value vector, OpBuilder &b, Location loc,
                             StringRef firstDim, int64_t firstDimPad) {
   if (firstDimPad == 0)
     return vector;
+  OpBuilder::InsertionGuard guard(b);
+  if (auto *defOp = vector.getDefiningOp())
+    b.setInsertionPointAfter(defOp);
   ArrayRef<int64_t> shape = cast<ShapedType>(vector.getType()).getShape();
   assert(shape.size() == 2);
   BottomUpTMBuilder padder(b, {"gemmG", firstDim}, shape, loc);
@@ -272,6 +278,9 @@ Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
                             StringRef secondDim, int64_t secondDimPad) {
   if (firstDimPad == 0 && secondDimPad == 0)
     return matrix;
+  OpBuilder::InsertionGuard guard(b);
+  if (auto *defOp = matrix.getDefiningOp())
+    b.setInsertionPointAfter(defOp);
   ArrayRef<int64_t> shape = cast<ShapedType>(matrix.getType()).getShape();
   BottomUpTMBuilder padder(b, {"gemmG", firstDim, secondDim}, shape, loc);
   padder.passThrough("gemmG");

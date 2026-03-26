@@ -157,4 +157,5 @@ cd build && \
  LIT_FILTER=rocmlir-gen ninja check-rocmlir && \
  LIT_FILTER=Conversion ninja check-rocmlir && \
  LIT_FILTER=rocmlir-driver ninja check-rocmlir && \
+ LIT_FILTER=capi ninja check-rocmlir && \
  LIT_FILTER=rocmlir-tuning-driver ninja check-rocmlir

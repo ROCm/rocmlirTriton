@@ -27,12 +27,13 @@
 // CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<32768xf16> to tensor<1x32x1024xf16>
 // CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<32768xf16> to tensor<1x1024x32xf16>
 // CHECK-NEXT: %[[scale:.*]] = rock.transform %[[scaleRaw]] {{.*}} : tensor<1048576xf16> to tensor<1x1024x1024xf16>
-// CHECK-NEXT: %[[output:.*]] = rock.transform %[[outputRaw]] {{.*}} : tensor<32768xf16> to tensor<1x1024x32xf16>
 
 // CHECK-NEXT: %[[output:.*]] = rock.attention
 // CHECK-NEXT: qk = %[[queries]] * %[[keys]]
 // CHECK-NEXT: qk = elementwise otherIns(%[[scale]]
 // CHECK: softmax(qk) * %[[values]]
+// CHECK: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
+// CHECK-NEXT: rock.store %[[flatOutput]] to %[[outputRaw]] by {{.*}}set
 // CHECK: return
 
 // CHECK-LABEL: func.func @host_naive_attention

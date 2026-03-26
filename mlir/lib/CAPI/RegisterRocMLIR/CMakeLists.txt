@@ -10,6 +10,8 @@ add_rocmlir_public_c_api_library(MLIRCAPIRegisterRocMLIR
 
   MLIRCAPIIR
   MLIRAnalysis
+  MLIRVectorToLLVM
+  MLIRVectorToLLVMPass
 
   TritonIR
   TritonGPUIR
