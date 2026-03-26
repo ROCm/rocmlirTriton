@@ -40,8 +40,12 @@ void mlir::reattachFuncs(ModuleOp module, DetachedFuncs &detached) {
     auto *realFunc = entry.realFunc;
     auto stub = entry.stub;
 
-    assert(SymbolTable::symbolKnownUseEmpty(stub, module) &&
-           "detached function stub still has callers at reattach time");
+    FunctionType stubType = stub.getFunctionType();
+    FunctionType realType = cast<func::FuncOp>(realFunc).getFunctionType();
+    if (stubType != realType) {
+      assert(SymbolTable::symbolKnownUseEmpty(stub, module) &&
+             "detached function signature changed but stub still has callers");
+    }
 
     stub->getBlock()->getOperations().insert(stub->getIterator(), realFunc);
     stub.erase();

@@ -36,15 +36,13 @@ struct DetachedFuncs {
 /// (e.g. func.call) remain valid during pass execution.
 ///
 /// Other module-level operations (globals, etc.) are left untouched.
-///
-/// Use this when you need to run passes on a subset of functions while
-/// keeping symbol references valid. Function signatures must NOT change
-/// during the detached period.
 DetachedFuncs detachFuncs(ModuleOp module,
                           function_ref<bool(func::FuncOp)> shouldDetach);
 
 /// Re-insert previously detached functions into the module, replacing
-/// their stubs. Asserts that function signatures have not changed.
+/// their stubs. If a stub's signature diverged from the real function
+/// during pipeline execution (e.g. type conversion passes), asserts
+/// that no callers of that stub remain.
 void reattachFuncs(ModuleOp module, DetachedFuncs &detached);
 
 } // namespace mlir
