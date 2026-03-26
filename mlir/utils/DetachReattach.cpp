@@ -40,11 +40,8 @@ void mlir::reattachFuncs(ModuleOp module, DetachedFuncs &detached) {
     auto *realFunc = entry.realFunc;
     auto stub = entry.stub;
 
-    FunctionType stubType = stub.getFunctionType();
-    FunctionType realType = cast<func::FuncOp>(realFunc).getFunctionType();
-    assert(stubType == realType &&
-           "detached function signature changed during pipeline execution; "
-           "no callers should exist to fixup");
+    assert(SymbolTable::symbolKnownUseEmpty(stub, module) &&
+           "detached function stub still has callers at reattach time");
 
     stub->getBlock()->getOperations().insert(stub->getIterator(), realFunc);
     stub.erase();
