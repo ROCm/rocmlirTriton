@@ -56,6 +56,7 @@ def log_error(title, message, outfile):
         print('\n'.join(f"### {line}" for line in content.split('\n')), file=outfile)
         outfile.flush()
 
+
 # Run a gemm or conv config and verify it
 def verify_kernel_with_perfconfig(perfconfig, config, paths: Paths, options: Options) -> float:
     if not options.compact_print:
