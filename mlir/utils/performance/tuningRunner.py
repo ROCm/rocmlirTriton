@@ -37,8 +37,8 @@ class Options:
     num_cu: int
     num_chiplets: int
     rocmlir_gen_flags: str
-    verify: bool
-    verify_perfconfigs: bool
+    disable_verify_winning_config: bool
+    verify_all_perfconfigs: bool
     tflops: bool
     compact_print: bool
     output: str
@@ -56,20 +56,13 @@ def log_error(title, message, outfile):
         print('\n'.join(f"### {line}" for line in content.split('\n')), file=outfile)
         outfile.flush()
 
-
-def verify_flags(verify: bool) -> str:
-    if verify:
-        return " -pv"
-    return ""
-
-
 # Run a gemm or conv config and verify it
 def verify_kernel_with_perfconfig(perfconfig, config, paths: Paths, options: Options) -> float:
     if not options.compact_print:
         print(f"Verifying with perfConfig = {perfconfig}", file=sys.stderr)
     config.set_perfconfig(perfconfig.strip())
     rocmlir_gen_command = paths.mlir_paths.rocmlir_gen_path + \
-        verify_flags(options.verify) + \
+        ' -pv' + \
         ' -print-verify-results=summary ' + \
         config.generate_mlir_driver_commandline(options.rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS)
     rocmlir_driver_command = [paths.mlir_paths.rocmlir_driver_path, '-c']
@@ -192,7 +185,7 @@ def get_winning_config(tuning_output, config, paths: Paths, options: Options):
         entries.append(entry)
         these_tflops = entry['TFlops']
         # verify that each perfconfig passes accuracy verification
-        if options.verify_perfconfigs and not np.isnan(nano_seconds):
+        if options.verify_all_perfconfigs and not np.isnan(nano_seconds):
             try:
                 verify_ns = verify_kernel_with_perfconfig(perfconfig, config, paths, options)
             except TuningError as e:
@@ -354,7 +347,7 @@ def tune_mlir_kernels(configs, conf_class, paths: Paths, options: Options):
                 else:
                     continue
 
-            if options.verify:
+            if not options.disable_verify_winning_config:
                 try:
                     verify_ns = verify_kernel_with_perfconfig(winning_config, config, paths,
                                                               options)
@@ -525,19 +518,19 @@ def main(args=None):
                         help="Quiet mode (don't output each test result)")
 
     parser.add_argument(
-        "--verify",
+        "--disable-verify-winning-config",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Verify compiled kernels against the CPU reference (rocmlir-gen -pv). "
-        "Use --verify=False to skip.",
+        default=False,
+        help="Disable verifying the winning config against the CPU reference (rocmlir-gen -pv). "
+        "Use --disable-verify-winning-config=True to skip.",
     )
 
     parser.add_argument(
-        "--verify-perf-configs",
+        "--verify-all-perfconfigs",
         action='store_true',
         default=False,
-        help="Compile and verify given problem with all applicable perf configs. "
-        "Use with --verify (default); not compatible with --verify=False.",
+        help="Compile and verify given problem with all applicable perf-configs. "
+        "Use with --disable-verify-winning-config=False (default); not compatible with --disable-verify-winning-config=True.",
     )
 
     parser.add_argument("--test_dir",
@@ -580,9 +573,9 @@ def main(args=None):
 
     parsed_args = parser.parse_args(args)
 
-    if parsed_args.verify_perf_configs and not parsed_args.verify:
+    if parsed_args.verify_all_perfconfigs and parsed_args.disable_verify_winning_config:
         print(
-            "Use of `--verify-perf-configs` is not allowed with `--verify=False`. Please pass `--verify=True`."
+            "Use of `--verify-all-perfconfigs` is not allowed with `--disable-verify-winning-config=True`. Please pass `--disable-verify-winning-config=False`."
         )
         return 1
 
@@ -607,8 +600,8 @@ def main(args=None):
                       quiet=parsed_args.quiet,
                       tuning_space_kind=parsed_args.tuning_space,
                       rocmlir_gen_flags=rocmlir_gen_flags,
-                      verify=parsed_args.verify,
-                      verify_perfconfigs=parsed_args.verify_perf_configs,
+                      disable_verify_winning_config=parsed_args.disable_verify_winning_config,
+                      verify_all_perfconfigs=parsed_args.verify_all_perfconfigs,
                       tflops=parsed_args.tflops,
                       compact_print=parsed_args.compact_print,
                       output=parsed_args.output,
