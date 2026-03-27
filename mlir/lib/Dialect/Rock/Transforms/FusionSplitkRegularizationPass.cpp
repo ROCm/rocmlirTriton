@@ -56,7 +56,8 @@ static LogicalResult
 divideAddBySplitkFactor(Value gemmResult, int64_t splitKFactor, IRRewriter &b) {
   SmallVector<std::tuple<Operation *, int>> adds;
   if (failed(checkValidOutputFusion(gemmResult, adds)))
-    return failure();
+    return gemmResult.getDefiningOp()->emitOpError(
+        "has invalid output fusion for split-k");
 
   for (auto [arithOp, gemmOutIndex] : adds) {
     assert(arithOp->getNumOperands() == 2);
