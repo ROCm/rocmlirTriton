@@ -5079,8 +5079,7 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
   auto validationType = genValidation.getValue();
   auto loc = b.getUnknownLoc();
 
-  if (validationType != "clone") { // -pv_with_cpp or -pv_with_mlir (-pv)
-    // Emit call to host_<conv>
+  if (validationType != "clone") { // --verifier=cpp or --verifier=mlir (-pv / -pv_with_mlir map to mlir)    // Emit call to host_<conv>
     if (genParams.operation == rock::KernelType::ConvElementwiseGemm) {
       if (validationType == "cpp") {
         llvm::errs()
