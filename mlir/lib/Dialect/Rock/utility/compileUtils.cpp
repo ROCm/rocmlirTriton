@@ -24,6 +24,9 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
+
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -88,7 +91,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     return failure();
   }
 
-  int64_t numCTAs = rock::getNumCTAs(moduleOp);
+  int64_t numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(moduleOp);
 
   int64_t tritonBlockSize = numWarps * warpSize;
 

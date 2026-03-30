@@ -287,6 +287,7 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
     }
 
     // Create gpu.launch_func
+    // Note: gpu.launch_func expects kernel operands to have proper types
     gpu::LaunchFuncOp::create(
         builder, callLoc,
         SymbolRefAttr::get(ctx, binaryOp.getName(),

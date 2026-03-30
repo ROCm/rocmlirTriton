@@ -29,6 +29,8 @@
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/Constants.h"
@@ -643,7 +645,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     numWarps = totalNumWarps.getInt();
   }
 
-  int numCTAs = rock::getNumCTAs(module);
+  int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(module);
 
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
   setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,

@@ -208,31 +208,40 @@ static benchmark::DataType getDataType(Type inputType) {
     }                                                                          \
   } while (0)
 
-// Launch a kernel with CTA cluster dimensions using hipDrvLaunchKernelEx,
-// matching Triton's _launch() in driver.c. Only call when numCTAs > 1.
-static LogicalResult launchClusterKernel(hipFunction_t func, uint32_t gridSize,
-                                         uint32_t blockSize, uint32_t sharedMem,
-                                         uint32_t numCTAs, hipStream_t stream,
-                                         void **kernelParams,
-                                         hipEvent_t startEvent = nullptr,
-                                         hipEvent_t stopEvent = nullptr) {
-  if (startEvent)
-    HIPCHECK(hipEventRecord(startEvent, stream));
+// Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
+// (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
+// launch_cooperative_grid always 0. Returns LogicalResult instead of void.
+// Note: hipEventRecord is handled by callers, not by this function.
+static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
+                                  uint32_t blockSize, uint32_t shared_memory,
+                                  uint32_t num_ctas, hipStream_t stream,
+                                  void **params) {
+  if (gridX == 0)
+    return success();
+  if (num_ctas > 1) {
+    // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
+    // it loads HIP symbols via dlsym. We link directly, so no check needed.
+    hipLaunchAttribute attributes[2];
+    // Attribute0: Cluster dimensions
+    attributes[0].id = static_cast<hipLaunchAttributeID>(4);
+    int *cluster_dims = (int *)attributes[0].val.pad;
+    cluster_dims[0] = num_ctas;
+    cluster_dims[1] = 1;
+    cluster_dims[2] = 1;
+    // Attribute1: Cooperative launch
+    attributes[1].id = hipLaunchAttributeCooperative;
+    attributes[1].val.cooperative = 0;
 
-  hipLaunchAttribute attributes[1];
-  attributes[0].id = static_cast<hipLaunchAttributeID>(4);
-  int *clusterDims = reinterpret_cast<int *>(attributes[0].val.pad);
-  clusterDims[0] = numCTAs;
-  clusterDims[1] = 1;
-  clusterDims[2] = 1;
-
-  HIP_LAUNCH_CONFIG config = {
-      gridSize * numCTAs, 1,      1,          blockSize, 1, 1,
-      sharedMem,          stream, attributes, 1};
-  HIPCHECK(hipDrvLaunchKernelEx(&config, func, kernelParams, 0));
-
-  if (stopEvent)
-    HIPCHECK(hipEventRecord(stopEvent, stream));
+    HIP_LAUNCH_CONFIG config = {
+        gridX * num_ctas, 1, 1,        // Grid size
+        blockSize,        1, 1,        // Block size
+        shared_memory,    stream, attributes, 2 // Number of attributes
+    };
+    HIPCHECK(hipDrvLaunchKernelEx(&config, function, params, 0));
+  } else {
+    HIPCHECK(hipModuleLaunchKernel(function, gridX, 1, 1, blockSize, 1, 1,
+                                   shared_memory, stream, params, nullptr));
+  }
   return success();
 }
 
@@ -370,15 +379,9 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
     for (auto [func, blockSize, gridSize, sharedMem, numCTAs] :
          llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes,
                    numCTAsList)) {
-      if (numCTAs > 1) {
-        if (failed(launchClusterKernel(func, gridSize, blockSize, sharedMem,
-                                       numCTAs, stream, argPointers.data())))
-          return failure();
-      } else {
-        HIPCHECK(hipExtModuleLaunchKernel(
-            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem,
-            stream, argPointers.data(), nullptr, nullptr, nullptr));
-      }
+      if (failed(launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
+                             stream, argPointers.data())))
+        return failure();
     }
   }
 
@@ -416,16 +419,11 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
       HIPCHECK(hipEventCreate(&startEvent));
       HIPCHECK(hipEventCreate(&stopEvent));
 
-      if (numCTAs > 1) {
-        if (failed(launchClusterKernel(func, gridSize, blockSize, sharedMem,
-                                       numCTAs, stream, argPointers.data(),
-                                       startEvent, stopEvent)))
-          return failure();
-      } else {
-        HIPCHECK(hipExtModuleLaunchKernel(
-            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem,
-            stream, argPointers.data(), nullptr, startEvent, stopEvent));
-      }
+      HIPCHECK(hipEventRecord(startEvent, stream));
+      if (failed(launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
+                             stream, argPointers.data())))
+        return failure();
+      HIPCHECK(hipEventRecord(stopEvent, stream));
       HIPCHECK(hipEventSynchronize(stopEvent));
 
       float currentMilliseconds = 0.0;
@@ -558,16 +556,11 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
         HIPCHECK(hipEventCreate(&startEvent));
         HIPCHECK(hipEventCreate(&stopEvent));
 
-        if (numCTAs > 1) {
-          if (failed(launchClusterKernel(func, gridSize, blockSize, sharedMem,
-                                         numCTAs, stream, argPointers.data(),
-                                         startEvent, stopEvent)))
-            return failure();
-        } else {
-          HIPCHECK(hipExtModuleLaunchKernel(
-              func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem,
-              stream, argPointers.data(), nullptr, startEvent, stopEvent));
-        }
+        HIPCHECK(hipEventRecord(startEvent, stream));
+        if (failed(launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
+                               stream, argPointers.data())))
+          return failure();
+        HIPCHECK(hipEventRecord(stopEvent, stream));
 
         HIPCHECK(hipStreamSynchronize(stream));
 

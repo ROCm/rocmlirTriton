@@ -160,18 +160,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
 
   GemmParamsAttr gemmParams = cast<GemmParamsAttr>(validParams);
 
-  if (gemmParams.getNumCTAs() > 1 &&
-      !rock::supportsMultiCTALaunch(rock::getArchValue(op))) {
-    LLVM_DEBUG(llvm::dbgs() << "Clamping numCTAs to 1: multi-CTA not supported "
-                               "on "
-                            << rock::getArchValue(op) << "\n");
-    gemmParams = GemmParamsAttr::get(
-        b.getContext(), gemmParams.getMPerBlock(), gemmParams.getNPerBlock(),
-        gemmParams.getKPerBlock(), gemmParams.getKpack(), /*numCTAs=*/1,
-        gemmParams.getNumWaves(), gemmParams.getMatrixInstrNonkdim(),
-        gemmParams.getSplitKFactor(), gemmParams.getNumStages(),
-        gemmParams.getWavesPerEU(), gemmParams.getGridGroupSize());
-  }
+  assert((gemmParams.getNumCTAs() == 1 ||
+          rock::supportsMultiCTALaunch(rock::getArchValue(op))) &&
+         "numCTAs > 1 on arch that does not support multi-CTA launch");
 
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
   int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
@@ -218,19 +209,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
-  if (attnPerfConfig.getNumCTAs() > 1 &&
-      !rock::supportsMultiCTALaunch(rock::getArchValue(op))) {
-    LLVM_DEBUG(llvm::dbgs() << "Clamping numCTAs to 1: multi-CTA not supported "
-                               "on "
-                            << rock::getArchValue(op) << "\n");
-    attnPerfConfig = GemmGemmParamsAttr::get(
-        builder.getContext(), attnPerfConfig.getMPerBlockG0(),
-        attnPerfConfig.getNPerBlockG0(), attnPerfConfig.getKPerBlock(),
-        attnPerfConfig.getKpack(), /*numCTAs=*/1,
-        attnPerfConfig.getNumWaves(), attnPerfConfig.getMatrixInstrNonkdim(),
-        attnPerfConfig.getSplitKFactor(), attnPerfConfig.getNumStages(),
-        attnPerfConfig.getWavesPerEU(), attnPerfConfig.getGridGroupSize());
-  }
+  assert((attnPerfConfig.getNumCTAs() == 1 ||
+          rock::supportsMultiCTALaunch(rock::getArchValue(op))) &&
+         "numCTAs > 1 on arch that does not support multi-CTA launch");
 
   auto accelParams =
       PopulateParamsGemmGemm::getGemmParams(builder, op, attnPerfConfig);

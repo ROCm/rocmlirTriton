@@ -90,10 +90,6 @@ bool supportsMultiCTALaunch(StringRef arch);
 /// Returns 1 if multi-CTA is not supported.
 int64_t getMaxNumCTAs(StringRef arch);
 
-/// Get the number of CTAs from the module's ttg.num-ctas attribute.
-/// Wraps triton::gpu::TritonGPUDialect::getNumCTAs.
-int getNumCTAs(ModuleOp mod);
-
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 

@@ -27,9 +27,6 @@
 // triton::AMD::TargetInfo
 #include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 
-// triton::gpu::TritonGPUDialect
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-
 #define DEBUG_TYPE "rock-amd-arch-db"
 
 using namespace mlir;
@@ -403,10 +400,6 @@ int64_t mlir::rock::getMaxNumCTAs(StringRef arch) {
   if (!supportsMultiCTALaunch(arch))
     return 1;
   return 16;
-}
-
-int mlir::rock::getNumCTAs(ModuleOp mod) {
-  return triton::gpu::TritonGPUDialect::getNumCTAs(mod);
 }
 
 bool mlir::rock::supportsTDM(StringRef arch) {

@@ -2,8 +2,10 @@
 // the perf_config into the ttg.num-ctas module attribute, and that
 // kernel launch parameters (grid_size, block_size) are set correctly.
 
-// gfx1250 with explicit perf_config setting numCTAs=2
-// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f16 -p --perf_config "gemm:v1:64,64,64,1,2,4,16,1,2,0,0" | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=GFX1250_CTA2
+// TODO: Enable when upstream supports multi-CTA:
+//   - mgpuLaunchClusterKernel for HIP (RocmRuntimeWrappers.cpp)
+//   - CGA layout fix for dot operands (Dialect.cpp)
+// DISABLED: rocmlir-gen --arch gfx1250 --operation gemm -t f16 -p --perf_config "gemm:v1:64,64,64,1,2,4,16,1,2,0,0" | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=GFX1250_CTA2
 
 // gfx1250 with default numCTAs=1 for comparison
 // RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f16 -p --perf_config "gemm:v1:64,64,64,1,1,4,16,1,2,0,0" | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=GFX1250_CTA1
