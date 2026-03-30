@@ -33,7 +33,6 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/ErrorHandling.h"
 
 namespace mlir {
 namespace rock {
@@ -203,115 +202,23 @@ ensureCompatibleShapes(OpBuilder &builder, Location loc, ValueRange values) {
   return results;
 }
 
-// Helper to create native arith operations (works on both scalars and tensors)
-static Value createNativeArithOp(OpBuilder &builder, Location loc,
-                                 StringRef name, Attribute constantValue,
-                                 ValueRange operands) {
-  if (name == "ConstantIntOp" || name == "ConstantOp") {
-    if (auto intAttr = dyn_cast<IntegerAttr>(constantValue)) {
-      return arith::ConstantOp::create(builder, loc, intAttr);
-    } else if (auto boolAttr = dyn_cast<BoolAttr>(constantValue)) {
-      return arith::ConstantOp::create(builder, loc, boolAttr);
-    }
-    llvm_unreachable("Unsupported constant type");
-  }
-
-  // arith ops work natively on both scalars and tensors
-  if (name == "AddIOp") {
-    return arith::AddIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "SubIOp") {
-    return arith::SubIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "MulIOp") {
-    return arith::MulIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "DivSIOp") {
-    return arith::DivSIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "DivUIOp") {
-    return arith::DivUIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "RemSIOp") {
-    return arith::RemSIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "RemUIOp") {
-    return arith::RemUIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "AndIOp") {
-    return arith::AndIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "OrIOp") {
-    return arith::OrIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "XOrIOp") {
-    return arith::XOrIOp::create(builder, loc, operands[0], operands[1]);
-  }
-  if (name == "SelectOp") {
-    return arith::SelectOp::create(builder, loc, operands[0], operands[1],
-                                   operands[2]);
-  }
-  if (name.starts_with("CmpIOp_")) {
-    StringRef predStr = name.drop_front(7); // Remove "CmpIOp_"
-    arith::CmpIPredicate pred;
-    if (predStr == "eq")
-      pred = arith::CmpIPredicate::eq;
-    else if (predStr == "ne")
-      pred = arith::CmpIPredicate::ne;
-    else if (predStr == "slt")
-      pred = arith::CmpIPredicate::slt;
-    else if (predStr == "sle")
-      pred = arith::CmpIPredicate::sle;
-    else if (predStr == "sgt")
-      pred = arith::CmpIPredicate::sgt;
-    else if (predStr == "sge")
-      pred = arith::CmpIPredicate::sge;
-    else if (predStr == "ult")
-      pred = arith::CmpIPredicate::ult;
-    else if (predStr == "ule")
-      pred = arith::CmpIPredicate::ule;
-    else if (predStr == "ugt")
-      pred = arith::CmpIPredicate::ugt;
-    else if (predStr == "uge")
-      pred = arith::CmpIPredicate::uge;
-    else
-      llvm_unreachable("Unknown comparison predicate");
-    return arith::CmpIOp::create(builder, loc, pred, operands[0], operands[1]);
-  }
-
-  llvm_unreachable("Unknown arith operation");
+static std::pair<Value, Value>
+ensureCompatible(OpBuilder &builder, Location loc, Value lhs, Value rhs) {
+  auto results = ensureCompatibleShapes(builder, loc, {lhs, rhs});
+  return {results[0], results[1]};
 }
 
-// Helper to create ArithOp - generates native arith operations
-static Value createArithOp(OpBuilder &builder, Location loc, Type resultType,
-                           StringRef name, Attribute constantValue,
-                           ValueRange operands) {
-
-  auto newOperands = ensureCompatibleShapes(builder, loc, operands);
-
-  if (!newOperands.empty()) {
-    assert(resultType == nullptr);
-    resultType = newOperands[0].getType();
-    if (name.contains("SelectOp"))
-      resultType = newOperands[1].getType();
-
-    if (name.contains("Cmp")) {
-      if (isa<RankedTensorType>(resultType)) {
-        auto tensorType = cast<RankedTensorType>(resultType);
-        resultType =
-            RankedTensorType::get(tensorType.getShape(), builder.getI1Type());
-      } else {
-        resultType = builder.getI1Type();
-      }
-    }
-  } else {
-    assert(resultType != nullptr);
-  }
-
-  // arith ops work natively on both scalars and tensors
-  return createNativeArithOp(builder, loc, name, constantValue, newOperands);
+static std::tuple<Value, Value, Value>
+ensureCompatible3(OpBuilder &builder, Location loc, Value a, Value b, Value c) {
+  auto results = ensureCompatibleShapes(builder, loc, {a, b, c});
+  return {results[0], results[1], results[2]};
 }
 
+/// Adapted from mlir/lib/Dialect/Affine/Utils/Utils.cpp (upstream MLIR).
+/// The upstream version operates on scalar Values; this version adds
+/// ensureCompatible() calls to handle tensor operands that may need
+/// broadcasting before each arith operation.
+///
 /// Visit affine expressions recursively and build the sequence of operations
 /// that correspond to it.  Visitation functions return an Value of the
 /// expression subtree they visited or `nullptr` on error.
@@ -325,25 +232,25 @@ public:
       : builder(builder), dimValues(dimValues), symbolValues(symbolValues),
         loc(loc) {}
 
-  Value buildBinaryExpr(AffineBinaryOpExpr expr, const std::string &opName,
+  template <typename OpTy>
+  Value buildBinaryExpr(AffineBinaryOpExpr expr,
                         arith::IntegerOverflowFlags overflowFlags =
                             arith::IntegerOverflowFlags::none) {
     auto lhs = visit(expr.getLHS());
     auto rhs = visit(expr.getRHS());
     if (!lhs || !rhs)
       return nullptr;
-
-    // Use native arith operations
-    return createArithOp(builder, loc, nullptr, opName, nullptr,
-                         ValueRange{lhs, rhs});
+    auto [l, r] = ensureCompatible(builder, loc, lhs, rhs);
+    return OpTy::create(builder, loc, l, r, overflowFlags);
   }
 
   Value visitAddExpr(AffineBinaryOpExpr expr) {
-    return buildBinaryExpr(expr, "AddIOp");
+    return buildBinaryExpr<arith::AddIOp>(expr);
   }
 
   Value visitMulExpr(AffineBinaryOpExpr expr) {
-    return buildBinaryExpr(expr, "MulIOp", arith::IntegerOverflowFlags::nsw);
+    return buildBinaryExpr<arith::MulIOp>(expr,
+                                          arith::IntegerOverflowFlags::nsw);
   }
 
   /// Euclidean modulo operation: negative RHS is not allowed.
@@ -367,19 +274,18 @@ public:
     auto rhs = visit(expr.getRHS());
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
-    Value remainder = createArithOp(builder, loc, nullptr, "RemSIOp", nullptr,
-                                    ValueRange{lhs, rhs});
-    Value zeroCst = createArithOp(
-        builder, loc, builder.getI32Type(), "ConstantIntOp",
-        builder.getIntegerAttr(builder.getI32Type(), 0), ValueRange{});
+    auto [l, r] = ensureCompatible(builder, loc, lhs, rhs);
+    Value remainder = arith::RemSIOp::create(builder, loc, l, r);
+    Value zeroCst =
+        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(0));
+    auto [rem, z] = ensureCompatible(builder, loc, remainder, zeroCst);
     Value isRemainderNegative =
-        createArithOp(builder, loc, nullptr, "CmpIOp_slt", nullptr,
-                      ValueRange{remainder, zeroCst});
-    Value correctedRemainder = createArithOp(builder, loc, nullptr, "AddIOp",
-                                             nullptr, ValueRange{remainder, rhs});
-    Value result =
-        createArithOp(builder, loc, nullptr, "SelectOp", nullptr,
-                      ValueRange{isRemainderNegative, correctedRemainder, remainder});
+        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::slt, rem, z);
+    auto [rem2, r2] = ensureCompatible(builder, loc, remainder, r);
+    Value correctedRemainder = arith::AddIOp::create(builder, loc, rem2, r2);
+    auto [cond, tv, fv] = ensureCompatible3(builder, loc, isRemainderNegative,
+                                            correctedRemainder, remainder);
+    Value result = arith::SelectOp::create(builder, loc, cond, tv, fv);
     return result;
   }
 
@@ -411,26 +317,25 @@ public:
     auto rhs = visit(expr.getRHS());
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
-    Value zeroCst = createArithOp(
-        builder, loc, builder.getI32Type(), "ConstantIntOp",
-        builder.getIntegerAttr(builder.getI32Type(), 0), ValueRange{});
-    Value noneCst = createArithOp(
-        builder, loc, builder.getI32Type(), "ConstantIntOp",
-        builder.getIntegerAttr(builder.getI32Type(), -1), ValueRange{});
-    Value negative = createArithOp(builder, loc, nullptr, "CmpIOp_slt", nullptr,
-                                   ValueRange{lhs, zeroCst});
-    Value negatedDecremented = createArithOp(builder, loc, nullptr, "SubIOp",
-                                             nullptr, ValueRange{noneCst, lhs});
-    Value dividend =
-        createArithOp(builder, loc, nullptr, "SelectOp", nullptr,
-                      ValueRange{negative, negatedDecremented, lhs});
-    Value quotient = createArithOp(builder, loc, nullptr, "DivSIOp", nullptr,
-                                   ValueRange{dividend, rhs});
-    Value correctedQuotient = createArithOp(builder, loc, nullptr, "SubIOp",
-                                            nullptr, ValueRange{noneCst, quotient});
-    Value result =
-        createArithOp(builder, loc, nullptr, "SelectOp", nullptr,
-                      ValueRange{negative, correctedQuotient, quotient});
+    Value zeroCst =
+        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(0));
+    Value negOneCst =
+        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(-1));
+    auto [l, z] = ensureCompatible(builder, loc, lhs, zeroCst);
+    Value negative =
+        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::slt, l, z);
+    auto [n, l2] = ensureCompatible(builder, loc, negOneCst, lhs);
+    Value negatedDecremented = arith::SubIOp::create(builder, loc, n, l2);
+    auto [cond1, tv1, fv1] =
+        ensureCompatible3(builder, loc, negative, negatedDecremented, lhs);
+    Value dividend = arith::SelectOp::create(builder, loc, cond1, tv1, fv1);
+    auto [div, r] = ensureCompatible(builder, loc, dividend, rhs);
+    Value quotient = arith::DivSIOp::create(builder, loc, div, r);
+    auto [n2, q] = ensureCompatible(builder, loc, negOneCst, quotient);
+    Value correctedQuotient = arith::SubIOp::create(builder, loc, n2, q);
+    auto [cond2, tv2, fv2] =
+        ensureCompatible3(builder, loc, negative, correctedQuotient, quotient);
+    Value result = arith::SelectOp::create(builder, loc, cond2, tv2, fv2);
     return result;
   }
 
@@ -458,38 +363,36 @@ public:
     auto rhs = visit(expr.getRHS());
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
-    Value zeroCst = createArithOp(
-        builder, loc, builder.getI32Type(), "ConstantIntOp",
-        builder.getIntegerAttr(builder.getI32Type(), 0), ValueRange{});
-    Value oneCst = createArithOp(
-        builder, loc, builder.getI32Type(), "ConstantIntOp",
-        builder.getIntegerAttr(builder.getI32Type(), 1), ValueRange{});
-    Value nonPositive = createArithOp(builder, loc, nullptr, "CmpIOp_sle",
-                                      nullptr, ValueRange{lhs, zeroCst});
-    Value negated = createArithOp(builder, loc, nullptr, "SubIOp", nullptr,
-                                  ValueRange{zeroCst, lhs});
-    Value decremented = createArithOp(builder, loc, nullptr, "SubIOp", nullptr,
-                                      ValueRange{lhs, oneCst});
-    Value dividend =
-        createArithOp(builder, loc, nullptr, "SelectOp", nullptr,
-                      ValueRange{nonPositive, negated, decremented});
-    Value quotient = createArithOp(builder, loc, nullptr, "DivSIOp", nullptr,
-                                   ValueRange{dividend, rhs});
-    Value negatedQuotient = createArithOp(builder, loc, nullptr, "SubIOp",
-                                          nullptr, ValueRange{zeroCst, quotient});
-    Value incrementedQuotient = createArithOp(builder, loc, nullptr, "AddIOp",
-                                              nullptr, ValueRange{quotient, oneCst});
-    Value result = createArithOp(
-        builder, loc, nullptr, "SelectOp", nullptr,
-        ValueRange{nonPositive, negatedQuotient, incrementedQuotient});
+    Value zeroCst =
+        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(0));
+    Value oneCst =
+        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(1));
+    auto [l, z] = ensureCompatible(builder, loc, lhs, zeroCst);
+    Value nonPositive =
+        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sle, l, z);
+    auto [z2, l2] = ensureCompatible(builder, loc, zeroCst, lhs);
+    Value negated = arith::SubIOp::create(builder, loc, z2, l2);
+    auto [l3, o] = ensureCompatible(builder, loc, lhs, oneCst);
+    Value decremented = arith::SubIOp::create(builder, loc, l3, o);
+    auto [cond1, tv1, fv1] =
+        ensureCompatible3(builder, loc, nonPositive, negated, decremented);
+    Value dividend = arith::SelectOp::create(builder, loc, cond1, tv1, fv1);
+    auto [div, r] = ensureCompatible(builder, loc, dividend, rhs);
+    Value quotient = arith::DivSIOp::create(builder, loc, div, r);
+    auto [z3, q] = ensureCompatible(builder, loc, zeroCst, quotient);
+    Value negatedQuotient = arith::SubIOp::create(builder, loc, z3, q);
+    auto [q2, o2] = ensureCompatible(builder, loc, quotient, oneCst);
+    Value incrementedQuotient = arith::AddIOp::create(builder, loc, q2, o2);
+    auto [cond2, tv2, fv2] = ensureCompatible3(
+        builder, loc, nonPositive, negatedQuotient, incrementedQuotient);
+    Value result = arith::SelectOp::create(builder, loc, cond2, tv2, fv2);
     return result;
   }
 
   Value visitConstantExpr(AffineConstantExpr expr) {
-    return createArithOp(
-        builder, loc, builder.getI32Type(), "ConstantIntOp",
-        builder.getIntegerAttr(builder.getI32Type(), expr.getValue()),
-        ValueRange{});
+    return arith::ConstantOp::create(
+        builder, loc,
+        builder.getIntegerAttr(builder.getI32Type(), expr.getValue()));
   }
 
   Value visitDimExpr(AffineDimExpr expr) {
@@ -530,16 +433,13 @@ static FailureOr<SmallVector<Value>> expandAffineMap(OpBuilder &builder,
   // rocMLIR currently uses static strides/shapes, so symbols are always 0.
   assert(affineMap.getNumSymbols() == 0 &&
          "dynamic shapes (affine symbols) not yet supported");
-  if (operands.size() < numDims)
+  if (operands.size() != numDims)
     return failure();
 
-  auto expanded = llvm::to_vector(
-      llvm::map_range(affineMap.getResults(),
-                      [numDims, &builder, loc, operands](AffineExpr expr) {
-                        return expandAffineExpr(builder, loc, expr,
-                                                operands.take_front(numDims),
-                                                operands.drop_front(numDims));
-                      }));
+  auto expanded = llvm::to_vector(llvm::map_range(
+      affineMap.getResults(), [&builder, loc, operands](AffineExpr expr) {
+        return expandAffineExpr(builder, loc, expr, operands, {});
+      }));
   if (llvm::all_of(expanded, [](Value v) { return v; }))
     return expanded;
   return failure();
@@ -547,22 +447,21 @@ static FailureOr<SmallVector<Value>> expandAffineMap(OpBuilder &builder,
 
 static Value updateValidityAfter(OpBuilder &b, Location loc,
                                  TransformMapAttr map, ValueRange outputs) {
-  Value isValid = createArithOp(b, loc, b.getI1Type(), "ConstantIntOp",
-                                b.getBoolAttr(true), ValueRange{});
+  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
   ArrayRef<int64_t> lowerBounds = map.getLowerBounds();
 
   // unsigned < catches both negatives (as all negatives are > the bound)
   // and being too large on the right.
   auto addLowerDimUltClamp = [&](uint32_t lowerDim) {
     int64_t bound = lowerBounds[lowerDim];
-    Value boundConst =
-        createArithOp(b, loc, b.getI32Type(), "ConstantIntOp",
-                      b.getIntegerAttr(b.getI32Type(), bound), ValueRange{});
+    Value boundConst = arith::ConstantOp::create(
+        b, loc, b.getIntegerAttr(b.getI32Type(), bound));
     Value output = outputs[lowerDim];
-    Value inBounds = createArithOp(b, loc, nullptr, "CmpIOp_ult", nullptr,
-                                   ValueRange{output, boundConst});
-    isValid = createArithOp(b, loc, nullptr, "AndIOp", nullptr,
-                            ValueRange{inBounds, isValid});
+    auto [o, bc] = ensureCompatible(b, loc, output, boundConst);
+    Value inBounds =
+        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, o, bc);
+    auto [ib, iv] = ensureCompatible(b, loc, inBounds, isValid);
+    isValid = arith::AndIOp::create(b, loc, ib, iv);
   };
 
   for (TransformAttr op : map.getOps()) {
@@ -609,21 +508,17 @@ struct TransformsToPtrRewritePattern
 
     source = isolateTransforms(b, source);
 
-    // TODO(roctriton): buffer could be the output of input fusion instead of an
-    // input tensor! Fix this when we enable fusions.
-    auto [buffer, transforms, needs64BitIdx] = untransform(b, source);
+    auto [buffer, transforms, _] = untransform(b, source);
 
-    size_t bufferIdxCount = shape.size();
-    if (bufferIdxCount == 0) {
-      return op.emitOpError("output pointer tensor must have non-zero rank");
+    // After regularize-input, the root of any transform chain must be either
+    // a block argument (kernel input tensor) or an arith.constant (splat).
+    if (!isa<BlockArgument>(buffer) &&
+        !buffer.getDefiningOp<arith::ConstantOp>()) {
+      return op.emitOpError("expected transform chain root to be a block "
+                            "argument or arith.constant, but got: ")
+             << *buffer.getDefiningOp();
     }
-    size_t extraIdxCount = extraIndices.size();
-    if (extraIdxCount < bufferIdxCount) {
-      return op.emitOpError("requires at least ")
-             << bufferIdxCount << " extra indices for output tile of rank "
-             << bufferIdxCount << ", but only " << extraIdxCount
-             << " indices were provided";
-    }
+
     SmallVector<Value> initValues(extraIndices);
     for (size_t dimension = 0; dimension < shape.size(); ++dimension) {
       // Create the range values using triton.make_range
@@ -631,8 +526,6 @@ struct TransformsToPtrRewritePattern
           makeRange(b, loc, 0, shape[dimension], shape.size(), dimension);
       initValues.push_back(rangeValue);
     }
-
-    // TODO(roctriton): check rangeIndices match `pointers` and `mask` shapes
 
     // For each domain, store the sequence of composed affine maps needed to
     // compute the result coordinate, along with the transform map that
@@ -655,8 +548,7 @@ struct TransformsToPtrRewritePattern
 
     // Create code to actually transform the coordinates
     AffineResults computed(initValues);
-    Value isValid = createArithOp(b, loc, b.getI1Type(), "ConstantIntOp",
-                                  b.getBoolAttr(true), ValueRange{});
+    Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
     for (const auto &[composedMap, transform] : composedMaps) {
       if (!composedMap) // empty transformations
         continue;
@@ -667,8 +559,8 @@ struct TransformsToPtrRewritePattern
       computed.assign(*transformed);
       if (transform) { // Time for bounds checks or other validity updates
         Value validityUpdate = updateValidityAfter(b, loc, transform, computed);
-        isValid = createArithOp(b, loc, nullptr, "AndIOp", nullptr,
-                                ValueRange{validityUpdate, isValid});
+        auto [vu, iv] = ensureCompatible(b, loc, validityUpdate, isValid);
+        isValid = arith::AndIOp::create(b, loc, vu, iv);
       }
     }
 
@@ -699,15 +591,21 @@ struct TransformsToPtrRewritePattern
               
       }
     }
-    // Use tensor.splat for broadcasting scalar to triton
+    // Use triton.splat for broadcasting scalar to triton
     auto splatType = RankedTensorType::get(shape, b.getI32Type());
     Value baseAddrSplat = triton::SplatOp::create(b, loc, splatType, baseAddr);
     // InsertionGuard restores original insertion point here
 
-    // add `baseAddr` using linalg.map for tensor addition
-    Value pointerTensor =
-        createArithOp(b, loc, nullptr, "AddIOp", nullptr,
-                      {baseAddrSplat, computed[0]});
+    if (computed.size() != 1) {
+      return op.emitOpError("expected transform chain to produce a single "
+                            "linearized index, but got ")
+             << computed.size() << " results";
+    }
+    // baseAddr is i32 which might be too narrow in some cases.
+    // This is intentional: rock-to-ttir replaces this i32 tensor with a
+    // tt.ptr-based tt.addptr, so the actual address width is handled there.
+    auto [base, offset] = ensureCompatible(b, loc, baseAddrSplat, computed[0]);
+    Value pointerTensor = arith::AddIOp::create(b, loc, base, offset);
 
     // Create the mask tensor by broadcasting isValid to the right shape
     Value maskTensor;
@@ -722,7 +620,7 @@ struct TransformsToPtrRewritePattern
         maskTensor = isValid;
       }
     } else {
-      // isValid is a scalar, splat it to tensor using tensor.splat
+      // isValid is a scalar, splat it to tensor using triton.splat
       auto maskType = RankedTensorType::get(shape, b.getI1Type());
       maskTensor = triton::SplatOp::create(b, loc, maskType, isValid);
     }
@@ -745,7 +643,7 @@ void RockTransformsToPointerArithPass::runOnOperation() {
   // by the next transform in the chain). These will be cleaned up by
   // Canonicalizer.
   target.addLegalDialect<rock::RockDialect, arith::ArithDialect,
-                         tensor::TensorDialect, triton::TritonDialect>();
+                         triton::TritonDialect>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<TransformsToPtrRewritePattern>(ctx);

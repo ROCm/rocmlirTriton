@@ -168,7 +168,8 @@ def RockMaskNonZeroPreservingFusionsPass
 }
 
 def RockTransformsToPointerArithPass : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
-  let summary = "";
+  let summary =
+      "Expand transform map chains into pointer arithmetic and validity masks";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect", "triton::TritonDialect"];
 }
 
