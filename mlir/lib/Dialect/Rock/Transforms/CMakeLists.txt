@@ -10,7 +10,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   ViewToTransform.cpp
   FusionSplitkRegularizationPass.cpp
   LegalizeFloatTypes.cpp
-  TransformsToPtr.cpp
+  LowerBlockwiseToPtr.cpp
   MaskNonZeroPreservingFusions.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp

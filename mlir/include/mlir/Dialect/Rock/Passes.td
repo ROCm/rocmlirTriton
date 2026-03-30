@@ -145,8 +145,9 @@ def RockLegalizeFloatTypesPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
-def RockTransformsToPtrPass : Pass<"rock-transforms-to-ptr", "::mlir::func::FuncOp"> {
-  let summary = "";
+def RockLowerBlockwiseToPtrPass
+    : Pass<"rock-lower-blockwise-to-ptr", "::mlir::func::FuncOp"> {
+  let summary = "Lower blockwise load/store ops to pointer-based variants";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
@@ -155,7 +156,7 @@ def RockMaskNonZeroPreservingFusionsPass
   let summary = "Insert arith.select masks after non-zero-preserving fusions "
                 "fed by Pad/Embed loads";
   let description = [{
-    This pass runs AFTER TransformsToPtr and BEFORE TransformsToPointerArith.
+    This pass runs AFTER LowerBlockwiseToPtr and BEFORE TransformsToPointerArith.
     When a blockwise load has Pad or Embed transforms, OOB positions are masked
     to zero. If the loaded tile feeds into a non-zero-preserving fusion (e.g.
     arith.addf %tile, 1.0), those positions become non-zero. This pass detects

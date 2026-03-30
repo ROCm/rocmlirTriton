@@ -354,7 +354,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // adaptor that runs AFTER SerializeHostFuncs.
   pm.addPass(rock::createRockSerializeHostFuncsPass());
   auto &funcPm2 = pm.nest<func::FuncOp>();
-  funcPm2.addPass(rock::createRockTransformsToPtrPass());
+  funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockMaskNonZeroPreservingFusionsPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith

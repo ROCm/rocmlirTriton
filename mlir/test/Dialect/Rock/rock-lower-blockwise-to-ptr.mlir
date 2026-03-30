@@ -1,4 +1,4 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-transforms-to-ptr | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-lower-blockwise-to-ptr | FileCheck %s
 
 // CHECK-LABEL: @test_blockwise_load
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<32768xf16>)
@@ -189,7 +189,7 @@ func.func @test_no_indices(%arg0: tensor<4096xf16>) -> tensor<64x64xf16> attribu
 
 // -----
 
-// blockwise_store_tile without extra indices
+// blockwise_store without extra indices
 // CHECK-LABEL: @test_store_no_indices
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xf32>, %[[ARG1:.*]]: tensor<4096xf32>)
 //      CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}} : tensor<64x64xf32> -> tensor<64x64xi32>, tensor<64x64xi1>
