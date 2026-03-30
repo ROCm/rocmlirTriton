@@ -263,6 +263,82 @@ module {
   }
 
   // ============================================================
+  // Input fusion (no store_marker): load_marker(addf(A, B)).
+  // Distributed into two load_markers + tile-level addf,
+  // result returned directly (e.g. feeds blockwise_gemm).
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_simple
+  // CHECK: %[[LM1:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // CHECK: %[[LM2:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // CHECK: %[[TILE_ADD:.*]] = arith.addf %[[LM1]], %[[LM2]] : tensor<16x16xf16>
+  // CHECK: return %[[TILE_ADD]]
+  func.func @test_input_fusion_simple(
+      %A: tensor<1x16x16xf16>, %B: tensor<1x16x16xf16>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16> attributes {rock.kernel} {
+    %fused = arith.addf %A, %B : tensor<1x16x16xf16>
+    %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n] : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // Input fusion with transforms, nested fusions, and
+  // interleaved transforms:
+  //   broadcast(A) \
+  //                 addf → transpose → \
+  //   broadcast(B) /                    mulf → transpose → load_marker
+  //                                    /
+  //                  broadcast(C) ----
+  // Each leaf accumulates the transforms between it and the
+  // load_marker: A,B get 3 transforms, C gets 2.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_with_transforms
+  // A: broadcast → transpose → transpose → load_marker
+  // CHECK: %[[TA1:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<16xf16> to tensor<1x16x16xf16>
+  // CHECK: %[[TA2:.*]] = rock.transform %[[TA1]] by
+  // CHECK-SAME: tensor<1x16x16xf16> to tensor<1x16x16xf16>
+  // CHECK: %[[TA3:.*]] = rock.transform %[[TA2]] by
+  // CHECK-SAME: tensor<1x16x16xf16> to tensor<1x16x16xf16>
+  // CHECK: %[[LM_A:.*]] = rock.load_marker %[[TA3]] views
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // B: broadcast → transpose → transpose → load_marker
+  // CHECK: %[[TB1:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<16xf16> to tensor<1x16x16xf16>
+  // CHECK: %[[TB2:.*]] = rock.transform %[[TB1]] by
+  // CHECK-SAME: tensor<1x16x16xf16> to tensor<1x16x16xf16>
+  // CHECK: %[[TB3:.*]] = rock.transform %[[TB2]] by
+  // CHECK-SAME: tensor<1x16x16xf16> to tensor<1x16x16xf16>
+  // CHECK: %[[LM_B:.*]] = rock.load_marker %[[TB3]] views
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // CHECK: %[[TILE_ADD:.*]] = arith.addf %[[LM_A]], %[[LM_B]] : tensor<16x16xf16>
+  // C: broadcast → transpose → load_marker
+  // CHECK: %[[TC1:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<16xf16> to tensor<1x16x16xf16>
+  // CHECK: %[[TC2:.*]] = rock.transform %[[TC1]] by
+  // CHECK-SAME: tensor<1x16x16xf16> to tensor<1x16x16xf16>
+  // CHECK: %[[LM_C:.*]] = rock.load_marker %[[TC2]] views
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // CHECK: %[[TILE_MUL:.*]] = arith.mulf %[[TILE_ADD]], %[[LM_C]] : tensor<16x16xf16>
+  // CHECK: return %[[TILE_MUL]]
+  func.func @test_input_fusion_with_transforms(
+      %A_raw: tensor<16xf16>, %B_raw: tensor<16xf16>, %C_raw: tensor<16xf16>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16> attributes {rock.kernel} {
+    %A = rock.transform %A_raw by #tmap_broadcast_1d : tensor<16xf16> to tensor<1x16x16xf16>
+    %B = rock.transform %B_raw by #tmap_broadcast_1d : tensor<16xf16> to tensor<1x16x16xf16>
+    %sum = arith.addf %A, %B : tensor<1x16x16xf16>
+    %transposed1 = rock.transform %sum by #tmap_transpose_3d : tensor<1x16x16xf16> to tensor<1x16x16xf16>
+    %C = rock.transform %C_raw by #tmap_broadcast_1d : tensor<16xf16> to tensor<1x16x16xf16>
+    %prod = arith.mulf %transposed1, %C : tensor<1x16x16xf16>
+    %transposed2 = rock.transform %prod by #tmap_transpose_3d : tensor<1x16x16xf16> to tensor<1x16x16xf16>
+    %lm = rock.load_marker %transposed2 views [#tmap] [%g, %m, %n] : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
   // No load_marker at all: only store_marker → store.
   // Pass has nothing to process.
   // ============================================================
