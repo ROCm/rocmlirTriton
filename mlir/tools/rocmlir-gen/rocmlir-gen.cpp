@@ -1406,6 +1406,8 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
                           &outIndices](OpBuilder &b, Location loc,
                                        Value ignoredIv, ValueRange noArgs) {
     for (const auto &kernel : kernels) {
+      // Check if kernel expects tensor arguments
+      // Use kernel.params which stores the function argument types
       bool expectsTensors =
           !kernel.params.empty() && isa<TensorType>(kernel.params.front());
 
@@ -1417,6 +1419,10 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
         auto callOp = func::CallOp::create(b, loc, kernel.func, tensorArgs);
 
+        // Result should be stored back to the corresponding output memref.
+        // Kernel returns (Output, LSE, ...) while args are (..., LSE,
+        // Output), so map result i to the (numResults - 1 - i)-th-from-last
+        // argument.
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
           if (resultIdx < outIndices.size()) {
             int32_t outIdx = outIndices[resultIdx];
