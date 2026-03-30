@@ -64,5 +64,47 @@ FailureOr<triton::ScaleDotElemType> mlirTypeToScaleDotElemType(Type type) {
       .Default([](Type) { return failure(); });
 }
 
+// Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
+// (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
+// launch_cooperative_grid always 0. Returns LogicalResult instead of void.
+// Note: hipEventRecord is handled by callers, not by this function.
+LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
+                           uint32_t blockSize, uint32_t shared_memory,
+                           uint32_t num_ctas, hipStream_t stream,
+                           void **params) {
+  if (gridX == 0)
+    return success();
+  if (num_ctas > 1) {
+    // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
+    // it loads HIP symbols via dlsym. We link directly, so no check needed.
+    hipLaunchAttribute attributes[2];
+    // Attribute0: Cluster dimensions
+    attributes[0].id = static_cast<hipLaunchAttributeID>(4);
+    int *cluster_dims = (int *)attributes[0].val.pad;
+    cluster_dims[0] = num_ctas;
+    cluster_dims[1] = 1;
+    cluster_dims[2] = 1;
+    // Attribute1: Cooperative launch
+    attributes[1].id = hipLaunchAttributeCooperative;
+    attributes[1].val.cooperative = 0;
+
+    HIP_LAUNCH_CONFIG config = {
+        gridX * num_ctas, 1, 1,        // Grid size
+        blockSize,        1, 1,        // Block size
+        shared_memory,    stream, attributes, 2 // Number of attributes
+    };
+    hipError_t status = hipDrvLaunchKernelEx(&config, function, params, 0);
+    if (status != hipSuccess)
+      return failure();
+  } else {
+    hipError_t status = hipModuleLaunchKernel(
+        function, gridX, 1, 1, blockSize, 1, 1,
+        shared_memory, stream, params, nullptr);
+    if (status != hipSuccess)
+      return failure();
+  }
+  return success();
+}
+
 } // namespace rock
 } // namespace mlir

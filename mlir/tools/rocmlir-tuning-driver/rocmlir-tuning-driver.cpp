@@ -30,6 +30,7 @@
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -208,43 +209,6 @@ static benchmark::DataType getDataType(Type inputType) {
     }                                                                          \
   } while (0)
 
-// Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
-// (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
-// launch_cooperative_grid always 0. Returns LogicalResult instead of void.
-// Note: hipEventRecord is handled by callers, not by this function.
-static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
-                                  uint32_t blockSize, uint32_t shared_memory,
-                                  uint32_t num_ctas, hipStream_t stream,
-                                  void **params) {
-  if (gridX == 0)
-    return success();
-  if (num_ctas > 1) {
-    // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
-    // it loads HIP symbols via dlsym. We link directly, so no check needed.
-    hipLaunchAttribute attributes[2];
-    // Attribute0: Cluster dimensions
-    attributes[0].id = static_cast<hipLaunchAttributeID>(4);
-    int *cluster_dims = (int *)attributes[0].val.pad;
-    cluster_dims[0] = num_ctas;
-    cluster_dims[1] = 1;
-    cluster_dims[2] = 1;
-    // Attribute1: Cooperative launch
-    attributes[1].id = hipLaunchAttributeCooperative;
-    attributes[1].val.cooperative = 0;
-
-    HIP_LAUNCH_CONFIG config = {
-        gridX * num_ctas, 1, 1,        // Grid size
-        blockSize,        1, 1,        // Block size
-        shared_memory,    stream, attributes, 2 // Number of attributes
-    };
-    HIPCHECK(hipDrvLaunchKernelEx(&config, function, params, 0));
-  } else {
-    HIPCHECK(hipModuleLaunchKernel(function, gridX, 1, 1, blockSize, 1, 1,
-                                   shared_memory, stream, params, nullptr));
-  }
-  return success();
-}
-
 static double computeMedian(const std::vector<double> &values) {
   if (values.empty())
     return 0.0;
@@ -379,7 +343,7 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
     for (auto [func, blockSize, gridSize, sharedMem, numCTAs] :
          llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes,
                    numCTAsList)) {
-      if (failed(launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
+      if (failed(rock::launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
                              stream, argPointers.data())))
         return failure();
     }
@@ -420,7 +384,7 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
       HIPCHECK(hipEventCreate(&stopEvent));
 
       HIPCHECK(hipEventRecord(startEvent, stream));
-      if (failed(launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
+      if (failed(rock::launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
                              stream, argPointers.data())))
         return failure();
       HIPCHECK(hipEventRecord(stopEvent, stream));
@@ -557,7 +521,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
         HIPCHECK(hipEventCreate(&stopEvent));
 
         HIPCHECK(hipEventRecord(startEvent, stream));
-        if (failed(launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
+        if (failed(rock::launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
                                stream, argPointers.data())))
           return failure();
         HIPCHECK(hipEventRecord(stopEvent, stream));
