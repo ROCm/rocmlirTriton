@@ -9,9 +9,6 @@
 
 namespace mlir {
 namespace rock {
-// Utility to create an APInt of the requested type
-FailureOr<APInt> createAPInt(Type elemType, int64_t value);
-
 // Utility to create an APFloat of the requested type
 std::pair<APFloat, llvm::detail::opStatus> createAPFloat(Type elemType,
                                                          float value);
@@ -32,26 +29,12 @@ Value createZeroConstantOp(OpBuilder &b, Location loc, Type type);
 Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
                              Type destType);
 
-/// Utility function to get the number of bytes a value of type `type` takes up.
-/// For the sub-byte types like f4E2M1FN, it returns the number of packed Bytes
-/// with padding.
-int64_t getByteWidth(Type type);
-
-// For sub-byte types, like f4E2M1FN, we need to pack multiple elements into
-// bytes. Calculates the number of bytes required to store `numElements` of the
-// given `type`, packing as many elements as possible into each byte.
-int64_t getPackedByteSize(uint64_t numElements, Type type);
-
 // Get a 1-D version of the shaped type `type`, preserving memory space.
 Type getFlattenedType(Type type);
 
 // Utility function to get a MemRef as a tensor
 Value getAsTensor(OpBuilder &builder, Location loc, mlir::Value value,
                   bool isWritable = false);
-
-// Return the type of a boolean vector whose shape is the same as the shape of
-// `v` except that its elements are booleans.
-Type vectorOfBoolShapedLike(Value v);
 
 } // namespace rock
 } // namespace mlir

@@ -156,6 +156,7 @@ sed -e "s/gfx1100/$ARCH/g" -e "s/rock.num_cu = 96/rock.num_cu = $NUM_CU/g" fusio
 # We will re-enable them once we have an optimized CPU validation code.
 
 cd build && \
+ ninja MLIRRockUnitTests && ./mlir/unittests/Dialect/Rock/MLIRRockUnitTests && \
  LIT_FILTER=fusion/fusability ninja check-rocmlir && \
  LIT_FILTER=fusion/pr-e2e/ ninja check-rocmlir && \
  LIT_FILTER=fusion/nightly-misc-e2e/ ninja check-rocmlir && \
