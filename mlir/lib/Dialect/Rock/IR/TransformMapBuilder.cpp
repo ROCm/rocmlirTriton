@@ -26,10 +26,10 @@
 using namespace mlir;
 using namespace mlir::rock;
 
-static AffineMapAttr assembleMapFor(Builder &b,
-                                    ArrayRef<TransformAttr> transforms,
-                                    ArrayRef<int64_t> upperBounds,
-                                    ArrayRef<int64_t> lowerBounds) {
+AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
+                                         ArrayRef<TransformAttr> transforms,
+                                         ArrayRef<int64_t> upperBounds,
+                                         ArrayRef<int64_t> lowerBounds) {
   llvm::SmallMapVector<int64_t, AffineExpr, 8> affExprsMap;
   for (const TransformAttr transform : transforms) {
     TransformType type = transform.getType();

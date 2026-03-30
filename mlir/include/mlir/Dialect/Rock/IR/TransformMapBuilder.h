@@ -316,6 +316,11 @@ struct BottomUpTMTopDimsWrapper {
   llvm::SmallVector<uint32_t> toTopDims(ArrayRef<StringRef> names);
 };
 
+/// Reconstruct the affine map implied by the given transforms and bounds.
+AffineMapAttr assembleMapFor(Builder &b, ArrayRef<TransformAttr> transforms,
+                             ArrayRef<int64_t> upperBounds,
+                             ArrayRef<int64_t> lowerBounds);
+
 /// Create a map of dimension names to indices in a destination coordinate space
 /// using the expansion map [original name] -> [expanded names] to
 /// replace one dimension with multiple ones.

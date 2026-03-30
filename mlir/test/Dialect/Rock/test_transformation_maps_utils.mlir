@@ -36,13 +36,13 @@ func.func @transform_unmerge_merge_pt_unmerge_merge(%arg0: tensor<16x16x16xf32>)
   // CHECK: %[[MERGE:.+]] = rock.transform %arg0 by <affine_map<(d0) -> (d0 floordiv 64, (d0 mod 64) floordiv 16, d0 mod 16)> by [<Merge{2, 4, 16} ["C"] at [0] -> ["C1", "C2", "C3"] at [0, 1, 2]>] bounds = [128] -> [2, 4, 16]> : tensor<2x4x16xf32> to tensor<128xf32>
   %merge = rock.transform %arg0 by <affine_map<(d0) -> (d0 floordiv (16 * 16), (d0 mod (16 * 16)) floordiv 16, d0 mod 16)> by [<Merge{16, 16, 16} ["C"] at [0] -> ["C1", "C2", "C3"] at [0, 1, 2]>] bounds = [4096] -> [16, 16, 16]> : tensor<16x16x16xf32> to tensor<4096xf32>
   // CHECK: %[[UNMERGE:.+]] = rock.transform %[[MERGE]] by <affine_map<(d0, d1, d2) -> ((d0 * 8 + d1) * 16 + d2)> by [<Unmerge{1, 8, 16} ["B2", "B1", "B3"] at [0, 1, 2] -> ["C"] at [0]>] bounds = [1, 8, 16] -> [128]> : tensor<128xf32> to tensor<1x8x16xf32>
-  %unmerge =  rock.transform %merge by <affine_map<(d0, d1, d2) -> (d0 * 32 * 16 + d1 * 32 + d2)> by [<Unmerge{8, 16, 32} ["B2", "B1", "B3"] at [0, 1, 2] -> ["C"] at [0]>] bounds = [8, 16, 32] -> [4096]>  : tensor<4096xf32> to tensor<8x16x32xf32>
+  %unmerge =  rock.transform %merge by <affine_map<(d0, d1, d2) -> ((d0 * 16 + d1) * 32 + d2)> by [<Unmerge{8, 16, 32} ["B2", "B1", "B3"] at [0, 1, 2] -> ["C"] at [0]>] bounds = [8, 16, 32] -> [4096]>  : tensor<4096xf32> to tensor<8x16x32xf32>
   // CHECK: %[[TRANSPOSED:.+]] = rock.transform %[[UNMERGE]] by <affine_map<(d0, d1, d2) -> (d1, d0, d2)> by [<PassThrough ["B1", "B2", "B3"] at [0, 1, 2] -> ["B2", "B1", "B3"] at [1, 0, 2]>] bounds = [8, 1, 16] -> [1, 8, 16]> : tensor<1x8x16xf32> to tensor<8x1x16xf32>
   %transposed = rock.transform %unmerge by <affine_map<(d0, d1, d2) -> (d1, d0, d2)> by [<PassThrough ["B1", "B2", "B3"] at [0, 1, 2] -> ["B2", "B1", "B3"] at [1, 0, 2]>] bounds = [16, 8, 32] -> [8, 16, 32]> : tensor<8x16x32xf32> to tensor<16x8x32xf32>
   // CHECK: %[[MERGE2:.+]] = rock.transform %[[TRANSPOSED]] by <affine_map<(d0) -> (d0 floordiv 16, 0, d0 mod 16)> by [<Merge{8, 1, 16} ["A"] at [0] -> ["B1", "B2", "B3"] at [0, 1, 2]>] bounds = [128] -> [8, 1, 16]> : tensor<8x1x16xf32> to tensor<128xf32>
   %merge2 = rock.transform %transposed by <affine_map<(d0) -> (d0 floordiv (8 * 32), (d0 mod (8 * 32)) floordiv 32, d0 mod 32)> by [<Merge{16, 8, 32} ["A"] at [0] -> ["B1", "B2", "B3"] at [0, 1, 2]>] bounds = [4096] -> [16, 8, 32]> : tensor<16x8x32xf32> to tensor<4096xf32>
   // CHECK: %[[UNMERGE2:.+]] = rock.transform %[[MERGE2]] by <affine_map<(d0, d1) -> (d0 * 16 + d1)> by [<Unmerge{8, 16} ["A1", "A3"] at [0, 1] -> ["A"] at [0]>] bounds = [8, 16] -> [128]> : tensor<128xf32> to tensor<8x16xf32>
-  %unmerge2 = rock.transform %merge2 by <affine_map<(d0, d1, d2) -> (d0 * 16 * 32 + d1 * 16 + d2)> by [<Unmerge{8, 32, 16} ["A1", "A2", "A3"] at [0, 1, 2] -> ["A"] at [0]>] bounds = [8, 32, 16] -> [4096]> : tensor<4096xf32> to tensor<8x32x16xf32>
+  %unmerge2 = rock.transform %merge2 by <affine_map<(d0, d1, d2) -> ((d0 * 32 + d1) * 16 + d2)> by [<Unmerge{8, 32, 16} ["A1", "A2", "A3"] at [0, 1, 2] -> ["A"] at [0]>] bounds = [8, 32, 16] -> [4096]> : tensor<4096xf32> to tensor<8x32x16xf32>
   "remove_dims"(%unmerge2) {names_to_drop = ["A2"]} : (tensor<8x32x16xf32>) -> ()
   return
 }
@@ -119,7 +119,7 @@ func.func @transform_ex1_t3(%arg0: tensor<1x64x1024xf32>) attributes {rock.arch 
 
 
 #tr0_ex2 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["A"] at [0] -> ["A"] at [0]>, <PassThrough ["B", "C"] at [1, 2] -> ["B", "C"] at [2, 1]>] bounds = [1, 1024, 64] -> [1, 64, 1024]>
-#tr1_ex2 = #rock.transform_map<affine_map<(d0, d1, d2) -> (0, d1, d2)> by [<Broadcast{32} ["A"] at [0] -> ["A"] at [0]>, <PassThrough ["B", "C"] at [1, 2] -> ["B", "C"] at [1, 2]>] bounds = [32, 1024, 64] -> [1, 1024, 64]>
+#tr1_ex2 = #rock.transform_map<affine_map<(d0, d1, d2) -> (0, d1, d2)> by [<Broadcast{1} ["A"] at [0] -> ["A"] at [0]>, <PassThrough ["B", "C"] at [1, 2] -> ["B", "C"] at [1, 2]>] bounds = [32, 1024, 64] -> [1, 1024, 64]>
 
 // CHECK-LABEL: @transform_ex2_t0
 // CHECK-SAME: ([[orig:%.*]]: [[orig_shape:tensor<64x1024xf32>]])
@@ -137,7 +137,7 @@ func.func @transform_ex2_t0(%arg0: tensor<1x64x1024xf32>) attributes {rock.arch 
 func.func @transform_ex2_t1(%arg0: tensor<1x64x1024xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
   // CHECK-NEXT: [[next0:%.*]] = rock.transform [[orig]] by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["A"] at [0] -> ["A"] at [0]>, <PassThrough ["B"] at [1] -> ["B"] at [1]>] bounds = [1, 1024] -> [1, 1024]> : [[orig_shape]] to tensor<1x1024xf32>
   %0 = rock.transform %arg0 by #tr0_ex2 : tensor<1x64x1024xf32> to tensor<1x1024x64xf32>
-  // CHECK-NEXT: [[next1:%.*]] = rock.transform [[next0]] by <affine_map<(d0, d1) -> (d0 mod 32, d1)> by [<Broadcast{32} ["A"] at [0] -> ["A"] at [0]>, <PassThrough ["B"] at [1] -> ["B"] at [1]>] bounds = [32, 1024] -> [1, 1024]> : tensor<1x1024xf32> to tensor<32x1024xf32>
+  // CHECK-NEXT: [[next1:%.*]] = rock.transform [[next0]] by <affine_map<(d0, d1) -> (0, d1)> by [<Broadcast{1} ["A"] at [0] -> ["A"] at [0]>, <PassThrough ["B"] at [1] -> ["B"] at [1]>] bounds = [32, 1024] -> [1, 1024]> : tensor<1x1024xf32> to tensor<32x1024xf32>
   %1 = rock.transform %0 by #tr1_ex2 : tensor<1x1024x64xf32> to tensor<32x1024x64xf32>
   "remove_dims"(%1) {names_to_drop = ["C"]} : (tensor<32x1024x64xf32>) -> ()
   return
@@ -145,14 +145,14 @@ func.func @transform_ex2_t1(%arg0: tensor<1x64x1024xf32>) attributes {rock.arch 
 
 
 #tr0_ex3 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["A"] at [0] -> ["A"] at [0]>, <PassThrough ["B", "C"] at [1, 2] -> ["B", "C"] at [2, 1]>] bounds = [1, 1024, 64] -> [1, 64, 1024]>
-#tr1_ex3 = #rock.transform_map<affine_map<(d0, d2) -> (d0, 0, d2)> by [<PassThrough ["A"] at [0] -> ["A"] at [0]>, <ConstDim{0, 1} [] at [] -> ["B"] at [1]>, <PassThrough ["C"] at [1] -> ["C"] at [2]>] bounds = [1, 64] -> [1, 1024, 64]>
+#tr1_ex3 = #rock.transform_map<affine_map<(d0, d2) -> (d0, 0, d2)> by [<PassThrough ["A"] at [0] -> ["A"] at [0]>, <ConstDim{0, 1024} [] at [] -> ["B"] at [1]>, <PassThrough ["C"] at [1] -> ["C"] at [2]>] bounds = [1, 64] -> [1, 1024, 64]>
 
 // CHECK-LABEL: @transform_ex3_t0
 // CHECK-SAME: ([[orig:%.*]]: [[orig_shape:tensor<64x1024xf32>]])
 func.func @transform_ex3_t0(%arg0: tensor<1x64x1024xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
   // CHECK-NEXT: [[next0:%.*]] = rock.transform [[orig]] by <affine_map<(d0, d1) -> (d1, d0)> by [<PassThrough ["B", "C"] at [0, 1] -> ["B", "C"] at [1, 0]>] bounds = [1024, 64] -> [64, 1024]> : [[orig_shape]] to tensor<1024x64xf32>
   %0 = rock.transform %arg0 by #tr0_ex3 : tensor<1x64x1024xf32> to tensor<1x1024x64xf32>
-  // CHECK-NEXT: [[next1:%.*]] = rock.transform [[next0]] by <affine_map<(d0) -> (0, d0)> by [<ConstDim{0, 1} [] at [] -> ["B"] at [0]>, <PassThrough ["C"] at [0] -> ["C"] at [1]>] bounds = [64] -> [1024, 64]> : tensor<1024x64xf32> to tensor<64xf32>
+  // CHECK-NEXT: [[next1:%.*]] = rock.transform [[next0]] by <affine_map<(d0) -> (0, d0)> by [<ConstDim{0, 1024} [] at [] -> ["B"] at [0]>, <PassThrough ["C"] at [0] -> ["C"] at [1]>] bounds = [64] -> [1024, 64]> : tensor<1024x64xf32> to tensor<64xf32>
   %1 = rock.transform %0 by #tr1_ex3 : tensor<1x1024x64xf32> to tensor<1x64xf32>
   "remove_dims"(%1) {names_to_drop = ["A"]} : (tensor<1x64xf32>) -> ()
   return
@@ -163,7 +163,7 @@ func.func @transform_ex3_t0(%arg0: tensor<1x64x1024xf32>) attributes {rock.arch 
 func.func @transform_ex3_t1(%arg0: tensor<1x64x1024xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
   // CHECK-NEXT: [[next0:%.*]] = rock.transform [[orig]] by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["A"] at [0] -> ["A"] at [0]>, <PassThrough ["B"] at [1] -> ["B"] at [1]>] bounds = [1, 1024] -> [1, 1024]> : [[orig_shape]] to tensor<1x1024xf32>
   %0 = rock.transform %arg0 by #tr0_ex3 : tensor<1x64x1024xf32> to tensor<1x1024x64xf32>
-  // CHECK-NEXT: [[next1:%.*]] = rock.transform [[next0]] by <affine_map<(d0) -> (d0, 0)> by [<PassThrough ["A"] at [0] -> ["A"] at [0]>, <ConstDim{0, 1} [] at [] -> ["B"] at [1]>] bounds = [1] -> [1, 1024]> : tensor<1x1024xf32> to tensor<1xf32>
+  // CHECK-NEXT: [[next1:%.*]] = rock.transform [[next0]] by <affine_map<(d0) -> (d0, 0)> by [<PassThrough ["A"] at [0] -> ["A"] at [0]>, <ConstDim{0, 1024} [] at [] -> ["B"] at [1]>] bounds = [1] -> [1, 1024]> : tensor<1x1024xf32> to tensor<1xf32>
   %1 = rock.transform %0 by #tr1_ex3 : tensor<1x1024x64xf32> to tensor<1x64xf32>
   "remove_dims"(%1) {names_to_drop = ["C"]} : (tensor<1x64xf32>) -> ()
   return
@@ -174,7 +174,7 @@ func.func @transform_ex3_t1(%arg0: tensor<1x64x1024xf32>) attributes {rock.arch 
 func.func @transform_ex3_t2(%arg0: tensor<1x64x1024xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
   // CHECK-NEXT: [[next0:%.*]] = rock.transform [[orig]] by <affine_map<(d0) -> (d0)> by [<PassThrough ["B"] at [0] -> ["B"] at [0]>] bounds = [1024] -> [1024]> : [[orig_shape]] to tensor<1024xf32>
   %0 = rock.transform %arg0 by #tr0_ex3 : tensor<1x64x1024xf32> to tensor<1x1024x64xf32>
-  // CHECK-NEXT: [[next1:%.*]] = rock.transform [[next0]] by <affine_map<() -> (0)> by [<ConstDim{0, 1} [] at [] -> ["B"] at [0]>] bounds = [] -> [1024]> : tensor<1024xf32> to tensor<f32>
+  // CHECK-NEXT: [[next1:%.*]] = rock.transform [[next0]] by <affine_map<() -> (0)> by [<ConstDim{0, 1024} [] at [] -> ["B"] at [0]>] bounds = [] -> [1024]> : tensor<1024xf32> to tensor<f32>
   %1 = rock.transform %0 by #tr1_ex3 : tensor<1x1024x64xf32> to tensor<1x64xf32>
   "remove_dims"(%1) {names_to_drop = ["A", "C"]} : (tensor<1x64xf32>) -> ()
   return
@@ -232,7 +232,7 @@ func.func @mfma_in_thread_subtile(%arg0: tensor<1x64x384xf32>) attributes {rock.
   // CHECK : %[[TR3:.+]] = rock.transform %[[TR2]] by <affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["kpack"] at [0] -> ["kpack"] at [0]>, <PassThrough ["d_iter", "k_iter"] at [1, 2] -> ["d_iter", "k_iter"] at [1, 2]>] bounds = [8, 2, 2] -> [8, 2, 2]> : tensor<8x2x2xf32> to tensor<8x2x2xf32>
   %2 = rock.transform %1 by <affine_map<(d0, d1, d2, d3, d4, d5, d6, d7, d8) -> (d0, d1, d2, d3, d4 floordiv 2, d4 mod 2, d5, d6, d7, d8)> by [<PassThrough ["k_loop", "g_block"] at [0, 1] -> ["k_loop", "g_block"] at [0, 1]>, <PassThrough ["n_block"] at [2] -> ["n_block"] at [2]>, <PassThrough ["kpack"] at [3] -> ["kpack"] at [3]>, <Merge{2, 2} ["wave_id"] at [4] -> ["wave_m", "wave_n"] at [4, 5]>, <PassThrough ["blk_id", "blk_td", "d_iter", "k_iter"] at [5, 6, 7, 8] -> ["blk_id", "blk_td", "d_iter", "k_iter"] at [6, 7, 8, 9]>] bounds = [1, 1, 6, 8, 4, 4, 16, 2, 2] -> [1, 1, 6, 8, 2, 2, 4, 16, 2, 2]> : tensor<1x1x6x8x2x2x4x16x2x2xf32> to tensor<1x1x6x8x4x4x16x2x2xf32>
   // CHECK : %[[TR4:.+]] = rock.transform %[[TR3]] by <affine_map<(d0, d1, d2) -> (d2, d0, d1)> by [<PassThrough ["kpack"] at [2] -> ["kpack"] at [0]>, <PassThrough ["drepeat", "kpack_iter"] at [0, 1] -> ["d_iter", "k_iter"] at [1, 2]>] bounds = [2, 2, 8] -> [8, 2, 2]> : tensor<8x2x2xf32> to tensor<2x2x8xf32>
-  %3 = rock.transform %2 by <affine_map<(d0, d1, d2, d3, d4, d5, d6, d7) -> (d0, d1, d3, d7, d4 floordiv 64, (d4 mod 64) floordiv 16, d4 mod 16, d5, d6)> by [<PassThrough ["k_loop", "g_block"] at [0, 1] -> ["k_loop", "g_block"] at [0, 1]>, <PassThrough ["n_block"] at [3] -> ["n_block"] at [2]>, <PassThrough ["kpack"] at [7] -> ["kpack"] at [3]>, <Merge{4, 4, 16} ["tid"] at [4] -> ["wave_id", "blk_id", "blk_td"] at [4, 5, 6]>, <PassThrough ["drepeat", "kpack_iter"] at [5, 6] -> ["d_iter", "k_iter"] at [7, 8]>] bounds = [1, 1, 12, 6, 256, 2, 2, 8] -> [1, 1, 6, 8, 4, 4, 16, 2, 2]> : tensor<1x1x6x8x4x4x16x2x2xf32> to tensor<1x1x12x6x256x2x2x8xf32>
+  %3 = rock.transform %2 by <affine_map<(d0, d1, d2, d3, d4, d5, d6, d7) -> (d0, d1, d3, d7, d4 floordiv 64, (d4 mod 64) floordiv 16, d4 mod 16, d5, d6)> by [<PassThrough ["k_loop", "g_block"] at [0, 1] -> ["k_loop", "g_block"] at [0, 1]>, <AddDim{12} ["m_block"] at [2] -> [] at []>, <PassThrough ["n_block"] at [3] -> ["n_block"] at [2]>, <PassThrough ["kpack"] at [7] -> ["kpack"] at [3]>, <Merge{4, 4, 16} ["tid"] at [4] -> ["wave_id", "blk_id", "blk_td"] at [4, 5, 6]>, <PassThrough ["drepeat", "kpack_iter"] at [5, 6] -> ["d_iter", "k_iter"] at [7, 8]>] bounds = [1, 1, 12, 6, 256, 2, 2, 8] -> [1, 1, 6, 8, 4, 4, 16, 2, 2]> : tensor<1x1x6x8x4x4x16x2x2xf32> to tensor<1x1x12x6x256x2x2x8xf32>
   // CHECK : %[[TR5:.+]] = rock.transform %[[TR4]] by <affine_map<(d0) -> (d0 floordiv 16, (d0 mod 16) floordiv 8, d0 mod 8)> by [<Merge{2, 2, 8} ["iter"] at [0] -> ["drepeat", "kpack_iter", "kpack"] at [0, 1, 2]>] bounds = [32] -> [2, 2, 8]> : tensor<2x2x8xf32> to tensor<32xf32>
   %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d0, d1, d2, d3, d4, d5 floordiv 16, (d5 mod 16) floordiv 8, d5 mod 8)> by [<PassThrough ["k_loop", "g_block", "m_block", "n_block", "tid"] at [0, 1, 2, 3, 4] -> ["k_loop", "g_block", "m_block", "n_block", "tid"] at [0, 1, 2, 3, 4]>, <Merge{2, 2, 8} ["iter"] at [5] -> ["drepeat", "kpack_iter", "kpack"] at [5, 6, 7]>] bounds = [1, 1, 12, 6, 256, 32] -> [1, 1, 12, 6, 256, 2, 2, 8]> : tensor<1x1x12x6x256x2x2x8xf32> to tensor<1x1x12x6x256x32xf32>
   "remove_dims"(%4) {names_to_drop = ["k_loop", "g_block", "m_block", "n_block", "tid"]} : (tensor<1x1x12x6x256x32xf32>) -> ()
@@ -244,7 +244,7 @@ func.func @padding_no_overlap(%arg0: tensor<320xf32>) attributes {rock.arch = "a
   // CHECK : %[[TR1:.+]] = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 10 + d1)> by [<Unmerge{4, 10} ["B1", "B2"] at [0, 1] -> ["A"] at [0]>] bounds = [4, 10] -> [40]> : tensor<40xf32> to tensor<4x10xf32>
   %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 10 + d1)> by [<Unmerge{32, 10} ["B1", "B2"] at [0, 1] -> ["A"] at [0]>] bounds = [32, 10] -> [320]> : tensor<320xf32> to tensor<32x10xf32>
   // CHECK : %[[TR2:.+]] = rock.transform %[[TR1]] by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["C1"] at [0] -> ["B1"] at [0]>, <Pad{0, 6} ["C2"] at [1] -> ["B2"] at [1]>] bounds = [4, 16] -> [4, 10]> : tensor<4x10xf32> to tensor<4x16xf32>
-  %1 = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1 - 6)> by [<PassThrough ["C1"] at [0] -> ["B1"] at [0]>, <Pad{0, 6} ["C2"] at [1] -> ["B2"] at [1]>] bounds = [32, 16] -> [32, 10]> : tensor<32x10xf32> to tensor<32x16xf32>
+  %1 = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["C1"] at [0] -> ["B1"] at [0]>, <Pad{0, 6} ["C2"] at [1] -> ["B2"] at [1]>] bounds = [32, 16] -> [32, 10]> : tensor<32x10xf32> to tensor<32x16xf32>
   // CHECK : %[[TR3:.+]] = rock.transform %[[TR2]] by <affine_map<(d0) -> (d0 floordiv 16, d0 mod 16)> by [<Merge{4, 16} ["D"] at [0] -> ["C1", "C2"] at [0, 1]>] bounds = [64] -> [4, 16]> : tensor<4x16xf32> to tensor<64xf32>
   %2 = rock.transform %1 by <affine_map<(d0) -> (d0 floordiv 16, d0 mod 16)> by [<Merge{32, 16} ["D"] at [0] -> ["C1", "C2"] at [0, 1]>] bounds = [512] -> [32, 16]> : tensor<32x16xf32> to tensor<512xf32>
   // CHECK : %[[TR4:.+]] = rock.transform %[[TR3]] by <affine_map<(d0) -> (d0)> by [<Unmerge{64} ["E2"] at [0] -> ["D"] at [0]>] bounds = [64] -> [64]> : tensor<64xf32> to tensor<64xf32>
@@ -258,11 +258,11 @@ func.func @padding_overlap(%arg0: tensor<320xf32>) attributes {rock.arch = "amdg
   // CHECK : %[[TR1:.+]] = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 4 + d1)> by [<Unmerge{8, 4} ["B1", "B2"] at [0, 1] -> ["A"] at [0]>] bounds = [8, 4] -> [32]> : tensor<32xf32> to tensor<8x4xf32>
   %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 10 + d1)> by [<Unmerge{32, 10} ["B1", "B2"] at [0, 1] -> ["A"] at [0]>] bounds = [32, 10] -> [320]> : tensor<320xf32> to tensor<32x10xf32>
   // CHECK : %[[TR2:.+]] = rock.transform %[[TR1]] by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["C1"] at [0] -> ["B1"] at [0]>, <Pad{0, 0} ["C2"] at [1] -> ["B2"] at [1]>] bounds = [8, 4] -> [8, 4]> : tensor<8x4xf32> to tensor<8x4xf32>
-  %1 = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1 - 6)> by [<PassThrough ["C1"] at [0] -> ["B1"] at [0]>, <Pad{0, 6} ["C2"] at [1] -> ["B2"] at [1]>] bounds = [32, 16] -> [32, 10]> : tensor<32x10xf32> to tensor<32x16xf32>
+  %1 = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["C1"] at [0] -> ["B1"] at [0]>, <Pad{0, 6} ["C2"] at [1] -> ["B2"] at [1]>] bounds = [32, 16] -> [32, 10]> : tensor<32x10xf32> to tensor<32x16xf32>
   // CHECK : %[[TR3:.+]] = rock.transform %[[TR2]] by <affine_map<(d0) -> (d0 floordiv 4, d0 mod 4)> by [<Merge{8, 4} ["D"] at [0] -> ["C1", "C2"] at [0, 1]>] bounds = [32] -> [8, 4]> : tensor<8x4xf32> to tensor<32xf32>
   %2 = rock.transform %1 by <affine_map<(d0) -> (d0 floordiv 16, d0 mod 16)> by [<Merge{32, 16} ["D"] at [0] -> ["C1", "C2"] at [0, 1]>] bounds = [512] -> [32, 16]> : tensor<32x16xf32> to tensor<512xf32>
   // CHECK : %[[TR4:.+]] = rock.transform %[[TR3]] by <affine_map<(d0, d1) -> (d0 * 4 + d1)> by [<Unmerge{8, 4} ["E1", "E3"] at [0, 1] -> ["D"] at [0]>] bounds = [8, 4] -> [32]> : tensor<32xf32> to tensor<8x4xf32>
-  %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (d0 * (16 * 4) + d1 * 4 + d2)> by [<Unmerge{8, 16, 4} ["E1", "E2", "E3"] at [0, 1, 2] -> ["D"] at [0]>] bounds = [8, 16, 4] -> [512]> : tensor<512xf32> to tensor<8x16x4xf32>
+  %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> ((d0 * 16 + d1) * 4 + d2)> by [<Unmerge{8, 16, 4} ["E1", "E2", "E3"] at [0, 1, 2] -> ["D"] at [0]>] bounds = [8, 16, 4] -> [512]> : tensor<512xf32> to tensor<8x16x4xf32>
   "remove_dims"(%3) {names_to_drop = ["E2"]} : (tensor<8x16x4xf32>) -> ()
   return
 }

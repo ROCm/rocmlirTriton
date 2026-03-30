@@ -1209,8 +1209,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     if (tuningParams) {
       maybeGemmExtraPad = requiredPadding(tuningParams, gemmSize);
     } else {
-      // We don't know if this'll be a padding kernel, so we can't promise an
-      // unfold or rely on atomic add, and so set the extraPad to a nonsense but
+      // We don't know if this'll be a padding kernel, so we can't promise a
+      // merge or rely on atomic add, and so set the extraPad to a nonsense but
       // existing value.
       maybeGemmExtraPad = GemmSize{-1, -1, -1, -1};
     }
@@ -1280,7 +1280,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // Weight tensor transformation for ConvOp
   // - PassThrough G dimension to dimension 0, name it gemmG.
   // - Merge non-K dimensions to dimension 1, name it as gemmK.
-  //   Optimization: If non-K dimensions are consecutive, apply unfold.
+  //   Optimization: If non-K dimensions are consecutive, apply merge.
   // - PassThrough K dimension to dimension 2, name it as gemmM.
   //
   // Weight tensor transformation for ConvBwdWeightOp
