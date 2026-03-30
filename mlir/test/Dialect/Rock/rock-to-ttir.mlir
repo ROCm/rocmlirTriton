@@ -265,6 +265,59 @@ func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: te
 
 // -----
 
+// Verifies integer atomic add uses ADD (not FADD)
+// CHECK-LABEL: @test_atomic_add_int
+// CHECK-SAME: (%[[VALUE:.*]]: tensor<64x64xi32>, %[[PTRS:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
+//      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<i32>>
+//      CHECK:   tt.atomic_rmw add, relaxed, gpu, %[[PTR_TENSOR]], %[[VALUE]], %[[MASK]]
+//  CHECK-NOT:   rock.blockwise_store_ptr
+func.func @test_atomic_add_int(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> tensor<64x64xi32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by atomic_add : tensor<64x64xi32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xi32>
+  return %0 : tensor<64x64xi32>
+}
+
+// -----
+
+// Verifies functions without rock.kernel attribute are left unchanged
+// CHECK-LABEL: @test_non_kernel_skipped
+// CHECK-SAME: -> tensor<64xf32>
+//      CHECK:   rock.blockwise_reduce sum
+//      CHECK:   return %{{.*}} : tensor<64xf32>
+func.func @test_non_kernel_skipped(%arg0: tensor<64x64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %0 = rock.blockwise_reduce sum %arg0 {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  return %0 : tensor<64xf32>
+}
+
+// -----
+
+// Verifies the function return type is updated to void after conversion
+// CHECK-LABEL: @test_func_type_void
+// CHECK-SAME: ) attributes
+//      CHECK:   tt.store
+//      CHECK:   return
+//  CHECK-NOT:   return %{{.*}}
+func.func @test_func_type_void(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// -----
+
+// Verifies f16 reduce uses addf with f16 element type
+// CHECK-LABEL: @test_reduce_sum_f16
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64x64xf16>)
+//      CHECK:   "tt.reduce"(%[[INPUT]]) <{axis = 1 : i32}>
+//      CHECK:   ^bb0(%[[LHS:.*]]: f16, %[[RHS:.*]]: f16):
+//      CHECK:     %[[SUM:.*]] = arith.addf %[[LHS]], %[[RHS]] : f16
+//      CHECK:     tt.reduce.return %[[SUM]] : f16
+//  CHECK-NOT:   rock.blockwise_reduce
+func.func @test_reduce_sum_f16(%arg0: tensor<64x64xf16>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_reduce sum %arg0 {axis = 1 : index} : tensor<64x64xf16> -> tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
 // Test: f8 GEMM without scales lowers to tt.dot (not tt.dot_scaled).
 // f8E4M3FN is a TT_Float type, so LegalizeFloatTypes does not set
 // matrixAOrigElemType/matrixBOrigElemType and no scales are present.
