@@ -17,24 +17,37 @@
 //===----------------------------------------------------------------------===//
 //
 // This pass lowers rock.expand_strides by moving the stride expansion from
-// the source chain of rock.store to the dest chain, using Unmerge + Slice
-// transforms.
+// the source chain of rock.store to the dest chain, using Slice (and
+// optionally Unmerge) transforms.
 //
-// Before:
-//   %expanded = rock.expand_strides %input : 4x24x24 -> 4x48x24
-//   %flat = rock.transform %expanded by <Merge> : 4x48x24 -> 4608
-//   rock.store %flat to %output_arg : 4608 -> 4608
+// Case 1: expand_strides followed by Merge then store (flat dest)
 //
-// After:
-//   %unmerged = rock.transform %output_arg by <Unmerge> : 4608 -> 4x48x24
-//   %sliced = rock.transform %unmerged by <Slice> : 4x48x24 -> 4x24x24
-//   rock.store %input to %sliced : 4x24x24 -> 4608
+//   Before:
+//     %expanded = rock.expand_strides %input : 4x24x24 -> 4x48x24
+//     %flat = rock.transform %expanded by <Merge> : 4x48x24 -> 4608
+//     rock.store %flat to %output_arg : 4608 -> 4608
+//
+//   After:
+//     %unmerged = rock.transform %output_arg by <Unmerge> : 4608 -> 4x48x24
+//     %sliced = rock.transform %unmerged by <Slice> : 4x48x24 -> 4x24x24
+//     rock.store %input to %sliced : 4x24x24 -> 4608
+//
+// Case 2: expand_strides directly feeds store (dest already has expanded shape)
+//
+//   Before:
+//     %expanded = rock.expand_strides %input : 4x24x24 -> 4x48x24
+//     rock.store %expanded to %output_arg : 4x48x24 -> 4x48x24
+//
+//   After:
+//     %sliced = rock.transform %output_arg by <Slice> : 4x48x24 -> 4x24x24
+//     rock.store %input to %sliced : 4x24x24 -> 4x48x24
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -51,31 +64,6 @@ using namespace mlir::rock;
 
 namespace {
 
-// Trace forward from a value through rock.transform ops to find a rock.store
-// that uses the (possibly transformed) value as its source.
-// Returns the store and the collected transform attributes between the
-// starting value and the store source.
-static FailureOr<StoreOp>
-traceToStore(Value start, SmallVectorImpl<TransformMapAttr> &transforms) {
-  Value current = start;
-  while (true) {
-    if (!current.hasOneUse())
-      return failure();
-    Operation *user = *current.getUsers().begin();
-    if (auto storeOp = dyn_cast<StoreOp>(user)) {
-      if (storeOp.getSource() == current)
-        return storeOp;
-      return failure();
-    }
-    if (auto transformOp = dyn_cast<TransformOp>(user)) {
-      transforms.push_back(transformOp.getTransform());
-      current = transformOp.getOutput();
-      continue;
-    }
-    return failure();
-  }
-}
-
 struct ExpandStridesLoweringPattern
     : public OpRewritePattern<rock::ExpandStridesOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -89,13 +77,29 @@ struct ExpandStridesLoweringPattern
     auto inputType = cast<RankedTensorType>(input.getType());
     auto expandedType = cast<RankedTensorType>(expandedResult.getType());
 
-    SmallVector<TransformMapAttr> forwardTransforms;
-    auto maybeStore = traceToStore(expandedResult, forwardTransforms);
-    if (failed(maybeStore))
+    auto maybeStores = traceRootOutputToStoreOps(expandedResult);
+    if (failed(maybeStores) || maybeStores->size() != 1)
       return rewriter.notifyMatchFailure(
-          op, "expand_strides result doesn't lead to a rock.store");
+          op, "expand_strides result doesn't lead to exactly one rock.store");
 
-    StoreOp storeOp = *maybeStore;
+    StoreOp storeOp = *maybeStores->begin();
+
+    // Collect intermediate TransformOps between expand_strides and the store.
+    SmallVector<TransformOp> forwardChainOps;
+    Value cur = expandedResult;
+    while (cur != storeOp.getSource()) {
+      if (!cur.hasOneUse())
+        return rewriter.notifyMatchFailure(
+            op, "non-single-use value in forward chain");
+      Operation *user = *cur.getUsers().begin();
+      auto trOp = dyn_cast<TransformOp>(user);
+      if (!trOp)
+        return rewriter.notifyMatchFailure(
+            op, "non-transform op between expand_strides and store");
+      forwardChainOps.push_back(trOp);
+      cur = trOp.getOutput();
+    }
+
     Value storeDest = storeOp.getDest();
     auto destType = cast<RankedTensorType>(storeDest.getType());
 
@@ -159,19 +163,8 @@ struct ExpandStridesLoweringPattern
     rewriter.replaceOp(storeOp, newStore.getResult());
 
     // Erase the now-dead forward transform chain and expand_strides
-    Value current = expandedResult;
-    SmallVector<Operation *> toErase;
-    for (size_t i = 0; i < forwardTransforms.size(); ++i) {
-      for (Operation *user : current.getUsers()) {
-        if (auto trOp = dyn_cast<TransformOp>(user)) {
-          current = trOp.getOutput();
-          toErase.push_back(trOp);
-          break;
-        }
-      }
-    }
-    for (Operation *deadOp : llvm::reverse(toErase))
-      rewriter.eraseOp(deadOp);
+    for (auto trOp : llvm::reverse(forwardChainOps))
+      rewriter.eraseOp(trOp);
     rewriter.eraseOp(op);
 
     return success();

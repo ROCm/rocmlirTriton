@@ -15,8 +15,7 @@
 // MIGRAPHX-NEXT:migraphx-tosa-simplify))
 
 // GPU:Kernel pipeline:
-// GPU-NEXT:builtin.module(func.func(rock-expand-strides-lowering),
-// GPU-NEXT:func.func(rock-affix-params),
+// GPU-NEXT:builtin.module(func.func(rock-affix-params),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-lower-reduce),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
