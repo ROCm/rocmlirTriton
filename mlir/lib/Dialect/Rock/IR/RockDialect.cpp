@@ -470,7 +470,7 @@ LogicalResult TransformMapAttr::verify(
   if (rawMap.getNumResults() != lowerBounds.size()) {
     return emitError() << "Affine map has " << rawMap.getNumResults()
                        << " outputs but there are " << lowerBounds.size()
-                       << " outut dimensions";
+                       << " output dimensions";
   }
 
   for (int64_t v : upperBounds.asArrayRef()) {
