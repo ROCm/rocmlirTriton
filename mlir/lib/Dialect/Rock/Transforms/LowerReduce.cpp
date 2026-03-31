@@ -59,6 +59,89 @@ using namespace mlir::rock;
 
 namespace {
 
+/// Build a TransformMapAttr that inverts `trMap`.
+///
+/// The original trMap maps upper→lower (source=lower, result=upper in a
+/// TransformOp).  The inverse maps in the opposite direction: its source has
+/// shape `srcShape` (the original upper bounds) and its result has the
+/// original lower bounds, with dimension names taken from `targetNames`.
+///
+/// Currently handles Merge (→Unmerge), PassThrough, and AddDim (→drop).
+static FailureOr<TransformMapAttr>
+invertTransformMap(OpBuilder &b, TransformMapAttr trMap,
+                   ArrayRef<int64_t> srcShape,
+                   ArrayRef<StringRef> targetNames, Location loc) {
+  SmallVector<StringAttr> srcNameStorage;
+  SmallVector<StringRef> srcNames;
+  for (int64_t i = 0, e = srcShape.size(); i < e; ++i) {
+    srcNameStorage.push_back(b.getStringAttr(Twine("inv") + Twine(i)));
+    srcNames.push_back(srcNameStorage.back().getValue());
+  }
+
+  BottomUpTMBuilder inv(b, srcNames, srcShape, loc);
+  for (TransformAttr tAttr : trMap.getOps()) {
+    switch (tAttr.getType()) {
+    case TransformType::Merge: {
+      SmallVector<StringRef> upperNames;
+      SmallVector<uint32_t> upperDims;
+      for (uint32_t d : tAttr.getLowerDims()) {
+        upperNames.push_back(targetNames[d]);
+        upperDims.push_back(d);
+      }
+      inv.unmerge(upperNames, upperDims,
+                  srcNames[tAttr.getUpperDims()[0]], tAttr.getParams());
+      break;
+    }
+    case TransformType::PassThrough:
+      for (size_t k = 0; k < tAttr.getUpperDims().size(); ++k)
+        inv.passThrough({targetNames[tAttr.getLowerDims()[k]]},
+                        {tAttr.getLowerDims()[k]},
+                        {srcNames[tAttr.getUpperDims()[k]]});
+      break;
+    case TransformType::AddDim:
+      for (uint32_t ud : tAttr.getUpperDims())
+        inv.dropDimAtIndex(srcNames[ud], 0);
+      break;
+    default:
+      return failure();
+    }
+  }
+  return inv.get();
+}
+
+/// Build a broadcast TransformMapAttr that expands the reduced `axis`
+/// from size 1 back to `targetShape[axis]`, passing all other dims through.
+static TransformMapAttr
+buildBroadcastMap(OpBuilder &b, ArrayRef<StringRef> dimNames,
+                  ArrayRef<int64_t> reducedShape,
+                  ArrayRef<int64_t> targetShape, int64_t axis, Location loc) {
+  BottomUpTMBuilder bc(b, dimNames, reducedShape, loc);
+  for (int64_t i = 0, e = reducedShape.size(); i < e; ++i) {
+    if (i == axis)
+      bc.broadcast({static_cast<uint32_t>(i)}, {targetShape[i]});
+    else
+      bc.passThrough(dimNames[i]);
+  }
+  return bc.get();
+}
+
+/// Walk a single-use chain of TransformOps starting from `start`, collecting
+/// them into `chain`.  Returns the final value (the first non-TransformOp use).
+static Value collectTransformChain(Value start,
+                                   SmallVectorImpl<TransformOp> &chain) {
+  Value cur = start;
+  while (cur.hasOneUse()) {
+    auto *user = *cur.user_begin();
+    if (auto tOp = dyn_cast<TransformOp>(user)) {
+      chain.push_back(tOp);
+      cur = tOp.getResult();
+    } else {
+      break;
+    }
+  }
+  return cur;
+}
+
 struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
   using OpRewritePattern<rock::ReduceOp>::OpRewritePattern;
 
@@ -67,137 +150,72 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     Location loc = reduceOp.getLoc();
     Value reduceInput = reduceOp.getIn();
     int64_t axis = reduceOp.getAxis().getSExtValue();
-    ReduceMethod method = reduceOp.getReduceMethod();
 
     auto inputType = cast<RankedTensorType>(reduceInput.getType());
     ArrayRef<int64_t> inputShape = inputType.getShape();
     int64_t rank = inputShape.size();
 
     StoreMethod storeMethod;
-    switch (method) {
-    case ReduceMethod::Sum:
-      storeMethod = StoreMethod::AtomicAdd;
-      break;
-    case ReduceMethod::Max:
-      storeMethod = StoreMethod::AtomicMax;
-      break;
+    switch (reduceOp.getReduceMethod()) {
+    case ReduceMethod::Sum: storeMethod = StoreMethod::AtomicAdd; break;
+    case ReduceMethod::Max: storeMethod = StoreMethod::AtomicMax; break;
     }
 
     Value reduceResult = reduceOp.getResult();
     if (reduceResult.getNumUses() != 1)
       return reduceOp.emitError("Expected exactly one use of the ReduceOp");
 
-    // Walk from reduceResult through any intermediate TransformOps to the store.
-    // Earlier passes may insert transforms (e.g. Merge) between the reduce
-    // output and the store to match the function signature's flat tensor shape.
-    Value current = reduceResult;
+    // Walk from the reduce result through any intermediate TransformOps
+    // (e.g. Merge flattening the output to match the function signature)
+    // to the store.
     SmallVector<TransformOp> intermediateOps;
-    while (current.hasOneUse()) {
-      Operation *user = *current.user_begin();
-      if (auto transformOp = dyn_cast<TransformOp>(user)) {
-        intermediateOps.push_back(transformOp);
-        current = transformOp.getResult();
-      } else {
-        break;
-      }
-    }
+    Value storeSource = collectTransformChain(reduceResult, intermediateOps);
 
-    if (!current.hasOneUse())
+    if (!storeSource.hasOneUse())
       return reduceOp.emitError(
           "Expected single-use chain from reduce to store");
-
-    auto storeOp = dyn_cast<StoreOp>(*current.user_begin());
+    auto storeOp = dyn_cast<StoreOp>(*storeSource.user_begin());
     if (!storeOp)
       return reduceOp.emitError(
           "rock.reduce result does not feed into a rock.store");
 
-    Value storeDest = storeOp.getDest();
-    auto reduceOutputType = cast<RankedTensorType>(reduceResult.getType());
-    ArrayRef<int64_t> reduceOutputShape = reduceOutputType.getShape();
-
-    SmallVector<StringAttr> dimNameAttrs;
+    // Canonical dimension names for the reduce output rank.
+    SmallVector<StringAttr> dimNameStorage;
     SmallVector<StringRef> dimNames;
     for (int64_t i = 0; i < rank; ++i) {
-      dimNameAttrs.push_back(rewriter.getStringAttr(Twine("d") + Twine(i)));
-      dimNames.push_back(dimNameAttrs.back().getValue());
+      dimNameStorage.push_back(rewriter.getStringAttr(Twine("d") + Twine(i)));
+      dimNames.push_back(dimNameStorage.back().getValue());
     }
+
+    ArrayRef<int64_t> reduceOutputShape =
+        cast<RankedTensorType>(reduceResult.getType()).getShape();
 
     rewriter.setInsertionPoint(storeOp);
-    Value transformedDest = storeDest;
+    Value transformedDest = storeOp.getDest();
 
-    // If there are intermediate transforms (e.g. Merge reshaping the reduce
-    // output to match the flat function argument), construct inverse transforms
-    // on the store destination to get back to the reduce output shape.
-    if (!intermediateOps.empty()) {
-      for (TransformOp tOp : llvm::reverse(intermediateOps)) {
-        TransformMapAttr trMap = tOp.getTransform();
-        auto currentType = cast<RankedTensorType>(transformedDest.getType());
-        ArrayRef<int64_t> currentShape = currentType.getShape();
-
-        SmallVector<StringAttr> curNameAttrs;
-        SmallVector<StringRef> curNames;
-        for (int64_t j = 0; j < (int64_t)currentShape.size(); ++j) {
-          curNameAttrs.push_back(
-              rewriter.getStringAttr(Twine("inv") + Twine(j)));
-          curNames.push_back(curNameAttrs.back().getValue());
-        }
-
-        BottomUpTMBuilder invBuilder(rewriter, curNames, currentShape, loc);
-        for (TransformAttr tAttr : trMap.getOps()) {
-          switch (tAttr.getType()) {
-          case TransformType::Merge: {
-            StringRef lowerName = curNames[tAttr.getUpperDims()[0]];
-            SmallVector<StringRef> upperNames;
-            SmallVector<uint32_t> upperDims;
-            for (uint32_t d : tAttr.getLowerDims()) {
-              upperNames.push_back(dimNames[d]);
-              upperDims.push_back(d);
-            }
-            invBuilder.unmerge(upperNames, upperDims, lowerName,
-                               tAttr.getParams());
-            break;
-          }
-          case TransformType::PassThrough: {
-            for (size_t k = 0; k < tAttr.getUpperDims().size(); ++k) {
-              invBuilder.passThrough(
-                  ArrayRef<StringRef>{dimNames[tAttr.getLowerDims()[k]]},
-                  ArrayRef<uint32_t>{tAttr.getLowerDims()[k]},
-                  ArrayRef<StringRef>{curNames[tAttr.getUpperDims()[k]]});
-            }
-            break;
-          }
-          case TransformType::AddDim: {
-            for (uint32_t ud : tAttr.getUpperDims())
-              invBuilder.dropDimAtIndex(curNames[ud], 0);
-            break;
-          }
-          default:
-            return reduceOp.emitError("Cannot invert intermediate transform "
-                                      "between reduce and store");
-          }
-        }
-        TransformMapAttr invMap = invBuilder.get();
-        transformedDest =
-            TransformOp::create(rewriter, loc, transformedDest, invMap);
-      }
+    // Undo intermediate transforms on the store destination so its shape
+    // matches the reduce output (e.g. Unmerge a prior Merge).
+    for (TransformOp tOp : llvm::reverse(intermediateOps)) {
+      auto destShape =
+          cast<RankedTensorType>(transformedDest.getType()).getShape();
+      FailureOr<TransformMapAttr> invMap = invertTransformMap(
+          rewriter, tOp.getTransform(), destShape, dimNames, loc);
+      if (failed(invMap))
+        return reduceOp.emitError(
+            "Cannot invert intermediate transform between reduce and store");
+      transformedDest =
+          TransformOp::create(rewriter, loc, transformedDest, *invMap);
     }
 
-    // Build broadcast from the reduce output shape to the unreduced input shape.
-    BottomUpTMBuilder bcBuilder(rewriter, dimNames, reduceOutputShape, loc);
-    for (int64_t i = 0; i < rank; ++i) {
-      if (i == axis)
-        bcBuilder.broadcast({static_cast<uint32_t>(i)}, {inputShape[i]});
-      else
-        bcBuilder.passThrough(dimNames[i]);
-    }
-    TransformMapAttr broadcastMap = bcBuilder.get();
+    // Broadcast the reduced axis back to the unreduced input size.
+    TransformMapAttr broadcastMap = buildBroadcastMap(
+        rewriter, dimNames, reduceOutputShape, inputShape, axis, loc);
     transformedDest =
         TransformOp::create(rewriter, loc, transformedDest, broadcastMap);
 
     auto newStore =
         StoreOp::create(rewriter, loc, storeOp.getResult().getType(),
                         reduceInput, transformedDest, storeOp.getStoreMethod());
-
     if (failed(setStoreMethodAndPrefill(rewriter, newStore, storeMethod)))
       return storeOp.emitError("failed to set store method and prefill");
 
