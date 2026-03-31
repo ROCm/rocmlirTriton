@@ -59,56 +59,6 @@ using namespace mlir::rock;
 
 namespace {
 
-/// Build a TransformMapAttr that inverts `trMap`.
-///
-/// The original trMap maps upper→lower (source=lower, result=upper in a
-/// TransformOp).  The inverse maps in the opposite direction: its source has
-/// shape `srcShape` (the original upper bounds) and its result has the
-/// original lower bounds, with dimension names taken from `targetNames`.
-///
-/// Currently handles Merge (→Unmerge), PassThrough, and AddDim (→drop).
-static FailureOr<TransformMapAttr>
-invertTransformMap(OpBuilder &b, TransformMapAttr trMap,
-                   ArrayRef<int64_t> srcShape,
-                   ArrayRef<StringRef> targetNames, Location loc) {
-  SmallVector<StringAttr> srcNameStorage;
-  SmallVector<StringRef> srcNames;
-  for (int64_t i = 0, e = srcShape.size(); i < e; ++i) {
-    srcNameStorage.push_back(b.getStringAttr(Twine("inv") + Twine(i)));
-    srcNames.push_back(srcNameStorage.back().getValue());
-  }
-
-  BottomUpTMBuilder inv(b, srcNames, srcShape, loc);
-  for (TransformAttr tAttr : trMap.getOps()) {
-    switch (tAttr.getType()) {
-    case TransformType::Merge: {
-      SmallVector<StringRef> upperNames;
-      SmallVector<uint32_t> upperDims;
-      for (uint32_t d : tAttr.getLowerDims()) {
-        upperNames.push_back(targetNames[d]);
-        upperDims.push_back(d);
-      }
-      inv.unmerge(upperNames, upperDims,
-                  srcNames[tAttr.getUpperDims()[0]], tAttr.getParams());
-      break;
-    }
-    case TransformType::PassThrough:
-      for (size_t k = 0; k < tAttr.getUpperDims().size(); ++k)
-        inv.passThrough({targetNames[tAttr.getLowerDims()[k]]},
-                        {tAttr.getLowerDims()[k]},
-                        {srcNames[tAttr.getUpperDims()[k]]});
-      break;
-    case TransformType::AddDim:
-      for (uint32_t ud : tAttr.getUpperDims())
-        inv.dropDimAtIndex(srcNames[ud], 0);
-      break;
-    default:
-      return failure();
-    }
-  }
-  return inv.get();
-}
-
 /// Build a broadcast TransformMapAttr that expands the reduced `axis`
 /// from size 1 back to `targetShape[axis]`, passing all other dims through.
 static TransformMapAttr
@@ -125,21 +75,28 @@ buildBroadcastMap(OpBuilder &b, ArrayRef<StringRef> dimNames,
   return bc.get();
 }
 
-/// Walk a single-use chain of TransformOps starting from `start`, collecting
-/// them into `chain`.  Returns the final value (the first non-TransformOp use).
-static Value collectTransformChain(Value start,
-                                   SmallVectorImpl<TransformOp> &chain) {
+/// Walk a single-use chain of TransformOps from `start` to a StoreOp,
+/// collecting intermediate TransformOps into `chain`.  Returns the StoreOp,
+/// or failure if the chain is broken by a multi-use value or an unexpected op.
+static FailureOr<StoreOp>
+collectTransformChain(Value start, SmallVectorImpl<TransformOp> &chain) {
   Value cur = start;
   while (cur.hasOneUse()) {
-    auto *user = *cur.user_begin();
+    Operation *user = *cur.user_begin();
     if (auto tOp = dyn_cast<TransformOp>(user)) {
       chain.push_back(tOp);
       cur = tOp.getResult();
+    } else if (auto store = dyn_cast<StoreOp>(user)) {
+      return store;
     } else {
-      break;
+      user->emitError("unexpected op between rock.reduce and rock.store: ")
+          << user->getName();
+      return failure();
     }
   }
-  return cur;
+
+  emitError(cur.getLoc(), "expected single-use chain from reduce to store");
+  return failure();
 }
 
 struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
@@ -157,8 +114,12 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
 
     StoreMethod storeMethod;
     switch (reduceOp.getReduceMethod()) {
-    case ReduceMethod::Sum: storeMethod = StoreMethod::AtomicAdd; break;
-    case ReduceMethod::Max: storeMethod = StoreMethod::AtomicMax; break;
+    case ReduceMethod::Sum:
+      storeMethod = StoreMethod::AtomicAdd;
+      break;
+    case ReduceMethod::Max:
+      storeMethod = StoreMethod::AtomicMax;
+      break;
     }
 
     Value reduceResult = reduceOp.getResult();
@@ -169,15 +130,11 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     // (e.g. Merge flattening the output to match the function signature)
     // to the store.
     SmallVector<TransformOp> intermediateOps;
-    Value storeSource = collectTransformChain(reduceResult, intermediateOps);
-
-    if (!storeSource.hasOneUse())
-      return reduceOp.emitError(
-          "Expected single-use chain from reduce to store");
-    auto storeOp = dyn_cast<StoreOp>(*storeSource.user_begin());
-    if (!storeOp)
-      return reduceOp.emitError(
-          "rock.reduce result does not feed into a rock.store");
+    FailureOr<StoreOp> maybeStore =
+        collectTransformChain(reduceResult, intermediateOps);
+    if (failed(maybeStore))
+      return failure();
+    StoreOp storeOp = *maybeStore;
 
     // Canonical dimension names for the reduce output rank.
     SmallVector<StringAttr> dimNameStorage;
@@ -196,15 +153,13 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     // Undo intermediate transforms on the store destination so its shape
     // matches the reduce output (e.g. Unmerge a prior Merge).
     for (TransformOp tOp : llvm::reverse(intermediateOps)) {
-      auto destShape =
-          cast<RankedTensorType>(transformedDest.getType()).getShape();
-      FailureOr<TransformMapAttr> invMap = invertTransformMap(
-          rewriter, tOp.getTransform(), destShape, dimNames, loc);
-      if (failed(invMap))
+      TransformMapAttr invMap =
+          rock::invertTransformMap(rewriter, tOp.getTransform(), loc);
+      if (!invMap)
         return reduceOp.emitError(
             "Cannot invert intermediate transform between reduce and store");
       transformedDest =
-          TransformOp::create(rewriter, loc, transformedDest, *invMap);
+          TransformOp::create(rewriter, loc, transformedDest, invMap);
     }
 
     // Broadcast the reduced axis back to the unreduced input size.
