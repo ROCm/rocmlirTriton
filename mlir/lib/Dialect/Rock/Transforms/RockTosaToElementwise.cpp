@@ -50,16 +50,16 @@ namespace {
 // Create a rock.transform that broadcasts `input` to `targetShape`.
 // Dimensions where the source has size 1 and the target has size > 1 use
 // Broadcast{1} (i.e. index % 1 = 0). Returns the input unchanged if shapes
-// already match, or nullptr if the shapes are incompatible.
-static Value createBroadcastTransform(PatternRewriter &rewriter, Location loc,
-                                      Value input,
-                                      ArrayRef<int64_t> targetShape) {
+// already match, or failure if the shapes are incompatible.
+static FailureOr<Value>
+createBroadcastTransform(PatternRewriter &rewriter, Location loc, Value input,
+                         ArrayRef<int64_t> targetShape) {
   auto inputTy = cast<ShapedType>(input.getType());
   ArrayRef<int64_t> inputShape = inputTy.getShape();
   if (inputShape == targetShape)
     return input;
   if (inputShape.size() != targetShape.size())
-    return nullptr;
+    return failure();
 
   SmallVector<SmallString<8>, 8> nameStorage(targetShape.size());
   SmallVector<StringRef> dimNames;
@@ -75,11 +75,12 @@ static Value createBroadcastTransform(PatternRewriter &rewriter, Location loc,
     } else if (inputShape[i] == 1) {
       bcast.takeRemainder(dimNames[i], 1);
     } else {
-      return nullptr;
+      return failure();
     }
   }
 
-  return rock::TransformOp::create(rewriter, loc, input, bcast.get());
+  Value result = rock::TransformOp::create(rewriter, loc, input, bcast.get());
+  return result;
 }
 
 // Broadcast two binary operands to the result shape of the given TOSA op.
@@ -88,13 +89,13 @@ template <typename OpTy>
 static FailureOr<std::pair<Value, Value>>
 broadcastInputs(PatternRewriter &rewriter, OpTy op) {
   auto resultShape = cast<ShapedType>(op.getType()).getShape();
-  Value b1 =
+  auto b1 =
       createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(), resultShape);
-  Value b2 =
+  auto b2 =
       createBroadcastTransform(rewriter, op.getLoc(), op.getInput2(), resultShape);
-  if (!b1 || !b2)
+  if (failed(b1) || failed(b2))
     return failure();
-  return std::make_pair(b1, b2);
+  return std::make_pair(*b1, *b2);
 }
 
 // Binary op that dispatches on float vs integer element type.
@@ -274,8 +275,16 @@ struct SelectConverter : public OpRewritePattern<tosa::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::SelectOp op,
                                 PatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<arith::SelectOp>(
-        op, op.getInput1(), op.getInput2(), op.getInput3());
+    auto resultShape = cast<ShapedType>(op.getType()).getShape();
+    auto pred = createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(),
+                                         resultShape);
+    auto onTrue = createBroadcastTransform(rewriter, op.getLoc(),
+                                           op.getInput2(), resultShape);
+    auto onFalse = createBroadcastTransform(rewriter, op.getLoc(),
+                                            op.getInput3(), resultShape);
+    if (failed(pred) || failed(onTrue) || failed(onFalse))
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, *pred, *onTrue, *onFalse);
     return success();
   }
 };

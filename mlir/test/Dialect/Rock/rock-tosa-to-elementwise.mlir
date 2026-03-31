@@ -472,3 +472,72 @@ func.func @intdiv(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> a
   %0 = tosa.intdiv %arg0, %arg1 : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
   return %0 : tensor<8xi32>
 }
+
+// -----
+
+// CHECK-LABEL: @add_f32_broadcast
+// CHECK-NOT:   tosa.add
+// CHECK:       %[[B:.*]] = rock.transform %arg1
+// CHECK:       arith.addf %arg0, %[[B]] : tensor<4x8xf32>
+func.func @add_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<4x8xf32>, tensor<1x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @add_f32_broadcast_both
+// CHECK-NOT:   tosa.add
+// CHECK-DAG:   %[[B0:.*]] = rock.transform %arg0
+// CHECK-DAG:   %[[B1:.*]] = rock.transform %arg1
+// CHECK:       arith.addf %[[B0]], %[[B1]] : tensor<4x8xf32>
+func.func @add_f32_broadcast_both(%arg0: tensor<4x1xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<4x1xf32>, tensor<1x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @mul_f32_broadcast
+// CHECK-NOT:   tosa.mul
+// CHECK:       %[[B:.*]] = rock.transform %arg1
+// CHECK:       arith.mulf %arg0, %[[B]] : tensor<4x8xf32>
+func.func @mul_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %shift = "tosa.const"() {values = dense<0> : tensor<1xi8>} : () -> tensor<1xi8>
+  %0 = "tosa.mul"(%arg0, %arg1, %shift) : (tensor<4x8xf32>, tensor<1x8xf32>, tensor<1xi8>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @greater_f32_broadcast
+// CHECK-NOT:   tosa.greater
+// CHECK:       %[[B:.*]] = rock.transform %arg1
+// CHECK:       arith.cmpf ogt, %arg0, %[[B]] : tensor<4x8xf32>
+func.func @greater_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xi1> attributes {rock.kernel} {
+  %0 = tosa.greater %arg0, %arg1 : (tensor<4x8xf32>, tensor<1x8xf32>) -> tensor<4x8xi1>
+  return %0 : tensor<4x8xi1>
+}
+
+// -----
+
+// CHECK-LABEL: @bitwise_and_broadcast
+// CHECK-NOT:   tosa.bitwise_and
+// CHECK:       %[[B:.*]] = rock.transform %arg1
+// CHECK:       arith.andi %arg0, %[[B]] : tensor<8x4xi32>
+func.func @bitwise_and_broadcast(%arg0: tensor<8x4xi32>, %arg1: tensor<1x4xi32>) -> tensor<8x4xi32> attributes {rock.kernel} {
+  %0 = tosa.bitwise_and %arg0, %arg1 : (tensor<8x4xi32>, tensor<1x4xi32>) -> tensor<8x4xi32>
+  return %0 : tensor<8x4xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @select_broadcast
+// CHECK-NOT:   tosa.select
+// CHECK-DAG:   %[[BP:.*]] = rock.transform %arg0 {{.*}} : tensor<1x8xi1> to tensor<4x8xi1>
+// CHECK-DAG:   %[[BF:.*]] = rock.transform %arg2 {{.*}} : tensor<4x1xf32> to tensor<4x8xf32>
+// CHECK:       arith.select %[[BP]], %arg1, %[[BF]] : tensor<4x8xi1>, tensor<4x8xf32>
+func.func @select_broadcast(%arg0: tensor<1x8xi1>, %arg1: tensor<4x8xf32>, %arg2: tensor<4x1xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.select %arg0, %arg1, %arg2 : (tensor<1x8xi1>, tensor<4x8xf32>, tensor<4x1xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
