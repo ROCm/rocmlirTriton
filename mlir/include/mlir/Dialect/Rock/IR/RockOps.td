@@ -292,7 +292,7 @@ def Rock_GemmElementwiseGemmOp
   let assemblyFormat = [{
     `{` `\n`
         ` ` `ab` `=` (`tr` $aTransposed^)? $a `*` (`tr` $bTransposed^)? $b `:` type($a) `,` type($b) `\n`
-        (`ab` `=` `elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
+        (`elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
         `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
     `}` attr-dict `->` type($result)
   }];
@@ -338,7 +338,7 @@ def Rock_ConvElementwiseGemmOp
   let assemblyFormat = [{
     `{` `\n`
         ` ` `ab` `=` `conv` `(` $filter `,` $input `)` `:` type($filter) `,` type($input) `\n`
-        (`ab` `=` `elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
+        (`elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
         (`tr` $oTransposed^)? $out `=` `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `->` type($out) `\n`
     `}` attr-dict (`->` type($result)^)?
   }];

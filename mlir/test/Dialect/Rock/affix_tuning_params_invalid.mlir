@@ -106,7 +106,7 @@ func.func @rock_gemm_gemm_splitk(%arg0: tensor<1474560xf16>, %arg1: tensor<14745
     // expected-error @+1 {{Fusion with SplitK perfConfig is not legal}}
     %out = rock.gemm_elementwise_gemm{
      ab = %0 * %1 : tensor<1x4096x360xf16>, tensor<1x360x4096xf16>
-     ab = elementwise {
+     elementwise {
     ^bb0(%arg4: tensor<1x4096x4096xf16>, %arg5: tensor<1x4096x4096xf16>):
       rock.yield
     }

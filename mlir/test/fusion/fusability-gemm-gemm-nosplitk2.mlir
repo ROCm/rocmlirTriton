@@ -12,7 +12,7 @@ module {
     %alloc = memref.alloc() {alignment = 64 : i64} : memref<1x4096x360xf16>
     rock.gemm_elementwise_gemm{
      ab = %0 * %1 : memref<1x4096x360xf16>, memref<1x360x4096xf16>
-     ab = elementwise {
+     elementwise {
     ^bb0(%arg4: memref<1x4096x4096xf16>, %arg5: memref<1x4096x4096xf16>):
       memref.copy %arg4, %arg5 : memref<1x4096x4096xf16> to memref<1x4096x4096xf16>
       rock.yield

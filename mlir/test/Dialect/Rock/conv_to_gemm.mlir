@@ -64,7 +64,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 //   %3 = rock.transform %arg3 by #transform_map3 : memref<3211264xf32> to memref<1x12544x256xf32>
 //   rock.conv_elementwise_gemm{
 //     ab = conv(%0, %1) : memref<1x256x1x1x64xf32>, memref<64x14x14x1x64xf32>
-//     ab = elementwise {
+//     elementwise {
 //   ^bb0(%arg4: memref<1x256x12544xf32>, %arg5: memref<1x256x12544xf32>):
 //     memref.copy %arg4, %arg5 : memref<1x256x12544xf32> to memref<1x256x12544xf32>
 //     rock.yield
@@ -85,7 +85,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 //   %3 = rock.transform %arg3 by #transform_map3 : memref<802816xf32> to memref<1x3136x256xf32>
 //   rock.conv_elementwise_gemm{
 //     ab = conv(%0, %1) : memref<1x256x1x1x64xf32>, memref<64x14x14x1x64xf32>
-//     ab = elementwise {
+//     elementwise {
 //   ^bb0(%arg4: memref<1x256x3136xf32>, %arg5: memref<1x256x3136xf32>):
 //     memref.copy %arg4, %arg5 : memref<1x256x3136xf32> to memref<1x256x3136xf32>
 //     rock.yield
@@ -106,7 +106,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 //   %3 = rock.transform %arg3 by #transform_map7 : memref<2359296xf32> to memref<1x9216x256xf32>
 //   rock.conv_elementwise_gemm{
 //     ab = conv(%0, %1) : memref<1x256x3x3x64xf32>, memref<64x14x14x1x64xf32>
-//     ab = elementwise {
+//     elementwise {
 //   ^bb0(%arg4: memref<1x256x9216xf32>, %arg5: memref<1x256x9216xf32>):
 //     memref.copy %arg4, %arg5 : memref<1x256x9216xf32> to memref<1x256x9216xf32>
 //     rock.yield
@@ -128,7 +128,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 //   %3 = rock.transform %arg3 by #transform_map7 : memref<2359296xf32> to memref<1x9216x256xf32>
 //   rock.conv_elementwise_gemm{
 //     ab = conv(%0, %1) : memref<1x256x3x3x64xf32>, memref<64x14x14x1x64xf32>
-//     ab = elementwise {
+//     elementwise {
 //   ^bb0(%arg4: memref<1x256x9216xf32>, %arg5: memref<1x256x9216xf32>):
 //     memref.copy %arg4, %arg5 : memref<1x256x9216xf32> to memref<1x256x9216xf32>
 //     rock.yield

@@ -14,7 +14,7 @@ module {
     %5 = rock.transform %3 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["dim0", "dim2", "dim1"] at [0, 1, 2] -> ["dim0", "dim2", "dim1"] at [0, 2, 1]>] bounds = [4, 32, 32] -> [4, 32, 32]> : memref<4x32x32xf32> to memref<4x32x32xf32>
     rock.gemm_elementwise_gemm{
       ab = %2 * tr %5 : memref<4x32x32xf32>, memref<4x32x32xf32>
-      ab = elementwise otherIns(%arg1 : memref<4096xf32>) {
+      elementwise otherIns(%arg1 : memref<4096xf32>) {
     ^bb0(%arg5: memref<4x32x32xf32>, %arg6: memref<4096xf32>, %arg7: memref<4x32x32xf32>):
       %7 = rock.transform %arg5 by <affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)> by [<Unmerge{4} ["exp1"] at [1] -> ["dim0"] at [0]>, <PassThrough ["dim1"] at [2] -> ["dim1"] at [1]>, <PassThrough ["dim2"] at [3] -> ["dim2"] at [2]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 4, 32, 32] -> [4, 32, 32]> : memref<4x32x32xf32> to memref<1x4x32x32xf32>
       %8 = rock.transform %arg6 by <affine_map<(d0, d1, d2, d3) -> ((d1 * 32 + d2) * 32 + d3)> by [<Unmerge{4, 32, 32} ["exp1", "exp2", "exp3"] at [1, 2, 3] -> ["dim0"] at [0]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 4, 32, 32] -> [4096]> : memref<4096xf32> to memref<1x4x32x32xf32>

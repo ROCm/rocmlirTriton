@@ -528,7 +528,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   // DISABLED-CHECK-SAME: storeMethod = #rock<StoreMethod atomic_add>
 //   %result = rock.gemm_elementwise_gemm{
 //    ab = %2 * %1 : tensor<1x64x64xf32>, tensor<1x64x64xf32>
-//    ab = elementwise {
+//    elementwise {
 //   ^bb0(%arg5: tensor<1x64x64xf32>, %arg6: tensor<1x64x64xf32>):
 //     rock.yield
 //   }
