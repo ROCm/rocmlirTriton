@@ -1086,9 +1086,6 @@ LogicalResult ExpandStridesOp::verify() {
     if (resDim < inDim)
       return emitOpError("result dimension ")
              << resDim << " is smaller than input dimension " << inDim;
-    if (resDim % inDim != 0)
-      return emitOpError("result dimension ")
-             << resDim << " is not a multiple of input dimension " << inDim;
   }
 
   if (inputType.getElementType() != resultType.getElementType())
