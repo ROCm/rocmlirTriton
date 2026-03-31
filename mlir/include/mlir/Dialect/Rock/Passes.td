@@ -511,7 +511,8 @@ def RockFlattenTosaFuncArgsPass
 
 def RockExpandStridesLoweringPass
     : Pass<"rock-expand-strides-lowering", "::mlir::func::FuncOp"> {
-  let summary = "Lower rock.expand_strides to dest-side Slice transforms on rock.store";
+  let summary =
+      "Lower rock.expand_strides to dest-side Slice transforms on rock.store";
   let dependentDialects = ["rock::RockDialect"];
 }
 

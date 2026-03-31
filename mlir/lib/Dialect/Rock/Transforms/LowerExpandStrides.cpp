@@ -107,7 +107,8 @@ struct ExpandStridesLoweringPattern
     ArrayRef<int64_t> inputShape = inputType.getShape();
     int64_t rank = inputType.getRank();
 
-    // Build dest-side transforms: storeDest -> Unmerge -> expanded -> Slice -> input
+    // Build dest-side transforms: storeDest -> Unmerge -> expanded -> Slice ->
+    // input
     Value newDest = storeDest;
 
     // Step 1: If the dest is flat (1D) and the expanded shape is N-D,
@@ -127,8 +128,8 @@ struct ExpandStridesLoweringPattern
         lengths.push_back(expandedShape[i]);
       }
 
-      BottomUpTMBuilder unmergeBuilder(rewriter, {"flat"},
-                                       destType.getShape(), loc);
+      BottomUpTMBuilder unmergeBuilder(rewriter, {"flat"}, destType.getShape(),
+                                       loc);
       unmergeBuilder.unmerge(upperNames, upperDims, "flat", lengths);
       TransformMapAttr unmergeAttr = unmergeBuilder.get();
       newDest = TransformOp::create(rewriter, loc, newDest, unmergeAttr);
@@ -153,12 +154,12 @@ struct ExpandStridesLoweringPattern
       }
     }
     TransformMapAttr sliceAttr = sliceBuilder.get();
-    Value slicedDest =
-        TransformOp::create(rewriter, loc, newDest, sliceAttr);
+    Value slicedDest = TransformOp::create(rewriter, loc, newDest, sliceAttr);
 
     // Create the new store: source = original input, dest = sliced dest
-    auto newStore = StoreOp::create(rewriter, loc, storeOp.getResult().getType(),
-                                    input, slicedDest, storeOp.getStoreMethod());
+    auto newStore =
+        StoreOp::create(rewriter, loc, storeOp.getResult().getType(), input,
+                        slicedDest, storeOp.getStoreMethod());
 
     rewriter.replaceOp(storeOp, newStore.getResult());
 
