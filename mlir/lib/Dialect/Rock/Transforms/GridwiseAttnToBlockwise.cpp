@@ -893,7 +893,15 @@ struct GridwiseAttentionRewritePattern
     });
 
     SmallVector<StringRef, 3> bidGridOrder = {"g_block", "m_block", "n_block"};
+    // We need two different grid lengths because the V input tensor and the
+    // output tensor have different shapes when splitKV > 1:
+    // - V tensor shape: [gemm0G, seqK, headDim] - splitKV is NOT in the batch dim
+    // - Output tensor shape: [gemm0G * splitKV, seqQ, headDim] - splitKV IS in
+    //   the batch dim (each split writes to a separate slice of the output)
+    // Therefore, loadTile for V uses gemm1BidGridLengths, while the output
+    // store transforms use gemm1BidGridLengthsForStore.
     SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks, 1};
+    SmallVector<int64_t, 3> gemm1BidGridLengthsForStore = {gemm0G * splitKV, gemm1MBlocks, 1};
 
     // if splitKV == 1, we define nullptr, and makeGxNGridLayout() will use
     // fewer instructions
@@ -1038,8 +1046,10 @@ struct GridwiseAttentionRewritePattern
         // TODO(roctriton): scaled gemm
         Value newAcc = BlockwiseGemmOp::create(
             rewriter, loc, accArg.getType(), loadedQ, loadedK, accArg,
-            /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
-            /*quantBlockSize=*/nullptr);
+            /*matrixScaleA=*/nullptr,
+            /*matrixScaleB=*/nullptr, /*quantBlockSize=*/nullptr,
+            /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+            /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
 
         // Yield the new accumulator
         scf::YieldOp::create(rewriter, loc, ValueRange{newAcc});
@@ -1225,7 +1235,9 @@ struct GridwiseAttentionRewritePattern
       Value gemm1Out = BlockwiseGemmOp::create(
           rewriter, loc, gemm1InitAcc.getType(), gemm0Out, loadedV,
           gemm1InitAcc, /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
-          /*quantBlockSize=*/nullptr);
+          /*quantBlockSize=*/nullptr,
+          /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+          /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
 
       // Apply flash attention correction
       if (op.getEnableSoftmax()) {
@@ -1281,9 +1293,9 @@ struct GridwiseAttentionRewritePattern
         layout::makeGxNGridLayout(rewriter, loc, bid, gemm1MBlocks, zero,
                                   gridSize, arch, rock::getNumCUValue(op));
 
-    // Compute output transforms
+    // Compute output transforms - use grid lengths with splitKV for output
     FailureOr<ArrayAttr> maybeOutputViews = computeOutputTransforms(
-        rewriter, loc, gemm1MPerBlock, gemm1NPerBlock, gemm1BidGridLengths);
+        rewriter, loc, gemm1MPerBlock, gemm1NPerBlock, gemm1BidGridLengthsForStore);
 
     if (failed(maybeOutputViews)) {
       LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms\n");
@@ -1302,7 +1314,7 @@ struct GridwiseAttentionRewritePattern
 
     if (lse) {
       ArrayAttr lseMap = computeOutputLseTransforms(
-          rewriter, loc, gemm1MPerBlock, gemm1BidGridLengths);
+          rewriter, loc, gemm1MPerBlock, gemm1BidGridLengthsForStore);
 
       auto lseStoreMarkerOp = StoreMarkerOp::create(
           rewriter, loc, op.getLse().getType(), lseOut, lseMap,

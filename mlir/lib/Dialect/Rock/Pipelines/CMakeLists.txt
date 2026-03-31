@@ -3,6 +3,7 @@ add_rocmlir_dialect_library(MLIRRockPipeline
 
   LINK_LIBS PUBLIC
   MLIRAMDGPUTransforms
+  MLIRCpuTransforms
   MLIRGPUToROCDLTransforms
   MLIRArithToAMDGPU
   MLIRComplexToLLVM

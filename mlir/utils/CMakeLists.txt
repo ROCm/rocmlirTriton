@@ -1,3 +1,15 @@
+add_rocmlir_dialect_library(MLIRRocMLIRUtils
+  DetachReattach.cpp
+
+  ADDITIONAL_HEADER_DIRS
+  ${MLIR_MAIN_INCLUDE_DIR}/mlir/utils
+
+  LINK_LIBS PUBLIC
+  MLIRFuncDialect
+  MLIRIR
+  MLIRSupport
+)
+
 # Performance tests can't meaningfully be used without the ability to
 # run code we generate from within our build, which is controlled by
 # MLIR_ENABLE_ROCM_RUNNNER . Furthermore, not guarding the performance

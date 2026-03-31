@@ -1,3 +1,4 @@
+add_subdirectory(CPU)
 
 set(LLVM_TARGET_DEFINITIONS RocMLIRPasses.td)
 mlir_tablegen(RocMLIRPasses.h.inc -gen-pass-decls -name RocMLIRConversion)

@@ -26,17 +26,18 @@ namespace rock {
 // Building and Registering.
 //===----------------------------------------------------------------------===//
 
-//===--- Bufferize Pipeline -----------------------------------------------===//
-struct BufferizeOptions : public PassPipelineOptions<BufferizeOptions> {
+//===--- Highlevel Pipeline
+//------------------------------------------------===//
+struct HighlevelOptions : public PassPipelineOptions<HighlevelOptions> {
 
   PassOptions::Option<bool> disableRock{
       *this, "disable-rock",
       desc("Disable Rock dialect targeting when bufferizing"), init(false)};
 };
 
-/// Adds the `bufferize` pipeline to the `OpPassManager`.
-void buildBufferizePipeline(OpPassManager &pm,
-                            const BufferizeOptions &options = {});
+/// Adds the `highlevel` pipeline to the `OpPassManager`.
+void buildHighlevelPipeline(OpPassManager &pm,
+                            const HighlevelOptions &options = {});
 
 //===--- Kernel Pipeline --------------------------------------------------===//
 struct KernelOptions : public PassPipelineOptions<KernelOptions> {
@@ -97,6 +98,9 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> suppressDiagnostic{
       *this, "suppress-diagnostic",
       desc("should we suppress diagnostic messages"), init(false)};
+  PassOptions::Option<std::string> dumpCpuSchedules{
+      *this, "dump-cpu-schedules",
+      desc("Path to dump CPU verifier IR and transform schedules"), init("")};
 };
 
 /// Adds the `backend` pipeline to the `OpPassManager`.

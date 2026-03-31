@@ -6,7 +6,7 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=highlevel -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=HIGHLEVEL --match-full-lines --strict-whitespace
 
 // COM: Do not put a leading space between the colon and the pass you're looking for
-// MIGRAPHX:Kernel pipeline:
+// MIGRAPHX:Kernel MIGraphX pipeline:
 // MIGRAPHX-NEXT:builtin.module(func.func(migraphx-realize-int4,
 // MIGRAPHX-NEXT:migraphx-transform,
 // MIGRAPHX-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
@@ -39,6 +39,8 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-lower-stores),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:func.func(rock-legalize-float-types),
+// GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-serialize-host-funcs,
 // GPU-NEXT:func.func(rock-transforms-to-ptr,
 // GPU-NEXT:rock-mask-non-zero-preserving-fusions,
@@ -53,11 +55,14 @@
 // BINARY-NEXT:builtin.module(triton-to-hsaco{allow-flush-denorm=false arch={{gfx90a|gfx942|gfx950}} enable-fp-fusion=true features= num-ctas=1 num-warps=4 opt-level=3 scalarize-packed-fops=false schedule-hint=none triple=amdgcn-amd-amdhsa waves-per-eu=0},
 // BINARY-NEXT:rock-restore-host-code{arch={{gfx90a|gfx942|gfx950}} features= opt-level=3 triple=amdgcn-amd-amdhsa},
 // BINARY-NEXT:emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false},
-// BINARY-NEXT:one-shot-bufferize{allow-return-allocs-from-loops=false allow-unknown-ops=false analysis-fuzzer-seed=0 analysis-heuristic=bottom-up buffer-alignment=64 bufferize-function-boundaries=true check-parallel-regions=true copy-before-write=false  dump-alias-sets=false function-boundary-type-conversion=infer-layout-map must-infer-memory-space=false  print-conflicts=false test-analysis-only=false unknown-type-conversion=fully-dynamic-layout-map use-encoding-for-memory-space=false},
+// BINARY-NEXT:cpu-lower-verifier{dump-schedules-path= phase=1},
+// BINARY-NEXT:one-shot-bufferize{allow-return-allocs-from-loops=false allow-unknown-ops=false analysis-fuzzer-seed=0 analysis-heuristic=bottom-up buffer-alignment=64 bufferize-function-boundaries=true check-parallel-regions=true copy-before-write=false  dump-alias-sets=false function-boundary-type-conversion=identity-layout-map must-infer-memory-space=false  print-conflicts=false test-analysis-only=false unknown-type-conversion=fully-dynamic-layout-map use-encoding-for-memory-space=false},
+// BINARY-NEXT:cpu-lower-verifier{dump-schedules-path= phase=2},
 // BINARY-NEXT:convert-linalg-to-loops,
 // BINARY-NEXT:expand-strided-metadata,
 // BINARY-NEXT:lower-affine,
 // BINARY-NEXT:convert-scf-to-cf{allow-pattern-rollback=true},
+// BINARY-NEXT:arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true},
 // BINARY-NEXT:func.func(gpu-async-region),
 // BINARY-NEXT:convert-cf-to-llvm{index-bitwidth=0},
 // BINARY-NEXT:convert-arith-to-llvm{index-bitwidth=0},
@@ -68,7 +73,7 @@
 // BINARY-NEXT:cse,
 // BINARY-NEXT:reconcile-unrealized-casts)
 
-// HIGHLEVEL:Kernel pipeline:
+// HIGHLEVEL:Kernel Highlevel pipeline:
 // HIGHLEVEL-NEXT:builtin.module(func.func(tosa-to-tensor,
 // HIGHLEVEL-NEXT:tosa-to-rock,
 // HIGHLEVEL-NEXT:rock-view-to-transform,

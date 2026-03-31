@@ -141,8 +141,8 @@ void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm) {
   if (failed(applyPassManagerCLOptions(*passMan)))
     llvm::errs() << "Failed to apply command-line options.\n";
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
-  mlir::migraphx::addHighLevelPipeline(*passMan);
-  mlir::rock::buildBufferizePipeline(*passMan);
+  mlir::migraphx::addMIGraphXPipeline(*passMan);
+  mlir::rock::buildHighlevelPipeline(*passMan);
 }
 
 MLIR_CAPI_EXPORTED void
@@ -172,7 +172,15 @@ MLIR_CAPI_EXPORTED bool mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
     llvm::errs() << "Invalid architecture: " << archStr << "\n";
     return false;
   }
-  // TODO(roctriton): add missing options!
+
+  // TODO(rocmlirTriton): Currently we are just setting the default values
+  // for TritonOptions, kernelOptions (above), and BackendOptions (below).
+  // Moving forwards we want figure out a way that we can set these options
+  // without changing the existing function signature to add a module op.
+  mlir::rock::TritonOptions tritonOpts;
+  tritonOpts.arch = devName.getChip().str();
+  mlir::rock::buildTritonPipeline(*passMan, tritonOpts);
+
   mlir::rock::BackendOptions opts;
   opts.triple = devName.getTriple().str();
   opts.chip = devName.getChip().str();

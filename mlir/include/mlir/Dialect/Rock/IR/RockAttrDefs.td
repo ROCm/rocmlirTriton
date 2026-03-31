@@ -383,6 +383,15 @@ def Rock_GridSsize : Rock_Attr<"GridSize"> {
   let mnemonic = "rock.grid_size";
 }
 
+def Rock_CpuVerifier : Rock_Attr<"CpuVerifier"> {
+  let mnemonic = "rock.cpu_verifier";
+  let description = [{
+    Marker attribute to indicate that a function is a CPU verifier function.
+    This attribute is used by buildHostLoweringPipeline to identify functions
+    that should be lowered using the CPU verifier pass.
+  }];
+}
+
 def Rock_PrefillAttr : Rock_Attr<"Prefill"> {
   let mnemonic = "rock.prefill";
 

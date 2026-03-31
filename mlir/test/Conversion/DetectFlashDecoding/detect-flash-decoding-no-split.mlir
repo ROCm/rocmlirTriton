@@ -37,7 +37,7 @@ module {
   // CHECK-DEBUG: No flash decoding detected
 
   // CHECK-IR-LABEL: @mlir_no_split_attention
-  func.func @mlir_no_split_attention(%arg0: tensor<786432xf16>, %arg1: tensor<393216xf16>, %arg2: tensor<393216xf16>) -> (tensor<786432xf16>, tensor<3072xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", kernel = "mixr", num_cu = 48 : i64} {
+  func.func @mlir_no_split_attention(%arg0: tensor<786432xf16>, %arg1: tensor<393216xf16>, %arg2: tensor<393216xf16>) -> (tensor<786432xf16>, tensor<3072xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.kernel = "mixr", rock.num_cu = 48 : i64} {
     %0 = rock.transform %arg1 by #transform_map : tensor<393216xf16> to tensor<1x12x128x256xf16>
     %1 = rock.transform %arg0 by #transform_map1 : tensor<786432xf16> to tensor<1x12x1x256x256xf16>
     %2 = rock.transform %1 by #transform_map2 : tensor<1x12x1x256x256xf16> to tensor<1x12x1x256x256xf16>

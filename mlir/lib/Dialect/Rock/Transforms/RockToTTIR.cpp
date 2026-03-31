@@ -204,24 +204,39 @@ struct RockBlockwiseGemmOpRewritePattern
     Value scaledB = op.getMatrixScaleB();
 
     // Get the tensor types
-    auto aTensorType = dyn_cast<RankedTensorType>(a.getType());
-    auto bTensorType = dyn_cast<RankedTensorType>(b.getType());
-    auto cTensorType = dyn_cast<RankedTensorType>(c.getType());
-    if (!aTensorType || !bTensorType || !cTensorType)
-      return failure();
+    auto aTensorType = cast<RankedTensorType>(a.getType());
+    auto bTensorType = cast<RankedTensorType>(b.getType());
+    auto cTensorType = cast<RankedTensorType>(c.getType());
+
+    // Use tt.dot_scaled when either:
+    //   (1) original element types were recorded, or
+    //   (2) scale operands are present.
+    // This ensures f8 uses float MFMA (via dot_scaled) instead of
+    // integer MFMA (via dot with i8 operands).
+    bool hasOrigElemTypes = op.getMatrixAOrigElemType().has_value() &&
+                            op.getMatrixBOrigElemType().has_value();
+    bool hasScales = scaledA && scaledB;
+    bool useDotScaled = hasOrigElemTypes || hasScales;
 
     Value result;
-    if (scaledA && scaledB) {
-      auto aElemTy = rock::mlirTypeToScaleDotElemType(
-          cast<RankedTensorType>(a.getType()).getElementType());
-      auto bElemTy = rock::mlirTypeToScaleDotElemType(
-          cast<RankedTensorType>(b.getType()).getElementType());
+    if (useDotScaled) {
+      // Use original element types saved by LegalizeFloatTypes (if any).
+      Type aOrigType =
+          op.getMatrixAOrigElemType().value_or(aTensorType.getElementType());
+      Type bOrigType =
+          op.getMatrixBOrigElemType().value_or(bTensorType.getElementType());
+      auto aElemTy = rock::mlirTypeToScaleDotElemType(aOrigType);
+      auto bElemTy = rock::mlirTypeToScaleDotElemType(bOrigType);
       if (failed(aElemTy) || failed(bElemTy))
-        return failure();
+        return op.emitError("unsupported element type for tt.dot_scaled");
+
+      bool matrixAKPack = op.getMatrixAKPack().value_or(true);
+      bool matrixBKPack = op.getMatrixBKPack().value_or(true);
 
       result = triton::DotScaledOp::create(rewriter, loc, cTensorType, a, b, c,
                                            scaledA, scaledB, aElemTy.value(),
-                                           bElemTy.value(), /*fastMath=*/false);
+                                           bElemTy.value(), /*fastMath=*/false,
+                                           matrixAKPack, matrixBKPack);
     } else {
       // Create tt.dot operation
       result =
@@ -229,8 +244,6 @@ struct RockBlockwiseGemmOpRewritePattern
                                 /*inputPrecision=*/triton::InputPrecision::IEEE,
                                 /*maxNumImpreciseAcc=*/0);
     }
-
-    // We dont use replaceOp because result has one result whereas op has none.
     rewriter.replaceOp(op, result);
     return success();
   }

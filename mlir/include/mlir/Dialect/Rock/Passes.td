@@ -133,6 +133,21 @@ def RockFusionSplitkRegularizationPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockLegalizeFloatTypesPass
+    : Pass<"rock-legalize-float-types", "::mlir::func::FuncOp"> {
+  let summary = "Legalize float types not in Triton's TT_Float to integers";
+  let description = [{
+    Triton's tt.load only accepts TT_Float types. Float types outside that set
+    (e.g. f8E8M0FNU, f4E2M1FN) are bitcast to integer types of the same bit
+    width (i8, i4) so downstream TTIR lowering works.
+    For kernel functions, replaces all non-TT_Float element types with
+    matching-width integers (a bitwise reinterpretation, not a value cast).
+    For the GPU wrapper, inserts unrealized_conversion_cast to reinterpret
+    memrefs before bufferization.to_tensor (no signature change needed).
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
 def RockTransformsToPtrPass : Pass<"rock-transforms-to-ptr", "::mlir::func::FuncOp"> {
   let summary = "";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
@@ -272,11 +287,10 @@ def RockRestoreHostCodePass : Pass<"rock-restore-host-code", "::mlir::ModuleOp">
 
     This allows the full test harness to work with the Triton-compiled kernel.
   }];
-  let dependentDialects = [
-    "func::FuncDialect",
-    "gpu::GPUDialect",
-    "arith::ArithDialect",
-    "memref::MemRefDialect",
+  let dependentDialects = ["bufferization::BufferizationDialect",
+                           "func::FuncDialect", "gpu::GPUDialect",
+                           "arith::ArithDialect", "memref::MemRefDialect",
+                           "ROCDL::ROCDLDialect",
   ];
   let options = [
     Option<"triple", "triple", "std::string", "\"amdgcn-amd-amdhsa\"",

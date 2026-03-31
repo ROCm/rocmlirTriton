@@ -9,6 +9,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   GridLayoutEmitter.cpp
   ViewToTransform.cpp
   FusionSplitkRegularizationPass.cpp
+  LegalizeFloatTypes.cpp
   TransformsToPtr.cpp
   MaskNonZeroPreservingFusions.cpp
   TransformsToPointerArith.cpp

@@ -40,6 +40,7 @@
 
 #include "mlir/Conversion/RocMLIRPasses.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Tosa/IR/TargetEnv.h"
@@ -242,8 +243,8 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
 
 //===- Consolidate the Rock Pipelines here ---------------------===//
 
-void rock::buildBufferizePipeline(OpPassManager &pm,
-                                  const rock::BufferizeOptions &options) {
+void rock::buildHighlevelPipeline(OpPassManager &pm,
+                                  const rock::HighlevelOptions &options) {
   bool noRock = options.disableRock;
 
   auto &funcPm = pm.nest<func::FuncOp>();
@@ -340,6 +341,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
 
+  // This pass converts unsupported float types to int8, take that into account
+  // for next passes (e.g. integer arithmetic optimizations)
+  addWithDCE(rock::createRockLegalizeFloatTypesPass());
+
   // Serialize and erase host functions BEFORE any func-level pass that
   // changes the kernel signature (e.g. RockToTTIRPass sets return to void).
   // Must use a new nest<func::FuncOp>() so these passes go into a separate
@@ -376,13 +381,27 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
-static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
-  // Bufferize tensor ops to memref ops - required before linalg-to-loops
-  // The host functions restored from attributes contain tensor operations
-  // that need to be converted to memref operations first.
+static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
+                                      StringRef dumpCpuSchedules = "") {
+  // CPU optimization phase.
+  // This transforms the function body but keeps tensor types at boundaries.
+  cpu::CpuLowerVerifierPassOptions cpuOpts;
+  cpuOpts.dumpSchedulesPath = dumpCpuSchedules.str();
+  cpuOpts.phase = cpu::CPU_PHASE_OPTIMIZE;
+  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
+
+  // Bufferize tensor ops to memref ops for the whole module.
+  // This handles both the CPU verifier functions and their call sites,
+  // eliminating the need for manual call site updates.
   bufferization::OneShotBufferizePassOptions bufOpts;
   bufOpts.bufferizeFunctionBoundaries = true;
+  bufOpts.functionBoundaryTypeConversion =
+      bufferization::LayoutMapOption::IdentityLayoutMap;
   pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
+
+  // Lower to LLVM phase (after bufferization)
+  cpuOpts.phase = cpu::CPU_PHASE_LOWERTOLLVM;
+  pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
 
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());
@@ -396,6 +415,13 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm) {
 
   // Lower SCF to control flow
   pm.addPass(createSCFToControlFlowPass());
+
+  // Expand f8E8M0FNU/f4E2M1FN extf/truncf to bitwise ops first, so that
+  // arith operations using these types are lowered before type conversion.
+  arith::ArithExpandOpsPassOptions expandOpts;
+  expandOpts.includeF8E8M0 = true;
+  expandOpts.includeF4E2M1 = true;
+  pm.addPass(arith::createArithExpandOpsPass(expandOpts));
 
   // Make GPU operations async - required by GpuToLLVMConversionPass patterns
   pm.addNestedPass<func::FuncOp>(createGpuAsyncRegionPass());
@@ -459,7 +485,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     pm.addPass(createEmulateFp8ExtTruncPass());
 
     // Lower host code (GPU launch + func/memref ops) to LLVM
-    buildHostLoweringPipeline(pm);
+    buildHostLoweringPipeline(pm, options.dumpCpuSchedules);
   }
 }
 
@@ -468,10 +494,10 @@ void rock::buildBackendPipeline(OpPassManager &pm,
 //===----------------------------------------------------------------------===//
 
 void rock::registerPipelines() {
-  PassPipelineRegistration<rock::BufferizeOptions>(
-      "rock-bufferize-pipeline",
+  PassPipelineRegistration<rock::HighlevelOptions>(
+      "rock-highlevel-pipeline",
       " representations and algorithms for sparse tensors.",
-      buildBufferizePipeline);
+      buildHighlevelPipeline);
   PassPipelineRegistration<rock::KernelOptions>(
       "rock-kernel-pipeline",
       " representations and algorithms for sparse tensors.",

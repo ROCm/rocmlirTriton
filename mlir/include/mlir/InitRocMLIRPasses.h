@@ -15,12 +15,15 @@
 #define MLIR_INITROCMLIRPASSES_H_
 
 // rocMLIR includes
+#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Conversion/RocMLIRPasses.h"
 #include "mlir/Dialect/MIGraphX/Passes.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 
 // MLIR includes
+#include "mlir/Conversion/Passes.h"
+#include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
 #include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
@@ -51,12 +54,12 @@ inline void registerUpstreamPasses() {
   registerTosaToLinalgNamed();
   registerTosaToSCFPass();
   registerConvertControlFlowToLLVMPass();
+  registerConvertVectorToSCFPass();
+  registerConvertVectorToLLVMPass();
+  registerConvertLinalgToLoopsPass();
 
-  // TODO: These require GPU/ROCDL dialects - evaluate for Triton backend
-  // registerArithToAMDGPUConversionPass();
-  // registerConvertAMDGPUToROCDLPass();
-  // registerConvertGpuOpsToROCDLOps();
-  // registerFinalizeMemRefToLLVMConversionPass();
+  // Register memref-to-llvm pass for CPU verifier lowering
+  registerFinalizeMemRefToLLVMConversionPass();
 
   // MLIR passes
   registerTransformsPasses();
@@ -84,6 +87,7 @@ inline void registerUpstreamPasses() {
 // The global registry is interesting to interact with the command-line tools.
 inline void registerRocMLIRPasses() {
   registerRocMLIRConversionPasses();
+  cpu::registerPasses();  // Register CPU verifier lowering passes
   migraphx::registerPasses();
   rock::registerPasses();
   rock::registerPipelines();

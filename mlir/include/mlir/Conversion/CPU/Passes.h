@@ -1,0 +1,53 @@
+//===- Passes.h - CPU pass entry points -------------------------*- C++ -*-===//
+//
+// Copyright 2026 Advanced Micro Devices.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// =============================================================================
+//
+// This header file defines prototypes that expose pass constructors for the
+// CPU dialect.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef MLIR_CONVERSION_CPU_PASSES_H_
+#define MLIR_CONVERSION_CPU_PASSES_H_
+
+#include "mlir/Pass/Pass.h"
+#include "mlir/Support/LLVM.h"
+#include "llvm/ADT/ArrayRef.h"
+
+namespace mlir {
+namespace cpu {
+
+/// Phases for the CpuLowerVerifier pass.
+/// The pass runs in two phases to allow whole-module bufferization in between.
+enum CpuLowerPhase {
+  /// Phase 1: Apply optimization transforms (tiling, vectorization, unroll)
+  /// Run this before whole-module bufferization.
+  CPU_PHASE_OPTIMIZE = 1,
+
+  /// Phase 2: Lower to LLVM dialect
+  /// Run this after whole-module bufferization.
+  CPU_PHASE_LOWERTOLLVM = 2
+};
+
+#define GEN_PASS_DECL_CPULOWERVERIFIERPASS
+
+#define GEN_PASS_REGISTRATION
+#include "mlir/Conversion/CPU/Passes.h.inc"
+
+} // namespace cpu
+} // namespace mlir
+
+#endif // MLIR_CONVERSION_CPU_PASSES_H_

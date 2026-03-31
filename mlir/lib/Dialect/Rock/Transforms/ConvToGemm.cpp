@@ -121,6 +121,17 @@ void matchUnderlyingOrder(SmallVectorImpl<StringRef> &names,
             });
 }
 
+// If `dest` is defined after `op` (e.g. because RegularizeOutput added
+// transforms to the store dest after the conv), move the builder's insertion
+// point past `dest`'s definition so that new ops don't violate dominance.
+static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
+                                    Value dest) {
+  if (Operation *defOp = dest.getDefiningOp()) {
+    if (defOp->getBlock() == op->getBlock() && op->isBeforeInBlock(defOp))
+      b.setInsertionPointAfter(defOp);
+  }
+}
+
 // TODO(rocmlirTriton): Propagate the type to fusions as well.
 /// Update any StoreOp that uses the conv result to use the gemm result instead.
 /// The conv result type differs from the gemm result type (due to shape
@@ -510,8 +521,11 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   auto maybeStores = traceRootOutputToStoreOps(op.getResult());
   if (failed(maybeStores))
     return op.emitOpError("cannot trace bwd_weight result to rock::StoreOp");
+  assert(maybeStores->size() == 1 &&
+         "bwd_weight has no fusions, expected exactly one store");
   StoreOp firstStore = maybeStores->front();
   Value filterDest = firstStore.getDest();
+  ensureInsertionAfterDef(b, op, filterDest);
 
   // Regularize filter dest layout to match input layout ordering.
   // This must happen before building transforms so that filterNames,
@@ -1102,27 +1116,13 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
         rock::backwardDataKernelIds(strideDims, dilationDims, filterDims);
 
     // ConvBwdData rewrite currently expects a single consuming rock.store.
-    SmallVector<StoreOp, 1> storeOps;
-    for (Operation *user : bwdDataOp.getResult().getUsers()) {
-      if (auto sop = dyn_cast<StoreOp>(user)) {
-        storeOps.push_back(sop);
-        continue;
-      }
-
-      bwdDataOp.emitOpError()
-          << "expected only rock.store users during ConvBwdData rewrite, got "
-          << user->getName();
-      return failure();
-    }
-
-    if (storeOps.size() != 1) {
-      bwdDataOp.emitOpError()
-          << "expected exactly one consuming rock.store user during "
-             "ConvBwdData rewrite, got "
-          << storeOps.size();
-      return failure();
-    }
-    StoreOp originalStoreOp = storeOps.front();
+    auto maybeStores = traceRootOutputToStoreOps(bwdDataOp.getResult());
+    if (failed(maybeStores))
+      return bwdDataOp.emitOpError(
+          "cannot trace bwd_data result to rock::StoreOp");
+    assert(maybeStores->size() == 1 &&
+           "bwd_data has no fusions, expected exactly one store");
+    StoreOp originalStoreOp = maybeStores->front();
 
     Type storeResultType = originalStoreOp.getResult().getType();
     auto storeMethod = originalStoreOp.getStoreMethodAttr();
@@ -1132,6 +1132,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // because it represents the input gradient, and the input layout is the
     // reference layout that everything else is regularized against.
     Value destBuffer = originalStoreOp.getDest();
+    ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
+
     Value lastStoreResult;
     for (int64_t kid : kernelIds) {
       auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
@@ -1227,6 +1229,9 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   if constexpr (notConvGemm) {
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
+      // BwdWeight: the regularized filterValue feeds into filter transforms
+      // that become gemm operands, so keep the insertion point moved.
+      ensureInsertionAfterDef(b, op, destBuffer);
       auto mapping = buildInputToFilterMapping(b, rank);
       filterValue = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
@@ -1235,18 +1240,37 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
           filterNames);
       filterShape = cast<ShapedType>(filterValue.getType()).getShape();
     } else {
-      // ConvOp: regularize output dest buffer.
-      auto mapping = buildInputToOutputMapping(b, rank);
-      destBuffer = regularizeDestLayout(
-          b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
-          destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
-          mapping, outputNames);
-      auto relayoutAttr =
-          cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
+      // ConvOp: regularize at the dest buffer's location, then restore the
+      // insertion point to the conv so filter/input transforms and the gemm
+      // are placed there. The gemm doesn't take gemmOutput as an SSA operand.
+      TransformMapAttr relayoutAttr;
+      {
+        OpBuilder::InsertionGuard guard(b);
+        ensureInsertionAfterDef(b, op, destBuffer);
+        auto mapping = buildInputToOutputMapping(b, rank);
+        destBuffer = regularizeDestLayout(
+            b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
+            destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
+            mapping, outputNames);
+        relayoutAttr =
+            cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
+      }
+      // Apply the relayout to each output view and fusion extra input,
+      // placing each transform right after its input's defining op so it
+      // dominates all consumers (fusion ops, stores).
+      auto applyRelayout = [&](Value &v) {
+        if (Operation *defOp = v.getDefiningOp()) {
+          OpBuilder::InsertionGuard vg(b);
+          b.setInsertionPointAfter(defOp);
+          v = TransformOp::create(b, loc, v, relayoutAttr);
+        } else {
+          v = TransformOp::create(b, loc, v, relayoutAttr);
+        }
+      };
       for (auto &view : outputViews)
-        view = TransformOp::create(b, loc, view, relayoutAttr);
+        applyRelayout(view);
       for (auto &[orig, view] : fusionInputMap)
-        view = TransformOp::create(b, loc, view, relayoutAttr);
+        applyRelayout(view);
     }
   }
 

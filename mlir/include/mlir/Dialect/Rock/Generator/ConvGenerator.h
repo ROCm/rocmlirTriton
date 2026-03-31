@@ -83,6 +83,7 @@ public:
 
   const Config &getConfig() const { return config; }
   void setKernelName(const std::string &newName);
+  void setKernelId(int id);
 
   LogicalResult getKernelCount(OpBuilder &builder, int &kernelCount) const;
 
@@ -178,6 +179,26 @@ private:
   // Generated Kernel Func
   func::FuncOp kernelFunc;
 };
+
+/// Reorder a vector of conv arguments from standard [filter, input, output,
+/// workspace?] order to kernel argument order, where the store destination
+/// (the tensor being computed) is always last:
+///   Fwd:       [filter, input, output]          (no change)
+///   BwdData:   [filter, output, input]           (swap input/output)
+///   BwdWeight: [input, output, workspace?, filter] (rotate filter to end)
+template <typename T>
+void reorderConvArgsForKernel(ConvOpType opType, SmallVectorImpl<T> &args) {
+  switch (opType) {
+  case ConvOpType::Fwd:
+    break;
+  case ConvOpType::BwdData:
+    std::swap(args[1], args[2]);
+    break;
+  case ConvOpType::BwdWeight:
+    std::rotate(args.begin(), args.begin() + 1, args.end());
+    break;
+  }
+}
 
 } // namespace rock
 } // namespace mlir

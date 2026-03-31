@@ -33,7 +33,7 @@ namespace rock {
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-regularize"
+#define DEBUG_TYPE "rock-regularize-output"
 
 using namespace mlir;
 using namespace mlir::rock;
