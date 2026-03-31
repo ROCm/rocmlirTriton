@@ -1,4 +1,4 @@
-// TODO(rocmlirTriton): TransformMapBuilder.cpp:189: mlir::rock::TransformMapBuilder::TransformMapBuilder(mlir::Builder &, ArrayRef<StringRef>, ArrayRef<int64_t>, mlir::Location): Assertion `startNamesArg.size() == startShapeArg.size() && "Start names and shape must have the same size"' failed.
+// TODO(rocmlirTriton): 'func.func' op expects result attribute array to have the same number of elements as the number of function results, got 1, but expected 0
 // UNSUPPORTED: true
 // RUN: rocmlir-gen -fut dot_add_reduce_mean --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut dot_add_reduce_mean --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
