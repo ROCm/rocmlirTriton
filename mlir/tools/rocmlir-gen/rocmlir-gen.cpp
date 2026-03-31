@@ -4617,6 +4617,9 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   Value lseOut;
+  // if split-kv is > 1, we use the LSE to compute the final result.
+  // There's no need to verify it, and it's expected to be different
+  // cpu vs gpu (sometimes).
   if (returnLSE)
     lseOut = block->getArgument(optionalArgsCounter++);
 
@@ -4986,7 +4989,7 @@ static void callTensorFuncWithMemrefs(OpBuilder &b, Location loc,
 ///
 /// The cpu_host function was created from the original function before the
 /// kernel pipeline ran. rock-insert-output-stores appends output argument(s)
-/// to the end of the kernel's signature, so the kernel may have more args
+/// to the end of the kernel's signature, so the kernel will have more args
 /// than cpu_host. The first cpuHostFunc.getNumArguments() args of the kernel
 /// always match cpu_host's args in order.
 static void callCpuHostWithMemrefs(OpBuilder &b, Location loc,
@@ -5384,8 +5387,10 @@ static LogicalResult populateHostHarnessLogic(
   // capture result index
   if (outIndices.empty()) {
     size_t numResults = std::max<size_t>(root0.resultTypes.size(), 1);
-    for (size_t i = 0; i < numResults; ++i) {
-      outIndices.push_back(localVars.size() - numResults + i);
+    assert(localVars.size() >= numResults &&
+           "fewer localVars than kernel results");
+    for (size_t i = localVars.size() - numResults; i < localVars.size(); ++i) {
+      outIndices.push_back(i);
     }
   }
   if (allOutIndices.empty())
