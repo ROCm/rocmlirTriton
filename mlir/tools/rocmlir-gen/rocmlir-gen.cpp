@@ -1424,13 +1424,11 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
         // Output), so map result i to the (numResults - 1 - i)-th-from-last
         // argument.
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-          if (resultIdx < outIndices.size()) {
-            int32_t outIdx = outIndices[resultIdx];
-            auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
-            Value resultMemref = bufferization::ToBufferOp::create(
-                b, loc, outMemrefType, result);
-            memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
-          }
+          int32_t outIdx = outIndices[resultIdx];
+          auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
+          Value resultMemref = bufferization::ToBufferOp::create(
+              b, loc, outMemrefType, result);
+          memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
         }
       } else {
         // Legacy memref-based kernel - call directly
@@ -5229,6 +5227,7 @@ static LogicalResult populateHostHarnessLogic(
 
   bool isAttention = false;
   SmallVector<int32_t, 2> outIndices;
+  SmallVector<int32_t, 2> allOutIndices;
   if (genParams.operation.has_value()) {
     switch (genParams.operation.value()) {
     case rock::KernelType::Conv:
@@ -5263,6 +5262,8 @@ static LogicalResult populateHostHarnessLogic(
         int32_t lseArgIdx = optionalArgsCounter;
         ++optionalArgsCounter;
         outIndices.push_back(optionalArgsCounter);
+        allOutIndices.push_back(optionalArgsCounter);
+        allOutIndices.push_back(lseArgIdx);
         // Only verify LSE when splitKV == 1; with splitKV > 1, the LSE
         // is an intermediate used to compute the final result.
         if (splitKV == 1)
@@ -5387,6 +5388,8 @@ static LogicalResult populateHostHarnessLogic(
       outIndices.push_back(localVars.size() - numResults + i);
     }
   }
+  if (allOutIndices.empty())
+    allOutIndices = outIndices;
 
   // Helper to call a function with appropriate type conversions
   // Handles both tensor-based (new) and memref-based (legacy) kernel interfaces
@@ -5531,7 +5534,7 @@ static LogicalResult populateHostHarnessLogic(
   func::FuncOp gpuWrapperFunc;
   if (!kernelsSet.empty())
     gpuWrapperFunc = createGPUWrapper(module, kernelBaseName, kernels,
-                                      genParams, outIndices);
+                                      genParams, allOutIndices);
   // Redirect calls to kernel functions to point at wrapped functions.
   func.walk([&](CallOpInterface callOp) -> WalkResult {
     // If the callee matches a wrapped function, update the call.
