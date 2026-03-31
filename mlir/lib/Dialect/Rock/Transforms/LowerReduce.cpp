@@ -81,41 +81,39 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     case ReduceMethod::Max:
       storeMethod = StoreMethod::AtomicMax;
       break;
-    default:
-      return reduceOp.emitError("unexpected reduce method");
     }
 
-    // Find the rock.store that directly consumes the reduce result.
     Value reduceResult = reduceOp.getResult();
-    FailureOr<SetVector<StoreOp>> maybeStores =
-        rock::traceRootOutputToStoreOps(reduceResult);
+    if (reduceResult.getNumUses() != 1)
+      return reduceOp.emitError("Expected exactly one use of the ReduceOp");
 
-    if (failed(maybeStores)) {
-      return reduceOp.emitError("cannot trace to rock::StoreOp");
+    // Walk from reduceResult through any intermediate TransformOps to the store.
+    // Earlier passes may insert transforms (e.g. Merge) between the reduce
+    // output and the store to match the function signature's flat tensor shape.
+    Value current = reduceResult;
+    SmallVector<TransformOp> intermediateOps;
+    while (current.hasOneUse()) {
+      Operation *user = *current.user_begin();
+      if (auto transformOp = dyn_cast<TransformOp>(user)) {
+        intermediateOps.push_back(transformOp);
+        current = transformOp.getResult();
+      } else {
+        break;
+      }
     }
-    SetVector<StoreOp> &stores = maybeStores.value();
 
-    if (stores.empty())
+    if (!current.hasOneUse())
+      return reduceOp.emitError(
+          "Expected single-use chain from reduce to store");
+
+    auto storeOp = dyn_cast<StoreOp>(*current.user_begin());
+    if (!storeOp)
       return reduceOp.emitError(
           "rock.reduce result does not feed into a rock.store");
 
-    if (stores.size() != 1)
-      return reduceOp.emitError(
-          "Expected exactly one rock.store to consume the reduce result");
-
-    if(reduceResult.getNumUses() != 1) {
-      return reduceOp.emitError(
-          "Expected exactly one use of the ReduceOp");
-    }
-
-    StoreOp storeOp = stores[0];
-
-    // Build a Broadcast transform on the store destination.
-    // The destination has the reduced shape (axis dim = 1).
-    // We broadcast that axis to match the unreduced input shape.
     Value storeDest = storeOp.getDest();
-    auto destType = cast<RankedTensorType>(storeDest.getType());
-    ArrayRef<int64_t> destShape = destType.getShape();
+    auto reduceOutputType = cast<RankedTensorType>(reduceResult.getType());
+    ArrayRef<int64_t> reduceOutputShape = reduceOutputType.getShape();
 
     SmallVector<StringAttr> dimNameAttrs;
     SmallVector<StringRef> dimNames;
@@ -124,22 +122,78 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
       dimNames.push_back(dimNameAttrs.back().getValue());
     }
 
-    BottomUpTMBuilder tmBuilder(rewriter, dimNames, destShape, loc);
-    for (int64_t i = 0; i < rank; ++i) {
-      if (i == axis) {
-        tmBuilder.broadcast({static_cast<uint32_t>(i)}, {inputShape[i]});
-      } else {
-        tmBuilder.passThrough(dimNames[i]);
+    rewriter.setInsertionPoint(storeOp);
+    Value transformedDest = storeDest;
+
+    // If there are intermediate transforms (e.g. Merge reshaping the reduce
+    // output to match the flat function argument), construct inverse transforms
+    // on the store destination to get back to the reduce output shape.
+    if (!intermediateOps.empty()) {
+      for (TransformOp tOp : llvm::reverse(intermediateOps)) {
+        TransformMapAttr trMap = tOp.getTransform();
+        auto currentType = cast<RankedTensorType>(transformedDest.getType());
+        ArrayRef<int64_t> currentShape = currentType.getShape();
+
+        SmallVector<StringAttr> curNameAttrs;
+        SmallVector<StringRef> curNames;
+        for (int64_t j = 0; j < (int64_t)currentShape.size(); ++j) {
+          curNameAttrs.push_back(
+              rewriter.getStringAttr(Twine("inv") + Twine(j)));
+          curNames.push_back(curNameAttrs.back().getValue());
+        }
+
+        BottomUpTMBuilder invBuilder(rewriter, curNames, currentShape, loc);
+        for (TransformAttr tAttr : trMap.getOps()) {
+          switch (tAttr.getType()) {
+          case TransformType::Merge: {
+            StringRef lowerName = curNames[tAttr.getUpperDims()[0]];
+            SmallVector<StringRef> upperNames;
+            SmallVector<uint32_t> upperDims;
+            for (uint32_t d : tAttr.getLowerDims()) {
+              upperNames.push_back(dimNames[d]);
+              upperDims.push_back(d);
+            }
+            invBuilder.unmerge(upperNames, upperDims, lowerName,
+                               tAttr.getParams());
+            break;
+          }
+          case TransformType::PassThrough: {
+            for (size_t k = 0; k < tAttr.getUpperDims().size(); ++k) {
+              invBuilder.passThrough(
+                  ArrayRef<StringRef>{dimNames[tAttr.getLowerDims()[k]]},
+                  ArrayRef<uint32_t>{tAttr.getLowerDims()[k]},
+                  ArrayRef<StringRef>{curNames[tAttr.getUpperDims()[k]]});
+            }
+            break;
+          }
+          case TransformType::AddDim: {
+            for (uint32_t ud : tAttr.getUpperDims())
+              invBuilder.dropDimAtIndex(curNames[ud], 0);
+            break;
+          }
+          default:
+            return reduceOp.emitError("Cannot invert intermediate transform "
+                                      "between reduce and store");
+          }
+        }
+        TransformMapAttr invMap = invBuilder.get();
+        transformedDest =
+            TransformOp::create(rewriter, loc, transformedDest, invMap);
       }
     }
-    TransformMapAttr broadcastMap = tmBuilder.get();
 
-    rewriter.setInsertionPoint(storeOp);
-    ArrayAttr transformsArr = rewriter.getArrayAttr({broadcastMap});
-    Value transformedDest = rock::transform(rewriter, storeDest, transformsArr);
+    // Build broadcast from the reduce output shape to the unreduced input shape.
+    BottomUpTMBuilder bcBuilder(rewriter, dimNames, reduceOutputShape, loc);
+    for (int64_t i = 0; i < rank; ++i) {
+      if (i == axis)
+        bcBuilder.broadcast({static_cast<uint32_t>(i)}, {inputShape[i]});
+      else
+        bcBuilder.passThrough(dimNames[i]);
+    }
+    TransformMapAttr broadcastMap = bcBuilder.get();
+    transformedDest =
+        TransformOp::create(rewriter, loc, transformedDest, broadcastMap);
 
-    // Create a new store with the old store method, then update it
-    // via setStoreMethodAndPrefill which sets the atomic method + prefill.
     auto newStore =
         StoreOp::create(rewriter, loc, storeOp.getResult().getType(),
                         reduceInput, transformedDest, storeOp.getStoreMethod());
@@ -148,6 +202,8 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
       return storeOp.emitError("failed to set store method and prefill");
 
     rewriter.replaceOp(storeOp, newStore);
+    for (TransformOp tOp : llvm::reverse(intermediateOps))
+      rewriter.eraseOp(tOp);
     rewriter.eraseOp(reduceOp);
     return success();
   }
