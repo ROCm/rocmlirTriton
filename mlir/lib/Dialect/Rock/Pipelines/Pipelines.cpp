@@ -308,8 +308,11 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   funcPm2.addPass(createCanonicalizerPass());
 
   pm.addPass(createConvertTensorToLinalgPass());
-  if (!noRock)
+  if (!noRock) {
     pm.addPass(rock::createRockInsertOutputStoresPass());
+    auto &funcPmExpand = pm.nest<func::FuncOp>();
+    funcPmExpand.addPass(rock::createRockExpandStridesLoweringPass());
+  }
 }
 
 void rock::buildKernelPipeline(OpPassManager &pm,
@@ -334,6 +337,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.addPass(createCSEPass());
   };
 
+  pm.nest<func::FuncOp>().addPass(
+      rock::createRockExpandStridesLoweringPass());
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());

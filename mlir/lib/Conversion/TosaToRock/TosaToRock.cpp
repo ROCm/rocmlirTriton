@@ -3213,6 +3213,25 @@ public:
   }
 };
 
+class ExpandStridesConverter final : public OpRewritePattern<tosa::CustomOp> {
+public:
+  using OpRewritePattern<tosa::CustomOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::CustomOp op,
+                                PatternRewriter &rw) const final {
+    if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
+      return rw.notifyMatchFailure(op, "domain isn't rocmlir");
+    if (op.getOperatorName() != ROCK_CUSTOMOP_EXPAND_STRIDES)
+      return rw.notifyMatchFailure(op, "isn't an expand_strides op");
+
+    Value input = op->getOperand(0);
+    auto outputType = cast<RankedTensorType>(op.getResult(0).getType());
+
+    rw.replaceOpWithNewOp<rock::ExpandStridesOp>(op, outputType, input);
+
+    return success();
+  }
+};
+
 } // namespace
 
 void tosa::populateTosaToRockConversionPatterns(MLIRContext *context,
@@ -3241,6 +3260,6 @@ void tosa::populateTosaToRockConvGemmConversionPatterns(
 void tosa::populateTosaToRockTensorConversionPatterns(
     MLIRContext *context, RewritePatternSet &patterns) {
   patterns.add<TransposeRewritePattern, CollapseExpandRewritePattern,
-               MulSplatOneRewritePattern, ElementwiseBroadcastInserter>(
-      context);
+               MulSplatOneRewritePattern, ElementwiseBroadcastInserter,
+               ExpandStridesConverter>(context);
 }

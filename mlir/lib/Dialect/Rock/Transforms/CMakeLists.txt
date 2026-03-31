@@ -23,6 +23,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   InsertOutputStores.cpp
   InsertOutputFusionLoads.cpp
   RegularizeInput.cpp
+  LowerExpandStrides.cpp
   LowerLoads.cpp
   LowerReduce.cpp
   LowerStores.cpp

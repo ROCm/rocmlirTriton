@@ -43,3 +43,35 @@ func.func @gridwise_gemm_n_too_big(%a: tensor<1x1x1xf32>,
   : tensor<1x1x1xf32>, tensor<1x1x2147483648xf32> -> tensor<1x1x2147483648xf32>
   func.return
 }
+
+// -----
+
+func.func @expand_strides_rank_mismatch(%input: tensor<4x24xf16>) -> tensor<4x48x24xf16> {
+  // expected-error@+1 {{'rock.expand_strides' op input and result must have the same rank}}
+  %result = rock.expand_strides %input : tensor<4x24xf16> -> tensor<4x48x24xf16>
+  return %result : tensor<4x48x24xf16>
+}
+
+// -----
+
+func.func @expand_strides_output_too_small(%input: tensor<4x24x24xf16>) -> tensor<4x20x24xf16> {
+  // expected-error@+1 {{'rock.expand_strides' op result dimension 20 is smaller than input dimension 24}}
+  %result = rock.expand_strides %input : tensor<4x24x24xf16> -> tensor<4x20x24xf16>
+  return %result : tensor<4x20x24xf16>
+}
+
+// -----
+
+func.func @expand_strides_element_type_mismatch(%input: tensor<4x24x24xf16>) -> tensor<4x48x24xf32> {
+  // expected-error@+1 {{'rock.expand_strides' op input and result must have the same element type}}
+  %result = rock.expand_strides %input : tensor<4x24x24xf16> -> tensor<4x48x24xf32>
+  return %result : tensor<4x48x24xf32>
+}
+
+// -----
+
+func.func @expand_strides_not_multiple(%input: tensor<4x24x24xf16>) -> tensor<4x50x24xf16> {
+  // expected-error@+1 {{'rock.expand_strides' op result dimension 50 is not a multiple of input dimension 24}}
+  %result = rock.expand_strides %input : tensor<4x24x24xf16> -> tensor<4x50x24xf16>
+  return %result : tensor<4x50x24xf16>
+}

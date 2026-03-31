@@ -565,7 +565,8 @@ bool mlir::rock::isFusionOp(Operation *op) {
 }
 
 bool mlir::rock::isForwardTraceOp(Operation *op) {
-  return isFusionOp(op) || isa<ViewLikeOpInterface>(op) || isa<ReduceOp>(op);
+  return isFusionOp(op) || isa<ViewLikeOpInterface>(op) || isa<ReduceOp>(op) ||
+         isa<ExpandStridesOp>(op);
 }
 
 FusionInfo mlir::rock::collectFusionInfo(Value root) {
