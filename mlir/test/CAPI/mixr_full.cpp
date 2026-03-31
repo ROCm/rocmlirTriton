@@ -201,7 +201,13 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   MlirRockTuningParam tuningParam = mlirRockTuningParamCreate();
   MlirRockTuningTable tuningTable = mlirRockTuningTableCreate();
 
-  mlirMIGraphXAddApplicabilityPipeline(applicabilityPm);
+  const char *deviceName = "gfx908:sramecc+:xnack-";
+  const char *perfConfig = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0";
+  if (!mlirMIGraphXAddApplicabilityPipeline(applicabilityPm, deviceName,
+                                            perfConfig)) {
+    printf("Errors in building applicability pipeline\n");
+    return false;
+  }
   unsigned numSuccesses = 0;
   char problemKey[ROCMLIR_TUNING_KEY_BUFSZ];
   size_t problemBytes =
@@ -287,8 +293,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   printf("kernel name : %s\n", nameData);
 
   // Run compilation pipeline on tuned config.
-  const char *deviceName = "gfx908:sramecc+:xnack-";
-  if (!mlirMIGraphXAddBackendPipeline(backendPm, deviceName)) {
+  if (!mlirMIGraphXAddBackendPipeline(backendPm, deviceName, perfConfig)) {
     printf("Errors in building backend pipeline\n");
     return false;
   }
