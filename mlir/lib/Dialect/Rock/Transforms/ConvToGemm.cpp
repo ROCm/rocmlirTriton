@@ -234,15 +234,22 @@ LogicalResult getConvDimNames(T op, SmallVectorImpl<StringRef> &filterNames,
   return success();
 }
 
-/// Build the gemm result type from the output view's shape and the conv op's
-/// result element type. The output view may have a different element type
-/// when fusions (e.g. sitofp for dequantize) sit between the conv and store.
+/// Return the type of v if the underlying convolution has a result, otherwise
+/// return null, allowing the lowering here to be, in principle, generic over
+/// tensors and memrefs.
+/// Uses the shape from outArg (which carries the GEMM-layout shape after
+/// transforms) but the element type from the conv's result. This is necessary
+/// when the output fusion chain changes the element type (e.g. arith.fptoui
+/// from f32 to i32): the store destination carries the final type, but the
+/// GEMM must produce the same element type as the conv.
 Type getResultType(Operation *convOp, Value outArg) {
   if (convOp->getNumResults() == 1) {
     auto outArgType = cast<RankedTensorType>(outArg.getType());
-    Type convResultElemType =
-        cast<ShapedType>(convOp->getResult(0).getType()).getElementType();
-    return RankedTensorType::get(outArgType.getShape(), convResultElemType);
+    auto convElemType =
+        cast<RankedTensorType>(convOp->getResult(0).getType()).getElementType();
+    if (outArgType.getElementType() != convElemType)
+      return RankedTensorType::get(outArgType.getShape(), convElemType);
+    return outArgType;
   }
   return nullptr;
 }

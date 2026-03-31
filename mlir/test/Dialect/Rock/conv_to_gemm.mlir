@@ -52,6 +52,24 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
   return %out : tensor<64x12x12x1x256xf16>
 }
 
+// Verify that conv-to-gemm handles type-changing output fusions.
+// The conv produces f32 but the store destination is i32 (through arith.fptoui).
+// The gemm must produce f32 (matching conv inputs), not i32.
+// CHECK-LABEL: @nhwc_1x1_fptoui_fusion
+// CHECK: rock.gemm
+// CHECK-SAME: -> tensor<{{[0-9x]+}}xf32>
+// CHECK: arith.fptoui {{.*}} : tensor<{{[0-9x]+}}xf32> to tensor<{{[0-9x]+}}xi32>
+// CHECK: rock.store
+func.func @nhwc_1x1_fptoui_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816xf32>, %arg2: tensor<3211264xi32>) -> tensor<64x14x14x1x256xi32> attributes {rock.block_size = 128 : i32, enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.numCU = 96 : i32} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d0 * 256 + d1 + d2 + d3) * 64 + d4)> by [<Unmerge{1, 256, 1, 1, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 1, 1, 64] -> [16384]> : tensor<16384xf32> to tensor<1x256x1x1x64xf32>
+  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf32> to tensor<64x14x14x1x64xf32>
+  %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 14, 14, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 256] -> [3211264]> : tensor<3211264xi32> to tensor<64x14x14x1x256xi32>
+  %result = rock.conv(%0, %1) {derivedBlockSize = 128 : i32, dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], input_layout = ["ni", "0i", "1i", "gi", "ci"], output_layout = ["no", "0o", "1o", "go", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index], params = #rock.gemm_params<kPerBlock = 4, mPerBlock = 256, nPerBlock = 64, kpack = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, strides = [1 : index, 1 : index]} : tensor<1x256x1x1x64xf32>, tensor<64x14x14x1x64xf32> -> tensor<64x14x14x1x256xf32>
+  %cast = arith.fptoui %result : tensor<64x14x14x1x256xf32> to tensor<64x14x14x1x256xi32>
+  %out = rock.store %cast to %2 by set : tensor<64x14x14x1x256xi32> -> tensor<64x14x14x1x256xi32> to tensor<64x14x14x1x256xi32>
+  return %out : tensor<64x14x14x1x256xi32>
+}
+
 // TODO(roctriton): conv_elementwise_gemm are broken
 // DISABLED-CHECK-LABEL: @conv_gemm_nhwc_1x1
 // DISABLED-CHECK: <AddDim{1} ["0"] at [1] -> [] at []>, <PassThrough ["0o"] at [2] -> ["0ipad"] at [1]>, <AddDim{1} ["1"] at [3] -> [] at []>, <PassThrough ["1o"] at [4] -> ["1ipad"] at [2]>
