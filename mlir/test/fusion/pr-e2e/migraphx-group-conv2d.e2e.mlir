@@ -1,6 +1,4 @@
-// TODO(rocmlirTriton): This currently fails in the host pipeline with "error: 'linalg.conv_2d_nhwc_fhwc' op inferred input/output operand #1 has shape's dimension #3 to be 4, but found 1"
-// UNSUPPORTED: true
-// RUN: rocmlir-gen --clone-harness -arch %arch -fut mlir_convolution %s | rocmlir-driver --kernel-pipeline=migraphx,highlevel --host-pipeline=migraphx,highlevel | rocmlir-driver -c | rocmlir-gen -ph -verifier clone -fut mlir_convolution - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
+// RUN: rocmlir-gen --clone-harness -arch %arch -fut mlir_convolution %s | rocmlir-driver --kernel-pipeline=migraphx,highlevel --host-pipeline=migraphx,highlevel | rocmlir-gen -ph -verifier clone -fut mlir_convolution - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
 // CLONE: [1 1 1]
 
 module {

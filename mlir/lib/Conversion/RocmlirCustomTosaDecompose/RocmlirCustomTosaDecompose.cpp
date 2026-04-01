@@ -366,7 +366,10 @@ public:
           rewriter.getDenseI64ArrayAttr(stride),
           rewriter.getDenseI64ArrayAttr(dilationVals),
           /* acc_type = */ accType);
-      // TODO(roctriton): group convolution
+      // TODO(roctriton): backward-data group conv needs a dedicated
+      // decomposition at the tosa.custom level, not simple group propagation,
+      // because swapInputOutputDimensions changes the channel layout such that
+      // the standard GroupConv2dDecomposer shape constraints don't hold.
     } else {
       Value reverse3 =
           tosa::ReverseOp::create(rewriter, loc, weightTy, reverse2,
@@ -704,7 +707,8 @@ public:
                        /*dilation=*/rewriter.getDenseI64ArrayAttr({1, 1}),
                        /* acc_type = */ accType)
                        .getResult();
-    // TODO(roctriton): group convolution
+    // TODO(roctriton): propagate group attribute for strided backward group
+    // convolution
 
     // Factor the resulting width / height.
     ShapedType convTy = cast<ShapedType>(conv2d.getType());
@@ -844,6 +848,113 @@ public:
   }
 };
 
+// Decompose tosa.conv2d with group > 1 into G individual tosa.conv2d ops
+// (each with group=1) followed by a tosa.concat along the output channel axis.
+//
+// For NHWC layout with G groups:
+//   input  [N, H, W, C]        -> G slices of [N, H, W, C/G]
+//   filter [F, Hf, Wf, C/G]    -> G slices of [F/G, Hf, Wf, C/G]
+//   bias   [F]                  -> G slices of [F/G]
+//   output [N, Ho, Wo, F]       = concat(G outputs of [N, Ho, Wo, F/G], axis=3)
+class GroupConv2dDecomposer : public OpRewritePattern<tosa::Conv2DOp> {
+public:
+  using OpRewritePattern<tosa::Conv2DOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::Conv2DOp op,
+                                PatternRewriter &rewriter) const final {
+    auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
+    if (!groupAttr || groupAttr.getInt() <= 1)
+      return rewriter.notifyMatchFailure(op, "not a group convolution");
+
+    int64_t group = groupAttr.getInt();
+    Location loc = op->getLoc();
+
+    Value input = op.getInput();
+    Value weight = op.getWeight();
+    Value bias = op.getBias();
+    Value inputZp = op.getInputZp();
+    Value weightZp = op.getWeightZp();
+
+    auto inputTy = cast<RankedTensorType>(input.getType());
+    auto weightTy = cast<RankedTensorType>(weight.getType());
+    auto biasTy = cast<RankedTensorType>(bias.getType());
+    auto resultTy = cast<RankedTensorType>(op.getType());
+
+    if (!inputTy.hasStaticShape() || !weightTy.hasStaticShape() ||
+        !biasTy.hasStaticShape() || !resultTy.hasStaticShape())
+      return rewriter.notifyMatchFailure(op, "requires static shapes");
+
+    int64_t N = inputTy.getDimSize(0);
+    int64_t H = inputTy.getDimSize(1);
+    int64_t W = inputTy.getDimSize(2);
+    int64_t C = inputTy.getDimSize(3);
+
+    int64_t F = weightTy.getDimSize(0);
+    int64_t Hf = weightTy.getDimSize(1);
+    int64_t Wf = weightTy.getDimSize(2);
+    int64_t Cg = weightTy.getDimSize(3);
+
+    if (C % group != 0 || F % group != 0)
+      return rewriter.notifyMatchFailure(
+          op, "input/output channels must be divisible by group");
+
+    if (Cg != C / group)
+      return rewriter.notifyMatchFailure(
+          op, "filter input channels doesn't match C/G");
+
+    int64_t Fg = F / group;
+    Type elemTy = inputTy.getElementType();
+    Type biasElemTy = biasTy.getElementType();
+    Type resultElemTy = resultTy.getElementType();
+
+    int64_t Ho = resultTy.getDimSize(1);
+    int64_t Wo = resultTy.getDimSize(2);
+
+    DenseI64ArrayAttr padAttr = op.getPadAttr();
+    DenseI64ArrayAttr strideAttr = op.getStrideAttr();
+    DenseI64ArrayAttr dilationAttr = op.getDilationAttr();
+    Type accType = op.getAccType();
+
+    SmallVector<Value> groupOutputs;
+    for (int64_t g = 0; g < group; ++g) {
+      SmallVector<int64_t> inputStart = {0, 0, 0, g * Cg};
+      SmallVector<int64_t> inputSize = {N, H, W, Cg};
+      Value slicedInput = tosa::SliceOp::create(
+          rewriter, loc, RankedTensorType::get(inputSize, elemTy), input,
+          getTosaConstShape(rewriter, loc, inputStart),
+          getTosaConstShape(rewriter, loc, inputSize));
+
+      SmallVector<int64_t> filterStart = {g * Fg, 0, 0, 0};
+      SmallVector<int64_t> filterSize = {Fg, Hf, Wf, Cg};
+      Value slicedFilter = tosa::SliceOp::create(
+          rewriter, loc,
+          RankedTensorType::get(filterSize, weightTy.getElementType()), weight,
+          getTosaConstShape(rewriter, loc, filterStart),
+          getTosaConstShape(rewriter, loc, filterSize));
+
+      SmallVector<int64_t> biasStart = {g * Fg};
+      SmallVector<int64_t> biasSize = {Fg};
+      Value slicedBias = tosa::SliceOp::create(
+          rewriter, loc, RankedTensorType::get(biasSize, biasElemTy), bias,
+          getTosaConstShape(rewriter, loc, biasStart),
+          getTosaConstShape(rewriter, loc, biasSize));
+
+      auto groupResultTy =
+          RankedTensorType::get({N, Ho, Wo, Fg}, resultElemTy);
+      Value groupConv = tosa::Conv2DOp::create(
+          rewriter, loc, groupResultTy, slicedInput, slicedFilter, slicedBias,
+          inputZp, weightZp, padAttr, strideAttr, dilationAttr, accType);
+
+      groupOutputs.push_back(groupConv);
+    }
+
+    Value result = tosa::ConcatOp::create(rewriter, loc, resultTy, groupOutputs,
+                                          rewriter.getI32IntegerAttr(3));
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::rock::populateRocmlirCustomTosaDecomposeTarget(
@@ -854,12 +965,17 @@ void mlir::rock::populateRocmlirCustomTosaDecomposeTarget(
            (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&
             op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT);
   });
+  target.addDynamicallyLegalOp<tosa::Conv2DOp>([](tosa::Conv2DOp op) {
+    auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
+    return !groupAttr || groupAttr.getInt() <= 1;
+  });
 }
 
 void mlir::rock::populateRocmlirCustomTosaDecomposeConversionPatterns(
     RewritePatternSet &patterns) {
   patterns.add<TransposeConvNonStridedConverter>(patterns.getContext());
   patterns.add<TransposeConvStridedConverter>(patterns.getContext());
+  patterns.add<GroupConv2dDecomposer>(patterns.getContext());
 }
 
 void RocmlirCustomTosaDecomposePass::runOnOperation() {
