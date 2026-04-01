@@ -1,0 +1,96 @@
+// RUN: rocmlir-opt -rock-gridwise-attn-to-blockwise -split-input-file %s | FileCheck %s
+
+// CHECK-LABEL: func @attn_mask_reshape_nonzero_qk_idx
+// The load_marker for the mask should bridge from tile coords to the
+// flat tensor<4096xi8> (body Unmerge transform folded into views).
+// CHECK: rock.load_marker {{.*}}tensor<4096xi8> -> tensor<32x32xi8>
+// The arith.trunci from the body should be cloned with tile-sized types.
+// CHECK: arith.trunci {{.*}} tensor<32x32xi8> to tensor<32x32xi1>
+func.func @attn_mask_reshape_nonzero_qk_idx(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>,
+    %mask: tensor<4096xi8>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+    } {
+  %result = rock.gridwise_attention(%q, %k, %v, %mask) preSoftmaxOps = {
+  ^bb0(%arg_mask: tensor<4096xi8>, %arg_qk: tensor<1x64x64xf32>):
+    %0 = rock.transform %arg_mask by <affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) * 64 + d2)> by [<Unmerge{1, 64, 64} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 64, 64] -> [4096]> : tensor<4096xi8> to tensor<1x64x64xi8>
+    %1 = arith.trunci %0 : tensor<1x64x64xi8> to tensor<1x64x64xi1>
+    rock.yield %arg_qk : tensor<1x64x64xf32>
+  } {
+    firstGemmIndices = array<i64: 1>,
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>, tensor<4096xi8> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @attn_scalar_broadcast
+// The load_marker for the scale should bridge from tile coords to the
+// scalar tensor<1xf32> (broadcast + reshape transforms folded into views).
+// CHECK: rock.load_marker {{.*}}tensor<1xf32> -> tensor<32x32xf32>
+// The mulf should use tile-sized types.
+// CHECK: arith.mulf {{.*}} tensor<32x32xf32>
+func.func @attn_scalar_broadcast(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>,
+    %scale: tensor<1xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+    } {
+  %result = rock.gridwise_attention(%q, %k, %v, %scale) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>, %arg_scale: tensor<1xf32>):
+    %0 = rock.transform %arg_scale by <affine_map<(d0, d1, d2) -> (d0 + d1 + d2)> by [<Unmerge{1, 1, 1} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 1, 1] -> [1]> : tensor<1xf32> to tensor<1x1x1xf32>
+    %1 = rock.transform %0 by <affine_map<(d0, d1, d2) -> (d0, 0, 0)> by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Broadcast{1} ["dim1"] at [1] -> ["dim1"] at [1]>, <Broadcast{1} ["dim2"] at [2] -> ["dim2"] at [2]>] bounds = [1, 64, 64] -> [1, 1, 1]> : tensor<1x1x1xf32> to tensor<1x64x64xf32>
+    %2 = arith.mulf %arg_qk, %1 : tensor<1x64x64xf32>
+    rock.yield %2 : tensor<1x64x64xf32>
+  } {
+    firstGemmIndices = array<i64: 0>,
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>, tensor<1xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @attn_no_presoftmax_ops
+// CHECK-NOT: rock.gridwise_attention
+// CHECK: rock.store_marker
+func.func @attn_no_presoftmax_ops(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+    } {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>):
+    rock.yield %arg_qk : tensor<1x64x64xf32>
+  } {
+    firstGemmIndices = array<i64: 0>,
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
