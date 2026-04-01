@@ -42,7 +42,7 @@
 // GPU-NEXT:func.func(rock-legalize-float-types),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-serialize-host-funcs,
-// GPU-NEXT:func.func(rock-transforms-to-ptr,
+// GPU-NEXT:func.func(rock-lower-blockwise-to-ptr,
 // GPU-NEXT:rock-mask-non-zero-preserving-fusions,
 // GPU-NEXT:rock-transforms-to-pointer-arith,
 // GPU-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},

@@ -15,7 +15,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 //
-// This pass runs AFTER RockTransformsToPtrPass and BEFORE
+// This pass runs AFTER RockLowerBlockwiseToPtrPass and BEFORE
 // RockTransformsToPointerArithPass.
 //
 // When a BlockwiseLoadPtrOp has Pad or Embed transforms, its mask tensor marks
