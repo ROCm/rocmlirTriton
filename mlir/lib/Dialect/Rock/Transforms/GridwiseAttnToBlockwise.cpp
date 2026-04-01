@@ -809,9 +809,14 @@ struct GridwiseAttentionRewritePattern
     IRMapping mapping;
     auto tileType = cast<RankedTensorType>(srcGemm0OutBuffer.getType());
 
-    // Map the QK product block arg, casting to the region's element type if
-    // needed.
-    BlockArgument qkArg = op.getPreSoftmaxQKArgument();
+    // Use firstGemmIndices to find which block arg is the QK product.
+    // The QK product may not be at index 0 when fusion reordering places
+    // extra inputs before it (e.g. a mask operand in migraphx.where).
+    ArrayRef<int64_t> firstGemmIdx = op.getFirstGemmIndices();
+    assert(!firstGemmIdx.empty());
+    unsigned qkArgIndex = firstGemmIdx[0];
+    BlockArgument qkArg = block.getArgument(qkArgIndex);
+
     Value gemm0Mapped = srcGemm0OutBuffer;
     Type regionElemType = cast<ShapedType>(qkArg.getType()).getElementType();
     if (tileType.getElementType() != regionElemType) {
@@ -822,15 +827,25 @@ struct GridwiseAttentionRewritePattern
     }
     mapping.map(qkArg, gemm0Mapped);
 
-    // Remaining block args correspond to preSoftmaxElemWiseInputs.
+    // Build list of block arg indices for the extra (non-QK) inputs,
+    // preserving their order so they align with getPreSoftmaxElemWiseInputs.
+    SmallVector<unsigned> extraArgIndices;
+    for (unsigned j = 0; j < block.getNumArguments(); ++j) {
+      if (j != qkArgIndex)
+        extraArgIndices.push_back(j);
+    }
+
     ValueRange extraInputs = op.getPreSoftmaxElemWiseInputs();
-    // assert that extraInputs + firstGemmOut matches the number of block
-    // arguments
-    if ((extraInputs.size() + 1) != block.getNumArguments()) {
-      LLVM_DEBUG(llvm::dbgs() << "getPreSoftmaxElemWiseInputs + 1 size must be "
-                                 "equal to block.getNumArguments\n");
+    if (extraInputs.size() != extraArgIndices.size()) {
+      LLVM_DEBUG(llvm::dbgs() << "getPreSoftmaxElemWiseInputs size must match "
+                                 "the number of non-QK block arguments\n");
       return failure();
     }
+
+    // Collect transform ops from the body that should be folded into the
+    // LoadMarkerOp views rather than cloned separately. This handles inputs
+    // whose shape differs from the gemm0 output.
+    DenseSet<Operation *> bodyTransformOpsToSkip;
 
     for (unsigned i = 0; i < extraInputs.size(); ++i) {
       Value globalInput = extraInputs[i];
@@ -838,7 +853,7 @@ struct GridwiseAttentionRewritePattern
       ArrayAttr globalInputMaps;
       std::tie(root, globalInputMaps, std::ignore) =
           untransform(rewriter, globalInput);
-    
+
       auto resultType = RankedTensorType::get(
           tileType.getShape(),
           cast<ShapedType>(globalInput.getType()).getElementType());
@@ -848,17 +863,54 @@ struct GridwiseAttentionRewritePattern
         otherInputMap =
             prependUpperViews(rewriter, gemm0OutViews, globalInputMaps);
       }
+
+      // Trace the chain of rock.transform ops on the block argument.
+      // These transforms bridge from the gemm0 output shape to the actual
+      // input tensor shape (e.g. broadcast [1,64,64]->[1,1,1] then reshape
+      // [1,1,1]->[1] for a scalar input). They must be part of the
+      // LoadMarkerOp's views so the view chain reaches the input tensor.
+      BlockArgument blockArg = block.getArgument(extraArgIndices[i]);
+      Value chainEnd = blockArg;
+      SmallVector<Attribute> bodyTransformAttrs;
+
+      while (chainEnd.hasOneUse()) {
+        Operation *user = *chainEnd.getUsers().begin();
+        auto transformOp = dyn_cast<TransformOp>(user);
+        if (!transformOp)
+          break;
+        bodyTransformAttrs.push_back(transformOp.getTransform());
+        bodyTransformOpsToSkip.insert(user);
+        chainEnd = transformOp.getResult();
+      }
+
+      if (!bodyTransformAttrs.empty()) {
+        // Body transforms go input->output in chain order. Views need
+        // upper->lower ordering, so append them in reverse.
+        SmallVector<Attribute> allViews(otherInputMap.begin(),
+                                        otherInputMap.end());
+        for (auto it = bodyTransformAttrs.rbegin();
+             it != bodyTransformAttrs.rend(); ++it)
+          allViews.push_back(*it);
+        otherInputMap = rewriter.getArrayAttr(allViews);
+      }
+
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, root, otherInputMap,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block});
-      mapping.map(block.getArgument(1 + i), markerOp.getResult());
+
+      // Map the end of the transform chain (or the block arg itself if no
+      // transforms) so that downstream uses get the load_marker result.
+      mapping.map(chainEnd, markerOp.getResult());
     }
 
-    // Clone ops from the region body (except the terminator), fixing up
+    // Clone ops from the region body (except the terminator and any
+    // transform ops already folded into LoadMarkerOp views), fixing up
     // result types to use tile-level shapes while preserving element types
     // (important for casts like arith.extf / arith.truncf).
     for (Operation &bodyOp : block.without_terminator()) {
+      if (bodyTransformOpsToSkip.contains(&bodyOp))
+        continue;
       Operation *cloned = rewriter.clone(bodyOp, mapping);
       if (cloned->getNumResults() == 1 && cloned->getNumOperands() > 0) {
         auto operandTy =
