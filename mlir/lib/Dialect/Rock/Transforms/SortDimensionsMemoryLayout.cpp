@@ -542,8 +542,9 @@ struct AttentionRewritePattern : public OpRewritePattern<rock::AttentionOp> {
     std::tie(newTensorQ, newTensorK, newTensorV, transposedQ, transposedK,
              transposedV) = maybeRewrite.value();
 
+    Type lseType = op.getLse() ? op.getLse().getType() : Type{};
     auto newOp = rock::AttentionOp::create(
-        b, op->getLoc(), op.getResult().getType(), op.getLse().getType(),
+        b, op->getLoc(), op.getResult().getType(), lseType,
         newTensorQ, newTensorK, newTensorV,
         op.getPreSoftmaxElemWiseInputs(), op.getCurrentSeqLen(),
         op.getPrefixOffset(), op.getNumHeadsQAttr(), op.getNumHeadsKVAttr(),
