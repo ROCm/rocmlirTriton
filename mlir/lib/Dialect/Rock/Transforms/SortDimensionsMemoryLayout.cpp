@@ -510,8 +510,8 @@ struct GemmRewritePattern : public OpRewritePattern<rock::GemmOp> {
       return failure();
 
     auto newGemm = rock::GemmOp::create(
-        b, op->getLoc(), op->getResultTypes()[0], resultA.tensor, resultB.tensor,
-        newTensorScaleA, newTensorScaleB, resultA.transposed,
+        b, op->getLoc(), op->getResultTypes()[0], resultA.tensor,
+        resultB.tensor, newTensorScaleA, newTensorScaleB, resultA.transposed,
         resultB.transposed, op.getOTransposedAttr(), transposedScaleA,
         transposedScaleB, op.getQuantBlockSizeAttr(), op.getParamsAttr());
 
@@ -544,13 +544,13 @@ struct AttentionRewritePattern : public OpRewritePattern<rock::AttentionOp> {
 
     Type lseType = op.getLse() ? op.getLse().getType() : Type{};
     auto newOp = rock::AttentionOp::create(
-        b, op->getLoc(), op.getResult().getType(), lseType,
-        newTensorQ, newTensorK, newTensorV,
-        op.getPreSoftmaxElemWiseInputs(), op.getCurrentSeqLen(),
-        op.getPrefixOffset(), op.getNumHeadsQAttr(), op.getNumHeadsKVAttr(),
-        transposedQ, transposedK, transposedV, op.getOTransposedAttr(),
-        op.getCausalAttr(), op.getSplitKVAttr(), op.getSoftmaxTypeAttr(),
-        op.getParams0Attr(), op.getParams1Attr(), op.getFirstGemmIndicesAttr(),
+        b, op->getLoc(), op.getResult().getType(), lseType, newTensorQ,
+        newTensorK, newTensorV, op.getPreSoftmaxElemWiseInputs(),
+        op.getCurrentSeqLen(), op.getPrefixOffset(), op.getNumHeadsQAttr(),
+        op.getNumHeadsKVAttr(), transposedQ, transposedK, transposedV,
+        op.getOTransposedAttr(), op.getCausalAttr(), op.getSplitKVAttr(),
+        op.getSoftmaxTypeAttr(), op.getParams0Attr(), op.getParams1Attr(),
+        op.getFirstGemmIndicesAttr(),
         op.getPreSoftmaxHasSplitKVTransformsAttr());
 
     bool linalgOpFound = false;
@@ -598,10 +598,10 @@ struct ConvElementwiseGemmRewritePattern
 
     auto newOp = rock::ConvElementwiseGemmOp::create(
         rw, op->getLoc(), op->getResultTypes(), newFilter, newInput,
-        resultC.tensor, op.getElemwiseInputs(), op.getOut(),
-        resultC.transposed, op.getOTransposedAttr(), op.getPaddingAttr(),
-        op.getStridesAttr(), op.getDilationsAttr(), op.getParams0Attr(),
-        op.getParams1Attr(), op.getFirstGemmIndicesAttr());
+        resultC.tensor, op.getElemwiseInputs(), op.getOut(), resultC.transposed,
+        op.getOTransposedAttr(), op.getPaddingAttr(), op.getStridesAttr(),
+        op.getDilationsAttr(), op.getParams0Attr(), op.getParams1Attr(),
+        op.getFirstGemmIndicesAttr());
 
     newOp->setAttr("filter_layout", newFilterLayout);
     newOp->setAttr("input_layout", newInputLayout);
