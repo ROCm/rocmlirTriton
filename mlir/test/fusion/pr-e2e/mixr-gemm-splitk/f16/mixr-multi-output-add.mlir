@@ -1,4 +1,4 @@
-// TODO(rocmlirTriton): error: operand #0 does not dominate this use
+// TODO(rocmlirTriton): error: 'func.func' op expects result attribute array to have the same number of elements as the number of function results, got 2, but expected 0
 // UNSUPPORTED: true
 // RUN: rocmlir-gen -fut mlir_convolution_multi_output_add --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_convolution_multi_output_add --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 
