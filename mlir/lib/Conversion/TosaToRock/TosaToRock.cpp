@@ -414,9 +414,7 @@ static bool isElementwiseOp(Operation *op) {
 static Value addBlockArgument(OpBuilder &b, Value val, Block *block,
                               Location loc) {
   RankedTensorType valType = cast<RankedTensorType>(val.getType());
-  val = block->addArgument(
-      MemRefType::get(valType.getShape(), valType.getElementType()), loc);
-  val = rock::getAsTensor(b, loc, val);
+  val = block->addArgument(valType, loc);
   return val;
 }
 
