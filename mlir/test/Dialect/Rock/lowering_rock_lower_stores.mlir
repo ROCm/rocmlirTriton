@@ -14,7 +14,7 @@
 #tmap = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 64 + d3, d2 * 64 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{4, 64} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 4, 2, 64, 64] -> [1, 256, 128]>
 
 // --- Destination flat-to-3D transform: 32768 -> [1,256,128] ---
-#tmap_dest = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0 * 32768 + d1 * 128 + d2)> by [<Unmerge{1, 256, 128} ["d0", "d1", "d2"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [1, 256, 128] -> [32768]>
+#tmap_dest = #rock.transform_map<affine_map<(d0, d1, d2) -> ((d0 * 256 + d1) * 128 + d2)> by [<Unmerge{1, 256, 128} ["d0", "d1", "d2"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [1, 256, 128] -> [32768]>
 
 module {
 

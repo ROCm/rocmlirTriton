@@ -333,6 +333,14 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
       return emitError()
              << "Pad must have two parameters (left, right) per dimension";
     }
+    for (size_t i = 0, e = params.size(); i < e; i += 2) {
+      if (params[i] < 0)
+        return emitError() << "Pad: left padding (" << params[i]
+                           << ") must be non-negative";
+      if (params[i + 1] < 0)
+        return emitError() << "Pad: right padding (" << params[i + 1]
+                           << ") must be non-negative";
+    }
     break;
   }
   case TransformType::Slice: {
@@ -343,6 +351,15 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     if (params.size() != 2 * upperDims.size()) {
       return emitError()
              << "Slice must have two parameters (begin, end) per dimension";
+    }
+    for (size_t i = 0, e = params.size(); i < e; i += 2) {
+      if (params[i] < 0)
+        return emitError() << "Slice: begin (" << params[i]
+                           << ") must be non-negative";
+      if (params[i + 1] <= params[i])
+        return emitError() << "Slice: end (" << params[i + 1]
+                           << ") must be greater than begin (" << params[i]
+                           << ")";
     }
     break;
   }
@@ -504,13 +521,11 @@ LogicalResult TransformMapAttr::verify(
                            << " is out of range [0, " << lb.size() << ")";
     }
 
+    // Structural checks (dimension counts, parameter counts, value validity)
+    // are handled by TransformAttr::verify. Here we only check consistency
+    // between the transform parameters and the map's upper/lower bounds.
     switch (t.getType()) {
     case TransformType::Unmerge: {
-      if (lDims.size() != 1)
-        return emitError() << "Unmerge must have exactly one lower dimension";
-      if (params.size() != uDims.size())
-        return emitError()
-               << "Unmerge must have one parameter per upper dimension";
       int64_t product = 1;
       for (auto [dim, param] : llvm::zip(uDims, params)) {
         if (ub[dim] != param) {
@@ -528,11 +543,6 @@ LogicalResult TransformMapAttr::verify(
       break;
     }
     case TransformType::Merge: {
-      if (uDims.size() != 1)
-        return emitError() << "Merge must have exactly one upper dimension";
-      if (params.size() != lDims.size())
-        return emitError()
-               << "Merge must have one parameter per lower dimension";
       int64_t product = 1;
       for (auto [dim, param] : llvm::zip(lDims, params)) {
         if (lb[dim] != param) {
@@ -550,11 +560,6 @@ LogicalResult TransformMapAttr::verify(
       break;
     }
     case TransformType::PassThrough: {
-      if (uDims.size() != lDims.size())
-        return emitError()
-               << "PassThrough must have same number of upper and lower dims";
-      if (!params.empty())
-        return emitError() << "PassThrough must have no parameters";
       for (auto [uDim, lDim] : llvm::zip(uDims, lDims)) {
         if (ub[uDim] != lb[lDim]) {
           return emitError() << "PassThrough: upper bound " << ub[uDim]
@@ -564,21 +569,9 @@ LogicalResult TransformMapAttr::verify(
       break;
     }
     case TransformType::Pad: {
-      if (uDims.size() != lDims.size())
-        return emitError()
-               << "Pad must have same number of upper and lower dims";
-      if (params.size() != 2 * uDims.size())
-        return emitError()
-               << "Pad must have two parameters (left, right) per dimension";
       for (unsigned i = 0, e = uDims.size(); i < e; ++i) {
         int64_t leftPad = params[i * 2];
         int64_t rightPad = params[i * 2 + 1];
-        if (leftPad < 0)
-          return emitError() << "Pad: left padding (" << leftPad
-                             << ") must be non-negative";
-        if (rightPad < 0)
-          return emitError() << "Pad: right padding (" << rightPad
-                             << ") must be non-negative";
         int64_t expected = lb[lDims[i]] + leftPad + rightPad;
         if (ub[uDims[i]] != expected) {
           return emitError() << "Pad: upper bound " << ub[uDims[i]]
@@ -590,40 +583,18 @@ LogicalResult TransformMapAttr::verify(
       break;
     }
     case TransformType::AddDim: {
-      if (uDims.size() != 1 || params.size() != 1)
-        return emitError() << "AddDim must have exactly one upper dimension "
-                              "and one parameter";
       if (params[0] != ub[uDims[0]]) {
         return emitError() << "AddDim: parameter " << params[0]
                            << " does not match upper bound " << ub[uDims[0]];
       }
       break;
     }
-    case TransformType::Embed: {
-      if (lDims.size() != 1)
-        return emitError() << "Embed must have exactly one lower dimension";
-      if (params.size() != uDims.size())
-        return emitError()
-               << "Embed must have one coefficient per upper dimension";
+    case TransformType::Embed:
       break;
-    }
     case TransformType::Slice: {
-      if (uDims.size() != lDims.size())
-        return emitError()
-               << "Slice must have same number of upper and lower dims";
-      if (params.size() != 2 * uDims.size())
-        return emitError()
-               << "Slice must have two parameters (begin, end) per dimension";
       for (unsigned i = 0, e = uDims.size(); i < e; ++i) {
         int64_t begin = params[i * 2];
         int64_t end = params[i * 2 + 1];
-        if (begin < 0)
-          return emitError()
-                 << "Slice: begin (" << begin << ") must be non-negative";
-        if (end <= begin)
-          return emitError()
-                 << "Slice: end (" << end << ") must be greater than begin ("
-                 << begin << ")";
         if (end > lb[lDims[i]])
           return emitError()
                  << "Slice: end (" << end << ") exceeds lower bound ("
@@ -637,11 +608,6 @@ LogicalResult TransformMapAttr::verify(
       break;
     }
     case TransformType::Broadcast: {
-      if (uDims.size() != lDims.size())
-        return emitError()
-               << "Broadcast must have same number of upper and lower dims";
-      if (params.size() != lDims.size())
-        return emitError() << "Broadcast must have one parameter per dimension";
       for (unsigned i = 0, e = lDims.size(); i < e; ++i) {
         if (params[i] != lb[lDims[i]]) {
           return emitError() << "Broadcast: parameter " << params[i]
@@ -651,12 +617,6 @@ LogicalResult TransformMapAttr::verify(
       break;
     }
     case TransformType::ConstDim: {
-      if (!uDims.empty())
-        return emitError() << "ConstDim must not have upper dimensions";
-      if (params.size() != 2 * lDims.size())
-        return emitError()
-               << "ConstDim must have two parameters (value, size) per "
-                  "lower dimension";
       for (unsigned i = 0, e = lDims.size(); i < e; ++i) {
         int64_t size = params[i * 2 + 1];
         if (size != lb[lDims[i]]) {
