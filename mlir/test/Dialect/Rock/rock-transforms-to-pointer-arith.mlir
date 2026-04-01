@@ -127,7 +127,7 @@ func.func @test_insufficient_indices(%arg0: tensor<8192xf16>) -> tensor<64x64xf1
   %c0_i32 = arith.constant 0 : i32
 
   // Transform with Unmerge creates dimensions that require indices
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d0 * 4096 + d1 * 64 + d2)> by [<Unmerge{2, 64, 64} ["k_loop", "m", "n"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [2, 64, 64] -> [8192]> : tensor<8192xf16> to tensor<2x64x64xf16>
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) * 64 + d2)> by [<Unmerge{2, 64, 64} ["k_loop", "m", "n"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [2, 64, 64] -> [8192]> : tensor<8192xf16> to tensor<2x64x64xf16>
 
   // Only 1 index provided but output tile is 2D (64x64), requiring at least 2 indices
   // expected-error@+2 {{requires at least 2 extra indices for output tile of rank 2, but only 1 indices were provided}}

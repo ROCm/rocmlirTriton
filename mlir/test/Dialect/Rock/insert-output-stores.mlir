@@ -95,9 +95,9 @@ func.func @gemm_with_reduce(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -
 // CHECK: %[[STORE_R:.*]] = rock.store %[[TR_R]] to %arg3 by set
 // CHECK: %[[STORE_L:.*]] = rock.store %[[TR_L]] to %arg4 by set
 // CHECK: return %[[STORE_R]], %[[STORE_L]]
-#map_merge3 = affine_map<(d0) -> (d0 floordiv 1024, (d0 mod 1024) floordiv 32, d0 mod 32)>
+#map_merge3 = affine_map<(d0) -> (0, d0 floordiv 32, d0 mod 32)>
 #merge3_map = #rock.transform_map<#map_merge3 by [<Merge{1, 32, 32} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [1024] -> [1, 32, 32]>
-#map_merge2 = affine_map<(d0) -> (d0 floordiv 32, d0 mod 32)>
+#map_merge2 = affine_map<(d0) -> (0, d0)>
 #merge2_map = #rock.transform_map<#map_merge2 by [<Merge{1, 32} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>] bounds = [32] -> [1, 32]>
 func.func @attention_with_transforms(%arg0: tensor<1x32x32xf32>, %arg1: tensor<1x32x32xf32>, %arg2: tensor<1x32x32xf32>) -> (tensor<1024xf32>, tensor<32xf32>) attributes {rock.kernel} {
   %result, %lse = rock.attention{

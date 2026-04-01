@@ -19,7 +19,7 @@
 #tf_merge_n = #rock.transform_map<#map_merge_n by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["m"] at [1]>, <Merge{10, 10} ["n"] at [2] -> ["n0", "n1"] at [2, 3]>] bounds = [1, 100, 100] -> [1, 100, 10, 10]>
 
 // --- Flat -> 4D [1,100,10,10] ---
-#map_flat_4d = affine_map<(d0, d1, d2, d3) -> (d1 * 100 + d2 * 10 + d3)>
+#map_flat_4d = affine_map<(d0, d1, d2, d3) -> ((d1 * 10 + d2) * 10 + d3)>
 #tf_flat_4d = #rock.transform_map<#map_flat_4d by [<Unmerge{100, 10, 10} ["m", "n0", "n1"] at [1, 2, 3] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 100, 10, 10] -> [10000]>
 
 // --- Merge m,n: [1,100,100] -> [1,10000] ---

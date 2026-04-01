@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
+#include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/math.h"
 
@@ -200,7 +201,7 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
     parser.emitError(typeLoc, "expected a name of a known transform")
             .attachNote()
         << "The transforms are PassThrough, Pad, Slice, Embed, Unmerge, Merge, "
-           "Unfold";
+           "AddDim, Broadcast, ConstDim";
     return {};
   }
 
@@ -323,30 +324,82 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     }
     break;
   }
-  case TransformType::Pad: // TODO, work out how this works
-    break;
-  case TransformType::Slice: // TODO, work out how this works
-    break;
-  case TransformType::Embed:
-  case TransformType::Unmerge: {
-    if (lowerDims.size() != 1) {
+  case TransformType::Pad: {
+    if (upperDims.size() != lowerDims.size()) {
       return emitError()
-             << "Embed and unmerge can only have one output argument";
+             << "Pad must have the same number of inputs and outputs";
+    }
+    if (params.size() != 2 * upperDims.size()) {
+      return emitError()
+             << "Pad must have two parameters (left, right) per dimension";
+    }
+    for (size_t i = 0, e = params.size(); i < e; i += 2) {
+      if (params[i] < 0)
+        return emitError() << "Pad: left padding (" << params[i]
+                           << ") must be non-negative";
+      if (params[i + 1] < 0)
+        return emitError() << "Pad: right padding (" << params[i + 1]
+                           << ") must be non-negative";
+    }
+    break;
+  }
+  case TransformType::Slice: {
+    if (upperDims.size() != lowerDims.size()) {
+      return emitError()
+             << "Slice must have the same number of inputs and outputs";
+    }
+    if (params.size() != 2 * upperDims.size()) {
+      return emitError()
+             << "Slice must have two parameters (begin, end) per dimension";
+    }
+    for (size_t i = 0, e = params.size(); i < e; i += 2) {
+      if (params[i] < 0)
+        return emitError() << "Slice: begin (" << params[i]
+                           << ") must be non-negative";
+      if (params[i + 1] <= params[i])
+        return emitError() << "Slice: end (" << params[i + 1]
+                           << ") must be greater than begin (" << params[i]
+                           << ")";
+    }
+    break;
+  }
+  case TransformType::Embed: {
+    if (lowerDims.size() != 1) {
+      return emitError() << "Embed can only have one output argument";
     }
     if (params.size() != upperDims.size()) {
-      return emitError() << "Embed and unmerge must specify one coefficient "
-                            "per input dimension";
+      return emitError()
+             << "Embed must specify one coefficient per input dimension";
+    }
+    break;
+  }
+  case TransformType::Unmerge: {
+    if (lowerDims.size() != 1) {
+      return emitError() << "Unmerge can only have one output argument";
+    }
+    if (params.size() != upperDims.size()) {
+      return emitError()
+             << "Unmerge must specify one length per input dimension";
+    }
+    for (int64_t p : params) {
+      if (p <= 0)
+        return emitError() << "Unmerge dimension length " << p
+                           << " must be positive";
     }
     break;
   }
   case TransformType::Merge: {
     if (upperDims.size() != 1) {
-      return emitError()
-             << "Merge and unfold can only have one input dimension";
+      return emitError() << "Merge can only have one input dimension";
     }
     if (params.size() != lowerDims.size()) {
-      return emitError() << "Merge and unfold have one parameter per output "
-                            "dimension (its size)";
+      return emitError()
+             << "Merge must have one parameter per output dimension (its size)";
+    }
+    for (int64_t p : params) {
+      if (p <= 0)
+        return emitError() << "Merge dimension size " << p
+                           << " must be positive";
     }
     break;
   }
@@ -356,6 +409,9 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     }
     if (params.size() != upperDims.size()) {
       return emitError() << "Must supply a size parameter for each dimension";
+    }
+    if (params[0] <= 0) {
+      return emitError() << "AddDim size " << params[0] << " must be positive";
     }
     if (!lowerDims.empty()) {
       return emitError() << "The added dimension cannot be mapped anywhere";
@@ -377,6 +433,10 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
       return emitError()
              << "ConstDim is parameterized by [value, length] pairs";
     for (size_t i = 0, e = params.size(); i < e; i += 2) {
+      if (params[i] < 0)
+        return emitError() << "For constant dimension " << lowerDims[i / 2]
+                           << " constant value " << params[i]
+                           << " must be non-negative";
       if (params[i] >= params[i + 1])
         return emitError() << "For constant dimension " << lowerDims[i / 2]
                            << " constant value " << params[i]
@@ -415,6 +475,10 @@ LogicalResult TransformMapAttr::verify(
     ::llvm::ArrayRef<::mlir::rock::TransformAttr> ops, AffineMapAttr map,
     DenseI64ArrayAttr upperBounds, DenseI64ArrayAttr lowerBounds) {
   AffineMap rawMap = map.getAffineMap();
+  if (rawMap.getNumSymbols() != 0) {
+    return emitError() << "Affine map must not have symbol inputs, but has "
+                       << rawMap.getNumSymbols();
+  }
   if (rawMap.getNumInputs() != upperBounds.size()) {
     return emitError() << "Affine map has " << rawMap.getNumInputs()
                        << " inputs but there are " << upperBounds.size()
@@ -423,19 +487,184 @@ LogicalResult TransformMapAttr::verify(
   if (rawMap.getNumResults() != lowerBounds.size()) {
     return emitError() << "Affine map has " << rawMap.getNumResults()
                        << " outputs but there are " << lowerBounds.size()
-                       << " outut dimensions";
+                       << " output dimensions";
   }
 
   for (int64_t v : upperBounds.asArrayRef()) {
-    if (v < 0) {
-      return emitError() << "Upper bound/shape component less than 0";
+    if (v <= 0) {
+      return emitError() << "Upper bound/shape component must be positive, got "
+                         << v;
     }
   }
   for (int64_t v : lowerBounds.asArrayRef()) {
-    if (v < 0) {
-      return emitError() << "Lower bound/shape component less than 0";
+    if (v <= 0) {
+      return emitError() << "Lower bound/shape component must be positive, got "
+                         << v;
     }
   }
+
+  ArrayRef<int64_t> ub = upperBounds.asArrayRef();
+  ArrayRef<int64_t> lb = lowerBounds.asArrayRef();
+  for (TransformAttr t : ops) {
+    ArrayRef<uint32_t> uDims = t.getUpperDims();
+    ArrayRef<uint32_t> lDims = t.getLowerDims();
+    ArrayRef<int64_t> params = t.getParams();
+
+    for (uint32_t d : uDims) {
+      if (d >= ub.size())
+        return emitError() << "Upper dimension index " << d
+                           << " is out of range [0, " << ub.size() << ")";
+    }
+    for (uint32_t d : lDims) {
+      if (d >= lb.size())
+        return emitError() << "Lower dimension index " << d
+                           << " is out of range [0, " << lb.size() << ")";
+    }
+
+    // Structural checks (dimension counts, parameter counts, value validity)
+    // are handled by TransformAttr::verify. Here we only check consistency
+    // between the transform parameters and the map's upper/lower bounds.
+    switch (t.getType()) {
+    case TransformType::Unmerge: {
+      int64_t product = 1;
+      for (auto [dim, param] : llvm::zip(uDims, params)) {
+        if (ub[dim] != param) {
+          return emitError()
+                 << "Unmerge: upper bound " << ub[dim] << " at dimension "
+                 << dim << " does not match parameter " << param;
+        }
+        product *= param;
+      }
+      if (product != lb[lDims[0]]) {
+        return emitError() << "Unmerge: product of parameters (" << product
+                           << ") does not match lower bound (" << lb[lDims[0]]
+                           << ")";
+      }
+      break;
+    }
+    case TransformType::Merge: {
+      int64_t product = 1;
+      for (auto [dim, param] : llvm::zip(lDims, params)) {
+        if (lb[dim] != param) {
+          return emitError()
+                 << "Merge: lower bound " << lb[dim] << " at dimension " << dim
+                 << " does not match parameter " << param;
+        }
+        product *= param;
+      }
+      if (product != ub[uDims[0]]) {
+        return emitError() << "Merge: product of parameters (" << product
+                           << ") does not match upper bound (" << ub[uDims[0]]
+                           << ")";
+      }
+      break;
+    }
+    case TransformType::PassThrough: {
+      for (auto [uDim, lDim] : llvm::zip(uDims, lDims)) {
+        if (ub[uDim] != lb[lDim]) {
+          return emitError() << "PassThrough: upper bound " << ub[uDim]
+                             << " does not match lower bound " << lb[lDim];
+        }
+      }
+      break;
+    }
+    case TransformType::Pad: {
+      for (unsigned i = 0, e = uDims.size(); i < e; ++i) {
+        int64_t leftPad = params[i * 2];
+        int64_t rightPad = params[i * 2 + 1];
+        int64_t expected = lb[lDims[i]] + leftPad + rightPad;
+        if (ub[uDims[i]] != expected) {
+          return emitError() << "Pad: upper bound " << ub[uDims[i]]
+                             << " does not match lower bound " << lb[lDims[i]]
+                             << " + leftPad(" << leftPad << ") + rightPad("
+                             << rightPad << ") = " << expected;
+        }
+      }
+      break;
+    }
+    case TransformType::AddDim: {
+      if (params[0] != ub[uDims[0]]) {
+        return emitError() << "AddDim: parameter " << params[0]
+                           << " does not match upper bound " << ub[uDims[0]];
+      }
+      break;
+    }
+    case TransformType::Embed:
+      break;
+    case TransformType::Slice: {
+      for (unsigned i = 0, e = uDims.size(); i < e; ++i) {
+        int64_t begin = params[i * 2];
+        int64_t end = params[i * 2 + 1];
+        if (end > lb[lDims[i]])
+          return emitError()
+                 << "Slice: end (" << end << ") exceeds lower bound ("
+                 << lb[lDims[i]] << ")";
+        if (ub[uDims[i]] != end - begin) {
+          return emitError() << "Slice: upper bound " << ub[uDims[i]]
+                             << " does not match end(" << end << ") - begin("
+                             << begin << ") = " << (end - begin);
+        }
+      }
+      break;
+    }
+    case TransformType::Broadcast: {
+      for (unsigned i = 0, e = lDims.size(); i < e; ++i) {
+        if (params[i] != lb[lDims[i]]) {
+          return emitError() << "Broadcast: parameter " << params[i]
+                             << " does not match lower bound " << lb[lDims[i]];
+        }
+      }
+      break;
+    }
+    case TransformType::ConstDim: {
+      for (unsigned i = 0, e = lDims.size(); i < e; ++i) {
+        int64_t size = params[i * 2 + 1];
+        if (size != lb[lDims[i]]) {
+          return emitError() << "ConstDim: size parameter " << size
+                             << " does not match lower bound " << lb[lDims[i]];
+        }
+      }
+      break;
+    }
+    }
+  }
+
+  // Check that each upper and lower dimension is referenced by exactly one
+  // transform (no duplicates, no gaps). AddDim has no lower dims and ConstDim
+  // has no upper dims, so those are excluded from their respective sets.
+  llvm::SmallDenseSet<uint32_t> seenUpper, seenLower;
+  for (TransformAttr t : ops) {
+    for (uint32_t d : t.getUpperDims()) {
+      if (!seenUpper.insert(d).second)
+        return emitError() << "Upper dimension " << d
+                           << " is referenced by multiple transforms";
+    }
+    for (uint32_t d : t.getLowerDims()) {
+      if (!seenLower.insert(d).second)
+        return emitError() << "Lower dimension " << d
+                           << " is referenced by multiple transforms";
+    }
+  }
+  for (uint32_t i = 0, e = ub.size(); i < e; ++i) {
+    if (!seenUpper.contains(i))
+      return emitError() << "Upper dimension " << i
+                         << " is not covered by any transform";
+  }
+  for (uint32_t i = 0, e = lb.size(); i < e; ++i) {
+    if (!seenLower.contains(i))
+      return emitError() << "Lower dimension " << i
+                         << " is not covered by any transform";
+  }
+
+  MLIRContext *ctx = map.getContext();
+  Builder b(ctx);
+  AffineMapAttr expectedMap = assembleMapFor(b, ops, ub, lb);
+  if (expectedMap != map) {
+    return emitError() << "Affine map " << map
+                       << " does not match map reconstructed from transforms: "
+                       << expectedMap;
+  }
+
   return success();
 }
 
@@ -897,6 +1126,7 @@ LogicalResult ExtractPtrOp::verify() {
 LogicalResult TransformOp::verify() {
   auto inputType = cast<ShapedType>(getInput().getType());
   auto outputType = cast<ShapedType>(getOutput().getType());
+
   TransformMapAttr tmap = getTransform();
 
   ArrayRef<int64_t> lowerBounds = tmap.getLowerBounds();
