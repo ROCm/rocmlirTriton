@@ -536,6 +536,24 @@ Value mlir::rock::createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
   return arith::ConstantOp::create(rewriter, loc, tensorType, zeroAttr);
 }
 
+Value mlir::rock::insertBroadcast(OpBuilder &b, Location loc, Value inp,
+                                  ArrayRef<int64_t> outShape) {
+  ArrayRef<int64_t> inpShape = cast<ShapedType>(inp.getType()).getShape();
+  bool broadcastDone = false;
+  rock::BottomUpTMBuilder broadcastDims(b, inpShape, loc);
+  for (unsigned int i = 0; i < outShape.size(); i++) {
+    if (inpShape[i] == 1 && outShape[i] != 1) {
+      broadcastDims.broadcast({i}, {outShape[i]});
+      broadcastDone = true;
+    } else {
+      broadcastDims.passThrough({i}, {i});
+    }
+  }
+  if (!broadcastDone)
+    return inp;
+  return rock::TransformOp::create(b, loc, inp, broadcastDims.get());
+}
+
 bool mlir::rock::isFusionOp(Operation *op) {
   if (!isa<arith::ArithDialect, math::MathDialect>(op->getDialect()))
     return false;
@@ -721,4 +739,21 @@ void mlir::rock::propagateOutputType(Value oldRoot, Value newRoot) {
       }
     }
   }
+}
+
+FailureOr<OutputsAndFusionInputs>
+mlir::rock::traceOutputsAndFusionInputs(Value rootOut) {
+  auto maybeStores = rock::traceRootOutputToStoreOps(rootOut);
+  if (failed(maybeStores))
+    return failure();
+
+  OutputsAndFusionInputs info;
+  info.stores = maybeStores.value();
+  for (auto storeOp : info.stores)
+    info.outputViews.push_back(storeOp.getDest());
+
+  // Collect extra fusion inputs (operands of fusion ops that are not in the
+  // gemm-result chain, e.g. the second operand of arith.addf).
+  info.fusionInputMap = rock::collectFusionExtraInputs(rootOut);
+  return info;
 }

@@ -83,14 +83,10 @@ LogicalResult mlir::rock::checkValidOutputFusion(
 
 bool mlir::rock::gemmGemmHasPreSecondGemmFusion(
     RockGemmGemmWrapperInterface gemmGemmOp) {
-  WalkResult res = gemmGemmOp.getPreSecondGemmRegion().walk(
-      [](Operation *fusionOp) -> WalkResult {
-        if (rock::isFusionOp(fusionOp))
-          return WalkResult::interrupt();
-        return WalkResult::advance();
-      });
-
-  return res.wasInterrupted();
+  Region &region = gemmGemmOp.getPreSecondGemmRegion();
+  if (region.empty())
+    return false;
+  return !region.front().without_terminator().empty();
 }
 
 LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {

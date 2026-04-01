@@ -561,6 +561,16 @@ def Rock_GridwiseAttentionOp
     `->` type($result) (`,` type($lse)^)?
   }];
   let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    // Block arg 0 of preSoftmaxBody is the first GEMM output (QK product).
+    BlockArgument getPreSoftmaxQKArgument() {
+      Region &region = getPreSoftmaxBody();
+      if (region.empty())
+        return nullptr;
+      return region.front().getArgument(0);
+    }
+  }];
 }
 
 // yield

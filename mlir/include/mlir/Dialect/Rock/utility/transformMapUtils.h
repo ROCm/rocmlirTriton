@@ -20,10 +20,6 @@ class OpBuilder;
 class Value;
 class ValueRange;
 
-namespace linalg {
-class GenericOp;
-}
-
 namespace rock {
 class TransformMapAttr;
 class TransformOp;

@@ -274,13 +274,16 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   tosaOptions.extensions.push_back("mxfp");
 
   funcPm.addPass(tosa::createTosaAttachTarget(tosaOptions));
-  funcPm.addPass(rock::createRockTosaToElementwisePass());
 
+  if (!noRock) {
+    funcPm.addPass(rock::createRockTosaToElementwisePass());
+  }
   // use tosa conversion pipeline
   // (see mlir/lib/Conversion/TosaToLinalg/TosaToLinalgPass.cpp)
   TosaToLinalgOptions tosaToLinalgOptions;
   TosaToLinalgNamedOptions tosaToLinalgNamedOptions;
-  // pass std::nullopt as validation options to avoid running tosa-validate pass
+  // pass std::nullopt as validation options to avoid running tosa-validate
+  // pass
   tosa::addTosaToLinalgPasses(pm, tosaToLinalgOptions, tosaToLinalgNamedOptions,
                               /*validationOptions=*/std::nullopt);
 

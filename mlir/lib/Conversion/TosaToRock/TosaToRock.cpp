@@ -780,25 +780,6 @@ public:
   }
 };
 
-static Value insertBroadcast(Value inp, ArrayRef<int64_t> outShape,
-                             Location loc, OpBuilder &b) {
-  ArrayRef<int64_t> inpShape = cast<ShapedType>(inp.getType()).getShape();
-  bool broadcastDone = false;
-  rock::BottomUpTMBuilder broadcastDims(b, inpShape, loc);
-  for (unsigned int i = 0; i < outShape.size(); i++) {
-    if (inpShape[i] == 1 && outShape[i] != 1) {
-      broadcastDims.broadcast({i}, {outShape[i]});
-      broadcastDone = true;
-    } else {
-      broadcastDims.passThrough({i}, {i});
-    }
-  }
-  if (!broadcastDone) {
-    return inp;
-  }
-  return rock::TransformOp::create(b, loc, inp, broadcastDims.get());
-}
-
 static FailureOr<Value> mulBroadcast(Value val, bool skipCollapseExpand = true);
 
 static FailureOr<Value> getValueSkipping(Value val,
@@ -1050,7 +1031,7 @@ public:
     SmallVector<int64_t, 3> aShape =
         llvm::to_vector<3>(cast<RankedTensorType>(matA.getType()).getShape());
     setLastDims(transposeA, aShape, {mDim, kDim});
-    Value brA = insertBroadcast(matA, aShape, loc, rw);
+    Value brA = rock::insertBroadcast(rw, loc, matA, aShape);
     Value brAScale = nullptr;
     if (scaleA) {
       SmallVector<int64_t, 3> aScaleShape = llvm::to_vector<3>(
@@ -1059,13 +1040,13 @@ public:
       // will not be able to match scaled_gemms. Update logic when we have
       // scaled_gemm support in TOSA
       setLastDims(nullptr, aScaleShape, {mDim, kDim});
-      brAScale = insertBroadcast(scaleA, aScaleShape, loc, rw);
+      brAScale = rock::insertBroadcast(rw, loc, scaleA, aScaleShape);
     }
 
     SmallVector<int64_t, 3> bShape = llvm::to_vector<3>(
         cast<RankedTensorType>(op.getB().getType()).getShape());
     setLastDims(transposeB, bShape, {kDim, nDim});
-    Value brB = insertBroadcast(matB, bShape, loc, rw);
+    Value brB = rock::insertBroadcast(rw, loc, matB, bShape);
 
     Value brBScale = nullptr;
     if (scaleB) {
@@ -1075,7 +1056,7 @@ public:
       // will not be able to match scaled_gemms. Update logic when we have
       // scaled_gemm support in TOSA
       setLastDims(nullptr, bScaleShape, {kDim, nDim});
-      brBScale = insertBroadcast(scaleB, bScaleShape, loc, rw);
+      brBScale = rock::insertBroadcast(rw, loc, scaleB, bScaleShape);
     }
 
     // TODO(rocmlirTriton): quantBlockSize
@@ -3163,7 +3144,7 @@ public:
     }
     if (bcastInput) {
       Value bcast =
-          insertBroadcast(bcastInput, out.getType().getShape(), loc, rw);
+          rock::insertBroadcast(rw, loc, bcastInput, out.getType().getShape());
       rw.replaceOp(op, bcast);
       return success();
     }
@@ -3202,8 +3183,8 @@ public:
       if (operandType.getRank() != resultType.getRank())
         continue;
 
-      Value broadcasted = insertBroadcast(operand.get(), resultType.getShape(),
-                                          op->getLoc(), rewriter);
+      Value broadcasted = rock::insertBroadcast(
+          rewriter, op->getLoc(), operand.get(), resultType.getShape());
       if (broadcasted != operand.get()) {
         rewriter.modifyOpInPlace(op, [&]() { operand.set(broadcasted); });
         changed = true;
