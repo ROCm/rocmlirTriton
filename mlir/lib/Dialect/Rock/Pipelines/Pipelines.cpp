@@ -309,6 +309,8 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
 
   pm.addPass(createConvertTensorToLinalgPass());
   if (!noRock) {
+    pm.nest<func::FuncOp>().addPass(
+        rock::createRockSortDimensionsMemoryLayoutPass());
     pm.addPass(rock::createRockInsertOutputStoresPass());
   }
 }

@@ -220,6 +220,13 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   ];
 }
 
+def RockSortDimensionsMemoryLayoutPass
+    : Pass<"rock-sort-dimensions-memory-layout", "::mlir::func::FuncOp"> {
+  let summary = "Sort dimensions by stride of the underlying memory layout";
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect", "linalg::LinalgDialect"];
+}
+
 def RockInsertOutputStoresPass
     : Pass<"rock-insert-output-stores", "::mlir::ModuleOp"> {
   let summary = "Insert rock.store ops for kernel outputs and convert returns "
