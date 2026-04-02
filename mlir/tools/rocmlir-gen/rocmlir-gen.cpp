@@ -3609,8 +3609,7 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       queries, keys, values, elemwiseInputs, currentSeqLenTensor,
       prefixOffsetTensor, numHeadsQ, numHeadsKV, transposeQ, transposeK,
       transposeV, transposeO, actualCausal, splitKV, softmaxType,
-      /*params0=*/nullptr, /*params1=*/nullptr,
-      /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
+      /*params0=*/nullptr, /*params1=*/nullptr);
   {
     Block *preSoftmaxElemwiseBlock =
         &attention.getPreSoftmaxBody().emplaceBlock();
@@ -3746,8 +3745,7 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
       transposeC, transposeO, builder.getIndexArrayAttr(pad),
       builder.getIndexArrayAttr(config->strideDims),
       builder.getIndexArrayAttr(config->dilationDims),
-      /*params0=*/nullptr, /*params1=*/nullptr,
-      /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
+      /*params0=*/nullptr, /*params1=*/nullptr);
   {
     Block *preSecondGemmBlock =
         &convElntGemm.getPreSecondGemmBody().emplaceBlock();
@@ -3862,8 +3860,7 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   auto gemmElntGemm = rock::GemmElementwiseGemmOp::create(
       builder, loc, outputLogicalType, a, b, c, elemwiseInputs, transposeA,
       transposeB, transposeC, transposeO,
-      /*params0=*/nullptr, /*params1=*/nullptr,
-      /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
+      /*params0=*/nullptr, /*params1=*/nullptr);
   {
     Block *preSecondGemmBlock =
         &gemmElntGemm.getPreSecondGemmBody().emplaceBlock();

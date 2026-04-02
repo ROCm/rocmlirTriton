@@ -340,7 +340,7 @@ module {
         rock.yield %qk : tensor<1x64x64xf16>
       }
       softmax(qk) * %v : tensor<1x64x32xf16>
-    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x64x32xf16>
+    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x64x32xf16>
     %attn_4d = rock.transform %attn by #tf_attn_unmerge : tensor<1x64x32xf16> to tensor<1x8x8x32xf16>
     %fused = arith.addf %attn_4d, %ext : tensor<1x8x8x32xf16>
     %r = rock.store %fused to %dest by set : tensor<1x8x8x32xf16> -> tensor<1x8x8x32xf16> to tensor<1x8x8x32xf16>

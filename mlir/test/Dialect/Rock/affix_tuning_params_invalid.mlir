@@ -8,7 +8,7 @@
 //   rock.attention{
 //     qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
 //     %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 
@@ -18,7 +18,7 @@
 //   rock.gemm_elementwise_gemm{
 //     ab = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
 //     %arg3 = ab * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 
@@ -28,7 +28,7 @@
 //   rock.conv_elementwise_gemm{
 //     ab = conv(%arg0, %arg1) : memref<1x128x256x1x1xf16>, memref<2x1x256x32x32xf16>
 //     %arg3 = ab * %arg2 : memref<1x128x128xf16> -> memref<1x2048x128xf16>
-//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod set>, strides = [1 : index, 1 : index]}
+//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod set>, strides = [1 : index, 1 : index]}
 //   return
 // }
 
@@ -54,7 +54,7 @@ func.func @two_gemms(
 //   rock.attention{
 //     qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
 //     %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 
@@ -64,7 +64,7 @@ func.func @two_gemms(
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
 //   return
 // }
 
@@ -74,7 +74,7 @@ func.func @two_gemms(
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
 //   return
 // }
 
@@ -84,7 +84,7 @@ func.func @two_gemms(
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 
@@ -94,7 +94,7 @@ func.func @two_gemms(
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 

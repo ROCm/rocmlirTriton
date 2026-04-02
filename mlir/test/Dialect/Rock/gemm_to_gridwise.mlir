@@ -229,7 +229,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } { 
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     splitKV = 1 : i32,
 //     storeMethod = #rock<StoreMethod set>,
 //     numHeadsKV = 1 : i32, 
@@ -257,7 +256,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } { 
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     splitKV = 1 : i32,
 //     storeMethod = #rock<StoreMethod set>,
 //     numHeadsKV = 1 : i32, 
@@ -280,7 +278,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } {
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     splitKV = 1 : i32,
 //     storeMethod = #rock<StoreMethod set>,
 //     numHeadsKV = 1 : i32, 
@@ -304,7 +301,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } {
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     splitKV = 1 : i32,
 //     storeMethod = #rock<StoreMethod set>,
 //     numHeadsKV = 1 : i32, 
@@ -327,7 +323,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } {
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     splitKV = 1 : i32,
 //     storeMethod = #rock<StoreMethod set>,
 //     numHeadsKV = 1 : i32, 
@@ -351,7 +346,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } {
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     splitKV = 4 : i32,
 //     storeMethod = #rock<StoreMethod set>,
 //     numHeadsKV = 1 : i32, 
@@ -377,7 +371,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } {
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     splitKV = 8 : i32,
 //     storeMethod = #rock<StoreMethod set>,
 //     numHeadsKV = 1 : i32, 
@@ -401,7 +394,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } {
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     storeMethod = #rock<StoreMethod set>,
 //     splitKV = 1 : i32,
 //     numHeadsKV = 1 : i32, 
@@ -425,7 +417,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } { 
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     storeMethod = #rock<StoreMethod set>
 //   } -> tensor<1x1024x64xf32>
 //   %out = rock.store %result to %arg3 by set : tensor<1x1024x64xf32> -> tensor<1x1024x64xf32> to tensor<1x1024x64xf32>
@@ -451,7 +442,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } { 
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1,
-//     firstGemmIndices = array<i64: 0>,
 //     storeMethod = #rock<StoreMethod set>
 //   } -> tensor<1x49x7xf32>
 //   %out = rock.store %result to %arg3 by set : tensor<1x49x7xf32> -> tensor<1x49x7xf32> to tensor<1x49x7xf32>
@@ -482,7 +472,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   } { 
 //     params0 = #xldops_attn_params_g0,
 //     params1 = #xldops_attn_params_g1_splitk,
-//     firstGemmIndices = array<i64: 0>,
 //     storeMethod = #rock<StoreMethod set>
 //   } -> tensor<1x1024x64xf32>
 //   %out = rock.store %result to %arg3 by set : tensor<1x1024x64xf32> -> tensor<1x1024x64xf32> to tensor<1x1024x64xf32>
@@ -533,7 +522,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //     rock.yield
 //   }
 //    %alloc = ab * %0 : tensor<1x64x64xf32> -> tensor<1x64x64xf32>
-//   } {firstGemmIndices = array<i64: 0>, params0 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, perf_config = "attn:v1:64,32,64,1,1,4,0,4,1,0,0", storeMethod = #rock<StoreMethod set>} -> tensor<1x64x64xf32>
+//   } {params0 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, perf_config = "attn:v1:64,32,64,1,1,4,0,4,1,0,0", storeMethod = #rock<StoreMethod set>} -> tensor<1x64x64xf32>
 //   %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 64, d0 mod 64)> by [<Merge{1, 64, 64} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [4096] -> [1, 64, 64]> : tensor<1x64x64xf32> to tensor<4096xf32>
 //   %alloc_0 = tensor.empty() : tensor<1x64x1xf32>
 // 
@@ -580,7 +569,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //       rock.yield
 //     }
 //      %arg4 = softmax(qk) * %arg2 : tensor<8x8192x128xf16> -> tensor<256x1x128xf16>
-//   } {firstGemmIndices = array<i64: 0>, numHeadsKV = 8 : i32, numHeadsQ = 64 : i32, params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, softmaxType = f32, splitKV = 4 : i32, storeMethod = #rock<StoreMethod set>} -> tensor<256x1x128xf16>
+//   } {numHeadsKV = 8 : i32, numHeadsQ = 64 : i32, params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, softmaxType = f32, splitKV = 4 : i32, storeMethod = #rock<StoreMethod set>} -> tensor<256x1x128xf16>
 //   %out = rock.store %result to %arg4 by set : tensor<256x1x128xf16> -> tensor<256x1x128xf16> to tensor<256x1x128xf16>
 //   return %out : tensor<256x1x128xf16>
 // }

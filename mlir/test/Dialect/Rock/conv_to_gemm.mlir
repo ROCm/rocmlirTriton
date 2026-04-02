@@ -88,7 +88,7 @@ func.func @nhwc_1x1_fptoui_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816
 //     rock.yield
 //   }
 //     %3 = ab * %2 : memref<1x256x256xf32> -> memref<1x12544x256xf32>
-//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod set>, strides = [1 : index, 1 : index]}
+//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod set>, strides = [1 : index, 1 : index]}
 //   return
 // }
 
@@ -109,7 +109,7 @@ func.func @nhwc_1x1_fptoui_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816
 //     rock.yield
 //   }
 //     %3 = ab * %2 : memref<1x256x256xf32> -> memref<1x3136x256xf32>
-//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod set>, strides = [2 : index, 2 : index]}
+//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod set>, strides = [2 : index, 2 : index]}
 //   return
 // }
 
@@ -130,7 +130,7 @@ func.func @nhwc_1x1_fptoui_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816
 //     rock.yield
 //   }
 //     %3 = ab * %2 : memref<1x256x256xf32> -> memref<1x9216x256xf32>
-//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod set>, strides = [1 : index, 1 : index]}
+//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod set>, strides = [1 : index, 1 : index]}
 //   return
 // }
 
@@ -152,6 +152,6 @@ func.func @nhwc_1x1_fptoui_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816
 //     rock.yield
 //   }
 //     %3 = ab * %2 : memref<1x256x256xf32> -> memref<1x9216x256xf32>
-//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod atomic_add>, strides = [1 : index, 1 : index]}
+//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod atomic_add>, strides = [1 : index, 1 : index]}
 //   return
 // }

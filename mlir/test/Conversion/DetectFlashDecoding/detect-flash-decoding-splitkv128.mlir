@@ -70,7 +70,7 @@ module {
       rock.yield
     }
      softmax(qk) * %6 : tensor<1024x1x64xf16>
-    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1024x128x64xf16>, tensor<1024x128xf32>
+    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1024x128x64xf16>, tensor<1024x128xf32>
     %12 = rock.transform %lseOut by #transform_map11 : tensor<1024x128xf32> to tensor<1x8x128x128x1xf32>
     %13 = rock.transform %12 by #transform_map12 : tensor<1x8x128x128x1xf32> to tensor<131072xf32>
     %14 = rock.transform %result by #transform_map13 : tensor<1024x128x64xf16> to tensor<8388608xf16>

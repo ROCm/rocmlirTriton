@@ -809,13 +809,13 @@ struct GridwiseAttentionRewritePattern
     IRMapping mapping;
     auto tileType = cast<RankedTensorType>(srcGemm0OutBuffer.getType());
 
-    // Use firstGemmIndices to find which block arg is the QK product.
-    // The QK product may not be at index 0 when fusion reordering places
-    // extra inputs before it (e.g. a mask operand in migraphx.where).
-    ArrayRef<int64_t> firstGemmIdx = op.getFirstGemmIndices();
-    assert(!firstGemmIdx.empty());
-    unsigned qkArgIndex = firstGemmIdx[0];
-    BlockArgument qkArg = block.getArgument(qkArgIndex);
+    // Block arg 0 is always the QK product (enforced by
+    // ElementwiseRegionFinder in TosaToRock). Extra element-wise inputs
+    // follow at args 1..N.
+    if (block.getNumArguments() == 0)
+      return op->emitOpError()
+             << "preSoftmaxBody block must have at least one argument";
+    BlockArgument qkArg = block.getArgument(0);
 
     Value gemm0Mapped = srcGemm0OutBuffer;
     Type regionElemType = cast<ShapedType>(qkArg.getType()).getElementType();
@@ -827,20 +827,13 @@ struct GridwiseAttentionRewritePattern
     }
     mapping.map(qkArg, gemm0Mapped);
 
-    // Build list of block arg indices for the extra (non-QK) inputs,
-    // preserving their order so they align with getPreSoftmaxElemWiseInputs.
-    SmallVector<unsigned> extraArgIndices;
-    for (unsigned j = 0; j < block.getNumArguments(); ++j) {
-      if (j != qkArgIndex)
-        extraArgIndices.push_back(j);
-    }
-
     ValueRange extraInputs = op.getPreSoftmaxElemWiseInputs();
-    if (extraInputs.size() != extraArgIndices.size()) {
-      LLVM_DEBUG(llvm::dbgs() << "getPreSoftmaxElemWiseInputs size must match "
-                                 "the number of non-QK block arguments\n");
-      return failure();
-    }
+    unsigned numExtraArgs = block.getNumArguments() - 1;
+    if (extraInputs.size() != numExtraArgs)
+      return op->emitOpError()
+             << "preSoftmaxBody has " << numExtraArgs
+             << " non-QK block argument(s) but op has "
+             << extraInputs.size() << " preSoftmaxElemWiseInputs";
 
     // Collect transform ops from the body that should be folded into the
     // LoadMarkerOp views rather than cloned separately. This handles inputs
@@ -869,10 +862,20 @@ struct GridwiseAttentionRewritePattern
       // input tensor shape (e.g. broadcast [1,64,64]->[1,1,1] then reshape
       // [1,1,1]->[1] for a scalar input). They must be part of the
       // LoadMarkerOp's views so the view chain reaches the input tensor.
-      BlockArgument blockArg = block.getArgument(extraArgIndices[i]);
+      BlockArgument blockArg = block.getArgument(i + 1);
       Value chainEnd = blockArg;
       SmallVector<Attribute> bodyTransformAttrs;
 
+      // The hasOneUse() condition means we only follow purely linear chains
+      // where each value feeds exactly one consumer. This works for all
+      // bodies produced by the current pipeline (ElementwiseRegionFinder
+      // generates linear reshape chains, converted to rock.transform by
+      // ViewToTransform). It will not handle:
+      //   - An intermediate transform result consumed by both the next
+      //     transform and an elementwise op (multi-use). The chain would
+      //     stop early, leaving later transforms to be incorrectly cloned
+      //     with mismatched shape metadata.
+      //   - A value consumed by two different TransformOps (branching).
       while (chainEnd.hasOneUse()) {
         Operation *user = *chainEnd.getUsers().begin();
         auto transformOp = dyn_cast<TransformOp>(user);
@@ -881,6 +884,20 @@ struct GridwiseAttentionRewritePattern
         bodyTransformAttrs.push_back(transformOp.getTransform());
         bodyTransformOpsToSkip.insert(user);
         chainEnd = transformOp.getResult();
+      }
+
+      // If the chain stopped at a multi-use value that still has a
+      // TransformOp consumer, we have either a multi-use intermediate
+      // or a branching chain. Both would leave transforms unfolded and
+      // incorrectly cloned with mismatched shape metadata.
+      if (!chainEnd.use_empty()) {
+        for (Operation *user : chainEnd.getUsers()) {
+          if (isa<TransformOp>(user))
+            return op->emitOpError()
+                   << "preSoftmaxBody block argument " << (i + 1)
+                   << " has a transform chain that is not purely linear "
+                      "(multi-use or branching); this is not supported";
+        }
       }
 
       if (!bodyTransformAttrs.empty()) {

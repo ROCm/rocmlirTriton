@@ -645,7 +645,6 @@ static LogicalResult commonAttentionGemmElmtGemm(
       currentSeqLen, prefixOffset, causal, splitKV,
       /*disableQBypassLDS=*/nullptr, prePadG0MAttr, prePadG0NAttr,
       numRepeatsGQA, softmaxType, params0, params1,
-      rw.getDenseI64ArrayAttr(op.getFirstGemmIndices()),
       rw.getBoolAttr(enableSoftmax), preSoftmaxHasSplitKVTransforms);
   bool fusionsFound = rock::gemmGemmHasPreSecondGemmFusion(op);
   if (fusionsFound) {
