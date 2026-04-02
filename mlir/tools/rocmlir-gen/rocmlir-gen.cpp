@@ -1327,7 +1327,8 @@ static Value computeFinalAttentionStage(OpBuilder builder, Location loc,
 static func::FuncOp createGPUWrapper(ModuleOp module,
                                      const std::string &funcName,
                                      const SmallVector<KernelIF, 8> &kernels,
-                                     const GenParams &params) {
+                                     const GenParams &params,
+                                     ArrayRef<int32_t> outIndices) {
   MLIRContext *context = module.getContext();
   OpBuilder b(context);
   auto loc = kernels[0].func->getLoc();
@@ -1401,9 +1402,9 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   // Emit kernel function call, repeating it if needed.
   // We assume that the repeated atomic add usages in a wrw kernel will not
   // substantially impact performance as the result becomes large
-  auto emitWrappedCall = [&kernels, &gpuMem](OpBuilder &b, Location loc,
-                                             Value ignoredIv,
-                                             ValueRange noArgs) {
+  auto emitWrappedCall = [&kernels, &gpuMem,
+                          &outIndices](OpBuilder &b, Location loc,
+                                       Value ignoredIv, ValueRange noArgs) {
     for (const auto &kernel : kernels) {
       // Check if kernel expects tensor arguments
       // Use kernel.params which stores the function argument types
@@ -1411,7 +1412,6 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
           !kernel.params.empty() && isa<TensorType>(kernel.params.front());
 
       if (expectsTensors) {
-        // Convert gpuMem (memrefs) to tensors for the kernel call
         SmallVector<Value, 4> tensorArgs;
         for (Value memrefArg : gpuMem) {
           tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, true));
@@ -1424,10 +1424,10 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
         // Output), so map result i to the (numResults - 1 - i)-th-from-last
         // argument.
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-          size_t outIdx = gpuMem.size() - 1 - resultIdx;
+          int32_t outIdx = outIndices[resultIdx];
           auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
-          Value resultMemref =
-              bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
+          Value resultMemref = bufferization::ToBufferOp::create(
+              b, loc, outMemrefType, result);
           memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
         }
       } else {
@@ -4617,6 +4617,9 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   Value lseOut;
+  // if split-kv is > 1, we use the LSE to compute the final result.
+  // There's no need to verify it, and it's expected to be different
+  // cpu vs gpu (sometimes).
   if (returnLSE)
     lseOut = block->getArgument(optionalArgsCounter++);
 
@@ -4959,95 +4962,6 @@ static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
   return func;
 }
 
-// If the fut expects certain args (mostly output buffers),
-// this will populate the linalg.fill calls to do those based
-// on the presense of mhal::PrefillAttr. This is to mimic the
-// requirement on the kernel launcher to do the same for the
-// expected funtionality.
-static void insertPrefills(func::FuncOp fut) {
-  SmallVector<ModuleOp, 1> innerModules;
-  fut->getParentOfType<ModuleOp>().walk(
-      [&](ModuleOp module) { innerModules.push_back(module); });
-  innerModules.push_back(fut->getParentOfType<ModuleOp>());
-  // TODO(roctriton): mhal
-  // fut.walk([&](mhal::LaunchOp launchOp) {
-  //   Location loc = launchOp->getLoc();
-  //   DenseMap<int, Attribute> argInitValues;
-  //   StringRef callee = launchOp.getCallee();
-  //   OpBuilder builder(launchOp);
-  //   for (ModuleOp module : innerModules) {
-  //     if (func::FuncOp calleeFunc =
-  //     module.lookupSymbol<func::FuncOp>(callee)) {
-  //       size_t argCount = calleeFunc.getArguments().size();
-  //       for (size_t i = 0; i < argCount; i++) {
-  //         if (Attribute initAttr =
-  //                 calleeFunc.getArgAttr(i, rock::PrefillAttr::getMnemonic()))
-  //                 {
-  //           argInitValues[i] = initAttr;
-  //         } else if (!argInitValues.contains(i) &&
-  //                    calleeFunc.getArgAttr(i, "mhal.write_access")) {
-  //           // initialize to 100 by default
-  //           // This ensures failure if the output tensor requires prefill,
-  //           // helping to detect uninitialized output in GPU vs CPU
-  //           execution. auto type = calleeFunc.getArgumentTypes()[i]; auto
-  //           elementType = cast<MemRefType>(type).getElementType(); Attribute
-  //           init; if (llvm::isa<FloatType>(elementType)) {
-  //             init = builder.getFloatAttr(elementType, 100.0);
-  //           } else {
-  //             assert(llvm::isa<IntegerType>(elementType) &&
-  //                    "expecting `int` element type");
-  //             init = builder.getIntegerAttr(elementType, 100);
-  //           }
-  //           argInitValues[i] = init;
-  //         }
-  //       }
-  //     }
-  //   }
-  //   {
-  //     OpBuilder::InsertionGuard guard(builder);
-  //     for (auto argIdxAndValueAttr : argInitValues) {
-  //       int argIdx = argIdxAndValueAttr.first;
-  //       auto valueAttr = argIdxAndValueAttr.second;
-  //       auto fillValue =
-  //           arith::ConstantOp::create(builder, loc,
-  //           cast<TypedAttr>(valueAttr));
-  //       Value originalArg = launchOp.getArgOperands()[argIdx];
-  //       linalg::FillOp::create(builder, loc, ValueRange{fillValue},
-  //                              ValueRange{originalArg});
-  //     }
-  //   }
-  // });
-}
-
-// Convert the mhal.launch/mhal.await pattern back to func.call.
-static void undoAsyncLaunchPass(Operation *cloneFunc) {
-  SymbolTableCollection symbolTable;
-  auto walker = [&](Operation *op) {
-    OpBuilder builder(op);
-    // TODO(roctriton): mhal
-    /*
-    if (auto launch = dyn_cast<mhal::LaunchOp>(op)) {
-      SymbolRefAttr calleeAttr = launch->getAttrOfType<SymbolRefAttr>("callee");
-      CallOpInterface callInt = dyn_cast<CallOpInterface>(op);
-      assert(callInt);
-      auto operands = callInt.getArgOperands();
-      auto call = func::CallOp::create(builder, op->getLoc(), calleeAttr,
-                                       TypeRange{}, operands);
-      call->moveBefore(op);
-      op->dropAllUses();
-      op->erase();
-      return WalkResult::interrupt();
-    }
-    if (auto launch = dyn_cast<mhal::AwaitOp>(op)) {
-      op->erase();
-      return WalkResult::interrupt();
-    }*/
-    return WalkResult::advance();
-  };
-  while (cloneFunc->walk(walker).wasInterrupted()) {
-  }
-}
-
 /// Helper to call a tensor-based function with memref arguments.
 /// Converts memrefs to tensors, calls the function, and copies results back.
 static void callTensorFuncWithMemrefs(OpBuilder &b, Location loc,
@@ -5067,6 +4981,36 @@ static void callTensorFuncWithMemrefs(OpBuilder &b, Location loc,
       Value resultMemref =
           bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
       memref::CopyOp::create(b, loc, resultMemref, memrefArgs[outIdx]);
+    }
+  }
+}
+
+/// Call a cpu_host function with the appropriate subset of valVars.
+///
+/// The cpu_host function was created from the original function before the
+/// kernel pipeline ran. rock-insert-output-stores appends output argument(s)
+/// to the end of the kernel's signature, so the kernel will have more args
+/// than cpu_host. The first cpuHostFunc.getNumArguments() args of the kernel
+/// always match cpu_host's args in order.
+static void callCpuHostWithMemrefs(OpBuilder &b, Location loc,
+                                   func::FuncOp cpuHostFunc,
+                                   SmallVectorImpl<Value> &valVars,
+                                   ArrayRef<int32_t> outIndices) {
+  size_t numCpuHostArgs = cpuHostFunc.getNumArguments();
+  SmallVector<Value, 8> tensorArgs;
+  for (size_t i = 0; i < numCpuHostArgs; ++i) {
+    tensorArgs.push_back(rock::getAsTensor(b, loc, valVars[i], false));
+  }
+
+  auto callOp = func::CallOp::create(b, loc, cpuHostFunc, tensorArgs);
+
+  for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
+    if (resultIdx < outIndices.size()) {
+      int32_t outIdx = outIndices[resultIdx];
+      auto outMemrefType = cast<MemRefType>(valVars[outIdx].getType());
+      Value resultMemref =
+          bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
+      memref::CopyOp::create(b, loc, resultMemref, valVars[outIdx]);
     }
   }
 }
@@ -5141,24 +5085,18 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
           << "Validation generation requested, but no operation specified\n";
       exit(1);
     }
-  } else { // clone
-    // Clone the kernel-calling function.  
-    //  will call the appropriate
-    // binary kernel from the mhal.launch ops;  here, we'll replace those with
-    // func.call which will get the MLIR kernel.  No redirection of callees
-    // needed.
-    auto *cloneFunc = func->clone();
-    insertPrefills(static_cast<func::FuncOp>(func));
-    undoAsyncLaunchPass(cloneFunc);
-    SymbolOpInterface cloneFuncOp = dyn_cast<SymbolOpInterface>(cloneFunc);
-    SmallString<128> nameBuffer(cloneFuncOp.getName());
-    nameBuffer += "_cloned";
-    cloneFuncOp.setName(nameBuffer);
-    cloneFunc->removeAttr(rock::KernelAttr::getMnemonic());
-    SymbolTable symbolTable(module);
-    symbolTable.insert(cloneFunc);
-    func::CallOp::create(b, loc, SymbolRefAttr::get(cloneFunc), TypeRange{},
-                         valVars);
+  } else {
+    // The _cpu_host function was created by --clone-harness and lowered by the
+    // host pipeline. It provides the CPU reference implementation for
+    // validation. Look it up by naming convention: <kernel_name>_cpu_host.
+    std::string cpuHostName = root0.func.getName().str() + "_cpu_host";
+    auto cpuHostFunc = module.lookupSymbol<func::FuncOp>(cpuHostName);
+    if (!cpuHostFunc) {
+      llvm::errs() << "Clone validation requires a " << cpuHostName
+                   << " function in the module.\n";
+      exit(1);
+    }
+    callCpuHostWithMemrefs(b, loc, cpuHostFunc, valVars, outIndices);
   }
 
   // Emit call to verifier
@@ -5292,6 +5230,7 @@ static LogicalResult populateHostHarnessLogic(
 
   bool isAttention = false;
   SmallVector<int32_t, 2> outIndices;
+  SmallVector<int32_t, 2> allOutIndices;
   if (genParams.operation.has_value()) {
     switch (genParams.operation.value()) {
     case rock::KernelType::Conv:
@@ -5322,15 +5261,19 @@ static LogicalResult populateHostHarnessLogic(
         ++optionalArgsCounter;
       if (!prefixOffset.empty())
         ++optionalArgsCounter;
-      // if split-kv is > 1, we use the LSE to compute the final result.
-      // There's no need to verify it, and it's expected to be different
-      // cpu vs gpu (sometimes).
       if (returnLSE) {
-        if (splitKV == 1)
-          outIndices.push_back(optionalArgsCounter);
+        int32_t lseArgIdx = optionalArgsCounter;
         ++optionalArgsCounter;
+        outIndices.push_back(optionalArgsCounter);
+        allOutIndices.push_back(optionalArgsCounter);
+        allOutIndices.push_back(lseArgIdx);
+        // Only verify LSE when splitKV == 1; with splitKV > 1, the LSE
+        // is an intermediate used to compute the final result.
+        if (splitKV == 1)
+          outIndices.push_back(lseArgIdx);
+      } else {
+        outIndices.push_back(optionalArgsCounter);
       }
-      outIndices.push_back(optionalArgsCounter);
     }
   } else {
     outIndices = root0.outIndices;
@@ -5443,8 +5386,15 @@ static LogicalResult populateHostHarnessLogic(
 
   // capture result index
   if (outIndices.empty()) {
-    outIndices.push_back(localVars.size() - 1);
+    size_t numResults = std::max<size_t>(root0.resultTypes.size(), 1);
+    assert(localVars.size() >= numResults &&
+           "fewer localVars than kernel results");
+    for (size_t i = localVars.size() - numResults; i < localVars.size(); ++i) {
+      outIndices.push_back(i);
+    }
   }
+  if (allOutIndices.empty())
+    allOutIndices = outIndices;
 
   // Helper to call a function with appropriate type conversions
   // Handles both tensor-based (new) and memref-based (legacy) kernel interfaces
@@ -5588,8 +5538,8 @@ static LogicalResult populateHostHarnessLogic(
   }
   func::FuncOp gpuWrapperFunc;
   if (!kernelsSet.empty())
-    gpuWrapperFunc =
-        createGPUWrapper(module, kernelBaseName, kernels, genParams);
+    gpuWrapperFunc = createGPUWrapper(module, kernelBaseName, kernels,
+                                      genParams, allOutIndices);
   // Redirect calls to kernel functions to point at wrapped functions.
   func.walk([&](CallOpInterface callOp) -> WalkResult {
     // If the callee matches a wrapped function, update the call.
@@ -5939,14 +5889,12 @@ int main(int argc, char **argv) {
   mlir::registerMLIRCLOptions();
   MLIRContext context(registry, MLIRContext::Threading::DISABLED);
   // LLVM dialect is temporary for the freeze trick.
-  context.loadDialect<rock::RockDialect, func::FuncDialect, scf::SCFDialect,
-                      affine::AffineDialect, memref::MemRefDialect,
-                      math::MathDialect, arith::ArithDialect,
-                      vector::VectorDialect, gpu::GPUDialect,
-                      linalg::LinalgDialect,
-                      // mhal::MHALDialect, TODO(roctriton): mhal
-                      bufferization::BufferizationDialect, tosa::TosaDialect,
-                      mlir::LLVM::LLVMDialect>();
+  context.loadDialect<
+      rock::RockDialect, func::FuncDialect, scf::SCFDialect,
+      affine::AffineDialect, memref::MemRefDialect, math::MathDialect,
+      arith::ArithDialect, vector::VectorDialect, gpu::GPUDialect,
+      linalg::LinalgDialect, bufferization::BufferizationDialect,
+      tosa::TosaDialect, mlir::LLVM::LLVMDialect>();
 
   // Parse pass names in main to ensure static initialization completed.
   llvm::cl::ParseCommandLineOptions(argc, argv,
@@ -6096,8 +6044,6 @@ int main(int argc, char **argv) {
         roots.remove(edge.getTarget());
       func::FuncOp func =
           dyn_cast<func::FuncOp>(node->getCallableRegion()->getParentOp());
-      if (func->hasAttr("original_func"))
-        roots.remove(node);
       if (func->getParentOp() && func->getParentOp()->getParentOp())
         roots.remove(node);
     }
