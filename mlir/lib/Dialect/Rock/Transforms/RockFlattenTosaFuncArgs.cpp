@@ -26,6 +26,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir {
@@ -45,6 +46,10 @@ struct RockFlattenTosaFuncArgs
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     if (func.isExternal())
+      return;
+
+    auto *module = func->getParentOp();
+    if (module && !SymbolTable::symbolKnownUseEmpty(func, module))
       return;
 
     Block &entryBlock = func.front();

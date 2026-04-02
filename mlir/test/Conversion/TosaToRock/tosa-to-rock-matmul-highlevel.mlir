@@ -4,9 +4,10 @@
 module {
   // CHECK-LABEL: @dot_tr_collapse_reshape1
   func.func @dot_tr_collapse_reshape1(%arg0: tensor<1x1x1x1xf32>, %arg1: tensor<1x1x1x1xf32>, %arg2: tensor<1x12x384x64xf32>, %arg3: tensor<1x12x384x64xf32>) -> tensor<1x12x384x384xf32> attributes {rock.arch = "##TOKEN_ARCH##",rock.kernel} {
-    // CHECK-DAG: %[[TRANSFORM0:.*]] = rock.transform %arg3 {{.*}} : tensor<1x12x384x64xf32> to tensor<12x384x64xf32>
+    // CHECK-DAG: %[[UNFLATTEN3:.*]] = rock.transform %arg3 {{.*}} : tensor<294912xf32> to tensor<1x12x384x64xf32>
+    // CHECK-DAG: %[[TRANSFORM0:.*]] = rock.transform %[[UNFLATTEN3]] {{.*}} : tensor<1x12x384x64xf32> to tensor<12x384x64xf32>
     %0 = "tosa.transpose"(%arg3) {perms = array<i32: 0, 1, 3, 2>} : (tensor<1x12x384x64xf32>) -> tensor<1x12x64x384xf32>
-    // CHECK-DAG: %[[TRANSFORM1:.*]] = rock.transform %arg2 {{.*}} : tensor<1x12x384x64xf32> to tensor<12x384x64xf32>
+    // CHECK-DAG: %[[TRANSFORM1:.*]] = rock.transform %arg2 {{.*}} : tensor<294912xf32> to tensor<12x384x64xf32>
     %const_shape = "tosa.const_shape"() { values = dense<[12, 384, 64]> : tensor<3xindex> } : () -> !tosa.shape<3>
     %1 = "tosa.reshape"(%arg2, %const_shape) : (tensor<1x12x384x64xf32>, !tosa.shape<3>) -> tensor<12x384x64xf32>
     %const_shape2 = "tosa.const_shape"() { values = dense<[12, 64, 384]> : tensor<3xindex> } : () -> !tosa.shape<3>
@@ -27,9 +28,11 @@ module {
   func.func private @dot_tr_collapse_reshape2(%arg0: tensor<2x320x64x64xf32>, %arg1: tensor<1x320x320xf32>) -> tensor<2x4096x320xf32> attributes {rock.arch = "##TOKEN_ARCH##",rock.kernel} {
     %cst = arith.constant dense<1.000000e+00> : tensor<2x320x320xf32>
     %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
-    // CHECK-DAG: %[[TRANSFORM_ARG1_0:.*]] = rock.transform %arg1 {{.*}} : tensor<1x320x320xf32> to tensor<2x320x320xf32>
+    // CHECK-DAG: %[[UNFLATTEN1:.*]] = rock.transform %arg1 {{.*}} : tensor<102400xf32> to tensor<1x320x320xf32>
+    // CHECK-DAG: %[[TRANSFORM_ARG1_0:.*]] = rock.transform %[[UNFLATTEN1]] {{.*}} : tensor<1x320x320xf32> to tensor<2x320x320xf32>
     %0 = "tosa.mul"(%cst, %arg1, %shift) : (tensor<2x320x320xf32>, tensor<1x320x320xf32>, tensor<1xi8>) -> tensor<2x320x320xf32>
-    // CHECK-DAG: %[[TRANSFORM_ARG0_0:.*]] = rock.transform %arg0 {{.*}} : tensor<2x320x64x64xf32> to tensor<2x64x64x320xf32>
+    // CHECK-DAG: %[[UNFLATTEN0:.*]] = rock.transform %arg0 {{.*}} : tensor<2621440xf32> to tensor<2x320x64x64xf32>
+    // CHECK-DAG: %[[TRANSFORM_ARG0_0:.*]] = rock.transform %[[UNFLATTEN0]] {{.*}} : tensor<2x320x64x64xf32> to tensor<2x64x64x320xf32>
     // CHECK-DAG: %[[TRANSFORM_ARG0_1:.*]] = rock.transform %[[TRANSFORM_ARG0_0]] {{.*}} : tensor<2x64x64x320xf32> to tensor<2x4096x320xf32>
     // CHECK-DAG: %[[TRANSFORM_ARG0_2:.*]] = rock.transform %[[TRANSFORM_ARG0_1]] {{.*}} : tensor<2x4096x320xf32> to tensor<8192x320xf32>
     // CHECK-DAG: %[[TRANSFORM_ARG1_1:.*]] = rock.transform %[[TRANSFORM_ARG1_0]] {{.*}} : tensor<2x320x320xf32> to tensor<320x320xf32>
