@@ -12,7 +12,6 @@
 
 #include "mlir/Conversion/TosaToRock/TosaToRock.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
@@ -72,8 +71,7 @@ public:
     RewritePatternSet patterns(&ctx);
     ConversionTarget target(ctx);
     target.addLegalDialect<rock::RockDialect, tosa::TosaDialect,
-                           tensor::TensorDialect,
-                           bufferization::BufferizationDialect>();
+                           tensor::TensorDialect>();
     target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
       return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME ||
              (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&

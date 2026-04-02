@@ -12,7 +12,6 @@
 
 #include "mlir/Conversion/TosaToRock/TosaToRock.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
@@ -411,8 +410,7 @@ static bool isElementwiseOp(Operation *op) {
   // clang-format on
 }
 
-static Value addBlockArgument(OpBuilder &b, Value val, Block *block,
-                              Location loc) {
+static Value addBlockArgument(Value val, Block *block, Location loc) {
   RankedTensorType valType = cast<RankedTensorType>(val.getType());
   val = block->addArgument(valType, loc);
   return val;
@@ -533,7 +531,7 @@ struct ElementwiseRegionFinder {
       mapper.map(v, newConstOp->getResult(0));
     }
     for (Value v : blockArgCandidates) {
-      auto newBlockArg = addBlockArgument(regionBuilder, v, block, loc);
+      auto newBlockArg = addBlockArgument(v, block, loc);
       mapper.map(v, newBlockArg);
     }
     for (Operation *op : visitedOps) {
@@ -1450,8 +1448,6 @@ struct ConvElementwiseGemmRewritePattern
       PatternRewriter &rewriter) const {
     Location loc = op.getLoc();
     auto outputType = cast<RankedTensorType>(op.getType());
-    Value output = bufferization::AllocTensorOp::create(
-        rewriter, loc, outputType, ValueRange{});
 
     // This is guaranteed by the matcher
     tosa::Conv2DOp firstConv =
@@ -1474,7 +1470,7 @@ struct ConvElementwiseGemmRewritePattern
 
     auto convElentwiseGemmOp = rock::ConvElementwiseGemmOp::create(
         rewriter, loc, outputType, convFields.filterExp, convFields.inputExp,
-        op.getB(), elementwiseOtherArgs, output,
+        op.getB(), elementwiseOtherArgs,
         /*cTransposed=*/nullptr,
         /*oTransposed=*/nullptr, convFields.pad, convFields.stride,
         convFields.dilation,
@@ -3048,8 +3044,6 @@ typename std::enable_if_t<
                                                         &rw) {
   Location loc = op->getLoc();
   auto outputType = cast<RankedTensorType>(op.getType());
-  Value output =
-      bufferization::AllocTensorOp::create(rw, loc, outputType, ValueRange{});
 
   int32_t blockSize = 256;
   auto elementCount =

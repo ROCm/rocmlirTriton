@@ -3742,7 +3742,7 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
     pad.push_back(right);
   }
   auto convElntGemm = rock::ConvElementwiseGemmOp::create(
-      builder, loc, output.getType(), filter, input, c, elemwiseInputs, output,
+      builder, loc, output.getType(), filter, input, c, elemwiseInputs,
       transposeC, transposeO, builder.getIndexArrayAttr(pad),
       builder.getIndexArrayAttr(config->strideDims),
       builder.getIndexArrayAttr(config->dilationDims),

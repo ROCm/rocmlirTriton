@@ -15,7 +15,7 @@
 
 // CHECK-NEXT: rock.conv_elementwise_gemm
 // CHECK-NEXT: ab = conv(%[[filter]], %[[input]])
-// CHECK: %[[output]] = ab * tr %[[c]]
+// CHECK: ab * tr %[[c]]
 // CHECK: return
 
 // CHECK-LABEL: func.func @host_naive_conv_gemm
