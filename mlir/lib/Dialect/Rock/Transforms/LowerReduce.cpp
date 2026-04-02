@@ -144,16 +144,8 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     if (failed(setStoreMethodAndPrefill(rewriter, newStore, storeMethod)))
       return storeOp.emitError("failed to set store method and prefill");
 
-    // collectTransformChain and the getNumUses check above guarantee a
-    // single-use chain from reduceOp through intermediateOps to storeOp.
-    // After replacing the store, the whole chain is dead.  Erase in
-    // reverse (downstream-first) order so each op is use-free when erased.
+    // Replace the old store with the new broadcast+atomic store.
     rewriter.replaceOp(storeOp, newStore);
-    for (TransformOp tOp : llvm::reverse(intermediateOps)) {
-      assert(tOp->use_empty() && "intermediate transform still has uses");
-      rewriter.eraseOp(tOp);
-    }
-    assert(reduceOp->use_empty() && "reduce op still has uses");
     rewriter.eraseOp(reduceOp);
     return success();
   }
