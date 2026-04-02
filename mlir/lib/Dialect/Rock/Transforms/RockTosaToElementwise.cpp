@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -46,19 +47,72 @@ namespace {
 // Generic templates for 1:1 TOSA -> arith/math replacement on tensors.
 // ===--------------------------------------------------------------------=== //
 
+// Create a rock.transform that broadcasts `input` to `targetShape`.
+// Dimensions where the source has size 1 and the target has size > 1 use
+// Broadcast{1} (i.e. index % 1 = 0). Returns the input unchanged if shapes
+// already match, or failure if the shapes are incompatible.
+static FailureOr<Value>
+createBroadcastTransform(PatternRewriter &rewriter, Location loc, Value input,
+                         ArrayRef<int64_t> targetShape) {
+  auto inputTy = cast<ShapedType>(input.getType());
+  ArrayRef<int64_t> inputShape = inputTy.getShape();
+  if (inputShape == targetShape)
+    return input;
+  if (inputShape.size() != targetShape.size())
+    return failure();
+
+  SmallVector<SmallString<8>, 8> nameStorage(targetShape.size());
+  SmallVector<StringRef> dimNames;
+  for (unsigned i = 0; i < targetShape.size(); ++i) {
+    ("dim" + Twine(i)).toVector(nameStorage[i]);
+    dimNames.push_back(nameStorage[i]);
+  }
+
+  rock::TopDownTMBuilder bcast(rewriter, dimNames, targetShape, loc);
+  for (unsigned i = 0; i < targetShape.size(); ++i) {
+    if (inputShape[i] == targetShape[i]) {
+      bcast.passThrough({dimNames[i]});
+    } else if (inputShape[i] == 1) {
+      bcast.takeRemainder(dimNames[i], 1);
+    } else {
+      return failure();
+    }
+  }
+
+  Value result = rock::TransformOp::create(rewriter, loc, input, bcast.get());
+  return result;
+}
+
+// Broadcast two binary operands to the result shape of the given TOSA op.
+// Works with any op that has getInput1(), getInput2(), getType(), getLoc().
+template <typename OpTy>
+static FailureOr<std::pair<Value, Value>>
+broadcastInputs(PatternRewriter &rewriter, OpTy op) {
+  auto resultShape = cast<ShapedType>(op.getType()).getShape();
+  auto b1 =
+      createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(), resultShape);
+  auto b2 =
+      createBroadcastTransform(rewriter, op.getLoc(), op.getInput2(), resultShape);
+  if (failed(b1) || failed(b2))
+    return failure();
+  return std::make_pair(*b1, *b2);
+}
+
 // Binary op that dispatches on float vs integer element type.
 template <typename TosaOp, typename FloatOp, typename IntOp>
 struct BinaryConverter : public OpRewritePattern<TosaOp> {
   using OpRewritePattern<TosaOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(TosaOp op,
                                 PatternRewriter &rewriter) const override {
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
     auto elemTy = cast<ShapedType>(op.getType()).getElementType();
     if (isa<FloatType>(elemTy))
-      rewriter.replaceOpWithNewOp<FloatOp>(op, op.getType(), op.getInput1(),
-                                           op.getInput2());
+      rewriter.replaceOpWithNewOp<FloatOp>(op, op.getType(), in1, in2);
     else if (isa<IntegerType>(elemTy))
-      rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), op.getInput1(),
-                                         op.getInput2());
+      rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), in1, in2);
     else
       return failure();
     return success();
@@ -93,8 +147,11 @@ struct IntBinaryConverter : public OpRewritePattern<TosaOp> {
   using OpRewritePattern<TosaOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(TosaOp op,
                                 PatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), op.getInput1(),
-                                       op.getInput2());
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
+    rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), in1, in2);
     return success();
   }
 };
@@ -155,18 +212,20 @@ struct MulConverter : public OpRewritePattern<tosa::MulOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::MulOp op,
                                 PatternRewriter &rewriter) const override {
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
     auto elemTy = cast<ShapedType>(op.getType()).getElementType();
     if (isa<FloatType>(elemTy)) {
-      rewriter.replaceOpWithNewOp<arith::MulFOp>(
-          op, op.getType(), op.getInput1(), op.getInput2());
+      rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getType(), in1, in2);
       return success();
     }
     if (isa<IntegerType>(elemTy)) {
       DenseElementsAttr shiftElem;
       if (matchPattern(op.getShift(), m_Constant(&shiftElem)) &&
           shiftElem.getValues<IntegerAttr>()[0].getInt() == 0) {
-        rewriter.replaceOpWithNewOp<arith::MulIOp>(
-            op, op.getType(), op.getInput1(), op.getInput2());
+        rewriter.replaceOpWithNewOp<arith::MulIOp>(op, op.getType(), in1, in2);
         return success();
       }
       return rewriter.notifyMatchFailure(op, "non-zero shift unsupported");
@@ -216,8 +275,16 @@ struct SelectConverter : public OpRewritePattern<tosa::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::SelectOp op,
                                 PatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<arith::SelectOp>(
-        op, op.getInput1(), op.getInput2(), op.getInput3());
+    auto resultShape = cast<ShapedType>(op.getType()).getShape();
+    auto pred = createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(),
+                                         resultShape);
+    auto onTrue = createBroadcastTransform(rewriter, op.getLoc(),
+                                           op.getInput2(), resultShape);
+    auto onFalse = createBroadcastTransform(rewriter, op.getLoc(),
+                                            op.getInput3(), resultShape);
+    if (failed(pred) || failed(onTrue) || failed(onFalse))
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, *pred, *onTrue, *onFalse);
     return success();
   }
 };
@@ -341,13 +408,15 @@ struct CmpConverter : public OpRewritePattern<TosaOp> {
   using OpRewritePattern<TosaOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(TosaOp op,
                                 PatternRewriter &rewriter) const override {
-    auto elemTy = cast<ShapedType>(op.getInput1().getType()).getElementType();
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
+    auto elemTy = cast<ShapedType>(in1.getType()).getElementType();
     if (isa<FloatType>(elemTy))
-      rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, FPred, op.getInput1(),
-                                                 op.getInput2());
+      rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, FPred, in1, in2);
     else if (isa<IntegerType>(elemTy))
-      rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, IPred, op.getInput1(),
-                                                 op.getInput2());
+      rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, IPred, in1, in2);
     else
       return failure();
     return success();

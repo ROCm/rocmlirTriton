@@ -1,4 +1,4 @@
-// TODO(rocmlirTriton): 'arith.mulf' op requires the same type for all operands and results
+// TODO(rocmlirTriton): error: 'rock.transform' op input rank must match transform lower bounds rank
 // UNSUPPORTED: true
 // This is a design that was in the MIGraphX CI that was previously failing
 // here: https://ontrack-internal.amd.com/browse/SWDEV-558297
