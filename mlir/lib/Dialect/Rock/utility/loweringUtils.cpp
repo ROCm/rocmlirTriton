@@ -7,6 +7,7 @@
 //===-----------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
@@ -756,4 +757,22 @@ mlir::rock::traceOutputsAndFusionInputs(Value rootOut) {
   // gemm-result chain, e.g. the second operand of arith.addf).
   info.fusionInputMap = rock::collectFusionExtraInputs(rootOut);
   return info;
+}
+
+arith::NarrowTypeEmulationConverter rock::create4BitTypeConverter() {
+  arith::NarrowTypeEmulationConverter typeConverter(/*targetBitwidth=*/8);
+  memref::populateMemRefNarrowTypeEmulationConversions(typeConverter);
+  typeConverter.addSourceMaterialization([](OpBuilder &builder, Type type,
+                                            ValueRange inputs,
+                                            Location loc) -> Value {
+    return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
+        .getResult(0);
+  });
+  typeConverter.addTargetMaterialization([](OpBuilder &builder, Type type,
+                                            ValueRange inputs,
+                                            Location loc) -> Value {
+    return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
+        .getResult(0);
+  });
+  return typeConverter;
 }

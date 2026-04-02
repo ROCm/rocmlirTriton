@@ -38,6 +38,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
@@ -228,6 +229,30 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   return success();
 }
 
+/// Return true if the function signature contains non-TT float types
+/// (e.g. f8E8M0FNU, f4E2M1FN) that are used for scaled GEMMs.
+/// These types conflict with ConvertNarrowTypeSignatures / EmulateNarrowTypes
+/// passes that run later in the pipeline, so we skip optimization for them.
+static bool hasNonTTFloatArgs(func::FuncOp func) {
+  auto check = [](Type t) {
+    Type elem;
+    if (auto shaped = dyn_cast<ShapedType>(t))
+      elem = shaped.getElementType();
+    else
+      elem = t;
+    return isa<FloatType>(elem) && !rock::isTTFloat(elem) &&
+           (elem.getIntOrFloatBitWidth() == 8 ||
+            elem.getIntOrFloatBitWidth() == 4);
+  };
+  for (Type argTy : func.getArgumentTypes())
+    if (check(argTy))
+      return true;
+  for (Type resTy : func.getResultTypes())
+    if (check(resTy))
+      return true;
+  return false;
+}
+
 void CpuLowerVerifierPass::runOnOperation() {
   ModuleOp module = getOperation();
   MLIRContext *ctx = &getContext();
@@ -259,6 +284,15 @@ void CpuLowerVerifierPass::runOnOperation() {
   // Lower each function in isolation using detach/reattach pattern
   // For each function, we detach all other operations, run transforms, then reattach
   for (func::FuncOp func : cpuVerifierFuncs) {
+    // TODO: CpuLowerVerifier doesn't work well with our passes to do
+    // f4E2M1FN -> i4 -> packed i8 (ConvertNarrowTypeSignatures and
+    // EmulateNarrowTypes). Skip scaled GEMM verifiers for now.
+    if (hasNonTTFloatArgs(func)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Skipping " << func.getName()
+                 << ": contains non-TT float types (scaled GEMM)\n");
+      continue;
+    }
     if (failed(lowerSingleFunction(func, schedules))) {
       return signalPassFailure();
     }

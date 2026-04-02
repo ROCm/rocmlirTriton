@@ -60,21 +60,14 @@ static LogicalResult testVectorizationInference(func::FuncOp f) {
         dyn_cast_or_null<IntegerAttr>(op->getAttr("in_dim_len"));
     if (maxLenOverride)
       inDimLen = maxLenOverride.getInt();
-    Operation *operationRootForFusionTraversal = nullptr;
-    if (op->hasAttr("traverseFusions")) {
-      operationRootForFusionTraversal = op;
-    }
     bool limitForDataType = op->hasAttrOfType<UnitAttr>("limitForDataType");
-    VectorizationResult result = getMaxVectorization(
-        input, inDim.getInt(), inDimLen, operationRootForFusionTraversal,
-        /*ignoreDataType=*/!limitForDataType);
+    VectorizationResult result =
+        getMaxVectorization(input, inDim.getInt(), inDimLen,
+                            /*ignoreDataType=*/!limitForDataType);
     MLIRContext *ctx = op->getContext();
     op->setAttr("result", IntegerAttr::get(IndexType::get(ctx), result.max));
     op->setAttr("bufferVectorSize",
                 IntegerAttr::get(IndexType::get(ctx), result.bufferVectorSize));
-    if (operationRootForFusionTraversal)
-      op->setAttr("fusionTraversalStatus",
-                  BoolAttr::get(ctx, result.fusionTraversalStatus.succeeded()));
     return WalkResult::advance();
   });
   return failure(result.wasInterrupted());

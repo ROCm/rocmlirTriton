@@ -789,65 +789,10 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
   return result;
 }
 
-static FailureOr<std::pair<Value, Operation *>>
-findPostFusionTransforms(Value buffer, Operation *currentUser) {
-  Value newTransformed = nullptr;
-  Operation *newRoot = nullptr;
-  for (Operation *user : buffer.getUsers()) {
-    if (user == currentUser)
-      continue;
-    Value candidate = nullptr;
-    if (auto copyOp = dyn_cast<memref::CopyOp>(user)) {
-      if (copyOp.getTarget() == buffer)
-        candidate = copyOp.getSource();
-      else
-        candidate = copyOp.getTarget();
-    } else if (auto genericOp = dyn_cast<linalg::GenericOp>(user)) {
-      if (genericOp.getOutputs().size() != 1) {
-        LLVM_DEBUG(llvm::dbgs() << "[vectorization] Can't process "
-                                   "linalg.generic with multiple outputs\n");
-        return failure();
-      }
-      Value genericOut = genericOp.getOutputs().front();
-      if (genericOut == buffer) {
-        if (auto index = genericOp->getAttrOfType<IntegerAttr>(
-                "rock.majorTensorNumber")) {
-          candidate = genericOp.getInputs()[index.getInt()];
-        } else {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "[vectorization] can't analyze linalg.generic "
-                        "without rock.majorTensorNumber\n");
-          return failure();
-        }
-      } else {
-        candidate = genericOut;
-      }
-    } else {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[vectorization] Unexpected user of temporary buffer: "
-                 << *user << "\n");
-      return failure();
-    }
-
-    if (newTransformed) {
-      LLVM_DEBUG(llvm::dbgs() << "[vectorization] Found multiple users that "
-                                 "could be the next one\n");
-      return failure();
-    }
-    newTransformed = candidate;
-    newRoot = user;
-  }
-  if (!newTransformed) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "[vectorization] This memref.alloc is a dead end\n");
-    return failure();
-  }
-  return std::make_pair(newTransformed, newRoot);
-}
-
-VectorizationResult mlir::rock::getMaxVectorization(
-    Value transformed, uint32_t dim, std::optional<int64_t> inputDimLen,
-    Operation *operationRootForFusionTraversal, bool ignoreDataType) {
+VectorizationResult
+mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
+                                std::optional<int64_t> inputDimLen,
+                                bool ignoreDataType) {
   auto upperType = cast<ShapedType>(transformed.getType());
   int64_t numInitialDims = upperType.getRank();
   int64_t initialVecLen = inputDimLen.value_or(upperType.getShape()[dim]);
@@ -857,54 +802,21 @@ VectorizationResult mlir::rock::getMaxVectorization(
   data[dim] =
       VectorizationInfo(/*maxLength=*/initialVecLen, /*needsCoefficient=*/1,
                         /*alignment=*/initialVecLen);
-  bool traverseFusions = (operationRootForFusionTraversal != nullptr);
-  Operation *currentUser = operationRootForFusionTraversal;
   Value currentVal = transformed;
-  LogicalResult fusionTraversalStatus = success();
   auto contiguousMerges = findContiguousGroups(transformed);
 
   // Advance to the next operation to analyze, updating any vectorization
-  // analysis state as needed. This function must update currentVal and
-  // currentUser, and may update other variables. In the simplest case, this
-  // advances to the next rock.transform operation. However, it also handles:
-  // - If we recah a memref.alloc() and are following fusions, go to the
-  // source of post-fusion transforms (for an output fusion, the output of the
-  // fusion) to traverse its transform stack (which involves) recomputing
-  // contiguous merge data).
-  // - For rock.scalarize, adjust the vectorization data to account for the
-  // change in indexing scheme and continue.
+  // analysis state as needed. This function must update currentVal, and may
+  // update other variables. This advances to the next rock.transform operation.
   auto advance = [&]() -> bool {
     Operation *definingOp = currentVal.getDefiningOp();
     if (!definingOp)
       return false;
     if (auto trOp = dyn_cast<TransformOp>(definingOp)) {
       currentVal = trOp.getInput();
-      currentUser = definingOp;
       return true;
     }
-    if (isa<memref::AllocOp>(definingOp)) {
-      if (!traverseFusions) {
-        definingOp->emitError(
-            "vectorization analysis found intermediate allocation but isn't "
-            "following fusions, results may be incorrect\n");
-        return false;
-      }
-      FailureOr<std::pair<Value, Operation *>> maybeNewStack =
-          findPostFusionTransforms(currentVal, currentUser);
-      if (failed(maybeNewStack)) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "[vectorization] Failed to advance past fusion\n");
-        fusionTraversalStatus = failure();
-        return false;
-      }
-      std::tie(currentVal, currentUser) = *maybeNewStack;
-      LLVM_DEBUG(llvm::dbgs()
-                     << "[vectorization] Advancing past fusion to new value "
-                     << currentVal << "with data: ";);
-      data.debugPrint();
-      contiguousMerges = findContiguousGroups(currentVal);
-      return true;
-    }
+    definingOp->emitError("Unexpected op\n");
     return false;
   };
 
@@ -950,8 +862,7 @@ VectorizationResult mlir::rock::getMaxVectorization(
     result = math_util::gcd(maxVectorLenBits / bwidth, result);
   }
   // bufferVectorSize will become non-trivial once scalarization comes in
-  return VectorizationResult{/*max=*/result, /*bufferVectorSize=*/1,
-                             /*fusionTraversalStatus=*/fusionTraversalStatus};
+  return VectorizationResult{/*max=*/result, /*bufferVectorSize=*/1};
 }
 
 void mlir::rock::collapseContiguousMerges(Value transformed) {

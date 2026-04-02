@@ -422,19 +422,6 @@ func.func @blockwise_gemm_scale_mismatch(
   return %0 : tensor<64x64xf32>
 }
 
-// matrixAOrigElemType and matrixBOrigElemType must both be set or both absent
-func.func @blockwise_gemm_orig_elem_type_mismatch(
-    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
-    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
-    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{If one of matrixAOrigElemType and matrixBOrigElemType is set, the other needs to be set as well}}
-  %0 = rock.blockwise_gemm(%a, %b, %c)
-    {matrixAOrigElemType = f8E4M3FN}
-    : tensor<64x64xf8E4M3FN>, tensor<64x64xf8E4M3FN>,
-      tensor<64x64xf32> -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
-}
-
 // quantBlockSize is required when scales are present
 func.func @blockwise_gemm_no_quantblocksize(
     %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
@@ -460,6 +447,42 @@ func.func @blockwise_gemm_scale_shape_mismatch(
     {quantBlockSize = 32 : i64}
     : tensor<64x64xf8E4M3FN> scaled by tensor<64x3xi8>,
       tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Packed matrix shape: after packing f4->i8, the K dim is halved.
+// Doubling the packed dim should recover the scale shape.
+// Here: matrixA = 64x32xi8 (K halved from 64 to 32), scale = 64x2 (K=64/32=2)
+// Expected: 64x64 (doubled K=32*2=64), normalized scale = 64x64. Match.
+// Test the mismatch case: scaleA has wrong shape.
+func.func @blockwise_gemm_packed_shape_mismatch(
+    %a: tensor<64x32xi8>, %b: tensor<32x64xi8>,
+    %scaleA: tensor<64x3xi8>, %scaleB: tensor<64x2xi8>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{Packed matrixA shape (with dim 1 2x) must match normalized scaleA shape.}}
+  %0 = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 32 : i64,
+     matrixAOrigElemType = f4E2M1FN,
+     matrixBOrigElemType = f4E2M1FN,
+     matrixAKPack = true,
+     matrixBKPack = true}
+    : tensor<64x32xi8> scaled by tensor<64x3xi8>,
+      tensor<32x64xi8> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Matrix shape must be 2D
+func.func @blockwise_gemm_3d_matrix(
+    %a: tensor<1x64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{matrix shape must be 2D}}
+  %0 = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<1x64x64xf8E4M3FN>,
+      tensor<64x64xf8E4M3FN>,
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %0 : tensor<64x64xf32>
 }

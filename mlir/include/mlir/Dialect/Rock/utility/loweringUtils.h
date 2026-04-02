@@ -9,6 +9,7 @@
 #ifndef ROCK_UTILITY_LOWERINGUTILS_H
 #define ROCK_UTILITY_LOWERINGUTILS_H
 
+#include "mlir/Dialect/Arith/Transforms/NarrowTypeEmulationConverter.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
@@ -211,6 +212,11 @@ struct OutputsAndFusionInputs {
 /// (store destinations) and any extra fusion inputs (operands of fusion ops
 /// that are not part of the gemm-result chain, e.g. the bias in arith.addf).
 FailureOr<OutputsAndFusionInputs> traceOutputsAndFusionInputs(Value rootOut);
+
+/// Create a NarrowTypeEmulationConverter targeting i8 with memref conversions
+/// and unrealized_conversion_cast materializations.  Used by both
+/// RockConvertNarrowTypeSignaturesPass and RockEmulateNarrowTypesPass.
+arith::NarrowTypeEmulationConverter create4BitTypeConverter();
 
 } // end namespace rock
 } // end namespace mlir
