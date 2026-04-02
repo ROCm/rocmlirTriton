@@ -247,9 +247,7 @@ Type getResultType(Operation *convOp, Value outArg) {
     auto outArgType = cast<RankedTensorType>(outArg.getType());
     auto convElemType =
         cast<RankedTensorType>(convOp->getResult(0).getType()).getElementType();
-    if (outArgType.getElementType() != convElemType)
-      return RankedTensorType::get(outArgType.getShape(), convElemType);
-    return outArgType;
+    return RankedTensorType::get(outArgType.getShape(), convElemType);
   }
   return nullptr;
 }

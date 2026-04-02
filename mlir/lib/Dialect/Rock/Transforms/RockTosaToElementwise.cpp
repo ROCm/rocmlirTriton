@@ -393,9 +393,11 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
         else
           rewriter.replaceOpWithNewOp<arith::ExtSIOp>(op, op.getType(),
                                                       op.getInput());
-      } else
+      } else if (srcTy.getIntOrFloatBitWidth() > dstTy.getIntOrFloatBitWidth())
         rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, op.getType(),
                                                      op.getInput());
+      else
+        rewriter.replaceOp(op, op.getInput());
       return success();
     }
     return failure();
@@ -425,8 +427,11 @@ struct CustomUnsignedOpConverter : public OpRewritePattern<tosa::CustomOp> {
         } else if (outElemType.getIntOrFloatBitWidth() >
                    inElemType.getIntOrFloatBitWidth()) {
           rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, outType, input);
-        } else {
+        } else if (outElemType.getIntOrFloatBitWidth() <
+                   inElemType.getIntOrFloatBitWidth()) {
           rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, outType, input);
+        } else {
+          rewriter.replaceOp(op, input);
         }
       } else {
         rewriter.replaceOpWithNewOp<arith::FPToUIOp>(op, outType, input);
