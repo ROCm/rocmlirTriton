@@ -1,4 +1,4 @@
-// TODO(rocmlirTriton): LLVM ERROR: Dimensions must match, ignoring order, but they don't.  Got dims: ["register", "lane", "warp", "block"] and ["lane", "warp", "block"]
+// TODO(rocmlirTriton): error: 'rock.transform' op failed to verify that all of {input, output} have same element type
 // UNSUPPORTED: true
 // RUN: rocmlir-driver -kernel-pipeline=migraphx %s | rocmlir-gen -fut mlir_unpack_int4_1645 --arch %arch --clone-harness - | rocmlir-driver -host-pipeline=highlevel -kernel-pipeline=highlevel | rocmlir-gen -ph -fut mlir_unpack_int4_1645 --verifier clone - | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
