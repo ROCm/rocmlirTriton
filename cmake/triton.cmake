@@ -24,10 +24,32 @@ if(NOT DEFINED MLIR_DIR)
   elseif(DEFINED LLVM_LIBRARY_DIR)
     set(MLIR_DIR "${LLVM_LIBRARY_DIR}/cmake/mlir" CACHE PATH "Path to MLIR CMake config")
   else()
-    message(FATAL_ERROR 
-      "MLIR_DIR must be set to the path containing MLIRConfig.cmake\n"
-      "Example: cmake -DMLIR_DIR=/path/to/llvm-build/lib/cmake/mlir ..\n"
-      "You can build LLVM/MLIR using: cd external/triton && ./scripts/build-llvm-project.sh")
+    # LLVM/MLIR not found — automatically build it via our wrapper script
+    set(_build_llvm_script "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-llvm.sh")
+    if(EXISTS "${_build_llvm_script}")
+      message(STATUS "LLVM/MLIR not found. Running ${_build_llvm_script} to build it...")
+      execute_process(
+        COMMAND bash "${_build_llvm_script}"
+        RESULT_VARIABLE _build_llvm_result
+      )
+      if(NOT _build_llvm_result EQUAL 0)
+        message(FATAL_ERROR "scripts/build-llvm.sh failed (exit code: ${_build_llvm_result})")
+      endif()
+      # After building, the MLIR config should now exist
+      if(EXISTS "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir/MLIRConfig.cmake")
+        set(MLIR_DIR "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir" CACHE PATH "Path to MLIR CMake config")
+      else()
+        message(FATAL_ERROR
+          "scripts/build-llvm.sh completed but MLIRConfig.cmake was not found at\n"
+          "  ${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir/\n"
+          "Check the build output above for errors.")
+      endif()
+    else()
+      message(FATAL_ERROR 
+        "MLIR_DIR must be set to the path containing MLIRConfig.cmake\n"
+        "Example: cmake -DMLIR_DIR=/path/to/llvm-build/lib/cmake/mlir ..\n"
+        "You can build LLVM/MLIR using: bash scripts/build-llvm.sh")
+    endif()
   endif()
 endif()
 

@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
+#include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/TargetSelect.h"
@@ -145,27 +146,14 @@ void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm) {
   mlir::rock::buildHighlevelPipeline(*passMan);
 }
 
-MLIR_CAPI_EXPORTED void
-mlirMIGraphXAddApplicabilityPipeline(MlirPassManager pm) {
-  auto *passMan = unwrap(pm);
-  passMan->setNesting(mlir::PassManager::Nesting::Implicit);
-  mlir::rock::KernelOptions opts;
-  // TODO: fix applicability
-  // opts.applicabilityMode = mlir::rock::ApplicabilityMode::Applicability;
-  // This is the default, but we set it paranoidly.
-  mlir::rock::buildKernelPipeline(*passMan, opts);
-}
-
-MLIR_CAPI_EXPORTED bool mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
-                                                       const char *arch) {
-  auto *passMan = unwrap(pm);
-  if (failed(applyPassManagerCLOptions(*passMan)))
+static bool parseArchAndPerfConfig(MlirPassManager pm, const char *arch,
+                                   const char *perfConfig,
+                                   mlir::rock::TritonOptions &tritonOpts,
+                                   mlir::rock::BackendOptions &backendOpts) {
+  if (!arch || !perfConfig) {
+    llvm::errs() << "arch and perfConfig must not be null\n";
     return false;
-  passMan->setNesting(mlir::PassManager::Nesting::Implicit);
-  mlir::rock::KernelOptions kOpts;
-  // TODO: fix applicability
-  // kOpts.applicabilityMode = mlir::rock::ApplicabilityMode::Full;
-  mlir::rock::buildKernelPipeline(*passMan, kOpts);
+  }
   llvm::StringRef archStr(arch);
   mlir::RocmDeviceName devName;
   if (archStr.empty() || mlir::failed(devName.parse(archStr))) {
@@ -173,20 +161,69 @@ MLIR_CAPI_EXPORTED bool mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
     return false;
   }
 
-  // TODO(rocmlirTriton): Currently we are just setting the default values
-  // for TritonOptions, kernelOptions (above), and BackendOptions (below).
-  // Moving forwards we want figure out a way that we can set these options
-  // without changing the existing function signature to add a module op.
-  mlir::rock::TritonOptions tritonOpts;
   tritonOpts.arch = devName.getChip().str();
+  backendOpts.triple = devName.getTriple().str();
+  backendOpts.chip = devName.getChip().str();
+  backendOpts.features = devName.getFeaturesForBackend();
+  backendOpts.optLevel = 3;
+
+  mlir::MLIRContext *ctx = unwrap(pm)->getContext();
+  llvm::StringRef configStr(perfConfig);
+  if (configStr.empty()) {
+    llvm::errs() << "perfConfig must not be empty\n";
+    return false;
+  }
+  auto strAttr = mlir::StringAttr::get(ctx, configStr);
+  mlir::Attribute configAttr;
+  if (auto gemm = mlir::rock::GemmParamsAttr::get(strAttr)) {
+    configAttr = gemm;
+  } else if (auto attn = mlir::rock::GemmGemmParamsAttr::get(strAttr)) {
+    configAttr = attn;
+  } else {
+    llvm::errs() << "Invalid perfConfig: " << configStr << "\n";
+    return false;
+  }
+  if (mlir::failed(mlir::rock::fillCompilationConfigs(configAttr, tritonOpts,
+                                                      backendOpts))) {
+    llvm::errs() << "Failed to apply perfConfig: " << configStr << "\n";
+    return false;
+  }
+  return true;
+}
+
+MLIR_CAPI_EXPORTED bool
+mlirMIGraphXAddApplicabilityPipeline(MlirPassManager pm, const char *arch,
+                                     const char *perfConfig) {
+  auto *passMan = unwrap(pm);
+  passMan->setNesting(mlir::PassManager::Nesting::Implicit);
+  mlir::rock::KernelOptions kOpts;
+  mlir::rock::buildKernelPipeline(*passMan, kOpts);
+
+  mlir::rock::TritonOptions tritonOpts;
+  mlir::rock::BackendOptions backendOpts;
+  if (!parseArchAndPerfConfig(pm, arch, perfConfig, tritonOpts, backendOpts))
+    return false;
+
   mlir::rock::buildTritonPipeline(*passMan, tritonOpts);
+  return true;
+}
 
-  mlir::rock::BackendOptions opts;
-  opts.triple = devName.getTriple().str();
-  opts.chip = devName.getChip().str();
-  opts.features = devName.getFeaturesForBackend();
-  opts.optLevel = 3;
-  mlir::rock::buildBackendPipeline(*passMan, opts);
+MLIR_CAPI_EXPORTED bool mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
+                                                       const char *arch,
+                                                       const char *perfConfig) {
+  auto *passMan = unwrap(pm);
+  if (failed(applyPassManagerCLOptions(*passMan)))
+    return false;
+  passMan->setNesting(mlir::PassManager::Nesting::Implicit);
+  mlir::rock::KernelOptions kOpts;
+  mlir::rock::buildKernelPipeline(*passMan, kOpts);
 
+  mlir::rock::TritonOptions tritonOpts;
+  mlir::rock::BackendOptions backendOpts;
+  if (!parseArchAndPerfConfig(pm, arch, perfConfig, tritonOpts, backendOpts))
+    return false;
+
+  mlir::rock::buildTritonPipeline(*passMan, tritonOpts);
+  mlir::rock::buildBackendPipeline(*passMan, backendOpts);
   return true;
 }

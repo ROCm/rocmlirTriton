@@ -24,7 +24,9 @@ extern "C" {
 // split strings of triple/chip/features
 // Version 4: The MLIR shaped type is added to better represent MIGRaphX's
 // native type
-#define MLIR_MIGRAPHX_DIALECT_API_VERSION 4
+// Version 5: mlirMIGraphXAddBackendPipeline() accepts a perfConfig string
+// (e.g. "gemm:v1:..." or "attn:v1:...") to set tuning parameters.
+#define MLIR_MIGRAPHX_DIALECT_API_VERSION 5
 
 MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(MIGraphX, migraphx);
 
@@ -67,15 +69,21 @@ MLIR_CAPI_EXPORTED void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm);
 /// configuration will actually compile to the pass manager. If this pipeline
 /// fails, it's not a meaningful error. The input to this should have been run
 /// through the high-level pipeline. This pipeline is only needed when tuning,
-/// and should, ideally, be called on a clone of the results of teh highlevel
+/// and should, ideally, be called on a clone of the results of the highlevel
 /// pipeline.
-MLIR_CAPI_EXPORTED void
-mlirMIGraphXAddApplicabilityPipeline(MlirPassManager pm);
+/// \p perfConfig is a tuning config string (e.g. "gemm:v1:..." or
+/// "attn:v1:...") that sets compilation parameters.
+MLIR_CAPI_EXPORTED bool
+mlirMIGraphXAddApplicabilityPipeline(MlirPassManager pm, const char *arch,
+                                     const char *perfConfig);
 
 /// Adds a full compile pipeline to the pass manager. This pipeline may either
 /// receive the results of the high-level or applicability pipelines.
+/// \p perfConfig is a tuning config string (e.g. "gemm:v1:..." or
+/// "attn:v1:...") that sets compilation parameters.
 MLIR_CAPI_EXPORTED bool mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
-                                                       const char *arch);
+                                                       const char *arch,
+                                                       const char *perfConfig);
 #ifdef __cplusplus
 }
 #endif
