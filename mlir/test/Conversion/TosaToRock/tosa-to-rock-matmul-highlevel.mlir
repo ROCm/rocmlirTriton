@@ -36,12 +36,13 @@ module {
     // CHECK-DAG: %[[TRANSFORM_ARG0_1:.*]] = rock.transform %[[TRANSFORM_ARG0_0]] {{.*}} : tensor<2x64x64x320xf32> to tensor<2x4096x320xf32>
     // CHECK-DAG: %[[TRANSFORM_ARG0_2:.*]] = rock.transform %[[TRANSFORM_ARG0_1]] {{.*}} : tensor<2x4096x320xf32> to tensor<8192x320xf32>
     // CHECK-DAG: %[[TRANSFORM_ARG1_1:.*]] = rock.transform %[[TRANSFORM_ARG1_0]] {{.*}} : tensor<2x320x320xf32> to tensor<320x320xf32>
+    // CHECK-DAG: %[[TRANSFORM_ARG0_3:.*]] = rock.transform %[[TRANSFORM_ARG0_2]] {{.*}} : tensor<8192x320xf32> to tensor<320x8192xf32>
     %1 = "tosa.transpose"(%arg0) {perms = array<i32: 0, 2, 3, 1>} : (tensor<2x320x64x64xf32>) -> tensor<2x64x64x320xf32>
     %const_shape = "tosa.const_shape"() { values = dense<[2, 4096, 320]> : tensor<3xindex> } : () -> !tosa.shape<3>
     %2 = "tosa.reshape"(%1, %const_shape) : (tensor<2x64x64x320xf32>, !tosa.shape<3>) -> tensor<2x4096x320xf32>
     %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
     %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-    // CHECK:  rock.gemm %[[TRANSFORM_ARG0_2]] * %[[TRANSFORM_ARG1_1]]
+    // CHECK:  rock.gemm tr %[[TRANSFORM_ARG0_3]] * %[[TRANSFORM_ARG1_1]]
     %3 = "tosa.matmul"(%2, %0, %a_zp, %b_zp) : (tensor<2x4096x320xf32>, tensor<2x320x320xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x4096x320xf32>
     return %3 : tensor<2x4096x320xf32>
   }

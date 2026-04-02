@@ -598,7 +598,7 @@ struct ConvElementwiseGemmRewritePattern
 
     auto newOp = rock::ConvElementwiseGemmOp::create(
         rw, op->getLoc(), op->getResultTypes(), newFilter, newInput,
-        resultC.tensor, op.getElemwiseInputs(), op.getOut(), resultC.transposed,
+        resultC.tensor, op.getElemwiseInputs(), resultC.transposed,
         op.getOTransposedAttr(), op.getPaddingAttr(), op.getStridesAttr(),
         op.getDilationsAttr(), op.getParams0Attr(), op.getParams1Attr(),
         op.getFirstGemmIndicesAttr());
