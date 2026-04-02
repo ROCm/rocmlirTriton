@@ -100,6 +100,27 @@ struct ExpandStridesLoweringPattern
       cur = trOp.getOutput();
     }
 
+    // Validate that the forward chain is one of the two supported forms:
+    //   (a) empty, expand_strides feeds store directly, or
+    //   (b) a single TransformOp whose only transform is a Merge
+    //       (i.e., a canonical flatten to 1-D).
+    // Any other chain (transpose, slice, multi-step reassociation, etc.)
+    // would be silently miscompiled by the hard-coded unmerge+slice below.
+    if (!forwardChainOps.empty()) {
+      if (forwardChainOps.size() != 1)
+        return rewriter.notifyMatchFailure(
+            op, "expected at most one merge transform between "
+                "expand_strides and store");
+
+      TransformMapAttr fwdMap = forwardChainOps[0].getTransform();
+      ArrayRef<TransformAttr> fwdOps = fwdMap.getOps();
+      if (fwdOps.size() != 1 ||
+          fwdOps[0].getType() != TransformType::Merge)
+        return rewriter.notifyMatchFailure(
+            op, "forward chain transform is not a single Merge; "
+                "cannot safely rewrite");
+    }
+
     Value storeDest = storeOp.getDest();
     auto destType = cast<RankedTensorType>(storeDest.getType());
 

@@ -346,7 +346,7 @@ def Rock_ConvElementwiseGemmOp
 
 def Rock_ExpandStridesOp
     : Rock_Op<"expand_strides", [Pure]>,
-      Arguments<(ins RankedTensorOf<[F32, F16, BF16, I8]>:$input)>,
+      Arguments<(ins RankedTensorOf<GemmInputTypes>:$input)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Expand tensor strides by copying into padded buffer";
 

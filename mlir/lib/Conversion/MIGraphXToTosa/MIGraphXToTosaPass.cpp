@@ -15,7 +15,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
@@ -52,7 +51,7 @@ void mlir::migraphx::populateMIGraphXToTosaDialectConversion(
 void mlir::migraphx::populateMIGraphXFuncBoundaryToTosaDialectConversion(
     ConversionTarget &target, TypeConverter *typeConverter) {
   target.addIllegalDialect<migraphx::MIGraphXDialect>();
-  target.addLegalDialect<tosa::TosaDialect, tensor::TensorDialect>();
+  target.addLegalDialect<tosa::TosaDialect>();
   target.addDynamicallyLegalOp<func::FuncOp>(
       [=](func::FuncOp op) -> std::optional<bool> {
         return typeConverter->isSignatureLegal(op.getFunctionType());

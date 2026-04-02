@@ -985,6 +985,11 @@ public:
     Value input = op->getOperand(0);
     auto inputType = cast<RankedTensorType>(input.getType());
     auto outputType = cast<RankedTensorType>(op.getResult(0).getType());
+
+    if (!inputType.hasStaticShape() || !outputType.hasStaticShape())
+      return rewriter.notifyMatchFailure(
+          op, "expand_strides decomposition requires fully static shapes");
+
     int64_t rank = inputType.getRank();
 
     Value emptyDest = tensor::EmptyOp::create(
