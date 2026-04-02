@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
+#include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -392,11 +393,58 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
         else
           rewriter.replaceOpWithNewOp<arith::ExtSIOp>(op, op.getType(),
                                                       op.getInput());
-      } else
+      } else if (srcTy.getIntOrFloatBitWidth() > dstTy.getIntOrFloatBitWidth())
         rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, op.getType(),
                                                      op.getInput());
+      else
+        rewriter.replaceOp(op, op.getInput());
       return success();
     }
+    return failure();
+  }
+};
+
+// tosa.custom with domain "rocmlir": unsigned_cast and unsigned_div.
+// These are custom TOSA ops that represent unsigned integer operations
+// (fptoui, uitofp, extui, divui) which standard TOSA doesn't support.
+struct CustomUnsignedOpConverter : public OpRewritePattern<tosa::CustomOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::CustomOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
+      return failure();
+
+    auto outType = cast<RankedTensorType>(op.getResults().front().getType());
+    Type outElemType = outType.getElementType();
+
+    if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_CAST) {
+      Value input = op.getInputList()[0];
+      Type inElemType =
+          cast<RankedTensorType>(input.getType()).getElementType();
+      if (isa<IntegerType>(inElemType)) {
+        if (isa<FloatType>(outElemType)) {
+          rewriter.replaceOpWithNewOp<arith::UIToFPOp>(op, outType, input);
+        } else if (outElemType.getIntOrFloatBitWidth() >
+                   inElemType.getIntOrFloatBitWidth()) {
+          rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, outType, input);
+        } else if (outElemType.getIntOrFloatBitWidth() <
+                   inElemType.getIntOrFloatBitWidth()) {
+          rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, outType, input);
+        } else {
+          rewriter.replaceOp(op, input);
+        }
+      } else {
+        rewriter.replaceOpWithNewOp<arith::FPToUIOp>(op, outType, input);
+      }
+      return success();
+    }
+
+    if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_DIV) {
+      rewriter.replaceOpWithNewOp<arith::DivUIOp>(
+          op, outType, op.getInputList()[0], op.getInputList()[1]);
+      return success();
+    }
+
     return failure();
   }
 };
@@ -444,6 +492,13 @@ struct RockTosaToElementwise
       return !isa<tosa::TosaDialect>(op->getDialect());
     });
     target.addLegalOp<tosa::ConstOp, tosa::ConstShapeOp>();
+    target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
+      if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
+        return true;
+      StringRef name = op.getOperatorName();
+      return name != ROCK_CUSTOMOP_UNSIGNED_CAST &&
+             name != ROCK_CUSTOMOP_UNSIGNED_DIV;
+    });
 
     // --- Binary float / int ---
     patterns.add<
@@ -488,8 +543,8 @@ struct RockTosaToElementwise
     // --- Special cases ---
     patterns
         .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
-             SigmoidConverter, SelectConverter, ClampConverter, CastConverter>(
-            ctx);
+             SigmoidConverter, SelectConverter, ClampConverter, CastConverter,
+             CustomUnsignedOpConverter>(ctx);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();

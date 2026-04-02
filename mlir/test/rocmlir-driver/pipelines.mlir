@@ -81,7 +81,6 @@
 // HIGHLEVEL-NEXT:rock-view-to-transform,
 // HIGHLEVEL-NEXT:rock-detect-flash-decoding,
 // HIGHLEVEL-NEXT:rocmlir-custom-tosa-decompose,
-// HIGHLEVEL-NEXT:rocmlir-custom-tosa-to-linalg,
 // HIGHLEVEL-NEXT:builtin.module(tosa-attach-target{extensions={int4,
 // HIGHLEVEL-NEXT:bf16,
 // HIGHLEVEL-NEXT:fp8e4m3,

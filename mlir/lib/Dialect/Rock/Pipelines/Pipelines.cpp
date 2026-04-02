@@ -260,7 +260,8 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   }
 
   funcPm.addPass(createRocmlirCustomTosaDecomposePass());
-  funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
+  if (noRock)
+    funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
 
   tosa::TosaAttachTargetOptions tosaOptions;
   tosaOptions.specificationVersion = tosa::SpecificationVersion::V_1_0;
