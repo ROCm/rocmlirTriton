@@ -33,7 +33,6 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
-#include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -58,22 +57,6 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-
-/// Build a broadcast TransformMapAttr that expands the reduced `axis`
-/// from size 1 back to `targetShape[axis]`, passing all other dims through.
-static TransformMapAttr
-buildBroadcastMap(OpBuilder &b, ArrayRef<StringRef> dimNames,
-                  ArrayRef<int64_t> reducedShape,
-                  ArrayRef<int64_t> targetShape, int64_t axis, Location loc) {
-  BottomUpTMBuilder bc(b, dimNames, reducedShape, loc);
-  for (int64_t i = 0, e = reducedShape.size(); i < e; ++i) {
-    if (i == axis)
-      bc.broadcast({static_cast<uint32_t>(i)}, {targetShape[i]});
-    else
-      bc.passThrough(dimNames[i]);
-  }
-  return bc.get();
-}
 
 /// Walk a single-use chain of TransformOps from `start` to a StoreOp,
 /// collecting intermediate TransformOps into `chain`.  Returns the StoreOp,
@@ -106,11 +89,9 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
                                 PatternRewriter &rewriter) const override {
     Location loc = reduceOp.getLoc();
     Value reduceInput = reduceOp.getIn();
-    int64_t axis = reduceOp.getAxis().getSExtValue();
 
     auto inputType = cast<RankedTensorType>(reduceInput.getType());
     ArrayRef<int64_t> inputShape = inputType.getShape();
-    int64_t rank = inputShape.size();
 
     StoreMethod storeMethod;
     switch (reduceOp.getReduceMethod()) {
@@ -133,19 +114,9 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     FailureOr<StoreOp> maybeStore =
         collectTransformChain(reduceResult, intermediateOps);
     if (failed(maybeStore))
-      return failure();
+      return reduceOp.emitError(
+          "could not find rock.store along single-use chain from reduce");
     StoreOp storeOp = *maybeStore;
-
-    // Canonical dimension names for the reduce output rank.
-    SmallVector<StringAttr> dimNameStorage;
-    SmallVector<StringRef> dimNames;
-    for (int64_t i = 0; i < rank; ++i) {
-      dimNameStorage.push_back(rewriter.getStringAttr(Twine("d") + Twine(i)));
-      dimNames.push_back(dimNameStorage.back().getValue());
-    }
-
-    ArrayRef<int64_t> reduceOutputShape =
-        cast<RankedTensorType>(reduceResult.getType()).getShape();
 
     rewriter.setInsertionPoint(storeOp);
     Value transformedDest = storeOp.getDest();
@@ -163,10 +134,8 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     }
 
     // Broadcast the reduced axis back to the unreduced input size.
-    TransformMapAttr broadcastMap = buildBroadcastMap(
-        rewriter, dimNames, reduceOutputShape, inputShape, axis, loc);
     transformedDest =
-        TransformOp::create(rewriter, loc, transformedDest, broadcastMap);
+        rock::insertBroadcast(rewriter, loc, transformedDest, inputShape);
 
     auto newStore =
         StoreOp::create(rewriter, loc, storeOp.getResult().getType(),
