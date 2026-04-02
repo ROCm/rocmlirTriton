@@ -26,6 +26,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   LowerReduce.cpp
   LowerStores.cpp
   RegularizeOutput.cpp
+  RockFlattenTosaFuncArgs.cpp
   RockTosaToElementwise.cpp
 
   ADDITIONAL_HEADER_DIRS

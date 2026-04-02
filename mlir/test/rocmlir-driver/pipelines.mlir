@@ -76,7 +76,8 @@
 // BINARY-NEXT:reconcile-unrealized-casts)
 
 // HIGHLEVEL:Kernel Highlevel pipeline:
-// HIGHLEVEL-NEXT:builtin.module(func.func(tosa-to-tensor,
+// HIGHLEVEL-NEXT:builtin.module(func.func(rock-flatten-tosa-func-args,
+// HIGHLEVEL-NEXT:tosa-to-tensor,
 // HIGHLEVEL-NEXT:tosa-to-rock,
 // HIGHLEVEL-NEXT:rock-view-to-transform,
 // HIGHLEVEL-NEXT:rock-detect-flash-decoding,

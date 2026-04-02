@@ -248,6 +248,8 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   bool noRock = options.disableRock;
 
   auto &funcPm = pm.nest<func::FuncOp>();
+  funcPm.addPass(rock::createRockFlattenTosaFuncArgsPass());
+
   // TOSA conversion to rock and/or linalg with mhal.launch's
   if (!noRock) {
     // convert tosa.conv2d/matmul to rock.conv
