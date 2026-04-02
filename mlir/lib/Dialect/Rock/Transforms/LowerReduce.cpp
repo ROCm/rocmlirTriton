@@ -144,8 +144,16 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     if (failed(setStoreMethodAndPrefill(rewriter, newStore, storeMethod)))
       return storeOp.emitError("failed to set store method and prefill");
 
-    // Replace the old store with the new broadcast+atomic store.
+    // The intermediate transforms and reduceOp form a single-use chain
+    // (enforced by collectTransformChain and the getNumUses check above)
+    // that is now dead.  All erasures are deferred by the
+    // ConversionPatternRewriter (applyPartialConversion) and committed
+    // together, so we must mark every op in the chain for removal —
+    // otherwise the framework inserts unrealized_conversion_casts for
+    // the still-live intermediate references.
     rewriter.replaceOp(storeOp, newStore);
+    for (TransformOp tOp : llvm::reverse(intermediateOps))
+      rewriter.eraseOp(tOp);
     rewriter.eraseOp(reduceOp);
     return success();
   }
