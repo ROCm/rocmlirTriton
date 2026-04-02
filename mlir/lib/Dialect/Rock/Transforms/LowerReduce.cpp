@@ -78,8 +78,7 @@ collectTransformChain(Value start, SmallVectorImpl<TransformOp> &chain) {
     }
   }
 
-  emitError(cur.getLoc(), "expected single-use chain from reduce to store");
-  return failure();
+  return emitError(cur.getLoc(), "expected single-use chain from reduce to store");
 }
 
 struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
@@ -137,15 +136,24 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     transformedDest =
         rock::insertBroadcast(rewriter, loc, transformedDest, inputShape);
 
+    // Create a new store with the old store method, then update it
+    // via setStoreMethodAndPrefill which sets the atomic method + prefill.
     auto newStore =
         StoreOp::create(rewriter, loc, storeOp.getResult().getType(),
                         reduceInput, transformedDest, storeOp.getStoreMethod());
     if (failed(setStoreMethodAndPrefill(rewriter, newStore, storeMethod)))
       return storeOp.emitError("failed to set store method and prefill");
 
+    // collectTransformChain and the getNumUses check above guarantee a
+    // single-use chain from reduceOp through intermediateOps to storeOp.
+    // After replacing the store, the whole chain is dead.  Erase in
+    // reverse (downstream-first) order so each op is use-free when erased.
     rewriter.replaceOp(storeOp, newStore);
-    for (TransformOp tOp : llvm::reverse(intermediateOps))
+    for (TransformOp tOp : llvm::reverse(intermediateOps)) {
+      assert(tOp->use_empty() && "intermediate transform still has uses");
       rewriter.eraseOp(tOp);
+    }
+    assert(reduceOp->use_empty() && "reduce op still has uses");
     rewriter.eraseOp(reduceOp);
     return success();
   }
