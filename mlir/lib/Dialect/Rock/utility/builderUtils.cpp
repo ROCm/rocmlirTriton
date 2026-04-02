@@ -42,21 +42,6 @@ Value createConstantIntOp(OpBuilder &b, Location loc, Type type,
   return retValue;
 }
 
-FailureOr<APInt> createAPInt(Type elemType, int64_t value) {
-  auto bitWidth = elemType.getIntOrFloatBitWidth();
-  bool isSigned = elemType.isSignedInteger();
-
-  if (!isSigned && value < 0)
-    return failure();
-
-  APInt newValue(bitWidth, value, isSigned);
-  APInt extended = isSigned ? newValue.sext(64) : newValue.zext(64);
-  if (extended != APInt(64, value, true))
-    return failure();
-
-  return newValue;
-}
-
 std::pair<APFloat, llvm::detail::opStatus> createAPFloat(Type elemType,
                                                          float value) {
   const llvm::fltSemantics &semantics =
@@ -107,11 +92,11 @@ Value createZeroConstantOp(OpBuilder &b, Location loc, Type type) {
 Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
                              Type destType) {
   // Convert from sourceType to destType if necessary.
-  Value result = source;
   Type sourceElemType = getElementTypeOrSelf(source.getType());
   Type destElemType = getElementTypeOrSelf(destType);
   unsigned sourceWidth = sourceElemType.getIntOrFloatBitWidth();
   unsigned destWidth = destElemType.getIntOrFloatBitWidth();
+  Value result = source;
   if (sourceElemType != destElemType) {
     if (isa<IntegerType>(sourceElemType) && isa<IntegerType>(destElemType)) {
       if (sourceWidth <= destWidth) {
@@ -138,21 +123,6 @@ Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
   return result;
 }
 
-int64_t getByteWidth(Type type) {
-  if (auto vecType = dyn_cast<VectorType>(type))
-    return llvm::divideCeil(
-        vecType.getElementTypeBitWidth() * vecType.getNumElements(), 8);
-  return llvm::divideCeil(type.getIntOrFloatBitWidth(), 8);
-}
-
-int64_t getPackedByteSize(uint64_t numElements, Type type) {
-  if (auto vecType = dyn_cast<VectorType>(type))
-    return llvm::divideCeil(vecType.getElementTypeBitWidth() *
-                                vecType.getNumElements() * numElements,
-                            8);
-  return llvm::divideCeil(numElements * type.getIntOrFloatBitWidth(), 8);
-}
-
 Type getFlattenedType(Type type) {
   if (auto st = dyn_cast<ShapedType>(type))
     return st.cloneWith(st.getNumElements(), st.getElementType());
@@ -166,11 +136,6 @@ Value getAsTensor(OpBuilder &builder, Location loc, mlir::Value value,
       builder, loc, memref::getTensorTypeFromMemRefType(value.getType()), value,
       isRestrict, isWritable);
   return origTensor;
-}
-
-Type vectorOfBoolShapedLike(Value v) {
-  return VectorType::get(cast<ShapedType>(v.getType()).getShape(),
-                         IntegerType::get(v.getContext(), 1));
 }
 
 } // namespace rock
