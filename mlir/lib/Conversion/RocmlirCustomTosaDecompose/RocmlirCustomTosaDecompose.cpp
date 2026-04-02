@@ -854,7 +854,7 @@ public:
 // For NHWC layout with G groups:
 //   input  [N, H, W, C]        -> G slices of [N, H, W, C/G]
 //   filter [F, Hf, Wf, C/G]    -> G slices of [F/G, Hf, Wf, C/G]
-//   bias   [F]                  -> G slices of [F/G]
+//   bias   [F]                  -> G slices of [F/G]  (or reused if scalar [1])
 //   output [N, Ho, Wo, F]       = concat(G outputs of [N, Ho, Wo, F/G], axis=3)
 class GroupConv2dDecomposer : public OpRewritePattern<tosa::Conv2DOp> {
 public:
@@ -862,7 +862,7 @@ public:
   LogicalResult matchAndRewrite(tosa::Conv2DOp op,
                                 PatternRewriter &rewriter) const final {
     auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
-    if (!groupAttr || groupAttr.getInt() <= 1)
+    if (!groupAttr || groupAttr.getInt() == 1)
       return rewriter.notifyMatchFailure(op, "not a group convolution");
 
     int64_t group = groupAttr.getInt();
@@ -902,6 +902,13 @@ public:
           op, "filter input channels doesn't match C/G");
 
     int64_t Fg = F / group;
+
+    int64_t biasDim = biasTy.getDimSize(0);
+    bool scalarBias = (biasDim == 1);
+    if (!scalarBias && biasDim != F)
+      return rewriter.notifyMatchFailure(
+          op, "bias dimension must be 1 (broadcast) or F (per-channel)");
+
     Type elemTy = inputTy.getElementType();
     Type biasElemTy = biasTy.getElementType();
     Type resultElemTy = resultTy.getElementType();
@@ -931,17 +938,22 @@ public:
           getTosaConstShape(rewriter, loc, filterStart),
           getTosaConstShape(rewriter, loc, filterSize));
 
-      SmallVector<int64_t> biasStart = {g * Fg};
-      SmallVector<int64_t> biasSize = {Fg};
-      Value slicedBias = tosa::SliceOp::create(
-          rewriter, loc, RankedTensorType::get(biasSize, biasElemTy), bias,
-          getTosaConstShape(rewriter, loc, biasStart),
-          getTosaConstShape(rewriter, loc, biasSize));
+      Value groupBias;
+      if (scalarBias) {
+        groupBias = bias;
+      } else {
+        SmallVector<int64_t> biasStart = {g * Fg};
+        SmallVector<int64_t> biasSize = {Fg};
+        groupBias = tosa::SliceOp::create(
+            rewriter, loc, RankedTensorType::get(biasSize, biasElemTy), bias,
+            getTosaConstShape(rewriter, loc, biasStart),
+            getTosaConstShape(rewriter, loc, biasSize));
+      }
 
       auto groupResultTy =
           RankedTensorType::get({N, Ho, Wo, Fg}, resultElemTy);
       Value groupConv = tosa::Conv2DOp::create(
-          rewriter, loc, groupResultTy, slicedInput, slicedFilter, slicedBias,
+          rewriter, loc, groupResultTy, slicedInput, slicedFilter, groupBias,
           inputZp, weightZp, padAttr, strideAttr, dilationAttr, accType);
 
       groupOutputs.push_back(groupConv);
@@ -967,7 +979,7 @@ void mlir::rock::populateRocmlirCustomTosaDecomposeTarget(
   });
   target.addDynamicallyLegalOp<tosa::Conv2DOp>([](tosa::Conv2DOp op) {
     auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
-    return !groupAttr || groupAttr.getInt() <= 1;
+    return !groupAttr || groupAttr.getInt() == 1;
   });
 }
 
