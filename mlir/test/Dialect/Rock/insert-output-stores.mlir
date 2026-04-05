@@ -225,6 +225,57 @@ func.func @gemm_fusion_same_operand_twice(%arg0: tensor<8x16xf32>, %arg1: tensor
   return %1 : tensor<8x32xf32>
 }
 
+// Elementwise kernel: single addf gets a store
+// CHECK-LABEL: func.func @elem_simple
+// CHECK-SAME: (%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel}
+// CHECK: %[[ADD:.*]] = arith.addf %arg0, %arg1
+// CHECK: %[[STORE:.*]] = rock.store %[[ADD]] to %arg2 by set
+// CHECK: return %[[STORE]]
+func.func @elem_simple(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  return %0 : tensor<1024xf32>
+}
+
+// Elementwise kernel: chained fusions (add then mul) get one store at the end
+// CHECK-LABEL: func.func @elem_chained
+// CHECK-SAME: (%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>, %arg3: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel}
+// CHECK: %[[ADD:.*]] = arith.addf %arg0, %arg1
+// CHECK: %[[MUL:.*]] = arith.mulf %[[ADD]], %arg2
+// CHECK: %[[STORE:.*]] = rock.store %[[MUL]] to %arg3 by set
+// CHECK: return %[[STORE]]
+func.func @elem_chained(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = arith.mulf %0, %arg2 : tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// Elementwise kernel with transform on output: new arg has transformed type
+// CHECK-LABEL: func.func @elem_with_transform
+// CHECK-SAME: (%arg0: tensor<8x32xf32>, %arg1: tensor<8x32xf32>, %arg2: tensor<256xf32>) -> tensor<256xf32> attributes {rock.kernel}
+// CHECK: %[[ADD:.*]] = arith.addf %arg0, %arg1
+// CHECK: %[[TR:.*]] = rock.transform %[[ADD]]
+// CHECK: %[[STORE:.*]] = rock.store %[[TR]] to %arg2 by set
+// CHECK: return %[[STORE]]
+func.func @elem_with_transform(%arg0: tensor<8x32xf32>, %arg1: tensor<8x32xf32>) -> tensor<256xf32> attributes {rock.kernel} {
+  %0 = arith.addf %arg0, %arg1 : tensor<8x32xf32>
+  %1 = rock.transform %0 by #merge_map : tensor<8x32xf32> to tensor<256xf32>
+  return %1 : tensor<256xf32>
+}
+
+// Elementwise kernel with two return values: each gets its own store
+// CHECK-LABEL: func.func @elem_two_returns
+// CHECK-SAME: (%arg0: tensor<8x32xf32>, %arg1: tensor<8x32xf32>, %arg2: tensor<8x32xf32>, %arg3: tensor<8x32xf32>) -> (tensor<8x32xf32>, tensor<8x32xf32>) attributes {rock.kernel}
+// CHECK: %[[ADD:.*]] = arith.addf %arg0, %arg1
+// CHECK: %[[MUL:.*]] = arith.mulf %arg0, %arg1
+// CHECK: %[[STORE0:.*]] = rock.store %[[ADD]] to %arg2 by set
+// CHECK: %[[STORE1:.*]] = rock.store %[[MUL]] to %arg3 by set
+// CHECK: return %[[STORE0]], %[[STORE1]]
+func.func @elem_two_returns(%arg0: tensor<8x32xf32>, %arg1: tensor<8x32xf32>) -> (tensor<8x32xf32>, tensor<8x32xf32>) attributes {rock.kernel} {
+  %0 = arith.addf %arg0, %arg1 : tensor<8x32xf32>
+  %1 = arith.mulf %arg0, %arg1 : tensor<8x32xf32>
+  return %0, %1 : tensor<8x32xf32>, tensor<8x32xf32>
+}
+
 // -----
 
 // A return operand not reachable from any FusionRoot should be flagged as

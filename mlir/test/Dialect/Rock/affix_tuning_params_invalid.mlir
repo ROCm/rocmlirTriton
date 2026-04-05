@@ -105,3 +105,24 @@ func.func @mlir_dot_max_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280
     %out = rock.store %res to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
     return %out : tensor<1x2x320xf32>
   }
+
+// expected-error @below {{invalid elementwise perf_config: "garbage"}}
+func.func @elem_invalid_perf_config(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "garbage"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// expected-error @below {{invalid elementwise perf_config: "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"}}
+func.func @elem_wrong_prefix(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// expected-error @below {{invalid elementwise perf_config: "elem:v1:256,1"}}
+func.func @elem_too_few_params(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "elem:v1:256,1"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}

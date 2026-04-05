@@ -5921,6 +5921,10 @@ static LogicalResult populateHostHarnessLogic(
     case rock::KernelType::ConvElementwiseGemm:
       outIndices.push_back(3);
       break;
+    case rock::KernelType::Elementwise:
+      llvm_unreachable(
+          "elementwise kernel generation not supported in rocmlir-gen");
+      break;
     case rock::KernelType::Attention:
       isAttention = true;
       int32_t optionalArgsCounter{3};

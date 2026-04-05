@@ -177,6 +177,15 @@ bool isFusionOp(Operation *op);
 // rock.reduce.
 bool isForwardTraceOp(Operation *op);
 
+/// Returns true if `funcOp` is an elementwise-only kernel: has rock.kernel,
+/// no FusionRoot ops and at least one fusion op (arith/math elementwise).
+bool isElementwiseKernel(func::FuncOp funcOp);
+
+/// Collect the inputs of an elementwise kernel: tensor-typed fusion op
+/// operands that trace back (through rock.transform chains) to block arguments
+/// or arith.constant ops, rather than being produced by other fusion ops.
+SetVector<Value> getElementwiseKernelInputs(func::FuncOp funcOp);
+
 /// Walk the fusion chain from `root` (the FusionRoot result) and collect
 /// operands of fusion ops that are NOT in the FusionRoot-result chain. These
 /// are "extra inputs" to output fusions (e.g., the second operand of

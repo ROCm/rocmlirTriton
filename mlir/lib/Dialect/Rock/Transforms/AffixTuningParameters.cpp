@@ -207,6 +207,7 @@ private:
   // Actual implementation.
   void affixTuningParametersImpl(RockGemmWrapperInterface op);
   void affixTuningParametersImpl(RockGemmGemmWrapperInterface op);
+  void affixTuningParametersElementwiseImpl(func::FuncOp func);
 
   LogicalResult validateRockAttributes(func::FuncOp func);
 };
@@ -285,6 +286,9 @@ void AffixTuningParameters::runOnOperation() {
       return signalPassFailure();
     }
   });
+
+  if (isElementwiseKernel(func))
+    affixTuningParametersElementwiseImpl(func);
 }
 
 void AffixTuningParameters::affixTuningParametersImpl(
@@ -428,4 +432,32 @@ void AffixTuningParameters::affixTuningParametersImpl(
   assert(blockSize > 0);
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           builder.getI32IntegerAttr(blockSize));
+}
+
+void AffixTuningParameters::affixTuningParametersElementwiseImpl(
+    func::FuncOp func) {
+  OpBuilder b(&getContext());
+  StringRef arch = rock::getArchValue(func);
+  int64_t waveSize = rock::getWaveSize(arch);
+
+  StringAttr defaultPerfConfig = b.getStringAttr("elem:v1:256,1,4,1,0");
+  StringAttr perfConfigStr = defaultPerfConfig;
+  if (auto userPerfConfig = func->getAttrOfType<StringAttr>("perf_config"))
+    perfConfigStr = userPerfConfig;
+
+  ElementwiseParamsAttr elemParams = ElementwiseParamsAttr::get(perfConfigStr);
+  if (!elemParams) {
+    func.emitError("invalid elementwise perf_config: ") << perfConfigStr;
+    return signalPassFailure();
+  }
+
+  int64_t blockSize = waveSize * elemParams.getNumWaves();
+  assert(blockSize > 0);
+
+  func->setAttr("perf_config", elemParams);
+  func->setAttr(rock::BlockSizeAttr::getMnemonic(),
+                b.getI32IntegerAttr(blockSize));
+
+  LLVM_DEBUG(llvm::dbgs() << "Elementwise kernel: blockSize=" << blockSize
+                          << " params=" << elemParams << "\n");
 }

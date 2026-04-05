@@ -263,6 +263,26 @@ runKernelPipeline(StringRef archName, ModuleOp m,
   if (gemmGemmWalk.wasInterrupted())
     return failure();
 
+  // Fallback: elementwise-only kernels store params on the function.
+  if (!fillCompilationRes.wasInterrupted() &&
+      !fillCompilationResGemmGemm.wasInterrupted()) {
+    auto fillCompilationResElem =
+        m.walk([&](func::FuncOp funcOp) -> WalkResult {
+          if (auto elemParams =
+                  funcOp->getAttrOfType<rock::ElementwiseParamsAttr>(
+                      "perf_config")) {
+            if (failed(fillCompilationConfigs(elemParams, tritonOpts,
+                                              backendOpts))) {
+              llvm::errs() << "Failed to process elementwise perfConfig\n";
+              return WalkResult::interrupt();
+            }
+          }
+          return WalkResult::advance();
+        });
+    if (fillCompilationResElem.wasInterrupted())
+      return failure();
+  }
+
   // Set up lowering pipeline.
   if (kernelPipelineSet.contains("gpu")) {
     // Set up the default lowering pipeline which goes down to GPU dialect.

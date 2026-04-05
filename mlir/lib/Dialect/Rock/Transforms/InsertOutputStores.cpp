@@ -16,10 +16,17 @@
 //===----------------------------------------------------------------------===//
 //
 // This pass inserts rock.store ops for kernel functions that return values.
-// It must run before any rock.store ops are inserted. For each return value
-// from a FusionRoot chain, it adds a new output argument, inserts a
+// It must run before any rock.store ops are inserted.
+//
+// For kernels with FusionRoot ops (GEMM, conv, attention): each return value
+// must be reachable from a FusionRoot via forward flood-fill.
+//
+// For elementwise-only kernels (no FusionRoot): every return operand is
+// treated as an output that needs a store. A kernel with no FusionRoot and
+// no return values is an error.
+//
+// For each return value, it adds a new output argument, inserts a
 // rock.store, and updates the func.return to use the store results.
-// Every return operand must be reachable from a FusionRoot.
 //
 //===----------------------------------------------------------------------===//
 
@@ -205,9 +212,6 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
       fusionRoots.push_back(op);
   });
 
-  if (fusionRoots.empty())
-    return success();
-
   // This pass must run before any rock.store ops are inserted.
   WalkResult storeCheck = funcOp.walk([](StoreOp storeOp) {
     storeOp.emitError("existing rock.store found; InsertOutputStores must run "
@@ -219,15 +223,36 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
 
   auto returnOp = cast<func::ReturnOp>(funcOp.getBody().back().getTerminator());
 
-  auto maybeStoreInfos = identifyReturnStores(fusionRoots, returnOp);
-  if (failed(maybeStoreInfos))
-    return failure();
-  auto &storeInfos = *maybeStoreInfos;
+  SmallVector<ReturnStoreInfo> storeInfos;
 
-  if (storeInfos.size() != returnOp.getNumOperands())
-    return returnOp.emitError("expected ")
-           << returnOp.getNumOperands() << " store infos but got "
-           << storeInfos.size();
+  if (fusionRoots.empty() && isElementwiseKernel(funcOp)) {
+    // Elementwise-only kernel: no FusionRoot, every return operand is an
+    // output.
+    if (returnOp.getNumOperands() == 0)
+      return funcOp.emitError(
+          "elementwise kernel has no return values to store");
+
+    for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
+      ReturnStoreInfo info;
+      info.returnIndex = i;
+      info.returnOperand = returnOp.getOperand(i);
+      storeInfos.push_back(info);
+    }
+  } else if (!fusionRoots.empty()) {
+    auto maybeStoreInfos = identifyReturnStores(fusionRoots, returnOp);
+    if (failed(maybeStoreInfos))
+      return failure();
+    storeInfos = std::move(*maybeStoreInfos);
+
+    if (storeInfos.size() != returnOp.getNumOperands())
+      return returnOp.emitError("expected ")
+             << returnOp.getNumOperands() << " store infos but got "
+             << storeInfos.size();
+  } else {
+    // No FusionRoot and not an elementwise kernel — nothing for this pass to
+    // do (e.g. a kernel that just passes through block arguments).
+    return success();
+  }
 
   // This pass runs before wrapper generation, so the kernel must not have
   // any call sites yet.

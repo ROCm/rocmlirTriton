@@ -806,3 +806,51 @@ func.func @mlir_dot_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280x320
   %out = rock.store %result to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
   return %out : tensor<1x2x320xf32>
 }
+
+// Elementwise kernel tests
+
+// CHECK-LABEL: @elem_default
+func.func @elem_default(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+  // CHECK: perf_config = #rock.elementwise_params<tileSize = 256, numCTAs = 1, numWaves = 4, numStages = 1, wavesPerEU = 0>
+  // CHECK-SAME: rock.block_size = 256 : i32
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// CHECK-LABEL: @elem_user_config
+func.func @elem_user_config(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "elem:v1:512,1,2,1,0"} {
+  // CHECK: perf_config = #rock.elementwise_params<tileSize = 512, numCTAs = 1, numWaves = 2, numStages = 1, wavesPerEU = 0>
+  // CHECK-SAME: rock.block_size = 128 : i32
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// CHECK-LABEL: @elem_chained_fusions
+func.func @elem_chained_fusions(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>, %arg3: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+  // CHECK: perf_config = #rock.elementwise_params<tileSize = 256, numCTAs = 1, numWaves = 4, numStages = 1, wavesPerEU = 0>
+  // CHECK-SAME: rock.block_size = 256 : i32
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = arith.mulf %0, %arg2 : tensor<1024xf32>
+  %2 = rock.store %1 to %arg3 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %2 : tensor<1024xf32>
+}
+
+// CHECK-LABEL: @elem_f16
+func.func @elem_f16(%arg0: tensor<2048xf16>, %arg1: tensor<2048xf16>, %arg2: tensor<2048xf16>) -> tensor<2048xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
+  // CHECK: perf_config = #rock.elementwise_params<tileSize = 256, numCTAs = 1, numWaves = 4, numStages = 1, wavesPerEU = 0>
+  // CHECK-SAME: rock.block_size = 256 : i32
+  %0 = arith.addf %arg0, %arg1 : tensor<2048xf16>
+  %1 = rock.store %0 to %arg2 by set : tensor<2048xf16> -> tensor<2048xf16> to tensor<2048xf16>
+  return %1 : tensor<2048xf16>
+}
+
+// CHECK-LABEL: @elem_user_config_waves_per_eu
+func.func @elem_user_config_waves_per_eu(%arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>, %arg2: tensor<4096xf32>) -> tensor<4096xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "elem:v1:128,1,8,1,2"} {
+  // CHECK: perf_config = #rock.elementwise_params<tileSize = 128, numCTAs = 1, numWaves = 8, numStages = 1, wavesPerEU = 2>
+  // CHECK-SAME: rock.block_size = 512 : i32
+  %0 = arith.addf %arg0, %arg1 : tensor<4096xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<4096xf32> -> tensor<4096xf32> to tensor<4096xf32>
+  return %1 : tensor<4096xf32>
+}
