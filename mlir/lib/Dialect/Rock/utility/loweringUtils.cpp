@@ -10,6 +10,8 @@
 #include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
+#include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
+#include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -721,6 +723,41 @@ bool mlir::rock::isFusionOp(Operation *op) {
 
 bool mlir::rock::isForwardTraceOp(Operation *op) {
   return isFusionOp(op) || isa<ViewLikeOpInterface>(op) || isa<ReduceOp>(op);
+}
+
+bool mlir::rock::isElementwiseKernel(func::FuncOp funcOp) {
+  if (!funcOp->hasAttr(KernelAttr::getMnemonic()))
+    return false;
+
+  bool hasFusionRoot = false;
+  bool hasFusionOp = false;
+  funcOp.walk([&](Operation *op) {
+    if (op->hasTrait<OpTrait::rock::FusionRoot>())
+      hasFusionRoot = true;
+    if (isFusionOp(op))
+      hasFusionOp = true;
+  });
+
+  return !hasFusionRoot && hasFusionOp;
+}
+
+SetVector<Value> mlir::rock::getElementwiseKernelInputs(func::FuncOp funcOp) {
+  SetVector<Value> leafInputs;
+  funcOp.walk([&](Operation *op) {
+    if (!isFusionOp(op))
+      return;
+    for (Value operand : op->getOperands()) {
+      if (!isa<RankedTensorType>(operand.getType()))
+        continue;
+      SmallVector<TransformMapAttr> transforms;
+      auto [underlying, _] = rock::untransform(operand, transforms);
+      if (!isa<BlockArgument>(underlying) &&
+          !underlying.getDefiningOp<arith::ConstantOp>())
+        continue;
+      leafInputs.insert(operand);
+    }
+  });
+  return leafInputs;
 }
 
 FusionInfo mlir::rock::collectFusionInfo(Value root) {
