@@ -784,6 +784,42 @@ struct GridwiseAttentionRewritePattern
     return ifb;
   }
 
+  // Map external splat constants referenced by the region body to
+  // tile-shaped replacements. Constants like scale factors or mask fill
+  // values may be defined at function scope and captured by closure.
+  LogicalResult mapExternalSplatConstants(PatternRewriter &rewriter,
+                                          Location loc,
+                                          GridwiseAttentionOp op, Block &block,
+                                          RankedTensorType tileType,
+                                          IRMapping &mapping) const {
+    for (Operation &bodyOp : block.without_terminator()) {
+      for (Value operand : bodyOp.getOperands()) {
+        if (operand.getParentBlock() == &block)
+          continue;
+        if (mapping.contains(operand))
+          continue;
+        auto constOp = operand.getDefiningOp<arith::ConstantOp>();
+        if (!constOp)
+          continue;
+        auto origType = dyn_cast<RankedTensorType>(constOp.getType());
+        if (!origType)
+          continue;
+        auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
+        if (!splatAttr)
+          return op->emitOpError()
+                 << "non-splat constant in preSoftmaxBody cannot be tiled";
+        auto newType = RankedTensorType::get(tileType.getShape(),
+                                             origType.getElementType());
+        Value newConst = arith::ConstantOp::create(
+            rewriter, loc,
+            SplatElementsAttr::get(newType,
+                                   splatAttr.getSplatValue<Attribute>()));
+        mapping.map(operand, newConst);
+      }
+    }
+    return success();
+  }
+
   // Apply pre-softmax element-wise fusions to the first GEMM (Q*K) output.
   // Clones the ops from the op's preSoftmaxBody region into the current IR,
   // mapping block arguments to tile-level values: arg0 is the gemm0 result
@@ -921,6 +957,10 @@ struct GridwiseAttentionRewritePattern
       mapping.map(chainEnd, markerOp.getResult());
     }
 
+    if (failed(mapExternalSplatConstants(rewriter, loc, op, block, tileType,
+                                         mapping)))
+      return failure();
+
     // Clone ops from the region body (except the terminator and any
     // transform ops already folded into LoadMarkerOp views), fixing up
     // result types to use tile-level shapes while preserving element types
@@ -929,6 +969,23 @@ struct GridwiseAttentionRewritePattern
       if (bodyTransformOpsToSkip.contains(&bodyOp))
         continue;
       Operation *cloned = rewriter.clone(bodyOp, mapping);
+
+      // Splat constants defined inside the region body must also be resized.
+      if (auto constOp = dyn_cast<arith::ConstantOp>(cloned)) {
+        auto origType = dyn_cast<RankedTensorType>(constOp.getType());
+        if (!origType)
+          continue;
+        auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
+        if (!splatAttr)
+          return op->emitOpError()
+                 << "non-splat constant in preSoftmaxBody cannot be tiled";
+        auto newType = RankedTensorType::get(tileType.getShape(),
+                                             origType.getElementType());
+        constOp.setValueAttr(SplatElementsAttr::get(
+            newType, splatAttr.getSplatValue<Attribute>()));
+        constOp.getResult().setType(newType);
+      }
+
       if (cloned->getNumResults() == 1 && cloned->getNumOperands() > 0) {
         auto operandTy =
             dyn_cast<RankedTensorType>(cloned->getOperand(0).getType());
