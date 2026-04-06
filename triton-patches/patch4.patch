@@ -1,0 +1,77 @@
+diff --git a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
+index ba59773d6..4e485340b 100644
+--- a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
++++ b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
+@@ -684,6 +684,7 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
+   POPULATE_UNARY_OP(math::ExpOp, math::ExpOp)
+   POPULATE_UNARY_OP(math::Exp2Op, math::Exp2Op)
+   POPULATE_UNARY_OP(math::ErfOp, math::ErfOp)
++  POPULATE_UNARY_OP(math::TanhOp, math::TanhOp)
+   POPULATE_UNARY_OP(triton::BitcastOp, LLVM::BitcastOp)
+   POPULATE_UNARY_OP(triton::IntToPtrOp, LLVM::IntToPtrOp)
+   POPULATE_UNARY_OP(triton::PtrToIntOp, LLVM::PtrToIntOp)
+diff --git a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
+index 780d0fd5a..4ab5f2f62 100644
+--- a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
++++ b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
+@@ -89,9 +89,10 @@ void populateArithPatternsAndLegality(TritonGPUTypeConverter &typeConverter,
+       GenericOpPattern<arith::RemSIOp>, GenericOpPattern<arith::AndIOp>,
+       GenericOpPattern<arith::OrIOp>, GenericOpPattern<arith::XOrIOp>,
+       GenericOpPattern<arith::ShLIOp>, GenericOpPattern<arith::ShRUIOp>,
+-      GenericOpPattern<arith::ShRSIOp>, // NegFOp
++      GenericOpPattern<arith::ShRSIOp>,
+       // Floating point
+-      GenericOpPattern<arith::AddFOp>, GenericOpPattern<arith::SubFOp>,
++      GenericOpPattern<arith::NegFOp>, GenericOpPattern<arith::AddFOp>,
++      GenericOpPattern<arith::SubFOp>,
+       // MaxMin
+       GenericOpPattern<arith::MaximumFOp>, GenericOpPattern<arith::MaxNumFOp>,
+       GenericOpPattern<arith::MaxSIOp>, GenericOpPattern<arith::MaxUIOp>,
+@@ -123,7 +124,8 @@ void populateMathPatternsAndLegality(TritonGPUTypeConverter &typeConverter,
+                GenericOpPattern<math::LogOp>, GenericOpPattern<math::Log2Op>,
+                GenericOpPattern<math::ErfOp>, GenericOpPattern<math::AbsFOp>,
+                GenericOpPattern<math::AbsIOp>, GenericOpPattern<math::SqrtOp>,
+-               GenericOpPattern<math::RsqrtOp>, GenericOpPattern<math::FmaOp>>(
++               GenericOpPattern<math::RsqrtOp>, GenericOpPattern<math::FmaOp>,
++               GenericOpPattern<math::TanhOp>>(
+       typeConverter, context);
+ }
+ 
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp
+index 79116ac79..3d048feae 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp
+@@ -2093,6 +2093,25 @@ struct FSubOpConversion
+   }
+ };
+ 
++struct FNegOpConversion
++    : ElementwiseOpConversionBase<arith::NegFOp, FNegOpConversion> {
++  using ElementwiseOpConversionBase::ElementwiseOpConversionBase;
++
++  SmallVector<Value> createDestOps(arith::NegFOp op, OpAdaptor adaptor,
++                                   ConversionPatternRewriter &rewriter,
++                                   Type elemTy, MultipleOperandsRange operands,
++                                   Location loc) const {
++    auto operandTy = getElementType(op.getOperand());
++    if (operandTy.isBF16()) {
++      auto v0 = convertBf16ToFp32(loc, rewriter, operands[0][0]);
++      auto result = LLVM::FNegOp::create(rewriter, loc, f32_ty, v0);
++      return {convertFp32ToBf16(loc, rewriter, result, RoundingMode::RTNE)};
++    } else {
++      return {LLVM::FNegOp::create(rewriter, loc, elemTy, operands[0][0])};
++    }
++  }
++};
++
+ static SmallVector<Value> S8_to_Bf16(Location loc,
+                                      ConversionPatternRewriter &rewriter,
+                                      const SmallVector<Value> &v) {
+@@ -2461,6 +2480,7 @@ void populateElementwiseOpToLLVMPatterns(
+   patterns.add<FAddOpConversion>(typeConverter, axisInfoAnalysis, benefit);
+   patterns.add<FMulOpConversion>(typeConverter, axisInfoAnalysis,
+                                  targetInfo.getISAFamily(), benefit);
++  patterns.add<FNegOpConversion>(typeConverter, axisInfoAnalysis, benefit);
+ 
+   patterns.add<ExtFOpConversion>(typeConverter, axisInfoAnalysis, benefit);
+   patterns.add<TruncFOpConversion>(typeConverter, axisInfoAnalysis,
