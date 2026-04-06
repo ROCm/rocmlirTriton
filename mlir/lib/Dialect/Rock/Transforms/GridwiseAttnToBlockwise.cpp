@@ -836,8 +836,8 @@ struct GridwiseAttentionRewritePattern
   // tile-shaped replacements. Constants like scale factors or mask fill
   // values may be defined at function scope and captured by closure.
   LogicalResult mapExternalSplatConstants(PatternRewriter &rewriter,
-                                          Location loc,
-                                          GridwiseAttentionOp op, Block &block,
+                                          Location loc, GridwiseAttentionOp op,
+                                          Block &block,
                                           RankedTensorType tileType,
                                           IRMapping &mapping) const {
     for (Operation &bodyOp : block.without_terminator()) {
@@ -946,8 +946,8 @@ struct GridwiseAttentionRewritePattern
     if (extraInputs.size() != numExtraArgs)
       return op->emitOpError()
              << "preSoftmaxBody has " << numExtraArgs
-             << " non-QK block argument(s) but op has "
-             << extraInputs.size() << " preSoftmaxElemWiseInputs";
+             << " non-QK block argument(s) but op has " << extraInputs.size()
+             << " preSoftmaxElemWiseInputs";
 
     for (unsigned i = 0; i < extraInputs.size(); ++i) {
       Value globalInput = extraInputs[i];
@@ -1006,7 +1006,8 @@ struct GridwiseAttentionRewritePattern
       // Build the complete view chain for the LoadMarkerOp.  The chain
       // (applied in reverse array order) maps from the raw input tensor
       // up to the tile shape:
-      //   tile <- gemm0OutViews <- invertedQK <- bodyTrans <- globalInputMaps <- raw
+      //   tile <- gemm0OutViews <- invertedQK <- bodyTrans <- globalInputMaps
+      //   <- raw
       // Each segment is optional and contributes nothing when empty.
       SmallVector<Attribute> allViews(gemm0OutViews.begin(),
                                       gemm0OutViews.end());

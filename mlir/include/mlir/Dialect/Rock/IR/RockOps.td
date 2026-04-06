@@ -303,10 +303,9 @@ def Rock_ConvElementwiseGemmOp
       AllElementTypesMatch<["filter", "input"]>,
       Arguments<(ins TensorOf<[F32, F16, BF16]>:$filter,
           TensorOf<[F32, F16, BF16]>:$input, TensorOf<[F32, F16, BF16]>:$c,
-          Variadic<AnyTensor>:$elemwiseInputs,
-          UnitAttr:$cTransposed, UnitAttr:$oTransposed,
-          IndexArrayLength<4>:$padding, IndexArrayLength<2>:$strides,
-          IndexArrayLength<2>:$dilations,
+          Variadic<AnyTensor>:$elemwiseInputs, UnitAttr:$cTransposed,
+          UnitAttr:$oTransposed, IndexArrayLength<4>:$padding,
+          IndexArrayLength<2>:$strides, IndexArrayLength<2>:$dilations,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result)> {
