@@ -960,12 +960,6 @@ struct GridwiseAttentionRewritePattern
           tileType.getShape(),
           cast<ShapedType>(globalInput.getType()).getElementType());
 
-      ArrayAttr otherInputMap = gemm0OutViews;
-      if (!globalInputMaps.empty()) {
-        otherInputMap =
-            prependUpperViews(rewriter, gemm0OutViews, globalInputMaps);
-      }
-
       // Trace the chain of rock.transform ops on the block argument.
       // These transforms bridge from the gemm0 output shape to the actual
       // input tensor shape (e.g. broadcast [1,64,64]->[1,1,1] then reshape
@@ -1009,21 +1003,22 @@ struct GridwiseAttentionRewritePattern
         }
       }
 
+      // Build the complete view chain for the LoadMarkerOp.  The chain
+      // (applied in reverse array order) maps from the raw input tensor
+      // up to the tile shape:
+      //   tile <- gemm0OutViews <- invertedQK <- bodyTrans <- globalInputMaps <- raw
+      // Each segment is optional and contributes nothing when empty.
+      SmallVector<Attribute> allViews(gemm0OutViews.begin(),
+                                      gemm0OutViews.end());
       if (!bodyTransformAttrs.empty()) {
-        SmallVector<Attribute> allViews(otherInputMap.begin(),
-                                        otherInputMap.end());
-        // When QK arg transforms reshape the GEMM output (e.g. adding a
-        // unit batch dim), the body transforms for extra inputs end in
-        // that reshaped space rather than gemm0-output space. Insert the
-        // inverted QK transforms to bridge the gap.
         allViews.append(invertedQKAttrs.begin(), invertedQKAttrs.end());
-        // Body transforms go input->output in chain order. Views need
-        // upper->lower ordering, so append them in reverse.
         for (auto it = bodyTransformAttrs.rbegin();
              it != bodyTransformAttrs.rend(); ++it)
           allViews.push_back(*it);
-        otherInputMap = rewriter.getArrayAttr(allViews);
       }
+      if (!globalInputMaps.empty())
+        allViews.append(globalInputMaps.begin(), globalInputMaps.end());
+      ArrayAttr otherInputMap = rewriter.getArrayAttr(allViews);
 
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, root, otherInputMap,
