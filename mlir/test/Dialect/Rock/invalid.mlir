@@ -43,5 +43,3 @@ func.func @gridwise_gemm_n_too_big(%a: tensor<1x1x1xf32>,
   : tensor<1x1x1xf32>, tensor<1x1x2147483648xf32> -> tensor<1x1x2147483648xf32>
   func.return
 }
-
-
