@@ -513,11 +513,133 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
                                                      op.getInput());
       return success();
     }
-    // float -> int: TOSA spec requires round-to-nearest-even before truncation
+    // float -> bool
+    if (isa<FloatType>(srcTy) && dstTy.isInteger(1)) {
+      auto srcShapedTy = cast<ShapedType>(op.getInput().getType());
+      Value zero = arith::ConstantOp::create(
+          rewriter, op.getLoc(),
+          DenseElementsAttr::get(srcShapedTy,
+                                 rewriter.getFloatAttr(srcTy, 0.0)));
+      rewriter.replaceOpWithNewOp<arith::CmpFOp>(
+          op, arith::CmpFPredicate::UNE, op.getInput(), zero);
+      return success();
+    }
+    // float -> int
+    // Replicates the three-case structure from TosaToLinalg's CastOp lowering,
+    // adapted for tensor-level ops and unsigned integer support.
     if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
+      auto srcShapedTy = cast<ShapedType>(op.getInput().getType());
+      auto dstShapedTy = cast<ShapedType>(op.getType());
+      auto srcFloatTy = cast<FloatType>(srcTy);
+      unsigned dstWidth = cast<IntegerType>(dstTy).getWidth();
+      bool isUnsigned = cast<IntegerType>(dstTy).isUnsignedInteger();
+      Location loc = op.getLoc();
+      const auto &fltSemantics = srcFloatTy.getFloatSemantics();
+
+      auto splatFloat = [&](APFloat v) -> Value {
+        return arith::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(srcShapedTy,
+                                   rewriter.getFloatAttr(srcTy, v)));
+      };
+      auto splatFloatFromDouble = [&](double v) -> Value {
+        return arith::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(srcShapedTy,
+                                   rewriter.getFloatAttr(srcTy, v)));
+      };
+      auto splatInt = [&](APInt v) -> Value {
+        return arith::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(dstShapedTy,
+                                   rewriter.getIntegerAttr(dstTy, v)));
+      };
+      auto fpToInt = [&](Value v) -> Value {
+        if (isUnsigned)
+          return arith::FPToUIOp::create(rewriter, loc, dstShapedTy, v);
+        return arith::FPToSIOp::create(rewriter, loc, dstShapedTy, v);
+      };
+
+      APInt intMin = isUnsigned ? APInt::getZero(dstWidth)
+                                : APInt::getSignedMinValue(dstWidth);
+      APInt intMax = isUnsigned ? APInt::getMaxValue(dstWidth)
+                                : APInt::getSignedMaxValue(dstWidth);
+
       Value rounded =
-          math::RoundEvenOp::create(rewriter, op.getLoc(), op.getInput());
-      rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, op.getType(), rounded);
+          math::RoundEvenOp::create(rewriter, loc, op.getInput());
+
+      // Case 1: Neither int min nor int max can be represented in the
+      // floating-point type due to too short exponent range. All finite
+      // float values are representable in the integer type; fix up
+      // infinities with cmp + select.
+      if (static_cast<int>(dstWidth) - 1 >
+          APFloat::semanticsMaxExponent(fltSemantics)) {
+        Value posInf = splatFloat(APFloat::getInf(fltSemantics));
+        auto overflow = arith::CmpFOp::create(
+            rewriter, loc, arith::CmpFPredicate::UEQ, rounded, posInf);
+
+        if (isUnsigned) {
+          Value zeroF = splatFloatFromDouble(0.0);
+          Value clampedPos =
+              arith::MaximumFOp::create(rewriter, loc, rounded, zeroF);
+          Value conv = fpToInt(clampedPos);
+          Value maxClamped = arith::SelectOp::create(
+              rewriter, loc, overflow, splatInt(intMax), conv);
+          rewriter.replaceOp(op, maxClamped);
+        } else {
+          Value conv = fpToInt(rounded);
+          Value negInf =
+              splatFloat(APFloat::getInf(fltSemantics, /*Negative=*/true));
+          auto underflow = arith::CmpFOp::create(
+              rewriter, loc, arith::CmpFPredicate::UEQ, rounded, negInf);
+          Value maxClamped = arith::SelectOp::create(
+              rewriter, loc, overflow, splatInt(intMax), conv);
+          rewriter.replaceOpWithNewOp<arith::SelectOp>(
+              op, underflow, splatInt(intMin), maxClamped);
+        }
+        return success();
+      }
+
+      // intMinFP is shared between cases 2 and 3.
+      double intMinDouble = isUnsigned
+                                ? static_cast<double>(intMin.getZExtValue())
+                                : static_cast<double>(intMin.getSExtValue());
+      Value intMinFP = splatFloatFromDouble(intMinDouble);
+
+      // Case 2: The mantissa has enough bits to represent int max exactly.
+      // Int min is also representable (0 for unsigned, or a power of two for
+      // signed). Clamp entirely in the floating-point domain, then convert.
+      unsigned requiredMantissa = isUnsigned ? dstWidth : dstWidth - 1;
+      if (srcFloatTy.getFPMantissaWidth() >= requiredMantissa) {
+        double intMaxDouble =
+            isUnsigned ? static_cast<double>(intMax.getZExtValue())
+                       : static_cast<double>(intMax.getSExtValue());
+        Value intMaxFP = splatFloatFromDouble(intMaxDouble);
+        Value hi = arith::MinimumFOp::create(rewriter, loc, rounded, intMaxFP);
+        Value clamped =
+            arith::MaximumFOp::create(rewriter, loc, hi, intMinFP);
+        rewriter.replaceOp(op, fpToInt(clamped));
+        return success();
+      }
+
+      // Case 3: Exponent range is sufficient but mantissa is too narrow to
+      // represent int max exactly. Clamp the lower bound in the float domain,
+      // convert, then compare against int-max-plus-one (a power of two, always
+      // representable) to fix up overflow with a select.
+      double intMaxPlusOneDouble =
+          isUnsigned
+              ? std::ldexp(1.0, dstWidth)
+              : static_cast<double>(intMax.getSExtValue()) + 1.0;
+      Value intMaxPlusOneFP = splatFloatFromDouble(intMaxPlusOneDouble);
+
+      Value minClampedFP =
+          arith::MaximumFOp::create(rewriter, loc, rounded, intMinFP);
+      Value minClamped = fpToInt(minClampedFP);
+      auto overflow = arith::CmpFOp::create(
+          rewriter, loc, arith::CmpFPredicate::UGE, rounded, intMaxPlusOneFP);
+      rewriter.replaceOpWithNewOp<arith::SelectOp>(op, overflow,
+                                                    splatInt(intMax),
+                                                    minClamped);
       return success();
     }
     // int -> int
