@@ -895,7 +895,6 @@ pipeline {
 
                                                     stage('Static checks (clang-format & clang-tidy)') {
                                                         timeout(time: 10, activity: true, unit: 'MINUTES') {
-                                                            sh 'pip install unidiff pathspec gitpython'
                                                             preMergeCheck(CODEPATH)
                                                         }
                                                     }
