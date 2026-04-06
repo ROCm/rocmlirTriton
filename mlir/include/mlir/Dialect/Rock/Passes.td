@@ -509,13 +509,6 @@ def RockFlattenTosaFuncArgsPass
   let dependentDialects = ["tosa::TosaDialect"];
 }
 
-def RockExpandStridesLoweringPass
-    : Pass<"rock-expand-strides-lowering", "::mlir::func::FuncOp"> {
-  let summary =
-      "Lower rock.expand_strides to dest-side Slice transforms on rock.store";
-  let dependentDialects = ["rock::RockDialect"];
-}
-
 def RockLowerStoresPass : Pass<"rock-lower-stores", "::mlir::func::FuncOp"> {
   let summary = "Lower rock.store ops and handle output fusions";
   let description = [{

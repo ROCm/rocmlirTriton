@@ -145,10 +145,12 @@ public:
                                                result.getLowerBounds());
   }
 
-  // NOTE: There is no  builder for slice() as it isn't used in this context
-  // If you find you need one, please add it, bearing in mind
-  // that your start dimension is already sliced so you need to pass the full
-  // length
+  // Slice: define lower (end) dimensions that are full-size ranges, with the
+  // upper (start) dimensions being subranges selected by [begin, begin+upper).
+  // fullLowerSizes provides the total size of each lower dimension.
+  void slice(ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims,
+             ArrayRef<StringRef> upperNames, ArrayRef<int64_t> begins,
+             ArrayRef<int64_t> fullLowerSizes);
 
   // Drop `dim`, making it disappear from the underlying view.
   void ignore(StringRef dim);

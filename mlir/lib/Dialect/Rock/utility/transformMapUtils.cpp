@@ -1001,8 +1001,40 @@ TransformMapAttr mlir::rock::invertTransformMap(
       transform.passThrough(tattr.getUpperNames(), tattr.getUpperDims(),
                             tattr.getLowerNames());
       break;
-    case rock::TransformType::Pad:
-    case rock::TransformType::Slice:
+    case rock::TransformType::Pad: {
+      // Pad: lower[L] -> upper[L+left+right]. Inverse is Slice selecting
+      // [left, left+L) from the full dimension.
+      SmallVector<int64_t> begins;
+      SmallVector<int64_t> fullLowerSizes;
+      for (unsigned i = 0, e = tattr.getLowerDims().size(); i < e; ++i) {
+        int64_t leftPad = tattr.getParams()[i * 2];
+        int64_t rightPad = tattr.getParams()[i * 2 + 1];
+        int64_t lowerSize = lowShape[tattr.getLowerDims()[i]];
+        begins.push_back(leftPad);
+        fullLowerSizes.push_back(lowerSize + leftPad + rightPad);
+      }
+      transform.slice(
+          SmallVector<StringRef>(tattr.getUpperNames()),
+          SmallVector<uint32_t>(tattr.getUpperDims()),
+          SmallVector<StringRef>(tattr.getLowerNames()), begins, fullLowerSizes);
+      break;
+    }
+    case rock::TransformType::Slice: {
+      // Slice: lower[D] -> upper[end-begin]. Inverse is Pad with
+      // left=begin, right=D-end.
+      SmallVector<int64_t> padParams;
+      for (unsigned i = 0, e = tattr.getLowerDims().size(); i < e; ++i) {
+        int64_t begin = tattr.getParams()[i * 2];
+        int64_t end = tattr.getParams()[i * 2 + 1];
+        int64_t fullLowerSize = lowShape[tattr.getLowerDims()[i]];
+        padParams.push_back(begin);
+        padParams.push_back(fullLowerSize - end);
+      }
+      transform.pad(SmallVector<StringRef>(tattr.getUpperNames()),
+                    SmallVector<uint32_t>(tattr.getUpperDims()),
+                    SmallVector<StringRef>(tattr.getLowerNames()), padParams);
+      break;
+    }
     case rock::TransformType::Embed:
     case rock::TransformType::Broadcast: // Unsupported
       return rock::TransformMapAttr();

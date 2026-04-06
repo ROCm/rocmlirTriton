@@ -1071,30 +1071,6 @@ LogicalResult ConvBwdWeightOp::verify() {
 }
 
 //===-----------------------------------------------------===//
-// ExpandStridesOp
-//===-----------------------------------------------------===//
-
-LogicalResult ExpandStridesOp::verify() {
-  auto inputType = cast<ShapedType>(getInput().getType());
-  auto resultType = cast<ShapedType>(getResult().getType());
-
-  if (inputType.getRank() != resultType.getRank())
-    return emitOpError("input and result must have the same rank");
-
-  for (auto [resDim, inDim] :
-       llvm::zip_equal(resultType.getShape(), inputType.getShape())) {
-    if (resDim < inDim)
-      return emitOpError("result dimension ")
-             << resDim << " is smaller than input dimension " << inDim;
-  }
-
-  if (inputType.getElementType() != resultType.getElementType())
-    return emitOpError("input and result must have the same element type");
-
-  return success();
-}
-
-//===-----------------------------------------------------===//
 // StoreOp
 //===-----------------------------------------------------===//
 

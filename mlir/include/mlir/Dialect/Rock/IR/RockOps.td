@@ -344,25 +344,6 @@ def Rock_ConvElementwiseGemmOp
   }];
 }
 
-def Rock_ExpandStridesOp
-    : Rock_Op<"expand_strides", [Pure]>,
-      Arguments<(ins RankedTensorOf<GemmInputTypes>:$input)>,
-      Results<(outs AnyRankedTensor:$result)> {
-  let summary = "Expand tensor strides by copying into padded buffer";
-
-  let description = [{
-    Copies a contiguous `input` tensor into a larger result tensor,
-    effectively expanding the memory strides. The remaining space in the
-    result tensor is left as uninitialized padding.
-  }];
-
-  let assemblyFormat = [{
-    $input attr-dict `:` type($input) `->` type($result)
-  }];
-
-  let hasVerifier = 1;
-}
-
 def Rock_TransformOp :
     Rock_Op<"transform", [Pure, ViewLikeOpInterface,
                           AllElementTypesMatch<["input", "output"]>]>,
