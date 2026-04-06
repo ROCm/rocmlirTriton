@@ -784,6 +784,54 @@ struct GridwiseAttentionRewritePattern
     return ifb;
   }
 
+  // Trace the chain of rock.transform ops on the QK block argument and
+  // collect them for skipping. These transforms reshape the GEMM result in
+  // the original full-tensor shape space (e.g. adding a unit batch dim)
+  // and are meaningless in tile space. Only pure reshape transforms
+  // (PassThrough, AddDim, Unmerge, Merge) are allowed; anything else
+  // (Pad, Broadcast, etc.) is rejected.
+  LogicalResult skipQKArgTransformChain(
+      GridwiseAttentionOp op, BlockArgument qkArg, Value gemm0Mapped,
+      DenseSet<Operation *> &opsToSkip, IRMapping &mapping,
+      SmallVectorImpl<TransformMapAttr> &qkTransformAttrs) const {
+    Value chainEnd = qkArg;
+    while (chainEnd.hasOneUse()) {
+      Operation *user = *chainEnd.getUsers().begin();
+      auto transformOp = dyn_cast<TransformOp>(user);
+      if (!transformOp)
+        break;
+      for (TransformAttr tr : transformOp.getTransform().getOps()) {
+        switch (tr.getType()) {
+        case TransformType::PassThrough:
+        case TransformType::AddDim:
+        case TransformType::Unmerge:
+        case TransformType::Merge:
+          break;
+        default:
+          return op->emitOpError()
+                 << "preSoftmaxBody QK argument has a non-reshape "
+                    "transform; only PassThrough, AddDim, Unmerge, and "
+                    "Merge are supported, but found: "
+                 << transformOp.getTransform();
+        }
+      }
+      opsToSkip.insert(user);
+      qkTransformAttrs.push_back(transformOp.getTransform());
+      chainEnd = transformOp.getResult();
+    }
+    if (!chainEnd.use_empty()) {
+      for (Operation *user : chainEnd.getUsers()) {
+        if (isa<TransformOp>(user))
+          return op->emitOpError()
+                 << "preSoftmaxBody QK argument has a transform chain "
+                    "that is not purely linear (multi-use or branching); "
+                    "this is not supported";
+      }
+    }
+    mapping.map(chainEnd, gemm0Mapped);
+    return success();
+  }
+
   // Map external splat constants referenced by the region body to
   // tile-shaped replacements. Constants like scale factors or mask fill
   // values may be defined at function scope and captured by closure.
@@ -861,7 +909,37 @@ struct GridwiseAttentionRewritePattern
       gemm0Mapped =
           createTypeConversionOp(rewriter, loc, gemm0Mapped, castType);
     }
-    mapping.map(qkArg, gemm0Mapped);
+
+    // Collect transform ops from the body that should be folded into
+    // LoadMarkerOp views (for extra inputs) or simply skipped (for the QK
+    // arg) rather than cloned with stale full-tensor shape metadata.
+    DenseSet<Operation *> bodyTransformOpsToSkip;
+    SmallVector<TransformMapAttr> qkTransformAttrs;
+
+    if (failed(skipQKArgTransformChain(op, qkArg, gemm0Mapped,
+                                       bodyTransformOpsToSkip, mapping,
+                                       qkTransformAttrs)))
+      return failure();
+
+    // The QK transforms above reshape the GEMM output into the body's
+    // working shape (e.g. AddDim turns [2,5,5] into [2,1,5,5]). Extra-input
+    // body transforms also end in that working shape, but gemm0OutViews
+    // only reach the GEMM output shape. To close the gap in the view chain
+    // (gemm0OutViews -> ??? -> body transforms), we insert the inverse of
+    // each QK transform. For example, if the QK transform is:
+    //   AddDim: lower=[2,5,5] -> upper=[2,1,5,5]
+    // its inverse is:
+    //   ConstDim: lower=[2,1,5,5] -> upper=[2,5,5]
+    // which maps the body's 4-D working coords back to the 3-D GEMM output
+    // coords that gemm0OutViews expect.
+    SmallVector<Attribute> invertedQKAttrs;
+    for (TransformMapAttr qkAttr : qkTransformAttrs) {
+      TransformMapAttr inv = invertTransformMap(rewriter, qkAttr, loc);
+      if (!inv)
+        return op->emitOpError()
+               << "failed to invert QK argument transform: " << qkAttr;
+      invertedQKAttrs.push_back(inv);
+    }
 
     ValueRange extraInputs = op.getPreSoftmaxElemWiseInputs();
     unsigned numExtraArgs = block.getNumArguments() - 1;
@@ -870,11 +948,6 @@ struct GridwiseAttentionRewritePattern
              << "preSoftmaxBody has " << numExtraArgs
              << " non-QK block argument(s) but op has "
              << extraInputs.size() << " preSoftmaxElemWiseInputs";
-
-    // Collect transform ops from the body that should be folded into the
-    // LoadMarkerOp views rather than cloned separately. This handles inputs
-    // whose shape differs from the gemm0 output.
-    DenseSet<Operation *> bodyTransformOpsToSkip;
 
     for (unsigned i = 0; i < extraInputs.size(); ++i) {
       Value globalInput = extraInputs[i];
@@ -937,10 +1010,15 @@ struct GridwiseAttentionRewritePattern
       }
 
       if (!bodyTransformAttrs.empty()) {
-        // Body transforms go input->output in chain order. Views need
-        // upper->lower ordering, so append them in reverse.
         SmallVector<Attribute> allViews(otherInputMap.begin(),
                                         otherInputMap.end());
+        // When QK arg transforms reshape the GEMM output (e.g. adding a
+        // unit batch dim), the body transforms for extra inputs end in
+        // that reshaped space rather than gemm0-output space. Insert the
+        // inverted QK transforms to bridge the gap.
+        allViews.append(invertedQKAttrs.begin(), invertedQKAttrs.end());
+        // Body transforms go input->output in chain order. Views need
+        // upper->lower ordering, so append them in reverse.
         for (auto it = bodyTransformAttrs.rbegin();
              it != bodyTransformAttrs.rend(); ++it)
           allViews.push_back(*it);
