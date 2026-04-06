@@ -104,6 +104,10 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
 void buildBackendPipeline(OpPassManager &pm,
                           const BackendOptions &options = {});
 
+/// Adds the host lowering pipeline to the `OpPassManager`.
+/// This lowers host code (func + memref + GPU ops) to LLVM dialect.
+void buildHostLoweringPipeline(OpPassManager &pm);
+
 /// Registers all pipelines for the `rock` dialect.
 void registerPipelines();
 
