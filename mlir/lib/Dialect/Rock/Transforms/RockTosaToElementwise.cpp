@@ -235,6 +235,24 @@ struct MulConverter : public OpRewritePattern<tosa::MulOp> {
   }
 };
 
+// tosa.reciprocal(tosa.rsqrt(x)) → math.sqrt(x)
+// Fold the two-op sqrt decomposition (from MIGraphXToTosa) into a single op.
+struct ReciprocalRsqrtToSqrtConverter
+    : public OpRewritePattern<tosa::ReciprocalOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::ReciprocalOp op,
+                                PatternRewriter &rewriter) const override {
+    auto rsqrt = op.getInput1().getDefiningOp<tosa::RsqrtOp>();
+    if (!rsqrt)
+      return failure();
+    rewriter.replaceOpWithNewOp<math::SqrtOp>(op, op.getType(),
+                                              rsqrt.getInput1());
+    if (rsqrt->use_empty())
+      rewriter.eraseOp(rsqrt);
+    return success();
+  }
+};
+
 // tosa.reciprocal: arith.divf(splat(1.0), x)
 struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -541,6 +559,7 @@ struct RockTosaToElementwise
                               arith::CmpIPredicate::eq>>(ctx);
 
     // --- Special cases ---
+    patterns.add<ReciprocalRsqrtToSqrtConverter>(ctx, /*benefit=*/2);
     patterns
         .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
              SigmoidConverter, SelectConverter, ClampConverter, CastConverter,

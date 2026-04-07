@@ -821,6 +821,14 @@ module {
      return %0 : !migraphx.shaped<16xf32, 1>
   }
 
+  // CHECK-LABEL: func.func @func_sqrt
+  // CHECK: %[[RSQRT:.*]] = tosa.rsqrt %arg0
+  // CHECK: tosa.reciprocal %[[RSQRT]]
+  func.func @func_sqrt(%arg0: !migraphx.shaped<16xf32, 1>) -> !migraphx.shaped<16xf32, 1> {
+    %0 = migraphx.sqrt %arg0 : <16xf32, 1> -> <16xf32, 1>
+     return %0 : !migraphx.shaped<16xf32, 1>
+  }
+
   // CHECK-LABEL: func.func @func_sigmoid
   // CHECK: tosa.sigmoid
   func.func @func_sigmoid(%arg0: !migraphx.shaped<16xf32, 1>) -> !migraphx.shaped<16xf32, 1> {

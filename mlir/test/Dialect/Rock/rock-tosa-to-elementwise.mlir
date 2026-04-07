@@ -90,6 +90,18 @@ func.func @rsqrt_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.k
 
 // -----
 
+// CHECK-LABEL: @sqrt_via_reciprocal_rsqrt
+// CHECK-NOT:   tosa.rsqrt
+// CHECK-NOT:   tosa.reciprocal
+// CHECK:       math.sqrt %arg0 : tensor<16xf32>
+func.func @sqrt_via_reciprocal_rsqrt(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.rsqrt %arg0 : (tensor<16xf32>) -> tensor<16xf32>
+  %1 = tosa.reciprocal %0 : (tensor<16xf32>) -> tensor<16xf32>
+  return %1 : tensor<16xf32>
+}
+
+// -----
+
 // CHECK-LABEL: @ceil_f32
 // CHECK-NOT:   tosa.ceil
 // CHECK:       math.ceil %arg0 : tensor<16xf32>
