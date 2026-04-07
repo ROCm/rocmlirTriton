@@ -503,6 +503,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
                                                      op.getInput());
       return success();
     }
+
     // int -> float
     if (isa<IntegerType>(srcTy) && isa<FloatType>(dstTy)) {
       if (srcTy.isInteger(1) || srcTy.isUnsignedInteger())
@@ -513,6 +514,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
                                                      op.getInput());
       return success();
     }
+
     // float -> bool
     if (isa<FloatType>(srcTy) && dstTy.isInteger(1)) {
       auto srcShapedTy = cast<ShapedType>(op.getInput().getType());
@@ -524,6 +526,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
           op, arith::CmpFPredicate::UNE, op.getInput(), zero);
       return success();
     }
+
     // float -> int
     // Replicates the three-case structure from TosaToLinalg's CastOp lowering,
     // adapted for tensor-level ops and unsigned integer support.
@@ -642,6 +645,20 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
                                                     minClamped);
       return success();
     }
+
+    // int -> bool
+    if (isa<IntegerType>(srcTy) && dstTy.isInteger(1)) {
+      auto srcShapedTy = cast<ShapedType>(op.getInput().getType());
+      Value zero = arith::ConstantOp::create(
+          rewriter, op.getLoc(),
+          DenseElementsAttr::get(
+              srcShapedTy,
+              rewriter.getIntegerAttr(srcTy, 0)));
+      rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+          op, arith::CmpIPredicate::ne, op.getInput(), zero);
+      return success();
+    }
+
     // int -> int
     if (isa<IntegerType>(srcTy) && isa<IntegerType>(dstTy)) {
       if (bitExtend) {
@@ -658,6 +675,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
         rewriter.replaceOp(op, op.getInput());
       return success();
     }
+  
     return failure();
   }
 };

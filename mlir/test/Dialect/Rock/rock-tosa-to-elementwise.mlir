@@ -322,16 +322,23 @@ func.func @cast_i32_to_f32(%arg0: tensor<16xi32>) -> tensor<16xf32> attributes {
 // f32 -> i32 hits case 3: exponent is sufficient but mantissa (24) is too
 // narrow to represent i32 max (2^31-1) exactly. Clamp lower bound, convert,
 // then fix up overflow with a select against int-max-plus-one (2^31).
+// RoundEvenTritonWorkaround expands math.roundeven into a floor-based sequence.
 // CHECK-LABEL: @cast_f32_to_i32
 // CHECK-NOT:   tosa.cast
-// CHECK:       %[[ROUNDED:.*]] = math.roundeven %arg0 : tensor<16xf32>
-// CHECK-DAG:   %[[MIN:.*]] = arith.constant dense<-2.14748365E+9> : tensor<16xf32>
-// CHECK-DAG:   %[[MAXP1:.*]] = arith.constant dense<2.14748365E+9> : tensor<16xf32>
-// CHECK-DAG:   %[[IMAX:.*]] = arith.constant dense<2147483647> : tensor<16xi32>
-// CHECK:       %[[MINCLAMP:.*]] = arith.maximumf %[[ROUNDED]], %[[MIN]] : tensor<16xf32>
+// CHECK-NOT:   math.roundeven
+// CHECK:       %[[SUM:.*]] = arith.addf %arg0, {{.*}} : tensor<16xf32>
+// CHECK:       %[[Y:.*]] = math.floor %[[SUM]] : tensor<16xf32>
+// CHECK:       %[[TIE:.*]] = arith.cmpf oeq, %[[SUM]], %[[Y]] : tensor<16xf32>
+// CHECK:       %[[YHALF:.*]] = arith.divf %[[Y]], {{.*}} : tensor<16xf32>
+// CHECK:       %[[YHALFFL:.*]] = math.floor %[[YHALF]] : tensor<16xf32>
+// CHECK:       %[[YEVEN:.*]] = arith.mulf {{.*}}, %[[YHALFFL]] : tensor<16xf32>
+// CHECK:       %[[FMOD:.*]] = arith.subf %[[Y]], %[[YEVEN]] : tensor<16xf32>
+// CHECK:       %[[YADJ:.*]] = arith.subf %[[Y]], %[[FMOD]] : tensor<16xf32>
+// CHECK:       %[[ROUNDED:.*]] = arith.select %[[TIE]], %[[YADJ]], %[[Y]] : tensor<16xi1>, tensor<16xf32>
+// CHECK:       %[[MINCLAMP:.*]] = arith.maximumf %[[ROUNDED]], {{.*}} : tensor<16xf32>
 // CHECK:       %[[CONV:.*]] = arith.fptosi %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
-// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %[[ROUNDED]], %[[MAXP1]] : tensor<16xf32>
-// CHECK:       arith.select %[[OVF]], %[[IMAX]], %[[CONV]] : tensor<16xi1>, tensor<16xi32>
+// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %[[ROUNDED]], {{.*}} : tensor<16xf32>
+// CHECK:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
 func.func @cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
   %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
@@ -343,11 +350,10 @@ func.func @cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {
 // 127 are exactly representable. Clamp entirely in float domain, then convert.
 // CHECK-LABEL: @cast_f32_to_i8
 // CHECK-NOT:   tosa.cast
-// CHECK:       %[[ROUNDED:.*]] = math.roundeven %arg0 : tensor<16xf32>
-// CHECK-DAG:   %[[MIN:.*]] = arith.constant dense<-1.280000e+02> : tensor<16xf32>
-// CHECK-DAG:   %[[MAX:.*]] = arith.constant dense<1.270000e+02> : tensor<16xf32>
-// CHECK:       %[[HI:.*]] = arith.minimumf %[[ROUNDED]], %[[MAX]] : tensor<16xf32>
-// CHECK:       %[[CLAMPED:.*]] = arith.maximumf %[[HI]], %[[MIN]] : tensor<16xf32>
+// CHECK-NOT:   math.roundeven
+// CHECK:       %[[ROUNDED:.*]] = arith.select {{.*}} : tensor<16xi1>, tensor<16xf32>
+// CHECK:       %[[HI:.*]] = arith.minimumf %[[ROUNDED]], {{.*}} : tensor<16xf32>
+// CHECK:       %[[CLAMPED:.*]] = arith.maximumf %[[HI]], {{.*}} : tensor<16xf32>
 // CHECK:       arith.fptosi %[[CLAMPED]] : tensor<16xf32> to tensor<16xi8>
 func.func @cast_f32_to_i8(%arg0: tensor<16xf32>) -> tensor<16xi8> attributes {rock.kernel} {
   %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xi8>
@@ -416,6 +422,39 @@ func.func @cast_i1_to_f32(%arg0: tensor<16xi1>) -> tensor<16xf32> attributes {ro
 func.func @cast_i32_to_i8(%arg0: tensor<16xi32>) -> tensor<16xi8> attributes {rock.kernel} {
   %0 = tosa.cast %arg0 : (tensor<16xi32>) -> tensor<16xi8>
   return %0 : tensor<16xi8>
+}
+
+// -----
+
+// f16 -> i32 hits case 1: f16 maxExponent=15 < dstWidth-1=31, so float range
+// is much smaller than the integer range. All finite f16 values fit in i32;
+// only +-inf need fixup via cmp + select.
+// CHECK-LABEL: @cast_f16_to_i32
+// CHECK-NOT:   tosa.cast
+// CHECK-NOT:   math.roundeven
+// CHECK:       %[[ROUNDED:.*]] = arith.select {{.*}} : tensor<16xi1>, tensor<16xf16>
+// CHECK:       %[[OVF:.*]] = arith.cmpf ueq, %[[ROUNDED]], {{.*}} : tensor<16xf16>
+// CHECK:       %[[CONV:.*]] = arith.fptosi %[[ROUNDED]] : tensor<16xf16> to tensor<16xi32>
+// CHECK:       %[[UNF:.*]] = arith.cmpf ueq, %[[ROUNDED]], {{.*}} : tensor<16xf16>
+// CHECK:       %[[MAXC:.*]] = arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
+// CHECK:       arith.select %[[UNF]], {{.*}}, %[[MAXC]] : tensor<16xi1>, tensor<16xi32>
+func.func @cast_f16_to_i32(%arg0: tensor<16xf16>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xf16>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// Int-to-bool: any nonzero value is true. Must use cmpne, not trunci (which
+// would only look at the LSB, giving wrong results for even nonzero values).
+// CHECK-LABEL: @cast_i32_to_i1
+// CHECK-NOT:   tosa.cast
+// CHECK-NOT:   arith.trunci
+// CHECK:       %[[ZERO:.*]] = arith.constant dense<0> : tensor<16xi32>
+// CHECK:       arith.cmpi ne, %arg0, %[[ZERO]] : tensor<16xi32>
+func.func @cast_i32_to_i1(%arg0: tensor<16xi32>) -> tensor<16xi1> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xi32>) -> tensor<16xi1>
+  return %0 : tensor<16xi1>
 }
 
 // -----
