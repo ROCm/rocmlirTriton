@@ -1,5 +1,3 @@
-// TODO(rocmlirTriton): llvm.fptrunc op result must be floating point type, fails on f8E4M3FN -> i8
-// UNSUPPORTED: true
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel | rocmlir-gen -ph -print-results -rand fixed - | rocmlir-driver -arch %arch -c  | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 module {
     // CHECK : Unranked Memref base
