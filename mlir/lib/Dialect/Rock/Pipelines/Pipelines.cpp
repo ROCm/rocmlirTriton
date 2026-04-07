@@ -352,8 +352,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
 
-  // This pass converts unsupported float types to int8, take that into account
-  // for next passes (e.g. integer arithmetic optimizations)
+  // This pass converts unsupported float types to int8 and wraps fusion ops
+  // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
   addWithDCE(rock::createRockLegalizeFloatTypesPass());
 
   // Serialize and erase host functions BEFORE any func-level pass that
@@ -361,6 +361,20 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // Must use a new nest<func::FuncOp>() so these passes go into a separate
   // adaptor that runs AFTER SerializeHostFuncs.
   pm.addPass(rock::createRockSerializeHostFuncsPass());
+
+  // Expand f8E8M0FNU and f4E2M1FN truncf/extf to bitwise integer ops.
+  // Must run AFTER SerializeHostFuncs (arith-expand would corrupt linalg body
+  // regions in host code) and BEFORE RockToTTIR, because LLVM lowering cannot
+  // handle fptrunc/fpext with these narrow float types. LegalizeFloatTypes
+  // converts GEMM operand tensors to i8 but fusion ops inside are wrapped
+  // with arith.bitcast, so scalar extf/truncf still use f4/f8 types.
+  {
+    arith::ArithExpandOpsPassOptions expandOpts;
+    expandOpts.includeF8E8M0 = true;
+    expandOpts.includeF4E2M1 = true;
+    pm.addPass(arith::createArithExpandOpsPass(expandOpts));
+  }
+
   auto &funcPm2 = pm.nest<func::FuncOp>();
   funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockMaskNonZeroPreservingFusionsPass());
