@@ -1,5 +1,3 @@
-// TODO(rocmlirTriton): TransformMapBuilder.cpp:189: mlir::rock::TransformMapBuilder::TransformMapBuilder(mlir::Builder &, ArrayRef<StringRef>, ArrayRef<int64_t>, mlir::Location): Assertion `startNamesArg.size() == startShapeArg.size() && "Start names and shape must have the same size"' failed.
-// UNSUPPORTED: true
 // RUN: rocmlir-gen -fut mlir_convolution_multi_reduce --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -RMS_threshold=1e-0 -rand 1 -rand_type float -fut mlir_convolution_multi_reduce --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 
 // We need a check for each output as this test case has two outputs in it.
