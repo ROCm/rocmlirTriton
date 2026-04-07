@@ -268,6 +268,11 @@ static LogicalResult sinkTransformsToLeaves(Operation *op, Block &block) {
       if (!defOp)
         continue;
 
+      // Part of a block-arg transform chain. collectArgTransformChains
+      // will handle these after sinking completes.
+      if (isa<TransformOp>(defOp))
+        continue;
+
       TransformMapAttr attr = transformOp.getTransform();
       Location loc = transformOp.getLoc();
 
