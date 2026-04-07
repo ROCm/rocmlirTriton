@@ -13,6 +13,7 @@
 #ifndef MLIR_DIALECT_ROCK_PIPELINES_H_
 #define MLIR_DIALECT_ROCK_PIPELINES_H_
 
+#include "llvm/ADT/StringRef.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassOptions.h"
 
@@ -106,6 +107,12 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
 /// Adds the `backend` pipeline to the `OpPassManager`.
 void buildBackendPipeline(OpPassManager &pm,
                           const BackendOptions &options = {});
+
+/// Adds the host lowering pipeline to the `OpPassManager`.
+/// This lowers host code (func + memref + GPU ops) to LLVM dialect.
+/// \p dumpCpuSchedules is forwarded to CpuLowerVerifierPass for schedule dumps.
+void buildHostLoweringPipeline(OpPassManager &pm,
+                               StringRef dumpCpuSchedules = "");
 
 /// Registers all pipelines for the `rock` dialect.
 void registerPipelines();

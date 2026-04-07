@@ -62,7 +62,7 @@ static cl::opt<std::string>
 static cl::opt<std::string>
     hostPipeline("host-pipeline", cl::desc("rocmlir-driver host pipeline list"),
                  cl::value_desc("comma separated list of rock pipelines: "
-                                "migraphx,highlevel or full"),
+                                "migraphx,highlevel,backend or full"),
                  cl::init(""));
 
 static cl::opt<bool> legacyRockPipeline("c", cl::Hidden, cl::init(false),
@@ -296,7 +296,8 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                            kernelPipelineOptions, kernelFullPipeline))) {
     return failure();
   }
-  llvm::SmallDenseSet<StringRef> hostPipelineOptions{"migraphx", "highlevel"};
+  llvm::SmallDenseSet<StringRef> hostPipelineOptions{"migraphx", "highlevel",
+                                                     "backend"};
   llvm::SmallDenseSet<StringRef> hostPipelineSet;
   std::string hostPipelineStr = hostPipeline.getValue();
   if (failed(parsePipeline(hostPipelineStr, hostPipelineSet,
@@ -336,6 +337,15 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     if (failed(runWithDetach(
             module, "Kernel Highlevel", isHost,
             [](PassManager &pm) { rock::buildHighlevelPipeline(pm); })))
+      return failure();
+  }
+
+  // Phase 2.5: Host backend lowering (func + memref + GPU ops -> LLVM)
+  if (hostPipelineSet.contains("backend")) {
+    if (failed(runWithDetach(module, "Host Backend", isKernel,
+                             [](PassManager &pm) {
+                               rock::buildHostLoweringPipeline(pm);
+                             })))
       return failure();
   }
 
