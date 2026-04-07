@@ -388,7 +388,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
-                                      StringRef dumpCpuSchedules = "") {
+                                     StringRef dumpCpuSchedules) {
 
   // CPU optimization phase.
   // This transforms the function body but keeps tensor types at boundaries.
