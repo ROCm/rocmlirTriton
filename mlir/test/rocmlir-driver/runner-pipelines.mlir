@@ -14,6 +14,8 @@
 // RUNNER-SAME: convert-scf-to-cf{allow-pattern-rollback=true},
 // RUNNER-SAME: func.func(gpu-async-region),
 // RUNNER-SAME: convert-cf-to-llvm{index-bitwidth=0},
+// RUNNER-SAME: convert-math-to-llvm{approximate-log1p=true},
+// RUNNER-SAME: convert-math-to-libm,
 // RUNNER-SAME: convert-arith-to-llvm{index-bitwidth=0},
 // RUNNER-SAME: finalize-memref-to-llvm{index-bitwidth=0 use-aligned-alloc=false use-generic-functions=false},
 // RUNNER-SAME: gpu-to-llvm{intersperse-sizes-for-kernels=false use-bare-pointers-for-host=false use-bare-pointers-for-kernels=true},

@@ -67,6 +67,8 @@
 // BINARY-NEXT:convert-scf-to-cf{allow-pattern-rollback=true},
 // BINARY-NEXT:func.func(gpu-async-region),
 // BINARY-NEXT:convert-cf-to-llvm{index-bitwidth=0},
+// BINARY-NEXT:convert-math-to-llvm{approximate-log1p=true},
+// BINARY-NEXT:convert-math-to-libm,
 // BINARY-NEXT:convert-arith-to-llvm{index-bitwidth=0},
 // BINARY-NEXT:finalize-memref-to-llvm{index-bitwidth=0 use-aligned-alloc=false use-generic-functions=false},
 // BINARY-NEXT:gpu-to-llvm{intersperse-sizes-for-kernels=false use-bare-pointers-for-host=false use-bare-pointers-for-kernels=true},
