@@ -10,6 +10,7 @@ add_rocmlir_dialect_library(MLIRMIGraphXTransforms
   MLIRMIGraphXDialect
   MLIRPass
   MLIRFuncDialect
+  MLIRRockOps
   MLIRTosaDialect
   MLIRTransforms
   MLIRSupport

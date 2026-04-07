@@ -416,9 +416,6 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());
 
-  // Expand strided metadata (handles memref.expand_shape, etc.)
-  pm.addPass(memref::createExpandStridedMetadataPass());
-
   // Expand f8E8M0FNU/f4E2M1FN extf/truncf to bitwise ops first, so that
   // arith operations using these types are lowered before type conversion.
   arith::ArithExpandOpsPassOptions expandOpts;
@@ -432,9 +429,19 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
   //   2. Rewrite loads/stores/allocs using upstream narrow-type emulation
   // The split avoids a crash in the upstream patterns that call
   // extract_strided_metadata on the original (pre-conversion) block argument.
+  // NOTE: ExpandStridedMetadata must run AFTER narrow-type emulation, because
+  // it converts memref.expand_shape into multi-dim memref.reinterpret_cast
+  // that the upstream narrow-type patterns cannot handle (rank-1 only).
+  // The upstream ConvertMemRefExpandShape pattern handles expand_shape on
+  // sub-byte types as a no-op (since memrefs are linearized by emulation).
   pm.addNestedPass<func::FuncOp>(
       rock::createRockConvertNarrowTypeSignaturesPass());
   pm.addNestedPass<func::FuncOp>(rock::createRockEmulateNarrowTypesPass());
+
+  // Expand strided metadata (handles memref.expand_shape, etc.)
+  // Must run after narrow-type emulation so sub-byte expand_shape ops are
+  // already handled, and before lower-affine since it generates affine.apply.
+  pm.addPass(memref::createExpandStridedMetadataPass());
 
   // Lower affine to standard arithmetic.  Must be after ExpandStridedMetadata
   // and the narrow-type emulation passes, both of which generate affine.apply.
