@@ -317,11 +317,18 @@ struct PowFTritonWorkaround : public OpRewritePattern<math::PowFOp> {
   }
 };
 
-// math.roundeven(x) -> math.floor(x + 0.5)
 // The Triton TritonToTritonGPU conversion does not have a pattern for
 // math.roundeven, so we expand it here into ops that Triton supports.
-// This is round-half-up rather than strict round-half-to-even, which
-// differs only for values exactly at x.5 boundaries.
+// TODO(rocmlirTriton): This expansion is very inefficient (2 floors, a div,
+// a cmp, and a select per element). Adding native math.roundeven support to
+// the Triton backend would eliminate this entirely.
+// Correct round-to-nearest-even (banker's rounding) for shaped float types:
+//   y = floor(x + 0.5)          -- round-half-up candidate
+//   is_tie = (x + 0.5 == y)     -- true iff x had fractional part exactly 0.5
+//   fmod_y_2 = y - 2*floor(y/2) -- 0 when y is even, ±1 when odd
+//   result = select(is_tie, y - fmod_y_2, y)
+// At ties this nudges odd results to the nearest even integer; elsewhere
+// floor(x+0.5) already gives the correct nearest integer.
 struct RoundEvenTritonWorkaround : public OpRewritePattern<math::RoundEvenOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(math::RoundEvenOp op,
@@ -330,12 +337,31 @@ struct RoundEvenTritonWorkaround : public OpRewritePattern<math::RoundEvenOp> {
     auto shapedTy = dyn_cast<ShapedType>(op.getType());
     if (!shapedTy)
       return failure();
-    auto halfAttr = DenseElementsAttr::get(
-        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), 0.5));
-    Value half = arith::ConstantOp::create(rewriter, loc, halfAttr);
-    Value added = arith::AddFOp::create(rewriter, loc, op.getType(),
-                                        op.getOperand(), half);
-    rewriter.replaceOpWithNewOp<math::FloorOp>(op, op.getType(), added);
+    Type elemTy = shapedTy.getElementType();
+
+    auto splatF = [&](double v) -> Value {
+      return arith::ConstantOp::create(
+          rewriter, loc,
+          DenseElementsAttr::get(shapedTy, rewriter.getFloatAttr(elemTy, v)));
+    };
+    Value half = splatF(0.5);
+    Value two = splatF(2.0);
+
+    Value sum =
+        arith::AddFOp::create(rewriter, loc, shapedTy, op.getOperand(), half);
+    Value y = math::FloorOp::create(rewriter, loc, shapedTy, sum);
+
+    Value isTie =
+        arith::CmpFOp::create(rewriter, loc, arith::CmpFPredicate::OEQ, sum, y);
+
+    Value yHalf = arith::DivFOp::create(rewriter, loc, shapedTy, y, two);
+    Value yHalfFloor = math::FloorOp::create(rewriter, loc, shapedTy, yHalf);
+    Value yEven =
+        arith::MulFOp::create(rewriter, loc, shapedTy, two, yHalfFloor);
+    Value fmodY2 = arith::SubFOp::create(rewriter, loc, shapedTy, y, yEven);
+
+    Value yAdjusted = arith::SubFOp::create(rewriter, loc, shapedTy, y, fmodY2);
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, isTie, yAdjusted, y);
     return success();
   }
 };
@@ -600,7 +626,10 @@ struct RockTosaToElementwise
                            tensor::TensorDialect>();
     // Mark ops that Triton's TritonToTritonGPU conversion cannot handle as
     // illegal so the workaround patterns below get applied to them.
-    target.addIllegalOp<math::TanhOp, math::PowFOp>();
+    target.addDynamicallyLegalOp<math::TanhOp>(
+        [](math::TanhOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<math::PowFOp>(
+        [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<math::RoundEvenOp>(
         [](math::RoundEvenOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<arith::NegFOp>(

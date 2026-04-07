@@ -318,10 +318,20 @@ func.func @cast_i32_to_f32(%arg0: tensor<16xi32>) -> tensor<16xf32> attributes {
 // CHECK-LABEL: @cast_f32_to_i32
 // CHECK-NOT:   tosa.cast
 // CHECK-NOT:   math.roundeven
-// CHECK:       %[[HALF:.*]] = arith.constant dense<5.000000e-01> : tensor<16xf32>
-// CHECK:       %[[ADD:.*]] = arith.addf %arg0, %[[HALF]] : tensor<16xf32>
-// CHECK:       %[[FLOOR:.*]] = math.floor %[[ADD]] : tensor<16xf32>
-// CHECK:       arith.fptosi %[[FLOOR]] : tensor<16xf32> to tensor<16xi32>
+// CastConverter emits math.roundeven which RoundEvenTritonWorkaround then
+// expands to a correct round-to-nearest-even sequence.
+// CHECK-DAG:   %[[HALF:.*]] = arith.constant dense<5.000000e-01> : tensor<16xf32>
+// CHECK-DAG:   %[[TWO:.*]] = arith.constant dense<2.000000e+00> : tensor<16xf32>
+// CHECK:       %[[SUM:.*]] = arith.addf %arg0, %[[HALF]] : tensor<16xf32>
+// CHECK:       %[[Y:.*]] = math.floor %[[SUM]] : tensor<16xf32>
+// CHECK:       %[[TIE:.*]] = arith.cmpf oeq, %[[SUM]], %[[Y]] : tensor<16xf32>
+// CHECK:       %[[YHALF:.*]] = arith.divf %[[Y]], %[[TWO]] : tensor<16xf32>
+// CHECK:       %[[YHALFFL:.*]] = math.floor %[[YHALF]] : tensor<16xf32>
+// CHECK:       %[[YEVEN:.*]] = arith.mulf %[[TWO]], %[[YHALFFL]] : tensor<16xf32>
+// CHECK:       %[[FMOD:.*]] = arith.subf %[[Y]], %[[YEVEN]] : tensor<16xf32>
+// CHECK:       %[[YADJ:.*]] = arith.subf %[[Y]], %[[FMOD]] : tensor<16xf32>
+// CHECK:       %[[ROUNDED:.*]] = arith.select %[[TIE]], %[[YADJ]], %[[Y]] : tensor<16xi1>, tensor<16xf32>
+// CHECK:       arith.fptosi %[[ROUNDED]] : tensor<16xf32> to tensor<16xi32>
 func.func @cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
   %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
@@ -730,12 +740,21 @@ func.func @powf_direct(%arg0: tensor<32xf32>, %arg1: tensor<32xf32>) -> tensor<3
 
 // -----
 
-// RoundEvenTritonWorkaround: math.roundeven directly in IR is expanded to floor(x + 0.5).
+// RoundEvenTritonWorkaround: math.roundeven is expanded to correct
+// round-to-nearest-even using floor(x+0.5) with tie-breaking to even.
 // CHECK-LABEL: @roundeven_direct
 // CHECK-NOT:   math.roundeven
-// CHECK:       %[[HALF:.*]] = arith.constant dense<5.000000e-01> : tensor<32xf32>
-// CHECK:       %[[ADD:.*]] = arith.addf %arg0, %[[HALF]] : tensor<32xf32>
-// CHECK:       math.floor %[[ADD]] : tensor<32xf32>
+// CHECK-DAG:   %[[HALF:.*]] = arith.constant dense<5.000000e-01> : tensor<32xf32>
+// CHECK-DAG:   %[[TWO:.*]] = arith.constant dense<2.000000e+00> : tensor<32xf32>
+// CHECK:       %[[SUM:.*]] = arith.addf %arg0, %[[HALF]] : tensor<32xf32>
+// CHECK:       %[[Y:.*]] = math.floor %[[SUM]] : tensor<32xf32>
+// CHECK:       %[[TIE:.*]] = arith.cmpf oeq, %[[SUM]], %[[Y]] : tensor<32xf32>
+// CHECK:       %[[YHALF:.*]] = arith.divf %[[Y]], %[[TWO]] : tensor<32xf32>
+// CHECK:       %[[YHALFFL:.*]] = math.floor %[[YHALF]] : tensor<32xf32>
+// CHECK:       %[[YEVEN:.*]] = arith.mulf %[[TWO]], %[[YHALFFL]] : tensor<32xf32>
+// CHECK:       %[[FMOD:.*]] = arith.subf %[[Y]], %[[YEVEN]] : tensor<32xf32>
+// CHECK:       %[[YADJ:.*]] = arith.subf %[[Y]], %[[FMOD]] : tensor<32xf32>
+// CHECK:       arith.select %[[TIE]], %[[YADJ]], %[[Y]] : tensor<32xi1>, tensor<32xf32>
 func.func @roundeven_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
   %0 = math.roundeven %arg0 : tensor<32xf32>
   return %0 : tensor<32xf32>
@@ -748,5 +767,25 @@ func.func @roundeven_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes 
 // CHECK:       math.roundeven %arg0 : f32
 func.func @roundeven_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
   %0 = math.roundeven %arg0 : f32
+  return %0 : f32
+}
+
+// -----
+
+// TanhTritonWorkaround only applies to shaped types; scalar tanh is preserved.
+// CHECK-LABEL: @tanh_scalar_preserved
+// CHECK:       math.tanh %arg0 : f32
+func.func @tanh_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
+  %0 = math.tanh %arg0 : f32
+  return %0 : f32
+}
+
+// -----
+
+// PowFTritonWorkaround only applies to shaped types; scalar powf is preserved.
+// CHECK-LABEL: @powf_scalar_preserved
+// CHECK:       math.powf %arg0, %arg1 : f32
+func.func @powf_scalar_preserved(%arg0: f32, %arg1: f32) -> f32 attributes {rock.kernel} {
+  %0 = math.powf %arg0, %arg1 : f32
   return %0 : f32
 }
