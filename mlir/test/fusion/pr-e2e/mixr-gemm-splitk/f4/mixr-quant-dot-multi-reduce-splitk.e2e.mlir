@@ -5,8 +5,6 @@
 // CHECK: [1 1 1]
 // CLONE: [1 1 1]
 // CLONE: [1 1 1]
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): migraphx f4 bugs
 module {
   func.func @quant_dot_multi_reduce(%arg0: !migraphx.shaped<2x32x10x64x64xf32, 0x10x1x0x0>, %arg1: !migraphx.shaped<2x320x320xf4E2M1FN, 102400x320x1>, %arg2: !migraphx.shaped<2x320x4096xf4E2M1FN, 1310720x4096x1>, %arg3: !migraphx.shaped<2x320x10x1xf8E8M0FNU, 3200x10x1x1>, %arg4: !migraphx.shaped<2x10x1x4096xf8E8M0FNU, 40960x4096x4096x1>) -> (!migraphx.shaped<2x32x1x1x1xf32, 32x1x1x1x1>, !migraphx.shaped<2x32x10x64x64xf32, 1310720x40960x4096x64x1>) attributes {rock.kernel} {
     %0 = migraphx.multibroadcast %arg3 {out_dyn_dims = [], out_lens = [2, 320, 10, 32]} : <2x320x10x1xf8E8M0FNU, 3200x10x1x1> -> <2x320x10x32xf8E8M0FNU, 3200x10x0x1>
@@ -14,7 +12,7 @@ module {
     %2 = migraphx.multibroadcast %arg4 {out_dyn_dims = [], out_lens = [2, 10, 32, 4096]} : <2x10x1x4096xf8E8M0FNU, 40960x4096x4096x1> -> <2x10x32x4096xf8E8M0FNU, 40960x0x4096x1>
     %3 = migraphx.reshape %2 {dims = [2, 320, 4096]} : <2x10x32x4096xf8E8M0FNU, 40960x0x4096x1> -> <2x320x4096xf8E8M0FNU, 40960x4096x1>
     %4 = migraphx.literal(dense<2.44140629E-5> : tensor<1xf32>) : <1xf32, 0>
-    %5 = migraphx.quant_dot %arg1 scaled by %1, %arg2 scaled by %3 {perf_config="gemm:v1:64,64,32,1,1,4,16,2,1,0,0"} : <2x320x320xf4E2M1FN, 102400x320x1> scaled by !migraphx.shaped<2x320x320xf8E8M0FNU, 3200x10x1>, <2x320x4096xf4E2M1FN, 1310720x4096x1> scaled by !migraphx.shaped<2x320x4096xf8E8M0FNU, 40960x4096x1> -> <2x320x4096xf32, 1310720x4096x1>
+    %5 = migraphx.quant_dot %arg1 scaled by %1, %arg2 scaled by %3 {perf_config="gemm:v1:64,64,64,1,1,4,32,5,1,0,0"} : <2x320x320xf4E2M1FN, 102400x320x1> scaled by !migraphx.shaped<2x320x320xf8E8M0FNU, 3200x10x1>, <2x320x4096xf4E2M1FN, 1310720x4096x1> scaled by !migraphx.shaped<2x320x4096xf8E8M0FNU, 40960x4096x1> -> <2x320x4096xf32, 1310720x4096x1>
     %6 = migraphx.reshape %5 {dims = [2, 32, 10, 64, 64]} : <2x320x4096xf32, 1310720x4096x1> -> <2x32x10x64x64xf32, 1310720x40960x4096x64x1>
     %7 = migraphx.add %6, %arg0 : <2x32x10x64x64xf32, 1310720x40960x4096x64x1>, <2x32x10x64x64xf32, 0x10x1x0x0> -> <2x32x10x64x64xf32, 1310720x40960x4096x64x1>
     %8 = migraphx.multibroadcast %4 {out_dyn_dims = [], out_lens = [2, 32, 10, 64, 64]} : <1xf32, 0> -> <2x32x10x64x64xf32, 0x0x0x0x0>

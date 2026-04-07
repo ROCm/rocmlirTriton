@@ -607,3 +607,168 @@ func.func @test_f4_merge_passthrough_chain(
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %arg4 : tensor<4096xf32>
 }
+
+// -----
+
+// Test: Fusion op (arith.addf) on f4 data between blockwise_load and
+// blockwise_gemm. The pass should unpack each i8 into two f4 nibbles, run the
+// fusion on each nibble independently, then repack into i8.
+
+// CHECK-LABEL: func.func @test_f4_fusion
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<2048xi8>, %[[ARG1:.*]]: tensor<2048xi8>,
+// Unpack low nibble: andi 0xF, trunci, bitcast to f4
+// CHECK: %[[LOW_I8:.*]] = arith.andi %{{.*}}, %{{.*}} : tensor<64x32xi8>
+// CHECK: %[[LOW_I4:.*]] = arith.trunci %[[LOW_I8]] : tensor<64x32xi8> to tensor<64x32xi4>
+// CHECK: %[[LOW_F4:.*]] = arith.bitcast %[[LOW_I4]] : tensor<64x32xi4> to tensor<64x32xf4E2M1FN>
+// Unpack high nibble: shrui 4, trunci, bitcast to f4
+// CHECK: %[[HIGH_I8:.*]] = arith.shrui %{{.*}}, %{{.*}} : tensor<64x32xi8>
+// CHECK: %[[HIGH_I4:.*]] = arith.trunci %[[HIGH_I8]] : tensor<64x32xi8> to tensor<64x32xi4>
+// CHECK: %[[HIGH_F4:.*]] = arith.bitcast %[[HIGH_I4]] : tensor<64x32xi4> to tensor<64x32xf4E2M1FN>
+// Fusion on each nibble
+// CHECK: %[[FUSED_LOW:.*]] = arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf4E2M1FN>
+// CHECK: %[[FUSED_HIGH:.*]] = arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf4E2M1FN>
+// Repack: bitcast to i4, extui to i8, shift high, OR
+// CHECK: %[[RES_LOW_I4:.*]] = arith.bitcast %[[FUSED_LOW]] : tensor<64x32xf4E2M1FN> to tensor<64x32xi4>
+// CHECK: %[[RES_HIGH_I4:.*]] = arith.bitcast %[[FUSED_HIGH]] : tensor<64x32xf4E2M1FN> to tensor<64x32xi4>
+// CHECK: %[[RES_LOW_I8:.*]] = arith.extui %[[RES_LOW_I4]] : tensor<64x32xi4> to tensor<64x32xi8>
+// CHECK: %[[RES_HIGH_I8:.*]] = arith.extui %[[RES_HIGH_I4]] : tensor<64x32xi4> to tensor<64x32xi8>
+// CHECK: %[[SHIFTED:.*]] = arith.shli %[[RES_HIGH_I8]], %{{.*}} : tensor<64x32xi8>
+// CHECK: %[[PACKED:.*]] = arith.ori %[[RES_LOW_I8]], %[[SHIFTED]] : tensor<64x32xi8>
+// CHECK: rock.blockwise_gemm(%[[PACKED]] scaled by %{{.*}}, %{{.*}} scaled by %{{.*}}, %{{.*}})
+
+func.func @test_f4_fusion(
+    %arg0: tensor<4096xf4E2M1FN>,
+    %arg1: tensor<4096xf4E2M1FN>,
+    %arg2: tensor<64x1xf8E8M0FNU>,
+    %arg3: tensor<64x1xf8E8M0FNU>,
+    %arg4: tensor<4096xf32>) -> tensor<4096xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %c0 = arith.constant 0 : i32
+
+  %a_3d = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
+    by [<Unmerge{64, 64} ["m", "k"] at [1, 2] -> ["raw"] at [0]>,
+        <AddDim{1} ["g"] at [0] -> [] at []>]
+    bounds = [1, 64, 64] -> [4096]>
+    : tensor<4096xf4E2M1FN> to tensor<1x64x64xf4E2M1FN>
+  %a_6d = rock.transform %a_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 64 + d4, d0 * 64 + d5)>
+    by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
+        <Unmerge{1, 64} ["k_loop", "k_iter"] at [0, 5] -> ["k"] at [2]>,
+        <Unmerge{1, 64} ["m_block", "m_iter"] at [2, 4] -> ["m"] at [1]>,
+        <AddDim{1} ["n_block"] at [3] -> [] at []>]
+    bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
+    : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
+
+  %fused = arith.addf %a_tile, %a_tile : tensor<64x64xf4E2M1FN>
+
+  %b_3d = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
+    by [<Unmerge{64, 64} ["k", "n"] at [1, 2] -> ["raw"] at [0]>,
+        <AddDim{1} ["g"] at [0] -> [] at []>]
+    bounds = [1, 64, 64] -> [4096]>
+    : tensor<4096xf4E2M1FN> to tensor<1x64x64xf4E2M1FN>
+  %b_6d = rock.transform %b_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
+    by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
+        <Unmerge{1, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>,
+        <Unmerge{1, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>,
+        <AddDim{1} ["m_block"] at [2] -> [] at []>]
+    bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
+    : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
+  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
+
+  %sa_tile = rock.blockwise_load %arg2[]
+    : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
+  %sb_tile = rock.blockwise_load %arg3[]
+    : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
+
+  %cst = arith.constant dense<0.0> : tensor<64x64xf32>
+  %result = rock.blockwise_gemm(%fused scaled by %sa_tile, %b_tile scaled by %sb_tile, %cst)
+    {quantBlockSize = 64 : i64}
+    : tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
+      tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %arg4 : tensor<4096xf32>
+}
+
+// -----
+
+// Test: f4 data loaded from memory with arith.addf fusion on A,
+// plus scale A loaded as f32 and converted to f8E8M0FNU via arith.truncf.
+// Verifies that:
+// - f4 A data gets packed (halved K) and the addf fusion is unpacked/repacked
+// - f32 -> f8E8M0FNU truncf on scale A gets bitcast-wrapped to i8
+// - f8E8M0FNU scale B (direct load) gets converted to i8
+
+// CHECK-LABEL: func.func @test_f4_fusion_with_f8_scale_convert
+// CHECK-SAME: (%{{.*}}: tensor<2048xi8>, %{{.*}}: tensor<2048xi8>,
+// CHECK-SAME:  %{{.*}}: tensor<64x1xf32>, %{{.*}}: tensor<64x1xi8>,
+// f4 addf fusion: unpacked into low/high nibbles, fused, repacked
+// CHECK: arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf4E2M1FN>
+// CHECK: arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf4E2M1FN>
+// Scale A: truncf f32 -> f8, then bitcast f8 -> i8
+// CHECK: arith.truncf %{{.*}} : tensor<64x1xf32> to tensor<64x1xf8E8M0FNU>
+// CHECK: arith.bitcast %{{.*}} : tensor<64x1xf8E8M0FNU> to tensor<64x1xi8>
+// CHECK: rock.blockwise_gemm
+
+func.func @test_f4_fusion_with_f8_scale_convert(
+    %arg0: tensor<4096xf4E2M1FN>,
+    %arg1: tensor<4096xf4E2M1FN>,
+    %arg2: tensor<64x1xf32>,
+    %arg3: tensor<64x1xf8E8M0FNU>,
+    %arg4: tensor<4096xf32>) -> tensor<4096xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %c0 = arith.constant 0 : i32
+
+  // A: load f4 from memory
+  %a_3d = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
+    by [<Unmerge{64, 64} ["m", "k"] at [1, 2] -> ["raw"] at [0]>,
+        <AddDim{1} ["g"] at [0] -> [] at []>]
+    bounds = [1, 64, 64] -> [4096]>
+    : tensor<4096xf4E2M1FN> to tensor<1x64x64xf4E2M1FN>
+  %a_6d = rock.transform %a_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 64 + d4, d0 * 64 + d5)>
+    by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
+        <Unmerge{1, 64} ["k_loop", "k_iter"] at [0, 5] -> ["k"] at [2]>,
+        <Unmerge{1, 64} ["m_block", "m_iter"] at [2, 4] -> ["m"] at [1]>,
+        <AddDim{1} ["n_block"] at [3] -> [] at []>]
+    bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
+    : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
+
+  // Fusion on A: addf on f4
+  %fused = arith.addf %a_tile, %a_tile : tensor<64x64xf4E2M1FN>
+
+  // Scale A: load f32, convert to f8E8M0FNU
+  %sa_tile_f32 = rock.blockwise_load %arg2[]
+    : tensor<64x1xf32> -> tensor<64x1xf32>
+  %sa_tile = arith.truncf %sa_tile_f32 : tensor<64x1xf32> to tensor<64x1xf8E8M0FNU>
+
+  // B: f4 data
+  %b_3d = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
+    by [<Unmerge{64, 64} ["k", "n"] at [1, 2] -> ["raw"] at [0]>,
+        <AddDim{1} ["g"] at [0] -> [] at []>]
+    bounds = [1, 64, 64] -> [4096]>
+    : tensor<4096xf4E2M1FN> to tensor<1x64x64xf4E2M1FN>
+  %b_6d = rock.transform %b_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
+    by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
+        <Unmerge{1, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>,
+        <Unmerge{1, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>,
+        <AddDim{1} ["m_block"] at [2] -> [] at []>]
+    bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
+    : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
+  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
+
+  // Scale B: already f8E8M0FNU
+  %sb_tile = rock.blockwise_load %arg3[]
+    : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
+
+  %cst = arith.constant dense<0.0> : tensor<64x64xf32>
+  %result = rock.blockwise_gemm(%fused scaled by %sa_tile, %b_tile scaled by %sb_tile, %cst)
+    {quantBlockSize = 64 : i64}
+    : tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
+      tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %arg4 : tensor<4096xf32>
+}
