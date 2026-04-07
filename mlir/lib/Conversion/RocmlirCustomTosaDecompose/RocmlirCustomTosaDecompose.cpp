@@ -961,7 +961,7 @@ public:
 
     Value result = tosa::ConcatOp::create(rewriter, loc, resultTy, groupOutputs,
                                           rewriter.getI32IntegerAttr(3));
-        rewriter.replaceOp(op, result);
+    rewriter.replaceOp(op, result);
     return success();
   }
 };

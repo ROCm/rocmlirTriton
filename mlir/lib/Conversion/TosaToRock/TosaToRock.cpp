@@ -3244,6 +3244,10 @@ public:
       if (inputType.getDimSize(i) == outputType.getDimSize(i)) {
         padBuilder.passThrough(dimNames[i]);
       } else {
+        if (outputType.getDimSize(i) < inputType.getDimSize(i))
+          return rw.notifyMatchFailure(
+              op, "output dim " + std::to_string(i) +
+                      " is smaller than input dim");
         int64_t rightPad = outputType.getDimSize(i) - inputType.getDimSize(i);
         padBuilder.pad(outDimNames[i], dimNames[i], /*left=*/0, rightPad);
       }
