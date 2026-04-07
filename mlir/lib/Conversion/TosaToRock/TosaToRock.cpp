@@ -3189,6 +3189,9 @@ public:
 
     bool changed = false;
     for (OpOperand &operand : op->getOpOperands()) {
+      // tosa.mul's shift operand (operand #2) must stay scalar per TOSA spec.
+      if (isa<tosa::MulOp>(op) && operand.getOperandNumber() == 2)
+        continue;
       auto operandType = dyn_cast<RankedTensorType>(operand.get().getType());
       if (!operandType)
         continue;

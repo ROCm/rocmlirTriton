@@ -307,3 +307,17 @@ func.func @mul_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> tens
   %0 = "tosa.mul"(%arg0, %arg1, %shift) : (tensor<4x8xf32>, tensor<1x8xf32>, tensor<1xi8>) -> tensor<4x8xf32>
   return %0 : tensor<4x8xf32>
 }
+
+// -----
+
+// Verify that tosa.mul's shift operand (#2) is never broadcast,
+// even when both data operands require broadcasting.
+// CHECK-LABEL: @mul_broadcast_both_no_shift_broadcast
+// CHECK-DAG:   %[[BCAST0:.*]] = rock.transform %arg0 by
+// CHECK-SAME:  tensor<1xf32> to tensor<8xf32>
+// CHECK:       tosa.mul %[[BCAST0]], %arg1, %{{.*}} : (tensor<8xf32>, tensor<8xf32>, tensor<1xi8>)
+func.func @mul_broadcast_both_no_shift_broadcast(%arg0: tensor<1xf32>, %arg1: tensor<8xf32>) -> tensor<8xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %shift = "tosa.const"() {values = dense<0> : tensor<1xi8>} : () -> tensor<1xi8>
+  %0 = "tosa.mul"(%arg0, %arg1, %shift) : (tensor<1xf32>, tensor<8xf32>, tensor<1xi8>) -> tensor<8xf32>
+  return %0 : tensor<8xf32>
+}
