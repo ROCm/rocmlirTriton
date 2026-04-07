@@ -245,6 +245,95 @@ static void eraseDeadOps(const DenseSet<Value> &rootReachable, Value root,
   }
 }
 
+/// Push rock.transform ops that sit on intermediate (non-block-arg) values
+/// back through the elementwise ops that produced them, until every
+/// transform is directly on a block argument or has been absorbed into a
+/// splat constant.  This is the body-region analogue of the external-IR
+/// flood-fill in floodFillFromRoot / getGemmSpaceEquiv.
+static LogicalResult sinkTransformsToLeaves(Operation *op, Block &block) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (auto &bodyOp :
+         llvm::make_early_inc_range(block.without_terminator())) {
+      auto transformOp = dyn_cast<TransformOp>(&bodyOp);
+      if (!transformOp)
+        continue;
+
+      Value input = transformOp.getInput();
+      if (isa<BlockArgument>(input))
+        continue;
+
+      Operation *defOp = input.getDefiningOp();
+      if (!defOp)
+        continue;
+
+      TransformMapAttr attr = transformOp.getTransform();
+      Location loc = transformOp.getLoc();
+
+      if (auto constOp = dyn_cast<arith::ConstantOp>(defOp)) {
+        auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
+        if (!splatAttr)
+          return op->emitOpError()
+                 << "cannot sink transform through non-splat constant";
+        auto newType =
+            cast<RankedTensorType>(transformOp.getResult().getType());
+        constOp.setValueAttr(SplatElementsAttr::get(
+            newType, splatAttr.getSplatValue<Attribute>()));
+        constOp.getResult().setType(newType);
+        transformOp.getResult().replaceAllUsesWith(constOp.getResult());
+        transformOp->erase();
+        changed = true;
+        break;
+      }
+
+      if (!isFusionOp(defOp))
+        return op->emitOpError()
+               << "rock.transform on non-elementwise, non-constant "
+                  "intermediate value is not supported";
+
+      auto resultType =
+          cast<RankedTensorType>(transformOp.getResult().getType());
+
+      OpBuilder builder(transformOp);
+      SmallVector<Value> newOperands;
+      for (Value operand : defOp->getOperands()) {
+        if (auto cOp = operand.getDefiningOp<arith::ConstantOp>()) {
+          auto splatVal = dyn_cast<SplatElementsAttr>(cOp.getValue());
+          if (!splatVal)
+            return op->emitOpError()
+                   << "cannot sink transform through non-splat constant";
+          auto cType =
+              cast<RankedTensorType>(operand.getType()).getElementType();
+          auto newCType = RankedTensorType::get(resultType.getShape(), cType);
+          Value newC = arith::ConstantOp::create(
+              builder, loc,
+              SplatElementsAttr::get(newCType,
+                                     splatVal.getSplatValue<Attribute>()));
+          newOperands.push_back(newC);
+        } else {
+          Value t = TransformOp::create(builder, loc, operand, attr);
+          newOperands.push_back(t);
+        }
+      }
+
+      Operation *newElemwise = builder.clone(*defOp);
+      for (unsigned i = 0; i < newOperands.size(); ++i)
+        newElemwise->setOperand(i, newOperands[i]);
+      newElemwise->getResult(0).setType(resultType);
+
+      transformOp.getResult().replaceAllUsesWith(newElemwise->getResult(0));
+      transformOp->erase();
+      if (defOp->use_empty())
+        defOp->erase();
+
+      changed = true;
+      break;
+    }
+  }
+  return success();
+}
+
 /// Linear chain of rock.transform ops rooted at a block argument.
 struct ArgTransformChain {
   SmallVector<TransformMapAttr> transforms;
@@ -444,6 +533,9 @@ static LogicalResult regularizeGemmGemmBody(OpBuilder &builder,
         "elementwise body block must have at least one argument");
 
   if (failed(inlineExternalConstants(builder, op, block)))
+    return failure();
+
+  if (failed(sinkTransformsToLeaves(op, block)))
     return failure();
 
   auto maybeChains = collectArgTransformChains(op, block);
