@@ -8,6 +8,8 @@ add_rocmlir_dialect_library(MLIRRockPipeline
   MLIRArithToAMDGPU
   MLIRComplexToLLVM
   MLIRIndexToLLVM
+  MLIRMathToLibm
+  MLIRMathToLLVM
   MLIRMathTransforms
   MLIRTensorToLinalg
   MLIRTosaToRock
