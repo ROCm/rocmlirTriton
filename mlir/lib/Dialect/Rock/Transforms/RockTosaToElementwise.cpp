@@ -269,6 +269,123 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
   }
 };
 
+// math.tanh(x) -> (exp(2x) - 1) / (exp(2x) + 1)
+// The Triton TritonToTritonGPU conversion does not have a pattern for
+// math.tanh, so we expand it here into ops that Triton supports.
+struct TanhTritonWorkaround : public OpRewritePattern<math::TanhOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(math::TanhOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto shapedTy = dyn_cast<ShapedType>(op.getType());
+    if (!shapedTy)
+      return failure();
+    Type elemTy = shapedTy.getElementType();
+    auto oneAttr =
+        DenseElementsAttr::get(shapedTy, rewriter.getFloatAttr(elemTy, 1.0));
+    auto twoAttr =
+        DenseElementsAttr::get(shapedTy, rewriter.getFloatAttr(elemTy, 2.0));
+    Value one = arith::ConstantOp::create(rewriter, loc, oneAttr);
+    Value two = arith::ConstantOp::create(rewriter, loc, twoAttr);
+    Value twoX = arith::MulFOp::create(rewriter, loc, op.getType(), two,
+                                       op.getOperand());
+    Value exp2X = math::ExpOp::create(rewriter, loc, op.getType(), twoX);
+    Value num = arith::SubFOp::create(rewriter, loc, op.getType(), exp2X, one);
+    Value den = arith::AddFOp::create(rewriter, loc, op.getType(), exp2X, one);
+    rewriter.replaceOpWithNewOp<arith::DivFOp>(op, op.getType(), num, den);
+    return success();
+  }
+};
+
+// math.powf(x, y) -> math.exp(y * math.log(x))
+// The Triton TritonToTritonGPU conversion does not have a pattern for
+// math.powf, so we expand it here into ops that Triton supports.
+// NOTE: only valid for x > 0.  Returns NaN for x < 0 and for pow(0, 0).
+struct PowFTritonWorkaround : public OpRewritePattern<math::PowFOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(math::PowFOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto shapedTy = dyn_cast<ShapedType>(op.getType());
+    if (!shapedTy)
+      return failure();
+    Value logX = math::LogOp::create(rewriter, loc, op.getType(), op.getLhs());
+    Value yLogX =
+        arith::MulFOp::create(rewriter, loc, op.getType(), op.getRhs(), logX);
+    rewriter.replaceOpWithNewOp<math::ExpOp>(op, op.getType(), yLogX);
+    return success();
+  }
+};
+
+// The Triton TritonToTritonGPU conversion does not have a pattern for
+// math.roundeven, so we expand it here into ops that Triton supports.
+// TODO(rocmlirTriton): This expansion is very inefficient (2 floors, a div,
+// a cmp, and a select per element). Adding native math.roundeven support to
+// the Triton backend would eliminate this entirely.
+// Correct round-to-nearest-even (banker's rounding) for shaped float types:
+//   y = floor(x + 0.5)          -- round-half-up candidate
+//   is_tie = (x + 0.5 == y)     -- true iff x had fractional part exactly 0.5
+//   fmod_y_2 = y - 2*floor(y/2) -- 0 when y is even, ±1 when odd
+//   result = select(is_tie, y - fmod_y_2, y)
+// At ties this nudges odd results to the nearest even integer; elsewhere
+// floor(x+0.5) already gives the correct nearest integer.
+struct RoundEvenTritonWorkaround : public OpRewritePattern<math::RoundEvenOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(math::RoundEvenOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto shapedTy = dyn_cast<ShapedType>(op.getType());
+    if (!shapedTy)
+      return failure();
+    Type elemTy = shapedTy.getElementType();
+
+    auto splatF = [&](double v) -> Value {
+      return arith::ConstantOp::create(
+          rewriter, loc,
+          DenseElementsAttr::get(shapedTy, rewriter.getFloatAttr(elemTy, v)));
+    };
+    Value half = splatF(0.5);
+    Value two = splatF(2.0);
+
+    Value sum =
+        arith::AddFOp::create(rewriter, loc, shapedTy, op.getOperand(), half);
+    Value y = math::FloorOp::create(rewriter, loc, shapedTy, sum);
+
+    Value isTie =
+        arith::CmpFOp::create(rewriter, loc, arith::CmpFPredicate::OEQ, sum, y);
+
+    Value yHalf = arith::DivFOp::create(rewriter, loc, shapedTy, y, two);
+    Value yHalfFloor = math::FloorOp::create(rewriter, loc, shapedTy, yHalf);
+    Value yEven =
+        arith::MulFOp::create(rewriter, loc, shapedTy, two, yHalfFloor);
+    Value fmodY2 = arith::SubFOp::create(rewriter, loc, shapedTy, y, yEven);
+
+    Value yAdjusted = arith::SubFOp::create(rewriter, loc, shapedTy, y, fmodY2);
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, isTie, yAdjusted, y);
+    return success();
+  }
+};
+
+// arith.negf(x) -> arith.mulf(x, -1.0)
+// The Triton TritonToTritonGPU conversion does not have a pattern for
+// arith.negf, so we expand it here into ops that Triton supports.
+struct NegFTritonWorkaround : public OpRewritePattern<arith::NegFOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(arith::NegFOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto shapedTy = dyn_cast<ShapedType>(op.getType());
+    if (!shapedTy)
+      return failure();
+    auto negOneAttr = DenseElementsAttr::get(
+        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), -1.0));
+    Value negOne = arith::ConstantOp::create(rewriter, loc, negOneAttr);
+    rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getType(),
+                                               op.getOperand(), negOne);
+    return success();
+  }
+};
+
 // tosa.sigmoid: 1 / (1 + exp(-x))
 struct SigmoidConverter : public OpRewritePattern<tosa::SigmoidOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -396,10 +513,11 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
                                                      op.getInput());
       return success();
     }
-    // float -> int
+    // float -> int: TOSA spec requires round-to-nearest-even before truncation
     if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
-      rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, op.getType(),
-                                                   op.getInput());
+      Value rounded =
+          math::RoundEvenOp::create(rewriter, op.getLoc(), op.getInput());
+      rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, op.getType(), rounded);
       return success();
     }
     // int -> int
@@ -506,6 +624,16 @@ struct RockTosaToElementwise
 
     target.addLegalDialect<arith::ArithDialect, math::MathDialect,
                            tensor::TensorDialect>();
+    // Mark ops that Triton's TritonToTritonGPU conversion cannot handle as
+    // illegal so the workaround patterns below get applied to them.
+    target.addDynamicallyLegalOp<math::TanhOp>(
+        [](math::TanhOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<math::PowFOp>(
+        [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<math::RoundEvenOp>(
+        [](math::RoundEvenOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<arith::NegFOp>(
+        [](arith::NegFOp op) { return !isa<ShapedType>(op.getType()); });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       return !isa<tosa::TosaDialect>(op->getDialect());
     });
@@ -564,6 +692,13 @@ struct RockTosaToElementwise
         .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
              SigmoidConverter, SelectConverter, ClampConverter, CastConverter,
              CustomUnsignedOpConverter>(ctx);
+
+    // --- Triton workarounds ---
+    // The Triton TritonToTritonGPU conversion is missing patterns for
+    // math.tanh, math.powf and arith.negf. Expand them here into ops
+    // Triton supports.
+    patterns.add<TanhTritonWorkaround, PowFTritonWorkaround,
+                 NegFTritonWorkaround, RoundEvenTritonWorkaround>(ctx);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();
