@@ -868,21 +868,6 @@ pipeline {
                                                     "HOME=${env.WORKSPACE}",
                                                     "PATH=/opt/rocm/llvm/bin:${env.PATH}"
                                                 ]) {
-                                                    stage('Init submodules') {
-                                                        sh 'git submodule update --init --recursive'
-                                                    }
-
-                                                    stage('Build LLVM/MLIR (Triton)') {
-                                                        timeout(time: 120, activity: true, unit: 'MINUTES') {
-                                                            sh '''
-                                                                cd external/triton
-                                                                bash scripts/build-llvm-project.sh
-                                                                cmake -DMLIR_ENABLE_ROCM_RUNNER=ON llvm-project/build
-                                                                ninja -C llvm-project/build mlir_rocm_runtime
-                                                            '''
-                                                        }
-                                                    }
-
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 10, activity: true, unit: 'MINUTES') {
                                                             sh '''
