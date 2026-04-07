@@ -932,14 +932,14 @@ struct GridwiseAttentionRewritePattern
     //   ConstDim: lower=[2,1,5,5] -> upper=[2,5,5]
     // which maps the body's 4-D working coords back to the 3-D GEMM output
     // coords that gemm0OutViews expect.
-    SmallVector<Attribute> invertedQKAttrs;
-    for (TransformMapAttr qkAttr : qkTransformAttrs) {
-      TransformMapAttr inv = invertTransformMap(rewriter, qkAttr, loc);
-      if (!inv)
-        return op->emitOpError()
-               << "failed to invert QK argument transform: " << qkAttr;
-      invertedQKAttrs.push_back(inv);
-    }
+    SmallVector<Attribute> qkAttrsReversed(qkTransformAttrs.rbegin(),
+                                            qkTransformAttrs.rend());
+    ArrayAttr invertedQKArrayAttr = invertTransforms(
+        rewriter, loc, rewriter.getArrayAttr(qkAttrsReversed));
+    if (!invertedQKArrayAttr)
+      return op->emitOpError() << "failed to invert QK argument transforms";
+    SmallVector<Attribute> invertedQKAttrs(invertedQKArrayAttr.begin(),
+                                           invertedQKArrayAttr.end());
 
     ValueRange extraInputs = op.getPreSoftmaxElemWiseInputs();
     unsigned numExtraArgs = block.getNumArguments() - 1;
