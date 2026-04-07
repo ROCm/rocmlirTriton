@@ -278,11 +278,15 @@ static LogicalResult sinkTransformsToLeaves(Operation *op, Block &block) {
                  << "cannot sink transform through non-splat constant";
         auto newType =
             cast<RankedTensorType>(transformOp.getResult().getType());
-        constOp.setValueAttr(SplatElementsAttr::get(
-            newType, splatAttr.getSplatValue<Attribute>()));
-        constOp.getResult().setType(newType);
-        transformOp.getResult().replaceAllUsesWith(constOp.getResult());
+        OpBuilder builder(transformOp);
+        Value newConst = arith::ConstantOp::create(
+            builder, loc,
+            SplatElementsAttr::get(newType,
+                                   splatAttr.getSplatValue<Attribute>()));
+        transformOp.getResult().replaceAllUsesWith(newConst);
         transformOp->erase();
+        if (constOp->use_empty())
+          constOp->erase();
         changed = true;
         break;
       }
