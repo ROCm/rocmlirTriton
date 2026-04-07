@@ -309,12 +309,13 @@ struct RockStorePtrOpRewritePattern
     } else if (storeMethod == rock::StoreMethod::AtomicMax) {
       // Use UMAX for unsigned int, MAX for signed int and float.
       // Triton's RMWOp enum lacks a dedicated FMAX, so we reuse MAX.
-      // translateTritonToHsaco() corrects the resulting LLVM intrinsic
-      // name from ".atomic.max" to ".atomic.fmax" for float operands.
+      // Downstream will map MAX to the correct LLVM intrinsic for
+      // float operands.
       triton::RMWOp rmwOp;
       if (elementType.isUnsignedInteger()) {
         rmwOp = triton::RMWOp::UMAX;
       } else {
+        // Signed integer or floating point - use MAX
         rmwOp = triton::RMWOp::MAX;
       }
       triton::AtomicRMWOp::create(
