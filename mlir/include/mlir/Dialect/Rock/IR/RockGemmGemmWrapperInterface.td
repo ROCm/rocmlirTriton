@@ -189,6 +189,17 @@ def RockGemmGemmWrapperInterface : OpInterface<"RockGemmGemmWrapperInterface"> {
         /*methodBody=*/"",
         /*defaultImplementation=*/ ""
       >,
+    InterfaceMethod<
+        /*desc=*/[{
+          Return a mutable range over the elementwise inputs for the fusion
+          between first and second GEMM.
+        }],
+        /*retType=*/"::mlir::MutableOperandRange",
+        /*methodName=*/"getPreSecondGemmElemwiseInputsMutable",
+        /*args=*/(ins),
+        /*methodBody=*/"",
+        /*defaultImplementation=*/""
+      >,
 
     // TODO: more methods here as needed
   ];

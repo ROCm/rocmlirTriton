@@ -784,54 +784,6 @@ struct GridwiseAttentionRewritePattern
     return ifb;
   }
 
-  // Trace the chain of rock.transform ops on the QK block argument and
-  // collect them for skipping. These transforms reshape the GEMM result in
-  // the original full-tensor shape space (e.g. adding a unit batch dim)
-  // and are meaningless in tile space. Only pure reshape transforms
-  // (PassThrough, AddDim, Unmerge, Merge) are allowed; anything else
-  // (Pad, Broadcast, etc.) is rejected.
-  LogicalResult skipQKArgTransformChain(
-      GridwiseAttentionOp op, BlockArgument qkArg, Value gemm0Mapped,
-      DenseSet<Operation *> &opsToSkip, IRMapping &mapping,
-      SmallVectorImpl<TransformMapAttr> &qkTransformAttrs) const {
-    Value chainEnd = qkArg;
-    while (chainEnd.hasOneUse()) {
-      Operation *user = *chainEnd.getUsers().begin();
-      auto transformOp = dyn_cast<TransformOp>(user);
-      if (!transformOp)
-        break;
-      for (TransformAttr tr : transformOp.getTransform().getOps()) {
-        switch (tr.getType()) {
-        case TransformType::PassThrough:
-        case TransformType::AddDim:
-        case TransformType::Unmerge:
-        case TransformType::Merge:
-          break;
-        default:
-          return op->emitOpError()
-                 << "preSoftmaxBody QK argument has a non-reshape "
-                    "transform; only PassThrough, AddDim, Unmerge, and "
-                    "Merge are supported, but found: "
-                 << transformOp.getTransform();
-        }
-      }
-      opsToSkip.insert(user);
-      qkTransformAttrs.push_back(transformOp.getTransform());
-      chainEnd = transformOp.getResult();
-    }
-    if (!chainEnd.use_empty()) {
-      for (Operation *user : chainEnd.getUsers()) {
-        if (isa<TransformOp>(user))
-          return op->emitOpError()
-                 << "preSoftmaxBody QK argument has a transform chain "
-                    "that is not purely linear (multi-use or branching); "
-                    "this is not supported";
-      }
-    }
-    mapping.map(chainEnd, gemm0Mapped);
-    return success();
-  }
-
   // Map external splat constants referenced by the region body to
   // tile-shaped replacements. Constants like scale factors or mask fill
   // values may be defined at function scope and captured by closure.
@@ -869,11 +821,9 @@ struct GridwiseAttentionRewritePattern
   }
 
   // Apply pre-softmax element-wise fusions to the first GEMM (Q*K) output.
-  // Clones the ops from the op's preSoftmaxBody region into the current IR,
-  // mapping block arguments to tile-level values: arg0 is the gemm0 result
-  // and remaining args are extra element-wise inputs loaded via LoadMarkerOps.
-  // Returns the (possibly fused) result, or the original buffer if no fusions
-  // are present.
+  // The body is expected to be purely elementwise (no rock.transform ops)
+  // after regularization by RockRegularizeOutputPass. Block arg 0 is the
+  // QK product; remaining args are extra inputs loaded via LoadMarkerOps.
   FailureOr<Value> postProcessFirstGemm(PatternRewriter &rewriter, Location loc,
                                         GridwiseAttentionOp op,
                                         layout::GridCoordinates gridCoords,
@@ -885,17 +835,12 @@ struct GridwiseAttentionRewritePattern
 
     Block &block = region.front();
 
-    // If there are no fusion ops in the region, nothing to do.
     if (block.without_terminator().empty())
       return srcGemm0OutBuffer;
 
-    // Build the mapping from block arguments to tile-level values.
     IRMapping mapping;
     auto tileType = cast<RankedTensorType>(srcGemm0OutBuffer.getType());
 
-    // Block arg 0 is always the QK product (enforced by
-    // ElementwiseRegionFinder in TosaToRock). Extra element-wise inputs
-    // follow at args 1..N.
     if (block.getNumArguments() == 0)
       return op->emitOpError()
              << "preSoftmaxBody block must have at least one argument";
@@ -909,37 +854,7 @@ struct GridwiseAttentionRewritePattern
       gemm0Mapped =
           createTypeConversionOp(rewriter, loc, gemm0Mapped, castType);
     }
-
-    // Collect transform ops from the body that should be folded into
-    // LoadMarkerOp views (for extra inputs) or simply skipped (for the QK
-    // arg) rather than cloned with stale full-tensor shape metadata.
-    DenseSet<Operation *> bodyTransformOpsToSkip;
-    SmallVector<TransformMapAttr> qkTransformAttrs;
-
-    if (failed(skipQKArgTransformChain(op, qkArg, gemm0Mapped,
-                                       bodyTransformOpsToSkip, mapping,
-                                       qkTransformAttrs)))
-      return failure();
-
-    // The QK transforms above reshape the GEMM output into the body's
-    // working shape (e.g. AddDim turns [2,5,5] into [2,1,5,5]). Extra-input
-    // body transforms also end in that working shape, but gemm0OutViews
-    // only reach the GEMM output shape. To close the gap in the view chain
-    // (gemm0OutViews -> ??? -> body transforms), we insert the inverse of
-    // each QK transform. For example, if the QK transform is:
-    //   AddDim: lower=[2,5,5] -> upper=[2,1,5,5]
-    // its inverse is:
-    //   ConstDim: lower=[2,1,5,5] -> upper=[2,5,5]
-    // which maps the body's 4-D working coords back to the 3-D GEMM output
-    // coords that gemm0OutViews expect.
-    SmallVector<Attribute> qkAttrsReversed(qkTransformAttrs.rbegin(),
-                                            qkTransformAttrs.rend());
-    ArrayAttr invertedQKArrayAttr = invertTransforms(
-        rewriter, loc, rewriter.getArrayAttr(qkAttrsReversed));
-    if (!invertedQKArrayAttr)
-      return op->emitOpError() << "failed to invert QK argument transforms";
-    SmallVector<Attribute> invertedQKAttrs(invertedQKArrayAttr.begin(),
-                                           invertedQKArrayAttr.end());
+    mapping.map(qkArg, gemm0Mapped);
 
     ValueRange extraInputs = op.getPreSoftmaxElemWiseInputs();
     unsigned numExtraArgs = block.getNumArguments() - 1;
@@ -960,63 +875,8 @@ struct GridwiseAttentionRewritePattern
           tileType.getShape(),
           cast<ShapedType>(globalInput.getType()).getElementType());
 
-      // Trace the chain of rock.transform ops on the block argument.
-      // These transforms bridge from the gemm0 output shape to the actual
-      // input tensor shape (e.g. broadcast [1,64,64]->[1,1,1] then reshape
-      // [1,1,1]->[1] for a scalar input). They must be part of the
-      // LoadMarkerOp's views so the view chain reaches the input tensor.
-      BlockArgument blockArg = block.getArgument(i + 1);
-      Value chainEnd = blockArg;
-      SmallVector<Attribute> bodyTransformAttrs;
-
-      // The hasOneUse() condition means we only follow purely linear chains
-      // where each value feeds exactly one consumer. This works for all
-      // bodies produced by the current pipeline (ElementwiseRegionFinder
-      // generates linear reshape chains, converted to rock.transform by
-      // ViewToTransform). It will not handle:
-      //   - An intermediate transform result consumed by both the next
-      //     transform and an elementwise op (multi-use). The chain would
-      //     stop early, leaving later transforms to be incorrectly cloned
-      //     with mismatched shape metadata.
-      //   - A value consumed by two different TransformOps (branching).
-      while (chainEnd.hasOneUse()) {
-        Operation *user = *chainEnd.getUsers().begin();
-        auto transformOp = dyn_cast<TransformOp>(user);
-        if (!transformOp)
-          break;
-        bodyTransformAttrs.push_back(transformOp.getTransform());
-        bodyTransformOpsToSkip.insert(user);
-        chainEnd = transformOp.getResult();
-      }
-
-      // If the chain stopped at a multi-use value that still has a
-      // TransformOp consumer, we have either a multi-use intermediate
-      // or a branching chain. Both would leave transforms unfolded and
-      // incorrectly cloned with mismatched shape metadata.
-      if (!chainEnd.use_empty()) {
-        for (Operation *user : chainEnd.getUsers()) {
-          if (isa<TransformOp>(user))
-            return op->emitOpError()
-                   << "preSoftmaxBody block argument " << (i + 1)
-                   << " has a transform chain that is not purely linear "
-                      "(multi-use or branching); this is not supported";
-        }
-      }
-
-      // Build the complete view chain for the LoadMarkerOp.  The chain
-      // (applied in reverse array order) maps from the raw input tensor
-      // up to the tile shape:
-      //   tile <- gemm0OutViews <- invertedQK <- bodyTrans <- globalInputMaps
-      //   <- raw
-      // Each segment is optional and contributes nothing when empty.
       SmallVector<Attribute> allViews(gemm0OutViews.begin(),
                                       gemm0OutViews.end());
-      if (!bodyTransformAttrs.empty()) {
-        allViews.append(invertedQKAttrs.begin(), invertedQKAttrs.end());
-        for (auto it = bodyTransformAttrs.rbegin();
-             it != bodyTransformAttrs.rend(); ++it)
-          allViews.push_back(*it);
-      }
       if (!globalInputMaps.empty())
         allViews.append(globalInputMaps.begin(), globalInputMaps.end());
       ArrayAttr otherInputMap = rewriter.getArrayAttr(allViews);
@@ -1026,25 +886,18 @@ struct GridwiseAttentionRewritePattern
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block});
 
-      // Map the end of the transform chain (or the block arg itself if no
-      // transforms) so that downstream uses get the load_marker result.
-      mapping.map(chainEnd, markerOp.getResult());
+      mapping.map(block.getArgument(i + 1), markerOp.getResult());
     }
 
     if (failed(mapExternalSplatConstants(rewriter, loc, op, block, tileType,
                                          mapping)))
       return failure();
 
-    // Clone ops from the region body (except the terminator and any
-    // transform ops already folded into LoadMarkerOp views), fixing up
-    // result types to use tile-level shapes while preserving element types
-    // (important for casts like arith.extf / arith.truncf).
+    // Clone elementwise ops from the body, fixing up result types to use
+    // tile-level shapes while preserving element types.
     for (Operation &bodyOp : block.without_terminator()) {
-      if (bodyTransformOpsToSkip.contains(&bodyOp))
-        continue;
       Operation *cloned = rewriter.clone(bodyOp, mapping);
 
-      // Splat constants defined inside the region body must also be resized.
       if (auto constOp = dyn_cast<arith::ConstantOp>(cloned)) {
         auto origType = dyn_cast<RankedTensorType>(constOp.getType());
         if (!origType)
@@ -1075,7 +928,6 @@ struct GridwiseAttentionRewritePattern
       }
     }
 
-    // The yield operand (mapped) is the fused result.
     auto yieldOp = cast<rock::YieldOp>(block.getTerminator());
     return mapping.lookup(yieldOp.getOperand(0));
   }
