@@ -471,7 +471,8 @@ static LogicalResult inlineExternalConstants(OpBuilder &builder, Operation *op,
       builder.setInsertionPoint(&bodyOp);
       Value newConst = arith::ConstantOp::create(
           builder, loc,
-          SplatElementsAttr::get(valType, splatAttr.getSplatValue<Attribute>()));
+          SplatElementsAttr::get(valType,
+                                 splatAttr.getSplatValue<Attribute>()));
       operand.set(newConst);
     }
   }
@@ -507,16 +508,13 @@ static void propagateBodyResultTypes(Block &block) {
   for (Operation &bodyOp : block.without_terminator()) {
     if (bodyOp.getNumResults() != 1 || bodyOp.getNumOperands() == 0)
       continue;
-    auto operandTy =
-        dyn_cast<RankedTensorType>(bodyOp.getOperand(0).getType());
-    auto resultTy =
-        dyn_cast<RankedTensorType>(bodyOp.getResult(0).getType());
+    auto operandTy = dyn_cast<RankedTensorType>(bodyOp.getOperand(0).getType());
+    auto resultTy = dyn_cast<RankedTensorType>(bodyOp.getResult(0).getType());
     if (!operandTy || !resultTy)
       continue;
     if (operandTy.getShape() != resultTy.getShape())
-      bodyOp.getResult(0).setType(
-          RankedTensorType::get(operandTy.getShape(),
-                                resultTy.getElementType()));
+      bodyOp.getResult(0).setType(RankedTensorType::get(
+          operandTy.getShape(), resultTy.getElementType()));
   }
 }
 
@@ -527,8 +525,8 @@ static void propagateBodyResultTypes(Block &block) {
 /// If arg0 (the first GEMM product) has transforms, they are eliminated
 /// by applying their inverse to all other block arguments' transform chains
 /// so that the entire body operates in arg0's original shape.
-static LogicalResult regularizeGemmGemmBody(OpBuilder &builder,
-                                            Operation *op, Region &body,
+static LogicalResult regularizeGemmGemmBody(OpBuilder &builder, Operation *op,
+                                            Region &body,
                                             MutableOperandRange mutableInputs) {
   if (body.empty())
     return success();
@@ -557,8 +555,8 @@ static LogicalResult regularizeGemmGemmBody(OpBuilder &builder,
   if (!anyTransforms)
     return success();
 
-  if (failed(externalizeBodyTransforms(builder, op, block, mutableInputs,
-                                       chains)))
+  if (failed(
+          externalizeBodyTransforms(builder, op, block, mutableInputs, chains)))
     return failure();
 
   ArrayRef<int64_t> targetShape =
