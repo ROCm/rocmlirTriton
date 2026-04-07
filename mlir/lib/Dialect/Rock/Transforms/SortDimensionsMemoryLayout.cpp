@@ -15,11 +15,11 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -562,10 +562,7 @@ struct AttentionRewritePattern : public OpRewritePattern<rock::AttentionOp> {
         op.getFirstGemmIndicesAttr(),
         op.getPreSoftmaxHasSplitKVTransformsAttr());
 
-    bool linalgOpFound = false;
-    op.getPreSoftmaxBody().walk(
-        [&linalgOpFound](linalg::GenericOp genOp) { linalgOpFound = true; });
-    if (linalgOpFound) {
+    if (rock::gemmGemmHasPreSecondGemmFusion(op)) {
       b.inlineRegionBefore(op.getPreSoftmaxBody(), newOp.getPreSoftmaxBody(),
                            newOp.getPreSoftmaxBody().begin());
     }
@@ -615,10 +612,7 @@ struct ConvElementwiseGemmRewritePattern
     newOp->setAttr("filter_layout", newFilterLayout);
     newOp->setAttr("input_layout", newInputLayout);
 
-    bool linalgOpFound = false;
-    op.getPreSecondGemmBody().walk(
-        [&linalgOpFound](linalg::GenericOp genOp) { linalgOpFound = true; });
-    if (linalgOpFound) {
+    if (rock::gemmGemmHasPreSecondGemmFusion(op)) {
       rw.inlineRegionBefore(op.getPreSecondGemmBody(),
                             newOp.getPreSecondGemmBody(),
                             newOp.getPreSecondGemmBody().begin());
@@ -657,10 +651,7 @@ struct GemmElementwiseGemmRewritePattern
         transposedV, op.getOTransposedAttr(), op.getParams0Attr(),
         op.getParams1Attr(), op.getFirstGemmIndicesAttr());
 
-    bool linalgOpFound = false;
-    op.getPreSecondGemmBody().walk(
-        [&linalgOpFound](linalg::GenericOp genOp) { linalgOpFound = true; });
-    if (linalgOpFound) {
+    if (rock::gemmGemmHasPreSecondGemmFusion(op)) {
       rw.inlineRegionBefore(op.getPreSecondGemmBody(),
                             newOp.getPreSecondGemmBody(),
                             newOp.getPreSecondGemmBody().begin());
