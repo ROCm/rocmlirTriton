@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// These rewriters sort dimensions using the memory layout (lower stride first).
+// These rewriters sort dimensions using the memory layout (higher stride first)
 //
 // Ported from upstream rocMLIR with BufferDependencyAnalysis replaced by
 // direct SSA operand tracing (no bufferization/memrefs in rocmlirTriton).
@@ -88,10 +88,19 @@ static LogicalResult traceToBlockArgs(
   std::tie(source, transforms, std::ignore) =
       rock::untransform(b, inputArg, existingTransforms);
 
-  if (!transformAttrsMap
-           .insert({source, SmallVector<Attribute>{transforms.begin(),
-                                                   transforms.end()}})
-           .second) {
+  SmallVector<Attribute> newTransforms(transforms.begin(), transforms.end());
+  auto [it, inserted] = transformAttrsMap.insert({source, newTransforms});
+  if (!inserted) {
+    if (it->second == newTransforms) {
+      // Benign DAG revisit. Same transforms, already processed.
+      return success(isa<BlockArgument>(source));
+    }
+    // Different transform chains reaching the same value: ambiguous dataflow.
+    // Remove the block arg (if present) so its unreliable transforms aren't
+    // used by sortByMemoryLayout.
+    LLVM_DEBUG(llvm::dbgs()
+               << "Conflicting transform chains reaching " << source << "\n");
+    blockArgs.remove(source);
     return failure();
   }
   if (isa<BlockArgument>(source)) {
