@@ -12,7 +12,6 @@
 
 #include "mlir/Conversion/TosaToRock/TosaToRock.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
@@ -37,8 +36,12 @@ struct TosaToRock : public impl::TosaToRockPassBase<TosaToRock> {
 public:
   void runOnOperation() override {
     auto func = getOperation();
+    if (func.isDeclaration())
+      return;
+
     if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
-      llvm::report_fatal_error("func op does not have the kernel attribute");
+      func.emitError("TosaToRockPass: func op does not have the kernel attribute");
+      signalPassFailure();
     }
     auto &ctx = getContext();
     RewritePatternSet attentionPatterns(&ctx);
@@ -68,15 +71,15 @@ public:
     RewritePatternSet patterns(&ctx);
     ConversionTarget target(ctx);
     target.addLegalDialect<rock::RockDialect, tosa::TosaDialect,
-                           tensor::TensorDialect,
-                           bufferization::BufferizationDialect>();
+                           tensor::TensorDialect>();
     target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
       return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME ||
              (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&
               op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT);
     });
     target.addIllegalOp<tosa::Conv2DOp, tosa::Conv3DOp, tosa::MatMulOp,
-                        tosa::ReduceSumOp, tosa::ReduceMaxOp>();
+                        tosa::MatmulTBlockScaledOp, tosa::ReduceSumOp,
+                        tosa::ReduceMaxOp>();
 
     mlir::tosa::populateTosaToRockConversionPatterns(func->getContext(),
                                                      patterns);

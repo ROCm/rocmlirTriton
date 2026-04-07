@@ -95,93 +95,92 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
   if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
     return;
 
-  // Step 1: Find the GEMM fusion root StoreMarkerOp. This is the one created
-  // by GridwiseGemmToBlockwise — it has non-empty extraViews (output
-  // transforms) and extraIndices (grid coordinates: g_block, m_block, n_block).
+  // Step 1: Find the fusion root StoreMarkerOp. This is the one created
+  // by ToBlockwise — it has non-empty extraViews (output
+  // transforms) and extraIndices (grid coordinates).
 
-  // TODO: assuming a single StoreMarkerOp for now. Needs a fix for Attention +
-  // LSE
-  StoreMarkerOp gemmStoreMarker = nullptr;
-  funcOp.walk([&](StoreMarkerOp op) {
-    gemmStoreMarker = op;
-    return WalkResult::interrupt();
-  });
+  SmallVector<StoreMarkerOp> storeMarkers;
+  funcOp.walk([&](StoreMarkerOp op) { storeMarkers.push_back(op); });
 
-  if (!gemmStoreMarker) {
+  if (storeMarkers.empty()) {
     funcOp->emitError("No StoreMarkerOp found");
     return signalPassFailure();
   }
 
-  // Extract output transforms and grid coordinates directly from the GEMM's
-  // StoreMarkerOp — no need to scrape them from BlockwiseLoadOps inside the
-  // loop.
-  ArrayAttr outputViews = gemmStoreMarker.getExtraViews();
-  SmallVector<Value> gridCoords(gemmStoreMarker.getExtraIndices());
+  for (StoreMarkerOp storeMarker : storeMarkers) {
+    // Extract output transforms and grid coordinates directly from the GEMM's
+    // StoreMarkerOp — no need to scrape them from BlockwiseLoadOps inside the
+    // loop.
+    ArrayAttr outputViews = storeMarker.getExtraViews();
+    SmallVector<Value> gridCoords(storeMarker.getExtraIndices());
 
-  LLVM_DEBUG(llvm::dbgs() << "GEMM StoreMarkerOp: " << gemmStoreMarker << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "StoreMarkerOp: " << storeMarker << "\n");
 
-  // Step 2: Collect extra fusion inputs (operands of fusion ops that are NOT
-  // in the GEMM-result chain). Reuse the utility from loweringUtils.
-  auto fusionInputMap =
-      rock::collectFusionExtraInputs(gemmStoreMarker.getResult());
+    // Step 2: Collect extra fusion inputs (operands of fusion ops that are NOT
+    // in the root-result chain).
+    auto fusionInputMap =
+        rock::collectFusionExtraInputs(storeMarker.getResult());
 
-  if (fusionInputMap.empty()) {
-    LLVM_DEBUG(llvm::dbgs() << "No extra fusion inputs found\n");
-    return;
-  }
+    if (fusionInputMap.empty()) {
+      LLVM_DEBUG(llvm::dbgs() << "No extra fusion inputs found\n");
+      continue;
+    }
 
-  LLVM_DEBUG(llvm::dbgs() << "Found " << fusionInputMap.size()
-                          << " unique extra fusion inputs\n");
+    LLVM_DEBUG(llvm::dbgs() << "Found " << fusionInputMap.size()
+                            << " unique extra fusion inputs\n");
 
-  // Step 3: For each unique extra input, create a LoadMarkerOp:
-  //   original_value -> rock.transform(outputViews) -> rock.load_marker
-  //                  -> (full tensor result, used by fusion ops)
-  // LowerLoads will later convert this into an actual BlockwiseLoadOp
-  // (plus UntileOp to bridge back to the full tensor type).
-  // Then update the map so replaceFusionExtraInputs can wire them in.
-  OpBuilder builder(funcOp.getContext());
-  Location loc = gemmStoreMarker.getLoc();
+    // Step 3: For each unique extra input, create a LoadMarkerOp:
+    //   original_value -> rock.transform(outputViews) -> rock.load_marker
+    //                  -> (full tensor result, used by fusion ops)
+    // LowerLoads will later convert this into an actual BlockwiseLoadOp
+    // (plus UntileOp to bridge back to the full tensor type).
+    // Then update the map so replaceFusionExtraInputs can wire them in.
+    OpBuilder builder(funcOp.getContext());
+    Location loc = storeMarker.getLoc();
 
-  for (auto &[originalVal, mappedVal] : fusionInputMap) {
-    // Find the latest-defined operation among all values we'll reference
-    // (originalVal, gemmStoreMarker, gridCoords) to maintain SSA dominance.
-    // The extra input may be defined before or after the GEMM store marker.
-    Operation *latestOp = gemmStoreMarker.getOperation();
-    if (auto *defOp = originalVal.getDefiningOp())
-      if (latestOp->isBeforeInBlock(defOp))
-        latestOp = defOp;
-    for (Value coord : gridCoords)
-      if (auto *defOp = coord.getDefiningOp())
+    for (auto &[originalVal, mappedVal] : fusionInputMap) {
+      // Find the latest-defined operation among all values we'll reference
+      // (originalVal, storeMarker, gridCoords) to maintain SSA dominance.
+      // The extra input may be defined before or after the GEMM store marker.
+      Operation *latestOp = storeMarker.getOperation();
+      if (auto *defOp = originalVal.getDefiningOp())
         if (latestOp->isBeforeInBlock(defOp))
           latestOp = defOp;
-    builder.setInsertionPointAfter(latestOp);
+      for (Value coord : gridCoords)
+        if (auto *defOp = coord.getDefiningOp())
+          if (latestOp->isBeforeInBlock(defOp))
+            latestOp = defOp;
+      builder.setInsertionPointAfter(latestOp);
 
-    // Apply the same output transforms used by the GEMM tile.
-    Value wrappedSource = transform(builder, originalVal, outputViews);
+      // Apply the same output transforms used by the GEMM tile.
+      Value wrappedSource = transform(builder, originalVal, outputViews);
 
-    // Determine tile type (last 2 dimensions of the transformed shape).
-    auto sourceType = cast<RankedTensorType>(wrappedSource.getType());
-    auto wrappedShape = sourceType.getShape();
-    auto tileType = RankedTensorType::get(wrappedShape.take_back(2),
-                                          sourceType.getElementType());
+      // Determine tile type (last 2 dimensions of the transformed shape).
+      auto sourceType = cast<RankedTensorType>(wrappedSource.getType());
+      auto wrappedShape = sourceType.getShape();
+      int64_t numElements = wrappedShape.size() - gridCoords.size();
+      assert(numElements > 0);
+      auto tileType = RankedTensorType::get(wrappedShape.take_back(numElements),
+                                            sourceType.getElementType());
 
-    // Create LoadMarkerOp with the GEMM's grid coordinates.
-    auto markerOp = LoadMarkerOp::create(builder, loc, tileType, originalVal,
-                                         outputViews, gridCoords);
+      // Create LoadMarkerOp with the GEMM's grid coordinates.
+      auto markerOp = LoadMarkerOp::create(builder, loc, tileType, originalVal,
+                                           outputViews, gridCoords);
 
-    // Create UntileOp to map tile back to the original full tensor type.
-    // LowerStores will strip these when converting back to tile operations.
-    auto untileOp = UntileOp::create(builder, loc, originalVal.getType(),
-                                     markerOp.getResult());
+      // Create UntileOp to map tile back to the original full tensor type.
+      // LowerStores will strip these when converting back to tile operations.
+      auto untileOp = UntileOp::create(builder, loc, originalVal.getType(),
+                                       markerOp.getResult());
 
-    // Update the map: original -> UntileOp result.
-    mappedVal = untileOp.getResult();
+      // Update the map: original -> UntileOp result.
+      mappedVal = untileOp.getResult();
 
-    LLVM_DEBUG(llvm::dbgs() << "Created LoadMarkerOp for extra fusion input: "
-                            << markerOp << "\n"
-                            << "  with UntileOp: " << untileOp << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "Created LoadMarkerOp for extra fusion input: "
+                              << markerOp << "\n"
+                              << "  with UntileOp: " << untileOp << "\n");
+    }
+
+    // Step 4: Replace extra input operands in fusion ops with the new values.
+    rock::replaceFusionExtraInputs(storeMarker.getResult(), fusionInputMap);
   }
-
-  // Step 4: Replace extra input operands in fusion ops with the new values.
-  rock::replaceFusionExtraInputs(gemmStoreMarker.getResult(), fusionInputMap);
 }

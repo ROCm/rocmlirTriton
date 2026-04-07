@@ -98,6 +98,9 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> suppressDiagnostic{
       *this, "suppress-diagnostic",
       desc("should we suppress diagnostic messages"), init(false)};
+  PassOptions::Option<std::string> dumpCpuSchedules{
+      *this, "dump-cpu-schedules",
+      desc("Path to dump CPU verifier IR and transform schedules"), init("")};
 };
 
 /// Adds the `backend` pipeline to the `OpPassManager`.

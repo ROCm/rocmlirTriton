@@ -10,7 +10,9 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   ViewToTransform.cpp
   FusionSplitkRegularizationPass.cpp
   LegalizeFloatTypes.cpp
-  TransformsToPtr.cpp
+  LowerBlockwiseToPtr.cpp
+  ConvertNarrowTypeSignatures.cpp
+  EmulateNarrowTypes.cpp
   MaskNonZeroPreservingFusions.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
@@ -24,6 +26,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   LowerReduce.cpp
   LowerStores.cpp
   RegularizeOutput.cpp
+  RockFlattenTosaFuncArgs.cpp
   RockTosaToElementwise.cpp
 
   ADDITIONAL_HEADER_DIRS

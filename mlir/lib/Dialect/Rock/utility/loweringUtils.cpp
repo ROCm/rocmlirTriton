@@ -7,6 +7,7 @@
 //===-----------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
@@ -233,6 +234,9 @@ Value mlir::rock::normalizeMatrix(Value matrix, OpBuilder &b, Location loc,
   bool addGroup = matrixType.getShape().size() != 3;
   if (!addGroup && !doTranspose)
     return matrix;
+  OpBuilder::InsertionGuard guard(b);
+  if (auto *defOp = matrix.getDefiningOp())
+    b.setInsertionPointAfter(defOp);
   SmallVector<StringRef, 3> bottomNames;
   if (!addGroup)
     bottomNames.push_back("gemmG");
@@ -256,6 +260,9 @@ Value mlir::rock::padVector(Value vector, OpBuilder &b, Location loc,
                             StringRef firstDim, int64_t firstDimPad) {
   if (firstDimPad == 0)
     return vector;
+  OpBuilder::InsertionGuard guard(b);
+  if (auto *defOp = vector.getDefiningOp())
+    b.setInsertionPointAfter(defOp);
   ArrayRef<int64_t> shape = cast<ShapedType>(vector.getType()).getShape();
   assert(shape.size() == 2);
   BottomUpTMBuilder padder(b, {"gemmG", firstDim}, shape, loc);
@@ -272,6 +279,9 @@ Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
                             StringRef secondDim, int64_t secondDimPad) {
   if (firstDimPad == 0 && secondDimPad == 0)
     return matrix;
+  OpBuilder::InsertionGuard guard(b);
+  if (auto *defOp = matrix.getDefiningOp())
+    b.setInsertionPointAfter(defOp);
   ArrayRef<int64_t> shape = cast<ShapedType>(matrix.getType()).getShape();
   BottomUpTMBuilder padder(b, {"gemmG", firstDim, secondDim}, shape, loc);
   padder.passThrough("gemmG");
@@ -527,6 +537,24 @@ Value mlir::rock::createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
   return arith::ConstantOp::create(rewriter, loc, tensorType, zeroAttr);
 }
 
+Value mlir::rock::insertBroadcast(OpBuilder &b, Location loc, Value inp,
+                                  ArrayRef<int64_t> outShape) {
+  ArrayRef<int64_t> inpShape = cast<ShapedType>(inp.getType()).getShape();
+  bool broadcastDone = false;
+  rock::BottomUpTMBuilder broadcastDims(b, inpShape, loc);
+  for (unsigned int i = 0; i < outShape.size(); i++) {
+    if (inpShape[i] == 1 && outShape[i] != 1) {
+      broadcastDims.broadcast({i}, {outShape[i]});
+      broadcastDone = true;
+    } else {
+      broadcastDims.passThrough({i}, {i});
+    }
+  }
+  if (!broadcastDone)
+    return inp;
+  return rock::TransformOp::create(b, loc, inp, broadcastDims.get());
+}
+
 bool mlir::rock::isFusionOp(Operation *op) {
   if (!isa<arith::ArithDialect, math::MathDialect>(op->getDialect()))
     return false;
@@ -712,4 +740,39 @@ void mlir::rock::propagateOutputType(Value oldRoot, Value newRoot) {
       }
     }
   }
+}
+
+FailureOr<OutputsAndFusionInputs>
+mlir::rock::traceOutputsAndFusionInputs(Value rootOut) {
+  auto maybeStores = rock::traceRootOutputToStoreOps(rootOut);
+  if (failed(maybeStores))
+    return failure();
+
+  OutputsAndFusionInputs info;
+  info.stores = maybeStores.value();
+  for (auto storeOp : info.stores)
+    info.outputViews.push_back(storeOp.getDest());
+
+  // Collect extra fusion inputs (operands of fusion ops that are not in the
+  // gemm-result chain, e.g. the second operand of arith.addf).
+  info.fusionInputMap = rock::collectFusionExtraInputs(rootOut);
+  return info;
+}
+
+arith::NarrowTypeEmulationConverter rock::create4BitTypeConverter() {
+  arith::NarrowTypeEmulationConverter typeConverter(/*targetBitwidth=*/8);
+  memref::populateMemRefNarrowTypeEmulationConversions(typeConverter);
+  typeConverter.addSourceMaterialization([](OpBuilder &builder, Type type,
+                                            ValueRange inputs,
+                                            Location loc) -> Value {
+    return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
+        .getResult(0);
+  });
+  typeConverter.addTargetMaterialization([](OpBuilder &builder, Type type,
+                                            ValueRange inputs,
+                                            Location loc) -> Value {
+    return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
+        .getResult(0);
+  });
+  return typeConverter;
 }

@@ -51,6 +51,15 @@ config = "-g 3 -m 1024 -k 768 -n 1024"
 
 [[suite.test]]
 config = "-g 1 -m 1 -k 32 -n 1"
+# f4 is packed to i8 along the stride-1 dimension. K-packing only works when K
+# is stride-1, which requires transA=false (for A) and transB=true (for B). In
+# this case, we can't pack along M/N dimension because they are odd dimensions.
+[[suite.test.exclude]]
+name = "transA"
+values = ["true"]
+[[suite.test.exclude]]
+name = "transB"
+values = ["false"]
 
 [[suite.test]]
 config = "-g 1 -m 512 -k 32 -n 512"

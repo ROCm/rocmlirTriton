@@ -1,4 +1,8 @@
 set(ROCK_UNITTEST_SOURCES
+  AmdArchDbTests.cpp
+  BuilderUtilsTests.cpp
+  PerfConfigParsingTests.cpp
+  RocmDeviceNameTests.cpp
   TransformMapBuilderTests.cpp
   TosaUtilsTests.cpp
   transformMapUtilsTests.cpp
@@ -15,7 +19,12 @@ target_link_libraries(MLIRRockUnitTests
   MLIRRockOps
   MLIRRockUtility
   MLIRRockTuning
+  MLIRArithDialect
+  MLIRBufferizationDialect
+  MLIRMemRefDialect
   MLIRTosaDialect
   MLIRFuncDialect
   MLIRIR
+  TritonAMDGPUToLLVM
+  TritonAMDUtils
 )

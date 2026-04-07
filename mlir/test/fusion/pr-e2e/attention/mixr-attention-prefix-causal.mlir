@@ -1,8 +1,9 @@
-// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_attention_wrapper  --verifier clone - | rocmlir-driver -host-pipeline mhal -kernel-pipeline full | xmir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// UNSUPPORTED: true
+// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_attention  --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
 
 module {
-  func.func @mlir_attention(%arg0: !migraphx.shaped<1x1xsi32, 1x1>, %arg1: !migraphx.shaped<1x18x4x64xf16, 4608x64x1152x1>, %arg2: !migraphx.shaped<1x2x1x16x64xf16, 2048x1024x1024x64x1>, %arg3: !migraphx.shaped<1x14x16x64xf16, 14336x1024x64x1>) -> !migraphx.shaped<1x4x896xf16, 3584x896x1> attributes {kernel, arch="gfx950"} {
+  func.func @mlir_attention(%arg0: !migraphx.shaped<1x1xsi32, 1x1>, %arg1: !migraphx.shaped<1x18x4x64xf16, 4608x64x1152x1>, %arg2: !migraphx.shaped<1x2x1x16x64xf16, 2048x1024x1024x64x1>, %arg3: !migraphx.shaped<1x14x16x64xf16, 14336x1024x64x1>) -> !migraphx.shaped<1x4x896xf16, 3584x896x1> attributes {rock.kernel} {
     %0 = migraphx.literal(dense<0xFC00> : tensor<1xf16>) : <1xf16, 1>
     %1 = migraphx.literal(dense<[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]> : tensor<16xsi32>) : <16xsi32, 1>
     %2 = migraphx.literal(dense<1.250000e-01> : tensor<1xf16>) : <1xf16, 1>

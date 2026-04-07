@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
+#include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Support/LogicalResult.h"
 #include <cassert>
@@ -166,39 +167,30 @@ bool mlirIsModuleFusible(MlirModule module, MlirStringRef perfStr) {
 
 MLIR_CAPI_EXPORTED
 size_t mlirGetNumPrefillArgs(MlirModule module) {
-  auto mod = unwrap(module);
-  assert(mod.getRegion().getBlocks().size() == 1 &&
-         "expected a single block/function in a module");
-  std::optional<gpu::BinaryOp> binary = std::nullopt;
-  mod.walk([&](gpu::BinaryOp op) { binary = op; });
-  if (!binary.has_value())
+  auto result = rock::getPrefillArrayFromBinary(unwrap(module));
+  if (failed(result))
     return 0;
-
-  // TODO(roctriton): fix this
-  return 0;
-  // auto attrs = mhal::getStoredPrefillAttributes(binary.value());
-  // return attrs.size();
+  auto arr = result.value();
+  return arr ? arr.size() : 0;
 }
 
 MLIR_CAPI_EXPORTED
 void mlirGetPrefillArgsInfo(MlirModule module, size_t *indices,
                             MlirAttribute *initValues, size_t length) {
-  auto mod = unwrap(module);
-  assert(mod.getRegion().getBlocks().size() == 1 &&
-         "expected a single block/function in a module");
-
-  std::optional<gpu::BinaryOp> binary = std::nullopt;
-  mod.walk([&](gpu::BinaryOp op) { binary = op; });
-  if (!binary.has_value())
+  auto result = rock::getPrefillArrayFromBinary(unwrap(module));
+  if (failed(result))
     return;
-  // TODO(roctriton): fix this
-  // auto attrs = mhal::getStoredPrefillAttributes(binary.value());
-
-  // assert(attrs.size() >= length && "length cannot exceed the attr size");
-  // for (size_t i = 0; i < length; ++i) {
-  //   indices[i] = attrs[i].getArgIndex();
-  //   initValues[i] = wrap(attrs[i].getInitValue());
-  // }
+  auto arr = result.value();
+  if (!arr)
+    return;
+  assert(arr.size() >= length && "length cannot exceed the attr size");
+  for (size_t i = 0; i < length; ++i) {
+    auto dict = mlir::cast<mlir::DictionaryAttr>(arr[i]);
+    indices[i] = mlir::cast<mlir::IntegerAttr>(dict.get("index"))
+                     .getValue()
+                     .getZExtValue();
+    initValues[i] = wrap(dict.get("value"));
+  }
 }
 
 MLIR_CAPI_EXPORTED

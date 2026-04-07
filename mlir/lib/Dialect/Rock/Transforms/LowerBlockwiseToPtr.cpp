@@ -1,4 +1,4 @@
-//===- TransformsToPtr.cpp - Lower blockwise ops to pointer form ----------===//
+//===- LowerBlockwiseToPtr.cpp - Lower blockwise ops to pointer form ------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -27,20 +27,20 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKTRANSFORMSTOPTRPASS
+#define GEN_PASS_DEF_ROCKLOWERBLOCKWISETOPTRPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-transforms-to-ptr"
+#define DEBUG_TYPE "rock-lower-blockwise-to-ptr"
 
 using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-struct RockTransformsToPtrPass
-    : public rock::impl::RockTransformsToPtrPassBase<
-          RockTransformsToPtrPass> {
+struct RockLowerBlockwiseToPtrPass
+    : public rock::impl::RockLowerBlockwiseToPtrPassBase<
+          RockLowerBlockwiseToPtrPass> {
   void runOnOperation() override;
 };
 
@@ -51,8 +51,7 @@ namespace {
 //===----------------------------------------------------------------------===//
 // BlockwiseLoadOp lowering.
 //===----------------------------------------------------------------------===//
-struct BlockwiseLoadTileRewritePattern
-    : public OpRewritePattern<BlockwiseLoadOp> {
+struct BlockwiseLoadRewritePattern : public OpRewritePattern<BlockwiseLoadOp> {
   using OpRewritePattern<BlockwiseLoadOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(BlockwiseLoadOp op,
@@ -71,7 +70,8 @@ struct BlockwiseLoadTileRewritePattern
     auto pointerTensorType = RankedTensorType::get(shape, b.getI32Type());
     auto maskTensorType = RankedTensorType::get(shape, b.getI1Type());
 
-    // Create rock.transforms_to_ptr operation (returns pointer and mask tensors)
+    // Create rock.transforms_to_ptr operation (returns pointer and mask
+    // tensors)
     auto transformsToPtrOp = TransformsToPtrOp::create(
         b, loc, pointerTensorType, maskTensorType, source, sourceIndices);
     Value pointerTensor = transformsToPtrOp.getPointers();
@@ -90,7 +90,7 @@ struct BlockwiseLoadTileRewritePattern
 //===----------------------------------------------------------------------===//
 // BlockwiseStoreOp lowering.
 //===----------------------------------------------------------------------===//
-struct BlockwiseStoreTileRewritePattern
+struct BlockwiseStoreRewritePattern
     : public OpRewritePattern<BlockwiseStoreOp> {
   using OpRewritePattern<BlockwiseStoreOp>::OpRewritePattern;
 
@@ -111,7 +111,8 @@ struct BlockwiseStoreTileRewritePattern
     auto pointerTensorType = RankedTensorType::get(shape, b.getI32Type());
     auto maskTensorType = RankedTensorType::get(shape, b.getI1Type());
 
-    // Create rock.transforms_to_ptr operation (returns pointer and mask tensors)
+    // Create rock.transforms_to_ptr operation (returns pointer and mask
+    // tensors)
     auto transformsToPtrOp = TransformsToPtrOp::create(
         b, loc, pointerTensorType, maskTensorType, dest, extraIndices);
     Value pointerTensor = transformsToPtrOp.getPointers();
@@ -129,7 +130,7 @@ struct BlockwiseStoreTileRewritePattern
 
 } // end anonymous namespace
 
-void RockTransformsToPtrPass::runOnOperation() {
+void RockLowerBlockwiseToPtrPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
   target.addIllegalOp<BlockwiseLoadOp, BlockwiseStoreOp>();
@@ -137,7 +138,7 @@ void RockTransformsToPtrPass::runOnOperation() {
       .addLegalOp<BlockwiseLoadPtrOp, BlockwiseStorePtrOp, TransformsToPtrOp>();
 
   RewritePatternSet patterns(ctx);
-  patterns.add<BlockwiseLoadTileRewritePattern, BlockwiseStoreTileRewritePattern>(ctx);
+  patterns.add<BlockwiseLoadRewritePattern, BlockwiseStoreRewritePattern>(ctx);
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
     signalPassFailure();

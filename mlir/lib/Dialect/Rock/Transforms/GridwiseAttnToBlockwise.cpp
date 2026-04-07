@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -36,7 +37,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
@@ -51,6 +51,7 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Support/WalkResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -209,8 +210,12 @@ struct GridwiseAttentionRewritePattern
                         Value attentionAcc,
                         Value sumRow) const {
     // Broadcast sumRow from [M] to [M, N] to match attentionAcc shape
-    auto accShape = cast<RankedTensorType>(attentionAcc.getType()).getShape();
-    Value sumRowBroadcast = broadcastRowTo2D(rewriter, loc, sumRow, accShape[1]);
+    auto accType = cast<RankedTensorType>(attentionAcc.getType());
+    Value sumRowBroadcast = broadcastRowTo2D(rewriter, loc, sumRow, accType.getShape()[1]);
+
+    // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
+    sumRowBroadcast = createTypeConversionOp(rewriter, loc, sumRowBroadcast, accType);
+
     return arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
   }
 
@@ -237,9 +242,12 @@ struct GridwiseAttentionRewritePattern
                                           Value attentionAcc,
                                           Value expMaxDiffRow) const {
     // Broadcast expMaxDiffRow from [M] to [M, N] to match attentionAcc shape
-    auto accShape = cast<RankedTensorType>(attentionAcc.getType()).getShape();
-    Value expMaxDiffBroadcast = broadcastRowTo2D(rewriter, loc, expMaxDiffRow, accShape[1]);
-    
+    auto accType = cast<RankedTensorType>(attentionAcc.getType());
+    Value expMaxDiffBroadcast = broadcastRowTo2D(rewriter, loc, expMaxDiffRow, accType.getShape()[1]);
+
+    // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
+    expMaxDiffBroadcast = createTypeConversionOp(rewriter, loc, expMaxDiffBroadcast, accType);
+
     Value scaledAttentionAcc =
         arith::MulFOp::create(rewriter, loc, attentionAcc, expMaxDiffBroadcast);
     Value newAttentionAcc = arith::AddFOp::create(
@@ -475,8 +483,7 @@ struct GridwiseAttentionRewritePattern
   createSplitKVTransformsForGemm0Out(OpBuilder &builder, Location loc,
                                      ArrayRef<int64_t> gemm0OutShape,
                                      int64_t splitKV) {
-    if (splitKV == 1)
-      return nullptr;
+    assert(splitKV > 1 && "split-kv must be greater than one");
 
     // GEMM0 output is [B*H, SeqQ, SeqK]
     // Need to transform to [B*H*splitKV, SeqQ, SeqK/splitKV] for fusion
@@ -778,6 +785,102 @@ struct GridwiseAttentionRewritePattern
     return ifb;
   }
 
+  // Apply pre-softmax element-wise fusions to the first GEMM (Q*K) output.
+  // Clones the ops from the op's preSoftmaxBody region into the current IR,
+  // mapping block arguments to tile-level values: arg0 is the gemm0 result
+  // and remaining args are extra element-wise inputs loaded via LoadMarkerOps.
+  // Returns the (possibly fused) result, or the original buffer if no fusions
+  // are present.
+  FailureOr<Value> postProcessFirstGemm(PatternRewriter &rewriter, Location loc,
+                                        GridwiseAttentionOp op,
+                                        layout::GridCoordinates gridCoords,
+                                        Value srcGemm0OutBuffer,
+                                        ArrayAttr gemm0OutViews) const {
+    Region &region = op.getPreSoftmaxBody();
+    if (region.empty())
+      return srcGemm0OutBuffer;
+
+    Block &block = region.front();
+
+    // If there are no fusion ops in the region, nothing to do.
+    if (block.without_terminator().empty())
+      return srcGemm0OutBuffer;
+
+    // Build the mapping from block arguments to tile-level values.
+    IRMapping mapping;
+    auto tileType = cast<RankedTensorType>(srcGemm0OutBuffer.getType());
+
+    // Map the QK product block arg, casting to the region's element type if
+    // needed.
+    BlockArgument qkArg = op.getPreSoftmaxQKArgument();
+    Value gemm0Mapped = srcGemm0OutBuffer;
+    Type regionElemType = cast<ShapedType>(qkArg.getType()).getElementType();
+    if (tileType.getElementType() != regionElemType) {
+      auto castType =
+          RankedTensorType::get(tileType.getShape(), regionElemType);
+      gemm0Mapped =
+          createTypeConversionOp(rewriter, loc, gemm0Mapped, castType);
+    }
+    mapping.map(qkArg, gemm0Mapped);
+
+    // Remaining block args correspond to preSoftmaxElemWiseInputs.
+    ValueRange extraInputs = op.getPreSoftmaxElemWiseInputs();
+    // assert that extraInputs + firstGemmOut matches the number of block
+    // arguments
+    if ((extraInputs.size() + 1) != block.getNumArguments()) {
+      LLVM_DEBUG(llvm::dbgs() << "getPreSoftmaxElemWiseInputs + 1 size must be "
+                                 "equal to block.getNumArguments\n");
+      return failure();
+    }
+
+    for (unsigned i = 0; i < extraInputs.size(); ++i) {
+      Value globalInput = extraInputs[i];
+      Value root;
+      ArrayAttr globalInputMaps;
+      std::tie(root, globalInputMaps, std::ignore) =
+          untransform(rewriter, globalInput);
+    
+      auto resultType = RankedTensorType::get(
+          tileType.getShape(),
+          cast<ShapedType>(globalInput.getType()).getElementType());
+
+      ArrayAttr otherInputMap = gemm0OutViews;
+      if (!globalInputMaps.empty()) {
+        otherInputMap =
+            prependUpperViews(rewriter, gemm0OutViews, globalInputMaps);
+      }
+      auto markerOp = LoadMarkerOp::create(
+          rewriter, loc, resultType, root, otherInputMap,
+          ValueRange{gridCoords.g_block, gridCoords.m_block,
+                     gridCoords.n_block});
+      mapping.map(block.getArgument(1 + i), markerOp.getResult());
+    }
+
+    // Clone ops from the region body (except the terminator), fixing up
+    // result types to use tile-level shapes while preserving element types
+    // (important for casts like arith.extf / arith.truncf).
+    for (Operation &bodyOp : block.without_terminator()) {
+      Operation *cloned = rewriter.clone(bodyOp, mapping);
+      if (cloned->getNumResults() == 1 && cloned->getNumOperands() > 0) {
+        auto operandTy =
+            dyn_cast<RankedTensorType>(cloned->getOperand(0).getType());
+        auto origResultTy =
+            dyn_cast<RankedTensorType>(cloned->getResult(0).getType());
+        if (!operandTy || !origResultTy) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "We expect first operand and result to be tensors\n");
+          return failure();
+        }
+        cloned->getResult(0).setType(RankedTensorType::get(
+            operandTy.getShape(), origResultTy.getElementType()));
+      }
+    }
+
+    // The yield operand (mapped) is the fused result.
+    auto yieldOp = cast<rock::YieldOp>(block.getTerminator());
+    return mapping.lookup(yieldOp.getOperand(0));
+  }
+
   LogicalResult matchAndRewrite(GridwiseAttentionOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
@@ -871,26 +974,10 @@ struct GridwiseAttentionRewritePattern
     FailureOr<ArrayAttr> maybeGemm0OutTileView = computeOutputTransforms(
         rewriter, loc, gemm0MPerBlock, gemm0NPerBlock, gemm0BidGridLengths);
 
-    if (failed(maybeGemm0OutTileView)) {
-      LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms\n");
-      return failure();
-    }
-    auto gemm0OutTileView = maybeGemm0OutTileView.value();
+    if (failed(maybeGemm0OutTileView))
+      return op->emitError("Failed to compute output transforms");
 
-    // Currently, there is a working assumption that this kernel is meant
-    // support fp32/fp16/bf16. This should be guaranteed by op verifiers.
-    // TODO: this is not correct, see PR: https://github.com/ROCm/rocMLIR/pull/2211
-    Type gemmOutElemType = elemTypeV;
-    if (elemTypeQ == rewriter.getI8Type()) {
-      gemmOutElemType = rewriter.getI32Type();
-    }
-    Type fusionOutElemType = elemTypeV;
-    // TODO(roctriton): fix this 
-    op.getPreSoftmaxBody().walk([&](linalg::GenericOp genOp) {
-      // Keep visiting to get the fusionOutElement type from the last genOp
-      fusionOutElemType =
-          cast<ShapedType>(genOp.getOutputs()[0].getType()).getElementType();
-    });
+    auto gemm0OutTileView = maybeGemm0OutTileView.value();
 
     SmallVector<StringRef, 3> bidGridOrder = {"g_block", "m_block", "n_block"};
     // We need two different grid lengths because the V input tensor and the
@@ -910,10 +997,9 @@ struct GridwiseAttentionRewritePattern
                       : nullptr;
 
     auto maybeGridSize = rock::getGridSize(op);
-    if(failed(maybeGridSize)) {
-      LLVM_DEBUG(llvm::dbgs() << "Failed to get grid_size\n");
-      return failure();
-    }
+    if (failed(maybeGridSize))
+      return op->emitError("Failed to get grid_size");
+
     int64_t gridSize = maybeGridSize->getInt();
         
     auto arch = rock::getArchValue(op);
@@ -989,11 +1075,14 @@ struct GridwiseAttentionRewritePattern
     }
 
     Type accType = rock::getAccType(elemTypeQ, elemTypeK);
+    Type gemm1AccType = rock::getAccType(elemTypeV, elemTypeV);
 
     // Create initial accumulator for nLoop with the shape of the final output
-    // tile
+    // tile. The second GEMM multiplies softmax output (cast to elemTypeV) by V,
+    // so its accumulator type may differ from the first GEMM's (e.g. f32 vs i32
+    // when Q/K are i8 but V is f16).
     Value initNLoopAcc = rock::createZeroAccBuffer(
-        rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, accType);
+        rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType);
 
     Value one = rewriter.createOrFold<arith::ConstantIntOp>(
         loc, rewriter.getI32Type(), 1);
@@ -1054,7 +1143,7 @@ struct GridwiseAttentionRewritePattern
         // Yield the new accumulator
         scf::YieldOp::create(rewriter, loc, ValueRange{newAcc});
       }
-    Value firstGemmResult = kLoopOp.getResult(0);
+      Value firstGemmResult = kLoopOp.getResult(0);
 
       int64_t prePadG0M = gemm0M;
       if (op.getPrePadG0M().has_value()) {
@@ -1076,11 +1165,9 @@ struct GridwiseAttentionRewritePattern
       ArrayAttr undoGQA = undoGQATransforms(rewriter, loc, op, unpaddedShape);
 
       // undo the GQA transforms for postProcessFirstGemm()
-      if (undoGQA) {
-        ArrayAttr linalgTileMaps = gemm0OutTileViewUnPadded;
-        linalgTileMaps = prependUpperViews(rewriter, linalgTileMaps, undoGQA);
-        gemm0OutTileViewUnPadded = linalgTileMaps;
-      }
+      if (undoGQA)
+        gemm0OutTileViewUnPadded =
+            prependUpperViews(rewriter, gemm0OutTileViewUnPadded, undoGQA);
 
       // Apply splitKV transforms if needed
       // This transforms the GEMM0 output from [B*H, SeqQ, SeqK] to
@@ -1089,23 +1176,18 @@ struct GridwiseAttentionRewritePattern
       if (splitKV > 1 && op.getPreSoftmaxHasSplitKVTransforms()) {
         ArrayAttr splitKVTransforms = createSplitKVTransformsForGemm0Out(
             rewriter, loc, unpaddedShape, splitKV);
-        assert(splitKVTransforms && "splitKV transforms should be non-null");
-        ArrayAttr linalgSubTileMaps = gemm0OutTileViewUnPadded;
-        linalgSubTileMaps =
-            prependUpperViews(rewriter, linalgSubTileMaps, splitKVTransforms);
-        gemm0OutTileViewUnPadded = linalgSubTileMaps;
+        gemm0OutTileViewUnPadded = prependUpperViews(
+            rewriter, gemm0OutTileViewUnPadded, splitKVTransforms);
       }
 
-    // TODO(roctriton): attention fusion
-      // Align the preSoftmaxElementWise (if any) linalg.generic to
+      // Align the preSoftmaxElementWise (if any) to
       // be performed on the output of the first gemm.
-    //   FailureOr<Value> maybeFusionOutBuffer = postProcessFirstGemm(
-    //       rewriter, loc, op, gridCoordsGemm0, gemm0OutBuffer, fusionOutBuffer,
-    //       gemm0OutSubTileViewsUnPadded);
-    //   if (failed(maybeFusionOutBuffer)) {
-    //     return op.emitError("post processing first gemm failed.\n");
-    //   }
-    //   gemm0OutBuffer = maybeFusionOutBuffer.value();
+      auto maybeFirstGemmResult =
+          postProcessFirstGemm(rewriter, loc, op, gridCoordsGemm0,
+                               firstGemmResult, gemm0OutTileViewUnPadded);
+      if (failed(maybeFirstGemmResult))
+        return op->emitError("Failed to post process first GEMM output");
+      firstGemmResult = maybeFirstGemmResult.value();
 
       Value maxRowDiffExp, softmaxExp;
       // Softmax
@@ -1217,7 +1299,7 @@ struct GridwiseAttentionRewritePattern
       Value gemm1InitAcc;
       if (op.getEnableSoftmax()) {
         gemm1InitAcc = rock::createZeroAccBuffer(
-            rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, accType);
+            rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType);
       } else {
         gemm1InitAcc = attentionAcc;
       }
@@ -1335,10 +1417,8 @@ void RockGridwiseAttnToBlockwisePass::runOnOperation() {
   ConversionTarget target(*ctx);
   target.addIllegalOp<GridwiseAttentionOp>();
   target.addLegalDialect<arith::ArithDialect, rock::RockDialect,
-                         affine::AffineDialect, vector::VectorDialect,
-                         linalg::LinalgDialect, scf::SCFDialect,
-                         math::MathDialect, tensor::TensorDialect, triton::TritonDialect>();
-  target.addLegalOp<gpu::PrintfOp>();
+                         affine::AffineDialect, scf::SCFDialect,
+                         math::MathDialect, triton::TritonDialect>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<GridwiseAttentionRewritePattern>(ctx);

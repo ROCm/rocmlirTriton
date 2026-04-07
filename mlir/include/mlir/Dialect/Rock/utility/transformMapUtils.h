@@ -20,10 +20,6 @@ class OpBuilder;
 class Value;
 class ValueRange;
 
-namespace linalg {
-class GenericOp;
-}
-
 namespace rock {
 class TransformMapAttr;
 class TransformOp;
@@ -87,17 +83,9 @@ ArrayAttr invertTransforms(OpBuilder &b, Location loc, ArrayAttr transforms);
 /// `max < bufferVectorSize` is a permissible outcome for this analysis, but
 /// indicates one should reconsider one's vectorization strategy.
 ///
-/// `fusionTraversalStatus` indicates whether the call could successfully
-/// traverse sequences of temporary buffers and allocations to reach a function
-/// output, should such a sequence exist. When fusion traversal isn't requested,
-/// which is the default behavior, this status is always a success. Failure
-/// indicates irregular (including "not normalized via -rock-regularize") usage,
-/// complex usage patterns (like `mul(%v, f(%v))`), or other situations where
-/// "the underlying buffer" isn't a well-defined concept.
 struct VectorizationResult {
   int64_t max = 1;
   int64_t bufferVectorSize = 1;
-  LogicalResult fusionTraversalStatus = success();
 };
 
 /// Given a transformed Value `transformed`, which is the result of applying
@@ -110,13 +98,6 @@ struct VectorizationResult {
 /// `bufferVectorSize` will be set to a value > 1 to reflect an intervening
 /// `rock.scalarize` operation.
 ///
-/// If `operatonRootForFusionTraversal` is passed in, the vectorization will
-/// traverse past temporary mumerf.alloc operations to analyze all the
-/// transformations that'll be applied after fusion. This operation should be
-/// a pointer to the operation that's using `transformed` - this is needed to
-/// identify which memref.alloc user is the one we don't need to look at
-/// in the case that there're no transformations on the buffer it's writing to.
-///
 /// `ignoreDataType` forces vectorization even when the inferred vectorization
 /// length for `transformed` would cause vector operations on its data type
 /// to exceed the maximum hardware vector memory operation for that type. It
@@ -124,7 +105,6 @@ struct VectorizationResult {
 VectorizationResult
 getMaxVectorization(Value transformed, uint32_t dim,
                     std::optional<int64_t> inputDimLen = std::nullopt,
-                    Operation *operationRootForFusionTraversal = nullptr,
                     bool ignoreDataType = false);
 
 /// Edits the transforms mapping  `transformed` to some underlying object to
@@ -180,6 +160,11 @@ TransformMapAttr transformExtractSlice(OpBuilder &b, Location loc,
 /// returns. The names of the logical dimensions for each argument will be taken
 /// from `names`, and the corresponding values will be placed in `expandedArgs`.
 ///
+/// `names` and `logicalTypes` may be shorter than the number of function
+/// arguments; only the first `names.size()` arguments are expanded (the rest
+/// are left untouched). Callers use this to exclude output arguments that are
+/// handled separately (e.g. via flattenOutput + StoreOp).
+///
 /// This is done to improve indexing performance, especially in cases where
 /// buffer loads are used, so that, for example, we don't have to mask all the
 /// non-final coordinates to 0 before feeding the index into the N-D row-major
@@ -188,6 +173,15 @@ void expandFlatFunctionArguments(OpBuilder &b, func::FuncOp func,
                                  ArrayRef<SmallVector<StringRef>> names,
                                  TypeRange logicalTypes,
                                  SmallVectorImpl<Value> &expanded);
+
+/// Apply a flattening transform to a value in logical shape, producing
+/// a 1-D tensor. Internally this builds the expand map (Unmerge + AddDim,
+/// flat->logical) via buildFlattenTransformMap and then inverts it, so the
+/// applied TransformOp carries a Merge + RemoveDim map (logical->flat).
+/// This is the inverse direction of what expandFlatFunctionArguments does
+/// per argument.
+Value flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
+                    ArrayRef<StringRef> dimNames);
 
 // This utility function will prepend a given set of the views onto
 // a set of existing views

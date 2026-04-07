@@ -112,9 +112,7 @@ def RockRegularizeOutputPass
 def RockGridwiseGemmToBlockwisePass : Pass<"rock-gridwise-gemm-to-blockwise", "::mlir::func::FuncOp"> {
   let summary = "expand gridwise gemm into blockwise copy, blockwise gemm, and threadwise copy";
   let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
-                           "gpu::GPUDialect", "vector::VectorDialect",
-                           "linalg::LinalgDialect", "scf::SCFDialect",
-                           "triton::TritonDialect"];
+                           "scf::SCFDialect", "triton::TritonDialect"];
 }
 
 def RockGridwiseAttnToBlockwisePass
@@ -122,8 +120,7 @@ def RockGridwiseAttnToBlockwisePass
   let summary = "expand gridwise attention into blockwise copy, blockwise "
                 "attention, and threadwise copy";
   let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
-                           "gpu::GPUDialect", "vector::VectorDialect",
-                           "linalg::LinalgDialect", "scf::SCFDialect",
+                           "scf::SCFDialect", "math::MathDialect",
                            "triton::TritonDialect"];
 }
 
@@ -148,9 +145,47 @@ def RockLegalizeFloatTypesPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
-def RockTransformsToPtrPass : Pass<"rock-transforms-to-ptr", "::mlir::func::FuncOp"> {
-  let summary = "";
+def RockLowerBlockwiseToPtrPass
+    : Pass<"rock-lower-blockwise-to-ptr", "::mlir::func::FuncOp"> {
+  let summary = "Lower blockwise load/store ops to pointer-based variants";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
+def RockConvertNarrowTypeSignaturesPass
+    : Pass<"rock-convert-narrow-type-signatures", "::mlir::func::FuncOp"> {
+  let summary = "Convert sub-byte types in function signatures to packed i8";
+  let description = [{
+    Converts function signatures containing sub-byte memref types
+    (e.g. memref<Nxi4>, memref<Nxf4E2M1FN>) to packed wider-type storage
+    (e.g. memref<ceil(N/2)xi8>).  Runs before RockEmulateNarrowTypesPass so
+    that the block arguments are already converted when the upstream memref
+    narrow-type emulation patterns rewrite loads and stores.
+  }];
+  let dependentDialects = ["arith::ArithDialect", "memref::MemRefDialect",
+                           "func::FuncDialect"];
+}
+
+def RockEmulateNarrowTypesPass
+    : Pass<"rock-emulate-narrow-types", "::mlir::func::FuncOp"> {
+  let summary = "Emulate sub-byte types (i4) into packed i8 storage";
+  let description = [{
+    Uses NarrowTypeEmulationConverter + upstream memref/arith narrow type
+    emulation patterns to convert sub-byte memref operations
+    (e.g. memref<Nxi4>) into packed wider-type storage (e.g. memref<N/2xi8>)
+    with proper bit-manipulation for load/store.
+
+    Must run after RockConvertNarrowTypeSignaturesPass, which converts
+    function signatures first.  This ordering avoids a crash in the upstream
+    ConvertMemRefLoad/ConvertMemrefStore patterns that call
+    extract_strided_metadata on the original (pre-conversion) memref value.
+  }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "memref::MemRefDialect",
+    "func::FuncDialect",
+    "scf::SCFDialect"
+  ];
 }
 
 def RockMaskNonZeroPreservingFusionsPass
@@ -158,7 +193,7 @@ def RockMaskNonZeroPreservingFusionsPass
   let summary = "Insert arith.select masks after non-zero-preserving fusions "
                 "fed by Pad/Embed loads";
   let description = [{
-    This pass runs AFTER TransformsToPtr and BEFORE TransformsToPointerArith.
+    This pass runs AFTER LowerBlockwiseToPtr and BEFORE TransformsToPointerArith.
     When a blockwise load has Pad or Embed transforms, OOB positions are masked
     to zero. If the loaded tile feeds into a non-zero-preserving fusion (e.g.
     arith.addf %tile, 1.0), those positions become non-zero. This pass detects
@@ -170,7 +205,8 @@ def RockMaskNonZeroPreservingFusionsPass
 }
 
 def RockTransformsToPointerArithPass : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
-  let summary = "";
+  let summary =
+      "Expand transform map chains into pointer arithmetic and validity masks";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect", "triton::TritonDialect"];
 }
 
@@ -287,11 +323,10 @@ def RockRestoreHostCodePass : Pass<"rock-restore-host-code", "::mlir::ModuleOp">
 
     This allows the full test harness to work with the Triton-compiled kernel.
   }];
-  let dependentDialects = [
-    "func::FuncDialect",
-    "gpu::GPUDialect",
-    "arith::ArithDialect",
-    "memref::MemRefDialect",
+  let dependentDialects = ["bufferization::BufferizationDialect",
+                           "func::FuncDialect", "gpu::GPUDialect",
+                           "arith::ArithDialect", "memref::MemRefDialect",
+                           "ROCDL::ROCDLDialect",
   ];
   let options = [
     Option<"triple", "triple", "std::string", "\"amdgcn-amd-amdhsa\"",
@@ -423,6 +458,26 @@ def RockTosaToElementwisePass
   }];
   let dependentDialects = ["arith::ArithDialect", "math::MathDialect",
                            "tensor::TensorDialect", "tosa::TosaDialect"];
+}
+
+def RockFlattenTosaFuncArgsPass
+    : Pass<"rock-flatten-tosa-func-args", "::mlir::func::FuncOp"> {
+  let summary = "Flatten N-D tensor function arguments and results to 1-D";
+  let description = [{
+    Downstream passes require all function boundary tensors to be 1-D.
+    The MIGraphX-to-TOSA conversion already produces 1-D boundaries, but
+    hand-written TOSA test kernels may have N-D tensor arguments and results.
+
+    This pass rewrites each kernel function so that:
+    - Every argument of type tensor<AxBx...xT> becomes tensor<(A*B*...)xT>,
+      with a tosa.reshape inserted at the top of the entry block to recover
+      the original N-D shape for use inside the function body.
+    - Every return operand is flattened with a tosa.reshape to 1-D before the
+      func.return, and the function signature is updated accordingly.
+
+    Functions whose boundaries are already 1-D (or scalar) are left unchanged.
+  }];
+  let dependentDialects = ["tosa::TosaDialect"];
 }
 
 def RockLowerStoresPass : Pass<"rock-lower-stores", "::mlir::func::FuncOp"> {

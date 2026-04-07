@@ -15,14 +15,21 @@
 namespace mlir {
 namespace rock {
 
+/// A kernel argument that must be pre-initialized before launch.
+struct PrefillInfo {
+  unsigned argIndex;
+  Attribute initValue;
+};
+
 /// Information about a compiled kernel
 struct KernelInfo {
   std::string name;
   LLVM::LLVMFuncOp llvmFunc;
-  int64_t gridSize;
-  int64_t blockSize;
-  int64_t sharedMemorySize;
-  SmallVector<Type> argTypes; // Original func argument types
+  int64_t gridSize = -1;
+  int64_t blockSize = -1;
+  int64_t sharedMemorySize = 0;
+  SmallVector<Type> argTypes;
+  SmallVector<PrefillInfo> prefillArgs;
 };
 
 /// Collect kernel information from a compiled module.
@@ -48,6 +55,11 @@ FailureOr<int64_t> checkLDSUsage(ModuleOp moduleOp, int64_t maxSharedMemPerWG);
 FailureOr<std::pair<gpu::ObjectAttr, DenseMap<StringRef, size_t>>>
 createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
                 SmallVectorImpl<KernelInfo> &kernels);
+
+/// Retrieve the prefill argument array from the module's gpu.binary, or
+/// a default-constructed ArrayAttr if none exists. Returns failure if the
+/// binary does not contain exactly one kernel.
+FailureOr<ArrayAttr> getPrefillArrayFromBinary(ModuleOp moduleOp);
 
 /// Parse a performance-config string into Triton and backend compilation
 /// options. Attempts to interpret `perfConfig` as a GemmParamsAttr or

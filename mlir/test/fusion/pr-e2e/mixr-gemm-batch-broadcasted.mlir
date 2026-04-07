@@ -1,9 +1,9 @@
-// RUN: rocmlir-gen --clone-harness -arch %arch -fut test %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -host-pipeline migraphx,highlevel -targets %arch | rocmlir-gen -ph -verifier clone -fut test_wrapper - | rocmlir-driver -host-pipeline mhal -kernel-pipeline full | xmir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
+// RUN: rocmlir-gen --clone-harness -arch %arch -fut test %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -host-pipeline migraphx,highlevel -arch %arch | rocmlir-gen -ph -verifier clone -fut test - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
 
 // CLONE: [1 1 1]
 
 module {
-  func.func @test(%arg0: !migraphx.shaped<1x32x16xf16, 512x1x32>, %arg1: !migraphx.shaped<1x64x32xf16, 2048x1x64>, %arg2: !migraphx.shaped<4x32x2x4x4xf16, 0x2x1x256x64>) -> !migraphx.shaped<4x32x2x4x4xf16, 1024x2x1x256x64> {
+  func.func @test(%arg0: !migraphx.shaped<1x32x16xf16, 512x1x32>, %arg1: !migraphx.shaped<1x64x32xf16, 2048x1x64>, %arg2: !migraphx.shaped<4x32x2x4x4xf16, 0x2x1x256x64>) -> !migraphx.shaped<4x32x2x4x4xf16, 1024x2x1x256x64> attributes {rock.kernel} {
     %trans0 = migraphx.transpose %arg0 {permutation = [0, 2, 1]} : <1x32x16xf16, 512x1x32> -> <1x16x32xf16, 512x32x1>
     %trans1 = migraphx.transpose %arg1 {permutation = [0, 2, 1]} : <1x64x32xf16, 2048x1x64> -> <1x32x64xf16, 2048x64x1>
     %0 = migraphx.multibroadcast %trans0 {out_dyn_dims = [], out_lens = [4, 16, 32]} : <1x16x32xf16, 512x32x1> -> <4x16x32xf16, 512x32x1>

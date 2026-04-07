@@ -121,6 +121,17 @@ void matchUnderlyingOrder(SmallVectorImpl<StringRef> &names,
             });
 }
 
+// If `dest` is defined after `op` (e.g. because RegularizeOutput added
+// transforms to the store dest after the conv), move the builder's insertion
+// point past `dest`'s definition so that new ops don't violate dominance.
+static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
+                                    Value dest) {
+  if (Operation *defOp = dest.getDefiningOp()) {
+    if (defOp->getBlock() == op->getBlock() && op->isBeforeInBlock(defOp))
+      b.setInsertionPointAfter(defOp);
+  }
+}
+
 // TODO(rocmlirTriton): Propagate the type to fusions as well.
 /// Update any StoreOp that uses the conv result to use the gemm result instead.
 /// The conv result type differs from the gemm result type (due to shape
@@ -226,9 +237,18 @@ LogicalResult getConvDimNames(T op, SmallVectorImpl<StringRef> &filterNames,
 /// Return the type of v if the underlying convolution has a result, otherwise
 /// return null, allowing the lowering here to be, in principle, generic over
 /// tensors and memrefs.
+/// Uses the shape from outArg (which carries the GEMM-layout shape after
+/// transforms) but the element type from the conv's result. This is necessary
+/// when the output fusion chain changes the element type (e.g. arith.fptoui
+/// from f32 to i32): the store destination carries the final type, but the
+/// GEMM must produce the same element type as the conv.
 Type getResultType(Operation *convOp, Value outArg) {
-  if (convOp->getNumResults() == 1)
-    return outArg.getType();
+  if (convOp->getNumResults() == 1) {
+    auto outArgType = cast<RankedTensorType>(outArg.getType());
+    auto convElemType =
+        cast<RankedTensorType>(convOp->getResult(0).getType()).getElementType();
+    return RankedTensorType::get(outArgType.getShape(), convElemType);
+  }
   return nullptr;
 }
 
@@ -510,8 +530,11 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   auto maybeStores = traceRootOutputToStoreOps(op.getResult());
   if (failed(maybeStores))
     return op.emitOpError("cannot trace bwd_weight result to rock::StoreOp");
+  assert(maybeStores->size() == 1 &&
+         "bwd_weight has no fusions, expected exactly one store");
   StoreOp firstStore = maybeStores->front();
   Value filterDest = firstStore.getDest();
+  ensureInsertionAfterDef(b, op, filterDest);
 
   // Regularize filter dest layout to match input layout ordering.
   // This must happen before building transforms so that filterNames,
@@ -1102,27 +1125,13 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
         rock::backwardDataKernelIds(strideDims, dilationDims, filterDims);
 
     // ConvBwdData rewrite currently expects a single consuming rock.store.
-    SmallVector<StoreOp, 1> storeOps;
-    for (Operation *user : bwdDataOp.getResult().getUsers()) {
-      if (auto sop = dyn_cast<StoreOp>(user)) {
-        storeOps.push_back(sop);
-        continue;
-      }
-
-      bwdDataOp.emitOpError()
-          << "expected only rock.store users during ConvBwdData rewrite, got "
-          << user->getName();
-      return failure();
-    }
-
-    if (storeOps.size() != 1) {
-      bwdDataOp.emitOpError()
-          << "expected exactly one consuming rock.store user during "
-             "ConvBwdData rewrite, got "
-          << storeOps.size();
-      return failure();
-    }
-    StoreOp originalStoreOp = storeOps.front();
+    auto maybeStores = traceRootOutputToStoreOps(bwdDataOp.getResult());
+    if (failed(maybeStores))
+      return bwdDataOp.emitOpError(
+          "cannot trace bwd_data result to rock::StoreOp");
+    assert(maybeStores->size() == 1 &&
+           "bwd_data has no fusions, expected exactly one store");
+    StoreOp originalStoreOp = maybeStores->front();
 
     Type storeResultType = originalStoreOp.getResult().getType();
     auto storeMethod = originalStoreOp.getStoreMethodAttr();
@@ -1132,6 +1141,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // because it represents the input gradient, and the input layout is the
     // reference layout that everything else is regularized against.
     Value destBuffer = originalStoreOp.getDest();
+    ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
+
     Value lastStoreResult;
     for (int64_t kid : kernelIds) {
       auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
@@ -1207,8 +1218,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     if (tuningParams) {
       maybeGemmExtraPad = requiredPadding(tuningParams, gemmSize);
     } else {
-      // We don't know if this'll be a padding kernel, so we can't promise an
-      // unfold or rely on atomic add, and so set the extraPad to a nonsense but
+      // We don't know if this'll be a padding kernel, so we can't promise a
+      // merge or rely on atomic add, and so set the extraPad to a nonsense but
       // existing value.
       maybeGemmExtraPad = GemmSize{-1, -1, -1, -1};
     }
@@ -1227,6 +1238,9 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   if constexpr (notConvGemm) {
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
+      // BwdWeight: the regularized filterValue feeds into filter transforms
+      // that become gemm operands, so keep the insertion point moved.
+      ensureInsertionAfterDef(b, op, destBuffer);
       auto mapping = buildInputToFilterMapping(b, rank);
       filterValue = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
@@ -1235,18 +1249,37 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
           filterNames);
       filterShape = cast<ShapedType>(filterValue.getType()).getShape();
     } else {
-      // ConvOp: regularize output dest buffer.
-      auto mapping = buildInputToOutputMapping(b, rank);
-      destBuffer = regularizeDestLayout(
-          b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
-          destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
-          mapping, outputNames);
-      auto relayoutAttr =
-          cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
+      // ConvOp: regularize at the dest buffer's location, then restore the
+      // insertion point to the conv so filter/input transforms and the gemm
+      // are placed there. The gemm doesn't take gemmOutput as an SSA operand.
+      TransformMapAttr relayoutAttr;
+      {
+        OpBuilder::InsertionGuard guard(b);
+        ensureInsertionAfterDef(b, op, destBuffer);
+        auto mapping = buildInputToOutputMapping(b, rank);
+        destBuffer = regularizeDestLayout(
+            b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
+            destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
+            mapping, outputNames);
+        relayoutAttr =
+            cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
+      }
+      // Apply the relayout to each output view and fusion extra input,
+      // placing each transform right after its input's defining op so it
+      // dominates all consumers (fusion ops, stores).
+      auto applyRelayout = [&](Value &v) {
+        if (Operation *defOp = v.getDefiningOp()) {
+          OpBuilder::InsertionGuard vg(b);
+          b.setInsertionPointAfter(defOp);
+          v = TransformOp::create(b, loc, v, relayoutAttr);
+        } else {
+          v = TransformOp::create(b, loc, v, relayoutAttr);
+        }
+      };
       for (auto &view : outputViews)
-        view = TransformOp::create(b, loc, view, relayoutAttr);
+        applyRelayout(view);
       for (auto &[orig, view] : fusionInputMap)
-        view = TransformOp::create(b, loc, view, relayoutAttr);
+        applyRelayout(view);
     }
   }
 
@@ -1256,7 +1289,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // Weight tensor transformation for ConvOp
   // - PassThrough G dimension to dimension 0, name it gemmG.
   // - Merge non-K dimensions to dimension 1, name it as gemmK.
-  //   Optimization: If non-K dimensions are consecutive, apply unfold.
+  //   Optimization: If non-K dimensions are consecutive, apply merge.
   // - PassThrough K dimension to dimension 2, name it as gemmM.
   //
   // Weight tensor transformation for ConvBwdWeightOp
@@ -1533,17 +1566,10 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
   LogicalResult matchAndRewrite(T op, PatternRewriter &b) const override {
     ConvolutionContext ctx = populateConvContext(op);
 
-    auto maybeStores = rock::traceRootOutputToStoreOps(op.getResult());
-    if (failed(maybeStores)) {
+    auto maybeViews = rock::traceOutputsAndFusionInputs(op.getResult());
+    if (failed(maybeViews))
       return op.emitOpError("cannot trace to rock::StoreOp");
-    }
-    SetVector<StoreOp> stores = maybeStores.value();
-    SmallVector<Value> outputViews;
-    for (auto storeOp : stores) {
-      outputViews.push_back(storeOp.getDest());
-    }
-
-    auto fusionInputMap = rock::collectFusionExtraInputs(op.getResult());
+    auto &[stores, outputViews, fusionInputMap] = maybeViews.value();
 
     auto maybeArgs =
         commonConvRewrite(op, b, ctx, convOpType, fusionInputMap, outputViews);

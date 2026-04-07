@@ -11,7 +11,7 @@
 #map4 = affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 1 + d2) * 128 + d3) * 64 + d4)>
 #map5 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3, d2, d4)>
 #map6 = affine_map<(d0, d1, d2) -> (0, d0 floordiv 128, d0 mod 128, d1, d2)>
-#map7 = affine_map<(d0) -> (0, d0 floordiv 8192, (d0 mod 8192) floordiv 64, d0 mod 64)>
+#map7 = affine_map<(d0) -> (0, d0 floordiv 8192, (d0 mod 8192) floordiv 128, d0 mod 128)>
 #map8 = affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) * 1 + d2)>
 #map9 = affine_map<(d0, d1, d2) -> (0, d0 floordiv 128, d0 mod 128, d1, d2)>
 #map10 = affine_map<(d0, d1, d2, d3, d4) -> (d1 * 128 + d3, d2, d4)>

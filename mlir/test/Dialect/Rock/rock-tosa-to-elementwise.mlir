@@ -472,3 +472,144 @@ func.func @intdiv(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> a
   %0 = tosa.intdiv %arg0, %arg1 : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
   return %0 : tensor<8xi32>
 }
+
+// -----
+
+// CHECK-LABEL: @add_f32_broadcast
+// CHECK-NOT:   tosa.add
+// CHECK:       %[[B:.*]] = rock.transform %arg1
+// CHECK:       arith.addf %arg0, %[[B]] : tensor<4x8xf32>
+func.func @add_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<4x8xf32>, tensor<1x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @unsigned_cast_fptoui
+// CHECK-NOT:   tosa.custom
+// CHECK:       arith.fptoui %arg0 : tensor<16xf32> to tensor<16xi32>
+func.func @unsigned_cast_fptoui(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @add_f32_broadcast_both
+// CHECK-NOT:   tosa.add
+// CHECK-DAG:   %[[B0:.*]] = rock.transform %arg0
+// CHECK-DAG:   %[[B1:.*]] = rock.transform %arg1
+// CHECK:       arith.addf %[[B0]], %[[B1]] : tensor<4x8xf32>
+func.func @add_f32_broadcast_both(%arg0: tensor<4x1xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.add %arg0, %arg1 : (tensor<4x1xf32>, tensor<1x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @unsigned_cast_uitofp
+// CHECK-NOT:   tosa.custom
+// CHECK:       arith.uitofp %arg0 : tensor<16xi32> to tensor<16xf32>
+func.func @unsigned_cast_uitofp(%arg0: tensor<16xi32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xi32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @mul_f32_broadcast
+// CHECK-NOT:   tosa.mul
+// CHECK:       %[[B:.*]] = rock.transform %arg1
+// CHECK:       arith.mulf %arg0, %[[B]] : tensor<4x8xf32>
+func.func @mul_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %shift = "tosa.const"() {values = dense<0> : tensor<1xi8>} : () -> tensor<1xi8>
+  %0 = "tosa.mul"(%arg0, %arg1, %shift) : (tensor<4x8xf32>, tensor<1x8xf32>, tensor<1xi8>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @unsigned_cast_extui
+// CHECK-NOT:   tosa.custom
+// CHECK:       arith.extui %arg0 : tensor<16xi8> to tensor<16xi32>
+func.func @unsigned_cast_extui(%arg0: tensor<16xi8>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xi8>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @greater_f32_broadcast
+// CHECK-NOT:   tosa.greater
+// CHECK:       %[[B:.*]] = rock.transform %arg1
+// CHECK:       arith.cmpf ogt, %arg0, %[[B]] : tensor<4x8xf32>
+func.func @greater_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> tensor<4x8xi1> attributes {rock.kernel} {
+  %0 = tosa.greater %arg0, %arg1 : (tensor<4x8xf32>, tensor<1x8xf32>) -> tensor<4x8xi1>
+  return %0 : tensor<4x8xi1>
+}
+
+// -----
+
+// CHECK-LABEL: @unsigned_cast_trunci
+// CHECK-NOT:   tosa.custom
+// CHECK:       arith.trunci %arg0 : tensor<16xi32> to tensor<16xi8>
+func.func @unsigned_cast_trunci(%arg0: tensor<16xi32>) -> tensor<16xi8> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xi32>) -> tensor<16xi8>
+  return %0 : tensor<16xi8>
+}
+
+// -----
+
+// CHECK-LABEL: @bitwise_and_broadcast
+// CHECK-NOT:   tosa.bitwise_and
+// CHECK:       %[[B:.*]] = rock.transform %arg1
+// CHECK:       arith.andi %arg0, %[[B]] : tensor<8x4xi32>
+func.func @bitwise_and_broadcast(%arg0: tensor<8x4xi32>, %arg1: tensor<1x4xi32>) -> tensor<8x4xi32> attributes {rock.kernel} {
+  %0 = tosa.bitwise_and %arg0, %arg1 : (tensor<8x4xi32>, tensor<1x4xi32>) -> tensor<8x4xi32>
+  return %0 : tensor<8x4xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @unsigned_div
+// CHECK-NOT:   tosa.custom
+// CHECK:       arith.divui %arg0, %arg1 : tensor<8xi32>
+func.func @unsigned_div(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0, %arg1 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_div"} : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
+  return %0 : tensor<8xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @select_broadcast
+// CHECK-NOT:   tosa.select
+// CHECK-DAG:   %[[BP:.*]] = rock.transform %arg0 {{.*}} : tensor<1x8xi1> to tensor<4x8xi1>
+// CHECK-DAG:   %[[BF:.*]] = rock.transform %arg2 {{.*}} : tensor<4x1xf32> to tensor<4x8xf32>
+// CHECK:       arith.select %[[BP]], %arg1, %[[BF]] : tensor<4x8xi1>, tensor<4x8xf32>
+func.func @select_broadcast(%arg0: tensor<1x8xi1>, %arg1: tensor<4x8xf32>, %arg2: tensor<4x1xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.select %arg0, %arg1, %arg2 : (tensor<1x8xi1>, tensor<4x8xf32>, tensor<4x1xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// Non-rocmlir custom ops should be left untouched.
+// CHECK-LABEL: @custom_other_domain
+// CHECK:       tosa.custom
+func.func @custom_other_domain(%arg0: tensor<8xf32>) -> tensor<8xf32> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0 {domain_name = "other", implementation_attrs = "", operator_name = "some_op"} : (tensor<8xf32>) -> tensor<8xf32>
+  return %0 : tensor<8xf32>
+}
+
+// -----
+
+// Rocmlir custom ops in a non-kernel function should be left untouched
+// (the pass early-returns without rock.kernel).
+// CHECK-LABEL: @unsigned_cast_non_kernel
+// CHECK:       tosa.custom
+// CHECK-NOT:   arith.fptoui
+func.func @unsigned_cast_non_kernel(%arg0: tensor<16xf32>) -> tensor<16xi32> {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}

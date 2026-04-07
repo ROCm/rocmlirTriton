@@ -209,11 +209,11 @@ struct RockBlockwiseGemmOpRewritePattern
     auto cTensorType = cast<RankedTensorType>(c.getType());
 
     // Use tt.dot_scaled when either:
-    //   (1) original element types were recorded, or
+    //   (1) original element types were recorded, or 
     //   (2) scale operands are present.
-    // This ensures f8 uses float MFMA (via dot_scaled) instead of
+    // This ensures f8 (or packed f4) uses float MFMA (via dot_scaled) instead of
     // integer MFMA (via dot with i8 operands).
-    bool hasOrigElemTypes = op.getMatrixAOrigElemType().has_value() &&
+    bool hasOrigElemTypes = op.getMatrixAOrigElemType().has_value() ||
                             op.getMatrixBOrigElemType().has_value();
     bool hasScales = scaledA && scaledB;
     bool useDotScaled = hasOrigElemTypes || hasScales;
@@ -355,8 +355,10 @@ struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
       FunctionType newFuncType = FunctionType::get(
           rewriter.getContext(), funcOp.getFunctionType().getInputs(),
           /*results=*/{});
-      rewriter.modifyOpInPlace(funcOp,
-                               [&]() { funcOp.setFunctionType(newFuncType); });
+      rewriter.modifyOpInPlace(funcOp, [&]() {
+        funcOp.setFunctionType(newFuncType);
+        funcOp.setAllResultAttrs(ArrayRef<DictionaryAttr>{});
+      });
     }
 
     rewriter.replaceOpWithNewOp<func::ReturnOp>(returnOp);

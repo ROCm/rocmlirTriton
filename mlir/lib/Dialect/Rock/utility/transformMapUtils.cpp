@@ -789,65 +789,10 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
   return result;
 }
 
-static FailureOr<std::pair<Value, Operation *>>
-findPostFusionTransforms(Value buffer, Operation *currentUser) {
-  Value newTransformed = nullptr;
-  Operation *newRoot = nullptr;
-  for (Operation *user : buffer.getUsers()) {
-    if (user == currentUser)
-      continue;
-    Value candidate = nullptr;
-    if (auto copyOp = dyn_cast<memref::CopyOp>(user)) {
-      if (copyOp.getTarget() == buffer)
-        candidate = copyOp.getSource();
-      else
-        candidate = copyOp.getTarget();
-    } else if (auto genericOp = dyn_cast<linalg::GenericOp>(user)) {
-      if (genericOp.getOutputs().size() != 1) {
-        LLVM_DEBUG(llvm::dbgs() << "[vectorization] Can't process "
-                                   "linalg.generic with multiple outputs\n");
-        return failure();
-      }
-      Value genericOut = genericOp.getOutputs().front();
-      if (genericOut == buffer) {
-        if (auto index = genericOp->getAttrOfType<IntegerAttr>(
-                "rock.majorTensorNumber")) {
-          candidate = genericOp.getInputs()[index.getInt()];
-        } else {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "[vectorization] can't analyze linalg.generic "
-                        "without rock.majorTensorNumber\n");
-          return failure();
-        }
-      } else {
-        candidate = genericOut;
-      }
-    } else {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[vectorization] Unexpected user of temporary buffer: "
-                 << *user << "\n");
-      return failure();
-    }
-
-    if (newTransformed) {
-      LLVM_DEBUG(llvm::dbgs() << "[vectorization] Found multiple users that "
-                                 "could be the next one\n");
-      return failure();
-    }
-    newTransformed = candidate;
-    newRoot = user;
-  }
-  if (!newTransformed) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "[vectorization] This memref.alloc is a dead end\n");
-    return failure();
-  }
-  return std::make_pair(newTransformed, newRoot);
-}
-
-VectorizationResult mlir::rock::getMaxVectorization(
-    Value transformed, uint32_t dim, std::optional<int64_t> inputDimLen,
-    Operation *operationRootForFusionTraversal, bool ignoreDataType) {
+VectorizationResult
+mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
+                                std::optional<int64_t> inputDimLen,
+                                bool ignoreDataType) {
   auto upperType = cast<ShapedType>(transformed.getType());
   int64_t numInitialDims = upperType.getRank();
   int64_t initialVecLen = inputDimLen.value_or(upperType.getShape()[dim]);
@@ -857,54 +802,21 @@ VectorizationResult mlir::rock::getMaxVectorization(
   data[dim] =
       VectorizationInfo(/*maxLength=*/initialVecLen, /*needsCoefficient=*/1,
                         /*alignment=*/initialVecLen);
-  bool traverseFusions = (operationRootForFusionTraversal != nullptr);
-  Operation *currentUser = operationRootForFusionTraversal;
   Value currentVal = transformed;
-  LogicalResult fusionTraversalStatus = success();
   auto contiguousMerges = findContiguousGroups(transformed);
 
   // Advance to the next operation to analyze, updating any vectorization
-  // analysis state as needed. This function must update currentVal and
-  // currentUser, and may update other variables. In the simplest case, this
-  // advances to the next rock.transform operation. However, it also handles:
-  // - If we recah a memref.alloc() and are following fusions, go to the
-  // source of post-fusion transforms (for an output fusion, the output of the
-  // fusion) to traverse its transform stack (which involves) recomputing
-  // contiguous merge data).
-  // - For rock.scalarize, adjust the vectorization data to account for the
-  // change in indexing scheme and continue.
+  // analysis state as needed. This function must update currentVal, and may
+  // update other variables. This advances to the next rock.transform operation.
   auto advance = [&]() -> bool {
     Operation *definingOp = currentVal.getDefiningOp();
     if (!definingOp)
       return false;
     if (auto trOp = dyn_cast<TransformOp>(definingOp)) {
       currentVal = trOp.getInput();
-      currentUser = definingOp;
       return true;
     }
-    if (isa<memref::AllocOp>(definingOp)) {
-      if (!traverseFusions) {
-        definingOp->emitError(
-            "vectorization analysis found intermediate allocation but isn't "
-            "following fusions, results may be incorrect\n");
-        return false;
-      }
-      FailureOr<std::pair<Value, Operation *>> maybeNewStack =
-          findPostFusionTransforms(currentVal, currentUser);
-      if (failed(maybeNewStack)) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "[vectorization] Failed to advance past fusion\n");
-        fusionTraversalStatus = failure();
-        return false;
-      }
-      std::tie(currentVal, currentUser) = *maybeNewStack;
-      LLVM_DEBUG(llvm::dbgs()
-                     << "[vectorization] Advancing past fusion to new value "
-                     << currentVal << "with data: ";);
-      data.debugPrint();
-      contiguousMerges = findContiguousGroups(currentVal);
-      return true;
-    }
+    definingOp->emitError("Unexpected op\n");
     return false;
   };
 
@@ -950,8 +862,7 @@ VectorizationResult mlir::rock::getMaxVectorization(
     result = math_util::gcd(maxVectorLenBits / bwidth, result);
   }
   // bufferVectorSize will become non-trivial once scalarization comes in
-  return VectorizationResult{/*max=*/result, /*bufferVectorSize=*/1,
-                             /*fusionTraversalStatus=*/fusionTraversalStatus};
+  return VectorizationResult{/*max=*/result, /*bufferVectorSize=*/1};
 }
 
 void mlir::rock::collapseContiguousMerges(Value transformed) {
@@ -1304,51 +1215,73 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
   return transform.get();
 }
 
+static TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
+                                                 ArrayRef<StringRef> dimNames,
+                                                 ArrayRef<int64_t> shape,
+                                                 int64_t numElements) {
+  int64_t rank = shape.size();
+  SmallVector<uint32_t> upperDims(rank);
+  std::iota(upperDims.begin(), upperDims.end(), 0);
+
+  SmallVector<uint32_t> nonUnitUpperDim;
+  SmallVector<int64_t> nonUnitUpperSize;
+  SmallVector<StringRef> nonUnitUpperName;
+  for (auto [upperDim, name, dimLen] : llvm::zip(upperDims, dimNames, shape)) {
+    if (dimLen != 1) {
+      nonUnitUpperDim.push_back(upperDim);
+      nonUnitUpperName.push_back(name);
+      nonUnitUpperSize.push_back(dimLen);
+    }
+  }
+  // There has to be at least one dimension that is unmerged.
+  if (nonUnitUpperDim.empty()) {
+    nonUnitUpperDim.push_back(upperDims.back());
+    nonUnitUpperName.push_back(dimNames.back());
+    nonUnitUpperSize.push_back(shape.back());
+  }
+
+  BottomUpTMBuilder flattener(b, {"raw"}, numElements, loc);
+  flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw", nonUnitUpperSize);
+  for (auto dim : upperDims) {
+    if (!llvm::is_contained(nonUnitUpperDim, dim)) {
+      flattener.addDim(dimNames[dim], dim, shape[dim]);
+    }
+  }
+  return flattener.get();
+}
+
 void mlir::rock::expandFlatFunctionArguments(
     OpBuilder &b, func::FuncOp func, ArrayRef<SmallVector<StringRef>> names,
     TypeRange logicalTypes, SmallVectorImpl<Value> &expanded) {
   expanded.resize_for_overwrite(names.size());
+  // Use llvm::zip (not enumerate) because some callers pass fewer names than
+  // func arguments, relying on zip's stop-at-shortest behavior.
   for (auto [arg, nameList, logicalType, logicalVal] :
        llvm::zip(func.getArguments(), names, logicalTypes, expanded)) {
     Location loc = arg.getLoc();
     auto logicalShapedTy = dyn_cast<ShapedType>(logicalType);
-    // Pass scalars through unaltered
     if (!logicalShapedTy) {
       logicalVal = arg;
       continue;
     }
-    SmallVector<uint32_t> upperDims(logicalShapedTy.getRank());
-    std::iota(upperDims.begin(), upperDims.end(), 0);
-    SmallVector<uint32_t> nonUnitUpperDim;
-    SmallVector<int64_t> nonUnitUpperSize;
-    SmallVector<StringRef> nonUnitUpperName;
-    for (auto [upperDim, name, dimLen] :
-         llvm::zip(upperDims, nameList, logicalShapedTy.getShape())) {
-      if (dimLen != 1) {
-        nonUnitUpperDim.push_back(upperDim);
-        nonUnitUpperName.push_back(name);
-        nonUnitUpperSize.push_back(dimLen);
-      }
-    }
-    // there has to be at least one dimension that is unmerged
-    if (nonUnitUpperDim.empty()) {
-      nonUnitUpperDim.push_back(upperDims.back());
-      nonUnitUpperName.push_back(nameList.back());
-      nonUnitUpperSize.push_back(logicalShapedTy.getShape().back());
-    }
-
-    BottomUpTMBuilder flattener(b, {"raw"}, logicalShapedTy.getNumElements(),
-                                loc);
-    flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw",
-                      nonUnitUpperSize);
-    for (auto dim : upperDims) {
-      if (!llvm::is_contained(nonUnitUpperDim, dim)) {
-        flattener.addDim(nameList[dim], dim, logicalShapedTy.getShape()[dim]);
-      }
-    }
-    TransformMapAttr expandMap = flattener.get();
+    TransformMapAttr expandMap =
+        buildFlattenTransformMap(b, loc, nameList, logicalShapedTy.getShape(),
+                                 logicalShapedTy.getNumElements());
     logicalVal = rock::TransformOp::create(b, loc, arg, expandMap);
   }
+}
+
+Value mlir::rock::flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
+                                ArrayRef<StringRef> dimNames) {
+  auto shapedType = cast<ShapedType>(logicalVal.getType());
+  // buildFlattenTransformMap builds a map with upper=logical, lower=flat
+  // (the "expand" direction). We need to invert it so that the TransformOp
+  // follows the standard convention: input=lower=logical, output=upper=flat.
+  TransformMapAttr expandMap = buildFlattenTransformMap(
+      b, loc, dimNames, shapedType.getShape(), shapedType.getNumElements());
+  TransformMapAttr flattenMap = invertTransformMap(b, expandMap, loc);
+  assert(flattenMap && "failed to invert expand map into flatten map");
+  return rock::TransformOp::create(b, loc, logicalVal, flattenMap);
 }
 
 ArrayAttr mlir::rock::prependUpperViews(OpBuilder &b, ArrayAttr viewsToPrepend,

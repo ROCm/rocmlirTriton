@@ -648,7 +648,7 @@ static llvm::cl::alias
 static llvm::cl::opt<std::string> genValidation(
     "verifier",
     llvm::cl::desc(
-        "Select verification from: none(default), cpu, gpu, mlir, clone"),
+        "Select verification from: none(default), cpu, mlir, clone"),
     llvm::cl::cb<void, std::string>([](const std::string &v) {
       if (!v.empty())
         genHostHarness = true;
@@ -674,20 +674,6 @@ static llvm::cl::opt<bool>
                       }));
 
 static llvm::cl::opt<bool>
-    genGPUValidation("pv_with_gpu", llvm::cl::Hidden, llvm::cl::init(false),
-                     llvm::cl::Optional, llvm::cl::cb<void, bool>([](bool v) {
-                       if (v) {
-                         genValidation = "gpu";
-                         genHostHarness = true;
-                       }
-                     }));
-
-static llvm::cl::opt<bool> genVerifierKeepPerfConfig(
-    "verifier-keep-perf-config", llvm::cl::init(false),
-    llvm::cl::desc(
-        "whether to clear perf config on verification with GPU kernels"));
-
-static llvm::cl::opt<bool>
     genCPUKernel("cpu-kernels", llvm::cl::desc("Generate CPU kernel for test"),
                  llvm::cl::init(false), llvm::cl::Optional,
                  llvm::cl::cb<void, bool>([](bool v) {
@@ -699,6 +685,13 @@ static llvm::cl::opt<bool>
                  }));
 static llvm::cl::alias aliasGenCPUKernel("prc",
                                          llvm::cl::aliasopt(genCPUKernel));
+
+static llvm::cl::opt<bool>
+    cpuTimers("cpu-timers",
+              llvm::cl::desc("Enable CPU timing instrumentation for JIT "
+                             "compilation, memory init, GPU kernel, and CPU "
+                             "validation"),
+              llvm::cl::init(false));
 
 // Input data spec
 static llvm::cl::opt<std::string> randomSeed(
@@ -1334,7 +1327,8 @@ static Value computeFinalAttentionStage(OpBuilder builder, Location loc,
 static func::FuncOp createGPUWrapper(ModuleOp module,
                                      const std::string &funcName,
                                      const SmallVector<KernelIF, 8> &kernels,
-                                     const GenParams &params) {
+                                     const GenParams &params,
+                                     ArrayRef<int32_t> outIndices) {
   MLIRContext *context = module.getContext();
   OpBuilder b(context);
   auto loc = kernels[0].func->getLoc();
@@ -1408,9 +1402,9 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   // Emit kernel function call, repeating it if needed.
   // We assume that the repeated atomic add usages in a wrw kernel will not
   // substantially impact performance as the result becomes large
-  auto emitWrappedCall = [&kernels, &gpuMem](OpBuilder &b, Location loc,
-                                             Value ignoredIv,
-                                             ValueRange noArgs) {
+  auto emitWrappedCall = [&kernels, &gpuMem,
+                          &outIndices](OpBuilder &b, Location loc,
+                                       Value ignoredIv, ValueRange noArgs) {
     for (const auto &kernel : kernels) {
       // Check if kernel expects tensor arguments
       // Use kernel.params which stores the function argument types
@@ -1418,7 +1412,6 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
           !kernel.params.empty() && isa<TensorType>(kernel.params.front());
 
       if (expectsTensors) {
-        // Convert gpuMem (memrefs) to tensors for the kernel call
         SmallVector<Value, 4> tensorArgs;
         for (Value memrefArg : gpuMem) {
           tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, true));
@@ -1426,16 +1419,15 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
         auto callOp = func::CallOp::create(b, loc, kernel.func, tensorArgs);
 
-        // Store returned tensors back to gpu memrefs
+        // Result should be stored back to the corresponding output memref.
+        // Kernel returns (Output, LSE, ...) while args are (..., LSE,
+        // Output), so map result i to the (numResults - 1 - i)-th-from-last
+        // argument.
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-          // Result should be stored back to the corresponding output memref.
-          // Kernel returns (Output, LSE, ...) while args are (..., LSE,
-          // Output), so map result i to the (numResults - 1 - i)-th-from-last
-          // argument.
-          size_t outIdx = gpuMem.size() - 1 - resultIdx;
+          int32_t outIdx = outIndices[resultIdx];
           auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
-          Value resultMemref =
-              bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
+          Value resultMemref = bufferization::ToBufferOp::create(
+              b, loc, outMemrefType, result);
           memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
         }
       } else {
@@ -1550,21 +1542,24 @@ static int getRandomSeed() {
 static std::tuple<short, short> getRandomTestData(int idx, bool isRandFloat) {
   short min = 1, max = 1;
 
-  int32_t idxSpec = -1;
-  switch (randomSide.getValue()[0]) {
-  case 'f':
-    idxSpec = 0;
-    break;
-  case 'i':
-    idxSpec = 1;
-    break;
-  case 'o':
-    idxSpec = 2;
-    break;
-  case 'b':
-  default:
-    break;
+  // Map the logical tensor name from -rand_side to the argument index.
+  // The kernel arg layout puts the store destination last:
+  //   Fwd:       [filter(0), input(1), output(2)]
+  //   BwdData:   [filter(0), output(1), input(2)]
+  //   BwdWeight: [input(0), output(1), filter(2)]
+  // Each string encodes the kernel arg order as [arg0, arg1, arg2] where
+  // the characters 'f', 'i', 'o' denote filter, input, output respectively.
+  // Finding the -rand_side character in the string gives its arg index.
+  StringRef argOrder = "fio"; // default (Fwd / Gemm)
+  if (operation.getNumOccurrences() > 0) {
+    if (operation.getValue() == rock::KernelType::ConvBwdData)
+      argOrder = "foi";
+    else if (operation.getValue() == rock::KernelType::ConvBwdWeight)
+      argOrder = "iof";
   }
+  char side = randomSide.getValue()[0];
+  size_t pos = argOrder.find(side);
+  int32_t idxSpec = (pos != StringRef::npos) ? static_cast<int32_t>(pos) : -1;
 
   if (randomSeed != "none" && randomSeed != "fixed") {
     if ((idxSpec >= 0) && (idxSpec != idx)) {
@@ -2457,26 +2452,15 @@ createCPUConvWithMLIR(ModuleOp module,
     assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
   }
 
+  // Build argument types in standard [filter, input, output, workspace?] order,
+  // then reorder so the store destination (result) is last.
   SmallVector<Type, 4> funcArgTypes = {filterFlatType, inputFlatType,
                                        outputFlatType};
-  if (hasWorkspace) {
-    auto workspaceType = RankedTensorType::get({filterElems}, b.getF32Type());
-    funcArgTypes.push_back(workspaceType);
-  }
-
-  // Determine result type based on operation
-  Type resultFlatType;
-  switch (genConfig.operation.value()) {
-  case rock::ConvOpType::Fwd:
-    resultFlatType = outputFlatType;
-    break;
-  case rock::ConvOpType::BwdData:
-    resultFlatType = inputFlatType;
-    break;
-  case rock::ConvOpType::BwdWeight:
-    resultFlatType = filterFlatType;
-    break;
-  }
+  if (hasWorkspace)
+    funcArgTypes.push_back(
+        RankedTensorType::get({filterElems}, b.getF32Type()));
+  rock::reorderConvArgsForKernel(genConfig.operation.value(), funcArgTypes);
+  Type resultFlatType = funcArgTypes.back();
 
   std::string funcName =
       rock::getNameForConvOpType(genConfig.operation.value()).str();
@@ -2489,14 +2473,33 @@ createCPUConvWithMLIR(ModuleOp module,
 
   auto func = func::FuncOp::create(
       b, loc, funcName, b.getFunctionType(funcArgTypes, {resultFlatType}));
+  // Mark as CPU verifier so buildHostLoweringPipeline can identify it
+  func->setAttr(rock::CpuVerifierAttr::getMnemonic(), b.getUnitAttr());
   module.push_back(func);
 
   Block *block = func.addEntryBlock();
   b.setInsertionPointToStart(block);
 
-  Value filterFlat = block->getArgument(0);
-  Value inputFlat = block->getArgument(1);
-  Value outputFlat = block->getArgument(2);
+  // Map block args back to semantic names (inverse of
+  // reorderConvArgsForKernel).
+  Value filterFlat, inputFlat, outputFlat;
+  switch (genConfig.operation.value()) {
+  case rock::ConvOpType::Fwd:
+    filterFlat = block->getArgument(0);
+    inputFlat = block->getArgument(1);
+    outputFlat = block->getArgument(2);
+    break;
+  case rock::ConvOpType::BwdData:
+    filterFlat = block->getArgument(0);
+    outputFlat = block->getArgument(1);
+    inputFlat = block->getArgument(2);
+    break;
+  case rock::ConvOpType::BwdWeight:
+    inputFlat = block->getArgument(0);
+    outputFlat = block->getArgument(1);
+    filterFlat = block->getArgument(hasWorkspace ? 3 : 2);
+    break;
+  }
 
   // i8 convolutions use i64 accumulation to detect overflow, f32 otherwise
   bool isI8Conv = genConfig.inputDataTypeStr == "i8";
@@ -2744,8 +2747,7 @@ static Value normalizeScaleShape(OpBuilder b, Location loc, Value scale,
 }
 
 static func::FuncOp createGpuGemmKernel(ModuleOp module,
-                                        const GenParams &params,
-                                        bool isVerifier = false) {
+                                        const GenParams &params) {
   MLIRContext *ctx = module.getContext();
   Location loc = module->getLoc();
   OpBuilder b(ctx);
@@ -2759,7 +2761,6 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   getGemmTypes(params.types, argTypes,
                /*isCpuVerifier=*/false);
   constexpr StringLiteral kernelName("rock_gemm");
-  constexpr StringLiteral kernelNameVerifier("rock_gemm_ver");
   IntegerAttr numCUAttr =
       (num_cu.getNumOccurrences() > 0
            ? b.getI64IntegerAttr(num_cu)
@@ -2796,7 +2797,8 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
                                transposeScaleB ? nName : kName});
   }
 
-  // Function takes flattened (a, b, [aScale, bScale,] c) as inputs and returns flattened c
+  // Function takes flattened (a, b, [aScale, bScale], c) as inputs and returns
+  // flattened c.
   SmallVector<Type, 5> funcArgTypes;
   SmallVector<Type, 5> funcArgLogicalTypes;
   int cIdx = scaledGemm ? 4 : 2;
@@ -2813,50 +2815,50 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
     funcArgLogicalTypes.push_back(argTypes[2]);
     funcArgLogicalTypes.push_back(argTypes[3]);
   }
-  // C is always last
-  allArgNames.emplace_back(SmallVector<StringRef>{
-      gName, transposeC ? nName : mName, transposeC ? mName : nName});
-  funcArgTypes.push_back(cFlatType);
-  funcArgLogicalTypes.push_back(cType);
 
-  auto func =
-      func::FuncOp::create(b, loc, isVerifier ? kernelNameVerifier : kernelName,
-                           b.getFunctionType(funcArgTypes, {cFlatType}), funcAttrs);
+  SmallVector<StringRef> cDimNames = {gName, transposeC ? nName : mName,
+                                      transposeC ? mName : nName};
+  funcArgTypes.push_back(cFlatType);
+
+  auto func = func::FuncOp::create(b, loc, kernelName,
+                                   b.getFunctionType(funcArgTypes, {cFlatType}),
+                                   funcAttrs);
 
   Block *block = func.addEntryBlock();
   b.setInsertionPointToStart(block);
 
   // Expand flattened arguments to logical shapes with dimension names
-  SmallVector<Value, 5> expandedArgs;
+  SmallVector<Value, 4> expandedArgs;
   rock::expandFlatFunctionArguments(b, func, allArgNames, funcArgLogicalTypes,
                                     expandedArgs);
 
   Value aVal = expandedArgs[0], bVal = expandedArgs[1];
   Value aScale = nullptr, bScale = nullptr;
-  Value cVal;
 
   if (scaledGemm) {
     aScale = normalizeScaleShape(b, loc, expandedArgs[2], transposeScaleA,
                                  /*isA=*/true);
     bScale = normalizeScaleShape(b, loc, expandedArgs[3], transposeScaleB,
                                  /*isA=*/false);
-    cVal = expandedArgs[4];
-  } else {
-    cVal = expandedArgs[2];
   }
 
+  // GEMM produces result in logical shape (e.g., tensor<1x64x64xf32>)
   auto gemm = rock::GemmOp::create(
-      b, loc, cVal.getType(), aVal, bVal, aScale, bScale, transposeA,
-      transposeB, transposeC, transposeScaleA, transposeScaleB,
+      b, loc, cType, aVal, bVal, aScale, bScale, transposeA, transposeB,
+      transposeC, transposeScaleA, transposeScaleB,
       scaledGemm ? b.getI64IntegerAttr(quantBlockSize) : nullptr,
       /*params=*/nullptr);
 
   if (!params.perfConfig.empty())
     gemm->setAttr("perf_config", b.getStringAttr(params.perfConfig));
 
-  // Store the result to the transformed C tensor
-  Value storedVal = rock::StoreOp::create(b, loc, cFlatType, gemm.getResult(),
-                                          cVal, storeMethod);
+  // Apply the output transform to flatten the GEMM result
+  Value flatResult = rock::flattenOutput(b, loc, gemm.getResult(), cDimNames);
+
+  // Store the flat result to the C argument
+  Value cArg = func.getArgument(cIdx);
+  Value storedVal =
+      rock::StoreOp::create(b, loc, cFlatType, flatResult, cArg, storeMethod);
 
   func::ReturnOp::create(b, loc, storedVal);
 
@@ -3528,7 +3530,30 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   SmallVector<Value> unflattenedArgs;
   SmallVector<SmallVector<StringRef>> allNames;
   getAttentionDimNames(allNames, params.types);
-  rock::expandFlatFunctionArguments(builder, func, allNames, argTypes,
+
+  // Save output dim names/types and trim from expansion (output is last)
+  SmallVector<StringRef> outputDimNames = allNames.back();
+  Type outputLogicalType = argTypes.back();
+  Type outputFlatType = flatArgTypes.back();
+  unsigned outputArgIdx = allNames.size() - 1;
+  allNames.pop_back();
+
+  // If returnLSE, also save and trim LSE (now last after output was popped)
+  SmallVector<StringRef> lseDimNames;
+  Type lseLogicalType;
+  Type lseFlatType;
+  unsigned lseArgIdx = 0;
+  if (returnLSE) {
+    lseDimNames = allNames.back();
+    lseLogicalType = argTypes[allNames.size() - 1];
+    lseFlatType = flatArgTypes[allNames.size() - 1];
+    lseArgIdx = allNames.size() - 1;
+    allNames.pop_back();
+  }
+
+  SmallVector<Type> expandArgTypes(argTypes.begin(),
+                                   argTypes.begin() + allNames.size());
+  rock::expandFlatFunctionArguments(builder, func, allNames, expandArgTypes,
                                     unflattenedArgs);
 
   Value queries = unflattenedArgs[0];
@@ -3539,17 +3564,22 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   Value quantScale;
   Value scale;
   Value bias;
-  Value output;
-  Value lse;
   Value currentSeqLenTensor;
   Value prefixOffsetTensor;
+
+  ShapedType qType = cast<ShapedType>(queries.getType());
+  Type qkElemType = qType.getElementType();
+  ArrayRef<int64_t> qShape = qType.getShape();
+  SmallVector<int64_t> qkShape = {qShape[0], sequenceLengthQ, sequenceLengthK};
 
   SmallVector<Value> elemwiseInputs;
   unsigned optionalArgsCounter = 3;
   if (isQuantized) {
     quantBias = unflattenedArgs[optionalArgsCounter++];
+    quantBias = rock::insertBroadcast(builder, loc, quantBias, qkShape);
     elemwiseInputs.push_back(quantBias);
     quantScale = unflattenedArgs[optionalArgsCounter++];
+    quantScale = rock::insertBroadcast(builder, loc, quantScale, qkShape);
     elemwiseInputs.push_back(quantScale);
   }
   if (hasAttnScale) {
@@ -3568,10 +3598,6 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     prefixOffsetTensor = broadcastBatchTensorRock(
         builder, loc, unflattenedArgs[optionalArgsCounter++]);
   }
-  if (returnLSE) {
-    lse = unflattenedArgs[optionalArgsCounter++];
-  }
-  output = unflattenedArgs[optionalArgsCounter];
 
   // Prefix causal masking requires causal to be enabled
   bool actualCausal = causalMasking || !prefixOffset.empty();
@@ -3579,7 +3605,7 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   auto softmaxType =
       TypeAttr::get(typeFromString(softmaxDataType.getValue(), ctx));
   auto attention = rock::AttentionOp::create(
-      builder, loc, output.getType(), returnLSE ? lse.getType() : nullptr,
+      builder, loc, outputLogicalType, returnLSE ? lseLogicalType : nullptr,
       queries, keys, values, elemwiseInputs, currentSeqLenTensor,
       prefixOffsetTensor, numHeadsQ, numHeadsKV, transposeQ, transposeK,
       transposeV, transposeO, actualCausal, splitKV, softmaxType,
@@ -3590,43 +3616,37 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
         &attention.getPreSoftmaxBody().emplaceBlock();
     PatternRewriter::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(preSoftmaxElemwiseBlock);
-    ShapedType qType = cast<ShapedType>(queries.getType());
-    ArrayRef<int64_t> qShape = qType.getShape();
-    Type qkElemType = qType.getElementType();
     if (isQuantized) {
       qkElemType = IntegerType::get(ctx, 32);
     }
-    RankedTensorType qkTensorRefType = RankedTensorType::get(
-        {qShape[0], sequenceLengthQ, sequenceLengthK}, qkElemType);
+    RankedTensorType qkTensorRefType =
+        RankedTensorType::get(qkShape, qkElemType);
     Value qkTensor = preSoftmaxElemwiseBlock->addArgument(qkTensorRefType, loc);
     if (isQuantized) {
+      auto qkShape = cast<ShapedType>(qkTensor.getType()).getShape();
       Value quantBiasI8 =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, quantBias);
       Value quantScaleF16 = addTensorArgToBlock(
           builder, loc, preSoftmaxElemwiseBlock, quantScale);
-      Value quantBiasI32 = rock::tosa::createOpAndInfer<tosa::CastOp>(
-          builder, loc, IntegerType::get(ctx, 32), quantBiasI8);
-      qkTensor = rock::tosa::createOpAndInfer<tosa::SubOp>(
-          builder, loc, IntegerType::get(ctx, 32), qkTensor, quantBiasI32);
-      qkTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(
-          builder, loc, Float16Type::get(ctx), qkTensor);
+      Value quantBiasI32 = rock::createTypeConversionOp(
+          builder, loc, quantBiasI8,
+          RankedTensorType::get(qkShape, IntegerType::get(ctx, 32)));
+      qkTensor = arith::SubIOp::create(builder, loc, qkTensor, quantBiasI32);
+      qkTensor = rock::createTypeConversionOp(
+          builder, loc, qkTensor,
+          RankedTensorType::get(qkShape, Float16Type::get(ctx)));
 
-      qkTensor = rock::tosa::getMulOp(builder, loc, qkTensor, quantScaleF16,
-                                      Float16Type::get(ctx));
+      qkTensor = arith::MulFOp::create(builder, loc, qkTensor, quantScaleF16);
     }
     if (hasAttnScale) {
       Value scaleTensor =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, scale);
-      qkTensor = rock::tosa::getMulOp(
-          builder, loc, qkTensor, scaleTensor,
-          cast<ShapedType>(scaleTensor.getType()).getElementType());
+      qkTensor = arith::MulFOp::create(builder, loc, qkTensor, scaleTensor);
     }
     if (hasAttnBias) {
       Value biasTensor =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, bias);
-      qkTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
-          builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
-          qkTensor, biasTensor);
+      qkTensor = arith::AddFOp::create(builder, loc, qkTensor, biasTensor);
     }
     rock::YieldOp::create(builder, loc, qkTensor);
   }
@@ -3634,17 +3654,20 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   if (!params.perfConfig.empty())
     attention->setAttr("perf_config", builder.getStringAttr(params.perfConfig));
 
-  // Store the result to the transformed output tensor
-  Value storedOut =
-      rock::StoreOp::create(builder, loc, flatArgTypes[flatArgTypes.size() - 1],
-                            attention.getResult(), output, storeMethod);
+  // Apply output transform to flatten the attention result, then store
+  Value flatResult =
+      rock::flattenOutput(builder, loc, attention.getResult(), outputDimNames);
+  Value outputArg = func.getArgument(outputArgIdx);
+  Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
+                                          flatResult, outputArg, storeMethod);
 
   SmallVector<Value> returnOperands = {storedOut};
   if (returnLSE) {
-    // Store the result to the transformed LSE tensor
-    Value storedLSE = rock::StoreOp::create(
-        builder, loc, flatArgTypes[flatArgTypes.size() - 2], attention.getLse(),
-        lse, rock::StoreMethod::Set);
+    Value flatLSE =
+        rock::flattenOutput(builder, loc, attention.getLse(), lseDimNames);
+    Value lseArg = func.getArgument(lseArgIdx);
+    Value storedLSE = rock::StoreOp::create(builder, loc, lseFlatType, flatLSE,
+                                            lseArg, rock::StoreMethod::Set);
     returnOperands.push_back(storedLSE);
   }
 
@@ -3719,7 +3742,7 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
     pad.push_back(right);
   }
   auto convElntGemm = rock::ConvElementwiseGemmOp::create(
-      builder, loc, output.getType(), filter, input, c, elemwiseInputs, output,
+      builder, loc, output.getType(), filter, input, c, elemwiseInputs,
       transposeC, transposeO, builder.getIndexArrayAttr(pad),
       builder.getIndexArrayAttr(config->strideDims),
       builder.getIndexArrayAttr(config->dilationDims),
@@ -3821,17 +3844,23 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   SmallVector<Value> unflattenedArgs;
   SmallVector<SmallVector<StringRef>> allNames;
   getGemmElementwiseGemmDimNames(allNames, params.types);
-  rock::expandFlatFunctionArguments(builder, func, allNames, argTypes,
+
+  // Save output dim names and logical type, then trim from expansion
+  SmallVector<StringRef> outputDimNames = allNames.back();
+  Type outputLogicalType = argTypes.back();
+  Type outputFlatType = flatArgTypes.back();
+  allNames.pop_back();
+  SmallVector<Type> expandArgTypes(argTypes.begin(), argTypes.end() - 1);
+  rock::expandFlatFunctionArguments(builder, func, allNames, expandArgTypes,
                                     unflattenedArgs);
 
   Value a = unflattenedArgs[0];
   Value b = unflattenedArgs[1];
   Value c = unflattenedArgs[2];
-  Value output = unflattenedArgs[3];
   SmallVector<Value> elemwiseInputs;
 
   auto gemmElntGemm = rock::GemmElementwiseGemmOp::create(
-      builder, loc, output.getType(), a, b, c, elemwiseInputs, transposeA,
+      builder, loc, outputLogicalType, a, b, c, elemwiseInputs, transposeA,
       transposeB, transposeC, transposeO,
       /*params0=*/nullptr, /*params1=*/nullptr,
       /*firstGemmIndices=*/builder.getDenseI64ArrayAttr({0}));
@@ -3853,10 +3882,12 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
     gemmElntGemm->setAttr("perf_config",
                           builder.getStringAttr(params.perfConfig));
 
-  // Store the result to the transformed output tensor
-  Value storedOut =
-      rock::StoreOp::create(builder, loc, flatArgTypes[flatArgTypes.size() - 1],
-                            gemmElntGemm.getResult(), output, storeMethod);
+  // Apply the output transform to flatten the result, then store
+  Value flatResult = rock::flattenOutput(builder, loc, gemmElntGemm.getResult(),
+                                         outputDimNames);
+  Value outputArg = func.getArgument(func.getNumArguments() - 1);
+  Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
+                                          flatResult, outputArg, storeMethod);
   func::ReturnOp::create(builder, loc, {storedOut});
 
   if (!disableSplitKForTuning)
@@ -3889,6 +3920,8 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   constexpr llvm::StringLiteral cpuKernName("host_naive_gemm");
   auto func = func::FuncOp::create(
       b, loc, cpuKernName, b.getFunctionType(flatArgTypes, {resultType}));
+  // Mark as CPU verifier so buildHostLoweringPipeline can identify it
+  func->setAttr(rock::CpuVerifierAttr::getMnemonic(), b.getUnitAttr());
   module.push_back(func);
 
   Block *block = func.addEntryBlock();
@@ -4584,6 +4617,9 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   Value lseOut;
+  // if split-kv is > 1, we use the LSE to compute the final result.
+  // There's no need to verify it, and it's expected to be different
+  // cpu vs gpu (sometimes).
   if (returnLSE)
     lseOut = block->getArgument(optionalArgsCounter++);
 
@@ -4926,95 +4962,6 @@ static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
   return func;
 }
 
-// If the fut expects certain args (mostly output buffers),
-// this will populate the linalg.fill calls to do those based
-// on the presense of mhal::PrefillAttr. This is to mimic the
-// requirement on the kernel launcher to do the same for the
-// expected funtionality.
-static void insertPrefills(func::FuncOp fut) {
-  SmallVector<ModuleOp, 1> innerModules;
-  fut->getParentOfType<ModuleOp>().walk(
-      [&](ModuleOp module) { innerModules.push_back(module); });
-  innerModules.push_back(fut->getParentOfType<ModuleOp>());
-  // TODO(roctriton): mhal
-  // fut.walk([&](mhal::LaunchOp launchOp) {
-  //   Location loc = launchOp->getLoc();
-  //   DenseMap<int, Attribute> argInitValues;
-  //   StringRef callee = launchOp.getCallee();
-  //   OpBuilder builder(launchOp);
-  //   for (ModuleOp module : innerModules) {
-  //     if (func::FuncOp calleeFunc =
-  //     module.lookupSymbol<func::FuncOp>(callee)) {
-  //       size_t argCount = calleeFunc.getArguments().size();
-  //       for (size_t i = 0; i < argCount; i++) {
-  //         if (Attribute initAttr =
-  //                 calleeFunc.getArgAttr(i, rock::PrefillAttr::getMnemonic()))
-  //                 {
-  //           argInitValues[i] = initAttr;
-  //         } else if (!argInitValues.contains(i) &&
-  //                    calleeFunc.getArgAttr(i, "mhal.write_access")) {
-  //           // initialize to 100 by default
-  //           // This ensures failure if the output tensor requires prefill,
-  //           // helping to detect uninitialized output in GPU vs CPU
-  //           execution. auto type = calleeFunc.getArgumentTypes()[i]; auto
-  //           elementType = cast<MemRefType>(type).getElementType(); Attribute
-  //           init; if (llvm::isa<FloatType>(elementType)) {
-  //             init = builder.getFloatAttr(elementType, 100.0);
-  //           } else {
-  //             assert(llvm::isa<IntegerType>(elementType) &&
-  //                    "expecting `int` element type");
-  //             init = builder.getIntegerAttr(elementType, 100);
-  //           }
-  //           argInitValues[i] = init;
-  //         }
-  //       }
-  //     }
-  //   }
-  //   {
-  //     OpBuilder::InsertionGuard guard(builder);
-  //     for (auto argIdxAndValueAttr : argInitValues) {
-  //       int argIdx = argIdxAndValueAttr.first;
-  //       auto valueAttr = argIdxAndValueAttr.second;
-  //       auto fillValue =
-  //           arith::ConstantOp::create(builder, loc,
-  //           cast<TypedAttr>(valueAttr));
-  //       Value originalArg = launchOp.getArgOperands()[argIdx];
-  //       linalg::FillOp::create(builder, loc, ValueRange{fillValue},
-  //                              ValueRange{originalArg});
-  //     }
-  //   }
-  // });
-}
-
-// Convert the mhal.launch/mhal.await pattern back to func.call.
-static void undoAsyncLaunchPass(Operation *cloneFunc) {
-  SymbolTableCollection symbolTable;
-  auto walker = [&](Operation *op) {
-    OpBuilder builder(op);
-    // TODO(roctriton): mhal
-    /*
-    if (auto launch = dyn_cast<mhal::LaunchOp>(op)) {
-      SymbolRefAttr calleeAttr = launch->getAttrOfType<SymbolRefAttr>("callee");
-      CallOpInterface callInt = dyn_cast<CallOpInterface>(op);
-      assert(callInt);
-      auto operands = callInt.getArgOperands();
-      auto call = func::CallOp::create(builder, op->getLoc(), calleeAttr,
-                                       TypeRange{}, operands);
-      call->moveBefore(op);
-      op->dropAllUses();
-      op->erase();
-      return WalkResult::interrupt();
-    }
-    if (auto launch = dyn_cast<mhal::AwaitOp>(op)) {
-      op->erase();
-      return WalkResult::interrupt();
-    }*/
-    return WalkResult::advance();
-  };
-  while (cloneFunc->walk(walker).wasInterrupted()) {
-  }
-}
-
 /// Helper to call a tensor-based function with memref arguments.
 /// Converts memrefs to tensors, calls the function, and copies results back.
 static void callTensorFuncWithMemrefs(OpBuilder &b, Location loc,
@@ -5038,6 +4985,36 @@ static void callTensorFuncWithMemrefs(OpBuilder &b, Location loc,
   }
 }
 
+/// Call a cpu_host function with the appropriate subset of valVars.
+///
+/// The cpu_host function was created from the original function before the
+/// kernel pipeline ran. rock-insert-output-stores appends output argument(s)
+/// to the end of the kernel's signature, so the kernel will have more args
+/// than cpu_host. The first cpuHostFunc.getNumArguments() args of the kernel
+/// always match cpu_host's args in order.
+static void callCpuHostWithMemrefs(OpBuilder &b, Location loc,
+                                   func::FuncOp cpuHostFunc,
+                                   SmallVectorImpl<Value> &valVars,
+                                   ArrayRef<int32_t> outIndices) {
+  size_t numCpuHostArgs = cpuHostFunc.getNumArguments();
+  SmallVector<Value, 8> tensorArgs;
+  for (size_t i = 0; i < numCpuHostArgs; ++i) {
+    tensorArgs.push_back(rock::getAsTensor(b, loc, valVars[i], false));
+  }
+
+  auto callOp = func::CallOp::create(b, loc, cpuHostFunc, tensorArgs);
+
+  for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
+    if (resultIdx < outIndices.size()) {
+      int32_t outIdx = outIndices[resultIdx];
+      auto outMemrefType = cast<MemRefType>(valVars[outIdx].getType());
+      Value resultMemref =
+          bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
+      memref::CopyOp::create(b, loc, resultMemref, valVars[outIdx]);
+    }
+  }
+}
+
 static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
                                   ModuleOp module,
                                   SmallVectorImpl<Value> &valVars,
@@ -5046,102 +5023,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
                                   KernelIF &root0) {
   auto validationType = genValidation.getValue();
   auto loc = b.getUnknownLoc();
-  bool heuristicValidation =
-      !genVerifierKeepPerfConfig && !genParams.perfConfig.empty();
-  bool isSmallFloatIn = false;
-  if (!genParams.types.empty()) {
-    FloatType ftype, itype;
-    if ((ftype = dyn_cast<FloatType>(genParams.types[0])) &&
-        (itype = dyn_cast<FloatType>(genParams.types[1])))
-      isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
-  }
-  bool gpuValidation = validationType == "gpu" &&
-                        (isSmallFloatIn || heuristicValidation);
-  // TODO(roctriton): remove gpuValidation
-  if (gpuValidation) {
-    if (genParams.convConfig.has_value()) { // conv GPU validation
-      // generate generic kernels
-      const auto &genConfig = **genParams.convConfig;
-      rock::ConvGenerator convGenerator(genConfig);
-      if (heuristicValidation) {
-        convGenerator.setPerfConfig("");
-      }
-      // use non-accel kernels to verify accel kernels except when
-      // verifying a tuning case
-      // convGenerator.flipAccel();
-      if (!(heuristicValidation) &&
-            genConfig.inputDataTypeStr == "i8")
-        // use f32 data type to verify non-f32 or xdlops f32 kernels
-        // except that i8 xdlops or tuned is verified with i8 non-xdlops.
-        convGenerator.setDataTypes("f32");
 
-      int kernelStart = genConfig.kernelId;
-      int kernelCount = 0;
-      if (failed(convGenerator.getKernelCount(b, kernelCount))) {
-        llvm::errs() << "Getting kernel count failed.\n";
-        exit(1);
-      }
-      if (kernelStart < 0) {
-        kernelStart = 0;
-      } else {
-        kernelCount = kernelStart + 1;
-      }
-      // generate all sub-kernels, and get corresponding gemmId
-      std::string kernelBaseName = genConfig.kernelBaseName;
-      SmallVector<KernelIF, 8> kernelIFFuncs;
-      for (int i = kernelStart; i < kernelCount; ++i) {
-        convGenerator.setKernelName(kernelBaseName + "_" + std::to_string(i));
-        if (failed(convGenerator.genConvModule(module, i, true,
-                                               /*ignoreTuning=*/true))) {
-          llvm::errs() << "Module population failed.\n";
-          exit(1);
-        }
-        kernelIFFuncs.push_back(convGenerator.getKernelFunc());
-      }
-      // Decide whether to trim the last workspace argument to the verifier
-      // GPU kernel.
-      rock::ConvGenerator originalConvGenerator(genConfig);
-      bool originalHasWorkspace = false, verifierHasWorkspace = false;
-      if (failed(originalConvGenerator.hasWorkspace(b, originalHasWorkspace))) {
-        llvm::errs() << "Getting workspace failed.\n";
-        exit(1);
-      }
-      if (failed(convGenerator.hasWorkspace(b, verifierHasWorkspace))) {
-        llvm::errs() << "Getting workspace failed.\n";
-        exit(1);
-      }
-      if (originalHasWorkspace && !verifierHasWorkspace) {
-        valVars.resize(valVars.size() - 1);
-      }
-      auto kernelWrapperFunc = createGPUWrapper(module, kernelBaseName + "_ver",
-                                                kernelIFFuncs, genParams);
-      func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
-      convGenerator.setKernelName(kernelBaseName);
-    } else { // gemm GPU validation
-      // TODO(roctriton): remove gpu validation
-      GenParams newParams = genParams;
-
-      if (heuristicValidation)
-        newParams.perfConfig = "";
-      // newParams.features = bitEnumClear(genParams.features,
-      //                                   mlir::rock::GemmFeatures::mfma |
-      //                                       mlir::rock::GemmFeatures::wmma);
-
-      if (!heuristicValidation && genParams.types[0].isInteger(8)) {
-        // use f32 data type to verify non-f32 or xdlops f32 kernels
-        // except that i8 xdops is verified with i8 non-xdolps and tuned i8 is
-        // verified with itself in heuristic mode.
-        newParams.types = SmallVector<Type>(5, b.getF32Type());
-      }
-
-      KernelIF kernel(
-          createGpuGemmKernel(module, newParams, /*isVerifier=*/true));
-      auto kernelWrapperFunc = createGPUWrapper(
-          module, kernel.func.getName().str(), {kernel}, genParams);
-      func::CallOp::create(b, loc, kernelWrapperFunc, valVars);
-    }
-  } else if (validationType != "clone") { // -pv_with_cpp or -pv_with_mlir (-pv)
-    // Emit call to host_<conv>
+  if (validationType != "clone") { // --verifier=cpp or --verifier=mlir (-pv / -pv_with_mlir map to mlir)    // Emit call to host_<conv>
     if (genParams.operation == rock::KernelType::ConvElementwiseGemm) {
       if (validationType == "cpp") {
         llvm::errs()
@@ -5166,8 +5049,20 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
         llvm::errs() << "External gemm validator is not available\n";
         exit(1);
       }
+      // Start CPU timer
+      if (cpuTimers) {
+        auto cpuTimerStartFunc = makeFuncDecl(module, "cpuTimerStart", {});
+        func::CallOp::create(b, loc, cpuTimerStartFunc, ValueRange{});
+      }
+
       auto cpuGemmFunc = createCpuGemmKernelWithMlir(module, genParams);
       callTensorFuncWithMemrefs(b, loc, cpuGemmFunc, valVars, outIndices);
+
+      // Stop CPU timer and print elapsed time
+      if (cpuTimers) {
+        auto cpuTimerStopFunc = makeFuncDecl(module, "cpuTimerStop", {});
+        func::CallOp::create(b, loc, cpuTimerStopFunc, ValueRange{});
+      }
     } else if (genParams.operation == rock::KernelType::Attention) {
       if (validationType == "cpp") {
         llvm::errs() << "External attention validator is not available\n";
@@ -5190,24 +5085,18 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
           << "Validation generation requested, but no operation specified\n";
       exit(1);
     }
-  } else { // clone
-    // Clone the kernel-calling function.  
-    //  will call the appropriate
-    // binary kernel from the mhal.launch ops;  here, we'll replace those with
-    // func.call which will get the MLIR kernel.  No redirection of callees
-    // needed.
-    auto *cloneFunc = func->clone();
-    insertPrefills(static_cast<func::FuncOp>(func));
-    undoAsyncLaunchPass(cloneFunc);
-    SymbolOpInterface cloneFuncOp = dyn_cast<SymbolOpInterface>(cloneFunc);
-    SmallString<128> nameBuffer(cloneFuncOp.getName());
-    nameBuffer += "_cloned";
-    cloneFuncOp.setName(nameBuffer);
-    cloneFunc->removeAttr(rock::KernelAttr::getMnemonic());
-    SymbolTable symbolTable(module);
-    symbolTable.insert(cloneFunc);
-    func::CallOp::create(b, loc, SymbolRefAttr::get(cloneFunc), TypeRange{},
-                         valVars);
+  } else {
+    // The _cpu_host function was created by --clone-harness and lowered by the
+    // host pipeline. It provides the CPU reference implementation for
+    // validation. Look it up by naming convention: <kernel_name>_cpu_host.
+    std::string cpuHostName = root0.func.getName().str() + "_cpu_host";
+    auto cpuHostFunc = module.lookupSymbol<func::FuncOp>(cpuHostName);
+    if (!cpuHostFunc) {
+      llvm::errs() << "Clone validation requires a " << cpuHostName
+                   << " function in the module.\n";
+      exit(1);
+    }
+    callCpuHostWithMemrefs(b, loc, cpuHostFunc, valVars, outIndices);
   }
 
   // Emit call to verifier
@@ -5307,6 +5196,12 @@ static LogicalResult populateHostHarnessLogic(
   Block *block = func.addEntryBlock();
   b.setInsertionPoint(block, block->begin());
 
+  // Timer to measure JIT compilation time (time from library load to main start)
+  if (cpuTimers) {
+    auto programStartFunc = makeFuncDecl(module, "programStart", {});
+    func::CallOp::create(b, loc, programStartFunc, ValueRange{});
+  }
+
   auto floatType = b.getF32Type();
   auto validationType = genValidation.getValue();
 
@@ -5319,17 +5214,6 @@ static LogicalResult populateHostHarnessLogic(
   bool isCPUKernel = !root0.func->hasAttr(rock::KernelAttr::getMnemonic());
   bool hasValidation = !validationType.empty() && !genCPUKernel.getValue();
   bool hasCloneValidation = hasValidation && (validationType == "clone");
-  bool heuristicValidation =
-      !genVerifierKeepPerfConfig && !genParams.perfConfig.empty();
-  bool isSmallFloatIn = false;
-  if (!genParams.types.empty()) {
-    FloatType ftype, itype;
-    if ((ftype = dyn_cast<FloatType>(genParams.types[0])) &&
-        (itype = dyn_cast<FloatType>(genParams.types[1])))
-      isSmallFloatIn = ftype.getWidth() < 32 && itype.getWidth() < 32;
-  }
-  bool gpuValidation = validationType == "gpu" &&
-                       (isSmallFloatIn || heuristicValidation);
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
   bool isSplitK = (genParams.perfConfig.empty())
                       ? false
@@ -5346,19 +5230,16 @@ static LogicalResult populateHostHarnessLogic(
 
   bool isAttention = false;
   SmallVector<int32_t, 2> outIndices;
+  SmallVector<int32_t, 2> allOutIndices;
   if (genParams.operation.has_value()) {
     switch (genParams.operation.value()) {
     case rock::KernelType::Conv:
+    case rock::KernelType::ConvBwdData:
+    case rock::KernelType::ConvBwdWeight:
       outIndices.push_back(2);
       break;
     case rock::KernelType::Gemm:
       outIndices.push_back(scaledGemm ? 4 : 2);
-      break;
-    case rock::KernelType::ConvBwdData:
-      outIndices.push_back(1);
-      break;
-    case rock::KernelType::ConvBwdWeight:
-      outIndices.push_back(0);
       break;
     case rock::KernelType::GemmElementwiseGemm:
       outIndices.push_back(3);
@@ -5380,15 +5261,19 @@ static LogicalResult populateHostHarnessLogic(
         ++optionalArgsCounter;
       if (!prefixOffset.empty())
         ++optionalArgsCounter;
-      // if split-kv is > 1, we use the LSE to compute the final result.
-      // There's no need to verify it, and it's expected to be different
-      // cpu vs gpu (sometimes).
       if (returnLSE) {
-        if (splitKV == 1)
-          outIndices.push_back(optionalArgsCounter);
+        int32_t lseArgIdx = optionalArgsCounter;
         ++optionalArgsCounter;
+        outIndices.push_back(optionalArgsCounter);
+        allOutIndices.push_back(optionalArgsCounter);
+        allOutIndices.push_back(lseArgIdx);
+        // Only verify LSE when splitKV == 1; with splitKV > 1, the LSE
+        // is an intermediate used to compute the final result.
+        if (splitKV == 1)
+          outIndices.push_back(lseArgIdx);
+      } else {
+        outIndices.push_back(optionalArgsCounter);
       }
-      outIndices.push_back(optionalArgsCounter);
     }
   } else {
     outIndices = root0.outIndices;
@@ -5408,6 +5293,14 @@ static LogicalResult populateHostHarnessLogic(
     ++offsetFromEnd;
   const int64_t expectedCurrSeqLenIdx =
       !currentSeqLen.empty() ? (root0.params.size() - offsetFromEnd - 1) : -1;
+
+  // Timer for memory initialization
+  func::FuncOp initTimerStopFunc;
+  if (cpuTimers) {
+    auto initTimerStartFunc = makeFuncDecl(module, "initTimerStart", {});
+    initTimerStopFunc = makeFuncDecl(module, "initTimerStop", {});
+    func::CallOp::create(b, loc, initTimerStartFunc, ValueRange{});
+  }
 
   for (auto [idx, paramType] : llvm::enumerate(root0.params)) {
     auto paramShapedType = dyn_cast<ShapedType>(paramType);
@@ -5469,9 +5362,7 @@ static LogicalResult populateHostHarnessLogic(
       Type valElemType = floatType;
       if (genParams.operation.has_value() && isa<IntegerType>(elemType)) {
         valElemType = elemType;
-        if (!gpuValidation && idx == 2)
-          //-pv_with_mlir, -pv_with_cpp, or -pv_with_gpu && non-accel
-          // validate in int64_t to detect overflow
+        if (llvm::is_contained(outIndices, idx))
           valElemType = b.getIntegerType(64);
       } else if ((genValidation == "clone") || elemType.isInteger(8) ||
                  elemType.isInteger(32)) {
@@ -5488,10 +5379,22 @@ static LogicalResult populateHostHarnessLogic(
     }
   }
 
+  // Stop memory initialization timer
+  if (cpuTimers) {
+    func::CallOp::create(b, loc, initTimerStopFunc, ValueRange{});
+  }
+
   // capture result index
   if (outIndices.empty()) {
-    outIndices.push_back(localVars.size() - 1);
+    size_t numResults = std::max<size_t>(root0.resultTypes.size(), 1);
+    assert(localVars.size() >= numResults &&
+           "fewer localVars than kernel results");
+    for (size_t i = localVars.size() - numResults; i < localVars.size(); ++i) {
+      outIndices.push_back(i);
+    }
   }
+  if (allOutIndices.empty())
+    allOutIndices = outIndices;
 
   // Helper to call a function with appropriate type conversions
   // Handles both tensor-based (new) and memref-based (legacy) kernel interfaces
@@ -5539,6 +5442,13 @@ static LogicalResult populateHostHarnessLogic(
     }
   };
 
+  // Timer for GPU kernel execution
+  func::FuncOp gpuTimerStartFunc, gpuTimerStopFunc;
+  if (cpuTimers) {
+    gpuTimerStartFunc = makeFuncDecl(module, "gpuTimerStart", {});
+    gpuTimerStopFunc = makeFuncDecl(module, "gpuTimerStop", {});
+  }
+
   // Call the roots.
   for (auto &root : roots) {
     // Is the root also a kernel?
@@ -5547,9 +5457,19 @@ static LogicalResult populateHostHarnessLogic(
           return k.func == root.func;
         }) != kernels.end();
     if (rootKernel) {
+      // Start GPU timer before kernel execution
+      if (cpuTimers) {
+        func::CallOp::create(b, loc, gpuTimerStartFunc, ValueRange{});
+      }
+
       // rootKernel calls will be redirected to GPU wrapper, which expects memrefs
       callFuncWithConversion(root.func, localVars, outIndices,
                              /*willBeWrapped=*/true);
+
+      // Stop GPU timer after kernel execution
+      if (cpuTimers) {
+        func::CallOp::create(b, loc, gpuTimerStopFunc, ValueRange{});
+      }
     } else if (!valVars.empty()) {
       callFuncWithConversion(root.func, valVars, outIndices);
       if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {
@@ -5618,8 +5538,8 @@ static LogicalResult populateHostHarnessLogic(
   }
   func::FuncOp gpuWrapperFunc;
   if (!kernelsSet.empty())
-    gpuWrapperFunc =
-        createGPUWrapper(module, kernelBaseName, kernels, genParams);
+    gpuWrapperFunc = createGPUWrapper(module, kernelBaseName, kernels,
+                                      genParams, allOutIndices);
   // Redirect calls to kernel functions to point at wrapped functions.
   func.walk([&](CallOpInterface callOp) -> WalkResult {
     // If the callee matches a wrapped function, update the call.
@@ -5869,10 +5789,15 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
       genParams.types.push_back(convGenerator.getFilterDataType(builder));
       genParams.types.push_back(convGenerator.getInputDataType(builder));
       genParams.types.push_back(convGenerator.getOutputDataType(builder));
+      // Reorder types to match the kernel arg ordering (store dest last).
+      if (operation.getValue() == rock::KernelType::ConvBwdData)
+        std::swap(genParams.types[1], genParams.types[2]);
+      else if (operation.getValue() == rock::KernelType::ConvBwdWeight)
+        std::rotate(genParams.types.begin(), genParams.types.begin() + 1,
+                    genParams.types.end());
     }
     genParams.convConfig = &convGenerator.getConfig();
   }
-  
 
   // TODO: Extract isApplicable check to be its own component
   if (isConv && failed(convGenerator.isApplicable())) {
@@ -5964,14 +5889,12 @@ int main(int argc, char **argv) {
   mlir::registerMLIRCLOptions();
   MLIRContext context(registry, MLIRContext::Threading::DISABLED);
   // LLVM dialect is temporary for the freeze trick.
-  context.loadDialect<rock::RockDialect, func::FuncDialect, scf::SCFDialect,
-                      affine::AffineDialect, memref::MemRefDialect,
-                      math::MathDialect, arith::ArithDialect,
-                      vector::VectorDialect, gpu::GPUDialect,
-                      linalg::LinalgDialect,
-                      // mhal::MHALDialect, TODO(roctriton): mhal
-                      bufferization::BufferizationDialect, tosa::TosaDialect,
-                      mlir::LLVM::LLVMDialect>();
+  context.loadDialect<
+      rock::RockDialect, func::FuncDialect, scf::SCFDialect,
+      affine::AffineDialect, memref::MemRefDialect, math::MathDialect,
+      arith::ArithDialect, vector::VectorDialect, gpu::GPUDialect,
+      linalg::LinalgDialect, bufferization::BufferizationDialect,
+      tosa::TosaDialect, mlir::LLVM::LLVMDialect>();
 
   // Parse pass names in main to ensure static initialization completed.
   llvm::cl::ParseCommandLineOptions(argc, argv,
@@ -6036,6 +5959,11 @@ int main(int argc, char **argv) {
     llvm::errs()
         << "--kernel-repeats is only supported with host harness (-ph) or "
            "CPU validation (-pv).\n";
+    return EXIT_FAILURE;
+  }
+
+  if (cpuTimers && !genHostHarness) {
+    llvm::errs() << "--cpu-timers requires host harness generation\n";
     return EXIT_FAILURE;
   }
 
@@ -6116,8 +6044,6 @@ int main(int argc, char **argv) {
         roots.remove(edge.getTarget());
       func::FuncOp func =
           dyn_cast<func::FuncOp>(node->getCallableRegion()->getParentOp());
-      if (func->hasAttr("original_func"))
-        roots.remove(node);
       if (func->getParentOp() && func->getParentOp()->getParentOp())
         roots.remove(node);
     }

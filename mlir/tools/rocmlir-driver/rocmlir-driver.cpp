@@ -12,6 +12,7 @@
 
 #include "mlir/Conversion/RocMLIRPasses.h"
 #include "mlir/Dialect/AMDGPU/Transforms/Passes.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MIGraphX/Pipeline/Pipeline.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -28,10 +29,9 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/utils/DetachReattach.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
-
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -81,6 +81,11 @@ static cl::opt<bool> dumpPipelines(
     "dump-pipelines", cl::init(false),
     cl::desc("Print out a textual form of the requested pipelines"));
 
+cl::opt<std::string> dumpCpuSchedules(
+    "dump-cpu-schedules", cl::init(""),
+    cl::value_desc("path"),
+    cl::desc("Dump CPU verifier IR and transform schedules to the specified directory"));
+
 /////////////////////////////////////////////////////////////////////////////
 //// Backend target spec
 static cl::opt<int> gpuOpt("gO",
@@ -124,63 +129,6 @@ parsePipeline(StringRef pipeline, llvm::SmallDenseSet<StringRef> &pipelineSet,
   return success();
 }
 
-//===----------------------------------------------------------------------===//
-// Function detach/reattach helpers for pipeline isolation
-//===----------------------------------------------------------------------===//
-
-struct DetachedFuncs {
-  struct Entry {
-    Operation *realFunc;
-    func::FuncOp stub;
-  };
-  SmallVector<Entry> entries;
-};
-
-// Physically remove functions matching `shouldDetach` from the module,
-// leaving private declaration stubs behind so that symbol references
-// (e.g. func.call) remain valid during pass execution.
-static DetachedFuncs
-detachFuncs(ModuleOp module,
-            mlir::function_ref<bool(func::FuncOp)> shouldDetach) {
-  DetachedFuncs detached;
-
-  for (auto funcOp :
-       llvm::make_early_inc_range(module.getOps<func::FuncOp>())) {
-    if (!shouldDetach(funcOp))
-      continue;
-
-    OpBuilder stubBuilder(funcOp);
-    auto stub =
-        func::FuncOp::create(stubBuilder, funcOp.getLoc(), funcOp.getName(),
-                             funcOp.getFunctionType());
-    stub.setVisibility(SymbolTable::Visibility::Private);
-
-    funcOp->remove();
-    detached.entries.push_back({funcOp, stub});
-  }
-
-  return detached;
-}
-
-// Re-insert previously detached functions into the module, replacing
-// their stubs.
-static void reattachFuncs(ModuleOp module, DetachedFuncs &detached) {
-  for (auto &entry : detached.entries) {
-    auto *realFunc = entry.realFunc;
-    auto stub = entry.stub;
-
-    mlir::FunctionType stubType = stub.getFunctionType();
-    mlir::FunctionType realType =
-        cast<func::FuncOp>(realFunc).getFunctionType();
-    assert(stubType == realType &&
-           "detached function signature changed during pipeline execution; "
-           "no callers should exist to fixup");
-
-    stub->getBlock()->getOperations().insert(stub->getIterator(), realFunc);
-    stub.erase();
-  }
-  detached.entries.clear();
-}
 
 // Detach functions matching `detachPredicate`, run a pipeline on the
 // remaining functions, then reattach. Skips the pipeline entirely if
@@ -250,6 +198,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     return failure();
   }
   backendOpts.optLevel = optLevel;
+  backendOpts.dumpCpuSchedules = dumpCpuSchedules.getValue();
 
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
   OpBuilder builder(m.getContext());

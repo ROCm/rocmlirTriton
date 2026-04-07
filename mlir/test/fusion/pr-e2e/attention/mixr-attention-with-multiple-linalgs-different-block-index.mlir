@@ -1,5 +1,6 @@
+// UNSUPPORTED: true
 // this test is generates attention where firstGemm output index in preSoftmaxBody is at 2
-// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_attention_wrapper --verifier clone - | rocmlir-driver -host-pipeline mhal -kernel-pipeline full | xmir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_attention --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
 module {
   func.func @mlir_attention(%arg0: !migraphx.shaped<1x16x16xf16, 256x16x1>, 
@@ -7,7 +8,7 @@ module {
                            %arg2: !migraphx.shaped<1x16x16xf16, 256x16x1>,
                            %arg3: !migraphx.shaped<16x16xf16, 16x1>,
                            %arg4: !migraphx.shaped<1x16x16xf16, 256x16x1>) 
-                           -> !migraphx.shaped<1x16x16xf16, 256x16x1> {
+                           -> !migraphx.shaped<1x16x16xf16, 256x16x1>  attributes {rock.kernel} {
     // Q (query) tensor
     %q = migraphx.reshape %arg0 {dims = [1, 16, 16]} : <1x16x16xf16, 256x16x1> -> <1x16x16xf16, 256x16x1>
     

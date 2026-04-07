@@ -374,7 +374,8 @@ static bool constructAndTraverseIr(MlirContext ctx,
   if (options.verbosityLevel > 1) {
     // run applicability pipeline
     auto pm1 = CRAIIWrapper<MlirPassManager>(mlirPassManagerCreate(ctx));
-    mlirMIGraphXAddApplicabilityPipeline(pm1.get());
+    mlirMIGraphXAddApplicabilityPipeline(pm1.get(), options.targetArch.c_str(),
+                                         streamStr.c_str());
     MlirLogicalResult status1 = mlirPassManagerRunOnOp(pm1.get(), moduleMO);
     if (mlirLogicalResultIsFailure(status1)) {
       std::cerr << "Applicability Pipeline failed" << '\n';
@@ -385,7 +386,8 @@ static bool constructAndTraverseIr(MlirContext ctx,
 
   if (isFusible) {
     auto pm2 = CRAIIWrapper<MlirPassManager>(mlirPassManagerCreate(ctx));
-    mlirMIGraphXAddBackendPipeline(pm2.get(), options.targetArch.c_str());
+    mlirMIGraphXAddBackendPipeline(pm2.get(), options.targetArch.c_str(),
+                                   streamStr.c_str());
     MlirLogicalResult status2 = mlirPassManagerRunOnOp(pm2.get(), moduleMO);
     if (mlirLogicalResultIsFailure(status2)) {
       std::cerr << "Backend Pipeline failed" << '\n';
