@@ -286,31 +286,18 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
       }
     }
 
-    // Triton adds workspace arguments (global scratch, profile scratch).
-    // Add null pointers for these. The number of args varies by operation
-    // type and fusions - we use kernel.argTypes.size() from the LLVM signature.
-    while (launchArgs.size() < kernel.argTypes.size()) {
-      Value nullPtr = LLVM::ZeroOp::create(builder, callLoc, ptrType);
-      launchArgs.push_back(nullPtr);
-    }
-
-    // Create dynamic shared memory size if needed
-    Value dynSharedMem = nullptr;
-    if (kernel.sharedMemorySize > 0) {
-      dynSharedMem = arith::ConstantOp::create(
-          builder, callLoc, builder.getI32Type(),
-          builder.getI32IntegerAttr(kernel.sharedMemorySize));
-    }
-
-    // Create gpu.launch_func
-    // Note: gpu.launch_func expects kernel operands to have proper types
+    // BakeKernelLaunchParams has already stripped unused workspace args and
+    // baked LDS into the binary, so no padding or dynamic shared memory needed.
+    assert(launchArgs.size() == kernel.argTypes.size() &&
+           "launch arg count must match kernel signature after "
+           "BakeKernelLaunchParams");
     gpu::LaunchFuncOp::create(
         builder, callLoc,
         SymbolRefAttr::get(ctx, binaryOp.getName(),
                            {SymbolRefAttr::get(ctx, kernel.name)}),
         gpu::KernelDim3{gridX, one, one},  // grid dimensions
         gpu::KernelDim3{blockX, one, one}, // block dimensions
-        dynSharedMem, launchArgs,
+        /*dynamicSharedMemorySize=*/nullptr, launchArgs,
         /*asyncTokenType=*/nullptr,
         /*asyncDependencies=*/ValueRange{},
         /*clusterSize=*/std::nullopt);
@@ -385,10 +372,9 @@ void RockRestoreHostCodePass::runOnOperation() {
   moduleOp->setAttr(gpu::GPUDialect::getContainerModuleAttrName(),
                     builder.getUnitAttr());
 
-  int maxSharedMemPerWG = rock::getLDSSize(arch);
   // Collect kernel information from LLVM functions
   SmallVector<KernelInfo> kernels;
-  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels))) {
+  if (failed(rock::collectKernelInfo(moduleOp, kernels))) {
     signalPassFailure();
     return;
   }

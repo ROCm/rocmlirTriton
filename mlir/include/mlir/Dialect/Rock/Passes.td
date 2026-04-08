@@ -271,6 +271,31 @@ def RockFuncToTritonFuncPass : Pass<"rock-func-to-triton-func", "::mlir::ModuleO
   ];
 }
 
+def BakeKernelLaunchParamsPass
+    : Pass<"bake-kernel-launch-params", "::mlir::ModuleOp"> {
+  let summary =
+      "Convert dynamic LDS to static and remove unused workspace args";
+  let description = [{
+    Triton's AMDGPU lowering creates two runtime artifacts that can be resolved
+    statically at compile time:
+
+    1. **Dynamic shared memory (LDS)** — `@global_smem` is declared as an
+       `external addrspace(3) global [0 x i8]`, requiring the host to pass the
+       LDS size at kernel launch.  This pass rewrites it to
+       `internal addrspace(3) global [N x i8] undef` (where N comes from the
+       `ttg.shared` module attribute) so the AMDGPU backend bakes the size into
+       `.amdhsa_group_segment_fixed_size` in the kernel descriptor.
+
+    2. **Unused workspace arguments** — Triton appends global-scratch and
+       profile-scratch pointer arguments to every kernel.  If they are unused
+       in the IR, this pass strips them from the function signature.
+
+    After this pass the `ttg.shared` attribute is removed (shared memory is now
+    static), so downstream launch code should pass 0 for dynamic shared memory.
+  }];
+  let dependentDialects = ["LLVM::LLVMDialect", ];
+}
+
 def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
   let summary = "Convert Triton LLVM dialect IR to HSACO binary";
   let description = [{

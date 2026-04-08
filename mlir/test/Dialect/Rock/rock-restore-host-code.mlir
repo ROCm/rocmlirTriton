@@ -9,10 +9,10 @@
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_basic_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO"
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @test_basic_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -30,11 +30,11 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_prefill_kernel" = 2 : i32,
     "rock.prefill_args.test_prefill_kernel" = [{index = 2 : i64, value = 0.000000e+00 : f32}],
     "triton.hsaco" = "DUMMY_HSACO"
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @test_prefill_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -50,7 +50,6 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_multi_prefill_same" = 2 : i32,
     "rock.prefill_args.test_multi_prefill_same" = [
         {index = 2 : i64, value = 0.000000e+00 : f32},
@@ -58,6 +57,7 @@ module attributes {
     ],
     "triton.hsaco" = "DUMMY_HSACO"
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @test_multi_prefill_same(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -73,7 +73,6 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_multi_prefill_mixed" = 2 : i32,
     "rock.prefill_args.test_multi_prefill_mixed" = [
         {index = 2 : i64, value = 0.000000e+00 : f32},
@@ -81,6 +80,7 @@ module attributes {
     ],
     "triton.hsaco" = "DUMMY_HSACO"
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @test_multi_prefill_mixed(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -97,13 +97,13 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 16384 : i32,
     "rock.grid_size.test_host_restore" = 8 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
         "func.func @host_wrapper(%arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>, %arg2: tensor<4096xf32>) -> tensor<4096xf32> {\n  %0 = func.call @test_host_restore(%arg0, %arg1, %arg2) : (tensor<4096xf32>, tensor<4096xf32>, tensor<4096xf32>) -> tensor<4096xf32>\n  return %0 : tensor<4096xf32>\n}"
     ]
 } {
+  llvm.mlir.global internal @global_smem(#llvm.undef) {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<16384 x i8>
   llvm.func @test_host_restore(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -112,21 +112,23 @@ module attributes {
 
 // -----
 
-// Verifies shared memory size is passed as dynamic_shared_memory_size
+// Verifies no dynamic_shared_memory_size is emitted — LDS is statically
+// baked into the binary by BakeKernelLaunchParams before RestoreHostCode runs.
 // CHECK: gpu.binary @rock_kernels
 // CHECK: func.func @host_with_lds
 // CHECK: gpu.launch_func @rock_kernels::@test_lds_kernel
-// CHECK-SAME: dynamic_shared_memory_size
+// CHECK-NOT: dynamic_shared_memory_size
+// CHECK: return
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 16384 : i32,
     "rock.grid_size.test_lds_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
         "func.func @host_with_lds(%arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>) -> tensor<4096xf32> {\n  %0 = func.call @test_lds_kernel(%arg0, %arg1) : (tensor<4096xf32>, tensor<4096xf32>) -> tensor<4096xf32>\n  return %0 : tensor<4096xf32>\n}"
     ]
 } {
+  llvm.mlir.global internal @global_smem(#llvm.undef) {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<16384 x i8>
   llvm.func @test_lds_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -145,10 +147,10 @@ module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.total-num-warps" = 8 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_total_num_warps" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO"
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @test_total_num_warps(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -168,11 +170,11 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.kernel_a" = 2 : i32,
     "rock.grid_size.kernel_b" = 8 : i32,
     "triton.hsaco" = "DUMMY_HSACO"
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @kernel_a(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -193,10 +195,10 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_kernel_preserved" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO"
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @test_kernel_preserved(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -215,13 +217,13 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_kernel_removed" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
         "func.func @host_with_removal(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>) -> tensor<1024xf32> {\n  %0 = func.call @test_kernel_removed(%arg0, %arg1) : (tensor<1024xf32>, tensor<1024xf32>) -> tensor<1024xf32>\n  return %0 : tensor<1024xf32>\n}"
     ]
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @test_kernel_removed(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -230,7 +232,7 @@ module attributes {
 
 // -----
 
-// Verifies no dynamic_shared_memory_size when ttg.shared = 0
+// Verifies no dynamic_shared_memory_size with zero LDS
 // CHECK: func.func @host_no_lds
 // CHECK: gpu.launch_func @rock_kernels::@test_no_lds_kernel
 // CHECK-NOT: dynamic_shared_memory_size
@@ -238,13 +240,13 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_no_lds_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
         "func.func @host_no_lds(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>) -> tensor<1024xf32> {\n  %0 = func.call @test_no_lds_kernel(%arg0, %arg1) : (tensor<1024xf32>, tensor<1024xf32>) -> tensor<1024xf32>\n  return %0 : tensor<1024xf32>\n}"
     ]
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @test_no_lds_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -253,23 +255,22 @@ module attributes {
 
 // -----
 
-// Verifies null pointers are added for extra workspace arguments
-// (kernel has 5 LLVM args but host call passes only 3 tensors -> 2 null ptrs)
+// Verifies launch args match kernel signature 1:1 after BakeKernelLaunchParams
+// has stripped unused workspace arguments. No null pointer padding needed.
 // CHECK: func.func @host_workspace
-// CHECK: llvm.mlir.zero : !llvm.ptr
-// CHECK: llvm.mlir.zero : !llvm.ptr
+// CHECK-NOT: llvm.mlir.zero : !llvm.ptr
 // CHECK: gpu.launch_func @rock_kernels::@test_workspace_kernel
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_workspace_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
         "func.func @host_workspace(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> {\n  %0 = func.call @test_workspace_kernel(%arg0, %arg1, %arg2) : (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>) -> tensor<1024xf32>\n  return %0 : tensor<1024xf32>\n}"
     ]
 } {
-  llvm.func @test_workspace_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr)
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+  llvm.func @test_workspace_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
   }
@@ -284,13 +285,13 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.test_void_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
         "func.func @host_void(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>) {\n  func.call @test_void_kernel(%arg0, %arg1) : (tensor<1024xf32>, tensor<1024xf32>) -> ()\n  return\n}"
     ]
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @test_void_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
@@ -312,7 +313,6 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
-    "ttg.shared" = 0 : i32,
     "rock.grid_size.kernel_x" = 4 : i32,
     "rock.grid_size.kernel_y" = 8 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
@@ -321,6 +321,7 @@ module attributes {
         "func.func @host_y(%arg0: tensor<512xf16>, %arg1: tensor<512xf16>, %arg2: tensor<512xf16>) -> tensor<512xf16> {\n  %0 = func.call @kernel_y(%arg0, %arg1, %arg2) : (tensor<512xf16>, tensor<512xf16>, tensor<512xf16>) -> tensor<512xf16>\n  return %0 : tensor<512xf16>\n}"
     ]
 } {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
   llvm.func @kernel_x(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return

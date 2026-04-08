@@ -27,20 +27,18 @@ struct KernelInfo {
   LLVM::LLVMFuncOp llvmFunc;
   int64_t gridSize = -1;
   int64_t blockSize = -1;
-  int64_t sharedMemorySize = 0;
   SmallVector<Type> argTypes;
   SmallVector<PrefillInfo> prefillArgs;
 };
 
 /// Collect kernel information from a compiled module.
 /// Walks LLVM functions with KernelAttr and extracts launch parameters:
-/// - Block size from ttg.num-warps (or ttg.total-num-warps) * ttg.threads-per-warp
-/// - Shared memory from ttg.shared
+/// - Block size from ttg.num-warps (or ttg.total-num-warps) *
+/// ttg.threads-per-warp
 /// - Grid size from rock.grid_size.{kernelName} module attribute
 /// - Argument types and count from LLVM function signature
-/// Returns failure if LDS usage exceeds maxSharedMemPerWG or required
-/// attributes are missing.
-LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
+/// Returns failure if required attributes are missing.
+LogicalResult collectKernelInfo(ModuleOp moduleOp,
                                 SmallVectorImpl<KernelInfo> &kernels);
 
 /// Check that the module's LDS (shared memory) usage does not exceed the
@@ -48,6 +46,8 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
 /// compares it against `maxSharedMemPerWG`.
 /// Returns the shared memory size on success, or failure if it exceeds the
 /// limit.
+///
+/// Must be called before BakeKernelLaunchParams, which removes ttg.shared.
 FailureOr<int64_t> checkLDSUsage(ModuleOp moduleOp, int64_t maxSharedMemPerWG);
 
 /// Create a gpu.ObjectAttr from the HSACO binary in moduleOp and kernel info.

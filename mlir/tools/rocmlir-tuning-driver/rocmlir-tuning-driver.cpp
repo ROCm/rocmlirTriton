@@ -291,7 +291,6 @@ struct CompilationResult {
   std::string hsacoBinary; // Single HSACO binary containing all kernels
   SmallVector<rock::KernelInfo>
       kernels; // Info for each kernel (name, block/grid sizes)
-  unsigned numKernelArgs = 0; // Number of kernel arguments (from compiled LLVM function).
 };
 
 // Create a fresh MLIRContext with all rocMLIR dialects registered.
@@ -319,7 +318,6 @@ static LogicalResult
 measureSmallKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
-                   ArrayRef<uint32_t> sharedMemSizes,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements, double &smallKernelCpuMs,
                    bool benchmarkMode) {
@@ -337,11 +335,12 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
         return failure();
       }
     }
-    for (auto [func, blockSize, gridSize, sharedMem] :
-         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
+    for (auto [func, blockSize, gridSize] :
+         llvm::zip(functions, blockSizes, gridSizes)) {
       HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
-          argPointers.data(), nullptr, nullptr, nullptr));
+          func, gridSize * blockSize, 1, 1, blockSize, 1, 1,
+          /*sharedMemBytes=*/0, stream, argPointers.data(), nullptr, nullptr,
+          nullptr));
     }
   }
 
@@ -357,7 +356,6 @@ static LogicalResult
 measureLargeKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
-                   ArrayRef<uint32_t> sharedMemSizes,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements) {
   // Measure runs normally.
@@ -371,15 +369,16 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
 
     double totalMilliseconds = 0.0;
 
-    for (auto [func, blockSize, gridSize, sharedMem] :
-         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
+    for (auto [func, blockSize, gridSize] :
+         llvm::zip(functions, blockSizes, gridSizes)) {
       hipEvent_t startEvent, stopEvent;
       HIPCHECK(hipEventCreate(&startEvent));
       HIPCHECK(hipEventCreate(&stopEvent));
 
       HIPCHECK(hipExtModuleLaunchKernel(
-          func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
-          argPointers.data(), nullptr, startEvent, stopEvent));
+          func, gridSize * blockSize, 1, 1, blockSize, 1, 1,
+          /*sharedMemBytes=*/0, stream, argPointers.data(), nullptr, startEvent,
+          stopEvent));
       HIPCHECK(hipEventSynchronize(stopEvent));
 
       float currentMilliseconds = 0.0;
@@ -406,7 +405,6 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
                                           const BenchmarkParams &params) {
   const auto &hsacoBinary = result.hsacoBinary;
   const auto &kernels = result.kernels;
-  unsigned numKernelArgs = result.numKernelArgs;
 
   bool benchmarkMode = !params.benchmarkConfig.empty();
   hipStream_t stream;
@@ -425,36 +423,12 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
                             hipMemcpyHostToDevice, stream));
   }
 
-  // HIP wants an array of pointers to each argument
+  // HIP wants an array of pointers to each argument.
+  // BakeKernelLaunchParams has already stripped unused workspace args from the
+  // kernel signature, so gpuBuffers maps 1:1 to kernel arguments.
   std::vector<void *> argPointers;
   for (void *&item : gpuBuffers) {
     argPointers.push_back(reinterpret_cast<void *>(&item));
-  }
-
-  // Triton adds extra workspace arguments to kernel functions:
-  // - globalPtrTy: Global scratch memory pointer
-  // - profilePtrTy: Profile scratch memory pointer
-  // These can be null when not used. The actual number of data args varies
-  // by operation type and fusions, so we use numKernelArgs (extracted from
-  // the compiled LLVM function) to determine the expected count.
-  // We pad with null pointers as needed.
-  // HIP expects pointers to the arguments, so we store nulls to pass their
-  // addresses.
-  if (numKernelArgs == 0) {
-    llvm::errs() << "Error: numKernelArgs is 0, kernel argument extraction "
-                    "failed or kernel has no arguments\n";
-    return failure();
-  }
-
-  // Use a vector to store null workspace pointers (need stable addresses)
-  static std::vector<void *> nullWorkspaces;
-  while (nullWorkspaces.size() < numKernelArgs) {
-    nullWorkspaces.push_back(nullptr);
-  }
-  size_t workspaceIdx = 0;
-  while (argPointers.size() < numKernelArgs) {
-    argPointers.push_back(
-        reinterpret_cast<void *>(&nullWorkspaces[workspaceIdx++]));
   }
 
   // Load ONE module from the single HSACO binary (contains all kernels)
@@ -480,12 +454,13 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     functions.push_back(func);
   }
 
-  // Extract block, grid, and shared memory sizes from kernel info
-  SmallVector<uint32_t> blockSizes, gridSizes, sharedMemSizes;
+  // Extract block and grid sizes from kernel info.
+  // Shared memory is statically baked into the binary by
+  // BakeKernelLaunchParams.
+  SmallVector<uint32_t> blockSizes, gridSizes;
   for (const rock::KernelInfo &kernel : kernels) {
     blockSizes.push_back(static_cast<uint32_t>(kernel.blockSize));
     gridSizes.push_back(static_cast<uint32_t>(kernel.gridSize));
-    sharedMemSizes.push_back(static_cast<uint32_t>(kernel.sharedMemorySize));
   }
 
   // Sleep guard to avoid GPU throttling
@@ -504,15 +479,16 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     // not.
     double totalMillisecondsWarmup = 0.0;
     for (unsigned iter = 0; iter < params.warmupIterations; ++iter) {
-      for (auto [func, blockSize, gridSize, sharedMem] :
-           llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes)) {
+      for (auto [func, blockSize, gridSize] :
+           llvm::zip(functions, blockSizes, gridSizes)) {
         hipEvent_t startEvent, stopEvent;
         HIPCHECK(hipEventCreate(&startEvent));
         HIPCHECK(hipEventCreate(&stopEvent));
 
         HIPCHECK(hipExtModuleLaunchKernel(
-            func, gridSize * blockSize, 1, 1, blockSize, 1, 1, sharedMem, stream,
-            argPointers.data(), nullptr, startEvent, stopEvent));
+            func, gridSize * blockSize, 1, 1, blockSize, 1, 1,
+            /*sharedMemBytes=*/0, stream, argPointers.data(), nullptr,
+            startEvent, stopEvent));
 
         HIPCHECK(hipStreamSynchronize(stream));
 
@@ -562,13 +538,12 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
 
   if (isSmallKernel) {
     if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, sharedMemSizes, argPointers,
-                                  measurements, smallKernelCpuMs, benchmarkMode)))
+                                  gridSizes, argPointers, measurements,
+                                  smallKernelCpuMs, benchmarkMode)))
       return failure();
   } else {
     if (failed(measureLargeKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, sharedMemSizes, argPointers,
-                                  measurements)))
+                                  gridSizes, argPointers, measurements)))
       return failure();
   }
 
@@ -900,10 +875,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       }
 
       // Collect kernel info from the compiled module (block/grid sizes,
-      // shared memory, argument count). This also validates LDS usage.
+      // argument types).
       SmallVector<rock::KernelInfo> localKernels;
-      if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
-                                         localKernels))) {
+      if (failed(rock::collectKernelInfo(sourceCopy.get(), localKernels))) {
         std::lock_guard<std::mutex> lock(outputMutex);
         llvm::errs() << "Failed to collect kernel info\n";
         result.status = CompilationStatus::CompilationFailed;
@@ -911,7 +885,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // Get numKernelArgs from the collected info
       if (localKernels.empty()) {
         std::lock_guard<std::mutex> lock(outputMutex);
         llvm::errs() << "No kernels found for config: " << result.perfConfig
@@ -920,7 +893,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         compilationFailed.store(true, std::memory_order_relaxed);
         return result;
       }
-      result.numKernelArgs = localKernels[0].argTypes.size();
 
       // Get the HSACO binary from the compiled module
       auto hsacoAttr =

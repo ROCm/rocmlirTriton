@@ -52,7 +52,8 @@
 // GPU-NEXT:cse))
 
 // BINARY:Kernel pipeline:
-// BINARY-NEXT:builtin.module(triton-to-hsaco{allow-flush-denorm=false arch={{gfx90a|gfx942|gfx950}} enable-fp-fusion=true features= num-ctas=1 num-warps=4 opt-level=3 scalarize-packed-fops=false schedule-hint=none triple=amdgcn-amd-amdhsa waves-per-eu=0},
+// BINARY-NEXT:builtin.module(bake-kernel-launch-params,
+// BINARY-NEXT:triton-to-hsaco{allow-flush-denorm=false arch={{gfx90a|gfx942|gfx950}} enable-fp-fusion=true features= num-ctas=1 num-warps=4 opt-level=3 scalarize-packed-fops=false schedule-hint=none triple=amdgcn-amd-amdhsa waves-per-eu=0},
 // BINARY-NEXT:rock-restore-host-code{arch={{gfx90a|gfx942|gfx950}} features= opt-level=3 triple=amdgcn-amd-amdhsa},
 // BINARY-NEXT:emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false},
 // BINARY-NEXT:cpu-lower-verifier{dump-schedules-path= phase=1},
