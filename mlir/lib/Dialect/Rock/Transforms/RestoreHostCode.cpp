@@ -89,6 +89,9 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
     metadataEntries.push_back(
         builder.getNamedAttr(rock::GridSizeAttr::getMnemonic(),
                              builder.getI64IntegerAttr(kernel.gridSize)));
+    metadataEntries.push_back(
+        builder.getNamedAttr(rock::ClusterSizeAttr::getMnemonic(),
+                             builder.getI64IntegerAttr(kernel.clusterSize)));
 
     if (!kernel.prefillArgs.empty()) {
       SmallVector<Attribute> prefillEntries;

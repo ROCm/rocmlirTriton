@@ -374,12 +374,14 @@ def Rock_NumChiplets : Rock_Attr<"NumChiplets"> {
   }];
 }
 
-def Rock_BlockSsize : Rock_Attr<"BlockSize"> {
+def Rock_BlockSize : Rock_Attr<"BlockSize"> {
   let mnemonic = "rock.block_size";
 }
 
-def Rock_GridSsize : Rock_Attr<"GridSize"> {
-  let mnemonic = "rock.grid_size";
+def Rock_GridSize : Rock_Attr<"GridSize"> { let mnemonic = "rock.grid_size"; }
+
+def Rock_ClusterSize : Rock_Attr<"ClusterSize"> {
+  let mnemonic = "rock.cluster_size";
 }
 
 def Rock_CpuVerifier : Rock_Attr<"CpuVerifier"> {
