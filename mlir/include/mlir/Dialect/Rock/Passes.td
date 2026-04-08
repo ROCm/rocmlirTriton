@@ -109,6 +109,23 @@ def RockRegularizeOutputPass
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }
 
+def RockRegularizeInterGemmFusionPass
+    : Pass<"rock-regularize-inter-gemm-fusion", "::mlir::func::FuncOp"> {
+  let summary = "Regularize elementwise fusion bodies between two GEMMs";
+  let description = [{
+    This pass regularizes the elementwise body region of gemm-gemm-like ops
+    (RockGemmGemmWrapperInterface) so that the body contains only elementwise
+    operations and no rock.transform ops.
+
+    Transforms on block arguments are pushed outside the body by applying them
+    to the corresponding external inputs. If the first block argument (the
+    first GEMM product) has transforms, they are eliminated by applying their
+    inverse to all other block arguments' transform chains so that the entire
+    body operates in the first GEMM product's original shape.
+  }];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
+}
+
 def RockGridwiseGemmToBlockwisePass : Pass<"rock-gridwise-gemm-to-blockwise", "::mlir::func::FuncOp"> {
   let summary = "expand gridwise gemm into blockwise copy, blockwise gemm, and threadwise copy";
   let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
