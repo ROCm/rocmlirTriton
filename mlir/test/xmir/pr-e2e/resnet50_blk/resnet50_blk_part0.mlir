@@ -3,7 +3,7 @@
 // CHECK: [1 1 1]
 
 module {
-  func.func private @forward__part_0(%arg0: tensor<1x32x32x64xf32> {mhal.read_access}, %arg1: tensor<64x3x3x64xf32> {mhal.read_access}, %arg2: tensor<1x32x32x64xf32> {mhal.read_access}) -> (tensor<1x32x32x64xf32> {mhal.write_access}) {
+  func.func private @forward__part_0(%arg0: tensor<1x32x32x64xf32>, %arg1: tensor<64x3x3x64xf32>, %arg2: tensor<1x32x32x64xf32>) -> (tensor<1x32x32x64xf32>) {
     %cst = arith.constant dense<0.000000e+00> : tensor<64xf32>
     %input_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
     %weight_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>

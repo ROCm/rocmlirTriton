@@ -18,7 +18,6 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
@@ -32,9 +31,11 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/MathExtras.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
+#include <numeric>
 #include <optional>
 using namespace mlir;
 using namespace mlir::rock;
@@ -126,7 +127,7 @@ mlir::rock::backwardDataKernelIds(ArrayRef<int64_t> strideDims,
   assert(strideDims.size() == dilationDims.size());
   SmallVector<int64_t, 5> gcdStrideDilations;
   for (const auto &[stride, dilation] : zip(strideDims, dilationDims))
-    gcdStrideDilations.push_back(math_util::gcd(stride, dilation));
+    gcdStrideDilations.push_back(std::gcd(stride, dilation));
 
   SmallVector<int64_t, 5> filTilda;
   for (const auto &[stride, gcdSD] : zip(strideDims, gcdStrideDilations))
@@ -159,8 +160,8 @@ mlir::rock::backwardDataKernelIds(ArrayRef<int64_t> strideDims,
       iTilda[0] = kernelId / subproduct;
     }
     for (size_t i = 0; i < filterDims.size(); i++)
-      iDotSlice.push_back(math_util::integer_divide_ceil(
-          filterDims[i] - iTilda[i], filTilda[i]));
+      iDotSlice.push_back(
+          llvm::divideCeil(filterDims[i] - iTilda[i], filTilda[i]));
 
     // gemmK must > 0, otherwise not need to run
     int64_t gemmKproduct = 1;

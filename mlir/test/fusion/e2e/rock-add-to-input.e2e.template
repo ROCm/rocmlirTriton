@@ -5,7 +5,7 @@
 // CHECK:  [5]
 !unit = memref<1x1x1x{type}>
 #map1 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
-module attributes {{mhal.arch = "##ARCH##"}} {{
+module attributes {{rock.arch = "##ARCH##"}} {{
   func.func @test_fusion(%arg0: !unit, %arg1: !unit, %arg2: !unit) attributes {{rock.kernel}} {{
     %cst = arith.constant 4.0 : {type}
     %0 = memref.alloc() : !unit

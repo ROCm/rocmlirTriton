@@ -4,7 +4,7 @@
 // CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} {axis = 1 : i32} : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32>
 // CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] {axis = 2 : i32} : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32>
 // CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 2, 2, 2, 2>, stride = array<i64: 1, 1>} : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
-func.func @bwd_data_conv2d(%arg0: tensor<9xf32> {mhal.read_access}, %arg1: tensor<9xf32> {mhal.read_access}) -> (tensor<25xf32> {mhal.write_access}) {
+func.func @bwd_data_conv2d(%arg0: tensor<9xf32>, %arg1: tensor<9xf32>) -> (tensor<25xf32>) {
   %0 = tosa.const_shape  {values = dense<25> : tensor<1xindex>} : () -> !tosa.shape<1>
   %1 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %2 = tosa.const_shape  {values = dense<[1, 1, 3, 3]> : tensor<4xindex>} : () -> !tosa.shape<4>
@@ -65,7 +65,7 @@ func.func @forward_group_conv2d(%arg0: tensor<1x8x8x4xf32>, %arg1: tensor<4x3x3x
 // CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} {axis = 1 : i32} : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32> 
 // CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] {axis = 2 : i32} : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32> 
 // CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} {acc_type = f32, dilation = array<i64: 2, 2>, pad = array<i64: 3, 3, 3, 3>, stride = array<i64: 1, 1>} : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
-func.func @bwd_data_conv2d_dilation(%arg0: tensor<9xf32> {mhal.read_access}, %arg1: tensor<9xf32> {mhal.read_access}) -> (tensor<25xf32> {mhal.write_access}) {
+func.func @bwd_data_conv2d_dilation(%arg0: tensor<9xf32>, %arg1: tensor<9xf32>) -> (tensor<25xf32>) {
   %0 = tosa.const_shape  {values = dense<25> : tensor<1xindex>} : () -> !tosa.shape<1>
   %1 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %2 = tosa.const_shape  {values = dense<[1, 1, 3, 3]> : tensor<4xindex>} : () -> !tosa.shape<4>

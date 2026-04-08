@@ -16,7 +16,6 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Attributes.h"

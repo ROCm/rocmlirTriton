@@ -3,7 +3,7 @@
 // CHECK: [1 1 1]
 
 module {
-  func.func private @forward__part_1(%arg0: tensor<1x512x7x7xf32> {mhal.read_access}, %arg1: tensor<512x1x1xf32> {mhal.read_access}, %arg2: tensor<1x512x7x7xf32> {mhal.read_access}) -> (tensor<1x7x7x512xf32> {mhal.write_access}) {
+  func.func private @forward__part_1(%arg0: tensor<1x512x7x7xf32>, %arg1: tensor<512x1x1xf32>, %arg2: tensor<1x512x7x7xf32>) -> (tensor<1x7x7x512xf32>) {
     %1 = tosa.transpose %arg0 {perms = array<i32: 0, 2, 3, 1>} : (tensor<1x512x7x7xf32>) -> tensor<1x7x7x512xf32>
     %2 = "tosa.const"() <{values = dense<2.87286908E-4> : tensor<512x3x3x512xf32>}> : () -> tensor<512x3x3x512xf32>
     %3 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<512xf32>}> : () -> tensor<512xf32>

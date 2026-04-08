@@ -180,7 +180,7 @@ func.func @mlir_lse_attention_kvcache_fusion(%arg0: tensor<12288xf16>, %arg1: te
 // CHECK: %[[lseFusion:.*]] = tosa.mul %[[lseExpanded]], %{{.*}}, %{{.*}} : (tensor<2x1x5x1xf16>, tensor<2x1x5x1xf16>, tensor<1xi8>) -> tensor<2x1x5x1xf16>
 // CHECK: %[[lseCollapsed:.*]] = tensor.collapse_shape %[[lseFusion]]
 // CHECK: return %{{.*}}, %[[lseCollapsed]] : tensor<640xf16>, tensor<10xf16>
-func.func @mlir_lse_attention_broadcasts(%arg0: tensor<640xf16> {mhal.read_access}, %arg1: tensor<640xf16> {mhal.read_access}, %arg2: tensor<640xf16> {mhal.read_access}, %arg3: tensor<25xf16> {mhal.read_access}) -> (tensor<640xf16> {mhal.write_access}, tensor<10xf16> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @mlir_lse_attention_broadcasts(%arg0: tensor<640xf16>, %arg1: tensor<640xf16>, %arg2: tensor<640xf16>, %arg3: tensor<25xf16>) -> (tensor<640xf16>, tensor<10xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = tosa.const_shape  {values = dense<[2, 1, 5, 64]> : tensor<4xindex>} : () -> !tosa.shape<4>
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [2, 1, 5, 64] : tensor<640xf16> into tensor<2x1x5x64xf16>
   %1 = tosa.const_shape  {values = dense<5> : tensor<2xindex>} : () -> !tosa.shape<2>
@@ -239,7 +239,7 @@ func.func @mlir_lse_attention_broadcasts(%arg0: tensor<640xf16> {mhal.read_acces
 // CHECK: %[[lseFusion:.*]] = tosa.mul %[[lseExpanded]], %{{.*}}, %{{.*}} : (tensor<2x1x5x1xf32>, tensor<2x1x5x1xf32>, tensor<1xi8>) -> tensor<2x1x5x1xf32>
 // CHECK: %[[lseCollapsed:.*]] = tensor.collapse_shape %[[lseFusion]]
 // CHECK: return %{{.*}}, %[[lseCollapsed]] : tensor<640xf16>, tensor<10xf32>
-func.func @mlir_lse_attention_broadcasts_f32(%arg0: tensor<640xf16> {mhal.read_access}, %arg1: tensor<640xf16> {mhal.read_access}, %arg2: tensor<640xf16> {mhal.read_access}, %arg3: tensor<25xf16> {mhal.read_access}) -> (tensor<640xf16> {mhal.write_access}, tensor<10xf32> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @mlir_lse_attention_broadcasts_f32(%arg0: tensor<640xf16>, %arg1: tensor<640xf16>, %arg2: tensor<640xf16>, %arg3: tensor<25xf16>) -> (tensor<640xf16>, tensor<10xf32>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = tosa.const_shape  {values = dense<[2, 1, 5, 64]> : tensor<4xindex>} : () -> !tosa.shape<4>
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [2, 1, 5, 64] : tensor<640xf16> into tensor<2x1x5x64xf16>
   %1 = tosa.const_shape  {values = dense<5> : tensor<2xindex>} : () -> !tosa.shape<2>

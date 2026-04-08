@@ -2076,7 +2076,7 @@ def run_fusion_kernel(filename, rocmlir_gen_args, paths: Paths):
     rocmlir_gen_cmd = [paths.mlir_paths.rocmlir_gen_path] + rocmlir_gen_args
     commands.append(rocmlir_gen_cmd)
     kernel_pipeline_cmd = [
-        paths.mlir_paths.rocmlir_driver_path, '-host-pipeline', 'mhal,runner', '-kernel-pipeline',
+        paths.mlir_paths.rocmlir_driver_path, '-host-pipeline', 'backend', '-kernel-pipeline',
         'full'
     ]
     commands.append(kernel_pipeline_cmd)

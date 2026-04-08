@@ -13,12 +13,12 @@
 #include "mlir/Dialect/Rock/Tuning/UtilityParams.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/Support/MathExtras.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
@@ -97,8 +97,7 @@ void AffixTuningParameters::setUtilityKernelSizes(Value arg, T utilityOp) {
   int64_t numElements = cast<ShapedType>(arg.getType()).getNumElements();
   uint32_t blockSize = kUtilityKernelBlockSize;
   int64_t elemsPerThread = kUtilityKernelElemsPerThread;
-  uint32_t gridSize =
-      math_util::integer_divide_ceil(numElements, blockSize * elemsPerThread);
+  uint32_t gridSize = llvm::divideCeil(numElements, blockSize * elemsPerThread);
 
   IntegerAttr blockSizeAttr = b.getI32IntegerAttr(blockSize);
   IntegerAttr gridSizeAttr = b.getI32IntegerAttr(gridSize);

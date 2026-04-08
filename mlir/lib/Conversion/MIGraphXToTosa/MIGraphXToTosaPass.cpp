@@ -62,12 +62,6 @@ void mlir::migraphx::populateMIGraphXFuncBoundaryToTosaDialectConversion(
       [=](func::CallOp op) -> std::optional<bool> {
         return typeConverter->isSignatureLegal(op.getCalleeType());
       });
-  /*
-target.addDynamicallyLegalOp<mhal::LaunchOp>(
-  [=](mhal::LaunchOp op) -> std::optional<bool> {
-    return typeConverter->isLegal(op.getResultTypes()) &&
-           typeConverter->isLegal(op.getOperandTypes());
-  });*/
   target.addDynamicallyLegalOp<func::ReturnOp>(
       [=](func::ReturnOp op) -> std::optional<bool> {
         return typeConverter->isLegal(op);

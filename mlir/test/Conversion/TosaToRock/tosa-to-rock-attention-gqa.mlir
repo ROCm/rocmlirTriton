@@ -67,7 +67,7 @@ func.func @attention_gqa_8_32(%arg0: tensor<6144xf16>, %arg1: tensor<65536xf16>,
 // CHECK-LABEL: func @attention_gqa_2_14
 // CHECK: rock.attention
 // CHECK: numHeadsKV = 2 : i32, numHeadsQ = 14 : i32
-func.func @attention_gqa_2_14(%arg0: tensor<2xi32> {mhal.read_access}, %arg1: tensor<9216xf16> {mhal.read_access}, %arg2: tensor<2048xf16> {mhal.read_access}, %arg3: tensor<2048xf16> {mhal.read_access}) -> (tensor<7168xf16> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @attention_gqa_2_14(%arg0: tensor<2xi32>, %arg1: tensor<9216xf16>, %arg2: tensor<2048xf16>, %arg3: tensor<2048xf16>) -> (tensor<7168xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<[[[[0, 1, 1, 1, 1, 1, 1, 1], [0, 0, 1, 1, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]]]]> : tensor<1x1x4x8xi8>}> : () -> tensor<1x1x4x8xi8>
   %1 = "tosa.const"() <{values = dense<[[0, 1, 2, 3, 4, 5, 6, 7]]> : tensor<1x8xi32>}> : () -> tensor<1x8xi32>
   %2 = tosa.const_shape  {values = dense<7168> : tensor<1xindex>} : () -> !tosa.shape<1>
@@ -138,7 +138,7 @@ func.func @attention_gqa_2_14(%arg0: tensor<2xi32> {mhal.read_access}, %arg1: te
 // CHECK-LABEL: func @attention_gqa_2_14_2
 // CHECK: rock.attention
 // CHECK: numHeadsKV = 2 : i32, numHeadsQ = 14 : i32
-func.func @attention_gqa_2_14_2(%arg0: tensor<9216xf16> {mhal.read_access}, %arg1: tensor<2048xf16> {mhal.read_access}, %arg2: tensor<2048xf16> {mhal.read_access}, %arg3: tensor<2xi32> {mhal.read_access}) -> (tensor<7168xf16> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @attention_gqa_2_14_2(%arg0: tensor<9216xf16>, %arg1: tensor<2048xf16>, %arg2: tensor<2048xf16>, %arg3: tensor<2xi32>) -> (tensor<7168xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<[[[[0, 1, 1, 1, 1, 1, 1, 1], [0, 0, 1, 1, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]]]]> : tensor<1x1x4x8xi8>}> : () -> tensor<1x1x4x8xi8>
   %1 = "tosa.const"() <{values = dense<[[0, 1, 2, 3, 4, 5, 6, 7]]> : tensor<1x8xi32>}> : () -> tensor<1x8xi32>
   %2 = tosa.const_shape  {values = dense<7168> : tensor<1xindex>} : () -> !tosa.shape<1>
@@ -209,7 +209,7 @@ func.func @attention_gqa_2_14_2(%arg0: tensor<9216xf16> {mhal.read_access}, %arg
 // CHECK-LABEL: func @attention_gqa_2_14_3
 // CHECK: rock.attention
 // CHECK: numHeadsKV = 2 : i32, numHeadsQ = 14 : i32
-func.func @attention_gqa_2_14_3(%arg0: tensor<2304xf16> {mhal.read_access}, %arg1: tensor<2048xf16> {mhal.read_access}, %arg2: tensor<2048xf16> {mhal.read_access}, %arg3: tensor<2xi32> {mhal.read_access}) -> (tensor<1792xf16> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @attention_gqa_2_14_3(%arg0: tensor<2304xf16>, %arg1: tensor<2048xf16>, %arg2: tensor<2048xf16>, %arg3: tensor<2xi32>) -> (tensor<1792xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<[[0, 1, 2, 3, 4, 5, 6, 7]]> : tensor<1x8xi32>}> : () -> tensor<1x8xi32>
   %1 = tosa.const_shape  {values = dense<1792> : tensor<1xindex>} : () -> !tosa.shape<1>
   %2 = tosa.const_shape  {values = dense<[28, 8, 64]> : tensor<3xindex>} : () -> !tosa.shape<3>
@@ -275,7 +275,7 @@ func.func @attention_gqa_2_14_3(%arg0: tensor<2304xf16> {mhal.read_access}, %arg
 // CHECK-LABEL: func @attention_gqa_2_14_4
 // CHECK: rock.attention
 // CHECK: numHeadsKV = 2 : i32, numHeadsQ = 14 : i32
-func.func @attention_gqa_2_14_4(%arg0: tensor<2xi32> {mhal.read_access}, %arg1: tensor<2304xf16> {mhal.read_access}, %arg2: tensor<2048xf16> {mhal.read_access}, %arg3: tensor<2048xf16> {mhal.read_access}) -> (tensor<1792xf16> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @attention_gqa_2_14_4(%arg0: tensor<2xi32>, %arg1: tensor<2304xf16>, %arg2: tensor<2048xf16>, %arg3: tensor<2048xf16>) -> (tensor<1792xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<[[0, 1, 2, 3, 4, 5, 6, 7]]> : tensor<1x8xi32>}> : () -> tensor<1x8xi32>
   %1 = tosa.const_shape  {values = dense<1792> : tensor<1xindex>} : () -> !tosa.shape<1>
   %2 = tosa.const_shape  {values = dense<[28, 8, 64]> : tensor<3xindex>} : () -> !tosa.shape<3>
