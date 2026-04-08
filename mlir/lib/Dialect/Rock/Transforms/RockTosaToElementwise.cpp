@@ -581,6 +581,9 @@ struct RockTosaToElementwise
     // The Triton TritonToTritonGPU conversion was missing patterns for
     // math.tanh, math.powf, math.roundeven and math.round. Use upstream
     // math::populateExpansionPatterns to expand them into ops Triton supports.
+    // 
+    // TODO(rocmlirTriton): gfx1250 will have dedicated instructions for tanh, we
+    // need to make sure we emit those instead of using the math.tanh expansion.
     math::populateExpansionPatterns(patterns,
                                     {"tanh", "powf", "roundeven", "round"});
 
