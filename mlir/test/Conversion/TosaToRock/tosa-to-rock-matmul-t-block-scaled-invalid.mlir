@@ -3,7 +3,7 @@
 // Test: K dimension not a multiple of block_size after transpose_b changes which dim is K.
 // B data shape is [1, 100, 256] which passes TOSA verifier (K=256 is divisible by 32).
 // But transpose_b toggles the default B transpose, making K=100 which is not divisible by 32.
-module attributes {kernel.module, mhal.arch = "amdgcn-amd-amdhsa:gfx950"} {
+module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
 func.func @k_not_multiple_of_block_size_via_transpose_b(
     %a_data: tensor<1x128x256xf4E2M1FN>,
     %a_scale: tensor<1x128x8xf8E8M0FNU>,
@@ -26,7 +26,7 @@ func.func @k_not_multiple_of_block_size_via_transpose_b(
 // A scale shape [1, 128, 8] passes TOSA verifier. But transpose_a_scale makes
 // the converter read dim 1 (128) as the K-scale dimension instead of dim 2 (8),
 // causing a mismatch with expected K/blockSize = 256/32 = 8.
-module attributes {kernel.module, mhal.arch = "amdgcn-amd-amdhsa:gfx950"} {
+module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
 func.func @a_scale_k_mismatch_via_transpose_a_scale(
     %a_data: tensor<1x128x256xf4E2M1FN>,
     %a_scale: tensor<1x128x8xf8E8M0FNU>,
@@ -49,7 +49,7 @@ func.func @a_scale_k_mismatch_via_transpose_a_scale(
 // B scale shape [1, 512, 8] passes TOSA verifier. But transpose_b_scale makes
 // the converter read dim 1 (512) as the K-scale dimension instead of dim 2 (8),
 // causing a mismatch with expected K/blockSize = 256/32 = 8.
-module attributes {kernel.module, mhal.arch = "amdgcn-amd-amdhsa:gfx950"} {
+module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
 func.func @b_scale_k_mismatch_via_transpose_b_scale(
     %a_data: tensor<1x128x256xf4E2M1FN>,
     %a_scale: tensor<1x128x8xf8E8M0FNU>,

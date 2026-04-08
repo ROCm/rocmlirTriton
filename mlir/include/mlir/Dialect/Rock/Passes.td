@@ -47,7 +47,7 @@ def RockAffixTuningParametersPass : Pass<"rock-affix-params", "::mlir::func::Fun
 def RockGemmToGridwisePass : Pass<"rock-gemm-to-gridwise", "::mlir::func::FuncOp"> {
   let summary = "convert gemm to gridwise gemm, adding padding";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "linalg::LinalgDialect", "arith::ArithDialect"];
+                           "arith::ArithDialect"];
 }
 
 def RockFoldBroadcastPass: Pass<"rock-fold-broadcast", "::mlir::func::FuncOp"> {

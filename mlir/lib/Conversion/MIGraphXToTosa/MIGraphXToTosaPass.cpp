@@ -14,7 +14,6 @@
 #include "mlir/Conversion/MIGraphXToTosa/MIGraphXToTosa.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
@@ -62,12 +61,6 @@ void mlir::migraphx::populateMIGraphXFuncBoundaryToTosaDialectConversion(
       [=](func::CallOp op) -> std::optional<bool> {
         return typeConverter->isSignatureLegal(op.getCalleeType());
       });
-  /*
-target.addDynamicallyLegalOp<mhal::LaunchOp>(
-  [=](mhal::LaunchOp op) -> std::optional<bool> {
-    return typeConverter->isLegal(op.getResultTypes()) &&
-           typeConverter->isLegal(op.getOperandTypes());
-  });*/
   target.addDynamicallyLegalOp<func::ReturnOp>(
       [=](func::ReturnOp op) -> std::optional<bool> {
         return typeConverter->isLegal(op);

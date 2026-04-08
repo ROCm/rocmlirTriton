@@ -4,7 +4,7 @@
 // CHECK: [1 1 1]
 
 module {
-  func.func private @forward__part_0(%arg0: tensor<1x64x56x56xf32> {mhal.read_access}, %arg1: tensor<128x64x1x1xf32> {mhal.read_access}, %arg2: tensor<1x128x1x1xf32> {mhal.read_access}, %arg3: tensor<1x128x1x1xf32> {mhal.read_access}, %arg4: tensor<1x128x1x1xf32> {mhal.read_access}, %arg5: tensor<1x128x1x1xf32> {mhal.read_access}, %arg6: tensor<1x128x28x28xf32> {mhal.read_access}) -> (tensor<1x128x28x28xf32> {mhal.write_access}) {
+  func.func private @forward__part_0(%arg0: tensor<1x64x56x56xf32>, %arg1: tensor<128x64x1x1xf32>, %arg2: tensor<1x128x1x1xf32>, %arg3: tensor<1x128x1x1xf32>, %arg4: tensor<1x128x1x1xf32>, %arg5: tensor<1x128x1x1xf32>, %arg6: tensor<1x128x28x28xf32>) -> (tensor<1x128x28x28xf32>) {
     %1 = tosa.transpose %arg0 {perms = array<i32: 0, 2, 3, 1>} : (tensor<1x64x56x56xf32>) -> tensor<1x56x56x64xf32>
     %const_shape = "tosa.const_shape"() { values = dense<[128, 1, 1, 64]> : tensor<4xindex> } : () -> !tosa.shape<4>
     %2 = tosa.reshape %arg1, %const_shape : (tensor<128x64x1x1xf32>, !tosa.shape<4>) -> tensor<128x1x1x64xf32>

@@ -1,6 +1,6 @@
 // RUN: rocmlir-opt --tosa-to-rock %s -o -| FileCheck %s
 
-module attributes {kernel.module, mhal.arch = "amdgcn-amd-amdhsa:gfx950"} {
+module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
 // CHECK-LABEL: @test_matmul_t_block_scaled_basic
 // CHECK: rock.gemm %{{.*}} scaled by %{{.*}} * tr %{{.*}} scaled by %{{.*}}
 func.func @test_matmul_t_block_scaled_basic(%a_data: tensor<1x128x256xf4E2M1FN>, 

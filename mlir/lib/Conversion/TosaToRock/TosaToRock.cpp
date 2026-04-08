@@ -484,7 +484,7 @@ struct ElementwiseRegionFinder {
     // Right now, this is a bit restricted that we only allow reshape-like
     // ops between in the elementwise tree that get fused to the fusion point.
     // TODO: however, the latest code gridwise-gemm-to-blockwise should tackle
-    // more cases. The absolute restriction is gemm0Output to Linalg block
+    // more cases. The absolute restriction is gemm0Output to block
     // should contain invertible transforms, but that's future work.
     if (!op || (!isElementwiseOp(op) &&
                 !isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(op))) {

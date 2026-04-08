@@ -8,10 +8,10 @@
 // CHECK-SAME: -t f16 -transQ false -transK true -transV false -transO false -causal false -return_lse true -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 32 -seq_len_k 32 -head_dim_qk 32 -head_dim_v 32
 
 module {
-  func.func private @mlir_attention(%v: !migraphx.shaped<2x2x32x32xf16, 2048x1024x32x1> {mhal.read_access}, 
-                            %q: !migraphx.shaped<2x4x32x32xf16, 4096x1024x32x1> {mhal.read_access}, 
-                            %k: !migraphx.shaped<2x2x32x32xf16, 2048x1024x32x1> {mhal.read_access}) 
-                            -> (!migraphx.shaped<2x4x32x32xf16, 4096x1024x32x1> {mhal.write_access}, !migraphx.shaped<2x4x32x1xf16, 128x32x1x1> {mhal.write_access}) attributes {rock.kernel, rock.arch = "gfx942", rock.num_cu = 304 : i64} {
+  func.func private @mlir_attention(%v: !migraphx.shaped<2x2x32x32xf16, 2048x1024x32x1>, 
+                            %q: !migraphx.shaped<2x4x32x32xf16, 4096x1024x32x1>, 
+                            %k: !migraphx.shaped<2x2x32x32xf16, 2048x1024x32x1>) 
+                            -> (!migraphx.shaped<2x4x32x32xf16, 4096x1024x32x1>, !migraphx.shaped<2x4x32x1xf16, 128x32x1x1>) attributes {rock.kernel, rock.arch = "gfx942", rock.num_cu = 304 : i64} {
     %vbroadcast = migraphx.multibroadcast %v {out_dyn_dims = [], out_lens = [2, 2, 2, 32, 32]} : <2x2x32x32xf16, 2048x1024x32x1> -> <2x2x2x32x32xf16, 2048x1024x0x32x1>
     %vreshaped = migraphx.reshape %vbroadcast {dims = [2, 4, 32, 32]} : <2x2x2x32x32xf16, 2048x1024x0x32x1> -> <2x4x32x32xf16, 2048x1024x32x1>
     %kbroadcast = migraphx.multibroadcast %k {out_dyn_dims = [], out_lens = [2, 2, 2, 32, 32]} : <2x2x32x32xf16, 2048x1024x32x1> -> <2x2x2x32x32xf16, 2048x1024x0x32x1>

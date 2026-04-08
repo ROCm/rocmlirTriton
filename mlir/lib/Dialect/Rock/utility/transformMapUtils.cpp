@@ -10,14 +10,13 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
@@ -243,8 +242,8 @@ propagateUnmergeVectorization(T &&dimAndLength,
         if (!previousAlign.has_value())
           previousAlign = upperInfo.alignment * previousDimsStride;
         else
-          previousAlign = math_util::gcd(
-              *previousAlign, upperInfo.alignment * previousDimsStride);
+          previousAlign = std::gcd(*previousAlign,
+                                   upperInfo.alignment * previousDimsStride);
       } else {
         break;
       }
@@ -253,7 +252,7 @@ propagateUnmergeVectorization(T &&dimAndLength,
       if (!previousAlign.has_value())
         previousAlign = previousDimsStride;
       else
-        previousAlign = math_util::gcd(*previousAlign, previousDimsStride);
+        previousAlign = std::gcd(*previousAlign, previousDimsStride);
     }
     previousDimsStride *= dimLength;
   }
@@ -527,9 +526,8 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
         std::tie(upper, lower) = data.value();
         if (input[upper].has_value()) {
           int64_t alignment =
-              sliceBegin == 0
-                  ? input[upper]->alignment
-                  : math_util::gcd(input[upper]->alignment, sliceBegin);
+              sliceBegin == 0 ? input[upper]->alignment
+                              : std::gcd(input[upper]->alignment, sliceBegin);
           result[lower] =
               VectorizationInfo(input[upper]->maxLength,
                                 input[upper]->needsCoefficient, alignment);
@@ -552,9 +550,9 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
           int64_t maxUpperLen = upperInfo->maxLength;
           int64_t upperAlign = upperInfo->alignment;
           int64_t maxVectorizationLeft =
-              math_util::gcd(maxUpperLen, maxUpperLen - leftPad);
+              std::gcd(maxUpperLen, maxUpperLen - leftPad);
           int64_t maxVectorizationRight =
-              math_util::gcd(maxUpperLen, maxUpperLen - rightPad);
+              std::gcd(maxUpperLen, maxUpperLen - rightPad);
           int64_t lowerMaxLen =
               std::min(maxVectorizationLeft, maxVectorizationRight);
           // Padding is unique in that it imposes the requirement that
@@ -563,7 +561,7 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
           // into the padding. However, this only applies if there's actual
           // padding being applied.
           if (leftPad != 0 || rightPad != 0)
-            lowerMaxLen = math_util::gcd(lowerMaxLen, upperAlign);
+            lowerMaxLen = std::gcd(lowerMaxLen, upperAlign);
           result[lower] = VectorizationInfo(
               lowerMaxLen, upperInfo->needsCoefficient, upperAlign);
         }
@@ -578,10 +576,8 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
         int64_t modulus;
         std::tie(upper, lower, modulus) = data;
         if (input[upper].has_value()) {
-          int64_t lowerMaxLen =
-              math_util::gcd(input[upper]->maxLength, modulus);
-          int64_t lowerAlignment =
-              math_util::gcd(input[upper]->alignment, modulus);
+          int64_t lowerMaxLen = std::gcd(input[upper]->maxLength, modulus);
+          int64_t lowerAlignment = std::gcd(input[upper]->alignment, modulus);
           result[lower] = VectorizationInfo(
               lowerMaxLen, input[upper]->needsCoefficient, lowerAlignment);
         }
@@ -692,8 +688,8 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
                   (ourResult->maxLength * ourResult->needsCoefficient)) {
             ourResult->maxLength *= upperLen;
             alignmentHandled.insert(upperDim);
-            ourResult->alignment = math_util::gcd(ourResult->alignment,
-                                                  thisAlignment * coefficient);
+            ourResult->alignment =
+                std::gcd(ourResult->alignment, thisAlignment * coefficient);
           } else {
             break;
           }
@@ -713,7 +709,7 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
           if (input[upperDim].has_value())
             thatAlignment = input[upperDim]->alignment;
           ourResult->alignment =
-              math_util::gcd(ourResult->alignment, thatAlignment * coefficient);
+              std::gcd(ourResult->alignment, thatAlignment * coefficient);
         }
       }
       result[lowerDims[0]] = ourResult;
@@ -775,7 +771,7 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
           continue;
         }
         int64_t lowerLen = groupLengths[lowerDim];
-        int64_t thisMaxLen = math_util::gcd(maxLen, lowerLen);
+        int64_t thisMaxLen = std::gcd(maxLen, lowerLen);
         int64_t thisAlignment = std::max(align / stride, (int64_t)1);
         result[lowerDim] =
             VectorizationInfo(thisMaxLen, coeff * stride, thisAlignment);
@@ -850,7 +846,7 @@ mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
   if (finalUnmerge && finalUnmerge->needsCoefficient == 1)
     result = finalUnmerge->maxLength;
   // TODO(kdrewnia): Add support for tails
-  result = math_util::gcd(initialVecLen, result);
+  result = std::gcd(initialVecLen, result);
 
   // Vectorizing more than the physical vector length (128 bits) might
   // be harmful for coalescence and other metrics. Let's limit the maximum
@@ -859,7 +855,7 @@ mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
   if (!ignoreDataType) {
     constexpr int64_t maxVectorLenBits = 128;
     int64_t bwidth = outputType.getElementTypeBitWidth();
-    result = math_util::gcd(maxVectorLenBits / bwidth, result);
+    result = std::gcd(maxVectorLenBits / bwidth, result);
   }
   // bufferVectorSize will become non-trivial once scalarization comes in
   return VectorizationResult{/*max=*/result, /*bufferVectorSize=*/1};

@@ -22,7 +22,6 @@
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -35,7 +34,6 @@
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
@@ -54,7 +52,9 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/MathExtras.h"
 #include <iterator>
+#include <numeric>
 #include <tuple>
 
 namespace mlir {
@@ -772,7 +772,7 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
   SmallVector<int64_t, 5> gcdStrideDilations;
   assert(strides.size() == dilations.size());
   for (const auto &[stride, dilation] : zip(strides, dilations)) {
-    gcdStrideDilations.push_back(math_util::gcd(stride, dilation));
+    gcdStrideDilations.push_back(std::gcd(stride, dilation));
   }
 
   SmallVector<int64_t, 5> filTilda;
@@ -782,30 +782,29 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
 
   SmallVector<int64_t, 5> filDots;
   for (const auto &[fil, tilda] : zip(convDims.fil, filTilda)) {
-    filDots.push_back(math_util::integer_divide_ceil(fil, tilda));
+    filDots.push_back(llvm::divideCeil(fil, tilda));
   }
 
   SmallVector<int64_t, 5> outTilda;
   for (const auto &[out, dilation, fil, stride] :
        zip(convDims.out, dilations, convDims.fil, strides)) {
-    outTilda.push_back(
-        out + math_util::integer_divide_ceil(dilation * (fil - 1), stride));
+    outTilda.push_back(out + llvm::divideCeil(dilation * (fil - 1), stride));
   }
 
   SmallVector<int64_t, 5> iTildaLeft;
   SmallVector<int64_t, 5> iTildaRight;
   for (const auto &[padindex, dilation, tilda, stride] :
        enumerate(dilations, filTilda, strides)) {
-    iTildaLeft.push_back(math_util::integer_divide_floor(
-        std::max((int64_t)0, pads[2 * padindex] - dilation * (tilda - 1)),
-        stride));
+    iTildaLeft.push_back(
+        std::max((int64_t)0, pads[2 * padindex] - dilation * (tilda - 1)) /
+        stride);
   }
   for (const auto &[padindex, out, in, stride] :
        enumerate(outTilda, convDims.in, strides)) {
-    iTildaRight.push_back(std::min(
-        out,
-        math_util::integer_divide_ceil(pads[2 * padindex] + in - 1, stride) +
-            1));
+    iTildaRight.push_back(
+        std::min(out, static_cast<int64_t>(llvm::divideCeil(
+                          pads[2 * padindex] + in - 1, stride)) +
+                          1));
   }
 
   // i2tilda = kernelid % filtilda[2]
@@ -833,8 +832,8 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
     iTilda[0] = kernelId / product;
   }
   for (size_t i = 0; i < convDims.fil.size(); i++)
-    iDotSlice.push_back(math_util::integer_divide_ceil(
-        convDims.fil[i] - iTilda[i], filTilda[i]));
+    iDotSlice.push_back(
+        llvm::divideCeil(convDims.fil[i] - iTilda[i], filTilda[i]));
 
   // backward data only, compute iTilda indices for multi-gemm decomposition
   // c is input channels , k is output channels

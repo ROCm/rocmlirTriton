@@ -14,7 +14,6 @@
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -65,6 +64,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <optional>
 
 using namespace mlir;
@@ -908,7 +908,7 @@ static GemmSize bwdDataGemmSizeForKernelId(const ConvolutionDims &sizes,
   SmallVector<int64_t, 5> gcdStrideDilations;
   assert(strides.size() == dilations.size());
   for (const auto &[stride, dilation] : zip(strides, dilations))
-    gcdStrideDilations.push_back(math_util::gcd(stride, dilation));
+    gcdStrideDilations.push_back(std::gcd(stride, dilation));
 
   SmallVector<int64_t, 5> filTilda;
   for (const auto &[stride, gcdSD] : zip(strides, gcdStrideDilations))
@@ -917,22 +917,21 @@ static GemmSize bwdDataGemmSizeForKernelId(const ConvolutionDims &sizes,
   SmallVector<int64_t, 5> outTilda;
   for (const auto &[out, dilation, fil, stride] :
        zip(sizes.out, dilations, sizes.fil, strides))
-    outTilda.push_back(
-        out + math_util::integer_divide_ceil(dilation * (fil - 1), stride));
+    outTilda.push_back(out + llvm::divideCeil(dilation * (fil - 1), stride));
 
   SmallVector<int64_t, 5> iTildaLeft;
   SmallVector<int64_t, 5> iTildaRight;
   for (const auto &[padindex, dilation, tilda, stride] :
        enumerate(dilations, filTilda, strides))
-    iTildaLeft.push_back(math_util::integer_divide_floor(
-        std::max((int64_t)0, padding[2 * padindex] - dilation * (tilda - 1)),
-        stride));
+    iTildaLeft.push_back(
+        std::max((int64_t)0, padding[2 * padindex] - dilation * (tilda - 1)) /
+        stride);
   for (const auto &[padindex, out, in, stride] :
        enumerate(outTilda, sizes.in, strides))
-    iTildaRight.push_back(std::min(
-        out,
-        math_util::integer_divide_ceil(padding[2 * padindex] + in - 1, stride) +
-            1));
+    iTildaRight.push_back(
+        std::min(out, static_cast<int64_t>(llvm::divideCeil(
+                          padding[2 * padindex] + in - 1, stride)) +
+                          1));
 
   SmallVector<int64_t, 5> tildaSlice;
   for (const auto &[right, left] : zip(iTildaRight, iTildaLeft))
@@ -961,7 +960,7 @@ static GemmSize bwdDataGemmSizeForKernelId(const ConvolutionDims &sizes,
   int64_t m = sizes.c;
   int64_t k = sizes.k;
   for (size_t i = 0; i < sizes.fil.size(); i++)
-    k *= math_util::integer_divide_ceil(sizes.fil[i] - iTilda[i], filTilda[i]);
+    k *= llvm::divideCeil(sizes.fil[i] - iTilda[i], filTilda[i]);
   int64_t n = sizes.n;
   for (auto ts : tildaSlice)
     n *= ts;

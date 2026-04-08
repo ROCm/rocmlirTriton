@@ -8,7 +8,6 @@
 #ifndef ROCK_UTILITY_FUSION_H
 #define ROCK_UTILITY_FUSION_H
 
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/IR/BuiltinOps.h"

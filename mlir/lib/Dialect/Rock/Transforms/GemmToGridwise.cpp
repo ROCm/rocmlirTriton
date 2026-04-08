@@ -32,10 +32,8 @@
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -50,9 +48,11 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <numeric>
 #include <sstream>
 #include <tuple>
 #include <utility>
@@ -355,8 +355,7 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
   }
 
   const int64_t origN = cast<RankedTensorType>(b.getType()).getShape()[2];
-  const int64_t nPad =
-      splitNFactor - math_util::mod_1_to_n(origN, splitNFactor);
+  const int64_t nPad = llvm::alignTo(origN, splitNFactor) - origN;
 
   b = padMatrix(b, builder, loc, "gemmK", 0, "gemmN", nPad);
   c = padMatrix(c, builder, loc, "gemmK", nPad, "gemmO", 0);
@@ -876,10 +875,10 @@ GemmRewritePattern::arrangeSplitKTransform(
     // cut in the middle of the a block
     // TODO: Use AmdArchDbInfo to populate blockSize
     int64_t blockSize = 32;
-    int64_t lcm = math_util::lcm(splitKFactor, blockSize);
-    kPad = lcm - math_util::mod_1_to_n(origK, lcm);
+    int64_t lcm = std::lcm(splitKFactor, blockSize);
+    kPad = llvm::alignTo(origK, lcm) - origK;
   } else {
-    kPad = splitKFactor - math_util::mod_1_to_n(origK, splitKFactor);
+    kPad = llvm::alignTo(origK, splitKFactor) - origK;
   }
 
   a = padMatrix(a, builder, loc, "gemmM", 0, "gemmK", kPad);
@@ -1083,12 +1082,11 @@ void RockGemmToGridwisePass::runOnOperation() {
 
   target.addIllegalOp<rock::GemmOp, rock::AttentionOp,
                       rock::GemmElementwiseGemmOp>();
-  target
-      .addLegalOp<rock::TransformOp, rock::GridwiseGemmOp, rock::StoreOp,
-                  rock::GridwiseAttentionOp, linalg::GenericOp, arith::TruncIOp,
-                  arith::ExtFOp, arith::ExtSIOp, arith::TruncFOp>();
+  target.addLegalOp<rock::TransformOp, rock::GridwiseGemmOp, rock::StoreOp,
+                    rock::GridwiseAttentionOp, arith::TruncIOp, arith::ExtFOp,
+                    arith::ExtSIOp, arith::TruncFOp>();
 
-  target.addLegalDialect<linalg::LinalgDialect, arith::ArithDialect>();
+  target.addLegalDialect<arith::ArithDialect>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<GemmRewritePattern, GemmElementwiseGemmRewritePattern,

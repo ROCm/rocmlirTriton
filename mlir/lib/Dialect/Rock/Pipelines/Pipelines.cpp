@@ -250,7 +250,7 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   auto &funcPm = pm.nest<func::FuncOp>();
   funcPm.addPass(rock::createRockFlattenTosaFuncArgsPass());
 
-  // TOSA conversion to rock and/or linalg with mhal.launch's
+  // TOSA conversion to rock
   if (!noRock) {
     // convert tosa.conv2d/matmul to rock.conv
     /* rocmlir-opt --tosa-to-tensor --tosa-to-rock --rock-view-to-transform
@@ -387,6 +387,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
+// (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                      StringRef dumpCpuSchedules) {
 

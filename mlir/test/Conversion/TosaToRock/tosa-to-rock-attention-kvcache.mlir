@@ -3,7 +3,7 @@
 // CHECK-LABEL: func @mlir_attention
 // CHECK: rock.attention
 // CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
-func.func @mlir_attention(%arg0: tensor<12288xf16> {mhal.read_access}, %arg1: tensor<4194304xf16> {mhal.read_access}, %arg2: tensor<4194304xf16> {mhal.read_access}, %arg3: tensor<32xi32> {mhal.read_access}) -> (tensor<4096xf16> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @mlir_attention(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 32, 1024, 128] : tensor<4194304xf16> into tensor<1x32x1024x128xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1]] output_shape [1, 32] : tensor<32xi32> into tensor<1x32xi32>
   %expanded_1 = tensor.expand_shape %arg0 [[0, 1, 2, 3]] output_shape [1, 96, 1, 128] : tensor<12288xf16> into tensor<1x96x1x128xf16>
@@ -50,7 +50,7 @@ func.func @mlir_attention(%arg0: tensor<12288xf16> {mhal.read_access}, %arg1: te
 // CHECK-LABEL: func @mlir_attention_bias
 // CHECK: rock.attention
 // CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
-func.func @mlir_attention_bias(%arg0: tensor<12288xf16> {mhal.read_access}, %arg1: tensor<4194304xf16> {mhal.read_access}, %arg2: tensor<4194304xf16> {mhal.read_access}, %arg3: tensor<32xi32> {mhal.read_access}, %arg4: tensor<32768xf16> {mhal.read_access}) -> (tensor<4096xf16> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @mlir_attention_bias(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>, %arg4: tensor<32768xf16>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 32, 1024, 128] : tensor<4194304xf16> into tensor<1x32x1024x128xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1]] output_shape [1, 32] : tensor<32xi32> into tensor<1x32xi32>
   %expanded_1 = tensor.expand_shape %arg4 [[0, 1, 2, 3]] output_shape [1, 32, 1, 1024] : tensor<32768xf16> into tensor<1x32x1x1024xf16>
@@ -99,7 +99,7 @@ func.func @mlir_attention_bias(%arg0: tensor<12288xf16> {mhal.read_access}, %arg
 // CHECK-LABEL: func @mlir_attention_scale
 // CHECK: rock.attention
 // CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
-func.func @mlir_attention_scale(%arg0: tensor<12288xf16> {mhal.read_access}, %arg1: tensor<4194304xf16> {mhal.read_access}, %arg2: tensor<4194304xf16> {mhal.read_access}, %arg3: tensor<32xi32> {mhal.read_access}, %arg4: tensor<32768xf16> {mhal.read_access}) -> (tensor<4096xf16> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @mlir_attention_scale(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>, %arg4: tensor<32768xf16>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 32, 1024, 128] : tensor<4194304xf16> into tensor<1x32x1024x128xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1]] output_shape [1, 32] : tensor<32xi32> into tensor<1x32xi32>
   %expanded_1 = tensor.expand_shape %arg4 [[0, 1, 2, 3]] output_shape [1, 32, 1, 1024] : tensor<32768xf16> into tensor<1x32x1x1024xf16>
@@ -148,7 +148,7 @@ func.func @mlir_attention_scale(%arg0: tensor<12288xf16> {mhal.read_access}, %ar
 // CHECK-LABEL: func @mlir_attention_scale_bias
 // CHECK: rock.attention
 // CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
-func.func @mlir_attention_scale_bias(%arg0: tensor<12288xf16> {mhal.read_access}, %arg1: tensor<4194304xf16> {mhal.read_access}, %arg2: tensor<4194304xf16> {mhal.read_access}, %arg3: tensor<32xi32> {mhal.read_access}, %arg4: tensor<32768xf16> {mhal.read_access}, %arg5: tensor<32768xf16> {mhal.read_access}) -> (tensor<4096xf16> {mhal.write_access}) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @mlir_attention_scale_bias(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>, %arg4: tensor<32768xf16>, %arg5: tensor<32768xf16>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 32, 1024, 128] : tensor<4194304xf16> into tensor<1x32x1024x128xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1]] output_shape [1, 32] : tensor<32xi32> into tensor<1x32xi32>
   %expanded_1 = tensor.expand_shape %arg5 [[0, 1, 2, 3]] output_shape [1, 32, 1, 1024] : tensor<32768xf16> into tensor<1x32x1x1024xf16>
