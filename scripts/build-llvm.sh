@@ -53,15 +53,15 @@ if [ -d "$PATCHES_DIR" ] && [ -n "$(ls -A "$PATCHES_DIR"/*.patch 2>/dev/null)" ]
     cd "$REPO_ROOT"
 fi
 
-# Step 3: Patch MLIR_ENABLE_ROCM_RUNNER=OFF -> ON (in-place, idempotent)
+# Step 3: Ensure MLIR_ENABLE_ROCM_RUNNER=ON (in-place, idempotent)
 if grep -q 'DMLIR_ENABLE_ROCM_RUNNER=OFF' "$TRITON_BUILD_SCRIPT"; then
     echo "--- Patching Triton's build-llvm-project.sh: enabling MLIR_ENABLE_ROCM_RUNNER ---"
     sed -i 's/DMLIR_ENABLE_ROCM_RUNNER=OFF/DMLIR_ENABLE_ROCM_RUNNER=ON/g' "$TRITON_BUILD_SCRIPT"
 elif grep -q 'DMLIR_ENABLE_ROCM_RUNNER=ON' "$TRITON_BUILD_SCRIPT"; then
     echo "--- MLIR_ENABLE_ROCM_RUNNER already ON, no patch needed ---"
 else
-    echo "ERROR: Could not find DMLIR_ENABLE_ROCM_RUNNER in $TRITON_BUILD_SCRIPT"
-    exit 1
+    echo "--- Adding MLIR_ENABLE_ROCM_RUNNER=ON to Triton's build script ---"
+    sed -i '/DCMAKE_CXX_COMPILER/a\              -DMLIR_ENABLE_ROCM_RUNNER=ON' "$TRITON_BUILD_SCRIPT"
 fi
 
 # Step 4: Run Triton's build-llvm-project.sh
