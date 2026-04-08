@@ -270,26 +270,6 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
   }
 };
 
-// arith.negf(x) -> arith.mulf(x, -1.0)
-// The Triton TritonToTritonGPU conversion does not have a pattern for
-// arith.negf, so we expand it here into ops that Triton supports.
-struct NegFTritonWorkaround : public OpRewritePattern<arith::NegFOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(arith::NegFOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    auto shapedTy = dyn_cast<ShapedType>(op.getType());
-    if (!shapedTy)
-      return failure();
-    auto negOneAttr = DenseElementsAttr::get(
-        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), -1.0));
-    Value negOne = arith::ConstantOp::create(rewriter, loc, negOneAttr);
-    rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getType(),
-                                               op.getOperand(), negOne);
-    return success();
-  }
-};
-
 // tosa.sigmoid: 1 / (1 + exp(-x))
 struct SigmoidConverter : public OpRewritePattern<tosa::SigmoidOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -678,8 +658,6 @@ struct RockTosaToElementwise
         [](math::RoundEvenOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<math::RoundOp>(
         [](math::RoundOp op) { return !isa<ShapedType>(op.getType()); });
-    target.addDynamicallyLegalOp<arith::NegFOp>(
-        [](arith::NegFOp op) { return !isa<ShapedType>(op.getType()); });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       return !isa<tosa::TosaDialect>(op->getDialect());
     });
@@ -740,14 +718,11 @@ struct RockTosaToElementwise
              CustomUnsignedOpConverter>(ctx);
 
     // --- Triton workarounds ---
-    // The Triton TritonToTritonGPU conversion is missing patterns for
-    // math.tanh, math.powf, math.roundeven, math.round and arith.negf. Use
-    // upstream math::populateExpansionPatterns for math ops (they expand to
-    // ops Triton supports plus arith.negf). NegFTritonWorkaround handles
-    // arith.negf produced by upstream expansions.
+    // The Triton TritonToTritonGPU conversion was missing patterns for
+    // math.tanh, math.powf, math.roundeven and math.round. Use upstream
+    // math::populateExpansionPatterns to expand them into ops Triton supports.
     math::populateExpansionPatterns(patterns,
                                     {"tanh", "powf", "roundeven", "round"});
-    patterns.add<NegFTritonWorkaround>(ctx);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();

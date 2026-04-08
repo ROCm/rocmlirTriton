@@ -1,16 +1,17 @@
 diff --git a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
-index ba59773d6..c1c8f7a42 100644
+index ba59773d6..7f58750dc 100644
 --- a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
 +++ b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
-@@ -685,6 +685,7 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
+@@ -685,6 +685,8 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
    POPULATE_UNARY_OP(math::Exp2Op, math::Exp2Op)
    POPULATE_UNARY_OP(math::ErfOp, math::ErfOp)
    POPULATE_UNARY_OP(triton::BitcastOp, LLVM::BitcastOp)
 +  POPULATE_UNARY_OP(arith::BitcastOp, LLVM::BitcastOp)
++  POPULATE_UNARY_OP(arith::NegFOp, LLVM::FNegOp)
    POPULATE_UNARY_OP(triton::IntToPtrOp, LLVM::IntToPtrOp)
    POPULATE_UNARY_OP(triton::PtrToIntOp, LLVM::PtrToIntOp)
  #undef POPULATE_UNARY_OP
-@@ -715,6 +716,7 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
+@@ -715,6 +717,7 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
    POPULATE_BINARY_OP(arith::MaxSIOp, LLVM::SMaxOp) // smax
    POPULATE_BINARY_OP(arith::MinUIOp, LLVM::UMinOp) // umin
    POPULATE_BINARY_OP(arith::MaxUIOp, LLVM::UMaxOp) // umax
@@ -19,9 +20,18 @@ index ba59773d6..c1c8f7a42 100644
  
    patterns.add<ElementwiseOpConversion<math::FmaOp, LLVM::FMAOp>>(
 diff --git a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
-index 780d0fd5a..616ceb978 100644
+index 780d0fd5a..c656bc6a8 100644
 --- a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
 +++ b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
+@@ -89,7 +89,7 @@ void populateArithPatternsAndLegality(TritonGPUTypeConverter &typeConverter,
+       GenericOpPattern<arith::RemSIOp>, GenericOpPattern<arith::AndIOp>,
+       GenericOpPattern<arith::OrIOp>, GenericOpPattern<arith::XOrIOp>,
+       GenericOpPattern<arith::ShLIOp>, GenericOpPattern<arith::ShRUIOp>,
+-      GenericOpPattern<arith::ShRSIOp>, // NegFOp
++      GenericOpPattern<arith::ShRSIOp>, GenericOpPattern<arith::NegFOp>,
+       // Floating point
+       GenericOpPattern<arith::AddFOp>, GenericOpPattern<arith::SubFOp>,
+       // MaxMin
 @@ -109,7 +109,8 @@ void populateArithPatternsAndLegality(TritonGPUTypeConverter &typeConverter,
        GenericOpPattern<arith::ExtUIOp>, GenericOpPattern<arith::ExtSIOp>,
        GenericOpPattern<arith::ExtFOp>, GenericOpPattern<arith::SIToFPOp>,
