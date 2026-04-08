@@ -34,7 +34,6 @@
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -1083,12 +1082,11 @@ void RockGemmToGridwisePass::runOnOperation() {
 
   target.addIllegalOp<rock::GemmOp, rock::AttentionOp,
                       rock::GemmElementwiseGemmOp>();
-  target
-      .addLegalOp<rock::TransformOp, rock::GridwiseGemmOp, rock::StoreOp,
-                  rock::GridwiseAttentionOp, linalg::GenericOp, arith::TruncIOp,
-                  arith::ExtFOp, arith::ExtSIOp, arith::TruncFOp>();
+  target.addLegalOp<rock::TransformOp, rock::GridwiseGemmOp, rock::StoreOp,
+                    rock::GridwiseAttentionOp, arith::TruncIOp, arith::ExtFOp,
+                    arith::ExtSIOp, arith::TruncFOp>();
 
-  target.addLegalDialect<linalg::LinalgDialect, arith::ArithDialect>();
+  target.addLegalDialect<arith::ArithDialect>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<GemmRewritePattern, GemmElementwiseGemmRewritePattern,

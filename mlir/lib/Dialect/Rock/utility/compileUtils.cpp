@@ -7,7 +7,6 @@
 //===-----------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
