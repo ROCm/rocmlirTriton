@@ -456,7 +456,19 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
 
   // Lower remaining operations to LLVM (order follows MHAL pipeline)
   pm.addPass(createConvertControlFlowToLLVMPass());
+
+  // Lower math ops before ArithToLLVM: MathToLLVM lowers ops with LLVM
+  // intrinsic equivalents, MathToLibm handles the rest (e.g., math.erf) by
+  // emitting libm calls.  MathToLibm can introduce arith ops (extf/truncf for
+  // non-f32 types), so ArithToLLVM must run after to catch them all.
+  pm.addPass(createConvertMathToLLVMPass());
+  pm.addPass(createConvertMathToLibmPass());
+
   pm.addPass(createArithToLLVMConversionPass());
+
+  // TODO(rocmlirTriton): add createConvertVectorToLLVMPass() if any lowering
+  // path produces vector dialect ops on the host side (the old runner pipeline
+  // had it here).
 
   // Lower memref operations to LLVM BEFORE GPU conversion (per MHAL pattern)
   pm.addPass(createFinalizeMemRefToLLVMConversionPass());

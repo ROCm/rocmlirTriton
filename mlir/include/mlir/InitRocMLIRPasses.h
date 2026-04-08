@@ -47,6 +47,7 @@ inline void registerUpstreamPasses() {
   registerArithToLLVMConversionPass();
   registerConvertFuncToLLVMPass();
   registerConvertMathToLLVMPass();
+  registerConvertMathToLibmPass();
   registerReconcileUnrealizedCastsPass();
   registerSCFToControlFlowPass();
   registerTosaToArithPass();
