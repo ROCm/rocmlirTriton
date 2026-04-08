@@ -359,8 +359,13 @@ struct ArithTruncFToFpToFpPattern
     if (!hasFp8ElementType(op.getOut().getType()))
       return failure();
 
-    auto roundingAttr = triton::RoundingModeAttr::get(
-        rewriter.getContext(), triton::RoundingMode::RTNE);
+    triton::RoundingMode tritonRM = triton::RoundingMode::RTNE;
+    if (auto arithRM = op.getRoundingmodeAttr()) {
+      if (arithRM.getValue() == arith::RoundingMode::toward_zero)
+        tritonRM = triton::RoundingMode::RTZ;
+    }
+    auto roundingAttr =
+        triton::RoundingModeAttr::get(rewriter.getContext(), tritonRM);
     rewriter.replaceOpWithNewOp<triton::FpToFpOp>(op, op.getOut().getType(),
                                                    op.getIn(), roundingAttr);
     return success();
@@ -380,6 +385,7 @@ struct ArithExtFToFpToFpPattern
     if (!hasFp8ElementType(op.getIn().getType()))
       return failure();
 
+    // FP8 → wider extension is exact (no precision loss), so no rounding needed.
     rewriter.replaceOpWithNewOp<triton::FpToFpOp>(
         op, op.getOut().getType(), op.getIn(), /*rounding=*/nullptr);
     return success();
