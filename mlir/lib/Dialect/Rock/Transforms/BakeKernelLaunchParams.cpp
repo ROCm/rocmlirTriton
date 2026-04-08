@@ -24,6 +24,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -56,12 +58,43 @@ struct BakeKernelLaunchParamsPass
     // Step 1: Convert @global_smem from dynamic (external, size 0)
     //         to static (internal, size = ttg.shared).
     // ---------------------------------------------------------------
-    int64_t sharedMemSize = 0;
-    if (auto attr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared"))
-      sharedMemSize = attr.getInt();
+    auto sharedAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared");
+    if (!sharedAttr) {
+      moduleOp.emitError("ttg.shared attribute not found on module");
+      return signalPassFailure();
+    }
+    int64_t sharedMemSize = sharedAttr.getInt();
 
     if (sharedMemSize < 0) {
       moduleOp.emitError("ttg.shared is negative (") << sharedMemSize << ")";
+      return signalPassFailure();
+    }
+
+    // Find the target architecture from rock.arch — try the kernel function
+    // first, then fall back to the module attribute.
+    StringRef archStr;
+    for (auto funcOp : moduleOp.getOps<LLVM::LLVMFuncOp>()) {
+      if (auto attr = funcOp->getAttrOfType<StringAttr>(
+              rock::ArchAttr::getMnemonic())) {
+        archStr = attr.getValue();
+        break;
+      }
+    }
+    if (archStr.empty()) {
+      if (auto attr = moduleOp->getAttrOfType<StringAttr>(
+              rock::ArchAttr::getMnemonic()))
+        archStr = attr.getValue();
+    }
+    if (archStr.empty()) {
+      moduleOp.emitError("rock.arch not found on kernel function or module");
+      return signalPassFailure();
+    }
+
+    int64_t maxLDS = rock::getLDSSize(archStr);
+    if (sharedMemSize > maxLDS) {
+      moduleOp.emitError("ttg.shared (")
+          << sharedMemSize << ") exceeds LDS limit (" << maxLDS << ") for "
+          << archStr;
       return signalPassFailure();
     }
 
@@ -98,49 +131,61 @@ struct BakeKernelLaunchParamsPass
     moduleOp->removeAttr("ttg.shared");
 
     // ---------------------------------------------------------------
-    // Step 2: Remove unused trailing workspace arguments from the
-    //         kernel LLVM function.  Triton's amendFuncOp appends
-    //         exactly two ptr<1> args (global-scratch and
-    //         profile-scratch).  We cap removal at that count so
-    //         real kernel data args are never touched.
+    // Step 2: Remove the two trailing workspace arguments that
+    //         Triton's amendFuncOp appends to every kernel
+    //         (global-scratch ptr<1> and profile-scratch ptr<1>).
+    //         These must be unused; if they have uses the pass fails
+    //         because downstream code (tuning driver, RestoreHostCode)
+    //         assumes a 1:1 mapping between host args and kernel args.
     // ---------------------------------------------------------------
-    constexpr unsigned kMaxWorkspaceArgs = 2;
+    constexpr unsigned kWorkspaceArgs = 2;
 
     for (auto funcOp :
          llvm::make_early_inc_range(moduleOp.getOps<LLVM::LLVMFuncOp>())) {
-      if (funcOp.isExternal())
-        continue;
-      // Only process kernel functions (external linkage, non-declaration).
-      if (funcOp.getLinkage() != LLVM::Linkage::External)
+      if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
         continue;
 
       unsigned numArgs = funcOp.getNumArguments();
-      if (numArgs < 2)
-        continue;
-
-      unsigned numToRemove = 0;
-      for (unsigned i = numArgs; i > 0 && numToRemove < kMaxWorkspaceArgs;
-           --i) {
-        BlockArgument arg = funcOp.getArgument(i - 1);
-        if (!arg.use_empty())
-          break;
-        // Triton workspace args are ptr<1> (global address space).
-        auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(arg.getType());
-        if (!ptrTy || ptrTy.getAddressSpace() != 1)
-          break;
-        ++numToRemove;
+      if (numArgs < kWorkspaceArgs) {
+        funcOp.emitError("kernel '")
+            << funcOp.getName() << "' has fewer than " << kWorkspaceArgs
+            << " arguments — expected trailing workspace args from "
+               "amendFuncOp";
+        return signalPassFailure();
       }
 
-      if (numToRemove == 0)
-        continue;
+      // The last kWorkspaceArgs args must be ptr<1> (from amendFuncOp).
+      for (unsigned i = numArgs - kWorkspaceArgs; i < numArgs; ++i) {
+        auto ptrTy =
+            dyn_cast<LLVM::LLVMPointerType>(funcOp.getArgument(i).getType());
+        if (!ptrTy || ptrTy.getAddressSpace() != 1) {
+          funcOp.emitError("expected trailing workspace arg %arg")
+              << i << " to be ptr<1>, got " << funcOp.getArgument(i).getType();
+          return signalPassFailure();
+        }
+      }
 
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Removing " << numToRemove << " unused trailing args from "
-                 << funcOp.getName() << "\n");
+      // All workspace args must be unused.
+      for (unsigned i = numArgs - kWorkspaceArgs; i < numArgs; ++i) {
+        BlockArgument arg = funcOp.getArgument(i);
+        if (!arg.use_empty()) {
+          funcOp.emitError("workspace argument %arg")
+              << i
+              << " has unexpected uses — cannot strip trailing "
+                 "workspace args from kernel '"
+              << funcOp.getName() << "'";
+          return signalPassFailure();
+        }
+      }
+
+      LLVM_DEBUG(llvm::dbgs() << "Removing " << kWorkspaceArgs
+                              << " unused trailing workspace args from "
+                              << funcOp.getName() << "\n");
+
+      unsigned newNumArgs = numArgs - kWorkspaceArgs;
 
       // Build the new function type without the trailing args.
       auto oldFnTy = funcOp.getFunctionType();
-      unsigned newNumArgs = numArgs - numToRemove;
       SmallVector<Type> newParamTypes;
       newParamTypes.reserve(newNumArgs);
       for (unsigned i = 0; i < newNumArgs; ++i)

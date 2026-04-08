@@ -493,13 +493,11 @@ void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
   std::string arch = options.chip;
 
-  // Convert dynamic shared memory to static LDS allocation and strip
-  // unused Triton workspace arguments from the kernel signature.
-  // This runs before TritonToHsaco so the static LDS size is baked into
-  // the kernel descriptor, and before RestoreHostCode so that
-  // collectKernelInfo sees the trimmed argument list.
-  // Placed here (not in buildTritonPipeline) so that ttg.shared is still
-  // available for validation between the Triton and backend pipelines.
+  // Validate LDS usage against the hardware limit, convert dynamic shared
+  // memory to static LDS allocation, and strip unused Triton workspace
+  // arguments from the kernel signature.  Runs before TritonToHsaco so the
+  // static LDS size is baked into the kernel descriptor, and before
+  // RestoreHostCode so that collectKernelInfo sees the trimmed argument list.
   pm.addPass(rock::createBakeKernelLaunchParamsPass());
 
   // Optionally generate the HSACO binary

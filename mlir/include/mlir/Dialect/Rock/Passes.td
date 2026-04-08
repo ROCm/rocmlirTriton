@@ -290,6 +290,10 @@ def BakeKernelLaunchParamsPass
        profile-scratch pointer arguments to every kernel.  If they are unused
        in the IR, this pass strips them from the function signature.
 
+    The pass also validates that `ttg.shared` does not exceed the hardware LDS
+    limit for the target architecture (read from the `rock.arch` attribute on
+    the kernel function).
+
     After this pass the `ttg.shared` attribute is removed (shared memory is now
     static), so downstream launch code should pass 0 for dynamic shared memory.
   }];

@@ -288,9 +288,14 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
 
     // BakeKernelLaunchParams has already stripped unused workspace args and
     // baked LDS into the binary, so no padding or dynamic shared memory needed.
-    assert(launchArgs.size() == kernel.argTypes.size() &&
-           "launch arg count must match kernel signature after "
-           "BakeKernelLaunchParams");
+    if (launchArgs.size() != kernel.argTypes.size()) {
+      callOp.emitError("launch arg count (")
+          << launchArgs.size() << ") does not match kernel signature ("
+          << kernel.argTypes.size()
+          << ") — BakeKernelLaunchParams may not have run or workspace args "
+             "are unexpectedly used";
+      return failure();
+    }
     gpu::LaunchFuncOp::create(
         builder, callLoc,
         SymbolRefAttr::get(ctx, binaryOp.getName(),
@@ -388,7 +393,7 @@ void RockRestoreHostCodePass::runOnOperation() {
   // metadata.
   if (!kernels.empty()) {
     if (failed(createGpuBinaryAndLaunchFuncs(moduleOp, options, kernels)))
-      signalPassFailure();
+      return signalPassFailure();
     // Only remove LLVM kernel functions when host functions were restored
     // (gpu.launch_func now references the kernel via gpu.binary).
     if (hasHostFuncs)
