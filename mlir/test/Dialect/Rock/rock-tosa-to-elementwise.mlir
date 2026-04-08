@@ -124,15 +124,10 @@ func.func @floor_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.k
 
 // CHECK-LABEL: @tanh_f32
 // CHECK-NOT:   tosa.tanh
-// TanhTritonWorkaround: math.tanh is expanded to (exp(2x) - 1) / (exp(2x) + 1)
-// because the Triton TritonToTritonGPU conversion has no pattern for math.tanh.
-// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<64xf32>
-// CHECK-DAG:   %[[TWO:.*]] = arith.constant dense<2.000000e+00> : tensor<64xf32>
-// CHECK:       %[[TWO_X:.*]] = arith.mulf %[[TWO]], %arg0 : tensor<64xf32>
-// CHECK:       %[[EXP:.*]] = math.exp %[[TWO_X]] : tensor<64xf32>
-// CHECK:       %[[NUM:.*]] = arith.subf %[[EXP]], %[[ONE]] : tensor<64xf32>
-// CHECK:       %[[DEN:.*]] = arith.addf %[[EXP]], %[[ONE]] : tensor<64xf32>
-// CHECK:       arith.divf %[[NUM]], %[[DEN]] : tensor<64xf32>
+// CHECK-NOT:   math.tanh
+// Upstream math::populateExpansionPatterns expands tanh using sign handling.
+// CHECK:       math.exp
+// CHECK:       arith.divf
 func.func @tanh_f32(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
   %0 = tosa.tanh %arg0 : (tensor<64xf32>) -> tensor<64xf32>
   return %0 : tensor<64xf32>
@@ -174,10 +169,8 @@ func.func @abs_i32(%arg0: tensor<32xi32>) -> tensor<32xi32> attributes {rock.ker
 
 // CHECK-LABEL: @negate_f32
 // CHECK-NOT:   tosa.negate
-// NegFTritonWorkaround: arith.negf is rewritten to arith.mulf(x, -1.0)
-// because the Triton TritonToTritonGPU conversion has no pattern for arith.negf.
-// CHECK:       %[[NEG1:.*]] = arith.constant dense<-1.000000e+00> : tensor<16xf32>
-// CHECK:       arith.mulf %arg0, %[[NEG1]] : tensor<16xf32>
+// arith.negf is now supported by Triton, so it's preserved.
+// CHECK:       arith.negf %arg0 : tensor<16xf32>
 func.func @negate_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
   %in_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
   %out_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
@@ -235,10 +228,9 @@ func.func @reciprocal_f32(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {r
 
 // CHECK-LABEL: @sigmoid_f32
 // CHECK-NOT:   tosa.sigmoid
-// sigmoid(x) = 1 / (1 + exp(-x)), where -x uses NegFTritonWorkaround.
+// sigmoid(x) = 1 / (1 + exp(-x)). arith.negf is now supported by Triton.
 // CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<16xf32>
-// CHECK-DAG:   %[[NEG1:.*]] = arith.constant dense<-1.000000e+00> : tensor<16xf32>
-// CHECK:       %[[NEG:.*]] = arith.mulf %arg0, %[[NEG1]] : tensor<16xf32>
+// CHECK:       %[[NEG:.*]] = arith.negf %arg0 : tensor<16xf32>
 // CHECK:       %[[EXP:.*]] = math.exp %[[NEG]] : tensor<16xf32>
 // CHECK:       %[[DENOM:.*]] = arith.addf %[[ONE]], %[[EXP]] : tensor<16xf32>
 // CHECK:       arith.divf %[[ONE]], %[[DENOM]] : tensor<16xf32>
@@ -318,20 +310,10 @@ func.func @cast_i32_to_f32(%arg0: tensor<16xi32>) -> tensor<16xf32> attributes {
 // CHECK-LABEL: @cast_f32_to_i32
 // CHECK-NOT:   tosa.cast
 // CHECK-NOT:   math.roundeven
-// CastConverter emits math.roundeven which RoundEvenTritonWorkaround then
-// expands to a correct round-to-nearest-even sequence.
-// CHECK-DAG:   %[[HALF:.*]] = arith.constant dense<5.000000e-01> : tensor<16xf32>
-// CHECK-DAG:   %[[TWO:.*]] = arith.constant dense<2.000000e+00> : tensor<16xf32>
-// CHECK:       %[[SUM:.*]] = arith.addf %arg0, %[[HALF]] : tensor<16xf32>
-// CHECK:       %[[Y:.*]] = math.floor %[[SUM]] : tensor<16xf32>
-// CHECK:       %[[TIE:.*]] = arith.cmpf oeq, %[[SUM]], %[[Y]] : tensor<16xf32>
-// CHECK:       %[[YHALF:.*]] = arith.divf %[[Y]], %[[TWO]] : tensor<16xf32>
-// CHECK:       %[[YHALFFL:.*]] = math.floor %[[YHALF]] : tensor<16xf32>
-// CHECK:       %[[YEVEN:.*]] = arith.mulf %[[TWO]], %[[YHALFFL]] : tensor<16xf32>
-// CHECK:       %[[FMOD:.*]] = arith.subf %[[Y]], %[[YEVEN]] : tensor<16xf32>
-// CHECK:       %[[YADJ:.*]] = arith.subf %[[Y]], %[[FMOD]] : tensor<16xf32>
-// CHECK:       %[[ROUNDED:.*]] = arith.select %[[TIE]], %[[YADJ]], %[[Y]] : tensor<16xi1>, tensor<16xf32>
-// CHECK:       arith.fptosi %[[ROUNDED]] : tensor<16xf32> to tensor<16xi32>
+// CastConverter emits math.roundeven, which upstream math::populateExpansionPatterns
+// then expands using bit manipulation (math.round + arith.bitcast).
+// CHECK:       math.copysign
+// CHECK:       arith.fptosi
 func.func @cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
   %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
@@ -655,17 +637,12 @@ func.func @unsigned_cast_non_kernel(%arg0: tensor<16xf32>) -> tensor<16xi32> {
 
 // -----
 
-// TanhTritonWorkaround: tosa.tanh with f16 is expanded through math.tanh workaround.
+// Upstream math::populateExpansionPatterns expands tanh using sign handling.
 // CHECK-LABEL: @tanh_f16
 // CHECK-NOT:   tosa.tanh
 // CHECK-NOT:   math.tanh
-// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<64xf16>
-// CHECK-DAG:   %[[TWO:.*]] = arith.constant dense<2.000000e+00> : tensor<64xf16>
-// CHECK:       %[[TWO_X:.*]] = arith.mulf %[[TWO]], %arg0 : tensor<64xf16>
-// CHECK:       %[[EXP:.*]] = math.exp %[[TWO_X]] : tensor<64xf16>
-// CHECK:       %[[NUM:.*]] = arith.subf %[[EXP]], %[[ONE]] : tensor<64xf16>
-// CHECK:       %[[DEN:.*]] = arith.addf %[[EXP]], %[[ONE]] : tensor<64xf16>
-// CHECK:       arith.divf %[[NUM]], %[[DEN]] : tensor<64xf16>
+// CHECK:       math.exp
+// CHECK:       arith.divf
 func.func @tanh_f16(%arg0: tensor<64xf16>) -> tensor<64xf16> attributes {rock.kernel} {
   %0 = tosa.tanh %arg0 : (tensor<64xf16>) -> tensor<64xf16>
   return %0 : tensor<64xf16>
@@ -673,16 +650,11 @@ func.func @tanh_f16(%arg0: tensor<64xf16>) -> tensor<64xf16> attributes {rock.ke
 
 // -----
 
-// TanhTritonWorkaround: math.tanh directly in IR is expanded.
+// Upstream math::populateExpansionPatterns expands math.tanh directly.
 // CHECK-LABEL: @tanh_direct
 // CHECK-NOT:   math.tanh
-// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<32xf32>
-// CHECK-DAG:   %[[TWO:.*]] = arith.constant dense<2.000000e+00> : tensor<32xf32>
-// CHECK:       %[[TWO_X:.*]] = arith.mulf %[[TWO]], %arg0 : tensor<32xf32>
-// CHECK:       %[[EXP:.*]] = math.exp %[[TWO_X]] : tensor<32xf32>
-// CHECK:       %[[NUM:.*]] = arith.subf %[[EXP]], %[[ONE]] : tensor<32xf32>
-// CHECK:       %[[DEN:.*]] = arith.addf %[[EXP]], %[[ONE]] : tensor<32xf32>
-// CHECK:       arith.divf %[[NUM]], %[[DEN]] : tensor<32xf32>
+// CHECK:       math.exp
+// CHECK:       arith.divf
 func.func @tanh_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
   %0 = math.tanh %arg0 : tensor<32xf32>
   return %0 : tensor<32xf32>
@@ -690,11 +662,9 @@ func.func @tanh_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock
 
 // -----
 
-// NegFTritonWorkaround: arith.negf on tensors is expanded to mulf(x, -1).
+// arith.negf is now supported by Triton, so it's preserved.
 // CHECK-LABEL: @negf_direct
-// CHECK-NOT:   arith.negf
-// CHECK:       %[[NEG1:.*]] = arith.constant dense<-1.000000e+00> : tensor<32xf32>
-// CHECK:       arith.mulf %arg0, %[[NEG1]] : tensor<32xf32>
+// CHECK:       arith.negf %arg0 : tensor<32xf32>
 func.func @negf_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
   %0 = arith.negf %arg0 : tensor<32xf32>
   return %0 : tensor<32xf32>
@@ -702,7 +672,7 @@ func.func @negf_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock
 
 // -----
 
-// NegFTritonWorkaround only applies to shaped types; scalar negf is preserved.
+// arith.negf is now supported by Triton; scalar negf is preserved as-is.
 // CHECK-LABEL: @negf_scalar_preserved
 // CHECK:       arith.negf %arg0 : f32
 func.func @negf_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
@@ -712,8 +682,7 @@ func.func @negf_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
 
 // -----
 
-// PowFTritonWorkaround: tosa.pow is expanded to exp(y * log(x))
-// because the Triton TritonToTritonGPU conversion has no pattern for math.powf.
+// Upstream math::populateExpansionPatterns expands powf to exp(y * log(x)).
 // CHECK-LABEL: @pow_f32
 // CHECK-NOT:   tosa.pow
 // CHECK-NOT:   math.powf
@@ -727,7 +696,7 @@ func.func @pow_f32(%arg0: tensor<64xf32>, %arg1: tensor<64xf32>) -> tensor<64xf3
 
 // -----
 
-// PowFTritonWorkaround: math.powf directly in IR is expanded.
+// Upstream math::populateExpansionPatterns expands powf to exp(y * log(x)).
 // CHECK-LABEL: @powf_direct
 // CHECK-NOT:   math.powf
 // CHECK:       %[[LOG:.*]] = math.log %arg0 : tensor<32xf32>
@@ -740,21 +709,11 @@ func.func @powf_direct(%arg0: tensor<32xf32>, %arg1: tensor<32xf32>) -> tensor<3
 
 // -----
 
-// RoundEvenTritonWorkaround: math.roundeven is expanded to correct
-// round-to-nearest-even using floor(x+0.5) with tie-breaking to even.
+// Upstream math::populateExpansionPatterns expands roundeven using
+// bit manipulation (math.round + arith.bitcast + math.copysign).
 // CHECK-LABEL: @roundeven_direct
 // CHECK-NOT:   math.roundeven
-// CHECK-DAG:   %[[HALF:.*]] = arith.constant dense<5.000000e-01> : tensor<32xf32>
-// CHECK-DAG:   %[[TWO:.*]] = arith.constant dense<2.000000e+00> : tensor<32xf32>
-// CHECK:       %[[SUM:.*]] = arith.addf %arg0, %[[HALF]] : tensor<32xf32>
-// CHECK:       %[[Y:.*]] = math.floor %[[SUM]] : tensor<32xf32>
-// CHECK:       %[[TIE:.*]] = arith.cmpf oeq, %[[SUM]], %[[Y]] : tensor<32xf32>
-// CHECK:       %[[YHALF:.*]] = arith.divf %[[Y]], %[[TWO]] : tensor<32xf32>
-// CHECK:       %[[YHALFFL:.*]] = math.floor %[[YHALF]] : tensor<32xf32>
-// CHECK:       %[[YEVEN:.*]] = arith.mulf %[[TWO]], %[[YHALFFL]] : tensor<32xf32>
-// CHECK:       %[[FMOD:.*]] = arith.subf %[[Y]], %[[YEVEN]] : tensor<32xf32>
-// CHECK:       %[[YADJ:.*]] = arith.subf %[[Y]], %[[FMOD]] : tensor<32xf32>
-// CHECK:       arith.select %[[TIE]], %[[YADJ]], %[[Y]] : tensor<32xi1>, tensor<32xf32>
+// CHECK:       math.copysign
 func.func @roundeven_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
   %0 = math.roundeven %arg0 : tensor<32xf32>
   return %0 : tensor<32xf32>
@@ -762,7 +721,7 @@ func.func @roundeven_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes 
 
 // -----
 
-// RoundEvenTritonWorkaround only applies to shaped types; scalar roundeven is preserved.
+// Upstream expansions only apply to shaped types; scalar roundeven is preserved.
 // CHECK-LABEL: @roundeven_scalar_preserved
 // CHECK:       math.roundeven %arg0 : f32
 func.func @roundeven_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
@@ -772,7 +731,7 @@ func.func @roundeven_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel
 
 // -----
 
-// TanhTritonWorkaround only applies to shaped types; scalar tanh is preserved.
+// Upstream expansions only apply to shaped types; scalar tanh is preserved.
 // CHECK-LABEL: @tanh_scalar_preserved
 // CHECK:       math.tanh %arg0 : f32
 func.func @tanh_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
@@ -782,7 +741,7 @@ func.func @tanh_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
 
 // -----
 
-// PowFTritonWorkaround only applies to shaped types; scalar powf is preserved.
+// Upstream expansions only apply to shaped types; scalar powf is preserved.
 // CHECK-LABEL: @powf_scalar_preserved
 // CHECK:       math.powf %arg0, %arg1 : f32
 func.func @powf_scalar_preserved(%arg0: f32, %arg1: f32) -> f32 attributes {rock.kernel} {
