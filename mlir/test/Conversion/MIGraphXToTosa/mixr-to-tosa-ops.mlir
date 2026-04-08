@@ -274,7 +274,8 @@ module  {
     %1 = migraphx.dot %arg1, %0 : <64x64x768xf16, 49152x768x1>, <64x768x2304xf16, 0x2304x1> -> <64x64x2304xf16, 147456x2304x1>
     // CHECK-DAG: %[[MATMUL:.*]] = tosa.matmul %[[ARG1]], %[[MUL]]
     // CHECK-SAME: {acc_type = f32}
-    // CHECK-DAG: %[[BIASED:.*]] = tosa.add %[[MATMUL]], %[[ARG0]]
+    // CHECK-DAG: %[[CAST:.*]] = tosa.cast %[[MATMUL]]
+    // CHECK-DAG: %[[BIASED:.*]] = tosa.add %[[CAST]], %[[ARG0]]
     // CHECK-DAG: %[[constshape5:.+]] = tosa.const_shape  {values = dense<9437184> : tensor<1xindex>} : () -> !tosa.shape<1>
     // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[BIASED]], %[[constshape5]]
     // CHECK: return %[[RET]]
@@ -296,7 +297,8 @@ module  {
     %1 = migraphx.dot %arg1, %0 : <64x64x768xf16, 49152x768x1>, <64x768x2304xf16, 0x2304x1> -> <64x64x2304xf16, 147456x2304x1>
     // CHECK-DAG: %[[MATMUL:.*]] = tosa.matmul %[[ARG1]], %[[MUL]]
     // CHECK-SAME: {acc_type = f32}
-    // CHECK-DAG: %[[BIASED:.*]] = tosa.add %[[MATMUL]], %[[ARG0]]
+    // CHECK-DAG: %[[CAST:.*]] = tosa.cast %[[MATMUL]]
+    // CHECK-DAG: %[[BIASED:.*]] = tosa.add %[[CAST]], %[[ARG0]]
     // CHECK-DAG: %[[constshape5:.+]] = tosa.const_shape  {values = dense<9437184> : tensor<1xindex>} : () -> !tosa.shape<1>
     // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[BIASED]], %[[constshape5]]
     // CHECK: return %[[RET]]
