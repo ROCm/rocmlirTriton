@@ -207,3 +207,71 @@ func.func @attn_external_transform_chain(
   } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
   return %result : tensor<1x64x32xf32>
 }
+
+// -----
+
+// Error: an external non-splat constant captured by the preSoftmaxBody
+// cannot be retiled to tile-level shapes.
+func.func @error_external_non_splat_constant(
+    %q: tensor<1x4x4xf32>,
+    %k: tensor<1x4x4xf32>,
+    %v: tensor<1x4x4xf32>) -> tensor<1x4x4xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 1 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+    } {
+  %cst = arith.constant dense<[[[1.0, 2.0, 3.0, 4.0],
+                                 [5.0, 6.0, 7.0, 8.0],
+                                 [9.0, 10.0, 11.0, 12.0],
+                                 [13.0, 14.0, 15.0, 16.0]]]> : tensor<1x4x4xf32>
+  // expected-error @below {{'rock.gridwise_attention' op non-splat constant in preSoftmaxBody cannot be tiled}}
+  // expected-error @below {{Failed to post process first GEMM output}}
+  // expected-error @below {{failed to legalize operation 'rock.gridwise_attention' that was explicitly marked illegal}}
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x4x4xf32>):
+    %0 = arith.mulf %arg_qk, %cst : tensor<1x4x4xf32>
+    rock.yield %0 : tensor<1x4x4xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 4, nPerBlock = 4, kPerBlock = 4, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 4, nPerBlock = 4, kPerBlock = 4, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x4x4xf32>, tensor<1x4x4xf32>, tensor<1x4x4xf32> -> tensor<1x4x4xf32>
+  return %result : tensor<1x4x4xf32>
+}
+
+// -----
+
+// Error: a non-splat constant defined inside the preSoftmaxBody
+// cannot be retiled to tile-level shapes.
+func.func @error_body_non_splat_constant(
+    %q: tensor<1x4x4xf32>,
+    %k: tensor<1x4x4xf32>,
+    %v: tensor<1x4x4xf32>) -> tensor<1x4x4xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 1 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+    } {
+  // expected-error @below {{'rock.gridwise_attention' op non-splat constant in preSoftmaxBody cannot be tiled}}
+  // expected-error @below {{Failed to post process first GEMM output}}
+  // expected-error @below {{failed to legalize operation 'rock.gridwise_attention' that was explicitly marked illegal}}
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x4x4xf32>):
+    %cst = arith.constant dense<[[[1.0, 2.0, 3.0, 4.0],
+                                   [5.0, 6.0, 7.0, 8.0],
+                                   [9.0, 10.0, 11.0, 12.0],
+                                   [13.0, 14.0, 15.0, 16.0]]]> : tensor<1x4x4xf32>
+    %0 = arith.mulf %arg_qk, %cst : tensor<1x4x4xf32>
+    rock.yield %0 : tensor<1x4x4xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 4, nPerBlock = 4, kPerBlock = 4, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 4, nPerBlock = 4, kPerBlock = 4, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x4x4xf32>, tensor<1x4x4xf32>, tensor<1x4x4xf32> -> tensor<1x4x4xf32>
+  return %result : tensor<1x4x4xf32>
+}

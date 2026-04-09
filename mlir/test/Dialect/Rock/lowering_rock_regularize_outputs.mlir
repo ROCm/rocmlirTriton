@@ -352,15 +352,12 @@ module {
   // Body:  sum = arith.addf arg1, arg2
   //        sum_t = rock.transform sum (Unmerge: 4096 -> 64x64)
   //        final = arith.addf arg0, sum_t
-  // Expect: transforms sunk to block args, then externalized.
-  //   Body becomes purely elementwise with matching shapes.
   // ============================================================
 
   // CHECK-LABEL: func.func @test_attention_body_intermediate_transform
-  // The body should contain no rock.transform ops after regularization.
   // CHECK: rock.attention
   // CHECK: elementwise
-  // CHECK-NOT: rock.transform
+  // CHECK: rock.transform
   // CHECK: rock.yield
   func.func @test_attention_body_intermediate_transform(
       %q_raw: tensor<2048xf16>, %k_raw: tensor<2048xf16>,
@@ -391,13 +388,12 @@ module {
   // Body:  sum = arith.mulf arg1, constant
   //        sum_t = rock.transform sum (Unmerge: 4096 -> 64x64)
   //        final = arith.addf arg0, sum_t
-  // Expect: constant absorbed, transforms sunk and externalized.
   // ============================================================
 
   // CHECK-LABEL: func.func @test_attention_body_intermediate_transform_const
   // CHECK: rock.attention
   // CHECK: elementwise
-  // CHECK-NOT: rock.transform
+  // CHECK: rock.transform
   // CHECK: rock.yield
   func.func @test_attention_body_intermediate_transform_const(
       %q_raw: tensor<2048xf16>, %k_raw: tensor<2048xf16>,

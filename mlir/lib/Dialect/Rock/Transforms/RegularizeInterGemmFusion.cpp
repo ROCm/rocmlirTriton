@@ -117,6 +117,8 @@ static LogicalResult sinkTransformsToLeaves(Operation *op, Block &block) {
       Operation *newElemwise = builder.clone(*defOp);
       for (unsigned i = 0; i < newOperands.size(); ++i)
         newElemwise->setOperand(i, newOperands[i]);
+      if (newElemwise->getNumResults() != 1)
+        return op->emitOpError() << "expected single-result elementwise op";
       newElemwise->getResult(0).setType(resultType);
 
       transformOp.getResult().replaceAllUsesWith(newElemwise->getResult(0));
@@ -178,6 +180,13 @@ externalizeBodyTransforms(OpBuilder &builder, Operation *op, Block &block,
                           MutableOperandRange mutableInputs,
                           SmallVectorImpl<ArgTransformChain> &chains) {
   Location loc = op->getLoc();
+
+  if (mutableInputs.size() != block.getNumArguments() - 1)
+    return op->emitOpError()
+           << "expected " << (block.getNumArguments() - 1)
+           << " extra elementwise inputs (one per non-root block arg), but got "
+           << mutableInputs.size();
+
   auto rootType = cast<RankedTensorType>(block.getArgument(0).getType());
 
   SmallVector<Attribute> invertedArg0Transforms;

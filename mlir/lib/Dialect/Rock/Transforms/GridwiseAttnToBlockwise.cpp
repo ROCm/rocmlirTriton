@@ -784,6 +784,25 @@ struct GridwiseAttentionRewritePattern
     return ifb;
   }
 
+  // Retile a ranked-tensor splat constant to targetShape in place.
+  // Returns success (no-op) for non-tensor constants, failure for non-splat
+  // tensors so the caller can emit a diagnostic.
+  static LogicalResult retileSplatConstant(arith::ConstantOp constOp,
+                                           ArrayRef<int64_t> targetShape) {
+    auto origType = dyn_cast<RankedTensorType>(constOp.getType());
+    if (!origType)
+      return success();
+    auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
+    if (!splatAttr)
+      return failure();
+    auto newType =
+        RankedTensorType::get(targetShape, origType.getElementType());
+    constOp.setValueAttr(
+        SplatElementsAttr::get(newType, splatAttr.getSplatValue<Attribute>()));
+    constOp.getResult().setType(newType);
+    return success();
+  }
+
   // Map external splat constants referenced by the region body to
   // tile-shaped replacements. Constants like scale factors or mask fill
   // values may be defined at function scope and captured by closure.
@@ -801,20 +820,13 @@ struct GridwiseAttentionRewritePattern
         auto constOp = operand.getDefiningOp<arith::ConstantOp>();
         if (!constOp)
           continue;
-        auto origType = dyn_cast<RankedTensorType>(constOp.getType());
-        if (!origType)
+        if (!isa<RankedTensorType>(constOp.getType()))
           continue;
-        auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
-        if (!splatAttr)
+        auto clonedConst = cast<arith::ConstantOp>(rewriter.clone(*constOp));
+        if (failed(retileSplatConstant(clonedConst, tileType.getShape())))
           return op->emitOpError()
                  << "non-splat constant in preSoftmaxBody cannot be tiled";
-        auto newType = RankedTensorType::get(tileType.getShape(),
-                                             origType.getElementType());
-        Value newConst = arith::ConstantOp::create(
-            rewriter, loc,
-            SplatElementsAttr::get(newType,
-                                   splatAttr.getSplatValue<Attribute>()));
-        mapping.map(operand, newConst);
+        mapping.map(operand, clonedConst.getResult());
       }
     }
     return success();
@@ -899,18 +911,9 @@ struct GridwiseAttentionRewritePattern
       Operation *cloned = rewriter.clone(bodyOp, mapping);
 
       if (auto constOp = dyn_cast<arith::ConstantOp>(cloned)) {
-        auto origType = dyn_cast<RankedTensorType>(constOp.getType());
-        if (!origType)
-          continue;
-        auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
-        if (!splatAttr)
+        if (failed(retileSplatConstant(constOp, tileType.getShape())))
           return op->emitOpError()
                  << "non-splat constant in preSoftmaxBody cannot be tiled";
-        auto newType = RankedTensorType::get(tileType.getShape(),
-                                             origType.getElementType());
-        constOp.setValueAttr(SplatElementsAttr::get(
-            newType, splatAttr.getSplatValue<Attribute>()));
-        constOp.getResult().setType(newType);
       }
 
       if (cloned->getNumResults() == 1 && cloned->getNumOperands() > 0) {
