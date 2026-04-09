@@ -429,3 +429,70 @@ func.func @test_scaled_gemm_mixed_f4_f8(
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
 }
+
+// -----
+
+// Test: arith.truncf with FP8 result is converted to tt.fp_to_fp (RTNE).
+// Triton's LLVM lowering cannot handle arith.truncf with FP8 output directly
+// (it creates an illegal llvm.fptrunc to i8).
+
+// CHECK-LABEL: @test_truncf_f32_to_f8E4M3FN
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x2xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtne : tensor<2x2xf32> -> tensor<2x2xf8E4M3FN>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f8E4M3FN(%arg0: tensor<2x2xf32>) -> tensor<2x2xf8E4M3FN> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 : tensor<2x2xf32> to tensor<2x2xf8E4M3FN>
+  return %0 : tensor<2x2xf8E4M3FN>
+}
+
+// -----
+
+// Test: arith.truncf with FP8 E5M2 result is also converted to tt.fp_to_fp.
+
+// CHECK-LABEL: @test_truncf_f32_to_f8E5M2
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<4xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtne : tensor<4xf32> -> tensor<4xf8E5M2>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f8E5M2(%arg0: tensor<4xf32>) -> tensor<4xf8E5M2> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 : tensor<4xf32> to tensor<4xf8E5M2>
+  return %0 : tensor<4xf8E5M2>
+}
+
+// -----
+
+// Test: arith.extf with FP8 input is converted to tt.fp_to_fp (no rounding).
+
+// CHECK-LABEL: @test_extf_f8E4M3FN_to_f32
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x2xf8E4M3FN>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]] : tensor<2x2xf8E4M3FN> -> tensor<2x2xf32>
+//  CHECK-NOT:   arith.extf
+func.func @test_extf_f8E4M3FN_to_f32(%arg0: tensor<2x2xf8E4M3FN>) -> tensor<2x2xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.extf %arg0 : tensor<2x2xf8E4M3FN> to tensor<2x2xf32>
+  return %0 : tensor<2x2xf32>
+}
+
+// -----
+
+// Test: Non-FP8 arith.truncf (f32 → f16) remains unchanged.
+
+// CHECK-LABEL: @test_truncf_f32_to_f16_unchanged
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//      CHECK:   %[[RESULT:.*]] = arith.truncf %[[INPUT]] : tensor<64xf32> to tensor<64xf16>
+//  CHECK-NOT:   tt.fp_to_fp
+func.func @test_truncf_f32_to_f16_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 : tensor<64xf32> to tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
+// Test: Non-FP8 arith.extf (f16 → f32) remains unchanged.
+
+// CHECK-LABEL: @test_extf_f16_to_f32_unchanged
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf16>)
+//      CHECK:   %[[RESULT:.*]] = arith.extf %[[INPUT]] : tensor<64xf16> to tensor<64xf32>
+//  CHECK-NOT:   tt.fp_to_fp
+func.func @test_extf_f16_to_f32_unchanged(%arg0: tensor<64xf16>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.extf %arg0 : tensor<64xf16> to tensor<64xf32>
+  return %0 : tensor<64xf32>
+}

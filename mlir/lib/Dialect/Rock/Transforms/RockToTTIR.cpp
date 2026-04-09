@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -337,6 +338,72 @@ struct RockStorePtrOpRewritePattern
   }
 };
 
+/// Return true if the element type of `t` is an FP8 type that Triton handles
+/// via tt.fp_to_fp rather than arith.truncf / arith.extf.
+static bool hasFp8ElementType(Type t) {
+  Type elem = getElementTypeOrSelf(t);
+  return isa<Float8E4M3FNType, Float8E4M3FNUZType, Float8E5M2Type,
+             Float8E5M2FNUZType>(elem);
+}
+
+//===----------------------------------------------------------------------===//
+// ArithTruncFToFpToFpPattern - Convert arith.truncf (wider → FP8) to
+// tt.fp_to_fp so that Triton's FP8 lowering handles it correctly.
+//===----------------------------------------------------------------------===//
+struct ArithTruncFToFpToFpPattern
+    : public OpRewritePattern<arith::TruncFOp> {
+  using OpRewritePattern<arith::TruncFOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncFOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!hasFp8ElementType(op.getOut().getType()))
+      return failure();
+
+    triton::RoundingMode tritonRM = triton::RoundingMode::RTNE;
+    if (auto arithRM = op.getRoundingmodeAttr()) {
+      switch (arithRM.getValue()) {
+      case arith::RoundingMode::toward_zero:
+        tritonRM = triton::RoundingMode::RTZ;
+        break;
+      case arith::RoundingMode::to_nearest_even:
+        tritonRM = triton::RoundingMode::RTNE;
+        break;
+      default:
+        LLVM_DEBUG(llvm::dbgs()
+                   << "arith.truncf rounding mode "
+                   << arith::stringifyRoundingMode(arithRM.getValue())
+                   << " has no exact Triton equivalent, defaulting to RTNE\n");
+        break;
+      }
+    }
+    auto roundingAttr =
+        triton::RoundingModeAttr::get(rewriter.getContext(), tritonRM);
+    rewriter.replaceOpWithNewOp<triton::FpToFpOp>(op, op.getOut().getType(),
+                                                   op.getIn(), roundingAttr);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// ArithExtFToFpToFpPattern - Convert arith.extf (FP8 → wider) to
+// tt.fp_to_fp so that Triton's FP8 lowering handles it correctly.
+//===----------------------------------------------------------------------===//
+struct ArithExtFToFpToFpPattern
+    : public OpRewritePattern<arith::ExtFOp> {
+  using OpRewritePattern<arith::ExtFOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ExtFOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!hasFp8ElementType(op.getIn().getType()))
+      return failure();
+
+    // FP8 → wider extension is exact (no precision loss), so no rounding needed.
+    rewriter.replaceOpWithNewOp<triton::FpToFpOp>(
+        op, op.getOut().getType(), op.getIn(), /*rounding=*/nullptr);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // ReturnOpRewritePattern - Update return ops to return nothing and update
 // the parent function signature to return void
@@ -393,12 +460,21 @@ void RockToTTIRPass::runOnOperation() {
   target.addDynamicallyLegalOp<func::ReturnOp>(
       [](func::ReturnOp op) { return op.getOperands().empty(); });
 
+  // arith.truncf / arith.extf with FP8 types must be converted to
+  // tt.fp_to_fp; Triton's LLVM lowering cannot handle them directly.
+  target.addDynamicallyLegalOp<arith::TruncFOp>(
+      [](arith::TruncFOp op) { return !hasFp8ElementType(op.getOut().getType()); });
+  target.addDynamicallyLegalOp<arith::ExtFOp>(
+      [](arith::ExtFOp op) { return !hasFp8ElementType(op.getIn().getType()); });
+
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
   patterns.add<RockLoadPtrOpRewritePattern>(ctx);
   patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
   patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ReturnOpRewritePattern>(ctx);
+  patterns.add<ArithTruncFToFpToFpPattern>(ctx);
+  patterns.add<ArithExtFToFpToFpPattern>(ctx);
 
   // Apply partial conversion - convert tensor.splat and Rock ops to Triton ops
   if (failed(applyPartialConversion(getOperation(), target,
