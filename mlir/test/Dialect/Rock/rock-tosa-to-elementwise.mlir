@@ -122,6 +122,23 @@ func.func @floor_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.k
 
 // -----
 
+// CHECK-LABEL: @tanh_f32
+// CHECK-NOT:   tosa.tanh
+// CHECK-NOT:   math.tanh
+// Tanh is expanded using the math dialect expansion pattern.
+// CHECK-DAG:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64xf32>
+// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<64xf32>
+// CHECK-DAG:   %[[NEGTWO:.*]] = arith.constant dense<-2.000000e+00> : tensor<64xf32>
+// CHECK:       %[[CMP:.*]] = arith.cmpf olt, %arg0, %[[ZERO]] : tensor<64xf32>
+// CHECK:       %[[UITOFP:.*]] = arith.uitofp %[[CMP]] : tensor<64xi1> to tensor<64xf32>
+// CHECK:       arith.mulf %[[UITOFP]], %[[NEGTWO]] : tensor<64xf32>
+func.func @tanh_f32(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
+  %0 = tosa.tanh %arg0 : (tensor<64xf32>) -> tensor<64xf32>
+  return %0 : tensor<64xf32>
+}
+
+// -----
+
 // CHECK-LABEL: @erf_f32
 // CHECK-NOT:   tosa.erf
 // CHECK:       math.erf %arg0 : tensor<64xf32>
@@ -693,6 +710,39 @@ func.func @custom_other_domain(%arg0: tensor<8xf32>) -> tensor<8xf32> attributes
 func.func @unsigned_cast_non_kernel(%arg0: tensor<16xf32>) -> tensor<16xi32> {
   %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @tanh_f16
+// CHECK-NOT:   tosa.tanh
+// CHECK-NOT:   math.tanh
+// Tanh is expanded using the math dialect expansion pattern.
+// CHECK-DAG:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64xf16>
+// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<64xf16>
+// CHECK-DAG:   %[[NEGTWO:.*]] = arith.constant dense<-2.000000e+00> : tensor<64xf16>
+// CHECK:       %[[CMP:.*]] = arith.cmpf olt, %arg0, %[[ZERO]] : tensor<64xf16>
+// CHECK:       %[[UITOFP:.*]] = arith.uitofp %[[CMP]] : tensor<64xi1> to tensor<64xf16>
+// CHECK:       arith.mulf %[[UITOFP]], %[[NEGTWO]] : tensor<64xf16>
+func.func @tanh_f16(%arg0: tensor<64xf16>) -> tensor<64xf16> attributes {rock.kernel} {
+  %0 = tosa.tanh %arg0 : (tensor<64xf16>) -> tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
+// math.tanh directly in IR is expanded using the math dialect expansion pattern.
+// CHECK-LABEL: @tanh_direct
+// CHECK-NOT:   math.tanh
+// CHECK-DAG:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<32xf32>
+// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<32xf32>
+// CHECK-DAG:   %[[NEGTWO:.*]] = arith.constant dense<-2.000000e+00> : tensor<32xf32>
+// CHECK:       %[[CMP:.*]] = arith.cmpf olt, %arg0, %[[ZERO]] : tensor<32xf32>
+// CHECK:       %[[UITOFP:.*]] = arith.uitofp %[[CMP]] : tensor<32xi1> to tensor<32xf32>
+// CHECK:       arith.mulf %[[UITOFP]], %[[NEGTWO]] : tensor<32xf32>
+func.func @tanh_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
+  %0 = math.tanh %arg0 : tensor<32xf32>
+  return %0 : tensor<32xf32>
 }
 
 // -----
