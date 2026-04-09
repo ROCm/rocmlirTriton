@@ -52,13 +52,11 @@ FailureOr<int64_t> checkLDSUsage(ModuleOp moduleOp, int64_t maxSharedMemPerWG) {
   return sharedMemory;
 }
 
-LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
+LogicalResult collectKernelInfo(ModuleOp moduleOp,
                                 SmallVectorImpl<KernelInfo> &kernels) {
   // Get Triton metadata from module attributes
   int64_t numWarps = -1;
   int64_t warpSize = -1;
-  FailureOr<int64_t> maybeSharedMemory =
-      checkLDSUsage(moduleOp, maxSharedMemPerWG);
 
   // Try ttg.total-num-warps first (set by warp-specialization pass),
   // fall back to ttg.num-warps
@@ -71,11 +69,6 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
   if (auto warpSizeAttr =
           moduleOp->getAttrOfType<IntegerAttr>("ttg.threads-per-warp"))
     warpSize = warpSizeAttr.getInt();
-
-  // Validate LDS usage
-  if (failed(maybeSharedMemory))
-    return failure();
-  int64_t sharedMemory = maybeSharedMemory.value();
 
   if (numWarps == -1) {
     LLVM_DEBUG(llvm::dbgs() << "ttg.num-warps not found\n");
@@ -97,7 +90,6 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp, int64_t maxSharedMemPerWG,
     info.name = funcOp.getName().str();
     info.llvmFunc = funcOp;
     info.blockSize = tritonBlockSize;
-    info.sharedMemorySize = sharedMemory;
 
     // Get grid_size from module attribute (set by FuncToTritonFunc)
     std::string gridAttrName = "rock.grid_size." + info.name;

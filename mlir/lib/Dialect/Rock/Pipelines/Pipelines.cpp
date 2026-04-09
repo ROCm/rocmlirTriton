@@ -493,6 +493,13 @@ void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
   std::string arch = options.chip;
 
+  // Validate LDS usage against the hardware limit, convert dynamic shared
+  // memory to static LDS allocation, and strip unused Triton workspace
+  // arguments from the kernel signature.  Runs before TritonToHsaco so the
+  // static LDS size is baked into the kernel descriptor, and before
+  // RestoreHostCode so that collectKernelInfo sees the trimmed argument list.
+  pm.addPass(rock::createResolveKernelLaunchParamsPass());
+
   // Optionally generate the HSACO binary
   if (options.compile) {
     // Add the TritonToHsaco pass to convert LLVM dialect to HSACO binary
