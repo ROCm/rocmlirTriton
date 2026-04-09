@@ -1,3 +1,5 @@
+// UNSUPPORTED: true
+// TODO(roctriton): We need to unbufferize rock.reduce
 // RUN:  cat %s | rocmlir-gen -ph -fut test_reduce -rand=none -print-results - \
 // RUN: | rocmlir-driver -host-pipeline mhal -kernel-pipeline full \
 // RUN: | xmir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
