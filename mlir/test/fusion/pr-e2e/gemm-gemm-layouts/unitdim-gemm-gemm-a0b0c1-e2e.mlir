@@ -1,9 +1,13 @@
 // RUN: rocmlir-gen --clone-harness -arch %arch -fut test %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -host-pipeline migraphx,highlevel -arch %arch | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=EMITKEY
 // RUN: rocmlir-gen --clone-harness -arch %arch -fut test %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -host-pipeline migraphx,highlevel -arch %arch | rocmlir-gen -ph -verifier clone -fut test - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
+// RUN: rocmlir-gen --clone-harness -arch %arch -fut test %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -host-pipeline migraphx,highlevel -arch %arch | rocmlir-gen -ph -verifier clone -fut test - | rocmlir-driver -c --mlir-print-ir-after=tritongpu-coalesce -o /dev/null 2>&1 | FileCheck %s --check-prefix=VECTORIZATION
 
 // CLONE: [1 1 1]
 
 // EMITKEY: -t f32 -transA false -transB false -transC true -transO false -g 1 -m 32 -n 64 -k 1 -gemmO 8
+
+// VECTORIZATION-DAG: #[[COALESCED:.*]] = #ttg.blocked<{sizePerThread = [1, 4]
+// VECTORIZATION: tt.load {{.*}}#[[COALESCED]]>
 
 module {
   func.func @test(%arg0: !migraphx.shaped<1x32x1xf32, 32x1x1>, %arg1: !migraphx.shaped<1x1x64xf32, 64x1x1>, %arg2: !migraphx.shaped<1x64x8xf32, 512x1x64>) -> !migraphx.shaped<1x32x8xf32, 256x8x1> attributes {rock.kernel} {
