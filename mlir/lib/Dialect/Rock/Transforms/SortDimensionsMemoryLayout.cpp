@@ -409,6 +409,10 @@ commonConv(OpT op, PatternRewriter &b) {
     auto ciPos = findIndex(inputLayout, b.getStringAttr("ci")).value();
     for (auto spatialDim : spatialDims) {
       auto spatialDimPos = findIndex(inputLayout, spatialDim).value();
+      // Bail out when the channel-in (ci) dimension has a larger stride than a
+      // spatial dimension. In that layout the channel elements are not
+      // contiguous relative to the spatial dims, so downstream vectorization
+      // would miscompute access patterns.
       if (inputStrides[ciPos] > inputStrides[spatialDimPos]) {
         return failure();
       }
