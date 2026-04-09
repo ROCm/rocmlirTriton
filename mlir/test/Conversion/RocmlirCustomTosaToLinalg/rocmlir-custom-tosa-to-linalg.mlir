@@ -84,6 +84,71 @@ func.func @floats_f16_to_i8(%arg0: tensor<8x8x2xf16>) -> tensor<8x8x2xi8> {
 
 // -----
 
+// Basic acc_type promotion: f16 output with f32 acc_type gets promoted.
+
+// CHECK-LABEL: @matmul_acc_promotion_basic
+// CHECK: %[[MATMUL:.+]] = tosa.matmul
+// CHECK-SAME: -> tensor<1x4x4xf32>
+// CHECK: %[[CAST:.+]] = tosa.cast %[[MATMUL]] : (tensor<1x4x4xf32>) -> tensor<1x4x4xf16>
+// CHECK: return %[[CAST]]
+func.func @matmul_acc_promotion_basic(%arg0: tensor<1x4x8xf16>, %arg1: tensor<1x8x4xf16>) -> tensor<1x4x4xf16> {
+  %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
+  %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
+  %0 = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x4x8xf16>, tensor<1x8x4xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<1x4x4xf16>
+  func.return %0 : tensor<1x4x4xf16>
+}
+
+// -----
+
+// No-op: acc_type matches the output element type, pattern should not fire.
+
+// CHECK-LABEL: @matmul_acc_type_matches_output
+// CHECK: tosa.matmul
+// CHECK-SAME: -> tensor<1x4x4xf32>
+// CHECK-NOT: tosa.cast
+// CHECK: return
+func.func @matmul_acc_type_matches_output(%arg0: tensor<1x4x8xf16>, %arg1: tensor<1x8x4xf16>) -> tensor<1x4x4xf32> {
+  %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
+  %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
+  %0 = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x4x8xf16>, tensor<1x8x4xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<1x4x4xf32>
+  func.return %0 : tensor<1x4x4xf32>
+}
+
+// -----
+
+// No-op: no acc_type attribute, pattern should not fire.
+
+// CHECK-LABEL: @matmul_no_acc_type
+// CHECK: tosa.matmul
+// CHECK-SAME: -> tensor<1x4x4xf16>
+// CHECK-NOT: tosa.cast
+// CHECK: return
+func.func @matmul_no_acc_type(%arg0: tensor<1x4x8xf16>, %arg1: tensor<1x8x4xf16>) -> tensor<1x4x4xf16> {
+  %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
+  %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
+  %0 = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) : (tensor<1x4x8xf16>, tensor<1x8x4xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<1x4x4xf16>
+  func.return %0 : tensor<1x4x4xf16>
+}
+
+// -----
+
+// Verify that the acc_type promotion pattern preserves discardable attributes
+// such as perf_config.
+
+// CHECK-LABEL: @matmul_acc_promotion_preserves_attrs
+// CHECK: %[[MATMUL:.+]] = tosa.matmul
+// CHECK-SAME: acc_type = f32
+// CHECK-SAME: perf_config = "some_config"
+// CHECK: tosa.cast %[[MATMUL]]
+func.func @matmul_acc_promotion_preserves_attrs(%arg0: tensor<1x4x8xf16>, %arg1: tensor<1x8x4xf16>) -> tensor<1x4x4xf16> {
+  %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
+  %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
+  %0 = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) {acc_type = f32, perf_config = "some_config"} : (tensor<1x4x8xf16>, tensor<1x8x4xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<1x4x4xf16>
+  func.return %0 : tensor<1x4x4xf16>
+}
+
+// -----
+
 // CHECK-LABEL: @unsigned_div
 // CHECK-SAME: (%[[arg0:.+]]: tensor<1x36x384x64xi32>, %[[arg1:.+]]: tensor<1x36x384x64xi32>)
 // CHECK: %[[empty:.+]] = tensor.empty() : tensor<1x36x384x64xi32>

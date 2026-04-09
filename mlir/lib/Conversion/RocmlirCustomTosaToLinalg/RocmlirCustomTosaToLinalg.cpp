@@ -131,6 +131,7 @@ LogicalResult MatMulAccPromotionPattern::matchAndRewrite(
   auto newMatmul = tosa::MatMulOp::create(
       rewriter, op.getLoc(), promotedOutType, adaptor.getA(), adaptor.getB(),
       adaptor.getAZp(), adaptor.getBZp());
+  newMatmul->setDiscardableAttrs(op->getDiscardableAttrDictionary());
 
   auto castOp = tosa::CastOp::create(rewriter, op.getLoc(), outType,
                                      newMatmul.getOutput());
