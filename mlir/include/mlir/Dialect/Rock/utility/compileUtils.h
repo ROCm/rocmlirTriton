@@ -47,7 +47,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
 /// Returns the shared memory size on success, or failure if it exceeds the
 /// limit.
 ///
-/// Must be called before BakeKernelLaunchParams, which removes ttg.shared.
+/// Must be called before ResolveKernelLaunchParams, which removes ttg.shared.
 FailureOr<int64_t> checkLDSUsage(ModuleOp moduleOp, int64_t maxSharedMemPerWG);
 
 /// Create a gpu.ObjectAttr from the HSACO binary in moduleOp and kernel info.

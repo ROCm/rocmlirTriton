@@ -286,13 +286,13 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
       }
     }
 
-    // BakeKernelLaunchParams has already stripped unused workspace args and
+    // ResolveKernelLaunchParams has already stripped unused workspace args and
     // baked LDS into the binary, so no padding or dynamic shared memory needed.
     if (launchArgs.size() != kernel.argTypes.size()) {
       callOp.emitError("launch arg count (")
           << launchArgs.size() << ") does not match kernel signature ("
           << kernel.argTypes.size()
-          << ") — BakeKernelLaunchParams may not have run or workspace args "
+          << ") — ResolveKernelLaunchParams may not have run or workspace args "
              "are unexpectedly used";
       return failure();
     }

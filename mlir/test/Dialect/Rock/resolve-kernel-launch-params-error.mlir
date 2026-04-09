@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -bake-kernel-launch-params --split-input-file %s -verify-diagnostics
+// RUN: rocmlir-opt -resolve-kernel-launch-params --split-input-file %s -verify-diagnostics
 
 // Verifies that a missing ttg.shared triggers an error.
 // expected-error @+1 {{ttg.shared attribute not found on module}}

@@ -1,4 +1,4 @@
-// Verifies that the BakeKernelLaunchParams pass causes the AMDGPU backend to
+// Verifies that the ResolveKernelLaunchParams pass causes the AMDGPU backend to
 // emit a non-zero .amdhsa_group_segment_fixed_size in the kernel descriptor,
 // proving that LDS is allocated statically in the binary rather than passed
 // dynamically at launch time.

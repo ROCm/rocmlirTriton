@@ -271,8 +271,8 @@ def RockFuncToTritonFuncPass : Pass<"rock-func-to-triton-func", "::mlir::ModuleO
   ];
 }
 
-def BakeKernelLaunchParamsPass
-    : Pass<"bake-kernel-launch-params", "::mlir::ModuleOp"> {
+def ResolveKernelLaunchParamsPass
+    : Pass<"resolve-kernel-launch-params", "::mlir::ModuleOp"> {
   let summary =
       "Convert dynamic LDS to static and remove unused workspace args";
   let description = [{
@@ -297,7 +297,7 @@ def BakeKernelLaunchParamsPass
     After this pass the `ttg.shared` attribute is removed (shared memory is now
     static), so downstream launch code should pass 0 for dynamic shared memory.
   }];
-  let dependentDialects = ["LLVM::LLVMDialect", ];
+  let dependentDialects = ["LLVM::LLVMDialect"];
 }
 
 def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {

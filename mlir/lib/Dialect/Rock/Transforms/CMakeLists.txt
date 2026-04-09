@@ -18,7 +18,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RockToTTIR.cpp
   SerializeHostFuncs.cpp
   FuncToTritonFunc.cpp
-  BakeKernelLaunchParams.cpp
+  ResolveKernelLaunchParams.cpp
   RestoreHostCode.cpp
   InsertOutputStores.cpp
   InsertOutputFusionLoads.cpp

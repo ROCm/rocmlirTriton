@@ -1,4 +1,4 @@
-//===- BakeKernelLaunchParams.cpp - Static LDS + remove workspace args ----===//
+//===- ResolveKernelLaunchParams.cpp - Static LDS + remove workspace args -===//
 //
 // Part of the rocMLIR Project, under the Apache License v2.0 with LLVM
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
@@ -34,21 +34,21 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_BAKEKERNELLAUNCHPARAMSPASS
+#define GEN_PASS_DEF_RESOLVEKERNELLAUNCHPARAMSPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "bake-kernel-launch-params"
+#define DEBUG_TYPE "resolve-kernel-launch-params"
 
 using namespace mlir;
 
 namespace {
 
-struct BakeKernelLaunchParamsPass
-    : public rock::impl::BakeKernelLaunchParamsPassBase<
-          BakeKernelLaunchParamsPass> {
-  using BakeKernelLaunchParamsPassBase::BakeKernelLaunchParamsPassBase;
+struct ResolveKernelLaunchParamsPass
+    : public rock::impl::ResolveKernelLaunchParamsPassBase<
+          ResolveKernelLaunchParamsPass> {
+  using ResolveKernelLaunchParamsPassBase::ResolveKernelLaunchParamsPassBase;
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();

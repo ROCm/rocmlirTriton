@@ -113,7 +113,7 @@ module attributes {
 // -----
 
 // Verifies no dynamic_shared_memory_size is emitted — LDS is statically
-// baked into the binary by BakeKernelLaunchParams before RestoreHostCode runs.
+// baked into the binary by ResolveKernelLaunchParams before RestoreHostCode runs.
 // CHECK: gpu.binary @rock_kernels
 // CHECK: func.func @host_with_lds
 // CHECK: gpu.launch_func @rock_kernels::@test_lds_kernel
@@ -255,7 +255,7 @@ module attributes {
 
 // -----
 
-// Verifies launch args match kernel signature 1:1 after BakeKernelLaunchParams
+// Verifies launch args match kernel signature 1:1 after ResolveKernelLaunchParams
 // has stripped unused workspace arguments. No null pointer padding needed.
 // CHECK: func.func @host_workspace
 // CHECK-NOT: llvm.mlir.zero : !llvm.ptr

@@ -424,8 +424,8 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   }
 
   // HIP wants an array of pointers to each argument.
-  // BakeKernelLaunchParams has already stripped unused workspace args from the
-  // kernel signature, so gpuBuffers maps 1:1 to kernel arguments.
+  // ResolveKernelLaunchParams has already stripped unused workspace args from
+  // the kernel signature, so gpuBuffers maps 1:1 to kernel arguments.
   std::vector<void *> argPointers;
   for (void *&item : gpuBuffers) {
     argPointers.push_back(reinterpret_cast<void *>(&item));
@@ -456,7 +456,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
 
   // Extract block and grid sizes from kernel info.
   // Shared memory is statically baked into the binary by
-  // BakeKernelLaunchParams.
+  // ResolveKernelLaunchParams.
   SmallVector<uint32_t> blockSizes, gridSizes;
   for (const rock::KernelInfo &kernel : kernels) {
     blockSizes.push_back(static_cast<uint32_t>(kernel.blockSize));
