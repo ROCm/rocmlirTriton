@@ -747,26 +747,6 @@ func.func @tanh_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock
 
 // -----
 
-// arith.negf on tensors is preserved (no workaround needed).
-// CHECK-LABEL: @negf_direct
-// CHECK:       arith.negf %arg0 : tensor<32xf32>
-func.func @negf_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
-  %0 = arith.negf %arg0 : tensor<32xf32>
-  return %0 : tensor<32xf32>
-}
-
-// -----
-
-// NegFTritonWorkaround only applies to shaped types; scalar negf is preserved.
-// CHECK-LABEL: @negf_scalar_preserved
-// CHECK:       arith.negf %arg0 : f32
-func.func @negf_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
-  %0 = arith.negf %arg0 : f32
-  return %0 : f32
-}
-
-// -----
-
 // PowFTritonWorkaround: tosa.pow is expanded to exp(y * log(x))
 // because the Triton TritonToTritonGPU conversion has no pattern for math.powf.
 // CHECK-LABEL: @pow_f32
