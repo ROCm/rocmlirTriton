@@ -119,7 +119,6 @@ def is_old_format(config_str: str) -> bool:
 
 
 def convert_to_new_format(old_config: OldPerfConfig, 
-                          default_k_per_block: int = 64,
                           default_kpack: int = 1,
                           default_num_ctas: int = 1,
                           default_num_waves: int = 4,
@@ -136,10 +135,10 @@ def convert_to_new_format(old_config: OldPerfConfig,
     return NewPerfConfig(
         m_per_block=old_config.m_per_block,
         n_per_block=old_config.n_per_block,
-        k_per_block=default_k_per_block,
+        k_per_block=old.kpackperblock*old.kpack,
         kpack=default_kpack,
         num_ctas=default_num_ctas,
-        num_waves=default_num_waves,
+        num_waves=(old_config.mperblock*old_config.nperblock)/(old_config.nperwave*old_config.mperwave),
         matrix_instr_nonkdim=default_matrix_instr_nonkdim,
         split_k_factor=old_config.split_k_factor,
         num_stages=old_config.schedule_version,
