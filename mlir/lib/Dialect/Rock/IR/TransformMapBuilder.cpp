@@ -506,6 +506,38 @@ int64_t TopDownTMBuilder::paddingSign() const {
   return -1;
 }
 
+void TopDownTMBuilder::slice(ArrayRef<StringRef> lowerNames,
+                             ArrayRef<uint32_t> lowerDims,
+                             ArrayRef<StringRef> upperNames,
+                             ArrayRef<int64_t> begins,
+                             ArrayRef<int64_t> fullLowerSizes) {
+  assert(upperNames.size() == lowerNames.size() &&
+         "Need same number of upper and lower dimensions in slice");
+  assert(upperNames.size() == begins.size() &&
+         "Need beginning of slice for each dimension");
+  assert(upperNames.size() == fullLowerSizes.size() &&
+         "Need full lower size for each dimension");
+
+  uint32_t n = upperNames.size();
+  SmallVector<uint32_t, 4> upperDims;
+  SmallVector<int64_t, 8> params;
+  upperDims.reserve(n);
+  params.reserve(2 * n);
+
+  for (uint32_t i = 0; i < n; ++i) {
+    uint32_t dim = startIndex(upperNames[i]);
+    upperDims.push_back(dim);
+    int64_t upperSize = startSize(dim);
+    int64_t begin = begins[i];
+    int64_t end = begin + upperSize;
+    defineDim(lowerNames[i], lowerDims[i], fullLowerSizes[i]);
+    params.push_back(begin);
+    params.push_back(end);
+  }
+  addTransform(TransformType::Slice, params, upperNames, upperDims, lowerNames,
+               lowerDims);
+}
+
 void TopDownTMBuilder::ignore(StringRef name) {
   uint32_t dim = startIndex(name);
   int64_t size = startSize(dim);

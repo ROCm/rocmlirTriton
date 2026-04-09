@@ -961,6 +961,49 @@ public:
 
     Value result = tosa::ConcatOp::create(rewriter, loc, resultTy, groupOutputs,
                                           rewriter.getI32IntegerAttr(3));
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+class ExpandStridesDecomposeConverter final
+    : public OpRewritePattern<tosa::CustomOp> {
+public:
+  using OpRewritePattern<tosa::CustomOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::CustomOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
+      return rewriter.notifyMatchFailure(op, "domain isn't rocmlir");
+    if (op.getOperatorName() != ROCK_CUSTOMOP_EXPAND_STRIDES)
+      return rewriter.notifyMatchFailure(op, "isn't an expand_strides op");
+    if (op.getNumOperands() != 1)
+      return rewriter.notifyMatchFailure(op, "should have 1 operand");
+    if (op.getNumResults() != 1)
+      return rewriter.notifyMatchFailure(op, "should have 1 result");
+
+    Location loc = op.getLoc();
+    Value input = op->getOperand(0);
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto outputType = cast<RankedTensorType>(op.getResult(0).getType());
+
+    if (!inputType.hasStaticShape() || !outputType.hasStaticShape())
+      return rewriter.notifyMatchFailure(
+          op, "expand_strides decomposition requires fully static shapes");
+
+    int64_t rank = inputType.getRank();
+
+    Value emptyDest = tensor::EmptyOp::create(
+        rewriter, loc, outputType.getShape(), outputType.getElementType());
+
+    SmallVector<OpFoldResult> offsets(rank, rewriter.getIndexAttr(0));
+    SmallVector<OpFoldResult> sizes;
+    sizes.reserve(rank);
+    for (int64_t dim : inputType.getShape())
+      sizes.push_back(rewriter.getIndexAttr(dim));
+    SmallVector<OpFoldResult> strides(rank, rewriter.getIndexAttr(1));
+
+    Value result = tensor::InsertSliceOp::create(
+        rewriter, loc, input, emptyDest, offsets, sizes, strides);
 
     rewriter.replaceOp(op, result);
     return success();
@@ -972,10 +1015,12 @@ public:
 void mlir::rock::populateRocmlirCustomTosaDecomposeTarget(
     ConversionTarget &target) {
   target.addLegalDialect<tosa::TosaDialect>();
+  target.addLegalOp<tensor::EmptyOp, tensor::InsertSliceOp>();
   target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
     return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME ||
            (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&
-            op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT);
+            op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT &&
+            op.getOperatorName() != ROCK_CUSTOMOP_EXPAND_STRIDES);
   });
   target.addDynamicallyLegalOp<tosa::Conv2DOp>([](tosa::Conv2DOp op) {
     auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
@@ -988,6 +1033,7 @@ void mlir::rock::populateRocmlirCustomTosaDecomposeConversionPatterns(
   patterns.add<TransposeConvNonStridedConverter>(patterns.getContext());
   patterns.add<TransposeConvStridedConverter>(patterns.getContext());
   patterns.add<GroupConv2dDecomposer>(patterns.getContext());
+  patterns.add<ExpandStridesDecomposeConverter>(patterns.getContext());
 }
 
 void RocmlirCustomTosaDecomposePass::runOnOperation() {

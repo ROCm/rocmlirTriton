@@ -58,6 +58,21 @@
 #map_attn_unmerge = affine_map<(d0, d1, d2, d3) -> (d0, d1 * 8 + d2, d3)>
 #tf_attn_unmerge = #rock.transform_map<#map_attn_unmerge by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Unmerge{8, 8} ["sq0", "sq1"] at [1, 2] -> ["seq_q"] at [1]>, <PassThrough ["head_v"] at [3] -> ["head_v"] at [2]>] bounds = [1, 8, 8, 32] -> [1, 64, 32]>
 
+// --- Expand-strides Pad transforms ---
+#map_es_id = affine_map<(d0, d1) -> (d0, d1)>
+#tf_pad_es1 = #rock.transform_map<#map_es_id by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Pad{0, 24} ["exp1"] at [1] -> ["dim1"] at [1]>] bounds = [4, 48] -> [4, 24]>
+#map_merge_es1 = affine_map<(d0) -> (d0 floordiv 48, d0 mod 48)>
+#tf_merge_es1 = #rock.transform_map<#map_merge_es1 by [<Merge{4, 48} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>] bounds = [192] -> [4, 48]>
+
+#tf_pad_es2 = #rock.transform_map<#map_es_id by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Pad{0, 7} ["exp1"] at [1] -> ["dim1"] at [1]>] bounds = [4, 12] -> [4, 5]>
+#map_merge_es2 = affine_map<(d0) -> (d0 floordiv 12, d0 mod 12)>
+#tf_merge_es2 = #rock.transform_map<#map_merge_es2 by [<Merge{4, 12} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>] bounds = [48] -> [4, 12]>
+
+// --- Expand-strides Slice transforms ---
+#tf_slice_es = #rock.transform_map<#map_es_id by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Slice{0, 24} ["sliced1"] at [1] -> ["dim1"] at [1]>] bounds = [4, 24] -> [4, 48]>
+#map_merge_es3 = affine_map<(d0) -> (d0 floordiv 24, d0 mod 24)>
+#tf_merge_es3 = #rock.transform_map<#map_merge_es3 by [<Merge{4, 24} ["flat"] at [0] -> ["col0", "col1"] at [0, 1]>] bounds = [96] -> [4, 24]>
+
 module {
 
   // ============================================================
@@ -359,5 +374,115 @@ module {
     %reduced = rock.reduce sum %fused {axis = 3 : index} : tensor<1x100x10x10xf16> -> tensor<1x100x10x1xf16>
     %r = rock.store %reduced to %dest by set : tensor<1x100x10x1xf16> -> tensor<1x100x10x1xf16> to tensor<1x100x10x1xf16>
     return %r : tensor<1x100x10x1xf16>
+  }
+
+  // ============================================================
+  // Pad + Merge (expand-strides): gemm -> Pad -> Merge -> store
+  // Regularize inverts to: Unmerge + Slice on dest
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_pad_with_merge
+  // CHECK-SAME: (%arg0: tensor<4x24xf16>, %arg1: tensor<24x24xf16>, %arg2: tensor<192xf16>)
+  // CHECK: %[[GEMM:.*]] = rock.gemm %arg0 * %arg1
+  // CHECK: %[[UNMERGE:.*]] = rock.transform %arg2
+  // CHECK: %[[SLICE:.*]] = rock.transform %[[UNMERGE]]
+  // CHECK: rock.store %[[GEMM]] to %[[SLICE]] by set
+  func.func @test_pad_with_merge(%arg0: tensor<4x24xf16>, %arg1: tensor<24x24xf16>, %arg2: tensor<192xf16>) -> tensor<192xf16> attributes {rock.kernel} {
+    %0 = rock.gemm %arg0 * %arg1 : tensor<4x24xf16> * tensor<24x24xf16> -> tensor<4x24xf16>
+    %1 = rock.transform %0 by #tf_pad_es1 : tensor<4x24xf16> to tensor<4x48xf16>
+    %2 = rock.transform %1 by #tf_merge_es1 : tensor<4x48xf16> to tensor<192xf16>
+    %3 = rock.store %2 to %arg2 by set : tensor<192xf16> -> tensor<192xf16> to tensor<192xf16>
+    return %3 : tensor<192xf16>
+  }
+
+  // ============================================================
+  // Pad only (expand-strides, no Merge): gemm -> Pad -> store
+  // Regularize inverts to: Slice on dest
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_pad_no_merge
+  // CHECK-SAME: (%arg0: tensor<4x24xf16>, %arg1: tensor<24x24xf16>, %arg2: tensor<4x48xf16>)
+  // CHECK: %[[GEMM:.*]] = rock.gemm %arg0 * %arg1
+  // CHECK: %[[SLICE:.*]] = rock.transform %arg2
+  // CHECK: rock.store %[[GEMM]] to %[[SLICE]] by set
+  func.func @test_pad_no_merge(%arg0: tensor<4x24xf16>, %arg1: tensor<24x24xf16>, %arg2: tensor<4x48xf16>) -> tensor<4x48xf16> attributes {rock.kernel} {
+    %0 = rock.gemm %arg0 * %arg1 : tensor<4x24xf16> * tensor<24x24xf16> -> tensor<4x24xf16>
+    %1 = rock.transform %0 by #tf_pad_es1 : tensor<4x24xf16> to tensor<4x48xf16>
+    %2 = rock.store %1 to %arg2 by set : tensor<4x48xf16> -> tensor<4x48xf16> to tensor<4x48xf16>
+    return %2 : tensor<4x48xf16>
+  }
+
+  // ============================================================
+  // Pad non-multiple (expand-strides): 4x5 into a 4x12 buffer
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_pad_non_multiple
+  // CHECK-SAME: (%arg0: tensor<4x5xf16>, %arg1: tensor<5x5xf16>, %arg2: tensor<48xf16>)
+  // CHECK: %[[GEMM:.*]] = rock.gemm %arg0 * %arg1
+  // CHECK: %[[UNMERGE:.*]] = rock.transform %arg2
+  // CHECK: %[[SLICE:.*]] = rock.transform %[[UNMERGE]]
+  // CHECK: rock.store %[[GEMM]] to %[[SLICE]] by set
+  func.func @test_pad_non_multiple(%arg0: tensor<4x5xf16>, %arg1: tensor<5x5xf16>, %arg2: tensor<48xf16>) -> tensor<48xf16> attributes {rock.kernel} {
+    %0 = rock.gemm %arg0 * %arg1 : tensor<4x5xf16> * tensor<5x5xf16> -> tensor<4x5xf16>
+    %1 = rock.transform %0 by #tf_pad_es2 : tensor<4x5xf16> to tensor<4x12xf16>
+    %2 = rock.transform %1 by #tf_merge_es2 : tensor<4x12xf16> to tensor<48xf16>
+    %3 = rock.store %2 to %arg2 by set : tensor<48xf16> -> tensor<48xf16> to tensor<48xf16>
+    return %3 : tensor<48xf16>
+  }
+
+  // ============================================================
+  // Slice only: gemm -> Slice -> store
+  // Inverse of Slice{0,24} is Pad{0,24} on the destination
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_slice_no_merge
+  // CHECK-SAME: (%arg0: tensor<4x16xf16>, %arg1: tensor<16x48xf16>, %arg2: tensor<4x24xf16>)
+  // CHECK: %[[GEMM:.*]] = rock.gemm %arg0 * %arg1
+  // CHECK: %[[PAD:.*]] = rock.transform %arg2
+  // CHECK: rock.store %[[GEMM]] to %[[PAD]] by set
+  func.func @test_slice_no_merge(%arg0: tensor<4x16xf16>, %arg1: tensor<16x48xf16>, %arg2: tensor<4x24xf16>) -> tensor<4x24xf16> attributes {rock.kernel} {
+    %0 = rock.gemm %arg0 * %arg1 : tensor<4x16xf16> * tensor<16x48xf16> -> tensor<4x48xf16>
+    %1 = rock.transform %0 by #tf_slice_es : tensor<4x48xf16> to tensor<4x24xf16>
+    %2 = rock.store %1 to %arg2 by set : tensor<4x24xf16> -> tensor<4x24xf16> to tensor<4x24xf16>
+    return %2 : tensor<4x24xf16>
+  }
+
+  // ============================================================
+  // Slice + Merge: gemm -> Slice -> Merge -> store
+  // Inverse of [Slice, Merge] is [Unmerge, Pad] on the dest
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_slice_with_merge
+  // CHECK-SAME: (%arg0: tensor<4x16xf16>, %arg1: tensor<16x48xf16>, %arg2: tensor<96xf16>)
+  // CHECK: %[[GEMM:.*]] = rock.gemm %arg0 * %arg1
+  // CHECK: %[[UNMERGE:.*]] = rock.transform %arg2
+  // CHECK: %[[PAD:.*]] = rock.transform %[[UNMERGE]]
+  // CHECK: rock.store %[[GEMM]] to %[[PAD]] by set
+  func.func @test_slice_with_merge(%arg0: tensor<4x16xf16>, %arg1: tensor<16x48xf16>, %arg2: tensor<96xf16>) -> tensor<96xf16> attributes {rock.kernel} {
+    %0 = rock.gemm %arg0 * %arg1 : tensor<4x16xf16> * tensor<16x48xf16> -> tensor<4x48xf16>
+    %1 = rock.transform %0 by #tf_slice_es : tensor<4x48xf16> to tensor<4x24xf16>
+    %2 = rock.transform %1 by #tf_merge_es3 : tensor<4x24xf16> to tensor<96xf16>
+    %3 = rock.store %2 to %arg2 by set : tensor<96xf16> -> tensor<96xf16> to tensor<96xf16>
+    return %3 : tensor<96xf16>
+  }
+
+  // ============================================================
+  // Slice + fusion: gemm -> Slice -> add(external) -> store
+  // External operand and dest both get inverse(Slice) = Pad
+  // Fusion moves to gemm space
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_slice_with_fusion
+  // CHECK-NOT: arith.addf {{.*}} : tensor<4x24xf16>
+  // CHECK: %[[GEMM:.*]] = rock.gemm
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[GEMM]], %{{.*}} : tensor<4x48xf16>
+  // CHECK: rock.store %[[FUSED]] to %{{.*}} {{.*}}: tensor<4x48xf16>
+  // CHECK-NOT: arith.addf {{.*}} : tensor<4x24xf16>
+  func.func @test_slice_with_fusion(%arg0: tensor<4x16xf16>, %arg1: tensor<16x48xf16>, %ext: tensor<4x24xf16>, %dest: tensor<4x24xf16>) -> tensor<4x24xf16> attributes {rock.kernel} {
+    %0 = rock.gemm %arg0 * %arg1 : tensor<4x16xf16> * tensor<16x48xf16> -> tensor<4x48xf16>
+    %1 = rock.transform %0 by #tf_slice_es : tensor<4x48xf16> to tensor<4x24xf16>
+    %2 = arith.addf %1, %ext : tensor<4x24xf16>
+    %3 = rock.store %2 to %dest by set : tensor<4x24xf16> -> tensor<4x24xf16> to tensor<4x24xf16>
+    return %3 : tensor<4x24xf16>
   }
 }

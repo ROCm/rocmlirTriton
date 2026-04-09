@@ -308,8 +308,9 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   funcPm2.addPass(createCanonicalizerPass());
 
   pm.addPass(createConvertTensorToLinalgPass());
-  if (!noRock)
+  if (!noRock) {
     pm.addPass(rock::createRockInsertOutputStoresPass());
+  }
 }
 
 void rock::buildKernelPipeline(OpPassManager &pm,

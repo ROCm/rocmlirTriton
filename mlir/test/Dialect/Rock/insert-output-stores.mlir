@@ -269,6 +269,27 @@ func.func @gemm_existing_store(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>
 
 // -----
 
+// Gemm -> transform(Pad) -> transform(Merge) -> return: Pad transform is traced forward
+// CHECK-LABEL: func.func @gemm_pad_stride_expansion
+// CHECK-SAME: (%arg0: tensor<4x24xf16>, %arg1: tensor<24x24xf16>, %arg2: tensor<192xf16>) -> tensor<192xf16> attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[PAD:.*]] = rock.transform %[[GEMM]]
+// CHECK: %[[TR:.*]] = rock.transform %[[PAD]]
+// CHECK: %[[STORE:.*]] = rock.store %[[TR]] to %arg2 by set
+// CHECK: return %[[STORE]]
+#pad_amap_es = affine_map<(d0, d1) -> (d0, d1)>
+#pad_map_es = #rock.transform_map<#pad_amap_es by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Pad{0, 24} ["exp1"] at [1] -> ["dim1"] at [1]>] bounds = [4, 48] -> [4, 24]>
+#map_merge_es = affine_map<(d0) -> (d0 floordiv 48, d0 mod 48)>
+#merge_map_es = #rock.transform_map<#map_merge_es by [<Merge{4, 48} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>] bounds = [192] -> [4, 48]>
+func.func @gemm_pad_stride_expansion(%arg0: tensor<4x24xf16>, %arg1: tensor<24x24xf16>) -> tensor<192xf16> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<4x24xf16> * tensor<24x24xf16> -> tensor<4x24xf16>
+  %1 = rock.transform %0 by #pad_map_es : tensor<4x24xf16> to tensor<4x48xf16>
+  %2 = rock.transform %1 by #merge_map_es : tensor<4x48xf16> to tensor<192xf16>
+  return %2 : tensor<192xf16>
+}
+
+// -----
+
 // Block argument passthrough not reachable from any FusionRoot is an error.
 func.func @mixed_returns(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>, %arg2: tensor<4xf32>) -> (tensor<8x32xf32>, tensor<4xf32>) attributes {rock.kernel} {
   %0 = rock.gemm %arg0 * %arg1 : tensor<8x16xf32> * tensor<16x32xf32> -> tensor<8x32xf32>

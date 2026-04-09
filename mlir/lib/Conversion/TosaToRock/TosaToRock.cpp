@@ -3213,6 +3213,53 @@ public:
   }
 };
 
+class ExpandStridesConverter final : public OpRewritePattern<tosa::CustomOp> {
+public:
+  using OpRewritePattern<tosa::CustomOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::CustomOp op,
+                                PatternRewriter &rw) const final {
+    if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
+      return rw.notifyMatchFailure(op, "domain isn't rocmlir");
+    if (op.getOperatorName() != ROCK_CUSTOMOP_EXPAND_STRIDES)
+      return rw.notifyMatchFailure(op, "isn't an expand_strides op");
+
+    Location loc = op.getLoc();
+    Value input = op->getOperand(0);
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto outputType = cast<RankedTensorType>(op.getResult(0).getType());
+    int64_t rank = inputType.getRank();
+
+    SmallVector<StringRef> dimNames;
+    SmallVector<StringRef> outDimNames;
+    for (int64_t i = 0; i < rank; ++i) {
+      dimNames.push_back(
+          rw.getStringAttr("dim" + std::to_string(i)).getValue());
+      outDimNames.push_back(
+          rw.getStringAttr("exp" + std::to_string(i)).getValue());
+    }
+
+    rock::BottomUpTMBuilder padBuilder(rw, dimNames, inputType.getShape(),
+                                       loc);
+    for (int64_t i = 0; i < rank; ++i) {
+      if (inputType.getDimSize(i) == outputType.getDimSize(i)) {
+        padBuilder.passThrough(dimNames[i]);
+      } else {
+        if (outputType.getDimSize(i) < inputType.getDimSize(i))
+          return rw.notifyMatchFailure(
+              op, "output dim " + std::to_string(i) +
+                      " is smaller than input dim");
+        int64_t rightPad = outputType.getDimSize(i) - inputType.getDimSize(i);
+        padBuilder.pad(outDimNames[i], dimNames[i], /*left=*/0, rightPad);
+      }
+    }
+    rock::TransformMapAttr padAttr = padBuilder.get();
+    Value padded = rock::TransformOp::create(rw, loc, input, padAttr);
+    rw.replaceOp(op, padded);
+
+    return success();
+  }
+};
+
 } // namespace
 
 void tosa::populateTosaToRockConversionPatterns(MLIRContext *context,
@@ -3241,6 +3288,6 @@ void tosa::populateTosaToRockConvGemmConversionPatterns(
 void tosa::populateTosaToRockTensorConversionPatterns(
     MLIRContext *context, RewritePatternSet &patterns) {
   patterns.add<TransposeRewritePattern, CollapseExpandRewritePattern,
-               MulSplatOneRewritePattern, ElementwiseBroadcastInserter>(
-      context);
+               MulSplatOneRewritePattern, ElementwiseBroadcastInserter,
+               ExpandStridesConverter>(context);
 }
