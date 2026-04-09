@@ -98,32 +98,25 @@ struct BakeKernelLaunchParamsPass
       return signalPassFailure();
     }
 
-    bool foundGlobalSmem = false;
-    for (auto globalOp : moduleOp.getOps<LLVM::GlobalOp>()) {
-      if (globalOp.getSymName() != "global_smem")
-        continue;
-      foundGlobalSmem = true;
-
-      if (sharedMemSize > 0) {
-        auto elemTy = IntegerType::get(ctx, 8);
-        auto newArrayTy = LLVM::LLVMArrayType::get(elemTy, sharedMemSize);
-
-        globalOp.setGlobalType(newArrayTy);
-        globalOp.setLinkage(LLVM::Linkage::Internal);
-        globalOp.setValueAttr(LLVM::UndefAttr::get(ctx));
-
-        LLVM_DEBUG(llvm::dbgs() << "Converted @global_smem to static LDS of "
-                                << sharedMemSize << " bytes\n");
-      } else {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "ttg.shared is 0; leaving @global_smem as-is\n");
-      }
-      break; // There is exactly one @global_smem per module.
-    }
-
-    if (!foundGlobalSmem) {
+    auto globalOp = moduleOp.lookupSymbol<LLVM::GlobalOp>("global_smem");
+    if (!globalOp) {
       moduleOp.emitError("@global_smem not found in module");
       return signalPassFailure();
+    }
+
+    if (sharedMemSize > 0) {
+      auto elemTy = IntegerType::get(ctx, 8);
+      auto newArrayTy = LLVM::LLVMArrayType::get(elemTy, sharedMemSize);
+
+      globalOp.setGlobalType(newArrayTy);
+      globalOp.setLinkage(LLVM::Linkage::Internal);
+      globalOp.setValueAttr(LLVM::UndefAttr::get(ctx));
+
+      LLVM_DEBUG(llvm::dbgs() << "Converted @global_smem to static LDS of "
+                              << sharedMemSize << " bytes\n");
+    } else {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "ttg.shared is 0; leaving @global_smem as-is\n");
     }
 
     // Always remove ttg.shared — after this pass, LDS is either statically
@@ -176,6 +169,17 @@ struct BakeKernelLaunchParamsPass
               << funcOp.getName() << "'";
           return signalPassFailure();
         }
+      }
+
+      // Guard against callers inside the module — if someone calls this
+      // kernel, changing its signature would silently break the call site.
+      auto uses = SymbolTable::getSymbolUses(funcOp, moduleOp);
+      if (uses && !uses->empty()) {
+        funcOp.emitError("kernel '")
+            << funcOp.getName()
+            << "' still has callers in the module — cannot strip workspace "
+               "args (pipeline ordering issue?)";
+        return signalPassFailure();
       }
 
       LLVM_DEBUG(llvm::dbgs() << "Removing " << kWorkspaceArgs
