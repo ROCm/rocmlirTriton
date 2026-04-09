@@ -271,17 +271,26 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
 };
 
 // tosa.sigmoid: 1 / (1 + exp(-x))
+// Triton computes sigmoid as: 1 / (1 + exp(-x))
+// where -x is computed as (0 - x) via subtraction rather than negation.
+// See: triton/python/triton/language/standard.py (sigmoid)
+//      triton/python/triton/language/semantic.py (minus)
+// Please not that we dont want to generate arith.negf here, because
+// it is not supported by Triton.
 struct SigmoidConverter : public OpRewritePattern<tosa::SigmoidOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::SigmoidOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     auto shapedTy = cast<ShapedType>(op.getType());
+    auto zeroAttr = DenseElementsAttr::get(
+        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), 0.0));
+    Value zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
     auto oneAttr = DenseElementsAttr::get(
         shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), 1.0));
     Value one = arith::ConstantOp::create(rewriter, loc, oneAttr);
     Value negX =
-        arith::NegFOp::create(rewriter, loc, op.getType(), op.getInput());
+        arith::SubFOp::create(rewriter, loc, op.getType(), zero, op.getInput());
     Value expNegX = math::ExpOp::create(rewriter, loc, op.getType(), negX);
     Value denom =
         arith::AddFOp::create(rewriter, loc, op.getType(), one, expNegX);
@@ -412,6 +421,10 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
     }
 
     // float -> int
+    // Triton uses FPToSI/FPToUI directly (truncation toward zero), without
+    // round-to-nearest-even. We follow Triton's approach to avoid generating
+    // arith.bitcast ops from math.round_even decomposition.
+    // See: triton/python/triton/language/semantic.py (cast, lines ~876-884)
     // Replicates the three-case structure from TosaToLinalg's CastOp lowering,
     // adapted for tensor-level ops and unsigned integer support.
     if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
@@ -452,8 +465,8 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       APInt intMax = isUnsigned ? APInt::getMaxValue(dstWidth)
                                 : APInt::getSignedMaxValue(dstWidth);
 
-      Value rounded =
-          math::RoundEvenOp::create(rewriter, loc, op.getInput());
+      // Use input directly without rounding (Triton-style truncation)
+      Value input = op.getInput();
 
       // Case 1: Neither int min nor int max can be represented in the
       // floating-point type due to too short exponent range. All finite
@@ -463,22 +476,22 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
           APFloat::semanticsMaxExponent(fltSemantics)) {
         Value posInf = splatFloat(APFloat::getInf(fltSemantics));
         auto overflow = arith::CmpFOp::create(
-            rewriter, loc, arith::CmpFPredicate::UEQ, rounded, posInf);
+            rewriter, loc, arith::CmpFPredicate::UEQ, input, posInf);
 
         if (isUnsigned) {
           Value zeroF = splatFloatFromDouble(0.0);
           Value clampedPos =
-              arith::MaximumFOp::create(rewriter, loc, rounded, zeroF);
+              arith::MaximumFOp::create(rewriter, loc, input, zeroF);
           Value conv = fpToInt(clampedPos);
           Value maxClamped = arith::SelectOp::create(
               rewriter, loc, overflow, splatInt(intMax), conv);
           rewriter.replaceOp(op, maxClamped);
         } else {
-          Value conv = fpToInt(rounded);
+          Value conv = fpToInt(input);
           Value negInf =
               splatFloat(APFloat::getInf(fltSemantics, /*Negative=*/true));
           auto underflow = arith::CmpFOp::create(
-              rewriter, loc, arith::CmpFPredicate::UEQ, rounded, negInf);
+              rewriter, loc, arith::CmpFPredicate::UEQ, input, negInf);
           Value maxClamped = arith::SelectOp::create(
               rewriter, loc, overflow, splatInt(intMax), conv);
           rewriter.replaceOpWithNewOp<arith::SelectOp>(
@@ -502,7 +515,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
             isUnsigned ? static_cast<double>(intMax.getZExtValue())
                        : static_cast<double>(intMax.getSExtValue());
         Value intMaxFP = splatFloatFromDouble(intMaxDouble);
-        Value hi = arith::MinimumFOp::create(rewriter, loc, rounded, intMaxFP);
+        Value hi = arith::MinimumFOp::create(rewriter, loc, input, intMaxFP);
         Value clamped =
             arith::MaximumFOp::create(rewriter, loc, hi, intMinFP);
         rewriter.replaceOp(op, fpToInt(clamped));
@@ -520,10 +533,10 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       Value intMaxPlusOneFP = splatFloatFromDouble(intMaxPlusOneDouble);
 
       Value minClampedFP =
-          arith::MaximumFOp::create(rewriter, loc, rounded, intMinFP);
+          arith::MaximumFOp::create(rewriter, loc, input, intMinFP);
       Value minClamped = fpToInt(minClampedFP);
       auto overflow = arith::CmpFOp::create(
-          rewriter, loc, arith::CmpFPredicate::UGE, rounded, intMaxPlusOneFP);
+          rewriter, loc, arith::CmpFPredicate::UGE, input, intMaxPlusOneFP);
       rewriter.replaceOpWithNewOp<arith::SelectOp>(op, overflow,
                                                     splatInt(intMax),
                                                     minClamped);
