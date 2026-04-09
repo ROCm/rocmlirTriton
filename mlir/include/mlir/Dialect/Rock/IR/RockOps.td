@@ -293,7 +293,7 @@ def Rock_GemmElementwiseGemmOp
     `{` `\n`
         ` ` `ab` `=` (`tr` $aTransposed^)? $a `*` (`tr` $bTransposed^)? $b `:` type($a) `,` type($b) `\n`
         (`ab` `=` `elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
-        `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
+        `out` `=` `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
     `}` attr-dict `->` type($result)
   }];
 }
@@ -339,7 +339,7 @@ def Rock_ConvElementwiseGemmOp
     `{` `\n`
         ` ` `ab` `=` `conv` `(` $filter `,` $input `)` `:` type($filter) `,` type($input) `\n`
         (`ab` `=` `elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
-        (`tr` $oTransposed^)? `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
+        `out` `=` (`tr` $oTransposed^)? `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
     `}` attr-dict `->` type($result)
   }];
 }

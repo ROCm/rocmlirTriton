@@ -220,6 +220,30 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   ];
 }
 
+def RockSortDimensionsMemoryLayoutPass
+    : Pass<"rock-sort-dimensions-memory-layout", "::mlir::func::FuncOp"> {
+  let summary = "Sort dimensions by stride of the underlying memory layout";
+  let description = [{
+    Reorders tensor dimensions to match physical memory layout (descending stride
+    order) for GEMM, Conv, Attention, and their fused variants.
+
+    For example, if a GEMM's B matrix has physical memory layout [G, N, K] but
+    the logical view is [G, K, N], the pass inserts a transform to make the
+    logical order match physical memory, then marks B as transposed in the
+    rock.gemm op.
+
+    The pass traces through rock.transform chains and shape-preserving
+    elementwise ops to determine actual memory strides, then inserts transforms
+    to align logical dimension order with physical memory. Transpose flags (for
+    GEMM-like ops) or layout attributes (for Conv) are updated accordingly.
+
+    This normalization ensures downstream passes (especially vectorization)
+    correctly analyze memory access patterns.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect"];
+}
+
 def RockInsertOutputStoresPass
     : Pass<"rock-insert-output-stores", "::mlir::ModuleOp"> {
   let summary = "Insert rock.store ops for kernel outputs and convert returns "
