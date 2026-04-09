@@ -732,7 +732,7 @@ struct RockTosaToElementwise
 
     // --- Triton workarounds ---
     // The Triton TritonToTritonGPU conversion is missing patterns for
-    // math.tanh and math.powf. Use upstream
+    // math.tanh and math.powf so we use upstream
     // math::populateExpansionPatterns to expand them into ops Triton supports.
     //
     // TODO(rocmlirTriton): gfx1250 will have dedicated instructions for tanh,
