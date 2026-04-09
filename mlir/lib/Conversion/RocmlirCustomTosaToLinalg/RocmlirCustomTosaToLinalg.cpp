@@ -48,8 +48,7 @@ struct UnsignedCastLoweringPattern
 /// f32 accumulation), promote the matmul output to acc_type and insert a cast
 /// back. This ensures the upstream TOSA-to-Linalg MatMulConverter (which
 /// ignores acc_type) accumulates in the wider type.
-struct MatMulAccPromotionPattern
-    : public OpConversionPattern<tosa::MatMulOp> {
+struct MatMulAccPromotionPattern : public OpConversionPattern<tosa::MatMulOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -129,10 +128,9 @@ LogicalResult MatMulAccPromotionPattern::matchAndRewrite(
     return rewriter.notifyMatchFailure(op, "acc_type already matches output");
 
   auto promotedOutType = RankedTensorType::get(outType.getShape(), accType);
-  auto newMatmul = tosa::MatMulOp::create(rewriter, op.getLoc(),
-                                          promotedOutType, adaptor.getA(),
-                                          adaptor.getB(), adaptor.getAZp(),
-                                          adaptor.getBZp());
+  auto newMatmul = tosa::MatMulOp::create(
+      rewriter, op.getLoc(), promotedOutType, adaptor.getA(), adaptor.getB(),
+      adaptor.getAZp(), adaptor.getBZp());
 
   auto castOp = tosa::CastOp::create(rewriter, op.getLoc(), outType,
                                      newMatmul.getOutput());
