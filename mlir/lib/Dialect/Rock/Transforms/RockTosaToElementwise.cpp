@@ -271,11 +271,11 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
 };
 
 // tosa.sigmoid: 1 / (1 + exp(-x))
-// Triton computes sigmoid as: 1 / (1 + exp(-x))
-// where -x is computed as (0 - x) via subtraction rather than negation.
+// We compute -x as (0 - x) to match both MIGraphX semantics and Triton's
+// implementation, avoiding arith.negf which Triton doesn't support on tensors.
 // See: triton/python/triton/language/standard.py (sigmoid)
 //      triton/python/triton/language/semantic.py (minus)
-// Please not that we dont want to generate arith.negf here, because
+// Please note that we dont want to generate arith.negf here, because
 // it is not supported by Triton.
 struct SigmoidConverter : public OpRewritePattern<tosa::SigmoidOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -421,9 +421,8 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
     }
 
     // float -> int
-    // Triton uses FPToSI/FPToUI directly (truncation toward zero), without
-    // round-to-nearest-even. We follow Triton's approach to avoid generating
-    // arith.bitcast ops from math.round_even decomposition.
+    // We use direct truncation (FPToSI/FPToUI) rather than round-to-nearest-even
+    // to match both MIGraphX semantics and Triton's implementation.
     // See: triton/python/triton/language/semantic.py (cast, lines ~876-884)
     // Replicates the three-case structure from TosaToLinalg's CastOp lowering,
     // adapted for tensor-level ops and unsigned integer support.
@@ -465,7 +464,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       APInt intMax = isUnsigned ? APInt::getMaxValue(dstWidth)
                                 : APInt::getSignedMaxValue(dstWidth);
 
-      // Use input directly without rounding (Triton-style truncation)
+      // Use input directly without rounding (truncation toward zero)
       Value input = op.getInput();
 
       // Case 1: Neither int min nor int max can be represented in the
