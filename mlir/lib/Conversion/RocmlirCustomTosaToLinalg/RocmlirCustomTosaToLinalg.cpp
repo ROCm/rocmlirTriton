@@ -43,6 +43,19 @@ struct UnsignedCastLoweringPattern
   matchAndRewrite(tosa::CustomOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override;
 };
+
+/// When acc_type differs from the output element type (e.g. f16 matmul with
+/// f32 accumulation), promote the matmul output to acc_type and insert a cast
+/// back. This ensures the upstream TOSA-to-Linalg MatMulConverter (which
+/// ignores acc_type) accumulates in the wider type.
+struct MatMulAccPromotionPattern
+    : public OpConversionPattern<tosa::MatMulOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tosa::MatMulOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 } // end namespace
 
 LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
@@ -102,19 +115,52 @@ LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
   return success();
 }
 
+LogicalResult MatMulAccPromotionPattern::matchAndRewrite(
+    tosa::MatMulOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  auto accTypeAttr = op->getAttrOfType<TypeAttr>("acc_type");
+  if (!accTypeAttr)
+    return rewriter.notifyMatchFailure(op, "no acc_type attribute");
+
+  Type accType = accTypeAttr.getValue();
+  auto outType = cast<RankedTensorType>(op.getOutput().getType());
+
+  if (accType == outType.getElementType())
+    return rewriter.notifyMatchFailure(op, "acc_type already matches output");
+
+  auto promotedOutType = RankedTensorType::get(outType.getShape(), accType);
+  auto newMatmul = tosa::MatMulOp::create(rewriter, op.getLoc(),
+                                          promotedOutType, adaptor.getA(),
+                                          adaptor.getB(), adaptor.getAZp(),
+                                          adaptor.getBZp());
+
+  auto castOp = tosa::CastOp::create(rewriter, op.getLoc(), outType,
+                                     newMatmul.getOutput());
+  rewriter.replaceOp(op, castOp);
+  return success();
+}
+
 void mlir::rock::populateRocmlirCustomTosaToLinalgTarget(
     ConversionTarget &target) {
   target.addLegalOp<linalg::GenericOp, linalg::YieldOp, arith::ExtUIOp,
                     arith::TruncIOp, arith::DivUIOp, arith::FPToUIOp,
-                    arith::UIToFPOp, tensor::EmptyOp>();
+                    arith::UIToFPOp, tensor::EmptyOp, tosa::CastOp>();
   target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
     return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME;
+  });
+  target.addDynamicallyLegalOp<tosa::MatMulOp>([](tosa::MatMulOp op) {
+    auto accTypeAttr = op->getAttrOfType<TypeAttr>("acc_type");
+    if (!accTypeAttr)
+      return true;
+    auto outType = cast<RankedTensorType>(op.getOutput().getType());
+    return accTypeAttr.getValue() == outType.getElementType();
   });
 }
 
 void mlir::rock::populateRocmlirCustomTosaToLinalgConversionPatterns(
     RewritePatternSet &patterns) {
-  patterns.add<UnsignedCastLoweringPattern>(patterns.getContext());
+  patterns.add<UnsignedCastLoweringPattern, MatMulAccPromotionPattern>(
+      patterns.getContext());
 }
 
 void RocmlirCustomLinalgToTosaPass::runOnOperation() {
