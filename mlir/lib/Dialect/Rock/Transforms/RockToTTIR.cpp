@@ -361,8 +361,20 @@ struct ArithTruncFToFpToFpPattern
 
     triton::RoundingMode tritonRM = triton::RoundingMode::RTNE;
     if (auto arithRM = op.getRoundingmodeAttr()) {
-      if (arithRM.getValue() == arith::RoundingMode::toward_zero)
+      switch (arithRM.getValue()) {
+      case arith::RoundingMode::toward_zero:
         tritonRM = triton::RoundingMode::RTZ;
+        break;
+      case arith::RoundingMode::to_nearest_even:
+        tritonRM = triton::RoundingMode::RTNE;
+        break;
+      default:
+        LLVM_DEBUG(llvm::dbgs()
+                   << "arith.truncf rounding mode "
+                   << arith::stringifyRoundingMode(arithRM.getValue())
+                   << " has no exact Triton equivalent, defaulting to RTNE\n");
+        break;
+      }
     }
     auto roundingAttr =
         triton::RoundingModeAttr::get(rewriter.getContext(), tritonRM);
