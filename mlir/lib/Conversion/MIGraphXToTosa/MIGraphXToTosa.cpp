@@ -723,15 +723,10 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
     }
   }
 
-  // Compute accumulation type: always f32 for float inputs, i32 for int.
-  Type accType = rock::getAccType(elementTy, elementTyB);
-
-  // Regular matmul path (no scales): use accType as the matmul output element
-  // type so that GPU (Rock) and CPU (Linalg) paths accumulate at the same
-  // precision.
+  // Regular matmul path (no scales)
   if (!matmulResultOp) {
     RankedTensorType newOutType =
-        RankedTensorType::get(newDimsOut, accType);
+        RankedTensorType::get(newDimsOut, newOutElementTy);
 
     auto aZp =
         tosa::createZeroPointTensor(rewriter, loc, inAReshaped.getType(), 0)
@@ -747,6 +742,7 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
   }
 
   // Common post-processing for both scaled and regular paths
+  Type accType = rock::getAccType(elementTy, elementTyB);
   matmulResultOp->setAttr("acc_type", TypeAttr::get(accType));
 
   if (auto attr = (*op).template getAttrOfType<StringAttr>("perf_config"))
@@ -754,20 +750,11 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
 
   Value result = matmulResult;
   if (batchInfo.needsReshape) {
-    Type reshapeElemTy = cast<ShapedType>(result.getType()).getElementType();
     auto origOutDimsValue = tosa::getTosaConstShape(rewriter, loc, origOutDims);
     result = tosa::ReshapeOp::create(
-        rewriter, loc, RankedTensorType::get(origOutDims, reshapeElemTy),
-        result, origOutDimsValue);
+        rewriter, loc, RankedTensorType::get(origOutDims, newOutElementTy),
+        matmulResult, origOutDimsValue);
   }
-
-  // Cast from accumulation type back to the original output type if they differ
-  if (cast<ShapedType>(result.getType()).getElementType() != newOutElementTy) {
-    auto castType = RankedTensorType::get(
-        cast<ShapedType>(result.getType()).getShape(), newOutElementTy);
-    result = tosa::CastOp::create(rewriter, loc, castType, result);
-  }
-
   rewriter.replaceOp(op, result);
   return success();
 }
