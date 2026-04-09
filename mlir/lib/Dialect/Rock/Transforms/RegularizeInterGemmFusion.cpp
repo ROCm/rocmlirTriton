@@ -322,9 +322,8 @@ static void propagateBodyResultTypes(Block &block) {
 /// If arg0 (the first GEMM product) has transforms, they are eliminated
 /// by applying their inverse to all other block arguments' transform chains
 /// so that the entire body operates in arg0's original shape.
-static LogicalResult
-regularizeGemmGemmBody(OpBuilder &builder,
-                       RockGemmGemmWrapperInterface ggOp) {
+static LogicalResult regularizeGemmGemmBody(OpBuilder &builder,
+                                            RockGemmGemmWrapperInterface ggOp) {
   if (!rock::gemmGemmHasPreSecondGemmFusion(ggOp))
     return success();
 

@@ -834,8 +834,8 @@ struct GridwiseAttentionRewritePattern
 
   // Apply pre-softmax element-wise fusions to the first GEMM (Q*K) output.
   // The body is expected to be purely elementwise (no rock.transform ops)
-  // after regularization by RockRegularizeInterGemmFusionPass. Block arg 0 is the
-  // QK product; remaining args are extra inputs loaded via LoadMarkerOps.
+  // after regularization by RockRegularizeInterGemmFusionPass. Block arg 0 is
+  // the QK product; remaining args are extra inputs loaded via LoadMarkerOps.
   FailureOr<Value> postProcessFirstGemm(PatternRewriter &rewriter, Location loc,
                                         GridwiseAttentionOp op,
                                         layout::GridCoordinates gridCoords,
