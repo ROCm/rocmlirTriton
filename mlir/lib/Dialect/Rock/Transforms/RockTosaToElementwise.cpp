@@ -731,14 +731,14 @@ struct RockTosaToElementwise
              CustomUnsignedOpConverter>(ctx);
 
     // --- Triton workarounds ---
-    // The Triton TritonToTritonGPU conversion was missing patterns for
-    // math.tanh, math.powf, math.roundeven and math.round. Use upstream
+    // The Triton TritonToTritonGPU conversion is missing patterns for
+    // math.tanh and math.powf. Use upstream
     // math::populateExpansionPatterns to expand them into ops Triton supports.
-    // 
-    // TODO(rocmlirTriton): gfx1250 will have dedicated instructions for tanh, we
-    // need to make sure we emit those instead of using the math.tanh expansion.
-    math::populateExpansionPatterns(patterns,
-                                    {"tanh", "powf", "roundeven", "round"});
+    //
+    // TODO(rocmlirTriton): gfx1250 will have dedicated instructions for tanh,
+    // we need to make sure we emit those instead of using the math.tanh
+    // expansion.
+    math::populateExpansionPatterns(patterns, {"tanh", "powf"});
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();
