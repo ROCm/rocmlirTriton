@@ -342,8 +342,9 @@ static FailureOr<std::tuple<Value, Value, Value>>
 arrangeGemmGemmSplitKTransform(OpBuilder &builder,
                                RockGemmGemmWrapperInterface op, Location loc,
                                int64_t splitNFactor, Value a, Value b, Value c,
-                               Value out, MutableArrayRef<Value> outputViews,
+                               MutableArrayRef<Value> outputViews,
                                DenseMap<Value, Value> &fusionInputMapOut) {
+  Value out = op->getResult(0);
   // set the store method and prefill attribute on output store ops
   FailureOr<SetVector<StoreOp>> storeOps = traceRootOutputToStoreOps(out);
   if (failed(storeOps))
@@ -365,7 +366,12 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
   ArrayRef<int64_t> aShape = cast<RankedTensorType>(a.getType()).getShape();
   ArrayRef<int64_t> bShape = cast<RankedTensorType>(b.getType()).getShape();
   ArrayRef<int64_t> cShape = cast<RankedTensorType>(c.getType()).getShape();
-  ArrayRef<int64_t> outShape = cast<RankedTensorType>(out.getType()).getShape();
+  ArrayRef<int64_t> outShape =
+      cast<RankedTensorType>(outputViews[0].getType()).getShape();
+  for (auto outputView : outputViews) {
+    if (cast<RankedTensorType>(outputView.getType()).getShape() != outShape)
+      return op->emitError("all output views must have the same shape");
+  }
 
   const int64_t N = bShape[2];
 
@@ -549,9 +555,8 @@ static LogicalResult commonAttentionGemmElmtGemm(
     if (enableSoftmax)
       return op.emitError("split-k is not supported for attention");
 
-    auto maybeSplitk =
-        arrangeGemmGemmSplitKTransform(rw, op, loc, splitKFactor, a, b, c, out,
-                                       outputViews, fusionInputMapOut);
+    auto maybeSplitk = arrangeGemmGemmSplitKTransform(
+        rw, op, loc, splitKFactor, a, b, c, outputViews, fusionInputMapOut);
     if (failed(maybeSplitk))
       return op.emitError("split-k set up failed");
 
