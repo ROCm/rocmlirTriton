@@ -137,7 +137,7 @@ def convert_to_new_format(old_config: OldPerfConfig,
     return NewPerfConfig(
         m_per_block=old_config.m_per_block,
         n_per_block=old_config.n_per_block,
-        k_per_block=old.kpackperblock*old.kpack,
+        k_per_block=old_config.kpackperblock*old_config.kpack,
         kpack=default_kpack,
         num_ctas=default_num_ctas,
         num_waves=(old_config.mperblock*old_config.nperblock)/(old_config.nperwave*old_config.mperwave),
