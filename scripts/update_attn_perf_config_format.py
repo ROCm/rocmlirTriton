@@ -101,17 +101,21 @@ def is_old_format(config_str: str) -> bool:
 
 
 def convert_to_new_format(old_config: OldAttnPerfConfig,
+                          default_kpack: int = 1,
                           default_num_ctas: int = 1,
                           default_matrix_instr_nonkdim: int = 0,
+                          default_num_stages: int = 1,
                           default_waves_per_eu: int = 0,
                           default_grid_group_size: int = 0) -> NewAttnPerfConfig:
     """
     Convert old attn perf config to new format.
     
     Conversion rules:
-    - kPerBlock = kpackPerBlock * kpack
+    - kPerBlock = kpackPerBlock * kpack (from old config)
     - numWaves = (mPerBlockG0 * nPerBlockG0) / (mPerWave * nPerWave)
-    - matrixInstrNonkdim = 0
+    - kpack = 1 (hardcoded)
+    - matrixInstrNonkdim = 0 (hardcoded)
+    - numStages = 1 (hardcoded)
     """
     # Compute kPerBlock
     k_per_block = old_config.kpack_per_block * old_config.kpack
@@ -128,12 +132,12 @@ def convert_to_new_format(old_config: OldAttnPerfConfig,
         m_per_block_g0=old_config.m_per_block_g0,
         n_per_block_g0=old_config.n_per_block_g0,
         k_per_block=k_per_block,
-        kpack=old_config.kpack,
+        kpack=default_kpack,
         num_ctas=default_num_ctas,
         num_waves=num_waves,
         matrix_instr_nonkdim=default_matrix_instr_nonkdim,
         split_k_factor=old_config.split_k_factor,
-        num_stages=old_config.schedule_version,
+        num_stages=default_num_stages,
         waves_per_eu=default_waves_per_eu,
         grid_group_size=default_grid_group_size,
     )
