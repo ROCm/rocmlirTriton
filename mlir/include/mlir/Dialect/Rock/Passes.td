@@ -159,7 +159,8 @@ def RockLegalizeFloatTypesPass
     For the GPU wrapper, inserts unrealized_conversion_cast to reinterpret
     memrefs before bufferization.to_tensor (no signature change needed).
   }];
-  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "scf::SCFDialect", "triton::TritonDialect"];
 }
 
 def RockLowerBlockwiseToPtrPass
