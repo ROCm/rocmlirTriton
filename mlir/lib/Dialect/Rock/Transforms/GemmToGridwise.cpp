@@ -869,14 +869,10 @@ GemmRewritePattern::arrangeSplitKTransform(
 
   const int64_t origK = cast<RankedTensorType>(a.getType()).getShape()[2];
   int64_t kPad = 0;
+  int64_t blockSize = 0;
   if (scaleA && scaleB) {
-    // Hard code block size to 32 for now.
-    // for the scaleGEMMs, split-K division needs to happen such that it doesn't
-    // cut in the middle of the a block
-    // TODO: Use AmdArchDbInfo to populate blockSize
-    int64_t blockSize = 32;
-    int64_t lcm = std::lcm(splitKFactor, blockSize);
-    kPad = llvm::alignTo(origK, lcm) - origK;
+    blockSize = op.getQuantBlockSize().value();
+    kPad = llvm::alignTo(origK, splitKFactor * blockSize) - origK;
   } else {
     kPad = llvm::alignTo(origK, splitKFactor) - origK;
   }
@@ -884,8 +880,12 @@ GemmRewritePattern::arrangeSplitKTransform(
   a = padMatrix(a, builder, loc, "gemmM", 0, "gemmK", kPad);
   b = padMatrix(b, builder, loc, "gemmK", kPad, "gemmN", 0);
   if (scaleA && scaleB) {
-    scaleA = padMatrix(scaleA, builder, loc, "gemmM", 0, "gemmK", kPad);
-    scaleB = padMatrix(scaleB, builder, loc, "gemmK", kPad, "gemmN", 0);
+    assert(kPad % blockSize == 0 &&
+           "kPad must be a multiple of quantBlockSize");
+    int64_t scaleKPad = kPad / blockSize;
+    scaleA = padMatrix(scaleA, builder, loc, "gemmM", 0, "gemmK", scaleKPad);
+    // scaleB is [G, N, K] after normalizeMatrix(scaleB, ..., "gemmN", "gemmK")
+    scaleB = padMatrix(scaleB, builder, loc, "gemmN", 0, "gemmK", scaleKPad);
   }
 
   // perform coordinate transformations
@@ -912,20 +912,36 @@ GemmRewritePattern::arrangeSplitKTransform(
     uint32_t nonKDim;
     uint32_t kDim;
     uint32_t newNonKDim;
+    int64_t kLen;
   };
 
   llvm::SmallVector<GemmOperandsData, 4> gemmOperands{
-      {a, aNew, {"gemmG", "gemmM", "gemmK"}, aShape, 1, 2, 1},
-      {b, bNew, {"gemmG", "gemmK", "gemmN"}, bShape, 2, 1, 3}};
+      {a, aNew, {"gemmG", "gemmM", "gemmK"}, aShape, 1, 2, 1, K},
+      {b, bNew, {"gemmG", "gemmK", "gemmN"}, bShape, 2, 1, 3, K}};
   if (scaleA && scaleB) {
     ArrayRef<int64_t> scaleAShape =
         cast<RankedTensorType>(scaleA.getType()).getShape();
     ArrayRef<int64_t> scaleBShape =
         cast<RankedTensorType>(scaleB.getType()).getShape();
-    gemmOperands.push_back(
-        {scaleA, scaleANew, {"gemmG", "gemmM", "gemmK"}, scaleAShape, 1, 2, 1});
-    gemmOperands.push_back(
-        {scaleB, scaleBNew, {"gemmG", "gemmK", "gemmN"}, scaleBShape, 2, 1, 3});
+    int64_t scaleAK = scaleAShape[2];
+    int64_t scaleBK = scaleBShape[2];
+    gemmOperands.push_back({scaleA,
+                            scaleANew,
+                            {"gemmG", "gemmM", "gemmK"},
+                            scaleAShape,
+                            1,
+                            2,
+                            1,
+                            scaleAK});
+    // After normalizeMatrix(scaleB, ..., "gemmN", "gemmK"), scaleB is [G, N, K]
+    gemmOperands.push_back({scaleB,
+                            scaleBNew,
+                            {"gemmG", "gemmN", "gemmK"},
+                            scaleBShape,
+                            1,
+                            2,
+                            1,
+                            scaleBK});
   }
   for (auto &gemmOperand : gemmOperands) {
     // Prepare matrix A and B - i.e.,
@@ -940,6 +956,9 @@ GemmRewritePattern::arrangeSplitKTransform(
         preservedDimName = dimName;
     }
 
+    int64_t operandK = gemmOperand.kLen;
+    assert(operandK % splitKFactor == 0 &&
+           "operandK must be divisible by splitKFactor after padding");
     BottomUpTMBuilder unmergeTransform(builder, gemmOperand.inputDimNames,
                                        gemmOperand.inputShape, loc);
 
@@ -948,7 +967,7 @@ GemmRewritePattern::arrangeSplitKTransform(
                                  {"gemmG", preservedDimName});
     unmergeTransform.unmerge({"gemmKSplit", "gemmK"},
                              {gemmOperand.kDim, gemmOperand.kDim + 1}, "gemmK",
-                             {splitKFactor, K / splitKFactor});
+                             {splitKFactor, operandK / splitKFactor});
 
     auto unmergeTransformAttr = unmergeTransform.get();
 
