@@ -4,7 +4,7 @@ suffix = "--operation gemm -out_dtype f32 --arch %arch %pv %constrained_float_ra
 
 [[axis]]
 name = "splitKFactor"
-values = ["gemm:v1:64,64,64,1,1,4,0,2,1,0,0", "gemm:v1:64,64,64,1,1,4,0,3,1,0,0", "gemm:v1:64,64,64,1,1,4,0,3,2,0,0"]
+values = ["gemm:v1:64,64,64,1,1,4,0,2,2,0,0", "gemm:v1:64,64,64,1,1,4,0,3,2,0,0", "gemm:v1:64,64,64,1,1,4,0,3,2,0,0"]
 prefix = "-perf_config="
 
 [[axis]]

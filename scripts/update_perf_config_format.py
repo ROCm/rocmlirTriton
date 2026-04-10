@@ -123,13 +123,15 @@ def convert_to_new_format(old_config: OldPerfConfig,
                           default_num_ctas: int = 1,
                           default_num_waves: int = 4,
                           default_matrix_instr_nonkdim: int = 16,
+                          default_num_stages: int = 2,
                           default_waves_per_eu: int = 0,
                           default_grid_group_size: int = 0) -> NewPerfConfig:
     """
     Convert old perf config to new format.
     
     The conversion uses:
-    - splitKFactor and numStages (scheduleVersion) from the old config
+    - splitKFactor from the old config
+    - numStages is always set to 2 (not derived from old scheduleVersion)
     - Default values for other parameters based on typical usage patterns
     """
     return NewPerfConfig(
@@ -141,7 +143,7 @@ def convert_to_new_format(old_config: OldPerfConfig,
         num_waves=(old_config.mperblock*old_config.nperblock)/(old_config.nperwave*old_config.mperwave),
         matrix_instr_nonkdim=default_matrix_instr_nonkdim,
         split_k_factor=old_config.split_k_factor,
-        num_stages=old_config.schedule_version,
+        num_stages=default_num_stages,
         waves_per_eu=default_waves_per_eu,
         grid_group_size=default_grid_group_size,
     )
