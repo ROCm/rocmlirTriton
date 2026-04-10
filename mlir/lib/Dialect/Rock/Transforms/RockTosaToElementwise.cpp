@@ -270,6 +270,27 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
   }
 };
 
+// arith.negf(x) -> arith.mulf(x, -1.0)
+// This supports migraphx.neg operator, which will be expanded to arith.negf.
+// However, the TritonToTritonGPU conversion does not have a pattern for
+// arith.negf, so we expand it here into ops that Triton supports.
+struct NegFTritonWorkaround : public OpRewritePattern<arith::NegFOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(arith::NegFOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto shapedTy = dyn_cast<ShapedType>(op.getType());
+    if (!shapedTy)
+      return failure();
+    auto negOneAttr = DenseElementsAttr::get(
+        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), -1.0));
+    Value negOne = arith::ConstantOp::create(rewriter, loc, negOneAttr);
+    rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getType(),
+                                               op.getOperand(), negOne);
+    return success();
+  }
+};
+
 // tosa.sigmoid: 1 / (1 + exp(-x))
 // We compute -x as (0 - x) to match both MIGraphX semantics and Triton's
 // implementation, avoiding arith.negf which Triton doesn't support on tensors.
@@ -670,6 +691,8 @@ struct RockTosaToElementwise
         [](math::RoundEvenOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<math::RoundOp>(
         [](math::RoundOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<arith::NegFOp>(
+        [](arith::NegFOp op) { return !isa<ShapedType>(op.getType()); });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       return !isa<tosa::TosaDialect>(op->getDialect());
     });
@@ -738,6 +761,9 @@ struct RockTosaToElementwise
     // we need to make sure we emit those instead of using the math.tanh
     // expansion.
     math::populateExpansionPatterns(patterns, {"tanh", "powf"});
+
+    // This is to support migraphx.neg operator, which will be expanded to arith.negf.
+    patterns.add<NegFTritonWorkaround>(ctx);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();
