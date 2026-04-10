@@ -1,6 +1,4 @@
 // RUN: rocmlir-opt --rock-tosa-to-elementwise --split-input-file %s | FileCheck %s
-// TODO(rocmlirTriton): Failures after updates to populateExpansionPatterns
-// UNSUPPORTED: true
 
 // CHECK-LABEL: @add_f32
 // CHECK-NOT:   tosa.add
@@ -175,7 +173,9 @@ func.func @abs_i32(%arg0: tensor<32xi32>) -> tensor<32xi32> attributes {rock.ker
 
 // CHECK-LABEL: @negate_f32
 // CHECK-NOT:   tosa.negate
-// CHECK:       arith.negf %arg0 : tensor<16xf32>
+// CHECK-NOT:   arith.negf
+// CHECK-DAG:   %[[NEG_ONE:.*]] = arith.constant dense<-1.000000e+00> : tensor<16xf32>
+// CHECK:       arith.mulf %arg0, %[[NEG_ONE]] : tensor<16xf32>
 func.func @negate_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
   %in_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
   %out_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
@@ -682,6 +682,28 @@ func.func @unsigned_div(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8x
 
 // -----
 
+// fp_to_int_cast: float-to-int using direct truncation (no rounding),
+// matching MIGraphX semantics for quantize paths.
+// CHECK-LABEL: @fp_to_int_cast_f32_to_i32
+// CHECK-NOT:   tosa.custom
+// CHECK:       arith.fptosi %arg0 : tensor<16xf32> to tensor<16xi32>
+func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf32>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @fp_to_int_cast_f32_to_i8
+// CHECK-NOT:   tosa.custom
+// CHECK:       arith.fptosi %arg0 : tensor<16xf32> to tensor<16xi8>
+func.func @fp_to_int_cast_f32_to_i8(%arg0: tensor<16xf32>) -> tensor<16xi8> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf32>) -> tensor<16xi8>
+  return %0 : tensor<16xi8>
+}
+
+// -----
+
 // CHECK-LABEL: @select_broadcast
 // CHECK-NOT:   tosa.select
 // CHECK-DAG:   %[[BP:.*]] = rock.transform %arg0 {{.*}} : tensor<1x8xi1> to tensor<4x8xi1>
@@ -777,7 +799,7 @@ func.func @powf_direct(%arg0: tensor<32xf32>, %arg1: tensor<32xf32>) -> tensor<3
 
 // -----
 
-// Scalar roundeven is preserved (only tensor types are marked illegal).
+// Scalar roundeven is preserved (math dialect ops are legal).
 // CHECK-LABEL: @roundeven_scalar_preserved
 // CHECK:       math.roundeven %arg0 : f32
 func.func @roundeven_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {

@@ -601,10 +601,11 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
   }
 };
 
-// tosa.custom with domain "rocmlir": unsigned_cast and unsigned_div.
-// These are custom TOSA ops that represent unsigned integer operations
-// (fptoui, uitofp, extui, divui) which standard TOSA doesn't support.
-struct CustomUnsignedOpConverter : public OpRewritePattern<tosa::CustomOp> {
+// tosa.custom with domain "rocmlir": unsigned_cast, unsigned_div,
+// and fp_to_int_cast.
+// These are custom TOSA ops that represent operations which standard TOSA
+// doesn't support or where we need to override upstream lowering behavior.
+struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::CustomOp op,
                                 PatternRewriter &rewriter) const override {
@@ -633,6 +634,12 @@ struct CustomUnsignedOpConverter : public OpRewritePattern<tosa::CustomOp> {
       } else {
         rewriter.replaceOpWithNewOp<arith::FPToUIOp>(op, outType, input);
       }
+      return success();
+    }
+
+    if (op.getOperatorName() == ROCK_CUSTOMOP_FP_TO_INT_CAST) {
+      Value input = op.getInputList()[0];
+      rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, outType, input);
       return success();
     }
 
@@ -691,10 +698,6 @@ struct RockTosaToElementwise
         [](math::TanhOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<math::PowFOp>(
         [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
-    target.addDynamicallyLegalOp<math::RoundEvenOp>(
-        [](math::RoundEvenOp op) { return !isa<ShapedType>(op.getType()); });
-    target.addDynamicallyLegalOp<math::RoundOp>(
-        [](math::RoundOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<arith::NegFOp>(
         [](arith::NegFOp op) { return !isa<ShapedType>(op.getType()); });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
@@ -706,7 +709,8 @@ struct RockTosaToElementwise
         return true;
       StringRef name = op.getOperatorName();
       return name != ROCK_CUSTOMOP_UNSIGNED_CAST &&
-             name != ROCK_CUSTOMOP_UNSIGNED_DIV;
+             name != ROCK_CUSTOMOP_UNSIGNED_DIV &&
+             name != ROCK_CUSTOMOP_FP_TO_INT_CAST;
     });
 
     // --- Binary float / int ---
@@ -754,7 +758,7 @@ struct RockTosaToElementwise
     patterns
         .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
              SigmoidConverter, SelectConverter, ClampConverter, CastConverter,
-             CustomUnsignedOpConverter>(ctx);
+             CustomOpConverter>(ctx);
 
     // --- Triton workarounds ---
     // The Triton TritonToTritonGPU conversion is missing patterns for

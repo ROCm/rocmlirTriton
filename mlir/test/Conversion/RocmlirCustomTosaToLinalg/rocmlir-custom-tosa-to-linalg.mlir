@@ -84,6 +84,42 @@ func.func @floats_f16_to_i8(%arg0: tensor<8x8x2xf16>) -> tensor<8x8x2xi8> {
 
 // -----
 
+// fp_to_int_cast: float-to-int using direct truncation (arith.fptosi),
+// bypassing upstream tosa-to-linalg round-to-nearest-even behavior.
+// CHECK-LABEL: @fp_to_int_cast_f32_to_i32
+// CHECK-SAME: (%[[arg0:.+]]: tensor<8x8x2xf32>)
+// CHECK: %[[empty:.+]] = tensor.empty() : tensor<8x8x2xi32>
+// CHECK: %[[ret:.+]] = linalg.generic
+// CHECK-SAME: ins(%[[arg0]] : tensor<8x8x2xf32>)
+// CHECK-SAME: outs(%[[empty]] : tensor<8x8x2xi32>)
+// CHECK-NEXT: %[[in:.+]]: f32
+// CHECK-NEXT: %[[res:.+]] = arith.fptosi %[[in]] : f32 to i32
+// CHECK-NEXT: linalg.yield %[[res]]
+// CHECK-NEXT: -> tensor<8x8x2xi32>
+// CHECK-NEXT: return %[[ret]]
+func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<8x8x2xf32>) -> tensor<8x8x2xi32> {
+  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<8x8x2xf32>) -> tensor<8x8x2xi32>
+  func.return %out : tensor<8x8x2xi32>
+}
+
+// CHECK-LABEL: @fp_to_int_cast_f16_to_i8
+// CHECK-SAME: (%[[arg0:.+]]: tensor<16xf16>)
+// CHECK: %[[empty:.+]] = tensor.empty() : tensor<16xi8>
+// CHECK: %[[ret:.+]] = linalg.generic
+// CHECK-SAME: ins(%[[arg0]] : tensor<16xf16>)
+// CHECK-SAME: outs(%[[empty]] : tensor<16xi8>)
+// CHECK-NEXT: %[[in:.+]]: f16
+// CHECK-NEXT: %[[res:.+]] = arith.fptosi %[[in]] : f16 to i8
+// CHECK-NEXT: linalg.yield %[[res]]
+// CHECK-NEXT: -> tensor<16xi8>
+// CHECK-NEXT: return %[[ret]]
+func.func @fp_to_int_cast_f16_to_i8(%arg0: tensor<16xf16>) -> tensor<16xi8> {
+  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf16>) -> tensor<16xi8>
+  func.return %out : tensor<16xi8>
+}
+
+// -----
+
 // Basic acc_type promotion: f16 output with f32 acc_type gets promoted.
 
 // CHECK-LABEL: @matmul_acc_promotion_basic

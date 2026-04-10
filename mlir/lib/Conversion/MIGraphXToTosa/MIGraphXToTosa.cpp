@@ -113,6 +113,14 @@ static Value createCastOp(PatternRewriter &rewriter, Location loc,
                                  ROCK_CUSTOMOP_UNSIGNED_CAST,
                                  ROCK_CUSTOMOP_DOMAIN_NAME, "", input)
               .getResult(0);
+  } else if (isa<FloatType>(inputType) && isa<IntegerType>(resElementType)) {
+    // MIGraphX uses truncation (no rounding) for float-to-int casts.
+    // Use a custom op so both GPU and CPU paths lower identically,
+    // bypassing upstream tosa-to-linalg which inserts round-to-nearest-even.
+    res = tosa::CustomOp::create(rewriter, loc, resType,
+                                 ROCK_CUSTOMOP_FP_TO_INT_CAST,
+                                 ROCK_CUSTOMOP_DOMAIN_NAME, "", input)
+              .getResult(0);
   } else {
     res = rewriter.createOrFold<tosa::CastOp>(loc, resType, input);
   }
