@@ -533,7 +533,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //     rock.yield
 //   }
 //    %alloc = ab * %0 : tensor<1x64x64xf32> -> tensor<1x64x64xf32>
-//   } {firstGemmIndices = array<i64: 0>, params0 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, perf_config = "attn:v2:64,128,32,16,32,16,4,4,1,2,1", storeMethod = #rock<StoreMethod set>} -> tensor<1x64x64xf32>
+//   } {firstGemmIndices = array<i64: 0>, params0 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 32, kPerBlock = 64, kpack = 4, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>, perf_config = "attn:v1:64,32,64,1,1,4,0,4,1,0,0", storeMethod = #rock<StoreMethod set>} -> tensor<1x64x64xf32>
 //   %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 64, d0 mod 64)> by [<Merge{1, 64, 64} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [4096] -> [1, 64, 64]> : tensor<1x64x64xf32> to tensor<4096xf32>
 //   %alloc_0 = tensor.empty() : tensor<1x64x1xf32>
 // 

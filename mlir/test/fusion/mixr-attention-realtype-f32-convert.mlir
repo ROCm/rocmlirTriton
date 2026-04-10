@@ -19,7 +19,7 @@ module {
     %1 = migraphx.convert %0 {target_type = 0 : i64} : <4096x4096xf32, 4096x1> to <4096x4096xf16, 4096x1>
     %2 = migraphx.dot %arg2, %1 : <4096x4096xf16, 4096x1>, <4096x4096xf16, 4096x1> -> <4096x4096xf16, 4096x1>
     %3 = migraphx.softmax %2 {axis = 1 : i64} : <4096x4096xf16, 4096x1> -> <4096x4096xf16, 4096x1>
-    %4 = migraphx.dot %3, %arg3 {perf_config = "attn:v2:128,128,128,128,128,16,1,1,1,2,1"} : <4096x4096xf16, 4096x1>, <4096x4096xf16, 4096x1> -> <4096x4096xf16, 4096x1>
+    %4 = migraphx.dot %3, %arg3 {perf_config = "attn:v1:128,128,128,1,1,8,0,1,1,0,0"} : <4096x4096xf16, 4096x1>, <4096x4096xf16, 4096x1> -> <4096x4096xf16, 4096x1>
     return %4 : !migraphx.shaped<4096x4096xf16, 4096x1>
   }
 }

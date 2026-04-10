@@ -336,7 +336,7 @@ func.func @test_conv(%arg0: tensor<2304xf16>, %arg1: tensor<1638400xf16>) -> ten
 // CHECK: %[[b:.*]] = rock.transform %{{.*}} : tensor<64x1x16xf16> to tensor<1x64x16xf16>
 // CHECK: rock.attention
 // CHECK-NEXT: qk = tr %[[a]] * tr %[[b]]
-// CHECK: perf_config = "attn:v2:128,128,128,2,64,64,8,4,1,2,1"
+// CHECK: perf_config = "attn:v1:128,128,16,1,1,4,0,4,1,0,0"
 func.func @test_attention(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: tensor<512xf16>) -> tensor<1x32x8xf16> attributes {rock.kernel} {
   %0 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> ((d0 * 8 + d1) * 64 + d2)> by [<Unmerge{1, 8, 64} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 8, 64] -> [512]> : tensor<512xf16> to tensor<1x8x64xf16>
   %1 = rock.transform %0 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["dim0", "dim2", "dim1"] at [0, 1, 2] -> ["dim0", "dim2", "dim1"] at [0, 2, 1]>] bounds = [1, 64, 8] -> [1, 8, 64]> : tensor<1x8x64xf16> to tensor<1x64x8xf16>
@@ -352,7 +352,7 @@ func.func @test_attention(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg
     rock.yield
   }
     softmax(qk) * %1 : tensor<1x64x8xf16>
-  } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v2:128,128,128,2,64,64,8,4,1,2,1"} -> tensor<1x32x8xf16>
+  } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:128,128,16,1,1,4,0,4,1,0,0"} -> tensor<1x32x8xf16>
   return %7 : tensor<1x32x8xf16>
 }
 
@@ -513,7 +513,7 @@ func.func @test_mlir_slice_add_literal_weights_convolution(%arg0: tensor<1638400
 // CHECK: %[[b:.*]] = rock.transform %{{.*}} : tensor<64x1x16xf16> to tensor<1x64x16xf16>
 // CHECK: rock.gemm_elementwise_gemm
 // CHECK-NEXT: ab = tr %[[a]] * tr %[[b]]
-// CHECK: perf_config = "attn:v2:128,128,128,2,64,64,8,4,1,2,1"
+// CHECK: perf_config = "attn:v1:128,128,16,1,1,4,0,4,1,0,0"
 func.func @test_gemm_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: tensor<512xf16>) -> tensor<1x32x8xf16> attributes {rock.kernel} {
   %0 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> ((d0 * 8 + d1) * 64 + d2)> by [<Unmerge{1, 8, 64} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 8, 64] -> [512]> : tensor<512xf16> to tensor<1x8x64xf16>
   %1 = rock.transform %0 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["dim0", "dim2", "dim1"] at [0, 1, 2] -> ["dim0", "dim2", "dim1"] at [0, 2, 1]>] bounds = [1, 64, 8] -> [1, 8, 64]> : tensor<1x8x64xf16> to tensor<1x64x8xf16>
@@ -525,7 +525,7 @@ func.func @test_gemm_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg
   %7 = rock.gemm_elementwise_gemm{
     ab = %6 * %3 : tensor<1x32x16xf16>, tensor<1x16x64xf16>
     out = ab * %1 : tensor<1x64x8xf16>
-  } {firstGemmIndices = array<i64: 0>, perf_config = "attn:v2:128,128,128,2,64,64,8,4,1,2,1"} -> tensor<1x32x8xf16>
+  } {firstGemmIndices = array<i64: 0>, perf_config = "attn:v1:128,128,16,1,1,4,0,4,1,0,0"} -> tensor<1x32x8xf16>
   return %7 : tensor<1x32x8xf16>
 }
 
@@ -534,7 +534,7 @@ func.func @test_gemm_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg
 // CHECK-LABEL: func.func @test_conv_gemm
 // CHECK: rock.conv_elementwise_gemm
 // CHECK: ab = conv(%{{.*}}, %{{.*}}) : tensor<256x3x3x
-// CHECK: perf_config = "attn:v2:128,128,128,2,64,64,8,4,1,2,1"
+// CHECK: perf_config = "attn:v1:128,128,16,1,1,4,0,4,1,0,0"
 func.func @test_conv_gemm(%arg0: tensor<147456xf32>, %arg1: tensor<802816xf32>, %arg2: tensor<65536xf32>) -> tensor<1x9216x256xf32> attributes {rock.kernel} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 3 + d2) * 3 + d3) * 64 + d4)> by [<Unmerge{256, 3, 3, 64} ["k", "0", "1", "c"] at [1, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 3, 3, 64] -> [147456]> : tensor<147456xf32> to tensor<1x256x3x3x64xf32>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2) * 64 + d4)> by [<Unmerge{64, 14, 14, 64} ["n", "0", "1", "c"] at [0, 1, 2, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [3] -> [] at []>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf32> to tensor<64x14x14x1x64xf32>
@@ -542,7 +542,7 @@ func.func @test_conv_gemm(%arg0: tensor<147456xf32>, %arg1: tensor<802816xf32>, 
   %3 = rock.conv_elementwise_gemm{
     ab = conv(%0, %1) : tensor<1x256x3x3x64xf32>, tensor<64x14x14x1x64xf32>
     out = ab * %2 : tensor<1x256x256xf32>
-  } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index], perf_config = "attn:v2:128,128,128,2,64,64,8,4,1,2,1"} -> tensor<1x9216x256xf32>
+  } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "0", "1", "c"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "0i", "1i", "gi", "ci"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index], perf_config = "attn:v1:128,128,16,1,1,4,0,4,1,0,0"} -> tensor<1x9216x256xf32>
   return %3 : tensor<1x9216x256xf32>
 }
 
