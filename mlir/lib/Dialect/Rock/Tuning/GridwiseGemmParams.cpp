@@ -277,26 +277,10 @@ LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
   if (mnPerXdl == 0)
     return success();
 
-  int64_t mPerBlock = params.getMPerBlock();
-  int64_t nPerBlock = params.getNPerBlock();
   int64_t numWaves = params.getNumWaves();
   // XDL: limit to wave counts this heuristic was derived for (see rocMLIR).
   if (numWaves != 1 && numWaves != 2 && numWaves != 4)
     return failure();
 
-  for (int64_t mWaves = 1; mWaves <= numWaves; ++mWaves) {
-    if (numWaves % mWaves != 0)
-      continue;
-    int64_t nWaves = numWaves / mWaves;
-    if (mPerBlock % mWaves != 0 || nPerBlock % nWaves != 0)
-      continue;
-
-    int64_t nPerWave = nPerBlock / nWaves;
-    if ((numWaves == 4 && mnPerXdl <= nPerWave) ||
-        (numWaves == 2 && mnPerXdl == nPerWave) ||
-        (numWaves == 1 && mnPerXdl == nPerWave))
-      return success();
-  }
-
-  return failure();
+  return success();
 }
