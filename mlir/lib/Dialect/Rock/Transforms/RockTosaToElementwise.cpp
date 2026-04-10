@@ -755,10 +755,9 @@ struct RockTosaToElementwise
 
     // --- Special cases ---
     patterns.add<ReciprocalRsqrtToSqrtConverter>(ctx, /*benefit=*/2);
-    patterns
-        .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
-             SigmoidConverter, SelectConverter, ClampConverter, CastConverter,
-             CustomOpConverter>(ctx);
+    patterns.add<AbsConverter, NegateConverter, MulConverter,
+                 ReciprocalConverter, SigmoidConverter, SelectConverter,
+                 ClampConverter, CastConverter, CustomOpConverter>(ctx);
 
     // --- Triton workarounds ---
     // The Triton TritonToTritonGPU conversion is missing patterns for
