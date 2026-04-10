@@ -32,7 +32,7 @@ module {
       rock.yield
     }
       %alloc = ab * %4 : memref<4x32x32xf32> -> memref<4x32x32xf32>
-    } {firstGemmIndices = array<i64: 0>, storeMethod = #rock<StoreMethod set>}
+    } {storeMethod = #rock<StoreMethod set>}
     %6 = rock.transform %alloc by <affine_map<(d0) -> (d0 floordiv 1024, (d0 mod 1024) floordiv 32, d0 mod 32)> by [<Merge{4, 32, 32} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [4096] -> [4, 32, 32]> : memref<4x32x32xf32> to memref<4096xf32>
     memref.copy %6, %arg4 : memref<4096xf32> to memref<4096xf32>
     return

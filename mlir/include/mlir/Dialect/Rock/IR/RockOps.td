@@ -195,7 +195,6 @@ def Rock_AttentionOp
           I32Attr:$splitKV, OptionalAttr<TypeAttr>:$softmaxType,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
-          DenseI64ArrayAttr:$firstGemmIndices,
           DefaultValuedOptionalAttr<BoolAttr,
                                     "false">:$preSoftmaxHasSplitKVTransforms)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result,
@@ -264,8 +263,7 @@ def Rock_GemmElementwiseGemmOp
           Variadic<AnyTensor>:$elemwiseInputs, UnitAttr:$aTransposed,
           UnitAttr:$bTransposed, UnitAttr:$cTransposed, UnitAttr:$oTransposed,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
-          OptionalAttr<RockTuningParamAttrInterface>:$params1,
-          DenseI64ArrayAttr:$firstGemmIndices)>,
+          OptionalAttr<RockTuningParamAttrInterface>:$params1)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result)> {
   let summary = "GEMM-elementwise-GEMM operation";
   let description = [{
@@ -305,13 +303,11 @@ def Rock_ConvElementwiseGemmOp
       AllElementTypesMatch<["filter", "input"]>,
       Arguments<(ins TensorOf<[F32, F16, BF16]>:$filter,
           TensorOf<[F32, F16, BF16]>:$input, TensorOf<[F32, F16, BF16]>:$c,
-          Variadic<AnyTensor>:$elemwiseInputs,
-          UnitAttr:$cTransposed, UnitAttr:$oTransposed,
-          IndexArrayLength<4>:$padding, IndexArrayLength<2>:$strides,
-          IndexArrayLength<2>:$dilations,
+          Variadic<AnyTensor>:$elemwiseInputs, UnitAttr:$cTransposed,
+          UnitAttr:$oTransposed, IndexArrayLength<4>:$padding,
+          IndexArrayLength<2>:$strides, IndexArrayLength<2>:$dilations,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
-          OptionalAttr<RockTuningParamAttrInterface>:$params1,
-          DenseI64ArrayAttr:$firstGemmIndices)>,
+          OptionalAttr<RockTuningParamAttrInterface>:$params1)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result)> {
   let summary = "CONV-elementwise-GEMM operation";
   let description = [{
@@ -545,7 +541,7 @@ def Rock_GridwiseAttentionOp
           OptionalAttr<IndexAttr>:$prePadG0N,
           OptionalAttr<IndexAttr>:$numRepeatsGQA,
           OptionalAttr<TypeAttr>:$softmaxType, Rock_GemmParamsAttr:$params0,
-          Rock_GemmParamsAttr:$params1, DenseI64ArrayAttr:$firstGemmIndices,
+          Rock_GemmParamsAttr:$params1,
           DefaultValuedOptionalAttr<BoolAttr, "true">:$enableSoftmax,
           DefaultValuedOptionalAttr<BoolAttr,
                                     "false">:$preSoftmaxHasSplitKVTransforms)>,

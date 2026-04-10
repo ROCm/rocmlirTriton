@@ -784,12 +784,58 @@ struct GridwiseAttentionRewritePattern
     return ifb;
   }
 
+  // Retile a ranked-tensor splat constant to targetShape in place.
+  // Returns success (no-op) for non-tensor constants, failure for non-splat
+  // tensors so the caller can emit a diagnostic.
+  static LogicalResult retileSplatConstant(arith::ConstantOp constOp,
+                                           ArrayRef<int64_t> targetShape) {
+    auto origType = dyn_cast<RankedTensorType>(constOp.getType());
+    if (!origType)
+      return success();
+    auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
+    if (!splatAttr)
+      return failure();
+    auto newType =
+        RankedTensorType::get(targetShape, origType.getElementType());
+    constOp.setValueAttr(
+        SplatElementsAttr::get(newType, splatAttr.getSplatValue<Attribute>()));
+    constOp.getResult().setType(newType);
+    return success();
+  }
+
+  // Map external splat constants referenced by the region body to
+  // tile-shaped replacements. Constants like scale factors or mask fill
+  // values may be defined at function scope and captured by closure.
+  LogicalResult mapExternalSplatConstants(PatternRewriter &rewriter,
+                                          Location loc, GridwiseAttentionOp op,
+                                          Block &block,
+                                          RankedTensorType tileType,
+                                          IRMapping &mapping) const {
+    for (Operation &bodyOp : block.without_terminator()) {
+      for (Value operand : bodyOp.getOperands()) {
+        if (operand.getParentBlock() == &block)
+          continue;
+        if (mapping.contains(operand))
+          continue;
+        auto constOp = operand.getDefiningOp<arith::ConstantOp>();
+        if (!constOp)
+          continue;
+        if (!isa<RankedTensorType>(constOp.getType()))
+          continue;
+        auto clonedConst = cast<arith::ConstantOp>(rewriter.clone(*constOp));
+        if (failed(retileSplatConstant(clonedConst, tileType.getShape())))
+          return op->emitOpError()
+                 << "non-splat constant in preSoftmaxBody cannot be tiled";
+        mapping.map(operand, clonedConst.getResult());
+      }
+    }
+    return success();
+  }
+
   // Apply pre-softmax element-wise fusions to the first GEMM (Q*K) output.
-  // Clones the ops from the op's preSoftmaxBody region into the current IR,
-  // mapping block arguments to tile-level values: arg0 is the gemm0 result
-  // and remaining args are extra element-wise inputs loaded via LoadMarkerOps.
-  // Returns the (possibly fused) result, or the original buffer if no fusions
-  // are present.
+  // The body is expected to be purely elementwise (no rock.transform ops)
+  // after regularization by RockRegularizeInterGemmFusionPass. Block arg 0 is
+  // the QK product; remaining args are extra inputs loaded via LoadMarkerOps.
   FailureOr<Value> postProcessFirstGemm(PatternRewriter &rewriter, Location loc,
                                         GridwiseAttentionOp op,
                                         layout::GridCoordinates gridCoords,
@@ -801,17 +847,17 @@ struct GridwiseAttentionRewritePattern
 
     Block &block = region.front();
 
-    // If there are no fusion ops in the region, nothing to do.
     if (block.without_terminator().empty())
       return srcGemm0OutBuffer;
 
-    // Build the mapping from block arguments to tile-level values.
     IRMapping mapping;
     auto tileType = cast<RankedTensorType>(srcGemm0OutBuffer.getType());
 
-    // Map the QK product block arg, casting to the region's element type if
-    // needed.
-    BlockArgument qkArg = op.getPreSoftmaxQKArgument();
+    if (block.getNumArguments() == 0)
+      return op->emitOpError()
+             << "preSoftmaxBody block must have at least one argument";
+    BlockArgument qkArg = block.getArgument(0);
+
     Value gemm0Mapped = srcGemm0OutBuffer;
     Type regionElemType = cast<ShapedType>(qkArg.getType()).getElementType();
     if (tileType.getElementType() != regionElemType) {
@@ -822,15 +868,13 @@ struct GridwiseAttentionRewritePattern
     }
     mapping.map(qkArg, gemm0Mapped);
 
-    // Remaining block args correspond to preSoftmaxElemWiseInputs.
     ValueRange extraInputs = op.getPreSoftmaxElemWiseInputs();
-    // assert that extraInputs + firstGemmOut matches the number of block
-    // arguments
-    if ((extraInputs.size() + 1) != block.getNumArguments()) {
-      LLVM_DEBUG(llvm::dbgs() << "getPreSoftmaxElemWiseInputs + 1 size must be "
-                                 "equal to block.getNumArguments\n");
-      return failure();
-    }
+    unsigned numExtraArgs = block.getNumArguments() - 1;
+    if (extraInputs.size() != numExtraArgs)
+      return op->emitOpError()
+             << "preSoftmaxBody has " << numExtraArgs
+             << " non-QK block argument(s) but op has " << extraInputs.size()
+             << " preSoftmaxElemWiseInputs";
 
     for (unsigned i = 0; i < extraInputs.size(); ++i) {
       Value globalInput = extraInputs[i];
@@ -838,28 +882,40 @@ struct GridwiseAttentionRewritePattern
       ArrayAttr globalInputMaps;
       std::tie(root, globalInputMaps, std::ignore) =
           untransform(rewriter, globalInput);
-    
+
       auto resultType = RankedTensorType::get(
           tileType.getShape(),
           cast<ShapedType>(globalInput.getType()).getElementType());
 
-      ArrayAttr otherInputMap = gemm0OutViews;
-      if (!globalInputMaps.empty()) {
-        otherInputMap =
-            prependUpperViews(rewriter, gemm0OutViews, globalInputMaps);
-      }
+      SmallVector<Attribute> allViews(gemm0OutViews.begin(),
+                                      gemm0OutViews.end());
+      if (!globalInputMaps.empty())
+        allViews.append(globalInputMaps.begin(), globalInputMaps.end());
+      ArrayAttr otherInputMap = rewriter.getArrayAttr(allViews);
+
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, root, otherInputMap,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block});
-      mapping.map(block.getArgument(1 + i), markerOp.getResult());
+
+      mapping.map(block.getArgument(i + 1), markerOp.getResult());
     }
 
-    // Clone ops from the region body (except the terminator), fixing up
-    // result types to use tile-level shapes while preserving element types
-    // (important for casts like arith.extf / arith.truncf).
+    if (failed(mapExternalSplatConstants(rewriter, loc, op, block, tileType,
+                                         mapping)))
+      return failure();
+
+    // Clone elementwise ops from the body, fixing up result types to use
+    // tile-level shapes while preserving element types.
     for (Operation &bodyOp : block.without_terminator()) {
       Operation *cloned = rewriter.clone(bodyOp, mapping);
+
+      if (auto constOp = dyn_cast<arith::ConstantOp>(cloned)) {
+        if (failed(retileSplatConstant(constOp, tileType.getShape())))
+          return op->emitOpError()
+                 << "non-splat constant in preSoftmaxBody cannot be tiled";
+      }
+
       if (cloned->getNumResults() == 1 && cloned->getNumOperands() > 0) {
         auto operandTy =
             dyn_cast<RankedTensorType>(cloned->getOperand(0).getType());
@@ -875,7 +931,6 @@ struct GridwiseAttentionRewritePattern
       }
     }
 
-    // The yield operand (mapped) is the fused result.
     auto yieldOp = cast<rock::YieldOp>(block.getTerminator());
     return mapping.lookup(yieldOp.getOperand(0));
   }

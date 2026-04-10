@@ -563,7 +563,6 @@ struct AttentionRewritePattern : public OpRewritePattern<rock::AttentionOp> {
         op.getNumHeadsKVAttr(), transposedQ, transposedK, transposedV,
         op.getOTransposedAttr(), op.getCausalAttr(), op.getSplitKVAttr(),
         op.getSoftmaxTypeAttr(), op.getParams0Attr(), op.getParams1Attr(),
-        op.getFirstGemmIndicesAttr(),
         op.getPreSoftmaxHasSplitKVTransformsAttr());
 
     if (rock::gemmGemmHasPreSecondGemmFusion(op)) {
@@ -610,8 +609,7 @@ struct ConvElementwiseGemmRewritePattern
         rw, op->getLoc(), op->getResultTypes(), newFilter, newInput,
         resultC.tensor, op.getElemwiseInputs(), resultC.transposed,
         op.getOTransposedAttr(), op.getPaddingAttr(), op.getStridesAttr(),
-        op.getDilationsAttr(), op.getParams0Attr(), op.getParams1Attr(),
-        op.getFirstGemmIndicesAttr());
+        op.getDilationsAttr(), op.getParams0Attr(), op.getParams1Attr());
 
     newOp->setAttr("filter_layout", newFilterLayout);
     newOp->setAttr("input_layout", newInputLayout);
@@ -653,7 +651,7 @@ struct GemmElementwiseGemmRewritePattern
         rw, op->getLoc(), op->getResultTypes(), newTensorQ, newTensorK,
         newTensorV, op.getElemwiseInputs(), transposedQ, transposedK,
         transposedV, op.getOTransposedAttr(), op.getParams0Attr(),
-        op.getParams1Attr(), op.getFirstGemmIndicesAttr());
+        op.getParams1Attr());
 
     if (rock::gemmGemmHasPreSecondGemmFusion(op)) {
       rw.inlineRegionBefore(op.getPreSecondGemmBody(),

@@ -340,11 +340,84 @@ module {
         rock.yield %qk : tensor<1x64x64xf16>
       }
       softmax(qk) * %v : tensor<1x64x32xf16>
-    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x64x32xf16>
+    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x64x32xf16>
     %attn_4d = rock.transform %attn by #tf_attn_unmerge : tensor<1x64x32xf16> to tensor<1x8x8x32xf16>
     %fused = arith.addf %attn_4d, %ext : tensor<1x8x8x32xf16>
     %r = rock.store %fused to %dest by set : tensor<1x8x8x32xf16> -> tensor<1x8x8x32xf16> to tensor<1x8x8x32xf16>
     return %r : tensor<1x8x8x32xf16>
+  }
+
+  // ============================================================
+  // ATTENTION body: transform on intermediate (sinkTransformsToLeaves)
+  // Body:  sum = arith.addf arg1, arg2
+  //        sum_t = rock.transform sum (Unmerge: 4096 -> 64x64)
+  //        final = arith.addf arg0, sum_t
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_attention_body_intermediate_transform
+  // CHECK: rock.attention
+  // CHECK: elementwise
+  // CHECK: rock.transform
+  // CHECK: rock.yield
+  func.func @test_attention_body_intermediate_transform(
+      %q_raw: tensor<2048xf16>, %k_raw: tensor<2048xf16>,
+      %v_raw: tensor<2048xf16>,
+      %ext1: tensor<1x4096xf16>, %ext2: tensor<1x4096xf16>,
+      %dest: tensor<1x64x32xf16>)
+      -> tensor<1x64x32xf16> attributes {rock.kernel} {
+    %q = rock.transform %q_raw by #tf_attn_q : tensor<2048xf16> to tensor<1x64x32xf16>
+    %k = rock.transform %k_raw by #tf_attn_k : tensor<2048xf16> to tensor<1x32x64xf16>
+    %v = rock.transform %v_raw by #tf_attn_v : tensor<2048xf16> to tensor<1x64x32xf16>
+    %attn = rock.attention{
+      qk = %q * %k : tensor<1x64x32xf16>, tensor<1x32x64xf16>
+      qk = elementwise otherIns (%ext1, %ext2 : tensor<1x4096xf16>, tensor<1x4096xf16>) {
+      ^bb0(%qk: tensor<1x64x64xf16>, %arg1: tensor<1x4096xf16>, %arg2: tensor<1x4096xf16>):
+        %sum = arith.addf %arg1, %arg2 : tensor<1x4096xf16>
+        %sum_t = rock.transform %sum by <affine_map<(d0, d1, d2) -> (d0, d1 * 64 + d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Unmerge{64, 64} ["seq_q", "seq_k"] at [1, 2] -> ["flat"] at [1]>] bounds = [1, 64, 64] -> [1, 4096]> : tensor<1x4096xf16> to tensor<1x64x64xf16>
+        %final = arith.addf %qk, %sum_t : tensor<1x64x64xf16>
+        rock.yield %final : tensor<1x64x64xf16>
+      }
+      softmax(qk) * %v : tensor<1x64x32xf16>
+    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x64x32xf16>
+    %r = rock.store %attn to %dest by set : tensor<1x64x32xf16> -> tensor<1x64x32xf16> to tensor<1x64x32xf16>
+    return %r : tensor<1x64x32xf16>
+  }
+
+  // ============================================================
+  // ATTENTION body: transform on intermediate with splat constant
+  // Body:  sum = arith.mulf arg1, constant
+  //        sum_t = rock.transform sum (Unmerge: 4096 -> 64x64)
+  //        final = arith.addf arg0, sum_t
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_attention_body_intermediate_transform_const
+  // CHECK: rock.attention
+  // CHECK: elementwise
+  // CHECK: rock.transform
+  // CHECK: rock.yield
+  func.func @test_attention_body_intermediate_transform_const(
+      %q_raw: tensor<2048xf16>, %k_raw: tensor<2048xf16>,
+      %v_raw: tensor<2048xf16>,
+      %ext1: tensor<1x4096xf16>,
+      %dest: tensor<1x64x32xf16>)
+      -> tensor<1x64x32xf16> attributes {rock.kernel} {
+    %q = rock.transform %q_raw by #tf_attn_q : tensor<2048xf16> to tensor<1x64x32xf16>
+    %k = rock.transform %k_raw by #tf_attn_k : tensor<2048xf16> to tensor<1x32x64xf16>
+    %v = rock.transform %v_raw by #tf_attn_v : tensor<2048xf16> to tensor<1x64x32xf16>
+    %cst = arith.constant dense<2.0> : tensor<1x4096xf16>
+    %attn = rock.attention{
+      qk = %q * %k : tensor<1x64x32xf16>, tensor<1x32x64xf16>
+      qk = elementwise otherIns (%ext1 : tensor<1x4096xf16>) {
+      ^bb0(%qk: tensor<1x64x64xf16>, %arg1: tensor<1x4096xf16>):
+        %scaled = arith.mulf %arg1, %cst : tensor<1x4096xf16>
+        %scaled_t = rock.transform %scaled by <affine_map<(d0, d1, d2) -> (d0, d1 * 64 + d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Unmerge{64, 64} ["seq_q", "seq_k"] at [1, 2] -> ["flat"] at [1]>] bounds = [1, 64, 64] -> [1, 4096]> : tensor<1x4096xf16> to tensor<1x64x64xf16>
+        %final = arith.addf %qk, %scaled_t : tensor<1x64x64xf16>
+        rock.yield %final : tensor<1x64x64xf16>
+      }
+      softmax(qk) * %v : tensor<1x64x32xf16>
+    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x64x32xf16>
+    %r = rock.store %attn to %dest by set : tensor<1x64x32xf16> -> tensor<1x64x32xf16> to tensor<1x64x32xf16>
+    return %r : tensor<1x64x32xf16>
   }
 
   // ============================================================

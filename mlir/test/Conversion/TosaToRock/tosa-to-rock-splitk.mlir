@@ -152,7 +152,7 @@ func.func @test_gemm_gemm(%arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>, %arg
   %3 = tosa.matmul %expanded_1, %expanded_0, %1, %1 {acc_type = f32} : (tensor<1x64x64xf32>, tensor<1x64x64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x64x64xf32>
 
   // CHECK: rock.gemm_elementwise_gemm
-  // CHECK: {firstGemmIndices = array<i64: 0>, perf_config = "attn:v1:64,128,32,16,32,16,4,4,1,2,1"
+  // CHECK: {perf_config = "attn:v1:64,128,32,16,32,16,4,4,1,2,1"
   %4 = tosa.matmul %3, %expanded, %1, %1 {acc_type = f32, perf_config = "attn:v1:64,128,32,16,32,16,4,4,1,2,1"} : (tensor<1x64x64xf32>, tensor<1x64x64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x64x64xf32>
   %collapsed = tensor.collapse_shape %4 [[0, 1, 2]] : tensor<1x64x64xf32> into tensor<4096xf32>
   return %collapsed : tensor<4096xf32>

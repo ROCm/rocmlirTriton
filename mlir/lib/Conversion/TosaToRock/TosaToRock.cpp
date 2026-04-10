@@ -473,8 +473,10 @@ struct ElementwiseRegionFinder {
     if (fusionOp) {
       firstGemmBasedOp = fusionOp;
       firstGemmBasedVal = input;
-      // cache blockArgCandidates for rewrite
-      blockArgCandidates.push_back(input);
+      // Always place the first-gemm value at position 0 so that
+      // getPreSoftmaxQKArgument() (which returns block arg 0) is correct
+      // regardless of DFS visit order.
+      blockArgCandidates.insert(blockArgCandidates.begin(), input);
       return;
     }
     if (op && dyn_cast<tosa::ConstOp>(op)) {
@@ -507,18 +509,12 @@ struct ElementwiseRegionFinder {
   }
 
   SmallVector<Value> getElementwiseArgs() const {
-    // ElementwiseArgs doesn't contain output from the first gemm explictly.
-    // Therefore remove it.
     SmallVector<Value> elementwiseArgs = blockArgCandidates;
-    uint64_t firstGemmBlockIndex = getFirstGemmBlockIndex();
-    elementwiseArgs.erase(elementwiseArgs.begin() + firstGemmBlockIndex);
+    auto it = std::find(elementwiseArgs.begin(), elementwiseArgs.end(),
+                        firstGemmBasedVal);
+    assert(it != elementwiseArgs.end());
+    elementwiseArgs.erase(it);
     return elementwiseArgs;
-  }
-
-  int64_t getFirstGemmBlockIndex() const {
-    return std::find_if(blockArgCandidates.begin(), blockArgCandidates.end(),
-                        [this](Value v) { return v == firstGemmBasedVal; }) -
-           blockArgCandidates.begin();
   }
 
   void rewrite(Value input, OpBuilder &regionBuilder, Block *block,
@@ -1487,8 +1483,6 @@ struct ConvElementwiseGemmRewritePattern
         rewriter, op, firstConv.getInput(), firstConv.getWeight(),
         /*outputType=*/RankedTensorType(), firstConv.getPadAttr(),
         firstConv.getStrideAttr(), firstConv.getDilationAttr(), group);
-    auto firstGemmBlockIndex = elementwiseRegionFinder.getFirstGemmBlockIndex();
-
     if (failed(setSplitKAttrs(op, rewriter)))
       return;
 
@@ -1498,9 +1492,7 @@ struct ConvElementwiseGemmRewritePattern
         /*cTransposed=*/nullptr,
         /*oTransposed=*/nullptr, convFields.pad, convFields.stride,
         convFields.dilation,
-        /*params0=*/nullptr, /*params1=*/nullptr,
-        /*firstGemmIndices=*/
-        rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
+        /*params0=*/nullptr, /*params1=*/nullptr);
 
     addConvAttributes(rewriter, convElentwiseGemmOp, convFields);
 
@@ -1559,7 +1551,6 @@ struct GemmElementwiseGemmRewritePattern
         elemwiseFinder.getElementwiseArgs();
     // This is guranteed by the matcher
     tosa::MatMulOp firstMatMulOp = elemwiseFinder.getFirstGemmBasedOp().value();
-    int64_t firstGemmBlockIndex = elemwiseFinder.getFirstGemmBlockIndex();
 
     if (failed(setSplitKAttrs(op, rewriter)))
       return;
@@ -1572,9 +1563,7 @@ struct GemmElementwiseGemmRewritePattern
             /*kTransposed=*/nullptr,
             /*vTransposed=*/nullptr,
             /*oTransposed=*/nullptr,
-            /*params0=*/nullptr, /*params1=*/nullptr,
-            /*firstGemmIndices=*/
-            rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
+            /*params0=*/nullptr, /*params1=*/nullptr);
     Block *preSecondGemmElemwiseBlock =
         &gemmElentwiseGemmOp.getPreSecondGemmBody().emplaceBlock();
     {
@@ -2993,7 +2982,6 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     UnitAttr causalAttr = isCausal ? rewriter.getUnitAttr() : nullptr;
     ElementwiseRegionFinder<tosa::MatMulOp> elemwiseRegion =
         attentionMatcherValues.preSoftmaxElementwiseFinder;
-    int64_t firstGemmBlockIndex = elemwiseRegion.getFirstGemmBlockIndex();
 
     IntegerAttr numHeadsQ, numHeadsKV;
     Value queries, keys, values;
@@ -3010,9 +2998,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         /*vTransposed=*/nullptr,
         /*oTransposed=*/nullptr, causalAttr,
         /*splitKV=*/rewriter.getI32IntegerAttr(1), softmaxTypeAttr,
-        /*params0=*/nullptr, /*params1=*/nullptr,
-        /*firstGemmIndices=*/
-        rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
+        /*params0=*/nullptr, /*params1=*/nullptr);
     Block *preSoftmaxElemwiseBlock = &attnOp.getPreSoftmaxBody().emplaceBlock();
     {
       PatternRewriter::InsertionGuard guard(rewriter);

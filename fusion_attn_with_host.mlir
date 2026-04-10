@@ -28,7 +28,7 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
       rock.yield %8 : tensor<4x70x70xf32>
     }
      softmax(qk) * %2 : tensor<2x70x70xf32>
-    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 2 : i32, numHeadsQ = 4 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<4x70x70xf32>, tensor<4x70xf32>
+    } {numHeadsKV = 2 : i32, numHeadsQ = 4 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<4x70x70xf32>, tensor<4x70xf32>
     %lseFinal = arith.addf %fusion4, %lse : tensor<4x70xf32>
     %resultFinal = arith.addf %fusion5, %result : tensor<4x70x70xf32>
     %6 = rock.store %resultFinal to %5 by  set : tensor<4x70x70xf32> -> tensor<19600xf32> to tensor<4x70x70xf32>

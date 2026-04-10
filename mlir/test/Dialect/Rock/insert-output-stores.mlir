@@ -43,7 +43,7 @@ func.func @attention_two_returns(%arg0: tensor<1x32x32xf32>, %arg1: tensor<1x32x
   %result, %lse = rock.attention{
    qk = %arg0 * %arg1 : tensor<1x32x32xf32>, tensor<1x32x32xf32>
    softmax(qk) * %arg2 : tensor<1x32x32xf32>
-  } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x32x32xf32>, tensor<1x32xf32>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x32x32xf32>, tensor<1x32xf32>
   return %result, %lse : tensor<1x32x32xf32>, tensor<1x32xf32>
 }
 
@@ -103,7 +103,7 @@ func.func @attention_with_transforms(%arg0: tensor<1x32x32xf32>, %arg1: tensor<1
   %result, %lse = rock.attention{
    qk = %arg0 * %arg1 : tensor<1x32x32xf32>, tensor<1x32x32xf32>
    softmax(qk) * %arg2 : tensor<1x32x32xf32>
-  } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x32x32xf32>, tensor<1x32xf32>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x32x32xf32>, tensor<1x32xf32>
   %0 = rock.transform %result by #merge3_map : tensor<1x32x32xf32> to tensor<1024xf32>
   %1 = rock.transform %lse by #merge2_map : tensor<1x32xf32> to tensor<32xf32>
   return %0, %1 : tensor<1024xf32>, tensor<32xf32>

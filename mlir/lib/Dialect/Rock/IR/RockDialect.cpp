@@ -1757,6 +1757,11 @@ Region &GemmElementwiseGemmOp::getPreSecondGemmRegion() {
   return getPreSecondGemmBody();
 }
 
+MutableOperandRange
+GemmElementwiseGemmOp::getPreSecondGemmElemwiseInputsMutable() {
+  return getElemwiseInputsMutable();
+}
+
 GemmGemmSize GemmElementwiseGemmOp::getGemmGemmSize() {
   ShapedType typeA = getA().getType(), typeB = getB().getType(),
              typeC = getC().getType();
@@ -1932,6 +1937,11 @@ Region &ConvElementwiseGemmOp::getPreSecondGemmRegion() {
   return getPreSecondGemmBody();
 }
 
+MutableOperandRange
+ConvElementwiseGemmOp::getPreSecondGemmElemwiseInputsMutable() {
+  return getElemwiseInputsMutable();
+}
+
 GemmGemmSize ConvElementwiseGemmOp::getGemmGemmSize() {
   auto strideVal = extractFromIntegerArrayAttr<int64_t>(getStrides());
   auto dilationVal = extractFromIntegerArrayAttr<int64_t>(getDilations());
@@ -1983,6 +1993,10 @@ bool AttentionOp::getTransposedOut() { return getOTransposed(); }
 KernelType AttentionOp::getKernelType() { return KernelType::Attention; }
 
 Region &AttentionOp::getPreSecondGemmRegion() { return getPreSoftmaxBody(); }
+
+MutableOperandRange AttentionOp::getPreSecondGemmElemwiseInputsMutable() {
+  return getPreSoftmaxElemWiseInputsMutable();
+}
 
 GemmGemmSize AttentionOp::getGemmGemmSize() {
   ShapedType typeA = getQueries().getType(), typeB = getKeys().getType(),

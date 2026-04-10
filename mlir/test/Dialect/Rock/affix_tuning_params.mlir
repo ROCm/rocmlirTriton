@@ -399,7 +399,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -417,7 +417,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.attention{
 //     qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
 //     %arg3 = softmax(qk) * %arg2 : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32>
-//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32}
+//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
 //   return %out : tensor<1x16384x512xf32>
 // }
@@ -434,7 +434,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32}
+//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -451,7 +451,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32}
+//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -467,7 +467,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.gemm_elementwise_gemm{
 //    ab = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = ab * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32}
+//   } {splitKV = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -485,7 +485,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.gemm_elementwise_gemm{
 //     ab = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
 //     %arg3 = ab * %arg2 : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32>
-//   } {perf_config = "attn:v1:128,128,128,2,64,64,8,1", firstGemmIndices = array<i64: 0>}
+//   } {perf_config = "attn:v1:128,128,128,2,64,64,8,1"}
 //   %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
 //   return %out : tensor<1x16384x512xf32>
 // }
@@ -503,7 +503,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.gemm_elementwise_gemm{
 //     ab = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
 //     %arg3 = ab * %arg2 : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32>
-//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", firstGemmIndices = array<i64: 0>, splitKV = 1 : i32}
+//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", splitKV = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
 //   return %out : tensor<1x16384x512xf32>
 // }
@@ -520,7 +520,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.gemm_elementwise_gemm{
 //    ab = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = ab * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", firstGemmIndices = array<i64: 0>, splitKV = 1 : i32}
+//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", splitKV = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -537,7 +537,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.gemm_elementwise_gemm{
 //    ab = %arg0 * tr %arg1 : tensor<1x384x64xf32>, tensor<1x384x64xf32>
 //    %arg3 = ab * %arg2 : tensor<1x384x64xf32> -> tensor<1x384x64xf32>
-//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", firstGemmIndices = array<i64: 0>, splitKV = 1 : i32}
+//   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", splitKV = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf32> -> tensor<1x384x64xf32> to tensor<1x384x64xf32>
 //   return %out : tensor<1x384x64xf32>
 // }
@@ -553,7 +553,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.conv_elementwise_gemm{
 //    ab = conv(%arg0, %arg1) : tensor<1x128x256x1x1xf16>, tensor<2x1x256x32x32xf16>
 //    %arg3 = ab * %arg2 : tensor<1x128x64xf16> -> tensor<1x2048x64xf16>
-//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]}
+//   } {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]}
 //   %out = rock.store %result to %arg3 by set : tensor<1x2048x64xf16> -> tensor<1x2048x64xf16> to tensor<1x2048x64xf16>
 //   return %out : tensor<1x2048x64xf16>
 // }
@@ -570,7 +570,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.conv_elementwise_gemm{
 //    ab = conv(%arg0, %arg1) : tensor<1x128x256x3x3xf32>, tensor<2x1x256x128x128xf32>
 //    %arg3 = ab * %arg2 : tensor<1x128x128xf32> -> tensor<1x32768x128xf32>
-//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,128,16,1,1,4,0,8,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]}
+//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,128,16,1,1,4,0,8,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]}
 //   %out = rock.store %result to %arg3 by set : tensor<1x32768x128xf32> -> tensor<1x32768x128xf32> to tensor<1x32768x128xf32>
 //   return %out : tensor<1x32768x128xf32>
 // }
@@ -587,7 +587,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.conv_elementwise_gemm{
 //    ab = conv(%arg0, %arg1) : tensor<1x128x256x3x3xf32>, tensor<2x1x256x128x128xf32>
 //    %arg3 = ab * %arg2 : tensor<1x128x128xf32> -> tensor<1x32768x128xf32>
-//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]}
+//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]}
 //   %out = rock.store %result to %arg3 by set : tensor<1x32768x128xf32> -> tensor<1x32768x128xf32> to tensor<1x32768x128xf32>
 //   return %out : tensor<1x32768x128xf32>
 // }
@@ -604,7 +604,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.conv_elementwise_gemm{
 //    ab = conv(%arg0, %arg1) : tensor<1x128x256x1x1xf16>, tensor<2x1x256x128x128xf16>
 //    %arg3 = ab * %arg2 : tensor<1x128x128xf16> -> tensor<1x32768x128xf16>
-//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]}
+//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]}
 //   %out = rock.store %result to %arg3 by set : tensor<1x32768x128xf16> -> tensor<1x32768x128xf16> to tensor<1x32768x128xf16>
 //   return %out : tensor<1x32768x128xf16>
 // }
@@ -621,7 +621,7 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
 //   %result = rock.conv_elementwise_gemm{
 //    ab = conv(%arg0, %arg1) : tensor<1x128x256x1x1xf32>, tensor<2x1x256x128x128xf32>
 //    %arg3 = ab * %arg2 : tensor<1x128x128xf32> -> tensor<1x32768x128xf32>
-//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], firstGemmIndices = array<i64: 0>, input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]}
+//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]}
 //   %out = rock.store %result to %arg3 by set : tensor<1x32768x128xf32> -> tensor<1x32768x128xf32> to tensor<1x32768x128xf32>
 //   return %out : tensor<1x32768x128xf32>
 // }
@@ -654,7 +654,7 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -671,7 +671,7 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -688,7 +688,7 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -705,7 +705,7 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -722,7 +722,7 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -739,7 +739,7 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -756,7 +756,7 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
 //   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
 //   return %out : tensor<1x384x64xf16>
 // }
@@ -782,7 +782,7 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
 //     rock.yield
 //   }
 //     %alloc = ab * %2 : tensor<1x4096x360xf16> -> tensor<1x4096x360xf16>
-//   } {firstGemmIndices = array<i64: 0>, perf_config="attn:v3:32,32,32,32,32,32,16,1,2,1,2,0,1"}
+//   } {perf_config="attn:v3:32,32,32,32,32,32,16,1,2,1,2,0,1"}
 //   %out = rock.store %result to %3 by set : tensor<1x4096x360xf16> -> tensor<1x4096x360xf16> to tensor<1x4096x360xf16>
 //   return %out : tensor<1x4096x360xf16>
 // }

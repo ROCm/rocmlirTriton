@@ -18,7 +18,7 @@ module {
       rock.yield
     }
      %alloc = ab * %2 : memref<1x4096x360xf16> -> memref<1x4096x360xf16>
-    } {features = #rock<GemmFeatures mfma|dot|atomic_add|atomic_add_f16|direct_to_lds_32b>, firstGemmIndices = array<i64: 0>, storeMethod = #rock<StoreMethod set>}
+    } {features = #rock<GemmFeatures mfma|dot|atomic_add|atomic_add_f16|direct_to_lds_32b>, storeMethod = #rock<StoreMethod set>}
     %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<1x4096x360xf16>
 
     linalg.generic {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>, affine_map<(d0, d1, d2) -> (d0, d1, d2)>], iterator_types = ["parallel", "parallel", "parallel"]} ins(%alloc : memref<1x4096x360xf16>) outs(%alloc_1 : memref<1x4096x360xf16>) {
