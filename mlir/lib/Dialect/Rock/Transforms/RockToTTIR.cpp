@@ -435,6 +435,141 @@ struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
 };
 } // end anonymous namespace
 
+/// Replace a non-splat `arith.constant` whose values follow a two-value
+/// repeating pattern along one axis with Triton-native ops.
+/// Handles patterns like [0,4,0,4,...] (half-period 1) and
+/// [0,0,4,4,0,0,4,4,...] (half-period 2).
+/// Triton GPU passes hang on large non-splat DenseElementsAttr blobs.
+static bool lowerRepeatingConstant(arith::ConstantOp constOp) {
+  auto denseAttr = dyn_cast<DenseElementsAttr>(constOp.getValue());
+  if (!denseAttr || denseAttr.isSplat())
+    return false;
+  auto tensorType = dyn_cast<RankedTensorType>(constOp.getType());
+  if (!tensorType || tensorType.getRank() != 2 ||
+      !tensorType.getElementType().isInteger(8))
+    return false;
+
+  auto shape = tensorType.getShape();
+  uint64_t rows = shape[0], cols = shape[1];
+  auto values = denseAttr.getValues<int8_t>();
+
+  // Try to match a two-value repeating pattern along one axis.
+  // Pattern: value at position p = ((p / halfPeriod) % 2 == 0) ? v0 : v1
+  auto tryAxis = [&](int64_t axis) -> bool {
+    uint64_t axisLen = (axis == 0) ? rows : cols;
+    if (axisLen < 2)
+      return false;
+
+    // Find v0 (value at position 0) and the half-period (first position
+    // where the value changes).
+    int8_t firstVal = values[{0u, 0u}];
+    uint64_t halfPeriod = 0;
+    for (uint64_t p = 1; p < axisLen; ++p) {
+      int8_t val = (axis == 0) ? values[{p, 0u}] : values[{0u, p}];
+      if (val != firstVal) {
+        halfPeriod = p;
+        break;
+      }
+    }
+    if (halfPeriod == 0 || axisLen % (halfPeriod * 2) != 0)
+      return false;
+
+    int8_t secondVal = (axis == 0) ? values[{halfPeriod, 0u}]
+                                   : values[{0u, halfPeriod}];
+    if (firstVal == secondVal)
+      return false;
+
+    // Verify the full 2D pattern.
+    for (uint64_t r = 0; r < rows; ++r) {
+      for (uint64_t c = 0; c < cols; ++c) {
+        uint64_t p = (axis == 0) ? r : c;
+        int8_t expected =
+            ((p / halfPeriod) % 2 == 0) ? firstVal : secondVal;
+        if (values[{r, c}] != expected)
+          return false;
+      }
+    }
+    return true;
+  };
+
+  int64_t alternatingAxis = -1;
+  uint64_t halfPeriod = 0;
+  int8_t v0 = 0, v1 = 0;
+
+  for (int64_t axis : {1, 0}) {
+    if (tryAxis(axis)) {
+      alternatingAxis = axis;
+      uint64_t axisLen = (axis == 0) ? rows : cols;
+      v0 = values[{0u, 0u}];
+      for (uint64_t p = 1; p < axisLen; ++p) {
+        int8_t val = (axis == 0) ? values[{p, 0u}] : values[{0u, p}];
+        if (val != v0) {
+          halfPeriod = p;
+          v1 = val;
+          break;
+        }
+      }
+      break;
+    }
+  }
+  if (alternatingAxis < 0)
+    return false;
+
+  OpBuilder builder(constOp);
+  Location loc = constOp.getLoc();
+  int64_t axisLen = shape[alternatingAxis];
+  int64_t otherAxis = 1 - alternatingAxis;
+
+  // Generate: ((range / halfPeriod) % 2) * (v1 - v0) + v0
+  auto i32RangeType = RankedTensorType::get({axisLen}, builder.getI32Type());
+  Value range =
+      triton::MakeRangeOp::create(builder, loc, i32RangeType, 0, axisLen);
+
+  Value divided = range;
+  if (halfPeriod > 1) {
+    Value hp = arith::ConstantOp::create(
+        builder, loc, DenseElementsAttr::get(
+                          i32RangeType,
+                          builder.getI32IntegerAttr(halfPeriod)));
+    divided = arith::DivUIOp::create(builder, loc, range, hp);
+  }
+
+  Value two = arith::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(i32RangeType, builder.getI32IntegerAttr(2)));
+  Value rem = arith::RemUIOp::create(builder, loc, divided, two);
+
+  int32_t diff = v1 - v0;
+  Value scale = arith::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(i32RangeType, builder.getI32IntegerAttr(diff)));
+  Value result = arith::MulIOp::create(builder, loc, rem, scale);
+
+  if (v0 != 0) {
+    Value base = arith::ConstantOp::create(
+        builder, loc,
+        DenseElementsAttr::get(i32RangeType, builder.getI32IntegerAttr(v0)));
+    result = arith::AddIOp::create(builder, loc, result, base);
+  }
+
+  auto i8RangeType = RankedTensorType::get({axisLen}, builder.getI8Type());
+  Value trunced = arith::TruncIOp::create(builder, loc, i8RangeType, result);
+
+  SmallVector<int64_t> expandedShape(2, 1);
+  expandedShape[alternatingAxis] = axisLen;
+  auto expandedType =
+      RankedTensorType::get(expandedShape, builder.getI8Type());
+  Value expanded =
+      triton::ExpandDimsOp::create(builder, loc, expandedType, trunced,
+                                   otherAxis);
+  Value broadcasted =
+      triton::BroadcastOp::create(builder, loc, tensorType, expanded);
+
+  constOp.replaceAllUsesWith(broadcasted);
+  constOp.erase();
+  return true;
+}
+
 void RockToTTIRPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
 
@@ -442,6 +577,14 @@ void RockToTTIRPass::runOnOperation() {
   if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic())) {
     return;
   }
+
+  // Pre-pass: replace non-splat arith.constant tensors that encode repeating
+  // sub-byte shift patterns with Triton-native ops. Large non-splat
+  // DenseElementsAttr blobs cause Triton GPU passes to hang.
+  SmallVector<arith::ConstantOp> toConvert;
+  funcOp.walk([&](arith::ConstantOp op) { toConvert.push_back(op); });
+  for (auto op : toConvert)
+    lowerRepeatingConstant(op);
 
   ConversionTarget target(*ctx);
 

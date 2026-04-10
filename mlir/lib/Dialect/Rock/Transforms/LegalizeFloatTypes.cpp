@@ -168,6 +168,9 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
       continue;
     }
 
+    if (isa<arith::ConstantOp>(defOp))
+      continue;
+
     defOp->emitError("unexpected op in 4-bit transform chain walk");
     return failure();
   }
@@ -551,6 +554,15 @@ static LogicalResult rewriteTransformChain(MLIRContext *ctx, OperandInput input,
 /// For each BlockwiseGemmOp, traces matrixA/matrixB backwards through
 /// blockwise_loads and transform chains, then halves the stride-1 dimension
 /// (K preferred, then D) and converts i4 -> i8.
+///
+/// Two paths:
+///   - The GEMM operand itself is 4-bit. Halves dimensions through
+///     the entire transform chain via rewriteTransformChain.
+///   - The GEMM operand is wider (e.g. f16) but root block
+///     args are i4 (from dequantization). Halves only the block arg and
+///     inserts a broadcast transform composition to restore the original flat
+///     size, then replaces arith.extui/extsi with sub-byte extraction
+///     (shrui + andi).
 static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
   OpBuilder builder(ctx);
   Type i8Ty = IntegerType::get(ctx, 8);
@@ -559,22 +571,22 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
   WalkResult walkResult = funcOp.walk([&](BlockwiseGemmOp gemmOp) {
     auto processOperand = [&](Value operand, bool isA) -> LogicalResult {
       auto tensorType = cast<RankedTensorType>(operand.getType());
-      if (!is4Bit(tensorType.getElementType()))
-        return success();
+      bool gemmOperandIs4Bit = is4Bit(tensorType.getElementType());
 
       auto maybeInputs = collectOperandInputs(operand);
       if (failed(maybeInputs))
-        return failure();
+        return gemmOperandIs4Bit ? failure() : success();
       SmallVector<OperandInput> &inputs = maybeInputs.value();
-      if (inputs.empty())
-        return gemmOp.emitError("no inputs found for 4-bit operand");
+      if (inputs.empty()) {
+        if (gemmOperandIs4Bit)
+          return gemmOp.emitError("no inputs found for 4-bit operand");
+        return success();
+      }
 
       std::optional<bool> kPack = std::nullopt;
       for (OperandInput &input : inputs) {
         bool localKPack = true;
         if (processedArgs.contains(input.rootArg)) {
-          // This is not supported for now. It could be tricky if one transform
-          // chain is `packable` in D and the other in K!
           return gemmOp.emitError(
               "duplicate block arg across transform chains");
         }
@@ -582,62 +594,230 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
           return gemmOp.emitError("transform chain has no blockwise_load");
         Value source = input.loadOp.getSource();
 
-        // The outermost transform's upper view is the 6D source i.e. (k_loop,
-        // g_block, m_block, n_block, k_iter, n_iter) for B of blockwise_load.
-        // The tile dims are the last 2 dims of this view. matrixA (MxK): tile
-        // dim 1 = K -> source dim (rank-1) matrixB (KxN): tile dim 0 = K ->
-        // source dim (rank-2)
         int64_t sourceRank = cast<ShapedType>(source.getType()).getRank();
         if (sourceRank != 6)
           return gemmOp.emitError("source rank must be six");
         int64_t kDimIdx = isA ? (sourceRank - 1) : (sourceRank - 2);
         int64_t dDimIdx = isA ? (sourceRank - 2) : (sourceRank - 1);
 
-        // Try K first, then D.
-        std::optional<int64_t> halveDimIdx = std::nullopt;
+        if (gemmOperandIs4Bit) {
+          // The GEMM operand is directly 4-bit: halve dimensions through the
+          // transform chain using vectorization to pick the packing axis.
+          std::optional<int64_t> halveDimIdx = std::nullopt;
+          VectorizationResult kVectorRes =
+              getMaxVectorization(source, kDimIdx);
+          if (kVectorRes.max > 1)
+            halveDimIdx = kDimIdx;
 
-        VectorizationResult kVectorRes = getMaxVectorization(source, kDimIdx);
+          if (!halveDimIdx.has_value()) {
+            localKPack = false;
+            VectorizationResult dVectorRes =
+                getMaxVectorization(source, dDimIdx);
+            if (dVectorRes.max > 1)
+              halveDimIdx = dDimIdx;
+          }
+          if (!halveDimIdx.has_value())
+            return gemmOp.emitError(
+                "max vectorization of both D and K is 1");
 
-        if (kVectorRes.max > 1)
-          halveDimIdx = kDimIdx;
+          if (kPack.has_value() && kPack.value() != localKPack)
+            return gemmOp.emitError(
+                "all inputs must agree whether to either pack along K or not");
+          if (!kPack.has_value())
+            kPack = localKPack;
 
-        if (!halveDimIdx.has_value()) {
-          localKPack = false;
-          VectorizationResult dVectorRes = getMaxVectorization(source, dDimIdx);
-          if (dVectorRes.max > 1)
-            halveDimIdx = dDimIdx;
+          if (failed(rewriteTransformChain(ctx, input, halveDimIdx.value())))
+            return failure();
+
+          auto newSrcType =
+              cast<RankedTensorType>(input.loadOp.getSource().getType());
+          int64_t srcRank = newSrcType.getRank();
+          SmallVector<int64_t> newResShape;
+          newResShape.push_back(newSrcType.getShape()[srcRank - 2]);
+          newResShape.push_back(newSrcType.getShape()[srcRank - 1]);
+          input.loadOp.getResult().setType(
+              RankedTensorType::get(newResShape, i8Ty));
+        } else {
+          // The GEMM operand is wider (e.g. f16) but root block args are
+          // 4-bit (behind a dequant fusion chain). Insert broadcast transforms
+          // + sub-byte extraction.
+
+          // Find the bottom TransformOp (closest to block arg).
+          Value cur = input.loadOp.getSource();
+          TransformOp bottomTransform;
+          SmallVector<TransformOp> chain;
+          while (auto trOp = cur.getDefiningOp<TransformOp>()) {
+            chain.push_back(trOp);
+            bottomTransform = trOp;
+            cur = trOp.getInput();
+          }
+          if (!bottomTransform)
+            return gemmOp.emitError("no transform chain for i4 block arg");
+
+          // Determine which tile dim the stride-1 physical dim maps to by
+          // tracing from kDimIdx / dDimIdx down to the bottom Unmerge's last
+          // upper dim (stride-1 in row-major order).
+          int64_t targetUpperDim = -1;
+          TransformMapAttr bottomMap = chain.back().getTransform();
+          for (TransformAttr trAttr : bottomMap.getOps()) {
+            if (trAttr.getType() == TransformType::Unmerge) {
+              targetUpperDim = trAttr.getUpperDims().back();
+              break;
+            }
+          }
+          if (targetUpperDim < 0)
+            return gemmOp.emitError(
+                "bottom transform has no Unmerge for stride-1 trace");
+
+          std::optional<int64_t> halveDimIdx = std::nullopt;
+          SmallVector<std::pair<TransformOp, int64_t>> pathProbe;
+          if (findHalvingPath(chain, targetUpperDim, 0, kDimIdx, pathProbe))
+            halveDimIdx = kDimIdx;
+          if (!halveDimIdx.has_value()) {
+            pathProbe.clear();
+            if (findHalvingPath(chain, targetUpperDim, 0, dDimIdx, pathProbe))
+              halveDimIdx = dDimIdx;
+          }
+          if (!halveDimIdx.has_value())
+            return gemmOp.emitError(
+                "cannot determine stride-1 source dim for sub-byte arg");
+
+          // Halve block arg: [flat, i4] -> [flat/2, i8].
+          auto oldArgType = cast<RankedTensorType>(input.rootArg.getType());
+          int64_t flatSize = oldArgType.getShape()[0];
+          if (flatSize % 2 != 0)
+            return gemmOp.emitError("i4 block arg flat size must be even");
+          input.rootArg.setType(RankedTensorType::get({flatSize / 2}, i8Ty,
+                                                      oldArgType.getEncoding()));
+
+          // Insert broadcast transforms: [flat/2] -> [flat].
+          // Net effect: upper index k maps to lower index k/2. Both k=2j and
+          // k=2j+1 read the same byte; the shift constant selects the correct
+          // sub-byte.
+          builder.setInsertionPoint(bottomTransform);
+          Location loc = input.loadOp.getLoc();
+
+          // [flat/2] -> [flat/2, 1]  (PassThrough + AddDim)
+          auto map1 = TransformMapAttr::get(
+              {TransformAttr::get(ctx, TransformType::PassThrough, {},
+                                  {"raw"}, {uint32_t(0)}, {"raw"},
+                                  {uint32_t(0)}),
+               TransformAttr::get(ctx, TransformType::AddDim, {1}, {"dup"},
+                                  {uint32_t(1)}, {}, {})},
+              {flatSize / 2, 1}, {flatSize / 2});
+          Value step1 =
+              TransformOp::create(builder, loc, input.rootArg, map1);
+
+          // [flat/2, 1] -> [flat/2, 2]  (PassThrough + Broadcast)
+          auto map2 = TransformMapAttr::get(
+              {TransformAttr::get(ctx, TransformType::PassThrough, {},
+                                  {"raw"}, {uint32_t(0)}, {"raw"},
+                                  {uint32_t(0)}),
+               TransformAttr::get(ctx, TransformType::Broadcast, {1}, {"dup"},
+                                  {uint32_t(1)}, {"dup"}, {uint32_t(1)})},
+              {flatSize / 2, 2}, {flatSize / 2, 1});
+          Value step2 = TransformOp::create(builder, loc, step1, map2);
+
+          // [flat/2, 2] -> [flat]  (Merge)
+          auto map3 = TransformMapAttr::get(
+              {TransformAttr::get(ctx, TransformType::Merge,
+                                  {flatSize / 2, 2}, {"flat"}, {uint32_t(0)},
+                                  {"raw", "dup"}, {uint32_t(0), uint32_t(1)})},
+              {flatSize}, {flatSize / 2, 2});
+          Value step3 = TransformOp::create(builder, loc, step2, map3);
+
+          // Rewire bottom TransformOp to use broadcast output.
+          bottomTransform->setOperand(0, step3);
+
+          // Change load result element type to i8 (shape unchanged).
+          auto loadResultType =
+              cast<RankedTensorType>(input.loadOp.getResult().getType());
+          auto tileShape = loadResultType.getShape();
+          auto i8TileType = RankedTensorType::get(tileShape, i8Ty);
+          input.loadOp.getResult().setType(i8TileType);
+
+          // Sub-byte extraction: replace arith.extui/extsi with shrui + andi.
+          int64_t loadAxisIdx = halveDimIdx.value() - (sourceRank - 2);
+
+          // Compute the effective stride factor: when the halving path
+          // passes through a Merge, multiple consecutive tile positions
+          // map to the same flat block-arg index, so the sub-byte period
+          // is longer than 2.  E.g. for a Merge{2,2} where the path
+          // follows the first lower dim (stride 2 within the merge),
+          // the period doubles from 2 to 4: [0,0,4,4,0,0,4,4,...].
+          int64_t strideFactor = 1;
+          for (auto &[trOp, lowerDim] : pathProbe) {
+            TransformMapAttr mapAttr = trOp.getTransform();
+            for (TransformAttr trAttr : mapAttr.getOps()) {
+              if (trAttr.getType() != TransformType::Merge)
+                continue;
+              auto lowerDims = trAttr.getLowerDims();
+              for (size_t i = 0; i < lowerDims.size(); ++i) {
+                if ((int64_t)lowerDims[i] == lowerDim) {
+                  auto params = trAttr.getParams();
+                  int64_t stride = 1;
+                  for (size_t j = i + 1; j < params.size(); ++j)
+                    stride *= params[j];
+                  strideFactor *= stride;
+                  break;
+                }
+              }
+            }
+          }
+
+          SmallVector<Attribute> shiftValues;
+          shiftValues.reserve(tileShape[0] * tileShape[1]);
+          for (int64_t d = 0; d < tileShape[0]; ++d)
+            for (int64_t k = 0; k < tileShape[1]; ++k) {
+              int64_t pos = (loadAxisIdx == 0) ? d : k;
+              int64_t subByteIdx = (pos / strideFactor) % 2;
+              shiftValues.push_back(
+                  builder.getI8IntegerAttr(subByteIdx * 4));
+            }
+          Value shifts = arith::ConstantOp::create(
+              builder, loc, DenseElementsAttr::get(i8TileType, shiftValues));
+          Value mask = arith::ConstantOp::create(
+              builder, loc,
+              DenseElementsAttr::get(i8TileType, builder.getI8IntegerAttr(15)));
+
+          for (auto *user : llvm::make_early_inc_range(
+                   input.loadOp.getResult().getUsers())) {
+            if (isa<arith::ExtUIOp>(user)) {
+              builder.setInsertionPoint(user);
+              Value shifted = arith::ShRUIOp::create(
+                  builder, loc, input.loadOp.getResult(), shifts);
+              Value subByte =
+                  arith::AndIOp::create(builder, loc, shifted, mask);
+              user->getResult(0).replaceAllUsesWith(subByte);
+              user->erase();
+            } else if (isa<arith::ExtSIOp>(user)) {
+              builder.setInsertionPoint(user);
+              Value shifted = arith::ShRUIOp::create(
+                  builder, loc, input.loadOp.getResult(), shifts);
+              Value subByte =
+                  arith::AndIOp::create(builder, loc, shifted, mask);
+              Value four = arith::ConstantOp::create(
+                  builder, loc,
+                  DenseElementsAttr::get(i8TileType,
+                                         builder.getI8IntegerAttr(4)));
+              Value shl = arith::ShLIOp::create(builder, loc, subByte, four);
+              Value sext = arith::ShRSIOp::create(builder, loc, shl, four);
+              user->getResult(0).replaceAllUsesWith(sext);
+              user->erase();
+            }
+          }
         }
-        if (!halveDimIdx.has_value())
-          return gemmOp.emitError("max vectorization of both D and K is 1");
-
-        if (kPack.has_value() && kPack.value() != localKPack)
-          return gemmOp.emitError(
-              "all inputs must agree whether to either pack along K or not");
-
-        if (!kPack.has_value())
-          kPack = localKPack;
-
-        if (failed(rewriteTransformChain(ctx, input, halveDimIdx.value())))
-          return failure();
         processedArgs.insert(input.rootArg);
-
-        auto newSrcType =
-            cast<RankedTensorType>(input.loadOp.getSource().getType());
-        int64_t srcRank = newSrcType.getRank();
-        SmallVector<int64_t> newResShape;
-        newResShape.push_back(newSrcType.getShape()[srcRank - 2]);
-        newResShape.push_back(newSrcType.getShape()[srcRank - 1]);
-        input.loadOp.getResult().setType(
-            RankedTensorType::get(newResShape, i8Ty));
       }
 
-      if (!kPack.has_value())
-        return gemmOp.emitError("kPack is undefined");
-
-      if (isA)
-        gemmOp.setMatrixAKPackAttr(builder.getBoolAttr(kPack.value()));
-      else
-        gemmOp.setMatrixBKPackAttr(builder.getBoolAttr(kPack.value()));
+      if (gemmOperandIs4Bit) {
+        if (!kPack.has_value())
+          return gemmOp.emitError("kPack is undefined");
+        if (isA)
+          gemmOp.setMatrixAKPackAttr(builder.getBoolAttr(kPack.value()));
+        else
+          gemmOp.setMatrixBKPackAttr(builder.getBoolAttr(kPack.value()));
+      }
       return success();
     };
 
@@ -970,14 +1150,16 @@ static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
 // GPU wrapper conversion
 //===----------------------------------------------------------------------===//
 
-/// Legalize a memref type with a non-TT_Float element type to its i8
-/// equivalent: f8E8M0FNU -> i8 (same shape), f4E2M1FN -> i8 (halved last dim).
+/// Legalize a memref type with a non-TT_Float or integer i4 element type to
+/// its i8 equivalent: f8E8M0FNU -> i8 (same shape), f4E2M1FN / i4 -> i8
+/// (halved last dim).
 static std::optional<MemRefType> convertMemRefType(MemRefType memrefType,
                                                    Type i8Ty) {
-  if (!isNonTTFloat(memrefType.getElementType()))
+  Type elemType = memrefType.getElementType();
+  if (!isNonTTFloat(elemType) && !elemType.isInteger(4))
     return std::nullopt;
   SmallVector<int64_t> newShape(memrefType.getShape());
-  if (memrefType.getElementType().getIntOrFloatBitWidth() == 4) {
+  if (elemType.getIntOrFloatBitWidth() == 4) {
     assert(newShape.back() % 2 == 0 && "The last dimension must be even");
     newShape.back() /= 2;
   }
