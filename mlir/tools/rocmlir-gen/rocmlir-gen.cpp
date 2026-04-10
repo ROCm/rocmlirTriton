@@ -2840,6 +2840,17 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
                                  /*isA=*/true);
     bScale = normalizeScaleShape(b, loc, expandedArgs[3], transposeScaleB,
                                  /*isA=*/false);
+    auto truncScaleToF8 = [&](Value scale) -> Value {
+      auto scaleTy = cast<RankedTensorType>(scale.getType());
+      if (scaleTy.getElementType().isF32()) {
+        auto f8Ty = RankedTensorType::get(scaleTy.getShape(),
+                                          Float8E8M0FNUType::get(ctx));
+        return arith::TruncFOp::create(b, loc, f8Ty, scale);
+      }
+      return scale;
+    };
+    aScale = truncScaleToF8(aScale);
+    bScale = truncScaleToF8(bScale);
   }
 
   // GEMM produces result in logical shape (e.g., tensor<1x64x64xf32>)
