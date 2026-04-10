@@ -274,6 +274,10 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
 // This supports migraphx.neg operator, which will be expanded to arith.negf.
 // However, the TritonToTritonGPU conversion does not have a pattern for
 // arith.negf, so we expand it here into ops that Triton supports.
+//
+// Note that the cleanest way would be to make Triton support arith.negf,
+// however they rejected this change:
+// https://github.com/triton-lang/triton/pull/9955
 struct NegFTritonWorkaround : public OpRewritePattern<arith::NegFOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(arith::NegFOp op,
@@ -762,7 +766,8 @@ struct RockTosaToElementwise
     // expansion.
     math::populateExpansionPatterns(patterns, {"tanh", "powf"});
 
-    // This is to support migraphx.neg operator, which will be expanded to arith.negf.
+    // This is to support migraphx.neg operator, which will be expanded to
+    // arith.negf.
     patterns.add<NegFTritonWorkaround>(ctx);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
