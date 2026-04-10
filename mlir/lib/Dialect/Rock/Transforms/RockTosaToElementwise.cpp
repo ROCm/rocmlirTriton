@@ -24,6 +24,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
@@ -269,106 +270,14 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
   }
 };
 
-// math.tanh(x) -> (exp(2x) - 1) / (exp(2x) + 1)
-// The Triton TritonToTritonGPU conversion does not have a pattern for
-// math.tanh, so we expand it here into ops that Triton supports.
-struct TanhTritonWorkaround : public OpRewritePattern<math::TanhOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(math::TanhOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    auto shapedTy = dyn_cast<ShapedType>(op.getType());
-    if (!shapedTy)
-      return failure();
-    Type elemTy = shapedTy.getElementType();
-    auto oneAttr =
-        DenseElementsAttr::get(shapedTy, rewriter.getFloatAttr(elemTy, 1.0));
-    auto twoAttr =
-        DenseElementsAttr::get(shapedTy, rewriter.getFloatAttr(elemTy, 2.0));
-    Value one = arith::ConstantOp::create(rewriter, loc, oneAttr);
-    Value two = arith::ConstantOp::create(rewriter, loc, twoAttr);
-    Value twoX = arith::MulFOp::create(rewriter, loc, op.getType(), two,
-                                       op.getOperand());
-    Value exp2X = math::ExpOp::create(rewriter, loc, op.getType(), twoX);
-    Value num = arith::SubFOp::create(rewriter, loc, op.getType(), exp2X, one);
-    Value den = arith::AddFOp::create(rewriter, loc, op.getType(), exp2X, one);
-    rewriter.replaceOpWithNewOp<arith::DivFOp>(op, op.getType(), num, den);
-    return success();
-  }
-};
-
-// math.powf(x, y) -> math.exp(y * math.log(x))
-// The Triton TritonToTritonGPU conversion does not have a pattern for
-// math.powf, so we expand it here into ops that Triton supports.
-// NOTE: only valid for x > 0.  Returns NaN for x < 0 and for pow(0, 0).
-struct PowFTritonWorkaround : public OpRewritePattern<math::PowFOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(math::PowFOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    auto shapedTy = dyn_cast<ShapedType>(op.getType());
-    if (!shapedTy)
-      return failure();
-    Value logX = math::LogOp::create(rewriter, loc, op.getType(), op.getLhs());
-    Value yLogX =
-        arith::MulFOp::create(rewriter, loc, op.getType(), op.getRhs(), logX);
-    rewriter.replaceOpWithNewOp<math::ExpOp>(op, op.getType(), yLogX);
-    return success();
-  }
-};
-
-// The Triton TritonToTritonGPU conversion does not have a pattern for
-// math.roundeven, so we expand it here into ops that Triton supports.
-// TODO(rocmlirTriton): This expansion is very inefficient (2 floors, a div,
-// a cmp, and a select per element). Adding native math.roundeven support to
-// the Triton backend would eliminate this entirely.
-// Correct round-to-nearest-even (banker's rounding) for shaped float types:
-//   y = floor(x + 0.5)          -- round-half-up candidate
-//   is_tie = (x + 0.5 == y)     -- true iff x had fractional part exactly 0.5
-//   fmod_y_2 = y - 2*floor(y/2) -- 0 when y is even, ±1 when odd
-//   result = select(is_tie, y - fmod_y_2, y)
-// At ties this nudges odd results to the nearest even integer; elsewhere
-// floor(x+0.5) already gives the correct nearest integer.
-struct RoundEvenTritonWorkaround : public OpRewritePattern<math::RoundEvenOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(math::RoundEvenOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    auto shapedTy = dyn_cast<ShapedType>(op.getType());
-    if (!shapedTy)
-      return failure();
-    Type elemTy = shapedTy.getElementType();
-
-    auto splatF = [&](double v) -> Value {
-      return arith::ConstantOp::create(
-          rewriter, loc,
-          DenseElementsAttr::get(shapedTy, rewriter.getFloatAttr(elemTy, v)));
-    };
-    Value half = splatF(0.5);
-    Value two = splatF(2.0);
-
-    Value sum =
-        arith::AddFOp::create(rewriter, loc, shapedTy, op.getOperand(), half);
-    Value y = math::FloorOp::create(rewriter, loc, shapedTy, sum);
-
-    Value isTie =
-        arith::CmpFOp::create(rewriter, loc, arith::CmpFPredicate::OEQ, sum, y);
-
-    Value yHalf = arith::DivFOp::create(rewriter, loc, shapedTy, y, two);
-    Value yHalfFloor = math::FloorOp::create(rewriter, loc, shapedTy, yHalf);
-    Value yEven =
-        arith::MulFOp::create(rewriter, loc, shapedTy, two, yHalfFloor);
-    Value fmodY2 = arith::SubFOp::create(rewriter, loc, shapedTy, y, yEven);
-
-    Value yAdjusted = arith::SubFOp::create(rewriter, loc, shapedTy, y, fmodY2);
-    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, isTie, yAdjusted, y);
-    return success();
-  }
-};
-
 // arith.negf(x) -> arith.mulf(x, -1.0)
-// The Triton TritonToTritonGPU conversion does not have a pattern for
+// This supports migraphx.neg operator, which will be expanded to arith.negf.
+// However, the TritonToTritonGPU conversion does not have a pattern for
 // arith.negf, so we expand it here into ops that Triton supports.
+//
+// Note that the cleanest way would be to make Triton support arith.negf,
+// however they rejected this change:
+// https://github.com/triton-lang/triton/pull/9955
 struct NegFTritonWorkaround : public OpRewritePattern<arith::NegFOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(arith::NegFOp op,
@@ -387,17 +296,26 @@ struct NegFTritonWorkaround : public OpRewritePattern<arith::NegFOp> {
 };
 
 // tosa.sigmoid: 1 / (1 + exp(-x))
+// We compute -x as (0 - x) to match both MIGraphX semantics and Triton's
+// implementation, avoiding arith.negf which Triton doesn't support on tensors.
+// See: triton/python/triton/language/standard.py (sigmoid)
+//      triton/python/triton/language/semantic.py (minus)
+// Please note that we dont want to generate arith.negf here, because
+// it is not supported by Triton.
 struct SigmoidConverter : public OpRewritePattern<tosa::SigmoidOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::SigmoidOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     auto shapedTy = cast<ShapedType>(op.getType());
+    auto zeroAttr = DenseElementsAttr::get(
+        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), 0.0));
+    Value zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
     auto oneAttr = DenseElementsAttr::get(
         shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), 1.0));
     Value one = arith::ConstantOp::create(rewriter, loc, oneAttr);
     Value negX =
-        arith::NegFOp::create(rewriter, loc, op.getType(), op.getInput());
+        arith::SubFOp::create(rewriter, loc, op.getType(), zero, op.getInput());
     Value expNegX = math::ExpOp::create(rewriter, loc, op.getType(), negX);
     Value denom =
         arith::AddFOp::create(rewriter, loc, op.getType(), one, expNegX);
@@ -528,6 +446,9 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
     }
 
     // float -> int
+    // We use direct truncation (FPToSI/FPToUI) rather than round-to-nearest-even
+    // to match both MIGraphX semantics and Triton's implementation.
+    // See: triton/python/triton/language/semantic.py (cast, lines ~876-884)
     // Replicates the three-case structure from TosaToLinalg's CastOp lowering,
     // adapted for tensor-level ops and unsigned integer support.
     if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
@@ -568,8 +489,8 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       APInt intMax = isUnsigned ? APInt::getMaxValue(dstWidth)
                                 : APInt::getSignedMaxValue(dstWidth);
 
-      Value rounded =
-          math::RoundEvenOp::create(rewriter, loc, op.getInput());
+      // Use input directly without rounding (truncation toward zero)
+      Value input = op.getInput();
 
       // Case 1: Neither int min nor int max can be represented in the
       // floating-point type due to too short exponent range. All finite
@@ -579,22 +500,22 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
           APFloat::semanticsMaxExponent(fltSemantics)) {
         Value posInf = splatFloat(APFloat::getInf(fltSemantics));
         auto overflow = arith::CmpFOp::create(
-            rewriter, loc, arith::CmpFPredicate::UEQ, rounded, posInf);
+            rewriter, loc, arith::CmpFPredicate::UEQ, input, posInf);
 
         if (isUnsigned) {
           Value zeroF = splatFloatFromDouble(0.0);
           Value clampedPos =
-              arith::MaximumFOp::create(rewriter, loc, rounded, zeroF);
+              arith::MaximumFOp::create(rewriter, loc, input, zeroF);
           Value conv = fpToInt(clampedPos);
           Value maxClamped = arith::SelectOp::create(
               rewriter, loc, overflow, splatInt(intMax), conv);
           rewriter.replaceOp(op, maxClamped);
         } else {
-          Value conv = fpToInt(rounded);
+          Value conv = fpToInt(input);
           Value negInf =
               splatFloat(APFloat::getInf(fltSemantics, /*Negative=*/true));
           auto underflow = arith::CmpFOp::create(
-              rewriter, loc, arith::CmpFPredicate::UEQ, rounded, negInf);
+              rewriter, loc, arith::CmpFPredicate::UEQ, input, negInf);
           Value maxClamped = arith::SelectOp::create(
               rewriter, loc, overflow, splatInt(intMax), conv);
           rewriter.replaceOpWithNewOp<arith::SelectOp>(
@@ -618,7 +539,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
             isUnsigned ? static_cast<double>(intMax.getZExtValue())
                        : static_cast<double>(intMax.getSExtValue());
         Value intMaxFP = splatFloatFromDouble(intMaxDouble);
-        Value hi = arith::MinimumFOp::create(rewriter, loc, rounded, intMaxFP);
+        Value hi = arith::MinimumFOp::create(rewriter, loc, input, intMaxFP);
         Value clamped =
             arith::MaximumFOp::create(rewriter, loc, hi, intMinFP);
         rewriter.replaceOp(op, fpToInt(clamped));
@@ -636,10 +557,10 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       Value intMaxPlusOneFP = splatFloatFromDouble(intMaxPlusOneDouble);
 
       Value minClampedFP =
-          arith::MaximumFOp::create(rewriter, loc, rounded, intMinFP);
+          arith::MaximumFOp::create(rewriter, loc, input, intMinFP);
       Value minClamped = fpToInt(minClampedFP);
       auto overflow = arith::CmpFOp::create(
-          rewriter, loc, arith::CmpFPredicate::UGE, rounded, intMaxPlusOneFP);
+          rewriter, loc, arith::CmpFPredicate::UGE, input, intMaxPlusOneFP);
       rewriter.replaceOpWithNewOp<arith::SelectOp>(op, overflow,
                                                     splatInt(intMax),
                                                     minClamped);
@@ -772,6 +693,8 @@ struct RockTosaToElementwise
         [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<math::RoundEvenOp>(
         [](math::RoundEvenOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<math::RoundOp>(
+        [](math::RoundOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<arith::NegFOp>(
         [](arith::NegFOp op) { return !isa<ShapedType>(op.getType()); });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
@@ -835,10 +758,17 @@ struct RockTosaToElementwise
 
     // --- Triton workarounds ---
     // The Triton TritonToTritonGPU conversion is missing patterns for
-    // math.tanh, math.powf and arith.negf. Expand them here into ops
-    // Triton supports.
-    patterns.add<TanhTritonWorkaround, PowFTritonWorkaround,
-                 NegFTritonWorkaround, RoundEvenTritonWorkaround>(ctx);
+    // math.tanh and math.powf so we use upstream
+    // math::populateExpansionPatterns to expand them into ops Triton supports.
+    //
+    // TODO(rocmlirTriton): gfx1250 will have dedicated instructions for tanh,
+    // we need to make sure we emit those instead of using the math.tanh
+    // expansion.
+    math::populateExpansionPatterns(patterns, {"tanh", "powf"});
+
+    // This is to support migraphx.neg operator, which will be expanded to
+    // arith.negf.
+    patterns.add<NegFTritonWorkaround>(ctx);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();
