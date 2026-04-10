@@ -950,12 +950,14 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
     if (kernelId == 1) {
       // Workspace -> filter tensor
+      // TODO(rocmlirTriton): Implement this
       // ConvertingCopyKernelOp::create(
       //     builder, builder.getUnknownLoc(), /*resultType=*/TypeRange{},
       //     func.getArgument(storeDestIdx - 1),
       //     func.getArgument(storeDestIdx),
       //     /*blockSize=*/nullptr, /*gridSize=*/nullptr,
       //     /*elemsPerThread=*/nullptr);
+      return failure();
     } else {
       if (needsZeroInit) {
         // Zero the workspace (before filter) or the filter (store dest).
