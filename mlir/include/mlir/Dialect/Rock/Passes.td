@@ -166,6 +166,12 @@ def RockFusionSplitkRegularizationPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockRewriteDivByReciprocalPass
+    : Pass<"rock-rewrite-div-by-reciprocal", "::mlir::func::FuncOp"> {
+  let summary = "Rewrite floating-point division using reciprocal multiply where applicable";
+  let dependentDialects = ["arith::ArithDialect", "func::FuncDialect"];
+}
+
 def RockLegalizeFloatTypesPass
     : Pass<"rock-legalize-float-types", "::mlir::func::FuncOp"> {
   let summary = "Legalize float types not in Triton's TT_Float to integers";
