@@ -73,7 +73,9 @@ func.func @floats_i4_to_f32(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xf32> {
 // CHECK-SAME: ins(%[[arg0]] : tensor<8x8x2xf16>)
 // CHECK-SAME: outs(%[[empty]] : tensor<8x8x2xi8>)
 // CHECK-NEXT: %[[in:.+]]: f16
-// CHECK-NEXT: %[[res:.+]] = arith.fptoui %[[in]] : f16 to i8
+// CHECK:      %[[clamped_lo:.+]] = arith.maximumf %[[in]], {{.*}} : f16
+// CHECK-NEXT: %[[clamped:.+]] = arith.minimumf %[[clamped_lo]], {{.*}} : f16
+// CHECK-NEXT: %[[res:.+]] = arith.fptoui %[[clamped]] : f16 to i8
 // CHECK-NEXT: linalg.yield %[[res]]
 // CHECK-NEXT: -> tensor<8x8x2xi8>
 // CHECK-NEXT: return %[[ret]]
@@ -93,7 +95,9 @@ func.func @floats_f16_to_i8(%arg0: tensor<8x8x2xf16>) -> tensor<8x8x2xi8> {
 // CHECK-SAME: ins(%[[arg0]] : tensor<8x8x2xf32>)
 // CHECK-SAME: outs(%[[empty]] : tensor<8x8x2xi32>)
 // CHECK-NEXT: %[[in:.+]]: f32
-// CHECK-NEXT: %[[res:.+]] = arith.fptosi %[[in]] : f32 to i32
+// CHECK:      %[[clamped_lo:.+]] = arith.maximumf %[[in]], {{.*}} : f32
+// CHECK-NEXT: %[[clamped:.+]] = arith.minimumf %[[clamped_lo]], {{.*}} : f32
+// CHECK-NEXT: %[[res:.+]] = arith.fptosi %[[clamped]] : f32 to i32
 // CHECK-NEXT: linalg.yield %[[res]]
 // CHECK-NEXT: -> tensor<8x8x2xi32>
 // CHECK-NEXT: return %[[ret]]
@@ -109,7 +113,9 @@ func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<8x8x2xf32>) -> tensor<8x8x2xi
 // CHECK-SAME: ins(%[[arg0]] : tensor<16xf16>)
 // CHECK-SAME: outs(%[[empty]] : tensor<16xi8>)
 // CHECK-NEXT: %[[in:.+]]: f16
-// CHECK-NEXT: %[[res:.+]] = arith.fptosi %[[in]] : f16 to i8
+// CHECK:      %[[clamped_lo:.+]] = arith.maximumf %[[in]], {{.*}} : f16
+// CHECK-NEXT: %[[clamped:.+]] = arith.minimumf %[[clamped_lo]], {{.*}} : f16
+// CHECK-NEXT: %[[res:.+]] = arith.fptosi %[[clamped]] : f16 to i8
 // CHECK-NEXT: linalg.yield %[[res]]
 // CHECK-NEXT: -> tensor<16xi8>
 // CHECK-NEXT: return %[[ret]]

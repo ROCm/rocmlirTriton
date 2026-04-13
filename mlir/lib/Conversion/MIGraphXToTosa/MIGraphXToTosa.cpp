@@ -1320,20 +1320,14 @@ LogicalResult QuantizeLinearConverter::matchAndRewrite(
 LogicalResult
 ConvertConverter::matchAndRewrite(migraphx::ConvertOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const {
-
-  auto inputType = op.getInA().getType().getElementType();
-  auto outputType = op.getResult().getType().getElementType();
-  if (inputType.isUnsignedInteger() || outputType.isUnsignedInteger()) {
-    assert(!inputType.isSignedInteger() && !outputType.isSignedInteger());
-    rewriter.replaceOpWithNewOp<tosa::CustomOp>(
-        op, getTypeConverter()->convertType(op.getResult().getType()),
-        ROCK_CUSTOMOP_UNSIGNED_CAST, ROCK_CUSTOMOP_DOMAIN_NAME, "",
-        adaptor.getInA());
-  } else {
-    rewriter.replaceOpWithNewOp<tosa::CastOp>(
-        op, getTypeConverter()->convertType(op.getResult().getType()),
-        adaptor.getInA());
-  }
+  Type inputType = op.getInA().getType().getElementType();
+  Type outputType = op.getResult().getType().getElementType();
+  auto convertedResultType = cast<RankedTensorType>(
+      getTypeConverter()->convertType(op.getResult().getType()));
+  Value result =
+      createCastOp(rewriter, op.getLoc(), convertedResultType.getElementType(),
+                   adaptor.getInA(), inputType, outputType);
+  rewriter.replaceOp(op, result);
   return success();
 }
 
@@ -1535,13 +1529,16 @@ LogicalResult ComparisonConverter<MIGraphXOp, TosaOp>::matchAndRewrite(
   Value inA = adaptor.getInA();
   Value inB = adaptor.getInB();
 
-  // Create a new tensor type with I1 element type
   auto newType =
       RankedTensorType::get(op.getType().getShape(), rewriter.getI1Type());
   auto comparisonResult =
       rewriter.createOrFold<TosaOp>(op->getLoc(), newType, inA, inB);
-  rewriter.replaceOpWithNewOp<tosa::CastOp>(op, adaptor.getInA().getType(),
-                                            comparisonResult);
+  Type origInputElemType = op.getInA().getType().getElementType();
+  auto convertedInType = cast<RankedTensorType>(inA.getType());
+  Value result =
+      createCastOp(rewriter, op->getLoc(), convertedInType.getElementType(),
+                   comparisonResult, rewriter.getI1Type(), origInputElemType);
+  rewriter.replaceOp(op, result);
 
   return success();
 }

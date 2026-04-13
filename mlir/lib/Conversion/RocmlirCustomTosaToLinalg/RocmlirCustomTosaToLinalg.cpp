@@ -100,13 +100,33 @@ LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
           } else {
             assert(isa<FloatType>(inElemType));
             assert(isa<IntegerType>(outElemType));
-            result = arith::FPToUIOp::create(b, loc, outElemType, inputs[0]);
+            unsigned uintBitWidth = cast<IntegerType>(outElemType).getWidth();
+            uint64_t uiMax = (1ULL << uintBitWidth) - 1;
+            Value uMaxVal = arith::ConstantOp::create(
+                b, loc,
+                FloatAttr::get(inElemType, static_cast<double>(uiMax)));
+            Value uMinVal = arith::ConstantOp::create(
+                b, loc, FloatAttr::get(inElemType, 0.0));
+            Value uClamped =
+                arith::MaximumFOp::create(b, loc, inputs[0], uMinVal);
+            uClamped = arith::MinimumFOp::create(b, loc, uClamped, uMaxVal);
+            result = arith::FPToUIOp::create(b, loc, outElemType, uClamped);
           }
         } else if (op.getOperatorName() == ROCK_CUSTOMOP_FP_TO_INT_CAST) {
           assert(isa<FloatType>(inElemType));
           assert(isa<IntegerType>(outElemType));
           assert(inputs.size() == 2);
-          result = arith::FPToSIOp::create(b, loc, outElemType, inputs[0]);
+          unsigned intBitWidth = cast<IntegerType>(outElemType).getWidth();
+          int64_t siMax = (1LL << (intBitWidth - 1)) - 1;
+          int64_t siMin = -(1LL << (intBitWidth - 1));
+          Value maxVal = arith::ConstantOp::create(
+              b, loc, FloatAttr::get(inElemType, static_cast<double>(siMax)));
+          Value minVal = arith::ConstantOp::create(
+              b, loc, FloatAttr::get(inElemType, static_cast<double>(siMin)));
+          Value clamped =
+              arith::MaximumFOp::create(b, loc, inputs[0], minVal);
+          clamped = arith::MinimumFOp::create(b, loc, clamped, maxVal);
+          result = arith::FPToSIOp::create(b, loc, outElemType, clamped);
         } else if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_DIV) {
           assert(isa<IntegerType>(outElemType));
           assert(isa<IntegerType>(inElemType));
@@ -149,7 +169,8 @@ void mlir::rock::populateRocmlirCustomTosaToLinalgTarget(
     ConversionTarget &target) {
   target.addLegalOp<linalg::GenericOp, linalg::YieldOp, arith::ExtUIOp,
                     arith::TruncIOp, arith::DivUIOp, arith::FPToSIOp,
-                    arith::FPToUIOp, arith::UIToFPOp, tensor::EmptyOp,
+                    arith::FPToUIOp, arith::UIToFPOp, arith::MaximumFOp,
+                    arith::MinimumFOp, arith::ConstantOp, tensor::EmptyOp,
                     tosa::CastOp>();
   target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
     return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME;

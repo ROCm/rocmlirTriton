@@ -771,6 +771,28 @@ func.func @tanh_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock
 
 // -----
 
+// NegFTritonWorkaround: arith.negf on tensors is expanded to mulf(x, -1).
+// CHECK-LABEL: @negf_direct
+// CHECK-NOT:   arith.negf
+// CHECK:       %[[NEG1:.*]] = arith.constant dense<-1.000000e+00> : tensor<32xf32>
+// CHECK:       arith.mulf %arg0, %[[NEG1]] : tensor<32xf32>
+func.func @negf_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
+  %0 = arith.negf %arg0 : tensor<32xf32>
+  return %0 : tensor<32xf32>
+}
+
+// -----
+
+// NegFTritonWorkaround only applies to shaped types; scalar negf is preserved.
+// CHECK-LABEL: @negf_scalar_preserved
+// CHECK:       arith.negf %arg0 : f32
+func.func @negf_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
+  %0 = arith.negf %arg0 : f32
+  return %0 : f32
+}
+
+// -----
+
 // PowFTritonWorkaround: tosa.pow is expanded to exp(y * log(x))
 // because the Triton TritonToTritonGPU conversion has no pattern for math.powf.
 // CHECK-LABEL: @pow_f32
