@@ -113,6 +113,11 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
                                  cl::init(""));
 
+static cl::opt<bool> rewriteDivByReciprocal(
+    "rewrite-div-by-reciprocal", cl::init(false),
+    cl::desc("After split-k regularization, tag arith.divf with fastmath arcp "
+             "(see rock-rewrite-div-by-reciprocal pass)"));
+
 namespace test {
 void registerTestDialect(DialectRegistry &);
 } // namespace test
@@ -260,6 +265,7 @@ runKernelPipeline(StringRef archName, ModuleOp m,
     // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
     opts.arch = archName.str();
+    opts.rewriteDivByReciprocal = rewriteDivByReciprocal.getValue();
     rock::buildKernelPipeline(pm, opts);
   }
   if (kernelPipelineSet.contains("triton")) {

@@ -45,6 +45,13 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
 
   PassOptions::Option<std::string> arch{
       *this, "arch", desc("AMDGPU ISA version: e.g. gfx908"), init("")};
+  /// When true, run `rock-rewrite-div-by-reciprocal` immediately after
+  /// `rock-fusion-splitk-regularization` (tags `arith.divf` with `arcp`).
+  PassOptions::Option<bool> rewriteDivByReciprocal{
+      *this, "rewrite-div-by-reciprocal",
+      desc("After split-k regularization, tag floating-point divisions with "
+           "fastmath `arcp` for reciprocal-style lowering"),
+      init(false)};
 };
 
 /// Adds the `kernel` pipeline to the `OpPassManager`.
