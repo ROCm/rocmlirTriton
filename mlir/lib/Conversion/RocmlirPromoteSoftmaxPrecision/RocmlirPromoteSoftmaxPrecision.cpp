@@ -94,8 +94,8 @@ struct SoftmaxNormPromotionPattern : public OpRewritePattern<MulOp> {
     Type f32Type = rewriter.getF32Type();
 
     // Cast exp output from f16/bf16 to f32.
-    auto castExpToF32 = rock::tosa::createOpAndInfer<CastOp>(
-        rewriter, loc, f32Type, expVal);
+    auto castExpToF32 =
+        rock::tosa::createOpAndInfer<CastOp>(rewriter, loc, f32Type, expVal);
 
     // ReduceSum in f32 (compensates for CPU's single-pass vs GPU's blockwise).
     auto newReduceSum = rock::tosa::createOpAndInfer<ReduceSumOp>(
@@ -111,8 +111,8 @@ struct SoftmaxNormPromotionPattern : public OpRewritePattern<MulOp> {
                                        newReciprocal, f32Type);
 
     // Cast back to original element type for downstream matmul.
-    auto castBack = rock::tosa::createOpAndInfer<CastOp>(
-        rewriter, loc, elemType, newMul);
+    auto castBack =
+        rock::tosa::createOpAndInfer<CastOp>(rewriter, loc, elemType, newMul);
 
     rewriter.replaceOp(op, castBack);
     return success();

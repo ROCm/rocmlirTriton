@@ -56,9 +56,7 @@ def RocmlirPromoteSoftmaxPrecisionPass
     CPU's single-pass reduction vs the GPU's blockwise reduction and
     aligning normalization precision with the GPU's f32 final division.
   }];
-  let dependentDialects = [
-    "tosa::TosaDialect"
-  ];
+  let dependentDialects = ["tosa::TosaDialect"];
 }
 
 //===----------------------------------------------------------------------===//
