@@ -146,6 +146,7 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
   PassManager pm(module->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
+  applyDefaultTimingPassManagerCLOptions(pm);
   pm.enableVerifier(!disableVerifyPasses);
   buildPipeline(pm);
 
@@ -171,6 +172,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
+  applyDefaultTimingPassManagerCLOptions(pm);
   pm.enableVerifier(!disableVerifyPasses);
   bool needArch = kernelPipelineSet.contains("binary");
   RocmDeviceName devName;
@@ -371,6 +373,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
+    applyDefaultTimingPassManagerCLOptions(pm);
     pm.enableVerifier(!disableVerifyPasses);
     auto errorHandler = [&](const Twine &msg) {
       emitError(UnknownLoc::get(module.getContext())) << msg;
