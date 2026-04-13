@@ -43,6 +43,24 @@ def RocmlirCustomTosaToLinalgPass : Pass<"rocmlir-custom-tosa-to-linalg", ""> {
 }
 
 //===----------------------------------------------------------------------===//
+// RocmlirPromoteSoftmaxPrecisionPass
+//===----------------------------------------------------------------------===//
+
+def RocmlirPromoteSoftmaxPrecisionPass
+    : Pass<"rocmlir-promote-softmax-precision", ""> {
+  let summary = "Promote f16/bf16 softmax normalization to f32";
+  let description = [{
+    Matches the TOSA softmax normalization pattern
+    (exp -> reduce_sum -> reciprocal -> mul) and promotes the reduce_sum,
+    reciprocal, and normalize-multiply to f32 for improved numerical accuracy
+    on the CPU reference path.
+  }];
+  let dependentDialects = [
+    "tosa::TosaDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // TosaToRock
 //===----------------------------------------------------------------------===//
 

@@ -263,6 +263,7 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   }
 
   funcPm.addPass(createRocmlirCustomTosaDecomposePass());
+  funcPm.addPass(createRocmlirPromoteSoftmaxPrecisionPass());
   if (noRock)
     funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
 

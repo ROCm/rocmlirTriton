@@ -14,6 +14,7 @@
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/RocmlirCustomTosaDecompose/RocmlirCustomTosaDecompose.h"
 #include "mlir/Conversion/RocmlirCustomTosaToLinalg/RocmlirCustomTosaToLinalg.h"
+#include "mlir/Conversion/RocmlirPromoteSoftmaxPrecision/RocmlirPromoteSoftmaxPrecision.h"
 #include "mlir/Conversion/TosaToRock/TosaToRock.h"
 
 namespace mlir {
