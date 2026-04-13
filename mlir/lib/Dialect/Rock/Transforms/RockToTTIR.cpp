@@ -435,9 +435,6 @@ struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
 };
 } // end anonymous namespace
 
-/// Attribute name set by LegalizeFloatTypes on sub-byte shift constants.
-static constexpr llvm::StringLiteral kSubByteShiftAttr = "rock.sub_byte_shift";
-
 /// Replace an `arith.constant` tagged with "rock.sub_byte_shift" with
 /// Triton-native ops that compute the same repeating pattern dynamically.
 ///
@@ -448,7 +445,7 @@ static constexpr llvm::StringLiteral kSubByteShiftAttr = "rock.sub_byte_shift";
 ///   ((make_range / halfPeriod) % 2) * (v1 - v0) + v0
 /// then expand_dims + broadcast to the original 2-D shape.
 static bool lowerSubByteShiftConstant(arith::ConstantOp constOp) {
-  auto dictAttr = constOp->getAttrOfType<DictionaryAttr>(kSubByteShiftAttr);
+  auto dictAttr = constOp->getAttrOfType<DictionaryAttr>("rock.sub_byte_shift");
   if (!dictAttr)
     return false;
 

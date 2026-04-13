@@ -168,9 +168,11 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
       continue;
     }
 
-    // Constants (e.g. inlined scale/zero-point literals from MIGraphX) appear
-    // in dequant fusion chains but don't contribute block-arg inputs to
-    // transform.  Skip them silently.
+    // This walk is searching for i4 block arguments that feed through
+    // transform chains into blockwise_loads.  Constants (e.g. inlined scale
+    // or zero-point literals) can appear as operands of fusion
+    // ops in dequant chains, but they are leaf values with no further operands
+    // to trace, and they can never be i4 block arguments that need packing.
     if (isa<arith::ConstantOp>(defOp))
       continue;
 
@@ -560,8 +562,13 @@ static LogicalResult rewriteTransformChain(MLIRContext *ctx, OperandInput input,
 ///             -- Broadcast -->  [flat/2, 2]
 ///             -- Merge -->  [flat]
 ///
-/// This makes every byte appear at two consecutive logical positions (2j and
-/// 2j+1), so a subsequent shift constant can select the correct sub-byte.
+/// When we halve the block arg from tensor<N x i4> to tensor<N/2 x i8>, two
+/// i4 values are packed into each i8 byte.  The rest of the transform chain
+/// still expects a logical tensor of size N (one element per original i4
+/// value).  This broadcast restores the original flat size by mapping every
+/// pair of consecutive logical indices (2j, 2j+1) to the same physical byte
+/// at index j.  A subsequent shift constant then selects the correct 4-bit
+/// half (lower or upper bits) from each byte.
 static Value insertSubByteBroadcast(OpBuilder &builder, MLIRContext *ctx,
                                     Location loc, Value halvedArg,
                                     int64_t halfSize, int64_t fullSize) {
@@ -589,10 +596,13 @@ static Value insertSubByteBroadcast(OpBuilder &builder, MLIRContext *ctx,
   return TransformOp::create(builder, loc, step2, mergeMap);
 }
 
-/// Determine which of the K or D tile dimensions corresponds to the stride-1
-/// physical dimension of the block arg.  Returns the 6-D source dim index
-/// (kDimIdx or dDimIdx), and populates `pathOut` with the trace for later
-/// stride-factor computation.
+/// Figure out which tile axis (K or D) to use for sub-byte extraction.
+/// The block arg is a flat 1-D tensor whose last element is "stride-1" (i.e.
+/// adjacent elements in the flat buffer are adjacent in memory).  The transform
+/// chain reshapes that flat buffer into a 6-D tile.  We need to know which
+/// tile axis (K or D) ends up being contiguous in the flat buffer, because
+/// that is the axis along which two consecutive i4 values share the same i8
+/// byte, and therefore the axis along which we alternate the shift pattern.
 static FailureOr<int64_t> findSubBytePackingDim(
     MutableArrayRef<TransformOp> chain, int64_t kDimIdx, int64_t dDimIdx,
     SmallVector<std::pair<TransformOp, int64_t>> &pathOut, Operation *emitLoc) {
@@ -617,46 +627,73 @@ static FailureOr<int64_t> findSubBytePackingDim(
       "cannot determine stride-1 source dim for sub-byte arg");
 }
 
+/// Check whether a transform attribute involves `lowerDim` in its lower dims.
+static bool transformTouchesLowerDim(TransformAttr trAttr, int64_t lowerDim) {
+  for (auto ld : trAttr.getLowerDims())
+    if ((int64_t)ld == lowerDim)
+      return true;
+  return false;
+}
+
 /// Compute the effective stride factor from a halving path.
 ///
-/// When the path passes through a Merge, multiple consecutive tile positions
-/// map to the same flat block-arg index.  The stride factor is the product of
-/// the "tail sizes" at each Merge along the path.
+/// The sub-byte shift pattern has a base period of 2 (alternating every
+/// element).  However, when the halving path passes through a Merge, multiple
+/// consecutive tile positions map to the same flat block-arg index, which
+/// stretches the period.  The stride factor is the product of the "tail sizes"
+/// at each Merge along the path.
 ///
 /// Example: Merge{2, 2} following lower dim 0 has tail size = product of
 /// param sizes after index 0 = 2, so the sub-byte period doubles from 2 to 4,
 /// giving the pattern [0, 0, 4, 4, 0, 0, 4, 4, ...].
-static int64_t computeSubByteStrideFactor(
+static FailureOr<int64_t> computeSubByteStrideFactor(
     MutableArrayRef<std::pair<TransformOp, int64_t>> path) {
   int64_t strideFactor = 1;
   for (auto &[trOp, lowerDim] : path) {
     for (TransformAttr trAttr : trOp.getTransform().getOps()) {
-      if (trAttr.getType() != TransformType::Merge)
+      if (!transformTouchesLowerDim(trAttr, lowerDim))
         continue;
-      auto lowerDims = trAttr.getLowerDims();
-      for (size_t i = 0; i < lowerDims.size(); ++i) {
-        if ((int64_t)lowerDims[i] == lowerDim) {
-          auto params = trAttr.getParams();
-          int64_t tailSize = 1;
-          for (size_t j = i + 1; j < params.size(); ++j)
-            tailSize *= params[j];
-          strideFactor *= tailSize;
-          break;
+
+      switch (trAttr.getType()) {
+      case TransformType::PassThrough:
+      case TransformType::Unmerge:
+      case TransformType::Broadcast:
+      case TransformType::AddDim:
+      case TransformType::ConstDim:
+        break;
+      case TransformType::Merge: {
+        auto lowerDims = trAttr.getLowerDims();
+        for (size_t i = 0; i < lowerDims.size(); ++i) {
+          if ((int64_t)lowerDims[i] == lowerDim) {
+            auto params = trAttr.getParams();
+            int64_t tailSize = 1;
+            for (size_t j = i + 1; j < params.size(); ++j)
+              tailSize *= params[j];
+            strideFactor *= tailSize;
+            break;
+          }
         }
+        break;
+      }
+      case TransformType::Pad:
+      case TransformType::Slice:
+        // Pad/Slice only add/remove elements at the boundary without
+        // changing the stride relationship within the real data region.
+        break;
+      case TransformType::Embed:
+        return trOp.emitError("unsupported transform type (Embed) on traced "
+                              "dimension in sub-byte stride factor "
+                              "computation");
       }
     }
   }
   return strideFactor;
 }
 
-/// Attribute name attached to sub-byte shift constants so that RockToTTIR can
-/// replace them with Triton-native ops without re-analyzing the dense blob.
-static constexpr llvm::StringLiteral kSubByteShiftAttr = "rock.sub_byte_shift";
-
 /// Build the 2-D shift constant for sub-byte extraction.
 ///
 /// For a tile of shape [D, K], the shift at position (d, k) is determined by
-/// which sub-byte (lower or upper nibble) that tile element corresponds to.
+/// which sub-byte (lower or upper bits) that tile element corresponds to.
 /// The formula is:  shift = ((pos / strideFactor) % 2) * 4
 /// where `pos` is the position along `loadAxisIdx` (0 for D, 1 for K).
 ///
@@ -679,7 +716,7 @@ static Value buildSubByteShiftConstant(OpBuilder &builder, Location loc,
   auto constOp = arith::ConstantOp::create(
       builder, loc, DenseElementsAttr::get(i8TileType, shiftValues));
 
-  constOp->setAttr(kSubByteShiftAttr, builder.getDictionaryAttr({
+  constOp->setAttr("rock.sub_byte_shift", builder.getDictionaryAttr({
       builder.getNamedAttr("axis", builder.getI64IntegerAttr(loadAxisIdx)),
       builder.getNamedAttr("halfPeriod", builder.getI64IntegerAttr(strideFactor)),
       builder.getNamedAttr("v0", builder.getI8IntegerAttr(0)),
@@ -691,8 +728,8 @@ static Value buildSubByteShiftConstant(OpBuilder &builder, Location loc,
 /// Replace arith.extui / arith.extsi users of a loaded i8 tile with sub-byte
 /// extraction logic:
 ///
-///   extui  →  (loaded >> shifts) & 0x0F
-///   extsi  →  ((loaded >> shifts) & 0x0F) << 4  >>s 4   (sign-extend)
+///   extui  ->  (loaded >> shifts) & 0x0F
+///   extsi  ->  ((loaded >> shifts) & 0x0F) << 4  >> s 4   (sign-extend)
 static void replaceExtUsersWithSubByteExtract(OpBuilder &builder, Location loc,
                                               Value loadResult,
                                               RankedTensorType i8TileType,
@@ -755,7 +792,7 @@ static LogicalResult processSubByteInput(OpBuilder &builder, MLIRContext *ctx,
     return failure();
   int64_t halveDimIdx = *halveDimOrErr;
 
-  // Halve the block arg: tensor<N x i4> → tensor<N/2 x i8>.
+  // Halve the block arg: tensor<N x i4> -> tensor<N/2 x i8>.
   auto oldArgType = cast<RankedTensorType>(input.rootArg.getType());
   int64_t flatSize = oldArgType.getShape()[0];
   if (flatSize % 2 != 0)
@@ -780,7 +817,10 @@ static LogicalResult processSubByteInput(OpBuilder &builder, MLIRContext *ctx,
 
   // Build the shift and mask constants, then replace ext users.
   int64_t loadAxisIdx = halveDimIdx - (sourceRank - 2);
-  int64_t strideFactor = computeSubByteStrideFactor(path);
+  auto strideFactorOrErr = computeSubByteStrideFactor(path);
+  if (failed(strideFactorOrErr))
+    return failure();
+  int64_t strideFactor = *strideFactorOrErr;
   Value shifts = buildSubByteShiftConstant(builder, loc, tileShape,
                                            i8TileType, loadAxisIdx,
                                            strideFactor);
@@ -796,7 +836,7 @@ static LogicalResult processSubByteInput(OpBuilder &builder, MLIRContext *ctx,
 ///
 /// For each BlockwiseGemmOp, traces matrixA/matrixB backwards through
 /// blockwise_loads and transform chains, then halves the stride-1 dimension
-/// (K preferred, then D) and converts i4 → i8.
+/// (K preferred, then D) and converts i4 -> i8.
 ///
 /// Two paths depending on whether the GEMM operand itself is 4-bit:
 ///
