@@ -9,12 +9,21 @@
 //===----------------------------------------------------------------------===//
 //
 // This pass matches the TOSA softmax normalization pattern
-// (exp -> reduce_sum -> reciprocal -> mul) and promotes the reduce_sum,
-// reciprocal, and normalize-multiply from f16/bf16 to f32.
+// (exp -> reduce_sum -> reciprocal -> mul) and promotes reduce_sum,
+// reciprocal, and the normalize-multiply from f16/bf16 to f32.
 //
-// This improves numerical accuracy of the CPU reference path, eliminating the
-// precision gap caused by f16 normalization in offline softmax (CPU) vs f32
-// deferred normalization in online softmax (GPU).
+// On the GPU path, reduce_sum is computed blockwise in f16
+// over small blocks (e.g. 32 elements), accumulating relatively little
+// rounding error per block. The final normalization is
+// deferred to after GEMM1 and performed in f32.
+//
+// On the CPU path without this promotion, reduce_sum is a
+// single-pass f16 reduction over the entire row (e.g. 384 elements),
+// accumulating much more rounding error than the GPU's blockwise approach.
+// The reciprocal and normalize-multiply are also performed in f16. Promoting
+// all three operations to f32 compensates for the structural difference
+// (single-pass vs blockwise) and aligns the normalization precision with the
+// GPU's f32 final division.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,7 +46,10 @@ namespace {
 /// Match the TOSA softmax normalization pattern:
 ///   exp -> reduce_sum -> reciprocal -> mul(exp, reciprocal)
 /// When operating on f16/bf16, promote reduce_sum, reciprocal, and the
-/// normalize-multiply to f32.
+/// normalize-multiply to f32. The f32 single-pass reduce_sum compensates for
+/// the structural difference between the CPU's single-pass reduction and the
+/// GPU's blockwise f16 reduction, while f32 reciprocal and mul match the
+/// GPU's f32 final division.
 struct SoftmaxNormPromotionPattern : public OpRewritePattern<MulOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -75,26 +87,30 @@ struct SoftmaxNormPromotionPattern : public OpRewritePattern<MulOp> {
     if (!reduceSumOp)
       return failure();
 
-    // reduce_sum's input must be the same exp that feeds into the mul
     if (reduceSumOp.getInput() != expVal)
       return failure();
 
     Location loc = op.getLoc();
     Type f32Type = rewriter.getF32Type();
 
+    // Cast exp output from f16/bf16 to f32.
     auto castExpToF32 = rock::tosa::createOpAndInfer<CastOp>(
         rewriter, loc, f32Type, expVal);
 
+    // ReduceSum in f32 (compensates for CPU's single-pass vs GPU's blockwise).
     auto newReduceSum = rock::tosa::createOpAndInfer<ReduceSumOp>(
         rewriter, loc, f32Type, castExpToF32,
         rewriter.getI32IntegerAttr(reduceSumOp.getAxis()));
 
+    // Reciprocal in f32 (matches GPU's f32 final division).
     auto newReciprocal = rock::tosa::createOpAndInfer<ReciprocalOp>(
         rewriter, loc, f32Type, newReduceSum);
 
+    // Normalize in f32: exp_f32 * reciprocal_f32.
     auto newMul = rock::tosa::getMulOp(rewriter, loc, castExpToF32,
                                        newReciprocal, f32Type);
 
+    // Cast back to original element type for downstream matmul.
     auto castBack = rock::tosa::createOpAndInfer<CastOp>(
         rewriter, loc, elemType, newMul);
 

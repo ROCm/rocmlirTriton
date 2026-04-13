@@ -51,9 +51,10 @@ def RocmlirPromoteSoftmaxPrecisionPass
   let summary = "Promote f16/bf16 softmax normalization to f32";
   let description = [{
     Matches the TOSA softmax normalization pattern
-    (exp -> reduce_sum -> reciprocal -> mul) and promotes the reduce_sum,
-    reciprocal, and normalize-multiply to f32 for improved numerical accuracy
-    on the CPU reference path.
+    (exp -> reduce_sum -> reciprocal -> mul) and promotes reduce_sum,
+    reciprocal, and the normalize-multiply to f32, compensating for the
+    CPU's single-pass reduction vs the GPU's blockwise reduction and
+    aligning normalization precision with the GPU's f32 final division.
   }];
   let dependentDialects = [
     "tosa::TosaDialect"
