@@ -118,6 +118,7 @@ MLIRComplexToLLVM
 MLIRControlFlowDialect
 MLIRControlFlowInterfaces
 MLIRControlFlowToLLVM
+MLIRControlFlowTransforms
 MLIRConvertToLLVMInterface
 MLIRConvertToLLVMPass
 MLIRDLTIDialect
@@ -161,6 +162,7 @@ MLIRMaskableOpInterface
 MLIRMaskingOpInterface
 MLIRMathDialect
 MLIRMathToLLVM
+MLIRMathToLibm
 MLIRMathToROCDL
 MLIRMathTransforms
 MLIRMemOpInterfaces
