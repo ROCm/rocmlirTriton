@@ -1890,6 +1890,9 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
       return scores;
     } else if (succeeded(maybeBroadcast)) {
+      // The input from MIGraphX will not be a constant range, so we cannot
+      // use the isConstantRange function. Instead we need to check that
+      // the constant is a valid causal mask pattern.
       auto maybeNonOne = mulBroadcast(maybeBroadcast.value());
       if (failed(maybeNonOne))
         return failure();
@@ -2294,9 +2297,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       auto maybeChainedSelect =
           getSelectWithNegInf(inputToContinue, chainInverted);
       if (succeeded(maybeChainedSelect) && !chainInverted) {
+        // Try to analyze the chained select for the missing pattern
         auto chainedSelect = maybeChainedSelect.value();
         analyzeSelectForSeqLenMask(chainedSelect, currentResult, opsToSkip,
                                    seqLenSkip);
+        // Only update inputToContinue if we found the complementary pattern
         bool foundComplementary =
             (!haveSeqLen && currentResult.seqLen) ||
             (!havePrefixOffset && currentResult.prefixOffset);
