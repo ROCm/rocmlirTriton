@@ -804,7 +804,8 @@ getDefiningOpSkipping(Value val, const DenseSet<StringRef> &opsToSkip) {
 
 static FailureOr<Value> mulBroadcast(Value val, bool skipCollapseExpand) {
   DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
-                                tensor::ExpandShapeOp::getOperationName()};
+                                tensor::ExpandShapeOp::getOperationName(),
+                                tosa::CastOp::getOperationName()};
   if (!skipCollapseExpand)
     opsToSkip.clear();
 
@@ -1740,7 +1741,13 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       return validateMask(
           floatValues, [](const APFloat &v) { return v.isZero(); },
           [](const APFloat &v) { return v.convertToDouble() == 1.0; },
-          [](const APFloat &v) { return v.isInfinity() && v.isNegative(); });
+          [](const APFloat &v) {
+            if (v.isInfinity() && v.isNegative())
+              return true;
+            APFloat largestNeg =
+                APFloat::getLargest(v.getSemantics(), /*Negative=*/true);
+            return v.bitwiseIsEqual(largestNeg);
+          });
     }
   }
 
