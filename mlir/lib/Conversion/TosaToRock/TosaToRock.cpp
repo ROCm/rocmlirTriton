@@ -1721,13 +1721,16 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
           switch (kind) {
           case CausalMaskKind::OnesLowerZerosUpper:
-            if (isLower ? !isOne(val) : !isZero(val)) return false;
+            if (isLower ? !isOne(val) : !isZero(val))
+              return false;
             break;
           case CausalMaskKind::ZerosLowerOnesUpper:
-            if (isLower ? !isZero(val) : !isOne(val)) return false;
+            if (isLower ? !isZero(val) : !isOne(val))
+              return false;
             break;
           case CausalMaskKind::ZerosLowerNegInfUpper:
-            if (isLower ? !isZero(val) : !isNegInf(val)) return false;
+            if (isLower ? !isZero(val) : !isNegInf(val))
+              return false;
             break;
           }
         }
@@ -1813,7 +1816,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   //   (b) select(lower_mask, scores, neg_val), input3 is masking constant
   // Sets `invertedPolarity` to true for case (b).
   FailureOr<tosa::SelectOp> getSelectWithNegInf(Value input,
-                                                 bool &invertedPolarity) const {
+                                                bool &invertedPolarity) const {
     DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
                                   tensor::ExpandShapeOp::getOperationName(),
                                   tosa::CastOp::getOperationName()};
