@@ -290,6 +290,46 @@ func.func @mlir_causal_attention_hardcoded_causal_mask2(%arg0: tensor<1xi32>, %a
   return %collapsed_7 : tensor<16384xf16>
 }
 
+// Test inverted-polarity select-based causal mask where:
+//   1. The i8 mask constant has 1s in the lower triangle, 0s in the upper.
+//   2. tosa.select puts scores on the true branch and -10000.0 on the false
+//      branch (inverted compared to the normal pattern).
+//   3. The masking constant is -10000.0 instead of -inf.
+// CHECK-LABEL: func @mlir_causal_attention_inverted_select
+// CHECK: rock.attention
+// CHECK-NOT: currentSeqLen =
+// CHECK: causal
+func.func @mlir_causal_attention_inverted_select(%arg0: tensor<64xf32>, %arg1: tensor<64xf32>, %arg2: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %neg10k = "tosa.const"() <{values = dense<-1.000000e+04> : tensor<1x2x4x4xf32>}> : () -> tensor<1x2x4x4xf32>
+  %scale = "tosa.const"() <{values = dense<1.250000e-01> : tensor<1x2x4x4xf32>}> : () -> tensor<1x2x4x4xf32>
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
+  %mask_i8 = "tosa.const"() <{values = dense<"0x01000000010100000101010001010101"> : tensor<1x1x4x4xi8>}> : () -> tensor<1x1x4x4xi8>
+  %ones_i8 = "tosa.const"() <{values = dense<1> : tensor<1x2x4x4xi8>}> : () -> tensor<1x2x4x4xi8>
+  %zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %q_4d = tensor.expand_shape %arg0 [[0, 1, 2, 3]] output_shape [1, 2, 4, 8] : tensor<64xf32> into tensor<1x2x4x8xf32>
+  %k_4d = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [1, 2, 4, 8] : tensor<64xf32> into tensor<1x2x4x8xf32>
+  %k_t = tosa.transpose %k_4d {perms = array<i32: 0, 1, 3, 2>} : (tensor<1x2x4x8xf32>) -> tensor<1x2x8x4xf32>
+  %q_3d = tensor.collapse_shape %q_4d [[0, 1], [2], [3]] : tensor<1x2x4x8xf32> into tensor<2x4x8xf32>
+  %k_3d = tensor.collapse_shape %k_t [[0, 1], [2], [3]] : tensor<1x2x8x4xf32> into tensor<2x8x4xf32>
+  %qk = tosa.matmul %q_3d, %k_3d, %zp, %zp {acc_type = f32} : (tensor<2x4x8xf32>, tensor<2x8x4xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x4x4xf32>
+  %qk_4d = tensor.expand_shape %qk [[0, 1], [2], [3]] output_shape [1, 2, 4, 4] : tensor<2x4x4xf32> into tensor<1x2x4x4xf32>
+  %scaled = tosa.mul %qk_4d, %scale, %shift : (tensor<1x2x4x4xf32>, tensor<1x2x4x4xf32>, tensor<1xi8>) -> tensor<1x2x4x4xf32>
+  %mask_bcast = tosa.mul %mask_i8, %ones_i8, %shift : (tensor<1x1x4x4xi8>, tensor<1x2x4x4xi8>, tensor<1xi8>) -> tensor<1x2x4x4xi8>
+  %mask_i1 = tosa.cast %mask_bcast : (tensor<1x2x4x4xi8>) -> tensor<1x2x4x4xi1>
+  %masked = tosa.select %mask_i1, %scaled, %neg10k : (tensor<1x2x4x4xi1>, tensor<1x2x4x4xf32>, tensor<1x2x4x4xf32>) -> tensor<1x2x4x4xf32>
+  %max = tosa.reduce_max %masked {axis = 3 : i32} : (tensor<1x2x4x4xf32>) -> tensor<1x2x4x1xf32>
+  %sub = tosa.sub %masked, %max : (tensor<1x2x4x4xf32>, tensor<1x2x4x1xf32>) -> tensor<1x2x4x4xf32>
+  %exp = tosa.exp %sub : (tensor<1x2x4x4xf32>) -> tensor<1x2x4x4xf32>
+  %sum = tosa.reduce_sum %exp {axis = 3 : i32} : (tensor<1x2x4x4xf32>) -> tensor<1x2x4x1xf32>
+  %recip = tosa.reciprocal %sum : (tensor<1x2x4x1xf32>) -> tensor<1x2x4x1xf32>
+  %softmax = tosa.mul %exp, %recip, %shift : (tensor<1x2x4x4xf32>, tensor<1x2x4x1xf32>, tensor<1xi8>) -> tensor<1x2x4x4xf32>
+  %sm_3d = tensor.collapse_shape %softmax [[0, 1], [2], [3]] : tensor<1x2x4x4xf32> into tensor<2x4x4xf32>
+  %v_3d = tensor.expand_shape %arg2 [[0, 1, 2]] output_shape [2, 4, 8] : tensor<64xf32> into tensor<2x4x8xf32>
+  %attn = tosa.matmul %sm_3d, %v_3d, %zp, %zp {acc_type = f32} : (tensor<2x4x4xf32>, tensor<2x4x8xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x4x8xf32>
+  %out = tensor.collapse_shape %attn [[0, 1, 2]] : tensor<2x4x8xf32> into tensor<64xf32>
+  return %out : tensor<64xf32>
+}
+
 // Test add-based causal mask where:
 //   1. Both scores and mask are cast to f32 before being added (tosa.cast sits
 //      between the broadcast mul and the tosa.add).

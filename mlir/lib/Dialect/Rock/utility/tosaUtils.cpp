@@ -103,7 +103,26 @@ bool isConstantZero(Value v) {
 bool isConstantOne(Value v) { return isConstantValue(v, 1.0); }
 
 bool isConstNegInf(Value v) {
-  return isConstantValue(v, -std::numeric_limits<double>::infinity());
+  if (isConstantValue(v, -std::numeric_limits<double>::infinity()))
+    return true;
+
+  // TODO: Need to speak with the MIGraphX team about what these
+  // values should be. Can we request that they use -inf or the
+  // largest negative finite value instead?
+  auto getValuesAttr = [](Value val) -> Attribute {
+    if (auto cst = val.getDefiningOp<arith::ConstantOp>())
+      return cst.getValue();
+    if (auto cst = val.getDefiningOp<mlir::tosa::ConstOp>())
+      return cst.getValuesAttr();
+    return {};
+  };
+
+  if (auto splatAttr = dyn_cast_or_null<SplatElementsAttr>(getValuesAttr(v)))
+    if (isa<FloatType>(splatAttr.getElementType())) {
+      APFloat val = splatAttr.getSplatValue<APFloat>();
+      return val.isNegative() && val.convertToDouble() <= -1.0e4;
+    }
+  return false;
 }
 
 static bool isIntAttrSame(Attribute value, int64_t expectedVal) {
