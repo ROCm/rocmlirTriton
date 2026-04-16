@@ -275,3 +275,61 @@ func.func @error_body_non_splat_constant(
   } : tensor<1x4x4xf32>, tensor<1x4x4xf32>, tensor<1x4x4xf32> -> tensor<1x4x4xf32>
   return %result : tensor<1x4x4xf32>
 }
+
+// -----
+
+// CHECK-LABEL: func @attn_single_chiplet_odd_cu
+// CHECK-NOT: rock.gridwise_attention
+// CHECK: rock.store_marker
+func.func @attn_single_chiplet_odd_cu(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-",
+      rock.num_cu = 35 : i64,
+      rock.num_chiplets = 1 : i64
+    } {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>):
+    rock.yield %arg_qk : tensor<1x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @attn_multi_chiplet_even
+// CHECK-NOT: rock.gridwise_attention
+// CHECK: rock.store_marker
+func.func @attn_multi_chiplet_even(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-",
+      rock.num_cu = 304 : i64,
+      rock.num_chiplets = 8 : i64
+    } {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>):
+    rock.yield %arg_qk : tensor<1x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}

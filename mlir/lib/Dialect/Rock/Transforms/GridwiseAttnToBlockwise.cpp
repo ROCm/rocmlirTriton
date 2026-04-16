@@ -1061,7 +1061,7 @@ struct GridwiseAttentionRewritePattern
         rewriter, loc, bid, gemm0MBlocks,
         rewriter.createOrFold<arith::ConstantIntOp>(loc, rewriter.getI32Type(),
                                                     0),
-        gridSize, arch, rock::getNumCUValue(op), splitKVConst);
+        gridSize, arch, rock::getNumChipletsValue(op), splitKVConst);
 
     auto blockMTensorType =
         RankedTensorType::get({gemm0MPerBlock}, elemTypeSoftmax);
@@ -1120,7 +1120,7 @@ struct GridwiseAttentionRewritePattern
       // as the first gemm is Kt x Qt.
       auto gridCoordsGemm0LoadQ = layout::makeGxNGridLayout(
           rewriter, loc, bid, gemm0MBlocks, zero, gridSize, arch,
-          rock::getNumCUValue(op), splitKVConst);
+          rock::getNumChipletsValue(op), splitKVConst);
 
       loadedQ =
           rock::loadTile(rewriter, loc, inQ, /*kiter=*/zero, "m",
@@ -1158,7 +1158,7 @@ struct GridwiseAttentionRewritePattern
 
       layout::GridCoordinates gridCoordsGemm0 = layout::makeGxNGridLayout(
           rewriter, loc, bid, gemm0MBlocks, nLoopIV, gridSize, arch,
-          rock::getNumCUValue(op), splitKVConst);
+          rock::getNumChipletsValue(op), splitKVConst);
       Value initAcc = rock::createZeroAccBuffer(
           rewriter, loc, {gemm0MPerBlock, gemm0NPerBlock}, accType);
 
@@ -1360,7 +1360,7 @@ struct GridwiseAttentionRewritePattern
 
       auto gridCoordsGemm1 = layout::makeGxNGridLayout(
           rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
-          rock::getNumCUValue(op), splitKVConst);
+          rock::getNumChipletsValue(op), splitKVConst);
 
       Value loadedV = rock::loadTile(rewriter, loc, inV,
                                      /*kIter=*/nLoopIV, "n", gridCoordsGemm1,
@@ -1427,7 +1427,7 @@ struct GridwiseAttentionRewritePattern
     // batch size already for output tensors
     auto gridCoordsGemm1 =
         layout::makeGxNGridLayout(rewriter, loc, bid, gemm1MBlocks, zero,
-                                  gridSize, arch, rock::getNumCUValue(op));
+                                  gridSize, arch, rock::getNumChipletsValue(op));
 
     // Compute output transforms - use grid lengths with splitKV for output
     FailureOr<ArrayAttr> maybeOutputViews = computeOutputTransforms(
