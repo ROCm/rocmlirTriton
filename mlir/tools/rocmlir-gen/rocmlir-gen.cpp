@@ -4228,9 +4228,6 @@ createCpuConvElementwiseGemmKernelWithMlir(ModuleOp module,
   if (transposeC) {
     cTensor = rock::tosa::getTransposeOp(builder, loc, cTensor, {0, 2, 1});
   }
-  auto inputZp =
-      tosa::createZeroPointTensor(builder, loc, inputTensor.getType(), 0)
-          .value();
   auto weightZp =
       tosa::createZeroPointTensor(builder, loc, filterTensor.getType(), 0)
           .value();
@@ -4250,6 +4247,15 @@ createCpuConvElementwiseGemmKernelWithMlir(ModuleOp module,
     pads.push_back(config->paddingLeftDims[i]);
     pads.push_back(config->paddingRightDims[i]);
   }
+
+  // Floor-mode convolutions may have partial windows that violate TOSA's
+  // exact-divisibility-by-stride requirement. Adjust padding/input to fix.
+  inputTensor = rock::tosa::adjustConvPadding(
+      builder, loc, inputTensor, filterTensor, pads, config->strideDims,
+      config->dilationDims);
+  auto inputZp =
+      tosa::createZeroPointTensor(builder, loc, inputTensor.getType(), 0)
+          .value();
 
   Value convOut = rock::tosa::createOpAndInfer<tosa::Conv2DOp>(
       builder, loc, convOutElemType, inputTensor, filterTensor, biasTensor,

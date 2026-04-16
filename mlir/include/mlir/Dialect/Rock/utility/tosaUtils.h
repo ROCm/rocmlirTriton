@@ -32,6 +32,26 @@ bool isConstNegInf(Value v);
 bool isConstRange(Value v);
 
 namespace tosa {
+
+/// Adjust conv padding for TOSA's exact-divisibility-by-stride requirement.
+/// Floor-mode convolutions may produce partial windows that TOSA rejects.
+/// Trims high-side padding first; if that's insufficient, inserts a
+/// tosa::SliceOp to shrink the input tensor.
+///
+/// Both input and filter are expected in TOSA layout (spatial dims at
+/// indices 1..nSpatial, i.e. NHWC / OCHW).
+///
+/// \param pads  Interleaved [padLeft0, padRight0, padLeft1, ...]. Modified
+///              in-place.
+/// \param input  The input tensor value (may be replaced by a SliceOp result).
+/// \param filter The filter/kernel tensor value (used to read spatial sizes).
+/// \param strides  Stride per spatial dimension.
+/// \param dilations  Dilation per spatial dimension.
+/// \returns The (possibly sliced) input tensor.
+Value adjustConvPadding(OpBuilder &builder, Location loc, Value input,
+                        Value filter, MutableArrayRef<int64_t> pads,
+                        ArrayRef<int64_t> strides, ArrayRef<int64_t> dilations);
+
 template <typename TosaOp, typename... Args>
 TosaOp createOpAndInfer(OpBuilder &rewriter, Location loc, Type elemType,
                         Args &&...args) {
