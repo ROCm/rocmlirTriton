@@ -806,8 +806,10 @@ static FailureOr<Value> mulBroadcast(Value val, bool skipCollapseExpand) {
   DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
                                 tensor::ExpandShapeOp::getOperationName(),
                                 tosa::CastOp::getOperationName()};
-  if (!skipCollapseExpand)
-    opsToSkip.clear();
+  if (!skipCollapseExpand) {
+    opsToSkip.erase(tensor::CollapseShapeOp::getOperationName());
+    opsToSkip.erase(tensor::ExpandShapeOp::getOperationName());
+  }
 
   auto maybeMul = getDefiningOpSkipping<tosa::MulOp>(val, opsToSkip);
   if (succeeded(maybeMul)) {
@@ -1745,16 +1747,17 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
           [](const APInt &v) { return v.isOne(); },
           [](const APInt &v) { return v.isMinSignedValue(); });
     } else {
+      APFloat largestNeg = APFloat::getLargest(
+          cast<FloatType>(constAttr.getElementType()).getFloatSemantics(),
+          /*Negative=*/true);
       return validateMask(
           constAttr.getValues<APFloat>(),
           [](const APFloat &v) { return v.isZero(); },
           [](const APFloat &v) { return v.convertToDouble() == 1.0; },
-          [](const APFloat &v) {
+          [&largestNeg](const APFloat &v) {
             if (v.isInfinity() && v.isNegative())
               return true;
 
-            APFloat largestNeg =
-                APFloat::getLargest(v.getSemantics(), /*Negative=*/true);
             if (v.bitwiseIsEqual(largestNeg))
               return true;
 
@@ -1814,9 +1817,9 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   // Handles two polarities:
   //   (a) select(upper_mask, neg_val, scores), input2 is masking constant
   //   (b) select(lower_mask, scores, neg_val), input3 is masking constant
-  // Sets `invertedPolarity` to true for case (b).
-  FailureOr<tosa::SelectOp> getSelectWithNegInf(Value input,
-                                                bool &invertedPolarity) const {
+  // Returns the select op and whether the polarity is inverted (case b).
+  FailureOr<std::pair<tosa::SelectOp, bool>>
+  getSelectWithNegInf(Value input) const {
     DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
                                   tensor::ExpandShapeOp::getOperationName(),
                                   tosa::CastOp::getOperationName()};
@@ -1824,14 +1827,10 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     if (failed(maybeSelect))
       return failure();
     auto select = maybeSelect.value();
-    if (isNegInfConstant(select.getInput2())) {
-      invertedPolarity = false;
-      return select;
-    }
-    if (isNegInfConstant(select.getInput3())) {
-      invertedPolarity = true;
-      return select;
-    }
+    if (isNegInfConstant(select.getInput2()))
+      return std::make_pair(select, false);
+    if (isNegInfConstant(select.getInput3()))
+      return std::make_pair(select, true);
     return failure();
   }
 
@@ -1856,12 +1855,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   //       tensors (normal polarity only)
   //   (2) A pre-folded broadcasted constant mask tensor
   FailureOr<Value> getCausalFromSelect(Value input) const {
-    bool invertedPolarity = false;
-    auto maybeSelect = getSelectWithNegInf(input, invertedPolarity);
+    auto maybeSelect = getSelectWithNegInf(input);
     if (failed(maybeSelect))
       return failure();
 
-    auto select = maybeSelect.value();
+    auto [select, invertedPolarity] = maybeSelect.value();
     auto pred = select.getInput1();
 
     // The scores are on the opposite side of the masking constant.
@@ -2262,12 +2260,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   FailureOr<SeqLenMaskResult> getSeqLenMask(Value softmaxInput) const {
     // Seq-len masking only applies to normal-polarity selects
     // (select(mask, neg_val, scores)).
-    bool invertedPolarity = false;
-    auto maybeSelect = getSelectWithNegInf(softmaxInput, invertedPolarity);
-    if (failed(maybeSelect) || invertedPolarity)
+    auto maybeSelect = getSelectWithNegInf(softmaxInput);
+    if (failed(maybeSelect) || maybeSelect.value().second)
       return failure();
 
-    auto select = maybeSelect.value();
+    auto select = maybeSelect.value().first;
 
     DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
                                   tensor::ExpandShapeOp::getOperationName(),
@@ -2293,12 +2290,10 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     bool havePrefixOffset = currentResult.prefixOffset != nullptr;
 
     if (haveSeqLen != havePrefixOffset) {
-      bool chainInverted = false;
-      auto maybeChainedSelect =
-          getSelectWithNegInf(inputToContinue, chainInverted);
-      if (succeeded(maybeChainedSelect) && !chainInverted) {
+      auto maybeChainedSelect = getSelectWithNegInf(inputToContinue);
+      if (succeeded(maybeChainedSelect) && !maybeChainedSelect.value().second) {
         // Try to analyze the chained select for the missing pattern
-        auto chainedSelect = maybeChainedSelect.value();
+        auto chainedSelect = maybeChainedSelect.value().first;
         analyzeSelectForSeqLenMask(chainedSelect, currentResult, opsToSkip,
                                    seqLenSkip);
         // Only update inputToContinue if we found the complementary pattern
