@@ -55,9 +55,10 @@ PopulateParamsGemmGemm::deserializePerfConfigs(OpBuilder &b,
                                                ArrayRef<StringRef> configs) {
   std::vector<GemmGemmParamsAttr> ret;
   ret.reserve(configs.size());
-  std::transform(
-      configs.begin(), configs.end(), std::back_inserter(ret),
-      [&](StringRef config) { return deserializePerfConfig(b, op, config); });
+  for (StringRef config : configs) {
+    if (auto params = deserializePerfConfig(b, op, config))
+      ret.push_back(params);
+  }
   return ret;
 }
 
