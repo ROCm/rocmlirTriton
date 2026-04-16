@@ -586,9 +586,15 @@ func.func @add_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> 
 
 // -----
 
+// unsigned_cast float->uint: f32 -> i32 hits case 3 (mantissa too narrow for
+// uint max). Clamp lower bound to 0 in float domain, convert, then fix up
+// overflow with a select.
 // CHECK-LABEL: @unsigned_cast_fptoui
 // CHECK-NOT:   tosa.custom
-// CHECK:       arith.fptoui %arg0 : tensor<16xf32> to tensor<16xi32>
+// CHECK:       %[[MINCLAMP:.*]] = arith.maximumf %arg0, {{.*}} : tensor<16xf32>
+// CHECK:       %[[CONV:.*]] = arith.fptoui %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
+// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %arg0, {{.*}} : tensor<16xf32>
+// CHECK:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
 func.func @unsigned_cast_fptoui(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
   %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
@@ -682,11 +688,14 @@ func.func @unsigned_div(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8x
 
 // -----
 
-// fp_to_int_cast: float-to-int using direct truncation (no rounding),
-// matching MIGraphX semantics for quantize paths.
+// fp_to_int_cast: float-to-signed-int with saturation, matching MIGraphX
+// convert semantics. f32 -> i32 hits case 3 (mantissa too narrow for i32 max).
 // CHECK-LABEL: @fp_to_int_cast_f32_to_i32
 // CHECK-NOT:   tosa.custom
-// CHECK:       arith.fptosi %arg0 : tensor<16xf32> to tensor<16xi32>
+// CHECK:       %[[MINCLAMP:.*]] = arith.maximumf %arg0, {{.*}} : tensor<16xf32>
+// CHECK:       %[[CONV:.*]] = arith.fptosi %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
+// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %arg0, {{.*}} : tensor<16xf32>
+// CHECK:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
 func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
   %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
@@ -696,7 +705,9 @@ func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> at
 
 // CHECK-LABEL: @fp_to_int_cast_f32_to_i8
 // CHECK-NOT:   tosa.custom
-// CHECK:       arith.fptosi %arg0 : tensor<16xf32> to tensor<16xi8>
+// CHECK:       %[[HI:.*]] = arith.minimumf %arg0, {{.*}} : tensor<16xf32>
+// CHECK:       %[[CLAMPED:.*]] = arith.maximumf %[[HI]], {{.*}} : tensor<16xf32>
+// CHECK:       arith.fptosi %[[CLAMPED]] : tensor<16xf32> to tensor<16xi8>
 func.func @fp_to_int_cast_f32_to_i8(%arg0: tensor<16xf32>) -> tensor<16xi8> attributes {rock.kernel} {
   %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf32>) -> tensor<16xi8>
   return %0 : tensor<16xi8>

@@ -1529,6 +1529,7 @@ LogicalResult ComparisonConverter<MIGraphXOp, TosaOp>::matchAndRewrite(
   Value inA = adaptor.getInA();
   Value inB = adaptor.getInB();
 
+  // Create a new tensor type with I1 element type
   auto newType =
       RankedTensorType::get(op.getType().getShape(), rewriter.getI1Type());
   auto comparisonResult =
