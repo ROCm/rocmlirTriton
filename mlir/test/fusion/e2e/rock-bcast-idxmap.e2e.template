@@ -1,23 +1,29 @@
-// TODO(rocmlirTriton): Functional failure in test
-// UNSUPPORTED: true
 // RUN: rocmlir-gen -ph -print-results -rand none %s | sed s/##TOKEN_ARCH##/%arch/g | rocmlir-driver -arch %arch -c  | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext --entry-point-result=void --mattr=-avx512bf16 | FileCheck %s
 
 // CHECK: 65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65,      65
 
 // NOTE: this tests non-accel path
 
-#map1 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>
-#map2 = affine_map<(d0, d1, d2, d3, d4) -> (0, 0, 0, 0, d4)>
+#map_in = affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 64 + d2) * 64 + d3) * 64 + d4)>
+#tf_in = #rock.transform_map<#map_in by [<AddDim{{1}} ["gi"] at [0] -> [] at []>, <Unmerge{{64, 64, 64, 64}} ["ni", "hi", "wi", "ci"] at [1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 64, 64, 64, 64] -> [16777216]>
+#map_fil = affine_map<(d0, d1, d2, d3, d4) -> ((d1 + d2 + d3) * 64 + d4)>
+#tf_fil = #rock.transform_map<#map_fil by [<AddDim{{1}} ["g"] at [0] -> [] at []>, <Unmerge{{64, 1, 1, 64}} ["k", "y", "x", "c"] at [1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 64, 1, 1, 64] -> [4096]>
+#map_bias_exp = affine_map<(d0, d1, d2, d3, d4) -> (d4)>
+#tf_bias_exp = #rock.transform_map<#map_bias_exp by [<AddDim{{1}} ["go"] at [0] -> [] at []>, <AddDim{{1}} ["no"] at [1] -> [] at []>, <AddDim{{1}} ["ho"] at [2] -> [] at []>, <AddDim{{1}} ["wo"] at [3] -> [] at []>, <PassThrough ["ko"] at [4] -> ["ko"] at [0]>] bounds = [1, 1, 1, 1, 64] -> [64]>
+#map_bias_bcast = affine_map<(d0, d1, d2, d3, d4) -> (0, 0, 0, 0, d4)>
+#tf_bias_bcast = #rock.transform_map<#map_bias_bcast by [<Broadcast{{1}} ["go"] at [0] -> ["go"] at [0]>, <Broadcast{{1}} ["no"] at [1] -> ["no"] at [1]>, <Broadcast{{1}} ["ho"] at [2] -> ["ho"] at [2]>, <Broadcast{{1}} ["wo"] at [3] -> ["wo"] at [3]>, <PassThrough ["ko"] at [4] -> ["ko"] at [4]>] bounds = [1, 64, 64, 64, 64] -> [1, 1, 1, 1, 64]>
+#map_out = affine_map<(d0) -> (0, d0 floordiv 262144, (d0 mod 262144) floordiv 4096, (d0 mod 4096) floordiv 64, d0 mod 64)>
+#tf_out = #rock.transform_map<#map_out by [<Merge{{1, 64, 64, 64, 64}} ["raw"] at [0] -> ["go", "no", "ho", "wo", "ko"] at [0, 1, 2, 3, 4]>] bounds = [16777216] -> [1, 64, 64, 64, 64]>
 module {{
-  func.func @test_fusion(%arg0: memref<1x64x64x64x64x{type}>, %arg1: memref<1x64x1x1x64x{type}>, %arg2: memref<64x{type}>, %arg3: memref<1x64x64x64x64x{type}>) attributes {{rock.kernel, rock.arch = "##TOKEN_ARCH##"}} {{
-    %0 = memref.alloc() : memref<1x64x64x64x64x{type}>
-    rock.conv(%arg1, %arg0, %0) features = none {{arch = "##TOKEN_ARCH##", dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["gi", "ni", "hi", "wi", "ci"], output_layout = ["go", "no", "ho", "wo", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]}} : memref<1x64x1x1x64x{type}>, memref<1x64x64x64x64x{type}>, memref<1x64x64x64x64x{type}>
-    %4 = memref.expand_shape %arg2 [[0, 1, 2, 3, 4]] output_shape [1, 1, 1, 1, 64] : memref<64x{type}> into memref<1x1x1x1x64x{type}>
-    linalg.generic {{indexing_maps = [#map1, #map2, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]}} ins(%0, %4 : memref<1x64x64x64x64x{type}>, memref<1x1x1x1x64x{type}>) outs(%arg3 : memref<1x64x64x64x64x{type}>) {{
-    ^bb0(%arg4: {type}, %arg5: {type}, %arg6: {type}):
-      %8 = arith.addf %arg4, %arg5 : {type}
-      linalg.yield %8 : {type}
-    }}
-    return
+  func.func @test_fusion(%arg0: tensor<16777216x{type}>, %arg1: tensor<4096x{type}>, %arg2: tensor<64x{type}>, %arg3: tensor<16777216x{type}>) -> tensor<16777216x{type}> attributes {{rock.kernel, rock.arch = "##TOKEN_ARCH##"}} {{
+    %input = rock.transform %arg0 by #tf_in : tensor<16777216x{type}> to tensor<1x64x64x64x64x{type}>
+    %filter = rock.transform %arg1 by #tf_fil : tensor<4096x{type}> to tensor<1x64x1x1x64x{type}>
+    %bias_exp = rock.transform %arg2 by #tf_bias_exp : tensor<64x{type}> to tensor<1x1x1x1x64x{type}>
+    %bias = rock.transform %bias_exp by #tf_bias_bcast : tensor<1x1x1x1x64x{type}> to tensor<1x64x64x64x64x{type}>
+    %conv = rock.conv(%filter, %input) {{dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "y", "x", "c"], input_layout = ["gi", "ni", "hi", "wi", "ci"], output_layout = ["go", "no", "ho", "wo", "ko"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]}} : tensor<1x64x1x1x64x{type}>, tensor<1x64x64x64x64x{type}> -> tensor<1x64x64x64x64x{type}>
+    %fused = arith.addf %conv, %bias : tensor<1x64x64x64x64x{type}>
+    %flat = rock.transform %fused by #tf_out : tensor<1x64x64x64x64x{type}> to tensor<16777216x{type}>
+    %stored = rock.store %flat to %arg3 by set : tensor<16777216x{type}> -> tensor<16777216x{type}> to tensor<16777216x{type}>
+    return %stored : tensor<16777216x{type}>
   }}
 }}

@@ -147,7 +147,7 @@ func.func @mlir_softmaxf32_lse_attention(%arg0: tensor<786432xf16>, %arg1: tenso
 // CHECK-LABEL: func @mlir_softmaxf32_attention_with_scaling
 // CHECK: %{{.*}} = rock.attention
 // CHECK: softmaxType = f32
-func.func @mlir_softmaxf32_attention_with_scaling(%arg0: tensor<48225280xf16>, %arg1: tensor<48225280xf16>, %arg2: tensor<48225280xf16>) -> tensor<48225280xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr", num_cu = 304 : i64} {
+func.func @mlir_softmaxf32_attention_with_scaling(%arg0: tensor<48225280xf16>, %arg1: tensor<48225280xf16>, %arg2: tensor<48225280xf16>) -> tensor<48225280xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr", rock.num_cu = 304 : i64} {
   %0 = tosa.const_shape  {values = dense<[1, 75352, 5, 128]> : tensor<4xindex>} : () -> !tosa.shape<4>
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 75352, 5, 128] : tensor<48225280xf16> into tensor<1x75352x5x128xf16>
   %expanded_0 = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [1, 75352, 5, 128] : tensor<48225280xf16> into tensor<1x75352x5x128xf16>
@@ -196,7 +196,7 @@ func.func @mlir_softmaxf32_attention_with_scaling(%arg0: tensor<48225280xf16>, %
 // CHECK-LABEL: func @mlir_softmaxf32_attention_with_scaling_multiple_converts
 // CHECK: %{{.*}} = rock.attention
 // CHECK: softmaxType = f32
-func.func @mlir_softmaxf32_attention_with_scaling_multiple_converts(%arg0: tensor<48225280xf16>, %arg1: tensor<48225280xf16>, %arg2: tensor<48225280xf16>) -> tensor<48225280xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr", num_cu = 304 : i64} {
+func.func @mlir_softmaxf32_attention_with_scaling_multiple_converts(%arg0: tensor<48225280xf16>, %arg1: tensor<48225280xf16>, %arg2: tensor<48225280xf16>) -> tensor<48225280xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr", rock.num_cu = 304 : i64} {
   %0 = tosa.const_shape  {values = dense<[1, 75352, 5, 128]> : tensor<4xindex>} : () -> !tosa.shape<4>
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 75352, 5, 128] : tensor<48225280xf16> into tensor<1x75352x5x128xf16>
   %expanded_0 = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [1, 75352, 5, 128] : tensor<48225280xf16> into tensor<1x75352x5x128xf16>
@@ -248,7 +248,7 @@ func.func @mlir_softmaxf32_attention_with_scaling_multiple_converts(%arg0: tenso
 // CHECK: %{{.*}} = rock.attention
 // CHECK: softmaxType = f32
 // COM: here scale is already converted to f32 and order of operands to mul is changed
-func.func @mlir_softmaxf32_attention_with_scaling_with_one_convert(%arg0: tensor<48225280xf16>, %arg1: tensor<48225280xf16>, %arg2: tensor<48225280xf16>) -> tensor<48225280xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr", num_cu = 304 : i64} {
+func.func @mlir_softmaxf32_attention_with_scaling_with_one_convert(%arg0: tensor<48225280xf16>, %arg1: tensor<48225280xf16>, %arg2: tensor<48225280xf16>) -> tensor<48225280xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr", rock.num_cu = 304 : i64} {
   %0 = tosa.const_shape  {values = dense<[1, 75352, 5, 128]> : tensor<4xindex>} : () -> !tosa.shape<4>
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 75352, 5, 128] : tensor<48225280xf16> into tensor<1x75352x5x128xf16>
   %expanded_0 = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [1, 75352, 5, 128] : tensor<48225280xf16> into tensor<1x75352x5x128xf16>
