@@ -1425,9 +1425,9 @@ struct GridwiseAttentionRewritePattern
 
     // Note that we don't use splitKV here because that dimension belongs to the
     // batch size already for output tensors
-    auto gridCoordsGemm1 =
-        layout::makeGxNGridLayout(rewriter, loc, bid, gemm1MBlocks, zero,
-                                  gridSize, arch, rock::getNumChipletsValue(op));
+    auto gridCoordsGemm1 = layout::makeGxNGridLayout(
+        rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
+        rock::getNumChipletsValue(op));
 
     // Compute output transforms - use grid lengths with splitKV for output
     FailureOr<ArrayAttr> maybeOutputViews = computeOutputTransforms(
