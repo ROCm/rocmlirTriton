@@ -279,7 +279,10 @@ func.func @error_body_non_splat_constant(
 // -----
 
 // CHECK-LABEL: func @attn_single_chiplet_odd_cu
-// CHECK-NOT: rock.gridwise_attention
+// With num_chiplets=1, XCD remapping should be skipped entirely
+// (the old buggy code using num_cu=35 would enter the remap branch and assert)
+// CHECK: tt.get_program_id x
+// CHECK-NOT: arith.cmpi sgt
 // CHECK: rock.store_marker
 func.func @attn_single_chiplet_odd_cu(
     %q: tensor<1x64x32xf32>,
@@ -308,7 +311,14 @@ func.func @attn_single_chiplet_odd_cu(
 // -----
 
 // CHECK-LABEL: func @attn_multi_chiplet_even
-// CHECK-NOT: rock.gridwise_attention
+// XCD remapping should use numChipletsPerGroup = ceil(num_chiplets/2) = 4,
+// NOT ceil(num_cu/2) = 152
+// CHECK: %[[BID:.*]] = tt.get_program_id x
+// CHECK: %[[CHIPLET_GRP:.*]] = arith.constant 4 : i32
+// CHECK: arith.remui %[[BID]], %[[CHIPLET_GRP]]
+// CHECK: arith.divui %[[BID]], %[[CHIPLET_GRP]]
+// CHECK: arith.cmpi sgt
+// CHECK: arith.select
 // CHECK: rock.store_marker
 func.func @attn_multi_chiplet_even(
     %q: tensor<1x64x32xf32>,
