@@ -262,9 +262,24 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
 LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
                                                         Type dataTypeA,
                                                         Type dataTypeB) {
-  // TODO(roctriton): We should probably implement this.
-  (void)params;
   (void)dataTypeA;
   (void)dataTypeB;
+
+  /// MFMA/XDL-only heuristic (rocMLIR `PopulateParamsXDL::specificCouldBePerformant`):
+  /// factor total wave count into an M×N wave grid; `nPerWave` is
+  /// `nPerBlock / nWaves`; `mnPerXdl` is `matrixInstrNonkdim`.
+
+
+  /// WMMA uses `matrixInstrNonkdim == 0`; do not apply XDL pruning here so the
+  /// full tuning space stays aligned with `computeNumWaves` (e.g. 2/4/8 on RDNA).
+  int64_t mnPerXdl = params.getMatrixInstrNonkdim();
+  if (mnPerXdl == 0)
+    return success();
+
+  int64_t numWaves = params.getNumWaves();
+  // XDL: limit to wave counts this heuristic was derived for (see rocMLIR).
+  if (numWaves != 1 && numWaves != 2 && numWaves != 4)
+    return failure();
+
   return success();
 }
