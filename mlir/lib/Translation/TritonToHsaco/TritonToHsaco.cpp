@@ -788,8 +788,15 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     }
   }
 
-  // make_hsaco (compiler.py lines 476-488)
-  auto hsaco = makeHSACO(amdgcnAsm, triple, arch, features);
+  // make_hsaco (compiler.py lines 476-488).
+  //
+  // Mirror upstream Triton PR #9447
+  // ("[AMD] Disable True16 for assembler on gfx11",
+  //  https://github.com/triton-lang/triton/pull/9447): the assembler also
+  // rejects Fake16 instructions (e.g. `v_lshlrev_b16 v139, 8, v139`) when
+  // True16 is enabled by default on gfx11. Pass the same `asmFeatures`
+  // (which already carries `-real-true16`) to `assembleAMDGCN`.
+  auto hsaco = makeHSACO(amdgcnAsm, triple, arch, asmFeatures);
   if (!hsaco) {
     return failure();
   }
