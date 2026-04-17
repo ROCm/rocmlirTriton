@@ -181,14 +181,17 @@ void setABIVersion(llvm::Module &module, int version) {
 }
 
 /// Set kernel function attributes
-void setKernelAttributes(llvm::Module &module, StringRef archStr,
-                         StringRef features, int numWarps, int wavesPerEU,
-                         int numCTAs,
-                         bool allowFlushDenorm, bool enableAsan,
-                         StringRef scheduleHint) {
+LogicalResult setKernelAttributes(llvm::Module &module, StringRef archStr,
+                                  StringRef features, int numWarps,
+                                  int wavesPerEU, int numCTAs,
+                                  bool allowFlushDenorm, bool enableAsan,
+                                  StringRef scheduleHint) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
+  // Match compiler.py: the kernel is the only non-declaration function with
+  // external linkage; instrumentation helpers (e.g. ConSan) use internal
+  // linkage. If none is found, we cannot produce a valid HSACO.
   llvm::Function *kernelFn = nullptr;
   for (llvm::Function &fn : module) {
     if (!fn.isDeclaration() && fn.hasExternalLinkage()) {
@@ -197,8 +200,10 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
     }
   }
 
-  if (!kernelFn)
-    return;
+  if (!kernelFn) {
+    llvm::errs() << "Could not find kernel function\n";
+    return failure();
+  }
 
   kernelFn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
   kernelFn->addFnAttr("amdgpu-cluster-dims", std::to_string(numCTAs) + ",1,1");
@@ -237,6 +242,8 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
       }
     }
   }
+
+  return success();
 }
 
 /// Check if architecture has architected SGPRs
@@ -644,9 +651,12 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   }
 
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
-  setKernelAttributes(*llvmModule, arch, features, numWarps,
-                      options.wavesPerEU, options.numCTAs, options.allowFlushDenorm,
-                      enableAsan, options.scheduleHint);
+  if (failed(setKernelAttributes(*llvmModule, arch, features, numWarps,
+                                 options.wavesPerEU, options.numCTAs,
+                                 options.allowFlushDenorm, enableAsan,
+                                 options.scheduleHint))) {
+    return failure();
+  }
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
   // compiler.py lines 412-423
@@ -767,7 +777,15 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   }
 
   // make_hsaco (compiler.py lines 476-488)
-  auto hsaco = makeHSACO(amdgcnAsm, triple, arch, features);
+  // target_features starts from options.features (includes +xnack when asan
+  // is enabled); gfx11 additionally needs -real-true16 at the assembler step.
+  std::string hsacoFeatures(features);
+  if (arch.contains("gfx11")) {
+    if (!hsacoFeatures.empty())
+      hsacoFeatures += ",";
+    hsacoFeatures += "-real-true16";
+  }
+  auto hsaco = makeHSACO(amdgcnAsm, triple, arch, hsacoFeatures);
   if (!hsaco) {
     return failure();
   }
