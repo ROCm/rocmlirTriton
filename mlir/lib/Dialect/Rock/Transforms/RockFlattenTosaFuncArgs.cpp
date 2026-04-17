@@ -24,8 +24,10 @@
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/Dialect/Tosa/Utils/ConversionUtils.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir {
@@ -39,73 +41,81 @@ using namespace mlir;
 
 namespace {
 
-struct RockFlattenTosaFuncArgs
-    : public rock::impl::RockFlattenTosaFuncArgsPassBase<
-          RockFlattenTosaFuncArgs> {
-  void runOnOperation() override {
-    func::FuncOp func = getOperation();
-    if (func.isExternal())
-      return;
+static void flattenFuncArgs(func::FuncOp func) {
+  if (func.isExternal())
+    return;
 
-    Block &entryBlock = func.front();
-    bool changed = false;
+  Block &entryBlock = func.front();
+  bool changed = false;
 
-    // --- Flatten arguments ---
-    ImplicitLocOpBuilder builder(func.getLoc(), &entryBlock,
-                                 entryBlock.begin());
-    for (unsigned i = 0; i < entryBlock.getNumArguments(); ++i) {
-      BlockArgument arg = entryBlock.getArgument(i);
-      auto tensorTy = dyn_cast<RankedTensorType>(arg.getType());
+  // --- Flatten arguments ---
+  ImplicitLocOpBuilder builder(func.getLoc(), &entryBlock, entryBlock.begin());
+  for (unsigned i = 0; i < entryBlock.getNumArguments(); ++i) {
+    BlockArgument arg = entryBlock.getArgument(i);
+    auto tensorTy = dyn_cast<RankedTensorType>(arg.getType());
+    if (!tensorTy || tensorTy.getRank() <= 1)
+      continue;
+
+    int64_t numElements = tensorTy.getNumElements();
+    auto flatTy =
+        RankedTensorType::get({numElements}, tensorTy.getElementType());
+    arg.setType(flatTy);
+
+    Value shapeValue = tosa::getTosaConstShape(builder, tensorTy.getShape());
+    auto reshapeOp =
+        tosa::ReshapeOp::create(builder, tensorTy, arg, shapeValue);
+    arg.replaceAllUsesExcept(reshapeOp.getResult(), reshapeOp.getOperation());
+    changed = true;
+  }
+
+  // --- Flatten return values ---
+  func.walk([&](func::ReturnOp ret) {
+    ImplicitLocOpBuilder retBuilder(ret.getLoc(), ret);
+    for (unsigned i = 0; i < ret.getNumOperands(); ++i) {
+      Value val = ret.getOperand(i);
+      auto tensorTy = dyn_cast<RankedTensorType>(val.getType());
       if (!tensorTy || tensorTy.getRank() <= 1)
         continue;
 
       int64_t numElements = tensorTy.getNumElements();
       auto flatTy =
           RankedTensorType::get({numElements}, tensorTy.getElementType());
-      arg.setType(flatTy);
-
-      Value shapeValue = tosa::getTosaConstShape(builder, tensorTy.getShape());
-      auto reshapeOp =
-          tosa::ReshapeOp::create(builder, tensorTy, arg, shapeValue);
-      arg.replaceAllUsesExcept(reshapeOp.getResult(), reshapeOp.getOperation());
+      Value shapeValue =
+          tosa::getTosaConstShape(retBuilder, ArrayRef<int64_t>{numElements});
+      auto flattened =
+          tosa::ReshapeOp::create(retBuilder, flatTy, val, shapeValue);
+      ret.setOperand(i, flattened);
       changed = true;
     }
+  });
 
-    // --- Flatten return values ---
+  // --- Update function signature ---
+  if (changed) {
+    SmallVector<Type> argTypes;
+    for (BlockArgument arg : entryBlock.getArguments())
+      argTypes.push_back(arg.getType());
+
+    SmallVector<Type> resultTypes;
     func.walk([&](func::ReturnOp ret) {
-      ImplicitLocOpBuilder retBuilder(ret.getLoc(), ret);
-      for (unsigned i = 0; i < ret.getNumOperands(); ++i) {
-        Value val = ret.getOperand(i);
-        auto tensorTy = dyn_cast<RankedTensorType>(val.getType());
-        if (!tensorTy || tensorTy.getRank() <= 1)
-          continue;
-
-        int64_t numElements = tensorTy.getNumElements();
-        auto flatTy =
-            RankedTensorType::get({numElements}, tensorTy.getElementType());
-        Value shapeValue =
-            tosa::getTosaConstShape(retBuilder, ArrayRef<int64_t>{numElements});
-        auto flattened =
-            tosa::ReshapeOp::create(retBuilder, flatTy, val, shapeValue);
-        ret.setOperand(i, flattened);
-        changed = true;
-      }
+      if (resultTypes.empty())
+        resultTypes.append(ret.getOperandTypes().begin(),
+                           ret.getOperandTypes().end());
     });
 
-    // --- Update function signature ---
-    if (changed) {
-      SmallVector<Type> argTypes;
-      for (BlockArgument arg : entryBlock.getArguments())
-        argTypes.push_back(arg.getType());
+    func.setType(FunctionType::get(func.getContext(), argTypes, resultTypes));
+  }
+}
 
-      SmallVector<Type> resultTypes;
-      func.walk([&](func::ReturnOp ret) {
-        if (resultTypes.empty())
-          resultTypes.append(ret.getOperandTypes().begin(),
-                             ret.getOperandTypes().end());
-      });
+struct RockFlattenTosaFuncArgs
+    : public rock::impl::RockFlattenTosaFuncArgsPassBase<
+          RockFlattenTosaFuncArgs> {
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
 
-      func.setType(FunctionType::get(func.getContext(), argTypes, resultTypes));
+    for (auto func : module.getOps<func::FuncOp>()) {
+      if (!SymbolTable::symbolKnownUseEmpty(func, module))
+        continue;
+      flattenFuncArgs(func);
     }
   }
 };

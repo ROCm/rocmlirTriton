@@ -247,8 +247,9 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
                                   const rock::HighlevelOptions &options) {
   bool noRock = options.disableRock;
 
+  pm.addPass(rock::createRockFlattenTosaFuncArgsPass());
+
   auto &funcPm = pm.nest<func::FuncOp>();
-  funcPm.addPass(rock::createRockFlattenTosaFuncArgsPass());
 
   // TOSA conversion to rock
   if (!noRock) {

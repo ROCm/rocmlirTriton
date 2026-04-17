@@ -531,14 +531,14 @@ def RockTosaToElementwisePass
 }
 
 def RockFlattenTosaFuncArgsPass
-    : Pass<"rock-flatten-tosa-func-args", "::mlir::func::FuncOp"> {
+    : Pass<"rock-flatten-tosa-func-args", "::mlir::ModuleOp"> {
   let summary = "Flatten N-D tensor function arguments and results to 1-D";
   let description = [{
     Downstream passes require all function boundary tensors to be 1-D.
     The MIGraphX-to-TOSA conversion already produces 1-D boundaries, but
-    hand-written TOSA test kernels may have N-D tensor arguments and results.
+    hand-written TOSA test functions may have N-D tensor arguments and results.
 
-    This pass rewrites each kernel function so that:
+    This pass rewrites each function so that:
     - Every argument of type tensor<AxBx...xT> becomes tensor<(A*B*...)xT>,
       with a tosa.reshape inserted at the top of the entry block to recover
       the original N-D shape for use inside the function body.
@@ -546,8 +546,10 @@ def RockFlattenTosaFuncArgsPass
       func.return, and the function signature is updated accordingly.
 
     Functions whose boundaries are already 1-D (or scalar) are left unchanged.
+    Functions that have symbol uses within the module are skipped to avoid
+    breaking call sites.
   }];
-  let dependentDialects = ["tosa::TosaDialect"];
+  let dependentDialects = ["func::FuncDialect", "tosa::TosaDialect"];
 }
 
 def RockLowerStoresPass : Pass<"rock-lower-stores", "::mlir::func::FuncOp"> {
