@@ -58,11 +58,14 @@ Generate a diff between the old and new commits for the key files that need sync
 
 ```bash
 cd external/triton
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/backend/compiler.py > compiler.py.diff
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/python/triton_amd.cc > triton_amd.cc.diff
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- python/src/llvm.cc > llvm.cc.diff
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp > AccelerateAMDMatmul.cpp.diff
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h > TargetUtils.h.diff
+for f in \
+    third_party/amd/backend/compiler.py \
+    third_party/amd/python/triton_amd.cc \
+    python/src/llvm.cc \
+    third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp \
+    third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h; do
+  git diff ${OLD_COMMIT}..${NEW_COMMIT} --function-context -- "$f" > "$(basename "$f").diff"
+done
 ```
 
 ## Step 5: Synchronize C++ Implementations
