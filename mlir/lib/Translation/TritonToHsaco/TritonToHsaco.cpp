@@ -223,7 +223,17 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   std::string denormalMode = allowFlushDenorm ? "preserve-sign" : "ieee";
   kernelFn->addFnAttr("denormal-fp-math-f32", denormalMode);
 
-  kernelFn->addFnAttr("target-features", features);
+  // Only stamp `target-features` on the kernel when the caller actually has
+  // something to override with (e.g. `+xnack` for asan). Stamping an empty
+  // override causes LLVM's per-function subtarget lookup to key off a bare
+  // `"target-features"=""` attribute and silently *ignore* the TM-level
+  // `-mattr` we later set on `tmAsm` (which is where `make_amdgcn` adds
+  // `-real-true16` for gfx11 to work around the `copyPhysReg` assertion).
+  // Upstream Triton only touches `target-features` in the asan path (see
+  // `add_fn_target_feature("+xnack")` in compiler.py); mirror that.
+  if (!features.empty()) {
+    kernelFn->addFnAttr("target-features", features);
+  }
   // ASan support
   if (enableAsan) {
     kernelFn->addFnAttr(llvm::Attribute::SanitizeAddress);
@@ -729,13 +739,25 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // disable_print_inline in compiler.py
   disablePrintInline(*llvmModule);
 
-  // make_amdgcn (compiler.py lines 452-473)
-  // Get features for assembly
+  // make_amdgcn (compiler.py lines 452-473).
+  //
+  // Build the codegen-only feature list. On gfx11 we must explicitly disable
+  // `real-true16`; with it enabled (the subtarget default) WMMA result paths
+  // hit a `SIInstrInfo::copyPhysReg` assertion during Post-RA pseudo
+  // expansion. Mirrors `make_amdgcn` in upstream Triton's compiler.py:
+  //
+  //   features = '-real-true16' if 'gfx11' in options.arch else ''
+  //
+  // Feature strings are comma-separated, so splice in a ',' when `features`
+  // is non-empty (e.g. `+xnack` for asan) to avoid producing the malformed
+  // `"+xnack-real-true16"`.
   std::string asmFeatures(features);
   if (arch.contains("gfx11")) {
+    if (!asmFeatures.empty())
+      asmFeatures.push_back(',');
     asmFeatures += "-real-true16";
   }
-  // Recreate target machine with proper features for codegen
+  // Recreate target machine with proper features for codegen.
   auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
                                    options.enableFpFusion);
   if (!tmAsm) {
