@@ -48,6 +48,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 
+#include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -71,7 +72,6 @@ using namespace mlir::triton;
 // @triton//:third_party/amd/backend/compiler.py
 static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::createInlinerPass());
-  pm->addPass(mlir::triton::createTritonRewriteTensorPointer());
 
   if (rock::supportsTDM(arch)) {
     pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
@@ -132,6 +132,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   bool useAsyncCopy = isAsyncCopyEnabled(options.arch);
   bool useBlockPingpong = isPingpongScheduleEnabled(options.arch, useAsyncCopy);
 
+  pm->addPass(mlir::createTritonAMDGPUOptimizeDescriptorEncoding());
   pm->addPass(mlir::createTritonAMDGPUScheduleLoops({options.numStages}));
   pm->addPass(
       mlir::createTritonAMDGPUPipeline({useAsyncCopy, useBlockPingpong}));
@@ -157,13 +158,15 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
 
-  // TODO(roctriton): useBufferOps
+  // TODO(rocmlirTriton): if knobs.amd.use_buffer_ops
     pm->addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonAMDGPUCanonicalizePointers());
     pm->addPass(mlir::createCanonicalizerPass());
     pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
         {options.arch, /*allowBufferAtomics*/true,
         /*analyzeSmallTensorOfst*/false}));
+    pm->addNestedPass<mlir::triton::FuncOp>(
+        mlir::createTritonAMDGPUOptimizeBufferOpPtr());
 
   pm->addPass(mlir::createTritonAMDFoldTrueCmpI());
   pm->addNestedPass<mlir::triton::FuncOp>(
@@ -195,6 +198,11 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   pm->addPass(mlir::createConvertIndexToLLVMPass());
 
   pm->addPass(mlir::triton::createAllocateAMDGPUSharedMemory());
+  pm->addPass(mlir::triton::gpu::createTritonGPUGlobalScratchAllocationPass());
+  // Upstream calls this pass twice, between
+  // HIPBackend.instrumentation.patch("ttgpuir_to_llvmir", ...).
+  // Because we do not implement the instrumentation thing (see
+  // docs/bump_triton_version.md Step 6), a single call is sufficient.
 
   // ## __HIP_FTZ is used to control the denorm flushing behavior of exp2 op as
   // follows:
