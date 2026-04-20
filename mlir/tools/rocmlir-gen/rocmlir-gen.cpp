@@ -1386,12 +1386,39 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
     gpu::MemcpyOp::create(b, loc, TypeRange{}, ValueRange{gpuAlloc, arg});
   }
 
+  // Snapshot the initial state of each output buffer so every iteration of
+  // the kernel-repeats loop can be restored to it. Without this, kernels
+  // that write outputs via atomic_add (e.g. Split-K GEMM, wrw atomic conv)
+  // accumulate `kernelRepeats` copies of the result on top of the prefilled
+  // init value, breaking -pv verification and skewing -ph performance
+  // measurement.
+  SmallVector<Value, 2> outSnapshots;
+  if (kernelRepeats > 1) {
+    for (int32_t outIdx : outIndices) {
+      auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
+      auto snapAllocOp = gpu::AllocOp::create(
+          b, loc, outMemrefType, Type(), /*asyncDependencies=*/ValueRange{},
+          /*dynamicSizes=*/ValueRange{}, /*symbolOperands=*/ValueRange{});
+      Value snap = snapAllocOp.getResult(0);
+      gpu::MemcpyOp::create(b, loc, TypeRange{},
+                            ValueRange{snap, gpuMem[outIdx]});
+      outSnapshots.push_back(snap);
+    }
+  }
+
   // Emit kernel function call, repeating it if needed.
-  // We assume that the repeated atomic add usages in a wrw kernel will not
-  // substantially impact performance as the result becomes large
-  auto emitWrappedCall = [&kernels, &gpuMem,
-                          &outIndices](OpBuilder &b, Location loc,
-                                       Value ignoredIv, ValueRange noArgs) {
+  auto emitWrappedCall = [&kernels, &gpuMem, &outIndices, &outSnapshots](
+                             OpBuilder &b, Location loc, Value ignoredIv,
+                             ValueRange noArgs) {
+    // Inside the kernel-repeats loop, restore each output buffer to its
+    // pre-loop state so every iteration starts from the same initial state.
+    if (ignoredIv) {
+      for (size_t i = 0, e = outIndices.size(); i < e; ++i) {
+        gpu::MemcpyOp::create(
+            b, loc, TypeRange{},
+            ValueRange{gpuMem[outIndices[i]], outSnapshots[i]});
+      }
+    }
     for (const auto &kernel : kernels) {
       // Check if kernel expects tensor arguments
       // Use kernel.params which stores the function argument types
@@ -1435,6 +1462,10 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
                        /*initArgs=*/{}, emitWrappedCall);
   } else {
     emitWrappedCall(b, loc, nullptr, {});
+  }
+
+  for (Value snap : outSnapshots) {
+    gpu::DeallocOp::create(b, loc, TypeRange{}, ValueRange{snap});
   }
 
   for (auto pair : llvm::enumerate(kernels[0].params)) {

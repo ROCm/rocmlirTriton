@@ -66,10 +66,6 @@ from perfRunner import (
 # =============================================================================
 
 MLIR_N_REPEATS = 10
-# rocmlir-gen wraps the GPU kernel in a loop when --kernel-repeats > 1. Split-K
-# GEMM uses atomic_add on the output buffer; each repeat accumulates another
-# full result (e.g. 10 repeats → ~10× vs reference). Verification must use 1.
-VERIFY_KERNEL_REPEATS = 1
 WARMUP_ITERATIONS = 1
 SLEEP_US = 100  # 0.1 ms
 
@@ -1145,7 +1141,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
     config.set_perfconfig(perfconfig)
 
     command_line_options = config.generate_mlir_driver_commandline(
-        options.rocmlir_gen_flags, kernel_repeats=VERIFY_KERNEL_REPEATS)
+        options.rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS)
     rocmlir_gen_command = [
         paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary'
     ] + verify_mode_flags(options.verify_mode).split() + command_line_options.split()
@@ -1378,10 +1374,10 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                              exit_code=tuning_driver.returncode,
                              gpu_id=gpu_id))
             return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
-        else:
+        # else:
             # Log any stderr output from tuning driver because it may contain warnings
-            if tuning_errors.strip():
-                gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
+            # if tuning_errors.strip():
+                # gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
 
         winning_config, max_tflops, entries = find_best_perfconfig(tuning_output.splitlines(),
                                                                    config, paths, options, gpu_id)
