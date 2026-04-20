@@ -29,8 +29,10 @@
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 
+#include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Config/Targets.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
@@ -67,14 +69,13 @@
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
-#include "mlir/Pass/Pass.h"
 
 #include <array>
 #include <mutex>
 #include <unordered_set>
 
 // LLD for linking
-#if MLIR_ENABLE_ROCM_CONVERSIONS
+#if LLVM_HAS_AMDGPU_TARGET
 #include "lld/Common/Driver.h"
 LLD_HAS_DRIVER(elf)
 #endif
@@ -498,7 +499,7 @@ std::optional<SmallVector<char, 0>> assembleAMDGCN(StringRef assembly,
 /// Invoke LLD to link object file to HSACO - matches triton_amd.cc lldInvoke
 static std::optional<std::string> lldInvoke(const char *inPath,
                                             const char *outPath) {
-#if MLIR_ENABLE_ROCM_CONVERSIONS
+#if LLVM_HAS_AMDGPU_TARGET
   // Workaround: Disable parallelism to avoid hangs caused by LLVM's thread pool
   // when the following code is executed in a forked child process.
   // Context: lld::elf::LinkerDriver::link uses parallelFor which uses the
@@ -531,7 +532,7 @@ static std::optional<std::string> lldInvoke(const char *inPath,
 
 /// Link object file to HSACO using LLD (amd.link_hsaco)
 std::optional<SmallVector<char, 0>> linkHSACO(ArrayRef<char> objectCode) {
-#if MLIR_ENABLE_ROCM_CONVERSIONS
+#if LLVM_HAS_AMDGPU_TARGET
   int tempObjFd = -1;
   llvm::SmallString<128> tempObjFilename;
   if (llvm::sys::fs::createTemporaryFile("kernel", "o", tempObjFd,
@@ -571,8 +572,8 @@ std::optional<SmallVector<char, 0>> linkHSACO(ArrayRef<char> objectCode) {
   StringRef buffer = (*hsacoFile)->getBuffer();
   return SmallVector<char, 0>(buffer.begin(), buffer.end());
 #else
-  llvm::errs() << "ROCM conversions not enabled. Rebuild with "
-                  "MLIR_ENABLE_ROCM_CONVERSIONS=1\n";
+  llvm::errs() << "AMDGPU target not built. Rebuild LLVM with AMDGPU in "
+                  "LLVM_TARGETS_TO_BUILD\n";
   return std::nullopt;
 #endif
 }
