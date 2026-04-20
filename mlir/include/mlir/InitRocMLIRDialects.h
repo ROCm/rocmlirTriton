@@ -240,7 +240,6 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::proton::gpu::registerConvertProtonNvidiaGPUToLLVM();
   mlir::triton::proton::gpu::registerConvertProtonAMDGPUToLLVM();
   mlir::triton::proton::gpu::registerAllocateProtonSharedMemoryPass();
-  mlir::triton::proton::gpu::registerAllocateProtonGlobalScratchBufferPass();
   mlir::triton::proton::gpu::registerScheduleBufferStorePass();
   mlir::triton::proton::gpu::registerAddSchedBarriersPass();
 
@@ -248,15 +247,10 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   if (std::string filename =
           mlir::triton::tools::getStrEnv("TRITON_PASS_PLUGIN_PATH");
       !filename.empty()) {
-
-    TritonPlugin TP(filename);
-    std::vector<const char *> passNames;
-    if (auto result = TP.getPassHandles(passNames); !result)
-      llvm::report_fatal_error(result.takeError());
-
-    for (const char *passName : passNames)
-      if (auto result = TP.registerPass(passName); !result)
-        llvm::report_fatal_error(result.takeError());
+    auto plugin = mlir::triton::plugin::TritonPlugin::load(filename);
+    if (!plugin)
+      llvm::report_fatal_error(plugin.takeError());
+    plugin->registerPasses();
   }
 
   registry.insert<
