@@ -38,8 +38,10 @@
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/Support/WalkResult.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/Support/Debug.h"
 #include <optional>
@@ -694,12 +696,18 @@ static FailureOr<int64_t> computeSubByteStrideFactor(
 ///
 /// For a tile of shape [D, K], the shift at position (d, k) is determined by
 /// which sub-byte (lower or upper bits) that tile element corresponds to.
-/// The formula is:  shift = ((pos / strideFactor) % 2) * 4
+/// The base formula is:  shift = ((pos / strideFactor) % 2) * 4
 /// where `pos` is the position along `loadAxisIdx` (0 for D, 1 for K).
 ///
 /// The constant is tagged with a "rock.sub_byte_shift" dictionary attribute
 /// containing {axis, halfPeriod, v0, v1} so that RockToTTIR can lower it to
 /// Triton-native ops without pattern-matching the dense blob.
+///
+/// This static path is only valid when `strideFactor < axisLen`, i.e. the
+/// nibble alternation can be expressed entirely within a single tile.  When
+/// `strideFactor >= axisLen` the in-tile pattern is degenerate (all zeros)
+/// and the alternation must be driven by the outer K-loop induction variable;
+/// that case is handled separately by `buildSubByteShiftDynamic`.
 static Value buildSubByteShiftConstant(OpBuilder &builder, Location loc,
                                        ArrayRef<int64_t> tileShape,
                                        RankedTensorType i8TileType,
@@ -716,13 +724,71 @@ static Value buildSubByteShiftConstant(OpBuilder &builder, Location loc,
   auto constOp = arith::ConstantOp::create(
       builder, loc, DenseElementsAttr::get(i8TileType, shiftValues));
 
-  constOp->setAttr("rock.sub_byte_shift", builder.getDictionaryAttr({
+  SmallVector<NamedAttribute> attrs = {
       builder.getNamedAttr("axis", builder.getI64IntegerAttr(loadAxisIdx)),
-      builder.getNamedAttr("halfPeriod", builder.getI64IntegerAttr(strideFactor)),
+      builder.getNamedAttr("halfPeriod",
+                           builder.getI64IntegerAttr(strideFactor)),
       builder.getNamedAttr("v0", builder.getI8IntegerAttr(0)),
       builder.getNamedAttr("v1", builder.getI8IntegerAttr(4)),
-  }));
+  };
+  constOp->setAttr("rock.sub_byte_shift", builder.getDictionaryAttr(attrs));
   return constOp;
+}
+
+/// Build a loop-variant tile of nibble-shift values for the case where
+/// `strideFactor` is at least the tile axis length.  In that regime every
+/// element in a single tile shares the *same* shift (low or high nibble),
+/// determined purely by the enclosing K-loop iv:
+///
+///   shift = ((iv * tileExtent) / strideFactor) % 2 * 4
+///
+/// The result is `tt.splat`-broadcast to a `tensor<DxKxi8>`.  Because the
+/// result has a real SSA dependency on the iv it cannot be hoisted out of the
+/// scf.for by LICM/canonicalization, which is why we emit the dynamic ops
+/// here instead of relying on the marker-and-late-lower mechanism used for
+/// the static case.
+static FailureOr<Value> buildSubByteShiftDynamic(OpBuilder &builder,
+                                                 Location loc,
+                                                 RankedTensorType i8TileType,
+                                                 int64_t strideFactor,
+                                                 int64_t tileExtent,
+                                                 Operation *anchor) {
+  auto forOp = anchor->getParentOfType<scf::ForOp>();
+  if (!forOp)
+    return emitError(loc, "sub-byte load with broadcast period >= tile extent "
+                          "must be inside an scf.for whose iv is the K-loop "
+                          "counter");
+
+  Type i32 = builder.getI32Type();
+  Value iv = forOp.getInductionVar();
+  if (iv.getType() != i32) {
+    auto ivIntTy = dyn_cast<IntegerType>(iv.getType());
+    if (!ivIntTy)
+      return emitError(loc, "sub-byte K-loop iv must be an integer; got ")
+             << iv.getType();
+    if (ivIntTy.getWidth() > 32)
+      iv = arith::TruncIOp::create(builder, loc, i32, iv);
+    else
+      iv = arith::ExtSIOp::create(builder, loc, i32, iv);
+  }
+
+  Value tileExtentVal = arith::ConstantOp::create(
+      builder, loc, builder.getI32IntegerAttr(tileExtent));
+  Value origin = arith::MulIOp::create(builder, loc, iv, tileExtentVal);
+  Value halfPeriodVal = arith::ConstantOp::create(
+      builder, loc, builder.getI32IntegerAttr(strideFactor));
+  Value div = arith::DivUIOp::create(builder, loc, origin, halfPeriodVal);
+  Value two = arith::ConstantOp::create(builder, loc,
+                                        builder.getI32IntegerAttr(2));
+  Value mod = arith::RemUIOp::create(builder, loc, div, two);
+  Value four = arith::ConstantOp::create(builder, loc,
+                                         builder.getI32IntegerAttr(4));
+  Value shiftI32 = arith::MulIOp::create(builder, loc, mod, four);
+  Value shiftI8 =
+      arith::TruncIOp::create(builder, loc, builder.getI8Type(), shiftI32);
+  Value shifts =
+      triton::SplatOp::create(builder, loc, i8TileType, shiftI8);
+  return shifts;
 }
 
 /// Replace arith.extui / arith.extsi users of a loaded i8 tile with sub-byte
@@ -821,9 +887,25 @@ static LogicalResult processSubByteInput(OpBuilder &builder, MLIRContext *ctx,
   if (failed(strideFactorOrErr))
     return failure();
   int64_t strideFactor = *strideFactorOrErr;
-  Value shifts = buildSubByteShiftConstant(builder, loc, tileShape,
-                                           i8TileType, loadAxisIdx,
-                                           strideFactor);
+
+  // When strideFactor exceeds the tile axis extent, the in-tile shift pattern
+  // is degenerate (always 0) and the nibble alternation must be driven by the
+  // outer K-loop iv.  Emit a loop-variant `tt.splat` of an arith-computed
+  // scalar shift inside the loop body so that LICM cannot hoist it out (which
+  // would silently revert to always-low-nibble behavior).
+  Value shifts;
+  int64_t axisLen = tileShape[loadAxisIdx];
+  if (strideFactor >= axisLen) {
+    builder.setInsertionPoint(input.loadOp);
+    auto dynamicShiftsOrErr = buildSubByteShiftDynamic(
+        builder, loc, i8TileType, strideFactor, axisLen, input.loadOp);
+    if (failed(dynamicShiftsOrErr))
+      return failure();
+    shifts = *dynamicShiftsOrErr;
+  } else {
+    shifts = buildSubByteShiftConstant(builder, loc, tileShape, i8TileType,
+                                       loadAxisIdx, strideFactor);
+  }
   Value mask = arith::ConstantOp::create(
       builder, loc,
       DenseElementsAttr::get(i8TileType, builder.getI8IntegerAttr(15)));

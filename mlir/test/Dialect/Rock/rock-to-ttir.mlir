@@ -550,3 +550,4 @@ func.func @test_non_tagged_constant_unchanged(%arg0: tensor<4x4xi8>) -> tensor<4
   %result = arith.shrui %arg0, %cst : tensor<4x4xi8>
   return %result : tensor<4x4xi8>
 }
+

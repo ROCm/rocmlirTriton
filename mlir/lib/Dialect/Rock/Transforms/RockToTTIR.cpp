@@ -27,7 +27,6 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -439,11 +438,18 @@ struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
 /// Triton-native ops that compute the same repeating pattern dynamically.
 ///
 /// The attribute (set by buildSubByteShiftConstant in LegalizeFloatTypes)
-/// carries {axis, halfPeriod, v0, v1}, so no pattern scanning is needed.
+/// carries {axis, halfPeriod, v0, v1}.  No pattern scanning of the dense blob
+/// is needed.
 ///
 /// The generated IR computes:
-///   ((make_range / halfPeriod) % 2) * (v1 - v0) + v0
+///   pos    = make_range(axisLen)
+///   result = ((pos / halfPeriod) % 2) * (v1 - v0) + v0
 /// then expand_dims + broadcast to the original 2-D shape.
+///
+/// Note: this path only handles the static, in-tile sub-byte alternation
+/// (halfPeriod < tile axis length).  When the alternation depends on the
+/// outer K-loop iv, LegalizeFloatTypes emits the loop-variant shift directly
+/// instead of going through this marker mechanism (so LICM can't hoist it).
 static bool lowerSubByteShiftConstant(arith::ConstantOp constOp) {
   auto dictAttr = constOp->getAttrOfType<DictionaryAttr>("rock.sub_byte_shift");
   if (!dictAttr)
@@ -466,18 +472,17 @@ static bool lowerSubByteShiftConstant(arith::ConstantOp constOp) {
   OpBuilder builder(constOp);
   Location loc = constOp.getLoc();
 
-  // Build: ((range / halfPeriod) % 2) * (v1 - v0) + v0
   auto i32RangeType = RankedTensorType::get({axisLen}, builder.getI32Type());
-  Value range =
+  Value pos =
       triton::MakeRangeOp::create(builder, loc, i32RangeType, 0, axisLen);
 
-  Value divided = range;
+  Value divided = pos;
   if (halfPeriod > 1) {
     Value hp = arith::ConstantOp::create(
         builder, loc,
         DenseElementsAttr::get(i32RangeType,
                                builder.getI32IntegerAttr(halfPeriod)));
-    divided = arith::DivUIOp::create(builder, loc, range, hp);
+    divided = arith::DivUIOp::create(builder, loc, pos, hp);
   }
 
   Value two = arith::ConstantOp::create(
