@@ -249,6 +249,7 @@ bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Type type) {
   Type elem = getElementTypeOrSelf(type);
   if (elem.isF32()) {
     switch (isaFamily) {
+    case ISAFamily::GCN5_1:
     case ISAFamily::CDNA1:
     case ISAFamily::CDNA2:
     case ISAFamily::CDNA3:
@@ -349,6 +350,9 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   case ISAFamily::GFX1250:
     return 256;
     break;
+  case ISAFamily::GCN5_1:
+    return 60;
+    break;
   default:
     return 1;
   }
@@ -371,6 +375,7 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
   switch (isaFamily) {
+  case ISAFamily::GCN5_1:
   case ISAFamily::CDNA1:
   case ISAFamily::CDNA2:
   case ISAFamily::CDNA3:
