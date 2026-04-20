@@ -176,7 +176,7 @@ def Rock_ReduceOp
   let summary = "Axes-wide reduction operation";
   let hasVerifier = 1;
   let assemblyFormat = [{
-    `` $reduceMethod $in attr-dict `:` type($in) `->` type($result)
+    $reduceMethod $in attr-dict `:` type($in) `->` type($result)
   }];
 }
 
