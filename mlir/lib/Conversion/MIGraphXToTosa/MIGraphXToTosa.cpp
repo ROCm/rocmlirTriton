@@ -114,9 +114,16 @@ static Value createCastOp(PatternRewriter &rewriter, Location loc,
                                  ROCK_CUSTOMOP_DOMAIN_NAME, "", input)
               .getResult(0);
   } else if (isa<FloatType>(inputType) && isa<IntegerType>(resElementType)) {
-    // MIGraphX uses truncation (no rounding) for float-to-int casts.
-    // Use a custom op so both GPU and CPU paths lower identically,
-    // bypassing upstream tosa-to-linalg which inserts round-to-nearest-even.
+    // Float -> signed int. (Float -> unsigned int is already handled by the
+    // unsigned_cast branch above, since the `or` there catches any unsigned
+    // endpoint first; that path also dispatches to a clamped fptoui in its
+    // downstream lowering.) MIGraphX uses truncation (no rounding) for
+    // float->int casts, but the custom op's lowering also clamps to the
+    // destination integer range before truncating, so out-of-range / inf
+    // inputs don't produce poison values (saturating-then-truncating, not a
+    // plain C-style cast). Use a custom op so both GPU and CPU paths lower
+    // identically, bypassing upstream tosa-to-linalg which would emit
+    // round-to-nearest-even.
     res = tosa::CustomOp::create(rewriter, loc, resType,
                                  ROCK_CUSTOMOP_FP_TO_INT_CAST,
                                  ROCK_CUSTOMOP_DOMAIN_NAME, "", input)

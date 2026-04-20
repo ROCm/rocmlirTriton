@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -395,121 +396,6 @@ struct ClampConverter : public OpRewritePattern<tosa::ClampOp> {
   }
 };
 
-/// Convert a floating-point tensor to an integer tensor with saturation
-/// (clamping) to the destination type's representable range, matching
-/// MIGraphX's reference convert semantics (see op/convert.hpp).
-///
-/// Three cases are handled depending on the relationship between the float
-/// type's precision and the integer type's width:
-///   Case 1: Int range exceeds float exponent range -> cmp+select for inf
-///   Case 2: Float mantissa can represent int max exactly -> full FP clamp
-///   Case 3: Float exponent sufficient but mantissa too narrow -> mixed
-static Value createClampedFPToInt(PatternRewriter &rewriter, Location loc,
-                                  Value input, ShapedType dstShapedTy,
-                                  bool isUnsigned) {
-  auto srcShapedTy = cast<ShapedType>(input.getType());
-  Type srcTy = srcShapedTy.getElementType();
-  Type dstTy = dstShapedTy.getElementType();
-  auto srcFloatTy = cast<FloatType>(srcTy);
-  unsigned dstWidth = cast<IntegerType>(dstTy).getWidth();
-  const auto &fltSemantics = srcFloatTy.getFloatSemantics();
-
-  auto splatFloat = [&](APFloat v) -> Value {
-    return arith::ConstantOp::create(
-        rewriter, loc,
-        DenseElementsAttr::get(srcShapedTy,
-                               rewriter.getFloatAttr(srcTy, v)));
-  };
-  auto splatFloatFromDouble = [&](double v) -> Value {
-    return arith::ConstantOp::create(
-        rewriter, loc,
-        DenseElementsAttr::get(srcShapedTy,
-                               rewriter.getFloatAttr(srcTy, v)));
-  };
-  auto splatInt = [&](APInt v) -> Value {
-    return arith::ConstantOp::create(
-        rewriter, loc,
-        DenseElementsAttr::get(dstShapedTy,
-                               rewriter.getIntegerAttr(dstTy, v)));
-  };
-  auto fpToInt = [&](Value v) -> Value {
-    if (isUnsigned)
-      return arith::FPToUIOp::create(rewriter, loc, dstShapedTy, v);
-    return arith::FPToSIOp::create(rewriter, loc, dstShapedTy, v);
-  };
-
-  APInt intMin = isUnsigned ? APInt::getZero(dstWidth)
-                            : APInt::getSignedMinValue(dstWidth);
-  APInt intMax = isUnsigned ? APInt::getMaxValue(dstWidth)
-                            : APInt::getSignedMaxValue(dstWidth);
-
-  // Case 1: Neither int min nor int max can be represented in the
-  // floating-point type due to too short exponent range. All finite
-  // float values are representable in the integer type; fix up
-  // infinities with cmp + select.
-  if (static_cast<int>(dstWidth) - 1 >
-      APFloat::semanticsMaxExponent(fltSemantics)) {
-    Value posInf = splatFloat(APFloat::getInf(fltSemantics));
-    auto overflow = arith::CmpFOp::create(
-        rewriter, loc, arith::CmpFPredicate::UEQ, input, posInf);
-
-    if (isUnsigned) {
-      Value zeroF = splatFloatFromDouble(0.0);
-      Value clampedPos =
-          arith::MaximumFOp::create(rewriter, loc, input, zeroF);
-      Value conv = fpToInt(clampedPos);
-      return arith::SelectOp::create(rewriter, loc, overflow,
-                                     splatInt(intMax), conv);
-    }
-    Value conv = fpToInt(input);
-    Value negInf =
-        splatFloat(APFloat::getInf(fltSemantics, /*Negative=*/true));
-    auto underflow = arith::CmpFOp::create(
-        rewriter, loc, arith::CmpFPredicate::UEQ, input, negInf);
-    Value maxClamped = arith::SelectOp::create(rewriter, loc, overflow,
-                                               splatInt(intMax), conv);
-    return arith::SelectOp::create(rewriter, loc, underflow,
-                                   splatInt(intMin), maxClamped);
-  }
-
-  // intMinFP is shared between cases 2 and 3.
-  double intMinDouble = isUnsigned
-                            ? static_cast<double>(intMin.getZExtValue())
-                            : static_cast<double>(intMin.getSExtValue());
-  Value intMinFP = splatFloatFromDouble(intMinDouble);
-
-  // Case 2: The mantissa has enough bits to represent int max exactly.
-  // Int min is also representable (0 for unsigned, or a power of two for
-  // signed). Clamp entirely in the floating-point domain, then convert.
-  unsigned requiredMantissa = isUnsigned ? dstWidth : dstWidth - 1;
-  if (srcFloatTy.getFPMantissaWidth() >= requiredMantissa) {
-    double intMaxDouble =
-        isUnsigned ? static_cast<double>(intMax.getZExtValue())
-                   : static_cast<double>(intMax.getSExtValue());
-    Value intMaxFP = splatFloatFromDouble(intMaxDouble);
-    Value hi = arith::MinimumFOp::create(rewriter, loc, input, intMaxFP);
-    Value clamped = arith::MaximumFOp::create(rewriter, loc, hi, intMinFP);
-    return fpToInt(clamped);
-  }
-
-  // Case 3: Exponent range is sufficient but mantissa is too narrow to
-  // represent int max exactly. Clamp the lower bound in the float domain,
-  // convert, then compare against int-max-plus-one (a power of two, always
-  // representable) to fix up overflow with a select.
-  double intMaxPlusOneDouble =
-      isUnsigned ? std::ldexp(1.0, dstWidth)
-                 : static_cast<double>(intMax.getSExtValue()) + 1.0;
-  Value intMaxPlusOneFP = splatFloatFromDouble(intMaxPlusOneDouble);
-
-  Value minClampedFP =
-      arith::MaximumFOp::create(rewriter, loc, input, intMinFP);
-  Value minClamped = fpToInt(minClampedFP);
-  auto overflow = arith::CmpFOp::create(
-      rewriter, loc, arith::CmpFPredicate::UGE, input, intMaxPlusOneFP);
-  return arith::SelectOp::create(rewriter, loc, overflow, splatInt(intMax),
-                                 minClamped);
-}
-
 // tosa.cast: dispatch to the appropriate arith cast op
 struct CastConverter : public OpRewritePattern<tosa::CastOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -564,9 +450,8 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
     // matching MIGraphX's saturating convert semantics.
     if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
       bool isUnsigned = cast<IntegerType>(dstTy).isUnsignedInteger();
-      Value result = createClampedFPToInt(
-          rewriter, op.getLoc(), op.getInput(),
-          cast<ShapedType>(op.getType()), isUnsigned);
+      Value result = rock::createClampedFPToInt(
+          rewriter, op.getLoc(), op.getInput(), dstTy, isUnsigned);
       rewriter.replaceOp(op, result);
       return success();
     }
@@ -636,8 +521,8 @@ struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
           rewriter.replaceOp(op, input);
         }
       } else {
-        Value result = createClampedFPToInt(rewriter, op.getLoc(), input,
-                                           outType, /*isUnsigned=*/true);
+        Value result = rock::createClampedFPToInt(
+            rewriter, op.getLoc(), input, outElemType, /*isUnsigned=*/true);
         rewriter.replaceOp(op, result);
       }
       return success();
@@ -645,8 +530,8 @@ struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
 
     if (op.getOperatorName() == ROCK_CUSTOMOP_FP_TO_INT_CAST) {
       Value input = op.getInputList()[0];
-      Value result = createClampedFPToInt(rewriter, op.getLoc(), input,
-                                         outType, /*isUnsigned=*/false);
+      Value result = rock::createClampedFPToInt(
+          rewriter, op.getLoc(), input, outElemType, /*isUnsigned=*/false);
       rewriter.replaceOp(op, result);
       return success();
     }
