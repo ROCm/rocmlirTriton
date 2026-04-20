@@ -164,10 +164,9 @@ struct RockLoadPtrOpRewritePattern
     Value ptrTensorOfPtrs =
         rock::CastToPtrOp::create(rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
-    // Create tt.load operation
-    // LoadOp takes: ptr, mask (optional), other (optional), boundaryCheck,
-    // padding, cache, evict, isVolatile Create attributes with default values
-    auto boundaryCheckAttr = rewriter.getDenseI32ArrayAttr({});
+    // Create tt.load operation.
+    // LoadOp takes: ptr, mask (optional), other (optional), cache, evict,
+    // isVolatile.
     auto cacheAttr = triton::CacheModifierAttr::get(
         rewriter.getContext(), triton::CacheModifier::NONE);
     auto evictAttr = triton::EvictionPolicyAttr::get(
@@ -176,8 +175,7 @@ struct RockLoadPtrOpRewritePattern
 
     Value result = triton::LoadOp::create(
         rewriter, loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
-        /*other=*/Value(), boundaryCheckAttr,
-        /*padding=*/nullptr, cacheAttr, evictAttr, isVolatileAttr);
+        /*other=*/Value(), cacheAttr, evictAttr, isVolatileAttr);
 
     // Replace the op with the loaded tensor result
     rewriter.replaceOp(op, result);
@@ -324,10 +322,9 @@ struct RockStorePtrOpRewritePattern
           triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else {
       // Default: StoreMethod::Set - regular store
-      // Signature: (ptr, value, mask, boundaryCheck, cache, evict)
+      // Signature: (ptr, value, mask, cache, evict)
       triton::StoreOp::create(
           rewriter, loc, ptrTensorOfPtrs, valueToStore, maskTensor,
-          /*boundaryCheck=*/ArrayRef<int32_t>{},
           /*cache=*/triton::CacheModifier::NONE,
           /*evict=*/triton::EvictionPolicy::NORMAL);
     }
