@@ -48,13 +48,26 @@ def RocmlirCustomTosaToLinalgPass : Pass<"rocmlir-custom-tosa-to-linalg", ""> {
 
 def RocmlirPromoteSoftmaxPrecisionPass
     : Pass<"rocmlir-promote-softmax-precision", ""> {
-  let summary = "Promote f16/bf16 softmax normalization to f32";
+  let summary =
+      "Promote f16/bf16 softmax/LSE numerator-sum and consumers to f32";
   let description = [{
-    Matches the TOSA softmax normalization pattern
-    (exp -> reduce_sum -> reciprocal -> mul) and promotes reduce_sum,
-    reciprocal, and the normalize-multiply to f32, compensating for the
-    CPU's single-pass reduction vs the GPU's blockwise reduction and
-    aligning normalization precision with the GPU's f32 final division.
+    Matches `tosa.reduce_sum` whose input is `tosa.exp` of an f16/bf16
+    tensor (the TOSA softmax/LSE numerator sum) and rewrites the sum in f32,
+    compensating for the CPU's single-pass reduction vs the GPU's blockwise
+    reduction.
+
+    Opportunistically promotes the two consumer chains to f32 as well so the
+    precision win is not immediately truncated:
+      * Softmax tail (`reciprocal -> mul(exp, reciprocal)`): rewritten end
+        to end in f32 with a single cast back to the original element type
+        before downstream consumers.
+      * LSE chain (`log` and the `log + add(max)` follow-up): rewritten in
+        f32 with the inputs cast up and the result cast back, mirroring the
+        GPU's `(log2(l) + m)*ln2` formulation that runs entirely in the
+        softmax-acc type.
+
+    Any other consumer of the matched `reduce_sum` falls back to a single
+    cast back to the original element type, so semantics are preserved.
   }];
   let dependentDialects = ["tosa::TosaDialect"];
 }
