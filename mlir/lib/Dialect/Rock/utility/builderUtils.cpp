@@ -224,8 +224,8 @@ Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
   // this NaN would erroneously match both the +inf and -inf overflow paths
   // in case 1, and would leak poison through case 2 entirely). NaN -> 0 also
   // matches MIGraphX's reference convert behaviour.
-  Value isNaN = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::UNO, input,
-                                      input);
+  Value isNaN =
+      arith::CmpFOp::create(b, loc, arith::CmpFPredicate::UNO, input, input);
   input = arith::SelectOp::create(b, loc, isNaN, fpConstD(0.0), input);
 
   // Case 1: int range exceeds the float exponent range, so every finite
@@ -240,8 +240,8 @@ Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
       isUnsigned ? static_cast<int>(dstWidth) : static_cast<int>(dstWidth) - 1;
   if (rangeExpThreshold > maxExp) {
     Value posInf = fpConst(APFloat::getInf(fltSemantics));
-    Value overflow = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::UEQ,
-                                           input, posInf);
+    Value overflow =
+        arith::CmpFOp::create(b, loc, arith::CmpFPredicate::UEQ, input, posInf);
     if (isUnsigned) {
       // Unsigned: clamp negatives (incl. -inf) to 0 before converting,
       // then patch up +inf to intMax.
@@ -252,19 +252,18 @@ Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
     }
     Value conv = fpToInt(input);
     Value negInf = fpConst(APFloat::getInf(fltSemantics, /*Negative=*/true));
-    Value underflow = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::UEQ,
-                                            input, negInf);
-    Value maxClamped = arith::SelectOp::create(b, loc, overflow,
-                                               intConst(intMax), conv);
+    Value underflow =
+        arith::CmpFOp::create(b, loc, arith::CmpFPredicate::UEQ, input, negInf);
+    Value maxClamped =
+        arith::SelectOp::create(b, loc, overflow, intConst(intMax), conv);
     return arith::SelectOp::create(b, loc, underflow, intConst(intMin),
                                    maxClamped);
   }
 
   // intMinFP is shared between cases 2 and 3 (intMin is always exactly
   // representable: 0 for unsigned, -2^(W-1) for signed).
-  double intMinDouble = isUnsigned
-                            ? static_cast<double>(intMin.getZExtValue())
-                            : static_cast<double>(intMin.getSExtValue());
+  double intMinDouble = isUnsigned ? static_cast<double>(intMin.getZExtValue())
+                                   : static_cast<double>(intMin.getSExtValue());
   Value intMinFP = fpConstD(intMinDouble);
 
   // Case 2: float mantissa is wide enough to represent intMax exactly.
