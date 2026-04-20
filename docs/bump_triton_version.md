@@ -81,11 +81,11 @@ The following tables map Python functions to their C++ equivalents. Each must be
 | `make_llir()` Part 1 | `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` |
 | `make_llir()` Part 2 + `make_amdgcn()` + `make_hsaco()` | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
 
-### 5.2 Understanding Pass Bindings (from `triton_amd.cc`)
+##### Understanding Pass Bindings (from `triton_amd.cc`)
 
 The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Python bindings for Triton passes. When `compiler.py` adds a new pass call, check `triton_amd.cc` to find the actual C++ pass creation function.
 
-### 5.3 LLVM Functions (from `llvm.cc`)
+### 5.2 LLVM Functions (from `llvm.cc`)
 
 | Python/C++ Function in Triton | C++ Location in rocmlirTriton |
 |------------------------------|-------------------------------|
@@ -93,7 +93,7 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 | `createTargetMachine()` | `TritonToHsaco.cpp::createTargetMachine()` |
 | `optimize_module()` | `TritonToHsaco.cpp::optimizeModule()` |
 
-### 5.4 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
+### 5.3 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
 
 All Triton-internal helper functions that we replicate are centralized in a
 single module for easy updating:
@@ -227,6 +227,15 @@ bash cmake.sh
 
 Which will probably fail due to LLVM being also bumped with Triton version.
 For this, we need to manually resolve the errors due to upstream LLVM changes.
+
+### 8.1 Watch for new Triton build-system requirements
+
+Upstream occasionally adds new required CMake variables or download hooks to
+`external/triton/CMakeLists.txt` (and its helpers in
+`external/triton/python/build_helpers.py`). 
+
+Because we embed Triton via
+`add_subdirectory` in `cmake/triton.cmake`, but Triton does it through `setup.py`, any change must be wired up on our side or the build will fail or start downloading things unnecessarily.
 
 ## Step 9: Regenerate Fat Library Dependencies
 
