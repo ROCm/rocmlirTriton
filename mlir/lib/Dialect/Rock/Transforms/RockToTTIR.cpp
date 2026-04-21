@@ -173,9 +173,15 @@ struct RockLoadPtrOpRewritePattern
         rewriter.getContext(), triton::EvictionPolicy::NORMAL);
     auto isVolatileAttr = rewriter.getBoolAttr(false);
 
+    // Pass a zero splat as `other` so masked-off lanes contribute zero to
+    // consumers (e.g. tt.dot in GEMM).
+    auto zeroAttr = rewriter.getZeroAttr(resultTensorType);
+    Value otherTensor =
+        arith::ConstantOp::create(rewriter, loc, resultTensorType, zeroAttr);
+
     Value result = triton::LoadOp::create(
         rewriter, loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
-        /*other=*/Value(), cacheAttr, evictAttr, isVolatileAttr);
+        /*other=*/otherTensor, cacheAttr, evictAttr, isVolatileAttr);
 
     // Replace the op with the loaded tensor result
     rewriter.replaceOp(op, result);
