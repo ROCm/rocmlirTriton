@@ -325,6 +325,9 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
   switch (isaFamily) {
+  case ISAFamily::GCN5_1:
+    return 60;
+    break;
   case ISAFamily::CDNA1:
     return 120;
     break;
@@ -349,9 +352,6 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
     break;
   case ISAFamily::GFX1250:
     return 256;
-    break;
-  case ISAFamily::GCN5_1:
-    return 60;
     break;
   default:
     return 1;
