@@ -602,6 +602,12 @@ std::optional<SmallVector<char, 0>> makeHSACO(StringRef amdgcnAsm,
 namespace mlir {
 namespace rock {
 
+static void appendFeature(std::string &features, llvm::StringRef feature) {
+  if (!features.empty())
+    features += ",";
+  features += feature;
+}
+
 FailureOr<llvm::SmallVector<char, 0>>
 translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   initializeLLVMTargets();
@@ -748,7 +754,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Get features for assembly
   std::string asmFeatures(features);
   if (arch.contains("gfx11")) {
-    asmFeatures += "-real-true16";
+    appendFeature(asmFeatures, "-real-true16");
   }
   // Recreate target machine with proper features for codegen
   auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
@@ -786,9 +792,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // is enabled); gfx11 additionally needs -real-true16 at the assembler step.
   std::string hsacoFeatures(features);
   if (arch.contains("gfx11")) {
-    if (!hsacoFeatures.empty())
-      hsacoFeatures += ",";
-    hsacoFeatures += "-real-true16";
+    appendFeature(hsacoFeatures, "-real-true16");
   }
   auto hsaco = makeHSACO(amdgcnAsm, triple, arch, hsacoFeatures);
   if (!hsaco) {
