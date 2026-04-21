@@ -2,10 +2,26 @@
 """
 Script to update outdated perf_config formats in TOML files.
 
-Converts old v3/v4 perf config format to the new gemm:v1 format.
+Converts old v3/v4 perf config format (MFMA/XDL accel GEMM) to the new
+gemm:v1 format. Field positions follow upstream rocMLIR's
+AccelGemmParamsAttr::get parser in mlir/lib/Dialect/Rock/IR/RockDialect.cpp.
 
-Old format: v3:MPerBlock,NPerBlock,KpackPerBlock,MPerWave,NPerWave,MnPerXdl,SplitKFactor,ScheduleVersion,...
-New format: gemm:v1:mPerBlock,nPerBlock,kPerBlock,kpack,numCTAs,numWaves,matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,gridGroupSize
+v3 format (11 comma-separated ints):
+    v3:MPerBlock, NPerBlock, KpackPerBlock, MPerWave, MnPerXdl,
+       Kpack, SplitKFactor, ScheduleVersion, OutputSwizzle,
+       ForceUnroll, ThreadCopyMore (trailing sentinel)
+    NPerWave is derived in upstream's handleLegacyNPerWaveOrMnPerXdl.
+    WavesPerEU and GridGroupSize default to 0 (use heuristic).
+
+v4 format (14 comma-separated ints):
+    v4:MPerBlock, NPerBlock, KpackPerBlock, MPerWave, NPerWave, MnPerXdl,
+       Kpack, SplitKFactor, ScheduleVersion, OutputSwizzle,
+       WavesPerEU, GridGroupSize, ForceUnroll, ThreadCopyMore (sentinel)
+
+New format (gemm:v1, 11 ints):
+    gemm:v1:mPerBlock, nPerBlock, kPerBlock, kpack, numCTAs, numWaves,
+            matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU,
+            gridGroupSize
 
 Usage:
     python update_perf_config_format.py <toml_file> [--dry-run] [--in-place]
@@ -22,20 +38,24 @@ from typing import Optional
 
 @dataclass
 class OldPerfConfig:
-    """Parsed old v3/v4 perf config."""
+    """Parsed old v3/v4 perf config (MFMA/XDL accel GEMM)."""
     m_per_block: int
     n_per_block: int
     kpack_per_block: int
     m_per_wave: int
-    n_per_wave: int
     mn_per_xdl: int
+    kpack: int
     split_k_factor: int
-    schedule_version: int
-    output_swizzle: int
-    waves_per_eu: int
-    grid_group_size: int
-    # v3 has no explicit Kpack field; v4 carries it at position 6.
-    kpack: int = 1
+    # v3 derives nPerWave via handleLegacyNPerWaveOrMnPerXdl;
+    # v4 stores it explicitly. None means "derive at conversion time".
+    n_per_wave: Optional[int] = None
+    # v3 fixes wavesPerEU=0 and gridGroupSize=0 in the parser;
+    # v4 stores them explicitly.
+    waves_per_eu: int = 0
+    grid_group_size: int = 0
+    # Captured for completeness; not used by the conversion.
+    schedule_version: int = 1
+    output_swizzle: int = 2
 
 
 @dataclass 
@@ -60,40 +80,59 @@ class NewPerfConfig:
 
 
 def parse_old_v3_config(config_str: str) -> Optional[OldPerfConfig]:
-    """Parse an old v3 format perf config string."""
+    """Parse an old v3 format perf config string (11 fields, MFMA/XDL).
+
+    v3 layout (0-indexed):
+        0: mPerBlock, 1: nPerBlock, 2: kpackPerBlock, 3: mPerWave,
+        4: mnPerXdl (legacy slot, MFMA/XDL path),
+        5: kpack, 6: splitKFactor, 7: scheduleVersion, 8: outputSwizzle,
+        9: forceUnroll, 10: ThreadCopyMore (trailing sentinel).
+    nPerWave is not stored; derived at conversion time.
+    wavesPerEU and gridGroupSize default to 0 (use heuristic).
+    """
     match = re.match(r'^v3:(\d+(?:,\d+)*)$', config_str.strip())
     if not match:
         return None
-    
+
     parts = [int(x) for x in match.group(1).split(',')]
     if len(parts) != 11:
         return None
-    
+
     return OldPerfConfig(
         m_per_block=parts[0],
         n_per_block=parts[1],
         kpack_per_block=parts[2],
         m_per_wave=parts[3],
-        n_per_wave=parts[4],
-        mn_per_xdl=parts[5],
+        mn_per_xdl=parts[4],
+        kpack=parts[5],
         split_k_factor=parts[6],
         schedule_version=parts[7],
         output_swizzle=parts[8],
-        waves_per_eu=parts[9],
-        grid_group_size=parts[10],
+        # parts[9] (forceUnroll) and parts[10] (ThreadCopyMore) are not
+        # carried into the new format.
     )
 
 
 def parse_old_v4_config(config_str: str) -> Optional[OldPerfConfig]:
-    """Parse an old v4 format perf config string."""
+    """Parse an old v4 format perf config string (14 fields, MFMA/XDL).
+
+    v4 layout (0-indexed):
+        0: mPerBlock, 1: nPerBlock, 2: kpackPerBlock, 3: mPerWave,
+        4: nPerWave, 5: mnPerXdl, 6: kpack,
+        7: splitKFactor, 8: scheduleVersion, 9: outputSwizzle,
+        10: wavesPerEU, 11: gridGroupSize,
+        12: forceUnroll, 13: ThreadCopyMore (trailing sentinel).
+    Length check is permissive (>= 12) so truncated v4 strings still parse;
+    the trailing forceUnroll/ThreadCopyMore are not used.
+    """
     match = re.match(r'^v4:(\d+(?:,\d+)*)$', config_str.strip())
     if not match:
         return None
-    
+
     parts = [int(x) for x in match.group(1).split(',')]
     if len(parts) < 12:
         return None
-    
+
     return OldPerfConfig(
         m_per_block=parts[0],
         n_per_block=parts[1],
@@ -101,12 +140,12 @@ def parse_old_v4_config(config_str: str) -> Optional[OldPerfConfig]:
         m_per_wave=parts[3],
         n_per_wave=parts[4],
         mn_per_xdl=parts[5],
-        split_k_factor=parts[7],  # Note: position 6 is Kpack in v4
+        kpack=parts[6],
+        split_k_factor=parts[7],
         schedule_version=parts[8],
         output_swizzle=parts[9],
         waves_per_eu=parts[10],
         grid_group_size=parts[11],
-        kpack=parts[6],
     )
 
 
@@ -121,34 +160,53 @@ def is_old_format(config_str: str) -> bool:
     return stripped.startswith('v3:') or stripped.startswith('v4:')
 
 
-def convert_to_new_format(old_config: OldPerfConfig, 
+def convert_to_new_format(old_config: OldPerfConfig,
                           default_kpack: int = 1,
                           default_num_ctas: int = 1,
-                          default_num_waves: int = 4,
-                          default_matrix_instr_nonkdim: int = 16,
-                          default_num_stages: int = 2,
-                          default_waves_per_eu: int = 0,
-                          default_grid_group_size: int = 0) -> NewPerfConfig:
+                          default_num_stages: int = 2) -> NewPerfConfig:
     """
-    Convert old perf config to new format.
-    
-    The conversion uses:
-    - splitKFactor from the old config
-    - numStages is always set to 2 (not derived from old scheduleVersion)
-    - Default values for other parameters based on typical usage patterns
+    Convert old perf config to new gemm:v1 format.
+
+    Field derivations (matched to upstream rocMLIR's AccelGemmParamsAttr::get):
+    - kPerBlock           = kpackPerBlock * kpack
+    - matrixInstrNonkdim  = mnPerXdl from the old config
+    - splitKFactor        = splitKFactor from the old config
+    - wavesPerEU          = wavesPerEU from the old config (0 for v3)
+    - gridGroupSize       = gridGroupSize from the old config (0 for v3)
+    - numWaves:
+        * v4 (explicit nPerWave): (mPerBlock * nPerBlock) / (mPerWave * nPerWave)
+        * v3 (no nPerWave): handleLegacyNPerWaveOrMnPerXdl caps
+          mWaves * nWaves at maxWavesPerWG=4, so the product collapses to 4
+          for any sane (mPerBlock >= mPerWave) input.
+    - numStages is always set to 2 (not derived from old scheduleVersion).
+    - kpack and numCTAs use the provided defaults; the old format does not
+      carry an equivalent of the new tile kpack or numCTAs.
     """
+    if old_config.n_per_wave is not None:
+        # v4: nPerWave is explicit.
+        num_waves = (old_config.m_per_block * old_config.n_per_block) // (old_config.m_per_wave * old_config.n_per_wave)
+    else:
+        # v3: derive per upstream's handleLegacyNPerWaveOrMnPerXdl.
+        max_waves_per_wg = 4
+        m_waves = min(old_config.m_per_block // old_config.m_per_wave, max_waves_per_wg);
+        n_waves = max_waves_per_wg // m_waves;
+        m_per_wave = old_config.m_per_block // m_waves;
+        n_per_wave = max(old_config.n_per_block // n_waves, old_config.mn_per_xdl);
+
+        num_waves = (old_config.m_per_block * old_config.n_per_block) // (m_per_wave * n_per_wave)
+
     return NewPerfConfig(
         m_per_block=old_config.m_per_block,
         n_per_block=old_config.n_per_block,
-        k_per_block=old_config.kpack_per_block*old_config.kpack,
+        k_per_block=old_config.kpack_per_block * old_config.kpack,
         kpack=default_kpack,
         num_ctas=default_num_ctas,
-        num_waves=(old_config.m_per_block*old_config.n_per_block)//(old_config.n_per_wave*old_config.m_per_wave),
-        matrix_instr_nonkdim=default_matrix_instr_nonkdim,
+        num_waves=num_waves,
+        matrix_instr_nonkdim=old_config.mn_per_xdl,
         split_k_factor=old_config.split_k_factor,
         num_stages=default_num_stages,
-        waves_per_eu=default_waves_per_eu,
-        grid_group_size=default_grid_group_size,
+        waves_per_eu=old_config.waves_per_eu,
+        grid_group_size=old_config.grid_group_size,
     )
 
 
