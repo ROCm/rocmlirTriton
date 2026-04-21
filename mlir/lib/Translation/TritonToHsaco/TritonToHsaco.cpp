@@ -186,7 +186,7 @@ void setABIVersion(llvm::Module &module, int version) {
 }
 
 /// Set kernel function attributes
-LogicalResult setKernelAttributes(llvm::Module &module, StringRef archStr,
+void setKernelAttributes(llvm::Module &module, StringRef archStr,
                                   StringRef features, int numWarps,
                                   int wavesPerEU, int numCTAs,
                                   bool allowFlushDenorm, bool enableAsan,
@@ -205,10 +205,8 @@ LogicalResult setKernelAttributes(llvm::Module &module, StringRef archStr,
     }
   }
 
-  if (!kernelFn) {
-    llvm::errs() << "Could not find kernel function\n";
-    return failure();
-  }
+  if (!kernelFn)
+    return;
 
   kernelFn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
   kernelFn->addFnAttr("amdgpu-cluster-dims", std::to_string(numCTAs) + ",1,1");
@@ -256,7 +254,7 @@ LogicalResult setKernelAttributes(llvm::Module &module, StringRef archStr,
     }
   }
 
-  return success();
+  return;
 }
 
 /// Check if architecture has architected SGPRs
@@ -670,12 +668,9 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   }
 
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
-  if (failed(setKernelAttributes(*llvmModule, arch, features, numWarps,
-                                 options.wavesPerEU, options.numCTAs,
-                                 options.allowFlushDenorm, enableAsan,
-                                 options.scheduleHint))) {
-    return failure();
-  }
+  setKernelAttributes(*llvmModule, arch, features, numWarps,
+                      options.wavesPerEU, options.numCTAs, options.allowFlushDenorm,
+                      enableAsan, options.scheduleHint);
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
   // compiler.py lines 412-423
