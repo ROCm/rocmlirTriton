@@ -316,6 +316,8 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   tosaOptions.extensions.push_back("fp8e5m2");
   tosaOptions.extensions.push_back("mxfp");
 
+  funcPm.addPass(tosa::createTosaAttachTarget(tosaOptions));
+
   if (!noRock) {
     funcPm.addPass(rock::createRockTosaToElementwisePass());
   }
