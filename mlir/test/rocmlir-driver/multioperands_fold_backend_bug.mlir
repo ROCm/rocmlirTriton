@@ -1,4 +1,4 @@
-// This test is just ensure backend LLVM compiler is not crashing while compiling this kernel. It was crashing earlier and fixed by https://github.com/llvm/llvm-project/pull/148205.
+// This test is just to ensure the backend LLVM compiler does not crash while compiling this kernel. It was crashing earlier and fixed by https://github.com/llvm/llvm-project/pull/148205.
 // RUN: sed -e 's/##TOKEN_ARCH##/%arch/g' %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel --arch %arch | rocmlir-driver -c --arch %arch | FileCheck %s
 // CHECK: triton.hsaco
 
