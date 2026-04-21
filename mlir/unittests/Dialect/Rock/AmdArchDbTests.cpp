@@ -144,7 +144,7 @@ TEST(AmdArchDbTest, MinNumCU) {
   EXPECT_EQ(getMinNumCU("gfx1030"), 30);  // RDNA2
   EXPECT_EQ(getMinNumCU("gfx1100"), 2);   // RDNA3
   EXPECT_EQ(getMinNumCU("gfx1200"), 12);  // RDNA4
-  EXPECT_EQ(getMinNumCU("gfx1250"), 256); // GFX1250
+  EXPECT_EQ(getMinNumCU("gfx1250"), 32); // GFX1250
 }
 
 // --- getMaxWavesPerEU ---

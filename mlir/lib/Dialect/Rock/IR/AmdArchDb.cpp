@@ -351,7 +351,7 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
     return 12;
     break;
   case ISAFamily::GFX1250:
-    return 256;
+    return 32;
     break;
   default:
     return 1;
