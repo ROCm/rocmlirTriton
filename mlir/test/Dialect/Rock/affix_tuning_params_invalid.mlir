@@ -3,7 +3,7 @@
 // RUN: rocmlir-opt -rock-affix-params %s -verify-diagnostics
 
 // TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attention_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @rock_attention_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @+1 {{The provided perf config is not valid}}
 //   rock.attention{
 //     qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
@@ -13,7 +13,7 @@
 // }
 
 // TODO(roctriton): gemm_elementwise_gemm are broken
-// func.func @rock_gemm_gemm_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @rock_gemm_gemm_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @+1 {{The provided perf config is not valid}}
 //   rock.gemm_elementwise_gemm{
 //     ab = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
@@ -23,7 +23,7 @@
 // }
 
 // TODO(roctriton): conv_elementwise_gemm are broken
-// func.func @rock_conv_gemm_invalid_perf_config(%arg0: memref<1x128x256x1x1xf16>, %arg1: memref<2x1x256x32x32xf16>, %arg2: memref<1x128x128xf16>, %arg3: memref<1x2048x128xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @rock_conv_gemm_invalid_perf_config(%arg0: memref<1x128x256x1x1xf16>, %arg1: memref<2x1x256x32x32xf16>, %arg2: memref<1x128x128xf16>, %arg3: memref<1x2048x128xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @+1 {{The provided perf config is not valid}}
 //   rock.conv_elementwise_gemm{
 //     ab = conv(%arg0, %arg1) : memref<1x128x256x1x1xf16>, memref<2x1x256x32x32xf16>
@@ -37,7 +37,7 @@ func.func @two_gemms(
     %a0: tensor<1x72x128xf8E4M3FN>, %b0: tensor<1x72x115200xf8E5M2>, %c0: tensor<1x128x115200xf32>,
     %a1: tensor<1x72x128xf8E4M3FN>, %b1: tensor<1x72x115200xf8E5M2>, %c1: tensor<1x128x115200xf32>)
     -> (tensor<1x128x115200xf32>, tensor<1x128x115200xf32>)
-    attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // First GEMM
   %result0 = rock.gemm tr %a0 * %b0 
     : tensor<1x72x128xf8E4M3FN> * tensor<1x72x115200xf8E5M2> -> tensor<1x128x115200xf32>
@@ -97,6 +97,24 @@ func.func @two_gemms(
 //   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
+
+// expected-error @below {{unknown attribute 'kernel' on function 'bare_kernel_attr'}}
+func.func @bare_kernel_attr(%arg0: tensor<1x128x128xf32>, %arg1: tensor<1x128x128xf32>, %arg2: tensor<1x128x128xf32>) -> tensor<1x128x128xf32>
+    attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %result = rock.gemm %arg0 * %arg1
+    : tensor<1x128x128xf32> * tensor<1x128x128xf32> -> tensor<1x128x128xf32>
+  %out = rock.store %result to %arg2 by set : tensor<1x128x128xf32> -> tensor<1x128x128xf32> to tensor<1x128x128xf32>
+  return %out : tensor<1x128x128xf32>
+}
+
+// expected-error @below {{unknown attribute 'rock.prefil' on argument 0 of function 'unknown_arg_attr'}}
+func.func @unknown_arg_attr(%arg0: tensor<1x128x128xf32> {rock.prefil}, %arg1: tensor<1x128x128xf32>, %arg2: tensor<1x128x128xf32>) -> tensor<1x128x128xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %result = rock.gemm %arg0 * %arg1
+    : tensor<1x128x128xf32> * tensor<1x128x128xf32> -> tensor<1x128x128xf32>
+  %out = rock.store %result to %arg2 by set : tensor<1x128x128xf32> -> tensor<1x128x128xf32> to tensor<1x128x128xf32>
+  return %out : tensor<1x128x128xf32>
+}
 
 func.func @rock_gemm_gemm_splitk(%arg0: tensor<1474560xf16>, %arg1: tensor<1474560xf16>, %arg2: tensor<1474560xf16>, %arg3: tensor<1474560xf16>)  -> tensor<1474560xf16> attributes {rock.enable_splitk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
     %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 360 + d2)> by [<Unmerge{4096, 360} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : tensor<1474560xf16> to tensor<1x4096x360xf16>

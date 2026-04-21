@@ -20,6 +20,7 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/Support/MathExtras.h"
 
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
@@ -51,13 +52,55 @@ private:
   void affixTuningParametersImpl(RockGemmWrapperInterface op);
   void affixTuningParametersImpl(RockGemmGemmWrapperInterface op);
 
+  LogicalResult validateRockAttributes(func::FuncOp func);
   template <typename T>
   void setUtilityKernelSizes(Value arg, T utilityOp);
 };
 } // anonymous namespace
 
+LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
+  static const llvm::StringSet<> knownFuncRockAttrs = {
+      EnableSplitKForTuningAttr::getMnemonic(),
+      ArchAttr::getMnemonic(),
+      KernelAttr::getMnemonic(),
+      NumCUAttr::getMnemonic(),
+      NumChipletsAttr::getMnemonic(),
+      BlockSizeAttr::getMnemonic(),
+      GridSizeAttr::getMnemonic(),
+      CpuVerifierAttr::getMnemonic(),
+  };
+  static const llvm::StringSet<> knownArgRockAttrs = {
+      PrefillAttr::getMnemonic(),
+  };
+
+  for (auto &namedAttr : func->getDiscardableAttrs()) {
+    StringRef name = namedAttr.getName().getValue();
+    if (!knownFuncRockAttrs.contains(name)) {
+      return func.emitError("unknown attribute '")
+             << name << "' on function '" << func.getSymName() << "'";
+    }
+  }
+  for (unsigned i = 0, e = func.getNumArguments(); i < e; ++i) {
+    if (auto argAttrs = func.getArgAttrDict(i)) {
+      for (auto &namedAttr : argAttrs) {
+        StringRef name = namedAttr.getName().getValue();
+        if (!knownArgRockAttrs.contains(name)) {
+          return func.emitError("unknown attribute '")
+                 << name << "' on argument " << i << " of function '"
+                 << func.getSymName() << "'";
+        }
+      }
+    }
+  }
+  return success();
+}
+
 void AffixTuningParameters::runOnOperation() {
   func::FuncOp func = getOperation();
+
+  if (failed(validateRockAttributes(func)))
+    return signalPassFailure();
+
   // currently, in rocMLIR we only support one Fusion Root per function.
   // Therefore we check for that here. Note that rocMLIR does generate multiple
   // kernels for the conv_bwd_data but that decomposition happens later in the
