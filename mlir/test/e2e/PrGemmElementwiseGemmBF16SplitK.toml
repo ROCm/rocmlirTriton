@@ -24,7 +24,7 @@ prefix = "--transO="
 
 [[axis]]
 name = "splitKFactor"
-values = ["attn:v1:64,32,64,1,1,4,0,3,1,0,0",
+values = ["attn:v1:32,64,64,1,1,4,0,3,1,0,0",
           "attn:v1:32,32,256,1,1,2,0,4,1,0,0"]
 prefix = "-perf_config="
 

@@ -6,7 +6,7 @@ module {
     %1 = migraphx.convolution %transposed, %arg1 {dilation = [1, 1], group = 1 : i64, padding = [1, 1, 1, 1], padding_mode = 0 : i64, stride = [1, 1]} : <2x16x8x8xbf16, 1024x64x8x1>, <16x16x3x3xbf16, 144x1x48x16> -> <2x16x8x8xbf16, 2048x1x128x16>
     %2 = migraphx.transpose %1 {permutation = [0, 2, 3, 1]} : <2x16x8x8xbf16, 2048x1x128x16> -> <2x8x8x16xbf16, 2048x128x16x1>
     %3 = migraphx.reshape %2 {dims = [1, 128, 16]} : <2x8x8x16xbf16, 2048x128x16x1> -> <1x128x16xbf16, 2048x16x1>
-    %4 = migraphx.dot %3, %arg2 {perf_config="attn:v1:64,128,32,1,1,4,16,1,1,0,0"} : <1x128x16xbf16, 2048x16x1>, <1x16x32xbf16, 0x1x0> -> <1x128x32xbf16, 4096x32x1>
+    %4 = migraphx.dot %3, %arg2 {perf_config="attn:v1:128,64,32,1,1,4,16,1,1,0,0"} : <1x128x16xbf16, 2048x16x1>, <1x16x32xbf16, 0x1x0> -> <1x128x32xbf16, 4096x32x1>
     return %4 : !migraphx.shaped<1x128x32xbf16, 4096x32x1>
   }
 }
