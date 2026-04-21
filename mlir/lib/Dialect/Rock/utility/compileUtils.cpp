@@ -81,6 +81,13 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
 
   int64_t tritonBlockSize = numWarps * warpSize;
 
+  auto numCTAsAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.num-ctas");
+  if (!numCTAsAttr) {
+    LLVM_DEBUG(llvm::dbgs() << "ttg.num-ctas not found\n");
+    return failure();
+  }
+  int64_t numCTAs = numCTAsAttr.getInt();
+
   // Walk LLVM functions with KernelAttr
   auto walkResult = moduleOp.walk([&](LLVM::LLVMFuncOp funcOp) -> WalkResult {
     if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
@@ -90,6 +97,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
     info.name = funcOp.getName().str();
     info.llvmFunc = funcOp;
     info.blockSize = tritonBlockSize;
+    info.clusterSize = numCTAs;
 
     // Get grid_size from module attribute (set by FuncToTritonFunc)
     std::string gridAttrName = "rock.grid_size." + info.name;

@@ -4,6 +4,7 @@
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "ttg.shared" = 0 : i32,
     "triton.hsaco" = "DUMMY_HSACO"
 } {
@@ -20,6 +21,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "ttg.shared" = 0 : i32,
     "rock.grid_size.test_bad_prefill" = 2 : i32,
     "rock.prefill_args.test_bad_prefill" = [
@@ -40,6 +42,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "ttg.shared" = 0 : i32,
     "rock.grid_size.test_bad_prefill_no_value" = 2 : i32,
     "rock.prefill_args.test_bad_prefill_no_value" = [
@@ -60,6 +63,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "ttg.shared" = 0 : i32,
     "rock.grid_size.test_bad_prefill_type" = 2 : i32,
     "rock.prefill_args.test_bad_prefill_type" = [42 : i64],

@@ -27,6 +27,7 @@ struct KernelInfo {
   LLVM::LLVMFuncOp llvmFunc;
   int64_t gridSize = -1;
   int64_t blockSize = -1;
+  int64_t clusterSize = -1;
   SmallVector<Type> argTypes;
   SmallVector<PrefillInfo> prefillArgs;
 };

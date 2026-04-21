@@ -5,10 +5,12 @@
 // CHECK: gpu.binary @rock_kernels
 // CHECK-SAME: #gpu.kernel_metadata<"test_basic_kernel"
 // CHECK-SAME: block_size = 256 : i64
+// CHECK-SAME: cluster_size = 1 : i64
 // CHECK-SAME: grid_size = 4 : i64
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_basic_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO"
 } {
@@ -25,11 +27,13 @@ module attributes {
 // CHECK: gpu.binary @rock_kernels
 // CHECK-SAME: #gpu.kernel_metadata<"test_prefill_kernel"
 // CHECK-SAME: block_size = 256 : i64
+// CHECK-SAME: cluster_size = 1 : i64
 // CHECK-SAME: grid_size = 2 : i64
 // CHECK-SAME: rock.prefill = [{index = 2 : i64, value = 0.000000e+00 : f32}]
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_prefill_kernel" = 2 : i32,
     "rock.prefill_args.test_prefill_kernel" = [{index = 2 : i64, value = 0.000000e+00 : f32}],
     "triton.hsaco" = "DUMMY_HSACO"
@@ -50,6 +54,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_multi_prefill_same" = 2 : i32,
     "rock.prefill_args.test_multi_prefill_same" = [
         {index = 2 : i64, value = 0.000000e+00 : f32},
@@ -73,6 +78,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_multi_prefill_mixed" = 2 : i32,
     "rock.prefill_args.test_multi_prefill_mixed" = [
         {index = 2 : i64, value = 0.000000e+00 : f32},
@@ -97,6 +103,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_host_restore" = 8 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
@@ -122,6 +129,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_lds_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
@@ -142,11 +150,13 @@ module attributes {
 // CHECK: gpu.binary @rock_kernels
 // CHECK-SAME: #gpu.kernel_metadata<"test_total_num_warps"
 // CHECK-SAME: block_size = 512 : i64
+// CHECK-SAME: cluster_size = 1 : i64
 // CHECK-SAME: grid_size = 4 : i64
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.total-num-warps" = 8 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_total_num_warps" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO"
 } {
@@ -163,13 +173,16 @@ module attributes {
 // CHECK: gpu.binary @rock_kernels
 // CHECK-SAME: #gpu.kernel_metadata<"kernel_a"
 // CHECK-SAME: block_size = 256 : i64
+// CHECK-SAME: cluster_size = 1 : i64
 // CHECK-SAME: grid_size = 2 : i64
 // CHECK-SAME: #gpu.kernel_metadata<"kernel_b"
 // CHECK-SAME: block_size = 256 : i64
+// CHECK-SAME: cluster_size = 1 : i64
 // CHECK-SAME: grid_size = 8 : i64
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.kernel_a" = 2 : i32,
     "rock.grid_size.kernel_b" = 8 : i32,
     "triton.hsaco" = "DUMMY_HSACO"
@@ -195,6 +208,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_kernel_preserved" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO"
 } {
@@ -217,6 +231,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_kernel_removed" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
@@ -240,6 +255,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_no_lds_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
@@ -263,6 +279,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_workspace_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
@@ -285,6 +302,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.test_void_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
@@ -303,7 +321,9 @@ module attributes {
 // Verifies multiple host functions calling different kernels are all restored
 // CHECK: gpu.binary @rock_kernels
 // CHECK-SAME: #gpu.kernel_metadata<"kernel_x"
+// CHECK-SAME: cluster_size = 1 : i64
 // CHECK-SAME: #gpu.kernel_metadata<"kernel_y"
+// CHECK-SAME: cluster_size = 1 : i64
 // CHECK: func.func @host_x
 // CHECK: gpu.launch_func @rock_kernels::@kernel_x
 // CHECK: func.func @host_y
@@ -313,6 +333,7 @@ module attributes {
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.kernel_x" = 4 : i32,
     "rock.grid_size.kernel_y" = 8 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
@@ -327,6 +348,28 @@ module attributes {
     llvm.return
   }
   llvm.func @kernel_y(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr)
+      attributes {rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies cluster_size > 1 is correctly embedded in kernel metadata
+// CHECK: gpu.binary @rock_kernels
+// CHECK-SAME: #gpu.kernel_metadata<"test_cluster_kernel"
+// CHECK-SAME: block_size = 256 : i64
+// CHECK-SAME: cluster_size = 4 : i64
+// CHECK-SAME: grid_size = 16 : i64
+module attributes {
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 4 : i32,
+    "ttg.shared" = 0 : i32,
+    "rock.grid_size.test_cluster_kernel" = 16 : i32,
+    "triton.hsaco" = "DUMMY_HSACO"
+} {
+  llvm.func @test_cluster_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
   }
