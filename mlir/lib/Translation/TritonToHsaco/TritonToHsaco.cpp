@@ -233,9 +233,17 @@ LogicalResult setKernelAttributes(llvm::Module &module, StringRef archStr,
   std::string denormalMode = allowFlushDenorm ? "preserve-sign" : "ieee";
   kernelFn->addFnAttr("denormal-fp-math-f32", denormalMode);
 
-  kernelFn->addFnAttr("target-features", features);
   // ASan support
+  // Only stamp `target-features` on the kernel when the caller actually has
+  // something to override with (e.g. `+xnack` for asan). Stamping an empty
+  // override causes LLVM's per-function subtarget lookup to key off a bare
+  // `"target-features"=""` attribute and silently *ignore* the TM-level
+  // `-mattr` we later set on `tmAsm` in `make_amdgcn` (which is where
+  // `-real-true16` is added for gfx11 to work around the `copyPhysReg`
+  // assertion). Upstream Triton only touches `target-features` in the asan
+  // path (see `add_fn_target_feature("+xnack")` in compiler.py); mirror that.
   if (enableAsan) {
+    kernelFn->addFnAttr("target-features", features);
     kernelFn->addFnAttr(llvm::Attribute::SanitizeAddress);
   }
 
