@@ -122,7 +122,8 @@ static bool isInThreadTransposeEnabled(StringRef arch) {
 }
 
 static bool isAsyncCopyEnabled(StringRef arch) {
-  return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
+  return false;
+  // return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
 }
 
 // Based on make_ttgir() in
