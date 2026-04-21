@@ -221,7 +221,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_attention_simple
 // DISABLED-CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>)
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 32 : i32
-// func.func @rock_attention_simple(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_attention_simple(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[q]], %[[k]], %[[v]], %[[o]])
 //   %result = rock.attention{
 //      qk = tr %arg0 * %arg1 : tensor<1x64x1024xf32>, tensor<1x64x1024xf32>
@@ -242,7 +242,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_attention_tr_padded
 // DISABLED-CHECK-SAME: (%[[q:.*]]: tensor<1x49x7xf32>, %[[k:.*]]: tensor<1x7x49xf32>, %[[v:.*]]: tensor<1x49x7xf32>, %[[o:.*]]: tensor<1x49x7xf32>)
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 2 : i32
-// func.func @rock_attention_tr_padded(%arg0: tensor<1x49x7xf32>, %arg1: tensor<1x7x49xf32>, %arg2: tensor<1x49x7xf32>, %arg3: tensor<1x49x7xf32>) -> tensor<1x49x7xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_attention_tr_padded(%arg0: tensor<1x49x7xf32>, %arg1: tensor<1x7x49xf32>, %arg2: tensor<1x49x7xf32>, %arg3: tensor<1x49x7xf32>) -> tensor<1x49x7xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK-DAG: %[[trQ:.*]] = rock.transform %[[q]] by {{.*}} : tensor<1x49x7xf32> to tensor<1x7x49xf32>
 //   // DISABLED-CHECK-DAG: %[[paddedTrQ:.*]] = rock.transform %[[trQ]] by {{.*}} : tensor<1x7x49xf32> to tensor<1x8x64xf32>
 //   // DISABLED-CHECK-DAG: %[[paddedK:.*]] = rock.transform %[[k]] by {{.*}} : tensor<1x7x49xf32> to tensor<1x8x64xf32>
@@ -269,7 +269,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_attention_kvcache
 // DISABLED-CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>, %[[currentSeqLen:.*]]: tensor<1xi32>)
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 32 : i32
-// func.func @rock_attention_kvcache(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>, %arg4: tensor<1xi32>) -> tensor<1x1024x64xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_attention_kvcache(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>, %arg4: tensor<1xi32>) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[q]], %[[k]], %[[v]], %[[currentSeqLen]], %[[o]])
 //   %result = rock.attention{
 //      qk = tr %arg0 * %arg1 : tensor<1x64x1024xf32>, tensor<1x64x1024xf32>
@@ -291,7 +291,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_attention_causal
 // DISABLED-CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>)
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 32 : i32
-// func.func @rock_attention_causal(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_attention_causal(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[q]], %[[k]], %[[v]], %[[o]])
 //   // DISABLED-CHECK-NEXT: , causal,
 //   %result = rock.attention{
@@ -314,7 +314,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_attention_lse
 // DISABLED-CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[lse:.*]]: tensor<1x1024xf32>, %[[o:.*]]: tensor<1x1024x64xf32>)
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 32 : i32
-// func.func @rock_attention_lse(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024xf32>, %arg4: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_attention_lse(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024xf32>, %arg4: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[q]], %[[k]], %[[v]], %[[o]], %[[lse]])
 //   %result = rock.attention{
 //      qk = tr %arg0 * %arg1 : tensor<1x64x1024xf32>, tensor<1x64x1024xf32>
@@ -336,7 +336,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_attention_splitkv
 // DISABLED-CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[lse:.*]]: tensor<4x1024xf32>, %[[o:.*]]: tensor<4x1024x64xf32>)
 // DISABLED-CHECK-SAME: grid_size = 128
-// func.func @rock_attention_splitkv(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<4x1024xf32>, %arg4: tensor<4x1024x64xf32>) -> tensor<4x1024x64xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, grid_size = 1024 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_attention_splitkv(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<4x1024xf32>, %arg4: tensor<4x1024x64xf32>) -> tensor<4x1024x64xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.grid_size = 1024 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[q]], %[[k]], %[[v]], %[[o]], %[[lse]])
 //   // DISABLED-CHECK-NEXT: splitKV = 4
 //   %result = rock.attention{
@@ -359,7 +359,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_attention_splitkv_padding
 // DISABLED-CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x384xf32>, %[[v:.*]]: tensor<1x384x64xf32>, %[[lse:.*]]: tensor<8x1024xf32>, %[[o:.*]]: tensor<8x1024x64xf32>)
 // DISABLED-CHECK-SAME: grid_size = 256
-// func.func @rock_attention_splitkv_padding(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x384xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<8x1024xf32>, %arg4: tensor<8x1024x64xf32>) -> tensor<8x1024x64xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, grid_size = 1024 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_attention_splitkv_padding(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x384xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<8x1024xf32>, %arg4: tensor<8x1024x64xf32>) -> tensor<8x1024x64xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.grid_size = 1024 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK-DAG: %[[kPadding:.*]] = rock.transform %[[k]] by {{.*}} : tensor<1x64x384xf32> to tensor<1x64x512xf32>
 //   // DISABLED-CHECK-DAG: %[[vPadding:.*]] = rock.transform %[[v]] by {{.*}} : tensor<1x384x64xf32> to tensor<1x512x64xf32>
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[q]], %[[kPadding]], %[[vPadding]], %[[o]], %[[lse]])
@@ -384,7 +384,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_attention_softmaxtype
 // DISABLED-CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf16>, %[[k:.*]]: tensor<1x64x1024xf16>, %[[v:.*]]: tensor<1x1024x64xf16>, %[[lse:.*]]: tensor<1x1024xf16>, %[[o:.*]]: tensor<1x1024x64xf16>)
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 32 : i32
-// func.func @rock_attention_softmaxtype(%arg0: tensor<1x64x1024xf16>, %arg1: tensor<1x64x1024xf16>, %arg2: tensor<1x1024x64xf16>, %arg3: tensor<1x1024xf16>, %arg4: tensor<1x1024x64xf16>) -> tensor<1x1024x64xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_attention_softmaxtype(%arg0: tensor<1x64x1024xf16>, %arg1: tensor<1x64x1024xf16>, %arg2: tensor<1x1024x64xf16>, %arg3: tensor<1x1024xf16>, %arg4: tensor<1x1024x64xf16>) -> tensor<1x1024x64xf16> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[q]], %[[k]], %[[v]], %[[o]], %[[lse]])
 //   // DISABLED-CHECK: softmaxType = f32
 //   %result = rock.attention{
@@ -408,7 +408,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_gemmelementwisegemm_simple
 // DISABLED-CHECK-SAME: (%[[a:.*]]: tensor<1x64x1024xf32>, %[[b:.*]]: tensor<1x64x1024xf32>, %[[c:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>)
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 32 : i32
-// func.func @rock_gemmelementwisegemm_simple(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_gemmelementwisegemm_simple(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[a]], %[[b]], %[[c]], %[[o]])
 //   // DISABLED-CHECK-NEXT: enableSoftmax = false
 //   %result = rock.gemm_elementwise_gemm{
@@ -427,7 +427,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_gemmelementwisegemm_tr_padded
 // DISABLED-CHECK-SAME: (%[[a:.*]]: tensor<1x49x7xf32>, %[[b:.*]]: tensor<1x7x49xf32>, %[[c:.*]]: tensor<1x49x7xf32>, %[[o:.*]]: tensor<1x49x7xf32>)
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 2 : i32
-// func.func @rock_gemmelementwisegemm_tr_padded(%arg0: tensor<1x49x7xf32>, %arg1: tensor<1x7x49xf32>, %arg2: tensor<1x49x7xf32>, %arg3: tensor<1x49x7xf32>) -> tensor<1x49x7xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_gemmelementwisegemm_tr_padded(%arg0: tensor<1x49x7xf32>, %arg1: tensor<1x7x49xf32>, %arg2: tensor<1x49x7xf32>, %arg3: tensor<1x49x7xf32>) -> tensor<1x49x7xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK-DAG: %[[trA:.*]] = rock.transform %[[a]] by {{.*}} : tensor<1x49x7xf32> to tensor<1x7x49xf32>
 //   // DISABLED-CHECK-DAG: %[[paddedTrA:.*]] = rock.transform %[[trA]] by {{.*}} : tensor<1x7x49xf32> to tensor<1x8x64xf32>
 //   // DISABLED-CHECK-DAG: %[[paddedB:.*]] = rock.transform %[[b]] by {{.*}} : tensor<1x7x49xf32> to tensor<1x8x64xf32>
@@ -453,7 +453,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-SAME: (%[[aRaw:.*]]: tensor<1x64x1024xf32>, %[[bRaw:.*]]: tensor<1x64x1024xf32>, %[[cRaw:.*]]: tensor<1x1024x64xf32>, %[[oRaw:.*]]: tensor<1x1024x64xf32>
 // DISABLED-CHECK-SAME: {rock.prefill = 0.000000e+00 : f32})
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 128 : i32
-// func.func @rock_gemmelementwisegemm_splitk(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_gemmelementwisegemm_splitk(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   // DISABLED-CHECK-DAG: %[[bSplit:.*]] = rock.transform %[[bRaw]] by <affine_map<(d0, d1, d2, d3) -> (d0, d3, d1 * 256 + d2)> by [<PassThrough ["gemmG", "gemmK"] at [0, 3] -> ["gemmG", "gemmK"] at [0, 1]>, <Unmerge{4, 256} ["gemmNSplit", "gemmN"] at [1, 2] -> ["gemmN"] at [2]>] bounds = [1, 4, 256, 64] -> [1, 64, 1024]> : tensor<1x64x1024xf32> to tensor<1x4x256x64xf32>
 //   // DISABLED-CHECK-DAG: %[[b:.*]] = rock.transform %[[bSplit]] by <affine_map<(d0, d1, d2) -> (0, d0, d2, d1)> by [<Merge{1, 4} ["gemmG"] at [0] -> ["gemmG", "gemmNSplit"] at [0, 1]>, <PassThrough ["gemmN", "gemmK"] at [2, 1] -> ["gemmN", "gemmK"] at [2, 3]>] bounds = [4, 64, 256] -> [1, 4, 256, 64]> : tensor<1x4x256x64xf32> to tensor<4x64x256xf32>
 //   // DISABLED-CHECK-DAG: %[[cSplit:.*]] = rock.transform %[[cRaw]] by <affine_map<(d0, d1, d2, d3) -> (d0, d1 * 256 + d2, d3)> by [<PassThrough ["gemmG", "gemmO"] at [0, 3] -> ["gemmG", "gemmO"] at [0, 2]>, <Unmerge{4, 256} ["gemmNSplit", "gemmN"] at [1, 2] -> ["gemmN"] at [1]>] bounds = [1, 4, 256, 64] -> [1, 1024, 64]> : tensor<1x1024x64xf32> to tensor<1x4x256x64xf32>
@@ -483,7 +483,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-SAME: (%[[aRaw:.*]]: tensor<4096xf32>, %[[bRaw:.*]]: tensor<4096xf32>, %[[cRaw:.*]]: tensor<4096xf32>, %[[oRaw:.*]]: tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32},
 // DISABLED-CHECK-SAME: %[[reduceOut:.*]]: tensor<64xf32> {rock.prefill = 0.000000e+00 : f32})
 // DISABLED-CHECK-SAME: rock.block_size = 64 : i32, grid_size = 8 : i32
-// func.func @rock_gemmelementwisegemm_splitk_two_outputs(%arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>, %arg2: tensor<4096xf32>, %arg3: tensor<4096xf32>, %arg4: tensor<64xf32>) -> (tensor<4096xf32>, tensor<64xf32>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// func.func @rock_gemmelementwisegemm_splitk_two_outputs(%arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>, %arg2: tensor<4096xf32>, %arg3: tensor<4096xf32>, %arg4: tensor<64xf32>) -> (tensor<4096xf32>, tensor<64xf32>) attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
 //   %0 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)> by [<Unmerge{64, 64} ["exp1", "exp2"] at [1, 2] -> ["dim0"] at [0]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 64, 64] -> [4096]> : tensor<4096xf32> to tensor<1x64x64xf32>
 //   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)> by [<Unmerge{64, 64} ["exp1", "exp2"] at [1, 2] -> ["dim0"] at [0]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 64, 64] -> [4096]> : tensor<4096xf32> to tensor<1x64x64xf32>
 //   %2 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)> by [<Unmerge{64, 64} ["exp1", "exp2"] at [1, 2] -> ["dim0"] at [0]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 64, 64] -> [4096]> : tensor<4096xf32> to tensor<1x64x64xf32>
@@ -545,7 +545,7 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // DISABLED-CHECK-LABEL: func.func @rock_attention_gqa
 // DISABLED-CHECK-SAME: (%[[q:.*]]: tensor<64x1x128xf16>, %[[k:.*]]: tensor<8x128x8192xf16>, %[[v:.*]]: tensor<8x8192x128xf16>, %[[lse:.*]]: tensor<256x1xf16>, %[[o:.*]]: tensor<256x1x128xf16>)
 // DISABLED-CHECK-SAME: grid_size = 32
-// func.func @rock_attention_gqa(%arg0: tensor<64x1x128xf16>, %arg1: tensor<8x128x8192xf16>, %arg2: tensor<8x8192x128xf16>, %arg3: tensor<256x1xf16>, %arg4: tensor<256x1x128xf16>) -> tensor<256x1x128xf16> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.block_size = 64 : i32, grid_size = 1024 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @rock_attention_gqa(%arg0: tensor<64x1x128xf16>, %arg1: tensor<8x128x8192xf16>, %arg2: tensor<8x8192x128xf16>, %arg3: tensor<256x1xf16>, %arg4: tensor<256x1x128xf16>) -> tensor<256x1x128xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.block_size = 64 : i32, rock.grid_size = 1024 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // DISABLED-CHECK-DAG: %[[qNormalized:.*]] = rock.transform %[[q]] by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by {{.*}} tensor<64x1x128xf16> to tensor<64x128x1xf16>
 //   // DISABLED-CHECK-DAG: %[[qExtractNumRepeats:.+]] = rock.transform %[[qNormalized]] by <affine_map<(d0, d1, d2, d3) -> (d0 * 8 + d3, d1, d2)> by {{.*}} tensor<64x128x1xf16> to tensor<8x128x1x8xf16>
 //   // DISABLED-CHECK-DAG: %[[qMoveToSeqLen:.*]] = rock.transform %[[qExtractNumRepeats]] by <affine_map<(d0, d1, d2) -> (d0, d1, 0, d2)> by {{.*}} tensor<8x128x1x8xf16> to tensor<8x128x8xf16>
