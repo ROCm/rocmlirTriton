@@ -326,8 +326,7 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   // pass std::nullopt as validation options to avoid running tosa-validate
   // pass
   tosa::addTosaToLinalgPasses(pm, tosaToLinalgOptions, tosaToLinalgNamedOptions,
-                              /*validationOptions=*/std::nullopt,
-                              /*attachTargetOptions=*/tosaOptions);
+                              /*validationOptions=*/std::nullopt);
   // Strip the tosa.target_env attribute so downstream tools that do not
   // load the TOSA dialect (e.g. mlir-runner) can parse the final IR. See
   // EraseTosaTargetEnv above.
