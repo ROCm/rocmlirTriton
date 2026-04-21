@@ -3,7 +3,8 @@
 // CHECK-LABEL: @test_load_conversion
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[ARG0]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
-//      CHECK:   %[[RESULT:.*]] = tt.load %[[PTR_TENSOR]], %[[MASK]] : tensor<64x64x!tt.ptr<f16>>
+//      CHECK:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf16>
+//      CHECK:   %[[RESULT:.*]] = tt.load %[[PTR_TENSOR]], %[[MASK]], %[[ZERO]] : tensor<64x64x!tt.ptr<f16>>
 //      CHECK:   return
 //      CHECK:   }
 //  CHECK-NOT:   rock.blockwise_load_ptr
@@ -150,7 +151,8 @@ func.func @test_reduce_max_int(%arg0: tensor<64x64xi32>) -> tensor<64xi32> attri
 // CHECK-LABEL: @test_load_f32
 // CHECK-SAME: (%[[PTRS:.*]]: tensor<32x128xi32>, %[[MASK:.*]]: tensor<32x128xi1>)
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<32x128xi32> -> tensor<32x128x!tt.ptr<f32>>
-//      CHECK:   tt.load %[[PTR_TENSOR]], %[[MASK]] : tensor<32x128x!tt.ptr<f32>>
+//      CHECK:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<32x128xf32>
+//      CHECK:   tt.load %[[PTR_TENSOR]], %[[MASK]], %[[ZERO]] : tensor<32x128x!tt.ptr<f32>>
 //  CHECK-NOT:   rock.blockwise_load_ptr
 func.func @test_load_f32(%arg0: tensor<32x128xi32>, %arg1: tensor<32x128xi1>) -> tensor<32x128xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
   %0 = rock.blockwise_load_ptr %arg0[%arg1] : tensor<32x128xi32>, tensor<32x128xi1> -> tensor<32x128xf32>
