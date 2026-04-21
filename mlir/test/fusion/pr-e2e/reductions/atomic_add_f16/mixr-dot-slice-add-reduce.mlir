@@ -10,7 +10,7 @@
 // CHECK-NEXT: Unranked Memref base
 
 module {
-  func.func @mlir_dot_slice_add_reduce(%arg0: !migraphx.shaped<1x8x16xf16, 128x16x1>, %arg1: !migraphx.shaped<1x16x24xf16, 384x24x1>, %arg2: !migraphx.shaped<1x4x24xf16, 96x24x1>) -> !migraphx.shaped<1x4x1xf16, 4x1x1> attributes {kernel = "mixr"} {
+  func.func @mlir_dot_slice_add_reduce(%arg0: !migraphx.shaped<1x8x16xf16, 128x16x1>, %arg1: !migraphx.shaped<1x16x24xf16, 384x24x1>, %arg2: !migraphx.shaped<1x4x24xf16, 96x24x1>) -> !migraphx.shaped<1x4x1xf16, 4x1x1> attributes {rock.kernel = "mixr"} {
     %0 = migraphx.dot %arg0, %arg1 : <1x8x16xf16, 128x16x1>, <1x16x24xf16, 384x24x1> -> <1x8x24xf16, 192x24x1>
     %1 = migraphx.slice %0 {axes = [1], starts = [0], ends = [4]} : <1x8x24xf16, 192x24x1> -> <1x4x24xf16, 192x24x1>
     %2 = migraphx.add %1, %arg2 : <1x4x24xf16, 192x24x1>, <1x4x24xf16, 96x24x1> -> <1x4x24xf16, 96x24x1>

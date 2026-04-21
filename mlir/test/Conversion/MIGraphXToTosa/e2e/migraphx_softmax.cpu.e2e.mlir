@@ -1,7 +1,10 @@
-// RUN: rocmlir-driver --host-pipeline=migraphx,highlevel %s | rocmlir-gen -ph -print-results -rand none -fut test - | \
-// RUN: rocmlir-opt -convert-linalg-to-loops -lower-affine -convert-scf-to-cf \
-// RUN: --convert-math-to-llvm --finalize-memref-to-llvm --convert-arith-to-llvm --convert-func-to-llvm --convert-cf-to-llvm -reconcile-unrealized-casts \
-// RUN: | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-driver --host-pipeline=migraphx,highlevel %s | \
+// RUN: rocmlir-opt -empty-tensor-to-alloc-tensor \
+// RUN:   --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" \
+// RUN:   -buffer-results-to-out-params="add-result-attr=false hoist-dynamic-allocs=false hoist-static-allocs=false modify-public-functions=true" | \
+// RUN: rocmlir-gen -ph -print-results -rand none -fut test - | \
+// RUN: rocmlir-driver --host-pipeline=backend | \
+// RUN: mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s
 
 module {
 // CHECK: Unranked Memref base@ = 0x{{.*}} rank = 1 offset = 0 sizes = [4] strides = [1] data =
@@ -23,4 +26,3 @@ module {
      return %1 : !migraphx.shaped<4xf32, 1>
   }
 }
-

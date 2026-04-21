@@ -1,7 +1,7 @@
 // Check the guards of tensor layouts in RockOps
 // RUN: rocmlir-opt %s -split-input-file -verify-diagnostics
 
-func.func @rock_conv_gkcyx_ngchw_ngkhw(%arg0: tensor<1x128x8x3x3xf32>, %arg1: tensor<128x1x8x32x32xf32>) -> tensor<128x1x128x30x30xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
+func.func @rock_conv_gkcyx_ngchw_ngkhw(%arg0: tensor<1x128x8x3x3xf32>, %arg1: tensor<128x1x8x32x32xf32>) -> tensor<128x1x128x30x30xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
   %result = rock.conv(%arg0, %arg1) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -15,7 +15,7 @@ func.func @rock_conv_gkcyx_ngchw_ngkhw(%arg0: tensor<1x128x8x3x3xf32>, %arg1: te
 
 // -----
 
-func.func @rock_conv_gkycx_ngchw_ngkhw(%arg0: tensor<1x128x3x8x3xf32>, %arg1: tensor<128x1x8x32x32xf32>) -> tensor<128x1x128x30x30xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
+func.func @rock_conv_gkycx_ngchw_ngkhw(%arg0: tensor<1x128x3x8x3xf32>, %arg1: tensor<128x1x8x32x32xf32>) -> tensor<128x1x128x30x30xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
   %result = rock.conv(%arg0, %arg1) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "0", "c", "1"],
@@ -29,7 +29,7 @@ func.func @rock_conv_gkycx_ngchw_ngkhw(%arg0: tensor<1x128x3x8x3xf32>, %arg1: te
 
 // -----
 
-func.func @rock_conv_gkcyx_gnhcw_ngkhw(%arg0: tensor<1x128x8x3x3xf32>, %arg1: tensor<1x128x32x8x32xf32>) -> tensor<128x1x128x30x30xf32> attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
+func.func @rock_conv_gkcyx_gnhcw_ngkhw(%arg0: tensor<1x128x8x3x3xf32>, %arg1: tensor<1x128x32x8x32xf32>) -> tensor<128x1x128x30x30xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
   %result = rock.conv(%arg0, %arg1) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],

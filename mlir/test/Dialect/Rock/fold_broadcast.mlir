@@ -134,7 +134,7 @@ func.func @mlir_dot_add_3(%arg0: tensor<8x32x1xf16>, %arg1: tensor<4x8x16xf16>, 
 // CHECK: %[[gemmOut4:.*]] = rock.gemm %[[unbroadcastA]] * %[[foldB]] : tensor<2x3xf16> * tensor<3x12xf16> -> tensor<2x12xf16>
 // CHECK: %[[reshape4:.*]] = rock.transform %[[gemmOut4]] by {{.*}} : tensor<2x12xf16> to tensor<3x2x4xf16>
 // CHECK: return %[[reshape4]] : tensor<3x2x4xf16>
-func.func @mlir_dot_broadcastA(%arg0: tensor<1x2x3xf16>, %arg1: tensor<3x3x4xf16>) -> tensor<3x2x4xf16> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", num_cu = 42 : i64} {
+func.func @mlir_dot_broadcastA(%arg0: tensor<1x2x3xf16>, %arg1: tensor<3x3x4xf16>) -> tensor<3x2x4xf16> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", rock.num_cu = 42 : i64} {
   %0 = rock.transform %arg0 by #transform_map10 : tensor<1x2x3xf16> to tensor<3x2x3xf16>
   %1 = rock.gemm %0 * %arg1 : tensor<3x2x3xf16> * tensor<3x3x4xf16> -> tensor<3x2x4xf16>
   return %1 : tensor<3x2x4xf16>
@@ -145,7 +145,7 @@ func.func @mlir_dot_broadcastA(%arg0: tensor<1x2x3xf16>, %arg1: tensor<3x3x4xf16
 // Both A and B are broadcast on batch dim — fold-broadcast pass does nothing.
 // CHECK-LABEL: func.func @mlir_dot_both_broadcast
 // CHECK: rock.gemm {{.*}} : tensor<3x2x3xf16> * tensor<3x3x4xf16> -> tensor<3x2x4xf16>
-func.func @mlir_dot_both_broadcast(%arg0: tensor<1x2x3xf16>, %arg1: tensor<1x3x4xf16>) -> tensor<3x2x4xf16> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", num_cu = 42 : i64} {
+func.func @mlir_dot_both_broadcast(%arg0: tensor<1x2x3xf16>, %arg1: tensor<1x3x4xf16>) -> tensor<3x2x4xf16> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", rock.num_cu = 42 : i64} {
   %0 = rock.transform %arg0 by #transform_map10 : tensor<1x2x3xf16> to tensor<3x2x3xf16>
   %1 = rock.transform %arg1 by #transform_map11 : tensor<1x3x4xf16> to tensor<3x3x4xf16>
   %2 = rock.gemm %0 * %1 : tensor<3x2x3xf16> * tensor<3x3x4xf16> -> tensor<3x2x4xf16>
@@ -161,7 +161,7 @@ func.func @mlir_dot_both_broadcast(%arg0: tensor<1x2x3xf16>, %arg1: tensor<1x3x4
 // CHECK: %[[gemmOut5:.*]] = rock.gemm %[[unbroadcastA5]] * %[[foldB5]] : tensor<2x3xf16> * tensor<3x12xf16> -> tensor<2x12xf16>
 // CHECK: %[[reshape5:.*]] = rock.transform %[[gemmOut5]] by {{.*}} : tensor<2x12xf16> to tensor<3x2x4xf16>
 // CHECK: return %[[reshape5]] : tensor<3x2x4xf16>
-func.func @mlir_dot_broadcastA_addDim(%arg0: tensor<6xf16>, %arg1: tensor<3x3x4xf16>) -> tensor<3x2x4xf16> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", num_cu = 42 : i64} {
+func.func @mlir_dot_broadcastA_addDim(%arg0: tensor<6xf16>, %arg1: tensor<3x3x4xf16>) -> tensor<3x2x4xf16> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", rock.num_cu = 42 : i64} {
   %0 = rock.transform %arg0 by #transform_map12 : tensor<6xf16> to tensor<1x2x3xf16>
   %1 = rock.transform %0 by #transform_map10 : tensor<1x2x3xf16> to tensor<3x2x3xf16>
   %2 = rock.gemm %1 * %arg1 : tensor<3x2x3xf16> * tensor<3x3x4xf16> -> tensor<3x2x4xf16>
