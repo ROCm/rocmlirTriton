@@ -4,6 +4,8 @@
 
 The rocmlirTriton project embeds Triton as a git submodule at `external/triton/`. Several Triton Python functions are replicated in C++ within this project. When the Triton version is bumped, these C++ implementations must be synchronized with the upstream changes.
 
+Note that we want to use Triton from https://github.com/triton-lang/triton-windows, as that includes Windows support not included in https://github.com/triton-lang/triton
+
 ## Step 1: Update the Triton Submodule
 
 ### 1.1 Record the Current Commit
