@@ -22,7 +22,7 @@ from typing import Optional
 
 @dataclass
 class OldPerfConfig:
-    """Parsed old v3 perf config."""
+    """Parsed old v3/v4 perf config."""
     m_per_block: int
     n_per_block: int
     kpack_per_block: int
@@ -34,6 +34,8 @@ class OldPerfConfig:
     output_swizzle: int
     waves_per_eu: int
     grid_group_size: int
+    # v3 has no explicit Kpack field; v4 carries it at position 6.
+    kpack: int = 1
 
 
 @dataclass 
@@ -104,6 +106,7 @@ def parse_old_v4_config(config_str: str) -> Optional[OldPerfConfig]:
         output_swizzle=parts[9],
         waves_per_eu=parts[10],
         grid_group_size=parts[11],
+        kpack=parts[6],
     )
 
 
@@ -137,10 +140,10 @@ def convert_to_new_format(old_config: OldPerfConfig,
     return NewPerfConfig(
         m_per_block=old_config.m_per_block,
         n_per_block=old_config.n_per_block,
-        k_per_block=old_config.kpackperblock*old_config.kpack,
+        k_per_block=old_config.kpack_per_block*old_config.kpack,
         kpack=default_kpack,
         num_ctas=default_num_ctas,
-        num_waves=(old_config.mperblock*old_config.nperblock)/(old_config.nperwave*old_config.mperwave),
+        num_waves=(old_config.m_per_block*old_config.n_per_block)/(old_config.n_per_wave*old_config.m_per_wave),
         matrix_instr_nonkdim=default_matrix_instr_nonkdim,
         split_k_factor=old_config.split_k_factor,
         num_stages=default_num_stages,
