@@ -49,7 +49,8 @@ defvar commonConvAttrs = (ins IndexArrayLength<4>:$padding,
     OptionalAttr<RockTuningParamAttrInterface>:$params);
 
 class Rock_ConvOpBase<string mnemonic>
-    : Rock_Op<mnemonic, [DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
+    : Rock_Op<mnemonic, [Pure,
+                         DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
                          DeclareOpInterfaceMethods<RockConvInterface>,
                          RockFusionRoot]> {
   let results = (outs AnyRankedTensor:$result);
@@ -122,7 +123,8 @@ def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
 }
 
 def Rock_GemmOp
-    : Rock_Op<"gemm", [DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
+    : Rock_Op<"gemm", [Pure,
+                       DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
                        RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins Arg<TensorOf<GemmInputTypes>, "matrix A">:$a,
           Arg<TensorOf<GemmInputTypes>, "matrix B">:$b,
@@ -169,7 +171,7 @@ def Rock_GemmOp
 }
 
 def Rock_ReduceOp
-    : Rock_Op<"reduce", [AllElementTypesMatch<["in", "result"]>]>,
+    : Rock_Op<"reduce", [Pure, AllElementTypesMatch<["in", "result"]>]>,
       Arguments<(ins Arg<TensorOf<[BF16, F16, F32]>, "input">:$in,
           ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
       Results<(outs TensorOf<[BF16, F16, F32]>:$result)> {
@@ -496,7 +498,7 @@ def Rock_StoreOp : Rock_Op<"store",
 
 // gridwise_gemm
 def Rock_GridwiseGemmOp
-    : Rock_Op<"gridwise_gemm", [RockFusionRoot, AttrSizedOperandSegments]>,
+    : Rock_Op<"gridwise_gemm", [Pure, RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins Arg<TensorRankOf<GemmInputTypes, [3]>, "matrix A view">:$a,
           Arg<TensorRankOf<GemmInputTypes, [3]>, "matrix B view">:$b,
           Optional<TensorRankOf<[F8E8M0FNU], [3]>>:$scaleA,
@@ -608,7 +610,7 @@ defvar LdsBufferTypes = GemmInputTypes # [VectorOfRankAndType<[1], GemmInputType
 
 // blockwise_gemm
 def Rock_BlockwiseGemmOp
-    : Rock_Op<"blockwise_gemm", [Pure, AttrSizedOperandSegments]>,
+    : Rock_Op<"blockwise_gemm", [AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<GemmInputTypes>:$matrixA,
           TensorOf<GemmInputTypes>:$matrixB, TensorOf<GemmOutputTypes>:$matrixC,
           Optional<TensorOf<[F8E8M0FNU, I8]>>:$matrixScaleA,
@@ -662,7 +664,7 @@ def Rock_BlockwiseGemmOp
 // blockwise_load
 def Rock_BlockwiseLoadOp
     : Rock_Op<"blockwise_load",
-              [Pure, AllElementTypesMatch<["source", "result"]>]>,
+              [AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source global memory">:$source,
           Variadic<I32>:$sourceIndices)>,
@@ -741,7 +743,7 @@ def Rock_BlockwiseStorePtrOp
 
 def Rock_TransformsToPtrOp
     : Rock_Op<"transforms_to_ptr",
-              [AllShapesMatch<["pointers", "mask"]>]>,
+              [Pure, AllShapesMatch<["pointers", "mask"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source">:$source,
           Variadic<I32>:$extraIndices)>,
@@ -764,7 +766,7 @@ def Rock_TransformsToPtrOp
 // blockwise_reduction
 def Rock_BlockwiseReduceOp
     : Rock_Op<"blockwise_reduce",
-              [AllElementTypesMatch<["input", "result"]>]>,
+              [Pure, AllElementTypesMatch<["input", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$input, IndexAttr:$axis,
           ReduceMethodAttr:$reduceMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
