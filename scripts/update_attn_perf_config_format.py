@@ -2,15 +2,18 @@
 """
 Script to update outdated attention perf_config formats in TOML and MLIR files.
 
-Converts old attn:v2 perf config format to the new attn:v1 format.
+Converts rocMLIR attn:v2 perf config format to rocmlirTriton's attn:v1 format.
 
-Old format: attn:v2:mPerBlockG0,mPerBlockG1,nPerBlockG0,kpackPerBlock,mPerWave,nPerWave,kpack,splitKFactor,scheduleVersion,outputSwizzle,forceUnroll
-New format: attn:v1:mPerBlockG0,nPerBlockG0,kPerBlock,kpack,numCTAs,numWaves,matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,gridGroupSize
+Old format (rocMLIR):    attn:v2:mPerBlockG0,mPerBlockG1,nPerBlockG0,kpackPerBlock,mPerWave,nPerWave,kpack,splitKFactor,scheduleVersion,outputSwizzle,forceUnroll
+New format (rocmlirTriton): attn:v1:mPerBlockG0,nPerBlockG0,kPerBlock,kpack,numCTAs,numWaves,matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,gridGroupSize
 
 Conversion rules:
-- kPerBlock = kpackPerBlock * kpack
-- numWaves = (mPerBlockG0 * nPerBlockG0) / (mPerWave * nPerWave)
-- matrixInstrNonkdim = 0
+- v1.mPerBlockG0 = v2.nPerBlockG0  (M/N swap: rocMLIR computes transposed
+- v1.nPerBlockG0 = v2.mPerBlockG0   attention, see GridwiseGemmToBlockwise.cpp)
+- kPerBlock = kpackPerBlock * kpack (from v2)
+- kpack = 1 (unrelated to v2 kpack which is a memory-packing concept)
+- numWaves = (mPerBlockG0 * nPerBlockG0) / (mPerWave * nPerWave) (from v2)
+- matrixInstrNonkdim = 0 (default)
 - numCTAs = 1 (default)
 - wavesPerEU = 0 (default)
 - gridGroupSize = 0 (default)
@@ -128,9 +131,13 @@ def convert_to_new_format(old_config: OldAttnPerfConfig,
     else:
         num_waves = numerator // denominator
     
+    # M/N swap: rocMLIR computes the transposed attention (M=seqK, N=seqQ) and
+    # transposes the result before storing, so its mPerBlockG0 tiles seqK while
+    # rocmlirTriton's mPerBlockG0 tiles seqQ. See transposeAttnOperand() in
+    # rocMLIR's GridwiseGemmToBlockwise.cpp.
     return NewAttnPerfConfig(
-        m_per_block_g0=old_config.m_per_block_g0,
-        n_per_block_g0=old_config.n_per_block_g0,
+        m_per_block_g0=old_config.n_per_block_g0,
+        n_per_block_g0=old_config.m_per_block_g0,
         k_per_block=k_per_block,
         kpack=default_kpack,
         num_ctas=default_num_ctas,
