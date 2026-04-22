@@ -146,7 +146,7 @@ func.func @dequantize_scale_bias_si32(%arg: !migraphx.shaped<1x112x112x64xsi32, 
 // CHECK-LABEL: func @quantize_scale_bias_ui32
 // CHECK: tosa.reciprocal
 // CHECK: tosa.mul
-// CHECK: tosa.cast{{.*}}: (tensor<1x112x112x64xf32>) -> tensor<1x112x112x64xi32>
+// CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}: (tensor<1x112x112x64xf32>) -> tensor<1x112x112x64xi32>
 // CHECK: tosa.add
 func.func @quantize_scale_bias_ui32(%arg: !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1>, %scale: !migraphx.shaped<1x1x1x64xf32, 64x64x64x1>, %bias: !migraphx.shaped<1x1x1x64xui32, 64x64x64x1>) -> !migraphx.shaped<1x112x112x64xui32, 802816x7168x64x1> attributes {rock.kernel = "mixr"} {
   %1 = migraphx.quantizelinear %arg, %scale, %bias : <1x112x112x64xf32, 802816x7168x64x1>, <1x1x1x64xf32, 64x64x64x1>, !migraphx.shaped<1x1x1x64xui32, 64x64x64x1> -> <1x112x112x64xui32, 802816x7168x64x1>
@@ -156,7 +156,7 @@ func.func @quantize_scale_bias_ui32(%arg: !migraphx.shaped<1x112x112x64xf32, 802
 // CHECK-LABEL: func @quantize_scale_bias_si32
 // CHECK: tosa.reciprocal
 // CHECK: tosa.mul
-// CHECK: tosa.cast{{.*}}f32{{.*}}i32
+// CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}f32{{.*}}i32
 // CHECK: tosa.add
 func.func @quantize_scale_bias_si32(%arg: !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1>, %scale: !migraphx.shaped<1x1x1x64xf32, 64x64x64x1>, %bias: !migraphx.shaped<1x1x1x64xsi32, 64x64x64x1>) -> !migraphx.shaped<1x112x112x64xsi32, 802816x7168x64x1> attributes {rock.kernel = "mixr"} {
   %1 = migraphx.quantizelinear %arg, %scale, %bias : <1x112x112x64xf32, 802816x7168x64x1>, <1x1x1x64xf32, 64x64x64x1>, !migraphx.shaped<1x1x1x64xsi32, 64x64x64x1> -> <1x112x112x64xsi32, 802816x7168x64x1>
@@ -166,7 +166,7 @@ func.func @quantize_scale_bias_si32(%arg: !migraphx.shaped<1x112x112x64xf32, 802
 // CHECK-LABEL: func @quantize_scale_bias_ui8
 // CHECK: tosa.reciprocal
 // CHECK: tosa.mul
-// CHECK: tosa.cast{{.*}}: (tensor<1x112x112x64xf32>) -> tensor<1x112x112x64xi32>
+// CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}: (tensor<1x112x112x64xf32>) -> tensor<1x112x112x64xi32>
 // CHECK: tosa.custom{{.*}}i8{{.*}}i32
 // CHECK: tosa.add
 // CHECK: tosa.clamp{{.*}}i32{{.*}}i32
@@ -179,7 +179,7 @@ func.func @quantize_scale_bias_ui8(%arg: !migraphx.shaped<1x112x112x64xf32, 8028
 // CHECK-LABEL: func @quantize_scale_bias_si8
 // CHECK: tosa.reciprocal
 // CHECK: tosa.mul
-// CHECK: tosa.cast{{.*}}f32{{.*}}i32
+// CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}f32{{.*}}i32
 // CHECK: tosa.cast{{.*}}i8{{.*}}i32
 // CHECK: tosa.add
 // CHECK: tosa.clamp{{.*}}i32{{.*}}i32
@@ -214,7 +214,7 @@ func.func @basic_add_si32(%arg0: !migraphx.shaped<1x112x112x64xsi32, 802816x7168
 // CHECK: tosa.mul{{.*}}(tensor<1x64x112x112xf32>, tensor<1x64x1x1xf32>, tensor<1xi8>) -> tensor<1x64x112x112xf32>
 // CHECK: tosa.reciprocal{{.*}}(tensor<1x64x1x1xf32>) -> tensor<1x64x1x1xf32>
 // CHECK: tosa.mul{{.*}}(tensor<1x64x112x112xf32>, tensor<1x64x1x1xf32>, tensor<1xi8>) -> tensor<1x64x112x112xf32>
-// CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xf32>) -> tensor<1x64x112x112xi32>
+// CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}(tensor<1x64x112x112xf32>) -> tensor<1x64x112x112xi32>
 // CHECK: tosa.cast{{.*}}(tensor<1x64x1x1xi8>) -> tensor<1x64x1x1xi32>
 // CHECK: tosa.add{{.*}}(tensor<1x64x112x112xi32>, tensor<1x64x1x1xi32>) -> tensor<1x64x112x112xi32>
 // CHECK: tosa.clamp{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xi32>

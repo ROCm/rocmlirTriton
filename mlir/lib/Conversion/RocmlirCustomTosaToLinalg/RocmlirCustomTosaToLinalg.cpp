@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -63,9 +64,10 @@ LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
   if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
     return rewriter.notifyMatchFailure(op, "domain isn't rocmlir");
   if (op.getOperatorName() != ROCK_CUSTOMOP_UNSIGNED_CAST &&
-      op.getOperatorName() != ROCK_CUSTOMOP_UNSIGNED_DIV)
+      op.getOperatorName() != ROCK_CUSTOMOP_UNSIGNED_DIV &&
+      op.getOperatorName() != ROCK_CUSTOMOP_FP_TO_INT_CAST)
     return rewriter.notifyMatchFailure(
-        op, "isn't an unsigned_cast or unsigned_div");
+        op, "isn't an unsigned_cast, unsigned_div, or fp_to_int_cast");
 
   Location loc = op.getLoc();
   auto outType = cast<RankedTensorType>(op.getResults().front().getType());
@@ -99,8 +101,15 @@ LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
           } else {
             assert(isa<FloatType>(inElemType));
             assert(isa<IntegerType>(outElemType));
-            result = arith::FPToUIOp::create(b, loc, outElemType, inputs[0]);
+            result = rock::createClampedFPToInt(b, loc, inputs[0], outElemType,
+                                                /*isUnsigned=*/true);
           }
+        } else if (op.getOperatorName() == ROCK_CUSTOMOP_FP_TO_INT_CAST) {
+          assert(isa<FloatType>(inElemType));
+          assert(isa<IntegerType>(outElemType));
+          assert(inputs.size() == 2);
+          result = rock::createClampedFPToInt(b, loc, inputs[0], outElemType,
+                                              /*isUnsigned=*/false);
         } else if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_DIV) {
           assert(isa<IntegerType>(outElemType));
           assert(isa<IntegerType>(inElemType));
@@ -142,8 +151,10 @@ LogicalResult MatMulAccPromotionPattern::matchAndRewrite(
 void mlir::rock::populateRocmlirCustomTosaToLinalgTarget(
     ConversionTarget &target) {
   target.addLegalOp<linalg::GenericOp, linalg::YieldOp, arith::ExtUIOp,
-                    arith::TruncIOp, arith::DivUIOp, arith::FPToUIOp,
-                    arith::UIToFPOp, tensor::EmptyOp, tosa::CastOp>();
+                    arith::TruncIOp, arith::DivUIOp, arith::FPToSIOp,
+                    arith::FPToUIOp, arith::UIToFPOp, arith::MaximumFOp,
+                    arith::MinimumFOp, arith::CmpFOp, arith::SelectOp,
+                    arith::ConstantOp, tensor::EmptyOp, tosa::CastOp>();
   target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
     return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME;
   });

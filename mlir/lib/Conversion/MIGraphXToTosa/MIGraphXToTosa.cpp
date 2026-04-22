@@ -113,6 +113,21 @@ static Value createCastOp(PatternRewriter &rewriter, Location loc,
                                  ROCK_CUSTOMOP_UNSIGNED_CAST,
                                  ROCK_CUSTOMOP_DOMAIN_NAME, "", input)
               .getResult(0);
+  } else if (isa<FloatType>(inputType) && isa<IntegerType>(resElementType)) {
+    // Float -> signed int. (Float -> unsigned int is already handled by the
+    // unsigned_cast branch above, since the `or` there catches any unsigned
+    // endpoint first; that path also dispatches to a clamped fptoui in its
+    // downstream lowering.) MIGraphX uses truncation (no rounding) for
+    // float->int casts, but the custom op's lowering also clamps to the
+    // destination integer range before truncating, so out-of-range / inf
+    // inputs don't produce poison values (saturating-then-truncating, not a
+    // plain C-style cast). Use a custom op so both GPU and CPU paths lower
+    // identically, bypassing upstream tosa-to-linalg which would emit
+    // round-to-nearest-even.
+    res = tosa::CustomOp::create(rewriter, loc, resType,
+                                 ROCK_CUSTOMOP_FP_TO_INT_CAST,
+                                 ROCK_CUSTOMOP_DOMAIN_NAME, "", input)
+              .getResult(0);
   } else {
     res = rewriter.createOrFold<tosa::CastOp>(loc, resType, input);
   }
@@ -1312,20 +1327,14 @@ LogicalResult QuantizeLinearConverter::matchAndRewrite(
 LogicalResult
 ConvertConverter::matchAndRewrite(migraphx::ConvertOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const {
-
-  auto inputType = op.getInA().getType().getElementType();
-  auto outputType = op.getResult().getType().getElementType();
-  if (inputType.isUnsignedInteger() || outputType.isUnsignedInteger()) {
-    assert(!inputType.isSignedInteger() && !outputType.isSignedInteger());
-    rewriter.replaceOpWithNewOp<tosa::CustomOp>(
-        op, getTypeConverter()->convertType(op.getResult().getType()),
-        ROCK_CUSTOMOP_UNSIGNED_CAST, ROCK_CUSTOMOP_DOMAIN_NAME, "",
-        adaptor.getInA());
-  } else {
-    rewriter.replaceOpWithNewOp<tosa::CastOp>(
-        op, getTypeConverter()->convertType(op.getResult().getType()),
-        adaptor.getInA());
-  }
+  Type inputType = op.getInA().getType().getElementType();
+  Type outputType = op.getResult().getType().getElementType();
+  auto convertedResultType = cast<RankedTensorType>(
+      getTypeConverter()->convertType(op.getResult().getType()));
+  Value result =
+      createCastOp(rewriter, op.getLoc(), convertedResultType.getElementType(),
+                   adaptor.getInA(), inputType, outputType);
+  rewriter.replaceOp(op, result);
   return success();
 }
 
@@ -1532,8 +1541,12 @@ LogicalResult ComparisonConverter<MIGraphXOp, TosaOp>::matchAndRewrite(
       RankedTensorType::get(op.getType().getShape(), rewriter.getI1Type());
   auto comparisonResult =
       rewriter.createOrFold<TosaOp>(op->getLoc(), newType, inA, inB);
-  rewriter.replaceOpWithNewOp<tosa::CastOp>(op, adaptor.getInA().getType(),
-                                            comparisonResult);
+  Type origInputElemType = op.getInA().getType().getElementType();
+  auto convertedInType = cast<RankedTensorType>(inA.getType());
+  Value result =
+      createCastOp(rewriter, op->getLoc(), convertedInType.getElementType(),
+                   comparisonResult, rewriter.getI1Type(), origInputElemType);
+  rewriter.replaceOp(op, result);
 
   return success();
 }

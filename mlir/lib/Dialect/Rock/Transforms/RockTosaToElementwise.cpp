@@ -26,8 +26,9 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
-#include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
+#include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -445,126 +446,13 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       return success();
     }
 
-    // float -> int
-    // We use direct truncation (FPToSI/FPToUI) rather than round-to-nearest-even
-    // to match both MIGraphX semantics and Triton's implementation.
-    // See: triton/python/triton/language/semantic.py (cast, lines ~876-884)
-    // Replicates the three-case structure from TosaToLinalg's CastOp lowering,
-    // adapted for tensor-level ops and unsigned integer support.
+    // float -> int: not reachable. This pass is only invoked from the
+    // MIGraphX pipeline, and the MIGraphX frontend never emits a plain
+    // `tosa.cast` for fp->int
     if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
-      auto srcShapedTy = cast<ShapedType>(op.getInput().getType());
-      auto dstShapedTy = cast<ShapedType>(op.getType());
-      auto srcFloatTy = cast<FloatType>(srcTy);
-      unsigned dstWidth = cast<IntegerType>(dstTy).getWidth();
-      bool isUnsigned = cast<IntegerType>(dstTy).isUnsignedInteger();
-      Location loc = op.getLoc();
-      const auto &fltSemantics = srcFloatTy.getFloatSemantics();
-
-      auto splatFloat = [&](APFloat v) -> Value {
-        return arith::ConstantOp::create(
-            rewriter, loc,
-            DenseElementsAttr::get(srcShapedTy,
-                                   rewriter.getFloatAttr(srcTy, v)));
-      };
-      auto splatFloatFromDouble = [&](double v) -> Value {
-        return arith::ConstantOp::create(
-            rewriter, loc,
-            DenseElementsAttr::get(srcShapedTy,
-                                   rewriter.getFloatAttr(srcTy, v)));
-      };
-      auto splatInt = [&](APInt v) -> Value {
-        return arith::ConstantOp::create(
-            rewriter, loc,
-            DenseElementsAttr::get(dstShapedTy,
-                                   rewriter.getIntegerAttr(dstTy, v)));
-      };
-      auto fpToInt = [&](Value v) -> Value {
-        if (isUnsigned)
-          return arith::FPToUIOp::create(rewriter, loc, dstShapedTy, v);
-        return arith::FPToSIOp::create(rewriter, loc, dstShapedTy, v);
-      };
-
-      APInt intMin = isUnsigned ? APInt::getZero(dstWidth)
-                                : APInt::getSignedMinValue(dstWidth);
-      APInt intMax = isUnsigned ? APInt::getMaxValue(dstWidth)
-                                : APInt::getSignedMaxValue(dstWidth);
-
-      // Use input directly without rounding (truncation toward zero)
-      Value input = op.getInput();
-
-      // Case 1: Neither int min nor int max can be represented in the
-      // floating-point type due to too short exponent range. All finite
-      // float values are representable in the integer type; fix up
-      // infinities with cmp + select.
-      if (static_cast<int>(dstWidth) - 1 >
-          APFloat::semanticsMaxExponent(fltSemantics)) {
-        Value posInf = splatFloat(APFloat::getInf(fltSemantics));
-        auto overflow = arith::CmpFOp::create(
-            rewriter, loc, arith::CmpFPredicate::UEQ, input, posInf);
-
-        if (isUnsigned) {
-          Value zeroF = splatFloatFromDouble(0.0);
-          Value clampedPos =
-              arith::MaximumFOp::create(rewriter, loc, input, zeroF);
-          Value conv = fpToInt(clampedPos);
-          Value maxClamped = arith::SelectOp::create(
-              rewriter, loc, overflow, splatInt(intMax), conv);
-          rewriter.replaceOp(op, maxClamped);
-        } else {
-          Value conv = fpToInt(input);
-          Value negInf =
-              splatFloat(APFloat::getInf(fltSemantics, /*Negative=*/true));
-          auto underflow = arith::CmpFOp::create(
-              rewriter, loc, arith::CmpFPredicate::UEQ, input, negInf);
-          Value maxClamped = arith::SelectOp::create(
-              rewriter, loc, overflow, splatInt(intMax), conv);
-          rewriter.replaceOpWithNewOp<arith::SelectOp>(
-              op, underflow, splatInt(intMin), maxClamped);
-        }
-        return success();
-      }
-
-      // intMinFP is shared between cases 2 and 3.
-      double intMinDouble = isUnsigned
-                                ? static_cast<double>(intMin.getZExtValue())
-                                : static_cast<double>(intMin.getSExtValue());
-      Value intMinFP = splatFloatFromDouble(intMinDouble);
-
-      // Case 2: The mantissa has enough bits to represent int max exactly.
-      // Int min is also representable (0 for unsigned, or a power of two for
-      // signed). Clamp entirely in the floating-point domain, then convert.
-      unsigned requiredMantissa = isUnsigned ? dstWidth : dstWidth - 1;
-      if (srcFloatTy.getFPMantissaWidth() >= requiredMantissa) {
-        double intMaxDouble =
-            isUnsigned ? static_cast<double>(intMax.getZExtValue())
-                       : static_cast<double>(intMax.getSExtValue());
-        Value intMaxFP = splatFloatFromDouble(intMaxDouble);
-        Value hi = arith::MinimumFOp::create(rewriter, loc, input, intMaxFP);
-        Value clamped =
-            arith::MaximumFOp::create(rewriter, loc, hi, intMinFP);
-        rewriter.replaceOp(op, fpToInt(clamped));
-        return success();
-      }
-
-      // Case 3: Exponent range is sufficient but mantissa is too narrow to
-      // represent int max exactly. Clamp the lower bound in the float domain,
-      // convert, then compare against int-max-plus-one (a power of two, always
-      // representable) to fix up overflow with a select.
-      double intMaxPlusOneDouble =
-          isUnsigned
-              ? std::ldexp(1.0, dstWidth)
-              : static_cast<double>(intMax.getSExtValue()) + 1.0;
-      Value intMaxPlusOneFP = splatFloatFromDouble(intMaxPlusOneDouble);
-
-      Value minClampedFP =
-          arith::MaximumFOp::create(rewriter, loc, input, intMinFP);
-      Value minClamped = fpToInt(minClampedFP);
-      auto overflow = arith::CmpFOp::create(
-          rewriter, loc, arith::CmpFPredicate::UGE, input, intMaxPlusOneFP);
-      rewriter.replaceOpWithNewOp<arith::SelectOp>(op, overflow,
-                                                    splatInt(intMax),
-                                                    minClamped);
-      return success();
+      return op.emitOpError(
+          "tosa.cast from floating-point to integer is not supported by "
+          "rock-tosa-to-elementwise");
     }
 
     // int -> bool
@@ -601,10 +489,11 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
   }
 };
 
-// tosa.custom with domain "rocmlir": unsigned_cast and unsigned_div.
-// These are custom TOSA ops that represent unsigned integer operations
-// (fptoui, uitofp, extui, divui) which standard TOSA doesn't support.
-struct CustomUnsignedOpConverter : public OpRewritePattern<tosa::CustomOp> {
+// tosa.custom with domain "rocmlir": unsigned_cast, unsigned_div,
+// and fp_to_int_cast.
+// These are custom TOSA ops that represent operations which standard TOSA
+// doesn't support or where we need to override upstream lowering behavior.
+struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::CustomOp op,
                                 PatternRewriter &rewriter) const override {
@@ -631,8 +520,18 @@ struct CustomUnsignedOpConverter : public OpRewritePattern<tosa::CustomOp> {
           rewriter.replaceOp(op, input);
         }
       } else {
-        rewriter.replaceOpWithNewOp<arith::FPToUIOp>(op, outType, input);
+        Value result = rock::createClampedFPToInt(
+            rewriter, op.getLoc(), input, outElemType, /*isUnsigned=*/true);
+        rewriter.replaceOp(op, result);
       }
+      return success();
+    }
+
+    if (op.getOperatorName() == ROCK_CUSTOMOP_FP_TO_INT_CAST) {
+      Value input = op.getInputList()[0];
+      Value result = rock::createClampedFPToInt(
+          rewriter, op.getLoc(), input, outElemType, /*isUnsigned=*/false);
+      rewriter.replaceOp(op, result);
       return success();
     }
 
@@ -691,10 +590,6 @@ struct RockTosaToElementwise
         [](math::TanhOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<math::PowFOp>(
         [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
-    target.addDynamicallyLegalOp<math::RoundEvenOp>(
-        [](math::RoundEvenOp op) { return !isa<ShapedType>(op.getType()); });
-    target.addDynamicallyLegalOp<math::RoundOp>(
-        [](math::RoundOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<arith::NegFOp>(
         [](arith::NegFOp op) { return !isa<ShapedType>(op.getType()); });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
@@ -706,7 +601,8 @@ struct RockTosaToElementwise
         return true;
       StringRef name = op.getOperatorName();
       return name != ROCK_CUSTOMOP_UNSIGNED_CAST &&
-             name != ROCK_CUSTOMOP_UNSIGNED_DIV;
+             name != ROCK_CUSTOMOP_UNSIGNED_DIV &&
+             name != ROCK_CUSTOMOP_FP_TO_INT_CAST;
     });
 
     // --- Binary float / int ---
@@ -751,10 +647,9 @@ struct RockTosaToElementwise
 
     // --- Special cases ---
     patterns.add<ReciprocalRsqrtToSqrtConverter>(ctx, /*benefit=*/2);
-    patterns
-        .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
-             SigmoidConverter, SelectConverter, ClampConverter, CastConverter,
-             CustomUnsignedOpConverter>(ctx);
+    patterns.add<AbsConverter, NegateConverter, MulConverter,
+                 ReciprocalConverter, SigmoidConverter, SelectConverter,
+                 ClampConverter, CastConverter, CustomOpConverter>(ctx);
 
     // --- Triton workarounds ---
     // The Triton TritonToTritonGPU conversion is missing patterns for

@@ -66,6 +66,13 @@ func.func @floats_i4_to_f32(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xf32> {
   func.return %out : tensor<8x8x2xf32>
 }
 
+// f16 -> i8 (unsigned): hits Case 2 of rock::createClampedFPToInt (mantissa
+// 11 >= dstWidth 8, so both 0 and 255 are exactly representable in f16).
+// First a NaN-sanitization prologue (cmpf uno + select to 0), then the
+// in-float-domain min/max clamp, then the truncating fptoui. The min comes
+// before the max because the helper emits `minimumf(in, intMax)` first and
+// `maximumf(hi, intMin)` second; this differs from the GPU/MIGraphX path
+// only in being inside a linalg.generic body.
 // CHECK-LABEL: @floats_f16_to_i8
 // CHECK-SAME: (%[[arg0:.+]]: tensor<8x8x2xf16>)
 // CHECK: %[[empty:.+]] = tensor.empty() : tensor<8x8x2xi8>
@@ -73,13 +80,72 @@ func.func @floats_i4_to_f32(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xf32> {
 // CHECK-SAME: ins(%[[arg0]] : tensor<8x8x2xf16>)
 // CHECK-SAME: outs(%[[empty]] : tensor<8x8x2xi8>)
 // CHECK-NEXT: %[[in:.+]]: f16
-// CHECK-NEXT: %[[res:.+]] = arith.fptoui %[[in]] : f16 to i8
-// CHECK-NEXT: linalg.yield %[[res]]
-// CHECK-NEXT: -> tensor<8x8x2xi8>
-// CHECK-NEXT: return %[[ret]]
+// CHECK:      %[[isnan:.+]] = arith.cmpf uno, %[[in]], %[[in]] : f16
+// CHECK:      %[[san:.+]] = arith.select %[[isnan]], {{.*}}, %[[in]] : f16
+// CHECK:      %[[hi:.+]] = arith.minimumf %[[san]], {{.*}} : f16
+// CHECK:      %[[clamped:.+]] = arith.maximumf %[[hi]], {{.*}} : f16
+// CHECK:      %[[res:.+]] = arith.fptoui %[[clamped]] : f16 to i8
+// CHECK:      linalg.yield %[[res]]
+// CHECK:      -> tensor<8x8x2xi8>
+// CHECK:      return %[[ret]]
 func.func @floats_f16_to_i8(%arg0: tensor<8x8x2xf16>) -> tensor<8x8x2xi8> {
   %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<8x8x2xf16>) -> tensor<8x8x2xi8>
   func.return %out : tensor<8x8x2xi8>
+}
+
+// -----
+
+// fp_to_int_cast lowers to rock::createClampedFPToInt, which implements the
+// MIGraphX saturating + truncating convert semantics (NaN -> 0, out-of-range
+// -> INT_MIN/MAX, no round-to-nearest-even). The exact case picked depends
+// on the (source-float, dest-int) pair.
+
+// f32 -> i32 (signed): Case 3, because f32 mantissa (24) is too narrow to
+// represent INT32_MAX (2^31 - 1) exactly. Strategy: NaN-sanitize, clamp the
+// lower bound in-float, fptosi, then patch up overflow against the exactly
+// representable (INT32_MAX + 1) = 2^31 with a select.
+// CHECK-LABEL: @fp_to_int_cast_f32_to_i32
+// CHECK-SAME: (%[[arg0:.+]]: tensor<8x8x2xf32>)
+// CHECK: %[[empty:.+]] = tensor.empty() : tensor<8x8x2xi32>
+// CHECK: %[[ret:.+]] = linalg.generic
+// CHECK-SAME: ins(%[[arg0]] : tensor<8x8x2xf32>)
+// CHECK-SAME: outs(%[[empty]] : tensor<8x8x2xi32>)
+// CHECK-NEXT: %[[in:.+]]: f32
+// CHECK:      %[[isnan:.+]] = arith.cmpf uno, %[[in]], %[[in]] : f32
+// CHECK:      %[[san:.+]] = arith.select %[[isnan]], {{.*}}, %[[in]] : f32
+// CHECK:      %[[clamped:.+]] = arith.maximumf %[[san]], {{.*}} : f32
+// CHECK:      %[[conv:.+]] = arith.fptosi %[[clamped]] : f32 to i32
+// CHECK:      %[[ovf:.+]] = arith.cmpf uge, %[[san]], {{.*}} : f32
+// CHECK:      %[[res:.+]] = arith.select %[[ovf]], {{.*}}, %[[conv]] : i32
+// CHECK:      linalg.yield %[[res]]
+// CHECK:      -> tensor<8x8x2xi32>
+// CHECK:      return %[[ret]]
+func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<8x8x2xf32>) -> tensor<8x8x2xi32> {
+  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<8x8x2xf32>) -> tensor<8x8x2xi32>
+  func.return %out : tensor<8x8x2xi32>
+}
+
+// f16 -> i8 (signed): Case 2, because f16 mantissa (11) >= dstWidth-1 (7),
+// so both -128 and 127 are exactly representable. Strategy: NaN-sanitize,
+// then fully clamp in-float (min then max), then fptosi.
+// CHECK-LABEL: @fp_to_int_cast_f16_to_i8
+// CHECK-SAME: (%[[arg0:.+]]: tensor<16xf16>)
+// CHECK: %[[empty:.+]] = tensor.empty() : tensor<16xi8>
+// CHECK: %[[ret:.+]] = linalg.generic
+// CHECK-SAME: ins(%[[arg0]] : tensor<16xf16>)
+// CHECK-SAME: outs(%[[empty]] : tensor<16xi8>)
+// CHECK-NEXT: %[[in:.+]]: f16
+// CHECK:      %[[isnan:.+]] = arith.cmpf uno, %[[in]], %[[in]] : f16
+// CHECK:      %[[san:.+]] = arith.select %[[isnan]], {{.*}}, %[[in]] : f16
+// CHECK:      %[[hi:.+]] = arith.minimumf %[[san]], {{.*}} : f16
+// CHECK:      %[[clamped:.+]] = arith.maximumf %[[hi]], {{.*}} : f16
+// CHECK:      %[[res:.+]] = arith.fptosi %[[clamped]] : f16 to i8
+// CHECK:      linalg.yield %[[res]]
+// CHECK:      -> tensor<16xi8>
+// CHECK:      return %[[ret]]
+func.func @fp_to_int_cast_f16_to_i8(%arg0: tensor<16xf16>) -> tensor<16xi8> {
+  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf16>) -> tensor<16xi8>
+  func.return %out : tensor<16xi8>
 }
 
 // -----

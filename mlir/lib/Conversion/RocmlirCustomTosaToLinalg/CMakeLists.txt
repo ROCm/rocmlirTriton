@@ -15,4 +15,5 @@ target_link_libraries(RocmlirCustomTosaToLinalg
   MLIRTosaDialect
   MLIRTensorDialect
   MLIRLinalgDialect
+  MLIRRockUtility
 )
