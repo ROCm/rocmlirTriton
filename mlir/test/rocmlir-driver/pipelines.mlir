@@ -59,7 +59,8 @@
 // GPU-NEXT:f8E5M2,
 // GPU-NEXT:f8E8M0FNU} target-type=f32},
 // GPU-NEXT:arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true},
-// GPU-NEXT:func.func(rock-lower-blockwise-to-ptr,
+// GPU-NEXT:func.func(rock-analyze-memory-use,
+// GPU-NEXT:rock-lower-blockwise-to-ptr,
 // GPU-NEXT:rock-preserve-masked-load-semantics,
 // GPU-NEXT:rock-transforms-to-pointer-arith,
 // GPU-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
@@ -259,7 +260,8 @@
 // `--host-pipeline=backend` (covered by runner-pipelines.mlir).
 // BINARY:Kernel pipeline:
 // BINARY-NEXT:builtin.module(resolve-kernel-launch-params,
-// BINARY-NEXT:triton-to-hsaco{allow-flush-denorm=false arch={{gfx90a|gfx942|gfx950}} enable-fp-fusion=true features= llvm-fn-attrs= num-ctas=1 num-warps=4 opt-level=3 scalarize-packed-fops=false schedule-hint=-1 triple=amdgcn-amd-amdhsa waves-per-eu=0},
+// BINARY-NEXT:llvm.func(rock-prepare-llvm{allow-flush-denorm=true}),
+// BINARY-NEXT:triton-to-hsaco{allow-flush-denorm=true arch={{gfx90a|gfx942|gfx950}} enable-fp-fusion=true features= llvm-fn-attrs= num-ctas=1 num-warps=4 opt-level=3 scalarize-packed-fops=false schedule-hint=-1 triple=amdgcn-amd-amdhsa waves-per-eu=0},
 // BINARY-NEXT:rock-emit-gpu-binary{arch={{gfx90a|gfx942|gfx950}} features= opt-level=3 triple=amdgcn-amd-amdhsa})
 
 // HIGHLEVEL:Kernel Highlevel pipeline:
