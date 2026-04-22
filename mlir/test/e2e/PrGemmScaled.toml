@@ -33,9 +33,9 @@ values = ["f8E8M0FNU"]
 prefix =  "-scale_b_dtype "
 
 [[axis]]
-name = "schedule_version"
+name = "num_stages"
 values = ["1", "2"]
-prefix = "--schedule_version  "
+prefix = "--num_stages "
 
 ## Gemm variants
 [[suite]]

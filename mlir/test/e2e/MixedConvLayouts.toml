@@ -30,9 +30,9 @@ values = ["ngchw", "nghwc", "hwcgn"]
 prefix = "-in_layout="
 
 [[axis]]
-name = "schedule_version"
+name = "num_stages"
 values = ["1", "2"]
-prefix = "--schedule_version  "
+prefix = "--num_stages "
 
 [[suite]]
 name = "MixedConvLayouts"

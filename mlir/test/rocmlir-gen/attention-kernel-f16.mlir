@@ -1,20 +1,18 @@
-// TODO(rocmlirTriton): Rework schedule_version -> num_stages
-
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
-// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false --schedule_version 2 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=SCHEDV2
-// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false --schedule_version 3 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=SCHEDV3
-// XXX: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --apply-bufferization-pipeline=false --schedule_version 4 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=SCHEDV4
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --num_stages 2 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=NUMSTAGES2
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --num_stages 3 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=NUMSTAGES3
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f16 -pv --num_stages 4 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=NUMSTAGES4
 
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
-// SCHEDV2-LABEL: func.func @rock_attention
-// SCHEDV2-SAME: schedule_version = #rock.schedule_version<2>
+// NUMSTAGES2-LABEL: func.func @rock_attention
+// NUMSTAGES2-SAME: rock.num_stages = 2 : i32
 
-// SCHEDV3-LABEL: func.func @rock_attention
-// SCHEDV3-SAME: schedule_version = #rock.schedule_version<3>
+// NUMSTAGES3-LABEL: func.func @rock_attention
+// NUMSTAGES3-SAME: rock.num_stages = 3 : i32
 
-// SCHEDV4-LABEL: func.func @rock_attention
-// SCHEDV4-SAME: schedule_version = #rock.schedule_version<4>
+// NUMSTAGES4-LABEL: func.func @rock_attention
+// NUMSTAGES4-SAME: rock.num_stages = 4 : i32
 
 // CHECK-LABEL: func.func @rock_attention
 // CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<32768xf16>,

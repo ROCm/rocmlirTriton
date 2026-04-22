@@ -263,6 +263,13 @@ def Rock_GemmParamsAttr
         getPerfConfigStr(buf);
         return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
     }
+
+    GemmParamsAttr withNumStages(int64_t newNumStages) const {
+      return GemmParamsAttr::get(
+        getContext(), getMPerBlock(), getNPerBlock(), getKPerBlock(),
+        getKpack(), getNumCTAs(), getNumWaves(), getMatrixInstrNonkdim(),
+        getSplitKFactor(), newNumStages, getWavesPerEU(), getGridGroupSize());
+    }
   }];
 
   let builders = [AttrBuilderWithInferredContext<(
@@ -324,6 +331,13 @@ def Rock_GemmGemmParamsAttr
         getPerfConfigStr(buf);
         return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
     }
+
+    GemmGemmParamsAttr withNumStages(int64_t newNumStages) const {
+      return GemmGemmParamsAttr::get(
+        getContext(), getMPerBlockG0(), getNPerBlockG0(), getKPerBlock(),
+        getKpack(), getNumCTAs(), getNumWaves(), getMatrixInstrNonkdim(),
+        getSplitKFactor(), newNumStages, getWavesPerEU(), getGridGroupSize());
+    }
   }];
 
   let builders = [AttrBuilderWithInferredContext<(
@@ -331,6 +345,13 @@ def Rock_GemmGemmParamsAttr
 
   let assemblyFormat = [{
     `<` struct(params) `>`
+  }];
+}
+
+def Rock_NumStagesAttr : Rock_Attr<"NumStages"> {
+  let mnemonic = "rock.num_stages";
+  let description = [{
+    Attribute to express num_stages tuning parameter.
   }];
 }
 

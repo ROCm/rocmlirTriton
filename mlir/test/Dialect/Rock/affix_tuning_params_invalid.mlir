@@ -48,55 +48,33 @@ func.func @two_gemms(
   return %out0, %out1 : tensor<1x128x115200xf32>, tensor<1x128x115200xf32>
 }
 
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_schedulev2(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {schedule_version =  #rock.schedule_version<2>, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
-//   // expected-disabled-error @+1 {{kernel has both perf_config and schedule_version attribute set. Please modify schedule version directly inside perf_config and remove schedule_version}}
-//   rock.attention{
-//     qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//     %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {perf_config = "attn:v1:16,128,64,1,1,1,0,1,1,0,0", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
+func.func @rock_gemm_num_stages2(%arg0: tensor<787456xf32>, %arg1: tensor<393728xf32>, %arg2: tensor<524288xf32>) -> tensor<524288xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.kernel, rock.num_stages = 2 : i32} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 769 + d2)> by [<Unmerge{1024, 769} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 769] -> [787456]> : tensor<787456xf32> to tensor<1x1024x769xf32>
+  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 512 + d2)> by [<Unmerge{769, 512} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 769, 512] -> [393728]> : tensor<393728xf32> to tensor<1x769x512xf32>
+  // expected-error @+1 {{kernel has both perf_config and rock.num_stages attribute set. Please modify num_stages directly inside perf_config and remove rock.num_stages}}
+  %2 = rock.gemm %0 * %1 {perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"} : tensor<1x1024x769xf32> * tensor<1x769x512xf32> -> tensor<1x1024x512xf32>
+  %3 = rock.transform %2 by <affine_map<(d0) -> (0, d0 floordiv 512, d0 mod 512)> by [<Merge{1024, 512} ["raw"] at [0] -> ["m", "n"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [524288] -> [1, 1024, 512]> : tensor<1x1024x512xf32> to tensor<524288xf32>
+  %4 = rock.store %3 to %arg2 by  set : tensor<524288xf32> -> tensor<524288xf32> to tensor<524288xf32>
+  return %4 : tensor<524288xf32>
+}
 
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_perfconfig_schedulev3_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_perfconfig_schedulev4_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_schedulev3_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {schedule_version =  #rock.schedule_version<3>, rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_schedulev4_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {schedule_version =  #rock.schedule_version<4>, rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
+func.func @rock_attn_num_stages2(%arg0: tensor<24576xf32>, %arg1: tensor<24576xf32>, %arg2: tensor<24576xf32>, %arg3: tensor<24576xf32>) -> tensor<24576xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel, rock.num_stages = 2 : i32} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)> by [<Unmerge{384, 64} ["seq_q", "head_qk"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 384, 64] -> [24576]> : tensor<24576xf32> to tensor<1x384x64xf32>
+  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 384 + d2)> by [<Unmerge{64, 384} ["head_qk", "seq_k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 384] -> [24576]> : tensor<24576xf32> to tensor<1x64x384xf32>
+  %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)> by [<Unmerge{384, 64} ["seq_k", "head_v"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 384, 64] -> [24576]> : tensor<24576xf32> to tensor<1x384x64xf32>
+  // expected-error @+1 {{kernel has both perf_config and rock.num_stages attribute set. Please modify num_stages directly inside perf_config and remove rock.num_stages}}
+  %result = rock.attention{
+    qk = %0 * %1 : tensor<1x384x64xf32>, tensor<1x64x384xf32>
+    qk = elementwise {
+  ^bb0(%arg4: tensor<1x384x384xf32>):
+    rock.yield %arg4 : tensor<1x384x384xf32>
+  }
+    softmax(qk) * %2 : tensor<1x384x64xf32>
+  } {perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x384x64xf32>
+  %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 64, d0 mod 64)> by [<Merge{384, 64} ["raw"] at [0] -> ["seq_q", "head_v"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [24576] -> [1, 384, 64]> : tensor<1x384x64xf32> to tensor<24576xf32>
+  %4 = rock.store %3 to %arg3 by  set : tensor<24576xf32> -> tensor<24576xf32> to tensor<24576xf32>
+  return %4 : tensor<24576xf32>
+}
 
 // expected-error @below {{unknown attribute 'kernel' on function 'bare_kernel_attr'}}
 func.func @bare_kernel_attr(%arg0: tensor<1x128x128xf32>, %arg1: tensor<1x128x128xf32>, %arg2: tensor<1x128x128xf32>) -> tensor<1x128x128xf32>

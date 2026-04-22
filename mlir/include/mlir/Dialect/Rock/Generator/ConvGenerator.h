@@ -33,7 +33,7 @@ public:
     // TODO: drop these
     std::string chip;
     bool disableSplitKForTuning;
-    int64_t scheduleVersion;
+    int64_t numStages;
     std::string triple;
     std::string chipFeatures;
     std::string perfConfig;
@@ -61,7 +61,7 @@ public:
 
   ConvGenerator(const std::string &arch = "", const std::string &chip = "",
                 bool disableSplitKForTuning = false,
-                int64_t scheduleVersion = 1, const std::string &triple = "",
+                int64_t numStages = 1, const std::string &triple = "",
                 const std::string &chipFeatures = "",
                 const std::string &perfConfig = "",
                 std::optional<int> num_cu = std::nullopt,

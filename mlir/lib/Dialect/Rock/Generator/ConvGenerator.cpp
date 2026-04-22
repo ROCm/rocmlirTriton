@@ -40,7 +40,7 @@ using namespace mlir::rock;
 
 ConvGenerator::ConvGenerator(
     const std::string &arch, const std::string &chip,
-    bool disableSplitKForTuning, int64_t scheduleVersion,
+    bool disableSplitKForTuning, int64_t numStages,
     const std::string &triple, const std::string &chipFeatures,
     const std::string &perfConfig, std::optional<int> num_cu,
     std::optional<int> num_chiplets, const std::optional<ConvOpType> operation,
@@ -53,7 +53,7 @@ ConvGenerator::ConvGenerator(
     : config{arch,
              chip,
              disableSplitKForTuning,
-             scheduleVersion,
+             numStages,
              triple,
              chipFeatures,
              perfConfig,
@@ -822,6 +822,10 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   if (!config.disableSplitKForTuning) {
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),
                   builder.getUnitAttr());
+  }
+  if (config.numStages != 1) {
+    func->setAttr(rock::NumStagesAttr::getMnemonic(),
+                  builder.getI32IntegerAttr(config.numStages));
   }
   module.push_back(func);
   if (func.getName() != kernelName) {
