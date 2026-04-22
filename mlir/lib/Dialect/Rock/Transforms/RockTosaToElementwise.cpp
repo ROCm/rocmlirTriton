@@ -446,14 +446,13 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       return success();
     }
 
-    // float -> int: clamp to the integer range then truncate toward zero,
-    // matching MIGraphX's saturating convert semantics.
+    // float -> int: not reachable. This pass is only invoked from the
+    // MIGraphX pipeline, and the MIGraphX frontend never emits a plain
+    // `tosa.cast` for fp->int
     if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
-      bool isUnsigned = cast<IntegerType>(dstTy).isUnsignedInteger();
-      Value result = rock::createClampedFPToInt(
-          rewriter, op.getLoc(), op.getInput(), dstTy, isUnsigned);
-      rewriter.replaceOp(op, result);
-      return success();
+      return op.emitOpError(
+          "tosa.cast from floating-point to integer is not supported by "
+          "rock-tosa-to-elementwise");
     }
 
     // int -> bool

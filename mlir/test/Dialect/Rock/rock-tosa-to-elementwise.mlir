@@ -314,53 +314,10 @@ func.func @cast_i32_to_f32(%arg0: tensor<16xi32>) -> tensor<16xf32> attributes {
 
 // -----
 
-// Float-to-int casts go through rock::createClampedFPToInt, which implements
-// the MIGraphX saturating + truncating convert semantics (NaN -> 0,
-// out-of-range -> INT_MIN/MAX). Every path starts with a NaN-sanitization
-// prologue (cmpf uno + select to 0); the remainder picks one of three
-// strategies based on the float type's exponent range and mantissa width
-// relative to the integer width.
-
-// f32 -> i32 hits case 3: exponent is sufficient but mantissa (24) is too
-// narrow to represent i32 max (2^31-1) exactly. Clamp lower bound, convert,
-// then fix up overflow with a select against int-max-plus-one (2^31).
-// Following Triton's approach, we use FPToSI directly without round-to-nearest-even.
-// See: triton/python/triton/language/semantic.py (cast, lines ~876-884)
-// CHECK-LABEL: @cast_f32_to_i32
-// CHECK-NOT:   tosa.cast
-// CHECK-NOT:   math.roundeven
-// CHECK:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
-// CHECK:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
-// CHECK:       %[[MINCLAMP:.*]] = arith.maximumf %[[SAN]], {{.*}} : tensor<16xf32>
-// CHECK:       %[[CONV:.*]] = arith.fptosi %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
-// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %[[SAN]], {{.*}} : tensor<16xf32>
-// CHECK:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
-func.func @cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
-  %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xi32>
-  return %0 : tensor<16xi32>
-}
-
-// -----
-
-// f32 -> i8 hits case 2: mantissa (24) >= dstWidth-1 (7), so both -128 and
-// 127 are exactly representable. Clamp entirely in float domain (after NaN
-// sanitization), then convert.
-// Following Triton's approach, we use FPToSI directly without round-to-nearest-even.
-// See: triton/python/triton/language/semantic.py (cast, lines ~876-884)
-// CHECK-LABEL: @cast_f32_to_i8
-// CHECK-NOT:   tosa.cast
-// CHECK-NOT:   math.roundeven
-// CHECK:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
-// CHECK:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
-// CHECK:       %[[HI:.*]] = arith.minimumf %[[SAN]], {{.*}} : tensor<16xf32>
-// CHECK:       %[[CLAMPED:.*]] = arith.maximumf %[[HI]], {{.*}} : tensor<16xf32>
-// CHECK:       arith.fptosi %[[CLAMPED]] : tensor<16xf32> to tensor<16xi8>
-func.func @cast_f32_to_i8(%arg0: tensor<16xf32>) -> tensor<16xi8> attributes {rock.kernel} {
-  %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xi8>
-  return %0 : tensor<16xi8>
-}
-
-// -----
+// Float-to-int via plain `tosa.cast` is intentionally rejected by this pass:
+// the MIGraphX frontend must emit `tosa.custom "fp_to_int_cast"` instead so
+// the saturating-truncation semantics are preserved (see CustomOpConverter
+// and the @fp_to_int_cast_* tests below for the lowered IR).
 
 // Float-to-bool: non-zero is true.
 // CHECK-LABEL: @cast_f32_to_i1
@@ -422,30 +379,6 @@ func.func @cast_i1_to_f32(%arg0: tensor<16xi1>) -> tensor<16xf32> attributes {ro
 func.func @cast_i32_to_i8(%arg0: tensor<16xi32>) -> tensor<16xi8> attributes {rock.kernel} {
   %0 = tosa.cast %arg0 : (tensor<16xi32>) -> tensor<16xi8>
   return %0 : tensor<16xi8>
-}
-
-// -----
-
-// f16 -> i32 hits case 1: f16 maxExponent=15 < dstWidth-1=31, so float range
-// is much smaller than the integer range. All finite f16 values fit in i32;
-// only +-inf need fixup via cmp + select. After NaN sanitization the case-1
-// overflow comparisons are UEQ against +/-inf on a NaN-free value, which
-// then collapses to plain inf comparisons.
-// Following Triton's approach, we use FPToSI directly without round-to-nearest-even.
-// See: triton/python/triton/language/semantic.py (cast, lines ~876-884)
-// CHECK-LABEL: @cast_f16_to_i32
-// CHECK-NOT:   tosa.cast
-// CHECK-NOT:   math.roundeven
-// CHECK:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf16>
-// CHECK:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf16>
-// CHECK:       %[[OVF:.*]] = arith.cmpf ueq, %[[SAN]], {{.*}} : tensor<16xf16>
-// CHECK:       %[[CONV:.*]] = arith.fptosi %[[SAN]] : tensor<16xf16> to tensor<16xi32>
-// CHECK:       %[[UNF:.*]] = arith.cmpf ueq, %[[SAN]], {{.*}} : tensor<16xf16>
-// CHECK:       %[[MAXC:.*]] = arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
-// CHECK:       arith.select %[[UNF]], {{.*}}, %[[MAXC]] : tensor<16xi1>, tensor<16xi32>
-func.func @cast_f16_to_i32(%arg0: tensor<16xf16>) -> tensor<16xi32> attributes {rock.kernel} {
-  %0 = tosa.cast %arg0 : (tensor<16xf16>) -> tensor<16xi32>
-  return %0 : tensor<16xi32>
 }
 
 // -----
@@ -703,11 +636,16 @@ func.func @unsigned_div(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8x
 // -----
 
 // fp_to_int_cast: float-to-signed-int with saturation, matching MIGraphX
-// convert semantics. Lowers via the same rock::createClampedFPToInt helper
-// as tosa.cast, so the IR shape is identical to @cast_f32_to_i32 above
-// (Case 3: mantissa too narrow for i32 max).
+// convert semantics. Lowers via rock::createClampedFPToInt. This is the
+// only path through which fp->int casts reach this pass; plain `tosa.cast`
+// fp->int is rejected (see CastConverter), so the MIGraphX frontend must
+// emit this custom op for any fp->int conversion.
+// f32 -> i32 is Case 3 of createClampedFPToInt: f32 mantissa (24) is too
+// narrow to represent i32 max (2^31-1) exactly, so we clamp the lower
+// bound, fptosi, then fix up overflow with a select against int-max-plus-one.
 // CHECK-LABEL: @fp_to_int_cast_f32_to_i32
 // CHECK-NOT:   tosa.custom
+// CHECK-NOT:   math.roundeven
 // CHECK:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
 // CHECK:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
 // CHECK:       %[[MINCLAMP:.*]] = arith.maximumf %[[SAN]], {{.*}} : tensor<16xf32>

@@ -177,11 +177,12 @@ Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
   // not required: types without NaN simply can't produce a NaN input, so
   // the cmpf UNO becomes dead code.)
   if (!APFloat::semanticsHasZero(fltSemantics) ||
-      !APFloat::semanticsHasInf(fltSemantics)) {
+      !APFloat::semanticsHasInf(fltSemantics) ||
+      !APFloat::semanticsHasSignedRepr(fltSemantics)) {
     llvm::reportFatalUsageError(
         "rock::createClampedFPToInt: source float type lacks a "
-        "representable zero or infinity; promote it to a wider float type "
-        "before invoking this conversion");
+        "representable zero, signed representation, or infinity; promote "
+        "it to a wider float type before invoking this conversion");
   }
 
   auto fpConst = [&](APFloat v) -> Value {
