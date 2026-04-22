@@ -7,7 +7,7 @@ gemm:v1 format. Field positions follow upstream rocMLIR's
 AccelGemmParamsAttr::get parser in mlir/lib/Dialect/Rock/IR/RockDialect.cpp.
 
 v3 format (11 comma-separated ints):
-    v3:MPerBlock, NPerBlock, KpackPerBlock, MPerWave, MnPerXdl,
+    v3:MPerBlock, NPerBlock, KpackPerBlock, MPerWave, MnPerXdl (n_per_wave for WMMA),
        Kpack, SplitKFactor, ScheduleVersion, OutputSwizzle,
        ForceUnroll, ThreadCopyMore (trailing sentinel)
     NPerWave is derived in upstream's handleLegacyNPerWaveOrMnPerXdl.
@@ -26,6 +26,7 @@ New format (gemm:v1, 11 ints):
 Usage:
     python update_perf_config_format.py <toml_file> [--dry-run] [--in-place]
     python update_perf_config_format.py --check <directory>  # Check all TOML files in directory
+    python update_perf_config_format.py <file> --arch wmma   # Force WMMA semantics
 """
 
 import argparse
@@ -46,10 +47,10 @@ class OldPerfConfig:
     mn_per_xdl: int
     kpack: int
     split_k_factor: int
-    # v3 derives nPerWave via handleLegacyNPerWaveOrMnPerXdl;
+    # v3 derives nPerWave via handleLegacyNPerWaveOrMnPerXdl
     # v4 stores it explicitly. None means "derive at conversion time".
     n_per_wave: Optional[int] = None
-    # v3 fixes wavesPerEU=0 and gridGroupSize=0 in the parser;
+    # v3 fixes wavesPerEU=0 and gridGroupSize=0 in the parser
     # v4 stores them explicitly.
     waves_per_eu: int = 0
     grid_group_size: int = 0
@@ -160,7 +161,26 @@ def is_old_format(config_str: str) -> bool:
     return stripped.startswith('v3:') or stripped.startswith('v4:')
 
 
+# Pattern to extract a `gfxNNNN` chip number
+_GFX_CHIP_RE = re.compile(r'gfx(\d+)', re.IGNORECASE)
+
+# Pattern for `rock.arch = "..."` attribute in MLIR/TOML content.
+_ROCK_ARCH_RE = re.compile(r'rock\.arch\s*=\s*"([^"]*)"')
+
+
+def is_wmma_from_content(content: str) -> bool:
+    """Return True if `content` declares a WMMA-capable AMD GPU."""
+    arch_match = _ROCK_ARCH_RE.search(content)
+    if not arch_match:
+        return False
+    chip_match = _GFX_CHIP_RE.search(arch_match.group(1))
+    if not chip_match:
+        return False
+    return int(chip_match.group(1)) >= 1000
+
+
 def convert_to_new_format(old_config: OldPerfConfig,
+                          is_wmma: bool = False,
                           default_kpack: int = 1,
                           default_num_ctas: int = 1,
                           default_num_stages: int = 2) -> NewPerfConfig:
@@ -169,16 +189,18 @@ def convert_to_new_format(old_config: OldPerfConfig,
 
     Field derivations (matched to upstream rocMLIR's AccelGemmParamsAttr::get):
     - kPerBlock           = kpackPerBlock * kpack
-    - matrixInstrNonkdim  = mnPerXdl from the old config
     - splitKFactor        = splitKFactor from the old config
     - wavesPerEU          = wavesPerEU from the old config (0 for v3)
     - gridGroupSize       = gridGroupSize from the old config (0 for v3)
-    - numWaves:
-        * v4 (explicit nPerWave): (mPerBlock * nPerBlock) / (mPerWave * nPerWave)
-        * v3 (no nPerWave): handleLegacyNPerWaveOrMnPerXdl caps
-          mWaves * nWaves at maxWavesPerWG=4, so the product collapses to 4
-          for any sane (mPerBlock >= mPerWave) input.
-    - numStages is always set to 2 (not derived from old scheduleVersion).
+    - matrixInstrNonkdim and numWaves depend on (version, isWmma):
+        * v4: nPerWave and mnPerXdl are explicit;
+              numWaves = (mPerBlock*nPerBlock) / (mPerWave*nPerWave)
+        * v3 + MFMA: parts[4] is mnPerXdl. mPerWave/nPerWave are recomputed
+              by handleLegacyNPerWaveOrMnPerXdl, then numWaves uses the
+              recomputed wave dims.
+        * v3 + WMMA: parts[4] is nPerWave. mnPerXdl is fixed to 16 and
+              mPerWave is unchanged.
+    - numStages is always 2 (not derived from old scheduleVersion).
     - kpack and numCTAs use the provided defaults; the old format does not
       carry an equivalent of the new tile kpack or numCTAs.
     """
@@ -187,13 +209,22 @@ def convert_to_new_format(old_config: OldPerfConfig,
         num_waves = (old_config.m_per_block * old_config.n_per_block) // (old_config.m_per_wave * old_config.n_per_wave)
     else:
         # v3: derive per upstream's handleLegacyNPerWaveOrMnPerXdl.
-        max_waves_per_wg = 4
-        m_waves = min(old_config.m_per_block // old_config.m_per_wave, max_waves_per_wg);
-        n_waves = max_waves_per_wg // m_waves;
-        m_per_wave = old_config.m_per_block // m_waves;
-        n_per_wave = max(old_config.n_per_block // n_waves, old_config.mn_per_xdl);
+        if is_wmma:
+            # v3 WMMA: parts[4] (stored as mn_per_xdl) is actually nPerWave;
+            n_per_wave = old_config.mn_per_xdl
+            # default value 16 because older versions had no mnPerXdl
+            old_config.mn_per_xdl = 16
 
-        num_waves = (old_config.m_per_block * old_config.n_per_block) // (m_per_wave * n_per_wave)
+            num_waves = (old_config.m_per_block * old_config.n_per_block) // (old_config.m_per_wave * n_per_wave)
+        else:   
+            max_waves_per_wg = 4
+            m_waves = min(old_config.m_per_block // old_config.m_per_wave, max_waves_per_wg)
+            n_waves = max_waves_per_wg // m_waves
+            m_per_wave = old_config.m_per_block // m_waves
+            n_per_wave = max(old_config.n_per_block // n_waves, old_config.mn_per_xdl)
+
+            num_waves = (old_config.m_per_block * old_config.n_per_block) // (m_per_wave * n_per_wave)
+
 
     return NewPerfConfig(
         m_per_block=old_config.m_per_block,
@@ -210,63 +241,74 @@ def convert_to_new_format(old_config: OldPerfConfig,
     )
 
 
-def convert_config_string(config_str: str) -> tuple[str, bool]:
+def convert_config_string(config_str: str,
+                          is_wmma: bool = False) -> tuple[str, bool]:
     """
     Convert a single config string from old to new format.
-    
+
     Returns:
         Tuple of (converted_string, was_converted)
     """
     stripped = config_str.strip()
-    
+
     if is_new_format(stripped):
         return config_str, False
-    
+
     if stripped.startswith('v3:'):
         old_config = parse_old_v3_config(stripped)
     elif stripped.startswith('v4:'):
         old_config = parse_old_v4_config(stripped)
     else:
         return config_str, False
-    
+
     if old_config is None:
         return config_str, False
-    
-    new_config = convert_to_new_format(old_config)
+
+    new_config = convert_to_new_format(old_config, is_wmma=is_wmma)
     return new_config.to_string(), True
 
 
-def process_toml_content(content: str) -> tuple[str, int]:
+def process_toml_content(content: str,
+                         is_wmma: Optional[bool] = None) -> tuple[str, int]:
     """
     Process TOML content and convert all old format configs to new format.
-    
+
     Handles two patterns:
     1. Quoted configs: "v3:..." or 'v3:...'
     2. Inline configs: --perf_config v3:... or -perf_config=v3:...
-    
+
+    If `is_wmma` is None, the arch is auto-detected from a
+    `rock.arch = "..."` attribute in `content`; absent or unparseable
+    arches default to MFMA semantics (is_wmma=False).
+
     Returns:
         Tuple of (new_content, number_of_conversions)
     """
+    if is_wmma is None:
+        is_wmma = is_wmma_from_content(content)
+
     conversions = 0
-    
+
     def replace_config(match):
         nonlocal conversions
         config_str = match.group('config')
-        new_config, was_converted = convert_config_string(config_str)
+        new_config, was_converted = convert_config_string(
+            config_str, is_wmma=is_wmma
+        )
         if was_converted:
             conversions += 1
         # Reconstruct the full match with the new config
         return match.group(0).replace(config_str, new_config)
-    
+
     # Pattern 1: Quoted configs like "v3:..." or 'v3:...' (standalone in arrays)
     pattern1 = re.compile(r'(["\'])(?P<config>v[34]:\d+(?:,\d+)*)\1')
-    
+
     # Pattern 2: Inline configs like --perf_config v3:... or -perf_config=v3:...
     pattern2 = re.compile(r'(-{1,2}perf_config[= ])(?P<config>v[34]:\d+(?:,\d+)*)')
-    
+
     new_content = pattern1.sub(replace_config, content)
     new_content = pattern2.sub(replace_config, new_content)
-    
+
     return new_content, conversions
 
 
@@ -289,20 +331,21 @@ def check_file(filepath: Path) -> tuple[bool, int]:
     return total > 0, total
 
 
-def process_file(filepath: Path, dry_run: bool = True, in_place: bool = False) -> int:
+def process_file(filepath: Path, dry_run: bool = True, in_place: bool = False,
+                 is_wmma: Optional[bool] = None) -> int:
     """
     Process a single TOML file.
-    
+
     Returns:
         Number of conversions made
     """
     content = filepath.read_text()
-    new_content, conversions = process_toml_content(content)
-    
+    new_content, conversions = process_toml_content(content, is_wmma=is_wmma)
+
     if conversions == 0:
         print(f"  {filepath}: No outdated configs found")
         return 0
-    
+
     print(f"  {filepath}: {conversions} config(s) to convert")
     
     if dry_run:
@@ -350,9 +393,24 @@ def main():
         action='store_true',
         help='Modify files in place'
     )
-    
+    parser.add_argument(
+        '--arch',
+        choices=('auto', 'mfma', 'wmma'),
+        default='auto',
+        help=(
+            'Speficy the architecture to use for the conversion'
+        ),
+    )
+
     args = parser.parse_args()
-    
+
+    if args.arch == 'mfma':
+        is_wmma_override: Optional[bool] = False
+    elif args.arch == 'wmma':
+        is_wmma_override = True
+    else:
+        is_wmma_override = None
+
     if not args.path.exists():
         print(f"Error: {args.path} does not exist", file=sys.stderr)
         return 1
@@ -391,7 +449,8 @@ def main():
         conversions = process_file(
             filepath,
             dry_run=args.dry_run or not args.in_place,
-            in_place=args.in_place
+            in_place=args.in_place,
+            is_wmma=is_wmma_override,
         )
         total_conversions += conversions
     
