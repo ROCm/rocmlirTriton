@@ -263,6 +263,10 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   }
 
   funcPm.addPass(createRocmlirCustomTosaDecomposePass());
+
+  // rocmlirPromoteSoftmaxPrecisionPass will only run on the CPU path. At this
+  // point in the GPU path, we have already converted to rock.attention ops.
+  funcPm.addPass(createRocmlirPromoteSoftmaxPrecisionPass());
   if (noRock)
     funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
 
