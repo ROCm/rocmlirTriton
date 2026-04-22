@@ -39,7 +39,7 @@
 //   return
 // }
 // 
-// func.func @attention_nonset(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_nonset(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{Only set store method is supported for attention.}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
@@ -48,7 +48,7 @@
 //   return
 // }
 // 
-// func.func @attention_numheadskv_negative(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_numheadskv_negative(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{numHeadsKV must be positive}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
@@ -57,7 +57,7 @@
 //   return
 // }
 // 
-// func.func @attention_numheadsq_negative(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_numheadsq_negative(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{numHeadsQ must be positive}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
@@ -66,7 +66,7 @@
 //   return
 // }
 // 
-// func.func @attention_numheadsq_not_divisible(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_numheadsq_not_divisible(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{numHeadsQ is not divisible by numHeadsKV}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
@@ -75,7 +75,7 @@
 //   return
 // }
 // 
-// func.func @attention_numheadsq_smaller_than_numheadskv(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_numheadsq_smaller_than_numheadskv(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{numHeadsQ is not divisible by numHeadsKV}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
@@ -84,7 +84,7 @@
 //   return
 // }
 // 
-// func.func @attention_prefix_offset_requires_causal(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>, %arg4: tensor<1xi32>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_prefix_offset_requires_causal(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>, %arg4: tensor<1xi32>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{prefixOffset requires causal to be enabled}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
