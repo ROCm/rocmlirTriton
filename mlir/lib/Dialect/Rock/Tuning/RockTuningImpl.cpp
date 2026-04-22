@@ -137,7 +137,7 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
 
   std::vector<uint32_t> kPerBlock = {16, 32, 64, 128};
   if (is8b && isMfma)
-    kPerBlock = {32, 64, 128};
+    kPerBlock = {16,32,64,128,256};
 
   // MFMA (CDNA) parameters
   // Note: kPack max is 2
@@ -150,8 +150,8 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numWavesRange,    // numWaves
       {16, 32},         // matrixInstrNonkdim
       {1, 2, 3},        // numStages
-      wavesPerEUList,   // wavesPerEU
-      gridGroupSizeList // gridGroupSize
+      {0,1,2,4, 8},   // wavesPerEU
+      {0, 1,2, 4,6,8,16,32} // gridGroupSize
   };
 
   // WMMA (RDNA) parameters
@@ -164,8 +164,8 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numWavesRange,    // numWaves
       {0},              // matrixInstrNonkdim
       {1, 2},           // numStages
-      wavesPerEUList,   // wavesPerEU
-      gridGroupSizeList // gridGroupSize
+      {0, 2,3},   // wavesPerEU
+      {0, 1,2,4,6} // gridGroupSize
   };
 
   return isMfma ? validRangeMfmaParams : validRangeWmmaParams;
