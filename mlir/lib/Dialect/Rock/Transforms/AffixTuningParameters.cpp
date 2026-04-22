@@ -104,7 +104,7 @@ static FailureOr<std::optional<int64_t>> getNumStages(func::FuncOp funcOp,
     return op->emitError(
         "kernel has both perf_config and rock.num_stages attribute "
         "set. Please modify num_stages directly inside "
-        "perf_config and remove rock.num_stages\n");
+        "perf_config and remove rock.num_stages");
   }
   if (hasNumStages) {
     numStages =
