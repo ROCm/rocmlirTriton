@@ -608,7 +608,7 @@ defvar LdsBufferTypes = GemmInputTypes # [VectorOfRankAndType<[1], GemmInputType
 
 // blockwise_gemm
 def Rock_BlockwiseGemmOp
-    : Rock_Op<"blockwise_gemm", Pure, [AttrSizedOperandSegments]>,
+    : Rock_Op<"blockwise_gemm", [Pure, AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<GemmInputTypes>:$matrixA,
           TensorOf<GemmInputTypes>:$matrixB, TensorOf<GemmOutputTypes>:$matrixC,
           Optional<TensorOf<[F8E8M0FNU, I8]>>:$matrixScaleA,
@@ -662,8 +662,7 @@ def Rock_BlockwiseGemmOp
 // blockwise_load
 def Rock_BlockwiseLoadOp
     : Rock_Op<"blockwise_load",
-    Pure,
-              [AllElementTypesMatch<["source", "result"]>]>,
+              [Pure, AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source global memory">:$source,
           Variadic<I32>:$sourceIndices)>,
