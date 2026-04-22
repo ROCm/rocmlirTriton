@@ -12,8 +12,7 @@ func.func @test_f4_broadcast_on_k_fails(
     %arg0: tensor<64xf4E2M1FN>,
     %arg1: tensor<4096xf4E2M1FN>,
     %arg2: tensor<64x1xf8E8M0FNU>,
-    %arg3: tensor<64x1xf8E8M0FNU>,
-    %arg4: tensor<4096xf32>) -> tensor<4096xf32>
+    %arg3: tensor<64x1xf8E8M0FNU>) -> tensor<64x64xf32>
     attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   %c0 = arith.constant 0 : i32
 
@@ -69,7 +68,7 @@ func.func @test_f4_broadcast_on_k_fails(
     : tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
       tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
       tensor<64x64xf32> -> tensor<64x64xf32>
-  return %arg4 : tensor<4096xf32>
+  return %result : tensor<64x64xf32>
 }
 
 // -----
@@ -82,8 +81,7 @@ func.func @test_f4_adddim_on_k_fails(
     %arg0: tensor<1xf4E2M1FN>,
     %arg1: tensor<4096xf4E2M1FN>,
     %arg2: tensor<1x1xf8E8M0FNU>,
-    %arg3: tensor<64x1xf8E8M0FNU>,
-    %arg4: tensor<4096xf32>) -> tensor<4096xf32>
+    %arg3: tensor<64x1xf8E8M0FNU>) -> tensor<1x64xf32>
     attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   %c0 = arith.constant 0 : i32
 
@@ -139,7 +137,7 @@ func.func @test_f4_adddim_on_k_fails(
     : tensor<1x64xf4E2M1FN> scaled by tensor<1x1xf8E8M0FNU>,
       tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
       tensor<1x64xf32> -> tensor<1x64xf32>
-  return %arg4 : tensor<4096xf32>
+  return %result : tensor<1x64xf32>
 }
 
 // Test: G (batch) is the fastest-changing dimension in the raw buffer.
@@ -254,16 +252,14 @@ func.func @test_f4_odd_k(
 
 // -----
 
-// Test: Fusion op (arith.addf) on a 4-bit tensor between blockwise_load and
-// blockwise_gemm. f4E2M1FN is an OCP MX storage-only format with no hardware
-// arithmetic; fusions on packed 4-bit data are not supported.
+// TODO(rocmlirTriton): Support arith.truncf f32 -> f4E2M1FN feeding into blockwise_gemm.
+// Fusion-produced f4 (no f4 kernel argument) is not yet supported.
 
-func.func @test_f4_fusion_rejected(
-    %arg0: tensor<4096xf4E2M1FN>,
+func.func @test_f4_truncf_input_to_gemm(
+    %arg0: tensor<4096xf32>,
     %arg1: tensor<4096xf4E2M1FN>,
     %arg2: tensor<64x1xf8E8M0FNU>,
-    %arg3: tensor<64x1xf8E8M0FNU>,
-    %arg4: tensor<4096xf32>) -> tensor<4096xf32>
+    %arg3: tensor<64x1xf8E8M0FNU>) -> tensor<64x64xf32>
     attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   %c0 = arith.constant 0 : i32
 
@@ -271,19 +267,18 @@ func.func @test_f4_fusion_rejected(
     by [<Unmerge{64, 64} ["m", "k"] at [1, 2] -> ["raw"] at [0]>,
         <AddDim{1} ["g"] at [0] -> [] at []>]
     bounds = [1, 64, 64] -> [4096]>
-    : tensor<4096xf4E2M1FN> to tensor<1x64x64xf4E2M1FN>
+    : tensor<4096xf32> to tensor<1x64x64xf32>
   %a_6d = rock.transform %a_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 64 + d4, d0 * 64 + d5)>
     by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
         <Unmerge{1, 64} ["k_loop", "k_iter"] at [0, 5] -> ["k"] at [2]>,
         <Unmerge{1, 64} ["m_block", "m_iter"] at [2, 4] -> ["m"] at [1]>,
         <AddDim{1} ["n_block"] at [3] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
-    : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
-    : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
+    : tensor<1x64x64xf32> to tensor<1x1x1x1x64x64xf32>
+  %a_tile_f32 = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x64x64xf32> -> tensor<64x64xf32>
 
-  // expected-error @+1 {{fusion ops on 4-bit types are not supported}}
-  %fused = arith.addf %a_tile, %a_tile : tensor<64x64xf4E2M1FN>
+  %a_tile = arith.truncf %a_tile_f32 : tensor<64x64xf32> to tensor<64x64xf4E2M1FN>
 
   %b_3d = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
     by [<Unmerge{64, 64} ["k", "n"] at [1, 2] -> ["raw"] at [0]>,
@@ -306,10 +301,11 @@ func.func @test_f4_fusion_rejected(
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
 
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
-  %result = rock.blockwise_gemm(%fused scaled by %sa_tile, %b_tile scaled by %sb_tile, %cst)
+  // expected-error @+1 {{4-bit operand produced by fusion (e.g. arith.truncf) rather than from a 4-bit kernel argument is not yet supported}}
+  %result = rock.blockwise_gemm(%a_tile scaled by %sa_tile, %b_tile scaled by %sb_tile, %cst)
     {quantBlockSize = 64 : i64}
     : tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
       tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
       tensor<64x64xf32> -> tensor<64x64xf32>
-  return %arg4 : tensor<4096xf32>
+  return %result : tensor<64x64xf32>
 }

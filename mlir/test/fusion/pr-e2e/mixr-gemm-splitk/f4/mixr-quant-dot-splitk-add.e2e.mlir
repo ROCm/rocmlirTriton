@@ -4,14 +4,12 @@
 module {
   // CHECK: [1 1 1]
   // CLONE: [1 1 1]
-  // UNSUPPORTED: true
-  // TODO(rocmlirTriton): migraphx f4 bugs
   func.func @quant_dot_splitk_add(%arg0: !migraphx.shaped<1x128x256xf4E2M1FN, 32768x256x1>, %arg1: !migraphx.shaped<1x256x128xf4E2M1FN, 32768x128x1>, %arg2: !migraphx.shaped<1x128x8x1xf8E8M0FNU, 1024x8x1x1>, %arg3: !migraphx.shaped<1x8x1x128xf8E8M0FNU, 1024x128x128x1>, %arg4: !migraphx.shaped<1x128x128xf32, 16384x128x1>) -> !migraphx.shaped<1x128x128xf32, 16384x128x1> attributes {rock.kernel} {
     %0 = migraphx.multibroadcast %arg2 {out_dyn_dims = [], out_lens = [1, 128, 8, 32]} : <1x128x8x1xf8E8M0FNU, 1024x8x1x1> -> <1x128x8x32xf8E8M0FNU, 1024x8x0x1>
     %1 = migraphx.reshape %0 {dims = [1, 128, 256]} : <1x128x8x32xf8E8M0FNU, 1024x8x0x1> -> <1x128x256xf8E8M0FNU, 1024x8x1>
     %2 = migraphx.multibroadcast %arg3 {out_dyn_dims = [], out_lens = [1, 8, 32, 128]} : <1x8x1x128xf8E8M0FNU, 1024x128x128x1> -> <1x8x32x128xf8E8M0FNU, 1024x0x128x1>
     %3 = migraphx.reshape %2 {dims = [1, 256, 128]} : <1x8x32x128xf8E8M0FNU, 1024x0x128x1> -> <1x256x128xf8E8M0FNU, 1024x128x1>
-    %4 = migraphx.quant_dot %arg0 scaled by %1, %arg1 scaled by %3 {perf_config="gemm:v1:64,64,32,1,1,4,16,2,1,0,0"} : <1x128x256xf4E2M1FN, 32768x256x1> scaled by !migraphx.shaped<1x128x256xf8E8M0FNU, 1024x8x1>, <1x256x128xf4E2M1FN, 32768x128x1> scaled by !migraphx.shaped<1x256x128xf8E8M0FNU, 1024x128x1> -> <1x128x128xf32, 16384x128x1>
+    %4 = migraphx.quant_dot %arg0 scaled by %1, %arg1 scaled by %3 {perf_config="gemm:v1:64,64,64,1,1,4,32,2,1,0,0"} : <1x128x256xf4E2M1FN, 32768x256x1> scaled by !migraphx.shaped<1x128x256xf8E8M0FNU, 1024x8x1>, <1x256x128xf4E2M1FN, 32768x128x1> scaled by !migraphx.shaped<1x256x128xf8E8M0FNU, 1024x128x1> -> <1x128x128xf32, 16384x128x1>
     %5 = migraphx.add %4, %arg4 {} : <1x128x128xf32, 16384x128x1>, <1x128x128xf32, 16384x128x1> -> <1x128x128xf32, 16384x128x1>
     return %5 : !migraphx.shaped<1x128x128xf32, 16384x128x1>
   }

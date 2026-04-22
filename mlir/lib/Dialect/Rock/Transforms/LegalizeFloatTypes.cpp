@@ -30,6 +30,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -40,6 +41,7 @@
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/Support/WalkResult.h"
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
 #include <optional>
 
@@ -57,9 +59,15 @@ using namespace mlir::rock;
 
 namespace {
 
-static bool isNonTTFloat(Type t) {
-  return isa<FloatType>(t) && !rock::isTTFloat(t) &&
-         (t.getIntOrFloatBitWidth() == 8 || t.getIntOrFloatBitWidth() == 4);
+static bool isNonTTFloat(Type t,
+                         std::optional<unsigned> bitWidth = std::nullopt) {
+  if (auto tType = dyn_cast<RankedTensorType>(t))
+    t = tType.getElementType();
+  if (!isa<FloatType>(t) || rock::isTTFloat(t))
+    return false;
+  if (bitWidth)
+    return t.getIntOrFloatBitWidth() == *bitWidth;
+  return t.getIntOrFloatBitWidth() == 8 || t.getIntOrFloatBitWidth() == 4;
 }
 
 //===----------------------------------------------------------------------===//
@@ -560,7 +568,9 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
         return failure();
       SmallVector<OperandInput> &inputs = maybeInputs.value();
       if (inputs.empty())
-        return gemmOp.emitError("no inputs found for 4-bit operand");
+        return gemmOp.emitError(
+            "4-bit operand produced by fusion (e.g. arith.truncf) rather than "
+            "from a 4-bit kernel argument is not yet supported");
 
       std::optional<bool> kPack = std::nullopt;
       for (OperandInput &input : inputs) {
@@ -644,26 +654,18 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
     return failure();
 
   // Flip any remaining 4-bit tensor results to i8 (element type only).
-  // Fusions (arith/math ops) on 4-bit data are not supported: f4E2M1FN is a
-  // storage format consumed directly by MFMA and has no hardware arithmetic.
-  WalkResult fusionCheck = funcOp.walk([&](Operation *op) {
+  // Fusion ops on 4-bit data are handled later by fixup4BitFusionOps.
+  funcOp.walk([&](Operation *op) {
+    if (rock::isFusionOp(op))
+      return;
     for (OpResult result : op->getResults()) {
       auto tType = dyn_cast<RankedTensorType>(result.getType());
       if (!tType || !is4Bit(tType.getElementType()))
         continue;
-      if (rock::isFusionOp(op)) {
-        op->emitError("fusion ops on 4-bit types are not supported; "
-                      "f4E2M1FN is a storage-only format with no "
-                      "hardware arithmetic");
-        return WalkResult::interrupt();
-      }
       result.setType(
           RankedTensorType::get(tType.getShape(), i8Ty, tType.getEncoding()));
     }
-    return WalkResult::advance();
   });
-  if (fusionCheck.wasInterrupted())
-    return failure();
 
   // rewriteTransformChain mutates block arg types (i4 -> i8 with halved
   // shapes), but the FunctionType attribute doesn't auto-update, so sync it.
@@ -675,11 +677,276 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// Fusion op fix-up: wrap broken fusion ops with arith.bitcast
+//===----------------------------------------------------------------------===//
+
+/// Original tensor types for each operand/result of a fusion op, captured
+/// before the type conversion walk rewrites them to integer.
+struct FusionOpInfo {
+  SmallVector<Type> origOperandTypes;
+  SmallVector<Type> origResultTypes;
+};
+
+/// Scan all fusion ops and record the original tensor types for any
+/// operand/result whose element type is a non-TT float.
+static llvm::MapVector<Operation *, FusionOpInfo>
+recordFusionOpTypes(func::FuncOp funcOp) {
+  llvm::MapVector<Operation *, FusionOpInfo> fusionInfoMap;
+  funcOp.walk([&](Operation *op) {
+    if (!isFusionOp(op))
+      return;
+    FusionOpInfo info;
+    bool hasNonTT = false;
+    for (Value operand : op->getOperands()) {
+      info.origOperandTypes.push_back(operand.getType());
+      if (auto tType = dyn_cast<RankedTensorType>(operand.getType()))
+        if (isNonTTFloat(tType.getElementType()))
+          hasNonTT = true;
+    }
+    for (OpResult result : op->getResults()) {
+      info.origResultTypes.push_back(result.getType());
+      if (auto tType = dyn_cast<RankedTensorType>(result.getType()))
+        if (isNonTTFloat(tType.getElementType()))
+          hasNonTT = true;
+    }
+    if (hasNonTT)
+      fusionInfoMap[op] = std::move(info);
+  });
+  return fusionInfoMap;
+}
+
+/// After the blanket type conversion (Step 1), fusion ops that had 8-bit
+/// non-TT float operands/results now illegally carry integer types.
+/// Fix them by restoring the original float types and inserting
+/// arith.bitcast ops at the boundaries (i8 -> f8 on inputs, f8 -> i8 on
+/// outputs).
+///
+/// Note: arith.truncf/extf involving f8E8M0FNU and f4E2M1FN are expanded to
+/// integer arithmetic by arith-expand AFTER this pass runs (in the kernel
+/// pipeline, between SerializeHostFuncs and RockToTTIR).
+static LogicalResult fixup8BitFusionOps(
+    MLIRContext *ctx,
+    const llvm::MapVector<Operation *, FusionOpInfo> &fusionInfoMap) {
+  OpBuilder builder(ctx);
+
+  for (auto &[op, info] : fusionInfoMap) {
+    bool has8bit = false;
+    for (Type t : info.origOperandTypes)
+      if (isNonTTFloat(t, 8))
+        has8bit = true;
+    for (Type t : info.origResultTypes)
+      if (isNonTTFloat(t, 8))
+        has8bit = true;
+    if (!has8bit)
+      continue;
+
+    Location loc = op->getLoc();
+
+    // Fix operands: i8 -> original float
+    builder.setInsertionPoint(op);
+    for (unsigned i = 0; i < info.origOperandTypes.size(); ++i) {
+      auto origTensorType =
+          dyn_cast<RankedTensorType>(info.origOperandTypes[i]);
+      if (!origTensorType || !isNonTTFloat(origTensorType, 8))
+        continue;
+
+      Value operand = op->getOperand(i);
+      Value bc = arith::BitcastOp::create(builder, loc, origTensorType,
+                                          operand);
+      op->setOperand(i, bc);
+    }
+
+    // Fix results: restore float type, bitcast back to i8
+    for (unsigned i = 0; i < info.origResultTypes.size(); ++i) {
+      auto origTensorType =
+          dyn_cast<RankedTensorType>(info.origResultTypes[i]);
+      if (!origTensorType || !isNonTTFloat(origTensorType, 8))
+        continue;
+
+      OpResult result = op->getResult(i);
+      Type intType = result.getType();
+
+      result.setType(origTensorType);
+
+      builder.setInsertionPointAfter(op);
+      Value bc = arith::BitcastOp::create(builder, loc, intType, result);
+      result.replaceAllUsesExcept(bc, bc.getDefiningOp());
+    }
+  }
+  return success();
+}
+
+/// After 4-bit packing (pack4BitKernelArgs), fusion ops that originally
+/// operated on f4 data have a shape mismatch: their operands are packed i8
+/// (halved shape) but their result types still carry the unpacked shape.
+/// Fix them by unpacking operands to f4 (nibble extraction), restoring the
+/// fusion op to operate on f4, then repacking the result to i8.
+static LogicalResult fixup4BitFusionOps(
+    func::FuncOp funcOp, MLIRContext *ctx,
+    const llvm::MapVector<Operation *, FusionOpInfo> &fusionInfoMap) {
+  OpBuilder builder(ctx);
+  Type i4Ty = IntegerType::get(ctx, 4);
+  Type i8Ty = IntegerType::get(ctx, 8);
+
+  for (auto &[op, info] : fusionInfoMap) {
+    bool has4bit = false;
+    for (Type t : info.origOperandTypes)
+      if (isNonTTFloat(t, 4))
+        has4bit = true;
+    for (Type t : info.origResultTypes)
+      if (isNonTTFloat(t, 4))
+        has4bit = true;
+    if (!has4bit)
+      continue;
+
+    Location loc = op->getLoc();
+
+    // After packing, the operands coming from blockwise_load have the packed
+    // shape (halved, i8). We unpack each into low/high f4 nibbles.
+    SmallVector<Value> lowOperands, highOperands;
+    builder.setInsertionPoint(op);
+
+    for (unsigned i = 0; i < info.origOperandTypes.size(); ++i) {
+      auto origTensorType =
+          dyn_cast<RankedTensorType>(info.origOperandTypes[i]);
+      Value operand = op->getOperand(i);
+
+      if (!origTensorType || !isNonTTFloat(origTensorType, 4)) {
+        lowOperands.push_back(operand);
+        highOperands.push_back(operand);
+        continue;
+      }
+
+      // operand.getType() is the packed type (e.g. tensor<64x32xi8>)
+      auto packedType = cast<RankedTensorType>(operand.getType());
+      auto f4ElemType = origTensorType.getElementType();
+      auto i4TensorType = RankedTensorType::get(packedType.getShape(), i4Ty,
+                                                 packedType.getEncoding());
+      auto f4TensorType = RankedTensorType::get(
+          packedType.getShape(), f4ElemType, packedType.getEncoding());
+
+      auto cst4 = arith::ConstantOp::create(
+          builder, loc,
+          DenseElementsAttr::get(packedType, builder.getI8IntegerAttr(4)));
+      auto cst0F = arith::ConstantOp::create(
+          builder, loc,
+          DenseElementsAttr::get(packedType, builder.getI8IntegerAttr(15)));
+
+      Value lowI8 = arith::AndIOp::create(builder, loc, operand, cst0F);
+      Value lowI4 = arith::TruncIOp::create(builder, loc, i4TensorType, lowI8);
+      Value lowF4 =
+          arith::BitcastOp::create(builder, loc, f4TensorType, lowI4);
+
+      Value highI8 = arith::ShRUIOp::create(builder, loc, operand, cst4);
+      Value highI4 =
+          arith::TruncIOp::create(builder, loc, i4TensorType, highI8);
+      Value highF4 =
+          arith::BitcastOp::create(builder, loc, f4TensorType, highI4);
+
+      lowOperands.push_back(lowF4);
+      highOperands.push_back(highF4);
+    }
+
+    // Build clone result types: for f4 results, use the packed operand shape
+    // (from the already-packed blockwise_load output) with the original f4
+    // element type. We can't use op->getResult().getType() because packing
+    // only updates transforms/loads, not the fusion op's result types.
+    // If no f4 operand exists (e.g. a type-narrowing op producing f4 from
+    // f32), fall back to an f4 result's current type after the type-swap.
+    RankedTensorType packedRefType;
+    for (unsigned i = 0; i < info.origOperandTypes.size(); ++i) {
+      if (isNonTTFloat(info.origOperandTypes[i], 4)) {
+        packedRefType = cast<RankedTensorType>(op->getOperand(i).getType());
+        break;
+      }
+    }
+    if (!packedRefType) {
+      for (unsigned i = 0; i < info.origResultTypes.size(); ++i) {
+        if (isNonTTFloat(info.origResultTypes[i], 4)) {
+          packedRefType = cast<RankedTensorType>(op->getResult(i).getType());
+          break;
+        }
+      }
+    }
+    if (!packedRefType)
+      return op->emitError("f4 fusion op has no f4 operands or results to "
+                           "derive packed shape from");
+
+    SmallVector<Type> cloneResultTypes;
+    for (unsigned i = 0; i < info.origResultTypes.size(); ++i) {
+      auto origTensorType =
+          dyn_cast<RankedTensorType>(info.origResultTypes[i]);
+      if (origTensorType && isNonTTFloat(origTensorType, 4)) {
+        cloneResultTypes.push_back(RankedTensorType::get(
+            packedRefType.getShape(), origTensorType.getElementType(),
+            packedRefType.getEncoding()));
+      } else {
+        cloneResultTypes.push_back(op->getResult(i).getType());
+      }
+    }
+
+    // Clone the op for low nibble.
+    builder.setInsertionPoint(op);
+    Operation *lowClone = builder.clone(*op);
+    for (unsigned i = 0; i < lowOperands.size(); ++i)
+      lowClone->setOperand(i, lowOperands[i]);
+    for (unsigned i = 0; i < cloneResultTypes.size(); ++i)
+      lowClone->getResult(i).setType(cloneResultTypes[i]);
+
+    // Clone the op for high nibble.
+    Operation *highClone = builder.clone(*op);
+    for (unsigned i = 0; i < highOperands.size(); ++i)
+      highClone->setOperand(i, highOperands[i]);
+    for (unsigned i = 0; i < cloneResultTypes.size(); ++i)
+      highClone->getResult(i).setType(cloneResultTypes[i]);
+
+    // Repack each result: f4 -> i4 -> i8 (low | high<<4).
+    builder.setInsertionPointAfter(highClone);
+    for (unsigned i = 0; i < op->getNumResults(); ++i) {
+      auto origTensorType =
+          dyn_cast<RankedTensorType>(info.origResultTypes[i]);
+      if (!origTensorType || !isNonTTFloat(origTensorType, 4)) {
+        op->getResult(i).replaceAllUsesWith(lowClone->getResult(i));
+        continue;
+      }
+
+      auto i4PackedType = RankedTensorType::get(packedRefType.getShape(), i4Ty,
+                                                packedRefType.getEncoding());
+      auto i8PackedType = RankedTensorType::get(packedRefType.getShape(), i8Ty,
+                                                packedRefType.getEncoding());
+
+      Value resLowI4 = arith::BitcastOp::create(builder, loc, i4PackedType,
+                                                  lowClone->getResult(i));
+      Value resHighI4 = arith::BitcastOp::create(builder, loc, i4PackedType,
+                                                   highClone->getResult(i));
+      Value resLowI8 =
+          arith::ExtUIOp::create(builder, loc, i8PackedType, resLowI4);
+      Value resHighI8 =
+          arith::ExtUIOp::create(builder, loc, i8PackedType, resHighI4);
+
+      auto cst4 = arith::ConstantOp::create(
+          builder, loc,
+          DenseElementsAttr::get(i8PackedType, builder.getI8IntegerAttr(4)));
+      Value shifted = arith::ShLIOp::create(builder, loc, resHighI8, cst4);
+      Value packed = arith::OrIOp::create(builder, loc, resLowI8, shifted);
+
+      op->getResult(i).replaceAllUsesWith(packed);
+    }
+
+    op->erase();
+  }
+  return success();
+}
+
 /// Legalize all non-TT_Float types to integer types of the same bit width
 /// throughout the kernel function (no shape changes).
 static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
   // Save original types on BlockwiseGemmOp BEFORE converting.
   recordOrigTypesOnGemm(funcOp);
+
+  // Record original types on fusion ops BEFORE converting.
+  auto fusionInfoMap = recordFusionOpTypes(funcOp);
 
   // Step 1: Simple type swap (f8->i8, f4->i4) with no shape changes.
   SmallVector<Type> newArgTypes;
@@ -703,8 +970,16 @@ static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
     newResultTypes.push_back(convertType(t, ctx));
   funcOp.setFunctionType(FunctionType::get(ctx, newArgTypes, newResultTypes));
 
+  // Step 1.5: Fix up 8-bit fusion ops that were broken by the type swap.
+  if (failed(fixup8BitFusionOps(ctx, fusionInfoMap)))
+    return failure();
+
   // Step 2: Pack 4-bit types (i4) to i8 with dimension halving.
-  return pack4BitKernelArgs(funcOp, ctx);
+  if (failed(pack4BitKernelArgs(funcOp, ctx)))
+    return failure();
+
+  // Step 3: Fix up 4-bit fusion ops that were broken by the packing.
+  return fixup4BitFusionOps(funcOp, ctx, fusionInfoMap);
 }
 
 //===----------------------------------------------------------------------===//
