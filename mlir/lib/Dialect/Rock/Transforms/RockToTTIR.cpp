@@ -440,6 +440,10 @@ struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
 /// Replace an `arith.constant` tagged with "rock.sub_byte_shift" with
 /// Triton-native ops that compute the same repeating pattern dynamically.
 ///
+/// Only emitted by the fallback path of LegalizeFloatTypes (used for tiny
+/// broadcasted scale/zero-point tensors).  The data tensor goes through the
+/// fast path and never produces this attribute.
+///
 /// The attribute (set by buildSubByteShiftConstant in LegalizeFloatTypes)
 /// carries {axis, halfPeriod, v0, v1}.  No pattern scanning of the dense blob
 /// is needed.
@@ -560,9 +564,9 @@ void RockToTTIRPass::runOnOperation() {
     return;
   }
 
-  // Pre-pass: replace sub-byte shift constants (tagged by LegalizeFloatTypes)
-  // with Triton-native ops.  Large non-splat DenseElementsAttr blobs cause
-  // Triton GPU passes to hang.
+  // Pre-pass: replace sub-byte shift constants (tagged by LegalizeFloatTypes
+  // fallback path for broadcasted scale/zp tensors) with Triton-native ops.
+  // Large non-splat DenseElementsAttr blobs cause Triton GPU passes to hang.
   SmallVector<arith::ConstantOp> toConvert;
   funcOp.walk([&](arith::ConstantOp op) { toConvert.push_back(op); });
   for (auto op : toConvert)
