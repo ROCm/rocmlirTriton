@@ -102,13 +102,26 @@ bool isConstantZero(Value v) {
 
 bool isConstantOne(Value v) { return isConstantValue(v, 1.0); }
 
+bool isMaskingNegInfValue(const APFloat &v) {
+  if (v.isInfinity() && v.isNegative())
+    return true;
+
+  // Some frontends emit the largest negative finite value of the target
+  // float semantics as a -inf stand-in.
+  APFloat largestNeg =
+      APFloat::getLargest(v.getSemantics(), /*Negative=*/true);
+  if (v.bitwiseIsEqual(largestNeg))
+    return true;
+
+  // See definition of `kMaskingConstantThreshold` for the history behind the
+  // specific value.
+  return v.isNegative() && v.convertToDouble() <= kMaskingConstantThreshold;
+}
+
 bool isConstNegInf(Value v) {
   if (isConstantValue(v, -std::numeric_limits<double>::infinity()))
     return true;
 
-  // TODO: Need to speak with the MIGraphX team about what these
-  // values should be. Can we request that they use -inf or the
-  // largest negative finite value instead?
   auto getValuesAttr = [](Value val) -> Attribute {
     if (auto cst = val.getDefiningOp<arith::ConstantOp>())
       return cst.getValue();
@@ -118,10 +131,8 @@ bool isConstNegInf(Value v) {
   };
 
   if (auto splatAttr = dyn_cast_or_null<SplatElementsAttr>(getValuesAttr(v)))
-    if (isa<FloatType>(splatAttr.getElementType())) {
-      APFloat val = splatAttr.getSplatValue<APFloat>();
-      return val.isNegative() && val.convertToDouble() <= -1.0e4;
-    }
+    if (isa<FloatType>(splatAttr.getElementType()))
+      return isMaskingNegInfValue(splatAttr.getSplatValue<APFloat>());
   return false;
 }
 

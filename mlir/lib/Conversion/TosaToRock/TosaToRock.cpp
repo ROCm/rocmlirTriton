@@ -1747,25 +1747,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
           [](const APInt &v) { return v.isOne(); },
           [](const APInt &v) { return v.isMinSignedValue(); });
     } else {
-      APFloat largestNeg = APFloat::getLargest(
-          cast<FloatType>(constAttr.getElementType()).getFloatSemantics(),
-          /*Negative=*/true);
       return validateMask(
           constAttr.getValues<APFloat>(),
           [](const APFloat &v) { return v.isZero(); },
           [](const APFloat &v) { return v.convertToDouble() == 1.0; },
-          [&largestNeg](const APFloat &v) {
-            if (v.isInfinity() && v.isNegative())
-              return true;
-
-            if (v.bitwiseIsEqual(largestNeg))
-              return true;
-
-            // TODO: Need to speak with the MIGraphX team about what these
-            // values should be. Can we request that they use -inf or the
-            // largest negative finite value instead?
-            return v.isNegative() && v.convertToDouble() <= -1.0e4;
-          });
+          [](const APFloat &v) { return rock::isMaskingNegInfValue(v); });
     }
   }
 
