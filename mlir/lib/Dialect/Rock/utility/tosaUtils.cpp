@@ -113,9 +113,21 @@ bool isMaskingNegInfValue(const APFloat &v) {
   if (v.bitwiseIsEqual(largestNeg))
     return true;
 
-  // See definition of `kMaskingConstantThreshold` for the history behind the
-  // specific value.
-  return v.isNegative() && v.convertToDouble() <= kMaskingConstantThreshold;
+  if (!v.isNegative())
+    return false;
+
+  // Round `kMaskingConstantThreshold` into `v`'s float semantics before
+  // comparing, so the cutoff matches whatever a frontend would have produced
+  // by casting a `-10000.0` f32 splat into that type. This matters in low-
+  // precision formats where `-10000.0` is not exactly representable: e.g. in
+  // bf16 the literal rounds to `-9984.0`, which would otherwise sit just
+  // above a fixed `-1.0e4` cutoff and slip through. See the definition of
+  // `kMaskingConstantThreshold` for the history behind the specific value.
+  APFloat threshold(kMaskingConstantThreshold);
+  bool losesInfo = false;
+  threshold.convert(v.getSemantics(), APFloat::rmNearestTiesToEven,
+                    &losesInfo);
+  return v.compare(threshold) != APFloat::cmpGreaterThan;
 }
 
 bool isConstNegInf(Value v) {
