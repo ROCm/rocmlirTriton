@@ -38,6 +38,125 @@ using namespace mlir::rock;
 
 namespace {
 
+/// If the value yielded from the body is produced by a `rock.transform`
+/// whose own input is not a block argument, that transform is a "yield-
+/// boundary" view that the upstream lowering inserted to convert the
+/// body's working shape back into arg0's shape. Rewire the yield to
+/// consume the transform's input directly and erase the transform.
+/// Repeat for any stack of such boundary transforms (rare in current
+/// migraphx output, but the loop costs nothing if there's only one).
+///
+/// Without this step, `sinkTransformsToLeaves` would push the yield-
+/// boundary transform inward through every body op until it reaches a
+/// leaf. When the body is a DAG (a value with multiple consumers),
+/// sinking clones the subtree it passes through but leaves the original
+/// alive (because the original still has consumers via its other use(s)),
+/// ending up with the same block-arg-rooted transform consumed by both
+/// the original and each clone. `collectArgTransformChains` then sees a
+/// multi-use chain end and rejects the body with "non-linear transform
+/// chain".
+///
+/// Erasing the yield-boundary transform up front sidesteps the entire
+/// problem. The sinker has nothing left to push inward; the only
+/// remaining transforms are the (already-linear) block-arg chains. The
+/// body is then converted to arg0's shape entirely by type substitution,
+/// in three coordinated steps that together re-work every value's type:
+///   1. `externalizeBodyTransforms` retypes the block-arg leaves. For
+///      arg0, it drops the in-body chain so the body reads `%arg0`
+///      directly (already in arg0's shape). For each extra block arg, it
+///      hoists the in-body chain plus inv(T_arg0) onto the corresponding
+///      external operand and retypes the block arg itself to arg0's
+///      shape.
+///   2. `reshapeBodyConstants` retypes the constant leaves. Every inline
+///      splat in the body is rewritten to arg0's shape with the same
+///      value.
+///   3. `propagateBodyResultTypes` walks the body in program order and
+///      retypes each intermediate op's result based on operand 0's type.
+///      This step is only sound if every operand source of every visited
+///      op has already been retyped by step 1 (block args), step 2
+///      (constants), or by an earlier visit in this same walk
+///      (intermediate body ops). For pure arith/math elementwise bodies,
+///      the only kind this pass accepts, that condition holds, so the
+///      new shape flows down the DAG to the value the yield was rewired
+///      to consume.
+static void eraseYieldBoundaryTransform(Block &block) {
+  auto yieldOp = cast<rock::YieldOp>(block.getTerminator());
+  if (yieldOp.getNumOperands() != 1)
+    return;
+
+  // Walk the (possibly stacked) boundary transforms in walking order from
+  // yield inward, without modifying the IR. Each link must be single-
+  // use (so erasing it later is safe and Op::erase() can't assert) and
+  // rooted at something other than a block arg (so the link isn't part
+  // of an arg-rooted chain that collectArgTransformChains will handle).
+  SmallVector<TransformMapAttr> boundaryAttrs;
+  {
+    Value cur = yieldOp.getOperand(0);
+    while (auto tOp = cur.getDefiningOp<TransformOp>()) {
+      if (isa<BlockArgument>(tOp.getInput()) || !tOp.getResult().hasOneUse())
+        break;
+      boundaryAttrs.push_back(tOp.getTransform());
+      cur = tOp.getInput();
+    }
+  }
+
+  if (boundaryAttrs.empty())
+    return;
+
+  // Cheap-rejection shape guard: if the outermost boundary transform's
+  // output shape isn't already arg0's shape, the inversion check below
+  // is guaranteed to fail (different result count from rootShape), so
+  // we may as well bail out before walking arg0's chain.
+  auto rootShape =
+      cast<RankedTensorType>(block.getArgument(0).getType()).getShape();
+  auto firstResShape =
+      cast<RankedTensorType>(yieldOp.getOperand(0).getType()).getShape();
+  if (firstResShape != rootShape)
+    return;
+
+  // Walk arg0's in-body transform chain (linear single-use chain of
+  // TransformOps) and collect its attributes in walking order from arg0
+  // outward.
+  SmallVector<TransformMapAttr> arg0Attrs;
+  {
+    Value cur = block.getArgument(0);
+    while (cur.hasOneUse()) {
+      auto chainTOp = dyn_cast<TransformOp>(*cur.getUsers().begin());
+      if (!chainTOp)
+        break;
+      arg0Attrs.push_back(chainTOp.getTransform());
+      cur = chainTOp.getResult();
+    }
+  }
+
+  // Inversion check. composeTransforms(L) applies L[0] first, then L[1],
+  // ..., then L[N-1]. The boundary stack maps arg0_shape -> working_shape
+  // (apply outer first, so boundaryAttrs is already in the right order).
+  // Arg0's chain maps working_shape -> arg0_shape via right-to-left
+  // composition of its attrs (each rock.transform reads at its top by
+  // applying its map down to the underlying data), so we pass them
+  // reversed. The composed round-trip must land on identity (modulo unit
+  // dims) for the rewrite to preserve per-element values.
+  SmallVector<TransformMapAttr> roundTrip(boundaryAttrs);
+  for (auto attr : llvm::reverse(arg0Attrs))
+    roundTrip.push_back(attr);
+  AffineMap composed = composeTransforms(roundTrip);
+  if (!isIdentityOnShape(composed, rootShape))
+    return;
+
+  // All checks passed — perform the erasure. Same loop structure as the
+  // walking step above; we re-derive each tOp from yield's current
+  // operand because each erase changes what yield points at.
+  while (true) {
+    auto tOp = yieldOp.getOperand(0).getDefiningOp<TransformOp>();
+    if (!tOp || isa<BlockArgument>(tOp.getInput()) ||
+        !tOp.getResult().hasOneUse())
+      return;
+    yieldOp.setOperand(0, tOp.getInput());
+    tOp.erase();
+  }
+}
+
 static LogicalResult sinkTransformsToLeaves(Operation *op, Block &block) {
   bool changed = true;
   while (changed) {
@@ -343,6 +462,8 @@ static LogicalResult regularizeGemmGemmBody(OpBuilder &builder,
 
   if (failed(inlineExternalConstants(builder, op, block)))
     return failure();
+
+  eraseYieldBoundaryTransform(block);
 
   if (failed(sinkTransformsToLeaves(op, block)))
     return failure();
