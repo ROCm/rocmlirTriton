@@ -73,36 +73,34 @@ static FailureOr<Container> reorderArrayAttr(Container inputArray,
   return reorderedElements;
 }
 
-using TransformList = SmallVector<Attribute>;
-
 // Traces input arguments of a conv/gemm operation back to blockArguments
 // through rock.transform ops and shape-preserving (elementwise) ops.
 //
 // Unlike upstream rocMLIR which uses BufferDependencyAnalysis to trace through
 // memref.alloc writer/reader chains, this version works on tensor-based IR
 // by directly following SSA operands of elementwise ops.
-//
-// A source value may be reached through multiple transform chains in SSA DAGs.
-// This implementation is conservative: if the same source is reached through
-// different transform chains, tracing fails and layout sorting is skipped.
 static LogicalResult traceToBlockArgs(
     Value inputArg, PatternRewriter &b, ArrayRef<Attribute> existingTransforms,
-    llvm::DenseMap<Value, TransformList> &transformAttrsMap,
+    llvm::DenseMap<Value, SmallVector<Attribute>> &transformAttrsMap,
     llvm::SmallSetVector<Value, 2> &blockArgs) {
   Value source;
   ArrayAttr transforms;
   std::tie(source, transforms, std::ignore) =
       rock::untransform(b, inputArg, existingTransforms);
 
-  TransformList newTransforms(transforms.begin(), transforms.end());
+  SmallVector<Attribute> newTransforms(transforms.begin(), transforms.end());
   auto [it, inserted] = transformAttrsMap.insert({source, newTransforms});
   if (!inserted) {
     if (it->second == newTransforms) {
       // Benign DAG revisit. Same transforms, already processed.
       return success(isa<BlockArgument>(source));
     }
+    // Different transform chains reaching the same value: ambiguous dataflow.
+    // Remove the block arg (if present) so its unreliable transforms aren't
+    // used by sortByMemoryLayout.
     LLVM_DEBUG(llvm::dbgs()
                << "Conflicting transform chains reaching " << source << "\n");
+    blockArgs.remove(source);
     return failure();
   }
   if (isa<BlockArgument>(source)) {
@@ -119,7 +117,7 @@ static LogicalResult traceToBlockArgs(
     return failure();
 
   bool hasSuccess = false;
-  TransformList sourceTransforms = newTransforms;
+  SmallVector<Attribute> sourceTransforms = transformAttrsMap.at(source);
   for (Value operand : defOp->getOperands()) {
     auto operandType = dyn_cast<ShapedType>(operand.getType());
     if (!operandType || operandType.getShape() != resultType.getShape())
@@ -135,7 +133,7 @@ static LogicalResult traceToBlockArgs(
 template <typename Container>
 static FailureOr<std::tuple<Value, Container, SmallVector<uint32_t>>>
 sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
-  llvm::DenseMap<Value, TransformList> transformAttrsMap;
+  llvm::DenseMap<Value, SmallVector<Attribute>> transformAttrsMap;
   llvm::SmallSetVector<Value, 2> blockArgs;
   if (failed(traceToBlockArgs(tensor, b, /*existingTransforms=*/{},
                               transformAttrsMap, blockArgs))) {
@@ -145,7 +143,7 @@ sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
     // Could not trace this tensor to any block argument.
     return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
   }
-  TransformList transformsList;
+  SmallVector<Attribute> transformsList;
   for (const auto blockArg : blockArgs) {
     if (!transformAttrsMap.contains(blockArg)) {
       return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
@@ -159,7 +157,6 @@ sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
   if (transformsList.empty()) {
     return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
   }
-
   ArrayAttr transforms = b.getArrayAttr(transformsList);
   rock::TransformMapAttr firstCoordTransform =
       cast<rock::TransformMapAttr>(transformsList[0]);
