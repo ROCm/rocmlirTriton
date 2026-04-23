@@ -74,7 +74,6 @@ static FailureOr<Container> reorderArrayAttr(Container inputArray,
 }
 
 using TransformList = SmallVector<Attribute>;
-using TransformCandidates = SmallVector<TransformList>;
 
 // Traces input arguments of a conv/gemm operation back to blockArguments
 // through rock.transform ops and shape-preserving (elementwise) ops.
@@ -84,11 +83,11 @@ using TransformCandidates = SmallVector<TransformList>;
 // by directly following SSA operands of elementwise ops.
 //
 // A source value may be reached through multiple transform chains in SSA DAGs.
-// We preserve all unique chains and later only accept the rewrite when all
-// chains imply an equivalent stride signature.
+// This implementation is conservative: if the same source is reached through
+// different transform chains, tracing fails and layout sorting is skipped.
 static LogicalResult traceToBlockArgs(
     Value inputArg, PatternRewriter &b, ArrayRef<Attribute> existingTransforms,
-    llvm::DenseMap<Value, TransformCandidates> &transformAttrsMap,
+    llvm::DenseMap<Value, TransformList> &transformAttrsMap,
     llvm::SmallSetVector<Value, 2> &blockArgs) {
   Value source;
   ArrayAttr transforms;
@@ -96,16 +95,16 @@ static LogicalResult traceToBlockArgs(
       rock::untransform(b, inputArg, existingTransforms);
 
   TransformList newTransforms(transforms.begin(), transforms.end());
-  TransformCandidates &candidates = transformAttrsMap[source];
-  bool alreadySeen = llvm::any_of(
-      candidates, [&](const TransformList &existing) {
-        return existing == newTransforms;
-      });
-  if (alreadySeen) {
-    // Benign DAG revisit. Same transforms, already processed.
-    return success(isa<BlockArgument>(source));
+  auto [it, inserted] = transformAttrsMap.insert({source, newTransforms});
+  if (!inserted) {
+    if (it->second == newTransforms) {
+      // Benign DAG revisit. Same transforms, already processed.
+      return success(isa<BlockArgument>(source));
+    }
+    LLVM_DEBUG(llvm::dbgs()
+               << "Conflicting transform chains reaching " << source << "\n");
+    return failure();
   }
-  candidates.push_back(newTransforms);
   if (isa<BlockArgument>(source)) {
     blockArgs.insert(source);
     return success();
@@ -133,42 +132,10 @@ static LogicalResult traceToBlockArgs(
   return success(hasSuccess);
 }
 
-static FailureOr<SmallVector<uint32_t>>
-getStrideSignatureFromTransforms(PatternRewriter &b,
-                                 ArrayRef<Attribute> transformsList) {
-  if (transformsList.empty())
-    return SmallVector<uint32_t>{};
-
-  ArrayAttr transforms = b.getArrayAttr(transformsList);
-  rock::TransformMapAttr firstCoordTransform =
-      cast<rock::TransformMapAttr>(transformsList[0]);
-  int64_t upperRank = firstCoordTransform.getUpperBounds().size();
-  SmallVector<uint32_t> strides(upperRank);
-  for (int64_t idx = 0; idx < upperRank; idx++) {
-    FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<rock::SubDimInfo>>>
-        maybeLowerSubDims = rock::getLowerSubDimensions(b, transforms, idx);
-    if (failed(maybeLowerSubDims))
-      return failure();
-
-    auto lowerSubDims = maybeLowerSubDims.value();
-    uint32_t minStride =
-        lowerSubDims.empty() ? 1 : std::numeric_limits<uint32_t>::max();
-    for (auto [dim, subDimInfos] : lowerSubDims) {
-      LLVM_DEBUG(llvm::dbgs() << "dim=" << dim << ":");
-      LLVM_DEBUG(llvm::interleaveComma(subDimInfos, llvm::dbgs()));
-      LLVM_DEBUG(llvm::dbgs() << "\n");
-      for (auto subDim : subDimInfos)
-        minStride = std::min(minStride, static_cast<uint32_t>(subDim.stride));
-    }
-    strides[idx] = minStride;
-  }
-  return strides;
-}
-
 template <typename Container>
 static FailureOr<std::tuple<Value, Container, SmallVector<uint32_t>>>
 sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
-  llvm::DenseMap<Value, TransformCandidates> transformAttrsMap;
+  llvm::DenseMap<Value, TransformList> transformAttrsMap;
   llvm::SmallSetVector<Value, 2> blockArgs;
   if (failed(traceToBlockArgs(tensor, b, /*existingTransforms=*/{},
                               transformAttrsMap, blockArgs))) {
@@ -179,48 +146,45 @@ sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
     return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
   }
   TransformList transformsList;
-  SmallVector<uint32_t> strides;
-  bool hasReferenceSignature = false;
-  auto evaluateCandidate = [&](ArrayRef<Attribute> candidateTransforms)
-      -> LogicalResult {
-    FailureOr<SmallVector<uint32_t>> maybeStrides =
-        getStrideSignatureFromTransforms(b, candidateTransforms);
-    if (failed(maybeStrides))
-      return failure();
-    if (!hasReferenceSignature) {
-      transformsList.assign(candidateTransforms.begin(),
-                            candidateTransforms.end());
-      strides = maybeStrides.value();
-      hasReferenceSignature = true;
-      return success();
-    }
-    if (strides != maybeStrides.value()) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Conflicting stride signatures for " << tensor << "\n");
-      return failure();
-    }
-    return success();
-  };
-
   for (const auto blockArg : blockArgs) {
     if (!transformAttrsMap.contains(blockArg)) {
       return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
     }
-    TransformCandidates &candidates = transformAttrsMap[blockArg];
-    if (candidates.empty())
+    if (transformsList.empty()) {
+      transformsList = transformAttrsMap[blockArg];
+    } else if (transformsList != transformAttrsMap[blockArg]) {
       return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
-    for (const TransformList &candidate : candidates) {
-      if (failed(evaluateCandidate(candidate)))
-        return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
     }
   }
-  if (transformsList.empty() || strides.empty()) {
+  if (transformsList.empty()) {
     return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
   }
 
+  ArrayAttr transforms = b.getArrayAttr(transformsList);
   rock::TransformMapAttr firstCoordTransform =
       cast<rock::TransformMapAttr>(transformsList[0]);
   int64_t upperRank = firstCoordTransform.getUpperBounds().size();
+  SmallVector<uint32_t> strides(upperRank);
+  for (int64_t idx = 0; idx < upperRank; idx++) {
+    FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<rock::SubDimInfo>>>
+        maybeLowerSubDims = rock::getLowerSubDimensions(b, transforms, idx);
+    if (failed(maybeLowerSubDims)) {
+      return failure();
+    }
+
+    auto lowerSubDims = maybeLowerSubDims.value();
+    uint32_t minStride =
+        lowerSubDims.empty() ? 1 : std::numeric_limits<uint32_t>::max();
+
+    for (auto [dim, subDimInfos] : lowerSubDims) {
+      LLVM_DEBUG(llvm::dbgs() << "dim=" << dim << ":");
+      LLVM_DEBUG(llvm::interleaveComma(subDimInfos, llvm::dbgs()));
+      LLVM_DEBUG(llvm::dbgs() << "\n");
+      for (auto subDim : subDimInfos)
+        minStride = std::min(minStride, static_cast<uint32_t>(subDim.stride));
+    }
+    strides[idx] = minStride;
+  }
 
   LLVM_DEBUG(llvm::dbgs() << "strides=");
   LLVM_DEBUG(llvm::interleaveComma(strides, llvm::dbgs()));
