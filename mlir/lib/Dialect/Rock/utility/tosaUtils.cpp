@@ -108,8 +108,7 @@ bool isMaskingNegInfValue(const APFloat &v) {
 
   // Some frontends emit the largest negative finite value of the target
   // float semantics as a -inf stand-in.
-  APFloat largestNeg =
-      APFloat::getLargest(v.getSemantics(), /*Negative=*/true);
+  APFloat largestNeg = APFloat::getLargest(v.getSemantics(), /*Negative=*/true);
   if (v.bitwiseIsEqual(largestNeg))
     return true;
 
@@ -125,8 +124,7 @@ bool isMaskingNegInfValue(const APFloat &v) {
   // `kMaskingConstantThreshold` for the history behind the specific value.
   APFloat threshold(kMaskingConstantThreshold);
   bool losesInfo = false;
-  threshold.convert(v.getSemantics(), APFloat::rmNearestTiesToEven,
-                    &losesInfo);
+  threshold.convert(v.getSemantics(), APFloat::rmNearestTiesToEven, &losesInfo);
   return v.compare(threshold) != APFloat::cmpGreaterThan;
 }
 
