@@ -46,6 +46,23 @@ namespace {
 /// Repeat for any stack of such boundary transforms (rare in current
 /// migraphx output, but the loop costs nothing if there's only one).
 ///
+/// Example. Suppose arg0's shape is <1x4x4xf32> but the body operates in
+/// a "working shape" of <16xf32>:
+///
+///   ^bb0(%arg0: tensor<1x4x4xf32>, %arg1: tensor<1x4x4xf32>):
+///     %a = rock.transform %arg0 by T_arg0  : <1x4x4> -> <16>
+///     %b = rock.transform %arg1 by T_arg1  : <1x4x4> -> <16>
+///     %s = arith.addf %a, %b               : tensor<16xf32>
+///     %y = rock.transform %s by T_yield    : <16> -> <1x4x4>
+///     rock.yield %y                        : tensor<1x4x4xf32>
+///
+/// `%y`'s defining transform is the yield boundary. Provided the round-
+/// trip `T_yield` ∘ inv(T_arg0) is identity on arg0's shape (so `%s` is
+/// per-element equivalent to a value already in arg0's shape), this
+/// function rewires the yield to consume `%s` directly and erases
+/// `T_yield`. Downstream steps then push T_arg0/T_arg1 outward and
+/// retype the body so it reads `%arg0`/`%arg1` directly in <1x4x4xf32>.
+///
 /// Without this step, `sinkTransformsToLeaves` would push the yield-
 /// boundary transform inward through every body op until it reaches a
 /// leaf. When the body is a DAG (a value with multiple consumers),
@@ -81,8 +98,13 @@ namespace {
 ///      to consume.
 static void eraseYieldBoundaryTransform(Block &block) {
   auto yieldOp = cast<rock::YieldOp>(block.getTerminator());
-  if (yieldOp.getNumOperands() != 1)
-    return;
+  assert(yieldOp.getNumOperands() == 1 &&
+         "pre-second-GEMM body must yield exactly one value");
+
+  // arg0 is the first GEMM's result (e.g. QK^T for attention, A*B for
+  // gemm-elementwise-gemm). Bind it to a named value to make the
+  // intent of the walks below easier to follow.
+  Value firstGemmRes = block.getArgument(0);
 
   // Walk the (possibly stacked) boundary transforms in walking order from
   // yield inward, without modifying the IR. Each link must be single-
@@ -107,8 +129,7 @@ static void eraseYieldBoundaryTransform(Block &block) {
   // output shape isn't already arg0's shape, the inversion check below
   // is guaranteed to fail (different result count from rootShape), so
   // we may as well bail out before walking arg0's chain.
-  auto rootShape =
-      cast<RankedTensorType>(block.getArgument(0).getType()).getShape();
+  auto rootShape = cast<RankedTensorType>(firstGemmRes.getType()).getShape();
   auto firstResShape =
       cast<RankedTensorType>(yieldOp.getOperand(0).getType()).getShape();
   if (firstResShape != rootShape)
@@ -119,7 +140,7 @@ static void eraseYieldBoundaryTransform(Block &block) {
   // outward.
   SmallVector<TransformMapAttr> arg0Attrs;
   {
-    Value cur = block.getArgument(0);
+    Value cur = firstGemmRes;
     while (cur.hasOneUse()) {
       auto chainTOp = dyn_cast<TransformOp>(*cur.getUsers().begin());
       if (!chainTOp)
