@@ -73,36 +73,39 @@ static FailureOr<Container> reorderArrayAttr(Container inputArray,
   return reorderedElements;
 }
 
+using TransformList = SmallVector<Attribute>;
+using TransformCandidates = SmallVector<TransformList>;
+
 // Traces input arguments of a conv/gemm operation back to blockArguments
 // through rock.transform ops and shape-preserving (elementwise) ops.
 //
 // Unlike upstream rocMLIR which uses BufferDependencyAnalysis to trace through
 // memref.alloc writer/reader chains, this version works on tensor-based IR
 // by directly following SSA operands of elementwise ops.
+//
+// A source value may be reached through multiple transform chains in SSA DAGs.
+// We preserve all unique chains and later only accept the rewrite when all
+// chains imply an equivalent stride signature.
 static LogicalResult traceToBlockArgs(
     Value inputArg, PatternRewriter &b, ArrayRef<Attribute> existingTransforms,
-    llvm::DenseMap<Value, SmallVector<Attribute>> &transformAttrsMap,
+    llvm::DenseMap<Value, TransformCandidates> &transformAttrsMap,
     llvm::SmallSetVector<Value, 2> &blockArgs) {
   Value source;
   ArrayAttr transforms;
   std::tie(source, transforms, std::ignore) =
       rock::untransform(b, inputArg, existingTransforms);
 
-  SmallVector<Attribute> newTransforms(transforms.begin(), transforms.end());
-  auto [it, inserted] = transformAttrsMap.insert({source, newTransforms});
-  if (!inserted) {
-    if (it->second == newTransforms) {
-      // Benign DAG revisit. Same transforms, already processed.
-      return success(isa<BlockArgument>(source));
-    }
-    // Different transform chains reaching the same value: ambiguous dataflow.
-    // Remove the block arg (if present) so its unreliable transforms aren't
-    // used by sortByMemoryLayout.
-    LLVM_DEBUG(llvm::dbgs()
-               << "Conflicting transform chains reaching " << source << "\n");
-    blockArgs.remove(source);
-    return failure();
+  TransformList newTransforms(transforms.begin(), transforms.end());
+  TransformCandidates &candidates = transformAttrsMap[source];
+  bool alreadySeen = llvm::any_of(
+      candidates, [&](const TransformList &existing) {
+        return existing == newTransforms;
+      });
+  if (alreadySeen) {
+    // Benign DAG revisit. Same transforms, already processed.
+    return success(isa<BlockArgument>(source));
   }
+  candidates.push_back(newTransforms);
   if (isa<BlockArgument>(source)) {
     blockArgs.insert(source);
     return success();
@@ -117,7 +120,7 @@ static LogicalResult traceToBlockArgs(
     return failure();
 
   bool hasSuccess = false;
-  SmallVector<Attribute> sourceTransforms = transformAttrsMap.at(source);
+  TransformList sourceTransforms = newTransforms;
   for (Value operand : defOp->getOperands()) {
     auto operandType = dyn_cast<ShapedType>(operand.getType());
     if (!operandType || operandType.getShape() != resultType.getShape())
@@ -130,30 +133,12 @@ static LogicalResult traceToBlockArgs(
   return success(hasSuccess);
 }
 
-template <typename Container>
-static FailureOr<std::tuple<Value, Container, SmallVector<uint32_t>>>
-sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
-  llvm::DenseMap<Value, SmallVector<Attribute>> transformAttrsMap;
-  llvm::SmallSetVector<Value, 2> blockArgs;
-  if (failed(traceToBlockArgs(tensor, b, /*existingTransforms=*/{},
-                              transformAttrsMap, blockArgs))) {
-    return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
-  }
-  assert(!blockArgs.empty());
-  SmallVector<Attribute> transformsList;
-  for (const auto blockArg : blockArgs) {
-    if (!transformAttrsMap.contains(blockArg)) {
-      return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
-    }
-    if (transformsList.empty()) {
-      transformsList = transformAttrsMap[blockArg];
-    } else if (transformsList != transformAttrsMap[blockArg]) {
-      return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
-    }
-  }
-  if (transformsList.empty()) {
-    return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
-  }
+static FailureOr<SmallVector<uint32_t>>
+getStrideSignatureFromTransforms(PatternRewriter &b,
+                                 ArrayRef<Attribute> transformsList) {
+  if (transformsList.empty())
+    return SmallVector<uint32_t>{};
+
   ArrayAttr transforms = b.getArrayAttr(transformsList);
   rock::TransformMapAttr firstCoordTransform =
       cast<rock::TransformMapAttr>(transformsList[0]);
@@ -162,14 +147,12 @@ sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
   for (int64_t idx = 0; idx < upperRank; idx++) {
     FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<rock::SubDimInfo>>>
         maybeLowerSubDims = rock::getLowerSubDimensions(b, transforms, idx);
-    if (failed(maybeLowerSubDims)) {
+    if (failed(maybeLowerSubDims))
       return failure();
-    }
 
     auto lowerSubDims = maybeLowerSubDims.value();
     uint32_t minStride =
         lowerSubDims.empty() ? 1 : std::numeric_limits<uint32_t>::max();
-
     for (auto [dim, subDimInfos] : lowerSubDims) {
       LLVM_DEBUG(llvm::dbgs() << "dim=" << dim << ":");
       LLVM_DEBUG(llvm::interleaveComma(subDimInfos, llvm::dbgs()));
@@ -179,6 +162,65 @@ sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
     }
     strides[idx] = minStride;
   }
+  return strides;
+}
+
+template <typename Container>
+static FailureOr<std::tuple<Value, Container, SmallVector<uint32_t>>>
+sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
+  llvm::DenseMap<Value, TransformCandidates> transformAttrsMap;
+  llvm::SmallSetVector<Value, 2> blockArgs;
+  if (failed(traceToBlockArgs(tensor, b, /*existingTransforms=*/{},
+                              transformAttrsMap, blockArgs))) {
+    return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
+  }
+  if (blockArgs.empty()) {
+    // Could not trace this tensor to any block argument.
+    return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
+  }
+  TransformList transformsList;
+  SmallVector<uint32_t> strides;
+  bool hasReferenceSignature = false;
+  auto evaluateCandidate = [&](ArrayRef<Attribute> candidateTransforms)
+      -> LogicalResult {
+    FailureOr<SmallVector<uint32_t>> maybeStrides =
+        getStrideSignatureFromTransforms(b, candidateTransforms);
+    if (failed(maybeStrides))
+      return failure();
+    if (!hasReferenceSignature) {
+      transformsList.assign(candidateTransforms.begin(),
+                            candidateTransforms.end());
+      strides = maybeStrides.value();
+      hasReferenceSignature = true;
+      return success();
+    }
+    if (strides != maybeStrides.value()) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Conflicting stride signatures for " << tensor << "\n");
+      return failure();
+    }
+    return success();
+  };
+
+  for (const auto blockArg : blockArgs) {
+    if (!transformAttrsMap.contains(blockArg)) {
+      return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
+    }
+    TransformCandidates &candidates = transformAttrsMap[blockArg];
+    if (candidates.empty())
+      return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
+    for (const TransformList &candidate : candidates) {
+      if (failed(evaluateCandidate(candidate)))
+        return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
+    }
+  }
+  if (transformsList.empty() || strides.empty()) {
+    return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
+  }
+
+  rock::TransformMapAttr firstCoordTransform =
+      cast<rock::TransformMapAttr>(transformsList[0]);
+  int64_t upperRank = firstCoordTransform.getUpperBounds().size();
 
   LLVM_DEBUG(llvm::dbgs() << "strides=");
   LLVM_DEBUG(llvm::interleaveComma(strides, llvm::dbgs()));
