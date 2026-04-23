@@ -140,8 +140,14 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
 
     Operation *defOp = cur.getDefiningOp();
     if (!defOp) {
-      emitError(cur.getLoc(), "reached block arg without blockwise_load");
-      return failure();
+      // Hit a block argument that isn't from a blockwise_load (e.g. an
+      // scf.for iter_arg or function arg).  Such block args cannot
+      // themselves be 4-bit kernel inputs, so just stop traversing this
+      // branch.  If the caller expected to find a 4-bit input it will emit
+      // a clearer diagnostic when `inputs` ends up empty.
+      LLVM_DEBUG(llvm::dbgs()
+                 << "stopping 4-bit walk at non-load block arg\n");
+      continue;
     }
 
     if (auto loadOp = dyn_cast<BlockwiseLoadOp>(defOp)) {
@@ -178,8 +184,14 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
     if (isa<arith::ConstantOp>(defOp))
       continue;
 
-    defOp->emitError("unexpected op in 4-bit transform chain walk");
-    return failure();
+    // Anything else (e.g. scf.for results from an inner GEMM accumulator,
+    // tt.* loads, etc.) cannot lead to a 4-bit kernel block arg.  Stop
+    // traversing this branch silently; the caller checks `inputs.empty()`
+    // and emits a precise diagnostic when the GEMM operand was actually
+    // 4-bit but no inputs were found.
+    LLVM_DEBUG(llvm::dbgs()
+               << "stopping 4-bit walk at unsupported op: " << *defOp << "\n");
+    continue;
   }
   return inputs;
 }
