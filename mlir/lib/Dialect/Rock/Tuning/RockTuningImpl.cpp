@@ -158,11 +158,11 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   std::vector<std::vector<uint32_t>> validRangeWmmaParams = {
       dPerBlock,        // M/block
       dPerBlock,        // N/block
-      {32, 64},         // K/block
+      kPerBlock,         // K/block
       {1},              // kPack
       numWavesRange,    // numWaves
       {0},              // matrixInstrNonkdim
-      {1, 2},           // numStages
+      {1, 2, 3},           // numStages
       wavesPerEUList,   // wavesPerEU
       gridGroupSizeList // gridGroupSize
   };

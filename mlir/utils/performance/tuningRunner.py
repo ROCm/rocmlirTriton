@@ -65,7 +65,8 @@ from perfRunner import (
 # Constants
 # =============================================================================
 
-MLIR_N_REPEATS = 10
+TUNE_REPEATS = 10
+VERIFY_REPEATS = 1
 WARMUP_ITERATIONS = 1
 SLEEP_US = 100  # 0.1 ms
 
@@ -171,8 +172,8 @@ class Options:
     num_cu: int
     num_chiplets: int
     rocmlir_gen_flags: str
-    verify_mode: str
-    verify_perfconfigs: bool
+    disable_verify_winning_config: bool
+    verify_all_perfconfigs: bool
     output: str
     abort_on_error: bool
     retune: bool
@@ -1010,8 +1011,10 @@ class TuningArgumentParser(argparse.ArgumentParser):
         if parsed.test_dir and op_type != Operation.FUSION:
             self.error("argument --test-dir: only allowed with --op=fusion")
 
-        if parsed.verify_perf_configs and parsed.verify_mode == "none":
-            self.error("argument --verify-perf-configs: not allowed with --verify-mode=none")
+        if parsed.verify_all_perfconfigs and parsed.disable_verify_winning_config:
+            self.error(
+                "argument --verify-all-perfconfigs: not allowed with --disable-verify-winning-config"
+            )
 
         if self._gpu_topology and not self._gpu_topology.validate_homogeneity(parsed.gpus):
             details = ", ".join(f"GPU {g}: {self._gpu_topology.gpus[g].sku}" for g in parsed.gpus)
@@ -1056,19 +1059,6 @@ def make_isolated_gpu_env(gpu_id: int) -> Dict[str, str]:
     env = os.environ.copy()
     set_isolated_gpu_env(env, gpu_id)
     return env
-
-
-def verify_mode_flags(verify_mode: str) -> str:
-    """Convert verify mode to rocmlir-gen flags."""
-    if verify_mode == "none":
-        return ""
-    if verify_mode == "cpu":
-        return "-pv"
-    if verify_mode == "gpu":
-        # rocmlir-gen has no --verifier-keep-perf-config or -pv_with_gpu; mlir
-        # verification is enabled by -pv / -pv_with_mlir (both set verifier=mlir).
-        return "-pv_with_mlir"
-    raise ValueError(f"Unknown verification mode: {verify_mode}")
 
 
 def kill_process(proc: Optional[subprocess.Popen]) -> None:
@@ -1141,10 +1131,10 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
     config.set_perfconfig(perfconfig)
 
     command_line_options = config.generate_mlir_driver_commandline(
-        options.rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS)
+        options.rocmlir_gen_flags, kernel_repeats=VERIFY_REPEATS)
     rocmlir_gen_command = [
-        paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary'
-    ] + verify_mode_flags(options.verify_mode).split() + command_line_options.split()
+        paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary', '-pv'
+    ] + command_line_options.split()
 
     rocmlir_driver_command = [paths.mlir_paths.rocmlir_driver_path, '-c']
     profiler_command = [perfRunner.ROCPROF] + perfRunner.get_metric_args_for_rocprof(
@@ -1263,7 +1253,7 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
             entry["MeasurementsMs"] = measurements
         entries.append(entry)
 
-        if options.verify_perfconfigs and not np.isnan(nano_seconds):
+        if options.verify_all_perfconfigs and not np.isnan(nano_seconds):
             verify_ns = verify_perfconfig(perfconfig, config, paths, options, gpu_id)
             if np.isnan(verify_ns):
                 raise TuningError(f"Verification returned NaN for perfconfig '{perfconfig}'")
@@ -1282,7 +1272,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
     gpu_logger = get_gpu_logger(gpu_id)
 
     tuning_driver_args = [
-        f"--tuning-space={options.tuning_space_kind}", f"--num-iterations={MLIR_N_REPEATS}",
+        f"--tuning-space={options.tuning_space_kind}", f"--num-iterations={TUNE_REPEATS}",
         f"--warmup-iterations={WARMUP_ITERATIONS}", "--use-median", f"--sleep-us={SLEEP_US}",
         f"--show-all-measurements={options.debug}", f"--num-compile-threads={num_compile_threads}",
     ]
@@ -1393,7 +1383,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
 
     verify_tflops = None
-    if options.verify_mode != "none":
+    if not options.disable_verify_winning_config:
         try:
             verify_ns = verify_perfconfig(winning_config, config, paths, options, gpu_id)
         except TuningError as e:
@@ -1786,17 +1776,20 @@ def parse_arguments(gpu_topology: GpuTopology,
                                default=False,
                                help="Enable verbose output, including commands being executed")
 
-    parser.add_argument("--verify-mode",
-                        default="gpu",
-                        choices=["none", "cpu", "gpu"],
-                        help="Verification mode to use when verifying perf configs")
+    parser.add_argument(
+        "--disable-verify-winning-config",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Disable verifying the winning perf config against the CPU reference (rocmlir-gen -pv). "
+        "Use --disable-verify-winning-config to skip verification.",
+    )
 
     parser.add_argument(
-        "--verify-perf-configs",
+        "--verify-all-perfconfigs",
         action='store_true',
         default=False,
-        help=
-        "Verify each perf config during tuning, not just the winning config. Requires --verify-mode to be cpu or gpu."
+        help="Verify each perf config during tuning, not just the winning config. "
+        "Not compatible with --disable-verify-winning-config.",
     )
 
     parser.add_argument('--data-type',
@@ -1942,8 +1935,8 @@ def main(args=None):
                       verbose=parsed_args.verbose,
                       tuning_space_kind=parsed_args.tuning_space,
                       rocmlir_gen_flags=parsed_args.rocmlir_gen_flags,
-                      verify_mode=parsed_args.verify_mode,
-                      verify_perfconfigs=parsed_args.verify_perf_configs,
+                      disable_verify_winning_config=parsed_args.disable_verify_winning_config,
+                      verify_all_perfconfigs=parsed_args.verify_all_perfconfigs,
                       output=parsed_args.output,
                       abort_on_error=parsed_args.abort_on_error,
                       retune=parsed_args.retune,
