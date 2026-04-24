@@ -47,14 +47,17 @@ namespace {
 /// migraphx output, but the loop costs nothing if there's only one).
 ///
 /// Example. Suppose arg0's shape is <1x4x4xf32> but the body operates in
-/// a "working shape" of <16xf32>:
+/// a "working shape" of <16xf32>. The example shows a single working
+/// shape because that is all this function reasons about. Any other
+/// intermediate working shapes in the body are handled later by
+/// `sinkTransformsToLeaves`:
 ///
 ///   ^bb0(%arg0: tensor<1x4x4xf32>, %arg1: tensor<1x4x4xf32>):
-///     %a = rock.transform %arg0 by T_arg0  : <1x4x4> -> <16>
-///     %b = rock.transform %arg1 by T_arg1  : <1x4x4> -> <16>
-///     %s = arith.addf %a, %b               : tensor<16xf32>
-///     %y = rock.transform %s by T_yield    : <16> -> <1x4x4>
-///     rock.yield %y                        : tensor<1x4x4xf32>
+///     %a = rock.transform %arg0 by T_arg0 : tensor<1x4x4xf32> to tensor<16xf32>
+///     %b = rock.transform %arg1 by T_arg1 : tensor<1x4x4xf32> to tensor<16xf32>
+///     %s = arith.addf %a, %b              : tensor<16xf32>
+///     %y = rock.transform %s by T_yield   : tensor<16xf32> to tensor<1x4x4xf32>
+///     rock.yield %y                       : tensor<1x4x4xf32>
 ///
 /// `%y`'s defining transform is the yield boundary. Provided the round-
 /// trip `T_yield` ∘ inv(T_arg0) is identity on arg0's shape (so `%s` is
@@ -115,6 +118,10 @@ static void eraseYieldBoundaryTransform(Block &block) {
   {
     Value cur = yieldOp.getOperand(0);
     while (auto tOp = cur.getDefiningOp<TransformOp>()) {
+      // Multi-use boundary links aren't supported: the inversion check
+      // below only justifies the rewrite if nothing else observes this
+      // view, and a surviving multi-use link would later be rejected by
+      // collectArgTransformChains as a non-linear transform chain.
       if (isa<BlockArgument>(tOp.getInput()) || !tOp.getResult().hasOneUse())
         break;
       boundaryAttrs.push_back(tOp.getTransform());
