@@ -91,6 +91,7 @@ def get_splitk_value(perfconfig):
         return params[SPLITK_IDX]
     return None
 
+
 # =============================================================================
 # Data Loading & Processing
 # =============================================================================
