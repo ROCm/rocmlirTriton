@@ -1483,9 +1483,9 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
     if ctx.options.debug and not debug_enabled:
         logger.warning("Debug output disabled when writing to stdout")
 
-    with (OutputFileWriter(ctx.options.output, ctx.options) as results_writer,
-          DebugFileWriter(f"{ctx.options.output}.debug") if debug_enabled else nullcontext() as
-          debug_writer):
+    debug_cm = (DebugFileWriter(f"{ctx.options.output}.debug") if debug_enabled else nullcontext())
+    with OutputFileWriter(ctx.options.output, ctx.options) as results_writer, \
+            debug_cm as debug_writer:
 
         executor = None
         progress_bar = None
