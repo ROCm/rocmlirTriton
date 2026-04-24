@@ -365,4 +365,27 @@ module {
     %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
     return %lm : tensor<16x16xf32>
   }
+
+  // CHECK-LABEL: func.func @test_shared_arg_different_transforms
+  // CHECK: %[[SM:.*]] = rock.store_marker
+  // CHECK: %[[LM_DIRECT:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<1x16x16xf32> -> tensor<16x16xf32>
+  // CHECK: %[[T:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<1x16x16xf32> to tensor<1x16x16xf32>
+  // CHECK: %[[LM_TRANSP:.*]] = rock.load_marker %[[T]] views
+  // CHECK-SAME: tensor<1x16x16xf32> -> tensor<16x16xf32>
+  // CHECK: %[[TILE_ADD:.*]] = arith.addf %[[LM_DIRECT]], %[[LM_TRANSP]] : tensor<16x16xf32>
+  // CHECK: %[[UT:.*]] = rock.untile %[[TILE_ADD]]
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[SM]], %[[UT]]
+  // CHECK: rock.store %[[FUSED]]
+  func.func @test_shared_arg_different_transforms(%tile: tensor<16x16xf32>, %bias: tensor<1x16x16xf32>, %dest: tensor<1x16x16xf32>, %g: i32, %m: i32, %n: i32) -> tensor<1x16x16xf32> attributes {rock.kernel} {
+    %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
+    %bias_t = rock.transform %bias by #tmap_transpose_3d : tensor<1x16x16xf32> to tensor<1x16x16xf32>
+    %sum = arith.addf %bias, %bias_t : tensor<1x16x16xf32>
+    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
+    %add = arith.addf %sm, %ut : tensor<1x16x16xf32>
+    %r = rock.store %add to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
+    return %r : tensor<1x16x16xf32>
+  }
 }
