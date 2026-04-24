@@ -1130,8 +1130,8 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
 
     config.set_perfconfig(perfconfig)
 
-    command_line_options = config.generate_mlir_driver_commandline(
-        options.rocmlir_gen_flags, kernel_repeats=VERIFY_REPEATS)
+    command_line_options = config.generate_mlir_driver_commandline(options.rocmlir_gen_flags,
+                                                                   +kernel_repeats=VERIFY_REPEATS)
     rocmlir_gen_command = [
         paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary', '-pv'
     ] + command_line_options.split()
@@ -1272,9 +1272,13 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
     gpu_logger = get_gpu_logger(gpu_id)
 
     tuning_driver_args = [
-        f"--tuning-space={options.tuning_space_kind}", f"--num-iterations={TUNE_REPEATS}",
-        f"--warmup-iterations={WARMUP_ITERATIONS}", "--use-median", f"--sleep-us={SLEEP_US}",
-        f"--show-all-measurements={options.debug}", f"--num-compile-threads={num_compile_threads}",
+        f"--tuning-space={options.tuning_space_kind}",
+        f"--num-iterations={TUNE_REPEATS}",
+        f"--warmup-iterations={WARMUP_ITERATIONS}",
+        "--use-median",
+        f"--sleep-us={SLEEP_US}",
+        f"--show-all-measurements={options.debug}",
+        f"--num-compile-threads={num_compile_threads}",
     ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
@@ -1365,9 +1369,9 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                              gpu_id=gpu_id))
             return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
         # else:
-            # Log any stderr output from tuning driver because it may contain warnings
-            # if tuning_errors.strip():
-            # gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
+        # Log any stderr output from tuning driver because it may contain warnings
+        # if tuning_errors.strip():
+        # gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
 
         winning_config, max_tflops, entries = find_best_perfconfig(tuning_output.splitlines(),
                                                                    config, paths, options, gpu_id)
