@@ -6,13 +6,13 @@
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // NUMSTAGES2-LABEL: func.func @rock_attention
-// NUMSTAGES2-SAME: rock.num_stages = 2 : i32
+// NUMSTAGES2-SAME: rock.num_stages = 2 : i64
 
 // NUMSTAGES3-LABEL: func.func @rock_attention
-// NUMSTAGES3-SAME: rock.num_stages = 3 : i32
+// NUMSTAGES3-SAME: rock.num_stages = 3 : i64
 
 // NUMSTAGES4-LABEL: func.func @rock_attention
-// NUMSTAGES4-SAME: rock.num_stages = 4 : i32
+// NUMSTAGES4-SAME: rock.num_stages = 4 : i64
 
 // CHECK-LABEL: func.func @rock_attention
 // CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<32768xf16>,

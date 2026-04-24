@@ -819,11 +819,15 @@ static llvm::cl::opt<F8TypesChoice> forceF8Types(
                                 "'OCP' or 'OFP8' types")),
     llvm::cl::init(F8TypesChoice::Arch));
 
-static llvm::cl::opt<int> numStages(
+static llvm::cl::opt<int64_t> numStages(
     "num_stages",
-    llvm::cl::desc(
-        "number of stages (num_stages triton tuning parameter)"),
-    llvm::cl::value_desc("positive integer"), llvm::cl::init(1));
+    llvm::cl::desc("number of stages (num_stages triton tuning parameter)"),
+    llvm::cl::value_desc("positive integer"), llvm::cl::init(1),
+    llvm::cl::callback([](const int64_t &value) {
+      if (value < 1)
+        llvm::report_fatal_error(
+            "error: --num_stages must be a positive integer (>= 1)");
+    }));
 
 ////////////////////////////////////////////////////////////////////////////////
 ////  Struct KernelIF
@@ -904,7 +908,7 @@ void registerTestDialect(DialectRegistry &);
 static void setNumStages(OpBuilder& builder, func::FuncOp func) {
   if (numStages.getValue() != 1)
     func->setAttr(rock::NumStagesAttr::getMnemonic(),
-                  builder.getI32IntegerAttr(numStages.getValue()));
+                  builder.getI64IntegerAttr(numStages.getValue()));
 }
 
 static bool isConv(rock::KernelType kernelType) {

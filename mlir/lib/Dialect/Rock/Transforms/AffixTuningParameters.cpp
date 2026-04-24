@@ -107,8 +107,15 @@ static FailureOr<std::optional<int64_t>> getNumStages(func::FuncOp funcOp,
         "perf_config and remove rock.num_stages");
   }
   if (hasNumStages) {
-    numStages =
-        dyn_cast<IntegerAttr>(funcOp->removeAttr(numStagesAttrName)).getInt();
+    auto attr =
+        dyn_cast_or_null<IntegerAttr>(funcOp->removeAttr(numStagesAttrName));
+    if (!attr)
+      return op->emitError("rock.num_stages must be an integer attribute");
+    int64_t value = attr.getInt();
+    if (value <= 0)
+      return op->emitError("rock.num_stages must be a positive integer, got ")
+             << value;
+    numStages = value;
   }
 
   return numStages;

@@ -825,7 +825,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   }
   if (config.numStages != 1) {
     func->setAttr(rock::NumStagesAttr::getMnemonic(),
-                  builder.getI32IntegerAttr(config.numStages));
+                  builder.getI64IntegerAttr(config.numStages));
   }
   module.push_back(func);
   if (func.getName() != kernelName) {
