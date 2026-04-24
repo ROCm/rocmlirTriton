@@ -1131,7 +1131,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
     config.set_perfconfig(perfconfig)
 
     command_line_options = config.generate_mlir_driver_commandline(options.rocmlir_gen_flags,
-                                                                   +kernel_repeats=VERIFY_REPEATS)
+                                                                   kernel_repeats=VERIFY_REPEATS)
     rocmlir_gen_command = [
         paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary', '-pv'
     ] + command_line_options.split()
