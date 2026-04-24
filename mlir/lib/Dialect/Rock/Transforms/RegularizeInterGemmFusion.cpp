@@ -225,7 +225,11 @@ externalizeBodyTransforms(OpBuilder &builder, Operation *op, Block &block,
         cast<RankedTensorType>(block.getArgument(i).getType()).getElementType();
     block.getArgument(i).setType(
         RankedTensorType::get(rootType.getShape(), argElemType));
-    chain.chainEnd.replaceAllUsesWith(block.getArgument(i));
+
+    // When the body has no transforms on this arg, chainEnd is the block
+    // argument itself; updating the block-arg type above is sufficient.
+    if (chain.chainEnd != block.getArgument(i))
+      chain.chainEnd.replaceAllUsesWith(block.getArgument(i));
   }
 
   // Erase dead transform ops (reverse order to satisfy use-def).
