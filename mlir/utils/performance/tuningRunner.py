@@ -1367,7 +1367,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         # else:
             # Log any stderr output from tuning driver because it may contain warnings
             # if tuning_errors.strip():
-                # gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
+            # gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
 
         winning_config, max_tflops, entries = find_best_perfconfig(tuning_output.splitlines(),
                                                                    config, paths, options, gpu_id)

@@ -122,7 +122,6 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   std::vector<uint32_t> wavesPerEUList = {0};
   std::vector<uint32_t> gridGroupSizeList = {0};
 
-
   auto arch = rock::getArchValue(gemmOp);
   auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
   bool isMfma = accelKind == MatrixAccelKind::MFMA ||
@@ -131,7 +130,7 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   bool is8b = inTypeA.isInteger(8) ||
               (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
 
-  std::vector<uint32_t> kPerBlock = 
+  std::vector<uint32_t> kPerBlock =
       kind == TuningParamSetKind::Exhaustive
           ? std::vector<uint32_t>{16, 32, 64, 128, 256, 512}
           : std::vector<uint32_t>{16, 32, 64, 128};
@@ -158,11 +157,11 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   std::vector<std::vector<uint32_t>> validRangeWmmaParams = {
       dPerBlock,        // M/block
       dPerBlock,        // N/block
-      kPerBlock,         // K/block
+      kPerBlock,        // K/block
       {1},              // kPack
       numWavesRange,    // numWaves
       {0},              // matrixInstrNonkdim
-      {1, 2, 3},           // numStages
+      {1, 2, 3},        // numStages
       wavesPerEUList,   // wavesPerEU
       gridGroupSizeList // gridGroupSize
   };
