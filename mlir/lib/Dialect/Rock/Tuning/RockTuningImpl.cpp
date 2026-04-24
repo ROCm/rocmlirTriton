@@ -207,7 +207,7 @@ getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
        kPerBlockWMMA,
        /*kPack=*/{1},
        numWavesRange,
-       /*matrixInstrNonkdim=*/{0},
+       /*matrixInstrNonkdim=*/{16, 32},
        {1, 2, 3},
        wavesPerEUList,
        gridGroupSizeList};
