@@ -27,6 +27,7 @@
 #include "mlir/Support/WalkResult.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -226,7 +227,6 @@ LogicalResult mlir::rock::testFusionLegalityBwdDataConv(ModuleOp mod) {
 static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
                                             int64_t gemm1N,
                                             int64_t elemBitWidth) {
-  int64_t bytesPerElem = std::max<int64_t>(1, elemBitWidth / 8);
   int64_t mPerBlockG0 = params.getMPerBlockG0();
   int64_t nPerBlockG0 = params.getNPerBlockG0();
   int64_t kPerBlock = params.getKPerBlock();
@@ -249,7 +249,11 @@ static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
   // so peak LDS is roughly the larger of the two phases. Multiply by
   // numStages because Triton multibuffers operand tiles to overlap
   // global loads with compute, so each live tile costs `numStages` slots.
-  return numStages * bytesPerElem * std::max(gemm0Elems, gemm1Elems);
+  // Compute the footprint in bits (so sub-byte element types like i4 aren't
+  // rounded up to 1 byte/elem), then convert to bytes at the end.
+  int64_t peakBits =
+      numStages * elemBitWidth * std::max(gemm0Elems, gemm1Elems);
+  return llvm::divideCeil(peakBits, int64_t{8});
 }
 
 LogicalResult
@@ -258,13 +262,18 @@ mlir::rock::testFusionLegalityGemmGemmLDS(func::FuncOp func,
   // The arch is a function/module-level attribute, so all ops in `func`
   // share the same LDS budget; resolve it once. A func that doesn't carry
   // `rock.arch` (e.g., a host helper alongside a kernel) has nothing to
-  // budget — treat it as trivially fusible.
+  // budget. Treat it as trivially fusible.
   auto maybeArch = getArch(func);
   if (failed(maybeArch))
-    return success();
+    llvm_unreachable("rock.arch missing on func passed to "
+                     "testFusionLegalityGemmGemmLDS; Any callers should have "
+                     "set it before calling isModuleFusible");
+
   int64_t maxLDS = getLDSSize(maybeArch->getValue());
   if (maxLDS <= 0)
-    return failure();
+    llvm_unreachable(
+        "getLDSSize returned non-positive for an arch that getArch accepted; "
+        "this should have failed during target selection");
 
   // If the caller passed a gemm-gemm perfConfig, use it for every gemm-gemm
   // op in the function. Otherwise (empty string, or a non-gemm-gemm config
@@ -277,6 +286,12 @@ mlir::rock::testFusionLegalityGemmGemmLDS(func::FuncOp func,
   GemmGemmParamsAttr explicitParams;
   if (!perfConfig.empty()) {
     auto perfConfigAttr = StringAttr::get(func.getContext(), perfConfig);
+    // Note: `GemmGemmParamsAttr::get` returns a null attribute for any
+    // string that doesn't start with `attn:` (e.g., a `gemm:v1:...`
+    // solution string for a rock.gemm kernel). That's intentional as
+    // when the caller's perfConfig isn't a gemm-gemm config, `explicitParams`
+    // stays null and the walk below falls back to `obtainTuningParameters`
+    // per op.
     explicitParams = GemmGemmParamsAttr::get(perfConfigAttr);
   }
 
