@@ -253,8 +253,6 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
       }
     }
   }
-
-  return;
 }
 
 /// Check if architecture has architected SGPRs
