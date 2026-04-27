@@ -1,11 +1,11 @@
-// RUN: rocmlir-driver -kernel-pipeline highlevel %s | rocmlir-opt --rock-affix-params --rock-conv-to-gemm --rock-gemm-to-gridwise -rock-regularize --rock-gridwise-gemm-to-blockwise --rock-blockwise-load-tile-to-threadwise --rock-linalg-align | FileCheck %s
+// RUN: rocmlir-driver -kernel-pipeline highlevel %s | FileCheck %s
 
-// CHECK-DAG: #[[MAP2:.*]] = #rock.transform_map<#map{{.*}} by [<PassThrough ["{{.*}}", "{{.*}}", "{{.*}}", "{{.*}}"] at [0, 1, 2, 3] -> ["{{.*}}", "{{.*}}", "{{.*}}", "{{.*}}"] at [0, 2, 3, 1]>] bounds = [256, 28, 28, 64] -> [256, 64, 28, 28]>
-// CHECK-COUNT-2: rock.threadwise_read_into {{.*}}
-// CHECK: rock.threadwise_read_into {{.*}} -> [[lain:%.*]] :
-// CHECK: linalg.generic{{.*}} ins({{.*}}, [[lain]] :{{.*}}) outs(%[[outBuf:.*]] : memref<128xf32, #gpu.address_space<private>>)
-// CHECK: rock.threadwise_write_all {{.*}} %[[outBuf]] ->
-// to test transpose is converted as transform and fused.
+// Verify that transpose is converted as transform and add is fused.
+// CHECK-DAG: #{{.*}} = #rock.transform_map<{{.*}} by [<PassThrough [{{.*}}] at [0, 1, 2, 3] -> [{{.*}}] at [0, 2, 3, 1]>]
+// CHECK: rock.conv
+// CHECK: arith.addf
+// CHECK-COUNT-1: rock.store
+// CHECK-NOT: rock.store
 
 // NOTE: using gfx906 arch to make sure we get non-accel path
 
@@ -18,4 +18,3 @@ func.func @test_fusion(%arg0: tensor<256x28x28x128xf32>, %arg1: tensor<64x3x3x12
     %2 = "tosa.add"(%0, %1) : (tensor<256x28x28x64xf32>, tensor<256x28x28x64xf32>) -> tensor<256x28x28x64xf32>
     return %2 : tensor<256x28x28x64xf32>
 }
-

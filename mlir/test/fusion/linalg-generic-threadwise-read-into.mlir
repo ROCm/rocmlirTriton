@@ -1,16 +1,19 @@
 // RUN: rocmlir-driver -kernel-pipeline=gpu %s | rocmlir-opt
 
-#map0 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
-
+#map = affine_map<(d0, d1, d2) -> (d1 + d2)>
+#map1 = affine_map<(d0, d1, d2) -> (d1 + d2)>
+#map2 = affine_map<(d0) -> (0, 0, 0)>
+#transform_map = #rock.transform_map<#map by [<Unmerge{1, 1} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1, 1] -> [1]>
+#transform_map1 = #rock.transform_map<#map1 by [<Unmerge{1, 1} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1, 1] -> [1]>
+#transform_map2 = #rock.transform_map<#map2 by [<Merge{1, 1} ["raw"] at [0] -> ["m", "n"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [1] -> [1, 1, 1]>
 module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  func.func @rock_gemm(%arg0: memref<1x1x1xf16>, %arg1: memref<1x1x1xf32>, %arg2: memref<1x1x1xf32>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-    %0 = memref.alloc() : memref<1x1x1xf32>
-    linalg.generic {indexing_maps = [#map0, #map0], iterator_types=["parallel", "parallel", "parallel"]} ins(%arg0 : memref<1x1x1xf16>) outs(%0 : memref<1x1x1xf32>) {
-    ^bb0(%arg3: f16, %arg4: f32):
-        %1 = arith.extf %arg3 : f16 to f32
-        linalg.yield %1 : f32
-    }
-    rock.gemm %arg2 = %0 * %arg1 features =  dot|atomic_add|atomic_fmax_f32 storeMethod =  set : memref<1x1x1xf32> = memref<1x1x1xf32> * memref<1x1x1xf32>
-    return
+  func.func @rock_gemm(%arg0: tensor<1xf16>, %arg1: tensor<1xf32>, %arg2: tensor<1xf32>) -> tensor<1xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+    %0 = rock.transform %arg0 by #transform_map : tensor<1xf16> to tensor<1x1x1xf16>
+    %ext = arith.extf %0 : tensor<1x1x1xf16> to tensor<1x1x1xf32>
+    %1 = rock.transform %arg1 by #transform_map1 : tensor<1xf32> to tensor<1x1x1xf32>
+    %2 = rock.gemm %ext * %1 : tensor<1x1x1xf32> * tensor<1x1x1xf32> -> tensor<1x1x1xf32>
+    %3 = rock.transform %2 by #transform_map2 : tensor<1x1x1xf32> to tensor<1xf32>
+    %4 = rock.store %3 to %arg2 by set : tensor<1xf32> -> tensor<1xf32> to tensor<1xf32>
+    return %4 : tensor<1xf32>
   }
 }

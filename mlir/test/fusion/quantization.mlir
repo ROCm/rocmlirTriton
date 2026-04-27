@@ -1,7 +1,7 @@
 // RUN: rocmlir-driver -kernel-pipeline highlevel -arch gfx906 %s | FileCheck %s
 
 // CHECK-LABEL: test_conv_with_cast
-// CHECK: arith.sitofp {{.*}} : i32 to f32
+// CHECK: arith.sitofp {{.*}} : tensor<{{.*}}xi32> to tensor<{{.*}}xf32>
 
 func.func @test_conv_with_cast(
     %input: tensor<1x8x8x4xi8>,
@@ -18,7 +18,7 @@ func.func @test_conv_with_cast(
 }
 
 // CHECK-LABEL: test_dequantization_migraphx
-// CHECK: arith.sitofp {{.*}} : i32 to f32
+// CHECK: arith.sitofp {{.*}} : tensor<{{.*}}xi32> to tensor<{{.*}}xf32>
 func.func @test_dequantization_migraphx(
     %input: tensor<1x8x8x4xi8>,
     %filter: tensor<8x1x1x4xi8>,
