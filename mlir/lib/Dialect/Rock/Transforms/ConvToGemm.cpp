@@ -1238,7 +1238,12 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
       // BwdWeight: the regularized filterValue feeds into filter transforms
-      // that become gemm operands, so keep the insertion point moved. 
+      // that become gemm operands, so keep the insertion point moved.
+      // Using `outputViews[0]` instead of `destBuffer`: for BwdWeight 
+      // `destBuffer` is the output-gradient operand which may be
+      // defined before `outputViews[0]`. Using `destBuffer` could
+      // therefore place the new TransformOp before its operand's defining
+      // op and break SSA dominance.
       ensureInsertionAfterDef(b, op, outputViews[0]);
       auto mapping = buildInputToFilterMapping(b, rank);
       filterValue = regularizeDestLayout(
