@@ -1,6 +1,3 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Fusions need rework
-
 // RUN: rocmlir-opt -rock-linalg-align -canonicalize %s | FileCheck %s
 
 !tile = memref<16xf16, #gpu.address_space<private>>

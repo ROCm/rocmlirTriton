@@ -1,6 +1,3 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Fusions need rework
-
 // RUN: rocmlir-driver --rock-regularize %s | FileCheck %s
 
 #general_gemm_params = #rock.general_gemm_params<blockSize = 128, kPerBlock = 16, mPerBlock = 32, nPerBlock = 32, kPerThread = 1, mPerThread = 2, nPerThread = 2, kpack = 1, splitKFactor = 1, scheduleVersion = 1, outputSwizzle = 2>

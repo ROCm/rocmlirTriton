@@ -1,6 +1,3 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Fusions need rework
-
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-affix-params -rock-conv-to-gemm -rock-gemm-to-gridwise -rock-regularize -rock-gridwise-gemm-to-blockwise -rock-blockwise-load-tile-to-threadwise -rock-linalg-align | FileCheck %s
 
 // CHECK: #[[MAP:.*]] = affine_map<(d0, d1, d2, d3, d4) -> (0, 0, 0, 0, d4)>

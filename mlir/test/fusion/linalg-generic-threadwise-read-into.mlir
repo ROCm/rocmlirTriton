@@ -1,6 +1,3 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Fusions need rework
-
 // RUN: rocmlir-driver -kernel-pipeline=gpu %s | rocmlir-opt
 
 #map0 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
