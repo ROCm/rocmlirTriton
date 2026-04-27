@@ -751,13 +751,10 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // disable_print_inline in compiler.py
   disablePrintInline(*llvmModule);
 
-  // make_amdgcn (compiler.py lines 452-473)
-  // Get features for assembly
-  std::string asmFeatures(features);
-  if (arch.contains("gfx11")) {
-    appendFeature(asmFeatures, "-real-true16");
-  }
-  // Recreate target machine with proper features for codegen
+  // make_amdgcn (compiler.py lines 509-537)
+  std::string asmFeatures;
+  if (arch.contains("gfx11"))
+    asmFeatures = "-real-true16";
   auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
                                    options.enableFpFusion);
   if (!tmAsm) {
@@ -788,13 +785,12 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     }
   }
 
-  // make_hsaco (compiler.py lines 476-488)
-  // target_features starts from options.features (includes +xnack when asan
-  // is enabled); gfx11 additionally needs -real-true16 at the assembler step.
-  std::string hsacoFeatures(features);
-  if (arch.contains("gfx11")) {
+  // make_hsaco (compiler.py lines 540-554)
+  std::string hsacoFeatures;
+  if (enableAsan)
+    hsacoFeatures = "+xnack";
+  if (arch.contains("gfx11"))
     appendFeature(hsacoFeatures, "-real-true16");
-  }
   auto hsaco = makeHSACO(amdgcnAsm, triple, arch, hsacoFeatures);
   if (!hsaco) {
     return failure();
