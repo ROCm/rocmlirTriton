@@ -31,6 +31,12 @@ LogicalResult testFusionLegalityReduce(func::FuncOp func);
 // fusion legality for backward data convolutions
 LogicalResult testFusionLegalityBwdDataConv(func::FuncOp func);
 
+// Checks whether the prospective LDS footprint of any
+// `RockGemmGemmWrapperInterface` op in `func` would fit within the target
+// arch's per-workgroup LDS budget under `perfConfig`.
+LogicalResult testFusionLegalityGemmGemmLDS(func::FuncOp func,
+                                            StringRef perfConfig);
+
 // This is an overload of the `testFusionLegalitySplitK` which is more
 // convenient to use in CAPI. Given a `ModuleOp`, the function retrieve the
 // embedded `func:FuncOp` and calls the implementation
@@ -43,6 +49,9 @@ LogicalResult testFusionLegalityReduce(ModuleOp mod);
 
 // Same as above, overload of `testFusionLegalityBwdDataConv` for `ModuleOp`.
 LogicalResult testFusionLegalityBwdDataConv(ModuleOp mod);
+
+// Same as above, overload of `testFusionLegalityGemmGemmLDS` for `ModuleOp`.
+LogicalResult testFusionLegalityGemmGemmLDS(ModuleOp mod, StringRef perfConfig);
 
 // Whether a gemm+gemm-like operation has any pre-second-GEMM fusions.
 bool gemmGemmHasPreSecondGemmFusion(RockGemmGemmWrapperInterface op);
