@@ -17,11 +17,6 @@ name = "data type"
 values = ["f32", "f16", "bf16", "i8"]
 prefix = "-t "
 
-[[axis]]
-name = "num_stages"
-values = ["1", "2"]
-prefix = "--num_stages "
-
 ## PaddedGemm
 [[suite]]
 name = "padded_gemm"

@@ -17,11 +17,6 @@ name = "data type"
 values = ["f32", "f16"]
 prefix = "-t "
 
-[[axis]]
-name = "num_stages"
-values = ["1", "2"]
-prefix = "--num_stages "
-
 [[suite]]
 name = "config"
 

@@ -39,11 +39,6 @@ name = "scaleB dtype"
 values = ["f32"]
 prefix =  "-scale_b_dtype "
 
-[[axis]]
-name = "num_stages"
-values = ["1", "2"]
-prefix = "--num_stages "
-
 ## Gemm variants
 [[suite]]
 name = "gemm_scaled_f32"

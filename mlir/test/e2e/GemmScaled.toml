@@ -37,11 +37,6 @@ name = "scaleB dtype"
 values = ["f8E8M0FNU"]
 prefix =  "-scale_b_dtype "
 
-[[axis]]
-name = "num_stages"
-values = ["1", "2"]
-prefix = "--num_stages "
-
 ## Gemm variants
 [[suite]]
 name = "gemm_scaled"

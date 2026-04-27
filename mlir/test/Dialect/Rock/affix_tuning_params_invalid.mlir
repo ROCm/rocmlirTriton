@@ -48,64 +48,6 @@ func.func @two_gemms(
   return %out0, %out1 : tensor<1x128x115200xf32>, tensor<1x128x115200xf32>
 }
 
-func.func @rock_gemm_num_stages2(%arg0: tensor<787456xf32>, %arg1: tensor<393728xf32>, %arg2: tensor<524288xf32>) -> tensor<524288xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.kernel, rock.num_stages = 2 : i64} {
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 769 + d2)> by [<Unmerge{1024, 769} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 769] -> [787456]> : tensor<787456xf32> to tensor<1x1024x769xf32>
-  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 512 + d2)> by [<Unmerge{769, 512} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 769, 512] -> [393728]> : tensor<393728xf32> to tensor<1x769x512xf32>
-  // expected-error @+1 {{kernel has both perf_config and rock.num_stages attribute set. Please modify num_stages directly inside perf_config and remove rock.num_stages}}
-  %2 = rock.gemm %0 * %1 {perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"} : tensor<1x1024x769xf32> * tensor<1x769x512xf32> -> tensor<1x1024x512xf32>
-  %3 = rock.transform %2 by <affine_map<(d0) -> (0, d0 floordiv 512, d0 mod 512)> by [<Merge{1024, 512} ["raw"] at [0] -> ["m", "n"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [524288] -> [1, 1024, 512]> : tensor<1x1024x512xf32> to tensor<524288xf32>
-  %4 = rock.store %3 to %arg2 by  set : tensor<524288xf32> -> tensor<524288xf32> to tensor<524288xf32>
-  return %4 : tensor<524288xf32>
-}
-
-func.func @rock_gemm_num_stages_not_integer(%arg0: tensor<787456xf32>, %arg1: tensor<393728xf32>, %arg2: tensor<524288xf32>) -> tensor<524288xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.kernel, rock.num_stages = "two"} {
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 769 + d2)> by [<Unmerge{1024, 769} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 769] -> [787456]> : tensor<787456xf32> to tensor<1x1024x769xf32>
-  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 512 + d2)> by [<Unmerge{769, 512} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 769, 512] -> [393728]> : tensor<393728xf32> to tensor<1x769x512xf32>
-  // expected-error @+1 {{rock.num_stages must be an integer attribute}}
-  %2 = rock.gemm %0 * %1 : tensor<1x1024x769xf32> * tensor<1x769x512xf32> -> tensor<1x1024x512xf32>
-  %3 = rock.transform %2 by <affine_map<(d0) -> (0, d0 floordiv 512, d0 mod 512)> by [<Merge{1024, 512} ["raw"] at [0] -> ["m", "n"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [524288] -> [1, 1024, 512]> : tensor<1x1024x512xf32> to tensor<524288xf32>
-  %4 = rock.store %3 to %arg2 by  set : tensor<524288xf32> -> tensor<524288xf32> to tensor<524288xf32>
-  return %4 : tensor<524288xf32>
-}
-
-func.func @rock_gemm_num_stages_negative(%arg0: tensor<787456xf32>, %arg1: tensor<393728xf32>, %arg2: tensor<524288xf32>) -> tensor<524288xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.kernel, rock.num_stages = -1 : i64} {
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 769 + d2)> by [<Unmerge{1024, 769} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 769] -> [787456]> : tensor<787456xf32> to tensor<1x1024x769xf32>
-  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 512 + d2)> by [<Unmerge{769, 512} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 769, 512] -> [393728]> : tensor<393728xf32> to tensor<1x769x512xf32>
-  // expected-error @+1 {{rock.num_stages must be a positive integer, got -1}}
-  %2 = rock.gemm %0 * %1 : tensor<1x1024x769xf32> * tensor<1x769x512xf32> -> tensor<1x1024x512xf32>
-  %3 = rock.transform %2 by <affine_map<(d0) -> (0, d0 floordiv 512, d0 mod 512)> by [<Merge{1024, 512} ["raw"] at [0] -> ["m", "n"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [524288] -> [1, 1024, 512]> : tensor<1x1024x512xf32> to tensor<524288xf32>
-  %4 = rock.store %3 to %arg2 by  set : tensor<524288xf32> -> tensor<524288xf32> to tensor<524288xf32>
-  return %4 : tensor<524288xf32>
-}
-
-func.func @rock_gemm_num_stages_zero(%arg0: tensor<787456xf32>, %arg1: tensor<393728xf32>, %arg2: tensor<524288xf32>) -> tensor<524288xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.kernel, rock.num_stages = 0 : i64} {
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 769 + d2)> by [<Unmerge{1024, 769} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 769] -> [787456]> : tensor<787456xf32> to tensor<1x1024x769xf32>
-  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 512 + d2)> by [<Unmerge{769, 512} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 769, 512] -> [393728]> : tensor<393728xf32> to tensor<1x769x512xf32>
-  // expected-error @+1 {{rock.num_stages must be a positive integer, got 0}}
-  %2 = rock.gemm %0 * %1 : tensor<1x1024x769xf32> * tensor<1x769x512xf32> -> tensor<1x1024x512xf32>
-  %3 = rock.transform %2 by <affine_map<(d0) -> (0, d0 floordiv 512, d0 mod 512)> by [<Merge{1024, 512} ["raw"] at [0] -> ["m", "n"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [524288] -> [1, 1024, 512]> : tensor<1x1024x512xf32> to tensor<524288xf32>
-  %4 = rock.store %3 to %arg2 by  set : tensor<524288xf32> -> tensor<524288xf32> to tensor<524288xf32>
-  return %4 : tensor<524288xf32>
-}
-
-func.func @rock_attn_num_stages2(%arg0: tensor<24576xf32>, %arg1: tensor<24576xf32>, %arg2: tensor<24576xf32>, %arg3: tensor<24576xf32>) -> tensor<24576xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel, rock.num_stages = 2 : i64} {
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)> by [<Unmerge{384, 64} ["seq_q", "head_qk"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 384, 64] -> [24576]> : tensor<24576xf32> to tensor<1x384x64xf32>
-  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 384 + d2)> by [<Unmerge{64, 384} ["head_qk", "seq_k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 384] -> [24576]> : tensor<24576xf32> to tensor<1x64x384xf32>
-  %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)> by [<Unmerge{384, 64} ["seq_k", "head_v"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 384, 64] -> [24576]> : tensor<24576xf32> to tensor<1x384x64xf32>
-  // expected-error @+1 {{kernel has both perf_config and rock.num_stages attribute set. Please modify num_stages directly inside perf_config and remove rock.num_stages}}
-  %result = rock.attention{
-    qk = %0 * %1 : tensor<1x384x64xf32>, tensor<1x64x384xf32>
-    qk = elementwise {
-  ^bb0(%arg4: tensor<1x384x384xf32>):
-    rock.yield %arg4 : tensor<1x384x384xf32>
-  }
-    softmax(qk) * %2 : tensor<1x384x64xf32>
-  } {perf_config = "attn:v1:128,16,64,1,1,1,0,1,1,0,0", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x384x64xf32>
-  %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 64, d0 mod 64)> by [<Merge{384, 64} ["raw"] at [0] -> ["seq_q", "head_v"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [24576] -> [1, 384, 64]> : tensor<1x384x64xf32> to tensor<24576xf32>
-  %4 = rock.store %3 to %arg3 by  set : tensor<24576xf32> -> tensor<24576xf32> to tensor<24576xf32>
-  return %4 : tensor<24576xf32>
-}
-
 // expected-error @below {{unknown attribute 'kernel' on function 'bare_kernel_attr'}}
 func.func @bare_kernel_attr(%arg0: tensor<1x128x128xf32>, %arg1: tensor<1x128x128xf32>, %arg2: tensor<1x128x128xf32>) -> tensor<1x128x128xf32>
     attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {

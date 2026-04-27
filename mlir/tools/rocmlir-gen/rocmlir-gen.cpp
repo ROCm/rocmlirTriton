@@ -819,16 +819,6 @@ static llvm::cl::opt<F8TypesChoice> forceF8Types(
                                 "'OCP' or 'OFP8' types")),
     llvm::cl::init(F8TypesChoice::Arch));
 
-static llvm::cl::opt<int64_t> numStages(
-    "num_stages",
-    llvm::cl::desc("number of stages (num_stages triton tuning parameter)"),
-    llvm::cl::value_desc("positive integer"), llvm::cl::init(1),
-    llvm::cl::callback([](const int64_t &value) {
-      if (value < 1)
-        llvm::report_fatal_error(
-            "error: --num_stages must be a positive integer (>= 1)");
-    }));
-
 ////////////////////////////////////////////////////////////////////////////////
 ////  Struct KernelIF
 ////  - Detected/capture kernel interface
@@ -904,12 +894,6 @@ struct GenParams {
 namespace test {
 void registerTestDialect(DialectRegistry &);
 } // namespace test
-
-static void setNumStages(OpBuilder& builder, func::FuncOp func) {
-  if (numStages.getValue() != 1)
-    func->setAttr(rock::NumStagesAttr::getMnemonic(),
-                  builder.getI64IntegerAttr(numStages.getValue()));
-}
 
 static bool isConv(rock::KernelType kernelType) {
   return kernelType == rock::KernelType::Conv ||
@@ -2874,7 +2858,6 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   Value storedVal =
       rock::StoreOp::create(b, loc, cFlatType, flatResult, cArg, storeMethod);
 
-  setNumStages(b, func);
   func::ReturnOp::create(b, loc, storedVal);
 
   if (!disableSplitKForTuning)
@@ -3685,7 +3668,6 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     returnOperands.push_back(storedLSE);
   }
 
-  setNumStages(builder, func);
   func::ReturnOp::create(builder, loc, returnOperands);
   module.push_back(func);
   return func;
@@ -3800,7 +3782,6 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
       rock::StoreOp::create(builder, loc, flatArgTypes[flatArgTypes.size() - 1],
                             convElntGemm.getResult(), output, storeMethod);
 
-  setNumStages(builder, func);
   func::ReturnOp::create(builder, loc, storedOut);
 
   if (!disableSplitKForTuning)
@@ -3902,8 +3883,7 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   Value outputArg = func.getArgument(func.getNumArguments() - 1);
   Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
                                           flatResult, outputArg, storeMethod);
-  
-  setNumStages(builder, func);
+
   func::ReturnOp::create(builder, loc, {storedOut});
   if (!disableSplitKForTuning)
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),
@@ -5762,11 +5742,10 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     }
 
     convGenerator = rock::ConvGenerator(
-        arch, chip, disableSplitKForTuning,
-        numStages, triple, chipFeatures,
+        arch, chip, disableSplitKForTuning, triple, chipFeatures,
         perfConfig.getValue(),
         num_cu.getNumOccurrences() ? std::optional<int>(num_cu.getValue())
-                                    : std::nullopt,
+                                   : std::nullopt,
         numChiplets.getNumOccurrences()
             ? std::optional<int>(numChiplets.getValue())
             : std::nullopt,

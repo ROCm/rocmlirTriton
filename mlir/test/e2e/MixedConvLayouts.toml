@@ -29,11 +29,6 @@ name = "in_layout"
 values = ["ngchw", "nghwc", "hwcgn"]
 prefix = "-in_layout="
 
-[[axis]]
-name = "num_stages"
-values = ["1", "2"]
-prefix = "--num_stages "
-
 [[suite]]
 name = "MixedConvLayouts"
 

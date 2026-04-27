@@ -642,66 +642,6 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
   return %out : tensor<64x1x1x14x14xf32>
 }
 
-// CHECK-LABEL: @rock_attn_numstages2
-func.func @rock_attn_numstages2(%arg0: tensor<32768xf16>, %arg1: tensor<32768xf16>, %arg2: tensor<32768xf16>, %arg3: tensor<32768xf16>) -> tensor<32768xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.kernel, rock.num_stages = 2 : i64} {
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_q", "head_qk"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
-  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 1024 + d2)> by [<Unmerge{32, 1024} ["head_qk", "seq_k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 32, 1024] -> [32768]> : tensor<32768xf16> to tensor<1x32x1024xf16>
-  %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_k", "head_v"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
-  // CHECK: rock.attention
-  // CHECK: numStages = 2
-  %result = rock.attention{
-    qk = %0 * %1 : tensor<1x1024x32xf16>, tensor<1x32x1024xf16>
-    qk = elementwise {
-  ^bb0(%arg4: tensor<1x1024x1024xf16>):
-    rock.yield %arg4 : tensor<1x1024x1024xf16>
-  }
-    softmax(qk) * %2 : tensor<1x1024x32xf16>
-  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x1024x32xf16>
-  %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 32, d0 mod 32)> by [<Merge{1024, 32} ["raw"] at [0] -> ["seq_q", "head_v"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [32768] -> [1, 1024, 32]> : tensor<1x1024x32xf16> to tensor<32768xf16>
-  %4 = rock.store %3 to %arg3 by  set : tensor<32768xf16> -> tensor<32768xf16> to tensor<32768xf16>
-  return %4 : tensor<32768xf16>
-}
-
-// CHECK-LABEL: @rock_attn_numstages3
-func.func @rock_attn_numstages3(%arg0: tensor<32768xf16>, %arg1: tensor<32768xf16>, %arg2: tensor<32768xf16>, %arg3: tensor<32768xf16>) -> tensor<32768xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel, rock.num_stages = 3 : i64} {
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_q", "head_qk"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
-  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 1024 + d2)> by [<Unmerge{32, 1024} ["head_qk", "seq_k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 32, 1024] -> [32768]> : tensor<32768xf16> to tensor<1x32x1024xf16>
-  %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_k", "head_v"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
-  // CHECK: rock.attention
-  // CHECK: numStages = 3
-  %result = rock.attention{
-    qk = %0 * %1 : tensor<1x1024x32xf16>, tensor<1x32x1024xf16>
-    qk = elementwise {
-  ^bb0(%arg4: tensor<1x1024x1024xf16>):
-    rock.yield %arg4 : tensor<1x1024x1024xf16>
-  }
-    softmax(qk) * %2 : tensor<1x1024x32xf16>
-  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x1024x32xf16>
-  %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 32, d0 mod 32)> by [<Merge{1024, 32} ["raw"] at [0] -> ["seq_q", "head_v"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [32768] -> [1, 1024, 32]> : tensor<1x1024x32xf16> to tensor<32768xf16>
-  %4 = rock.store %3 to %arg3 by  set : tensor<32768xf16> -> tensor<32768xf16> to tensor<32768xf16>
-  return %4 : tensor<32768xf16>
-}
-
-// CHECK-LABEL: @rock_attn_numstages4
-func.func @rock_attn_numstages4(%arg0: tensor<32768xf16>, %arg1: tensor<32768xf16>, %arg2: tensor<32768xf16>, %arg3: tensor<32768xf16>) -> tensor<32768xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel, rock.num_stages = 4 : i64} {
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_q", "head_qk"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
-  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 1024 + d2)> by [<Unmerge{32, 1024} ["head_qk", "seq_k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 32, 1024] -> [32768]> : tensor<32768xf16> to tensor<1x32x1024xf16>
-  %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_k", "head_v"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
-  // CHECK: rock.attention
-  // CHECK: numStages = 4
-  %result = rock.attention{
-    qk = %0 * %1 : tensor<1x1024x32xf16>, tensor<1x32x1024xf16>
-    qk = elementwise {
-  ^bb0(%arg4: tensor<1x1024x1024xf16>):
-    rock.yield %arg4 : tensor<1x1024x1024xf16>
-  }
-    softmax(qk) * %2 : tensor<1x1024x32xf16>
-  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x1024x32xf16>
-  %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 32, d0 mod 32)> by [<Merge{1024, 32} ["raw"] at [0] -> ["seq_q", "head_v"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [32768] -> [1, 1024, 32]> : tensor<1x1024x32xf16> to tensor<32768xf16>
-  %4 = rock.store %3 to %arg3 by  set : tensor<32768xf16> -> tensor<32768xf16> to tensor<32768xf16>
-  return %4 : tensor<32768xf16>
-}
-
 // CHECK-LABEL: @rock_attn_perfconfig_numstages2
 func.func @rock_attn_perfconfig_numstages2(%arg0: tensor<32768xf16>, %arg1: tensor<32768xf16>, %arg2: tensor<32768xf16>, %arg3: tensor<32768xf16>) -> tensor<32768xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.kernel} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_q", "head_qk"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>

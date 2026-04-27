@@ -40,10 +40,10 @@ using namespace mlir::rock;
 
 ConvGenerator::ConvGenerator(
     const std::string &arch, const std::string &chip,
-    bool disableSplitKForTuning, int64_t numStages,
-    const std::string &triple, const std::string &chipFeatures,
-    const std::string &perfConfig, std::optional<int> num_cu,
-    std::optional<int> num_chiplets, const std::optional<ConvOpType> operation,
+    bool disableSplitKForTuning, const std::string &triple,
+    const std::string &chipFeatures, const std::string &perfConfig,
+    std::optional<int> num_cu, std::optional<int> num_chiplets,
+    const std::optional<ConvOpType> operation,
     const std::string &filterDataTypeStr, const std::string &inputDataTypeStr,
     const std::string &outputDataTypeStr, ArrayRef<int> dilations,
     ArrayRef<int> strides, ArrayRef<int> paddingLeft,
@@ -53,7 +53,6 @@ ConvGenerator::ConvGenerator(
     : config{arch,
              chip,
              disableSplitKForTuning,
-             numStages,
              triple,
              chipFeatures,
              perfConfig,
@@ -822,10 +821,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
   if (!config.disableSplitKForTuning) {
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),
                   builder.getUnitAttr());
-  }
-  if (config.numStages != 1) {
-    func->setAttr(rock::NumStagesAttr::getMnemonic(),
-                  builder.getI64IntegerAttr(config.numStages));
   }
   module.push_back(func);
   if (func.getName() != kernelName) {

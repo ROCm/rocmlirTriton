@@ -66,7 +66,6 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       BlockSizeAttr::getMnemonic(),
       GridSizeAttr::getMnemonic(),
       CpuVerifierAttr::getMnemonic(),
-      NumStagesAttr::getMnemonic(),
   };
   static const llvm::StringSet<> knownArgRockAttrs = {
       PrefillAttr::getMnemonic(),
@@ -92,33 +91,6 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
     }
   }
   return success();
-}
-
-static FailureOr<std::optional<int64_t>> getNumStages(func::FuncOp funcOp,
-                                                            Operation *op) {
-  auto numStagesAttrName = rock::NumStagesAttr::getMnemonic();
-  std::optional<int64_t> numStages = std::nullopt;
-  bool hasPerfConfig = op->hasAttrOfType<StringAttr>("perf_config");
-  bool hasNumStages = funcOp->hasAttr(numStagesAttrName);
-  if (hasNumStages && hasPerfConfig) {
-    return op->emitError(
-        "kernel has both perf_config and rock.num_stages attribute "
-        "set. Please modify num_stages directly inside "
-        "perf_config and remove rock.num_stages");
-  }
-  if (hasNumStages) {
-    auto attr =
-        dyn_cast_or_null<IntegerAttr>(funcOp->removeAttr(numStagesAttrName));
-    if (!attr)
-      return op->emitError("rock.num_stages must be an integer attribute");
-    int64_t value = attr.getInt();
-    if (value <= 0)
-      return op->emitError("rock.num_stages must be a positive integer, got ")
-             << value;
-    numStages = value;
-  }
-
-  return numStages;
 }
 
 void AffixTuningParameters::runOnOperation() {
@@ -172,18 +144,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
     return signalPassFailure();
   }
   GemmParamsAttr gemmParams = maybeValidParams.value();
-
-  // update num_stages to what is provided by the user if and only if
-  // user hasn't provided perfConfig, otherwise just keep whatever is inside
-  // perfConfig
-  FailureOr<std::optional<int64_t>> maybeNumStages =
-      getNumStages(funcParent, op);
-  if (failed(maybeNumStages))
-    return signalPassFailure();
-  std::optional<int64_t> numStages = maybeNumStages.value();
-  if (numStages.has_value())
-    gemmParams = gemmParams.withNumStages(numStages.value());
-
   StringAttr perfConfigAttr = gemmParams.getPerfConfigAttr();
 
   LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
@@ -259,18 +219,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
     return signalPassFailure();
   }
   auto attnPerfConfig = maybeAttnPerfConfig.value();
-
-  // update num_stages to what is provided by the user if and only if
-  // user hasn't provided perfConfig, otherwise just keep whatever is inside
-  // perfConfig
-  FailureOr<std::optional<int64_t>> maybeNumStages =
-      getNumStages(funcParent, op);
-  if (failed(maybeNumStages))
-    return signalPassFailure();
-  std::optional<int64_t> numStages = maybeNumStages.value();
-  if (numStages.has_value())
-    attnPerfConfig = attnPerfConfig.withNumStages(numStages.value());
-
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
   auto accelParams =
