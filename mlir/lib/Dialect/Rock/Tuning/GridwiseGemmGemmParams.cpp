@@ -85,16 +85,20 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
       params.getWavesPerEU(), params.getGridGroupSize());
 }
 
+int64_t PopulateParamsGemmGemm::getGemm1N(RockGemmGemmWrapperInterface op) {
+  auto cShape = cast<ShapedType>(op.getCType()).getShape();
+  assert(cShape.size() == 3 || cShape.size() == 2);
+  int idx = op.getTransposedC() ? 0 : 1;
+  if (cShape.size() == 3)
+    idx++;
+  return cShape[idx];
+}
+
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
     OpBuilder &b, RockGemmGemmWrapperInterface op, GemmGemmParamsAttr params) {
   // Due to limitations, gemm1NPerBlock must be equal to gemm1N
   // and gemm1NPerBlock must be a power of two
-  auto cShape = cast<ShapedType>(op.getCType()).getShape();
-  int idx = op.getTransposedC() ? 0 : 1;
-  assert(cShape.size() == 3 || cShape.size() == 2);
-  if (cShape.size() == 3)
-    idx++;
-  int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(cShape[idx]);
+  int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(getGemm1N(op));
   return GemmParamsAttr::get(
       b.getContext(), params.getMPerBlockG0(), gemm1NPerBlock,
       params.getNPerBlockG0(), params.getKpack(), params.getNumCTAs(),

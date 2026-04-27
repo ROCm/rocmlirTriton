@@ -34,6 +34,8 @@ public:
   static FailureOr<GemmGemmParamsAttr>
   obtainTuningParameters(OpBuilder &b, RockGemmGemmWrapperInterface op);
 
+  static int64_t getGemm1N(RockGemmGemmWrapperInterface op);
+
 protected:
   static GemmGemmParamsAttr
   deserializePerfConfig(OpBuilder &b, RockGemmGemmWrapperInterface op,
