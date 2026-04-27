@@ -1238,8 +1238,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     int rank = static_cast<int>(filterNames.size());
     if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
       // BwdWeight: the regularized filterValue feeds into filter transforms
-      // that become gemm operands, so keep the insertion point moved.
-      ensureInsertionAfterDef(b, op, destBuffer);
+      // that become gemm operands, so keep the insertion point moved. 
+      ensureInsertionAfterDef(b, op, outputViews[0]);
       auto mapping = buildInputToFilterMapping(b, rank);
       filterValue = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
