@@ -2,15 +2,17 @@
 
 // ============================================================
 // addf with constant: non-zero-preserving (0 + 1 = 1).
-// Should insert arith.select to re-zero OOB positions.
+// Should insert bitwise zeroing to re-zero OOB positions.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_addf_constant
 // CHECK-SAME: (%[[PTRS:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>,
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]]
 // CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf16>
-// CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf16>
-// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xf16>
+// CHECK: %[[BITMASK:.*]] = arith.extsi %[[MASK]] : tensor<64x64xi1> to tensor<64x64xi16>
+// CHECK: %[[FUSEDBITS:.*]] = arith.bitcast %[[FUSED]] : tensor<64x64xf16> to tensor<64x64xi16>
+// CHECK: %[[MASKEDBITS:.*]] = arith.andi %[[FUSEDBITS]], %[[BITMASK]] : tensor<64x64xi16>
+// CHECK: %[[SAFE:.*]] = arith.bitcast %[[MASKEDBITS]] : tensor<64x64xi16> to tensor<64x64xf16>
 // CHECK: rock.blockwise_store_ptr %[[SAFE]]
 func.func @test_addf_constant(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
@@ -83,15 +85,17 @@ func.func @test_no_fusion(
 // ============================================================
 // Fusion chain: mulf (zero-preserving) then addf constant
 // (non-zero-preserving). Overall: 0*2+1=1, not zero-preserving.
-// Should insert arith.select after the chain leaf (addf result).
+// Should insert bitwise zeroing after the chain leaf (addf result).
 // ============================================================
 
 // CHECK-LABEL: func.func @test_chain_mulf_addf
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
 // CHECK: %[[MUL:.*]] = arith.mulf %[[LOAD]], %{{.*}} : tensor<64x64xf16>
 // CHECK: %[[ADD:.*]] = arith.addf %[[MUL]], %{{.*}} : tensor<64x64xf16>
-// CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf16>
-// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[ADD]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xf16>
+// CHECK: %[[BITMASK:.*]] = arith.extsi %[[MASK]] : tensor<64x64xi1> to tensor<64x64xi16>
+// CHECK: %[[ADDBITS:.*]] = arith.bitcast %[[ADD]] : tensor<64x64xf16> to tensor<64x64xi16>
+// CHECK: %[[MASKEDBITS:.*]] = arith.andi %[[ADDBITS]], %[[BITMASK]] : tensor<64x64xi16>
+// CHECK: %[[SAFE:.*]] = arith.bitcast %[[MASKEDBITS]] : tensor<64x64xi16> to tensor<64x64xf16>
 // CHECK: rock.blockwise_store_ptr %[[SAFE]]
 func.func @test_chain_mulf_addf(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
@@ -163,8 +167,10 @@ func.func @test_two_loads_addf(
 // CHECK: arith.addf
 // CHECK: %[[LEAF:.*]] = arith.addf {{.*}}, %{{.*}} : tensor<64x64xf16>
 // CHECK: %[[COMBINED:.*]] = arith.andi %[[MASK_A]], %[[MASK_B]] : tensor<64x64xi1>
-// CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf16>
-// CHECK: %[[SAFE:.*]] = arith.select %[[COMBINED]], %[[LEAF]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xf16>
+// CHECK: %[[BITMASK:.*]] = arith.extsi %[[COMBINED]] : tensor<64x64xi1> to tensor<64x64xi16>
+// CHECK: %[[LEAFBITS:.*]] = arith.bitcast %[[LEAF]] : tensor<64x64xf16> to tensor<64x64xi16>
+// CHECK: %[[MASKEDBITS:.*]] = arith.andi %[[LEAFBITS]], %[[BITMASK]] : tensor<64x64xi16>
+// CHECK: %[[SAFE:.*]] = arith.bitcast %[[MASKEDBITS]] : tensor<64x64xi16> to tensor<64x64xf16>
 // CHECK: rock.blockwise_store_ptr %[[SAFE]]
 func.func @test_two_loads_then_const(
     %ptrs_a: tensor<64x64xi32>, %mask_a: tensor<64x64xi1>,
@@ -180,15 +186,45 @@ func.func @test_two_loads_then_const(
 }
 
 // ============================================================
+// Fusion chain feeding a GEMM operand: non-zero-preserving.
+// This is the Triton dot-operand path that must not leave an i1 select
+// predicate for later layout conversion.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_gemm_operand_remask
+// CHECK-SAME: (%[[A_PTRS:.*]]: tensor<64x64xi32>, %[[A_MASK:.*]]: tensor<64x64xi1>, %[[B_PTRS:.*]]: tensor<64x64xi32>, %[[B_MASK:.*]]: tensor<64x64xi1>,
+// CHECK: %[[A:.*]] = rock.blockwise_load_ptr %[[A_PTRS]][%[[A_MASK]]]
+// CHECK: %[[B:.*]] = rock.blockwise_load_ptr %[[B_PTRS]][%[[B_MASK]]]
+// CHECK: %[[ADD:.*]] = arith.addf %[[B]], %{{.*}} : tensor<64x64xf16>
+// CHECK: %[[BITMASK:.*]] = arith.extsi %[[B_MASK]] : tensor<64x64xi1> to tensor<64x64xi16>
+// CHECK: %[[ADDBITS:.*]] = arith.bitcast %[[ADD]] : tensor<64x64xf16> to tensor<64x64xi16>
+// CHECK: %[[MASKEDBITS:.*]] = arith.andi %[[ADDBITS]], %[[BITMASK]] : tensor<64x64xi16>
+// CHECK: %[[SAFE:.*]] = arith.bitcast %[[MASKEDBITS]] : tensor<64x64xi16> to tensor<64x64xf16>
+// CHECK: rock.blockwise_gemm(%[[A]], %[[SAFE]], %[[ACC:.*]])
+func.func @test_gemm_operand_remask(
+    %ptrs_a: tensor<64x64xi32>, %mask_a: tensor<64x64xi1>,
+    %ptrs_b: tensor<64x64xi32>, %mask_b: tensor<64x64xi1>,
+    %acc: tensor<64x64xf32>) -> tensor<64x64xf32> attributes {rock.kernel} {
+  %a = rock.blockwise_load_ptr %ptrs_a[%mask_a] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %b = rock.blockwise_load_ptr %ptrs_b[%mask_b] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %cst = arith.constant dense<1.0> : tensor<64x64xf16>
+  %fused = arith.addf %b, %cst : tensor<64x64xf16>
+  %r = rock.blockwise_gemm(%a, %fused, %acc) : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  return %r : tensor<64x64xf32>
+}
+
+// ============================================================
 // math.exp: non-zero-preserving (exp(0)=1).
-// Should insert arith.select.
+// Should insert bitwise zeroing.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_math_exp
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
 // CHECK: %[[EXP:.*]] = math.exp %[[LOAD]] : tensor<64x64xf32>
-// CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
-// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[EXP]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: %[[BITMASK:.*]] = arith.extsi %[[MASK]] : tensor<64x64xi1> to tensor<64x64xi32>
+// CHECK: %[[EXPBITS:.*]] = arith.bitcast %[[EXP]] : tensor<64x64xf32> to tensor<64x64xi32>
+// CHECK: %[[MASKEDBITS:.*]] = arith.andi %[[EXPBITS]], %[[BITMASK]] : tensor<64x64xi32>
+// CHECK: %[[SAFE:.*]] = arith.bitcast %[[MASKEDBITS]] : tensor<64x64xi32> to tensor<64x64xf32>
 // CHECK: rock.blockwise_store_ptr %[[SAFE]]
 func.func @test_math_exp(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,

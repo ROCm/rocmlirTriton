@@ -225,6 +225,33 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
   return isZero;
 }
 
+/// Return a value equivalent to `arith.select mask, value, 0`, but without
+/// materializing a late i1 select predicate. Triton may move select predicates
+/// through dot operand layout conversion as xi1 local_allocs, which Triton
+/// cannot handle. Bitwise zeroing carries the mask as a byte-or-wider integer
+/// instead.
+static Value zeroMaskedValue(OpBuilder &builder, Location loc, Value mask,
+                             Value value) {
+  auto valueType = cast<RankedTensorType>(value.getType());
+  Type elemType = valueType.getElementType();
+  unsigned bitWidth = elemType.getIntOrFloatBitWidth();
+  Type intElemType = builder.getIntegerType(bitWidth);
+  auto intTensorType = RankedTensorType::get(valueType.getShape(), intElemType,
+                                             valueType.getEncoding());
+
+  // sext(i1) gives either 0x00...00 or 0xff...ff.
+  Value allBitsMask = arith::ExtSIOp::create(builder, loc, intTensorType, mask);
+  Value valueBits = value;
+  if (value.getType() != intTensorType)
+    valueBits = arith::BitcastOp::create(builder, loc, intTensorType, value);
+
+  Value maskedBits =
+      arith::AndIOp::create(builder, loc, valueBits, allBitsMask);
+  if (value.getType() == intTensorType)
+    return maskedBits;
+  return arith::BitcastOp::create(builder, loc, valueType, maskedBits);
+}
+
 struct RockMaskNonZeroPreservingFusionsPass
     : public rock::impl::RockMaskNonZeroPreservingFusionsPassBase<
           RockMaskNonZeroPreservingFusionsPass> {
@@ -289,12 +316,7 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
     for (++it; it != masks.end(); ++it)
       combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
 
-    // Insert arith.select %mask, %fused, %zero.
-    auto leafType = cast<RankedTensorType>(leaf.getType());
-    auto zeroAttr = builder.getZeroAttr(leafType);
-    Value zero = arith::ConstantOp::create(builder, loc, leafType, zeroAttr);
-    Value safe =
-        arith::SelectOp::create(builder, loc, combinedMask, leaf, zero);
+    Value safe = zeroMaskedValue(builder, loc, combinedMask, leaf);
 
     // Replace non-fusion uses of the leaf with the masked version.
     leaf.replaceUsesWithIf(safe, [&](OpOperand &use) {
