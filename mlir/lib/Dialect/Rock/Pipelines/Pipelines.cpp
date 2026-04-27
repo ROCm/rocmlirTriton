@@ -122,11 +122,7 @@ static bool isInThreadTransposeEnabled(StringRef arch) {
 }
 
 static bool isAsyncCopyEnabled(StringRef arch) {
-  // Temporary disable async copy since it is broken in upstream Triton.
-  // This seems to be related to PR #9883 but my initial investigation didn't
-  // reveal the root cause.
-  return false;
-  // return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
+  return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
 }
 
 // Based on make_ttgir() in
