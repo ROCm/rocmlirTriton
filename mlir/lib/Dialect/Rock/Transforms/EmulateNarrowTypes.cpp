@@ -48,6 +48,43 @@ using namespace mlir;
 
 namespace {
 
+/// Workaround for upstream MLIR bug: ConvertMemrefStore missing TypeConverter.
+///
+/// Commit 20b925a28a29 (PR #178498, Jan 2026) refactored ConvertMemrefStore
+/// to support disableAtomicRMW but dropped the TypeConverter from its
+/// constructor, registering it via patterns.insert<>(context, flag) instead
+/// of patterns.add<>(typeConverter, context).  Without a TypeConverter the
+/// dialect-conversion framework cannot remap operands that flow through
+/// unrealized_conversion_cast ops (e.g. from a prior signature-conversion
+/// pass), causing "failed to legalize operation 'memref.store'".
+/// TODO: Remove this workaround once the upstream fix lands.
+///
+/// This pattern folds unrealized_conversion_cast ops whose input already
+/// has the type the converter expects.  The preceding
+/// RockConvertNarrowTypeSignaturesPass creates casts like
+/// `memref<16xi8> -> memref<32xi4>`.  The type converter maps
+/// `memref<32xi4>` back to `memref<16xi8>`, so the cast is an identity
+/// through conversion and can be replaced by its input.
+struct FoldNarrowTypeCast
+    : public OpConversionPattern<UnrealizedConversionCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(UnrealizedConversionCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.getNumResults() != 1 || adaptor.getInputs().size() != 1)
+      return failure();
+
+    Type targetType =
+        getTypeConverter()->convertType(op.getResultTypes().front());
+    if (!targetType || adaptor.getInputs().front().getType() != targetType)
+      return failure();
+
+    rewriter.replaceOp(op, adaptor.getInputs().front());
+    return success();
+  }
+};
+
 static bool has4BitOps(func::FuncOp funcOp) {
   auto is4Bit = [](Type t) {
     Type elem = getElementTypeOrSelf(t);
@@ -107,7 +144,16 @@ struct RockEmulateNarrowTypesPass
     // func ops are already legal after signature conversion.
     target.addLegalOp<func::FuncOp, func::CallOp, func::ReturnOp>();
 
+    // Upstream MLIR bug workaround (see FoldNarrowTypeCast above):
+    // fold unrealized casts left by the signatures pass so that
+    // ConvertMemrefStore (which lacks a TypeConverter) sees remapped operands.
+    target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
+        [&typeConverter](UnrealizedConversionCastOp op) {
+          return typeConverter.isLegal(op.getResultTypes());
+        });
+
     RewritePatternSet patterns(ctx);
+    patterns.add<FoldNarrowTypeCast>(typeConverter, ctx);
     arith::populateArithNarrowTypeEmulationPatterns(typeConverter, patterns);
     memref::populateMemRefNarrowTypeEmulationPatterns(typeConverter, patterns);
     scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter,
