@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Rock/utility/tosaUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/AsmState.h"
@@ -32,6 +33,7 @@ struct TestEnv {
   TestEnv(bool withFunc = true) : builder(&ctx) {
     DialectRegistry reg;
     reg.insert<mlir::tosa::TosaDialect>();
+    reg.insert<mlir::arith::ArithDialect>();
     if (withFunc)
       reg.insert<func::FuncDialect>();
     ctx.appendDialectRegistry(reg);
@@ -319,4 +321,171 @@ TEST(TosaTransposeUtilsTest, FourDPermutation) {
   EXPECT_EQ(resType.getDimSize(1), 16);
   EXPECT_EQ(resType.getDimSize(2), 32);
   EXPECT_EQ(resType.getDimSize(3), 8);
+}
+
+TEST(TosaUtilsTest, ConstantValueViaArithConstant) {
+  TestEnv env;
+  OpBuilder &builder = env.builder;
+  Location loc = builder.getUnknownLoc();
+
+  auto funcType = builder.getFunctionType({}, {});
+  auto func = func::FuncOp::create(builder, loc, "test_arith", funcType);
+  auto &entryBlock = *func.addEntryBlock();
+  builder.setInsertionPointToStart(&entryBlock);
+
+  {
+    auto tType = RankedTensorType::get({2}, builder.getF32Type());
+    auto attr = DenseElementsAttr::get(tType, builder.getF32FloatAttr(0.0f));
+    auto cst = arith::ConstantOp::create(builder, loc, attr);
+    EXPECT_TRUE(isConstantZero(cst));
+    EXPECT_FALSE(isConstantOne(cst));
+    EXPECT_TRUE(isConstantValue(cst, 0.0));
+  }
+  {
+    auto tType = RankedTensorType::get({3}, builder.getF32Type());
+    auto attr = DenseElementsAttr::get(tType, builder.getF32FloatAttr(1.0f));
+    auto cst = arith::ConstantOp::create(builder, loc, attr);
+    EXPECT_TRUE(isConstantOne(cst));
+    EXPECT_FALSE(isConstantZero(cst));
+  }
+  {
+    auto tType = RankedTensorType::get({4}, builder.getI32Type());
+    SmallVector<Attribute> elems;
+    for (int i = 0; i < 4; ++i)
+      elems.push_back(builder.getI32IntegerAttr(i));
+    auto attr = DenseElementsAttr::get(tType, elems);
+    auto cst = arith::ConstantOp::create(builder, loc, attr);
+    EXPECT_TRUE(isConstRange(cst));
+  }
+  {
+    auto tType = RankedTensorType::get({2}, builder.getF32Type());
+    SmallVector<Attribute> elems;
+    elems.push_back(
+        builder.getF32FloatAttr(-std::numeric_limits<float>::infinity()));
+    elems.push_back(
+        builder.getF32FloatAttr(-std::numeric_limits<float>::infinity()));
+    auto attr = DenseElementsAttr::get(tType, elems);
+    auto cst = arith::ConstantOp::create(builder, loc, attr);
+    EXPECT_TRUE(isConstNegInf(cst));
+  }
+}
+
+TEST(TosaUtilsTest, GetOneTensorAndGetZeroTensor) {
+  TestEnv env;
+  OpBuilder &builder = env.builder;
+  Location loc = builder.getUnknownLoc();
+
+  auto funcType = builder.getFunctionType({}, {});
+  auto func = func::FuncOp::create(builder, loc, "test_tensors", funcType);
+  auto &entryBlock = *func.addEntryBlock();
+  builder.setInsertionPointToStart(&entryBlock);
+
+  {
+    auto tType = RankedTensorType::get({2, 3}, builder.getF32Type());
+    Value one = rock::tosa::getOneTensor(builder, loc, tType);
+    EXPECT_TRUE(isConstantOne(one));
+    EXPECT_FALSE(isConstantZero(one));
+  }
+  {
+    auto tType = RankedTensorType::get({4}, builder.getI32Type());
+    Value zero = rock::tosa::getZeroTensor(builder, loc, tType);
+    EXPECT_TRUE(isConstantZero(zero));
+    EXPECT_FALSE(isConstantOne(zero));
+  }
+}
+
+TEST(TosaUtilsTest, SpecificValueAttributeArrayAttr) {
+  TestEnv env(false);
+  OpBuilder &b = env.builder;
+
+  {
+    SmallVector<Attribute> elems;
+    elems.push_back(b.getF32FloatAttr(0.0f));
+    elems.push_back(b.getF32FloatAttr(0.0f));
+    Attribute arr = b.getArrayAttr(elems);
+    EXPECT_TRUE(isSpecificValueAttribute(arr, 0.0));
+    EXPECT_FALSE(isSpecificValueAttribute(arr, 1.0));
+  }
+  {
+    SmallVector<Attribute> elems;
+    elems.push_back(b.getI32IntegerAttr(5));
+    elems.push_back(b.getI32IntegerAttr(5));
+    elems.push_back(b.getI32IntegerAttr(3));
+    Attribute arr = b.getArrayAttr(elems);
+    EXPECT_FALSE(isSpecificValueAttribute(arr, 5.0));
+  }
+}
+
+TEST(TosaUtilsTest, ConstRangeAttributeArrayAttr) {
+  TestEnv env;
+  OpBuilder &builder = env.builder;
+  Location loc = builder.getUnknownLoc();
+
+  auto funcType = builder.getFunctionType({}, {});
+  auto func = func::FuncOp::create(builder, loc, "test_arr_range", funcType);
+  auto &entryBlock = *func.addEntryBlock();
+  builder.setInsertionPointToStart(&entryBlock);
+
+  {
+    auto tType = RankedTensorType::get({3}, builder.getI32Type());
+    SmallVector<Attribute> elems;
+    for (int i = 0; i < 3; ++i)
+      elems.push_back(builder.getI32IntegerAttr(i));
+    auto attr = DenseElementsAttr::get(tType, elems);
+    auto cst = mlir::tosa::ConstOp::create(builder, loc, tType, attr);
+    EXPECT_TRUE(isConstRange(cst));
+  }
+  {
+    auto tType = RankedTensorType::get({3}, builder.getI32Type());
+    auto attr = DenseElementsAttr::get(tType, builder.getI32IntegerAttr(0));
+    auto cst = mlir::tosa::ConstOp::create(builder, loc, tType, attr);
+    EXPECT_FALSE(isConstRange(cst));
+  }
+}
+
+TEST(TosaUtilsTest, NonConstantOpReturnsFalse) {
+  TestEnv env;
+  OpBuilder &builder = env.builder;
+  Location loc = builder.getUnknownLoc();
+
+  auto tType = RankedTensorType::get({4}, builder.getF32Type());
+  auto funcType = builder.getFunctionType({tType}, {});
+  auto func = func::FuncOp::create(builder, loc, "test_blockarg", funcType);
+  func.addEntryBlock();
+  Value blockArg = func.getArgument(0);
+
+  EXPECT_FALSE(isConstantZero(blockArg));
+  EXPECT_FALSE(isConstantOne(blockArg));
+  EXPECT_FALSE(isConstantValue(blockArg, 42.0));
+  EXPECT_FALSE(isConstNegInf(blockArg));
+  EXPECT_FALSE(isConstRange(blockArg));
+}
+
+TEST(TosaUtilsTest, ConstNegInfFalseCase) {
+  TestEnv env;
+  OpBuilder &builder = env.builder;
+  Location loc = builder.getUnknownLoc();
+
+  auto funcType = builder.getFunctionType({}, {});
+  auto func = func::FuncOp::create(builder, loc, "test_not_neginf", funcType);
+  auto &entryBlock = *func.addEntryBlock();
+  builder.setInsertionPointToStart(&entryBlock);
+
+  {
+    auto tType = RankedTensorType::get({2}, builder.getF32Type());
+    auto attr = DenseElementsAttr::get(tType, builder.getF32FloatAttr(0.0f));
+    auto cst = mlir::tosa::ConstOp::create(builder, loc, tType, attr);
+    EXPECT_FALSE(isConstNegInf(cst));
+  }
+  {
+    auto tType = RankedTensorType::get({2}, builder.getF32Type());
+    SmallVector<Attribute> elems;
+    elems.push_back(
+        builder.getF32FloatAttr(std::numeric_limits<float>::infinity()));
+    elems.push_back(
+        builder.getF32FloatAttr(std::numeric_limits<float>::infinity()));
+    auto attr = DenseElementsAttr::get(tType, elems);
+    auto cst = mlir::tosa::ConstOp::create(builder, loc, tType, attr);
+    EXPECT_FALSE(isConstNegInf(cst));
+  }
 }

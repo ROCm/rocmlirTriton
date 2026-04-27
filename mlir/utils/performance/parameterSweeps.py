@@ -265,7 +265,7 @@ Errors = {tune_errs.decode('utf-8')}
     runner_from_lowering, lowering_to_runner = os.pipe()
     lowering = await asyncio.create_subprocess_exec(paths.mlir_paths.rocmlir_driver_path,
                                                     '--kernel-pipeline=full',
-                                                    '--host-pipeline=runner',
+                                                    '--host-pipeline=backend',
                                                     '-',
                                                     stdin=asyncio.subprocess.PIPE,
                                                     stdout=lowering_to_runner,

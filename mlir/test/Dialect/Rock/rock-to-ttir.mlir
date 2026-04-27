@@ -52,6 +52,19 @@ func.func @test_return_conversion(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64x
 
 // -----
 
+// CHECK-LABEL: @test_return_clears_res_attrs
+// CHECK-SAME: (%{{.*}}: tensor<64x64xf32>, %{{.*}}: tensor<64x64xi32>, %{{.*}}: tensor<64x64xi1>)
+//      CHECK:   tt.store
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_store_ptr
+//  CHECK-NOT:   res_attrs
+func.func @test_return_clears_res_attrs(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> (tensor<64x64xf32> {rock.prefill = 0.000000e+00 : f32}) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// -----
+
 // CHECK-LABEL: @test_atomic_add_store
 // CHECK-SAME: (%[[VALUE:.*]]: tensor<64x64xf32>, %[[PTRS:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
@@ -357,4 +370,129 @@ func.func @test_scaled_gemm_f8(
       tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: Scaled GEMM with i8 data (packed f4E2M1FN) and matrixAOrigElemType/matrixBOrigElemType.
+// The original f4E2M1FN type maps to e2m1 in tt.dot_scaled.
+// matrixAKPack=true, matrixBKPack=false tests asymmetric packing.
+
+// CHECK-LABEL: @test_scaled_gemm_f4_packed
+// CHECK-SAME: (%[[A:.*]]: tensor<64x32xi8>, %[[B:.*]]: tensor<64x32xi8>, %[[C:.*]]: tensor<64x64xf32>, %[[SA:.*]]: tensor<64x2xi8>, %[[SB:.*]]: tensor<64x2xi8>)
+//      CHECK:   tt.dot_scaled %[[A]] scale %[[SA]], %[[B]] scale %[[SB]], %[[C]]
+// CHECK-SAME:     lhs = e2m1 rhs = e2m1
+// CHECK-SAME:     rhs_k_pack = false
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_scaled_gemm_f4_packed(
+    %a: tensor<64x32xi8>, %b: tensor<64x32xi8>,
+    %c: tensor<64x64xf32>,
+    %scaleA: tensor<64x2xi8>, %scaleB: tensor<64x2xi8>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // matrixA is MxK: K halved from 64 to 32 (matrixAKPack=true)
+  // matrixB is KxN: N halved from 64 to 32 (matrixBKPack=false, D packed)
+  %result = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 32 : i64,
+     matrixAOrigElemType = f4E2M1FN,
+     matrixBOrigElemType = f4E2M1FN,
+     matrixAKPack = true,
+     matrixBKPack = false}
+    : tensor<64x32xi8> scaled by tensor<64x2xi8>,
+      tensor<64x32xi8> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: Mixed-type scaled GEMM. A is packed f4 (i8 with matrixAOrigElemType),
+// B is f8E4M3FN (no matrixBOrigElemType since it's a TT_Float).
+// Only matrixAOrigElemType is set; B falls back to its tensor element type
+// via .value_or() in RockToTTIR.
+
+// CHECK-LABEL: @test_scaled_gemm_mixed_f4_f8
+// CHECK-SAME: (%[[A:.*]]: tensor<64x32xi8>, %[[B:.*]]: tensor<64x64xf8E4M3FN>, %[[C:.*]]: tensor<64x64xf32>, %[[SA:.*]]: tensor<64x2xi8>, %[[SB:.*]]: tensor<64x2xi8>)
+//      CHECK:   tt.dot_scaled %[[A]] scale %[[SA]], %[[B]] scale %[[SB]], %[[C]]
+// CHECK-SAME:     lhs = e2m1 rhs = e4m3
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_scaled_gemm_mixed_f4_f8(
+    %a: tensor<64x32xi8>, %b: tensor<64x64xf8E4M3FN>,
+    %c: tensor<64x64xf32>,
+    %scaleA: tensor<64x2xi8>, %scaleB: tensor<64x2xi8>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 32 : i64,
+     matrixAOrigElemType = f4E2M1FN,
+     matrixAKPack = true}
+    : tensor<64x32xi8> scaled by tensor<64x2xi8>,
+      tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: arith.truncf with FP8 result is converted to tt.fp_to_fp (RTNE).
+// Triton's LLVM lowering cannot handle arith.truncf with FP8 output directly
+// (it creates an illegal llvm.fptrunc to i8).
+
+// CHECK-LABEL: @test_truncf_f32_to_f8E4M3FN
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x2xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtne : tensor<2x2xf32> -> tensor<2x2xf8E4M3FN>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f8E4M3FN(%arg0: tensor<2x2xf32>) -> tensor<2x2xf8E4M3FN> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 : tensor<2x2xf32> to tensor<2x2xf8E4M3FN>
+  return %0 : tensor<2x2xf8E4M3FN>
+}
+
+// -----
+
+// Test: arith.truncf with FP8 E5M2 result is also converted to tt.fp_to_fp.
+
+// CHECK-LABEL: @test_truncf_f32_to_f8E5M2
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<4xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtne : tensor<4xf32> -> tensor<4xf8E5M2>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f8E5M2(%arg0: tensor<4xf32>) -> tensor<4xf8E5M2> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 : tensor<4xf32> to tensor<4xf8E5M2>
+  return %0 : tensor<4xf8E5M2>
+}
+
+// -----
+
+// Test: arith.extf with FP8 input is converted to tt.fp_to_fp (no rounding).
+
+// CHECK-LABEL: @test_extf_f8E4M3FN_to_f32
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x2xf8E4M3FN>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]] : tensor<2x2xf8E4M3FN> -> tensor<2x2xf32>
+//  CHECK-NOT:   arith.extf
+func.func @test_extf_f8E4M3FN_to_f32(%arg0: tensor<2x2xf8E4M3FN>) -> tensor<2x2xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.extf %arg0 : tensor<2x2xf8E4M3FN> to tensor<2x2xf32>
+  return %0 : tensor<2x2xf32>
+}
+
+// -----
+
+// Test: Non-FP8 arith.truncf (f32 → f16) remains unchanged.
+
+// CHECK-LABEL: @test_truncf_f32_to_f16_unchanged
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//      CHECK:   %[[RESULT:.*]] = arith.truncf %[[INPUT]] : tensor<64xf32> to tensor<64xf16>
+//  CHECK-NOT:   tt.fp_to_fp
+func.func @test_truncf_f32_to_f16_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 : tensor<64xf32> to tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
+// Test: Non-FP8 arith.extf (f16 → f32) remains unchanged.
+
+// CHECK-LABEL: @test_extf_f16_to_f32_unchanged
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf16>)
+//      CHECK:   %[[RESULT:.*]] = arith.extf %[[INPUT]] : tensor<64xf16> to tensor<64xf32>
+//  CHECK-NOT:   tt.fp_to_fp
+func.func @test_extf_f16_to_f32_unchanged(%arg0: tensor<64xf16>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.extf %arg0 : tensor<64xf16> to tensor<64xf32>
+  return %0 : tensor<64xf32>
 }

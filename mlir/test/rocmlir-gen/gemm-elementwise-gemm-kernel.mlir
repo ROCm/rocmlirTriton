@@ -14,7 +14,7 @@
 
 // CHECK-NEXT: rock.gemm_elementwise_gemm
 // CHECK-NEXT: ab = %[[a]] * %[[b]]
-// CHECK: ab * %[[c]]
+// CHECK: out = ab * %[[c]]
 // CHECK: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
 // CHECK-NEXT: rock.store %[[flatOutput]] to %[[outputRaw]] by {{.*}}set
 // CHECK: return

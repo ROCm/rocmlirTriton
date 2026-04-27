@@ -43,7 +43,7 @@ func.func @attention_two_returns(%arg0: tensor<1x32x32xf32>, %arg1: tensor<1x32x
   %result, %lse = rock.attention{
    qk = %arg0 * %arg1 : tensor<1x32x32xf32>, tensor<1x32x32xf32>
    softmax(qk) * %arg2 : tensor<1x32x32xf32>
-  } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x32x32xf32>, tensor<1x32xf32>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x32x32xf32>, tensor<1x32xf32>
   return %result, %lse : tensor<1x32x32xf32>, tensor<1x32xf32>
 }
 
@@ -95,15 +95,15 @@ func.func @gemm_with_reduce(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -
 // CHECK: %[[STORE_R:.*]] = rock.store %[[TR_R]] to %arg3 by set
 // CHECK: %[[STORE_L:.*]] = rock.store %[[TR_L]] to %arg4 by set
 // CHECK: return %[[STORE_R]], %[[STORE_L]]
-#map_merge3 = affine_map<(d0) -> (d0 floordiv 1024, (d0 mod 1024) floordiv 32, d0 mod 32)>
+#map_merge3 = affine_map<(d0) -> (0, d0 floordiv 32, d0 mod 32)>
 #merge3_map = #rock.transform_map<#map_merge3 by [<Merge{1, 32, 32} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [1024] -> [1, 32, 32]>
-#map_merge2 = affine_map<(d0) -> (d0 floordiv 32, d0 mod 32)>
+#map_merge2 = affine_map<(d0) -> (0, d0)>
 #merge2_map = #rock.transform_map<#map_merge2 by [<Merge{1, 32} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>] bounds = [32] -> [1, 32]>
 func.func @attention_with_transforms(%arg0: tensor<1x32x32xf32>, %arg1: tensor<1x32x32xf32>, %arg2: tensor<1x32x32xf32>) -> (tensor<1024xf32>, tensor<32xf32>) attributes {rock.kernel} {
   %result, %lse = rock.attention{
    qk = %arg0 * %arg1 : tensor<1x32x32xf32>, tensor<1x32x32xf32>
    softmax(qk) * %arg2 : tensor<1x32x32xf32>
-  } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x32x32xf32>, tensor<1x32xf32>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x32x32xf32>, tensor<1x32xf32>
   %0 = rock.transform %result by #merge3_map : tensor<1x32x32xf32> to tensor<1024xf32>
   %1 = rock.transform %lse by #merge2_map : tensor<1x32xf32> to tensor<32xf32>
   return %0, %1 : tensor<1024xf32>, tensor<32xf32>
@@ -265,6 +265,27 @@ func.func @gemm_existing_store(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>
   // expected-error @below {{existing rock.store found; InsertOutputStores must run before stores are inserted}}
   %1 = rock.store %0 to %arg2 by set : tensor<8x32xf32> -> tensor<8x32xf32> to tensor<8x32xf32>
   return %1 : tensor<8x32xf32>
+}
+
+// -----
+
+// Gemm -> transform(Pad) -> transform(Merge) -> return: Pad transform is traced forward
+// CHECK-LABEL: func.func @gemm_pad_stride_expansion
+// CHECK-SAME: (%arg0: tensor<4x24xf16>, %arg1: tensor<24x24xf16>, %arg2: tensor<192xf16>) -> tensor<192xf16> attributes {rock.kernel}
+// CHECK: %[[GEMM:.*]] = rock.gemm
+// CHECK: %[[PAD:.*]] = rock.transform %[[GEMM]]
+// CHECK: %[[TR:.*]] = rock.transform %[[PAD]]
+// CHECK: %[[STORE:.*]] = rock.store %[[TR]] to %arg2 by set
+// CHECK: return %[[STORE]]
+#pad_amap_es = affine_map<(d0, d1) -> (d0, d1)>
+#pad_map_es = #rock.transform_map<#pad_amap_es by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Pad{0, 24} ["exp1"] at [1] -> ["dim1"] at [1]>] bounds = [4, 48] -> [4, 24]>
+#map_merge_es = affine_map<(d0) -> (d0 floordiv 48, d0 mod 48)>
+#merge_map_es = #rock.transform_map<#map_merge_es by [<Merge{4, 48} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>] bounds = [192] -> [4, 48]>
+func.func @gemm_pad_stride_expansion(%arg0: tensor<4x24xf16>, %arg1: tensor<24x24xf16>) -> tensor<192xf16> attributes {rock.kernel} {
+  %0 = rock.gemm %arg0 * %arg1 : tensor<4x24xf16> * tensor<24x24xf16> -> tensor<4x24xf16>
+  %1 = rock.transform %0 by #pad_map_es : tensor<4x24xf16> to tensor<4x48xf16>
+  %2 = rock.transform %1 by #merge_map_es : tensor<4x48xf16> to tensor<192xf16>
+  return %2 : tensor<192xf16>
 }
 
 // -----

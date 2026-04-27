@@ -1,0 +1,98 @@
+diff --git a/include/triton/Conversion/TritonGPUToLLVM/Utility.h b/include/triton/Conversion/TritonGPUToLLVM/Utility.h
+--- a/include/triton/Conversion/TritonGPUToLLVM/Utility.h
++++ b/include/triton/Conversion/TritonGPUToLLVM/Utility.h
+@@ -603,7 +603,7 @@ Value packLLVector(Location loc, ValueRange vals, RewriterBase &rewriter);
+ 
+ Value packLLVector(Location loc, ValueRange vals, RewriterBase &rewriter);
+ 
+-std::optional<LLVM::AtomicBinOp> matchAtomicOp(RMWOp atomicOp);
++std::optional<LLVM::AtomicBinOp> matchAtomicOp(RMWOp atomicOp, Type valType);
+ 
+ std::optional<LLVM::AtomicOrdering> getMemoryOrdering(MemSemantic memOrdering);
+ 
+diff --git a/lib/Conversion/TritonGPUToLLVM/Utility.cpp b/lib/Conversion/TritonGPUToLLVM/Utility.cpp
+--- a/lib/Conversion/TritonGPUToLLVM/Utility.cpp
++++ b/lib/Conversion/TritonGPUToLLVM/Utility.cpp
+@@ -809,7 +809,8 @@ std::optional<LLVM::AtomicBinOp> matchAtomicOp(RMWOp atomicOp) {
+   return vec;
+ }
+ 
+-std::optional<LLVM::AtomicBinOp> matchAtomicOp(RMWOp atomicOp) {
++std::optional<LLVM::AtomicBinOp> matchAtomicOp(RMWOp atomicOp, Type valType) {
++  bool isFloat = isa<FloatType>(getElementTypeOrSelf(valType));
+   switch (atomicOp) {
+   case RMWOp::AND:
+     return LLVM::AtomicBinOp::_and;
+@@ -821,9 +822,9 @@ std::optional<LLVM::AtomicBinOp> matchAtomicOp(RMWOp atomicOp) {
+   case RMWOp::FADD:
+     return LLVM::AtomicBinOp::fadd;
+   case RMWOp::MAX:
+-    return LLVM::AtomicBinOp::max;
++    return isFloat ? LLVM::AtomicBinOp::fmax : LLVM::AtomicBinOp::max;
+   case RMWOp::MIN:
+-    return LLVM::AtomicBinOp::min;
++    return isFloat ? LLVM::AtomicBinOp::fmin : LLVM::AtomicBinOp::min;
+   case RMWOp::UMAX:
+     return LLVM::AtomicBinOp::umax;
+   case RMWOp::UMIN:
+diff --git a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp
+--- a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp
++++ b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp
+@@ -867,7 +867,7 @@
+       // Let LLVM handle compare+swap loop; branch-based pred should be fine
+       if (valueElemTy.isBF16() && getNVIDIAComputeCapability(moduleOp) < 90) {
+         // Lower atomic bin-op and sem to LLVM
+-        auto llvmAtomicBinOp = matchAtomicOp(atomicRmwAttr);
++        auto llvmAtomicBinOp = matchAtomicOp(atomicRmwAttr, op.getVal().getType());
+         auto llvmAtomicMemOrdering = getMemoryOrdering(op.getSem());
+ 
+         // Generate dominating undef
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/AtomicRMWOpsEmitter.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/AtomicRMWOpsEmitter.cpp
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/AtomicRMWOpsEmitter.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/AtomicRMWOpsEmitter.cpp
+@@ -467,10 +467,16 @@ Value AtomicRMWEmitter::atomicIntraWaveReduce(RewriterBase &rewriter,
+     case LLVM::AtomicBinOp::fadd:
+       return b.fadd(res, v);
+     case LLVM::AtomicBinOp::max:
+-    case LLVM::AtomicBinOp::umax:
+       return b.umax(v, res);
++    case LLVM::AtomicBinOp::umax:
++      return b.umax(v, res);
++    case LLVM::AtomicBinOp::fmax:
++      return b.fmax(v, res);
+     case LLVM::AtomicBinOp::min:
+-    case LLVM::AtomicBinOp::umin:
+       return b.umin(v, res);
++    case LLVM::AtomicBinOp::umin:
++      return b.umin(v, res);
++    case LLVM::AtomicBinOp::fmin:
++      return b.fmin(v, res);
+     case LLVM::AtomicBinOp::xchg:
+       return v;
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp
+@@ -173,6 +173,11 @@ Value BufferEmitter::emitAtomicRMW(RMWOp rmwType, Type type, Value rsrcDesc,
+   //   LLVM verifier to fail. When this is fixed, the ROCDL ops should be used
+   //   here.
+   auto rmwOpStr = stringifyRMWOp(rmwType).str();
++  Type elemTy = getElementTypeOrSelf(type);
++  if (rmwType == RMWOp::MAX)
++    rmwOpStr = isa<FloatType>(elemTy) ? "fmax" : "smax";
++  else if (rmwType == RMWOp::MIN)
++    rmwOpStr = isa<FloatType>(elemTy) ? "fmin" : "smin";
+   auto instrinsic = "llvm.amdgcn.raw.ptr.buffer.atomic." + rmwOpStr;
+   auto bufferAtomicRMW = LLVM::createLLVMIntrinsicCallOp(
+       rewriter, loc, instrinsic, bufferType, args);
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp
+@@ -2088,7 +2088,7 @@ struct AtomicRMWOpConversion
+     auto loc = op.getLoc();
+     auto b = TritonLLVMOpBuilder(loc, rewriter);
+ 
+-    auto binOp = matchAtomicOp(op.getAtomicRmwOp());
++    auto binOp = matchAtomicOp(op.getAtomicRmwOp(), op.getVal().getType());
+     if (!binOp)
+       return rewriter.notifyMatchFailure(op, "Unsupported RMW operation");
+

@@ -1,6 +1,6 @@
 directory = "PrGemmElementwiseGemmF32"
 prefix = "rocmlir-gen"
-suffix = "--operation gemm_gemm -t f32 --arch %arch -pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
+suffix = "--operation gemm_gemm -t f32 --arch %arch -pv %random_data %rocmlir_gen_flags | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
 
 [[axis]]
 name = "transA"
@@ -30,11 +30,11 @@ name = "pr_gemm_gemm_f32"
 config = "-m 384 -n 384 -k 64 -gemmO 64"
 
 [[suite.test]]
-config = "-m 64 -n 64 -k 64 -gemmO 64 -perf_config attn:v2:32,32,64,32,32,32,4,1,1,2,1"
+config = "-m 64 -n 64 -k 64 -gemmO 64 -perf_config attn:v1:64,32,128,1,1,2,0,1,1,0,0"
 
 ## This one test kPerBlock (16 x 4) == head_dim case
 [[suite.test]]
-config = "-m 64 -n 64 -k 64 -gemmO 64 -perf_config attn:v2:64,64,64,16,32,32,4,1,1,2,1"
+config = "-m 64 -n 64 -k 64 -gemmO 64 -perf_config attn:v1:64,64,64,1,1,4,0,1,1,0,0"
 
 [[suite.test]]
 config = "-m 64 -n 64 -k 64 -gemmO 64"

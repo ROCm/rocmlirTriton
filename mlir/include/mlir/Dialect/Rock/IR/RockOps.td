@@ -55,8 +55,8 @@ class Rock_ConvOpBase<string mnemonic>
   let results = (outs AnyRankedTensor:$result);
 }
 
-defvar GemmInputTypes = [F32, F16, BF16, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M2,
-                         F8E4M3FN, F4E2M1FN, F8E8M0FNU];
+defvar GemmInputTypes = [F32, F16, BF16, I<4>, I8, F8E5M2FNUZ, F8E4M3FNUZ,
+                         F8E5M2, F8E4M3FN, F4E2M1FN, F8E8M0FNU];
 // This can be extended for quantization.
 defvar GemmOutputTypes = [F32, F16, BF16, I32, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M2, F8E4M3FN];
 defvar GemmAccumulatorTypes = [F32, F16, BF16, I32];
@@ -195,7 +195,6 @@ def Rock_AttentionOp
           I32Attr:$splitKV, OptionalAttr<TypeAttr>:$softmaxType,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
-          DenseI64ArrayAttr:$firstGemmIndices,
           DefaultValuedOptionalAttr<BoolAttr,
                                     "false">:$preSoftmaxHasSplitKVTransforms)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result,
@@ -264,8 +263,7 @@ def Rock_GemmElementwiseGemmOp
           Variadic<AnyTensor>:$elemwiseInputs, UnitAttr:$aTransposed,
           UnitAttr:$bTransposed, UnitAttr:$cTransposed, UnitAttr:$oTransposed,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
-          OptionalAttr<RockTuningParamAttrInterface>:$params1,
-          DenseI64ArrayAttr:$firstGemmIndices)>,
+          OptionalAttr<RockTuningParamAttrInterface>:$params1)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result)> {
   let summary = "GEMM-elementwise-GEMM operation";
   let description = [{
@@ -293,7 +291,7 @@ def Rock_GemmElementwiseGemmOp
     `{` `\n`
         ` ` `ab` `=` (`tr` $aTransposed^)? $a `*` (`tr` $bTransposed^)? $b `:` type($a) `,` type($b) `\n`
         (`ab` `=` `elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
-        `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
+        `out` `=` `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
     `}` attr-dict `->` type($result)
   }];
 }
@@ -305,14 +303,12 @@ def Rock_ConvElementwiseGemmOp
       AllElementTypesMatch<["filter", "input"]>,
       Arguments<(ins TensorOf<[F32, F16, BF16]>:$filter,
           TensorOf<[F32, F16, BF16]>:$input, TensorOf<[F32, F16, BF16]>:$c,
-          Variadic<AnyTensor>:$elemwiseInputs, TensorOf<[F32, F16, BF16]>:$out,
-          UnitAttr:$cTransposed, UnitAttr:$oTransposed,
-          IndexArrayLength<4>:$padding, IndexArrayLength<2>:$strides,
-          IndexArrayLength<2>:$dilations,
+          Variadic<AnyTensor>:$elemwiseInputs, UnitAttr:$cTransposed,
+          UnitAttr:$oTransposed, IndexArrayLength<4>:$padding,
+          IndexArrayLength<2>:$strides, IndexArrayLength<2>:$dilations,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
-          OptionalAttr<RockTuningParamAttrInterface>:$params1,
-          DenseI64ArrayAttr:$firstGemmIndices)>,
-      Results<(outs Optional<TensorOf<[F32, F16, BF16]>>:$result)> {
+          OptionalAttr<RockTuningParamAttrInterface>:$params1)>,
+      Results<(outs TensorOf<[F32, F16, BF16]>:$result)> {
   let summary = "CONV-elementwise-GEMM operation";
   let description = [{
     Performs the operation out = preSecondGemmBody(conv_forward(filter, input), elemwiseInputs) * c.
@@ -320,9 +316,9 @@ def Rock_ConvElementwiseGemmOp
     This operation performs fused CONV-elementwise-GEMM. There is an optional element-wise
     fusion just before the second GEMM, defined by `preSecondGemmBody` with inputs `elemwiseInputs`.
 
-    If none of the `transposed` attributes are set, then `c` is [G] x N x O and `out` is [G] x M x O, 
-    where G is the optional group dimension (which is assumed to be 1 if not set). Note that input and
-    filter layouts are defined by attributes "input_layout" and "filter_layout".
+    If none of the `transposed` attributes are set, then `c` is [G] x N x O and the result is
+    [G] x M x O, where G is the optional group dimension (which is assumed to be 1 if not set).
+    Note that input and filter layouts are defined by attributes "input_layout" and "filter_layout".
 
     The transpose attributes allow for the non-group dimensions of the matrix to be
     transposed. For example, if `cTransposed` is set, then the argument `c` should be
@@ -339,8 +335,8 @@ def Rock_ConvElementwiseGemmOp
     `{` `\n`
         ` ` `ab` `=` `conv` `(` $filter `,` $input `)` `:` type($filter) `,` type($input) `\n`
         (`ab` `=` `elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
-        (`tr` $oTransposed^)? $out `=` `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `->` type($out) `\n`
-    `}` attr-dict (`->` type($result)^)?
+        `out` `=` (`tr` $oTransposed^)? `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
+    `}` attr-dict `->` type($result)
   }];
 }
 
@@ -545,7 +541,7 @@ def Rock_GridwiseAttentionOp
           OptionalAttr<IndexAttr>:$prePadG0N,
           OptionalAttr<IndexAttr>:$numRepeatsGQA,
           OptionalAttr<TypeAttr>:$softmaxType, Rock_GemmParamsAttr:$params0,
-          Rock_GemmParamsAttr:$params1, DenseI64ArrayAttr:$firstGemmIndices,
+          Rock_GemmParamsAttr:$params1,
           DefaultValuedOptionalAttr<BoolAttr, "true">:$enableSoftmax,
           DefaultValuedOptionalAttr<BoolAttr,
                                     "false">:$preSoftmaxHasSplitKVTransforms)>,
@@ -561,6 +557,16 @@ def Rock_GridwiseAttentionOp
     `->` type($result) (`,` type($lse)^)?
   }];
   let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    // Block arg 0 of preSoftmaxBody is the first GEMM output (QK product).
+    BlockArgument getPreSoftmaxQKArgument() {
+      Region &region = getPreSoftmaxBody();
+      if (region.empty())
+        return nullptr;
+      return region.front().getArgument(0);
+    }
+  }];
 }
 
 // yield
@@ -634,6 +640,12 @@ def Rock_BlockwiseGemmOp
     `matrixAOrigElemType` or `matrixBOrigElemType` are defined. This is to avoid
     using `tt.dot` if we changed the datatype of A or B, it would be represented
     as i8 but it's really `matrixAOrigElemType`/`matrixBOrigElemType`.
+    
+    When LegalizeFloatTypes converts sub-byte float types (e.g.
+    f4E2M1FN) to integer types (i4, then packed to i8),
+    `matrixAOrigElemType`/`matrixBOrigElemType` preserve the original float type
+    for tt.dot_scaled. `matrixAKPack`/`matrixBKPack` indicate whether the
+    packing dimension was K (true) or D (false).
   }];
   let assemblyFormat = [{
     `(` $matrixA  (`scaled` `by` $matrixScaleA^)? `,`

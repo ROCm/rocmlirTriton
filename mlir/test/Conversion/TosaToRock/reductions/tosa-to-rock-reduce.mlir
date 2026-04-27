@@ -1,6 +1,6 @@
 // RUN: rocmlir-opt --tosa-to-rock %s -o -| FileCheck %s
 
-module attributes {rock.kernel.module, rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
+module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
 // CHECK-LABEL: @test_basic
 // CHECK-SAME: -> (tensor<2x10x1xf32> {rock.prefill = 0.000000e+00 : f32})
 func.func @test_basic(%arg0: tensor<2x10x100xf32>) -> tensor<2x10x1xf32> attributes {rock.kernel} {

@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
+#include "mlir/Dialect/Tosa/Utils/ConversionUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 
@@ -145,6 +146,44 @@ bool isConstRange(Value v) {
 }
 
 namespace tosa {
+
+Value adjustConvPadding(OpBuilder &builder, Location loc, Value input,
+                        Value filter, MutableArrayRef<int64_t> pads,
+                        ArrayRef<int64_t> strides,
+                        ArrayRef<int64_t> dilations) {
+  auto inputShape = cast<ShapedType>(input.getType()).getShape();
+  auto filterShape = cast<ShapedType>(filter.getType()).getShape();
+  int64_t nSpatial = pads.size() / 2;
+
+  SmallVector<int64_t> sliceSizes(inputShape.begin(), inputShape.end());
+  bool needSlice = false;
+  for (int64_t i = 0; i < nSpatial; ++i) {
+    unsigned dim = 1 + i;
+    int64_t fullExtent = inputShape[dim] - 1 + pads[2 * i] + pads[2 * i + 1] -
+                         (filterShape[dim] - 1) * dilations[i];
+    int64_t remainder = fullExtent % strides[i];
+    int64_t fromPad = std::min(pads[2 * i + 1], remainder);
+    pads[2 * i + 1] -= fromPad;
+    int64_t fromInput = remainder - fromPad;
+    if (fromInput > 0) {
+      sliceSizes[dim] -= fromInput;
+      needSlice = true;
+    }
+  }
+  if (needSlice) {
+    ImplicitLocOpBuilder implicitBuilder(loc, builder);
+    SmallVector<int64_t> starts(sliceSizes.size(), 0);
+    auto startsValue = ::mlir::tosa::getTosaConstShape(implicitBuilder, starts);
+    auto sizesValue =
+        ::mlir::tosa::getTosaConstShape(implicitBuilder, sliceSizes);
+    auto slicedType = RankedTensorType::get(
+        sliceSizes, cast<ShapedType>(input.getType()).getElementType());
+    input = ::mlir::tosa::SliceOp::create(builder, loc, slicedType, input,
+                                          startsValue, sizesValue);
+  }
+  return input;
+}
+
 Value getOneTensor(OpBuilder &builder, Location loc, RankedTensorType type) {
   auto value = cast<ElementsAttr>(builder.getOneAttr(type));
   return ::mlir::tosa::ConstOp::create(builder, loc, type, value);

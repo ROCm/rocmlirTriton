@@ -8,6 +8,8 @@ add_rocmlir_dialect_library(MLIRRockPipeline
   MLIRArithToAMDGPU
   MLIRComplexToLLVM
   MLIRIndexToLLVM
+  MLIRMathToLibm
+  MLIRMathToLLVM
   MLIRMathTransforms
   MLIRTensorToLinalg
   MLIRTosaToRock
@@ -21,10 +23,12 @@ add_rocmlir_dialect_library(MLIRRockPipeline
   MLIRUBToLLVM
   RocmlirCustomTosaDecompose
   RocmlirCustomTosaToLinalg
+  RocmlirPromoteSoftmaxPrecision
   RocmlirEmulateFp8ExtTrunc
 
   # Upstream dialect libraries we need to load that we don't directly depend on
   MLIRBufferizationTransformOps
+  MLIRControlFlowTransforms
   MLIRTensorInferTypeOpInterfaceImpl
   
   TritonGPUTransforms

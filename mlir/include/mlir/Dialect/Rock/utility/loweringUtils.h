@@ -9,6 +9,7 @@
 #ifndef ROCK_UTILITY_LOWERINGUTILS_H
 #define ROCK_UTILITY_LOWERINGUTILS_H
 
+#include "mlir/Dialect/Arith/Transforms/NarrowTypeEmulationConverter.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
@@ -156,6 +157,11 @@ Value loadTile(PatternRewriter &rewriter, Location loc, Value in, Value kIter,
 Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
                           ArrayRef<int64_t> shape, Type accType);
 
+/// Insert rock.transform with Broadcast dims to expand dimensions of
+/// `inp` to match `outShape`. Returns `inp` unchanged if no broadcast needed.
+Value insertBroadcast(OpBuilder &b, Location loc, Value inp,
+                      ArrayRef<int64_t> outShape);
+
 bool isFusionOp(Operation *op);
 
 // Returns true if `op` should be followed during forward tracing from a
@@ -193,6 +199,24 @@ void replaceFusionExtraInputs(Value root,
 /// to padding in GemmToGridwise) and downstream fusion ops need their operands
 /// and result types updated accordingly.
 void propagateOutputType(Value oldRoot, Value newRoot);
+
+/// Result of tracing a fusion root output: stores, output views, and extra
+/// fusion inputs collected from the fusion chain.
+struct OutputsAndFusionInputs {
+  SetVector<StoreOp> stores;
+  SmallVector<Value> outputViews;
+  DenseMap<Value, Value> fusionInputMap;
+};
+
+/// Trace a fusion root output to its store ops, collecting the output views
+/// (store destinations) and any extra fusion inputs (operands of fusion ops
+/// that are not part of the gemm-result chain, e.g. the bias in arith.addf).
+FailureOr<OutputsAndFusionInputs> traceOutputsAndFusionInputs(Value rootOut);
+
+/// Create a NarrowTypeEmulationConverter targeting i8 with memref conversions
+/// and unrealized_conversion_cast materializations.  Used by both
+/// RockConvertNarrowTypeSignaturesPass and RockEmulateNarrowTypesPass.
+arith::NarrowTypeEmulationConverter create4BitTypeConverter();
 
 } // end namespace rock
 } // end namespace mlir

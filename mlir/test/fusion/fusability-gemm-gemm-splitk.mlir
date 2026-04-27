@@ -18,7 +18,7 @@ module {
       rock.yield
     }
      %alloc = ab * %2 : memref<1x4096x360xf16> -> memref<1x4096x360xf16>
-    } {features = #rock<GemmFeatures mfma|dot|atomic_add|atomic_add_f16|direct_to_lds_32b>, firstGemmIndices = array<i64: 0>, storeMethod = #rock<StoreMethod set>}
+    } {features = #rock<GemmFeatures mfma|dot|atomic_add|atomic_add_f16|direct_to_lds_32b>, storeMethod = #rock<StoreMethod set>}
     %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<1x4096x1xf16>
     rock.reduce  sum %alloc into %alloc_1 {axis = 2 : index, blockSize = 256 : i32, gridSize = 2 : i32} : memref<1x4096x360xf16> into memref<1x4096x1xf16>
     memref.copy %alloc_1, %3 : memref<1x4096x1xf16> to memref<1x4096x1xf16>

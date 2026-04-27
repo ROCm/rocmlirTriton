@@ -29,14 +29,12 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
@@ -303,10 +301,8 @@ void RockGridwiseGemmToBlockwisePass::runOnOperation() {
   ConversionTarget target(*ctx);
   target.addIllegalOp<rock::GridwiseGemmOp>();
   target.addLegalDialect<arith::ArithDialect, rock::RockDialect,
-                         affine::AffineDialect, vector::VectorDialect,
-                         linalg::LinalgDialect, scf::SCFDialect,
-                         math::MathDialect, tensor::TensorDialect, triton::TritonDialect>();
-  target.addLegalOp<gpu::PrintfOp>();
+                         affine::AffineDialect, scf::SCFDialect,
+                         triton::TritonDialect>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<GridwiseGemmRewritePattern>(ctx);

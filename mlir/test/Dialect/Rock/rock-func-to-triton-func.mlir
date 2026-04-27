@@ -373,6 +373,48 @@ func.func @test_multi_prefill_mixed_types(
 
 // -----
 
+// Verifies non-kernel func.func is preserved alongside a converted kernel
+// CHECK: func.func @helper_function
+// CHECK-LABEL: tt.func @test_non_kernel_preserved
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+//  CHECK-NOT:   rock.extract_ptr
+func.func @helper_function(%x: f32, %y: f32) -> f32 {
+  %r = arith.addf %x, %y : f32
+  return %r : f32
+}
+func.func @test_non_kernel_preserved(%arg0: tensor<64xf16>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<64xf16> -> i32
+  %1 = tt.splat %0 : i32 -> tensor<64xi32>
+  %2 = rock.cast_to_ptr %1 : tensor<64xi32> -> tensor<64x!tt.ptr<f16>>
+  %3 = tt.load %2, %cst_mask : tensor<64x!tt.ptr<f16>>
+  return
+}
+
+// -----
+
+// Verifies scalar (non-tensor) arguments pass through unchanged
+// CHECK-LABEL: tt.func @test_mixed_tensor_scalar
+// CHECK-SAME: (%[[PTR:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[SCALAR:.*]]: i32)
+//      CHECK:   tt.splat %[[PTR]] : !tt.ptr<f16> -> tensor<64x!tt.ptr<f16>>
+//      CHECK:   tt.splat %[[SCALAR]] : i32 -> tensor<64xi32>
+//      CHECK:   tt.addptr
+//      CHECK:   tt.load
+//  CHECK-NOT:   rock.extract_ptr
+//  CHECK-NOT:   rock.cast_to_ptr
+func.func @test_mixed_tensor_scalar(%arg0: tensor<4096xf16>, %arg1: i32) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32
+  %1 = tt.splat %0 : i32 -> tensor<64xi32>
+  %offset = tt.splat %arg1 : i32 -> tensor<64xi32>
+  %2 = arith.addi %1, %offset : tensor<64xi32>
+  %3 = rock.cast_to_ptr %2 : tensor<64xi32> -> tensor<64x!tt.ptr<f16>>
+  %4 = tt.load %3, %cst_mask : tensor<64x!tt.ptr<f16>>
+  return
+}
+
+// -----
+
 // Verifies a dead tensor input (no extract_ptr) is still converted to tt.ptr,
 // and a prefill arg on another argument is preserved
 // CHECK: module attributes {{{.*}}rock.prefill_args.test_dead_input_with_prefill = [{index = 2 : i64, value = 0.000000e+00 : f32}]

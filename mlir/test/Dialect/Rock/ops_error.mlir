@@ -10,7 +10,6 @@
 //     gridSize = 24 : i32,
 //     params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
 //     params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
-//     firstGemmIndices = array<i64: 0>,
 //     storeMethod = #rock<StoreMethod atomic_add>,
 //     splitKV = 1 : i32,
 //     enableSoftmax = true,
@@ -30,7 +29,6 @@
 //     gridSize = 24 : i32,
 //     params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
 //     params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
-//     firstGemmIndices = array<i64: 0>,
 //     storeMethod = #rock<StoreMethod set>,
 //     splitKV = 1 : i32,
 //     enableSoftmax = true,
@@ -41,58 +39,58 @@
 //   return
 // }
 // 
-// func.func @attention_nonset(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_nonset(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{Only set store method is supported for attention.}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod atomic_add>}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod atomic_add>}
 //   return
 // }
 // 
-// func.func @attention_numheadskv_negative(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_numheadskv_negative(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{numHeadsKV must be positive}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = -1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {splitKV = 1 : i32, numHeadsKV = -1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 // 
-// func.func @attention_numheadsq_negative(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_numheadsq_negative(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{numHeadsQ must be positive}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = -1 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = -1 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 // 
-// func.func @attention_numheadsq_not_divisible(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_numheadsq_not_divisible(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{numHeadsQ is not divisible by numHeadsKV}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 3 : i32, numHeadsQ = 4 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {splitKV = 1 : i32, numHeadsKV = 3 : i32, numHeadsQ = 4 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 // 
-// func.func @attention_numheadsq_smaller_than_numheadskv(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_numheadsq_smaller_than_numheadskv(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{numHeadsQ is not divisible by numHeadsKV}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 4 : i32, numHeadsQ = 2 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {splitKV = 1 : i32, numHeadsKV = 4 : i32, numHeadsQ = 2 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 // 
-// func.func @attention_prefix_offset_requires_causal(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>, %arg4: tensor<1xi32>) attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+// func.func @attention_prefix_offset_requires_causal(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>, %arg4: tensor<1xi32>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
 //   // expected-disabled-error @below {{prefixOffset requires causal to be enabled}}
 //   rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    prefixOffset = (%arg4 : tensor<1xi32>)
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
+//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
 //   return
 // }
 
@@ -422,19 +420,6 @@ func.func @blockwise_gemm_scale_mismatch(
   return %0 : tensor<64x64xf32>
 }
 
-// matrixAOrigElemType and matrixBOrigElemType must both be set or both absent
-func.func @blockwise_gemm_orig_elem_type_mismatch(
-    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
-    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
-    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
-  // expected-error @+1 {{If one of matrixAOrigElemType and matrixBOrigElemType is set, the other needs to be set as well}}
-  %0 = rock.blockwise_gemm(%a, %b, %c)
-    {matrixAOrigElemType = f8E4M3FN}
-    : tensor<64x64xf8E4M3FN>, tensor<64x64xf8E4M3FN>,
-      tensor<64x64xf32> -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
-}
-
 // quantBlockSize is required when scales are present
 func.func @blockwise_gemm_no_quantblocksize(
     %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
@@ -460,6 +445,42 @@ func.func @blockwise_gemm_scale_shape_mismatch(
     {quantBlockSize = 32 : i64}
     : tensor<64x64xf8E4M3FN> scaled by tensor<64x3xi8>,
       tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Packed matrix shape: after packing f4->i8, the K dim is halved.
+// Doubling the packed dim should recover the scale shape.
+// Here: matrixA = 64x32xi8 (K halved from 64 to 32), scale = 64x2 (K=64/32=2)
+// Expected: 64x64 (doubled K=32*2=64), normalized scale = 64x64. Match.
+// Test the mismatch case: scaleA has wrong shape.
+func.func @blockwise_gemm_packed_shape_mismatch(
+    %a: tensor<64x32xi8>, %b: tensor<32x64xi8>,
+    %scaleA: tensor<64x3xi8>, %scaleB: tensor<64x2xi8>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{Packed matrixA shape (with dim 1 2x) must match normalized scaleA shape.}}
+  %0 = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 32 : i64,
+     matrixAOrigElemType = f4E2M1FN,
+     matrixBOrigElemType = f4E2M1FN,
+     matrixAKPack = true,
+     matrixBKPack = true}
+    : tensor<64x32xi8> scaled by tensor<64x3xi8>,
+      tensor<32x64xi8> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
+// Matrix shape must be 2D
+func.func @blockwise_gemm_3d_matrix(
+    %a: tensor<1x64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  // expected-error @+1 {{matrix shape must be 2D}}
+  %0 = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<1x64x64xf8E4M3FN>,
+      tensor<64x64xf8E4M3FN>,
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %0 : tensor<64x64xf32>
 }

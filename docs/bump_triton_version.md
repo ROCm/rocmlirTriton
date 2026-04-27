@@ -32,9 +32,10 @@ git add external/triton
 The LLVM version is tied to the Triton version (specified in `external/triton/cmake/llvm-hash.txt`). After bumping Triton, LLVM must be rebuilt.
 
 ```bash
-cd external/triton/scripts/
-bash build-llvm-project.sh
+bash scripts/build-llvm.sh
 ```
+
+This wrapper script handles submodule init, applying `triton-patches/*.patch`, patching `MLIR_ENABLE_ROCM_RUNNER=ON`, and building LLVM/MLIR.
 
 ## Step 3: Check if our local patches are still needed
 We may have local patches (`.patch` files) under `./triton-patches`, which are applied using the `cmake.sh` script.
@@ -224,7 +225,17 @@ bash cmake.sh
 Which will probably fail due to LLVM being also bumped with Triton version.
 For this, we need to manually resolve the errors due to upstream LLVM changes.
 
-## Step 9: Run Tests
+## Step 9: Regenerate Fat Library Dependencies
+
+The file `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` lists all LLVM/MLIR and rocMLIR libraries that get merged into `librockCompiler.a`. A Triton bump can add or remove library dependencies, so this file must be regenerated after a successful build.
+
+From the **build directory**, run:
+
+```bash
+perl ../mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl > ../mlir/tools/rocmlir-lib/librockcompiler_deps.cmake
+```
+
+## Step 10: Run Tests
 
 ```bash
 bash tests.sh
@@ -235,7 +246,7 @@ Use this checklist to track progress:
 
 - [ ] Record old Triton commit (OLD_COMMIT)
 - [ ] Update Triton submodule to new commit (NEW_COMMIT)
-- [ ] Rebuild LLVM with `external/triton/scripts/build-llvm-project.sh`
+- [ ] Rebuild LLVM with `scripts/build-llvm.sh`
 - [ ] Generate diff for `third_party/amd/backend/compiler.py`
 - [ ] Generate diff for `python/src/llvm.cc`
 - [ ] Generate diff for `third_party/amd/python/triton_amd.cc`
@@ -251,6 +262,7 @@ Use this checklist to track progress:
 - [ ] Update `tritonUtils.cpp::mlirTypeToScaleDotElemType()` if changed
 - [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
 - [ ] Build project with `cmake.sh`
+- [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
 - [ ] Run tests with `tests.sh`
 - [ ] All tests pass
 - [ ] Commit all changes
@@ -308,4 +320,6 @@ If new Triton headers are needed:
 | Triton AccelerateMatmul | `external/triton/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp` |
 | Build script | `cmake.sh` |
 | Test script | `tests.sh` |
-| LLVM build script | `external/triton/scripts/build-llvm-project.sh` |
+| LLVM build wrapper | `scripts/build-llvm.sh` |
+| Fat library deps generator | `mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl` |
+| Fat library deps list | `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` |

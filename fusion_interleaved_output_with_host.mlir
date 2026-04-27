@@ -11,7 +11,7 @@
 #map_flat = affine_map<(d0, d1, d2) -> (d1 * 100 + d2)>
 #map_gemm_to_4d = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 * 10 + d3)>
 #map_4d_to_gemm = affine_map<(d0, d1, d2) -> (d0, d1, d2 floordiv 10, d2 mod 10)>
-#map_flat_to_4d = affine_map<(d0, d1, d2, d3) -> (d1 * 100 + d2 * 10 + d3)>
+#map_flat_to_4d = affine_map<(d0, d1, d2, d3) -> ((d1 * 10 + d2) * 10 + d3)>
 #map_mod3 = affine_map<(d0) -> (d0 mod 3)>
 #map_gemm_a = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
 #map_gemm_b = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>

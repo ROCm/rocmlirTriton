@@ -24,7 +24,11 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
+#include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -46,19 +50,72 @@ namespace {
 // Generic templates for 1:1 TOSA -> arith/math replacement on tensors.
 // ===--------------------------------------------------------------------=== //
 
+// Create a rock.transform that broadcasts `input` to `targetShape`.
+// Dimensions where the source has size 1 and the target has size > 1 use
+// Broadcast{1} (i.e. index % 1 = 0). Returns the input unchanged if shapes
+// already match, or failure if the shapes are incompatible.
+static FailureOr<Value>
+createBroadcastTransform(PatternRewriter &rewriter, Location loc, Value input,
+                         ArrayRef<int64_t> targetShape) {
+  auto inputTy = cast<ShapedType>(input.getType());
+  ArrayRef<int64_t> inputShape = inputTy.getShape();
+  if (inputShape == targetShape)
+    return input;
+  if (inputShape.size() != targetShape.size())
+    return failure();
+
+  SmallVector<SmallString<8>, 8> nameStorage(targetShape.size());
+  SmallVector<StringRef> dimNames;
+  for (unsigned i = 0; i < targetShape.size(); ++i) {
+    ("dim" + Twine(i)).toVector(nameStorage[i]);
+    dimNames.push_back(nameStorage[i]);
+  }
+
+  rock::TopDownTMBuilder bcast(rewriter, dimNames, targetShape, loc);
+  for (unsigned i = 0; i < targetShape.size(); ++i) {
+    if (inputShape[i] == targetShape[i]) {
+      bcast.passThrough({dimNames[i]});
+    } else if (inputShape[i] == 1) {
+      bcast.takeRemainder(dimNames[i], 1);
+    } else {
+      return failure();
+    }
+  }
+
+  Value result = rock::TransformOp::create(rewriter, loc, input, bcast.get());
+  return result;
+}
+
+// Broadcast two binary operands to the result shape of the given TOSA op.
+// Works with any op that has getInput1(), getInput2(), getType(), getLoc().
+template <typename OpTy>
+static FailureOr<std::pair<Value, Value>>
+broadcastInputs(PatternRewriter &rewriter, OpTy op) {
+  auto resultShape = cast<ShapedType>(op.getType()).getShape();
+  auto b1 =
+      createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(), resultShape);
+  auto b2 =
+      createBroadcastTransform(rewriter, op.getLoc(), op.getInput2(), resultShape);
+  if (failed(b1) || failed(b2))
+    return failure();
+  return std::make_pair(*b1, *b2);
+}
+
 // Binary op that dispatches on float vs integer element type.
 template <typename TosaOp, typename FloatOp, typename IntOp>
 struct BinaryConverter : public OpRewritePattern<TosaOp> {
   using OpRewritePattern<TosaOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(TosaOp op,
                                 PatternRewriter &rewriter) const override {
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
     auto elemTy = cast<ShapedType>(op.getType()).getElementType();
     if (isa<FloatType>(elemTy))
-      rewriter.replaceOpWithNewOp<FloatOp>(op, op.getType(), op.getInput1(),
-                                           op.getInput2());
+      rewriter.replaceOpWithNewOp<FloatOp>(op, op.getType(), in1, in2);
     else if (isa<IntegerType>(elemTy))
-      rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), op.getInput1(),
-                                         op.getInput2());
+      rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), in1, in2);
     else
       return failure();
     return success();
@@ -93,8 +150,11 @@ struct IntBinaryConverter : public OpRewritePattern<TosaOp> {
   using OpRewritePattern<TosaOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(TosaOp op,
                                 PatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), op.getInput1(),
-                                       op.getInput2());
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
+    rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), in1, in2);
     return success();
   }
 };
@@ -155,23 +215,43 @@ struct MulConverter : public OpRewritePattern<tosa::MulOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::MulOp op,
                                 PatternRewriter &rewriter) const override {
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
     auto elemTy = cast<ShapedType>(op.getType()).getElementType();
     if (isa<FloatType>(elemTy)) {
-      rewriter.replaceOpWithNewOp<arith::MulFOp>(
-          op, op.getType(), op.getInput1(), op.getInput2());
+      rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getType(), in1, in2);
       return success();
     }
     if (isa<IntegerType>(elemTy)) {
       DenseElementsAttr shiftElem;
       if (matchPattern(op.getShift(), m_Constant(&shiftElem)) &&
           shiftElem.getValues<IntegerAttr>()[0].getInt() == 0) {
-        rewriter.replaceOpWithNewOp<arith::MulIOp>(
-            op, op.getType(), op.getInput1(), op.getInput2());
+        rewriter.replaceOpWithNewOp<arith::MulIOp>(op, op.getType(), in1, in2);
         return success();
       }
       return rewriter.notifyMatchFailure(op, "non-zero shift unsupported");
     }
     return failure();
+  }
+};
+
+// tosa.reciprocal(tosa.rsqrt(x)) → math.sqrt(x)
+// Fold the two-op sqrt decomposition (from MIGraphXToTosa) into a single op.
+struct ReciprocalRsqrtToSqrtConverter
+    : public OpRewritePattern<tosa::ReciprocalOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::ReciprocalOp op,
+                                PatternRewriter &rewriter) const override {
+    auto rsqrt = op.getInput1().getDefiningOp<tosa::RsqrtOp>();
+    if (!rsqrt)
+      return failure();
+    rewriter.replaceOpWithNewOp<math::SqrtOp>(op, op.getType(),
+                                              rsqrt.getInput1());
+    if (rsqrt->use_empty())
+      rewriter.eraseOp(rsqrt);
+    return success();
   }
 };
 
@@ -191,18 +271,52 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
   }
 };
 
+// arith.negf(x) -> arith.mulf(x, -1.0)
+// This supports migraphx.neg operator, which will be expanded to arith.negf.
+// However, the TritonToTritonGPU conversion does not have a pattern for
+// arith.negf, so we expand it here into ops that Triton supports.
+//
+// Note that the cleanest way would be to make Triton support arith.negf,
+// however they rejected this change:
+// https://github.com/triton-lang/triton/pull/9955
+struct NegFTritonWorkaround : public OpRewritePattern<arith::NegFOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(arith::NegFOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto shapedTy = dyn_cast<ShapedType>(op.getType());
+    if (!shapedTy)
+      return failure();
+    auto negOneAttr = DenseElementsAttr::get(
+        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), -1.0));
+    Value negOne = arith::ConstantOp::create(rewriter, loc, negOneAttr);
+    rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getType(),
+                                               op.getOperand(), negOne);
+    return success();
+  }
+};
+
 // tosa.sigmoid: 1 / (1 + exp(-x))
+// We compute -x as (0 - x) to match both MIGraphX semantics and Triton's
+// implementation, avoiding arith.negf which Triton doesn't support on tensors.
+// See: triton/python/triton/language/standard.py (sigmoid)
+//      triton/python/triton/language/semantic.py (minus)
+// Please note that we dont want to generate arith.negf here, because
+// it is not supported by Triton.
 struct SigmoidConverter : public OpRewritePattern<tosa::SigmoidOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::SigmoidOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     auto shapedTy = cast<ShapedType>(op.getType());
+    auto zeroAttr = DenseElementsAttr::get(
+        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), 0.0));
+    Value zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
     auto oneAttr = DenseElementsAttr::get(
         shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), 1.0));
     Value one = arith::ConstantOp::create(rewriter, loc, oneAttr);
     Value negX =
-        arith::NegFOp::create(rewriter, loc, op.getType(), op.getInput());
+        arith::SubFOp::create(rewriter, loc, op.getType(), zero, op.getInput());
     Value expNegX = math::ExpOp::create(rewriter, loc, op.getType(), negX);
     Value denom =
         arith::AddFOp::create(rewriter, loc, op.getType(), one, expNegX);
@@ -216,8 +330,16 @@ struct SelectConverter : public OpRewritePattern<tosa::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::SelectOp op,
                                 PatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<arith::SelectOp>(
-        op, op.getInput1(), op.getInput2(), op.getInput3());
+    auto resultShape = cast<ShapedType>(op.getType()).getShape();
+    auto pred = createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(),
+                                         resultShape);
+    auto onTrue = createBroadcastTransform(rewriter, op.getLoc(),
+                                           op.getInput2(), resultShape);
+    auto onFalse = createBroadcastTransform(rewriter, op.getLoc(),
+                                            op.getInput3(), resultShape);
+    if (failed(pred) || failed(onTrue) || failed(onFalse))
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, *pred, *onTrue, *onFalse);
     return success();
   }
 };
@@ -300,6 +422,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
                                                      op.getInput());
       return success();
     }
+
     // int -> float
     if (isa<IntegerType>(srcTy) && isa<FloatType>(dstTy)) {
       if (srcTy.isInteger(1) || srcTy.isUnsignedInteger())
@@ -310,12 +433,41 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
                                                      op.getInput());
       return success();
     }
-    // float -> int
-    if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
-      rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, op.getType(),
-                                                   op.getInput());
+
+    // float -> bool
+    if (isa<FloatType>(srcTy) && dstTy.isInteger(1)) {
+      auto srcShapedTy = cast<ShapedType>(op.getInput().getType());
+      Value zero = arith::ConstantOp::create(
+          rewriter, op.getLoc(),
+          DenseElementsAttr::get(srcShapedTy,
+                                 rewriter.getFloatAttr(srcTy, 0.0)));
+      rewriter.replaceOpWithNewOp<arith::CmpFOp>(
+          op, arith::CmpFPredicate::UNE, op.getInput(), zero);
       return success();
     }
+
+    // float -> int: not reachable. This pass is only invoked from the
+    // MIGraphX pipeline, and the MIGraphX frontend never emits a plain
+    // `tosa.cast` for fp->int
+    if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
+      return op.emitOpError(
+          "tosa.cast from floating-point to integer is not supported by "
+          "rock-tosa-to-elementwise");
+    }
+
+    // int -> bool
+    if (isa<IntegerType>(srcTy) && dstTy.isInteger(1)) {
+      auto srcShapedTy = cast<ShapedType>(op.getInput().getType());
+      Value zero = arith::ConstantOp::create(
+          rewriter, op.getLoc(),
+          DenseElementsAttr::get(
+              srcShapedTy,
+              rewriter.getIntegerAttr(srcTy, 0)));
+      rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+          op, arith::CmpIPredicate::ne, op.getInput(), zero);
+      return success();
+    }
+
     // int -> int
     if (isa<IntegerType>(srcTy) && isa<IntegerType>(dstTy)) {
       if (bitExtend) {
@@ -325,11 +477,70 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
         else
           rewriter.replaceOpWithNewOp<arith::ExtSIOp>(op, op.getType(),
                                                       op.getInput());
-      } else
+      } else if (srcTy.getIntOrFloatBitWidth() > dstTy.getIntOrFloatBitWidth())
         rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, op.getType(),
                                                      op.getInput());
+      else
+        rewriter.replaceOp(op, op.getInput());
       return success();
     }
+  
+    return failure();
+  }
+};
+
+// tosa.custom with domain "rocmlir": unsigned_cast, unsigned_div,
+// and fp_to_int_cast.
+// These are custom TOSA ops that represent operations which standard TOSA
+// doesn't support or where we need to override upstream lowering behavior.
+struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::CustomOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
+      return failure();
+
+    auto outType = cast<RankedTensorType>(op.getResults().front().getType());
+    Type outElemType = outType.getElementType();
+
+    if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_CAST) {
+      Value input = op.getInputList()[0];
+      Type inElemType =
+          cast<RankedTensorType>(input.getType()).getElementType();
+      if (isa<IntegerType>(inElemType)) {
+        if (isa<FloatType>(outElemType)) {
+          rewriter.replaceOpWithNewOp<arith::UIToFPOp>(op, outType, input);
+        } else if (outElemType.getIntOrFloatBitWidth() >
+                   inElemType.getIntOrFloatBitWidth()) {
+          rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, outType, input);
+        } else if (outElemType.getIntOrFloatBitWidth() <
+                   inElemType.getIntOrFloatBitWidth()) {
+          rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, outType, input);
+        } else {
+          rewriter.replaceOp(op, input);
+        }
+      } else {
+        Value result = rock::createClampedFPToInt(
+            rewriter, op.getLoc(), input, outElemType, /*isUnsigned=*/true);
+        rewriter.replaceOp(op, result);
+      }
+      return success();
+    }
+
+    if (op.getOperatorName() == ROCK_CUSTOMOP_FP_TO_INT_CAST) {
+      Value input = op.getInputList()[0];
+      Value result = rock::createClampedFPToInt(
+          rewriter, op.getLoc(), input, outElemType, /*isUnsigned=*/false);
+      rewriter.replaceOp(op, result);
+      return success();
+    }
+
+    if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_DIV) {
+      rewriter.replaceOpWithNewOp<arith::DivUIOp>(
+          op, outType, op.getInputList()[0], op.getInputList()[1]);
+      return success();
+    }
+
     return failure();
   }
 };
@@ -341,13 +552,15 @@ struct CmpConverter : public OpRewritePattern<TosaOp> {
   using OpRewritePattern<TosaOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(TosaOp op,
                                 PatternRewriter &rewriter) const override {
-    auto elemTy = cast<ShapedType>(op.getInput1().getType()).getElementType();
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
+    auto elemTy = cast<ShapedType>(in1.getType()).getElementType();
     if (isa<FloatType>(elemTy))
-      rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, FPred, op.getInput1(),
-                                                 op.getInput2());
+      rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, FPred, in1, in2);
     else if (isa<IntegerType>(elemTy))
-      rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, IPred, op.getInput1(),
-                                                 op.getInput2());
+      rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, IPred, in1, in2);
     else
       return failure();
     return success();
@@ -371,10 +584,26 @@ struct RockTosaToElementwise
 
     target.addLegalDialect<arith::ArithDialect, math::MathDialect,
                            tensor::TensorDialect>();
+    // Mark ops that Triton's TritonToTritonGPU conversion cannot handle as
+    // illegal so the workaround patterns below get applied to them.
+    target.addDynamicallyLegalOp<math::TanhOp>(
+        [](math::TanhOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<math::PowFOp>(
+        [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<arith::NegFOp>(
+        [](arith::NegFOp op) { return !isa<ShapedType>(op.getType()); });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       return !isa<tosa::TosaDialect>(op->getDialect());
     });
     target.addLegalOp<tosa::ConstOp, tosa::ConstShapeOp>();
+    target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
+      if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
+        return true;
+      StringRef name = op.getOperatorName();
+      return name != ROCK_CUSTOMOP_UNSIGNED_CAST &&
+             name != ROCK_CUSTOMOP_UNSIGNED_DIV &&
+             name != ROCK_CUSTOMOP_FP_TO_INT_CAST;
+    });
 
     // --- Binary float / int ---
     patterns.add<
@@ -417,10 +646,24 @@ struct RockTosaToElementwise
                               arith::CmpIPredicate::eq>>(ctx);
 
     // --- Special cases ---
-    patterns
-        .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
-             SigmoidConverter, SelectConverter, ClampConverter, CastConverter>(
-            ctx);
+    patterns.add<ReciprocalRsqrtToSqrtConverter>(ctx, /*benefit=*/2);
+    patterns.add<AbsConverter, NegateConverter, MulConverter,
+                 ReciprocalConverter, SigmoidConverter, SelectConverter,
+                 ClampConverter, CastConverter, CustomOpConverter>(ctx);
+
+    // --- Triton workarounds ---
+    // The Triton TritonToTritonGPU conversion is missing patterns for
+    // math.tanh and math.powf so we use upstream
+    // math::populateExpansionPatterns to expand them into ops Triton supports.
+    //
+    // TODO(rocmlirTriton): gfx1250 will have dedicated instructions for tanh,
+    // we need to make sure we emit those instead of using the math.tanh
+    // expansion.
+    math::populateExpansionPatterns(patterns, {"tanh", "powf"});
+
+    // This is to support migraphx.neg operator, which will be expanded to
+    // arith.negf.
+    patterns.add<NegFTritonWorkaround>(ctx);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();

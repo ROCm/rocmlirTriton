@@ -18,7 +18,6 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
@@ -293,7 +292,6 @@ struct CompilationResult {
   std::string hsacoBinary; // Single HSACO binary containing all kernels
   SmallVector<rock::KernelInfo>
       kernels; // Info for each kernel (name, block/grid sizes)
-  unsigned numKernelArgs = 0; // Number of kernel arguments (from compiled LLVM function).
 };
 
 // Create a fresh MLIRContext with all rocMLIR dialects registered.
@@ -321,7 +319,6 @@ static LogicalResult
 measureSmallKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
-                   ArrayRef<uint32_t> sharedMemSizes,
                    ArrayRef<uint32_t> numCTAsList,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements, double &smallKernelCpuMs,
@@ -340,10 +337,10 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
         return failure();
       }
     }
-    for (auto [func, blockSize, gridSize, sharedMem, numCTAs] :
-         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes,
+    for (auto [func, blockSize, gridSize, numCTAs] :
+         llvm::zip(functions, blockSizes, gridSizes,
                    numCTAsList)) {
-      if (failed(rock::launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
+      if (failed(rock::launchKernel(func, gridSize, blockSize, /*shared_memory=*/0, numCTAs,
                              stream, argPointers.data())))
         return failure();
     }
@@ -361,7 +358,6 @@ static LogicalResult
 measureLargeKernel(unsigned iterations, hipStream_t stream,
                    const std::vector<hipFunction_t> &functions,
                    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
-                   ArrayRef<uint32_t> sharedMemSizes,
                    ArrayRef<uint32_t> numCTAsList,
                    std::vector<void *> &argPointers,
                    std::vector<double> &measurements) {
@@ -376,15 +372,15 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
 
     double totalMilliseconds = 0.0;
 
-    for (auto [func, blockSize, gridSize, sharedMem, numCTAs] :
-         llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes,
+    for (auto [func, blockSize, gridSize, numCTAs] :
+         llvm::zip(functions, blockSizes, gridSizes,
                    numCTAsList)) {
       hipEvent_t startEvent, stopEvent;
       HIPCHECK(hipEventCreate(&startEvent));
       HIPCHECK(hipEventCreate(&stopEvent));
 
       HIPCHECK(hipEventRecord(startEvent, stream));
-      if (failed(rock::launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
+      if (failed(rock::launchKernel(func, gridSize, blockSize, /*shared_memory=*/0, numCTAs,
                              stream, argPointers.data())))
         return failure();
       HIPCHECK(hipEventRecord(stopEvent, stream));
@@ -414,7 +410,6 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
                                           const BenchmarkParams &params) {
   const auto &hsacoBinary = result.hsacoBinary;
   const auto &kernels = result.kernels;
-  unsigned numKernelArgs = result.numKernelArgs;
 
   bool benchmarkMode = !params.benchmarkConfig.empty();
   hipStream_t stream;
@@ -433,36 +428,12 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
                             hipMemcpyHostToDevice, stream));
   }
 
-  // HIP wants an array of pointers to each argument
+  // HIP wants an array of pointers to each argument.
+  // ResolveKernelLaunchParams has already stripped unused workspace args from
+  // the kernel signature, so gpuBuffers maps 1:1 to kernel arguments.
   std::vector<void *> argPointers;
   for (void *&item : gpuBuffers) {
     argPointers.push_back(reinterpret_cast<void *>(&item));
-  }
-
-  // Triton adds extra workspace arguments to kernel functions:
-  // - globalPtrTy: Global scratch memory pointer
-  // - profilePtrTy: Profile scratch memory pointer
-  // These can be null when not used. The actual number of data args varies
-  // by operation type and fusions, so we use numKernelArgs (extracted from
-  // the compiled LLVM function) to determine the expected count.
-  // We pad with null pointers as needed.
-  // HIP expects pointers to the arguments, so we store nulls to pass their
-  // addresses.
-  if (numKernelArgs == 0) {
-    llvm::errs() << "Error: numKernelArgs is 0, kernel argument extraction "
-                    "failed or kernel has no arguments\n";
-    return failure();
-  }
-
-  // Use a vector to store null workspace pointers (need stable addresses)
-  static std::vector<void *> nullWorkspaces;
-  while (nullWorkspaces.size() < numKernelArgs) {
-    nullWorkspaces.push_back(nullptr);
-  }
-  size_t workspaceIdx = 0;
-  while (argPointers.size() < numKernelArgs) {
-    argPointers.push_back(
-        reinterpret_cast<void *>(&nullWorkspaces[workspaceIdx++]));
   }
 
   // Load ONE module from the single HSACO binary (contains all kernels)
@@ -488,13 +459,14 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     functions.push_back(func);
   }
 
-  // Extract block, grid, shared memory sizes and numCTAs from kernel info
-  SmallVector<uint32_t> blockSizes, gridSizes, sharedMemSizes, numCTAsList;
+  // Extract block, grid sizes and numCTAs from kernel info.
+  // Shared memory is statically baked into the binary by
+  // ResolveKernelLaunchParams.
+  SmallVector<uint32_t> blockSizes, gridSizes, numCTAsList;
   for (const rock::KernelInfo &kernel : kernels) {
     blockSizes.push_back(static_cast<uint32_t>(kernel.blockSize));
     gridSizes.push_back(static_cast<uint32_t>(kernel.gridSize));
-    sharedMemSizes.push_back(static_cast<uint32_t>(kernel.sharedMemorySize));
-    numCTAsList.push_back(static_cast<uint32_t>(kernel.numCTAs));
+    numCTAsList.push_back(static_cast<uint32_t>(kernel.clusterSize));
   }
 
   // Sleep guard to avoid GPU throttling
@@ -513,15 +485,15 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     // not.
     double totalMillisecondsWarmup = 0.0;
     for (unsigned iter = 0; iter < params.warmupIterations; ++iter) {
-      for (auto [func, blockSize, gridSize, sharedMem, numCTAs] :
-           llvm::zip(functions, blockSizes, gridSizes, sharedMemSizes,
+      for (auto [func, blockSize, gridSize, numCTAs] :
+           llvm::zip(functions, blockSizes, gridSizes,
                      numCTAsList)) {
         hipEvent_t startEvent, stopEvent;
         HIPCHECK(hipEventCreate(&startEvent));
         HIPCHECK(hipEventCreate(&stopEvent));
 
         HIPCHECK(hipEventRecord(startEvent, stream));
-        if (failed(rock::launchKernel(func, gridSize, blockSize, sharedMem, numCTAs,
+        if (failed(rock::launchKernel(func, gridSize, blockSize, /*shared_memory=*/0, numCTAs,
                                stream, argPointers.data())))
           return failure();
         HIPCHECK(hipEventRecord(stopEvent, stream));
@@ -574,13 +546,13 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
 
   if (isSmallKernel) {
     if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, sharedMemSizes, numCTAsList,
+                                  gridSizes, numCTAsList,
                                   argPointers, measurements, smallKernelCpuMs,
                                   benchmarkMode)))
       return failure();
   } else {
     if (failed(measureLargeKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, sharedMemSizes, numCTAsList,
+                                  gridSizes, numCTAsList,
                                   argPointers,
                                   measurements)))
       return failure();
@@ -914,10 +886,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       }
 
       // Collect kernel info from the compiled module (block/grid sizes,
-      // shared memory, argument count). This also validates LDS usage.
+      // argument types).
       SmallVector<rock::KernelInfo> localKernels;
-      if (failed(rock::collectKernelInfo(sourceCopy.get(), maxSharedMemPerWG,
-                                         localKernels))) {
+      if (failed(rock::collectKernelInfo(sourceCopy.get(), localKernels))) {
         std::lock_guard<std::mutex> lock(outputMutex);
         llvm::errs() << "Failed to collect kernel info\n";
         result.status = CompilationStatus::CompilationFailed;
@@ -925,7 +896,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // Get numKernelArgs from the collected info
       if (localKernels.empty()) {
         std::lock_guard<std::mutex> lock(outputMutex);
         llvm::errs() << "No kernels found for config: " << result.perfConfig
@@ -934,7 +904,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         compilationFailed.store(true, std::memory_order_relaxed);
         return result;
       }
-      result.numKernelArgs = localKernels[0].argTypes.size();
 
       // Get the HSACO binary from the compiled module
       auto hsacoAttr =

@@ -1,12 +1,12 @@
-// RUN: rocmlir-opt -pass-pipeline="builtin.module(func.func(tosa-to-linalg-named, tosa-to-linalg))" %s |\
-// RUN: rocmlir-opt  -linalg-fuse-elementwise-ops -empty-tensor-to-alloc-tensor --one-shot-bufferize="copy-before-write bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map"  -buffer-results-to-out-params="add-result-attr=false hoist-dynamic-allocs=false hoist-static-allocs=false modify-public-functions=true" |\
-// RUN: rocmlir-gen -ph -pr -rand 1 -fut test_fusion - |\
-// RUN: rocmlir-opt -convert-linalg-to-loops -lower-affine -convert-scf-to-cf \
-// RUN:   --convert-arith-to-llvm --expand-strided-metadata --finalize-memref-to-llvm --convert-func-to-llvm --convert-cf-to-llvm --reconcile-unrealized-casts \
-// RUN: | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s
-
+// RUN: rocmlir-driver -host-pipeline=highlevel %s |\
+// RUN: rocmlir-opt -empty-tensor-to-alloc-tensor \
+// RUN:   --one-shot-bufferize="copy-before-write bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" \
+// RUN:   -buffer-results-to-out-params="add-result-attr=false hoist-dynamic-allocs=false hoist-static-allocs=false modify-public-functions=true" |\
+// RUN: rocmlir-gen -rand 1 -ph -pr -fut test_fusion - |\
+// RUN: rocmlir-driver --host-pipeline=backend --arch %arch |\
+// RUN: mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 module {
-  // CHECK:  [6,     2,     0,     0,     6,     6,     6,     6,     6,     0,     0,     6,     6,     0,     0,     0]
+  // CHECK:  6,     2,     0,     0,     6,     6,     6,     6,     6,     0,     0,     6,     6,     0,     0,     0
   func.func @test_fusion(%arg0: tensor<1x32x32x8xf32>, %arg1: tensor<16x3x3x8xf32>) -> tensor<1x30x30x16xf32> {
 
     %cst = arith.constant dense<0.0> : tensor<16xf32>

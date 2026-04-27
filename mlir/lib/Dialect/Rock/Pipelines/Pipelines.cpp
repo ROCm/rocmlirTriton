@@ -247,8 +247,11 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
                                   const rock::HighlevelOptions &options) {
   bool noRock = options.disableRock;
 
+  pm.addPass(rock::createRockFlattenTosaFuncArgsPass());
+
   auto &funcPm = pm.nest<func::FuncOp>();
-  // TOSA conversion to rock and/or linalg with mhal.launch's
+
+  // TOSA conversion to rock
   if (!noRock) {
     // convert tosa.conv2d/matmul to rock.conv
     /* rocmlir-opt --tosa-to-tensor --tosa-to-rock --rock-view-to-transform
@@ -260,7 +263,12 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   }
 
   funcPm.addPass(createRocmlirCustomTosaDecomposePass());
-  funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
+
+  // rocmlirPromoteSoftmaxPrecisionPass will only run on the CPU path. At this
+  // point in the GPU path, we have already converted to rock.attention ops.
+  funcPm.addPass(createRocmlirPromoteSoftmaxPrecisionPass());
+  if (noRock)
+    funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
 
   tosa::TosaAttachTargetOptions tosaOptions;
   tosaOptions.specificationVersion = tosa::SpecificationVersion::V_1_0;
@@ -274,13 +282,16 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   tosaOptions.extensions.push_back("mxfp");
 
   funcPm.addPass(tosa::createTosaAttachTarget(tosaOptions));
-  funcPm.addPass(rock::createRockTosaToElementwisePass());
 
+  if (!noRock) {
+    funcPm.addPass(rock::createRockTosaToElementwisePass());
+  }
   // use tosa conversion pipeline
   // (see mlir/lib/Conversion/TosaToLinalg/TosaToLinalgPass.cpp)
   TosaToLinalgOptions tosaToLinalgOptions;
   TosaToLinalgNamedOptions tosaToLinalgNamedOptions;
-  // pass std::nullopt as validation options to avoid running tosa-validate pass
+  // pass std::nullopt as validation options to avoid running tosa-validate
+  // pass
   tosa::addTosaToLinalgPasses(pm, tosaToLinalgOptions, tosaToLinalgNamedOptions,
                               /*validationOptions=*/std::nullopt);
 
@@ -302,8 +313,11 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   funcPm2.addPass(createCanonicalizerPass());
 
   pm.addPass(createConvertTensorToLinalgPass());
-  if (!noRock)
+  if (!noRock) {
+    pm.nest<func::FuncOp>().addPass(
+        rock::createRockSortDimensionsMemoryLayoutPass());
     pm.addPass(rock::createRockInsertOutputStoresPass());
+  }
 }
 
 void rock::buildKernelPipeline(OpPassManager &pm,
@@ -331,6 +345,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
+  addWithDCE(rock::createRockRegularizeInterGemmFusionPass());
   addWithDCE(rock::createRockConvToGemmPass());
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
   addWithDCE(rock::createRockGemmToGridwisePass());
@@ -341,8 +356,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
 
-  // This pass converts unsupported float types to int8, take that into account
-  // for next passes (e.g. integer arithmetic optimizations)
+  // This pass converts unsupported float types to int8 and wraps fusion ops
+  // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
   addWithDCE(rock::createRockLegalizeFloatTypesPass());
 
   // Serialize and erase host functions BEFORE any func-level pass that
@@ -350,8 +365,22 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // Must use a new nest<func::FuncOp>() so these passes go into a separate
   // adaptor that runs AFTER SerializeHostFuncs.
   pm.addPass(rock::createRockSerializeHostFuncsPass());
+
+  // Expand f8E8M0FNU and f4E2M1FN truncf/extf to bitwise integer ops.
+  // Must run AFTER SerializeHostFuncs (arith-expand would corrupt linalg body
+  // regions in host code) and BEFORE RockToTTIR, because LLVM lowering cannot
+  // handle fptrunc/fpext with these narrow float types. LegalizeFloatTypes
+  // converts GEMM operand tensors to i8 but fusion ops inside are wrapped
+  // with arith.bitcast, so scalar extf/truncf still use f4/f8 types.
+  {
+    arith::ArithExpandOpsPassOptions expandOpts;
+    expandOpts.includeF8E8M0 = true;
+    expandOpts.includeF4E2M1 = true;
+    pm.addPass(arith::createArithExpandOpsPass(expandOpts));
+  }
+
   auto &funcPm2 = pm.nest<func::FuncOp>();
-  funcPm2.addPass(rock::createRockTransformsToPtrPass());
+  funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockMaskNonZeroPreservingFusionsPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
@@ -381,10 +410,15 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
-static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
-                                      StringRef dumpCpuSchedules = "") {
+// (rocMLIR)
+void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
+                                     StringRef dumpCpuSchedules) {
+
   // CPU optimization phase.
   // This transforms the function body but keeps tensor types at boundaries.
+  // The pass internally skips verifier functions that involve non-TT float
+  // types (f8E8M0FNU, f4E2M1FN) used by scaled GEMMs, because those conflict
+  // with ConvertNarrowTypeSignatures / EmulateNarrowTypes passes below.
   cpu::CpuLowerVerifierPassOptions cpuOpts;
   cpuOpts.dumpSchedulesPath = dumpCpuSchedules.str();
   cpuOpts.phase = cpu::CPU_PHASE_OPTIMIZE;
@@ -406,16 +440,6 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
   // Lower linalg to loops (for operations like linalg.fill in -pv mode)
   pm.addPass(createConvertLinalgToLoopsPass());
 
-  // Expand strided metadata (handles memref.expand_shape, etc.)
-  pm.addPass(memref::createExpandStridedMetadataPass());
-
-  // Lower affine to standard arithmetic (must be after ExpandStridedMetadata
-  // which can generate affine.apply ops)
-  pm.addPass(createLowerAffinePass());
-
-  // Lower SCF to control flow
-  pm.addPass(createSCFToControlFlowPass());
-
   // Expand f8E8M0FNU/f4E2M1FN extf/truncf to bitwise ops first, so that
   // arith operations using these types are lowered before type conversion.
   arith::ArithExpandOpsPassOptions expandOpts;
@@ -423,12 +447,52 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
   expandOpts.includeF4E2M1 = true;
   pm.addPass(arith::createArithExpandOpsPass(expandOpts));
 
+  // Emulate sub-byte types (f4E2M1FN -> i4 -> packed i8) after ArithExpandOps
+  // has lowered the arithmetic.  Split into two passes:
+  //   1. Convert function signatures (memref<Nxi4> args -> memref<N/2xi8>)
+  //   2. Rewrite loads/stores/allocs using upstream narrow-type emulation
+  // The split avoids a crash in the upstream patterns that call
+  // extract_strided_metadata on the original (pre-conversion) block argument.
+  // NOTE: ExpandStridedMetadata must run AFTER narrow-type emulation, because
+  // it converts memref.expand_shape into multi-dim memref.reinterpret_cast
+  // that the upstream narrow-type patterns cannot handle (rank-1 only).
+  // The upstream ConvertMemRefExpandShape pattern handles expand_shape on
+  // sub-byte types as a no-op (since memrefs are linearized by emulation).
+  pm.addNestedPass<func::FuncOp>(
+      rock::createRockConvertNarrowTypeSignaturesPass());
+  pm.addNestedPass<func::FuncOp>(rock::createRockEmulateNarrowTypesPass());
+
+  // Expand strided metadata (handles memref.expand_shape, etc.)
+  // Must run after narrow-type emulation so sub-byte expand_shape ops are
+  // already handled, and before lower-affine since it generates affine.apply.
+  pm.addPass(memref::createExpandStridedMetadataPass());
+
+  // Lower affine to standard arithmetic.  Must be after ExpandStridedMetadata
+  // and the narrow-type emulation passes, both of which generate affine.apply.
+  pm.addPass(createLowerAffinePass());
+
+  // Lower SCF to control flow (must be after lower-affine, which creates
+  // scf.for from affine.for)
+  pm.addPass(createSCFToControlFlowPass());
+
   // Make GPU operations async - required by GpuToLLVMConversionPass patterns
   pm.addNestedPass<func::FuncOp>(createGpuAsyncRegionPass());
 
   // Lower remaining operations to LLVM (order follows MHAL pipeline)
   pm.addPass(createConvertControlFlowToLLVMPass());
+
+  // Lower math ops before ArithToLLVM: MathToLLVM lowers ops with LLVM
+  // intrinsic equivalents, MathToLibm handles the rest (e.g., math.erf) by
+  // emitting libm calls.  MathToLibm can introduce arith ops (extf/truncf for
+  // non-f32 types), so ArithToLLVM must run after to catch them all.
+  pm.addPass(createConvertMathToLLVMPass());
+  pm.addPass(createConvertMathToLibmPass());
+
   pm.addPass(createArithToLLVMConversionPass());
+
+  // TODO(rocmlirTriton): add createConvertVectorToLLVMPass() if any lowering
+  // path produces vector dialect ops on the host side (the old runner pipeline
+  // had it here).
 
   // Lower memref operations to LLVM BEFORE GPU conversion (per MHAL pattern)
   pm.addPass(createFinalizeMemRefToLLVMConversionPass());
@@ -451,6 +515,13 @@ static void buildHostLoweringPipeline(mlir::OpPassManager &pm,
 void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
   std::string arch = options.chip;
+
+  // Validate LDS usage against the hardware limit, convert dynamic shared
+  // memory to static LDS allocation, and strip unused Triton workspace
+  // arguments from the kernel signature.  Runs before TritonToHsaco so the
+  // static LDS size is baked into the kernel descriptor, and before
+  // RestoreHostCode so that collectKernelInfo sees the trimmed argument list.
+  pm.addPass(rock::createResolveKernelLaunchParamsPass());
 
   // Optionally generate the HSACO binary
   if (options.compile) {

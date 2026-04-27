@@ -157,7 +157,6 @@ func.func @self_attention_with_dot_product(%arg0: tensor<1x1x64xf32>, %arg1: ten
 
 // CHECK: rock.attention
 // CHECK: elementwise otherIns(%arg2, %arg3 : tensor<786432xi8>, tensor<786432xf16>)
-// CHECK: firstGemmIndices = array<i64: 1>
 func.func @mlir_attention_where(%arg0: tensor<786432xf16>, %arg1: tensor<786432xf16>, %arg2: tensor<786432xi8>, %arg3: tensor<786432xf16>, %arg4: tensor<786432xf16>) -> tensor<786432xf16> attributes {rock.arch = "gfx942", rock.kernel = "mixr"} {
   %expanded = tensor.expand_shape %arg4 [[0, 1, 2, 3]] output_shape [1, 12, 256, 256] : tensor<786432xf16> into tensor<1x12x256x256xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1, 2, 3]] output_shape [1, 12, 256, 256] : tensor<786432xf16> into tensor<1x12x256x256xf16>
@@ -191,7 +190,7 @@ func.func @mlir_attention_where(%arg0: tensor<786432xf16>, %arg1: tensor<786432x
 }
 
 // CHECK: rock.attention
-// CHECK: perf_config = "attn:v2:64,128,32,16,32,16,4,4,1,2,1"
+// CHECK: perf_config = "attn:v1:32,64,64,1,1,4,0,4,1,0,0"
 func.func @self_attention_perfconfig(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x384x64xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<1x384x384xf32>) -> tensor<1x384x64xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.transpose"(%arg1) {perms = array<i32: 0, 2, 1>} : (tensor<1x384x64xf32>) -> tensor<1x64x384xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
@@ -205,6 +204,6 @@ func.func @self_attention_perfconfig(%arg0: tensor<1x384x64xf32>, %arg1: tensor<
   %6 = "tosa.reduce_sum"(%5) {axis = 1 : i32} : (tensor<1x384x384xf32>) -> tensor<1x1x384xf32>
   %7 = "tosa.reciprocal"(%6) : (tensor<1x1x384xf32>) -> tensor<1x1x384xf32>
   %8 = "tosa.mul"(%5, %7, %shift) : (tensor<1x384x384xf32>, tensor<1x1x384xf32>, tensor<1xi8>) -> tensor<1x384x384xf32>
-  %9 = "tosa.matmul"(%8, %arg2, %a_zp, %b_zp) {perf_config = "attn:v2:64,128,32,16,32,16,4,4,1,2,1"} : (tensor<1x384x384xf32>, tensor<1x384x64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x384x64xf32>
+  %9 = "tosa.matmul"(%8, %arg2, %a_zp, %b_zp) {perf_config = "attn:v1:32,64,64,1,1,4,0,4,1,0,0"} : (tensor<1x384x384xf32>, tensor<1x384x64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x384x64xf32>
   return %9 : tensor<1x384x64xf32>
 }

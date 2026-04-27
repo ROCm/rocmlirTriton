@@ -47,6 +47,7 @@ inline void registerUpstreamPasses() {
   registerArithToLLVMConversionPass();
   registerConvertFuncToLLVMPass();
   registerConvertMathToLLVMPass();
+  registerConvertMathToLibmPass();
   registerReconcileUnrealizedCastsPass();
   registerSCFToControlFlowPass();
   registerTosaToArithPass();
@@ -91,10 +92,6 @@ inline void registerRocMLIRPasses() {
   migraphx::registerPasses();
   rock::registerPasses();
   rock::registerPipelines();
-
-  // TODO: Re-enable when MHAL is updated for newer LLVM
-  // registerMHALPasses();
-
   registerUpstreamPasses();
 }
 

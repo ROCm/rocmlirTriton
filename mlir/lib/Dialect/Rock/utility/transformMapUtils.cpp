@@ -10,14 +10,13 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
@@ -243,8 +242,8 @@ propagateUnmergeVectorization(T &&dimAndLength,
         if (!previousAlign.has_value())
           previousAlign = upperInfo.alignment * previousDimsStride;
         else
-          previousAlign = math_util::gcd(
-              *previousAlign, upperInfo.alignment * previousDimsStride);
+          previousAlign = std::gcd(*previousAlign,
+                                   upperInfo.alignment * previousDimsStride);
       } else {
         break;
       }
@@ -253,7 +252,7 @@ propagateUnmergeVectorization(T &&dimAndLength,
       if (!previousAlign.has_value())
         previousAlign = previousDimsStride;
       else
-        previousAlign = math_util::gcd(*previousAlign, previousDimsStride);
+        previousAlign = std::gcd(*previousAlign, previousDimsStride);
     }
     previousDimsStride *= dimLength;
   }
@@ -527,9 +526,8 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
         std::tie(upper, lower) = data.value();
         if (input[upper].has_value()) {
           int64_t alignment =
-              sliceBegin == 0
-                  ? input[upper]->alignment
-                  : math_util::gcd(input[upper]->alignment, sliceBegin);
+              sliceBegin == 0 ? input[upper]->alignment
+                              : std::gcd(input[upper]->alignment, sliceBegin);
           result[lower] =
               VectorizationInfo(input[upper]->maxLength,
                                 input[upper]->needsCoefficient, alignment);
@@ -552,9 +550,9 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
           int64_t maxUpperLen = upperInfo->maxLength;
           int64_t upperAlign = upperInfo->alignment;
           int64_t maxVectorizationLeft =
-              math_util::gcd(maxUpperLen, maxUpperLen - leftPad);
+              std::gcd(maxUpperLen, maxUpperLen - leftPad);
           int64_t maxVectorizationRight =
-              math_util::gcd(maxUpperLen, maxUpperLen - rightPad);
+              std::gcd(maxUpperLen, maxUpperLen - rightPad);
           int64_t lowerMaxLen =
               std::min(maxVectorizationLeft, maxVectorizationRight);
           // Padding is unique in that it imposes the requirement that
@@ -563,7 +561,7 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
           // into the padding. However, this only applies if there's actual
           // padding being applied.
           if (leftPad != 0 || rightPad != 0)
-            lowerMaxLen = math_util::gcd(lowerMaxLen, upperAlign);
+            lowerMaxLen = std::gcd(lowerMaxLen, upperAlign);
           result[lower] = VectorizationInfo(
               lowerMaxLen, upperInfo->needsCoefficient, upperAlign);
         }
@@ -578,10 +576,8 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
         int64_t modulus;
         std::tie(upper, lower, modulus) = data;
         if (input[upper].has_value()) {
-          int64_t lowerMaxLen =
-              math_util::gcd(input[upper]->maxLength, modulus);
-          int64_t lowerAlignment =
-              math_util::gcd(input[upper]->alignment, modulus);
+          int64_t lowerMaxLen = std::gcd(input[upper]->maxLength, modulus);
+          int64_t lowerAlignment = std::gcd(input[upper]->alignment, modulus);
           result[lower] = VectorizationInfo(
               lowerMaxLen, input[upper]->needsCoefficient, lowerAlignment);
         }
@@ -692,8 +688,8 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
                   (ourResult->maxLength * ourResult->needsCoefficient)) {
             ourResult->maxLength *= upperLen;
             alignmentHandled.insert(upperDim);
-            ourResult->alignment = math_util::gcd(ourResult->alignment,
-                                                  thisAlignment * coefficient);
+            ourResult->alignment =
+                std::gcd(ourResult->alignment, thisAlignment * coefficient);
           } else {
             break;
           }
@@ -713,7 +709,7 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
           if (input[upperDim].has_value())
             thatAlignment = input[upperDim]->alignment;
           ourResult->alignment =
-              math_util::gcd(ourResult->alignment, thatAlignment * coefficient);
+              std::gcd(ourResult->alignment, thatAlignment * coefficient);
         }
       }
       result[lowerDims[0]] = ourResult;
@@ -775,7 +771,7 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
           continue;
         }
         int64_t lowerLen = groupLengths[lowerDim];
-        int64_t thisMaxLen = math_util::gcd(maxLen, lowerLen);
+        int64_t thisMaxLen = std::gcd(maxLen, lowerLen);
         int64_t thisAlignment = std::max(align / stride, (int64_t)1);
         result[lowerDim] =
             VectorizationInfo(thisMaxLen, coeff * stride, thisAlignment);
@@ -789,65 +785,10 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
   return result;
 }
 
-static FailureOr<std::pair<Value, Operation *>>
-findPostFusionTransforms(Value buffer, Operation *currentUser) {
-  Value newTransformed = nullptr;
-  Operation *newRoot = nullptr;
-  for (Operation *user : buffer.getUsers()) {
-    if (user == currentUser)
-      continue;
-    Value candidate = nullptr;
-    if (auto copyOp = dyn_cast<memref::CopyOp>(user)) {
-      if (copyOp.getTarget() == buffer)
-        candidate = copyOp.getSource();
-      else
-        candidate = copyOp.getTarget();
-    } else if (auto genericOp = dyn_cast<linalg::GenericOp>(user)) {
-      if (genericOp.getOutputs().size() != 1) {
-        LLVM_DEBUG(llvm::dbgs() << "[vectorization] Can't process "
-                                   "linalg.generic with multiple outputs\n");
-        return failure();
-      }
-      Value genericOut = genericOp.getOutputs().front();
-      if (genericOut == buffer) {
-        if (auto index = genericOp->getAttrOfType<IntegerAttr>(
-                "rock.majorTensorNumber")) {
-          candidate = genericOp.getInputs()[index.getInt()];
-        } else {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "[vectorization] can't analyze linalg.generic "
-                        "without rock.majorTensorNumber\n");
-          return failure();
-        }
-      } else {
-        candidate = genericOut;
-      }
-    } else {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[vectorization] Unexpected user of temporary buffer: "
-                 << *user << "\n");
-      return failure();
-    }
-
-    if (newTransformed) {
-      LLVM_DEBUG(llvm::dbgs() << "[vectorization] Found multiple users that "
-                                 "could be the next one\n");
-      return failure();
-    }
-    newTransformed = candidate;
-    newRoot = user;
-  }
-  if (!newTransformed) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "[vectorization] This memref.alloc is a dead end\n");
-    return failure();
-  }
-  return std::make_pair(newTransformed, newRoot);
-}
-
-VectorizationResult mlir::rock::getMaxVectorization(
-    Value transformed, uint32_t dim, std::optional<int64_t> inputDimLen,
-    Operation *operationRootForFusionTraversal, bool ignoreDataType) {
+VectorizationResult
+mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
+                                std::optional<int64_t> inputDimLen,
+                                bool ignoreDataType) {
   auto upperType = cast<ShapedType>(transformed.getType());
   int64_t numInitialDims = upperType.getRank();
   int64_t initialVecLen = inputDimLen.value_or(upperType.getShape()[dim]);
@@ -857,54 +798,21 @@ VectorizationResult mlir::rock::getMaxVectorization(
   data[dim] =
       VectorizationInfo(/*maxLength=*/initialVecLen, /*needsCoefficient=*/1,
                         /*alignment=*/initialVecLen);
-  bool traverseFusions = (operationRootForFusionTraversal != nullptr);
-  Operation *currentUser = operationRootForFusionTraversal;
   Value currentVal = transformed;
-  LogicalResult fusionTraversalStatus = success();
   auto contiguousMerges = findContiguousGroups(transformed);
 
   // Advance to the next operation to analyze, updating any vectorization
-  // analysis state as needed. This function must update currentVal and
-  // currentUser, and may update other variables. In the simplest case, this
-  // advances to the next rock.transform operation. However, it also handles:
-  // - If we recah a memref.alloc() and are following fusions, go to the
-  // source of post-fusion transforms (for an output fusion, the output of the
-  // fusion) to traverse its transform stack (which involves) recomputing
-  // contiguous merge data).
-  // - For rock.scalarize, adjust the vectorization data to account for the
-  // change in indexing scheme and continue.
+  // analysis state as needed. This function must update currentVal, and may
+  // update other variables. This advances to the next rock.transform operation.
   auto advance = [&]() -> bool {
     Operation *definingOp = currentVal.getDefiningOp();
     if (!definingOp)
       return false;
     if (auto trOp = dyn_cast<TransformOp>(definingOp)) {
       currentVal = trOp.getInput();
-      currentUser = definingOp;
       return true;
     }
-    if (isa<memref::AllocOp>(definingOp)) {
-      if (!traverseFusions) {
-        definingOp->emitError(
-            "vectorization analysis found intermediate allocation but isn't "
-            "following fusions, results may be incorrect\n");
-        return false;
-      }
-      FailureOr<std::pair<Value, Operation *>> maybeNewStack =
-          findPostFusionTransforms(currentVal, currentUser);
-      if (failed(maybeNewStack)) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "[vectorization] Failed to advance past fusion\n");
-        fusionTraversalStatus = failure();
-        return false;
-      }
-      std::tie(currentVal, currentUser) = *maybeNewStack;
-      LLVM_DEBUG(llvm::dbgs()
-                     << "[vectorization] Advancing past fusion to new value "
-                     << currentVal << "with data: ";);
-      data.debugPrint();
-      contiguousMerges = findContiguousGroups(currentVal);
-      return true;
-    }
+    definingOp->emitError("Unexpected op\n");
     return false;
   };
 
@@ -938,7 +846,7 @@ VectorizationResult mlir::rock::getMaxVectorization(
   if (finalUnmerge && finalUnmerge->needsCoefficient == 1)
     result = finalUnmerge->maxLength;
   // TODO(kdrewnia): Add support for tails
-  result = math_util::gcd(initialVecLen, result);
+  result = std::gcd(initialVecLen, result);
 
   // Vectorizing more than the physical vector length (128 bits) might
   // be harmful for coalescence and other metrics. Let's limit the maximum
@@ -947,11 +855,10 @@ VectorizationResult mlir::rock::getMaxVectorization(
   if (!ignoreDataType) {
     constexpr int64_t maxVectorLenBits = 128;
     int64_t bwidth = outputType.getElementTypeBitWidth();
-    result = math_util::gcd(maxVectorLenBits / bwidth, result);
+    result = std::gcd(maxVectorLenBits / bwidth, result);
   }
   // bufferVectorSize will become non-trivial once scalarization comes in
-  return VectorizationResult{/*max=*/result, /*bufferVectorSize=*/1,
-                             /*fusionTraversalStatus=*/fusionTraversalStatus};
+  return VectorizationResult{/*max=*/result, /*bufferVectorSize=*/1};
 }
 
 void mlir::rock::collapseContiguousMerges(Value transformed) {
@@ -1094,8 +1001,40 @@ TransformMapAttr mlir::rock::invertTransformMap(
       transform.passThrough(tattr.getUpperNames(), tattr.getUpperDims(),
                             tattr.getLowerNames());
       break;
-    case rock::TransformType::Pad:
-    case rock::TransformType::Slice:
+    case rock::TransformType::Pad: {
+      // Pad: lower[L] -> upper[L+left+right]. Inverse is Slice selecting
+      // [left, left+L) from the full dimension.
+      SmallVector<int64_t> begins;
+      SmallVector<int64_t> fullLowerSizes;
+      for (unsigned i = 0, e = tattr.getLowerDims().size(); i < e; ++i) {
+        int64_t leftPad = tattr.getParams()[i * 2];
+        int64_t rightPad = tattr.getParams()[i * 2 + 1];
+        int64_t lowerSize = lowShape[tattr.getLowerDims()[i]];
+        begins.push_back(leftPad);
+        fullLowerSizes.push_back(lowerSize + leftPad + rightPad);
+      }
+      transform.slice(
+          SmallVector<StringRef>(tattr.getUpperNames()),
+          SmallVector<uint32_t>(tattr.getUpperDims()),
+          SmallVector<StringRef>(tattr.getLowerNames()), begins, fullLowerSizes);
+      break;
+    }
+    case rock::TransformType::Slice: {
+      // Slice: lower[D] -> upper[end-begin]. Inverse is Pad with
+      // left=begin, right=D-end.
+      SmallVector<int64_t> padParams;
+      for (unsigned i = 0, e = tattr.getLowerDims().size(); i < e; ++i) {
+        int64_t begin = tattr.getParams()[i * 2];
+        int64_t end = tattr.getParams()[i * 2 + 1];
+        int64_t fullLowerSize = lowShape[tattr.getLowerDims()[i]];
+        padParams.push_back(begin);
+        padParams.push_back(fullLowerSize - end);
+      }
+      transform.pad(SmallVector<StringRef>(tattr.getUpperNames()),
+                    SmallVector<uint32_t>(tattr.getUpperDims()),
+                    SmallVector<StringRef>(tattr.getLowerNames()), padParams);
+      break;
+    }
     case rock::TransformType::Embed:
     case rock::TransformType::Broadcast: // Unsupported
       return rock::TransformMapAttr();

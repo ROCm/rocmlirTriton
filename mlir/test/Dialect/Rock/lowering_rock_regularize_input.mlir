@@ -17,7 +17,7 @@
 
 #tmap_transpose_3d = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["n"] at [2]>, <PassThrough ["n"] at [2] -> ["m"] at [1]>] bounds = [1, 16, 16] -> [1, 16, 16]>
 
-#tmap_4d_to_3d = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, 0, d1, d2)> by [<Merge{1, 1} ["g"] at [0] -> ["g0", "g1"] at [0, 1]>, <PassThrough ["m"] at [1] -> ["m"] at [2]>, <PassThrough ["n"] at [2] -> ["n"] at [3]>] bounds = [1, 16, 16] -> [1, 1, 16, 16]>
+#tmap_4d_to_3d = #rock.transform_map<affine_map<(d0, d1, d2) -> (0, 0, d1, d2)> by [<Merge{1, 1} ["g"] at [0] -> ["g0", "g1"] at [0, 1]>, <PassThrough ["m"] at [1] -> ["m"] at [2]>, <PassThrough ["n"] at [2] -> ["n"] at [3]>] bounds = [1, 16, 16] -> [1, 1, 16, 16]>
 
 module {
 

@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -43,6 +44,18 @@ struct UnsignedCastLoweringPattern
   matchAndRewrite(tosa::CustomOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override;
 };
+
+/// When acc_type differs from the output element type (e.g. f16 matmul with
+/// f32 accumulation), promote the matmul output to acc_type and insert a cast
+/// back. This ensures the upstream TOSA-to-Linalg MatMulConverter (which
+/// ignores acc_type) accumulates in the wider type.
+struct MatMulAccPromotionPattern : public OpConversionPattern<tosa::MatMulOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tosa::MatMulOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 } // end namespace
 
 LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
@@ -51,9 +64,10 @@ LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
   if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
     return rewriter.notifyMatchFailure(op, "domain isn't rocmlir");
   if (op.getOperatorName() != ROCK_CUSTOMOP_UNSIGNED_CAST &&
-      op.getOperatorName() != ROCK_CUSTOMOP_UNSIGNED_DIV)
+      op.getOperatorName() != ROCK_CUSTOMOP_UNSIGNED_DIV &&
+      op.getOperatorName() != ROCK_CUSTOMOP_FP_TO_INT_CAST)
     return rewriter.notifyMatchFailure(
-        op, "isn't an unsigned_cast or unsigned_div");
+        op, "isn't an unsigned_cast, unsigned_div, or fp_to_int_cast");
 
   Location loc = op.getLoc();
   auto outType = cast<RankedTensorType>(op.getResults().front().getType());
@@ -87,8 +101,15 @@ LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
           } else {
             assert(isa<FloatType>(inElemType));
             assert(isa<IntegerType>(outElemType));
-            result = arith::FPToUIOp::create(b, loc, outElemType, inputs[0]);
+            result = rock::createClampedFPToInt(b, loc, inputs[0], outElemType,
+                                                /*isUnsigned=*/true);
           }
+        } else if (op.getOperatorName() == ROCK_CUSTOMOP_FP_TO_INT_CAST) {
+          assert(isa<FloatType>(inElemType));
+          assert(isa<IntegerType>(outElemType));
+          assert(inputs.size() == 2);
+          result = rock::createClampedFPToInt(b, loc, inputs[0], outElemType,
+                                              /*isUnsigned=*/false);
         } else if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_DIV) {
           assert(isa<IntegerType>(outElemType));
           assert(isa<IntegerType>(inElemType));
@@ -102,19 +123,54 @@ LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
   return success();
 }
 
+LogicalResult MatMulAccPromotionPattern::matchAndRewrite(
+    tosa::MatMulOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  auto accTypeAttr = op->getAttrOfType<TypeAttr>("acc_type");
+  if (!accTypeAttr)
+    return rewriter.notifyMatchFailure(op, "no acc_type attribute");
+
+  Type accType = accTypeAttr.getValue();
+  auto outType = cast<RankedTensorType>(op.getOutput().getType());
+
+  if (accType == outType.getElementType())
+    return rewriter.notifyMatchFailure(op, "acc_type already matches output");
+
+  auto promotedOutType = RankedTensorType::get(outType.getShape(), accType);
+  auto newMatmul = tosa::MatMulOp::create(
+      rewriter, op.getLoc(), promotedOutType, adaptor.getA(), adaptor.getB(),
+      adaptor.getAZp(), adaptor.getBZp());
+  newMatmul->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+
+  auto castOp = tosa::CastOp::create(rewriter, op.getLoc(), outType,
+                                     newMatmul.getOutput());
+  rewriter.replaceOp(op, castOp);
+  return success();
+}
+
 void mlir::rock::populateRocmlirCustomTosaToLinalgTarget(
     ConversionTarget &target) {
   target.addLegalOp<linalg::GenericOp, linalg::YieldOp, arith::ExtUIOp,
-                    arith::TruncIOp, arith::DivUIOp, arith::FPToUIOp,
-                    arith::UIToFPOp, tensor::EmptyOp>();
+                    arith::TruncIOp, arith::DivUIOp, arith::FPToSIOp,
+                    arith::FPToUIOp, arith::UIToFPOp, arith::MaximumFOp,
+                    arith::MinimumFOp, arith::CmpFOp, arith::SelectOp,
+                    arith::ConstantOp, tensor::EmptyOp, tosa::CastOp>();
   target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
     return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME;
+  });
+  target.addDynamicallyLegalOp<tosa::MatMulOp>([](tosa::MatMulOp op) {
+    auto accTypeAttr = op->getAttrOfType<TypeAttr>("acc_type");
+    if (!accTypeAttr)
+      return true;
+    auto outType = cast<RankedTensorType>(op.getOutput().getType());
+    return accTypeAttr.getValue() == outType.getElementType();
   });
 }
 
 void mlir::rock::populateRocmlirCustomTosaToLinalgConversionPatterns(
     RewritePatternSet &patterns) {
-  patterns.add<UnsignedCastLoweringPattern>(patterns.getContext());
+  patterns.add<UnsignedCastLoweringPattern, MatMulAccPromotionPattern>(
+      patterns.getContext());
 }
 
 void RocmlirCustomLinalgToTosaPass::runOnOperation() {

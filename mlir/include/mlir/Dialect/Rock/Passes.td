@@ -47,7 +47,7 @@ def RockAffixTuningParametersPass : Pass<"rock-affix-params", "::mlir::func::Fun
 def RockGemmToGridwisePass : Pass<"rock-gemm-to-gridwise", "::mlir::func::FuncOp"> {
   let summary = "convert gemm to gridwise gemm, adding padding";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "linalg::LinalgDialect", "arith::ArithDialect"];
+                           "arith::ArithDialect"];
 }
 
 def RockFoldBroadcastPass: Pass<"rock-fold-broadcast", "::mlir::func::FuncOp"> {
@@ -109,12 +109,27 @@ def RockRegularizeOutputPass
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }
 
+def RockRegularizeInterGemmFusionPass
+    : Pass<"rock-regularize-inter-gemm-fusion", "::mlir::func::FuncOp"> {
+  let summary = "Regularize elementwise fusion bodies between two GEMMs";
+  let description = [{
+    This pass regularizes the elementwise body region of gemm-gemm-like ops
+    (RockGemmGemmWrapperInterface) so that the body contains only elementwise
+    operations and no rock.transform ops.
+
+    Transforms on block arguments are pushed outside the body by applying them
+    to the corresponding external inputs. If the first block argument (the
+    first GEMM product) has transforms, they are eliminated by applying their
+    inverse to all other block arguments' transform chains so that the entire
+    body operates in the first GEMM product's original shape.
+  }];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
+}
+
 def RockGridwiseGemmToBlockwisePass : Pass<"rock-gridwise-gemm-to-blockwise", "::mlir::func::FuncOp"> {
   let summary = "expand gridwise gemm into blockwise copy, blockwise gemm, and threadwise copy";
   let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
-                           "gpu::GPUDialect", "vector::VectorDialect",
-                           "linalg::LinalgDialect", "scf::SCFDialect",
-                           "triton::TritonDialect"];
+                           "scf::SCFDialect", "triton::TritonDialect"];
 }
 
 def RockGridwiseAttnToBlockwisePass
@@ -122,8 +137,7 @@ def RockGridwiseAttnToBlockwisePass
   let summary = "expand gridwise attention into blockwise copy, blockwise "
                 "attention, and threadwise copy";
   let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
-                           "gpu::GPUDialect", "vector::VectorDialect",
-                           "linalg::LinalgDialect", "scf::SCFDialect",
+                           "scf::SCFDialect", "math::MathDialect",
                            "triton::TritonDialect"];
 }
 
@@ -148,9 +162,47 @@ def RockLegalizeFloatTypesPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
-def RockTransformsToPtrPass : Pass<"rock-transforms-to-ptr", "::mlir::func::FuncOp"> {
-  let summary = "";
+def RockLowerBlockwiseToPtrPass
+    : Pass<"rock-lower-blockwise-to-ptr", "::mlir::func::FuncOp"> {
+  let summary = "Lower blockwise load/store ops to pointer-based variants";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
+def RockConvertNarrowTypeSignaturesPass
+    : Pass<"rock-convert-narrow-type-signatures", "::mlir::func::FuncOp"> {
+  let summary = "Convert sub-byte types in function signatures to packed i8";
+  let description = [{
+    Converts function signatures containing sub-byte memref types
+    (e.g. memref<Nxi4>, memref<Nxf4E2M1FN>) to packed wider-type storage
+    (e.g. memref<ceil(N/2)xi8>).  Runs before RockEmulateNarrowTypesPass so
+    that the block arguments are already converted when the upstream memref
+    narrow-type emulation patterns rewrite loads and stores.
+  }];
+  let dependentDialects = ["arith::ArithDialect", "memref::MemRefDialect",
+                           "func::FuncDialect"];
+}
+
+def RockEmulateNarrowTypesPass
+    : Pass<"rock-emulate-narrow-types", "::mlir::func::FuncOp"> {
+  let summary = "Emulate sub-byte types (i4) into packed i8 storage";
+  let description = [{
+    Uses NarrowTypeEmulationConverter + upstream memref/arith narrow type
+    emulation patterns to convert sub-byte memref operations
+    (e.g. memref<Nxi4>) into packed wider-type storage (e.g. memref<N/2xi8>)
+    with proper bit-manipulation for load/store.
+
+    Must run after RockConvertNarrowTypeSignaturesPass, which converts
+    function signatures first.  This ordering avoids a crash in the upstream
+    ConvertMemRefLoad/ConvertMemrefStore patterns that call
+    extract_strided_metadata on the original (pre-conversion) memref value.
+  }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "memref::MemRefDialect",
+    "func::FuncDialect",
+    "scf::SCFDialect"
+  ];
 }
 
 def RockMaskNonZeroPreservingFusionsPass
@@ -158,7 +210,7 @@ def RockMaskNonZeroPreservingFusionsPass
   let summary = "Insert arith.select masks after non-zero-preserving fusions "
                 "fed by Pad/Embed loads";
   let description = [{
-    This pass runs AFTER TransformsToPtr and BEFORE TransformsToPointerArith.
+    This pass runs AFTER LowerBlockwiseToPtr and BEFORE TransformsToPointerArith.
     When a blockwise load has Pad or Embed transforms, OOB positions are masked
     to zero. If the loaded tile feeds into a non-zero-preserving fusion (e.g.
     arith.addf %tile, 1.0), those positions become non-zero. This pass detects
@@ -170,7 +222,8 @@ def RockMaskNonZeroPreservingFusionsPass
 }
 
 def RockTransformsToPointerArithPass : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
-  let summary = "";
+  let summary =
+      "Expand transform map chains into pointer arithmetic and validity masks";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect", "triton::TritonDialect"];
 }
 
@@ -182,6 +235,30 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
     "arith::ArithDialect",
     "triton::TritonDialect"
   ];
+}
+
+def RockSortDimensionsMemoryLayoutPass
+    : Pass<"rock-sort-dimensions-memory-layout", "::mlir::func::FuncOp"> {
+  let summary = "Sort dimensions by stride of the underlying memory layout";
+  let description = [{
+    Reorders tensor dimensions to match physical memory layout (descending stride
+    order) for GEMM, Conv, Attention, and their fused variants.
+
+    For example, if a GEMM's B matrix has physical memory layout [G, N, K] but
+    the logical view is [G, K, N], the pass inserts a transform to make the
+    logical order match physical memory, then marks B as transposed in the
+    rock.gemm op.
+
+    The pass traces through rock.transform chains and shape-preserving
+    elementwise ops to determine actual memory strides, then inserts transforms
+    to align logical dimension order with physical memory. Transpose flags (for
+    GEMM-like ops) or layout attributes (for Conv) are updated accordingly.
+
+    This normalization ensures downstream passes (especially vectorization)
+    correctly analyze memory access patterns.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect"];
 }
 
 def RockInsertOutputStoresPass
@@ -233,6 +310,35 @@ def RockFuncToTritonFuncPass : Pass<"rock-func-to-triton-func", "::mlir::ModuleO
     "arith::ArithDialect",
     "triton::TritonDialect",
   ];
+}
+
+def ResolveKernelLaunchParamsPass
+    : Pass<"resolve-kernel-launch-params", "::mlir::ModuleOp"> {
+  let summary =
+      "Convert dynamic LDS to static and remove unused workspace args";
+  let description = [{
+    Triton's AMDGPU lowering creates two runtime artifacts that can be resolved
+    statically at compile time:
+
+    1. **Dynamic shared memory (LDS)** — `@global_smem` is declared as an
+       `external addrspace(3) global [0 x i8]`, requiring the host to pass the
+       LDS size at kernel launch.  This pass rewrites it to
+       `internal addrspace(3) global [N x i8] undef` (where N comes from the
+       `ttg.shared` module attribute) so the AMDGPU backend bakes the size into
+       `.amdhsa_group_segment_fixed_size` in the kernel descriptor.
+
+    2. **Unused workspace arguments** — Triton appends global-scratch and
+       profile-scratch pointer arguments to every kernel.  If they are unused
+       in the IR, this pass strips them from the function signature.
+
+    The pass also validates that `ttg.shared` does not exceed the hardware LDS
+    limit for the target architecture (read from the `rock.arch` attribute on
+    the kernel function).
+
+    After this pass the `ttg.shared` attribute is removed (shared memory is now
+    static), so downstream launch code should pass 0 for dynamic shared memory.
+  }];
+  let dependentDialects = ["LLVM::LLVMDialect"];
 }
 
 def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
@@ -422,6 +528,28 @@ def RockTosaToElementwisePass
   }];
   let dependentDialects = ["arith::ArithDialect", "math::MathDialect",
                            "tensor::TensorDialect", "tosa::TosaDialect"];
+}
+
+def RockFlattenTosaFuncArgsPass
+    : Pass<"rock-flatten-tosa-func-args", "::mlir::ModuleOp"> {
+  let summary = "Flatten N-D tensor function arguments and results to 1-D";
+  let description = [{
+    Downstream passes require all function boundary tensors to be 1-D.
+    The MIGraphX-to-TOSA conversion already produces 1-D boundaries, but
+    hand-written TOSA test functions may have N-D tensor arguments and results.
+
+    This pass rewrites each function so that:
+    - Every argument of type tensor<AxBx...xT> becomes tensor<(A*B*...)xT>,
+      with a tosa.reshape inserted at the top of the entry block to recover
+      the original N-D shape for use inside the function body.
+    - Every return operand is flattened with a tosa.reshape to 1-D before the
+      func.return, and the function signature is updated accordingly.
+
+    Functions whose boundaries are already 1-D (or scalar) are left unchanged.
+    Functions that have symbol uses within the module are skipped to avoid
+    breaking call sites.
+  }];
+  let dependentDialects = ["func::FuncDialect", "tosa::TosaDialect"];
 }
 
 def RockLowerStoresPass : Pass<"rock-lower-stores", "::mlir::func::FuncOp"> {

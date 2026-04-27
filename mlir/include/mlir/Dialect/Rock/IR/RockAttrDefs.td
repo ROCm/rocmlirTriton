@@ -218,7 +218,7 @@ def Rock_GemmParamsAttr
     : Rock_Attr<"GemmParams", [RockTuningParamAttrInterface]> {
   let mnemonic = "gemm_params";
   let description = [{
-    The tuning parameters for an mfma or wmma-based matrix multiplication.
+    The tuning parameters for matrix multiplication.
 
     - mPerBlock: The number of values of m to process in each workgroup
     - nPerBlock: The number of values of n to process in each workgroup
@@ -277,8 +277,7 @@ def Rock_GemmGemmParamsAttr
     : Rock_Attr<"GemmGemmParams", [RockTuningParamAttrInterface]> {
   let mnemonic = "gemm_gemm_params";
   let description = [{
-    The tuning parameters for an mfma or wmma-based gemm+gemm operation
-    (e.g., attention).
+    The tuning parameters for gemm+gemm operation (e.g., attention).
 
     - mPerBlockG0: The number of values of m to process in each workgroup for
       the first GEMM
@@ -286,15 +285,15 @@ def Rock_GemmGemmParamsAttr
       the first GEMM
     - kPerBlock: The number of values of k to process in each workgroup
     - kpack: The number of matrix instructions we can run with one LDS load (can be 1 or 2, see AccelerateAMDMatmul.cpp)
-    - mPerWave: The number of values of m to process in each wavefront
-    - nPerWave: The number of values of n to process in each wavefront
-    - mnPerXdl: The size of the m/n dimension in the accelerator (XDL)
+    - numCTAs: The number CTAs
+    - numWaves: The number waves
+    - matrixInstrNonkdim: The size of the m/n dimension in the accelerator (XDL)
       instruction
     - splitKFactor: Split-k factor for the Split-k GEMM algorithm
-    - scheduleVersion: Param to select GEMM schedule
-    - outputSwizzle: Whether to enable/disable output swizzle or use heuristics
+    - numStages: Number of stages
     - wavesPerEU: Hint to backend compiler for wavefronts per execution unit
-    - forceUnroll: Whether to force loop unrolling
+    - gridGroupSize: Number of chiplets to group together to perform a spatially
+      local tile
   }];
 
   let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
@@ -375,12 +374,14 @@ def Rock_NumChiplets : Rock_Attr<"NumChiplets"> {
   }];
 }
 
-def Rock_BlockSsize : Rock_Attr<"BlockSize"> {
+def Rock_BlockSize : Rock_Attr<"BlockSize"> {
   let mnemonic = "rock.block_size";
 }
 
-def Rock_GridSsize : Rock_Attr<"GridSize"> {
-  let mnemonic = "rock.grid_size";
+def Rock_GridSize : Rock_Attr<"GridSize"> { let mnemonic = "rock.grid_size"; }
+
+def Rock_ClusterSize : Rock_Attr<"ClusterSize"> {
+  let mnemonic = "rock.cluster_size";
 }
 
 def Rock_CpuVerifier : Rock_Attr<"CpuVerifier"> {

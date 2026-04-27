@@ -11,7 +11,7 @@
 #map4 = affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 1 + d2) * 128 + d3) * 64 + d4)>
 #map5 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3, d2, d4)>
 #map6 = affine_map<(d0, d1, d2) -> (0, d0 floordiv 128, d0 mod 128, d1, d2)>
-#map7 = affine_map<(d0) -> (0, d0 floordiv 8192, (d0 mod 8192) floordiv 64, d0 mod 64)>
+#map7 = affine_map<(d0) -> (0, d0 floordiv 8192, (d0 mod 8192) floordiv 128, d0 mod 128)>
 #map8 = affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) * 1 + d2)>
 #map9 = affine_map<(d0, d1, d2) -> (0, d0 floordiv 128, d0 mod 128, d1, d2)>
 #map10 = affine_map<(d0, d1, d2, d3, d4) -> (d1 * 128 + d3, d2, d4)>
@@ -70,7 +70,7 @@ module {
       rock.yield
     }
      softmax(qk) * %6 : tensor<1024x1x64xf16>
-    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1024x128x64xf16>, tensor<1024x128xf32>
+    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<1024x128x64xf16>, tensor<1024x128xf32>
     %12 = rock.transform %lseOut by #transform_map11 : tensor<1024x128xf32> to tensor<1x8x128x128x1xf32>
     %13 = rock.transform %12 by #transform_map12 : tensor<1x8x128x128x1xf32> to tensor<131072xf32>
     %14 = rock.transform %result by #transform_map13 : tensor<1024x128x64xf16> to tensor<8388608xf16>

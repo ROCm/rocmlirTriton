@@ -15,7 +15,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
@@ -112,6 +111,21 @@ static Value createCastOp(PatternRewriter &rewriter, Location loc,
            !resElementTypeBeforeConvert.isSignedInteger());
     res = tosa::CustomOp::create(rewriter, loc, resType,
                                  ROCK_CUSTOMOP_UNSIGNED_CAST,
+                                 ROCK_CUSTOMOP_DOMAIN_NAME, "", input)
+              .getResult(0);
+  } else if (isa<FloatType>(inputType) && isa<IntegerType>(resElementType)) {
+    // Float -> signed int. (Float -> unsigned int is already handled by the
+    // unsigned_cast branch above, since the `or` there catches any unsigned
+    // endpoint first; that path also dispatches to a clamped fptoui in its
+    // downstream lowering.) MIGraphX uses truncation (no rounding) for
+    // float->int casts, but the custom op's lowering also clamps to the
+    // destination integer range before truncating, so out-of-range / inf
+    // inputs don't produce poison values (saturating-then-truncating, not a
+    // plain C-style cast). Use a custom op so both GPU and CPU paths lower
+    // identically, bypassing upstream tosa-to-linalg which would emit
+    // round-to-nearest-even.
+    res = tosa::CustomOp::create(rewriter, loc, resType,
+                                 ROCK_CUSTOMOP_FP_TO_INT_CAST,
                                  ROCK_CUSTOMOP_DOMAIN_NAME, "", input)
               .getResult(0);
   } else {
@@ -372,40 +386,14 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
   }
 
   // MIGraphX uses floor-mode output sizes where partial windows are dropped.
-  // TOSA requires exact divisibility by stride. Trim the high-side padding
-  // to satisfy this; the removed padding never affects floor-mode output.
-  // When reducing padding would make it negative, shrink the input instead.
+  // TOSA requires exact divisibility by stride. Adjust padding and slice
+  // input if needed.
   if (!isBwdDataConvOp) {
-    auto inputShape = cast<ShapedType>(input.getType()).getShape();
-    auto filterShape = cast<ShapedType>(filter.getType()).getShape();
-    SmallVector<int64_t> sliceSizes(inputShape.begin(), inputShape.end());
-    bool needSlice = false;
-    for (int i = 0, e = pads.size() / 2; i < e; i++) {
-      int64_t fullExtent = inputShape[i + 1] - 1 + pads[2 * i] +
-                           pads[2 * i + 1] -
-                           (filterShape[i + 1] - 1) * dilations[i];
-      int64_t remainder = fullExtent % strides[i];
-      // Absorb remainder from padding first, then from input if needed.
-      int64_t fromPad = std::min(pads[2 * i + 1], remainder);
-      pads[2 * i + 1] -= fromPad;
-      int64_t fromInput = remainder - fromPad;
-      if (fromInput > 0) {
-        sliceSizes[i + 1] -= fromInput;
-        needSlice = true;
-      }
-    }
-    if (needSlice) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(cop);
-      SmallVector<int64_t> starts(sliceSizes.size(), 0);
-      auto startsValue = tosa::getTosaConstShape(rewriter, loc, starts);
-      auto sizesValue = tosa::getTosaConstShape(rewriter, loc, sliceSizes);
-      auto slicedType = RankedTensorType::get(
-          sliceSizes, cast<ShapedType>(input.getType()).getElementType());
-      input = tosa::SliceOp::create(rewriter, loc, slicedType, input,
-                                    startsValue, sizesValue);
-      cop->setOperand(0, input);
-    }
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(cop);
+    input = rock::tosa::adjustConvPadding(rewriter, loc, input, filter, pads,
+                                          strides, dilations);
+    cop->setOperand(0, input);
   }
 
   // Set attributes common to both forwards and backwards conv
@@ -442,6 +430,139 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
   return success();
 }
 
+/// Helper struct to hold batch flattening information for matmul operations.
+/// TOSA matmul only supports a single batch dimension, so we need to flatten
+/// multiple batch dimensions into one.
+struct BatchFlattenInfo {
+  int64_t batchSizeA;
+  int64_t batchSizeB;
+  int64_t batchSizeOut;
+  int64_t mDim;
+  int64_t kDim;
+  int64_t nDim;
+  // After handling broadcast, batch is the same for A, B, and output
+  int64_t newBatch;
+  int64_t newM;
+  // Whether reshaping is needed
+  bool needsReshape;
+};
+
+/// Compute batch flattening information for matmul operations.
+/// Returns failure if the batch dimensions can't be handled (e.g., broadcast
+/// A).
+static FailureOr<BatchFlattenInfo>
+computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
+                        ArrayRef<int64_t> outShape) {
+  BatchFlattenInfo info;
+  size_t rankA = shapeA.size();
+  size_t rankB = shapeB.size();
+  size_t outRank = outShape.size();
+  assert(rankA >= 2 && rankB >= 2 && outRank >= 2 &&
+         "matmul operands must be at least rank 2");
+
+  // Compute batch sizes by multiplying all dimensions except last 2
+  info.batchSizeA = 1;
+  info.batchSizeB = 1;
+  info.batchSizeOut = 1;
+  for (size_t i = 0; i < outRank - 2; i++)
+    info.batchSizeOut *= outShape[i];
+  for (size_t i = 0; i < rankA - 2; i++)
+    info.batchSizeA *= shapeA[i];
+  for (size_t i = 0; i < rankB - 2; i++)
+    info.batchSizeB *= shapeB[i];
+
+  // Get M, K, N dimensions (last 2 dims of each tensor)
+  info.mDim = shapeA[rankA - 2];
+  info.kDim = shapeA[rankA - 1];
+  info.nDim = shapeB[rankB - 1];
+
+  info.newBatch = info.batchSizeA;
+  info.newM = info.mDim;
+
+  // Handle batch dimension mismatch (broadcast)
+  if (info.batchSizeA != info.batchSizeB) {
+    if (info.batchSizeB == 1) {
+      // Broadcast B - flatten A's batch into M dimension
+      info.newBatch = 1;
+      info.newM = info.batchSizeA * info.mDim;
+    } else {
+      return failure();
+    }
+  }
+
+  // Determine if reshaping is needed
+  info.needsReshape = (outRank != 3 || rankA != rankB ||
+                       (outRank == 3 && shapeA[0] != shapeB[0]));
+
+  return info;
+}
+
+/// Reshape tensors to 3D for matmul if needed.
+/// Returns the reshaped A and B tensors.
+static std::pair<Value, Value>
+reshapeTo3DForMatmul(PatternRewriter &rewriter, Location loc, Value inA,
+                     Value inB, const BatchFlattenInfo &info, Type elementTy) {
+  Value inAReshaped = inA;
+  Value inBReshaped = inB;
+
+  if (info.needsReshape) {
+    SmallVector<int64_t> newDimsA = {info.newBatch, info.newM, info.kDim};
+    SmallVector<int64_t> newDimsB = {info.newBatch, info.kDim, info.nDim};
+
+    auto newDimsAValue = tosa::getTosaConstShape(rewriter, loc, newDimsA);
+    RankedTensorType newAType = RankedTensorType::get(newDimsA, elementTy);
+    inAReshaped =
+        tosa::ReshapeOp::create(rewriter, loc, newAType, inA, newDimsAValue);
+
+    auto newDimsBValue = tosa::getTosaConstShape(rewriter, loc, newDimsB);
+    RankedTensorType newBType = RankedTensorType::get(newDimsB, elementTy);
+    inBReshaped =
+        tosa::ReshapeOp::create(rewriter, loc, newBType, inB, newDimsBValue);
+  }
+
+  return {inAReshaped, inBReshaped};
+}
+
+/// Reverse the scale broadcasting by reshaping, slicing, and reshaping again.
+/// MIGraphX broadcasts scales to match A/B shapes (e.g., [batch, M, K/block] ->
+/// [batch, M, K]). This function recovers the original unbroadcasted scale by:
+///   1. Optionally reshaping to 3D (shape3D) if batch flattening was applied.
+///   2. Reshaping to 4D (shape4D) to separate K into K/block and block dims.
+///   3. Slicing to take only the first element of the block dim (sliceSize).
+///   4. Reshaping to final 3D shape (shapeFinal) with K/block as a single dim.
+// TODO: this wouldn't be needed once we start accepting non-broadcasted scales.
+static Value unbroadcastScale(PatternRewriter &rewriter, Location loc,
+                              Value scale, Type elementType, bool needsReshape,
+                              ArrayRef<int64_t> shape3D,
+                              ArrayRef<int64_t> shape4D,
+                              ArrayRef<int64_t> sliceSize,
+                              ArrayRef<int64_t> shapeFinal) {
+  Value scaleFlat = scale;
+  if (needsReshape) {
+    auto shape3DValue = tosa::getTosaConstShape(rewriter, loc, shape3D);
+    RankedTensorType type3D = RankedTensorType::get(shape3D, elementType);
+    scaleFlat =
+        tosa::ReshapeOp::create(rewriter, loc, type3D, scale, shape3DValue);
+  }
+
+  auto shape4DValue = tosa::getTosaConstShape(rewriter, loc, shape4D);
+  RankedTensorType type4D = RankedTensorType::get(shape4D, elementType);
+  Value scale4D =
+      tosa::ReshapeOp::create(rewriter, loc, type4D, scaleFlat, shape4DValue);
+
+  SmallVector<int64_t> sliceStart(4, 0);
+  auto sliceStartValue = tosa::getTosaConstShape(rewriter, loc, sliceStart);
+  auto sliceSizeValue = tosa::getTosaConstShape(rewriter, loc, sliceSize);
+  RankedTensorType sliceType = RankedTensorType::get(sliceSize, elementType);
+  Value scaleSliced = tosa::SliceOp::create(rewriter, loc, sliceType, scale4D,
+                                            sliceStartValue, sliceSizeValue);
+
+  auto shapeFinalValue = tosa::getTosaConstShape(rewriter, loc, shapeFinal);
+  RankedTensorType finalType = RankedTensorType::get(shapeFinal, elementType);
+  return tosa::ReshapeOp::create(rewriter, loc, finalType, scaleSliced,
+                                 shapeFinalValue);
+}
+
 template <typename DotType>
 LogicalResult DotConverter<DotType>::matchAndRewrite(
     DotType op, OpAdaptor adaptor, ConversionPatternRewriter &rewriter) const {
@@ -449,6 +570,22 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
   auto inA = cast<TypedValue<RankedTensorType>>(adaptor.getInA());
   auto inB = cast<TypedValue<RankedTensorType>>(adaptor.getInB());
   auto results = op->getResults();
+
+  // Handle scale parameters (only available for QuantDotOp)
+  Value inScaleA, inScaleB;
+  TypedValue<RankedTensorType> scaleA;
+  TypedValue<RankedTensorType> scaleB;
+  bool hasScales = false;
+  if constexpr (std::is_same_v<DotType, migraphx::QuantDotOp>) {
+    inScaleA = adaptor.getScaleA();
+    inScaleB = adaptor.getScaleB();
+    if (inScaleA && inScaleB) {
+      scaleA = cast<TypedValue<RankedTensorType>>(inScaleA);
+      scaleB = cast<TypedValue<RankedTensorType>>(inScaleB);
+      hasScales = true;
+    }
+  }
+
   Type elementTy = inA.getType().getElementType();
   Type elementTyB = inB.getType().getElementType();
   auto origOutputTy = cast<MIXRShapedType>(results[0].getType());
@@ -458,92 +595,156 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
   if (outElementTy.isUnsignedInteger())
     return op.emitError("No support for unsigned dot product.\n");
 
-  // check batch dimension. Tosa matmul only allow a single dimension for it,
-  // add reshape ops to flatten and restore the original dimension.
+  // Get shapes for batch flattening
+  ArrayRef<int64_t> shapeA = inA.getType().getShape();
+  ArrayRef<int64_t> shapeB = inB.getType().getShape();
   ArrayRef<int64_t> origOutDims = origOutputTy.getShape();
-  RankedTensorType newOutType =
-      RankedTensorType::get(origOutDims, newOutElementTy);
-  size_t outRank = origOutDims.size();
-  ArrayRef<int64_t> orgDimsA = inA.getType().getShape();
-  ArrayRef<int64_t> orgDimsB = inB.getType().getShape();
-  size_t rankA = orgDimsA.size();
-  size_t rankB = orgDimsB.size();
 
-  // A, B, Out have the same rank. rank=2 assumes batch=1.
-  // Here handling special cases.
-  if (outRank != 3 || rankA != rankB ||
-      (outRank == 3 && orgDimsA[0] != orgDimsB[0])) {
-    int64_t batchSizeA = 1, batchSizeB = 1, batchSizeC = 1;
-    for (size_t i = 0; i < outRank - 2; i++) {
-      batchSizeC *= origOutDims[i];
-    }
-    for (size_t i = 0; i < rankA - 2; i++) {
-      batchSizeA *= orgDimsA[i];
-    }
-    for (size_t i = 0; i < rankB - 2; i++) {
-      batchSizeB *= orgDimsB[i];
-    }
-
-    int64_t newDimsA[3] = {batchSizeA, orgDimsA[outRank - 2],
-                           orgDimsA[outRank - 1]};
-    int64_t newDimsB[3] = {batchSizeB, orgDimsB[outRank - 2],
-                           orgDimsB[outRank - 1]};
-    int64_t newDimsOut[3] = {batchSizeC, origOutDims[outRank - 2],
-                             origOutDims[outRank - 1]};
-    if (batchSizeA != batchSizeB) {
-      // support when batchB dimension is broadcast
-      if (batchSizeB == 1) {
-        // modify [g, m, k, n] to [1, g*m, k, n]
-        newDimsA[0] = 1;
-        newDimsA[1] *= batchSizeA;
-        newDimsOut[0] = 1;
-        newDimsOut[1] *= batchSizeC;
-      } else {
-        // currently not supporting the other case, broadcast A could be
-        // supported with an additional transpose.
-        return op->emitError("tosa.matmul can't broadcast input.");
-      }
-    }
-    RankedTensorType newAType = RankedTensorType::get(newDimsA, elementTy);
-    RankedTensorType newBType = RankedTensorType::get(newDimsB, elementTy);
-    newOutType = RankedTensorType::get(newDimsOut, newOutElementTy);
-    auto newDimsAValue = tosa::getTosaConstShape(rewriter, loc, newDimsA);
-    auto reshapeAOp =
-        tosa::ReshapeOp::create(rewriter, loc, newAType, inA, newDimsAValue);
-    auto newDimsBValue = tosa::getTosaConstShape(rewriter, loc, newDimsB);
-    auto reshapeBOp =
-        tosa::ReshapeOp::create(rewriter, loc, newBType, inB, newDimsBValue);
-
-    // reassign inputs.
-    inA = cast<TypedValue<RankedTensorType>>(reshapeAOp.getResult());
-    inB = cast<TypedValue<RankedTensorType>>(reshapeBOp.getResult());
+  // Compute batch flattening info (done once for both scaled and regular)
+  auto batchInfoResult = computeBatchFlattenInfo(shapeA, shapeB, origOutDims);
+  if (failed(batchInfoResult)) {
+    return op->emitError("tosa.matmul can't broadcast input.");
   }
-  auto aZp =
-      tosa::createZeroPointTensor(rewriter, loc, inA.getType(), 0).value();
-  auto bZp =
-      tosa::createZeroPointTensor(rewriter, loc, inB.getType(), 0).value();
-  // Construct tosa.matmul.
-  auto mop =
-      tosa::MatMulOp::create(rewriter, loc, newOutType, inA, inB, aZp, bZp);
+  BatchFlattenInfo batchInfo = *batchInfoResult;
 
-  // Determine the accumulation type based on the output type.
+  // Compute 3D output shape
+  SmallVector<int64_t> newDimsOut = {batchInfo.newBatch, batchInfo.newM,
+                                     batchInfo.nDim};
+
+  // Reshape data tensors to 3D. Both A and B are always reshaped together
+  // because the needsReshape condition depends on their shared batch
+  // dimensions, and when batch broadcasting flattens A's batch into M, B still
+  // needs its batch flattened to match.
+  auto [inAReshaped, inBReshaped] =
+      reshapeTo3DForMatmul(rewriter, loc, inA, inB, batchInfo, elementTy);
+
+  Value matmulResult;
+  Operation *matmulResultOp = nullptr;
+
+  // Handle scaled quant_dot -> tosa.matmul_t_block_scaled.
+  // QuantDotOp without scales falls through to the regular tosa.matmul path
+  // below (scales are optional in quant_dot).
+  if constexpr (std::is_same_v<DotType, migraphx::QuantDotOp>) {
+    if (hasScales) {
+      // Block size for tosa.matmul_t_block_scaled. At this point scales have
+      // already been broadcasted to match A/B shapes, so the block size cannot
+      // be derived from the scale tensor dimensions.
+      // At present blockSize is hardcoded to 32 for MI355 as it only supports
+      // blockSize of 32. This should be made attribute to allow for different
+      // block sizes for future architectures.
+      static constexpr int64_t blockSize = 32;
+      if (batchInfo.kDim % blockSize != 0)
+        return op->emitError("K dimension (")
+               << batchInfo.kDim << ") must be a multiple of blockSize ("
+               << blockSize << ")";
+      int64_t scaleKDim = batchInfo.kDim / blockSize;
+
+      // MIGraphX broadcasts scales to match A/B shapes before passing them
+      // to quant_dot (the verifier enforces scaleA.shape == A.shape and
+      // scaleB.shape == B.shape). We use batchInfo dimensions derived from
+      // A/B to reshape the scales since they share the same shape.
+      //
+      // Undo the broadcast to recover the original scale shapes expected by
+      // tosa.matmul_t_block_scaled:
+      //   scaleA: [batch, M, K] -> [batch, M, K/blockSize]
+      //   scaleB: [batch, K, N] -> [batch, K/blockSize, N]
+
+      Type scaleAElementType = scaleA.getType().getElementType();
+      Type scaleBElementType = scaleB.getType().getElementType();
+
+      // MIGraphX always broadcasts scales to match A/B shapes before sending
+      // them. If MIGraphX ever sends non-broadcasted scales, this unbroadcast
+      // step should be skipped or made conditional.
+      // Undo broadcast on scaleA: [batch, M, K] -> [batch, M, K/blockSize]
+      SmallVector<int64_t> scaleA3DShape = {batchInfo.newBatch, batchInfo.newM,
+                                            batchInfo.kDim};
+      SmallVector<int64_t> scaleA4DShape = {batchInfo.newBatch, batchInfo.newM,
+                                            scaleKDim, blockSize};
+      SmallVector<int64_t> scaleASliceSize = {batchInfo.newBatch,
+                                              batchInfo.newM, scaleKDim, 1};
+      SmallVector<int64_t> unbroadcastedScaleAShape = {
+          batchInfo.newBatch, batchInfo.newM, scaleKDim};
+
+      Value scaleAUnbroadcasted =
+          unbroadcastScale(rewriter, loc, scaleA, scaleAElementType,
+                           batchInfo.needsReshape, scaleA3DShape, scaleA4DShape,
+                           scaleASliceSize, unbroadcastedScaleAShape);
+
+      // Undo broadcast on scaleB: [batch, K, N] -> [batch, K/blockSize, N]
+      SmallVector<int64_t> scaleB3DShape = {batchInfo.newBatch, batchInfo.kDim,
+                                            batchInfo.nDim};
+      SmallVector<int64_t> scaleB4DShape = {batchInfo.newBatch, scaleKDim,
+                                            blockSize, batchInfo.nDim};
+      SmallVector<int64_t> scaleBSliceSize = {batchInfo.newBatch, scaleKDim, 1,
+                                              batchInfo.nDim};
+      SmallVector<int64_t> unbroadcastedScaleBShape = {
+          batchInfo.newBatch, scaleKDim, batchInfo.nDim};
+
+      Value scaleBUnbroadcasted =
+          unbroadcastScale(rewriter, loc, scaleB, scaleBElementType,
+                           batchInfo.needsReshape, scaleB3DShape, scaleB4DShape,
+                           scaleBSliceSize, unbroadcastedScaleBShape);
+
+      // Transpose B from [batch x K x N] to [batch x N x K]
+      SmallVector<int32_t> bTransposePerm = {0, 2, 1};
+      Value bDataTransposed = rock::tosa::getTransposeOp(
+          rewriter, loc, inBReshaped, bTransposePerm);
+
+      // Transpose scaleB from [batch x (K/block_size) x N] to [batch x N x
+      // (K/block_size)]
+      Value scaleBTransposed = rock::tosa::getTransposeOp(
+          rewriter, loc, scaleBUnbroadcasted, bTransposePerm);
+
+      // Output type for matmul (3D)
+      RankedTensorType matmulOutputType =
+          RankedTensorType::get(newDimsOut, newOutElementTy);
+
+      // Create tosa.matmul_t_block_scaled
+      auto blockSizeAttr = mlir::tosa::BlockSizeAttr::get(
+          rewriter.getContext(), mlir::tosa::BlockSize::BLOCK_SIZE_32);
+
+      auto matmulOp = tosa::MatmulTBlockScaledOp::create(
+          rewriter, loc, matmulOutputType, inAReshaped, scaleAUnbroadcasted,
+          bDataTransposed, scaleBTransposed, blockSizeAttr);
+
+      matmulResult = matmulOp.getResult();
+      matmulResultOp = matmulOp;
+    }
+  }
+
+  // Regular matmul path (no scales)
+  if (!matmulResultOp) {
+    RankedTensorType newOutType =
+        RankedTensorType::get(newDimsOut, newOutElementTy);
+
+    auto aZp =
+        tosa::createZeroPointTensor(rewriter, loc, inAReshaped.getType(), 0)
+            .value();
+    auto bZp =
+        tosa::createZeroPointTensor(rewriter, loc, inBReshaped.getType(), 0)
+            .value();
+
+    auto mop = tosa::MatMulOp::create(rewriter, loc, newOutType, inAReshaped,
+                                      inBReshaped, aZp, bZp);
+    matmulResult = mop.getResult();
+    matmulResultOp = mop;
+  }
+
+  // Common post-processing for both scaled and regular paths
   Type accType = rock::getAccType(elementTy, elementTyB);
-  mop->setAttr("acc_type", TypeAttr::get(accType));
+  matmulResultOp->setAttr("acc_type", TypeAttr::get(accType));
 
-  // Convert optional attributes
   if (auto attr = (*op).template getAttrOfType<StringAttr>("perf_config"))
-    mop->setAttr("perf_config", attr);
+    matmulResultOp->setAttr("perf_config", attr);
 
-  if (outRank != 3 || rankA != rankB ||
-      (outRank == 3 && orgDimsA[0] != orgDimsB[0])) {
+  Value result = matmulResult;
+  if (batchInfo.needsReshape) {
     auto origOutDimsValue = tosa::getTosaConstShape(rewriter, loc, origOutDims);
-    auto rop = tosa::ReshapeOp::create(
-        rewriter, loc, getTypeConverter()->convertType(origOutputTy), mop,
-        origOutDimsValue);
-    rewriter.replaceOp(op, rop);
-    return success();
+    result = tosa::ReshapeOp::create(
+        rewriter, loc, RankedTensorType::get(origOutDims, newOutElementTy),
+        matmulResult, origOutDimsValue);
   }
-  rewriter.replaceOp(op, mop);
+  rewriter.replaceOp(op, result);
   return success();
 }
 
@@ -953,6 +1154,14 @@ struct ConvertConverter final
                   ConversionPatternRewriter &rewriter) const final;
 };
 
+struct SqrtConverter final : public OpConversionPattern<migraphx::SqrtOp> {
+  using OpConversionPattern<migraphx::SqrtOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(migraphx::SqrtOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final;
+};
+
 struct NegConverter final : public OpConversionPattern<migraphx::NegOp> {
   using OpConversionPattern<migraphx::NegOp>::OpConversionPattern;
 
@@ -1118,20 +1327,25 @@ LogicalResult QuantizeLinearConverter::matchAndRewrite(
 LogicalResult
 ConvertConverter::matchAndRewrite(migraphx::ConvertOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const {
+  Type inputType = op.getInA().getType().getElementType();
+  Type outputType = op.getResult().getType().getElementType();
+  auto convertedResultType = cast<RankedTensorType>(
+      getTypeConverter()->convertType(op.getResult().getType()));
+  Value result =
+      createCastOp(rewriter, op.getLoc(), convertedResultType.getElementType(),
+                   adaptor.getInA(), inputType, outputType);
+  rewriter.replaceOp(op, result);
+  return success();
+}
 
-  auto inputType = op.getInA().getType().getElementType();
-  auto outputType = op.getResult().getType().getElementType();
-  if (inputType.isUnsignedInteger() || outputType.isUnsignedInteger()) {
-    assert(!inputType.isSignedInteger() && !outputType.isSignedInteger());
-    rewriter.replaceOpWithNewOp<tosa::CustomOp>(
-        op, getTypeConverter()->convertType(op.getResult().getType()),
-        ROCK_CUSTOMOP_UNSIGNED_CAST, ROCK_CUSTOMOP_DOMAIN_NAME, "",
-        adaptor.getInA());
-  } else {
-    rewriter.replaceOpWithNewOp<tosa::CastOp>(
-        op, getTypeConverter()->convertType(op.getResult().getType()),
-        adaptor.getInA());
-  }
+// TOSA has no sqrt op, so decompose as reciprocal(rsqrt(x)).
+LogicalResult
+SqrtConverter::matchAndRewrite(migraphx::SqrtOp op, OpAdaptor adaptor,
+                               ConversionPatternRewriter &rewriter) const {
+  auto resultType = getTypeConverter()->convertType(op.getResult().getType());
+  auto rsqrt =
+      rewriter.create<tosa::RsqrtOp>(op.getLoc(), resultType, adaptor.getInA());
+  rewriter.replaceOpWithNewOp<tosa::ReciprocalOp>(op, resultType, rsqrt);
   return success();
 }
 
@@ -1327,8 +1541,12 @@ LogicalResult ComparisonConverter<MIGraphXOp, TosaOp>::matchAndRewrite(
       RankedTensorType::get(op.getType().getShape(), rewriter.getI1Type());
   auto comparisonResult =
       rewriter.createOrFold<TosaOp>(op->getLoc(), newType, inA, inB);
-  rewriter.replaceOpWithNewOp<tosa::CastOp>(op, adaptor.getInA().getType(),
-                                            comparisonResult);
+  Type origInputElemType = op.getInA().getType().getElementType();
+  auto convertedInType = cast<RankedTensorType>(inA.getType());
+  Value result =
+      createCastOp(rewriter, op->getLoc(), convertedInType.getElementType(),
+                   comparisonResult, rewriter.getI1Type(), origInputElemType);
+  rewriter.replaceOp(op, result);
 
   return success();
 }
@@ -1355,18 +1573,6 @@ struct AsUnderlyingShapeConverter final
                   ConversionPatternRewriter &rewriter) const final;
 };
 } // namespace
-
-/// This mirrors the call op conversion pattern but works for mhal.launch.
-/*
-struct MHALLaunchConverter final : public OpConversionPattern<mhal::LaunchOp> {
-  using OpConversionPattern<mhal::LaunchOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(mhal::LaunchOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const final;
-};
-} // namespace
-*/
 
 LogicalResult AsLogicalShapeConverter::matchAndRewrite(
     migraphx::AsLogicalShapeOp op, OpAdaptor adaptor,
@@ -1443,6 +1649,9 @@ LogicalResult AsUnderlyingShapeConverter::matchAndRewrite(
   Location loc = op.getLoc();
   MIXRShapedType resultType = op.getOut().getType();
   RankedTensorType memoryLayoutType = resultType.asMemoryLayoutTensor();
+  if (!memoryLayoutType)
+    return op.emitOpError("output type has strides that cannot be represented "
+                          "as a memory layout");
   auto resultTensorType =
       cast<RankedTensorType>(getTypeConverter()->convertType(resultType));
   if (!resultTensorType)
@@ -1462,10 +1671,33 @@ LogicalResult AsUnderlyingShapeConverter::matchAndRewrite(
   Value transposed = in;
   if (!llvm::is_sorted(permutation))
     transposed = rock::tosa::getTransposeOp(rewriter, loc, in, permutationI32);
+  // Handle long strides by using a custom TOSA op to expand strides,
+  // placing the contiguous result into a larger padded buffer.
   if (transposed.getType() != memoryLayoutType) {
-    rewriter.eraseOp(transposed.getDefiningOp());
-    return op.emitOpError(
-        "writing to tensors with long strides or broadcasts is unsupported");
+    if (resultType.hasBroadcast())
+      return op.emitOpError(
+          "writing to tensors with broadcasts is unsupported");
+
+    auto transposedType = cast<RankedTensorType>(transposed.getType());
+
+    for (auto [memDim, transDim] : llvm::zip_equal(memoryLayoutType.getShape(),
+                                                   transposedType.getShape())) {
+      if (memDim < transDim)
+        return op.emitOpError("memory layout dimension ")
+               << memDim << " is smaller than logical dimension " << transDim
+               << "; this indicates invalid strides";
+    }
+
+    transposed =
+        tosa::CustomOp::create(
+            rewriter, loc,
+            /*output_list=*/TypeRange{memoryLayoutType},
+            /*operator_name=*/
+            rewriter.getStringAttr(ROCK_CUSTOMOP_EXPAND_STRIDES),
+            /*domain_name=*/rewriter.getStringAttr(ROCK_CUSTOMOP_DOMAIN_NAME),
+            /*implementation_attrs=*/rewriter.getStringAttr(""),
+            /*input_list=*/ValueRange{transposed})
+            .getResult(0);
   }
 
   Value collapsed = transposed;
@@ -1477,26 +1709,6 @@ LogicalResult AsUnderlyingShapeConverter::matchAndRewrite(
   rewriter.replaceOp(op, collapsed);
   return success();
 }
-/*
-LogicalResult MHALLaunchConverter::matchAndRewrite(
-    mhal::LaunchOp op, OpAdaptor adaptor,
-    ConversionPatternRewriter &rewriter) const {
-  // Convert the original function results.
-  SmallVector<Type, 2> resultTypes;
-  if (failed(typeConverter->convertTypes(op.getResultTypes(), resultTypes)))
-    return failure();
-
-  // If this isn't a one-to-one type mapping, we don't know how to aggregate
-  // the results.
-  if (op->getNumResults() != resultTypes.size())
-    return failure();
-
-  // Substitute with the new result types from the corresponding FuncType
-  // conversion.
-  rewriter.replaceOpWithNewOp<mhal::LaunchOp>(
-      op, op.getCalleeAttr(), resultTypes, adaptor.getOperands());
-  return success();
-}*/
 
 //===----------------------------------------------------------------------===//
 // External interface
@@ -1504,31 +1716,31 @@ LogicalResult MHALLaunchConverter::matchAndRewrite(
 
 void migraphx::populateMIGraphXToTosaConversionPatterns(
     RewritePatternSet &patterns, TypeConverter &typeConverter) {
-  patterns.add<ConvConverter<ConvolutionBwdDataOp>,
-               ConvConverter<ConvolutionOp>, ConvConverter<QuantConvolutionOp>,
-               DotConverter<DotOp>, DotConverter<QuantDotOp>,
-               BroadcastConverter, MultiBroadcastConverter, TransposeConverter,
-               ReshapeConverter, SliceConverter, ReduceMeanConverter,
-               ReduceConverter<ReduceSumOp, tosa::ReduceSumOp>,
-               ReduceConverter<ReduceMaxOp, tosa::ReduceMaxOp>,
-               TrivialConverter<AddOp, tosa::AddOp>,
-               TrivialConverter<SubOp, tosa::SubOp>,
-               TrivialConverter<PowOp, tosa::PowOp>, DivConverter, MulConverter,
-               TrivialConverter<AbsOp, tosa::AbsOp>,
-               TrivialConverter<CeilOp, tosa::CeilOp>,
-               TrivialConverter<ErfOp, tosa::ErfOp>,
-               TrivialConverter<ExpOp, tosa::ExpOp>,
-               TrivialConverter<FloorOp, tosa::FloorOp>,
-               TrivialConverter<LogOp, tosa::LogOp>,
-               TrivialConverter<RecipOp, tosa::ReciprocalOp>,
-               TrivialConverter<RsqrtOp, tosa::RsqrtOp>,
-               TrivialConverter<SigmoidOp, tosa::SigmoidOp>,
-               TrivialConverter<TanhOp, tosa::TanhOp>, QuantizeLinearConverter,
-               DeQuantizeLinearConverter, ConvertConverter, NegConverter,
-               ReluConverter, SoftmaxConverter, LiteralConverter, ClipConverter,
-               WhereConverter, ComparisonConverter<Greater, tosa::GreaterOp>,
-               ComparisonConverter<Equal, tosa::EqualOp>>(
-      typeConverter, patterns.getContext());
+  patterns.add<
+      ConvConverter<ConvolutionBwdDataOp>, ConvConverter<ConvolutionOp>,
+      ConvConverter<QuantConvolutionOp>, DotConverter<DotOp>,
+      DotConverter<QuantDotOp>, BroadcastConverter, MultiBroadcastConverter,
+      TransposeConverter, ReshapeConverter, SliceConverter, ReduceMeanConverter,
+      ReduceConverter<ReduceSumOp, tosa::ReduceSumOp>,
+      ReduceConverter<ReduceMaxOp, tosa::ReduceMaxOp>,
+      TrivialConverter<AddOp, tosa::AddOp>,
+      TrivialConverter<SubOp, tosa::SubOp>,
+      TrivialConverter<PowOp, tosa::PowOp>, DivConverter, MulConverter,
+      TrivialConverter<AbsOp, tosa::AbsOp>,
+      TrivialConverter<CeilOp, tosa::CeilOp>,
+      TrivialConverter<ErfOp, tosa::ErfOp>,
+      TrivialConverter<ExpOp, tosa::ExpOp>,
+      TrivialConverter<FloorOp, tosa::FloorOp>,
+      TrivialConverter<LogOp, tosa::LogOp>,
+      TrivialConverter<RecipOp, tosa::ReciprocalOp>,
+      TrivialConverter<RsqrtOp, tosa::RsqrtOp>,
+      TrivialConverter<SigmoidOp, tosa::SigmoidOp>,
+      TrivialConverter<TanhOp, tosa::TanhOp>, QuantizeLinearConverter,
+      DeQuantizeLinearConverter, ConvertConverter, SqrtConverter, NegConverter,
+      ReluConverter, SoftmaxConverter, LiteralConverter, ClipConverter,
+      WhereConverter, ComparisonConverter<Greater, tosa::GreaterOp>,
+      ComparisonConverter<Equal, tosa::EqualOp>>(typeConverter,
+                                                 patterns.getContext());
 }
 
 void mlir::migraphx::populateMIGraphXFuncBoundaryToTosaConversionPatterns(

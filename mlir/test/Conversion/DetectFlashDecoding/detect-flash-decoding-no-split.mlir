@@ -21,12 +21,12 @@
 #transform_map3 = #rock.transform_map<#map3 by [<PassThrough ["dim0", "dim1", "dim3", "dim2"] at [0, 1, 2, 3] -> ["dim0", "dim1", "dim3", "dim2"] at [0, 1, 3, 2]>] bounds = [1, 12, 256, 128] -> [1, 12, 128, 256]>
 #transform_map4 = #rock.transform_map<#map4 by [<Unmerge{12, 256, 1, 128} ["exp1", "exp2", "exp3", "exp4"] at [1, 2, 3, 4] -> ["dim0"] at [0]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 12, 256, 1, 128] -> [393216]>
 #transform_map5 = #rock.transform_map<#map5 by [<PassThrough ["dim0", "dim1", "dim3", "dim4", "dim2"] at [0, 1, 2, 3, 4] -> ["dim0", "dim1", "dim3", "dim4", "dim2"] at [0, 1, 3, 4, 2]>] bounds = [1, 12, 1, 128, 256] -> [1, 12, 256, 1, 128]>
-#transform_map6 = #rock.transform_map<#map6 by [<PassThrough ["dim0"] at [0] -> ["col1"] at [1]>, <PassThrough ["dim1"] at [1] -> ["dim3"] at [3]>, <PassThrough ["dim2"] at [2] -> ["dim4"] at [4]>] bounds = [12, 256, 256] -> [1, 12, 1, 256, 256]>
+#transform_map6 = #rock.transform_map<#map6 by [<ConstDim{0, 1} [] at [] -> ["col0"] at [0]>, <PassThrough ["dim0"] at [0] -> ["col1"] at [1]>, <ConstDim{0, 1} [] at [] -> ["dim2"] at [2]>, <PassThrough ["dim1"] at [1] -> ["dim3"] at [3]>, <PassThrough ["dim2"] at [2] -> ["dim4"] at [4]>] bounds = [12, 256, 256] -> [1, 12, 1, 256, 256]>
 #transform_map7 = #rock.transform_map<#map7 by [<Merge{1, 12, 256, 128} ["dim0"] at [0] -> ["col0", "col1", "col2", "col3"] at [0, 1, 2, 3]>] bounds = [393216] -> [1, 12, 256, 128]>
 #transform_map8 = #rock.transform_map<#map8 by [<Unmerge{12, 256, 128} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [12, 256, 128] -> [393216]>
-#transform_map9 = #rock.transform_map<#map9 by [<PassThrough ["dim0"] at [0] -> ["col1"] at [1]>, <PassThrough ["dim1"] at [1] -> ["dim3"] at [3]>, <PassThrough ["dim2"] at [2] -> ["dim4"] at [4]>] bounds = [12, 128, 256] -> [1, 12, 1, 128, 256]>
-#transform_map10 = #rock.transform_map<#map10 by [<PassThrough ["dim1"] at [1] -> ["dim1"] at [1]>, <PassThrough ["dim2"] at [3] -> ["dim2"] at [3]>, <PassThrough ["dim3"] at [4] -> ["dim3"] at [4]>, <AddDim{1} ["unit0"] at [0] -> [] at []>, <AddDim{1} ["unit2"] at [2] -> [] at []>] bounds = [1, 12, 1, 256, 128] -> [12, 256, 128]>
-#transform_map11 = #rock.transform_map<#map11 by [<PassThrough ["dim1"] at [1] -> ["dim1"] at [1]>, <Unmerge{256} ["exp2"] at [2] -> ["dim2"] at [2]>, <AddDim{1} ["unit0"] at [0] -> [] at []>, <AddDim{1} ["unit3"] at [3] -> [] at []>] bounds = [1, 12, 256, 1] -> [12, 256]>
+#transform_map9 = #rock.transform_map<#map9 by [<ConstDim{0, 1} [] at [] -> ["col0"] at [0]>, <PassThrough ["dim0"] at [0] -> ["col1"] at [1]>, <ConstDim{0, 1} [] at [] -> ["dim2"] at [2]>, <PassThrough ["dim1"] at [1] -> ["dim3"] at [3]>, <PassThrough ["dim2"] at [2] -> ["dim4"] at [4]>] bounds = [12, 128, 256] -> [1, 12, 1, 128, 256]>
+#transform_map10 = #rock.transform_map<#map10 by [<PassThrough ["dim1"] at [1] -> ["dim1"] at [0]>, <PassThrough ["dim2"] at [3] -> ["dim2"] at [1]>, <PassThrough ["dim3"] at [4] -> ["dim3"] at [2]>, <AddDim{1} ["unit0"] at [0] -> [] at []>, <AddDim{1} ["unit2"] at [2] -> [] at []>] bounds = [1, 12, 1, 256, 128] -> [12, 256, 128]>
+#transform_map11 = #rock.transform_map<#map11 by [<PassThrough ["dim1"] at [1] -> ["dim1"] at [0]>, <Unmerge{256} ["exp2"] at [2] -> ["dim2"] at [1]>, <AddDim{1} ["unit0"] at [0] -> [] at []>, <AddDim{1} ["unit3"] at [3] -> [] at []>] bounds = [1, 12, 256, 1] -> [12, 256]>
 #transform_map12 = #rock.transform_map<#map12 by [<Merge{1, 12, 256, 1} ["dim0"] at [0] -> ["col0", "col1", "col2", "col3"] at [0, 1, 2, 3]>] bounds = [3072] -> [1, 12, 256, 1]>
 #transform_map13 = #rock.transform_map<#map13 by [<Merge{12, 256, 256} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [786432] -> [12, 256, 256]>
 module {
@@ -69,7 +69,7 @@ module {
       rock.yield
     }
      softmax(qk) * %9 : tensor<12x128x256xf16>
-    } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<12x256x256xf16>, tensor<12x256xf32>
+    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<12x256x256xf16>, tensor<12x256xf32>
     %12 = rock.transform %lseOut by #transform_map11 : tensor<12x256xf32> to tensor<1x12x256x1xf32>
     %13 = rock.transform %12 by #transform_map12 : tensor<1x12x256x1xf32> to tensor<3072xf32>
     %14 = rock.transform %result by #transform_map13 : tensor<12x256x256xf16> to tensor<786432xf16>

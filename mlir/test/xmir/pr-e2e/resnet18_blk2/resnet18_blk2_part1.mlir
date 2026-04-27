@@ -1,10 +1,10 @@
-// RUN: rocmlir-gen -fut forward__part_1 --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel | rocmlir-gen -ph -fut forward__part_1_wrapper -rand 1 -rand_type float --verifier clone -relDiff_threshold 0.000002 - | rocmlir-driver -host-pipeline mhal,runner -kernel-pipeline full -targets %arch | xmir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut forward__part_1 --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel | rocmlir-gen -ph -fut forward__part_1 -rand 1 -rand_type float --verifier clone -relDiff_threshold 0.000002 - | rocmlir-driver -kernel-pipeline full -arch %arch | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 
 
 // CHECK: [1 1 1]
 
 module {
-  func.func private @forward__part_1(%arg0: tensor<1x56x56x64xf32> {mhal.read_access}, %arg1: tensor<64x64x3x3xf32> {mhal.read_access}, %arg2: tensor<1x64x1x1xf32> {mhal.read_access}, %arg3: tensor<64x1x1xf32> {mhal.read_access}, %arg4: tensor<1x64x1x1xf32> {mhal.read_access}, %arg5: tensor<1x64x1x1xf32> {mhal.read_access}) -> (tensor<1x64x56x56xf32> {mhal.write_access}) {
+  func.func private @forward__part_1(%arg0: tensor<1x56x56x64xf32>, %arg1: tensor<64x64x3x3xf32>, %arg2: tensor<1x64x1x1xf32>, %arg3: tensor<64x1x1xf32>, %arg4: tensor<1x64x1x1xf32>, %arg5: tensor<1x64x1x1xf32>) -> (tensor<1x64x56x56xf32>) {
     %1 = tosa.transpose %arg1 {perms = array<i32: 0, 2, 3, 1>} : (tensor<64x64x3x3xf32>) -> tensor<64x3x3x64xf32>
     %2 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<64xf32>}> : () -> tensor<64xf32>
     %const_shape = "tosa.const_shape"() { values = dense<[1, 64, 1, 1]> : tensor<4xindex> } : () -> !tosa.shape<4>

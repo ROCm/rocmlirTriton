@@ -12,7 +12,6 @@
 
 #include "mlir/Conversion/TosaToRock/TosaToRock.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
@@ -411,12 +410,9 @@ static bool isElementwiseOp(Operation *op) {
   // clang-format on
 }
 
-static Value addBlockArgument(OpBuilder &b, Value val, Block *block,
-                              Location loc) {
+static Value addBlockArgument(Value val, Block *block, Location loc) {
   RankedTensorType valType = cast<RankedTensorType>(val.getType());
-  val = block->addArgument(
-      MemRefType::get(valType.getShape(), valType.getElementType()), loc);
-  val = rock::getAsTensor(b, loc, val);
+  val = block->addArgument(valType, loc);
   return val;
 }
 
@@ -477,8 +473,10 @@ struct ElementwiseRegionFinder {
     if (fusionOp) {
       firstGemmBasedOp = fusionOp;
       firstGemmBasedVal = input;
-      // cache blockArgCandidates for rewrite
-      blockArgCandidates.push_back(input);
+      // Always place the first-gemm value at position 0 so that
+      // getPreSoftmaxQKArgument() (which returns block arg 0) is correct
+      // regardless of DFS visit order.
+      blockArgCandidates.insert(blockArgCandidates.begin(), input);
       return;
     }
     if (op && dyn_cast<tosa::ConstOp>(op)) {
@@ -488,7 +486,7 @@ struct ElementwiseRegionFinder {
     // Right now, this is a bit restricted that we only allow reshape-like
     // ops between in the elementwise tree that get fused to the fusion point.
     // TODO: however, the latest code gridwise-gemm-to-blockwise should tackle
-    // more cases. The absolute restriction is gemm0Output to Linalg block
+    // more cases. The absolute restriction is gemm0Output to block
     // should contain invertible transforms, but that's future work.
     if (!op || (!isElementwiseOp(op) &&
                 !isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(op))) {
@@ -511,18 +509,12 @@ struct ElementwiseRegionFinder {
   }
 
   SmallVector<Value> getElementwiseArgs() const {
-    // ElementwiseArgs doesn't contain output from the first gemm explictly.
-    // Therefore remove it.
     SmallVector<Value> elementwiseArgs = blockArgCandidates;
-    uint64_t firstGemmBlockIndex = getFirstGemmBlockIndex();
-    elementwiseArgs.erase(elementwiseArgs.begin() + firstGemmBlockIndex);
+    auto it = std::find(elementwiseArgs.begin(), elementwiseArgs.end(),
+                        firstGemmBasedVal);
+    assert(it != elementwiseArgs.end());
+    elementwiseArgs.erase(it);
     return elementwiseArgs;
-  }
-
-  int64_t getFirstGemmBlockIndex() const {
-    return std::find_if(blockArgCandidates.begin(), blockArgCandidates.end(),
-                        [this](Value v) { return v == firstGemmBasedVal; }) -
-           blockArgCandidates.begin();
   }
 
   void rewrite(Value input, OpBuilder &regionBuilder, Block *block,
@@ -535,7 +527,7 @@ struct ElementwiseRegionFinder {
       mapper.map(v, newConstOp->getResult(0));
     }
     for (Value v : blockArgCandidates) {
-      auto newBlockArg = addBlockArgument(regionBuilder, v, block, loc);
+      auto newBlockArg = addBlockArgument(v, block, loc);
       mapper.map(v, newBlockArg);
     }
     for (Operation *op : visitedOps) {
@@ -780,25 +772,6 @@ public:
   }
 };
 
-static Value insertBroadcast(Value inp, ArrayRef<int64_t> outShape,
-                             Location loc, OpBuilder &b) {
-  ArrayRef<int64_t> inpShape = cast<ShapedType>(inp.getType()).getShape();
-  bool broadcastDone = false;
-  rock::BottomUpTMBuilder broadcastDims(b, inpShape, loc);
-  for (unsigned int i = 0; i < outShape.size(); i++) {
-    if (inpShape[i] == 1 && outShape[i] != 1) {
-      broadcastDims.broadcast({i}, {outShape[i]});
-      broadcastDone = true;
-    } else {
-      broadcastDims.passThrough({i}, {i});
-    }
-  }
-  if (!broadcastDone) {
-    return inp;
-  }
-  return rock::TransformOp::create(b, loc, inp, broadcastDims.get());
-}
-
 static FailureOr<Value> mulBroadcast(Value val, bool skipCollapseExpand = true);
 
 static FailureOr<Value> getValueSkipping(Value val,
@@ -904,64 +877,6 @@ public:
     }
   }
 
-  // Helper to extract scale and matrix from a mul operation
-  FailureOr<std::pair<Value, Value>>
-  tryExtractScaleAndMatrix(Value mulInput1, Value mulInput2) const {
-    Value scale = nullptr;
-    Value matrix = nullptr;
-
-    // Check if input1 is a cast from Float4E2M1FN
-    if (tosa::CastOp castOp = mulInput1.getDefiningOp<tosa::CastOp>()) {
-      Value castInput = castOp.getInput();
-      if (isa<Float4E2M1FNType>(
-              cast<ShapedType>(castInput.getType()).getElementType())) {
-        matrix = castInput;
-        scale = mulInput2;
-      }
-    }
-    // Check if input2 is a cast from Float4E2M1FN
-    else if (tosa::CastOp castOp = mulInput2.getDefiningOp<tosa::CastOp>()) {
-      Value castInput = castOp.getInput();
-      if (isa<Float4E2M1FNType>(
-              cast<ShapedType>(castInput.getType()).getElementType())) {
-        matrix = castInput;
-        scale = mulInput1;
-      }
-    }
-
-    // Unwrap cast on scale if present
-    if (scale && scale.getDefiningOp<tosa::CastOp>()) {
-      scale = scale.getDefiningOp<tosa::CastOp>().getInput();
-    }
-    if (scale) {
-      RankedTensorType scaleType = cast<RankedTensorType>(scale.getType());
-      if (!isa<Float8E8M0FNUType>(scaleType.getElementType()) &&
-          !isa<Float32Type>(scaleType.getElementType())) {
-        return failure();
-      }
-    }
-
-    if (!scale || !matrix) {
-      return failure();
-    }
-
-    return std::make_pair(scale, matrix);
-  }
-
-  // Helper to reshape matrix and scale to match target shape
-  Value reshapeIfNeeded(Value val, ArrayRef<int64_t> targetShape, Location loc,
-                        ConversionPatternRewriter &rw) const {
-    auto valType = cast<RankedTensorType>(val.getType());
-    if (valType.getShape() == targetShape) {
-      return val;
-    }
-
-    RankedTensorType newType =
-        RankedTensorType::get(targetShape, valType.getElementType());
-    auto normalizedShapeValue = tosa::getTosaConstShape(rw, loc, targetShape);
-    return tosa::ReshapeOp::create(rw, loc, newType, val, normalizedShapeValue);
-  }
-
   LogicalResult matchAndRewrite(tosa::MatMulOp op,
                                 tosa::MatMulOp::Adaptor adaptor,
                                 ConversionPatternRewriter &rw) const final {
@@ -969,66 +884,6 @@ public:
     auto outputType = cast<RankedTensorType>(op.getType());
     auto matA = op.getA();
     auto matB = op.getB();
-    Value matABeforeCast = nullptr;
-    Value matBBeforeCast = nullptr;
-    DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
-                                  tensor::ExpandShapeOp::getOperationName()};
-
-    // Try to extract scale and matrix for input A
-    Value scaleA = nullptr;
-    FailureOr<tosa::MulOp> maybeMulA =
-        getDefiningOpSkipping<tosa::MulOp>(matA, opsToSkip);
-    if (succeeded(maybeMulA)) {
-      tosa::MulOp mulOpA = maybeMulA.value();
-      FailureOr<std::pair<Value, Value>> maybeScaleMatrixA =
-          tryExtractScaleAndMatrix(mulOpA.getInput1(), mulOpA.getInput2());
-      if (succeeded(maybeScaleMatrixA)) {
-        auto [extractedScaleA, extractedMatrixA] = maybeScaleMatrixA.value();
-        scaleA = extractedScaleA;
-        matABeforeCast = extractedMatrixA;
-      }
-    }
-
-    // Try to extract scale and matrix for input B
-    Value scaleB = nullptr;
-    FailureOr<tosa::MulOp> maybeMulB =
-        getDefiningOpSkipping<tosa::MulOp>(matB, opsToSkip);
-    if (succeeded(maybeMulB)) {
-      tosa::MulOp mulOpB = maybeMulB.value();
-      FailureOr<std::pair<Value, Value>> maybeScaleMatrixB =
-          tryExtractScaleAndMatrix(mulOpB.getInput1(), mulOpB.getInput2());
-      if (succeeded(maybeScaleMatrixB)) {
-        auto [extractedScaleB, extractedMatrixB] = maybeScaleMatrixB.value();
-        scaleB = extractedScaleB;
-        matBBeforeCast = extractedMatrixB;
-      }
-    }
-
-    // rock.gemm requires both scaleA and scaleB to be provided, or neither
-    // If only one scale is present, fall back to normal matmul
-    bool hasScaleA = (scaleA != nullptr);
-    bool hasScaleB = (scaleB != nullptr);
-    if (hasScaleA != hasScaleB) {
-      return op.emitError("Only one scale is present. For scaled GEMM, both "
-                          "scaleA and scaleB must be provided.");
-    }
-
-    // Reshape matrices and scales to match the expected shapes if needed
-    if (matABeforeCast && scaleA) {
-      ArrayRef<int64_t> targetShape =
-          cast<ShapedType>(matA.getType()).getShape();
-      matABeforeCast = reshapeIfNeeded(matABeforeCast, targetShape, loc, rw);
-      scaleA = reshapeIfNeeded(scaleA, targetShape, loc, rw);
-      matA = cast<TypedValue<TensorType>>(matABeforeCast);
-    }
-
-    if (matBBeforeCast && scaleB) {
-      ArrayRef<int64_t> targetShape =
-          cast<ShapedType>(matB.getType()).getShape();
-      matBBeforeCast = reshapeIfNeeded(matBBeforeCast, targetShape, loc, rw);
-      scaleB = reshapeIfNeeded(scaleB, targetShape, loc, rw);
-      matB = cast<TypedValue<TensorType>>(matBBeforeCast);
-    }
 
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
@@ -1050,38 +905,16 @@ public:
     SmallVector<int64_t, 3> aShape =
         llvm::to_vector<3>(cast<RankedTensorType>(matA.getType()).getShape());
     setLastDims(transposeA, aShape, {mDim, kDim});
-    Value brA = insertBroadcast(matA, aShape, loc, rw);
-    Value brAScale = nullptr;
-    if (scaleA) {
-      SmallVector<int64_t, 3> aScaleShape = llvm::to_vector<3>(
-          cast<RankedTensorType>(scaleA.getType()).getShape());
-      // TODO: Handle transpose of scaleA, currently TransposeRewritePattern
-      // will not be able to match scaled_gemms. Update logic when we have
-      // scaled_gemm support in TOSA
-      setLastDims(nullptr, aScaleShape, {mDim, kDim});
-      brAScale = insertBroadcast(scaleA, aScaleShape, loc, rw);
-    }
+    Value brA = rock::insertBroadcast(rw, loc, matA, aShape);
 
     SmallVector<int64_t, 3> bShape = llvm::to_vector<3>(
         cast<RankedTensorType>(op.getB().getType()).getShape());
     setLastDims(transposeB, bShape, {kDim, nDim});
-    Value brB = insertBroadcast(matB, bShape, loc, rw);
+    Value brB = rock::insertBroadcast(rw, loc, matB, bShape);
 
-    Value brBScale = nullptr;
-    if (scaleB) {
-      SmallVector<int64_t, 3> bScaleShape = llvm::to_vector<3>(
-          cast<RankedTensorType>(scaleB.getType()).getShape());
-      // TODO: Handle transpose of scaleB, currently TransposeRewritePattern
-      // will not be able to match scaled_gemms. Update logic when we have
-      // scaled_gemm support in TOSA
-      setLastDims(nullptr, bScaleShape, {kDim, nDim});
-      brBScale = insertBroadcast(scaleB, bScaleShape, loc, rw);
-    }
-
-    // TODO(rocmlirTriton): quantBlockSize
     auto rockGemm = rock::GemmOp::create(
-        rw, loc, outputType, brA, brB, brAScale, brBScale, transposeA,
-        transposeB, transposeC, /*aScaleTransposed=*/nullptr,
+        rw, loc, outputType, brA, brB, /*scaleA=*/nullptr, /*scaleB=*/nullptr,
+        transposeA, transposeB, transposeC, /*aScaleTransposed=*/nullptr,
         /*bScaleTransposed=*/nullptr,
         /*quantBlockSize=*/nullptr,
         /*params=*/nullptr);
@@ -1092,6 +925,126 @@ public:
     Value result = rockGemm.getResult();
 
     rw.replaceOp(op, result);
+
+    return success();
+  }
+};
+
+class MatmulTBlockScaledConverter final
+    : public OpConversionPattern<tosa::MatmulTBlockScaledOp> {
+public:
+  using OpConversionPattern<tosa::MatmulTBlockScaledOp>::OpConversionPattern;
+
+  UnitAttr getTranspose(tosa::MatmulTBlockScaledOp op, StringRef name) const {
+    if (auto attr = op->getAttrOfType<BoolAttr>(name)) {
+      if (attr.getValue())
+        return UnitAttr::get(op->getContext());
+    }
+    return nullptr;
+  }
+
+  LogicalResult matchAndRewrite(tosa::MatmulTBlockScaledOp op,
+                                tosa::MatmulTBlockScaledOp::Adaptor adaptor,
+                                ConversionPatternRewriter &rw) const final {
+    Location loc = op->getLoc();
+    auto outputType = cast<RankedTensorType>(op.getType());
+
+    // Get operands
+    // For matmul_t_block_scaled:
+    //   a_data: [batch, M, K] - f4E2M1FN
+    //   a_scale: [batch, M, K/blockSize] - f8E8M0FNU
+    //   b_data: [batch, N, K] - f4E2M1FN (B is transposed by default for
+    //   tosa.matmul_t_block_scaled)
+    //   b_scale: [batch, N, K/blockSize] - f8E8M0FNU (B scale is already
+    //   transposed by default for tosa.matmul_t_block_scaled) output: [batch,
+    //   M, N] - f32
+    Value aData = adaptor.getAData();
+    Value aScale = adaptor.getAScale();
+    Value bData = adaptor.getBData();
+    Value bScale = adaptor.getBScale();
+
+    auto aScaleType = cast<RankedTensorType>(aScale.getType());
+    auto bScaleType = cast<RankedTensorType>(bScale.getType());
+
+    ArrayRef<int64_t> aScaleShape = aScaleType.getShape();
+    ArrayRef<int64_t> bScaleShape = bScaleType.getShape();
+
+    // Get transpose attributes that may have been set by
+    // TransposeRewritePattern. These are discardable BoolAttrs (not part of
+    // MatmulTBlockScaledOp's ODS definition), so they don't affect the op's
+    // verifier and are safe with -verify-passes.
+    UnitAttr transposeA = getTranspose(op, "transpose_a");
+    UnitAttr transposeBFromAttr = getTranspose(op, "transpose_b");
+    UnitAttr transposeC = getTranspose(op, "transpose_c");
+    UnitAttr transposeAScaleFromAttr = getTranspose(op, "transpose_a_scale");
+    UnitAttr transposeBScaleFromAttr = getTranspose(op, "transpose_b_scale");
+
+    // Get blockSize from the op's block_size attribute (source of truth)
+    int64_t blockSize = static_cast<int64_t>(
+        tosa::BlockSizeAttr::getBlockSizeValue(op.getBlockSize()));
+
+    // Get K from B data shape
+    auto bDataType = cast<RankedTensorType>(bData.getType());
+    ArrayRef<int64_t> bShape = bDataType.getShape();
+    // B shape depends on transpose:
+    // By default B is transposed in tosa.matmul_t_block_scaled with shape
+    // [batch, N, K]. If transpose_b is toggled, shape is [batch, K, N].
+    int64_t kDim = transposeBFromAttr ? bShape[1] : bShape[2];
+
+    // The MatmulTBlockScaledOp verifier already checks C % blockSize == 0,
+    // but re-check here defensively since transpose attributes may have
+    // changed which dimension is K.
+    if (kDim % blockSize != 0)
+      return op->emitOpError("K dimension (")
+             << kDim << ") must be a multiple of block_size (" << blockSize
+             << ")";
+
+    // Validate scale K dimensions are consistent with K and blockSize
+    int64_t kScaleDimA =
+        transposeAScaleFromAttr ? aScaleShape[1] : aScaleShape[2];
+    int64_t kScaleDimB =
+        transposeBScaleFromAttr ? bScaleShape[1] : bScaleShape[2];
+    int64_t expectedKScale = kDim / blockSize;
+
+    if (kScaleDimA != expectedKScale)
+      return op->emitOpError("A scale K dimension (")
+             << kScaleDimA << ") does not match K / block_size ("
+             << expectedKScale << ")";
+    if (kScaleDimB != expectedKScale)
+      return op->emitOpError("B scale K dimension (")
+             << kScaleDimB << ") does not match K / block_size ("
+             << expectedKScale << ")";
+
+    if (failed(setSplitKAttrs(op, rw)))
+      return failure();
+
+    // Scale transpose attributes:
+    // TransposeRewritePattern can set transpose_a_scale and transpose_b_scale
+    // when transposes are fused into the matmul_t_block_scaled op.
+    // Scale transposes are independent of data transposes - rock::GemmOp can
+    // take scaleA/scaleB transposed independently from A/B arguments.
+    //
+    // - A scale: starts non-transposed [batch, M, K/blockSize], toggled if
+    //   transpose_a_scale is set
+    // - B scale: starts non-transposed [batch, N, K/blockSize] (matching
+    //   rock.gemm's non-transposed scale layout), toggled if
+    //   transpose_b_scale is set
+    UnitAttr aScaleTransposed = transposeAScaleFromAttr;
+    UnitAttr bScaleTransposed = transposeBScaleFromAttr;
+    // For matmul_t_block_scaled, B is already expected to be transposed.
+    // If transpose_b attribute is set, it toggles the transpose.
+    UnitAttr transposeB = transposeBFromAttr ? nullptr : rw.getUnitAttr();
+
+    auto rockGemm = rock::GemmOp::create(
+        rw, loc, outputType, aData, bData, aScale, bScale, transposeA,
+        transposeB, transposeC, aScaleTransposed, bScaleTransposed,
+        /*quantBlockSize=*/rw.getI64IntegerAttr(blockSize),
+        /*params=*/nullptr);
+
+    if (auto attr = op->getAttrOfType<StringAttr>("perf_config"))
+      rockGemm->setAttr("perf_config", attr);
+
+    rw.replaceOp(op, rockGemm.getResult());
 
     return success();
   }
@@ -1137,7 +1090,8 @@ struct TransposeRewritePattern : public OpRewritePattern<tosa::TransposeOp> {
     return success();
   }
 
-  LogicalResult checkMatMulTransposeValid(tosa::MatMulOp matmulOp,
+  template <typename OpT>
+  LogicalResult checkMatMulTransposeValid(OpT matmulOp,
                                           const ArrayRef<int32_t> dims) const {
     // batch dimension is expected to be 3rd from the last.
     if (dims.size() >= 3 && dims[dims.size() - 3] != (int32_t)dims.size() - 3) {
@@ -1317,6 +1271,38 @@ struct TransposeRewritePattern : public OpRewritePattern<tosa::TransposeOp> {
           return matMulOp.emitWarning(
               "transpose found leading to a matmul input other than A or B");
         }
+        // TODO: Consider removing this matmul_t_block_scaled handling if the
+        // SortDimensions pass can fully subsume transpose fusion for scaled
+        // gemms.
+      } else if (auto bsOp =
+                     dyn_cast<tosa::MatmulTBlockScaledOp>(use.getOwner())) {
+        if (checkMatMulTransposeValid(bsOp, dims).failed()) {
+          return failure();
+        }
+        bool mmNonTrivial = isMatMulNonTrivial(dims);
+        if (bsOp.getAData() == tOutput) {
+          setTranspose(bsOp, "transpose_a", mmNonTrivial);
+          bsOp.getADataMutable().assign(tInput);
+        } else if (bsOp.getBData() == tOutput) {
+          // Note: matmul_t_block_scaled already expects B to be transposed,
+          // so an additional transpose would un-transpose it
+          setTranspose(bsOp, "transpose_b", mmNonTrivial);
+          bsOp.getBDataMutable().assign(tInput);
+        } else if (bsOp.getAScale() == tOutput) {
+          // Handle transpose on A scale input
+          setTranspose(bsOp, "transpose_a_scale", mmNonTrivial);
+          bsOp.getAScaleMutable().assign(tInput);
+        } else if (bsOp.getBScale() == tOutput) {
+          // Handle transpose on B scale input
+          // Note: B scale follows B's default transpose in
+          // matmul_t_block_scaled
+          setTranspose(bsOp, "transpose_b_scale", mmNonTrivial);
+          bsOp.getBScaleMutable().assign(tInput);
+        } else {
+          return bsOp.emitWarning(
+              "transpose found leading to a matmul_t_block_scaled input other "
+              "than A/B data or scale");
+        }
       } else {
         return failure();
       }
@@ -1359,6 +1345,17 @@ struct TransposeRewritePattern : public OpRewritePattern<tosa::TransposeOp> {
       setTranspose(matMulOp, "transpose_c", isMatMulNonTrivial(dims));
       matMulOp->getResult(0).setType(tOutput.getType());
       top->replaceAllUsesWith(matMulOp);
+    } else if (tosa::MatmulTBlockScaledOp bsOp =
+                   tInput.getDefiningOp<tosa::MatmulTBlockScaledOp>()) {
+      if (checkInputHasUses(b, top, tInput).failed()) {
+        return failure();
+      }
+      if (checkMatMulTransposeValid(bsOp, dims).failed()) {
+        return failure();
+      }
+      setTranspose(bsOp, "transpose_c", isMatMulNonTrivial(dims));
+      bsOp->getResult(0).setType(tOutput.getType());
+      top->replaceAllUsesWith(bsOp);
     } else {
       if (mergeTransposeWithGemmLikeOp(b, tOutput, dims, tInput).failed()) {
         return failure();
@@ -1471,8 +1468,6 @@ struct ConvElementwiseGemmRewritePattern
       PatternRewriter &rewriter) const {
     Location loc = op.getLoc();
     auto outputType = cast<RankedTensorType>(op.getType());
-    Value output = bufferization::AllocTensorOp::create(
-        rewriter, loc, outputType, ValueRange{});
 
     // This is guaranteed by the matcher
     tosa::Conv2DOp firstConv =
@@ -1488,20 +1483,16 @@ struct ConvElementwiseGemmRewritePattern
         rewriter, op, firstConv.getInput(), firstConv.getWeight(),
         /*outputType=*/RankedTensorType(), firstConv.getPadAttr(),
         firstConv.getStrideAttr(), firstConv.getDilationAttr(), group);
-    auto firstGemmBlockIndex = elementwiseRegionFinder.getFirstGemmBlockIndex();
-
     if (failed(setSplitKAttrs(op, rewriter)))
       return;
 
     auto convElentwiseGemmOp = rock::ConvElementwiseGemmOp::create(
         rewriter, loc, outputType, convFields.filterExp, convFields.inputExp,
-        op.getB(), elementwiseOtherArgs, output,
+        op.getB(), elementwiseOtherArgs,
         /*cTransposed=*/nullptr,
         /*oTransposed=*/nullptr, convFields.pad, convFields.stride,
         convFields.dilation,
-        /*params0=*/nullptr, /*params1=*/nullptr,
-        /*firstGemmIndices=*/
-        rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
+        /*params0=*/nullptr, /*params1=*/nullptr);
 
     addConvAttributes(rewriter, convElentwiseGemmOp, convFields);
 
@@ -1560,7 +1551,6 @@ struct GemmElementwiseGemmRewritePattern
         elemwiseFinder.getElementwiseArgs();
     // This is guranteed by the matcher
     tosa::MatMulOp firstMatMulOp = elemwiseFinder.getFirstGemmBasedOp().value();
-    int64_t firstGemmBlockIndex = elemwiseFinder.getFirstGemmBlockIndex();
 
     if (failed(setSplitKAttrs(op, rewriter)))
       return;
@@ -1573,9 +1563,7 @@ struct GemmElementwiseGemmRewritePattern
             /*kTransposed=*/nullptr,
             /*vTransposed=*/nullptr,
             /*oTransposed=*/nullptr,
-            /*params0=*/nullptr, /*params1=*/nullptr,
-            /*firstGemmIndices=*/
-            rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
+            /*params0=*/nullptr, /*params1=*/nullptr);
     Block *preSecondGemmElemwiseBlock =
         &gemmElentwiseGemmOp.getPreSecondGemmBody().emplaceBlock();
     {
@@ -2994,7 +2982,6 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     UnitAttr causalAttr = isCausal ? rewriter.getUnitAttr() : nullptr;
     ElementwiseRegionFinder<tosa::MatMulOp> elemwiseRegion =
         attentionMatcherValues.preSoftmaxElementwiseFinder;
-    int64_t firstGemmBlockIndex = elemwiseRegion.getFirstGemmBlockIndex();
 
     IntegerAttr numHeadsQ, numHeadsKV;
     Value queries, keys, values;
@@ -3011,9 +2998,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         /*vTransposed=*/nullptr,
         /*oTransposed=*/nullptr, causalAttr,
         /*splitKV=*/rewriter.getI32IntegerAttr(1), softmaxTypeAttr,
-        /*params0=*/nullptr, /*params1=*/nullptr,
-        /*firstGemmIndices=*/
-        rewriter.getDenseI64ArrayAttr(firstGemmBlockIndex));
+        /*params0=*/nullptr, /*params1=*/nullptr);
     Block *preSoftmaxElemwiseBlock = &attnOp.getPreSoftmaxBody().emplaceBlock();
     {
       PatternRewriter::InsertionGuard guard(rewriter);
@@ -3069,8 +3054,6 @@ typename std::enable_if_t<
                                                         &rw) {
   Location loc = op->getLoc();
   auto outputType = cast<RankedTensorType>(op.getType());
-  Value output =
-      bufferization::AllocTensorOp::create(rw, loc, outputType, ValueRange{});
 
   int32_t blockSize = 256;
   auto elementCount =
@@ -3163,7 +3146,7 @@ public:
     }
     if (bcastInput) {
       Value bcast =
-          insertBroadcast(bcastInput, out.getType().getShape(), loc, rw);
+          rock::insertBroadcast(rw, loc, bcastInput, out.getType().getShape());
       rw.replaceOp(op, bcast);
       return success();
     }
@@ -3192,6 +3175,9 @@ public:
 
     bool changed = false;
     for (OpOperand &operand : op->getOpOperands()) {
+      // tosa.mul's shift operand (operand #2) must stay scalar per TOSA spec.
+      if (isa<tosa::MulOp>(op) && operand.getOperandNumber() == 2)
+        continue;
       auto operandType = dyn_cast<RankedTensorType>(operand.get().getType());
       if (!operandType)
         continue;
@@ -3202,8 +3188,8 @@ public:
       if (operandType.getRank() != resultType.getRank())
         continue;
 
-      Value broadcasted = insertBroadcast(operand.get(), resultType.getShape(),
-                                          op->getLoc(), rewriter);
+      Value broadcasted = rock::insertBroadcast(
+          rewriter, op->getLoc(), operand.get(), resultType.getShape());
       if (broadcasted != operand.get()) {
         rewriter.modifyOpInPlace(op, [&]() { operand.set(broadcasted); });
         changed = true;
@@ -3213,14 +3199,61 @@ public:
   }
 };
 
+class ExpandStridesConverter final : public OpRewritePattern<tosa::CustomOp> {
+public:
+  using OpRewritePattern<tosa::CustomOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::CustomOp op,
+                                PatternRewriter &rw) const final {
+    if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
+      return rw.notifyMatchFailure(op, "domain isn't rocmlir");
+    if (op.getOperatorName() != ROCK_CUSTOMOP_EXPAND_STRIDES)
+      return rw.notifyMatchFailure(op, "isn't an expand_strides op");
+
+    Location loc = op.getLoc();
+    Value input = op->getOperand(0);
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto outputType = cast<RankedTensorType>(op.getResult(0).getType());
+    int64_t rank = inputType.getRank();
+
+    SmallVector<StringRef> dimNames;
+    SmallVector<StringRef> outDimNames;
+    for (int64_t i = 0; i < rank; ++i) {
+      dimNames.push_back(
+          rw.getStringAttr("dim" + std::to_string(i)).getValue());
+      outDimNames.push_back(
+          rw.getStringAttr("exp" + std::to_string(i)).getValue());
+    }
+
+    rock::BottomUpTMBuilder padBuilder(rw, dimNames, inputType.getShape(),
+                                       loc);
+    for (int64_t i = 0; i < rank; ++i) {
+      if (inputType.getDimSize(i) == outputType.getDimSize(i)) {
+        padBuilder.passThrough(dimNames[i]);
+      } else {
+        if (outputType.getDimSize(i) < inputType.getDimSize(i))
+          return rw.notifyMatchFailure(
+              op, "output dim " + std::to_string(i) +
+                      " is smaller than input dim");
+        int64_t rightPad = outputType.getDimSize(i) - inputType.getDimSize(i);
+        padBuilder.pad(outDimNames[i], dimNames[i], /*left=*/0, rightPad);
+      }
+    }
+    rock::TransformMapAttr padAttr = padBuilder.get();
+    Value padded = rock::TransformOp::create(rw, loc, input, padAttr);
+    rw.replaceOp(op, padded);
+
+    return success();
+  }
+};
+
 } // namespace
 
 void tosa::populateTosaToRockConversionPatterns(MLIRContext *context,
                                                 RewritePatternSet &patterns) {
   patterns.add<ForwardConvConverter<tosa::Conv2DOp>,
                ForwardConvConverter<tosa::Conv3DOp>, BackwardConvConverter,
-               MatMulConverter, ReduceSumConverter, ReduceMaxConverter>(
-      context);
+               MatMulConverter, MatmulTBlockScaledConverter, ReduceSumConverter,
+               ReduceMaxConverter>(context);
 }
 
 void tosa::populateTosaToRockAttentionConversionPatterns(
@@ -3241,6 +3274,6 @@ void tosa::populateTosaToRockConvGemmConversionPatterns(
 void tosa::populateTosaToRockTensorConversionPatterns(
     MLIRContext *context, RewritePatternSet &patterns) {
   patterns.add<TransposeRewritePattern, CollapseExpandRewritePattern,
-               MulSplatOneRewritePattern, ElementwiseBroadcastInserter>(
-      context);
+               MulSplatOneRewritePattern, ElementwiseBroadcastInserter,
+               ExpandStridesConverter>(context);
 }

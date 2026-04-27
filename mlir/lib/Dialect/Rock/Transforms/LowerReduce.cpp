@@ -33,7 +33,6 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
-#include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -59,6 +58,29 @@ using namespace mlir::rock;
 
 namespace {
 
+/// Walk a single-use chain of TransformOps from `start` to a StoreOp,
+/// collecting intermediate TransformOps into `chain`.  Returns the StoreOp,
+/// or failure if the chain is broken by a multi-use value or an unexpected op.
+static FailureOr<StoreOp>
+collectTransformChain(Value start, SmallVectorImpl<TransformOp> &chain) {
+  Value cur = start;
+  while (cur.hasOneUse()) {
+    Operation *user = *cur.user_begin();
+    if (auto tOp = dyn_cast<TransformOp>(user)) {
+      chain.push_back(tOp);
+      cur = tOp.getResult();
+    } else if (auto store = dyn_cast<StoreOp>(user)) {
+      return store;
+    } else {
+      user->emitError("unexpected op between rock.reduce and rock.store: ")
+          << user->getName();
+      return failure();
+    }
+  }
+
+  return emitError(cur.getLoc(), "expected single-use chain from reduce to store");
+}
+
 struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
   using OpRewritePattern<rock::ReduceOp>::OpRewritePattern;
 
@@ -66,88 +88,74 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
                                 PatternRewriter &rewriter) const override {
     Location loc = reduceOp.getLoc();
     Value reduceInput = reduceOp.getIn();
-    int64_t axis = reduceOp.getAxis().getSExtValue();
-    ReduceMethod method = reduceOp.getReduceMethod();
 
     auto inputType = cast<RankedTensorType>(reduceInput.getType());
     ArrayRef<int64_t> inputShape = inputType.getShape();
-    int64_t rank = inputShape.size();
 
     StoreMethod storeMethod;
-    switch (method) {
+    switch (reduceOp.getReduceMethod()) {
     case ReduceMethod::Sum:
       storeMethod = StoreMethod::AtomicAdd;
       break;
     case ReduceMethod::Max:
       storeMethod = StoreMethod::AtomicMax;
       break;
-    default:
-      return reduceOp.emitError("unexpected reduce method");
     }
 
-    // Find the rock.store that directly consumes the reduce result.
     Value reduceResult = reduceOp.getResult();
-    FailureOr<SetVector<StoreOp>> maybeStores =
-        rock::traceRootOutputToStoreOps(reduceResult);
+    if (reduceResult.getNumUses() != 1)
+      return reduceOp.emitError("Expected exactly one use of the ReduceOp");
 
-    if (failed(maybeStores)) {
-      return reduceOp.emitError("cannot trace to rock::StoreOp");
-    }
-    SetVector<StoreOp> &stores = maybeStores.value();
-
-    if (stores.empty())
+    // Walk from the reduce result through any intermediate TransformOps
+    // (e.g. Merge flattening the output to match the function signature)
+    // to the store.
+    SmallVector<TransformOp> intermediateOps;
+    FailureOr<StoreOp> maybeStore =
+        collectTransformChain(reduceResult, intermediateOps);
+    if (failed(maybeStore))
       return reduceOp.emitError(
-          "rock.reduce result does not feed into a rock.store");
-
-    if (stores.size() != 1)
-      return reduceOp.emitError(
-          "Expected exactly one rock.store to consume the reduce result");
-
-    if(reduceResult.getNumUses() != 1) {
-      return reduceOp.emitError(
-          "Expected exactly one use of the ReduceOp");
-    }
-
-    StoreOp storeOp = stores[0];
-
-    // Build a Broadcast transform on the store destination.
-    // The destination has the reduced shape (axis dim = 1).
-    // We broadcast that axis to match the unreduced input shape.
-    Value storeDest = storeOp.getDest();
-    auto destType = cast<RankedTensorType>(storeDest.getType());
-    ArrayRef<int64_t> destShape = destType.getShape();
-
-    SmallVector<StringAttr> dimNameAttrs;
-    SmallVector<StringRef> dimNames;
-    for (int64_t i = 0; i < rank; ++i) {
-      dimNameAttrs.push_back(rewriter.getStringAttr(Twine("d") + Twine(i)));
-      dimNames.push_back(dimNameAttrs.back().getValue());
-    }
-
-    BottomUpTMBuilder tmBuilder(rewriter, dimNames, destShape, loc);
-    for (int64_t i = 0; i < rank; ++i) {
-      if (i == axis) {
-        tmBuilder.broadcast({static_cast<uint32_t>(i)}, {inputShape[i]});
-      } else {
-        tmBuilder.passThrough(dimNames[i]);
-      }
-    }
-    TransformMapAttr broadcastMap = tmBuilder.get();
+          "could not find rock.store along single-use chain from reduce");
+    StoreOp storeOp = *maybeStore;
 
     rewriter.setInsertionPoint(storeOp);
-    ArrayAttr transformsArr = rewriter.getArrayAttr({broadcastMap});
-    Value transformedDest = rock::transform(rewriter, storeDest, transformsArr);
+    Value transformedDest = storeOp.getDest();
+
+    // Undo intermediate transforms on the store destination so its shape
+    // matches the reduce output (e.g. Unmerge a prior Merge).
+    if (!intermediateOps.empty()) {
+      ArrayAttr inverted = rock::invertTransforms(
+          rewriter, loc,
+          rewriter.getArrayAttr(llvm::map_to_vector(
+              intermediateOps,
+              [](TransformOp tOp) -> Attribute { return tOp.getTransform(); })));
+      if (!inverted)
+        return reduceOp.emitError(
+            "Cannot invert intermediate transform between reduce and store");
+      transformedDest = rock::transform(rewriter, transformedDest, inverted);
+    }
+
+    // Broadcast the reduced axis back to the unreduced input size.
+    transformedDest =
+        rock::insertBroadcast(rewriter, loc, transformedDest, inputShape);
 
     // Create a new store with the old store method, then update it
     // via setStoreMethodAndPrefill which sets the atomic method + prefill.
     auto newStore =
         StoreOp::create(rewriter, loc, storeOp.getResult().getType(),
                         reduceInput, transformedDest, storeOp.getStoreMethod());
-
     if (failed(setStoreMethodAndPrefill(rewriter, newStore, storeMethod)))
       return storeOp.emitError("failed to set store method and prefill");
 
+    // The intermediate transforms and reduceOp form a single-use chain
+    // (enforced by collectTransformChain and the getNumUses check above)
+    // that is now dead.  All erasures are deferred by the
+    // ConversionPatternRewriter (applyPartialConversion) and committed
+    // together, so we must mark every op in the chain for removal —
+    // otherwise the framework inserts unrealized_conversion_casts for
+    // the still-live intermediate references.
     rewriter.replaceOp(storeOp, newStore);
+    for (TransformOp tOp : llvm::reverse(intermediateOps))
+      rewriter.eraseOp(tOp);
     rewriter.eraseOp(reduceOp);
     return success();
   }

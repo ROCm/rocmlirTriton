@@ -47,3 +47,7 @@ config = "-g 3 -m 1024 -k 768 -n 1024"
 # Test large tensors with padding
 [[suite.test]]
 config = "-g 1 -m 32768 -k 32 -n 32769"
+# triton doesn't let us load i4/f4, so we can only load 2 packed i4 as i8
+[[suite.test.exclude]]
+name = "transB"
+values = ["false"]

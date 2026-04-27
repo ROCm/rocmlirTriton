@@ -1,62 +1,3 @@
-get_property(rocmlir_dialect_libs GLOBAL PROPERTY ROCMLIR_DIALECT_LIBS)
-get_property(rocmlir_capi_libs GLOBAL PROPERTY ROCMLIR_PUBLIC_C_API_LIBS)
-
-set(LIBS
-  ${rocmlir_dialect_libs}
-  ${rocmlir_capi_libs}
-  MLIRAnalysis
-  MLIRFuncInlinerExtension
-  MLIRVectorToLLVM
-  MLIRVectorToLLVMPass
-
-  TritonIR
-  TritonGPUIR
-  TritonAnalysis
-  TritonGPUTransforms
-  TritonAMDGPUToLLVM
-  TritonAMDGPUTransforms
-  TritonAMDAnalysis
-  TritonAMDGPUDialectToLLVM
-  TritonAMDUtils
-  GluonTransforms
-  TritonInstrumentToLLVM
-  NVHopperTransforms
-  ProtonToProtonGPU
-  ProtonGPUToLLVM
-  ProtonNVIDIAGPUToLLVM
-  ProtonAMDGPUToLLVM
-  ProtonGPUTransforms
-  TritonLLVMIR
-  NVGPUToLLVM
-  TritonInstrumentTransforms
-)
-
-set(CMAKE_BUILD_RPATH ${CMAKE_BUILD_DIR}/external/llvm-project/llvm/lib)
-
-llvm_add_library(MLIRRockThin
-PARTIAL_SOURCES_INTENDED
-
-  rocmlir-lib.cpp
-
-  LINK_LIBS
-  ${LIBS}
-  )
-
-# Add Triton include directories for compilation
-target_include_directories(MLIRRockThin PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_BINARY_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/third_party/nvidia
-  ${TRITON_BINARY_DIR}/third_party/nvidia
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_PROJECT_DIR}
-  ${TRITON_BINARY_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party/amd/include
-  ${TRITON_BINARY_DIR}/third_party/nvidia/include
-)
-
 llvm_canonicalize_cmake_booleans(BUILD_FAT_LIBROCKCOMPILER)
 # Static library target, enabled only when building static libs
 if(BUILD_FAT_LIBROCKCOMPILER)
@@ -73,6 +14,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   set(LIBRARY_NAME rockCompiler)
 
   include(librockcompiler_deps.cmake)
+  set(__rocmlir_targets ${__rocmlir_libs})
 
   # Static libraries on Windows have a 4GB size limit. The Debug version of the FAT library
   # exceeds that limit significantly. Therefore, the change is to expose CMake's INTERFACE
@@ -84,10 +26,10 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   add_library(${LIBRARY_NAME} INTERFACE)
 
   if (WIN32)
-    add_dependencies(${LIBRARY_NAME} MLIRRockThin)
+    add_dependencies(${LIBRARY_NAME} ${__rocmlir_targets})
 
     foreach(__library ${__mlir_libs})
-      list(APPEND __mlir_libraries ${LLVM_EXTERNAL_LIB_DIR}/${__library}.lib)
+      list(APPEND __mlir_libraries ${LLVM_LIBRARY_DIR}/${__library}.lib)
       target_link_libraries(${LIBRARY_NAME}
           INTERFACE
               $<BUILD_INTERFACE:${__library}>
@@ -123,7 +65,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     # Get the proper path to all these libraries
     list(TRANSFORM __rocmlir_libs PREPEND "${ROCMLIR_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}")
     list(TRANSFORM __rocmlir_libs APPEND ${CMAKE_STATIC_LIBRARY_SUFFIX})
-    list(TRANSFORM __mlir_libs PREPEND "${LLVM_EXTERNAL_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}")
+    list(TRANSFORM __mlir_libs PREPEND "${LLVM_LIBRARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}")
     list(TRANSFORM __mlir_libs APPEND ${CMAKE_STATIC_LIBRARY_SUFFIX})
 
     # Step one: construct mri file.
@@ -132,7 +74,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
                        COMMAND for archive in ${__rocmlir_libs} ${__mlir_libs} \; do echo "addlib $$archive" >> ${mri_file} \; done
                        COMMAND echo "save" >> ${mri_file}
                        COMMAND echo "end" >> ${mri_file}
-                       DEPENDS MLIRRockThin)
+                       DEPENDS ${__rocmlir_targets})
 
     # Step two: use mri file to generate the fat library.
     add_custom_command(OUTPUT ${full_output_path}
@@ -160,11 +102,6 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     unset(__library_name)
 
   endif()
-
-  # Install Miir.h to ${CMAKE_INSTALL_PREFIX}/include/${PACKAGE_NAME}/
-  # as part of component rockCompiler
-  rocm_install(FILES Miir.h
-    DESTINATION include/${PACKAGE_NAME})
 
   # Install a target, i.e. ${package_name}::${component_name}, as part of
   # devel component and export it to be searchable by find_package().

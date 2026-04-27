@@ -8,7 +8,6 @@
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/math.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -76,9 +75,9 @@ std::optional<GemmSize> mlir::rock::calculatePadding(int64_t kPerBlock,
                                                      int64_t mPerBlock,
                                                      int64_t nPerBlock,
                                                      const GemmSize &gemmSize) {
-  int64_t kExtra = kPerBlock - math_util::mod_1_to_n(gemmSize.k, kPerBlock);
-  int64_t mExtra = mPerBlock - math_util::mod_1_to_n(gemmSize.m, mPerBlock);
-  int64_t nExtra = nPerBlock - math_util::mod_1_to_n(gemmSize.n, nPerBlock);
+  int64_t kExtra = llvm::alignTo(gemmSize.k, kPerBlock) - gemmSize.k;
+  int64_t mExtra = llvm::alignTo(gemmSize.m, mPerBlock) - gemmSize.m;
+  int64_t nExtra = llvm::alignTo(gemmSize.n, nPerBlock) - gemmSize.n;
   if (mExtra == 0 && kExtra == 0 && nExtra == 0)
     return std::nullopt;
   return GemmSize(0, mExtra, kExtra, nExtra);
@@ -263,9 +262,24 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
 LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
                                                         Type dataTypeA,
                                                         Type dataTypeB) {
-  // TODO(roctriton): We should probably implement this.
-  (void)params;
   (void)dataTypeA;
   (void)dataTypeB;
+
+  /// MFMA/XDL-only heuristic (rocMLIR `PopulateParamsXDL::specificCouldBePerformant`):
+  /// factor total wave count into an M×N wave grid; `nPerWave` is
+  /// `nPerBlock / nWaves`; `mnPerXdl` is `matrixInstrNonkdim`.
+
+
+  /// WMMA uses `matrixInstrNonkdim == 0`; do not apply XDL pruning here so the
+  /// full tuning space stays aligned with `computeNumWaves` (e.g. 2/4/8 on RDNA).
+  int64_t mnPerXdl = params.getMatrixInstrNonkdim();
+  if (mnPerXdl == 0)
+    return success();
+
+  int64_t numWaves = params.getNumWaves();
+  // XDL: limit to wave counts this heuristic was derived for (see rocMLIR).
+  if (numWaves != 1 && numWaves != 2 && numWaves != 4)
+    return failure();
+
   return success();
 }

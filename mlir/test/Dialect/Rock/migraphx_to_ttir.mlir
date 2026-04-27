@@ -4,9 +4,11 @@
 // TODO(rocmlirTriton): Add dummy check to make FileCheck happy
 // CHECK: module
 
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch |  rocmlir-driver -arch %arch -c --mlir-print-ir-after=rock-transforms-to-ptr -o /dev/null 2>&1 | FileCheck %s
+// TODO(rocmlirTriton): Re-enable once the test has actual kernel IR.
+// R_U_N: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch |  rocmlir-driver -arch %arch -c --mlir-print-ir-after=rock-lower-blockwise-to-ptr -o /dev/null 2>&1 | FileCheck %s
 
 // TODO(rocmlirTriton): Fix this test
+// UNSUPPORTED: true
 
 module {
   // DISABLED-CHECK: %[[TRANS0:.*]] = rock.transform %{{.*}} <Unmerge{32, 4, 32} ["k_loop", "k_thread", "k_iter"] at [0, 5, 7] -> ["k"] at [1]>

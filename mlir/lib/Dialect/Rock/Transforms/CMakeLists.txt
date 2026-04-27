@@ -10,20 +10,26 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   ViewToTransform.cpp
   FusionSplitkRegularizationPass.cpp
   LegalizeFloatTypes.cpp
-  TransformsToPtr.cpp
+  LowerBlockwiseToPtr.cpp
+  ConvertNarrowTypeSignatures.cpp
+  EmulateNarrowTypes.cpp
   MaskNonZeroPreservingFusions.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
   SerializeHostFuncs.cpp
   FuncToTritonFunc.cpp
+  ResolveKernelLaunchParams.cpp
   RestoreHostCode.cpp
+  SortDimensionsMemoryLayout.cpp
   InsertOutputStores.cpp
   InsertOutputFusionLoads.cpp
   RegularizeInput.cpp
   LowerLoads.cpp
   LowerReduce.cpp
   LowerStores.cpp
+  RegularizeInterGemmFusion.cpp
   RegularizeOutput.cpp
+  RockFlattenTosaFuncArgs.cpp
   RockTosaToElementwise.cpp
 
   ADDITIONAL_HEADER_DIRS

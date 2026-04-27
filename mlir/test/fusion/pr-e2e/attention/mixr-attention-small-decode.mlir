@@ -1,7 +1,7 @@
 // This is a design that was in the MIGraphX CI that was previously failing
 // here: https://ontrack-internal.amd.com/browse/SWDEV-558297
 
-// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_attention_wrapper --verifier clone - | rocmlir-driver -host-pipeline mhal -kernel-pipeline full | xmir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_attention --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 
 module {
   // CHECK: [1 1 1]
@@ -10,7 +10,7 @@ module {
         %arg1: !migraphx.shaped<1x2x4x2xf16, 16x8x2x1>,
         %arg2: !migraphx.shaped<1x2x4x2xf16, 16x8x2x1>,
         %arg3: !migraphx.shaped<1x1xsi32, 1x1>
-    ) -> !migraphx.shaped<1x1x4xf16, 4x4x1> attributes {arch = "", kernel = "mixr", num_cu = 0 : i64} {
+    ) -> !migraphx.shaped<1x1x4xf16, 4x4x1> attributes {rock.kernel} {
     %0 = migraphx.literal(dense<[0, 1, 2, 3]> : tensor<4xsi32>) : <4xsi32, 1>
     %1 = migraphx.literal(dense<0xFC00> : tensor<1xf16>) : <1xf16, 1>
     %2 = migraphx.literal(dense<1.000000e+00> : tensor<1xf16>) : <1xf16, 1>

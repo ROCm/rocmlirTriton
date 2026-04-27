@@ -97,6 +97,84 @@ func.func @test_extract_ptr_hoisting(%arg0: tensor<8192xf16>, %arg1: tensor<8192
 
 // -----
 
+// Verifies Pad transforms produce non-trivial validity masks with bounds checks
+// CHECK-LABEL: @test_pad_mask
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4032xf16>)
+//      CHECK:   %[[BASE_PTR:.*]] = rock.extract_ptr %[[ARG0]] : tensor<4032xf16> -> i32
+//      CHECK:   tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+//      CHECK:   tt.expand_dims {{.*}} : tensor<64xi32> -> tensor<64x1xi32>
+//      CHECK:   tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+//      CHECK:   tt.expand_dims {{.*}} : tensor<64xi32> -> tensor<1x64xi32>
+//      CHECK:   %[[BOUND:.*]] = arith.constant 63 : i32
+//      CHECK:   arith.cmpi ult, {{.*}}, {{.*}} : tensor<64x1xi32>
+//      CHECK:   arith.andi {{.*}} : tensor<64x1xi1>
+//      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
+//      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
+//      CHECK:   tt.broadcast {{.*}} : tensor<64x1xi1> -> tensor<64x64xi1>
+//      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @test_pad_mask(%arg0: tensor<4032xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // Unmerge into 63x64, then Pad the first dim by 1 on the right.
+  // The view is 64x64 but the last row is out-of-bounds.
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{63, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [63, 64] -> [4032]> : tensor<4032xf16> to tensor<63x64xf16>
+  %1 = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1)> by [<Pad{0, 1} ["m_padded"] at [0] -> ["m"] at [0]>, <PassThrough ["n"] at [1] -> ["n"] at [1]>] bounds = [64, 64] -> [63, 64]> : tensor<63x64xf16> to tensor<64x64xf16>
+
+  %pointers, %mask = rock.transforms_to_ptr %1 : tensor<64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
+  %2 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+
+  return %2 : tensor<64x64xf16>
+}
+
+// -----
+
+// Verifies constant buffer root uses base pointer of 0 (no extract_ptr).
+// This mirrors attention where a fakeTensor is used to compute a mask
+// for out-of-bounds padding, not to actually load memory.
+// CHECK-LABEL: @test_constant_buffer
+//  CHECK-NOT:   rock.extract_ptr
+//      CHECK:   tt.make_range
+//      CHECK:   tt.splat %{{.*}} : i32 -> tensor<64x64xi32>
+//      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @test_constant_buffer(%arg0: tensor<64x64xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %cst = arith.constant dense<0.0> : tensor<4096xf16>
+
+  %0 = rock.transform %cst by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf16> to tensor<64x64xf16>
+
+  %pointers, %mask = rock.transforms_to_ptr %0 : tensor<64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
+  %1 = arith.select %mask, %arg0, %arg1 : tensor<64x64xi1>, tensor<64x64xf16>
+
+  return %1 : tensor<64x64xf16>
+}
+
+// -----
+
+// Verifies no extra indices case (source rank = output rank)
+// CHECK-LABEL: @test_no_extra_indices
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4096xf16>)
+//      CHECK:   %[[BASE_PTR:.*]] = rock.extract_ptr %[[ARG0]] : tensor<4096xf16> -> i32
+//      CHECK:   tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+//      CHECK:   tt.expand_dims
+//      CHECK:   tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+//      CHECK:   tt.expand_dims
+//      CHECK:   arith.muli
+//      CHECK:   arith.addi
+//      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
+//      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
+//      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
+//      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @test_no_extra_indices(%arg0: tensor<4096xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf16> to tensor<64x64xf16>
+
+  %pointers, %mask = rock.transforms_to_ptr %0 : tensor<64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
+  %1 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+
+  return %1 : tensor<64x64xf16>
+}
+
+// -----
+
 // Verifies non-square tile shapes produce correct make_range bounds
 // CHECK-LABEL: @test_nonsquare_tile
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4096xf16>)
@@ -122,18 +200,41 @@ func.func @test_nonsquare_tile(%arg0: tensor<4096xf16>) -> tensor<32x128xf16> at
 
 // -----
 
-// Verifies that insufficient extra indices produces a proper error
-func.func @test_insufficient_indices(%arg0: tensor<8192xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+// Verifies conv-style input transforms with padding=1 (same-size output).
+// Pad{1,1} produces bounds checks; Embed + Merge produce divsi/remsi.
+// CHECK-LABEL: @test_embed_conv_style
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<1048576xf32>)
+//      CHECK:   rock.extract_ptr %[[ARG0]]
+//      CHECK:   tt.make_range
+//      CHECK:   tt.expand_dims
+//      CHECK:   tt.make_range
+//      CHECK:   tt.expand_dims
+//      CHECK:   arith.divsi
+//      CHECK:   arith.remsi
+//      CHECK:   arith.cmpi
+//      CHECK:   arith.andi
+//      CHECK:   rock.blockwise_load_ptr
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @test_embed_conv_style(%arg0: tensor<1048576xf32>) -> tensor<8x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %c0_i32 = arith.constant 0 : i32
 
-  // Transform with Unmerge creates dimensions that require indices
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d0 * 4096 + d1 * 64 + d2)> by [<Unmerge{2, 64, 64} ["k_loop", "m", "n"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [2, 64, 64] -> [8192]> : tensor<8192xf16> to tensor<2x64x64xf16>
+  // 1. Unmerge raw into ni, ci, 0i, 1i with AddDim for gi
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 8 + d2) * 32 + d3) * 32 + d4)> by [<Unmerge{128, 8, 32, 32} ["ni", "ci", "0i", "1i"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [128, 1, 8, 32, 32] -> [1048576]> : tensor<1048576xf32> to tensor<128x1x8x32x32xf32>
 
-  // Only 1 index provided but output tile is 2D (64x64), requiring at least 2 indices
-  // expected-error@+2 {{requires at least 2 extra indices for output tile of rank 2, but only 1 indices were provided}}
-  // expected-error@+1 {{failed to legalize operation 'rock.transforms_to_ptr' that was explicitly marked illegal}}
-  %pointers, %mask = rock.transforms_to_ptr %0[%c0_i32] : tensor<2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-  %1 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  // 2. Pad spatial dims by 1 on each side (same-size conv)
+  %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3 - 1, d4 - 1)> by [<PassThrough ["ni"] at [0] -> ["ni"] at [0]>, <PassThrough ["gi"] at [1] -> ["gi"] at [1]>, <PassThrough ["ci"] at [2] -> ["ci"] at [2]>, <Pad{1, 1, 1, 1} ["0ipad", "1ipad"] at [3, 4] -> ["0i", "1i"] at [3, 4]>] bounds = [128, 1, 8, 34, 34] -> [128, 1, 8, 32, 32]> : tensor<128x1x8x32x32xf32> to tensor<128x1x8x34x34xf32>
 
-  return %1 : tensor<64x64xf16>
+  // 3. Embed for 3x3 sliding window (stride 1), output spatial = 32x32
+  %2 = rock.transform %1 by <affine_map<(d0, d1, d2, d3, d4, d5, d6) -> (d0, d1, d2, d3 + d4, d5 + d6)> by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Embed{1, 1} ["0", "0o"] at [3, 4] -> ["0ipad"] at [3]>, <Embed{1, 1} ["1", "1o"] at [5, 6] -> ["1ipad"] at [4]>] bounds = [128, 1, 8, 3, 32, 3, 32] -> [128, 1, 8, 34, 34]> : tensor<128x1x8x34x34xf32> to tensor<128x1x8x3x32x3x32xf32>
+
+  // 4. Merge into gemmG, gemmK, gemmN (gemmN = 128*32*32 = 131072)
+  %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (d2 floordiv 1024, d0, d1 floordiv 9, (d1 mod 9) floordiv 3, (d2 mod 1024) floordiv 32, d1 mod 3, d2 mod 32)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{8, 3, 3} ["gemmK"] at [1] -> ["ci", "0", "1"] at [2, 3, 5]>, <Merge{128, 32, 32} ["gemmN"] at [2] -> ["ni", "0o", "1o"] at [0, 4, 6]>] bounds = [1, 72, 131072] -> [128, 1, 8, 3, 32, 3, 32]> : tensor<128x1x8x3x32x3x32xf32> to tensor<1x72x131072xf32>
+
+  // 5. Tile into blocks
+  %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 8 + d3, d2 * 64 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{9, 8} ["k_block", "k_iter"] at [1, 3] -> ["gemmK"] at [1]>, <Unmerge{2048, 64} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 9, 2048, 8, 64] -> [1, 72, 131072]> : tensor<1x72x131072xf32> to tensor<1x9x2048x8x64xf32>
+
+  %pointers, %mask = rock.transforms_to_ptr %4[%c0_i32, %c0_i32, %c0_i32] : tensor<1x9x2048x8x64xf32> -> tensor<8x64xi32>, tensor<8x64xi1>
+  %5 = rock.blockwise_load_ptr %pointers[%mask] : tensor<8x64xi32>, tensor<8x64xi1> -> tensor<8x64xf32>
+
+  return %5 : tensor<8x64xf32>
 }

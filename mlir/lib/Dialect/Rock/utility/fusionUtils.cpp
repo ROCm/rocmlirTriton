@@ -9,7 +9,6 @@
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -83,14 +82,10 @@ LogicalResult mlir::rock::checkValidOutputFusion(
 
 bool mlir::rock::gemmGemmHasPreSecondGemmFusion(
     RockGemmGemmWrapperInterface gemmGemmOp) {
-  WalkResult res = gemmGemmOp.getPreSecondGemmRegion().walk(
-      [](Operation *fusionOp) -> WalkResult {
-        if (rock::isFusionOp(fusionOp))
-          return WalkResult::interrupt();
-        return WalkResult::advance();
-      });
-
-  return res.wasInterrupted();
+  Region &region = gemmGemmOp.getPreSecondGemmRegion();
+  if (region.empty())
+    return false;
+  return !region.front().without_terminator().empty();
 }
 
 LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {

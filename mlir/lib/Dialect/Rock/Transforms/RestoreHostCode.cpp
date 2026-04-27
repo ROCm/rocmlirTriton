@@ -89,6 +89,9 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
     metadataEntries.push_back(
         builder.getNamedAttr(rock::GridSizeAttr::getMnemonic(),
                              builder.getI64IntegerAttr(kernel.gridSize)));
+    metadataEntries.push_back(
+        builder.getNamedAttr(rock::ClusterSizeAttr::getMnemonic(),
+                             builder.getI64IntegerAttr(kernel.clusterSize)));
 
     if (!kernel.prefillArgs.empty()) {
       SmallVector<Attribute> prefillEntries;
@@ -252,7 +255,7 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
     // Create grid and block dimensions
     Value one = arith::ConstantIndexOp::create(builder, callLoc, 1);
     Value gridX = arith::ConstantIndexOp::create(
-        builder, callLoc, kernel.gridSize * kernel.numCTAs);
+        builder, callLoc, kernel.gridSize * kernel.clusterSize);
     Value blockX =
         arith::ConstantIndexOp::create(builder, callLoc, kernel.blockSize);
 
@@ -286,27 +289,22 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
       }
     }
 
-    // Triton adds workspace arguments (global scratch, profile scratch).
-    // Add null pointers for these. The number of args varies by operation
-    // type and fusions - we use kernel.argTypes.size() from the LLVM signature.
-    while (launchArgs.size() < kernel.argTypes.size()) {
-      Value nullPtr = LLVM::ZeroOp::create(builder, callLoc, ptrType);
-      launchArgs.push_back(nullPtr);
-    }
-
-    // Create dynamic shared memory size if needed
-    Value dynSharedMem = nullptr;
-    if (kernel.sharedMemorySize > 0) {
-      dynSharedMem = arith::ConstantOp::create(
-          builder, callLoc, builder.getI32Type(),
-          builder.getI32IntegerAttr(kernel.sharedMemorySize));
+    // ResolveKernelLaunchParams has already stripped unused workspace args and
+    // baked LDS into the binary, so no padding or dynamic shared memory needed.
+    if (launchArgs.size() != kernel.argTypes.size()) {
+      callOp.emitError("launch arg count (")
+          << launchArgs.size() << ") does not match kernel signature ("
+          << kernel.argTypes.size()
+          << ") — ResolveKernelLaunchParams may not have run or workspace args "
+             "are unexpectedly used";
+      return failure();
     }
 
     // Set cluster size for multi-CTA launch
     std::optional<gpu::KernelDim3> clusterSize;
-    if (kernel.numCTAs > 1) {
+    if (kernel.clusterSize > 1) {
       Value numCTAsVal =
-          arith::ConstantIndexOp::create(builder, callLoc, kernel.numCTAs);
+          arith::ConstantIndexOp::create(builder, callLoc, kernel.clusterSize);
       clusterSize = gpu::KernelDim3{numCTAsVal, one, one};
     }
 
@@ -318,7 +316,7 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
                            {SymbolRefAttr::get(ctx, kernel.name)}),
         gpu::KernelDim3{gridX, one, one},  // grid dimensions
         gpu::KernelDim3{blockX, one, one}, // block dimensions
-        dynSharedMem, launchArgs,
+        /*dynamicSharedMemorySize=*/nullptr, launchArgs,
         /*asyncTokenType=*/nullptr,
         /*asyncDependencies=*/ValueRange{}, clusterSize);
 
@@ -392,10 +390,9 @@ void RockRestoreHostCodePass::runOnOperation() {
   moduleOp->setAttr(gpu::GPUDialect::getContainerModuleAttrName(),
                     builder.getUnitAttr());
 
-  int maxSharedMemPerWG = rock::getLDSSize(arch);
   // Collect kernel information from LLVM functions
   SmallVector<KernelInfo> kernels;
-  if (failed(rock::collectKernelInfo(moduleOp, maxSharedMemPerWG, kernels))) {
+  if (failed(rock::collectKernelInfo(moduleOp, kernels))) {
     signalPassFailure();
     return;
   }
@@ -409,7 +406,7 @@ void RockRestoreHostCodePass::runOnOperation() {
   // metadata.
   if (!kernels.empty()) {
     if (failed(createGpuBinaryAndLaunchFuncs(moduleOp, options, kernels)))
-      signalPassFailure();
+      return signalPassFailure();
     // Only remove LLVM kernel functions when host functions were restored
     // (gpu.launch_func now references the kernel via gpu.binary).
     if (hasHostFuncs)

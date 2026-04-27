@@ -62,7 +62,7 @@ static cl::opt<std::string>
 static cl::opt<std::string>
     hostPipeline("host-pipeline", cl::desc("rocmlir-driver host pipeline list"),
                  cl::value_desc("comma separated list of rock pipelines: "
-                                "migraphx,highlevel or full"),
+                                "migraphx,highlevel,backend or full"),
                  cl::init(""));
 
 static cl::opt<bool> legacyRockPipeline("c", cl::Hidden, cl::init(false),
@@ -146,6 +146,7 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
   PassManager pm(module->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
+  applyDefaultTimingPassManagerCLOptions(pm);
   pm.enableVerifier(!disableVerifyPasses);
   buildPipeline(pm);
 
@@ -171,6 +172,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
+  applyDefaultTimingPassManagerCLOptions(pm);
   pm.enableVerifier(!disableVerifyPasses);
   bool needArch = kernelPipelineSet.contains("binary");
   RocmDeviceName devName;
@@ -296,7 +298,8 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                            kernelPipelineOptions, kernelFullPipeline))) {
     return failure();
   }
-  llvm::SmallDenseSet<StringRef> hostPipelineOptions{"migraphx", "highlevel"};
+  llvm::SmallDenseSet<StringRef> hostPipelineOptions{"migraphx", "highlevel",
+                                                     "backend"};
   llvm::SmallDenseSet<StringRef> hostPipelineSet;
   std::string hostPipelineStr = hostPipeline.getValue();
   if (failed(parsePipeline(hostPipelineStr, hostPipelineSet,
@@ -339,6 +342,15 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       return failure();
   }
 
+  // Phase 2.5: Host backend lowering (func + memref + GPU ops -> LLVM)
+  if (hostPipelineSet.contains("backend")) {
+    if (failed(runWithDetach(module, "Host Backend", isKernel,
+                             [](PassManager &pm) {
+                               rock::buildHostLoweringPipeline(pm);
+                             })))
+      return failure();
+  }
+
   // Phase 3: GPU / Triton / Backend (kernel pipeline only)
   bool needsKernelBackend = kernelPipelineSet.contains("gpu") ||
                             kernelPipelineSet.contains("triton") ||
@@ -361,6 +373,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
+    applyDefaultTimingPassManagerCLOptions(pm);
     pm.enableVerifier(!disableVerifyPasses);
     auto errorHandler = [&](const Twine &msg) {
       emitError(UnknownLoc::get(module.getContext())) << msg;

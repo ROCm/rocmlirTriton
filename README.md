@@ -54,7 +54,7 @@ In general (with all invocations given from the build directory)
     - `-pv` (which makes the host code validate the results against a reference)
     - `-pr` (which prints kernel results)
 - `./bin/rocmlir-driver` is a wrapper around the kernel generation pipeline.
-  Use `-c` (or `--kernel-pipeline=full --host-pipeline=runner`) to run the
+  Use `-c` (or `--kernel-pipeline=full --host-pipeline=backend`) to run the
   default pipeline
 
 
