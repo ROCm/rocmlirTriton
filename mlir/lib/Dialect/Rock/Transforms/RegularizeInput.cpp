@@ -72,14 +72,18 @@ static Value applyTransforms(OpBuilder &builder, Value source,
 /// replacement. Each leaf (block arg or constant) gets its own load_marker;
 /// fusion ops are cloned to operate on tile types. Transforms are accumulated
 /// during the walk and applied at the leaves.
-static FailureOr<Value>
-distributeLoadMarker(OpBuilder &builder, Location loc, Value originalVal,
-                     ArrayRef<TransformMapAttr> postTransforms,
-                     ArrayAttr extraViews, ValueRange extraIndices,
-                     Type tileType, IRMapping &valueMapping,
-                     func::FuncOp funcOp) {
-  if (valueMapping.contains(originalVal))
-    return valueMapping.lookup(originalVal);
+static FailureOr<Value> distributeLoadMarker(
+    OpBuilder &builder, Location loc, Value originalVal,
+    ArrayRef<TransformMapAttr> postTransforms, ArrayAttr extraViews,
+    ValueRange extraIndices, Type tileType,
+    llvm::DenseMap<std::pair<Value, ArrayAttr>, Value> &valueMapping,
+    func::FuncOp funcOp) {
+  ArrayAttr postTransformsAttr = builder.getArrayAttr(
+      SmallVector<Attribute>(postTransforms.begin(), postTransforms.end()));
+  std::pair<Value, ArrayAttr> cacheKey{originalVal, postTransformsAttr};
+  auto cached = valueMapping.find(cacheKey);
+  if (cached != valueMapping.end())
+    return cached->second;
 
   Operation *defOp = originalVal.getDefiningOp();
 
@@ -92,7 +96,7 @@ distributeLoadMarker(OpBuilder &builder, Location loc, Value originalVal,
     Value source = applyTransforms(builder, originalVal, postTransforms);
     auto newMarker = LoadMarkerOp::create(builder, loc, tileType, source,
                                           extraViews, extraIndices);
-    valueMapping.map(originalVal, newMarker.getResult());
+    valueMapping.insert({cacheKey, newMarker.getResult()});
     return newMarker.getResult();
   }
 
@@ -106,7 +110,7 @@ distributeLoadMarker(OpBuilder &builder, Location loc, Value originalVal,
         builder, loc, transformOp.getInput(), newPostTransforms, extraViews,
         extraIndices, tileType, valueMapping, funcOp);
     if (succeeded(result))
-      valueMapping.map(originalVal, result.value());
+      valueMapping.insert({cacheKey, result.value()});
     return result;
   }
 
@@ -128,7 +132,7 @@ distributeLoadMarker(OpBuilder &builder, Location loc, Value originalVal,
 
     Operation *cloned = builder.clone(*defOp, fusionMapping);
     cloned->getResult(0).setType(tileType);
-    valueMapping.map(originalVal, cloned->getResult(0));
+    valueMapping.insert({cacheKey, cloned->getResult(0)});
     return cloned->getResult(0);
   }
 
@@ -144,7 +148,7 @@ distributeLoadMarker(OpBuilder &builder, Location loc, Value originalVal,
         DenseElementsAttr::get(tileRankedType, attr.getSplatValue<Attribute>());
     auto newConst =
         arith::ConstantOp::create(builder, loc, tileRankedType, newAttr);
-    valueMapping.map(originalVal, newConst.getResult());
+    valueMapping.insert({cacheKey, newConst.getResult()});
     return newConst.getResult();
   }
 
@@ -179,7 +183,7 @@ void RockRegularizeInputPass::runOnOperation() {
     Location loc = markerOp.getLoc();
     auto tileType = cast<RankedTensorType>(markerOp.getResult().getType());
 
-    IRMapping valueMapping;
+    llvm::DenseMap<std::pair<Value, ArrayAttr>, Value> valueMapping;
     FailureOr<Value> replacement = distributeLoadMarker(
         builder, loc, markerOp.getSource(), /*postTransforms=*/{},
         markerOp.getExtraViews(), markerOp.getExtraIndices(), tileType,

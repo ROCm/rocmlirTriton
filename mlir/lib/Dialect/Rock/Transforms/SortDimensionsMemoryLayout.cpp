@@ -139,7 +139,10 @@ sortByMemoryLayout(Value tensor, const Container &layout, PatternRewriter &b) {
                               transformAttrsMap, blockArgs))) {
     return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
   }
-  assert(!blockArgs.empty());
+  if (blockArgs.empty()) {
+    // Could not trace this tensor to any block argument.
+    return std::make_tuple(tensor, layout, SmallVector<uint32_t>{});
+  }
   SmallVector<Attribute> transformsList;
   for (const auto blockArg : blockArgs) {
     if (!transformAttrsMap.contains(blockArg)) {
