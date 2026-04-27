@@ -239,8 +239,7 @@ static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
   int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(gemm1N);
 
   // Phase A (gemm0): A tile (M x K) + B tile (K x N) live in LDS.
-  int64_t gemm0Elems =
-      mPerBlockG0 * kPerBlock + nPerBlockG0 * kPerBlock;
+  int64_t gemm0Elems = mPerBlockG0 * kPerBlock + nPerBlockG0 * kPerBlock;
   // Phase B (gemm1): P tile (M x K1) + V tile (K1 x N1) live in LDS.
   int64_t gemm1Elems =
       mPerBlockG0 * gemm1KPerBlock + gemm1KPerBlock * gemm1NPerBlock;
@@ -256,9 +255,8 @@ static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
   return llvm::divideCeil(peakBits, int64_t{8});
 }
 
-LogicalResult
-mlir::rock::testFusionLegalityGemmGemmLDS(func::FuncOp func,
-                                          StringRef perfConfig) {
+LogicalResult mlir::rock::testFusionLegalityGemmGemmLDS(func::FuncOp func,
+                                                        StringRef perfConfig) {
   // The arch is a function/module-level attribute, so all ops in `func`
   // share the same LDS budget; resolve it once. A func that doesn't carry
   // `rock.arch` (e.g., a host helper alongside a kernel) has nothing to
@@ -300,9 +298,8 @@ mlir::rock::testFusionLegalityGemmGemmLDS(func::FuncOp func,
       func.walk([&](RockGemmGemmWrapperInterface gemmGemmOp) -> WalkResult {
         GemmGemmParamsAttr params = explicitParams;
         if (!params) {
-          auto maybeParams =
-              PopulateParamsGemmGemm::obtainTuningParameters(builder,
-                                                             gemmGemmOp);
+          auto maybeParams = PopulateParamsGemmGemm::obtainTuningParameters(
+              builder, gemmGemmOp);
           if (failed(maybeParams))
             return WalkResult::interrupt();
           params = maybeParams.value();
@@ -323,8 +320,8 @@ mlir::rock::testFusionLegalityGemmGemmLDS(func::FuncOp func,
   return success(!walkResult.wasInterrupted());
 }
 
-LogicalResult
-mlir::rock::testFusionLegalityGemmGemmLDS(ModuleOp mod, StringRef perfConfig) {
+LogicalResult mlir::rock::testFusionLegalityGemmGemmLDS(ModuleOp mod,
+                                                        StringRef perfConfig) {
   auto funcs = mod.getOps<func::FuncOp>();
   bool isFusible = true;
   for (auto f : funcs) {
