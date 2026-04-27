@@ -113,12 +113,12 @@ void initializeLLVMTargets() {
     llvm::InitializeAllTargetMCs();
     llvm::InitializeAllAsmParsers();
     llvm::InitializeAllAsmPrinters();
-    // Disable LLVM's internal parallelism. Triton kernels produce small LLVM
-    // modules where pass-level parallelism is not beneficial, and LLVM's
-    // global thread pool is not fork-safe: a forked child inherits the pool's
-    // state but not its threads, causing SIGABRT on use or cleanup.
-    llvm::parallel::strategy = llvm::hardware_concurrency(1);
   });
+  // Disable LLVM's internal parallelism. Triton kernels produce small LLVM
+  // modules where pass-level parallelism is not beneficial, and LLVM's
+  // global thread pool is not fork-safe: a forked child inherits the pool's
+  // state but not its threads, causing SIGABRT on use or cleanup.
+  llvm::parallel::strategy = llvm::hardware_concurrency(1);
 }
 
 /// Create LLVM target machine - from createTargetMachine in llvm.cc
