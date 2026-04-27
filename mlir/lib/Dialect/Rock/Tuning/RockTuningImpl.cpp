@@ -166,8 +166,8 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       dPerBlock,        // N/block
       kPerBlockWMMA,         // K/block
       {1},              // kPack
-      numWavesRange,    // numWaves
-      {16, 32},              // matrixInstrNonkdim
+      {4, 8},    // numWaves
+      {0},              // matrixInstrNonkdim
       {1, 2, 3},           // numStages
       wavesPerEUList,   // wavesPerEU
       gridGroupSizeList // gridGroupSize
