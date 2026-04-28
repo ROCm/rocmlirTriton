@@ -20,6 +20,33 @@
 
 include "mlir/Pass/PassBase.td"
 
+def CpuConvToGemmPass : Pass<"cpu-conv-to-gemm", "::mlir::ModuleOp"> {
+  let summary = "Convert linalg.generic convolutions to matmul operations";
+  let description = [{
+    This pass identifies linalg.generic operations that represent convolutions
+    and converts them to matrix multiplication operations using the im2col
+    transformation.
+
+    The pass currently supports:
+    - Backward data convolution (computing input gradients)
+
+    The transformation follows the im2col approach:
+    1. Identify linalg.generic with convolution semantics based on indexing maps
+    2. Create an im2col tensor that rearranges the input data
+    3. Replace the convolution with a matmul (linalg.generic with GEMM semantics)
+    4. Reshape results back to the expected output shape
+
+    This transformation can improve performance by leveraging highly optimized
+    GEMM implementations.
+  }];
+  let dependentDialects = [
+    "func::FuncDialect",
+    "linalg::LinalgDialect",
+    "arith::ArithDialect",
+    "tensor::TensorDialect"
+  ];
+}
+
 def CpuLowerVerifierPass : Pass<"cpu-lower-verifier", "::mlir::ModuleOp"> {
   let summary = "Lower CPU verifier functions (i.e., functions marked with 'rock.cpu_verifier' attribute) to LLVM-compatible IR";
   let description = [{

@@ -1,4 +1,5 @@
 add_rocmlir_dialect_library(MLIRCpuTransforms
+  ConvToGemm.cpp
   LowerCpuVerifier.cpp
   Schedules.cpp
   Schedules/LowerToLLVMSchedule.cpp

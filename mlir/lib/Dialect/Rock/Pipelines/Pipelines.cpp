@@ -423,6 +423,11 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                      StringRef dumpCpuSchedules) {
 
   // CPU optimization phase.
+
+  // Convert convolutions in CPU verifier functions to GEMM operations.
+  // This transforms linalg.generic convolutions into im2col + matmul form.
+  pm.addPass(cpu::createCpuConvToGemmPass());
+  
   // This transforms the function body but keeps tensor types at boundaries.
   // The pass internally skips verifier functions that involve non-TT float
   // types (f8E8M0FNU, f4E2M1FN) used by scaled GEMMs, because those conflict
