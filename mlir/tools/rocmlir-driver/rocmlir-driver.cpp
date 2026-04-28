@@ -440,8 +440,19 @@ int main(int argc, char **argv) {
   }
   module = moduleRef.get();
 
-  // Run MLIR passes with passed in tuning parameters
+  // Run MLIR passes with passed in tuning parameters. If a rock pass
+  // determined the (kernel x perf-config x hw) combination is structurally
+  // inapplicable it will have signalled pass failure AND set the
+  // `rock.not_applicable` marker on the module (see RockAttrDefs.td and
+  // ResolveKernelLaunchParamsPass for the canonical example). Distinguish
+  // that from a real lowering bug via a dedicated exit code so callers
+  // (parameterSweeps.py, tuning frontends, ...) can classify the failure
+  // without having to scrape stderr.
   if (failed(runMLIRPasses(module, passPipeline))) {
+    if (module->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
+      llvm::errs() << "Lowering not applicable.\n";
+      exit(2);
+    }
     llvm::errs() << "Lowering failed.\n";
     exit(1);
   }

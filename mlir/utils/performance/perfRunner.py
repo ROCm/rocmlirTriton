@@ -15,7 +15,7 @@ import argparse
 import re
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, List, Tuple
 import numpy as np
 import pandas as pd
 from hip import hip
@@ -34,15 +34,25 @@ BENCHMARKING_STATS_FILE_NAME = 'results_kernel_stats.csv'
 BENCHMARKING_METRICS_FILE_NAME = 'results_counter_collection.csv'
 ROCMLIR_INPUT_METRICS_FILE_NAME = 'rocmlir_metrics.txt'
 DIRECTIONS = ['-F 1', '-F 2', '-F 4']
-DATA_TYPES = ['conv', 'convfp16', 'convbfp16', 'convfp8', 'convint8']
 LAYOUTS = ['NHWC', 'NCHW']
 
 DATA_TYPES_GEMM = ['f32', 'f16', 'bf16', 'i8', 'fp8', 'f4E2M1FN']
 DATA_TYPES_GEMM_SCALES = ['f32', 'f8E8M0FNU']
-DATA_TYPES_ATTENTION_WMMA = ['i8', 'f16', 'bf16']
-DATA_TYPES_ATTENTION_MFMA = ['i8', 'f32', 'f16', 'bf16']
+DATA_TYPES_ATTENTION = ['i8', 'f32', 'f16', 'bf16']
 DATA_TYPES_GEMM_GEMM = ['f32', 'f16', 'bf16']
 DATA_TYPES_CONV_GEMM = ['f32', 'f16', 'bf16']
+# Canonical mapping from a (rocmlir-gen) conv dtype to its MIOpen-style argv[0]
+# prefix used in legacy MIOpen config files (see ConvConfiguration.from_command_line).
+DATA_TYPES_CONV_TO_MIOPEN = {
+    'f32': 'conv',
+    'f16': 'convfp16',
+    'bf16': 'convbfp16',
+    'i8': 'convint8',
+    'fp8': 'convfp8',
+    'fp8_fp8': 'convfp8',
+}
+DATA_TYPES_CONV = list(DATA_TYPES_CONV_TO_MIOPEN.keys())
+DATA_TYPES_CONV_MIOPEN = sorted(set(DATA_TYPES_CONV_TO_MIOPEN.values()))
 OUTPUT_DATA_TYPES_MAP = {
     'f32': 'f32',
     'f16': 'f16',
@@ -185,20 +195,6 @@ def get_chip():
     arch = get_arch()
     chip = GFX_CHIP_RE.search(arch).group(0)
     return chip
-
-
-DATA_TYPES_ATTENTION = None
-
-
-def initialize_dtypes_attn():
-    global DATA_TYPES_ATTENTION
-    if get_chip().startswith('gfx9'):
-        DATA_TYPES_ATTENTION = DATA_TYPES_ATTENTION_MFMA
-    else:
-        DATA_TYPES_ATTENTION = DATA_TYPES_ATTENTION_WMMA
-
-    return DATA_TYPES_ATTENTION  # For modules that import this function
-
 
 def create_paths(config_file_path, mlir_build_dir_path) -> Paths:
     """Creates the composite Paths structure using build dir paths"""
@@ -406,7 +402,7 @@ def get_conv_configurations(filename):
             lines = config_file.readlines()
             # All combinations of conv direction, type and layouts
             for direction, datatype, layout, line in \
-                    itertools.product(DIRECTIONS, DATA_TYPES, LAYOUTS, lines):
+                    itertools.product(DIRECTIONS, DATA_TYPES_CONV_MIOPEN, LAYOUTS, lines):
                 line = line.strip()
 
                 # Skip empty lines
@@ -476,7 +472,7 @@ class ConvConfiguration(PerfConfiguration):
             self.direction, self.datatype, self.chip, self.num_cu, self.num_chiplets,
             self.filter_layout, self.input_layout, self.output_layout, self.n, self.c, self.hi,
             self.wi, self.k, self.y, self.x, self.dilation_h, self.dilation_w, self.conv_stride_h,
-            self.conv_stride_w, self.padding_h, self.padding_w, self.perfconfig, bank_conflict,
+            self.conv_stride_w, self.padding_hl, self.padding_wl, self.perfconfig, bank_conflict,
             self.compute_tflops(nanoseconds)
         ]
         assert (len(self.TABLE_COLUMNS) == len(values))
@@ -495,6 +491,27 @@ class ConvConfiguration(PerfConfiguration):
             'wrw': '--operation conv_bwd_weight'
         }[self.direction]
 
+        # Pick symmetric or asymmetric padding cmdline form per axis.
+        # rocmlir-gen errors out when --padding_h and --padding_h_l/_h_r
+        # disagree on the same axis (validatePadding in rocmlir-gen.cpp).
+        padding_args = []
+        if self.padding_hl == self.padding_hr:
+            padding_args += ['--padding_h', str(self.padding_hl)]
+        else:
+            padding_args += [
+                '--padding_h_l',
+                str(self.padding_hl), '--padding_h_r',
+                str(self.padding_hr)
+            ]
+        if self.padding_wl == self.padding_wr:
+            padding_args += ['--padding_w', str(self.padding_wl)]
+        else:
+            padding_args += [
+                '--padding_w_l',
+                str(self.padding_wl), '--padding_w_r',
+                str(self.padding_wr)
+            ]
+
         result = ' '.join([
             direction, '-t', self.datatype, '--arch', self.arch, '--num_cu',
             str(self.num_cu), '--num_chiplets',
@@ -510,9 +527,7 @@ class ConvConfiguration(PerfConfiguration):
             str(self.dilation_h), '--dilation_w',
             str(self.dilation_w), '--conv_stride_h',
             str(self.conv_stride_h), '--conv_stride_w',
-            str(self.conv_stride_w), '--padding_h',
-            str(self.padding_h), '--padding_w',
-            str(self.padding_w), '--groupsize',
+            str(self.conv_stride_w), *padding_args, '--groupsize',
             str(self.group),
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
@@ -608,9 +623,10 @@ class ConvConfiguration(PerfConfiguration):
             else:
                 continue
 
+        # MIOpen only supports symmetric padding; replicate to both sides.
         return cls(datatype, direction, filter_layout, input_layout, output_layout, n, c, hi, wi, k,
-                   y, x, conv_stride_h, conv_stride_w, padding_h, padding_w, dilation_h, dilation_w,
-                   group, arch, num_cu, num_chiplets)
+                   y, x, conv_stride_h, conv_stride_w, padding_h, padding_h, padding_w, padding_w,
+                   dilation_h, dilation_w, group, arch, num_cu, num_chiplets)
 
     def to_command_line(self):
         return (
@@ -619,16 +635,40 @@ class ConvConfiguration(PerfConfiguration):
             f"-f {inverse_filter_layouts(self.filter_layout)} -I {self.input_layout.upper()} " +
             f"-O {inverse_output_layouts(self.output_layout)} " +
             f"-n {self.n} -c {self.c} -H {self.hi} -W {self.wi} -k {self.k} " +
-            f"-y {self.y} -x {self.x} -p {self.padding_h} -q {self.padding_w} " +
+            # MIOpen only supports symmetric padding; use the left side as
+            # the single value (asymmetric configs are produced by the sweep
+            # script, not benchmarked against MIOpen).
+            f"-y {self.y} -x {self.x} -p {self.padding_hl} -q {self.padding_wl} " +
             f"-u {self.conv_stride_h} -v {self.conv_stride_w} -l {self.dilation_h} " +
             f"-j {self.dilation_w} -m conv -g {self.group} -t 1")
 
-    def __init__(self, dtype: str, direction: str, filter_layout: str, input_layout: str,
-                 output_layout: str, n: int, c: int, hi: int, wi: int, k: int, y: int, x: int,
-                 conv_stride_h: int, conv_stride_w: int, padding_h: int, padding_w: int,
-                 dilation_h: int, dilation_w: int, group: int, arch: str, num_cu: int,
-                 num_chiplets: int):
-        if dtype not in {"f16", "f32", "bf16", "i8", "fp8_fp8", "fp8"}:
+    def __init__(self,
+                 dtype: str,
+                 direction: str,
+                 filter_layout: str,
+                 input_layout: str,
+                 output_layout: str,
+                 n: int,
+                 c: int,
+                 hi: int,
+                 wi: int,
+                 k: int,
+                 y: int,
+                 x: int,
+                 conv_stride_h: int,
+                 conv_stride_w: int,
+                 padding_hl: int,
+                 padding_hr: int,
+                 padding_wl: int,
+                 padding_wr: int,
+                 dilation_h: int,
+                 dilation_w: int,
+                 group: int,
+                 arch: str,
+                 num_cu: int,
+                 num_chiplets: int,
+                 perf_config: str = ''):
+        if dtype not in DATA_TYPES_CONV:
             raise ValueError(f"Invalid datatype: {dtype}")
         if direction not in {"fwd", "bwd", "wrw"}:
             raise ValueError(f"Invalid direction: {direction}")
@@ -650,8 +690,13 @@ class ConvConfiguration(PerfConfiguration):
 
         self.conv_stride_h = conv_stride_h
         self.conv_stride_w = conv_stride_w
-        self.padding_h = padding_h
-        self.padding_w = padding_w
+        # Per-side padding (rocmlir-gen --padding_h_l / --padding_h_r etc.).
+        # Symmetric callers (e.g. MIOpen-style ``from_command_line``) pass
+        # the same value for both sides.
+        self.padding_hl = padding_hl
+        self.padding_hr = padding_hr
+        self.padding_wl = padding_wl
+        self.padding_wr = padding_wr
         self.dilation_h = dilation_h
         self.dilation_w = dilation_w
 
@@ -661,12 +706,14 @@ class ConvConfiguration(PerfConfiguration):
         self.num_chiplets = num_chiplets
         self.chip = GFX_CHIP_RE.search(arch).group(0)
 
-        self.ho = math.floor((self.hi + self.padding_h * 2 -
+        # Per-side padding gives the correct formula in both symmetric
+        # (hl + hr == 2 * padding_h) and asymmetric cases.
+        self.ho = math.floor((self.hi + self.padding_hl + self.padding_hr -
                               (self.y - 1) * self.dilation_h - 1) / self.conv_stride_h) + 1
-        self.wo = math.floor((self.wi + self.padding_w * 2 -
+        self.wo = math.floor((self.wi + self.padding_wl + self.padding_wr -
                               (self.x - 1) * self.dilation_w - 1) / self.conv_stride_w) + 1
 
-        self.perfconfig = ''
+        self.perfconfig = perf_config
 
     @classmethod
     def benchmark_external(cls, commandline, paths: Paths, arch, num_cu, num_chiplets):
@@ -857,8 +904,6 @@ def get_gemm_gemm_configurations(filename):
 
 
 def get_attn_configurations(filename):
-    if DATA_TYPES_ATTENTION is None:
-        initialize_dtypes_attn()
     bool_space = ['false', 'true']
     # if not defined, set it to false
     default_to_false = ['false']
@@ -1314,7 +1359,7 @@ class ConvGemmConfiguration(PerfConfiguration):
                 f"-n {self.n} -c {self.c} -H {self.hi} -W {self.wi} -k {self.k} " +
                 f"-y {self.y} -x {self.x} -p {self.padding_h} -q {self.padding_w} " +
                 f"-u {self.conv_stride_h} -v {self.conv_stride_w} -l {self.dilation_h} " +
-                f"-j {self.dilation_w} -g {self.group}" + f"-gemmO {str(self.o)}")
+                f"-j {self.dilation_w} -g {self.group} -gemmO {str(self.o)}")
 
 
 class GemmGemmConfiguration(PerfConfiguration):
@@ -1479,9 +1524,8 @@ class AttentionConfiguration(PerfConfiguration):
                  arch: str,
                  num_cu: int,
                  num_chiplets: int,
-                 perf_config: str = ''):
-        if DATA_TYPES_ATTENTION is None:
-            initialize_dtypes_attn()
+                 perf_config: str = '',
+                 current_seqlen: Optional[List[int]] = None):
         if dtype not in DATA_TYPES_ATTENTION:
             raise ValueError(f"Invalid datatype for a: {dtype}")
 
@@ -1502,6 +1546,9 @@ class AttentionConfiguration(PerfConfiguration):
         self.causal = causal
         self.return_lse = return_lse
         self.split_kv = split_kv
+        # Only set in KV-cache mode (seq_len_q == 1). Picked up by the sweep
+        # script's test_config to add ``--current_seq_len=...`` to rocmlir-gen.
+        self.current_seqlen = current_seqlen
 
         self.arch = arch
         self.chip = GFX_CHIP_RE.search(arch).group(0)
@@ -2263,7 +2310,6 @@ def main(args=None):
     chip = get_chip()
     num_cu = get_num_cu(chip)
     num_chiplets = get_num_chiplets(chip, num_cu)
-    initialize_dtypes_attn()
 
     root_dir = str(
         subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode().strip())
