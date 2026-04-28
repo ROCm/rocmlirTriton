@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -kernel-pipeline highlevel %s | rocmlir-driver --rock-affix-params --rock-conv-to-gemm --rock-gemm-to-gridwise --rock-regularize --rock-gridwise-gemm-to-blockwise --rock-blockwise-load-tile-to-threadwise --rock-linalg-align --rock-pipeline | FileCheck %s
+// RUN: rocmlir-driver -kernel-pipeline highlevel %s | rocmlir-driver -kernel-pipeline gpu -arch %arch | rocmlir-opt | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<1x64x56x56xf32>, %arg1: tensor<64x64x1x1xf32>, %arg2: tensor<1x64x56x56xf32>) -> tensor<1x64x56x56xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
@@ -14,25 +14,14 @@ module {
     return %5 : tensor<1x64x56x56xf32>
   }
 }
-// 1. Tracks the beginning of the store loop of gemmv2
-// Prologue
-//CHECK-COUNT-2: rock.threadwise_read_into
-//CHECK-COUNT-2: rock.threadwise_write_all {{.*}} #gpu.address_space<workgroup>
-// SW pipelined loop
-//CHECK: scf.for
-//CHECK-COUNT-2: rock.threadwise_read_into
-//CHECK: rock.blockwise_gemm_accel
-//CHECK-COUNT-2: rock.threadwise_write_all {{.*}} #gpu.address_space<workgroup>
-// Epilogue
-//CHECK: rock.blockwise_gemm_accel
+// 1. Check gemm lowered to tt.dot
+// CHECK: tt.load
+// CHECK: tt.load
+// CHECK: tt.dot
 
-// 2. Check if ops are fused and copy_v2 is not present here
-//CHECK-NOT: rock.threadwise_write_all
+// 2. Check fused add + relu after gemm
+// CHECK: arith.addf
+// CHECK: arith.maximumf
 
-// 3. Check correct sequence of load-linalg-store
-//CHECK: rock.threadwise_read_into
-//CHECK: linalg.generic
-//CHECK: rock.threadwise_write_all
-
-// 4. Check if there is leftover ops.
-//CHECK-NOT: memref.copy
+// 3. Check result is stored
+// CHECK: tt.store
