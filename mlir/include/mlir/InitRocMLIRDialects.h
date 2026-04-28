@@ -111,6 +111,9 @@
 #include "triton/Tools/PluginUtils.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+
 namespace mlir {
 
 inline void registerUpstreamDialects(DialectRegistry &registry) {
@@ -244,13 +247,21 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::proton::gpu::registerAddSchedBarriersPass();
 
   // Plugin passes
-  if (std::string filename =
-          mlir::triton::tools::getStrEnv("TRITON_PASS_PLUGIN_PATH");
-      !filename.empty()) {
-    auto plugin = mlir::triton::plugin::TritonPlugin::load(filename);
-    if (!plugin)
-      llvm::report_fatal_error(plugin.takeError());
-    plugin->registerPasses();
+  // Upstream Triton renamed TRITON_PASS_PLUGIN_PATH to TRITON_PLUGIN_PATHS in
+  // PR #9748, with the new variable holding a colon-separated list of plugin
+  // paths. Iterate over each path and load the corresponding plugin.
+  if (std::string envValue =
+          mlir::triton::tools::getStrEnv("TRITON_PLUGIN_PATHS");
+      !envValue.empty()) {
+    llvm::SmallVector<llvm::StringRef, 4> paths;
+    llvm::StringRef(envValue).split(paths, ':', /*MaxSplit=*/-1,
+                                    /*KeepEmpty=*/false);
+    for (const auto &path : paths) {
+      auto plugin = mlir::triton::plugin::TritonPlugin::load(path.str());
+      if (!plugin)
+        llvm::report_fatal_error(plugin.takeError());
+      plugin->registerPasses();
+    }
   }
 
   registry.insert<
