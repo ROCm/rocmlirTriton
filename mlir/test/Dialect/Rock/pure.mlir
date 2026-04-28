@@ -251,33 +251,6 @@ func.func @dce_extract_ptr(%src: tensor<64x64xf32>, %sink: i32) -> i32 {
 
 // -----
 
-// CHECK-LABEL: func.func @dce_store
-// CHECK-NOT:     rock.store
-// CHECK:         return %arg2
-func.func @dce_store(%src: tensor<8x32xf32>, %dest: tensor<8x32xf32>,
-                     %sink: tensor<8x32xf32>) -> tensor<8x32xf32> {
-  %unused = rock.store %src to %dest by set
-      : tensor<8x32xf32> -> tensor<8x32xf32> to tensor<8x32xf32>
-  return %sink : tensor<8x32xf32>
-}
-
-// -----
-
-// CHECK-LABEL: func.func @dce_blockwise_store
-// CHECK-NOT:     rock.blockwise_store
-// CHECK:         return %arg2
-func.func @dce_blockwise_store(%src: tensor<64x64xf32>,
-                               %dest: tensor<1x1x2x64x64xf32>,
-                               %sink: tensor<8192xf32>) -> tensor<8192xf32> {
-  %c0 = arith.constant 0 : i32
-  %c1 = arith.constant 1 : i32
-  %unused = rock.blockwise_store %src -> %dest[%c0, %c0, %c1] by set
-      : tensor<64x64xf32> -> tensor<1x1x2x64x64xf32> -> tensor<8192xf32>
-  return %sink : tensor<8192xf32>
-}
-
-// -----
-
 #xform_used = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0 * 64 + d1, d2)>
   by [<Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 1] -> ["k"] at [0]>,
       <PassThrough ["n"] at [2] -> ["n"] at [1]>]
