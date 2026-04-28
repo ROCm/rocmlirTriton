@@ -68,33 +68,6 @@
 using namespace mlir;
 using namespace mlir::triton;
 
-namespace {
-// Workaround for upstream MLIR behavior: mlir::tosa::addTosaToLinalgPasses
-// unconditionally schedules tosa-attach-target, which sets a persistent
-// tosa.target_env attribute on the enclosing ModuleOp.
-// The leftover attribute survives
-// all the way through LLVM lowering and makes the final IR unparseable by
-// downstream tools that do not load the TOSA dialect (e.g. mlir-runner),
-// failing with 'attribute created with unregistered dialect'. Erase it
-// after TOSA-to-Linalg so the emitted IR stays TOSA-free. Remove this
-// workaround once an upstream fix lands (see docs/bump_triton_version.md).
-struct EraseTosaTargetEnv
-    : public PassWrapper<EraseTosaTargetEnv, OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EraseTosaTargetEnv)
-
-  StringRef getArgument() const final { return "erase-tosa-target-env"; }
-  StringRef getDescription() const final {
-    return "Erase the tosa.target_env module attribute left behind by "
-           "tosa-attach-target so downstream tools that do not load the "
-           "TOSA dialect can parse the resulting IR.";
-  }
-
-  void runOnOperation() override {
-    getOperation()->removeAttr(tosa::TargetEnvAttr::name);
-  }
-};
-} // namespace
-
 // Based on make_ttir() in
 // @triton//:third_party/amd/backend/compiler.py
 static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
@@ -305,19 +278,6 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   if (noRock)
     funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
 
-  tosa::TosaAttachTargetOptions tosaOptions;
-  tosaOptions.specificationVersion = tosa::SpecificationVersion::V_1_0;
-  tosaOptions.level = tosa::Level::none;
-  tosaOptions.profiles.push_back("pro_int");
-  tosaOptions.profiles.push_back("pro_fp");
-  tosaOptions.extensions.push_back("int4");
-  tosaOptions.extensions.push_back("bf16");
-  tosaOptions.extensions.push_back("fp8e4m3");
-  tosaOptions.extensions.push_back("fp8e5m2");
-  tosaOptions.extensions.push_back("mxfp");
-
-  funcPm.addPass(tosa::createTosaAttachTarget(tosaOptions));
-
   if (!noRock) {
     funcPm.addPass(rock::createRockTosaToElementwisePass());
   }
@@ -328,11 +288,7 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   // pass std::nullopt as validation options to avoid running tosa-validate
   // pass
   tosa::addTosaToLinalgPasses(pm, tosaToLinalgOptions, tosaToLinalgNamedOptions,
-                              /*validationOptions=*/std::nullopt);
-  // Strip the tosa.target_env attribute so downstream tools that do not
-  // load the TOSA dialect (e.g. mlir-runner) can parse the final IR. See
-  // EraseTosaTargetEnv above.
-  pm.addPass(std::make_unique<EraseTosaTargetEnv>());
+                              /*validationOptions=*/std::nullopt, /*attachTargetOptions*/std::nullopt);
 
   // for tosa control flow
   /* rocmlir-opt --tosa-to-tensor --tosa-to-scf --tosa-to-arith
