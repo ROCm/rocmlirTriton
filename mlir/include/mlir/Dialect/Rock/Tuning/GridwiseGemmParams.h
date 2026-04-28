@@ -207,6 +207,15 @@ struct PopulateParamsWmma {
   friend class ParamLookupTable<GemmParamsAttr>;
 };
 
+/// Hard legality check (must apply in every tuning mode, including
+/// `Exhaustive`). Returns true when the per-thread accumulator tile would
+/// exceed the gfx9-class CDNA register budget (VGPR + AGPR == 512 slots),
+/// causing the BlockwiseGemm lowering to spill to scratch and (with splitK
+/// K-padding) take a runtime memory access fault. WMMA / RDNA paths
+/// (`matrixInstrNonkdim == 0`) are exempted because the gfx9 wave size in
+/// the threshold does not apply.
+bool gemmParamsExceedRegisterBudget(GemmParamsAttr params);
+
 //
 // Unified MFMA/WMMA agnostic interface
 //

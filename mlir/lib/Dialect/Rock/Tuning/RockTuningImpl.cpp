@@ -395,6 +395,13 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                           gemmKPerBlock, gemmKPack, numCTAs, numWaves,
                           matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU,
                           gridGroupSize);
+                      // Hard legality gate: applies in every kind including
+                      // Exhaustive. Configs whose per-thread accumulator would
+                      // overflow the gfx9 VGPR + AGPR budget (and therefore
+                      // crash the GPU under splitK K-padding) must never reach
+                      // the runner.
+                      if (gemmParamsExceedRegisterBudget(gemmParams))
+                        continue;
                       if (kind != TuningParamSetKind::Full ||
                           succeeded(
                               tuningInfo->couldBePerformant(info, gemmParams)))

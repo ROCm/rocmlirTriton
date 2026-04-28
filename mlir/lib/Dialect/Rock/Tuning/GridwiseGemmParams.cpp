@@ -259,6 +259,55 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
   return res;
 }
 
+/// Hard legality check that must apply in every tuning mode (Quick / Full /
+/// Exhaustive), unlike `specificCouldBePerformant` which is a Full-only
+/// performance heuristic.
+///
+/// CDNA2/3/4 (gfx90a / gfx940-942 / gfx950) per the AMD ISA references
+/// (MI200 ISA §3.6.4, MI300 ISA §3.6.4, CDNA4 ISA §3.6.4): "A wave may
+/// have up to 512 total VGPRs, 256 of each type [arch + accumulation]";
+/// LLVM mirrors this in `getAddressableNumVGPRs` returning 512 when
+/// `FeatureGFX90AInsts` is set. With f32 accumulation each MFMA output
+/// element occupies one slot in that unified 512-entry register file, so
+/// once
+///   accPerWave = mPerBlock * nPerBlock / numWaves    (lanes * slots)
+///   accPerLane = accPerWave / waveSize(64)           // gfx9 wave is 64
+/// crosses 512 the codegen must spill the accumulator to scratch. The
+/// non-pipelined BlockwiseGemm lowering used at `numStages=1` then takes
+/// a runtime memory access fault on splitK K-padded shapes (notably
+/// `numWaves=1`, 256x256, `mnPerXdl=16`, splitK=3 on K=1024). Even for
+/// shapes that do not crash, these configs are 3-20x slower than the
+/// multi-wave / smaller-tile alternatives, so dropping them does not
+/// regress achievable performance.
+///
+/// CDNA1 (gfx908 / MI100) is stricter: the MI100 ISA §3.6.4 says
+/// "two sets of VGPRs: normal and accumulation. Waves are allocated an
+/// equal number of each type", so the AGPR cap is 256 (not 256-of-512
+/// flexible). The 512 threshold here is therefore lenient on gfx908; a
+/// future arch-aware tightening could lower it. We keep 512 as the common
+/// ceiling because the original crash repro is on gfx942, and using a
+/// tighter threshold on gfx908 would silently shrink its tuning space.
+///
+/// WMMA / RDNA paths take the `matrixInstrNonkdim == 0` early-out below;
+/// they have a different (256-VGPR per wave) register file and reuse
+/// VGPRs (no AGPR), so the gfx9 64-lane wave assumption in the threshold
+/// does not apply.
+bool mlir::rock::gemmParamsExceedRegisterBudget(GemmParamsAttr params) {
+  int64_t mnPerXdl = params.getMatrixInstrNonkdim();
+  if (mnPerXdl == 0)
+    return false;
+
+  int64_t numWaves = params.getNumWaves();
+  if (numWaves <= 0)
+    return false;
+
+  constexpr int64_t kCdnaWaveSize = 64;
+  constexpr int64_t kMaxAccPerThread = 512;
+  int64_t accPerThread = (params.getMPerBlock() * params.getNPerBlock()) /
+                         (numWaves * kCdnaWaveSize);
+  return accPerThread > kMaxAccPerThread;
+}
+
 LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
                                                         Type dataTypeA,
                                                         Type dataTypeB) {
@@ -279,6 +328,13 @@ LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
   int64_t numWaves = params.getNumWaves();
   // XDL: limit to wave counts this heuristic was derived for (see rocMLIR).
   if (numWaves != 1 && numWaves != 2 && numWaves != 4)
+    return failure();
+
+  // Defense-in-depth: also reject oversized per-thread accumulator tiles in
+  // the Full performance heuristic. The same check runs unconditionally via
+  // `gemmParamsExceedRegisterBudget` for the brute-force enumeration loop;
+  // mirroring it here keeps direct `couldBePerformant` callers consistent.
+  if (gemmParamsExceedRegisterBudget(params))
     return failure();
 
   return success();
