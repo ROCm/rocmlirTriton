@@ -167,15 +167,6 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
   return success();
 }
 
-static LogicalResult validateNumCTAs(int64_t numCTAs, StringRef arch) {
-  int64_t maxNumCTAs = rock::getMaxNumCTAs(arch);
-  if (numCTAs > maxNumCTAs) {
-    LLVM_DEBUG(llvm::dbgs() << "Invalid numCTAs=" << numCTAs << " for " << arch
-                            << " (max: " << maxNumCTAs << ")\n");
-    return failure();
-  }
-  return success();
-}
 
 FailureOr<ArrayAttr> getPrefillArrayFromBinary(ModuleOp moduleOp) {
   ArrayAttr result;
@@ -207,9 +198,6 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
                                      rock::BackendOptions &backendOpts) {
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
   if (auto gemmParams = dyn_cast<GemmParamsAttr>(perfConfig)) {
-    if (failed(validateNumCTAs(gemmParams.getNumCTAs(), tritonOpts.arch)))
-      return failure();
-
     tritonOpts.numWarps = gemmParams.getNumWaves();
     tritonOpts.numCTAs = gemmParams.getNumCTAs();
     tritonOpts.numStages = gemmParams.getNumStages();
@@ -222,9 +210,6 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
     return success();
   }
   if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(perfConfig)) {
-    if (failed(validateNumCTAs(gemmGemmParams.getNumCTAs(), tritonOpts.arch)))
-      return failure();
-
     tritonOpts.numWarps = gemmGemmParams.getNumWaves();
     tritonOpts.numCTAs = gemmGemmParams.getNumCTAs();
     tritonOpts.numStages = gemmGemmParams.getNumStages();
