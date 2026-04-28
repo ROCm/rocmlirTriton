@@ -87,6 +87,11 @@ if [ -d "$LLVM_PATCHES_DIR" ] && [ -n "$(ls -A "$LLVM_PATCHES_DIR"/*.patch 2>/de
     HOOK_FILE="$(mktemp)"
     cat > "$HOOK_FILE" <<EOF
 $ROCMLIR_HOOK_BEGIN
+# Triton's preceding \`git reset --hard\` restores tracked files but leaves
+# untracked files behind. Patches that create new files would otherwise leave
+# those files on disk across runs, so make sure to clean everything
+# before applying patches.
+git -C "\$LLVM_PROJECT_PATH" clean -fd
 echo "--- Applying llvm patches from $LLVM_PATCHES_DIR ---"
 for patch in "$LLVM_PATCHES_DIR"/*.patch; do
     if git -C "\$LLVM_PROJECT_PATH" apply --check "\$patch" 2>/dev/null; then
