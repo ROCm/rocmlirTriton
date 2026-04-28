@@ -2,7 +2,7 @@
 // `-canonicalize` when their results are unused. Each function instantiates
 // one Pure op, ignores its result, and returns an unrelated value.
 
-// RUN: rocmlir-opt --canonicalize -canonicalize -split-input-file %s | FileCheck %s
+// RUN: rocmlir-opt --canonicalize -split-input-file %s | FileCheck %s
 
 #xform = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0 * 64 + d1, d2)>
   by [<Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 1] -> ["k"] at [0]>,
