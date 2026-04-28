@@ -259,39 +259,22 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
   return res;
 }
 
-/// Hard legality check that must apply in every tuning mode (Quick / Full /
-/// Exhaustive), unlike `specificCouldBePerformant` which is a Full-only
-/// performance heuristic.
+/// Hard legality gate that runs in every tuning mode (Quick/Full/Exhaustive),
+/// unlike `specificCouldBePerformant` which is a Full-only performance prune.
 ///
-/// CDNA2/3/4 (gfx90a / gfx940-942 / gfx950) per the AMD ISA references
-/// (MI200 ISA §3.6.4, MI300 ISA §3.6.4, CDNA4 ISA §3.6.4): "A wave may
-/// have up to 512 total VGPRs, 256 of each type [arch + accumulation]";
-/// LLVM mirrors this in `getAddressableNumVGPRs` returning 512 when
-/// `FeatureGFX90AInsts` is set. With f32 accumulation each MFMA output
-/// element occupies one slot in that unified 512-entry register file, so
-/// once
-///   accPerWave = mPerBlock * nPerBlock / numWaves    (lanes * slots)
-///   accPerLane = accPerWave / waveSize(64)           // gfx9 wave is 64
-/// crosses 512 the codegen must spill the accumulator to scratch. The
-/// non-pipelined BlockwiseGemm lowering used at `numStages=1` then takes
-/// a runtime memory access fault on splitK K-padded shapes (notably
-/// `numWaves=1`, 256x256, `mnPerXdl=16`, splitK=3 on K=1024). Even for
-/// shapes that do not crash, these configs are 3-20x slower than the
-/// multi-wave / smaller-tile alternatives, so dropping them does not
-/// regress achievable performance.
+/// MFMA on gfx90a/940-942/950 has 512 unified VGPR+AGPR slots per wave. With
+/// f32 accumulation each output element costs one slot, so when
+///   accPerLane = mPerBlock * nPerBlock / (numWaves * 64)
+/// exceeds 512 the C accumulator spills to scratch. Combined with splitK > 1
+/// and numStages == 1, the spilled kernel takes a runtime memory access fault
+/// on gfx942 (originally seen on 256x256, numWaves=1, splitK=3, K=1024). The
+/// non-crashing configs in this band underperform multi-wave / smaller-tile
+/// alternatives by 3-20x, so we filter the whole band rather than just the
+/// crash subset.
 ///
-/// CDNA1 (gfx908 / MI100) is stricter: the MI100 ISA §3.6.4 says
-/// "two sets of VGPRs: normal and accumulation. Waves are allocated an
-/// equal number of each type", so the AGPR cap is 256 (not 256-of-512
-/// flexible). The 512 threshold here is therefore lenient on gfx908; a
-/// future arch-aware tightening could lower it. We keep 512 as the common
-/// ceiling because the original crash repro is on gfx942, and using a
-/// tighter threshold on gfx908 would silently shrink its tuning space.
-///
-/// WMMA / RDNA paths take the `matrixInstrNonkdim == 0` early-out below;
-/// they have a different (256-VGPR per wave) register file and reuse
-/// VGPRs (no AGPR), so the gfx9 64-lane wave assumption in the threshold
-/// does not apply.
+/// gfx908 has a stricter 256+256 split (lenient under 512). WMMA / RDNA take
+/// the `mnPerXdl == 0` early-out (different register file + wave size). See
+/// `specificCouldBePerformant.md` for the per-arch register-file table.
 bool mlir::rock::gemmParamsExceedRegisterBudget(GemmParamsAttr params) {
   int64_t mnPerXdl = params.getMatrixInstrNonkdim();
   if (mnPerXdl == 0)
@@ -330,10 +313,6 @@ LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
   if (numWaves != 1 && numWaves != 2 && numWaves != 4)
     return failure();
 
-  // Defense-in-depth: also reject oversized per-thread accumulator tiles in
-  // the Full performance heuristic. The same check runs unconditionally via
-  // `gemmParamsExceedRegisterBudget` for the brute-force enumeration loop;
-  // mirroring it here keeps direct `couldBePerformant` callers consistent.
   if (gemmParamsExceedRegisterBudget(params))
     return failure();
 
