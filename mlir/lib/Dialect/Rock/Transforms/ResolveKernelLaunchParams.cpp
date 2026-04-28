@@ -92,6 +92,8 @@ struct ResolveKernelLaunchParamsPass
 
     int64_t maxLDS = rock::getLDSSize(archStr);
     if (sharedMemSize > maxLDS) {
+      moduleOp->setAttr(rock::NotApplicableAttr::getMnemonic(),
+                        UnitAttr::get(ctx));
       moduleOp.emitError("ttg.shared (")
           << sharedMemSize << ") exceeds LDS limit (" << maxLDS << ") for "
           << archStr;
