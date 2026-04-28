@@ -646,6 +646,11 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   }
 
   int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(module);
+  if (numCTAs != options.numCTAs) {
+    LLVM_DEBUG(llvm::dbgs() << "numCTAs mismatch: TritonGPUDialect::getNumCTAs="
+                            << numCTAs << " vs options.numCTAs="
+                            << options.numCTAs << "\n");
+  }
 
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
   setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
