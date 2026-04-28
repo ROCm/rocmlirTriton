@@ -89,7 +89,6 @@ func.func @rock_conv_bwd_weight(%input : tensor<?x?x?x?x?xf32>, %output : tensor
   %result = rock.conv_bwd_weight(%input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
-    rock.numCU = 64 : i32,
     output_layout = ["n", "go", "k", "0o", "1o"],
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
@@ -104,7 +103,6 @@ func.func @rock_conv_bwd_weight_f16(%input : tensor<?x?x?x?x?xf16>, %output : te
   %result = rock.conv_bwd_weight(%input, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
-    rock.numCU = 64 : i32,
     output_layout = ["n", "go", "k", "0o", "1o"],
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
@@ -189,10 +187,8 @@ func.func @rock_transform_1_to_n(%tensor : tensor<1x128x64x32x16xf32>) -> tensor
 // CHECK-LABEL: func.func @rock_transform_1_to_n
 //  CHECK-NEXT: rock.transform
 
-func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2048xf32>, %out : tensor<2x1024x2048xf32>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.numCU = 64 : i32} {
+func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2048xf32>, %out : tensor<2x1024x2048xf32>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 64 : i32} {
   %gemm_result = rock.gridwise_gemm(%A, %B) {
-    blockSize = 256 : i32,
-    gridSize = 1 : i32,
     params = #rock.gemm_params<
       mPerBlock = 128,
       nPerBlock = 128,
@@ -215,10 +211,8 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 // CHECK-NEXT: rock.store
 
 // TODO: Scaled gemm tests need rework
-// func.func @rock_gridwise_scaled_gemm(%A : tensor<2x1024x1024xf4E2M1FN>, %B : tensor<2x1024x2048xf4E2M1FN>, %scaleA : tensor<2x1024x1024xf8E8M0FNU>, %scaleB : tensor<2x1024x2048xf8E8M0FNU>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.numCU = 256 : i32} {
+// func.func @rock_gridwise_scaled_gemm(%A : tensor<2x1024x1024xf4E2M1FN>, %B : tensor<2x1024x2048xf4E2M1FN>, %scaleA : tensor<2x1024x1024xf8E8M0FNU>, %scaleB : tensor<2x1024x2048xf8E8M0FNU>) -> tensor<2x1024x2048xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.num_cu = 256 : i32} {
 //   %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB) storeMethod (set) {
-//     blockSize = 256 : i32,
-//     gridSize = 1 : i32,
 //     params = #rock.gemm_params<
 //       kPerBlock = 4,
 //       kpack = 1,
@@ -249,8 +243,6 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 //                                                 %bufferScaleB : tensor<4xf8E8M0FNU>,
 //                                                 %matrixC : tensor<4xvector<16xf32>>) -> tensor<4xvector<16xf32>> {
 //   %result = rock.blockwise_gemm %matrixC += %bufferA from %matrixA scaled by %bufferScaleA from %matrixScaleA * %bufferB from %matrixB scaled by %bufferScaleB from %matrixScaleB {
-//     rock.arch = "amdgcn-amd-amdhsa:gfx950",
-//     blockSize = 256 : i32,
 //     matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //     matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //     params = #rock.gemm_params<
@@ -301,8 +293,6 @@ func.func @rock_gridwise_gemm(%A : tensor<2x1024x1024xf32>, %B : tensor<2x1024x2
 // func.func @gridwise_attn_atomic_add(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x64x384xf32>, %arg2: tensor<1x384x64xf32>, %arg3: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, grid_size = 24 : i32, kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"} {
 //   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["gemmG"] at [0] -> ["gemmG"] at [0]>, <PassThrough ["gemm0K", "gemm0M"] at [1, 2] -> ["gemm0K", "gemm0M"] at [2, 1]>] bounds = [1, 64, 384] -> [1, 384, 64]> : tensor<1x384x64xf32> to tensor<1x64x384xf32>
 //   %result = rock.gridwise_attention(%0, %arg1, %arg2, %arg3) preSoftmaxOps = {} {
-//     blockSize = 64 : i32,
-//     gridSize = 24 : i32,
 //     params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
 //     params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
 //     storeMethod = #rock<StoreMethod atomic_add>,
