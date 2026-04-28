@@ -1,1 +1,0 @@
-    %21 = migraphx.quantizelinear(%20, %9, %8) : (tensor<32x384x3072xf32>, tensor<32x384x3072xf32>, tensor<32x384x3072xi8>) -> tensor<32x384x3072xi8>
