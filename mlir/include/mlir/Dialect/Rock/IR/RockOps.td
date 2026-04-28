@@ -257,7 +257,9 @@ def Rock_AttentionOp
 }
 
 def Rock_GemmElementwiseGemmOp
-    : Rock_Op<"gemm_elementwise_gemm", [DeclareOpInterfaceMethods<
+    : Rock_Op<"gemm_elementwise_gemm", [RecursiveMemoryEffects,
+                                        RecursivelySpeculatable,
+                                        DeclareOpInterfaceMethods<
                                             RockGemmGemmWrapperInterface>,
                                         RockFusionRoot]>,
       AllElementTypesMatch<["a", "b"]>,
@@ -300,7 +302,9 @@ def Rock_GemmElementwiseGemmOp
 }
 
 def Rock_ConvElementwiseGemmOp
-    : Rock_Op<"conv_elementwise_gemm", [DeclareOpInterfaceMethods<
+    : Rock_Op<"conv_elementwise_gemm", [RecursiveMemoryEffects,
+                                        RecursivelySpeculatable,
+                                        DeclareOpInterfaceMethods<
                                             RockGemmGemmWrapperInterface>,
                                         RockFusionRoot]>,
       AllElementTypesMatch<["filter", "input"]>,

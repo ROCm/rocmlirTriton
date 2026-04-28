@@ -251,6 +251,95 @@ func.func @dce_extract_ptr(%src: tensor<64x64xf32>, %sink: i32) -> i32 {
 
 // -----
 
+// Region-carrying op with a pure body: RecursiveMemoryEffects /
+// RecursivelySpeculatable should let -canonicalize DCE it.
+// CHECK-LABEL: func.func @dce_attention
+// CHECK-NOT:     rock.attention
+// CHECK:         return %arg3
+func.func @dce_attention(%q: tensor<1x8x4xf16>, %k: tensor<1x4x8xf16>,
+                         %v: tensor<1x8x4xf16>, %sink: tensor<1x8x4xf16>)
+    -> tensor<1x8x4xf16> {
+  %unused = rock.attention {
+    qk = %q * %k : tensor<1x8x4xf16>, tensor<1x4x8xf16>
+    softmax(qk) * %v : tensor<1x8x4xf16>
+  } {firstGemmIndices = array<i64: 0>, numHeadsKV = 1 : i32,
+     numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x8x4xf16>
+  return %sink : tensor<1x8x4xf16>
+}
+
+// -----
+
+// CHECK-LABEL: func.func @dce_gemm_elementwise_gemm
+// CHECK-NOT:     rock.gemm_elementwise_gemm
+// CHECK:         return %arg3
+func.func @dce_gemm_elementwise_gemm(%a: tensor<1x32x16xf16>,
+                                     %b: tensor<1x16x64xf16>,
+                                     %c: tensor<1x64x8xf16>,
+                                     %sink: tensor<1x32x8xf16>)
+    -> tensor<1x32x8xf16> {
+  %unused = rock.gemm_elementwise_gemm {
+    ab = %a * %b : tensor<1x32x16xf16>, tensor<1x16x64xf16>
+    out = ab * %c : tensor<1x64x8xf16>
+  } {firstGemmIndices = array<i64: 0>} -> tensor<1x32x8xf16>
+  return %sink : tensor<1x32x8xf16>
+}
+
+// -----
+
+// CHECK-LABEL: func.func @dce_conv_elementwise_gemm
+// CHECK-NOT:     rock.conv_elementwise_gemm
+// CHECK:         return %arg3
+func.func @dce_conv_elementwise_gemm(%filter: tensor<1x256x3x3x64xf32>,
+                                     %input: tensor<64x14x14x1x64xf32>,
+                                     %c: tensor<1x256x256xf32>,
+                                     %sink: tensor<1x9216x256xf32>)
+    -> tensor<1x9216x256xf32> {
+  %unused = rock.conv_elementwise_gemm {
+    ab = conv(%filter, %input)
+        : tensor<1x256x3x3x64xf32>, tensor<64x14x14x1x64xf32>
+    out = ab * %c : tensor<1x256x256xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     firstGemmIndices = array<i64: 0>,
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x9216x256xf32>
+  return %sink : tensor<1x9216x256xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func.func @dce_gridwise_attention
+// CHECK-NOT:     rock.gridwise_attention
+// CHECK:         return %arg3
+func.func @dce_gridwise_attention(%q: tensor<1x64x32xf32>,
+                                  %k: tensor<1x32x64xf32>,
+                                  %v: tensor<1x64x32xf32>,
+                                  %sink: tensor<1x64x32xf32>)
+    -> tensor<1x64x32xf32> {
+  %unused = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>):
+    rock.yield %arg_qk : tensor<1x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32,
+                                kPerBlock = 32, kpack = 1, numCTAs = 1,
+                                numWaves = 4, matrixInstrNonkdim = 0,
+                                splitKFactor = 1, numStages = 1,
+                                wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32,
+                                kPerBlock = 32, kpack = 1, numCTAs = 1,
+                                numWaves = 4, matrixInstrNonkdim = 0,
+                                splitKFactor = 1, numStages = 1,
+                                wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>
+      -> tensor<1x64x32xf32>
+  return %sink : tensor<1x64x32xf32>
+}
+
+// -----
+
 #xform_used = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0 * 64 + d1, d2)>
   by [<Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 1] -> ["k"] at [0]>,
       <PassThrough ["n"] at [2] -> ["n"] at [1]>]
