@@ -1,0 +1,26 @@
+diff --git a/mlir/lib/Dialect/MemRef/Transforms/EmulateNarrowType.cpp b/mlir/lib/Dialect/MemRef/Transforms/EmulateNarrowType.cpp
+index d24224355ed51..8686f22c9e3c2 100644
+--- a/mlir/lib/Dialect/MemRef/Transforms/EmulateNarrowType.cpp
++++ b/mlir/lib/Dialect/MemRef/Transforms/EmulateNarrowType.cpp
+@@ -415,8 +415,9 @@ struct ConvertMemRefReinterpretCast final
+ struct ConvertMemrefStore final : OpConversionPattern<memref::StoreOp> {
+   using OpConversionPattern::OpConversionPattern;
+ 
+-  ConvertMemrefStore(MLIRContext *context, bool disableAtomicRMW)
+-      : OpConversionPattern<memref::StoreOp>(context),
++  ConvertMemrefStore(const TypeConverter &typeConverter, MLIRContext *context,
++                     bool disableAtomicRMW)
++      : OpConversionPattern<memref::StoreOp>(typeConverter, context),
+         disableAtomicRMW(disableAtomicRMW) {}
+ 
+   LogicalResult
+@@ -639,7 +640,8 @@ void memref::populateMemRefNarrowTypeEmulationPatterns(
+                ConvertMemRefAssumeAlignment, ConvertMemRefMemorySpaceCast,
+                ConvertMemRefSubview, ConvertMemRefReinterpretCast>(
+       typeConverter, patterns.getContext());
+-  patterns.insert<ConvertMemrefStore>(patterns.getContext(), disableAtomicRMW);
++  patterns.insert<ConvertMemrefStore>(typeConverter, patterns.getContext(),
++                                      disableAtomicRMW);
+   memref::populateResolveExtractStridedMetadataPatterns(patterns);
+ }
+ 
