@@ -42,15 +42,6 @@ struct KernelInfo {
 LogicalResult collectKernelInfo(ModuleOp moduleOp,
                                 SmallVectorImpl<KernelInfo> &kernels);
 
-/// Check that the module's LDS (shared memory) usage does not exceed the
-/// hardware limit. Reads the "ttg.shared" attribute from `moduleOp` and
-/// compares it against `maxSharedMemPerWG`.
-/// Returns the shared memory size on success, or failure if it exceeds the
-/// limit.
-///
-/// Must be called before ResolveKernelLaunchParams, which removes ttg.shared.
-FailureOr<int64_t> checkLDSUsage(ModuleOp moduleOp, int64_t maxSharedMemPerWG);
-
 /// Create a gpu.ObjectAttr from the HSACO binary in moduleOp and kernel info.
 /// Returns the ObjectAttr and a mapping from kernel names to their indices.
 FailureOr<std::pair<gpu::ObjectAttr, DenseMap<StringRef, size_t>>>

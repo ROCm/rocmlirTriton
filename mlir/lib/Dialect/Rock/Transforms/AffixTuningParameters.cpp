@@ -225,6 +225,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   }
   if (rock::isSplitKRequested(perfConfigAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
+      op->getParentOfType<ModuleOp>()->setAttr(
+          rock::NotApplicableAttr::getMnemonic(),
+          UnitAttr::get(op->getContext()));
       op->emitError("Fusion with SplitK perfConfig is not legal");
       return signalPassFailure();
     }
@@ -266,6 +269,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   }
   if (rock::isSplitKRequested(perfConfigAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
+      op->getParentOfType<ModuleOp>()->setAttr(
+          rock::NotApplicableAttr::getMnemonic(),
+          UnitAttr::get(op->getContext()));
       op->emitError("Fusion with SplitK perfConfig is not legal");
       return signalPassFailure();
     }
