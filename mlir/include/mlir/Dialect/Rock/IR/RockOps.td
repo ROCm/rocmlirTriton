@@ -184,7 +184,8 @@ def Rock_ReduceOp
 
 def Rock_AttentionOp
     : Rock_Op<
-          "attention", [DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
+          "attention", [RecursiveMemoryEffects, RecursivelySpeculatable,
+                        DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
                         RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<[F32, F16, BF16, I8]>:$queries,
           TensorOf<[F32, F16, BF16, I8]>:$keys,
@@ -477,7 +478,8 @@ def Rock_LoadMarkerOp
 
 // store
 def Rock_StoreOp : Rock_Op<"store",
-                           [AllElementTypesMatch<["source", "dest", "result"]>]>,
+                           [Pure,
+                            AllElementTypesMatch<["source", "dest", "result"]>]>,
                    Arguments<(ins AnyRankedTensor:$source,
                        AnyRankedTensor:$dest, StoreMethodAttr:$storeMethod)>,
                    Results<(outs AnyRankedTensor:$result)> {
@@ -530,8 +532,9 @@ def Rock_GridwiseGemmOp
 
 // gridwise_attention
 def Rock_GridwiseAttentionOp
-    : Rock_Op<"gridwise_attention", [RockFusionRoot, AttrSizedOperandSegments,
-]>,
+    : Rock_Op<"gridwise_attention",
+              [RecursiveMemoryEffects, RecursivelySpeculatable, RockFusionRoot,
+               AttrSizedOperandSegments]>,
       Arguments<(ins TensorRankOf<[F32, F16, BF16, I8], [3]>:$queries,
           TensorRankOf<[F32, F16, BF16, I8], [3]>:$keys,
           TensorRankOf<[F32, F16, BF16], [3]>:$values,
@@ -610,7 +613,7 @@ defvar LdsBufferTypes = GemmInputTypes # [VectorOfRankAndType<[1], GemmInputType
 
 // blockwise_gemm
 def Rock_BlockwiseGemmOp
-    : Rock_Op<"blockwise_gemm", [AttrSizedOperandSegments]>,
+    : Rock_Op<"blockwise_gemm", [Pure, AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<GemmInputTypes>:$matrixA,
           TensorOf<GemmInputTypes>:$matrixB, TensorOf<GemmOutputTypes>:$matrixC,
           Optional<TensorOf<[F8E8M0FNU, I8]>>:$matrixScaleA,
@@ -664,7 +667,7 @@ def Rock_BlockwiseGemmOp
 // blockwise_load
 def Rock_BlockwiseLoadOp
     : Rock_Op<"blockwise_load",
-              [AllElementTypesMatch<["source", "result"]>]>,
+              [Pure, AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source global memory">:$source,
           Variadic<I32>:$sourceIndices)>,
@@ -685,7 +688,8 @@ def Rock_BlockwiseLoadOp
 def Rock_BlockwiseLoadPtrOp
     : Rock_Op<"blockwise_load_ptr",
               [AllShapesMatch<["pointerTensor", "maskTensor", "result"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32]>, "Pointer tensor">:$pointerTensor,
+      Arguments<(ins Arg<RankedTensorOf<[I32]>, "Pointer tensor",
+                         [MemRead]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor)>,
       Results<(outs TensorOf<NativeMemoryOpTypes>:$result)> {
   let summary = "Blockwise load from global memory";
@@ -700,7 +704,8 @@ def Rock_BlockwiseLoadPtrOp
 // blockwise_store
 def Rock_BlockwiseStoreOp
     : Rock_Op<"blockwise_store",
-              [DeclareOpInterfaceMethods<RockAcceptingViewOpInterface>,
+              [Pure,
+               DeclareOpInterfaceMethods<RockAcceptingViewOpInterface>,
                DeclareOpInterfaceMethods<RockWriterOpInterface>,
                AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
@@ -724,7 +729,8 @@ def Rock_BlockwiseStorePtrOp
     : Rock_Op<"blockwise_store_ptr",
               [AllShapesMatch<["pointerTensor", "maskTensor", "source"]>,
                AllElementTypesMatch<["source", "result"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32]>, "Pointer tensor">:$pointerTensor,
+      Arguments<(ins Arg<RankedTensorOf<[I32]>, "Pointer tensor",
+                         [MemWrite]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           StoreMethodAttr:$storeMethod)>,
