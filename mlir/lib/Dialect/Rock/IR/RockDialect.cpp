@@ -1883,6 +1883,30 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     }
   }
 
+  // The pre-second-GEMM region is optional in the assembly format, so an
+  // empty region is legal. When present, however, downstream passes
+  // (e.g. RegularizeInterGemmFusion, GridwiseAttnToBlockwise) assume a
+  // single block whose terminator is a `rock.yield` of exactly one value.
+  // Enforce that shape here so malformed IR is rejected up front rather than
+  // crashing later in a pass.
+  Region &body = op.getPreSecondGemmRegion();
+  if (!body.empty()) {
+    if (!body.hasOneBlock())
+      return op.emitOpError(
+          "pre-second-GEMM region must contain a single block");
+    Block &block = body.front();
+    if (block.getNumArguments() == 0)
+      return op.emitOpError(
+          "pre-second-GEMM body must have at least one block argument");
+    auto yieldOp = dyn_cast<rock::YieldOp>(block.getTerminator());
+    if (!yieldOp)
+      return op.emitOpError(
+          "pre-second-GEMM body must be terminated by a rock.yield");
+    if (yieldOp.getNumOperands() != 1)
+      return op.emitOpError(
+          "pre-second-GEMM body must yield exactly one value");
+  }
+
   return success();
 }
 

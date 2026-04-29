@@ -101,13 +101,21 @@ namespace {
 ///      to consume.
 static void eraseYieldBoundaryTransform(Block &block) {
   auto yieldOp = cast<rock::YieldOp>(block.getTerminator());
-  assert(yieldOp.getNumOperands() == 1 &&
-         "pre-second-GEMM body must yield exactly one value");
 
   // arg0 is the first GEMM's result (e.g. QK^T for attention, A*B for
   // gemm-elementwise-gemm). Bind it to a named value to make the
   // intent of the walks below easier to follow.
   Value firstGemmRes = block.getArgument(0);
+
+  // Cheap-rejection shape guard: if the outermost boundary transform's
+  // output shape isn't already arg0's shape, the inversion check below
+  // is guaranteed to fail (different result count from rootShape), so
+  // we may as well bail out before walking arg0's chain.
+  auto rootShape = cast<RankedTensorType>(firstGemmRes.getType()).getShape();
+  auto firstResShape =
+      cast<RankedTensorType>(yieldOp.getOperand(0).getType()).getShape();
+  if (firstResShape != rootShape)
+    return;
 
   // Walk the (possibly stacked) boundary transforms in walking order from
   // yield inward, without modifying the IR. Each link must be single-
@@ -122,24 +130,30 @@ static void eraseYieldBoundaryTransform(Block &block) {
       // below only justifies the rewrite if nothing else observes this
       // view, and a surviving multi-use link would later be rejected by
       // collectArgTransformChains as a non-linear transform chain.
-      if (isa<BlockArgument>(tOp.getInput()) || !tOp.getResult().hasOneUse())
+      if (!tOp.getResult().hasOneUse())
         break;
+
+      // Reaching a block arg means the entire chain from yield back to
+      // that arg is single-use, i.e. the arg has no other in-body uses.
+      // For non-arg0 args (extra elementwise inputs like biases/scales)
+      // that would mean the body discards the first GEMM result entirely,
+      // which no current producer emits. Codify that invariant: the only
+      // block arg the yield-rooted chain can reach is arg0 itself, whose
+      // chain is then picked up by collectArgTransformChains.
+      if (isa<BlockArgument>(tOp.getInput())) {
+        assert(tOp.getInput() == firstGemmRes &&
+               "yield-rooted single-use transform chain should only ever "
+               "land on arg0 (the first GEMM result); other block args' "
+               "chains are handled by collectArgTransformChains");
+        break;
+      }
+
       boundaryAttrs.push_back(tOp.getTransform());
       cur = tOp.getInput();
     }
   }
 
   if (boundaryAttrs.empty())
-    return;
-
-  // Cheap-rejection shape guard: if the outermost boundary transform's
-  // output shape isn't already arg0's shape, the inversion check below
-  // is guaranteed to fail (different result count from rootShape), so
-  // we may as well bail out before walking arg0's chain.
-  auto rootShape = cast<RankedTensorType>(firstGemmRes.getType()).getShape();
-  auto firstResShape =
-      cast<RankedTensorType>(yieldOp.getOperand(0).getType()).getShape();
-  if (firstResShape != rootShape)
     return;
 
   // Walk arg0's in-body transform chain (linear single-use chain of
@@ -172,7 +186,7 @@ static void eraseYieldBoundaryTransform(Block &block) {
   if (!isIdentityOnShape(composed, rootShape))
     return;
 
-  // All checks passed — perform the erasure. Same loop structure as the
+  // All checks passed, perform the erasure. Same loop structure as the
   // walking step above; we re-derive each tOp from yield's current
   // operand because each erase changes what yield points at.
   while (true) {
