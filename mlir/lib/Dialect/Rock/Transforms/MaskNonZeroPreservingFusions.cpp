@@ -59,6 +59,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LogicalResult.h"
 
 namespace mlir {
 namespace rock {
@@ -242,25 +243,29 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
 /// through dot operand layout conversion as xi1 local_allocs, which Triton
 /// cannot handle. Bitwise zeroing carries the mask as a byte-or-wider integer
 /// instead.
-static Value zeroMaskedValue(OpBuilder &builder, Location loc, Value mask,
-                             Value value) {
+static FailureOr<Value> zeroMaskedValue(OpBuilder &builder, Location loc,
+                                        Value mask, Value value) {
   auto valueType = cast<RankedTensorType>(value.getType());
   Type elemType = valueType.getElementType();
-  assert(elemType.isIntOrFloat() &&
-         "zeroMaskedValue expects an int/float element type");
-  assert(cast<RankedTensorType>(mask.getType()).getElementType().isInteger(1) &&
-         "zeroMaskedValue expects an i1 mask");
+  if (!elemType.isIntOrFloat())
+    return emitError(loc)
+           << "cannot bitwise re-mask non-int/float element type " << elemType;
+
+  auto maskType = dyn_cast<RankedTensorType>(mask.getType());
+  if (!maskType || !maskType.getElementType().isInteger(1))
+    return emitError(loc) << "expected i1 tensor mask for bitwise re-masking";
 
   // Fast path for i1 leaves: `arith.andi value, mask` is already the bitwise
   // zeroing we want, and avoids a degenerate `arith.extsi : i1 -> i1`.
   if (elemType.isInteger(1))
-    return arith::AndIOp::create(builder, loc, value, mask);
+    return arith::AndIOp::create(builder, loc, value, mask).getResult();
 
   unsigned bitWidth = elemType.getIntOrFloatBitWidth();
-  assert(bitWidth >= 8 &&
-         "zeroMaskedValue produces a same-width integer mask tensor; sub-byte "
-         "non-i1 element types would re-introduce the sub-byte layout that "
-         "Triton's dot operand layout conversion cannot lower");
+  if (bitWidth < 8)
+    return emitError(loc)
+           << "cannot bitwise re-mask sub-byte non-i1 element type "
+           << elemType;
+
   Type intElemType = builder.getIntegerType(bitWidth);
   auto intTensorType = RankedTensorType::get(valueType.getShape(), intElemType,
                                              valueType.getEncoding());
@@ -275,7 +280,8 @@ static Value zeroMaskedValue(OpBuilder &builder, Location loc, Value mask,
       arith::AndIOp::create(builder, loc, valueBits, allBitsMask);
   if (value.getType() == intTensorType)
     return maskedBits;
-  return arith::BitcastOp::create(builder, loc, valueType, maskedBits);
+  return arith::BitcastOp::create(builder, loc, valueType, maskedBits)
+      .getResult();
 }
 
 struct RockMaskNonZeroPreservingFusionsPass
@@ -345,11 +351,16 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
     for (++it; it != masks.end(); ++it)
       combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
 
-    Value safe = zeroMaskedValue(builder, loc, combinedMask, leaf);
+    FailureOr<Value> safe = zeroMaskedValue(builder, loc, combinedMask, leaf);
+    if (failed(safe)) {
+      signalPassFailure();
+      return;
+    }
+    Value safeValue = *safe;
 
     // Replace non-fusion uses of the leaf with the masked version.
-    leaf.replaceUsesWithIf(safe, [&](OpOperand &use) {
-      return use.getOwner() != safe.getDefiningOp() &&
+    leaf.replaceUsesWithIf(safeValue, [&](OpOperand &use) {
+      return use.getOwner() != safeValue.getDefiningOp() &&
              !rock::isFusionOp(use.getOwner());
     });
   }
