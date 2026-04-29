@@ -98,6 +98,9 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
   if (dumpSchedulesPath.empty())
     return;
 
+  assert(targetModule && transformModule &&
+         "dumpBeforeTransform requires non-null target and transform modules");
+
   // Use the path specified by the pass option
   std::string dumpDir = dumpSchedulesPath;
   std::error_code ec = llvm::sys::fs::create_directory(dumpDir);
@@ -186,6 +189,11 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
 
   // Step 3: Apply each transform step with pre/post sequences
   for (const TransformStep &step : pipeline) {
+    if (!step.module) {
+      LLVM_DEBUG(llvm::dbgs() << "    Skipping " << step.name
+                              << " (no schedule module)\n");
+      continue;
+    }
     // 3.1. Pre-sequence
     std::string prePhaseName = "pre_" + step.name.str();
     LLVM_DEBUG(llvm::dbgs() << "    Applying " << prePhaseName << "...\n");
