@@ -6,37 +6,40 @@
 // These tests run rocmlir-opt --help which is enough to call into
 // registerRocMLIRDialects and exercise the plugin loading code.
 //
-// Mirrors external/triton/test/Plugins/test-plugin.mlir but does not require
-// the upstream example plugin shared libraries, which are not built in the
-// rocmlirTriton project (TRITON_BUILD_PYTHON_MODULE is OFF).
+// We only need rocmlir-opt --help: registerRocMLIRDialects runs
+// unconditionally in main() before any CLI parsing, so --help is enough to
+// trigger the plugin-loading code in registerTritonDialects.
 
 // 1. Baseline: with the env var unset, rocmlir-opt must register dialects
-//    and run --help successfully. Guards against making the var mandatory.
-// RUN: env -u TRITON_PLUGIN_PATHS rocmlir-opt --help \
-// RUN:   | FileCheck %s --check-prefix=CHECK-HELP
+//    and run --help successfully. No plugin warning should be printed.
+//    Guards against making the var mandatory or printing spurious warnings.
+// RUN: env -u TRITON_PLUGIN_PATHS rocmlir-opt --help 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-HELP --implicit-check-not="TRITON_EXT_ENABLED"
 
 // CHECK-HELP: MLIR+Rock modular optimizer driver
 
-// 2. Bug detector: with the env var set to a path that cannot be loaded,
-//    rocmlir-opt must abort with a "Could not load library" error.
-//
-//    If TRITON_PLUGIN_PATHS is silently ignored (because someone renamed
-//    the env var upstream), rocmlir-opt will exit 0
-//    and this test will fail.
-//
-//    The current code path uses report_fatal_error -> abort(), so the
-//    process dies via SIGABRT. We use `not --crash` so signal-based
-//    failures count as the expected outcome.
+// 2. Bug detector: with the env var set, the path must show up in
+//    upstream's "will not load" warning, proving the value reached
+//    loadPlugins(). If TRITON_PLUGIN_PATHS is silently ignored (because
+//    someone renamed the env var upstream and the rocMLIR side stops
+//    forwarding it, or because the loader call site was deleted),
+//    no warning is emitted and this test fails.
 // RUN: env TRITON_PLUGIN_PATHS=/rocmlir/nonexistent/plugin.so \
-// RUN:   not --crash rocmlir-opt --help 2>&1 \
+// RUN:   rocmlir-opt --help 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-BAD-PATH
 
-// CHECK-BAD-PATH: Could not load library '/rocmlir/nonexistent/plugin.so'
+// CHECK-BAD-PATH:      WARNING
+// CHECK-BAD-PATH:      not built with TRITON_EXT_ENABLED:
+// CHECK-BAD-PATH-NEXT: /rocmlir/nonexistent/plugin.so
 
-// 3. Multi-path parsing: the loader splits on ':' and tries each entry.
-//    The first bad path should be reported.
+// 3. Multi-path parsing: the loader splits on ':' and processes every
+//    entry. Each path must produce its own warning, proving the value
+//    is parsed rather than treated as a single string.
 // RUN: env TRITON_PLUGIN_PATHS=/rocmlirTriton/nonexistent/a.so:/rocmlirTriton/nonexistent/b.so \
-// RUN:   not --crash rocmlir-opt --help 2>&1 \
+// RUN:   rocmlir-opt --help 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MULTI
 
-// CHECK-MULTI: Could not load library '/rocmlirTriton/nonexistent/a.so'
+// CHECK-MULTI:      not built with TRITON_EXT_ENABLED:
+// CHECK-MULTI-NEXT: /rocmlirTriton/nonexistent/a.so
+// CHECK-MULTI:      not built with TRITON_EXT_ENABLED:
+// CHECK-MULTI-NEXT: /rocmlirTriton/nonexistent/b.so

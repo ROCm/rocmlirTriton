@@ -243,19 +243,10 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::proton::gpu::registerScheduleBufferStorePass();
   mlir::triton::proton::gpu::registerAddSchedBarriersPass();
 
-  // Plugin passes
-  if (std::string envValue =
-          mlir::triton::tools::getStrEnv("TRITON_PLUGIN_PATHS");
-      !envValue.empty()) {
-    llvm::SmallVector<llvm::StringRef, 4> paths;
-    llvm::StringRef(envValue).split(paths, ':', /*MaxSplit=*/-1,
-                                    /*KeepEmpty=*/false);
-    for (const auto &path : paths) {
-      auto plugin = mlir::triton::plugin::TritonPlugin::load(path.str());
-      if (!plugin)
-        llvm::report_fatal_error(plugin.takeError());
-      plugin->registerPasses();
-    }
+  // Register plugin passes and dialects.
+  for (const auto &plugin : mlir::triton::plugin::loadPlugins()) {
+    plugin.registerPasses();
+    plugin.registerDialects(registry);
   }
 
   registry.insert<
