@@ -162,6 +162,14 @@ add_lit_testsuite(check-rocmlir "Running the RocMLIR regression tests"
 set_target_properties(check-rocmlir PROPERTIES FOLDER "Tests")
 
 add_lit_testsuites(ROCMLIR ${CMAKE_CURRENT_SOURCE_DIR}
+  # Without BINARY_DIR, the per-suite check-rocmlir-* targets (Unit,
+  # Dialect, Conversion, ...) point Lit at the *source* tree, where
+  # there is no generated lit.site.cfg.py. Lit then loads the source
+  # lit.cfg.py directly and crashes on missing site-config-set vars.
+  # Passing BINARY_DIR makes add_lit_testsuites use the build-tree path
+  # plus a --filter, which is the intended out-of-tree behavior (see
+  # llvm/cmake/modules/AddLLVM.cmake :: add_lit_testsuites).
+  BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${ROCMLIR_TEST_DEPENDS}
 )
 

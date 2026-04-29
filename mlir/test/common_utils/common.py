@@ -1,4 +1,15 @@
-from hip import hip
+import subprocess
+
+# hip-python is required to enumerate AMD GPUs at lit-config time. It is the
+# default on Linux ROCm installs but is typically absent on the Windows HIP SDK,
+# where the test framework still wants to load common.py. Tolerate its absence:
+# get_agents() will raise subprocess.CalledProcessError, which lit.site.cfg.py
+# already handles by setting config.no_AMD_GPU = True (so GPU-needing tests
+# are skipped rather than failing the whole suite).
+try:
+    from hip import hip
+except ImportError:
+    hip = None
 
 
 # Helper function to decode arch to its features
@@ -58,6 +69,11 @@ def hip_check(call_result):
 
 
 def get_agents():
+    if hip is None:
+        # Match the exception type lit.site.cfg.py catches to mark no_AMD_GPU.
+        raise subprocess.CalledProcessError(
+            1, 'hip-python', output=b'',
+            stderr=b'hip-python not installed; cannot enumerate AMD GPUs')
     agents = set()
     device_count = hip_check(hip.hipGetDeviceCount())
     for device in range(device_count):

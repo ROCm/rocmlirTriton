@@ -78,7 +78,7 @@ config.arch = ""
 config.arch_support_mfma = False
 config.arch_support_wmma = False
 config.arch_support_accel_fp8 = False
-config.features = None
+config.features = ""
 if config.rocm_path:
     try:
         agents = get_agents()
