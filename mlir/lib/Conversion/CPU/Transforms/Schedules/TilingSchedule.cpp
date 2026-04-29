@@ -63,59 +63,106 @@ static void tileElementwiseOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
       /*scalableSizes=*/std::nullopt);
 }
 
+/// Flatten elementwise linalg.generic ops containing arith.extf or
+/// arith.truncf. This prevents IR explosion when lowering multi-dimensional
+/// vectors to LLVM, since LLVM only supports 1D vectors and must decompose each
+/// leaf vector individually for operations on nested arrays.
+static void flattenExtfTruncfOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
+                                 Value target) {
+  auto anyOpType = getAnyOpType(ctx);
+
+  // Match arith.extf ops and get their parent linalg.generic
+  auto matchExtf = ib.create<transform::MatchOp>(
+      anyOpType, target, ArrayRef<StringRef>{"arith.extf"});
+  auto extfLinalg = ib.create<transform::GetParentOp>(
+      /*parent=*/anyOpType,
+      /*target=*/matchExtf.getResult(),
+      /*isolated_from_above=*/UnitAttr{},
+      /*allow_empty_results=*/UnitAttr{},
+      /*op_name=*/StringAttr::get(ctx, "linalg.generic"),
+      /*deduplicate=*/UnitAttr{},
+      /*nth_parent=*/IntegerAttr{});
+
+  // Match arith.truncf ops and get their parent linalg.generic
+  auto matchTruncf = ib.create<transform::MatchOp>(
+      anyOpType, target, ArrayRef<StringRef>{"arith.truncf"});
+  auto truncfLinalg = ib.create<transform::GetParentOp>(
+      /*parent=*/anyOpType,
+      /*target=*/matchTruncf.getResult(),
+      /*isolated_from_above=*/UnitAttr{},
+      /*allow_empty_results=*/UnitAttr{},
+      /*op_name=*/StringAttr::get(ctx, "linalg.generic"),
+      /*deduplicate=*/UnitAttr{},
+      /*nth_parent=*/IntegerAttr{});
+
+  // Merge handles and flatten the elementwise ops
+  auto merged = ib.create<transform::MergeHandlesOp>(
+      anyOpType, ValueRange{extfLinalg.getResult(), truncfLinalg.getResult()},
+      /*deduplicate=*/UnitAttr{});
+  ib.create<transform::FlattenElementwiseLinalgOp>(anyOpType,
+                                                   merged.getResult());
+}
+
 OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
-  return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
-    auto anyOpType = getAnyOpType(ctx);
+  return buildTransformModule(
+      ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
+        auto anyOpType = getAnyOpType(ctx);
 
-    // AVX vector width is 256 bits. 
-    // For fp32, AVX takes 8 elements.
-    int vectorSize = 8;
+        // AVX vector width is 256 bits.
+        // For fp32, AVX takes 8 elements.
+        int vectorSize = 8;
 
-    // Tile elementwise ops of different dimensions to prevent huge vectors
-    tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/1);
-    tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/2);
-    tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/3);
+        // Flatten extf/truncf linalg.generic ops to 1D to avoid IR explosion
+        // when lowering multi-dimensional vectors to LLVM
+        flattenExtfTruncfOps(ib, ctx, arg);
 
-    // Now tile (and optionally fuse) the matmul
-    auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
+        // Tile elementwise ops of different dimensions to prevent huge vectors
+        tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/1);
+        tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/2);
+        tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/3);
+        tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/4);
+        tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/5);
 
-    SmallVector<Type> fuseLoopTypes(3, anyOpType);
-    auto fuse = ib.create<transform::FuseOp>(
-        /*loopTypes=*/fuseLoopTypes,
-        /*target=*/matchMatmul.getResults(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{1, 256, 64},
-        /*staticTileInterchange=*/ArrayRef<int64_t>{},
-        /*applyCleanup=*/false,
-        /*useForall=*/false);
+        // Now tile (and optionally fuse) the matmul
+        auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
 
-    SmallVector<Type> tile1LoopTypes(1, anyOpType);
-    auto tile1 = ib.create<transform::TileUsingForOp>(
-        /*loopTypes=*/tile1LoopTypes,
-        /*target=*/fuse.getTransformed(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{0, 0, 0, 64},
-        /*interchange=*/ArrayRef<int64_t>{},
-        /*scalableSizes=*/std::nullopt);
+        SmallVector<Type> fuseLoopTypes(3, anyOpType);
+        auto fuse = ib.create<transform::FuseOp>(
+            /*loopTypes=*/fuseLoopTypes,
+            /*target=*/matchMatmul.getResults(),
+            /*staticTileSizes=*/ArrayRef<int64_t>{1, 256, 64},
+            /*staticTileInterchange=*/ArrayRef<int64_t>{},
+            /*applyCleanup=*/false,
+            /*useForall=*/false);
 
-    SmallVector<Type> tile2LoopTypes(3, anyOpType);
-    ib.create<transform::TileUsingForOp>(
-        /*loopTypes=*/tile2LoopTypes,
-        /*target=*/tile1.getTiledLinalgOp(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{0, vectorSize, vectorSize, 1},
-        /*interchange=*/ArrayRef<int64_t>{},
-        /*scalableSizes=*/std::nullopt);
+        SmallVector<Type> tile1LoopTypes(1, anyOpType);
+        auto tile1 = ib.create<transform::TileUsingForOp>(
+            /*loopTypes=*/tile1LoopTypes,
+            /*target=*/fuse.getTransformed(),
+            /*staticTileSizes=*/ArrayRef<int64_t>{0, 0, 0, 64},
+            /*interchange=*/ArrayRef<int64_t>{},
+            /*scalableSizes=*/std::nullopt);
 
-    auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
+        SmallVector<Type> tile2LoopTypes(3, anyOpType);
+        ib.create<transform::TileUsingForOp>(
+            /*loopTypes=*/tile2LoopTypes,
+            /*target=*/tile1.getTiledLinalgOp(),
+            /*staticTileSizes=*/ArrayRef<int64_t>{0, vectorSize, vectorSize, 1},
+            /*interchange=*/ArrayRef<int64_t>{},
+            /*scalableSizes=*/std::nullopt);
 
-    auto canonicalize = ib.create<transform::ApplyRegisteredPassOp>(
-        anyOpType, matchFunc.getResults(),
-        /*passName=*/"canonicalize",
-        /*options=*/DictionaryAttr::get(ctx),
-        /*dynamicOptions=*/ValueRange{});
+        auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
 
-    ib.create<transform::ApplyRegisteredPassOp>(
-        anyOpType, canonicalize.getResult(),
-        /*passName=*/"lower-affine",
-        /*options=*/DictionaryAttr::get(ctx),
-        /*dynamicOptions=*/ValueRange{});
-  });
+        auto canonicalize = ib.create<transform::ApplyRegisteredPassOp>(
+            anyOpType, matchFunc.getResults(),
+            /*passName=*/"canonicalize",
+            /*options=*/DictionaryAttr::get(ctx),
+            /*dynamicOptions=*/ValueRange{});
+
+        ib.create<transform::ApplyRegisteredPassOp>(
+            anyOpType, canonicalize.getResult(),
+            /*passName=*/"lower-affine",
+            /*options=*/DictionaryAttr::get(ctx),
+            /*dynamicOptions=*/ValueRange{});
+      });
 }
