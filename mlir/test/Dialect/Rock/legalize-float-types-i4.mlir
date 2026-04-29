@@ -6,23 +6,24 @@
 
 // Test 1: Sub-byte uint4 behind a dequant fusion chain.
 // The GEMM operand is f16, but the data block arg is i4 (packed uint4).
-// The pass should:
-//   1. Halve the i4 block arg: tensor<16 x i4> -> tensor<8 x i8>
-//   2. Insert broadcast transforms: [8] -> [8,1] -> [8,2] -> [16]
-//   3. Replace arith.extui with shift-and-mask sub-byte extraction
+// strideFactor == 1 so the FAST path fires: the existing transform chain is
+// halved in-place (no Broadcast/Merge inserted) and the load tile shape is
+// halved.  After the load, andi (low nibble) + shrui (high nibble) + tt.join
+// + tt.reshape rebuild the original logical tile shape.
 
 // CHECK-LABEL: func.func @test_i4_sub_byte_extui
 // Block arg halved to i8
 // CHECK-SAME: (%[[DATA:.*]]: tensor<8xi8>,
-// Broadcast transform chain inserted between halved arg and bottom transform
+// Existing transforms (Unmerge / AddDim) survive, just with halved sizes.
 // CHECK: rock.transform %[[DATA]]{{.*}}AddDim
-// CHECK: rock.transform{{.*}}Broadcast
-// CHECK: rock.transform{{.*}}Merge
-// Load result type is i8
-// CHECK: %[[LOADED:.*]] = rock.blockwise_load %{{.*}} : tensor<1x1x1x1x4x4xi8> -> tensor<4x4xi8>
-// Sub-byte extraction: shrui + andi (no arith.extui)
-// CHECK: arith.shrui %[[LOADED]], %{{.*}} : tensor<4x4xi8>
-// CHECK: arith.andi %{{.*}}, %{{.*}} : tensor<4x4xi8>
+// Load tile is the HALVED i8 shape (last dim 4 -> 2 along packing axis).
+// CHECK: %[[LOADED:.*]] = rock.blockwise_load %{{.*}} : tensor<1x1x1x1x4x2xi8> -> tensor<4x2xi8>
+// Sub-byte extraction: andi (low nibble) before shrui (high nibble).
+// CHECK: arith.andi %[[LOADED]], %{{.*}} : tensor<4x2xi8>
+// CHECK: arith.shrui %[[LOADED]], %{{.*}} : tensor<4x2xi8>
+// Re-interleave low/high nibbles back to the original logical tile.
+// CHECK: tt.join
+// CHECK: tt.reshape
 // CHECK-NOT: arith.extui
 func.func @test_i4_sub_byte_extui(
     %data: tensor<16xi4>,
@@ -94,18 +95,20 @@ func.func @test_i4_sub_byte_extui(
 
 // Test 2: Sub-byte int4 (signed) behind a dequant fusion chain.
 // Same structure as uint4 test above, but uses arith.extsi instead of extui.
-// The pass should replace arith.extsi with the sign-extending variant:
-//   (loaded >> shifts) & 0xF  then  (<< 4) >>s 4
+// Fast path again (strideFactor == 1).  After the unpack (andi + shrui +
+// tt.join + tt.reshape), the extsi user is replaced by an arith.shli+shrsi
+// pair on the unpacked tile to sign-extend each 4-bit nibble.
 
 // CHECK-LABEL: func.func @test_i4_sub_byte_extsi
 // CHECK-SAME: (%[[DATA:.*]]: tensor<8xi8>,
 // CHECK: rock.transform %[[DATA]]{{.*}}AddDim
-// CHECK: rock.transform{{.*}}Broadcast
-// CHECK: rock.transform{{.*}}Merge
-// CHECK: %[[LOADED:.*]] = rock.blockwise_load %{{.*}} : tensor<1x1x1x1x4x4xi8> -> tensor<4x4xi8>
-// Sub-byte extraction + sign extension: shrui, andi, shli, shrsi
-// CHECK: arith.shrui %[[LOADED]], %{{.*}} : tensor<4x4xi8>
-// CHECK: arith.andi %{{.*}}, %{{.*}} : tensor<4x4xi8>
+// CHECK: %[[LOADED:.*]] = rock.blockwise_load %{{.*}} : tensor<1x1x1x1x4x2xi8> -> tensor<4x2xi8>
+// Fast-path nibble unpack: andi (low) + shrui (high) on the halved tile.
+// CHECK: arith.andi %[[LOADED]], %{{.*}} : tensor<4x2xi8>
+// CHECK: arith.shrui %[[LOADED]], %{{.*}} : tensor<4x2xi8>
+// CHECK: tt.join
+// CHECK: tt.reshape
+// Sign-extend each nibble of the unpacked tile via shli<<4 then shrsi>>4.
 // CHECK: arith.shli %{{.*}}, %{{.*}} : tensor<4x4xi8>
 // CHECK: arith.shrsi %{{.*}}, %{{.*}} : tensor<4x4xi8>
 // CHECK-NOT: arith.extsi
@@ -175,13 +178,17 @@ func.func @test_i4_sub_byte_extsi(
 
 // Test 3: Sub-byte i4 with arith.constant in the fusion chain.
 // When the dequant chain includes an inlined constant (e.g. scale literal),
-// collectOperandInputs should skip it without error.
+// collectOperandInputs should skip it without error.  Same fast path as
+// tests 1/2 (strideFactor == 1).
 
 // CHECK-LABEL: func.func @test_i4_constant_in_fusion_chain
 // CHECK-SAME: (%[[DATA:.*]]: tensor<8xi8>,
 // CHECK: rock.transform %[[DATA]]{{.*}}AddDim
-// CHECK: arith.shrui
-// CHECK: arith.andi
+// Fast-path nibble unpack: andi (low) before shrui (high) on the halved tile.
+// CHECK: arith.andi %{{.*}}, %{{.*}} : tensor<4x2xi8>
+// CHECK: arith.shrui %{{.*}}, %{{.*}} : tensor<4x2xi8>
+// CHECK: tt.join
+// CHECK: tt.reshape
 // CHECK-NOT: arith.extui
 func.func @test_i4_constant_in_fusion_chain(
     %data: tensor<16xi4>,
@@ -259,8 +266,9 @@ func.func @test_i4_constant_in_fusion_chain(
 // CHECK: tt.splat %{{.*}} : i8 -> tensor<4x4xi8>
 // CHECK: arith.shrui %{{.*}}, %{{.*}} : tensor<4x4xi8>
 // CHECK: arith.andi %{{.*}}, %{{.*}} : tensor<4x4xi8>
-// The plain in-tile dense<0> / dense<4> shift constant must NOT be emitted.
-// CHECK-NOT: rock.sub_byte_shift
+// The static in-tile shift form (tt.make_range + ...) must NOT be emitted,
+// the alternation depends on the K-loop iv, so it has to live inside scf.for.
+// CHECK-NOT: tt.make_range
 // CHECK-NOT: arith.extui %{{.*}} : tensor<4x4xi4>
 func.func @test_i4_sub_byte_dynamic_shift(
     %data: tensor<16xi4>,
@@ -360,5 +368,138 @@ func.func @test_i4_sub_byte_dynamic_shift(
       : tensor<4x4xf16>, tensor<4x4xf16>, tensor<4x4xf32> -> tensor<4x4xf32>
     scf.yield %g : tensor<4x4xf32>
   }
+  return %out : tensor<16xf32>
+}
+
+// -----
+
+// Test 5: Sub-byte uint4 with a broadcast period that is > 1 but still less
+// than the K-tile axis length.  This is the "static in-tile" fallback case:
+// the nibble alternation can be expressed entirely within a single tile, so
+// the pass emits a loop-invariant make_range-based shift tensor (no scf.for
+// dependency).  Previously this was a marker-tagged `arith.constant` lowered
+// later in RockToTTIR; the IR is now emitted directly here.
+//
+// Chain (block arg -> load source):
+//   <16xi4>   --Unmerge{4,4}-->        <4x4xi4>
+//             --AddDim{1}     -->      <4x4x1xi4>
+//             --Broadcast{1}  -->      <4x4x2xi4>     (broadcast factor 2)
+//             --Merge{4,2}    -->      <4x8xi4>       (strideFactor *= 2)
+//             --AddDim/permute-->      <1x8x4xi4>
+//             --Unmerge{1,8}+Unmerge{1,4}+AddDim --> <1x1x1x1x8x4xi4>
+// Tile axis K = 8, strideFactor = 2 -> 2 < 8 so the static path fires.
+
+// CHECK-LABEL: func.func @test_i4_sub_byte_static_shift
+// Block arg halved to i8.
+// CHECK-SAME: (%[[DATA:.*]]: tensor<8xi8>,
+// CHECK: rock.transform %[[DATA]]{{.*}}AddDim
+// CHECK: rock.transform{{.*}}Broadcast
+// CHECK: rock.transform{{.*}}Merge
+// The shift sequence is loop-invariant: tt.make_range + arith ops, no scf.for
+// induction variable in the shift computation.
+// CHECK: tt.make_range {end = 8 : i32, start = 0 : i32}
+// CHECK: arith.divui
+// CHECK: arith.remui
+// CHECK: arith.muli
+// CHECK: arith.trunci
+// CHECK: tt.expand_dims
+// CHECK: tt.broadcast
+// Sub-byte extraction over the loaded i8 tile.
+// CHECK: arith.shrui %{{.*}}, %{{.*}} : tensor<8x4xi8>
+// CHECK: arith.andi %{{.*}}, %{{.*}} : tensor<8x4xi8>
+// No tt.splat-based shift (that would be the dynamic path).
+// CHECK-NOT: tt.splat %{{.*}} : i8 -> tensor<8x4xi8>
+// CHECK-NOT: arith.extui %{{.*}} : tensor<8x4xi4>
+func.func @test_i4_sub_byte_static_shift(
+    %data: tensor<16xi4>,
+    %scale: tensor<32xf16>,
+    %out: tensor<16xf32>) -> tensor<16xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %c0 = arith.constant 0 : i32
+
+  // Bottom: 1D(16) -> 2D(4, 4).
+  %data_2d = rock.transform %data by <affine_map<(d0, d1) -> (d0 * 4 + d1)>
+    by [<Unmerge{4, 4} ["outer", "packed"] at [0, 1] -> ["raw"] at [0]>]
+    bounds = [4, 4] -> [16]>
+    : tensor<16xi4> to tensor<4x4xi4>
+  // Add a unit "broad" dim ahead of the broadcast.
+  %data_2d_addbroad = rock.transform %data_2d by <affine_map<(d0, d1, d2) -> (d0, d1)>
+    by [<PassThrough ["outer"] at [0] -> ["outer"] at [0]>,
+        <PassThrough ["packed"] at [1] -> ["packed"] at [1]>,
+        <AddDim{1} ["broad"] at [2] -> [] at []>]
+    bounds = [4, 4, 1] -> [4, 4]>
+    : tensor<4x4xi4> to tensor<4x4x1xi4>
+  // Broadcast "broad" from 1 to 2: every byte is reused 2x along K.
+  %data_bcast = rock.transform %data_2d_addbroad by <affine_map<(d0, d1, d2) -> (d0, d1, 0)>
+    by [<PassThrough ["outer"] at [0] -> ["outer"] at [0]>,
+        <PassThrough ["packed"] at [1] -> ["packed"] at [1]>,
+        <Broadcast{1} ["broad"] at [2] -> ["broad"] at [2]>]
+    bounds = [4, 4, 2] -> [4, 4, 1]>
+    : tensor<4x4x1xi4> to tensor<4x4x2xi4>
+  // Fold {packed, broad} into K with tail size 2 -> strideFactor = 2.
+  %data_merged = rock.transform %data_bcast by <affine_map<(d0, d1) -> (d0, d1 floordiv 2, d1 mod 2)>
+    by [<PassThrough ["outer"] at [0] -> ["outer"] at [0]>,
+        <Merge{4, 2} ["k_full"] at [1] -> ["packed", "broad"] at [1, 2]>]
+    bounds = [4, 8] -> [4, 4, 2]>
+    : tensor<4x4x2xi4> to tensor<4x8xi4>
+  // 2D(4, 8) -> 3D(g=1, k=8, n=4) by adding a g dim and swapping outer -> n.
+  %data_3d = rock.transform %data_merged by <affine_map<(d0, d1, d2) -> (d2, d1)>
+    by [<AddDim{1} ["g"] at [0] -> [] at []>,
+        <PassThrough ["k"] at [1] -> ["k_full"] at [1]>,
+        <PassThrough ["n"] at [2] -> ["outer"] at [0]>]
+    bounds = [1, 8, 4] -> [4, 8]>
+    : tensor<4x8xi4> to tensor<1x8x4xi4>
+  // 3D(1, 8, 4) -> 6D(k_loop=1, g_block=1, m_block=1, n_block=1, k_iter=8, n_iter=4).
+  %data_6d = rock.transform %data_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 8 + d4, d3 * 4 + d5)>
+    by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
+        <Unmerge{1, 8} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>,
+        <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>,
+        <AddDim{1} ["m_block"] at [2] -> [] at []>]
+    bounds = [1, 1, 1, 1, 8, 4] -> [1, 8, 4]>
+    : tensor<1x8x4xi4> to tensor<1x1x1x1x8x4xi4>
+  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x8x4xi4> -> tensor<8x4xi4>
+  %ext = arith.extui %data_tile : tensor<8x4xi4> to tensor<8x4xi8>
+  %ext_f16 = arith.uitofp %ext : tensor<8x4xi8> to tensor<8x4xf16>
+
+  // Scale chain (f16, no sub-byte).  Lower bounds are [1, 8, 4] so that the
+  // 6D unmerges line up with the data chain (k=8 at lower dim 1, n=4 at 2).
+  %scale_3d = rock.transform %scale by <affine_map<(d0, d1, d2) -> (d1 * 4 + d2)>
+    by [<Unmerge{8, 4} ["k", "n"] at [1, 2] -> ["raw"] at [0]>,
+        <AddDim{1} ["g"] at [0] -> [] at []>]
+    bounds = [1, 8, 4] -> [32]>
+    : tensor<32xf16> to tensor<1x8x4xf16>
+  %scale_6d = rock.transform %scale_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 8 + d4, d3 * 4 + d5)>
+    by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
+        <Unmerge{1, 8} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>,
+        <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>,
+        <AddDim{1} ["m_block"] at [2] -> [] at []>]
+    bounds = [1, 1, 1, 1, 8, 4] -> [1, 8, 4]>
+    : tensor<1x8x4xf16> to tensor<1x1x1x1x8x4xf16>
+  %scale_tile = rock.blockwise_load %scale_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x8x4xf16> -> tensor<8x4xf16>
+
+  %dequant = arith.mulf %ext_f16, %scale_tile : tensor<8x4xf16>
+
+  // matrixA chain (f16, no sub-byte).  Tile is [M=4, K=8].
+  %a_3d = rock.transform %scale by <affine_map<(d0, d1, d2) -> (d1 * 8 + d2)>
+    by [<Unmerge{4, 8} ["m", "k"] at [1, 2] -> ["raw"] at [0]>,
+        <AddDim{1} ["g"] at [0] -> [] at []>]
+    bounds = [1, 4, 8] -> [32]>
+    : tensor<32xf16> to tensor<1x4x8xf16>
+  %a_6d = rock.transform %a_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d3 * 4 + d4, d0 * 8 + d5)>
+    by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
+        <Unmerge{1, 8} ["k_loop", "k_iter"] at [0, 5] -> ["k"] at [2]>,
+        <Unmerge{1, 4} ["m_block", "m_iter"] at [3, 4] -> ["m"] at [1]>,
+        <AddDim{1} ["n_block"] at [2] -> [] at []>]
+    bounds = [1, 1, 1, 1, 4, 8] -> [1, 4, 8]>
+    : tensor<1x4x8xf16> to tensor<1x1x1x1x4x8xf16>
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x4x8xf16> -> tensor<4x8xf16>
+
+  // GEMM: A=[M,K]=[4,8] x B=[K,N]=[8,4] -> C=[M,N]=[4,4].
+  %cst = arith.constant dense<0.0> : tensor<4x4xf32>
+  %result = rock.blockwise_gemm(%a_tile, %dequant, %cst)
+    : tensor<4x8xf16>, tensor<8x4xf16>, tensor<4x4xf32> -> tensor<4x4xf32>
   return %out : tensor<16xf32>
 }

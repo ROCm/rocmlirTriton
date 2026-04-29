@@ -718,47 +718,73 @@ static FailureOr<int64_t> computeSubByteStrideFactor(
   return strideFactor;
 }
 
-/// Build the 2-D shift constant for sub-byte extraction (FALLBACK PATH).
+/// Build the 2-D shift tensor for sub-byte extraction (FALLBACK PATH, static
+/// in-tile case).
 ///
 /// For a tile of shape [D, K], the shift at position (d, k) is determined by
-/// which sub-byte (lower or upper bits) that tile element corresponds to.
-/// The base formula is:  shift = ((pos / strideFactor) % 2) * 4
-/// where `pos` is the position along `loadAxisIdx` (0 for D, 1 for K).
+/// which nibble (low or high) that tile element corresponds to:
+///   shift = ((pos / strideFactor) % 2) * 4
+/// where `pos` is the index along `loadAxisIdx` (0 for D, 1 for K).
 ///
-/// The constant is tagged with a "rock.sub_byte_shift" dictionary attribute
-/// containing {axis, halfPeriod, v0, v1} so that RockToTTIR can lower it to
-/// Triton-native ops without pattern-matching the dense blob.
+/// The pattern is emitted as `tt.make_range` + arith ops + `tt.expand_dims` +
+/// `tt.broadcast` rather than as a single dense `arith.constant`.  Materialising
+/// the full 2-D dense blob hangs Triton's downstream GPU passes for non-trivial
+/// tile sizes, so we keep the symbolic form all the way through to the LLVM
+/// lowering, which folds the make_range chain into cheap register code.
 ///
 /// This static path is only valid when `strideFactor < axisLen`, i.e. the
 /// nibble alternation can be expressed entirely within a single tile.  When
-/// `strideFactor >= axisLen` the in-tile pattern is degenerate (all zeros)
-/// and the alternation must be driven by the outer K-loop induction variable;
-/// that case is handled separately by `buildSubByteShiftDynamic`.
+/// `strideFactor >= axisLen` the in-tile pattern is degenerate (every element
+/// of one tile shares the same shift) and the alternation must be driven by
+/// the outer K-loop induction variable; that case is handled separately by
+/// `buildSubByteShiftDynamic`.
 static Value buildSubByteShiftConstant(OpBuilder &builder, Location loc,
                                        ArrayRef<int64_t> tileShape,
                                        RankedTensorType i8TileType,
                                        int64_t loadAxisIdx,
                                        int64_t strideFactor) {
-  SmallVector<Attribute> shiftValues;
-  shiftValues.reserve(tileShape[0] * tileShape[1]);
-  for (int64_t d = 0; d < tileShape[0]; ++d)
-    for (int64_t k = 0; k < tileShape[1]; ++k) {
-      int64_t pos = (loadAxisIdx == 0) ? d : k;
-      int64_t subByteIdx = (pos / strideFactor) % 2;
-      shiftValues.push_back(builder.getI8IntegerAttr(subByteIdx * 4));
-    }
-  auto constOp = arith::ConstantOp::create(
-      builder, loc, DenseElementsAttr::get(i8TileType, shiftValues));
+  int64_t axisLen = tileShape[loadAxisIdx];
+  int64_t otherAxis = 1 - loadAxisIdx;
 
-  SmallVector<NamedAttribute> attrs = {
-      builder.getNamedAttr("axis", builder.getI64IntegerAttr(loadAxisIdx)),
-      builder.getNamedAttr("halfPeriod",
-                           builder.getI64IntegerAttr(strideFactor)),
-      builder.getNamedAttr("v0", builder.getI8IntegerAttr(0)),
-      builder.getNamedAttr("v1", builder.getI8IntegerAttr(4)),
-  };
-  constOp->setAttr("rock.sub_byte_shift", builder.getDictionaryAttr(attrs));
-  return constOp;
+  Type i32Ty = builder.getI32Type();
+  Type i8Ty = builder.getI8Type();
+  auto i32RangeType = RankedTensorType::get({axisLen}, i32Ty);
+
+  Value pos =
+      triton::MakeRangeOp::create(builder, loc, i32RangeType, 0, axisLen);
+
+  Value divided = pos;
+  if (strideFactor > 1) {
+    Value hp = arith::ConstantOp::create(
+        builder, loc,
+        DenseElementsAttr::get(i32RangeType,
+                               builder.getI32IntegerAttr(strideFactor)));
+    divided = arith::DivUIOp::create(builder, loc, pos, hp);
+  }
+
+  Value two = arith::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(i32RangeType, builder.getI32IntegerAttr(2)));
+  Value rem = arith::RemUIOp::create(builder, loc, divided, two);
+
+  // Map nibble index to byte shift: low nibble -> 0, high nibble -> 4.
+  Value four = arith::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(i32RangeType, builder.getI32IntegerAttr(4)));
+  Value shiftI32 = arith::MulIOp::create(builder, loc, rem, four);
+
+  auto i8RangeType = RankedTensorType::get({axisLen}, i8Ty);
+  Value shiftI8 =
+      arith::TruncIOp::create(builder, loc, i8RangeType, shiftI32);
+
+  // Insert a unit dim for the OTHER axis, then broadcast to the full tile
+  // shape so it can be SHRed against the loaded i8 tile.
+  SmallVector<int64_t> expandedShape(2, 1);
+  expandedShape[loadAxisIdx] = axisLen;
+  auto expandedType = RankedTensorType::get(expandedShape, i8Ty);
+  Value expanded = triton::ExpandDimsOp::create(builder, loc, expandedType,
+                                                shiftI8, otherAxis);
+  return triton::BroadcastOp::create(builder, loc, i8TileType, expanded);
 }
 
 /// Build a loop-variant tile of nibble-shift values for the FALLBACK PATH
