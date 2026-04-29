@@ -70,6 +70,11 @@ If we apply a loop pipelining transform that targets all `scf.for` operations wi
 
 Previously (in rocMLIR, or before the CPU optimization landed on develop), this level of isolation wasn't necessary. The original CPU code path only performed bufferization and LLVM lowering—passes that are safe to apply to the entire module without side effects on unrelated functions. However, the transform dialect operations used for CPU optimization (such as tiling, vectorization, and loop pipelining) require more precise targeting, making function isolation neccesary.
 
+## 3.1 Debugging: dumping per-step IR and transform schedules
+
+`rocmlir-driver` accepts the optional flag `-dump-cpu-schedules=<dir>`.
+When set, the pass writes one `.mlir` file per (function, schedule) pair, capturing the CPU verifier IR *before* the step runs together with the transform sequence that is about to be applied.
+
 ## 4. Optimization strategy
 The high-level idea is following GOTO's paper [1] while trying to be reasonably simple.
 In other words, optimize the code while keeping complexity low.
