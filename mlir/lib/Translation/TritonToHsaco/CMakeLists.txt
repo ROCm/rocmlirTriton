@@ -76,6 +76,12 @@ target_include_directories(obj.TritonToHsacoTranslation PRIVATE
 # Define path to Triton's bundled device libraries (ocml.bc, ockl.bc)
 target_compile_definitions(obj.TritonToHsacoTranslation PRIVATE
   TRITON_AMD_BACKEND_LIB_DIR="${TRITON_PROJECT_DIR}/third_party/amd/backend/lib"
+  # Propagate the canonicalized boolean to the C++ preprocessor. Without
+  # this, TritonToHsaco.cpp's `#if MLIR_ENABLE_ROCM_CONVERSIONS` blocks
+  # always evaluate to 0 (macro undefined), and rocmlir-driver/HSACO codegen
+  # emits "ROCM conversions not enabled" at runtime regardless of the
+  # CMake -DMLIR_ENABLE_ROCM_CONVERSIONS=ON option.
+  MLIR_ENABLE_ROCM_CONVERSIONS=${MLIR_ENABLE_ROCM_CONVERSIONS}
 )
 
 # Add LLD include directory for compilation (header access)
