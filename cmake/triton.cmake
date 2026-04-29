@@ -76,19 +76,44 @@ include(AddLLVM)
 include(AddMLIR)
 
 #===----------------------------------------------------------------------===//
-# ROCm Configuration
+# ROCm / HIP SDK Configuration
+#
+# Accepted inputs (first hit wins):
+#   -DROCM_PATH=<dir>         (cache/command-line)
+#   ENV{ROCM_PATH}=<dir>
+#   ENV{HIP_PATH}=<dir>       (the HIP SDK installer sets this on Windows)
+#   platform default          ("C:/opt/rocm" on Windows, "/opt/rocm" elsewhere)
+#
+# The Linux ROCm layout has HIP CMake files under   ${ROCM_PATH}/hip/cmake
+# The Windows HIP SDK layout has them under        ${ROCM_PATH}/lib/cmake/hip
+# find_package(hip) / find_package(hiprtc) pick up either location once
+# ${ROCM_PATH} is on CMAKE_PREFIX_PATH.
 #===----------------------------------------------------------------------===//
 
 if(NOT DEFINED ROCM_PATH)
-  if(NOT DEFINED ENV{ROCM_PATH})
-    set(ROCM_PATH "/opt/rocm" CACHE PATH "Path to ROCm installation")
+  if(DEFINED ENV{ROCM_PATH})
+    set(ROCM_PATH "$ENV{ROCM_PATH}" CACHE PATH "Path to ROCm / HIP SDK installation")
+  elseif(DEFINED ENV{HIP_PATH})
+    set(ROCM_PATH "$ENV{HIP_PATH}" CACHE PATH "Path to ROCm / HIP SDK installation")
+  elseif(WIN32)
+    set(ROCM_PATH "C:/opt/rocm" CACHE PATH "Path to ROCm / HIP SDK installation")
   else()
-    set(ROCM_PATH $ENV{ROCM_PATH} CACHE PATH "Path to ROCm installation")
+    set(ROCM_PATH "/opt/rocm" CACHE PATH "Path to ROCm / HIP SDK installation")
   endif()
 endif()
+file(TO_CMAKE_PATH "${ROCM_PATH}" ROCM_PATH)
 message(STATUS "ROCM_PATH: ${ROCM_PATH}")
 
-list(APPEND CMAKE_MODULE_PATH "${ROCM_PATH}/hip/cmake")
+# Expose ROCM_PATH to subdirectories (notably rocmlir-tuning-driver) via
+# CMAKE_PREFIX_PATH so find_package(hip) / find_package(hiprtc) succeed on
+# both Linux and the Windows HIP SDK without hard-coded per-OS path hacks.
+list(APPEND CMAKE_PREFIX_PATH "${ROCM_PATH}")
+
+# Legacy HIP CMake module location (Linux); the Windows HIP SDK exposes these
+# via the standard lib/cmake/<pkg> layout, discovered through CMAKE_PREFIX_PATH.
+if(NOT WIN32)
+  list(APPEND CMAKE_MODULE_PATH "${ROCM_PATH}/hip/cmake")
+endif()
 
 #===----------------------------------------------------------------------===//
 # Triton Build Options (matching external/triton/CMakeLists.txt)
@@ -105,6 +130,39 @@ set(TRITON_BUILD_UT OFF CACHE BOOL "Don't build Triton unit tests")
 
 # Enable AMD backend via TRITON_CODEGEN_BACKENDS
 set(TRITON_CODEGEN_BACKENDS "amd" "nvidia" CACHE STRING "Enable AMD codegen backend")
+
+# Triton's CMakeLists.txt now FATAL_ERRORs at configure time if
+# TRITON_CACHE_PATH is empty (see external/triton/CMakeLists.txt). Normally
+# Triton's setup.py supplies this from $HOME/.triton/cache; since rocmlirTriton
+# integrates Triton via add_subdirectory and doesn't ship a Python kernel
+# runtime, we default to a build-tree-local directory. Users can still
+# override on the cmake command line.
+if(NOT TRITON_CACHE_PATH)
+  set(TRITON_CACHE_PATH "${CMAKE_BINARY_DIR}/triton-cache" CACHE PATH "Path to triton cache")
+  file(MAKE_DIRECTORY "${TRITON_CACHE_PATH}")
+endif()
+
+# LLVM_SYSPATH tells Triton where to find a pre-built LLVM. If empty,
+# Triton's build_helpers.py downloads a ~1.8 GB prebuilt tarball from the
+# triton-windows release bucket. We always have a locally-built LLVM
+# at the path MLIR_DIR was derived from (see above), so point Triton at
+# it to skip the download. Layout expected by Triton:
+#   ${LLVM_SYSPATH}/include   (LLVM headers, populated by find_package(MLIR))
+#   ${LLVM_SYSPATH}/lib       (LLVM libraries + lib/cmake/{mlir,lld})
+#   ${LLVM_SYSPATH}/bin       (FileCheck, llvm-tblgen, mlir-tblgen, etc.)
+# MLIR_DIR is .../build/lib/cmake/mlir, so LLVM_SYSPATH is the .../build
+# directory two levels up.
+if(NOT LLVM_SYSPATH)
+  get_filename_component(_llvm_lib_cmake_dir "${MLIR_DIR}" DIRECTORY)
+  get_filename_component(_llvm_lib_dir       "${_llvm_lib_cmake_dir}" DIRECTORY)
+  get_filename_component(_llvm_syspath_guess "${_llvm_lib_dir}" DIRECTORY)
+  if(EXISTS "${_llvm_syspath_guess}/bin")
+    set(LLVM_SYSPATH "${_llvm_syspath_guess}" CACHE PATH "Path to system LLVM installation")
+  endif()
+endif()
+if(LLVM_SYSPATH)
+  message(STATUS "LLVM_SYSPATH (skips Triton's prebuilt LLVM download): ${LLVM_SYSPATH}")
+endif()
 
 #===----------------------------------------------------------------------===//
 # Include Directories
