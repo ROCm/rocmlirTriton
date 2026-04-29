@@ -151,7 +151,7 @@ std::vector<uint8_t> getPattern(DataType dataType) {
     break;
   case DataType::F16:
     for (auto flt : patternFlt) {
-      ushort f16flt = float_to_float16(flt);
+      unsigned short f16flt = float_to_float16(flt);
       auto *p = reinterpret_cast<unsigned char const *>(&f16flt);
       res.push_back(p[0]);
       res.push_back(p[1]);
@@ -159,7 +159,7 @@ std::vector<uint8_t> getPattern(DataType dataType) {
     break;
   case DataType::BF16:
     for (auto flt : patternFlt) {
-      ushort bf16flt = float_to_bfloat16(flt);
+      unsigned short bf16flt = float_to_bfloat16(flt);
       auto *p = reinterpret_cast<unsigned char const *>(&bf16flt);
       res.push_back(p[0]);
       res.push_back(p[1]);

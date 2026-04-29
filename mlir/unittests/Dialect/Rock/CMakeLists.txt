@@ -26,5 +26,14 @@ target_link_libraries(MLIRRockUnitTests
   MLIRFuncDialect
   MLIRIR
   TritonAMDGPUToLLVM
+  # LLD is strict about undefined symbols (unlike GNU ld); on Windows these
+  # transitive Triton-AMD + MLIR libraries must be listed explicitly.
+  TritonAMDGPUDialectToLLVM
+  TritonAMDAnalysis
+  MLIRUBToLLVM
   TritonAMDUtils
+  # In triton-windows@main-windows, TritonInstrumentToLLVM (pulled in via the
+  # AMD backend) references NVIDIA PTXBuilder helpers. With LLD's strict
+  # undefined-symbol behavior we must explicitly link the NVIDIA backend lib.
+  TritonNVIDIAGPUToLLVM
 )

@@ -14,6 +14,11 @@ target_link_libraries(rocmlir-translate
   MLIRROCDLToLLVMIRTranslation
   MLIRAnalysis
   MLIRFuncInlinerExtension
+  # LLD on Windows does not pull static-library symbols transitively the way
+  # GNU ld does; MLIRRockUtility defines getAccType / getMfmaVersion /
+  # getWmmaVersion which are used by the Rock transforms that get pulled in
+  # via ${translation_libs}.
+  MLIRRockUtility
 
   TritonIR
   TritonGPUIR
