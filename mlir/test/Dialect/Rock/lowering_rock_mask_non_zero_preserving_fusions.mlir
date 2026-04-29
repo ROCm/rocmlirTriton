@@ -25,14 +25,61 @@ func.func @test_addf_constant(
 }
 
 // ============================================================
+// bf16 addf with constant: non-zero-preserving (0 + 1 = 1).
+// Should insert bitwise zeroing through an i16 bitcast round trip.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_bf16_addf_constant
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xbf16>
+// CHECK: %[[BITMASK:.*]] = arith.extsi %[[MASK]] : tensor<64x64xi1> to tensor<64x64xi16>
+// CHECK: %[[FUSEDBITS:.*]] = arith.bitcast %[[FUSED]] : tensor<64x64xbf16> to tensor<64x64xi16>
+// CHECK: %[[MASKEDBITS:.*]] = arith.andi %[[FUSEDBITS]], %[[BITMASK]] : tensor<64x64xi16>
+// CHECK: %[[SAFE:.*]] = arith.bitcast %[[MASKEDBITS]] : tensor<64x64xi16> to tensor<64x64xbf16>
+// CHECK: rock.blockwise_store_ptr %[[SAFE]]
+func.func @test_bf16_addf_constant(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xbf16> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xbf16>
+  %cst = arith.constant dense<1.0> : tensor<64x64xbf16>
+  %fused = arith.addf %tile, %cst : tensor<64x64xbf16>
+  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xbf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xbf16>
+  return %r : tensor<4096xbf16>
+}
+
+// ============================================================
+// i8 addi with constant: non-zero-preserving (0 + 1 = 1).
+// Should insert bitwise zeroing through an i8 mask and return the masked
+// integer bits directly without bitcasting.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_i8_addi_constant
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addi %[[LOAD]], %{{.*}} : tensor<64x64xi8>
+// CHECK-NOT: arith.bitcast
+// CHECK: %[[BITMASK:.*]] = arith.extsi %[[MASK]] : tensor<64x64xi1> to tensor<64x64xi8>
+// CHECK: %[[SAFE:.*]] = arith.andi %[[FUSED]], %[[BITMASK]] : tensor<64x64xi8>
+// CHECK-NOT: arith.bitcast
+// CHECK: rock.blockwise_store_ptr %[[SAFE]]
+func.func @test_i8_addi_constant(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xi8> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
+  %cst = arith.constant dense<1> : tensor<64x64xi8>
+  %fused = arith.addi %tile, %cst : tensor<64x64xi8>
+  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xi8> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xi8>
+  return %r : tensor<4096xi8>
+}
+
+// ============================================================
 // mulf with constant: zero-preserving (0 * 2 = 0).
-// No arith.select should be inserted.
+// No remasking ops should be inserted.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_mulf_constant
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr
 // CHECK: %[[FUSED:.*]] = arith.mulf %[[LOAD]], %{{.*}} : tensor<64x64xf16>
-// CHECK-NOT: arith.select
+// CHECK-NOT: arith.{{extsi|andi}}
 // CHECK: rock.blockwise_store_ptr %[[FUSED]]
 func.func @test_mulf_constant(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
@@ -46,13 +93,13 @@ func.func @test_mulf_constant(
 
 // ============================================================
 // Trivial mask (constant splat true): no Pad/Embed OOB concern.
-// No arith.select should be inserted regardless of fusion type.
+// No remasking ops should be inserted regardless of fusion type.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_trivial_mask
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr
 // CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf16>
-// CHECK-NOT: arith.select
+// CHECK-NOT: arith.{{extsi|andi}}
 // CHECK: rock.blockwise_store_ptr %[[FUSED]]
 func.func @test_trivial_mask(
     %ptrs: tensor<64x64xi32>,
@@ -67,12 +114,12 @@ func.func @test_trivial_mask(
 
 // ============================================================
 // No fusion: load goes directly to store.
-// No arith.select should be inserted (no fusion chain leaves).
+// No remasking ops should be inserted (no fusion chain leaves).
 // ============================================================
 
 // CHECK-LABEL: func.func @test_no_fusion
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr
-// CHECK-NOT: arith.select
+// CHECK-NOT: arith.{{extsi|andi}}
 // CHECK: rock.blockwise_store_ptr %[[LOAD]]
 func.func @test_no_fusion(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
@@ -112,14 +159,14 @@ func.func @test_chain_mulf_addf(
 // ============================================================
 // Fusion chain: mulf then mulf (both zero-preserving).
 // Overall: 0*2*3=0, zero-preserving.
-// No arith.select should be inserted.
+// No remasking ops should be inserted.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_chain_mulf_mulf
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr
 // CHECK: arith.mulf
 // CHECK: %[[MUL2:.*]] = arith.mulf
-// CHECK-NOT: arith.select
+// CHECK-NOT: arith.{{extsi|andi}}
 // CHECK: rock.blockwise_store_ptr %[[MUL2]]
 func.func @test_chain_mulf_mulf(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
@@ -135,14 +182,14 @@ func.func @test_chain_mulf_mulf(
 
 // ============================================================
 // Two loads -> addf: zero-preserving (0+0=0).
-// No arith.select should be inserted.
+// No remasking ops should be inserted.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_two_loads_addf
 // CHECK: %[[A:.*]] = rock.blockwise_load_ptr
 // CHECK: %[[B:.*]] = rock.blockwise_load_ptr
 // CHECK: %[[SUM:.*]] = arith.addf %[[A]], %[[B]] : tensor<64x64xf16>
-// CHECK-NOT: arith.select
+// CHECK-NOT: arith.{{extsi|andi}}
 // CHECK: rock.blockwise_store_ptr %[[SUM]]
 func.func @test_two_loads_addf(
     %ptrs_a: tensor<64x64xi32>, %mask_a: tensor<64x64xi1>,
@@ -237,13 +284,13 @@ func.func @test_math_exp(
 
 // ============================================================
 // arith.extf: zero-preserving (extf(0.0 f16) = 0.0 f32).
-// No arith.select should be inserted.
+// No remasking ops should be inserted.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_extf
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr
 // CHECK: %[[EXT:.*]] = arith.extf %[[LOAD]] : tensor<64x64xf16> to tensor<64x64xf32>
-// CHECK-NOT: arith.select
+// CHECK-NOT: arith.{{extsi|andi}}
 // CHECK: rock.blockwise_store_ptr %[[EXT]]
 func.func @test_extf(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
@@ -256,13 +303,13 @@ func.func @test_extf(
 
 // ============================================================
 // arith.negf: zero-preserving (negf(0) = -0 ≈ 0).
-// No arith.select should be inserted.
+// No remasking ops should be inserted.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_negf
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr
 // CHECK: %[[NEG:.*]] = arith.negf %[[LOAD]] : tensor<64x64xf16>
-// CHECK-NOT: arith.select
+// CHECK-NOT: arith.{{extsi|andi}}
 // CHECK: rock.blockwise_store_ptr %[[NEG]]
 func.func @test_negf(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
@@ -274,14 +321,44 @@ func.func @test_negf(
 }
 
 // ============================================================
+// i1 leaf: a load -> arith.cmpf chain whose result is used as the mask of
+// another load. cmpf is a fusion op (any arith/math op with >=1 operand and
+// 1 result) and is non-zero-preserving (cmpf oge 0.0, 0.0 = true), so the
+// pass must re-zero OOB positions on the i1 leaf. The bitwise path would
+// emit a degenerate `arith.extsi : i1 -> i1`; instead we expect a direct
+// `arith.andi` of the leaf with the contributing mask, with no extsi/bitcast
+// for this leaf.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_i1_leaf_remask
+// CHECK-SAME: (%[[A_PTRS:[^:]+]]: tensor<64x64xi32>, %[[A_MASK:[^:]+]]: tensor<64x64xi1>, %[[B_PTRS:[^:]+]]: tensor<64x64xi32>,
+// CHECK: %[[A:.*]] = rock.blockwise_load_ptr %[[A_PTRS]][%[[A_MASK]]]
+// CHECK: %[[CMP:.*]] = arith.cmpf oge, %[[A]], %{{.*}} : tensor<64x64xf16>
+// CHECK: %[[SAFE_MASK:.*]] = arith.andi %[[CMP]], %[[A_MASK]] : tensor<64x64xi1>
+// CHECK-NOT: arith.extsi %{{.*}} : tensor<64x64xi1> to tensor<64x64xi1>
+// CHECK: %[[B:.*]] = rock.blockwise_load_ptr %[[B_PTRS]][%[[SAFE_MASK]]]
+// CHECK: rock.blockwise_store_ptr %[[B]]
+func.func @test_i1_leaf_remask(
+    %ptrs_a: tensor<64x64xi32>, %mask_a: tensor<64x64xi1>,
+    %ptrs_b: tensor<64x64xi32>,
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+  %a = rock.blockwise_load_ptr %ptrs_a[%mask_a] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %zero = arith.constant dense<0.0> : tensor<64x64xf16>
+  %cmp = arith.cmpf oge, %a, %zero : tensor<64x64xf16>
+  %b = rock.blockwise_load_ptr %ptrs_b[%cmp] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %r = rock.blockwise_store_ptr %b -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
+  return %r : tensor<4096xf16>
+}
+
+// ============================================================
 // Non-kernel function: pass should skip entirely.
-// Even with a non-zero-preserving fusion, no select is inserted.
+// Even with a non-zero-preserving fusion, no remasking is inserted.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_non_kernel
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr
 // CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf16>
-// CHECK-NOT: arith.select
+// CHECK-NOT: arith.{{extsi|andi}}
 // CHECK: rock.blockwise_store_ptr %[[FUSED]]
 func.func @test_non_kernel(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,

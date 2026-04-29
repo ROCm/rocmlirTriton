@@ -24,9 +24,21 @@
 // 1.0), OOB positions become non-zero and corrupt the GEMM result (tt.dot has
 // no mask).
 //
-// This pass detects such cases and inserts:
-//   %safe = arith.select %mask, %fused_result, %zero
-// at the end of the fusion chain, ensuring OOB positions remain zero.
+// This pass detects such cases and re-zeros OOB positions at the end of the
+// fusion chain. The naive lowering would be `arith.select %mask, %leaf, %zero`,
+// but Triton may move late i1 select predicates through dot operand layout
+// conversion as `xi1` `local_alloc`s, which Triton cannot handle. To sidestep
+// that we use bitwise zeroing instead, carrying the mask as a byte-or-wider
+// integer:
+//   %allBits = arith.extsi %mask : tensor<...xi1> to tensor<...xiW>
+//   %bits    = arith.bitcast %leaf : tensor<...xT> to tensor<...xiW>
+//   %masked  = arith.andi %bits, %allBits : tensor<...xiW>
+//   %safe    = arith.bitcast %masked : tensor<...xiW> to tensor<...xT>
+// where W is the element bit width of %leaf (>= 8).
+//
+// i1 leaves (e.g. an `arith.cmpf` whose result feeds the mask of another
+// `rock.blockwise_load_ptr`) take a fast path: a direct `arith.andi %leaf,
+// %mask`, since the value is already an i1 tensor and not a select predicate.
 //
 //===----------------------------------------------------------------------===//
 
@@ -234,7 +246,21 @@ static Value zeroMaskedValue(OpBuilder &builder, Location loc, Value mask,
                              Value value) {
   auto valueType = cast<RankedTensorType>(value.getType());
   Type elemType = valueType.getElementType();
+  assert(elemType.isIntOrFloat() &&
+         "zeroMaskedValue expects an int/float element type");
+  assert(cast<RankedTensorType>(mask.getType()).getElementType().isInteger(1) &&
+         "zeroMaskedValue expects an i1 mask");
+
+  // Fast path for i1 leaves: `arith.andi value, mask` is already the bitwise
+  // zeroing we want, and avoids a degenerate `arith.extsi : i1 -> i1`.
+  if (elemType.isInteger(1))
+    return arith::AndIOp::create(builder, loc, value, mask);
+
   unsigned bitWidth = elemType.getIntOrFloatBitWidth();
+  assert(bitWidth >= 8 &&
+         "zeroMaskedValue produces a same-width integer mask tensor; sub-byte "
+         "non-i1 element types would re-introduce the sub-byte layout that "
+         "Triton's dot operand layout conversion cannot lower");
   Type intElemType = builder.getIntegerType(bitWidth);
   auto intTensorType = RankedTensorType::get(valueType.getShape(), intElemType,
                                              valueType.getEncoding());
@@ -302,7 +328,10 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
                           << " non-zero-preserving fusion chain leaves\n");
 
   // ---- Phase 2: Emit masking IR ----
-  // For each remaining leaf, insert arith.select to re-zero OOB positions.
+  // For each remaining leaf, emit bitwise zeroing (or arith.andi for i1
+  // leaves) via zeroMaskedValue to re-zero OOB positions, avoiding a late
+  // i1 select predicate that Triton's dot operand layout conversion cannot
+  // handle. See zeroMaskedValue's docstring for details.
   for (auto &[leaf, masks] : leafMasks) {
     LLVM_DEBUG(llvm::dbgs()
                << "Non-zero-preserving fusion chain, inserting mask for: "

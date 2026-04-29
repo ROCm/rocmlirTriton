@@ -207,15 +207,26 @@ def RockEmulateNarrowTypesPass
 
 def RockMaskNonZeroPreservingFusionsPass
     : Pass<"rock-mask-non-zero-preserving-fusions", "::mlir::func::FuncOp"> {
-  let summary = "Insert arith.select masks after non-zero-preserving fusions "
-                "fed by Pad/Embed loads";
+  let summary = "Bitwise re-zero OOB positions after non-zero-preserving "
+                "fusions fed by Pad/Embed loads";
   let description = [{
     This pass runs AFTER LowerBlockwiseToPtr and BEFORE TransformsToPointerArith.
     When a blockwise load has Pad or Embed transforms, OOB positions are masked
     to zero. If the loaded tile feeds into a non-zero-preserving fusion (e.g.
-    arith.addf %tile, 1.0), those positions become non-zero. This pass detects
-    such cases and inserts arith.select with the load mask to re-zero OOB
-    positions at the end of the fusion chain.
+    arith.addf %tile, 1.0), those positions become non-zero and would corrupt
+    a downstream tt.dot, which has no mask.
+
+    The naive lowering would be `arith.select %mask, %leaf, %zero`, but Triton
+    may move late i1 select predicates through dot operand layout conversion
+    as `xi1` `local_alloc`s, which Triton cannot handle. To sidestep that, the
+    pass re-zeroes OOB positions bitwise: it sign-extends the i1 mask to the
+    leaf's element bit width, bitcasts the leaf to that integer type, ANDs
+    them together, and bitcasts back. i1 leaves (e.g. an `arith.cmpf` whose
+    result feeds the mask of another `rock.blockwise_load_ptr`) take a fast
+    path that uses `arith.andi` directly on the leaf and mask. Sub-byte
+    non-i1 element types (e.g. i4, f4E2M1FN) are intentionally rejected,
+    since the bitwise path would produce a sub-byte integer mask that defeats
+    its purpose.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect"];

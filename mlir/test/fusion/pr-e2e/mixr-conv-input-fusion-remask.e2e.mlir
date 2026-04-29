@@ -2,7 +2,7 @@
 // CLONE: [1 1 1]
 
 module {
-  func.func @mlir_broadcast_mul_add_relu_convolution_broadcast_add_relu(%arg0: !migraphx.shaped<160x1x1xf16, 1x1x1>, %arg1: !migraphx.shaped<32x160x56x56xf16, 602112x3136x56x1>, %arg2: !migraphx.shaped<160xf16, 1>, %arg3: !migraphx.shaped<128x160x1x1xf16, 160x1x1x1>, %arg4: !migraphx.shaped<128xf16, 1>) -> !migraphx.shaped<32x128x56x56xf16, 401408x3136x56x1> attributes {rock.arch = "gfx90a:sramecc+:xnack-", rock.enable_splitk_for_tuning, rock.kernel = "mixr", rock.num_chiplets = 1 : i64, rock.num_cu = 104 : i64} {
+  func.func @mlir_broadcast_mul_add_relu_convolution_broadcast_add_relu(%arg0: !migraphx.shaped<160x1x1xf16, 1x1x1>, %arg1: !migraphx.shaped<32x160x56x56xf16, 602112x3136x56x1>, %arg2: !migraphx.shaped<160xf16, 1>, %arg3: !migraphx.shaped<128x160x1x1xf16, 160x1x1x1>, %arg4: !migraphx.shaped<128xf16, 1>) -> !migraphx.shaped<32x128x56x56xf16, 401408x3136x56x1> attributes {rock.kernel} {
     %0 = migraphx.multibroadcast %arg0 {out_dyn_dims = [], out_lens = [32, 160, 56, 56]} : <160x1x1xf16, 1x1x1> -> <32x160x56x56xf16, 0x1x0x0>
     %1 = migraphx.broadcast %arg2 {axis = 1 : i64, out_lens = [32, 160, 56, 56]} : <160xf16, 1> -> <32x160x56x56xf16, 0x1x0x0>
     %2 = migraphx.mul %0, %arg1 : <32x160x56x56xf16, 0x1x0x0>, <32x160x56x56xf16, 602112x3136x56x1> -> <32x160x56x56xf16, 501760x3136x56x1>
