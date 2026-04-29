@@ -185,7 +185,20 @@ if (rock::supportsTDM(arch))
 
 If there is no `rock` equivalent function to check that hardware feature, then implement a new function in `AmdArchDb.cpp` and use it.
 
-## Step 6: Features Intentionally NOT Implemented
+## Step 6: Regenerate Fat Library Dependencies
+
+The file `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` lists all LLVM/MLIR and rocMLIR libraries that get merged into `librockCompiler.a`. A Triton bump can add or remove library dependencies, so this file must be regenerated after a successful build.
+
+From the **build directory**, run:
+
+```bash
+perl ../mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl > ../mlir/tools/rocmlir-lib/librockcompiler_deps.cmake
+```
+
+## Step 7: Env variables
+Search for `triton::tools::getStrEnv` in rocmlirTriton and make sure that the variable names are up to date since they might have been renamed or removed during Triton bump.
+
+## Step 8: Features Intentionally NOT Implemented
 
 The following Python features are **intentionally omitted** from the C++ implementation. Do NOT add them when synchronizing:
 
@@ -203,7 +216,7 @@ The following Python features are **intentionally omitted** from the C++ impleme
 
 When reviewing diffs, **skip changes** related to these features.
 
-## Step 7: Handling Pass Interface Changes
+## Step 9: Handling Pass Interface Changes
 
 When Triton changes pass interfaces (arguments, types), follow these steps:
 
@@ -218,7 +231,7 @@ When Triton changes pass interfaces (arguments, types), follow these steps:
 - New string parameter (usually arch) → pass `options.arch` or equivalent
 - New integer parameter → check what value Triton passes and match it
 
-## Step 8: Rebuild rocmlirTriton and fix changes (due to upstream MLIR changes)
+## Step 10: Rebuild rocmlirTriton and fix changes (due to upstream MLIR changes)
 
 After making all synchronization changes:
 
@@ -230,7 +243,7 @@ bash cmake.sh
 Which will probably fail due to LLVM being also bumped with Triton version.
 For this, we need to manually resolve the errors due to upstream LLVM changes.
 
-### 8.1 Watch for new Triton build-system requirements
+### Watch for new Triton build-system requirements
 
 Upstream occasionally adds new required CMake variables or download hooks to
 `external/triton/CMakeLists.txt` (and its helpers in
@@ -239,17 +252,7 @@ Upstream occasionally adds new required CMake variables or download hooks to
 Because we embed Triton via
 `add_subdirectory` in `cmake/triton.cmake`, but Triton does it through `setup.py`, any change must be wired up on our side or the build will fail or start downloading things unnecessarily.
 
-## Step 9: Regenerate Fat Library Dependencies
-
-The file `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` lists all LLVM/MLIR and rocMLIR libraries that get merged into `librockCompiler.a`. A Triton bump can add or remove library dependencies, so this file must be regenerated after a successful build.
-
-From the **build directory**, run:
-
-```bash
-perl ../mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl > ../mlir/tools/rocmlir-lib/librockcompiler_deps.cmake
-```
-
-## Step 10: Run Tests
+## Step 11: Run Tests
 
 ```bash
 bash tests.sh
