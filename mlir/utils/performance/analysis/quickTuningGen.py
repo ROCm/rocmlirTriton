@@ -121,7 +121,7 @@ def load_data(files, no_splitk):
         for f in files:
             print(f"  {f}")
 
-        dfs = [pd.read_csv(f, sep='\t', index_col=None) for f in files]
+        dfs = [pd.read_csv(f, sep='\t', index_col=None, low_memory=False) for f in files]
         df = pd.concat(dfs, ignore_index=True)
     else:
         # Read TSV content from stdin
@@ -133,6 +133,15 @@ def load_data(files, no_splitk):
     df = df[df['DataType'] != 'DataType']
     if len(df) < before:
         print(f"Dropped {before - len(df)} repeated header row(s)")
+
+    # Embedded header rows force pandas to infer 'TFlops' as object dtype, which
+    # later breaks numeric comparisons. Coerce to numeric and drop rows from
+    # failed tuning runs that have no TFlops measurement.
+    before = len(df)
+    df['TFlops'] = pd.to_numeric(df['TFlops'], errors='coerce')
+    df = df.dropna(subset=['TFlops'])
+    if len(df) < before:
+        print(f"Dropped {before - len(df)} row(s) with missing/invalid TFlops")
 
     if no_splitk and not df.empty:
         # Filter out configs where Split-K != 1
