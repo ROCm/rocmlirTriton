@@ -131,7 +131,7 @@ OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
             /*loopTypes=*/fuseLoopTypes,
             /*target=*/matchMatmul.getResults(),
             /*staticTileSizes=*/ArrayRef<int64_t>{1, 256, 64},
-            /*staticTileInterchange=*/ArrayRef<int64_t>{},
+            /*staticTileInterchange=*/ArrayRef<int64_t>{0, 2, 1},
             /*applyCleanup=*/false,
             /*useForall=*/false);
 
@@ -147,7 +147,7 @@ OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
         ib.create<transform::TileUsingForOp>(
             /*loopTypes=*/tile2LoopTypes,
             /*target=*/tile1.getTiledLinalgOp(),
-            /*staticTileSizes=*/ArrayRef<int64_t>{0, vectorSize, vectorSize, 1},
+            /*staticTileSizes=*/ArrayRef<int64_t>{0, vectorSize, vectorSize, vectorSize},
             /*interchange=*/ArrayRef<int64_t>{},
             /*scalableSizes=*/std::nullopt);
 
