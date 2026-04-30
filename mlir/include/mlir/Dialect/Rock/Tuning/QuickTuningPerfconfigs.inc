@@ -447,6 +447,42 @@ const StringRef PopulateParamsWmma::initParametersI8ConvGfx1150[] = {
 };
 // END_CONV_Wmma_i8_gfx1150_DEFS
 
+// BEGIN_GEMM_Wmma_f16_gfx1200_DEFS
+const StringRef PopulateParamsWmma::initParametersF16GemmGfx1200[] = {
+    "gemm:v1:128,128,32,1,1,4,0,1,1,0,0",
+    "gemm:v1:64,128,64,1,1,4,0,1,1,0,0",
+    "gemm:v1:128,64,32,1,1,4,0,1,3,0,0",
+    "gemm:v1:256,64,32,1,1,4,0,1,1,0,0",
+    "gemm:v1:32,128,64,1,1,4,0,1,2,0,0",
+    "gemm:v1:32,32,256,1,1,4,0,1,3,0,0",
+    "gemm:v1:16,64,64,1,1,4,0,1,1,0,0",
+    "gemm:v1:64,32,64,1,1,4,0,1,1,0,0",
+    "gemm:v1:16,64,128,1,1,4,0,4,2,0,0",
+    "gemm:v1:64,64,256,1,1,4,0,1,1,0,0",
+    "gemm:v1:64,256,64,1,1,4,0,1,2,0,0",
+    "gemm:v1:128,256,64,1,1,8,0,1,2,0,0",
+    "gemm:v1:16,32,256,1,1,8,0,1,3,0,0",
+    "gemm:v1:128,128,128,1,1,4,0,1,1,0,0",
+    "gemm:v1:128,128,256,1,1,4,0,1,1,0,0"
+};
+// END_GEMM_Wmma_f16_gfx1200_DEFS
+
+// BEGIN_GEMM_Wmma_i8_gfx1200_DEFS
+const StringRef PopulateParamsWmma::initParametersI8GemmGfx1200[] = {
+    "gemm:v1:64,128,64,1,1,4,0,1,2,0,0",
+    "gemm:v1:128,128,64,1,1,4,0,1,2,0,0",
+    "gemm:v1:16,64,256,1,1,4,0,1,2,0,0",
+    "gemm:v1:32,32,256,1,1,4,0,1,3,0,0",
+    "gemm:v1:64,256,64,1,1,8,0,1,2,0,0",
+    "gemm:v1:32,128,128,1,1,4,0,1,1,0,0",
+    "gemm:v1:128,16,128,1,1,4,0,1,3,0,0",
+    "gemm:v1:128,128,32,1,1,4,0,1,1,0,0",
+    "gemm:v1:64,256,32,1,1,4,0,1,2,0,0",
+    "gemm:v1:256,64,64,1,1,4,0,1,2,0,0",
+    "gemm:v1:32,256,32,1,1,8,0,1,1,0,0"
+};
+// END_GEMM_Wmma_i8_gfx1200_DEFS
+
 #endif // Wmma_DEFINITIONS_GEN
 
 #ifdef Wmma_DECLARATIONS_GEN
@@ -566,6 +602,16 @@ static constexpr size_t nInitParametersI8ConvGfx1150 = 1;
 static const StringRef initParametersI8ConvGfx1150[nInitParametersI8ConvGfx1150];
 // END_CONV_Wmma_i8_gfx1150_DECS
 
+// BEGIN_GEMM_Wmma_f16_gfx1200_DECS
+static constexpr size_t nInitParametersF16GemmGfx1200 = 15;
+static const StringRef initParametersF16GemmGfx1200[nInitParametersF16GemmGfx1200];
+// END_GEMM_Wmma_f16_gfx1200_DECS
+
+// BEGIN_GEMM_Wmma_i8_gfx1200_DECS
+static constexpr size_t nInitParametersI8GemmGfx1200 = 11;
+static const StringRef initParametersI8GemmGfx1200[nInitParametersI8GemmGfx1200];
+// END_GEMM_Wmma_i8_gfx1200_DECS
+
 #endif // Wmma_DECLARATIONS_GEN
 
 #ifdef GemmGemm_DEFINITIONS_GEN
@@ -671,6 +717,10 @@ static const StringRef initParametersF16AttentionGfx1000[nInitParametersF16Atten
 {"gfx1150_conv_f16", {PopulateParamsWmma::initParametersF16ConvGfx1150, PopulateParamsWmma::nInitParametersF16ConvGfx1150}},
 {"gfx1150_conv_i8", {PopulateParamsWmma::initParametersI8ConvGfx1150, PopulateParamsWmma::nInitParametersI8ConvGfx1150}},
 
+{"gfx1200_gemm_f16", {PopulateParamsWmma::initParametersF16GemmGfx1200, PopulateParamsWmma::nInitParametersF16GemmGfx1200}},
+
+{"gfx1200_gemm_i8", {PopulateParamsWmma::initParametersI8GemmGfx1200, PopulateParamsWmma::nInitParametersI8GemmGfx1200}},
+
 #endif // Accel_LOOKUP_TABLE_GEN
 
 #ifdef GemmGemm_LOOKUP_TABLE_GEN
@@ -683,3 +733,37 @@ static const StringRef initParametersF16AttentionGfx1000[nInitParametersF16Atten
 {"gfx1000_attention_i8", {PopulateParamsGemmGemm::initParametersF16AttentionGfx1000, PopulateParamsGemmGemm::nInitParametersF16AttentionGfx1000}},
 
 #endif // GemmGemm_LOOKUP_TABLE_GEN
+
+#ifdef NonAccel_DEFINITIONS_GEN
+
+// BEGIN_GEMM_NonAccel_f32_gfx1200_DEFS
+const StringRef PopulateParams::initParametersF32GemmGfx1200[] = {
+    "gemm:v1:64,64,32,1,1,4,0,1,2,0,0",
+    "gemm:v1:64,64,64,1,1,4,0,1,2,0,0",
+    "gemm:v1:4,64,32,1,1,4,0,4,3,0,0",
+    "gemm:v1:4,64,64,1,1,4,0,1,3,0,0",
+    "gemm:v1:32,64,32,1,1,4,0,1,1,0,0",
+    "gemm:v1:4,64,32,1,1,4,0,1,1,0,0",
+    "gemm:v1:8,64,128,1,1,8,0,1,2,0,0",
+    "gemm:v1:64,16,32,1,1,4,0,1,2,0,0",
+    "gemm:v1:32,4,256,1,1,4,0,4,2,0,0",
+    "gemm:v1:16,64,64,1,1,4,0,4,2,0,0"
+};
+// END_GEMM_NonAccel_f32_gfx1200_DEFS
+
+#endif  // NonAccel_DEFINITIONS_GEN
+
+#ifdef NonAccel_DECLARATIONS_GEN
+
+// BEGIN_GEMM_NonAccel_f32_gfx1200_DECS
+static constexpr size_t nInitParametersF32GemmGfx1200 = 10;
+static const StringRef initParametersF32GemmGfx1200[nInitParametersF32GemmGfx1200];
+// END_GEMM_NonAccel_f32_gfx1200_DECS
+
+#endif  // NonAccel_DECLARATIONS_GEN
+
+#ifdef NonAccel_LOOKUP_TABLE_GEN
+
+{"gfx1200_gemm_f32", {PopulateParams::initParametersF32GemmGfx1200, PopulateParams::nInitParametersF32GemmGfx1200}},
+
+#endif  // NonAccel_LOOKUP_TABLE_GEN

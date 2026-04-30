@@ -126,7 +126,13 @@ def load_data(files, no_splitk):
     else:
         # Read TSV content from stdin
         print("Reading from stdin...")
-        df = pd.read_csv(sys.stdin, sep='\t', index_col=None)
+        df = pd.read_csv(sys.stdin, sep='\t', index_col=None, low_memory=False)
+
+    # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
+    before = len(df)
+    df = df[df['DataType'] != 'DataType']
+    if len(df) < before:
+        print(f"Dropped {before - len(df)} repeated header row(s)")
 
     if no_splitk and not df.empty:
         # Filter out configs where Split-K != 1
@@ -243,24 +249,49 @@ def init_inc_file(path):
     path.write_text("\n".join(lines))
 
 
-def replace_section(content, insert_marker, begin_marker, end_marker, new_content):
-    """Replace content between markers, creating section if needed."""
+def find_endif(content, section_name):
+    """Find position of `#endif // SECTION_NAME` line, tolerant of whitespace.
+
+    Matches `#endif`, any horizontal whitespace, `//`, any horizontal whitespace,
+    then the section name. This survives clang-format normalizing two spaces to one.
+    """
+    pattern = re.compile(rf'^[ \t]*#endif[ \t]+//[ \t]*{re.escape(section_name)}[ \t]*$',
+                         re.MULTILINE)
+    match = pattern.search(content)
+    return match.start() if match else -1
+
+
+def ensure_section(content, section_name):
+    """Ensure `#ifdef SECTION_NAME ... #endif // SECTION_NAME` exists; append if missing."""
+    if find_endif(content, section_name) != -1:
+        return content
+    if not content.endswith("\n"):
+        content += "\n"
+    content += f"\n#ifdef {section_name}\n\n#endif  // {section_name}\n"
+    print(f"Created missing section: {section_name}")
+    return content
+
+
+def replace_section(content, section_name, begin_marker, end_marker, new_content):
+    """Replace content between begin/end markers inside the named #ifdef section.
+
+    Creates the begin/end block if it doesn't exist, and creates the enclosing
+    #ifdef/#endif section too if it's also missing.
+    """
     pattern = re.compile(f'{re.escape(begin_marker)}.*?{re.escape(end_marker)}', re.DOTALL)
 
     if pattern.search(content):
         return pattern.sub(f'{begin_marker}\n{new_content}\n{end_marker}', content)
 
-    # Section doesn't exist - insert before 'insert_marker'
-    insert_pos = content.find(insert_marker)
-    if insert_pos == -1:
-        raise ValueError(f"Cannot find {insert_marker}")
+    content = ensure_section(content, section_name)
+    insert_pos = find_endif(content, section_name)
 
     section = f'{begin_marker}\n{new_content}\n{end_marker}\n\n'
     return content[:insert_pos] + section + content[insert_pos:]
 
 
-def add_lookup_entry(content, insert_marker, entry):
-    """Add or replace lookup table entry."""
+def add_lookup_entry(content, section_name, entry):
+    """Add or replace a lookup table entry inside the named #ifdef section."""
     match = LOOKUP_ENTRY_PATTERN.match(entry)
     if not match:
         raise ValueError(f"Invalid lookup entry: {entry}")
@@ -275,21 +306,20 @@ def add_lookup_entry(content, insert_marker, entry):
         insert_pos = existing.start()
         content = content[:existing.start()] + content[existing.end():]
     else:
-        insert_pos = content.find(insert_marker)
-        if insert_pos == -1:
-            raise ValueError(f"Cannot find {insert_marker}")
+        content = ensure_section(content, section_name)
+        insert_pos = find_endif(content, section_name)
 
     return content[:insert_pos] + f'{entry}\n\n' + content[insert_pos:]
 
 
-def get_lookup_endif(arch, op, dtype):
-    """Get the appropriate lookup table #endif marker."""
+def get_lookup_section(arch, op, dtype):
+    """Get the appropriate lookup table section name."""
     if op == "attention":
-        return "#endif  // GemmGemm_LOOKUP_TABLE_GEN"
+        return "GemmGemm_LOOKUP_TABLE_GEN"
     elif is_accel(arch, dtype, op):
-        return "#endif  // Accel_LOOKUP_TABLE_GEN"
+        return "Accel_LOOKUP_TABLE_GEN"
     else:
-        return "#endif  // NonAccel_LOOKUP_TABLE_GEN"
+        return "NonAccel_LOOKUP_TABLE_GEN"
 
 
 def update_inc_file(results, arch, op):
@@ -312,7 +342,7 @@ def update_inc_file(results, arch, op):
             def_lines.append(f'    "{cfg}"{comma}')
         def_lines.append("};")
 
-        content = replace_section(content, f"#endif  // {instr}_DEFINITIONS_GEN",
+        content = replace_section(content, f"{instr}_DEFINITIONS_GEN",
                                   f"// BEGIN_{op.upper()}_{instr}_{dtype}_{arch}_DEFS",
                                   f"// END_{op.upper()}_{instr}_{dtype}_{arch}_DEFS",
                                   "\n".join(def_lines))
@@ -323,17 +353,17 @@ def update_inc_file(results, arch, op):
             f"static const StringRef {param_name}[{count_name}];"
         ]
 
-        content = replace_section(content, f"#endif  // {instr}_DECLARATIONS_GEN",
+        content = replace_section(content, f"{instr}_DECLARATIONS_GEN",
                                   f"// BEGIN_{op.upper()}_{instr}_{dtype}_{arch}_DECS",
                                   f"// END_{op.upper()}_{instr}_{dtype}_{arch}_DECS",
                                   "\n".join(dec_lines))
 
         # Add lookup entry
-        endif_marker = get_lookup_endif(arch, op, dtype)
+        section_name = get_lookup_section(arch, op, dtype)
         key = f"{arch}_{op}_{dtype}"
         value = f"{{{class_name}::{param_name}, {class_name}::{count_name}}}"
         entry = f'{{"{key}", {value}}},'
-        content = add_lookup_entry(content, endif_marker, entry)
+        content = add_lookup_entry(content, section_name, entry)
 
     path.write_text(content)
 
@@ -364,10 +394,10 @@ def add_type_aliases(from_type, to_type):
             print(f"Skipping {from_key}: already exists")
             continue
 
-        endif_marker = get_lookup_endif(arch, op, from_type)
+        section_name = get_lookup_section(arch, op, from_type)
         entry = f'{{"{from_key}", {value}}},  // alias -> {to_type}'
 
-        content = add_lookup_entry(content, endif_marker, entry)
+        content = add_lookup_entry(content, section_name, entry)
         print(f"Added: {from_key} -> {to_type}")
         aliases_added += 1
 
