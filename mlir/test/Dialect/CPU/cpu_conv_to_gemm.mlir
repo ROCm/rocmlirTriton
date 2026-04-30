@@ -1,138 +1,158 @@
-// RUN: rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope --split-input-file %s | FileCheck %s
+// Test 1. 3x3 stride-2 backward-data conv, NHWGC / GKYXC / NHWGK, bf16.
+// RUN: rocmlir-gen -batchsize=64 -in_channels=512 -in_h=16 -in_w=16 -out_channels=512 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=2 --conv_stride_w=2 --padding_h=0 --padding_w=0 --operation conv_bwd_data -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t bf16 --arch gfx942 -pv | \
+// RUN:   rocmlir-opt --symbol-privatize='exclude=conv_bwd_data_cpu' -symbol-dce | \
+// RUN:   rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope | \
+// RUN:   FileCheck %s --check-prefix=BWDDATA-3X3-NHWGC
 
-// The pass should rewrite the convolution into
-// an im2col-style transpose + collapse, followed by a 4-dim batched matmul
-// linalg.generic, plus a final expand_shape that restores the [N,H,W,G,C]
-// output layout.
+// BWDDATA-3X3-NHWGC-LABEL: func.func @conv_bwd_data_cpu(
+// BWDDATA-3X3-NHWGC-NOT: iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// BWDDATA-3X3-NHWGC:      tensor.collapse_shape
+// BWDDATA-3X3-NHWGC-SAME: into tensor<1x16384x4608xf32>
+// BWDDATA-3X3-NHWGC:      tensor.collapse_shape
+// BWDDATA-3X3-NHWGC-SAME: into tensor<1x4608x512xf32>
+// BWDDATA-3X3-NHWGC:      iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// BWDDATA-3X3-NHWGC:      ins({{.*}} : tensor<1x16384x4608xf32>, tensor<1x4608x512xf32>)
+// BWDDATA-3X3-NHWGC:      outs({{.*}} : tensor<1x16384x512xf32>)
+// BWDDATA-3X3-NHWGC:      arith.mulf
+// BWDDATA-3X3-NHWGC:      arith.addf
 
-#input_map  = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7) -> (d0, d3 + d6, d4 + d7, d1, d5)>
-#filter_map = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7) -> (d1, d5, d6, d7, d2)>
-#output_map = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7) -> (d0, d3, d4, d1, d2)>
+// Test 2. 7x7 stride-2 backward-data conv, NHWGC / GKYXC / NHWGK, f32.
+// RUN: rocmlir-gen -batchsize=256 -in_channels=3 -in_h=230 -in_w=230 -out_channels=64 -fil_h=7 -fil_w=7 --dilation_h=1 --dilation_w=1 --conv_stride_h=2 --conv_stride_w=2 --padding_h=1 --padding_w=1 --operation conv_bwd_data -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t f32 --arch gfx942 -pv | \
+// RUN:   rocmlir-opt --symbol-privatize='exclude=conv_bwd_data_cpu' -symbol-dce | \
+// RUN:   rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope | \
+// RUN:   FileCheck %s --check-prefix=BWDDATA-7X7-NHWGC
 
-// CHECK-LABEL: func.func @conv_bwd_data_cpu_3x3(
-// CHECK-SAME:    %[[INPUT:[A-Za-z0-9_]+]]: tensor<1x4x4x1x2xf32>,
-// CHECK-SAME:    %[[FILTER:[A-Za-z0-9_]+]]: tensor<1x2x3x3x2xf32>,
-// CHECK-SAME:    %[[INIT:[A-Za-z0-9_]+]]: tensor<1x2x2x1x2xf32>)
+// BWDDATA-7X7-NHWGC-LABEL: func.func @conv_bwd_data_cpu(
+// BWDDATA-7X7-NHWGC-NOT:     iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// BWDDATA-7X7-NHWGC:         tensor.collapse_shape
+// BWDDATA-7X7-NHWGC:         into tensor<1x13542400x3136xf32>
+// BWDDATA-7X7-NHWGC:         tensor.collapse_shape
+// BWDDATA-7X7-NHWGC:         into tensor<1x3136x3xf32>
+// BWDDATA-7X7-NHWGC:         iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// BWDDATA-7X7-NHWGC:         ins({{.*}} : tensor<1x13542400x3136xf32>, tensor<1x3136x3xf32>)
+// BWDDATA-7X7-NHWGC:         outs({{.*}} : tensor<1x13542400x3xf32>)
+// BWDDATA-7X7-NHWGC:         arith.mulf
+// BWDDATA-7X7-NHWGC:         arith.addf
 
-// The original 8-dim conv linalg.generic must be gone.
-// CHECK-NOT: iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// Test 3. 7x7 stride-2 backward-data conv, NGCHW / GKCYX / NGCHW, f32.
+// RUN: rocmlir-gen -batchsize=256 -in_channels=3 -in_h=230 -in_w=230 -out_channels=64 -fil_h=7 -fil_w=7 --dilation_h=1 --dilation_w=1 --conv_stride_h=2 --conv_stride_w=2 --padding_h=1 --padding_w=1 --operation conv_bwd_data -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw -t f32 --arch gfx942 -pv | \
+// RUN:   rocmlir-opt --symbol-privatize='exclude=conv_bwd_data_cpu' -symbol-dce | \
+// RUN:   rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope | \
+// RUN:   FileCheck %s --check-prefix=BWDDATA-7X7-NGCHW
 
-// A zero f32 constant is reused to fill the GEMM accumulator below.
-// CHECK:      %[[ZERO:.+]] = arith.constant 0.000000e+00 : f32
+// BWDDATA-7X7-NGCHW-LABEL: func.func @conv_bwd_data_cpu(
+// BWDDATA-7X7-NGCHW-NOT: iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// BWDDATA-7X7-NGCHW:         tensor.collapse_shape
+// BWDDATA-7X7-NGCHW:         into tensor<1x13542400x3136xf32>
+// BWDDATA-7X7-NGCHW:         tensor.collapse_shape
+// BWDDATA-7X7-NGCHW:         into tensor<1x3136x3xf32>
+// BWDDATA-7X7-NGCHW:         iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// BWDDATA-7X7-NGCHW:         ins({{.*}} : tensor<1x13542400x3136xf32>, tensor<1x3136x3xf32>)
+// BWDDATA-7X7-NGCHW:         outs({{.*}} : tensor<1x13542400x3xf32>)
+// BWDDATA-7X7-NGCHW:         arith.mulf
+// BWDDATA-7X7-NGCHW:         arith.addf
 
-// im2col materializes an explicit [G, N, Ho, Wo, C, Fh, Fw] tensor sourced
-// from the padded input, then collapses it to a 3-D LHS.
-// CHECK:      %[[IM2COL_INIT:.+]] = tensor.empty() : tensor<1x1x2x2x2x3x3xf32>
-// CHECK:      %[[IM2COL:.+]] = linalg.generic
-// CHECK-SAME:   ins(%[[INPUT]] : tensor<1x4x4x1x2xf32>)
-// CHECK-SAME:   outs(%[[IM2COL_INIT]] : tensor<1x1x2x2x2x3x3xf32>)
-// CHECK:      %[[LHS:.+]] = tensor.collapse_shape %[[IM2COL]]
-// CHECK-SAME:   tensor<1x1x2x2x2x3x3xf32> into tensor<1x4x18xf32>
+// Test 4. Forward 1x1 conv, NHWGC / GKYXC / NHWGK, f32.
+// Forward 1x1 conv, NHWGC / GKYXC / NHWGK, f32 (ResNet-50 bottleneck shape:
+// RUN: rocmlir-gen -batchsize=64 -in_channels=2048 -in_h=7 -in_w=7 -out_channels=512 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --operation conv -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t f32 --arch gfx942 -pv | \
+// RUN:   rocmlir-opt --symbol-privatize='exclude=conv_cpu' -symbol-dce | \
+// RUN:   rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope | \
+// RUN:   FileCheck %s --check-prefix=FWD-1X1-NHWGC
 
-// Filter is collapsed to a 3-D RHS that matches the GEMM contraction dim.
-// CHECK:      %[[RHS:.+]] = tensor.collapse_shape %[[FILTER]]
-// CHECK-SAME:   tensor<1x2x3x3x2xf32> into tensor<1x18x2xf32>
+// FWD-1X1-NHWGC-LABEL: func.func @conv_cpu(
+// FWD-1X1-NHWGC-NOT:     iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// FWD-1X1-NHWGC:         tensor.collapse_shape
+// FWD-1X1-NHWGC-SAME:    into tensor<1x3136x2048xf32>
+// FWD-1X1-NHWGC:         tensor.collapse_shape
+// FWD-1X1-NHWGC-SAME:    into tensor<1x2048x512xf32>
+// FWD-1X1-NHWGC:         iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// FWD-1X1-NHWGC-SAME:    ins({{.*}} : tensor<1x3136x2048xf32>, tensor<1x2048x512xf32>)
+// FWD-1X1-NHWGC-SAME:    outs({{.*}} : tensor<1x3136x512xf32>)
+// FWD-1X1-NHWGC:         arith.mulf
+// FWD-1X1-NHWGC:         arith.addf
 
-// GEMM accumulator is a fresh zero-filled 1x4x2 tensor.
-// CHECK:      %[[ACC_INIT:.+]] = tensor.empty() : tensor<1x4x2xf32>
-// CHECK:      %[[ACC:.+]] = linalg.fill ins(%[[ZERO]] : f32) outs(%[[ACC_INIT]] : tensor<1x4x2xf32>)
+// Test 5. Forward 3x3 stride-1 padded conv, NHWGC / GKYXC / NHWGK, f32
+// RUN: rocmlir-gen -batchsize=64 -in_channels=128 -in_h=28 -in_w=28 -out_channels=128 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=1 --padding_w=1 --operation conv -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t f32 --arch gfx942 -pv | \
+// RUN:   rocmlir-opt --symbol-privatize='exclude=conv_cpu' -symbol-dce | \
+// RUN:   rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope | \
+// RUN:   FileCheck %s --check-prefix=FWD-3X3-NHWGC
 
-// The contraction is now a 4-dim parallel/parallel/parallel/reduction matmul
-// over (g, m, n, k).
-// CHECK:      %[[GEMM:.+]] = linalg.generic
-// CHECK-SAME:   iterator_types = ["parallel", "parallel", "parallel", "reduction"]
-// CHECK-SAME:   ins(%[[LHS]], %[[RHS]] : tensor<1x4x18xf32>, tensor<1x18x2xf32>)
-// CHECK-SAME:   outs(%[[ACC]] : tensor<1x4x2xf32>)
-// CHECK:        arith.mulf
-// CHECK:        arith.addf
-// CHECK:        linalg.yield {{.*}} : f32
-// CHECK:      } -> tensor<1x4x2xf32>
+// FWD-3X3-NHWGC-LABEL: func.func @conv_cpu(
+// FWD-3X3-NHWGC-NOT:     iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// FWD-3X3-NHWGC:         tensor.collapse_shape
+// FWD-3X3-NHWGC-SAME:    into tensor<1x50176x1152xf32>
+// FWD-3X3-NHWGC:         tensor.collapse_shape
+// FWD-3X3-NHWGC-SAME:    into tensor<1x1152x128xf32>
+// FWD-3X3-NHWGC:         iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// FWD-3X3-NHWGC-SAME:    ins({{.*}} : tensor<1x50176x1152xf32>, tensor<1x1152x128xf32>)
+// FWD-3X3-NHWGC-SAME:    outs({{.*}} : tensor<1x50176x128xf32>)
+// FWD-3X3-NHWGC:         arith.mulf
+// FWD-3X3-NHWGC:         arith.addf
 
-// Result expands back to [G, N, Ho, Wo, C] and is transposed to the original
-// [N, Ho, Wo, G, C] output layout.
-// CHECK:      %[[EXPANDED:.+]] = tensor.expand_shape %[[GEMM]]
-// CHECK-SAME:   tensor<1x4x2xf32> into tensor<1x1x2x2x2xf32>
-// CHECK:      linalg.generic
-// CHECK-SAME:   ins(%[[EXPANDED]] : tensor<1x1x2x2x2xf32>)
-// CHECK-SAME:   outs({{.*}} : tensor<1x2x2x1x2xf32>)
+// Test 6. Forward 3x3 stride-1 padded conv, NGCHW / GKCYX / NGKHW, f32. Same
+// RUN: rocmlir-gen -batchsize=64 -in_channels=128 -in_h=28 -in_w=28 -out_channels=128 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=1 --padding_w=1 --operation conv -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw -t f32 --arch gfx942 -pv | \
+// RUN:   rocmlir-opt --symbol-privatize='exclude=conv_cpu' -symbol-dce | \
+// RUN:   rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope | \
+// RUN:   FileCheck %s --check-prefix=FWD-3X3-NGCHW
 
-// Testcase extracted from:
-// ./build/bin/rocmlir-gen -batchsize=64 -in_channels=512 -in_h=16 -in_w=16 -out_channels=512 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=2 --conv_stride_w=2 --padding_h=0 --padding_w=0 --operation conv_bwd_data -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t bf16
-func.func @conv_bwd_data_cpu_3x3(%arg0: tensor<1x4x4x1x2xf32>, %arg1: tensor<1x2x3x3x2xf32>, %arg2: tensor<1x2x2x1x2xf32>) -> tensor<1x2x2x1x2xf32> attributes {rock.cpu_verifier} {
-  %cst = arith.constant 0.000000e+00 : f32
-  %0 = linalg.fill ins(%cst : f32) outs(%arg2 : tensor<1x2x2x1x2xf32>) -> tensor<1x2x2x1x2xf32>
-  %1 = linalg.generic {indexing_maps = [#input_map, #filter_map, #output_map], iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]} ins(%arg0, %arg1 : tensor<1x4x4x1x2xf32>, tensor<1x2x3x3x2xf32>) outs(%0 : tensor<1x2x2x1x2xf32>) {
-  ^bb0(%in: f32, %in_0: f32, %out: f32):
-    %2 = arith.mulf %in, %in_0 : f32
-    %3 = arith.addf %out, %2 : f32
-    linalg.yield %3 : f32
-  } -> tensor<1x2x2x1x2xf32>
-  return %1 : tensor<1x2x2x1x2xf32>
-}
+// FWD-3X3-NGCHW-LABEL: func.func @conv_cpu(
+// FWD-3X3-NGCHW-NOT:     iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// FWD-3X3-NGCHW:         tensor.collapse_shape
+// FWD-3X3-NGCHW-SAME:    into tensor<1x50176x1152xf32>
+// FWD-3X3-NGCHW:         tensor.collapse_shape
+// FWD-3X3-NGCHW-SAME:    into tensor<1x1152x128xf32>
+// FWD-3X3-NGCHW:         iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// FWD-3X3-NGCHW-SAME:    ins({{.*}} : tensor<1x50176x1152xf32>, tensor<1x1152x128xf32>)
+// FWD-3X3-NGCHW-SAME:    outs({{.*}} : tensor<1x50176x128xf32>)
+// FWD-3X3-NGCHW:         arith.mulf
+// FWD-3X3-NGCHW:         arith.addf
 
-// -----
+// Test 7. Backward-data 3x3 stride-2 conv, NHWGC / GKYXC / NHWGK, f32
+// RUN: rocmlir-gen -batchsize=64 -in_channels=128 -in_h=58 -in_w=58 -out_channels=128 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=2 --conv_stride_w=2 --padding_h=0 --padding_w=0 --operation conv_bwd_data -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t f32 --arch gfx942 -pv | \
+// RUN:   rocmlir-opt --symbol-privatize='exclude=conv_bwd_data_cpu' -symbol-dce | \
+// RUN:   rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope | \
+// RUN:   FileCheck %s --check-prefix=BWDDATA-3X3-S2-NHWGC
 
-// Larger 7x7 backward-data convolution (ImageNet-style first-layer shape):
-//   N=256, G=1, K=64 (in-channels of fwd), C=3 (out-channels of fwd),
-//   Fh=Fw=7, padded input 256x236x236, output 256x230x230.
+// BWDDATA-3X3-S2-NHWGC-LABEL: func.func @conv_bwd_data_cpu(
+// BWDDATA-3X3-S2-NHWGC-NOT:     iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// BWDDATA-3X3-S2-NHWGC:         tensor.collapse_shape
+// BWDDATA-3X3-S2-NHWGC-SAME:    into tensor<1x215296x1152xf32>
+// BWDDATA-3X3-S2-NHWGC:         tensor.collapse_shape
+// BWDDATA-3X3-S2-NHWGC-SAME:    into tensor<1x1152x128xf32>
+// BWDDATA-3X3-S2-NHWGC:         iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// BWDDATA-3X3-S2-NHWGC-SAME:    ins({{.*}} : tensor<1x215296x1152xf32>, tensor<1x1152x128xf32>)
+// BWDDATA-3X3-S2-NHWGC-SAME:    outs({{.*}} : tensor<1x215296x128xf32>)
+// BWDDATA-3X3-S2-NHWGC:         arith.mulf
+// BWDDATA-3X3-S2-NHWGC:         arith.addf
 
-#input_map_big  = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7) -> (d0, d3 + d6, d4 + d7, d1, d5)>
-#filter_map_big = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7) -> (d1, d5, d6, d7, d2)>
-#output_map_big = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7) -> (d0, d3, d4, d1, d2)>
+// Test 8. Forward 1x1 conv, NHWGC / GKYXC / NHWGK, *bf16*
+// RUN: rocmlir-gen -batchsize=64 -in_channels=2048 -in_h=7 -in_w=7 -out_channels=512 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=0 --padding_w=0 --operation conv -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t bf16 --arch gfx942 -pv | \
+// RUN:   rocmlir-opt --symbol-privatize='exclude=conv_cpu' -symbol-dce | \
+// RUN:   rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope | \
+// RUN:   FileCheck %s --check-prefix=FWD-1X1-NHWGC-BF16
 
-// CHECK-LABEL: func.func @conv_bwd_data_cpu_7x7(
-// CHECK-SAME:    %[[INPUT:[A-Za-z0-9_]+]]: tensor<256x236x236x1x64xf32>,
-// CHECK-SAME:    %[[FILTER:[A-Za-z0-9_]+]]: tensor<1x64x7x7x3xf32>,
-// CHECK-SAME:    %[[INIT:[A-Za-z0-9_]+]]: tensor<256x230x230x1x3xf32>)
+// FWD-1X1-NHWGC-BF16-LABEL: func.func @conv_cpu(
+// FWD-1X1-NHWGC-BF16-NOT:     iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// FWD-1X1-NHWGC-BF16:         arith.extf {{.*}} : bf16 to f32
+// FWD-1X1-NHWGC-BF16:         tensor.collapse_shape
+// FWD-1X1-NHWGC-BF16-SAME:    into tensor<1x3136x2048xf32>
+// FWD-1X1-NHWGC-BF16:         tensor.collapse_shape
+// FWD-1X1-NHWGC-BF16-SAME:    into tensor<1x2048x512xf32>
+// FWD-1X1-NHWGC-BF16:         iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// FWD-1X1-NHWGC-BF16-SAME:    ins({{.*}} : tensor<1x3136x2048xf32>, tensor<1x2048x512xf32>)
+// FWD-1X1-NHWGC-BF16-SAME:    outs({{.*}} : tensor<1x3136x512xf32>)
+// FWD-1X1-NHWGC-BF16:         arith.mulf
+// FWD-1X1-NHWGC-BF16:         arith.addf
+// FWD-1X1-NHWGC-BF16:         arith.truncf {{.*}} : f32 to bf16
 
-// CHECK-NOT: iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// Test 9. Forward 1x1 *stride-2* conv, NHWGC / GKYXC / NHWGK, f32
+// RUN: rocmlir-gen -batchsize=64 -in_channels=1024 -in_h=14 -in_w=14 -out_channels=2048 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --conv_stride_h=2 --conv_stride_w=2 --padding_h=0 --padding_w=0 --operation conv -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t f32 --arch gfx942 -pv | \
+// RUN:   rocmlir-opt --symbol-privatize='exclude=conv_cpu' -symbol-dce | \
+// RUN:   rocmlir-opt --cpu-conv-to-gemm --mlir-print-local-scope | \
+// RUN:   FileCheck %s --check-prefix=FWD-1X1-S2-NEG
 
-// CHECK:      %[[ZERO:.+]] = arith.constant 0.000000e+00 : f32
-
-// im2col expands the padded input into a 7-D tensor [G, N, Ho, Wo, K, Fh, Fw],
-// then collapses to a 3-D LHS of shape [G, N*Ho*Wo, K*Fh*Fw] = [1, 13542400, 3136].
-// CHECK:      %[[IM2COL_INIT:.+]] = tensor.empty() : tensor<1x256x230x230x64x7x7xf32>
-// CHECK:      %[[IM2COL:.+]] = linalg.generic
-// CHECK-SAME:   ins(%[[INPUT]] : tensor<256x236x236x1x64xf32>)
-// CHECK-SAME:   outs(%[[IM2COL_INIT]] : tensor<1x256x230x230x64x7x7xf32>)
-// CHECK:      %[[LHS:.+]] = tensor.collapse_shape %[[IM2COL]]
-// CHECK-SAME:   tensor<1x256x230x230x64x7x7xf32> into tensor<1x13542400x3136xf32>
-
-// Filter collapses to [G, K*Fh*Fw, C] = [1, 3136, 3].
-// CHECK:      %[[RHS:.+]] = tensor.collapse_shape %[[FILTER]]
-// CHECK-SAME:   tensor<1x64x7x7x3xf32> into tensor<1x3136x3xf32>
-
-// CHECK:      %[[ACC_INIT:.+]] = tensor.empty() : tensor<1x13542400x3xf32>
-// CHECK:      %[[ACC:.+]] = linalg.fill ins(%[[ZERO]] : f32) outs(%[[ACC_INIT]] : tensor<1x13542400x3xf32>)
-
-// CHECK:      %[[GEMM:.+]] = linalg.generic
-// CHECK-SAME:   iterator_types = ["parallel", "parallel", "parallel", "reduction"]
-// CHECK-SAME:   ins(%[[LHS]], %[[RHS]] : tensor<1x13542400x3136xf32>, tensor<1x3136x3xf32>)
-// CHECK-SAME:   outs(%[[ACC]] : tensor<1x13542400x3xf32>)
-// CHECK:        arith.mulf
-// CHECK:        arith.addf
-// CHECK:        linalg.yield {{.*}} : f32
-// CHECK:      } -> tensor<1x13542400x3xf32>
-
-// Result expands back to [G, N, Ho, Wo, C] and is transposed to the original
-// [N, Ho, Wo, G, C] output layout.
-// CHECK:      %[[EXPANDED:.+]] = tensor.expand_shape %[[GEMM]]
-// CHECK-SAME:   tensor<1x13542400x3xf32> into tensor<1x256x230x230x3xf32>
-// CHECK:      linalg.generic
-// CHECK-SAME:   ins(%[[EXPANDED]] : tensor<1x256x230x230x3xf32>)
-// CHECK-SAME:   outs({{.*}} : tensor<256x230x230x1x3xf32>)
-
-// Testcase extracted from:
-// ./build/bin/rocmlir-gen --cpu-timers -batchsize=256 -in_channels=3 -in_h=230 -in_w=230 -out_channels=64 -fil_h=7 -fil_w=7 --dilation_h=1 --dilation_w=1 --conv_stride_h=2 --conv_stride_w=2 --padding_h=1 --padding_w=1 --operation conv_bwd_data -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk -t f32  --arch gfx942 -pv
-func.func @conv_bwd_data_cpu_7x7(%arg0: tensor<256x236x236x1x64xf32>, %arg1: tensor<1x64x7x7x3xf32>, %arg2: tensor<256x230x230x1x3xf32>) -> tensor<256x230x230x1x3xf32> attributes {rock.cpu_verifier} {
-  %cst = arith.constant 0.000000e+00 : f32
-  %0 = linalg.fill ins(%cst : f32) outs(%arg2 : tensor<256x230x230x1x3xf32>) -> tensor<256x230x230x1x3xf32>
-  %1 = linalg.generic {indexing_maps = [#input_map_big, #filter_map_big, #output_map_big], iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]} ins(%arg0, %arg1 : tensor<256x236x236x1x64xf32>, tensor<1x64x7x7x3xf32>) outs(%0 : tensor<256x230x230x1x3xf32>) {
-  ^bb0(%in: f32, %in_0: f32, %out: f32):
-    %2 = arith.mulf %in, %in_0 : f32
-    %3 = arith.addf %out, %2 : f32
-    linalg.yield %3 : f32
-  } -> tensor<256x230x230x1x3xf32>
-  return %1 : tensor<256x230x230x1x3xf32>
-}
-
+// FWD-1X1-S2-NEG-LABEL: func.func @conv_cpu(
+// FWD-1X1-S2-NEG:         iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
+// FWD-1X1-S2-NEG-SAME:    ins({{.*}} : tensor<64x14x14x1x1024xf32>, tensor<1x2048x1x1x1024xf32>)
+// FWD-1X1-S2-NEG-SAME:    outs({{.*}} : tensor<64x7x7x1x2048xf32>)
+// FWD-1X1-S2-NEG-NOT:     iterator_types = ["parallel", "parallel", "parallel", "reduction"]
