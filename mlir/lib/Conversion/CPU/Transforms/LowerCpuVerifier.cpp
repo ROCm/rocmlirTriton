@@ -29,6 +29,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Schedules.h"
+#include "Schedules/TilingSchedule.h"
 
 #include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -63,6 +64,81 @@ using namespace mlir;
 using namespace mlir::cpu;
 
 namespace {
+
+/// Return true if `op` has the matmul iterator-type signature
+/// `[parallel, parallel, parallel, reduction]` -- i.e. is a 3-parallel,
+/// 1-reduction batched matmul. This mirrors the filter used by the
+/// transform-side `createMatchMatmulOp` helper, so policy decisions made
+/// here line up with what the schedule actually targets.
+static bool isMatmulIteratorTypes(linalg::GenericOp op) {
+  SmallVector<utils::IteratorType> iters = op.getIteratorTypesArray();
+  if (iters.size() != 4)
+    return false;
+  return iters[0] == utils::IteratorType::parallel &&
+         iters[1] == utils::IteratorType::parallel &&
+         iters[2] == utils::IteratorType::parallel &&
+         iters[3] == utils::IteratorType::reduction;
+}
+
+/// Return the largest value in `candidates` that divides `dim` exactly.
+/// Falls back to `fallback` if none of the candidates divide. `candidates`
+/// is expected to be sorted largest-first.
+static int64_t pickDivisibleTile(int64_t dim, ArrayRef<int64_t> candidates,
+                                 int64_t fallback) {
+  for (int64_t c : candidates)
+    if (c > 0 && dim % c == 0)
+      return c;
+  return fallback;
+}
+
+/// Inspect the CPU verifier function `func` and choose tile sizes for its
+/// matmul-shaped `linalg.generic`. Returns `std::nullopt` if either no
+/// matmul is found or the matmul has any dynamic loop bound -- in those
+/// cases the caller should fall back to the default schedule and consider
+/// disabling vectorization.
+///
+/// Policy: pick the largest tile in a candidate ladder that divides each
+/// loop dim cleanly. Divisibility ensures that all post-tile shapes stay
+/// static, which is required for `transform.structured.vectorize` to
+/// succeed without `assume_dynamic_dims_match_vec_sizes`.
+static std::optional<MatmulTileSizes>
+chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
+  linalg::GenericOp matmul;
+  func.walk([&](linalg::GenericOp g) {
+    if (isMatmulIteratorTypes(g))
+      matmul = g;
+  });
+  if (!matmul)
+    return std::nullopt;
+
+  SmallVector<int64_t, 4> loopRanges = matmul.getStaticLoopRanges();
+  if (loopRanges.size() != 4 ||
+      llvm::any_of(loopRanges, ShapedType::isDynamic))
+    return std::nullopt;
+
+  // loopRanges = (G, M, N, K) per the matmul iterator-types signature.
+  int64_t M = loopRanges[1];
+  int64_t N = loopRanges[2];
+  int64_t K = loopRanges[3];
+
+  // Candidate ladders (largest first). The smallest entry is `vectorSize`,
+  // which any sensible static problem dim is expected to be a multiple of
+  // -- if it isn't, the inner micro-tile would still introduce dynamic
+  // shapes and the caller will skip vectorization upstream.
+  static constexpr int64_t mLadder[] = {256, 224, 128, 112, 64, 32, 16, 8};
+  static constexpr int64_t nLadder[] = {64, 32, 16, 8};
+  static constexpr int64_t kLadder[] = {64, 32, 16, 8};
+
+  MatmulTileSizes t;
+  t.gFuse = 1;
+  t.mFuse = pickDivisibleTile(M, mLadder, vectorSize);
+  t.nFuse = pickDivisibleTile(N, nLadder, vectorSize);
+  t.kTile = pickDivisibleTile(K, kLadder, vectorSize);
+  t.microTileM = vectorSize;
+  t.microTileN = vectorSize;
+  t.microTileK = vectorSize;
+  return t;
+}
 
 struct CpuLowerVerifierPass
     : public cpu::impl::CpuLowerVerifierPassBase<CpuLowerVerifierPass> {
@@ -162,12 +238,40 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
                           << " functions for isolation\n");
 
   // Step 2: Build the pipeline of main transform steps based on phase option
+  //
+  // For the optimization phase we build the tiling schedule lazily, with
+  // tile sizes chosen from the static shapes of this function's matmul.
+  // Picking divisors of (M, N, K) keeps every post-tile shape static, which
+  // in turn lets `transform.structured.vectorize` succeed downstream. If
+  // the matmul has dynamic shapes (or no matmul exists) we fall back to
+  // the default tile sizes -- behavior identical to the previous shared
+  // schedule.
+  OwningOpRef<ModuleOp> perFuncTiling;
   SmallVector<TransformStep> pipeline;
   if (phase == CPU_PHASE_OPTIMIZE) {
+    // AVX vector width is 256 bits -> 8 fp32 lanes. Keep this in sync with
+    // the `vectorSize` constant in TilingSchedule.cpp.
+    constexpr int64_t kVectorSize = 8;
+    if (auto t = chooseMatmulTileSizes(func, kVectorSize)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  Chose matmul tile sizes for " << funcName
+                 << ": M=" << t->mFuse << " N=" << t->nFuse
+                 << " K=" << t->kTile << "\n");
+      perFuncTiling = buildTilingSchedule(&getContext(), *t);
+    } else {
+      LLVM_DEBUG(llvm::dbgs() << "  Using default matmul tile sizes for "
+                              << funcName << " (no static matmul shape)\n");
+      perFuncTiling = buildTilingSchedule(&getContext());
+    }
+    if (!perFuncTiling) {
+      reattachFuncs(module, detached);
+      return func.emitError("Failed to build per-function tiling schedule");
+    }
+
     // Optimization phase: tiling, vectorization, unroll
     // Run before whole-module bufferization
     pipeline = {
-        {schedules.tilingModule.get(), "tiling"},
+        {perFuncTiling.get(), "tiling"},
         {schedules.vectorizationModule.get(), "vectorization"},
         {schedules.unrollModule.get(), "unroll"},
     };

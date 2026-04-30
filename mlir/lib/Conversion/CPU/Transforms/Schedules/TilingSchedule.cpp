@@ -103,9 +103,10 @@ static void flattenExtfTruncfOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
                                                    merged.getResult());
 }
 
-OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
+OwningOpRef<ModuleOp>
+cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
   return buildTransformModule(
-      ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
+      ctx, [ctx, tileSizes](ImplicitLocOpBuilder &ib, BlockArgument arg) {
         auto anyOpType = getAnyOpType(ctx);
 
         // AVX vector width is 256 bits.
@@ -130,7 +131,9 @@ OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
         auto fuse = ib.create<transform::FuseOp>(
             /*loopTypes=*/fuseLoopTypes,
             /*target=*/matchMatmul.getResults(),
-            /*staticTileSizes=*/ArrayRef<int64_t>{1, 256, 64},
+            /*staticTileSizes=*/
+            ArrayRef<int64_t>{tileSizes.gFuse, tileSizes.mFuse,
+                              tileSizes.nFuse},
             /*staticTileInterchange=*/ArrayRef<int64_t>{0, 2, 1},
             /*applyCleanup=*/false,
             /*useForall=*/false);
@@ -139,7 +142,7 @@ OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
         auto tile1 = ib.create<transform::TileUsingForOp>(
             /*loopTypes=*/tile1LoopTypes,
             /*target=*/fuse.getTransformed(),
-            /*staticTileSizes=*/ArrayRef<int64_t>{0, 0, 0, 64},
+            /*staticTileSizes=*/ArrayRef<int64_t>{0, 0, 0, tileSizes.kTile},
             /*interchange=*/ArrayRef<int64_t>{},
             /*scalableSizes=*/std::nullopt);
 
@@ -147,7 +150,9 @@ OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
         ib.create<transform::TileUsingForOp>(
             /*loopTypes=*/tile2LoopTypes,
             /*target=*/tile1.getTiledLinalgOp(),
-            /*staticTileSizes=*/ArrayRef<int64_t>{0, vectorSize, vectorSize, vectorSize},
+            /*staticTileSizes=*/
+            ArrayRef<int64_t>{0, tileSizes.microTileM, tileSizes.microTileN,
+                              tileSizes.microTileK},
             /*interchange=*/ArrayRef<int64_t>{},
             /*scalableSizes=*/std::nullopt);
 
@@ -165,4 +170,8 @@ OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
             /*options=*/DictionaryAttr::get(ctx),
             /*dynamicOptions=*/ValueRange{});
       });
+}
+
+OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
+  return buildTilingSchedule(ctx, MatmulTileSizes{});
 }
