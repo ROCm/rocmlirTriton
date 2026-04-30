@@ -40,6 +40,7 @@
 #include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"
 #include "mlir/Dialect/SCF/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/ValueBoundsOpInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/TransformOps/TensorTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
@@ -71,6 +72,7 @@ void cpu::registerScheduleDialectExtensions(DialectRegistry &registry) {
   func::registerTransformDialectExtension(registry);
   memref::registerTransformDialectExtension(registry);
   scf::registerTransformDialectExtension(registry);
+  tensor::registerTransformDialectExtension(registry);
 
   // Register ValueBoundsOpInterface for dialects, required by
   // transform.structured.tile_using_for and other tiling transforms

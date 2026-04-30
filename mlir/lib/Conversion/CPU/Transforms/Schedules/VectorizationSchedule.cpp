@@ -19,33 +19,72 @@
 #include "ScheduleUtils.h"
 
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
+#include "mlir/Dialect/Tensor/TransformOps/TensorTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
+#include "mlir/Dialect/Vector/TransformOps/VectorTransformOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
 using namespace mlir;
 using namespace mlir::cpu;
 
+namespace {
+
+/// Populate the body of a `transform.apply_patterns` op with the same set of
+/// ops that `transform.structured.vectorize_children_and_
+/// apply_patterns` would apply. This mirrors the upstream populate
+/// calls in `VectorizeChildrenAndApplyPatternsOp::applyToOne`
+/// (mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp).
+static void populateVectorizationCleanup(ImplicitLocOpBuilder &ib,
+                                         bool vectorizePadding,
+                                         bool foldTypeExtensionsIntoContract) {
+  ib.create<transform::ApplyTransferPermutationPatternsOp>();
+  ib.create<transform::ApplyVectorReductionToContractPatternsOp>();
+  ib.create<transform::ApplySinkVectorPatternsOp>();
+  ib.create<transform::ApplyFoldTensorSubsetOpsIntoVectorTransfersPatternsOp>();
+  ib.create<transform::ApplyCanonicalizationPatternsOp>();
+  if (foldTypeExtensionsIntoContract)
+    ib.create<transform::ApplyFoldArithExtensionPatternsOp>();
+  if (vectorizePadding) {
+    ib.create<transform::ApplyPadVectorizationPatternsOp>();
+    ib.create<transform::ApplyDecomposeTensorPadPatternsOp>();
+  }
+}
+
+} // namespace
+
 OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
-  return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
-    auto anyOpType = getAnyOpType(ctx);
+  return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib,
+                                         BlockArgument arg) {
+    // Match parameters that VectorizeChildrenAndApplyPatternsOp used to be
+    // invoked with.
+    constexpr bool kVectorizePadding = true;
+    constexpr bool kVectorizeNDExtract = true;
+    constexpr bool kFoldTypeExtensionsIntoContract = false;
 
+    auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
+
+    // Vectorize the matmul only
     auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
-
-    auto getParent = ib.create<transform::GetParentOp>(
-        /*resultType=*/anyOpType,
+    ib.create<transform::VectorizeOp>(
         /*target=*/matchMatmul.getResults(),
-        /*isolated_from_above=*/true,
-        /*allow_empty_results=*/false,
-        /*op_name=*/StringAttr{},
-        /*deduplicate=*/false,
-        /*nth_parent=*/1);
+        /*vector_sizes=*/ValueRange{},
+        /*static_vector_sizes=*/DenseI64ArrayAttr{},
+        /*vectorize_nd_extract=*/
+        kVectorizeNDExtract ? UnitAttr::get(ctx) : UnitAttr{},
+        /*assume_dynamic_dims_match_vec_sizes=*/UnitAttr{},
+        /*create_named_contraction=*/UnitAttr{},
+        /*scalable_sizes=*/DenseBoolArrayAttr{});
 
-    ib.create<transform::VectorizeChildrenAndApplyPatternsOp>(
-        /*target=*/getParent.getParent(),
-        /*foldTypeExtensionsIntoContract=*/false,
-        /*vectorizePadding=*/true,
-        /*vectorizeNDExtract=*/true,
-        /*flatten1DDepthwise=*/false);
+    // Apply the same cleanup pattern set that
+    // VectorizeChildrenAndApplyPatternsOp would apply.
+    ib.create<transform::ApplyPatternsOp>(
+        /*target=*/matchFunc.getResults(),
+        /*bodyBuilder=*/
+        [&](OpBuilder &b, Location loc) {
+          ImplicitLocOpBuilder nested(loc, b);
+          populateVectorizationCleanup(nested, kVectorizePadding,
+                                       kFoldTypeExtensionsIntoContract);
+        });
   });
 }
