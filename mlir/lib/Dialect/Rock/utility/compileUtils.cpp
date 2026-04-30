@@ -167,7 +167,6 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
   return success();
 }
 
-
 FailureOr<ArrayAttr> getPrefillArrayFromBinary(ModuleOp moduleOp) {
   ArrayAttr result;
   LogicalResult status = success();

@@ -315,14 +315,12 @@ static std::unique_ptr<MLIRContext> createCompilationContext() {
   return ctx;
 }
 
-static LogicalResult
-measureSmallKernel(unsigned iterations, hipStream_t stream,
-                   const std::vector<hipFunction_t> &functions,
-                   ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
-                   ArrayRef<uint32_t> numCTAsList,
-                   std::vector<void *> &argPointers,
-                   std::vector<double> &measurements, double &smallKernelCpuMs,
-                   bool benchmarkMode) {
+static LogicalResult measureSmallKernel(
+    unsigned iterations, hipStream_t stream,
+    const std::vector<hipFunction_t> &functions, ArrayRef<uint32_t> blockSizes,
+    ArrayRef<uint32_t> gridSizes, ArrayRef<uint32_t> numCTAsList,
+    std::vector<void *> &argPointers, std::vector<double> &measurements,
+    double &smallKernelCpuMs, bool benchmarkMode) {
   // Special case for small kernels, where we measure the time for all kernels
   // at once, using CPU timers.
   auto iterationStart = std::chrono::steady_clock::now();
@@ -338,10 +336,10 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
       }
     }
     for (auto [func, blockSize, gridSize, numCTAs] :
-         llvm::zip(functions, blockSizes, gridSizes,
-                   numCTAsList)) {
-      if (failed(rock::launchKernel(func, gridSize, blockSize, /*shared_memory=*/0, numCTAs,
-                             stream, argPointers.data())))
+         llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
+      if (failed(rock::launchKernel(func, gridSize, blockSize,
+                                    /*shared_memory=*/0, numCTAs, stream,
+                                    argPointers.data())))
         return failure();
     }
   }
@@ -354,13 +352,11 @@ measureSmallKernel(unsigned iterations, hipStream_t stream,
   return success();
 }
 
-static LogicalResult
-measureLargeKernel(unsigned iterations, hipStream_t stream,
-                   const std::vector<hipFunction_t> &functions,
-                   ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
-                   ArrayRef<uint32_t> numCTAsList,
-                   std::vector<void *> &argPointers,
-                   std::vector<double> &measurements) {
+static LogicalResult measureLargeKernel(
+    unsigned iterations, hipStream_t stream,
+    const std::vector<hipFunction_t> &functions, ArrayRef<uint32_t> blockSizes,
+    ArrayRef<uint32_t> gridSizes, ArrayRef<uint32_t> numCTAsList,
+    std::vector<void *> &argPointers, std::vector<double> &measurements) {
   // Measure runs normally.
   for (unsigned iter = 0; iter < iterations; ++iter) {
     if (failed(flushInstructionCache(stream))) {
@@ -373,15 +369,15 @@ measureLargeKernel(unsigned iterations, hipStream_t stream,
     double totalMilliseconds = 0.0;
 
     for (auto [func, blockSize, gridSize, numCTAs] :
-         llvm::zip(functions, blockSizes, gridSizes,
-                   numCTAsList)) {
+         llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
       hipEvent_t startEvent, stopEvent;
       HIPCHECK(hipEventCreate(&startEvent));
       HIPCHECK(hipEventCreate(&stopEvent));
 
       HIPCHECK(hipEventRecord(startEvent, stream));
-      if (failed(rock::launchKernel(func, gridSize, blockSize, /*shared_memory=*/0, numCTAs,
-                             stream, argPointers.data())))
+      if (failed(rock::launchKernel(func, gridSize, blockSize,
+                                    /*shared_memory=*/0, numCTAs, stream,
+                                    argPointers.data())))
         return failure();
       HIPCHECK(hipEventRecord(stopEvent, stream));
       HIPCHECK(hipEventSynchronize(stopEvent));
@@ -486,15 +482,15 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     double totalMillisecondsWarmup = 0.0;
     for (unsigned iter = 0; iter < params.warmupIterations; ++iter) {
       for (auto [func, blockSize, gridSize, numCTAs] :
-           llvm::zip(functions, blockSizes, gridSizes,
-                     numCTAsList)) {
+           llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
         hipEvent_t startEvent, stopEvent;
         HIPCHECK(hipEventCreate(&startEvent));
         HIPCHECK(hipEventCreate(&stopEvent));
 
         HIPCHECK(hipEventRecord(startEvent, stream));
-        if (failed(rock::launchKernel(func, gridSize, blockSize, /*shared_memory=*/0, numCTAs,
-                               stream, argPointers.data())))
+        if (failed(rock::launchKernel(func, gridSize, blockSize,
+                                      /*shared_memory=*/0, numCTAs, stream,
+                                      argPointers.data())))
           return failure();
         HIPCHECK(hipEventRecord(stopEvent, stream));
 
@@ -545,15 +541,13 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   double smallKernelCpuMs = 0.0;
 
   if (isSmallKernel) {
-    if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, numCTAsList,
-                                  argPointers, measurements, smallKernelCpuMs,
-                                  benchmarkMode)))
+    if (failed(measureSmallKernel(
+            iterations, stream, functions, blockSizes, gridSizes, numCTAsList,
+            argPointers, measurements, smallKernelCpuMs, benchmarkMode)))
       return failure();
   } else {
     if (failed(measureLargeKernel(iterations, stream, functions, blockSizes,
-                                  gridSizes, numCTAsList,
-                                  argPointers,
+                                  gridSizes, numCTAsList, argPointers,
                                   measurements)))
       return failure();
   }

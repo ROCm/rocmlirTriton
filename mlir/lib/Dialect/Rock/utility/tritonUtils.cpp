@@ -96,17 +96,17 @@ LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
     attributes[1].val.cooperative = 0;
 
     HIP_LAUNCH_CONFIG config = {
-        gridX * num_ctas, 1, 1,        // Grid size
-        blockSize,        1, 1,        // Block size
+        gridX * num_ctas, 1,      1,            // Grid size
+        blockSize,        1,      1,            // Block size
         shared_memory,    stream, attributes, 2 // Number of attributes
     };
     hipError_t status = hipDrvLaunchKernelEx(&config, function, params, 0);
     if (status != hipSuccess)
       return failure();
   } else {
-    hipError_t status = hipModuleLaunchKernel(
-        function, gridX, 1, 1, blockSize, 1, 1,
-        shared_memory, stream, params, nullptr);
+    hipError_t status =
+        hipModuleLaunchKernel(function, gridX, 1, 1, blockSize, 1, 1,
+                              shared_memory, stream, params, nullptr);
     if (status != hipSuccess)
       return failure();
   }

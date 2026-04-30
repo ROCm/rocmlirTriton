@@ -42,14 +42,13 @@ static LogicalResult validateNumCTAs(Operation *op, int64_t numCTAs) {
   StringRef arch = rock::getArchValue(op);
   int64_t maxNumCTAs = rock::getMaxNumCTAs(arch);
   if (numCTAs > maxNumCTAs) {
-    op->emitError("numCTAs=") << numCTAs << " exceeds max (" << maxNumCTAs
-                              << ") for " << arch;
+    op->emitError("numCTAs=")
+        << numCTAs << " exceeds max (" << maxNumCTAs << ") for " << arch;
     return failure();
   }
   if (numCTAs != 1 && !rock::supportsMultiCTALaunch(arch)) {
-    op->emitError("numCTAs=") << numCTAs
-                              << " but multi-CTA launch is not supported on "
-                              << arch;
+    op->emitError("numCTAs=")
+        << numCTAs << " but multi-CTA launch is not supported on " << arch;
     return failure();
   }
   return success();
