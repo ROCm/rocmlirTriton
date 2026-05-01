@@ -216,6 +216,12 @@ public:
   getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
                       Type dataTypeB, StringRef arch) const override;
 
+#define NonAccel_DECLARATIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef NonAccel_DECLARATIONS_GEN
+
+  friend class ParamLookupTable<GemmParamsAttr>;
+
 protected:
   LogicalResult specificCouldBePerformant(GemmParamsAttr params, Type dataTypeA,
                                           Type dataTypeB) override;
