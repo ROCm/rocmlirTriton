@@ -45,7 +45,7 @@ FailureOr<int64_t> checkLDSUsage(ModuleOp moduleOp, int64_t maxSharedMemPerWG) {
   // Validate LDS usage
   if (sharedMemory >= maxSharedMemPerWG) {
     LLVM_DEBUG(llvm::dbgs()
-               << "ttg.shared: too much LDS usage (" << sharedMemory << " > "
+               << "ttg.shared: too much LDS usage (" << sharedMemory << " >= "
                << maxSharedMemPerWG << ")\n");
     return failure();
   }
