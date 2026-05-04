@@ -26,9 +26,12 @@
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/OwningOpRef.h"
+
+#include "llvm/ADT/ArrayRef.h"
 
 #include <functional>
 
@@ -56,9 +59,14 @@ transform::AnyOpType getAnyOpType(MLIRContext *ctx);
 OwningOpRef<ModuleOp> buildTransformModule(MLIRContext *ctx,
                                            TransformBodyBuilder bodyBuilder);
 
+/// Iterator-type signature of the matmul-shaped `linalg.generic` ops the CPU
+/// verifier pipeline targets: `[parallel, parallel, parallel, reduction]`.
+/// Single source of truth shared by the transform-side matchers and the
+/// payload-side predicates.
+llvm::ArrayRef<utils::IteratorType> getMatmulIteratorTypes();
+
 /// Create a DictionaryAttr containing the iterator_types attribute for
-/// matching matmul-like operations (pattern: [parallel, parallel, parallel,
-/// reduction]).
+/// matching matmul-like operations using `getMatmulIteratorTypes()`.
 DictionaryAttr getMatmulIteratorTypesAttr(MLIRContext *ctx);
 
 /// Create a transform::MatchOp that matches linalg.generic ops with matmul

@@ -66,18 +66,21 @@ OwningOpRef<ModuleOp> cpu::buildTransformModule(MLIRContext *ctx,
   return module;
 }
 
+llvm::ArrayRef<utils::IteratorType> cpu::getMatmulIteratorTypes() {
+  static constexpr utils::IteratorType kIters[] = {
+      utils::IteratorType::parallel, utils::IteratorType::parallel,
+      utils::IteratorType::parallel, utils::IteratorType::reduction};
+  return llvm::ArrayRef<utils::IteratorType>(kIters);
+}
+
 DictionaryAttr cpu::getMatmulIteratorTypesAttr(MLIRContext *ctx) {
-  // Create iterator_types attribute to match matmul pattern:
-  // [parallel, parallel, parallel, reduction]
-  SmallVector<Attribute> iteratorTypeAttrs = {
-      linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel),
-      linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel),
-      linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel),
-      linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::reduction)};
-  auto iteratorTypesAttr = ArrayAttr::get(ctx, iteratorTypeAttrs);
+  SmallVector<Attribute> iteratorTypeAttrs;
+  iteratorTypeAttrs.reserve(getMatmulIteratorTypes().size());
+  for (utils::IteratorType iter : getMatmulIteratorTypes())
+    iteratorTypeAttrs.push_back(linalg::IteratorTypeAttr::get(ctx, iter));
   return DictionaryAttr::get(
       ctx, {NamedAttribute(StringAttr::get(ctx, "iterator_types"),
-                           iteratorTypesAttr)});
+                           ArrayAttr::get(ctx, iteratorTypeAttrs))});
 }
 
 transform::MatchOp cpu::createMatchMatmulOp(ImplicitLocOpBuilder &ib,

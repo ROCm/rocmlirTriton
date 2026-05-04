@@ -29,6 +29,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Schedules.h"
+#include "Schedules/ScheduleUtils.h"
 #include "Schedules/TilingSchedule.h"
 
 #include "mlir/Conversion/CPU/Passes.h"
@@ -58,26 +59,18 @@ namespace cpu {
 } // namespace cpu
 } // namespace mlir
 
-#define DEBUG_TYPE "cpu-lower-verifier"
-
 using namespace mlir;
 using namespace mlir::cpu;
 
 namespace {
 
-/// Return true if `op` has the matmul iterator-type signature
-/// `[parallel, parallel, parallel, reduction]` -- i.e. is a 3-parallel,
-/// 1-reduction batched matmul. This mirrors the filter used by the
-/// transform-side `createMatchMatmulOp` helper, so policy decisions made
-/// here line up with what the schedule actually targets.
+/// Return true if `op`'s iterator types match the matmul signature defined
+/// by `cpu::getMatmulIteratorTypes()`. Sharing the signature with the
+/// transform-side matchers keeps the policy decisions made here in lockstep
+/// with what the schedule actually targets.
 static bool isMatmulIteratorTypes(linalg::GenericOp op) {
   SmallVector<utils::IteratorType> iters = op.getIteratorTypesArray();
-  if (iters.size() != 4)
-    return false;
-  return iters[0] == utils::IteratorType::parallel &&
-         iters[1] == utils::IteratorType::parallel &&
-         iters[2] == utils::IteratorType::parallel &&
-         iters[3] == utils::IteratorType::reduction;
+  return llvm::ArrayRef(iters) == cpu::getMatmulIteratorTypes();
 }
 
 /// Return the largest value in `candidates` that divides `dim` exactly.
@@ -121,8 +114,8 @@ chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
     return std::nullopt;
 
   SmallVector<int64_t, 4> loopRanges = matmul.getStaticLoopRanges();
-  if (loopRanges.size() != 4)
-    return std::nullopt;
+  assert(loopRanges.size() == cpu::getMatmulIteratorTypes().size() &&
+         "matmul matcher should have ensured a 4-D iteration space");
 
   // loopRanges = (G, M, N, K) per the matmul iterator-types signature.
   // Any of M / N / K may be dynamic; we still produce tile sizes and let
@@ -131,11 +124,8 @@ chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
   int64_t N = loopRanges[2];
   int64_t K = loopRanges[3];
 
-  // Candidate ladders (largest first). When no candidate divides (or the
-  // dim is dynamic) we fall back to `vectorSize`; the corresponding
-  // `*Divisible` flag captures whether the chosen tile actually divides
-  // the problem dim, so the schedule can decide what to do about the
-  // partial last iteration.
+  // TODO: Properly figure out this values based on the target architecture.
+  // https://amd-hub.atlassian.net/browse/AIROCMLIR-812
   static constexpr int64_t mLadder[] = {512, 256, 128, 64, 32, 16, 8};
   static constexpr int64_t nLadder[] = {16, 8};
   static constexpr int64_t kLadder[] = {784, 392, 196, 128, 64, 32, 16, 8};
@@ -152,12 +142,6 @@ chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
   t.nDivisible = isStaticallyDivisible(N, t.nFuse);
   t.kDivisible = isStaticallyDivisible(K, t.kTile);
 
-  LLVM_DEBUG(llvm::dbgs()
-             << "  Divisibility for " << func.getName()
-             << ": M=" << M << "/" << t.mFuse << "(" << t.mDivisible << ")"
-             << " N=" << N << "/" << t.nFuse << "(" << t.nDivisible << ")"
-             << " K=" << K << "/" << t.kTile << "(" << t.kDivisible << ")"
-             << "\n");
   return t;
 }
 
