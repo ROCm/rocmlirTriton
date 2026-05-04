@@ -136,9 +136,9 @@ chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
   // `*Divisible` flag captures whether the chosen tile actually divides
   // the problem dim, so the schedule can decide what to do about the
   // partial last iteration.
-  static constexpr int64_t mLadder[] = {256, 224, 128, 112, 64, 32, 16, 8};
-  static constexpr int64_t nLadder[] = {64, 32, 16, 8};
-  static constexpr int64_t kLadder[] = {64, 32, 16, 8};
+  static constexpr int64_t mLadder[] = {512, 256, 128, 64, 32, 16, 8};
+  static constexpr int64_t nLadder[] = {16, 8};
+  static constexpr int64_t kLadder[] = {784, 392, 196, 128, 64, 32, 16, 8};
 
   MatmulTileSizes t;
   t.gFuse = 1;
