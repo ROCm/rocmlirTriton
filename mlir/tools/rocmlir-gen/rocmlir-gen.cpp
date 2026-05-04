@@ -1924,58 +1924,6 @@ static void emitMemcpy(OpBuilder &b, Value src, Value dst) {
   }
 }
 
-/// Operation IDs for per-op timing in CPU verifier functions.
-/// These correspond to the cpuOpTimerStart(int opId) calls.
-enum CpuVerifierOpId : int32_t {
-  CpuOpExtF_Filter = 0,
-  CpuOpExtF_Input = 1,
-  CpuOpExtF_Output = 2,
-  CpuOpPadInput = 3,
-  CpuOpFill = 4,
-  CpuOpDilate = 5,
-  CpuOpPadOrCrop = 6,
-  CpuOpFlipFilter = 7,
-  CpuOpConvGeneric = 8,
-  CpuOpTruncF = 9,
-  CpuOpTotal = 10  // For total count
-};
-
-/// Helper struct for per-op timing in CPU verifier functions.
-/// Emits calls to cpuOpTimerStart/cpuOpTimerStop around operations.
-struct CpuOpTimer {
-  ModuleOp module;
-  OpBuilder &b;
-  Location loc;
-  bool enabled;
-
-  CpuOpTimer(ModuleOp module, OpBuilder &builder, Location location)
-      : module(module), b(builder), loc(location), enabled(cpuTimers) {}
-
-  void emitStart(CpuVerifierOpId opId) {
-    if (!enabled)
-      return;
-    auto i32Type = b.getI32Type();
-    auto timerStartFunc = makeFuncDecl(module, "cpuOpTimerStart", {i32Type});
-    Value opIdVal = arith::ConstantIntOp::create(b, loc, i32Type,
-                                                  static_cast<int32_t>(opId));
-    func::CallOp::create(b, loc, timerStartFunc, ValueRange{opIdVal});
-  }
-
-  void emitStop() {
-    if (!enabled)
-      return;
-    auto timerStopFunc = makeFuncDecl(module, "cpuOpTimerStop", {});
-    func::CallOp::create(b, loc, timerStopFunc, ValueRange{});
-  }
-
-  void emitPrintStats() {
-    if (!enabled)
-      return;
-    auto printStatsFunc = makeFuncDecl(module, "cpuOpTimerPrintStats", {});
-    func::CallOp::create(b, loc, printStatsFunc, ValueRange{});
-  }
-};
-
 /// Converts tensor element type to f32 if needed (handles both float and integer types).
 static Value ensureFloatIsF32(OpBuilder &b, Location loc, Value tensor,
                               Type floatType) {
@@ -2300,8 +2248,7 @@ static Value emitBwdDataConvGeneric(OpBuilder &b, Location loc,
                                     ArrayRef<int64_t> dilations,
                                     ArrayRef<int64_t> filterSpatialSizes,
                                     ArrayRef<int64_t> paddingLeft,
-                                    ArrayRef<int64_t> paddingRight,
-                                    CpuOpTimer *timer = nullptr) {
+                                    ArrayRef<int64_t> paddingRight) {
   MLIRContext *ctx = b.getContext();
   int64_t dim = outputInfo.imageDims.size();
 
@@ -2312,10 +2259,8 @@ static Value emitBwdDataConvGeneric(OpBuilder &b, Location loc,
                                          filterInfo.imageDims.end());
 
   // Step 1: Dilate the output gradient at actual spatial positions
-  if (timer) timer->emitStart(CpuOpDilate);
   Value dilatedOutputGrad =
       dilateTensor(b, loc, outputGrad, strides, outputSpatialPos);
-  if (timer) timer->emitStop();
 
   // Step 2: Pad/crop the dilated output gradient to match convolution requirements
   // For transposed conv, we need: paddedSize = inputSize + (filterSize-1)*dilation
@@ -2351,13 +2296,6 @@ static Value emitBwdDataConvGeneric(OpBuilder &b, Location loc,
     return lowDelta[i] < 0 || highDelta[i] < 0;
   });
 
-  bool needsPad = llvm::any_of(llvm::seq<int64_t>(0, dim), [&](int64_t i) {
-    return lowDelta[i] > 0 || highDelta[i] > 0;
-  });
-
-  // Time the combined pad/crop operation
-  if (timer && (needsCrop || needsPad)) timer->emitStart(CpuOpPadOrCrop);
-
   if (needsCrop) {
     SmallVector<OpFoldResult> offsets(tensorRank, b.getIndexAttr(0));
     SmallVector<OpFoldResult> sizes(tensorRank);
@@ -2379,6 +2317,11 @@ static Value emitBwdDataConvGeneric(OpBuilder &b, Location loc,
                                                offsets, sizes, unitStrides);
   }
 
+  // Apply pad if any delta is positive (tensor.pad)
+  bool needsPad = llvm::any_of(llvm::seq<int64_t>(0, dim), [&](int64_t i) {
+    return lowDelta[i] > 0 || highDelta[i] > 0;
+  });
+
   if (needsPad) {
     SmallVector<OpFoldResult> lowPad(tensorRank, b.getIndexAttr(0));
     SmallVector<OpFoldResult> highPad(tensorRank, b.getIndexAttr(0));
@@ -2396,15 +2339,11 @@ static Value emitBwdDataConvGeneric(OpBuilder &b, Location loc,
                     .getResult();
   }
 
-  if (timer && (needsCrop || needsPad)) timer->emitStop();
-
   Value paddedOutputGrad = processed;
 
   // Step 3: Flip the filter spatially at actual spatial positions
-  if (timer) timer->emitStart(CpuOpFlipFilter);
   Value flippedFilter =
       flipFilterSpatial(b, loc, filter, filterSpatialSizes, filterSpatialPos);
-  if (timer) timer->emitStop();
 
   // Step 4: Perform convolution with flipped filter using layout-aware indexing
   // Iteration domain: (n, g, c, ih_0..., k, kh_0...)
@@ -2449,14 +2388,11 @@ static Value emitBwdDataConvGeneric(OpBuilder &b, Location loc,
                                                  utils::IteratorType::parallel);
   iteratorTypes.append(1 + dim, utils::IteratorType::reduction);
 
-  if (timer) timer->emitStart(CpuOpConvGeneric);
-  Value result = linalg::GenericOp::create(b, loc, resultType,
+  return linalg::GenericOp::create(b, loc, resultType,
                                    ValueRange{paddedOutputGrad, flippedFilter},
                                    zero, indexingMaps, iteratorTypes,
                                    convBodyBuilderF32)
       .getResult(0);
-  if (timer) timer->emitStop();
-  return result;
 }
 
 /// Create a tensor-based CPU convolution kernel using linalg.generic.
@@ -2544,8 +2480,6 @@ createCPUConvWithMLIR(ModuleOp module,
     filterFlat = block->getArgument(hasWorkspace ? 3 : 2);
     break;
   }
-  // Create per-op timer for CPU verifier instrumentation
-  CpuOpTimer timer(module, b, loc);
 
   // i8 convolutions use i64 accumulation to detect overflow, f32 otherwise
   bool isI8Conv = genConfig.inputDataTypeStr == "i8";
@@ -2578,15 +2512,9 @@ createCPUConvWithMLIR(ModuleOp module,
     input = expandToLogicalShape(inputFlat, genConfig.inputDimension);
     output = expandToLogicalShape(outputFlat, genConfig.outputDimension);
   } else {
-    timer.emitStart(CpuOpExtF_Filter);
     filter = expandAndConvertToF32(filterFlat, genConfig.filterDimension);
-    timer.emitStop();
-    timer.emitStart(CpuOpExtF_Input);
     input = expandAndConvertToF32(inputFlat, genConfig.inputDimension);
-    timer.emitStop();
-    timer.emitStart(CpuOpExtF_Output);
     output = expandAndConvertToF32(outputFlat, genConfig.outputDimension);
-    timer.emitStop();
   }
 
   // Parse tensor layouts - these tell us where each dimension is
@@ -2613,7 +2541,6 @@ createCPUConvWithMLIR(ModuleOp module,
                      [](int64_t p) { return p == 0; }));
 
   if (needsPadding) {
-    timer.emitStart(CpuOpPadInput);
     // Pad at actual spatial dimension positions from layout
     SmallVector<OpFoldResult> lowPad(inputType.getRank(), b.getIndexAttr(0));
     SmallVector<OpFoldResult> highPad(inputType.getRank(), b.getIndexAttr(0));
@@ -2636,7 +2563,6 @@ createCPUConvWithMLIR(ModuleOp module,
                                   padValue)
                 .getResult();
     inputType = paddedType;
-    timer.emitStop();
   }
 
   // Determine result shape in original layout and create zero tensor
@@ -2656,11 +2582,9 @@ createCPUConvWithMLIR(ModuleOp module,
   auto resultType = RankedTensorType::get(resultShape, computeType);
   // Use tensor.empty + linalg.fill instead of arith.constant to avoid
   // memref copy during bufferization
-  timer.emitStart(CpuOpFill);
   Value zeroVal = rock::createZeroConstantOp(b, loc, computeType);
   Value emptyResult = tensor::EmptyOp::create(b, loc, resultType, ValueRange{});
   Value zeroResult = linalg::FillOp::create(b, loc, zeroVal, emptyResult).getResult(0);
-  timer.emitStop();
 
   // Emit the convolution using linalg.generic with layout-aware indexing
   // No transposes needed - the indexing maps use actual dimension positions!
@@ -2686,8 +2610,7 @@ createCPUConvWithMLIR(ModuleOp module,
                                     inputInfo, genConfig.strideDims,
                                     genConfig.dilationDims, filterInfo.imageLens,
                                     genConfig.paddingLeftDims,
-                                    genConfig.paddingRightDims,
-                                    &timer);
+                                    genConfig.paddingRightDims);
     break;
   }
 
@@ -2699,7 +2622,6 @@ createCPUConvWithMLIR(ModuleOp module,
   ArrayRef<int64_t> finalResultShape =
       cast<RankedTensorType>(resultOrigLayout.getType()).getShape();
   if (resultFlatTensorType.getElementType() != computeType) {
-    timer.emitStart(CpuOpTruncF);
     auto resultOrigType = RankedTensorType::get(
         finalResultShape, resultFlatTensorType.getElementType());
     Value emptyConvert =
@@ -2726,7 +2648,6 @@ createCPUConvWithMLIR(ModuleOp module,
           linalg::YieldOp::create(nestedB, nestedLoc, converted);
         });
     resultOrigLayout = convertOp.getResult(0);
-    timer.emitStop();
   }
 
   // Collapse to flat 1D tensor
@@ -2736,9 +2657,6 @@ createCPUConvWithMLIR(ModuleOp module,
       llvm::to_vector(llvm::iota_range<int64_t>(0, finalShape.size(), false));
   Value flatResult = tensor::CollapseShapeOp::create(
       b, loc, resultFlatTensorType, resultOrigLayout, allDims);
-
-  // Print per-op statistics at the end of the CPU verifier
-  timer.emitPrintStats();
 
   func::ReturnOp::create(b, loc, flatResult);
   return func;
@@ -5112,37 +5030,13 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
             << "Group convolution not supported for conv+gemm in rocmlir-gen\n";
         exit(1);
       }
-      // Start CPU timer
-      if (cpuTimers) {
-        auto cpuTimerStartFunc = makeFuncDecl(module, "cpuTimerStart", {});
-        func::CallOp::create(b, loc, cpuTimerStartFunc, ValueRange{});
-      }
-
       auto cpuConvElementwiseGemmFunc =
           createCpuConvElementwiseGemmKernelWithMlir(module, genParams);
       func::CallOp::create(b, loc, cpuConvElementwiseGemmFunc, valVars);
-
-      // Stop CPU timer and print elapsed time
-      if (cpuTimers) {
-        auto cpuTimerStopFunc = makeFuncDecl(module, "cpuTimerStop", {});
-        func::CallOp::create(b, loc, cpuTimerStopFunc, ValueRange{});
-      }
     } else if (genParams.convConfig.has_value()) {
       const auto &genConfig = **genParams.convConfig;
-      // Start CPU timer
-      if (cpuTimers) {
-        auto cpuTimerStartFunc = makeFuncDecl(module, "cpuTimerStart", {});
-        func::CallOp::create(b, loc, cpuTimerStartFunc, ValueRange{});
-      }
-
       auto cpuConvFunc = createCPUConvWithMLIR(module, genConfig);
       callTensorFuncWithMemrefs(b, loc, cpuConvFunc, valVars, outIndices);
-
-      // Stop CPU timer and print elapsed time
-      if (cpuTimers) {
-        auto cpuTimerStopFunc = makeFuncDecl(module, "cpuTimerStop", {});
-        func::CallOp::create(b, loc, cpuTimerStopFunc, ValueRange{});
-      }
     } else if (genParams.operation == rock::KernelType::Gemm) {
       // Emit call to host gemm
       if (validationType == "cpp") {

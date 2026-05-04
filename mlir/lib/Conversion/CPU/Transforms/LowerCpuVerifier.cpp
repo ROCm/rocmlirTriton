@@ -59,6 +59,8 @@ namespace cpu {
 } // namespace cpu
 } // namespace mlir
 
+#define DEBUG_TYPE "cpu-lower-verifier"
+
 using namespace mlir;
 using namespace mlir::cpu;
 
