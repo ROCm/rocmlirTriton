@@ -241,7 +241,8 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   opts.chip = chip;
   opts.features = features;
   mlir::rock::buildBackendPipeline(pm, opts);
-
+  mlir::rock::buildHostLoweringPipeline(pm, opts);
+  
   auto status = pm.run(module);
 
   module.walk([&](mlir::LLVM::LLVMFuncOp llvmFunc) {

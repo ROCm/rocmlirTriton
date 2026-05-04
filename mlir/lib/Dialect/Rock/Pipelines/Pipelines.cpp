@@ -407,8 +407,8 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
-                                     const rock::BackendOptions &options,
-                                     StringRef dumpCpuSchedules) {
+                                     const rock::BackendOptions &options) {
+  // Gate createRockRestoreHostCodePass for build after backend pipeline only
   ModuleOp moduleOp = pm.getOp<ModuleOp>();
   if (moduleOp.hasAttr("rock.host_functions") || moduleOp.hasAttr("triton.hsaco")) {                       
     // Restore host functions (main, wrapper) that were stored during
@@ -430,7 +430,7 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   // types (f8E8M0FNU, f4E2M1FN) used by scaled GEMMs, because those conflict
   // with ConvertNarrowTypeSignatures / EmulateNarrowTypes passes below.
   cpu::CpuLowerVerifierPassOptions cpuOpts;
-  cpuOpts.dumpSchedulesPath = dumpCpuSchedules.str();
+  cpuOpts.dumpSchedulesPath = options.dumpCpuSchedules.str();
   cpuOpts.phase = cpu::CPU_PHASE_OPTIMIZE;
   pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
 
@@ -530,8 +530,9 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   // Validate LDS usage against the hardware limit, convert dynamic shared
   // memory to static LDS allocation, and strip unused Triton workspace
   // arguments from the kernel signature.  Runs before TritonToHsaco so the
-  // static LDS size is baked into the kernel descriptor, and before
-  // RestoreHostCode so that collectKernelInfo sees the trimmed argument list.
+  // static LDS size is baked into the kernel descriptor, and before any
+  // downstream consumer of the kernel argument list (e.g. RestoreHostCode in
+  // the host lowering pipeline) sees the trimmed signature.
   pm.addPass(rock::createResolveKernelLaunchParamsPass());
 
   // Optionally generate the HSACO binary
@@ -573,6 +574,6 @@ void rock::registerPipelines() {
       buildTritonPipeline);
   PassPipelineRegistration<rock::BackendOptions>(
       "rock-backend-pipeline",
-      " representations and algorithms for sparse tensors.",
+      "GPU compilation: lower Triton LLVM-dialect kernels to HSACO binary.",
       buildBackendPipeline);
 }

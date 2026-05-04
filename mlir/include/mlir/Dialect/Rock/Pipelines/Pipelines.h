@@ -71,6 +71,9 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
 void buildTritonPipeline(OpPassManager &pm, const TritonOptions &options = {});
 
 //===--- Backend Pipeline -------------------------------------------------===//
+//
+// GPU-only compilation phase. Takes Triton/LLVM-dialect kernels and produces
+// a HSACO binary in the `triton.hsaco` module attribute.
 struct BackendOptions : public PassPipelineOptions<BackendOptions> {
 
   PassOptions::Option<std::string> triple{
@@ -104,15 +107,13 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
       desc("Path to dump CPU verifier IR and transform schedules"), init("")};
 };
 
-/// Adds the `backend` pipeline to the `OpPassManager`.
-void buildBackendPipeline(OpPassManager &pm,
-                          const BackendOptions &options = {});
-
 /// Adds the host lowering pipeline to the `OpPassManager`.
-/// This lowers host code (func + memref + GPU ops) to LLVM dialect.
-/// \p dumpCpuSchedules is forwarded to CpuLowerVerifierPass for schedule dumps.
 void buildHostLoweringPipeline(OpPassManager &pm,
-                               StringRef dumpCpuSchedules = "");
+                               const BackendOptions &options = {});
+
+/// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.
+void buildBackendPipeline(OpPassManager &pm,
+    const BackendOptions &options = {});
 
 /// Registers all pipelines for the `rock` dialect.
 void registerPipelines();
