@@ -843,36 +843,53 @@ static FailureOr<Value> buildSubByteShiftDynamic(OpBuilder &builder,
   return shifts;
 }
 
-/// Replace arith.extui / arith.extsi users of a loaded i8
-/// tile with sub-byte extraction logic that uses position-dependent shifts:
+/// Replace arith.extui / arith.extsi / arith.uitofp / arith.sitofp users of a
+/// loaded i8 tile with sub-byte extraction logic that uses position-dependent
+/// shifts:
 ///
 ///   extui  ->  (loaded >> shifts) & 0x0F
 ///   extsi  ->  ((loaded >> shifts) & 0x0F) << 4  >> s 4   (sign-extend)
+///   uitofp ->  uitofp((loaded >> shifts) & 0x0F)          (rewire operand)
+///   sitofp ->  sitofp(sign-extend((loaded >> shifts) & 0x0F)) (rewire operand)
+///
+/// The fp paths cover dequant chains where the i4 -> wider-float conversion is
+/// fused into a single arith.uitofp / arith.sitofp at the tensor level (no
+/// intermediate arith.extui), e.g. `arith.uitofp %x : i4 to f16`.
 static void replaceExtUsersWithSubByteExtract(OpBuilder &builder, Location loc,
                                               Value loadResult,
                                               RankedTensorType i8TileType,
                                               Value shifts, Value mask) {
+  auto extractLow = [&](Operation *user) -> Value {
+    builder.setInsertionPoint(user);
+    Value shifted = arith::ShRUIOp::create(builder, loc, loadResult, shifts);
+    return arith::AndIOp::create(builder, loc, shifted, mask);
+  };
+  auto signExtendNibble = [&](Value subByte) -> Value {
+    Value four = arith::ConstantOp::create(
+        builder, loc,
+        DenseElementsAttr::get(i8TileType, builder.getI8IntegerAttr(4)));
+    Value shl = arith::ShLIOp::create(builder, loc, subByte, four);
+    return arith::ShRSIOp::create(builder, loc, shl, four);
+  };
+
   for (auto *user :
        llvm::make_early_inc_range(loadResult.getUsers())) {
     if (isa<arith::ExtUIOp>(user)) {
-      builder.setInsertionPoint(user);
-      Value shifted =
-          arith::ShRUIOp::create(builder, loc, loadResult, shifts);
-      Value subByte = arith::AndIOp::create(builder, loc, shifted, mask);
+      Value subByte = extractLow(user);
       user->getResult(0).replaceAllUsesWith(subByte);
       user->erase();
     } else if (isa<arith::ExtSIOp>(user)) {
-      builder.setInsertionPoint(user);
-      Value shifted =
-          arith::ShRUIOp::create(builder, loc, loadResult, shifts);
-      Value subByte = arith::AndIOp::create(builder, loc, shifted, mask);
-      Value four = arith::ConstantOp::create(
-          builder, loc,
-          DenseElementsAttr::get(i8TileType, builder.getI8IntegerAttr(4)));
-      Value shl = arith::ShLIOp::create(builder, loc, subByte, four);
-      Value sext = arith::ShRSIOp::create(builder, loc, shl, four);
+      Value subByte = extractLow(user);
+      Value sext = signExtendNibble(subByte);
       user->getResult(0).replaceAllUsesWith(sext);
       user->erase();
+    } else if (isa<arith::UIToFPOp>(user)) {
+      Value subByte = extractLow(user);
+      user->setOperand(0, subByte);
+    } else if (isa<arith::SIToFPOp>(user)) {
+      Value subByte = extractLow(user);
+      Value sext = signExtendNibble(subByte);
+      user->setOperand(0, sext);
     }
   }
 }
@@ -941,19 +958,33 @@ emitSubByteUnpackFastPath(OpBuilder &builder, OperandInput &input,
 
   auto unpackedType = cast<RankedTensorType>(unpacked.getType());
 
+  // Mirror the four user kinds handled by replaceExtUsersWithSubByteExtract:
+  // here the unpacked tile is already materialized, so extui/uitofp users just
+  // need to point at `unpacked`, while extsi/sitofp users need a sign-extend
+  // (shl 4; ashr 4) on the unsigned-nibble values first.
+  auto signExtendUnpacked = [&]() {
+    Value sextFour = arith::ConstantOp::create(
+        builder, loc,
+        DenseElementsAttr::get(unpackedType, builder.getI8IntegerAttr(4)));
+    Value shl = arith::ShLIOp::create(builder, loc, unpacked, sextFour);
+    return arith::ShRSIOp::create(builder, loc, shl, sextFour);
+  };
+
   for (auto *user : llvm::make_early_inc_range(loaded.getUsers())) {
     if (isa<arith::ExtUIOp>(user)) {
       user->getResult(0).replaceAllUsesWith(unpacked);
       user->erase();
     } else if (isa<arith::ExtSIOp>(user)) {
       builder.setInsertionPoint(user);
-      Value sextFour = arith::ConstantOp::create(
-          builder, loc,
-          DenseElementsAttr::get(unpackedType, builder.getI8IntegerAttr(4)));
-      Value shl = arith::ShLIOp::create(builder, loc, unpacked, sextFour);
-      Value sext = arith::ShRSIOp::create(builder, loc, shl, sextFour);
+      Value sext = signExtendUnpacked();
       user->getResult(0).replaceAllUsesWith(sext);
       user->erase();
+    } else if (isa<arith::UIToFPOp>(user)) {
+      user->setOperand(0, unpacked);
+    } else if (isa<arith::SIToFPOp>(user)) {
+      builder.setInsertionPoint(user);
+      Value sext = signExtendUnpacked();
+      user->setOperand(0, sext);
     }
   }
   return success();
