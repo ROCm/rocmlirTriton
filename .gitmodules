@@ -2,6 +2,3 @@
 	path = external/triton
 	url = https://github.com/triton-lang/triton.git
 	ignore = dirty
-[submodule ".cursor/ai-rules"]
-	path = .cursor/ai-rules
-	url = git@github.com:umangyadav/workspace-skills-rules.git
