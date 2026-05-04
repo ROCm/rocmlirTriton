@@ -1,6 +1,3 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Fusions need rework
-
 // RUN: rocmlir-driver -kernel-pipeline=highlevel,gpu,triton,binary %s | FileCheck %s
 
 module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1030"} {
