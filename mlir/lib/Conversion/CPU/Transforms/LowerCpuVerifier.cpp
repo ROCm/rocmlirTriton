@@ -91,16 +91,25 @@ static int64_t pickDivisibleTile(int64_t dim, ArrayRef<int64_t> candidates,
   return fallback;
 }
 
+/// Return `true` when `dim` is statically known and is a clean multiple of
+/// `tile`. Dynamic dims are treated as non-divisible because we can't
+/// prove the property at compile time -- the schedule must handle the
+/// remainder explicitly in that case.
+static bool isStaticallyDivisible(int64_t dim, int64_t tile) {
+  return !ShapedType::isDynamic(dim) && tile > 0 && dim % tile == 0;
+}
+
 /// Inspect the CPU verifier function `func` and choose tile sizes for its
-/// matmul-shaped `linalg.generic`. Returns `std::nullopt` if either no
-/// matmul is found or the matmul has any dynamic loop bound -- in those
-/// cases the caller should fall back to the default schedule and consider
-/// disabling vectorization.
+/// matmul-shaped `linalg.generic`. Returns `std::nullopt` only when no
+/// matmul-shaped op is found in the function -- in which case the caller
+/// should fall back to the default schedule.
 ///
-/// Policy: pick the largest tile in a candidate ladder that divides each
-/// loop dim cleanly. Divisibility ensures that all post-tile shapes stay
-/// static, which is required for `transform.structured.vectorize` to
-/// succeed without `assume_dynamic_dims_match_vec_sizes`.
+/// Policy: pick the largest tile in a candidate ladder that divides the
+/// corresponding loop dim cleanly; if none divides (or the dim is
+/// dynamic), fall back to `vectorSize` and record the dim as
+/// non-divisible via the `*Divisible` flags on `MatmulTileSizes`. The
+/// schedule uses those flags to decide how to handle the partial last
+/// iteration (peel, mask, scalar fallback, ...).
 static std::optional<MatmulTileSizes>
 chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
   linalg::GenericOp matmul;
@@ -112,19 +121,21 @@ chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
     return std::nullopt;
 
   SmallVector<int64_t, 4> loopRanges = matmul.getStaticLoopRanges();
-  if (loopRanges.size() != 4 ||
-      llvm::any_of(loopRanges, ShapedType::isDynamic))
+  if (loopRanges.size() != 4)
     return std::nullopt;
 
   // loopRanges = (G, M, N, K) per the matmul iterator-types signature.
+  // Any of M / N / K may be dynamic; we still produce tile sizes and let
+  // the schedule handle the remainder via the divisibility flags below.
   int64_t M = loopRanges[1];
   int64_t N = loopRanges[2];
   int64_t K = loopRanges[3];
 
-  // Candidate ladders (largest first). The smallest entry is `vectorSize`,
-  // which any sensible static problem dim is expected to be a multiple of
-  // -- if it isn't, the inner micro-tile would still introduce dynamic
-  // shapes and the caller will skip vectorization upstream.
+  // Candidate ladders (largest first). When no candidate divides (or the
+  // dim is dynamic) we fall back to `vectorSize`; the corresponding
+  // `*Divisible` flag captures whether the chosen tile actually divides
+  // the problem dim, so the schedule can decide what to do about the
+  // partial last iteration.
   static constexpr int64_t mLadder[] = {256, 224, 128, 112, 64, 32, 16, 8};
   static constexpr int64_t nLadder[] = {64, 32, 16, 8};
   static constexpr int64_t kLadder[] = {64, 32, 16, 8};
@@ -137,6 +148,16 @@ chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
   t.microTileM = vectorSize;
   t.microTileN = vectorSize;
   t.microTileK = vectorSize;
+  t.mDivisible = isStaticallyDivisible(M, t.mFuse);
+  t.nDivisible = isStaticallyDivisible(N, t.nFuse);
+  t.kDivisible = isStaticallyDivisible(K, t.kTile);
+
+  LLVM_DEBUG(llvm::dbgs()
+             << "  Divisibility for " << func.getName()
+             << ": M=" << M << "/" << t.mFuse << "(" << t.mDivisible << ")"
+             << " N=" << N << "/" << t.nFuse << "(" << t.nDivisible << ")"
+             << " K=" << K << "/" << t.kTile << "(" << t.kDivisible << ")"
+             << "\n");
   return t;
 }
 

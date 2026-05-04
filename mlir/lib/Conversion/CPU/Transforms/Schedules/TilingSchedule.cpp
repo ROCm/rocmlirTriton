@@ -20,10 +20,16 @@
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
+#include "mlir/Dialect/SCF/TransformOps/SCFTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
+
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
+
+#define DEBUG_TYPE "cpu-tiling-schedule"
 
 using namespace mlir;
 using namespace mlir::cpu;
@@ -105,9 +111,22 @@ static void flattenExtfTruncfOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
 
 OwningOpRef<ModuleOp>
 cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
+  LLVM_DEBUG(llvm::dbgs()
+             << "buildTilingSchedule: matmul tile sizes G=" << tileSizes.gFuse
+             << " M=" << tileSizes.mFuse << "(div=" << tileSizes.mDivisible
+             << ") N=" << tileSizes.nFuse << "(div=" << tileSizes.nDivisible
+             << ") K=" << tileSizes.kTile << "(div=" << tileSizes.kDivisible
+             << ") microTile=(" << tileSizes.microTileM << ","
+             << tileSizes.microTileN << "," << tileSizes.microTileK << ")\n");
+
   return buildTransformModule(
       ctx, [ctx, tileSizes](ImplicitLocOpBuilder &ib, BlockArgument arg) {
         auto anyOpType = getAnyOpType(ctx);
+        // Typed handle for `scf.for` payloads -- required as the operand
+        // type of `transform.loop.peel`, so we ask `fuse` and the K-tile
+        // to return their loops as `!transform.op<"scf.for">` instead of
+        // the generic `!transform.any_op`.
+        auto scfForType = transform::OperationType::get(ctx, "scf.for");
 
         // AVX vector width is 256 bits.
         // For fp32, AVX takes 8 elements.
@@ -124,10 +143,25 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
         tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/4);
         tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/5);
 
-        // Now tile (and optionally fuse) the matmul
+        // Now tile (and optionally fuse) the matmul.
+        //
+        // Loop layout produced by `fuse` with interchange [0, 2, 1] and
+        // tile sizes [gFuse, mFuse, nFuse] (G, M, N parallel, K reduction):
+        //   loops[0] -> G  (tile = gFuse)
+        //   loops[1] -> N  (tile = nFuse)
+        //   loops[2] -> M  (tile = mFuse)
+        // K is tiled separately by `tile1` below.
+        //
+        // For each parallel dim that the caller marked as not divisible by
+        // its tile, peel the corresponding loop so the main body has a
+        // clean static trip count and only the (small) remainder body
+        // carries a partial iteration. Vectorization downstream targets
+        // only the static main body. Peel the M loop first (innermost of
+        // the fused triple) so the N peel that follows operates on a
+        // simpler structure; functionally either order works.
         auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
 
-        SmallVector<Type> fuseLoopTypes(3, anyOpType);
+        SmallVector<Type> fuseLoopTypes(3, scfForType);
         auto fuse = ib.create<transform::FuseOp>(
             /*loopTypes=*/fuseLoopTypes,
             /*target=*/matchMatmul.getResults(),
@@ -138,18 +172,54 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
             /*applyCleanup=*/false,
             /*useForall=*/false);
 
-        SmallVector<Type> tile1LoopTypes(1, anyOpType);
+        // Helper: peel a loop's last (partial) iteration.
+        auto peelLoop = [&](Value loop) {
+          ib.create<transform::LoopPeelOp>(
+              /*peeled_loop=*/scfForType,
+              /*remainder_loop=*/scfForType,
+              /*target=*/loop,
+              /*peel_front=*/false,
+              /*fail_if_already_divisible=*/false);
+        };
+
+        bool peeledFuseLoop = false;
+        if (!tileSizes.mDivisible) {
+          peelLoop(fuse.getLoops()[2]);
+          peeledFuseLoop = true;
+        }
+        if (!tileSizes.nDivisible) {
+          peelLoop(fuse.getLoops()[1]);
+          peeledFuseLoop = true;
+        }
+
+        // Peeling clones the matmul into both main and remainder bodies and
+        // invalidates the `fuse.getTransformed()` handle. Re-match so the
+        // K-tile applies to the new payload.
+        Value kTileTarget =
+            peeledFuseLoop
+                ? createMatchMatmulOp(ib, ctx, arg).getResults()
+                : fuse.getTransformed();
+
+        SmallVector<Type> tile1LoopTypes(1, scfForType);
         auto tile1 = ib.create<transform::TileUsingForOp>(
             /*loopTypes=*/tile1LoopTypes,
-            /*target=*/fuse.getTransformed(),
+            /*target=*/kTileTarget,
             /*staticTileSizes=*/ArrayRef<int64_t>{0, 0, 0, tileSizes.kTile},
             /*interchange=*/ArrayRef<int64_t>{},
             /*scalableSizes=*/std::nullopt);
 
+        // Same dance for K: peel if the K dim isn't a multiple of kTile,
+        // then re-match the matmul before the inner micro-tile runs.
+        Value microTileTarget = tile1.getTiledLinalgOp();
+        if (!tileSizes.kDivisible) {
+          peelLoop(tile1.getLoops()[0]);
+          microTileTarget = createMatchMatmulOp(ib, ctx, arg).getResults();
+        }
+
         SmallVector<Type> tile2LoopTypes(3, anyOpType);
         ib.create<transform::TileUsingForOp>(
             /*loopTypes=*/tile2LoopTypes,
-            /*target=*/tile1.getTiledLinalgOp(),
+            /*target=*/microTileTarget,
             /*staticTileSizes=*/
             ArrayRef<int64_t>{0, tileSizes.microTileM, tileSizes.microTileN,
                               tileSizes.microTileK},

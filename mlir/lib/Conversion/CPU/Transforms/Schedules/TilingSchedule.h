@@ -39,10 +39,12 @@ namespace cpu {
 /// matches the matmul `linalg.generic` iteration space (G, M, N, K), where
 /// G/M/N are parallel and K is the reduction.
 ///
-/// All tile sizes must divide their corresponding problem dim cleanly, so
-/// the generated `scf.for` loops have static post-tile shapes (otherwise
-/// `transform.structured.vectorize` would fail). The caller is responsible
-/// for choosing divisors -- see `chooseMatmulTileSizes` in LowerCpuVerifier.cpp.
+/// Tile sizes do not have to divide their corresponding problem dim. The
+/// `*Divisible` flags below tell the schedule whether each dim is a clean
+/// multiple of its tile, so the schedule can decide how to handle the
+/// remainder (peel, mask, scalar fallback, ...). The caller -- typically
+/// `chooseMatmulTileSizes` in LowerCpuVerifier.cpp -- is responsible for
+/// setting those flags.
 struct MatmulTileSizes {
   /// Outer fuse tile (G, M, N); applied with interchange [0, 2, 1] so the
   /// loop nest order becomes G -> N -> M.
@@ -55,6 +57,18 @@ struct MatmulTileSizes {
   int64_t microTileM = 8;
   int64_t microTileN = 8;
   int64_t microTileK = 8;
+
+  /// Per-dim divisibility: true when the corresponding problem dim is a
+  /// clean multiple of the chosen tile (for M/N at the outer fuse level,
+  /// for K at the reduction-tile level). False means the post-tile loop
+  /// will have a partial last iteration with dynamic slice shapes, and
+  /// the schedule needs to handle the remainder explicitly.
+  ///
+  /// Defaults to `true` so existing callers that hand-build a
+  /// `MatmulTileSizes` get the historical "assume clean tiling" behavior.
+  bool mDivisible = true;
+  bool nDivisible = true;
+  bool kDivisible = true;
 };
 
 /// Build the tiling (optimization) transform module.
