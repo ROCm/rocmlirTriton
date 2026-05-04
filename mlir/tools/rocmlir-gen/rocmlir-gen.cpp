@@ -819,19 +819,6 @@ static llvm::cl::opt<F8TypesChoice> forceF8Types(
                                 "'OCP' or 'OFP8' types")),
     llvm::cl::init(F8TypesChoice::Arch));
 
-enum class GEMMScheduleVersion : int { V1 = 1, V2 = 2, V3 = 3, V4 = 4 };
-
-static llvm::cl::opt<GEMMScheduleVersion> gemmScheduleVersion(
-    "schedule_version",
-    llvm::cl::desc(
-        "select amongst different available scheduling strategies for GEMM"),
-    llvm::cl::values(
-        clEnumValN(GEMMScheduleVersion::V1, "1", "Select GEMM Schedule V1"),
-        clEnumValN(GEMMScheduleVersion::V2, "2", "Select GEMM Schedule V2"),
-        clEnumValN(GEMMScheduleVersion::V3, "3", "Select GEMM Schedule V3"),
-        clEnumValN(GEMMScheduleVersion::V4, "4", "Select GEMM Schedule V4")),
-    llvm::cl::init(GEMMScheduleVersion::V1));
-
 ////////////////////////////////////////////////////////////////////////////////
 ////  Struct KernelIF
 ////  - Detected/capture kernel interface
@@ -3896,8 +3883,8 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   Value outputArg = func.getArgument(func.getNumArguments() - 1);
   Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
                                           flatResult, outputArg, storeMethod);
-  func::ReturnOp::create(builder, loc, {storedOut});
 
+  func::ReturnOp::create(builder, loc, {storedOut});
   if (!disableSplitKForTuning)
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),
                   builder.getUnitAttr());
@@ -5755,11 +5742,10 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     }
 
     convGenerator = rock::ConvGenerator(
-        arch, chip, disableSplitKForTuning,
-        int(gemmScheduleVersion.getValue()), triple, chipFeatures,
+        arch, chip, disableSplitKForTuning, triple, chipFeatures,
         perfConfig.getValue(),
         num_cu.getNumOccurrences() ? std::optional<int>(num_cu.getValue())
-                                    : std::nullopt,
+                                   : std::nullopt,
         numChiplets.getNumOccurrences()
             ? std::optional<int>(numChiplets.getValue())
             : std::nullopt,

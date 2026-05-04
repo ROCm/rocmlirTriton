@@ -53,8 +53,6 @@ private:
   void affixTuningParametersImpl(RockGemmGemmWrapperInterface op);
 
   LogicalResult validateRockAttributes(func::FuncOp func);
-  template <typename T>
-  void setUtilityKernelSizes(Value arg, T utilityOp);
 };
 } // anonymous namespace
 
@@ -133,28 +131,6 @@ void AffixTuningParameters::runOnOperation() {
   });
 }
 
-template <typename T>
-void AffixTuningParameters::setUtilityKernelSizes(Value arg, T utilityOp) {
-  OpBuilder b(&getContext());
-
-  int64_t numElements = cast<ShapedType>(arg.getType()).getNumElements();
-  uint32_t blockSize = kUtilityKernelBlockSize;
-  int64_t elemsPerThread = kUtilityKernelElemsPerThread;
-  uint32_t gridSize = llvm::divideCeil(numElements, blockSize * elemsPerThread);
-
-  IntegerAttr blockSizeAttr = b.getI32IntegerAttr(blockSize);
-  IntegerAttr gridSizeAttr = b.getI32IntegerAttr(gridSize);
-
-  // Tracking utility kernel block size separately.
-  utilityOp->setAttr("blockSize", blockSizeAttr);
-  utilityOp->setAttr("gridSize", gridSizeAttr);
-  utilityOp->setAttr("elemsPerThread", b.getIndexAttr(elemsPerThread));
-
-  func::FuncOp funcOp = getOperation();
-  funcOp->setAttr(rock::BlockSizeAttr::getMnemonic(), blockSizeAttr);
-  funcOp->setAttr(rock::GridSizeAttr::getMnemonic(), gridSizeAttr);
-}
-
 void AffixTuningParameters::affixTuningParametersImpl(
     RockGemmWrapperInterface op) {
   OpBuilder b(op.getContext());
@@ -167,16 +143,16 @@ void AffixTuningParameters::affixTuningParametersImpl(
     LLVM_DEBUG(llvm::dbgs() << "obtainTuningParameters call fails.\n");
     return signalPassFailure();
   }
-  GemmParamsAttr validParams = maybeValidParams.value();
-  StringAttr perfConfigAttr = validParams.getPerfConfigAttr();
+  GemmParamsAttr gemmParams = maybeValidParams.value();
+  StringAttr perfConfigAttr = gemmParams.getPerfConfigAttr();
 
   LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
                           << perfConfigAttr << "\n");
 
   auto origGemmSize = op.getGemmSize();
   auto paddedGemmSize = calculatePaddedGemmSize(
-      validParams.getKPerBlock(), validParams.getMPerBlock(),
-      validParams.getNPerBlock(), origGemmSize);
+      gemmParams.getKPerBlock(), gemmParams.getMPerBlock(),
+      gemmParams.getNPerBlock(), origGemmSize);
   const bool requiredPadding = !(paddedGemmSize == origGemmSize);
 
   int64_t gemmKBlocks = 1;
@@ -185,9 +161,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   if (maybeWrwOp && isWrWAtomicKernel(rock::getArchValue(op), info.gemmAType,
                                       requiredPadding)) {
     auto res = calculateKBlockNum(
-        info.batchSize, paddedGemmSize, validParams.getMPerBlock(),
-        validParams.getNPerBlock(), validParams.getKPerBlock(),
-        validParams.getKpack(), info.numCu, gemmKBlocks);
+        info.batchSize, paddedGemmSize, gemmParams.getMPerBlock(),
+        gemmParams.getNPerBlock(), gemmParams.getKPerBlock(),
+        gemmParams.getKpack(), info.numCu, gemmKBlocks);
 
     if (failed(res)) {
       LLVM_DEBUG(llvm::dbgs()
@@ -201,7 +177,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
     bwdOp->setAttr(bwdOp.getKBlocksAttrName(), b.getIndexAttr(gemmKBlocks));
 
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
-  GemmParamsAttr gemmParams = cast<GemmParamsAttr>(validParams);
   int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
   assert(blockSize > 0);
   op.setGemmParamsAttr(gemmParams);

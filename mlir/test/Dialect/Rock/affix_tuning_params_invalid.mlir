@@ -51,56 +51,6 @@ func.func @two_gemms(
   return %out0, %out1 : tensor<1x128x115200xf32>, tensor<1x128x115200xf32>
 }
 
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_schedulev2(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {schedule_version =  #rock.schedule_version<2>, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
-//   // expected-disabled-error @+1 {{kernel has both perf_config and schedule_version attribute set. Please modify schedule version directly inside perf_config and remove schedule_version}}
-//   rock.attention{
-//     qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//     %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {perf_config = "attn:v1:16,128,64,1,1,1,0,1,1,0,0", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_perfconfig_schedulev3_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_perfconfig_schedulev4_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_schedulev3_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {schedule_version =  #rock.schedule_version<3>, rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_schedulev4_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {schedule_version =  #rock.schedule_version<4>, rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
-
 // expected-error @below {{unknown attribute 'kernel' on function 'bare_kernel_attr'}}
 func.func @bare_kernel_attr(%arg0: tensor<1x128x128xf32>, %arg1: tensor<1x128x128xf32>, %arg2: tensor<1x128x128xf32>) -> tensor<1x128x128xf32>
     attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
