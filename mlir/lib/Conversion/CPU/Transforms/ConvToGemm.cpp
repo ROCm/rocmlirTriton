@@ -34,6 +34,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExpr.h"
@@ -46,7 +47,6 @@
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -121,8 +121,6 @@ struct ConvInfo {
   int64_t inChannels;    // K (matcher's reduction-channel-in-input-and-filter)
   int64_t filterHeight;  // Fh
   int64_t filterWidth;   // Fw
-  int64_t inputHeight;   // H_in (padded input, == Ho + Fh - 1)
-  int64_t inputWidth;    // W_in (padded input, == Wo + Fw - 1)
 
   // Operands (in the user's original layout).
   Value input;
@@ -171,53 +169,58 @@ static bool hasContractionBody(linalg::GenericOp op) {
 /// iteration-space dim positions and per-operand dim positions, and return
 /// success(); otherwise return failure() and leave `info` untouched.
 ///
-/// The canonical iteration-space we recognise (after parsing) is:
-///   parallel:  N, G, C, Ho, Wo
-///   reduction: K, Fh, Fw
-/// with indexing maps shaped like:
-///   input:  permutation of (N, G, K, (Ho+Fh), (Wo+Fw))
-///   filter: permutation of (G, K, Fh, Fw, C)
-///   output: permutation of (N, G, C, Ho, Wo)
-/// where C / K are the matcher's *role names* (see `ConvInfo`'s comment for
-/// how those map to forward-conv vs bwd-data terminology). We do NOT assume
-/// any particular permutation; we recover the role of each iteration-space
-/// dim and each operand-dim from the structure of the maps.
+/// Most of the heavy lifting -- iterator-type counts, projected-permutation
+/// checks on output/filter, the unconvolved-vs-convolved input-dim walk
+/// that distinguishes batch/depth/output-channel/input-channel/filter-loop --
+/// is delegated to `linalg::inferConvolutionDims`. We then map the upstream
+/// classification to our role names:
 ///
-/// Disambiguation of G vs C is the only subtlety: both are parallel and both
-/// appear in the output and the filter, so they are indistinguishable from
-/// those two operands alone. The discriminator is the input map -- G appears
-/// in the input (the input is grouped along G), C does not (C is purely an
-/// output-side channel of the contraction).
+///   inferConvolutionDims | matcher field    | conv role
+///   ---------------------|------------------|------------------
+///   batch[0]             | batchDim         | N
+///   depth[0]             | groupDim         | G
+///   outputChannel[0]     | outChannelDim    | C
+///   inputChannel[0]      | inChannelDim     | K
+///   outputImage          | (Ho, Wo) iter pos | output spatial
+///   filterLoop           | (Fh, Fw) iter pos | filter spatial
 ///
-/// We deliberately reject anything that's not stride-1 / dilation-1 (i.e.
-/// anything other than `dPar + dRed` sums in the input map) -- those configs
-/// fall through with a clean "NOT CONVERTED" diagnostic instead of crashing
-/// the linalg verifier later.
+/// The (Ho, Wo) order we want is *output-tensor* order, not iter-space order,
+/// so we recover it by walking the output map's results. Pairing each output
+/// spatial dim with its filter spatial dim requires one short walk over the
+/// input map's `(parDim + redDim)` sums.
+///
+/// Stride-1 / dilation-1 is enforced via `dims->strides` / `dims->dilations`
+/// (anything else, e.g. fwd conv with stride > 1, falls through cleanly with
+/// a "NOT CONVERTED" diagnostic instead of crashing the linalg verifier).
+/// The `mul + add` body shape is verified by `hasContractionBody` (the
+/// upstream conv interface checks indexing maps but not the body).
 static LogicalResult matchConvolutionLikeGeneric(linalg::GenericOp op,
                                                  ConvInfo &info) {
-  SmallVector<utils::IteratorType> iteratorTypes = op.getIteratorTypesArray();
-  if (iteratorTypes.size() != 8) {
-    LLVM_DEBUG(llvm::dbgs() << "  Not a conv: expected 8 dims, got "
-                            << iteratorTypes.size() << "\n");
+  FailureOr<linalg::ConvolutionDimensions> dims =
+      linalg::inferConvolutionDims(cast<linalg::LinalgOp>(op.getOperation()));
+  if (failed(dims)) {
+    LLVM_DEBUG(llvm::dbgs() << "  Not a conv: inferConvolutionDims failed\n");
     return failure();
   }
 
-  unsigned numParallel = 0, numReduction = 0;
-  for (auto it : iteratorTypes) {
-    if (it == utils::IteratorType::parallel)
-      ++numParallel;
-    else if (it == utils::IteratorType::reduction)
-      ++numReduction;
-  }
-  if (numParallel != 5 || numReduction != 3) {
-    LLVM_DEBUG(llvm::dbgs() << "  Not a conv: expected 5 parallel + 3 "
-                            << "reduction, got " << numParallel << " parallel "
-                            << "+ " << numReduction << " reduction\n");
+  // We only handle the canonical 2D, single-group, single-channel-pair case.
+  if (dims->batch.size() != 1 || dims->depth.size() != 1 ||
+      dims->outputChannel.size() != 1 || dims->inputChannel.size() != 1 ||
+      dims->outputImage.size() != 2 || dims->filterLoop.size() != 2) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "  Not a conv: unsupported dim layout (got "
+               << dims->batch.size() << "B/" << dims->depth.size() << "D/"
+               << dims->outputChannel.size() << "OC/"
+               << dims->inputChannel.size() << "IC/"
+               << dims->outputImage.size() << "OI/" << dims->filterLoop.size()
+               << "FL)\n");
     return failure();
   }
 
-  if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1) {
-    LLVM_DEBUG(llvm::dbgs() << "  Not a conv: expected 2 inputs + 1 output\n");
+  if (!llvm::all_of(dims->strides, [](int64_t s) { return s == 1; }) ||
+      !llvm::all_of(dims->dilations, [](int64_t d) { return d == 1; })) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "  Not a conv: only stride-1 / dilation-1 supported\n");
     return failure();
   }
 
@@ -225,6 +228,19 @@ static LogicalResult matchConvolutionLikeGeneric(linalg::GenericOp op,
     LLVM_DEBUG(llvm::dbgs() << "  Not a conv: body is not mul+add\n");
     return failure();
   }
+
+  info.batchDim = dims->batch[0];
+  info.groupDim = dims->depth[0];
+  info.outChannelDim = dims->outputChannel[0];
+  info.inChannelDim = dims->inputChannel[0];
+
+  // Operands.
+  info.input = op.getDpsInputOperand(0)->get();
+  info.filter = op.getDpsInputOperand(1)->get();
+  info.output = op.getDpsInitOperand(0)->get();
+  auto outType = cast<RankedTensorType>(info.output.getType());
+  auto filType = cast<RankedTensorType>(info.filter.getType());
+  info.elementType = outType.getElementType();
 
   SmallVector<AffineMap> maps = op.getIndexingMapsArray();
   AffineMap inputMap = maps[0];
@@ -238,11 +254,22 @@ static LogicalResult matchConvolutionLikeGeneric(linalg::GenericOp op,
     llvm::dbgs() << "    Output: " << outputMap << "\n";
   });
 
-  // Output and filter must be all pure dim refs over 5 results each.
-  if (outputMap.getNumResults() != 5 || filterMap.getNumResults() != 5 ||
-      inputMap.getNumResults() != 5)
+  // Recover (Ho, Wo) in *output-tensor* order by walking outputMap's results.
+  // Anything that isn't N/G/C is a spatial dim.
+  SmallVector<unsigned, 2> outputSpatial;
+  for (AffineExpr expr : outputMap.getResults()) {
+    unsigned pos = cast<AffineDimExpr>(expr).getPosition();
+    if (pos != info.batchDim && pos != info.groupDim &&
+        pos != info.outChannelDim)
+      outputSpatial.push_back(pos);
+  }
+  if (outputSpatial.size() != 2)
     return failure();
+  info.outHeightDim = outputSpatial[0];
+  info.outWidthDim = outputSpatial[1];
 
+  // Pair each output spatial dim with its filter spatial dim by walking the
+  // (parDim + redDim) sums in the input map.
   auto isDim = [](AffineExpr e, unsigned &pos) {
     if (auto d = dyn_cast<AffineDimExpr>(e)) {
       pos = d.getPosition();
@@ -250,239 +277,43 @@ static LogicalResult matchConvolutionLikeGeneric(linalg::GenericOp op,
     }
     return false;
   };
-
-  // Output: 5 distinct parallel dim refs.
-  llvm::SmallSet<unsigned, 5> outputDims;
-  for (auto [i, expr] : llvm::enumerate(outputMap.getResults())) {
-    unsigned pos;
-    if (!isDim(expr, pos) || iteratorTypes[pos] != utils::IteratorType::parallel)
-      return failure();
-    if (!outputDims.insert(pos).second)
-      return failure();
-  }
-
-  // Filter: 5 distinct dim refs (mix of parallel and reduction).
-  llvm::SmallSet<unsigned, 5> filterDims;
-  for (AffineExpr expr : filterMap.getResults()) {
-    unsigned pos;
-    if (!isDim(expr, pos))
-      return failure();
-    if (!filterDims.insert(pos).second)
-      return failure();
-  }
-
-  // Group dim G vs output-channel dim C: both are parallel and both appear
-  // in the output and the filter, so we cannot tell them apart from those
-  // two operands alone. The discriminator is the input map: G appears in
-  // the input (the input is grouped along G), C does not (C is purely an
-  // output channel of the contraction). We collect the input map's dim refs
-  // into `inputRefDims` once here and reuse the set when we walk the input
-  // map below.
-  llvm::SmallSet<unsigned, 8> inputRefDims;
-  for (AffineExpr expr : inputMap.getResults()) {
-    if (auto d = dyn_cast<AffineDimExpr>(expr)) {
-      inputRefDims.insert(d.getPosition());
-      continue;
-    }
-    auto bin = dyn_cast<AffineBinaryOpExpr>(expr);
-    if (!bin || bin.getKind() != AffineExprKind::Add)
-      continue;
-    if (auto d = dyn_cast<AffineDimExpr>(bin.getLHS()))
-      inputRefDims.insert(d.getPosition());
-    if (auto d = dyn_cast<AffineDimExpr>(bin.getRHS()))
-      inputRefDims.insert(d.getPosition());
-  }
-
-  unsigned groupDim = kInvalidDim;
-  unsigned outChannelDim = kInvalidDim;
-  for (unsigned d : outputDims) {
-    if (!filterDims.count(d))
-      continue; // Not shared with the filter -> this is N (handled later).
-    if (iteratorTypes[d] != utils::IteratorType::parallel)
-      continue; // Should not happen (output is all parallel) but be safe.
-    // Shared parallel dim between output and filter: must be either G or C.
-    if (inputRefDims.count(d)) {
-      if (groupDim != kInvalidDim) {
-        LLVM_DEBUG(llvm::dbgs() << "  Not a conv: multiple shared parallel "
-                                << "dims appear in input (ambiguous G)\n");
-        return failure();
-      }
-      groupDim = d;
-    } else {
-      if (outChannelDim != kInvalidDim) {
-        LLVM_DEBUG(llvm::dbgs() << "  Not a conv: multiple shared parallel "
-                                << "dims absent from input (ambiguous C)\n");
-        return failure();
-      }
-      outChannelDim = d;
-    }
-  }
-  if (groupDim == kInvalidDim) {
-    LLVM_DEBUG(llvm::dbgs() << "  Not a conv: no group dim shared between "
-                            << "output and filter and present in input\n");
-    return failure();
-  }
-  if (outChannelDim == kInvalidDim) {
-    LLVM_DEBUG(llvm::dbgs() << "  Not a conv: no out-channel dim shared "
-                            << "between output and filter (and absent from "
-                            << "input)\n");
-    return failure();
-  }
-
-  // Reduction dims used by the filter: K (the input channel) is the one
-  // that ALSO appears as a pure dim in the input map. The other two are the
-  // filter spatial dims Fh / Fw, which appear in the input map only inside
-  // (parallel + reduction) sums.
-  llvm::SmallSet<unsigned, 3> filterRedDims;
-  for (unsigned d : filterDims)
-    if (iteratorTypes[d] == utils::IteratorType::reduction)
-      filterRedDims.insert(d);
-  if (filterRedDims.size() != 3)
-    return failure();
-
-  // Walk the input map: each result is either a pure dim (must be N, G, or
-  // K) or a 2-term sum (parallel + reduction) describing one spatial axis.
-  // We've already verified that the group dim appears in the input map
-  // above (that's how we discriminate G from C), so we don't need to track
-  // its presence again -- but we still need to skip it here.
-  unsigned batchDim = kInvalidDim;
-  unsigned inChannelDim = kInvalidDim;
-  // (Ho-or-Wo, Fh-or-Fw) pairs, in the order they appear in the input map.
-  SmallVector<std::pair<unsigned, unsigned>, 2> spatialSums;
-  llvm::SmallSet<unsigned, 5> inputPureDims;
-  for (AffineExpr expr : inputMap.getResults()) {
-    unsigned pos;
-    if (isDim(expr, pos)) {
-      if (!inputPureDims.insert(pos).second)
-        return failure();
-      if (pos == groupDim)
+  auto isPar = [&](unsigned d) {
+    return op.getIteratorTypesArray()[d] == utils::IteratorType::parallel;
+  };
+  auto findRedFor = [&](unsigned parDim) -> std::optional<unsigned> {
+    for (AffineExpr expr : inputMap.getResults()) {
+      auto bin = dyn_cast<AffineBinaryOpExpr>(expr);
+      if (!bin || bin.getKind() != AffineExprKind::Add)
         continue;
-      if (filterRedDims.count(pos)) {
-        // A reduction dim that's a pure ref in the input -> this is K.
-        if (inChannelDim != kInvalidDim)
-          return failure();
-        inChannelDim = pos;
+      unsigned a, b;
+      if (!isDim(bin.getLHS(), a) || !isDim(bin.getRHS(), b))
         continue;
-      }
-      if (iteratorTypes[pos] == utils::IteratorType::parallel &&
-          !filterDims.count(pos)) {
-        // Parallel dim not in filter -> N.
-        if (batchDim != kInvalidDim)
-          return failure();
-        batchDim = pos;
-        continue;
-      }
-      // Anything else is unexpected.
-      return failure();
-    }
-    // Not a pure dim: must be a 2-term sum of one parallel and one reduction
-    // iter-space dim. This is where stride-1 / dilation-1 comes in: anything
-    // like `2*dPar + dRed` would be an AffineBinaryOp(Mul, ...) and we'd
-    // hit the unsupported branch below, falling out cleanly.
-    auto bin = dyn_cast<AffineBinaryOpExpr>(expr);
-    if (!bin || bin.getKind() != AffineExprKind::Add) {
-      LLVM_DEBUG(llvm::dbgs() << "  Not a conv: input map result is neither "
-                              << "a pure dim nor a sum: " << expr << "\n");
-      return failure();
-    }
-    unsigned a, b;
-    if (!isDim(bin.getLHS(), a) || !isDim(bin.getRHS(), b)) {
-      LLVM_DEBUG(llvm::dbgs() << "  Not a conv: spatial sum has non-dim "
-                              << "operand (likely strided/dilated): " << expr
-                              << "\n");
-      return failure();
-    }
-    auto isPar = [&](unsigned d) {
-      return iteratorTypes[d] == utils::IteratorType::parallel;
-    };
-    unsigned parDim, redDim;
-    if (isPar(a) && !isPar(b)) {
-      parDim = a;
-      redDim = b;
-    } else if (!isPar(a) && isPar(b)) {
-      parDim = b;
-      redDim = a;
-    } else {
-      return failure();
-    }
-    // The parallel dim must be in the output (it's a spatial output dim) and
-    // must NOT be in the filter; the reduction dim must be a filter spatial
-    // dim (i.e. in the filter, but not K).
-    if (!outputDims.count(parDim) || filterDims.count(parDim))
-      return failure();
-    if (!filterRedDims.count(redDim))
-      return failure();
-    spatialSums.push_back({parDim, redDim});
-  }
-
-  if (batchDim == kInvalidDim || inChannelDim == kInvalidDim ||
-      spatialSums.size() != 2) {
-    LLVM_DEBUG(llvm::dbgs() << "  Not a conv: input map missing N, K, or "
-                            << "spatial sums\n");
-    return failure();
-  }
-
-  // The two remaining parallel dims in the output (after removing N, G, and
-  // the spatial dims we identified via sums) must be exactly the spatial
-  // sum's parallel dims, and the order in the output's result list defines
-  // (Ho, Wo). Likewise for filter reduction dims defining (Fh, Fw).
-  SmallVector<unsigned, 2> outputSpatialDims;
-  for (AffineExpr expr : outputMap.getResults()) {
-    unsigned pos = cast<AffineDimExpr>(expr).getPosition();
-    if (pos != batchDim && pos != groupDim && pos != outChannelDim)
-      outputSpatialDims.push_back(pos);
-  }
-  if (outputSpatialDims.size() != 2)
-    return failure();
-  info.outHeightDim = outputSpatialDims[0];
-  info.outWidthDim = outputSpatialDims[1];
-
-  // Pair each output spatial dim with the filter spatial dim it's summed
-  // with in the input map. (The order of `spatialSums` doesn't matter --
-  // we look them up by parallel dim.)
-  auto findRedFor = [&](unsigned parDim) -> unsigned {
-    for (auto [p, r] : spatialSums)
+      unsigned p = isPar(a) ? a : b;
+      unsigned r = isPar(a) ? b : a;
       if (p == parDim)
         return r;
-    return kInvalidDim;
+    }
+    return std::nullopt;
   };
-  info.filterHeightDim = findRedFor(info.outHeightDim);
-  info.filterWidthDim = findRedFor(info.outWidthDim);
-  if (info.filterHeightDim == kInvalidDim ||
-      info.filterWidthDim == kInvalidDim)
+  std::optional<unsigned> fh = findRedFor(info.outHeightDim);
+  std::optional<unsigned> fw = findRedFor(info.outWidthDim);
+  if (!fh || !fw)
     return failure();
-
-  info.batchDim = batchDim;
-  info.groupDim = groupDim;
-  info.outChannelDim = outChannelDim;
-  info.inChannelDim = inChannelDim;
-
-  // Operands.
-  info.input = op.getDpsInputOperand(0)->get();
-  info.filter = op.getDpsInputOperand(1)->get();
-  info.output = op.getDpsInitOperand(0)->get();
-  auto outType = cast<RankedTensorType>(info.output.getType());
-  auto inType = cast<RankedTensorType>(info.input.getType());
-  auto filType = cast<RankedTensorType>(info.filter.getType());
-  info.elementType = outType.getElementType();
+  info.filterHeightDim = *fh;
+  info.filterWidthDim = *fw;
 
   // Build per-operand dim-position tables (iter-space pos -> tensor-dim pos).
-  unsigned numIters = iteratorTypes.size();
+  unsigned numIters = op.getNumLoops();
   info.outputDimPos.assign(numIters, kInvalidDim);
   info.inputDimPos.assign(numIters, kInvalidDim);
   info.filterDimPos.assign(numIters, kInvalidDim);
-  for (auto [i, expr] : llvm::enumerate(outputMap.getResults())) {
+  for (auto [i, expr] : llvm::enumerate(outputMap.getResults()))
     info.outputDimPos[cast<AffineDimExpr>(expr).getPosition()] = i;
-  }
-  for (auto [i, expr] : llvm::enumerate(filterMap.getResults())) {
+  for (auto [i, expr] : llvm::enumerate(filterMap.getResults()))
     info.filterDimPos[cast<AffineDimExpr>(expr).getPosition()] = i;
-  }
   // For the input map, pure dims map directly; sums map both their parallel
-  // and their reduction operand to the same tensor position (the sum's
-  // result is the spatial input axis index, which is parameterised by
-  // both -- this is fine because we only ever look up the *parallel* side
-  // for output spatial dims and don't read input-spatial sizes via these
-  // tables).
+  // and their reduction operand to the same tensor position (we only ever
+  // look up the parallel side for output spatial dims).
   for (auto [i, expr] : llvm::enumerate(inputMap.getResults())) {
     unsigned pos;
     if (isDim(expr, pos)) {
@@ -494,20 +325,16 @@ static LogicalResult matchConvolutionLikeGeneric(linalg::GenericOp op,
     }
   }
 
-  // Sizes.
   ArrayRef<int64_t> oShape = outType.getShape();
-  ArrayRef<int64_t> iShape = inType.getShape();
   ArrayRef<int64_t> fShape = filType.getShape();
-  info.batchSize = oShape[info.outputDimPos[batchDim]];
-  info.groupSize = oShape[info.outputDimPos[groupDim]];
-  info.outChannels = oShape[info.outputDimPos[outChannelDim]];
+  info.batchSize = oShape[info.outputDimPos[info.batchDim]];
+  info.groupSize = oShape[info.outputDimPos[info.groupDim]];
+  info.outChannels = oShape[info.outputDimPos[info.outChannelDim]];
   info.outHeight = oShape[info.outputDimPos[info.outHeightDim]];
   info.outWidth = oShape[info.outputDimPos[info.outWidthDim]];
-  info.inChannels = fShape[info.filterDimPos[inChannelDim]];
+  info.inChannels = fShape[info.filterDimPos[info.inChannelDim]];
   info.filterHeight = fShape[info.filterDimPos[info.filterHeightDim]];
   info.filterWidth = fShape[info.filterDimPos[info.filterWidthDim]];
-  info.inputHeight = iShape[info.inputDimPos[info.outHeightDim]];
-  info.inputWidth = iShape[info.inputDimPos[info.outWidthDim]];
 
   LLVM_DEBUG({
     llvm::dbgs() << "  Identified convolution:\n";
@@ -516,8 +343,7 @@ static LogicalResult matchConvolutionLikeGeneric(linalg::GenericOp op,
                  << "\n";
     llvm::dbgs() << "    Out spatial: " << info.outHeight << "x"
                  << info.outWidth << "  Filter spatial: " << info.filterHeight
-                 << "x" << info.filterWidth << "  Input spatial (padded): "
-                 << info.inputHeight << "x" << info.inputWidth << "\n";
+                 << "x" << info.filterWidth << "\n";
   });
   return success();
 }
