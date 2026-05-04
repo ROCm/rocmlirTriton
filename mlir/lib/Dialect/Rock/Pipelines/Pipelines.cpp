@@ -407,7 +407,22 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
+                                     const rock::BackendOptions &options,
                                      StringRef dumpCpuSchedules) {
+  ModuleOp moduleOp = pm.getOp<ModuleOp>();
+  if (moduleOp.hasAttr("rock.host_functions") || moduleOp.hasAttr("triton.hsaco")) {                       
+    // Restore host functions (main, wrapper) that were stored during
+    // RockFuncToTritonFuncPass. This converts func.call @kernel to gpu.launch_func.
+    rock::RockRestoreHostCodePassOptions restoreOpts;
+    restoreOpts.triple = options.triple;
+    restoreOpts.arch = options.chip;
+    restoreOpts.features = options.features;
+    restoreOpts.optLevel = options.optLevel;
+    pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
+  }
+  // Lower FP8 extf/truncf ops explicitly. Leaving this task to 
+  // buildHostLoweringPipeline would generate invalid builtin.unrealized_casts.
+  pm.addPass(createEmulateFp8ExtTruncPass());
 
   // CPU optimization phase.
   // This transforms the function body but keeps tensor types at boundaries.
@@ -507,6 +522,7 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   pm.addPass(createReconcileUnrealizedCastsPass());
 }
 
+// Buidling GPU lowering pipeline
 void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
   std::string arch = options.chip;
@@ -536,22 +552,6 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.enableFpFusion = options.enableFpFusion;
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
-
-    // Restore host functions (main, wrapper) that were stored during
-    // RockFuncToTritonFuncPass. This converts func.call @kernel to gpu.launch_func.
-    rock::RockRestoreHostCodePassOptions restoreOpts;
-    restoreOpts.triple = options.triple;
-    restoreOpts.arch = arch;
-    restoreOpts.features = options.features;
-    restoreOpts.optLevel = options.optLevel;
-    pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
-
-    // Lower FP8 extf/truncf ops explicitly. Leaving this task to 
-    // buildHostLoweringPipeline would generate invalid builtin.unrealized_casts.
-    pm.addPass(createEmulateFp8ExtTruncPass());
-
-    // Lower host code (GPU launch + func/memref ops) to LLVM
-    buildHostLoweringPipeline(pm, options.dumpCpuSchedules);
   }
 }
 
