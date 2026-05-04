@@ -126,6 +126,41 @@ set(MLIR_CMAKE_CONFIG_DIR "${MLIR_DIR}")
 set(MLIR_TABLEGEN_EXE mlir-tblgen)
 
 #===----------------------------------------------------------------------===//
+# Configure TRITON_CACHE_PATH (mimics get_triton_cache_path() logic in setup.py)
+#===----------------------------------------------------------------------===//
+if(NOT TRITON_CACHE_PATH)
+  if(DEFINED ENV{TRITON_HOME})
+    set(TRITON_CACHE_PATH "$ENV{TRITON_HOME}/.triton"
+        CACHE PATH "Path to triton cache")
+  elseif(DEFINED ENV{HOME})
+    set(TRITON_CACHE_PATH "$ENV{HOME}/.triton"
+        CACHE PATH "Path to triton cache")
+  else()
+    set(TRITON_CACHE_PATH "${CMAKE_BINARY_DIR}/.triton-cache"
+        CACHE PATH "Path to triton cache")
+  endif()
+endif()
+message(STATUS "TRITON_CACHE_PATH: ${TRITON_CACHE_PATH}")
+
+#===----------------------------------------------------------------------===//
+# Tell Triton where LLVM lives so it reuses our local build instead of
+# downloading a prebuilt version.
+#===----------------------------------------------------------------------===//
+if(NOT LLVM_SYSPATH)
+  if(DEFINED ENV{LLVM_SYSPATH})
+    set(LLVM_SYSPATH "$ENV{LLVM_SYSPATH}" CACHE PATH "Path to LLVM install used by Triton")
+  else()
+    # Reuse the MLIR_DIR-derived LLVM prefix so Triton doesn't redownload prebuilts.
+    # MLIR_DIR is e.g. .../llvm-project/build/lib/cmake/mlir → prefix is .../llvm-project/build
+    get_filename_component(_mlir_parent "${MLIR_DIR}" DIRECTORY)   # lib/cmake
+    get_filename_component(_mlir_parent "${_mlir_parent}" DIRECTORY) # lib
+    get_filename_component(_llvm_prefix "${_mlir_parent}" DIRECTORY)  # build
+    set(LLVM_SYSPATH "${_llvm_prefix}" CACHE PATH "Path to LLVM install used by Triton")
+  endif()
+endif()
+message(STATUS "LLVM_SYSPATH: ${LLVM_SYSPATH}")
+
+#===----------------------------------------------------------------------===//
 # Add Triton subdirectory
 #===----------------------------------------------------------------------===//
 

@@ -4,6 +4,8 @@
 
 The rocmlirTriton project embeds Triton as a git submodule at `external/triton/`. Several Triton Python functions are replicated in C++ within this project. When the Triton version is bumped, these C++ implementations must be synchronized with the upstream changes.
 
+Note that we want to use Triton from https://github.com/triton-lang/triton-windows, as that includes Windows support not included in https://github.com/triton-lang/triton
+
 ## Step 1: Update the Triton Submodule
 
 ### 1.1 Record the Current Commit
@@ -58,11 +60,14 @@ Generate a diff between the old and new commits for the key files that need sync
 
 ```bash
 cd external/triton
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/backend/compiler.py > compiler.py.diff
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- python/src/llvm.cc > llvm.cc.diff
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/python/triton_amd.cc > triton_amd.cc.diff
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp > AccelerateAMDMatmul.cpp.diff
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h > TargetUtils.h.diff
+for f in \
+    third_party/amd/backend/compiler.py \
+    third_party/amd/python/triton_amd.cc \
+    python/src/llvm.cc \
+    third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp \
+    third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h; do
+  git diff ${OLD_COMMIT}..${NEW_COMMIT} --function-context -- "$f" > "$(basename "$f").diff"
+done
 ```
 
 ## Step 5: Synchronize C++ Implementations
@@ -78,11 +83,11 @@ The following tables map Python functions to their C++ equivalents. Each must be
 | `make_llir()` Part 1 | `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` |
 | `make_llir()` Part 2 + `make_amdgcn()` + `make_hsaco()` | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
 
-### 5.2 Understanding Pass Bindings (from `triton_amd.cc`)
+##### Understanding Pass Bindings (from `triton_amd.cc`)
 
 The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Python bindings for Triton passes. When `compiler.py` adds a new pass call, check `triton_amd.cc` to find the actual C++ pass creation function.
 
-### 5.3 LLVM Functions (from `llvm.cc`)
+### 5.2 LLVM Functions (from `llvm.cc`)
 
 | Python/C++ Function in Triton | C++ Location in rocmlirTriton |
 |------------------------------|-------------------------------|
@@ -90,7 +95,7 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 | `createTargetMachine()` | `TritonToHsaco.cpp::createTargetMachine()` |
 | `optimize_module()` | `TritonToHsaco.cpp::optimizeModule()` |
 
-### 5.4 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
+### 5.3 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
 
 All Triton-internal helper functions that we replicate are centralized in a
 single module for easy updating:
@@ -180,7 +185,20 @@ if (rock::supportsTDM(arch))
 
 If there is no `rock` equivalent function to check that hardware feature, then implement a new function in `AmdArchDb.cpp` and use it.
 
-## Step 6: Features Intentionally NOT Implemented
+## Step 6: Regenerate Fat Library Dependencies
+
+The file `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` lists all LLVM/MLIR and rocMLIR libraries that get merged into `librockCompiler.a`. A Triton bump can add or remove library dependencies, so this file must be regenerated after a successful build.
+
+From the **build directory**, run:
+
+```bash
+perl ../mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl > ../mlir/tools/rocmlir-lib/librockcompiler_deps.cmake
+```
+
+## Step 7: Env variables
+Search for `triton::tools::getStrEnv` in rocmlirTriton and make sure that the variable names are up to date since they might have been renamed or removed during Triton bump.
+
+## Step 8: Features Intentionally NOT Implemented
 
 The following Python features are **intentionally omitted** from the C++ implementation. Do NOT add them when synchronizing:
 
@@ -198,7 +216,7 @@ The following Python features are **intentionally omitted** from the C++ impleme
 
 When reviewing diffs, **skip changes** related to these features.
 
-## Step 7: Handling Pass Interface Changes
+## Step 9: Handling Pass Interface Changes
 
 When Triton changes pass interfaces (arguments, types), follow these steps:
 
@@ -213,7 +231,7 @@ When Triton changes pass interfaces (arguments, types), follow these steps:
 - New string parameter (usually arch) → pass `options.arch` or equivalent
 - New integer parameter → check what value Triton passes and match it
 
-## Step 8: Rebuild rocmlirTriton and fix changes (due to upstream MLIR changes)
+## Step 10: Rebuild rocmlirTriton and fix changes (due to upstream MLIR changes)
 
 After making all synchronization changes:
 
@@ -225,17 +243,16 @@ bash cmake.sh
 Which will probably fail due to LLVM being also bumped with Triton version.
 For this, we need to manually resolve the errors due to upstream LLVM changes.
 
-## Step 9: Regenerate Fat Library Dependencies
+### Watch for new Triton build-system requirements
 
-The file `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` lists all LLVM/MLIR and rocMLIR libraries that get merged into `librockCompiler.a`. A Triton bump can add or remove library dependencies, so this file must be regenerated after a successful build.
+Upstream occasionally adds new required CMake variables or download hooks to
+`external/triton/CMakeLists.txt` (and its helpers in
+`external/triton/python/build_helpers.py`). 
 
-From the **build directory**, run:
+Because we embed Triton via
+`add_subdirectory` in `cmake/triton.cmake`, but Triton does it through `setup.py`, any change must be wired up on our side or the build will fail or start downloading things unnecessarily.
 
-```bash
-perl ../mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl > ../mlir/tools/rocmlir-lib/librockcompiler_deps.cmake
-```
-
-## Step 10: Run Tests
+## Step 11: Run Tests
 
 ```bash
 bash tests.sh

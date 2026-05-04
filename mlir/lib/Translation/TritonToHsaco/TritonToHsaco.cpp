@@ -29,8 +29,10 @@
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 
+#include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Config/Targets.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
@@ -59,6 +61,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Parallel.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
@@ -66,14 +69,13 @@
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
-#include "mlir/Pass/Pass.h"
 
 #include <array>
 #include <mutex>
 #include <unordered_set>
 
 // LLD for linking
-#if MLIR_ENABLE_ROCM_CONVERSIONS
+#if LLVM_HAS_AMDGPU_TARGET
 #include "lld/Common/Driver.h"
 LLD_HAS_DRIVER(elf)
 #endif
@@ -112,6 +114,11 @@ void initializeLLVMTargets() {
     llvm::InitializeAllAsmParsers();
     llvm::InitializeAllAsmPrinters();
   });
+  // Disable LLVM's internal parallelism. Triton kernels produce small LLVM
+  // modules where pass-level parallelism is not beneficial, and LLVM's
+  // global thread pool is not fork-safe: a forked child inherits the pool's
+  // state but not its threads, causing SIGABRT on use or cleanup.
+  llvm::parallel::strategy = llvm::hardware_concurrency(1);
 }
 
 /// Create LLVM target machine - from createTargetMachine in llvm.cc
@@ -130,8 +137,6 @@ std::unique_ptr<llvm::TargetMachine> createTargetMachine(llvm::Module &module,
   llvm::TargetOptions opt;
   if (enableFpFusion)
     opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
-  opt.NoInfsFPMath = false;
-  opt.NoNaNsFPMath = true;
   opt.TrapUnreachable = true;
   opt.MCOptions.AsmVerbose = true;
   opt.MCOptions.PreserveAsmComments = true;
@@ -182,13 +187,16 @@ void setABIVersion(llvm::Module &module, int version) {
 
 /// Set kernel function attributes
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
-                         StringRef features, int numWarps, int wavesPerEU,
-                         int numCTAs,
-                         bool allowFlushDenorm, bool enableAsan,
-                         StringRef scheduleHint) {
+                                  StringRef features, int numWarps,
+                                  int wavesPerEU, int numCTAs,
+                                  bool allowFlushDenorm, bool enableAsan,
+                                  StringRef scheduleHint) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
+  // Match compiler.py: the kernel is the only non-declaration function with
+  // external linkage; instrumentation helpers (e.g. ConSan) use internal
+  // linkage. If none is found, we cannot produce a valid HSACO.
   llvm::Function *kernelFn = nullptr;
   for (llvm::Function &fn : module) {
     if (!fn.isDeclaration() && fn.hasExternalLinkage()) {
@@ -223,9 +231,17 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   std::string denormalMode = allowFlushDenorm ? "preserve-sign" : "ieee";
   kernelFn->addFnAttr("denormal-fp-math-f32", denormalMode);
 
-  kernelFn->addFnAttr("target-features", features);
   // ASan support
+  // Only stamp `target-features` on the kernel when the caller actually has
+  // something to override with (e.g. `+xnack` for asan). Stamping an empty
+  // override causes LLVM's per-function subtarget lookup to key off a bare
+  // `"target-features"=""` attribute and silently *ignore* the TM-level
+  // `-mattr` we later set on `tmAsm` in `make_amdgcn` (which is where
+  // `-real-true16` is added for gfx11 to work around the `copyPhysReg`
+  // assertion). Upstream Triton only touches `target-features` in the asan
+  // path (see `add_fn_target_feature("+xnack")` in compiler.py); mirror that.
   if (enableAsan) {
+    kernelFn->addFnAttr("target-features", features);
     kernelFn->addFnAttr(llvm::Attribute::SanitizeAddress);
   }
 
@@ -487,7 +503,7 @@ std::optional<SmallVector<char, 0>> assembleAMDGCN(StringRef assembly,
 /// Invoke LLD to link object file to HSACO - matches triton_amd.cc lldInvoke
 static std::optional<std::string> lldInvoke(const char *inPath,
                                             const char *outPath) {
-#if MLIR_ENABLE_ROCM_CONVERSIONS
+#if LLVM_HAS_AMDGPU_TARGET
   // Workaround: Disable parallelism to avoid hangs caused by LLVM's thread pool
   // when the following code is executed in a forked child process.
   // Context: lld::elf::LinkerDriver::link uses parallelFor which uses the
@@ -505,7 +521,7 @@ static std::optional<std::string> lldInvoke(const char *inPath,
                                       inPath,   "-o",          outPath};
   std::string errString;
   llvm::raw_string_ostream errStream(errString);
-  auto lldRes = lld::lldMain(args, llvm::outs(), llvm::errs(),
+  auto lldRes = lld::lldMain(args, llvm::outs(), errStream,
                              {{lld::Gnu, &lld::elf::link}});
   bool noErrors = (!lldRes.retCode && lldRes.canRunAgain);
   if (!noErrors) {
@@ -520,7 +536,7 @@ static std::optional<std::string> lldInvoke(const char *inPath,
 
 /// Link object file to HSACO using LLD (amd.link_hsaco)
 std::optional<SmallVector<char, 0>> linkHSACO(ArrayRef<char> objectCode) {
-#if MLIR_ENABLE_ROCM_CONVERSIONS
+#if LLVM_HAS_AMDGPU_TARGET
   int tempObjFd = -1;
   llvm::SmallString<128> tempObjFilename;
   if (llvm::sys::fs::createTemporaryFile("kernel", "o", tempObjFd,
@@ -560,8 +576,8 @@ std::optional<SmallVector<char, 0>> linkHSACO(ArrayRef<char> objectCode) {
   StringRef buffer = (*hsacoFile)->getBuffer();
   return SmallVector<char, 0>(buffer.begin(), buffer.end());
 #else
-  llvm::errs() << "ROCM conversions not enabled. Rebuild with "
-                  "MLIR_ENABLE_ROCM_CONVERSIONS=1\n";
+  llvm::errs() << "AMDGPU target not built. Rebuild LLVM with AMDGPU in "
+                  "LLVM_TARGETS_TO_BUILD\n";
   return std::nullopt;
 #endif
 }
@@ -589,6 +605,12 @@ std::optional<SmallVector<char, 0>> makeHSACO(StringRef amdgcnAsm,
 
 namespace mlir {
 namespace rock {
+
+static void appendFeature(std::string &features, llvm::StringRef feature) {
+  if (!features.empty())
+    features += ",";
+  features += feature;
+}
 
 FailureOr<llvm::SmallVector<char, 0>>
 translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
@@ -729,13 +751,10 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // disable_print_inline in compiler.py
   disablePrintInline(*llvmModule);
 
-  // make_amdgcn (compiler.py lines 452-473)
-  // Get features for assembly
-  std::string asmFeatures(features);
-  if (arch.contains("gfx11")) {
-    asmFeatures += "-real-true16";
-  }
-  // Recreate target machine with proper features for codegen
+  // make_amdgcn (compiler.py lines 509-537)
+  std::string asmFeatures;
+  if (arch.contains("gfx11"))
+    asmFeatures = "-real-true16";
   auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
                                    options.enableFpFusion);
   if (!tmAsm) {
@@ -766,8 +785,13 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     }
   }
 
-  // make_hsaco (compiler.py lines 476-488)
-  auto hsaco = makeHSACO(amdgcnAsm, triple, arch, features);
+  // make_hsaco (compiler.py lines 540-554)
+  std::string hsacoFeatures;
+  if (enableAsan)
+    hsacoFeatures = "+xnack";
+  if (arch.contains("gfx11"))
+    appendFeature(hsacoFeatures, "-real-true16");
+  auto hsaco = makeHSACO(amdgcnAsm, triple, arch, hsacoFeatures);
   if (!hsaco) {
     return failure();
   }
