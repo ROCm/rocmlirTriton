@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -kernel-pipeline gpu -arch %arch %s | rocmlir-opt | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline gpu -arch %arch | rocmlir-opt | FileCheck %s
 
 // CHECK: tt.dot
 // CHECK: arith.addf
@@ -22,7 +22,7 @@
 #transform_map7 = #rock.transform_map<#map7 by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Merge{1, 4} ["dim1"] at [1] -> ["col1", "col2"] at [1, 2]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [3]>, <PassThrough ["dim3"] at [3] -> ["dim3"] at [4]>] bounds = [4, 4, 1, 1] -> [4, 1, 4, 1, 1]>
 #transform_map8 = #rock.transform_map<#map8 by [<Merge{4, 4, 1, 1} ["dim0"] at [0] -> ["col0", "col1", "col2", "col3"] at [0, 1, 2, 3]>] bounds = [16] -> [4, 4, 1, 1]>
 module {
-  func.func @test(%arg0: tensor<4xf32>, %arg1: tensor<108xf32>, %arg2: tensor<108xf32>, %arg3: tensor<16xf32>) -> tensor<16xf32> attributes {rock.arch = "gfx908:sramecc+:xnack-", rock.kernel = "mixr"} {
+  func.func @test(%arg0: tensor<4xf32>, %arg1: tensor<108xf32>, %arg2: tensor<108xf32>, %arg3: tensor<16xf32>) -> tensor<16xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel = "mixr"} {
     %cst = arith.constant dense<3.40282347E+38> : tensor<4x4x1x1xf32>
     %cst_0 = arith.constant dense<0.000000e+00> : tensor<4x4x1x1xf32>
     %0 = rock.transform %arg2 by #transform_map : tensor<108xf32> to tensor<4x3x3x3xf32>
