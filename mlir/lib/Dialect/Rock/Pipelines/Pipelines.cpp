@@ -417,8 +417,10 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   restoreOpts.optLevel = options.optLevel;
   pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
 
-  // Lower FP8 extf/truncf ops explicitly. Leaving this task to
-  // buildHostLoweringPipeline would generate invalid builtin.unrealized_casts.
+// Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
+// OneShotBufferize / CpuLowerVerifier below — otherwise stray
+// arith.extf/truncf on fp8 element types crash bufferization with
+// unsupported builtin.unrealized_conversion_cast.
   pm.addPass(createEmulateFp8ExtTruncPass());
 
   // CPU optimization phase.

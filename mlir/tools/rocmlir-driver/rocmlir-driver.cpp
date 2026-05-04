@@ -260,10 +260,10 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   if (kernelPipelineSet.contains("binary")) {
     rock::buildBackendPipeline(pm, backendOpts);
     // Chain host lowering after the GPU compile so that the resulting module
-    // is runnable end-to-end
-    if (!hostPipelineSet.contains("backend")) {
-      rock::buildHostLoweringPipeline(pm, backendOpts);
-    }
+    // is runnable end-to-end. This must still run even if host backend
+     // lowering was requested separately, because the post-backend run is the
+     // one that can rewrite host kernel calls using the compiled GPU artifact.
+    rock::buildHostLoweringPipeline(pm, backendOpts);
   }
 
   if (dumpPipelines) {
