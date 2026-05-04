@@ -76,7 +76,7 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToEnd(module.getBody());
 
-  builder.create<transform::NamedSequenceOp>(
+  auto matcher = builder.create<transform::NamedSequenceOp>(
       loc, kStaticMatmulMatcherName,
       /*rootType=*/anyOpType,
       /*resultTypes=*/TypeRange{anyOpType},
@@ -150,9 +150,12 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
         // Yield the matched op as the result of the named sequence.
         ib.setInsertionPointAfter(matchStructured);
         ib.create<transform::YieldOp>(matchStructured.getResults());
-      },
-      /*attrs=*/ArrayRef<NamedAttribute>{},
-      /*argAttrs=*/ArrayRef<DictionaryAttr>{readonlyAttr});
+      });
+
+  // NamedSequenceOp::build does not propagate the `argAttrs` parameter, so
+  // set the arg attributes after construction. `transform.readonly` is
+  // required by `transform.collect_matching` on the matcher's argument.
+  matcher.setArgAttrs(0, readonlyAttr);
 }
 
 } // namespace
