@@ -610,12 +610,16 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
           if (dVectorRes.max > 1)
             halveDimIdx = dDimIdx;
         }
-        if (!halveDimIdx.has_value())
+        if (!halveDimIdx.has_value()) {
+          rock::markAsNotApplicable(gemmOp);
           return gemmOp.emitError("max vectorization of both D and K is 1");
+        }
 
-        if (kPack.has_value() && kPack.value() != localKPack)
+        if (kPack.has_value() && kPack.value() != localKPack) {
+          rock::markAsNotApplicable(gemmOp);
           return gemmOp.emitError(
               "all inputs must agree whether to either pack along K or not");
+        }
 
         if (!kPack.has_value())
           kPack = localKPack;

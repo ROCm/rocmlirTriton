@@ -218,6 +218,15 @@ FailureOr<OutputsAndFusionInputs> traceOutputsAndFusionInputs(Value rootOut);
 /// RockConvertNarrowTypeSignaturesPass and RockEmulateNarrowTypesPass.
 arith::NarrowTypeEmulationConverter create4BitTypeConverter();
 
+/// Mark the module containing `op` (or `op` itself if it is a ModuleOp) with
+/// the `rock.not_applicable` attribute, signaling that the current
+/// (kernel x perf-config x hardware) combination cannot be compiled for a
+/// structural reason (e.g. LDS overflow, unsupported fusion+SplitK, ...).
+/// The pass should still call `signalPassFailure()` so the pipeline halts;
+/// consumers (tuning driver) inspect this attribute on PM failure to
+/// distinguish a "not-applicable" config from a real compilation bug.
+void markAsNotApplicable(Operation *op);
+
 } // end namespace rock
 } // end namespace mlir
 #endif

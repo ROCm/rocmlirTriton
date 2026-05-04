@@ -169,6 +169,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     std::optional<int64_t> quantBlockSize = op.getQuantBlockSize();
     int64_t quantKPerBlock = 0;
     if (quantBlockSize.has_value() && kPerBlock % quantBlockSize.value() != 0) {
+      rock::markAsNotApplicable(op);
       return op->emitOpError()
              << "kPerBlock is not a multiple of quantBlockSize";
     }

@@ -655,7 +655,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   }
 
   // 2. Set up compilation options (shared across all threads)
-  rock::KernelOptions compilationKernOpts;
+  rock::KernelOptions kernelOpts;
 
   RocmDeviceName deviceName;
   StringRef archName =
@@ -663,6 +663,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
           .getValue();
   if (failed(deviceName.parse(archName)))
     return source->emitOpError("could not parse arch name: " + archName);
+  kernelOpts.arch = deviceName.getChip().str();
 
   // 3. Initialize host buffers and allocate device buffers
   std::vector<void *> hostBuffers;
@@ -813,11 +814,11 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      // Pipeline
-      PassManager applicabilityPM(sourceModule.get()->getName(),
-                                  PassManager::Nesting::Implicit);
-      PassManager compilationPM(sourceModule.get()->getName(),
-                                PassManager::Nesting::Implicit);
+      // Pipeline: a single PassManager runs the full kernel + Triton + backend
+      // lowering. Failures are classified post-hoc by checking whether any
+      // rock pass set the `rock.not_applicable` marker on the module.
+      PassManager pm(sourceModule.get()->getName(),
+                     PassManager::Nesting::Implicit);
 
       rock::BackendOptions backendOpts;
       backendOpts.triple = deviceName.getTriple().str();
@@ -826,8 +827,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       backendOpts.features = backendFeatures;
       backendOpts.optLevel = 3;
       backendOpts.suppressDiagnostic = true;
-
-      int maxSharedMemPerWG = rock::getLDSSize(backendOpts.chip);
 
       rock::TritonOptions tritonOpts;
       tritonOpts.arch = backendOpts.chip;
@@ -845,32 +844,22 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         return result;
       }
 
-      rock::buildKernelPipeline(applicabilityPM, compilationKernOpts);
-      rock::buildTritonPipeline(applicabilityPM, tritonOpts);
-      rock::buildBackendPipeline(compilationPM, backendOpts);
+      rock::buildKernelPipeline(pm, kernelOpts);
+      rock::buildTritonPipeline(pm, tritonOpts);
+      rock::buildBackendPipeline(pm, backendOpts);
 
-      // Applicability check - clone the pre-parsed module
-      // TODO: find a more robust way to check for applicability
       OwningOpRef<ModuleOp> sourceCopy =
           copyIR(sourceModule.get(), perfConfigStrAttr);
-      if (failed(applicabilityPM.run(sourceCopy.get()))) {
-        result.status = CompilationStatus::NotApplicable;
-        return result;
-      }
-
-      // check if we use too much LDS
-      if (failed(rock::checkLDSUsage(sourceCopy.get(), maxSharedMemPerWG))) {
-        result.status = CompilationStatus::NotApplicable;
-        return result;
-      }
-
-      // Compilation
-      if (failed(compilationPM.run(sourceCopy.get()))) {
-        std::lock_guard<std::mutex> lock(outputMutex);
-        llvm::errs() << "Backend pipeline failed for config: "
-                     << result.perfConfig << "\n";
-        result.status = CompilationStatus::CompilationFailed;
-        compilationFailed.store(true, std::memory_order_relaxed);
+      if (failed(pm.run(sourceCopy.get()))) {
+        if (sourceCopy.get()->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
+          result.status = CompilationStatus::NotApplicable;
+        } else {
+          std::lock_guard<std::mutex> lock(outputMutex);
+          llvm::errs() << "Compilation pipeline failed for config: "
+                       << result.perfConfig << "\n";
+          result.status = CompilationStatus::CompilationFailed;
+          compilationFailed.store(true, std::memory_order_relaxed);
+        }
         return result;
       }
 
