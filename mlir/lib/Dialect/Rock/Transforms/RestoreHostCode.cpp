@@ -369,6 +369,11 @@ void RockRestoreHostCodePass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
 
+  // Gate the pass if no host functions or binary are present
+  if (!moduleOp->hasAttr("rock.host_functions") &&
+      !moduleOp->hasAttr("triton.hsaco"))
+    return;
+
   // Build options from pass parameters
   RockRestoreHostCodePassOptions options;
   options.triple = triple.getValue();

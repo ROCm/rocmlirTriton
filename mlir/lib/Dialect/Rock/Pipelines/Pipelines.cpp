@@ -408,19 +408,16 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                      const rock::BackendOptions &options) {
-  // Gate createRockRestoreHostCodePass for build after backend pipeline only
-  ModuleOp moduleOp = pm.getOp<ModuleOp>();
-  if (moduleOp.hasAttr("rock.host_functions") || moduleOp.hasAttr("triton.hsaco")) {                       
-    // Restore host functions (main, wrapper) that were stored during
-    // RockFuncToTritonFuncPass. This converts func.call @kernel to gpu.launch_func.
-    rock::RockRestoreHostCodePassOptions restoreOpts;
-    restoreOpts.triple = options.triple;
-    restoreOpts.arch = options.chip;
-    restoreOpts.features = options.features;
-    restoreOpts.optLevel = options.optLevel;
-    pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
-  }
-  // Lower FP8 extf/truncf ops explicitly. Leaving this task to 
+  // Restore host functions (main, wrapper) that were stored during
+  // RockFuncToTritonFuncPass. This converts func.call @kernel to gpu.launch_func.
+  rock::RockRestoreHostCodePassOptions restoreOpts;
+  restoreOpts.triple = options.triple;
+  restoreOpts.arch = options.chip;
+  restoreOpts.features = options.features;
+  restoreOpts.optLevel = options.optLevel;
+  pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
+
+  // Lower FP8 extf/truncf ops explicitly. Leaving this task to
   // buildHostLoweringPipeline would generate invalid builtin.unrealized_casts.
   pm.addPass(createEmulateFp8ExtTruncPass());
 
@@ -430,7 +427,7 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   // types (f8E8M0FNU, f4E2M1FN) used by scaled GEMMs, because those conflict
   // with ConvertNarrowTypeSignatures / EmulateNarrowTypes passes below.
   cpu::CpuLowerVerifierPassOptions cpuOpts;
-  cpuOpts.dumpSchedulesPath = options.dumpCpuSchedules.str();
+  cpuOpts.dumpSchedulesPath = options.dumpCpuSchedules;
   cpuOpts.phase = cpu::CPU_PHASE_OPTIMIZE;
   pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
 

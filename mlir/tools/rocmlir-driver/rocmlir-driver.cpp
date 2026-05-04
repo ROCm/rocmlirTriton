@@ -168,7 +168,8 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
 
 static LogicalResult
 runKernelPipeline(StringRef arch, ModuleOp m,
-                  llvm::SmallDenseSet<StringRef> &kernelPipelineSet) {
+                  llvm::SmallDenseSet<StringRef> &kernelPipelineSet,
+                  llvm::SmallDenseSet<StringRef> &hostPipelineSet) {
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
@@ -258,6 +259,11 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   }
   if (kernelPipelineSet.contains("binary")) {
     rock::buildBackendPipeline(pm, backendOpts);
+    // Chain host lowering after the GPU compile so that the resulting module
+    // is runnable end-to-end
+    if (!hostPipelineSet.contains("backend")) {
+      rock::buildHostLoweringPipeline(pm, backendOpts);
+    }
   }
 
   if (dumpPipelines) {
@@ -342,11 +348,16 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       return failure();
   }
 
-  // Phase 2.5: Host backend lowering (func + memref + GPU ops -> LLVM)
+  // Phase 2.5: Host backend lowering (func + memref + GPU ops -> LLVM).
+  // RestoreHostCode at the top of buildHostLoweringPipeline short-circuits
+  // here because no kernel has been compiled yet (`triton.hsaco` is absent)
+  // — Phase 3 below will compile the kernel separately.
   if (hostPipelineSet.contains("backend")) {
+    rock::BackendOptions hostOpts;
+    hostOpts.dumpCpuSchedules = dumpCpuSchedules.getValue();
     if (failed(runWithDetach(module, "Host Backend", isKernel,
-                             [](PassManager &pm) {
-                               rock::buildHostLoweringPipeline(pm);
+                             [&](PassManager &pm) {
+                               rock::buildHostLoweringPipeline(pm, hostOpts);
                              })))
       return failure();
   }
@@ -364,7 +375,8 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                 .getValue();
       }
     }
-    if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet)))
+    if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet,
+                                 hostPipelineSet)))
       return failure();
   }
 

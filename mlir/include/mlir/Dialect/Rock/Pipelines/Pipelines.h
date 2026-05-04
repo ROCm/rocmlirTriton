@@ -107,13 +107,14 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
       desc("Path to dump CPU verifier IR and transform schedules"), init("")};
 };
 
-/// Adds the host lowering pipeline to the `OpPassManager`.
-void buildHostLoweringPipeline(OpPassManager &pm,
-                               const BackendOptions &options = {});
-
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.
 void buildBackendPipeline(OpPassManager &pm,
-    const BackendOptions &options = {});
+                          const BackendOptions &options = {});
+
+/// Adds the `host-lowering` pipeline (CPU/host lowering only) to the
+/// `OpPassManager`.
+void buildHostLoweringPipeline(OpPassManager &pm,
+                               const BackendOptions &options = {});
 
 /// Registers all pipelines for the `rock` dialect.
 void registerPipelines();
