@@ -34,17 +34,10 @@ class MLIRContext;
 namespace cpu {
 
 /// Tile sizes used by the matmul portion of the tiling schedule.
-///
-/// The defaults match the historical hard-coded values. Dimension order
-/// matches the matmul `linalg.generic` iteration space (G, M, N, K), where
-/// G/M/N are parallel and K is the reduction.
-///
 /// Tile sizes do not have to divide their corresponding problem dim. The
 /// `*Divisible` flags below tell the schedule whether each dim is a clean
 /// multiple of its tile, so the schedule can decide how to handle the
-/// remainder (peel, mask, scalar fallback, ...). The caller -- typically
-/// `chooseMatmulTileSizes` in LowerCpuVerifier.cpp -- is responsible for
-/// setting those flags.
+/// remainder (peel, mask, scalar fallback, ...).
 struct MatmulTileSizes {
   /// Outer fuse tile (G, M, N); applied with interchange [0, 2, 1] so the
   /// loop nest order becomes G -> N -> M.
@@ -60,25 +53,22 @@ struct MatmulTileSizes {
 
   /// Per-dim divisibility: true when the corresponding problem dim is a
   /// clean multiple of the chosen tile (for M/N at the outer fuse level,
-  /// for K at the reduction-tile level). False means the post-tile loop
-  /// will have a partial last iteration with dynamic slice shapes, and
-  /// the schedule needs to handle the remainder explicitly.
-  ///
-  /// Defaults to `true` so existing callers that hand-build a
-  /// `MatmulTileSizes` get the historical "assume clean tiling" behavior.
+  /// for K at the reduction-tile level), false otherwise.
   bool mDivisible = true;
   bool nDivisible = true;
   bool kDivisible = true;
 };
 
-/// Build the tiling (optimization) transform module.
-/// This schedule tiles matmul operations for CPU cache efficiency.
+/// Build the tiling transform module.
+/// This schedule tiles and peels matmul ops.
 ///
 /// The tiling strategy is:
 /// 1. Fuse + tile outer loops: [gFuse, mFuse, nFuse] (G, M, N)
-/// 2. Tile reduction dimension: [0, 0, 0, kTile] (K)
-/// 3. Tile microkernel: [0, microTileM, microTileN, microTileK]
-/// 4. Apply canonicalization and lower-affine
+/// 2. Peel the M loop if it's not a multiple of mFuse.
+/// 3. Tile reduction dimension: [0, 0, 0, kTile] (K)
+/// 4. Peel the K loop if it's not a multiple of kTile.
+/// 5. Tile microkernel: [0, microTileM, microTileN, microTileK]
+/// 6. Apply canonicalization and lower-affine
 OwningOpRef<ModuleOp> buildTilingSchedule(MLIRContext *ctx,
                                           const MatmulTileSizes &tileSizes);
 

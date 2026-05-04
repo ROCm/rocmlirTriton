@@ -167,12 +167,10 @@ OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
   constexpr bool kVectorizeNDExtract = true;
   constexpr bool kFoldTypeExtensionsIntoContract = false;
 
-  // Loop ranges (P,P,P,R) of the post-tiling matmul body that we want to
-  // vectorize. After peeling, only the main loops produce a generic with
-  // these exact static dims; remainder loops produce dynamic dims and are
-  // rejected by the matcher.
-  // TODO: thread the expected dims through `MatmulTileSizes` instead of
-  // hard-coding them, so the matcher tracks the chosen tile sizes.
+  // If peeling was applied, we will have multiple matmuls with different shapes:
+  // The original matmul plus the peeled one. But we want to vectorize only the
+  // original one, which we know that has the static shape {1, 8, 8, 8}. So match
+  // that only.
   static constexpr int64_t kExpectedDims[] = {1, 8, 8, 8};
 
   OwningOpRef<ModuleOp> module = createTransformModule(ctx);
