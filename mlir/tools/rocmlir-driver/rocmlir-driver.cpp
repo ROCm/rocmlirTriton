@@ -70,6 +70,7 @@ static cl::opt<bool> legacyRockPipeline("c", cl::Hidden, cl::init(false),
                                         cl::cb<void, bool>([](bool v) {
                                           if (v) {
                                             kernelPipeline.setValue("full");
+                                            hostPipeline.setValue("backend");
                                           }
                                         }));
 
@@ -254,16 +255,10 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     rock::buildKernelPipeline(pm, opts);
   }
   if (kernelPipelineSet.contains("triton")) {
-
     rock::buildTritonPipeline(pm, tritonOpts);
   }
   if (kernelPipelineSet.contains("binary")) {
     rock::buildBackendPipeline(pm, backendOpts);
-    // Chain host lowering after the GPU compile so that the resulting module
-    // is runnable end-to-end. This must still run even if host backend
-     // lowering was requested separately, because the post-backend run is the
-     // one that can rewrite host kernel calls using the compiled GPU artifact.
-    rock::buildHostLoweringPipeline(pm, backendOpts);
   }
 
   if (dumpPipelines) {
@@ -348,21 +343,13 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       return failure();
   }
 
-  // Phase 2.5: Host backend lowering (func + memref + GPU ops -> LLVM).
-  // RestoreHostCode at the top of buildHostLoweringPipeline short-circuits
-  // here because no kernel has been compiled yet (`triton.hsaco` is absent)
-  // — Phase 3 below will compile the kernel separately.
-  if (hostPipelineSet.contains("backend")) {
-    rock::BackendOptions hostOpts;
-    hostOpts.dumpCpuSchedules = dumpCpuSchedules.getValue();
-    if (failed(runWithDetach(module, "Host Backend", isKernel,
-                             [&](PassManager &pm) {
-                               rock::buildHostLoweringPipeline(pm, hostOpts);
-                             })))
-      return failure();
-  }
-
-  // Phase 3: GPU / Triton / Backend (kernel pipeline only)
+  // Phase 3: GPU / Triton / Backend (kernel pipeline only).
+  //
+  // This runs before the host backend (Phase 4) when both are requested
+  // (e.g. via `-c`).  buildBackendPipeline produces `gpu.binary` and rewrites
+  // `func.call @kernel` -> `gpu.launch_func`; if the host were lowered first,
+  // those calls would already be `llvm.call @kernel` and the kernel-launch
+  // rewrite would silently fail to find them, leaving an unlinked module.
   bool needsKernelBackend = kernelPipelineSet.contains("gpu") ||
                             kernelPipelineSet.contains("triton") ||
                             kernelPipelineSet.contains("binary");
@@ -377,6 +364,23 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     }
     if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet,
                                  hostPipelineSet)))
+      return failure();
+  }
+
+  // Phase 4: Host backend lowering (func + memref + GPU ops -> LLVM).
+  //
+  // Runs AFTER kernel compilation so the host module already contains
+  // `gpu.launch_func` (created by RestoreHostCode in buildBackendPipeline);
+  // gpu-to-llvm at the end of this pipeline then translates those into HIP
+  // runtime calls.  Safe to run standalone too: with no kernel pipeline,
+  // there is no `gpu.launch_func` and gpu-to-llvm is a no-op.
+  if (hostPipelineSet.contains("backend")) {
+    rock::BackendOptions hostOpts;
+    hostOpts.dumpCpuSchedules = dumpCpuSchedules.getValue();
+    if (failed(runWithDetach(module, "Host Backend", isKernel,
+                             [&](PassManager &pm) {
+                               rock::buildHostLoweringPipeline(pm, hostOpts);
+                             })))
       return failure();
   }
 

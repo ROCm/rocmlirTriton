@@ -54,32 +54,14 @@
 // GPU-NEXT:tt.func(canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // GPU-NEXT:cse))
 
+// `--kernel-pipeline=binary` is now strictly the GPU-only compile: it must
+// produce `gpu.binary` (via TritonToHsaco + RockRestoreHostCode) but must NOT
+// chain in any host-side lowering.  Host lowering is opt-in via
+// `--host-pipeline=backend` (covered by runner-pipelines.mlir).
 // BINARY:Kernel pipeline:
 // BINARY-NEXT:builtin.module(resolve-kernel-launch-params,
 // BINARY-NEXT:triton-to-hsaco{allow-flush-denorm=false arch={{gfx90a|gfx942|gfx950}} enable-fp-fusion=true features= num-ctas=1 num-warps=4 opt-level=3 scalarize-packed-fops=false schedule-hint=none triple=amdgcn-amd-amdhsa waves-per-eu=0},
-// BINARY-NEXT:rock-restore-host-code{arch={{gfx90a|gfx942|gfx950}} features= opt-level=3 triple=amdgcn-amd-amdhsa},
-// BINARY-NEXT:emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false},
-// BINARY-NEXT:cpu-lower-verifier{dump-schedules-path= phase=1},
-// BINARY-NEXT:one-shot-bufferize{allow-return-allocs-from-loops=false allow-unknown-ops=false analysis-fuzzer-seed=0 analysis-heuristic=bottom-up buffer-alignment=64 bufferize-function-boundaries=true check-parallel-regions=true copy-before-write=false  dump-alias-sets=false function-boundary-type-conversion=identity-layout-map must-infer-memory-space=false  print-conflicts=false test-analysis-only=false unknown-type-conversion=fully-dynamic-layout-map use-encoding-for-memory-space=false},
-// BINARY-NEXT:cpu-lower-verifier{dump-schedules-path= phase=2},
-// BINARY-NEXT:convert-linalg-to-loops,
-// BINARY-NEXT:arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true},
-// BINARY-NEXT:func.func(rock-convert-narrow-type-signatures),
-// BINARY-NEXT:func.func(rock-emulate-narrow-types),
-// BINARY-NEXT:expand-strided-metadata,
-// BINARY-NEXT:lower-affine,
-// BINARY-NEXT:convert-scf-to-cf{allow-pattern-rollback=true},
-// BINARY-NEXT:func.func(gpu-async-region),
-// BINARY-NEXT:convert-cf-to-llvm{index-bitwidth=0},
-// BINARY-NEXT:convert-math-to-llvm{approximate-log1p=true},
-// BINARY-NEXT:convert-math-to-libm,
-// BINARY-NEXT:convert-arith-to-llvm{index-bitwidth=0},
-// BINARY-NEXT:finalize-memref-to-llvm{index-bitwidth=0 use-aligned-alloc=false use-generic-functions=false},
-// BINARY-NEXT:gpu-to-llvm{intersperse-sizes-for-kernels=false use-bare-pointers-for-host=false use-bare-pointers-for-kernels=true},
-// BINARY-NEXT:convert-func-to-llvm{index-bitwidth=0 use-bare-ptr-memref-call-conv=false},
-// BINARY-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// BINARY-NEXT:cse,
-// BINARY-NEXT:reconcile-unrealized-casts)
+// BINARY-NEXT:rock-restore-host-code{arch={{gfx90a|gfx942|gfx950}} features= opt-level=3 triple=amdgcn-amd-amdhsa})
 
 // HIGHLEVEL:Kernel Highlevel pipeline:
 // HIGHLEVEL-NEXT:builtin.module(rock-flatten-tosa-func-args,

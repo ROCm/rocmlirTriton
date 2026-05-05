@@ -512,7 +512,7 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   pm.addPass(createReconcileUnrealizedCastsPass());
 }
 
-// Buidling GPU lowering pipeline
+// Build GPU lowering pipeline
 void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
   std::string arch = options.chip;
@@ -546,7 +546,8 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   }
 
   // Restore host functions (main, wrapper) that were stored during
-  // RockFuncToTritonFuncPass. This converts func.call @kernel to gpu.launch_func.
+  // RockFuncToTritonFuncPass. This converts func.call @kernel to 
+  // gpu.launch_func.
   rock::RockRestoreHostCodePassOptions restoreOpts;
   restoreOpts.triple = options.triple;
   restoreOpts.arch = options.chip;
