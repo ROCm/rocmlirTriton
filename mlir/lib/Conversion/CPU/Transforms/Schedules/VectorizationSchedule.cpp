@@ -59,7 +59,7 @@ static void populateVectorizationCleanup(ImplicitLocOpBuilder &ib,
 ///   transform.named_sequence @match_static_matmul_generic(
 ///       %candidate: !transform.any_op {transform.readonly}) -> !transform.any_op
 /// Succeeds only on `linalg.generic` ops whose loop ranges are exactly
-/// `expectedDims` (parallel,parallel,parallel,reduction). Dynamic dims are
+/// `expectedDims` (parallel,parallel,reduction). Dynamic dims are
 /// reported as a negative `kDynamic` sentinel by `match.structured.dim`, so
 /// any peeled remainder generic is rejected automatically by the equality
 /// check.
@@ -100,11 +100,11 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
         ImplicitLocOpBuilder bodyIb(nestedLoc, b);
         bodyIb.setInsertionPointToStart(block);
 
-        // Iterator-type predicates: dims [0, 1, 2] parallel, dim [3] reduction.
+        // Iterator-type predicates: dims [0, 1] parallel, dim [2] reduction.
         bodyIb.create<transform::MatchStructuredDimOp>(
             /*result=*/Type{},
             /*operand_handle=*/structHandle,
-            /*raw_dim_list=*/b.getDenseI64ArrayAttr({0, 1, 2}),
+            /*raw_dim_list=*/b.getDenseI64ArrayAttr({0, 1}),
             /*is_inverted=*/UnitAttr{},
             /*is_all=*/UnitAttr{},
             /*parallel=*/b.getUnitAttr(),
@@ -112,7 +112,7 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
         bodyIb.create<transform::MatchStructuredDimOp>(
             /*result=*/Type{},
             /*operand_handle=*/structHandle,
-            /*raw_dim_list=*/b.getDenseI64ArrayAttr({3}),
+            /*raw_dim_list=*/b.getDenseI64ArrayAttr({2}),
             /*is_inverted=*/UnitAttr{},
             /*is_all=*/UnitAttr{},
             /*parallel=*/UnitAttr{},
@@ -169,9 +169,9 @@ OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
 
   // If peeling was applied, we will have multiple matmuls with different shapes:
   // The original matmul plus the peeled one. But we want to vectorize only the
-  // original one, which we know that has the static shape {1, 8, 8, 8}. So match
-  // that only.
-  static constexpr int64_t kExpectedDims[] = {1, 8, 8, 8};
+  // original one, which we know that has the static shape {8, 8, 8} after the
+  // 3-D matmul micro-tile. So match that only.
+  static constexpr int64_t kExpectedDims[] = {8, 8, 8};
 
   OwningOpRef<ModuleOp> module = createTransformModule(ctx);
   auto loc = UnknownLoc::get(ctx);

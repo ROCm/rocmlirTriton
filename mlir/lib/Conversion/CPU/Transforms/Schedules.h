@@ -37,12 +37,13 @@ namespace cpu {
 /// These modules are used by the CpuLowerVerifierPass to apply
 /// transform sequences to CPU verifier functions.
 struct TransformSchedules {
-  OwningOpRef<ModuleOp> preModule;          // canonicalize + cse
-  OwningOpRef<ModuleOp> postModule;         // LICM + hoisting
-  OwningOpRef<ModuleOp> tilingModule;       // tiling
-  OwningOpRef<ModuleOp> vectorizationModule;// vectorization
-  OwningOpRef<ModuleOp> unrollModule;       // loop unrolling
-  OwningOpRef<ModuleOp> lowerToLLVMModule;  // bufferization + LLVM lowering
+  OwningOpRef<ModuleOp> preModule;              // canonicalize + cse
+  OwningOpRef<ModuleOp> postModule;             // LICM + hoisting
+  OwningOpRef<ModuleOp> fusedConvToMatmulModule;// fused conv -> matmul shape
+  OwningOpRef<ModuleOp> tilingModule;           // tiling
+  OwningOpRef<ModuleOp> vectorizationModule;    // vectorization
+  OwningOpRef<ModuleOp> unrollModule;           // loop unrolling
+  OwningOpRef<ModuleOp> lowerToLLVMModule;      // bufferization + LLVM lowering
 };
 
 /// Parse and create all transform schedules.

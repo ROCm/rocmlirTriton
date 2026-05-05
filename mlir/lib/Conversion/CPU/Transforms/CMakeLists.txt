@@ -2,6 +2,7 @@ add_rocmlir_dialect_library(MLIRCpuTransforms
   ConvToGemm.cpp
   LowerCpuVerifier.cpp
   Schedules.cpp
+  Schedules/FusedConvToMatmulSchedule.cpp
   Schedules/LowerToLLVMSchedule.cpp
   Schedules/UnrollSchedule.cpp
   Schedules/PrePostSchedules.cpp

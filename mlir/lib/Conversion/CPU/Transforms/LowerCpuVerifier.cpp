@@ -48,6 +48,9 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/utils/DetachReattach.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
@@ -94,6 +97,71 @@ static bool isStaticallyDivisible(int64_t dim, int64_t tile) {
   return !ShapedType::isDynamic(dim) && tile > 0 && dim % tile == 0;
 }
 
+/// Identify the (M, N, K) iter-space dims of a 3-D matmul-shaped
+/// `linalg.generic`. The matmul matcher only constrains the iter-type
+/// signature ((parallel, parallel, reduction) in some order), not the
+/// position of each iter dim within the iter-space -- the order depends
+/// on which path produced the op (rocmlir-gen GEMM vs.
+/// fused-conv-to-matmul collapse), so we infer the roles from the
+/// operand-map structure:
+///
+/// - The reduction iter dim is K.
+/// - The parallel iter dim that appears in the *first input*'s map (LHS)
+///   is M; the other parallel dim is N.
+///
+/// Returns `failure()` if `op` doesn't have exactly two inputs / one
+/// output / the expected number of iter dims, or if the maps aren't
+/// projected permutations using single iter-space symbols.
+struct MatmulDims {
+  unsigned mDim;
+  unsigned nDim;
+  unsigned kDim;
+};
+
+static FailureOr<MatmulDims> classifyMatmulDims(linalg::GenericOp op) {
+  if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1)
+    return failure();
+
+  SmallVector<utils::IteratorType> iters = op.getIteratorTypesArray();
+  if (llvm::ArrayRef(iters) != cpu::getMatmulIteratorTypes())
+    return failure();
+
+  auto findReductionDim = [&]() -> std::optional<unsigned> {
+    for (auto [i, it] : llvm::enumerate(iters))
+      if (it == utils::IteratorType::reduction)
+        return static_cast<unsigned>(i);
+    return std::nullopt;
+  };
+  std::optional<unsigned> kDim = findReductionDim();
+  if (!kDim)
+    return failure();
+
+  // Collect iter dims used by the LHS input map. The parallel dim that
+  // shows up in LHS is M, the other parallel dim is N.
+  AffineMap lhsMap = op.getMatchingIndexingMap(op.getDpsInputOperand(0));
+  llvm::SmallSet<unsigned, 4> lhsDims;
+  for (AffineExpr e : lhsMap.getResults()) {
+    auto dimE = dyn_cast<AffineDimExpr>(e);
+    if (!dimE)
+      return failure();
+    lhsDims.insert(dimE.getPosition());
+  }
+
+  std::optional<unsigned> mDim, nDim;
+  for (auto [i, it] : llvm::enumerate(iters)) {
+    if (it != utils::IteratorType::parallel)
+      continue;
+    if (lhsDims.contains(static_cast<unsigned>(i)))
+      mDim = static_cast<unsigned>(i);
+    else
+      nDim = static_cast<unsigned>(i);
+  }
+  if (!mDim || !nDim)
+    return failure();
+
+  return MatmulDims{*mDim, *nDim, *kDim};
+}
+
 /// Inspect the CPU verifier function `func` and choose tile sizes for its
 /// matmul-shaped `linalg.generic`. Returns `std::nullopt` only when no
 /// matmul-shaped op is found in the function -- in which case the caller
@@ -115,16 +183,22 @@ chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
   if (!matmul)
     return std::nullopt;
 
+  // Recover (M, N, K) from the operand maps rather than assuming a
+  // positional convention -- the rocmlir-gen GEMM and the
+  // fused-conv-to-matmul collapse don't necessarily emit dims in the
+  // same iter-space order, but the role of each dim is unambiguous from
+  // the maps.
+  FailureOr<MatmulDims> dims = classifyMatmulDims(matmul);
+  if (failed(dims))
+    return std::nullopt;
+
   SmallVector<int64_t, 4> loopRanges = matmul.getStaticLoopRanges();
   assert(loopRanges.size() == cpu::getMatmulIteratorTypes().size() &&
-         "matmul matcher should have ensured a 4-D iteration space");
+         "matmul matcher should have ensured a 3-D iteration space");
 
-  // loopRanges = (G, M, N, K) per the matmul iterator-types signature.
-  // Any of M / N / K may be dynamic; we still produce tile sizes and let
-  // the schedule handle the remainder via the divisibility flags below.
-  int64_t M = loopRanges[1];
-  int64_t N = loopRanges[2];
-  int64_t K = loopRanges[3];
+  int64_t M = loopRanges[dims->mDim];
+  int64_t N = loopRanges[dims->nDim];
+  int64_t K = loopRanges[dims->kDim];
 
   // TODO: Properly figure out this values based on the target architecture.
   // https://amd-hub.atlassian.net/browse/AIROCMLIR-812
@@ -133,7 +207,6 @@ chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
   static constexpr int64_t kLadder[] = {784, 392, 196, 128, 64, 32, 16, 8};
 
   MatmulTileSizes t;
-  t.gFuse = 1;
   t.mFuse = pickDivisibleTile(M, mLadder, vectorSize);
   t.nFuse = pickDivisibleTile(N, nLadder, vectorSize);
   t.kTile = pickDivisibleTile(K, kLadder, vectorSize);
@@ -143,9 +216,18 @@ chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
   t.mDivisible = isStaticallyDivisible(M, t.mFuse);
   t.nDivisible = isStaticallyDivisible(N, t.nFuse);
   t.kDivisible = isStaticallyDivisible(K, t.kTile);
+  t.mDim = dims->mDim;
+  t.nDim = dims->nDim;
+  t.kDim = dims->kDim;
 
   return t;
 }
+
+/// Describes a single transform step in the lowering pipeline.
+struct TransformStep {
+  ModuleOp module;  // The transform module to apply.
+  StringRef name;   // Name of this step (e.g., "tiling", "vectorization").
+};
 
 struct CpuLowerVerifierPass
     : public cpu::impl::CpuLowerVerifierPassBase<CpuLowerVerifierPass> {
@@ -165,6 +247,14 @@ private:
   /// Dump the IR and transform sequence to /tmp for debugging
   void dumpBeforeTransform(ModuleOp targetModule, ModuleOp transformModule,
                            StringRef funcName, StringRef phaseName);
+
+  /// Apply one transform step (pre-sequence + step + post-sequence) to
+  /// `moduleRef`. Used to build the optimization pipeline incrementally
+  /// so we can run `fusedConvToMatmul` before deciding tile sizes.
+  LogicalResult applyTransformStep(OwningOpRef<ModuleOp> &moduleRef,
+                                   const TransformStep &step,
+                                   const TransformSchedules &schedules,
+                                   func::FuncOp func);
 
   /// Lower a single CPU verifier function using the transform interpreter
   LogicalResult lowerSingleFunction(func::FuncOp func,
@@ -220,11 +310,46 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
   LLVM_DEBUG(llvm::dbgs() << "Dumped IR and transform to: " << filename << "\n");
 }
 
-/// Describes a single transform step in the lowering pipeline.
-struct TransformStep {
-  ModuleOp module;  // The transform module to apply
-  StringRef name;   // Name of this step (e.g., "optimization", "vectorization")
-};
+/// Apply one transform step (pre + main + post) to `moduleRef`. Returns
+/// `failure()` and leaves a diagnostic on `func` if any sub-sequence
+/// fails. The caller is responsible for `reattachFuncs` cleanup.
+LogicalResult CpuLowerVerifierPass::applyTransformStep(
+    OwningOpRef<ModuleOp> &moduleRef, const TransformStep &step,
+    const TransformSchedules &schedules, func::FuncOp func) {
+  if (!step.module) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "    Skipping " << step.name << " (no schedule module)\n");
+    return success();
+  }
+  ModuleOp module = moduleRef.get();
+  StringRef funcName = func.getName();
+
+  // Pre-sequence.
+  std::string prePhaseName = "pre_" + step.name.str();
+  LLVM_DEBUG(llvm::dbgs() << "    Applying " << prePhaseName << "...\n");
+  dumpBeforeTransform(module, schedules.preModule.get(), funcName,
+                      prePhaseName);
+  if (failed(applyTransformSequence(moduleRef, schedules.preModule.get(), "pre",
+                                    funcName)))
+    return func.emitError("Pre transform failed before ") << step.name;
+
+  // Main transform.
+  LLVM_DEBUG(llvm::dbgs() << "    Applying " << step.name << "...\n");
+  dumpBeforeTransform(module, step.module, funcName, step.name);
+  if (failed(applyTransformSequence(moduleRef, step.module, step.name,
+                                    funcName)))
+    return func.emitError("Transform failed at ") << step.name;
+
+  // Post-sequence.
+  std::string postPhaseName = "post_" + step.name.str();
+  LLVM_DEBUG(llvm::dbgs() << "    Applying " << postPhaseName << "...\n");
+  dumpBeforeTransform(module, schedules.postModule.get(), funcName,
+                      postPhaseName);
+  if (failed(applyTransformSequence(moduleRef, schedules.postModule.get(),
+                                    "post", funcName)))
+    return func.emitError("Post transform failed after ") << step.name;
+  return success();
+}
 
 LogicalResult
 CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
@@ -244,21 +369,45 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   LLVM_DEBUG(llvm::dbgs() << "  Detached " << detached.entries.size()
                           << " functions for isolation\n");
 
-  // Step 2: Build the pipeline of main transform steps based on phase option
-  //
-  // For the optimization phase we build the tiling schedule lazily, with
-  // tile sizes chosen from the static shapes of this function's matmul.
-  // Picking divisors of (M, N, K) keeps every post-tile shape static, which
-  // in turn lets `transform.structured.vectorize` succeed downstream. If
-  // the matmul has dynamic shapes (or no matmul exists) we fall back to
-  // the default tile sizes -- behavior identical to the previous shared
-  // schedule.
-  OwningOpRef<ModuleOp> perFuncTiling;
-  SmallVector<TransformStep> pipeline;
+  // We need to wrap the module in OwningOpRef for applyTransformSequence
+  // but we don't own it, so we use a non-owning reference pattern.
+  OwningOpRef<ModuleOp> moduleRef(module);
+  auto cleanup = llvm::make_scope_exit([&] {
+    (void)moduleRef.release();
+    reattachFuncs(module, detached);
+  });
+
   if (phase == CPU_PHASE_OPTIMIZE) {
+    // Optimization phase splits into two stages around `chooseMatmulTileSizes`:
+    //
+    //   stage 1 -- shape normalization
+    //     Run `fusedConvToMatmul` first. For functions that came out of
+    //     `cpu-conv-to-gemm` this rewrites the 8-D `rock.cpu_fused_conv`
+    //     into a 3-D matmul-shaped `linalg.generic` (and folds the
+    //     unit-extent batch/group dims). For plain GEMM verifiers the
+    //     schedule is a no-op.
+    //
+    //   choose tile sizes
+    //     Inspect the now-canonical matmul to pick (mFuse, nFuse, kTile)
+    //     based on the static (M, N, K) extents. Crucially this happens
+    //     *after* stage 1 so the matcher actually sees a 3-D matmul --
+    //     otherwise it would always fall back to the default tiles
+    //     (which assert static divisibility and silently disable
+    //     peeling, see AIROCMLIR-???).
+    //
+    //   stage 2 -- tile / vectorize / unroll
+    //     Use the per-function tiling schedule built from the chosen
+    //     tile sizes, then vectorize and unroll.
+    if (failed(applyTransformStep(
+            moduleRef,
+            {schedules.fusedConvToMatmulModule.get(), "fusedConvToMatmul"},
+            schedules, func)))
+      return failure();
+
     // AVX vector width is 256 bits -> 8 fp32 lanes. Keep this in sync with
     // the `vectorSize` constant in TilingSchedule.cpp.
     constexpr int64_t kVectorSize = 8;
+    OwningOpRef<ModuleOp> perFuncTiling;
     if (auto t = chooseMatmulTileSizes(func, kVectorSize)) {
       LLVM_DEBUG(llvm::dbgs()
                  << "  Chose matmul tile sizes for " << funcName
@@ -267,81 +416,30 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
       perFuncTiling = buildTilingSchedule(&getContext(), *t);
     } else {
       LLVM_DEBUG(llvm::dbgs() << "  Using default matmul tile sizes for "
-                              << funcName << " (no static matmul shape)\n");
+                              << funcName << " (no matmul shape)\n");
       perFuncTiling = buildTilingSchedule(&getContext());
     }
-    if (!perFuncTiling) {
-      reattachFuncs(module, detached);
+    if (!perFuncTiling)
       return func.emitError("Failed to build per-function tiling schedule");
-    }
 
-    // Optimization phase: tiling, vectorization, unroll
-    // Run before whole-module bufferization
-    pipeline = {
+    SmallVector<TransformStep> stage2 = {
         {perFuncTiling.get(), "tiling"},
         {schedules.vectorizationModule.get(), "vectorization"},
         {schedules.unrollModule.get(), "unroll"},
     };
+    for (const TransformStep &step : stage2)
+      if (failed(applyTransformStep(moduleRef, step, schedules, func)))
+        return failure();
   } else if (phase == CPU_PHASE_LOWERTOLLVM) {
-    // Lower to LLVM phase
-    // Run after whole-module bufferization
-    pipeline = {
-        {schedules.lowerToLLVMModule.get(), "lowerToLLVM"},
-    };
+    // Lower to LLVM phase. Run after whole-module bufferization.
+    if (failed(applyTransformStep(
+            moduleRef, {schedules.lowerToLLVMModule.get(), "lowerToLLVM"},
+            schedules, func)))
+      return failure();
   } else {
-    reattachFuncs(module, detached);
     return func.emitError("Invalid phase: ")
            << phase << " (must be CPU_PHASE_OPTIMIZE or CPU_PHASE_LOWERTOLLVM)";
   }
-
-  // We need to wrap the module in OwningOpRef for applyTransformSequence
-  // but we don't own it, so we use a non-owning reference pattern
-  OwningOpRef<ModuleOp> moduleRef(module);
-
-  // Step 3: Apply each transform step with pre/post sequences
-  for (const TransformStep &step : pipeline) {
-    if (!step.module) {
-      LLVM_DEBUG(llvm::dbgs() << "    Skipping " << step.name
-                              << " (no schedule module)\n");
-      continue;
-    }
-    // 3.1. Pre-sequence
-    std::string prePhaseName = "pre_" + step.name.str();
-    LLVM_DEBUG(llvm::dbgs() << "    Applying " << prePhaseName << "...\n");
-    dumpBeforeTransform(module, schedules.preModule.get(), funcName,
-                        prePhaseName);
-    if (failed(applyTransformSequence(moduleRef, schedules.preModule.get(),
-                                      "pre", funcName))) {
-      reattachFuncs(module, detached);
-      return func.emitError("Pre transform failed before ") << step.name;
-    }
-
-    // 3.2. Main transform
-    LLVM_DEBUG(llvm::dbgs() << "    Applying " << step.name << "...\n");
-    dumpBeforeTransform(module, step.module, funcName, step.name);
-    if (failed(applyTransformSequence(moduleRef, step.module, step.name,
-                                      funcName))) {
-      reattachFuncs(module, detached);
-      return func.emitError("Transform failed at ") << step.name;
-    }
-
-    // 3.3. Post-sequence
-    std::string postPhaseName = "post_" + step.name.str();
-    LLVM_DEBUG(llvm::dbgs() << "    Applying " << postPhaseName << "...\n");
-    dumpBeforeTransform(module, schedules.postModule.get(), funcName,
-                        postPhaseName);
-    if (failed(applyTransformSequence(moduleRef, schedules.postModule.get(),
-                                      "post", funcName))) {
-      reattachFuncs(module, detached);
-      return func.emitError("Post transform failed after ") << step.name;
-    }
-  }
-
-  // Release the non-owning reference (don't delete the module!)
-  (void)moduleRef.release();
-
-  // Step 4: Reattach the detached operations
-  reattachFuncs(module, detached);
 
   LLVM_DEBUG(llvm::dbgs() << "Successfully lowered phase " << phase
                           << " for: " << funcName << "\n");

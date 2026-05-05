@@ -128,17 +128,35 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
           tileElementwiseOps(ib, ctx, arg, vectorSize, numDims);
         }
 
-        // Now tile (and optionally fuse) the matmul.
+        // Now tile (and optionally fuse) the matmul. The matmul iter-type
+        // signature is the canonical 3-D `[par, par, red]` (see
+        // `getMatmulIteratorTypes()`), but the *position* of M / N / K
+        // within the iter-space depends on how the op was generated. The
+        // caller picks tile sizes and per-dim positions by inspecting
+        // the actual op via `classifyMatmulDims`; below we map those
+        // back to the positional `static_tile_sizes` arrays expected by
+        // the transform ops.
         auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
 
-        SmallVector<Type> fuseLoopTypes(3, scfForType);
+        const unsigned mDim = tileSizes.mDim;
+        const unsigned nDim = tileSizes.nDim;
+        const unsigned kDim = tileSizes.kDim;
+
+        // Outer fuse over (M, N): tile sizes are placed at the M / N
+        // positions in the 3-D iter-space and 0 at the K position so the
+        // reduction dim is left intact for the K-tile step below.
+        // Interchange puts N on the outside (i.e. iterate over N first)
+        // by listing parallel dims in [N, M, K] order.
+        SmallVector<int64_t, 3> fuseTileSizes(3, 0);
+        fuseTileSizes[mDim] = tileSizes.mFuse;
+        fuseTileSizes[nDim] = tileSizes.nFuse;
+        SmallVector<int64_t, 3> fuseInterchange = {nDim, mDim, kDim};
+        SmallVector<Type> fuseLoopTypes(2, scfForType);
         auto fuse = ib.create<transform::FuseOp>(
             /*loopTypes=*/fuseLoopTypes,
             /*target=*/matchMatmul.getResults(),
-            /*staticTileSizes=*/
-            ArrayRef<int64_t>{tileSizes.gFuse, tileSizes.mFuse,
-                              tileSizes.nFuse},
-            /*staticTileInterchange=*/ArrayRef<int64_t>{0, 2, 1},
+            /*staticTileSizes=*/fuseTileSizes,
+            /*staticTileInterchange=*/fuseInterchange,
             /*applyCleanup=*/false,
             /*useForall=*/false);
 
@@ -152,13 +170,16 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
               /*fail_if_already_divisible=*/false);
         };
 
+        // Loop nest after fuse with interchange [N, M, K]:
+        //   fuse.loops[0] -> N (outermost)
+        //   fuse.loops[1] -> M (innermost of the fuse pair)
         bool peeledFuseLoop = false;
         if (!tileSizes.mDivisible) {
-          peelLoop(fuse.getLoops()[2]);
+          peelLoop(fuse.getLoops()[1]);
           peeledFuseLoop = true;
         }
         if (!tileSizes.nDivisible) {
-          peelLoop(fuse.getLoops()[1]);
+          peelLoop(fuse.getLoops()[0]);
           peeledFuseLoop = true;
         }
 
@@ -168,11 +189,15 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
                 ? createMatchMatmulOp(ib, ctx, arg).getResults()
                 : fuse.getTransformed();
 
+        // Tile only the K (reduction) dim: tile sizes index by iter-space
+        // dim, so we put `kTile` at the K position and 0 elsewhere.
+        SmallVector<int64_t, 3> kTileSizes(3, 0);
+        kTileSizes[kDim] = tileSizes.kTile;
         SmallVector<Type> tile1LoopTypes(1, scfForType);
         auto tile1 = ib.create<transform::TileUsingForOp>(
             /*loopTypes=*/tile1LoopTypes,
             /*target=*/kTileTarget,
-            /*staticTileSizes=*/ArrayRef<int64_t>{0, 0, 0, tileSizes.kTile},
+            /*staticTileSizes=*/kTileSizes,
             /*interchange=*/ArrayRef<int64_t>{},
             /*scalableSizes=*/std::nullopt);
 
@@ -184,13 +209,17 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
           microTileTarget = createMatchMatmulOp(ib, ctx, arg).getResults();
         }
 
+        // Innermost register-blocking micro-tile over (M, N, K). Place
+        // each per-dim micro-tile at its iter-space position.
+        SmallVector<int64_t, 3> microTileSizes(3, 0);
+        microTileSizes[mDim] = tileSizes.microTileM;
+        microTileSizes[nDim] = tileSizes.microTileN;
+        microTileSizes[kDim] = tileSizes.microTileK;
         SmallVector<Type> tile2LoopTypes(3, anyOpType);
         ib.create<transform::TileUsingForOp>(
             /*loopTypes=*/tile2LoopTypes,
             /*target=*/microTileTarget,
-            /*staticTileSizes=*/
-            ArrayRef<int64_t>{0, tileSizes.microTileM, tileSizes.microTileN,
-                              tileSizes.microTileK},
+            /*staticTileSizes=*/microTileSizes,
             /*interchange=*/ArrayRef<int64_t>{},
             /*scalableSizes=*/std::nullopt);
 

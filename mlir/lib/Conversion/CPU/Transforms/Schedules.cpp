@@ -22,6 +22,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Schedules.h"
+#include "Schedules/FusedConvToMatmulSchedule.h"
 #include "Schedules/LowerToLLVMSchedule.h"
 #include "Schedules/UnrollSchedule.h"
 #include "Schedules/PrePostSchedules.h"
@@ -105,6 +106,14 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
   if (!schedules.postModule) {
     emitError(UnknownLoc::get(ctx))
         << "Failed to build post transform sequence for CPU verifier";
+    return failure();
+  }
+
+  schedules.fusedConvToMatmulModule = buildFusedConvToMatmulSchedule(ctx);
+  if (!schedules.fusedConvToMatmulModule) {
+    emitError(UnknownLoc::get(ctx))
+        << "Failed to build fused-conv-to-matmul transform sequence for CPU "
+        << "verifier";
     return failure();
   }
 

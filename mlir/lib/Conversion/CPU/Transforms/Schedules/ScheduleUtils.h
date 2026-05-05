@@ -60,9 +60,12 @@ OwningOpRef<ModuleOp> buildTransformModule(MLIRContext *ctx,
                                            TransformBodyBuilder bodyBuilder);
 
 /// Iterator-type signature of the matmul-shaped `linalg.generic` ops the CPU
-/// verifier pipeline targets: `[parallel, parallel, parallel, reduction]`.
-/// Single source of truth shared by the transform-side matchers and the
-/// payload-side predicates.
+/// verifier pipeline targets: `[parallel, parallel, reduction]`, i.e. the
+/// canonical 3-D `(M, N, K)` matmul iter-space. Both rocmlir-gen GEMMs and
+/// fused-conv-derived matmuls land on this shape after
+/// `fold_unit_extent_dims_via_slices` collapses the size-1 batch / spatial
+/// dims. Single source of truth shared by the transform-side matchers and
+/// the payload-side predicates.
 llvm::ArrayRef<utils::IteratorType> getMatmulIteratorTypes();
 
 /// Create a DictionaryAttr containing the iterator_types attribute for
@@ -70,7 +73,7 @@ llvm::ArrayRef<utils::IteratorType> getMatmulIteratorTypes();
 DictionaryAttr getMatmulIteratorTypesAttr(MLIRContext *ctx);
 
 /// Create a transform::MatchOp that matches linalg.generic ops with matmul
-/// iterator types pattern [parallel, parallel, parallel, reduction].
+/// iterator types pattern `[parallel, parallel, reduction]`.
 transform::MatchOp createMatchMatmulOp(ImplicitLocOpBuilder &ib,
                                        MLIRContext *ctx, Value target);
 

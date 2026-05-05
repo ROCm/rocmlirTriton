@@ -39,9 +39,8 @@ namespace cpu {
 /// multiple of its tile, so the schedule can decide how to handle the
 /// remainder (peel, mask, scalar fallback, ...).
 struct MatmulTileSizes {
-  /// Outer fuse tile (G, M, N); applied with interchange [0, 2, 1] so the
-  /// loop nest order becomes G -> N -> M.
-  int64_t gFuse = 1;
+  /// Outer fuse tile (M, N); applied with interchange [1, 0] so the
+  /// loop nest order becomes N -> M.
   int64_t mFuse = 256;
   int64_t nFuse = 64;
   /// K reduction tile applied by the second `tile_using_for`.
@@ -57,17 +56,27 @@ struct MatmulTileSizes {
   bool mDivisible = true;
   bool nDivisible = true;
   bool kDivisible = true;
+
+  /// Position of the (M, N, K) iter dims within the matmul's iter-space.
+  /// The matcher only constrains the iter-type signature, not the order
+  /// of dims, so the same schedule needs to retarget different
+  /// positions for ops produced by different paths (rocmlir-gen GEMMs
+  /// vs. fused-conv-to-matmul). Defaults match the order that
+  /// rocmlir-gen produces.
+  unsigned mDim = 0;
+  unsigned nDim = 1;
+  unsigned kDim = 2;
 };
 
 /// Build the tiling transform module.
 /// This schedule tiles and peels matmul ops.
 ///
 /// The tiling strategy is:
-/// 1. Fuse + tile outer loops: [gFuse, mFuse, nFuse] (G, M, N)
+/// 1. Fuse + tile outer loops: [mFuse, nFuse] (M, N)
 /// 2. Peel the M loop if it's not a multiple of mFuse.
-/// 3. Tile reduction dimension: [0, 0, 0, kTile] (K)
+/// 3. Tile reduction dimension: [0, 0, kTile] (K)
 /// 4. Peel the K loop if it's not a multiple of kTile.
-/// 5. Tile microkernel: [0, microTileM, microTileN, microTileK]
+/// 5. Tile microkernel: [microTileM, microTileN, microTileK]
 /// 6. Apply canonicalization and lower-affine
 OwningOpRef<ModuleOp> buildTilingSchedule(MLIRContext *ctx,
                                           const MatmulTileSizes &tileSizes);
