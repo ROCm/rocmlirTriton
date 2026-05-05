@@ -4,7 +4,7 @@
 // this issue is fixed. The MIGraphX -> Tosa -> Linalg CPU lowering currently does not
 // support large group sizes, so we need to use the original rocmlir-gen command
 // to check that the issue is fixed with g=4.
-// RUN: rocmlir-gen --operation conv_bwd_data -t f16 --arch gfx942 --fil_layout kyxc --in_layout nhwc --out_layout nhwk --batchsize 1 --in_channels 64 --in_h 32 --in_w 14 --out_channels 256 --fil_h 2 --fil_w 1 --dilation_h 1 --dilation_w 2 --conv_stride_h 2 --conv_stride_w 3 --padding_h 0 --padding_w 3 --groupsize 4 --perf_config=gemm:v1:32,64,128,1,1,1,0,2,2,2,0 -pv | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=ROCKGEN
+// RUN: rocmlir-gen --operation conv_bwd_data -t f16 --arch %arch --fil_layout kyxc --in_layout nhwc --out_layout nhwk --batchsize 1 --in_channels 64 --in_h 32 --in_w 14 --out_channels 256 --fil_h 2 --fil_w 1 --dilation_h 1 --dilation_w 2 --conv_stride_h 2 --conv_stride_w 3 --padding_h 0 --padding_w 3 --groupsize 4 --perf_config=gemm:v1:32,64,128,1,1,1,0,2,2,2,0 -pv | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=ROCKGEN
 
 // ROCKGEN: [1 1 1]
 

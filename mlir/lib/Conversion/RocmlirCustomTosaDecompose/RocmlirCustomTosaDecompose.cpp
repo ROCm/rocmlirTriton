@@ -775,13 +775,26 @@ public:
       resultPadLeft = std::max<int64_t>(0, outPad[2]);
     }
 
-    // Try to slice the targetted result size, cap to the convolutions width.
+    int64_t resultHeight = resultTy.getDimSize(1);
+    int64_t resultWidth = resultTy.getDimSize(2);
+    int64_t convExpandedHeight = convReshapeDims1[1];
+    int64_t convExpandedWidth = convReshapeDims1[2];
+
+    // Extreme low-side padding/cropping can leave no overlap with the expanded
+    // convolution result. Keep the slice window valid and let padding fill the
+    // requested result extent.
+    resultPadTop = std::min(resultPadTop, resultHeight);
+    resultPadLeft = std::min(resultPadLeft, resultWidth);
+    resultSliceTop = std::min(resultSliceTop, convExpandedHeight);
+    resultSliceLeft = std::min(resultSliceLeft, convExpandedWidth);
+
+    // Try to slice the targetted result size, cap to the convolution extent.
     int64_t resultSliceHeight =
-        std::min<int64_t>(convReshapeDims1[1] - resultSliceTop,
-                          resultTy.getDimSize(1) - resultPadTop);
+        std::min<int64_t>(convExpandedHeight - resultSliceTop,
+                          resultHeight - resultPadTop);
     int64_t resultSliceWidth =
-        std::min<int64_t>(convReshapeDims1[2] - resultSliceLeft,
-                          resultTy.getDimSize(2) - resultPadLeft);
+        std::min<int64_t>(convExpandedWidth - resultSliceLeft,
+                          resultWidth - resultPadLeft);
 
     llvm::SmallVector<int64_t, 4> sliceBegin = {0, resultSliceTop,
                                                 resultSliceLeft, 0};
@@ -798,9 +811,9 @@ public:
 
     llvm::SmallVector<int64_t, 8> resultPadding = {0, 0, 0, 0, 0, 0, 0, 0};
     resultPadding[2] = resultPadTop;
-    resultPadding[3] = resultTy.getDimSize(1) - resultPadTop - sliceSize[1];
+    resultPadding[3] = resultHeight - resultPadTop - sliceSize[1];
     resultPadding[4] = resultPadLeft;
-    resultPadding[5] = resultTy.getDimSize(2) - resultPadLeft - sliceSize[2];
+    resultPadding[5] = resultWidth - resultPadLeft - sliceSize[2];
 
     Value resultPaddingVal =
         getTosaConstShape(rewriter, op->getLoc(), resultPadding);
