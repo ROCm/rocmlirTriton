@@ -1119,7 +1119,6 @@ def format_error(context: str,
 # Core Tuning Logic
 # =============================================================================
 
-
 def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, options: Options,
                       gpu_id: int) -> float:
     """Verify a performance config by running with profiling.
@@ -1136,6 +1135,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
         paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary', '-pv'
     ] + command_line_options.split()
 
+    host_pipeline_command = [paths.mlir_paths.rocmlir_driver_path, '--host-pipeline=highlevel']
     rocmlir_driver_command = [paths.mlir_paths.rocmlir_driver_path, '-c']
     profiler_command = [perfRunner.ROCPROF] + perfRunner.get_metric_args_for_rocprof(
         options.arch) + [
@@ -1143,13 +1143,15 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
             perfRunner.BENCHMARKING_RESULT_FILE_NAME, '--', paths.mlir_paths.rocm_run_path
         ]
 
-    verification_pipeline = " | ".join([
-        ' '.join(rocmlir_gen_command), ' '.join(rocmlir_driver_command), ' '.join(rocprof_command)
-    ])
+    verification_commands = [
+        rocmlir_gen_command, host_pipeline_command, rocmlir_driver_command, rocprof_command
+    ]
+    verification_pipeline = " | ".join(' '.join(command) for command in verification_commands)
     gpu_logger.debug(f"Verifying perfconfig '{perfconfig}'\nCommand: {verification_pipeline}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         p1 = None
+        host_pipeline = None
         p2 = None
         p3 = None
         env = make_isolated_gpu_env(gpu_id)
@@ -1159,13 +1161,20 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
                                   stderr=subprocess.DEVNULL,
                                   env=env,
                                   cwd=tmpdir)
+            host_pipeline = subprocess.Popen(host_pipeline_command,
+                                             stdin=p1.stdout,
+                                             stdout=subprocess.PIPE,
+                                             stderr=subprocess.DEVNULL,
+                                             env=env,
+                                             cwd=tmpdir)
+            p1.stdout.close()
             p2 = subprocess.Popen(rocmlir_driver_command,
-                                  stdin=p1.stdout,
+                                  stdin=host_pipeline.stdout,
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL,
                                   env=env,
                                   cwd=tmpdir)
-            p1.stdout.close()
+            host_pipeline.stdout.close()
             p3 = subprocess.Popen(rocprof_command,
                                   stdin=p2.stdout,
                                   stdout=subprocess.PIPE,
@@ -1205,6 +1214,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
 
         finally:
             kill_process(p1)
+            kill_process(host_pipeline)
             kill_process(p2)
             kill_process(p3)
 
