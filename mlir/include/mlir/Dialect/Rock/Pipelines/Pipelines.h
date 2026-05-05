@@ -111,8 +111,7 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
 void buildBackendPipeline(OpPassManager &pm,
                           const BackendOptions &options = {});
 
-/// Adds the `host-lowering` pipeline (CPU/host lowering only) to the
-/// `OpPassManager`.
+/// Adds the CPU/host lowering pass sequence to the `OpPassManager`.
 void buildHostLoweringPipeline(OpPassManager &pm,
                                const BackendOptions &options = {});
 
