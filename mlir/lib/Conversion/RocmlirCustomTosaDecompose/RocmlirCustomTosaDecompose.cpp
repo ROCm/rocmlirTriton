@@ -754,6 +754,9 @@ public:
     //   offset = pad_low * (stride + 1) - stride * (kPrime - 1) - out_pad_low
     // Positive offset means we crop the expanded result on the low side;
     // negative offset means we pre-pad the result on the low side.
+    // Defined as a local lambda (rather than a file-scope helper) so the
+    // implementation stays adjacent to the derivation comment above and reads
+    // as a single visual unit at its two call sites just below.
     auto computeLowSideOffset = [](int64_t inPadLow, int64_t outPadLow,
                                    int64_t strideVal, int64_t kPrime) {
       return inPadLow * (strideVal + 1) - strideVal * (kPrime - 1) - outPadLow;
@@ -800,6 +803,18 @@ public:
     int64_t resultSliceWidth = std::min<int64_t>(
         convExpandedWidth - resultSliceLeft, resultWidth - resultPadLeft);
 
+    // The clamping above guarantees both arguments to each `min` are
+    // non-negative, so the slice extents must be too. A zero slice extent
+    // is reachable for pathological pad/out_pad inputs that just barely pass
+    // verifyConvTranspose, and is intentionally handled rather than rejected:
+    // tosa.slice and tosa.pad both accept zero-extent dimensions per the TOSA
+    // spec, and downstream TosaToLinalg lowers them to well-defined linalg
+    // generics. The post-pad below will fill the full requested result extent
+    // with the pad constant, which is the correct value when the expanded
+    // convolution has no overlap with the requested output region.
+    assert(resultSliceHeight >= 0 && resultSliceWidth >= 0 &&
+           "slice extents must be non-negative after clamping");
+
     llvm::SmallVector<int64_t, 4> sliceBegin = {0, resultSliceTop,
                                                 resultSliceLeft, 0};
     llvm::SmallVector<int64_t, 4> sliceSize(convReshapeDims1.begin(),
@@ -818,6 +833,8 @@ public:
     resultPadding[3] = resultHeight - resultPadTop - sliceSize[1];
     resultPadding[4] = resultPadLeft;
     resultPadding[5] = resultWidth - resultPadLeft - sliceSize[2];
+    assert(resultPadding[3] >= 0 && resultPadding[5] >= 0 &&
+           "post-slice pad extents must be non-negative");
 
     Value resultPaddingVal =
         getTosaConstShape(rewriter, op->getLoc(), resultPadding);

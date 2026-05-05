@@ -1,4 +1,4 @@
-// RUN: rocmlir-gen -fut mlir_test --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel -arch %arch | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_test --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut mlir_bwd_data_conv --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel -arch %arch | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_bwd_data_conv --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 
 // We also want to check the original rocmlir-gen command that initially hit
 // this issue is fixed. The MIGraphX -> Tosa -> Linalg CPU lowering currently does not
@@ -10,7 +10,7 @@
 
 module {
   // CHECK: [1 1 1]
-  func.func @mlir_test(%grad_out: !migraphx.shaped<1x16x16x7xf16, 1792x112x7x1>, %weights: !migraphx.shaped<16x16x2x1xf16, 32x2x1x1>) -> !migraphx.shaped<1x16x32x19xf16, 9728x608x19x1> attributes {rock.kernel} {
+  func.func @mlir_bwd_data_conv(%grad_out: !migraphx.shaped<1x16x16x7xf16, 1792x112x7x1>, %weights: !migraphx.shaped<16x16x2x1xf16, 32x2x1x1>) -> !migraphx.shaped<1x16x32x19xf16, 9728x608x19x1> attributes {rock.kernel} {
     %res = migraphx.backwards_data_convolution %grad_out, %weights {
       dilation = [1, 2],
       group = 1 : i64,
