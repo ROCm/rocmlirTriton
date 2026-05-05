@@ -408,19 +408,10 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                      const rock::BackendOptions &options) {
-  // Restore host functions (main, wrapper) that were stored during
-  // RockFuncToTritonFuncPass. This converts func.call @kernel to gpu.launch_func.
-  rock::RockRestoreHostCodePassOptions restoreOpts;
-  restoreOpts.triple = options.triple;
-  restoreOpts.arch = options.chip;
-  restoreOpts.features = options.features;
-  restoreOpts.optLevel = options.optLevel;
-  pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
-
-// Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
-// OneShotBufferize / CpuLowerVerifier below — otherwise stray
-// arith.extf/truncf on fp8 element types crash bufferization with
-// unsupported builtin.unrealized_conversion_cast.
+  // Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
+  // OneShotBufferize / CpuLowerVerifier below — otherwise stray
+  // arith.extf/truncf on fp8 element types crash bufferization with
+  // unsupported builtin.unrealized_conversion_cast.
   pm.addPass(createEmulateFp8ExtTruncPass());
 
   // CPU optimization phase.
@@ -553,6 +544,15 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
   }
+
+  // Restore host functions (main, wrapper) that were stored during
+  // RockFuncToTritonFuncPass. This converts func.call @kernel to gpu.launch_func.
+  rock::RockRestoreHostCodePassOptions restoreOpts;
+  restoreOpts.triple = options.triple;
+  restoreOpts.arch = options.chip;
+  restoreOpts.features = options.features;
+  restoreOpts.optLevel = options.optLevel;
+  pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
 }
 
 //===----------------------------------------------------------------------===//

@@ -179,6 +179,5 @@ mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
 
   mlir::rock::buildTritonPipeline(*passMan, tritonOpts);
   mlir::rock::buildBackendPipeline(*passMan, backendOpts);
-  mlir::rock::buildHostLoweringPipeline(*passMan, backendOpts);
   return true;
 }

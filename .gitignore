@@ -75,4 +75,4 @@ pythonenv*
 .ipynb_checkpoints
 /MIOpenDeps
 CMakePresets.json
-.cursor/ 
+.cursor/
