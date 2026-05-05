@@ -270,8 +270,19 @@ void mcpuVerify(T *gpuResults, T *validationResults, long long dataSize,
   }
   double aveAbsDiff = sumAbsDiff / static_cast<double>(dataSize);
   double aveRelDiff = sumRelDiff / static_cast<double>(dataSize);
-  double err_RMS = sqrt(sumDiffSq) / (static_cast<double>(maxMag) *
-                                      sqrt(static_cast<double>(dataSize)));
+
+  // When the test and validation tensors agree element-wise (sumDiffSq == 0),
+  // RMS is unambiguously zero. Computing it via the normalized formula below
+  // would yield 0/0 = NaN whenever the tensors are also entirely zero (e.g.
+  // both sides produce -0), which fails the RMS threshold check.
+  double err_RMS;
+  if (sumDiffSq == 0.0) {
+    err_RMS = 0.0;
+  } else {
+    err_RMS = sqrt(sumDiffSq) / (static_cast<double>(maxMag) *
+                                 sqrt(static_cast<double>(dataSize)));
+  }
+
   // Check if pass based on all three metrics: RMS, maxAbsDiff, maxRelDiff
   int RMS_pass = (err_RMS <= thr_RMS) ? 1 : 0;
   int absDiff_pass = (maxAbsDiff <= thr_absDiff) ? 1 : 0;
