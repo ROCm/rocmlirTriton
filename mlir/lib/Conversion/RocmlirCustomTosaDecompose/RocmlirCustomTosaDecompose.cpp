@@ -743,11 +743,17 @@ public:
     int64_t kWPrime = restridedWeightTy.getDimSize(2);
 
     // After factoring stride phases out of the filter channels, a contribution
-    // from input index i and effective filter index k lands in the expanded
-    // result at:
-    //   i * stride + k + pad_low * (stride + 1) - stride * (kPrime - 1)
+    // from gradient-output index h and original filter index k lands in the
+    // expanded stride-1 conv result at:
+    //   ho_expanded = h * stride + k + pad_low * stride - stride * (kPrime - 1)
     // where kPrime is the reduced spatial filter size used by the stride-1
-    // convolution. Convert that origin into a low-side crop or pad.
+    // convolution. The output of this op is dx[i] (with i = h*stride + k -
+    // pad_low) shifted by out_pad_low. So output position 0 corresponds to
+    // h*stride + k = pad_low - out_pad_low, which substituted above gives the
+    // low-side offset into the expanded conv result:
+    //   offset = pad_low * (stride + 1) - stride * (kPrime - 1) - out_pad_low
+    // Positive offset means we crop the expanded result on the low side;
+    // negative offset means we pre-pad the result on the low side.
     auto computeLowSideOffset = [](int64_t inPadLow, int64_t outPadLow,
                                    int64_t strideVal, int64_t kPrime) {
       return inPadLow * (strideVal + 1) - strideVal * (kPrime - 1) - outPadLow;
