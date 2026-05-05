@@ -51,7 +51,33 @@ const StringRef PopulateParamsXDL::initParametersF32GemmGfx942[] = {
 
 // BEGIN_GEMM_XDL_f32_gfx950_DEFS
 const StringRef PopulateParamsXDL::initParametersF32GemmGfx950[] = {
-    "gemm:v1:64,64,64,1,1,4,0,1,2,0,0"
+    "gemm:v1:32,128,16,1,1,4,32,1,3,0,0",
+    "gemm:v1:64,64,64,1,1,4,16,1,1,0,0",
+    "gemm:v1:16,16,16,1,1,2,16,1,2,0,0",
+    "gemm:v1:64,16,64,1,1,4,16,1,1,0,0",
+    "gemm:v1:16,128,64,1,1,4,16,1,1,0,0",
+    "gemm:v1:32,32,32,1,1,4,16,1,2,0,0",
+    "gemm:v1:128,128,16,1,1,4,16,1,2,0,0",
+    "gemm:v1:16,16,16,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,64,64,1,1,4,16,4,1,0,0",
+    "gemm:v1:16,16,64,1,1,2,16,4,2,0,0",
+    "gemm:v1:32,16,64,1,1,2,16,4,1,0,0",
+    "gemm:v1:16,16,16,1,1,2,16,3,3,0,0",
+    "gemm:v1:16,64,64,1,1,4,16,4,2,0,0",
+    "gemm:v1:16,32,64,1,1,2,16,4,3,0,0",
+    "gemm:v1:16,16,64,1,1,4,16,4,1,0,0",
+    "gemm:v1:16,16,16,1,1,4,16,4,3,0,0",
+    "gemm:v1:16,16,16,1,1,2,16,3,2,0,0",
+    "gemm:v1:16,16,16,1,1,2,32,4,3,0,0",
+    "gemm:v1:16,16,16,1,1,4,32,4,3,0,0",
+    "gemm:v1:16,16,32,1,1,4,16,4,2,0,0",
+    "gemm:v1:16,16,32,1,1,4,32,4,3,0,0",
+    "gemm:v1:32,256,16,1,1,4,32,4,2,0,0",
+    "gemm:v1:16,64,128,1,1,4,16,1,3,0,0",
+    "gemm:v1:16,64,128,1,1,4,16,4,2,0,0",
+    "gemm:v1:32,128,32,1,1,4,32,4,2,0,0",
+    "gemm:v1:16,128,64,1,1,2,16,1,1,0,0",
+    "gemm:v1:16,64,128,1,1,2,16,1,2,0,0"
 };
 // END_GEMM_XDL_f32_gfx950_DEFS
 
@@ -139,7 +165,82 @@ const StringRef PopulateParamsXDL::initParametersF16GemmGfx942[] = {
 
 // BEGIN_GEMM_XDL_f16_gfx950_DEFS
 const StringRef PopulateParamsXDL::initParametersF16GemmGfx950[] = {
-    "gemm:v1:64,64,64,1,1,4,0,1,2,0,0"
+    "gemm:v1:64,64,128,1,1,4,32,1,2,0,0",
+    "gemm:v1:64,128,64,1,1,4,32,1,2,0,0",
+    "gemm:v1:16,16,16,1,1,2,16,1,2,0,0",
+    "gemm:v1:32,64,128,1,1,4,16,1,2,0,0",
+    "gemm:v1:16,64,128,1,1,4,16,4,2,0,0",
+    "gemm:v1:128,64,64,1,1,4,32,1,3,0,0",
+    "gemm:v1:64,64,32,1,1,2,32,1,2,0,0",
+    "gemm:v1:128,128,32,1,1,2,32,1,2,0,0",
+    "gemm:v1:16,64,128,1,1,4,16,1,3,0,0",
+    "gemm:v1:64,128,32,1,1,2,32,1,3,0,0",
+    "gemm:v1:64,32,128,1,1,4,32,1,2,0,0",
+    "gemm:v1:32,64,32,1,1,2,16,1,2,0,0",
+    "gemm:v1:128,64,128,1,1,4,16,1,2,0,0",
+    "gemm:v1:16,16,32,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,64,128,1,1,4,16,3,3,0,0",
+    "gemm:v1:32,128,64,1,1,4,32,1,2,0,0",
+    "gemm:v1:16,32,128,1,1,4,32,4,2,0,0",
+    "gemm:v1:32,128,128,1,1,2,16,1,2,0,0",
+    "gemm:v1:32,64,128,1,1,2,16,4,3,0,0",
+    "gemm:v1:64,64,16,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,128,64,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,16,64,1,1,2,32,1,2,0,0",
+    "gemm:v1:16,256,32,1,1,4,16,1,3,0,0",
+    "gemm:v1:16,32,128,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,64,64,1,1,2,16,4,3,0,0",
+    "gemm:v1:64,128,32,1,1,2,16,1,3,0,0",
+    "gemm:v1:128,256,32,1,1,4,32,1,3,0,0",
+    "gemm:v1:16,16,16,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,32,128,1,1,2,16,3,3,0,0",
+    "gemm:v1:16,32,128,1,1,4,32,1,2,0,0",
+    "gemm:v1:16,32,64,1,1,4,32,1,2,0,0",
+    "gemm:v1:16,32,64,1,1,4,32,4,3,0,0",
+    "gemm:v1:16,64,16,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,64,16,1,1,2,32,4,2,0,0",
+    "gemm:v1:256,256,64,1,1,4,32,1,2,0,0",
+    "gemm:v1:32,128,128,1,1,2,16,1,3,0,0",
+    "gemm:v1:32,32,32,1,1,2,32,1,2,0,0",
+    "gemm:v1:32,64,16,1,1,2,32,1,2,0,0",
+    "gemm:v1:128,16,128,1,1,4,16,1,2,0,0",
+    "gemm:v1:16,128,128,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,128,16,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,16,128,1,1,2,16,4,2,0,0",
+    "gemm:v1:16,16,16,1,1,2,16,4,3,0,0",
+    "gemm:v1:16,16,16,1,1,2,32,4,3,0,0",
+    "gemm:v1:16,16,32,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,16,32,1,1,2,32,4,3,0,0",
+    "gemm:v1:16,16,64,1,1,4,16,1,2,0,0",
+    "gemm:v1:16,16,64,1,1,4,16,1,3,0,0",
+    "gemm:v1:16,32,16,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,64,64,1,1,2,32,1,2,0,0",
+    "gemm:v1:256,128,64,1,1,4,32,1,2,0,0",
+    "gemm:v1:32,128,128,1,1,4,32,1,3,0,0",
+    "gemm:v1:32,256,16,1,1,2,16,1,2,0,0",
+    "gemm:v1:32,256,16,1,1,2,32,1,2,0,0",
+    "gemm:v1:64,64,16,1,1,2,32,4,2,0,0",
+    "gemm:v1:128,16,32,1,1,4,16,1,3,0,0",
+    "gemm:v1:128,64,16,1,1,2,16,1,3,0,0",
+    "gemm:v1:128,64,32,1,1,4,16,1,2,0,0",
+    "gemm:v1:16,16,32,1,1,2,32,3,3,0,0",
+    "gemm:v1:16,16,32,1,1,4,16,1,2,0,0",
+    "gemm:v1:16,16,32,1,1,4,32,4,1,0,0",
+    "gemm:v1:16,256,16,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,256,64,1,1,2,16,4,2,0,0",
+    "gemm:v1:16,64,64,1,1,4,16,1,2,0,0",
+    "gemm:v1:32,64,128,1,1,2,16,3,2,0,0",
+    "gemm:v1:32,64,32,1,1,4,32,4,2,0,0",
+    "gemm:v1:16,16,128,1,1,4,32,4,1,0,0",
+    "gemm:v1:16,16,32,1,1,2,16,4,3,0,0",
+    "gemm:v1:16,64,64,1,1,2,16,3,3,0,0",
+    "gemm:v1:64,256,32,1,1,2,16,1,2,0,0",
+    "gemm:v1:128,16,32,1,1,2,32,4,3,0,0",
+    "gemm:v1:128,64,128,1,1,4,16,4,3,0,0",
+    "gemm:v1:128,64,64,1,1,2,32,4,2,0,0",
+    "gemm:v1:256,128,32,1,1,4,16,1,3,0,0",
+    "gemm:v1:256,64,16,1,1,2,32,4,2,0,0",
+    "gemm:v1:64,128,128,1,1,2,32,1,1,0,0"
 };
 // END_GEMM_XDL_f16_gfx950_DEFS
 
@@ -213,7 +314,43 @@ const StringRef PopulateParamsXDL::initParametersI8GemmGfx942[] = {
 
 // BEGIN_GEMM_XDL_i8_gfx950_DEFS
 const StringRef PopulateParamsXDL::initParametersI8GemmGfx950[] = {
-    "gemm:v1:64,64,64,1,1,4,0,1,2,0,0"
+    "gemm:v1:16,16,32,1,1,2,16,1,2,0,0",
+    "gemm:v1:64,128,128,1,1,4,16,1,2,0,0",
+    "gemm:v1:64,128,64,1,1,2,16,1,2,0,0",
+    "gemm:v1:128,128,128,1,1,4,16,1,2,0,0",
+    "gemm:v1:32,64,128,1,1,2,16,1,2,0,0",
+    "gemm:v1:64,256,64,1,1,4,16,1,2,0,0",
+    "gemm:v1:16,16,32,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,64,128,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,64,128,1,1,2,16,1,2,0,0",
+    "gemm:v1:32,32,128,1,1,2,16,1,3,0,0",
+    "gemm:v1:64,64,64,1,1,2,32,1,2,0,0",
+    "gemm:v1:16,128,64,1,1,4,16,1,2,0,0",
+    "gemm:v1:16,16,64,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,32,128,1,1,2,16,1,2,0,0",
+    "gemm:v1:32,256,64,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,128,64,1,1,4,16,1,3,0,0",
+    "gemm:v1:16,128,64,1,1,4,32,1,2,0,0",
+    "gemm:v1:16,32,32,1,1,2,16,1,2,0,0",
+    "gemm:v1:32,64,128,1,1,4,32,1,2,0,0",
+    "gemm:v1:32,64,64,1,1,2,32,1,2,0,0",
+    "gemm:v1:16,16,64,1,1,4,16,1,3,0,0",
+    "gemm:v1:16,256,32,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,32,32,1,1,2,32,1,2,0,0",
+    "gemm:v1:16,32,64,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,32,64,1,1,4,16,1,3,0,0",
+    "gemm:v1:16,64,32,1,1,2,16,1,2,0,0",
+    "gemm:v1:16,64,64,1,1,2,16,1,3,0,0",
+    "gemm:v1:16,16,128,1,1,2,16,1,3,0,0",
+    "gemm:v1:32,128,32,1,1,2,16,1,2,0,0",
+    "gemm:v1:32,16,64,1,1,4,32,1,3,0,0",
+    "gemm:v1:32,256,128,1,1,4,32,1,1,0,0",
+    "gemm:v1:32,32,32,1,1,4,16,1,3,0,0",
+    "gemm:v1:128,256,64,1,1,4,32,1,3,0,0",
+    "gemm:v1:16,16,128,1,1,2,32,1,2,0,0",
+    "gemm:v1:16,16,128,1,1,4,32,1,2,0,0",
+    "gemm:v1:256,32,128,1,1,4,16,1,3,0,0",
+    "gemm:v1:128,64,128,1,1,2,16,1,3,0,0"
 };
 // END_GEMM_XDL_i8_gfx950_DEFS
 
@@ -267,7 +404,7 @@ static const StringRef initParametersF32GemmGfx942[nInitParametersF32GemmGfx942]
 // END_GEMM_XDL_f32_gfx942_DECS
 
 // BEGIN_GEMM_XDL_f32_gfx950_DECS
-static constexpr size_t nInitParametersF32GemmGfx950 = 2;
+static constexpr size_t nInitParametersF32GemmGfx950 = 27;
 static const StringRef initParametersF32GemmGfx950[nInitParametersF32GemmGfx950];
 // END_GEMM_XDL_f32_gfx950_DECS
 
@@ -307,7 +444,7 @@ static const StringRef initParametersF16GemmGfx942[nInitParametersF16GemmGfx942]
 // END_GEMM_XDL_f16_gfx942_DECS
 
 // BEGIN_GEMM_XDL_f16_gfx950_DECS
-static constexpr size_t nInitParametersF16GemmGfx950 = 2;
+static constexpr size_t nInitParametersF16GemmGfx950 = 76;
 static const StringRef initParametersF16GemmGfx950[nInitParametersF16GemmGfx950];
 // END_GEMM_XDL_f16_gfx950_DECS
 
@@ -357,7 +494,7 @@ static const StringRef initParametersI8GemmGfx942[nInitParametersI8GemmGfx942];
 // END_GEMM_XDL_i8_gfx942_DECS
 
 // BEGIN_GEMM_XDL_i8_gfx950_DECS
-static constexpr size_t nInitParametersI8GemmGfx950 = 2;
+static constexpr size_t nInitParametersI8GemmGfx950 = 37;
 static const StringRef initParametersI8GemmGfx950[nInitParametersI8GemmGfx950];
 // END_GEMM_XDL_i8_gfx950_DECS
 
@@ -767,6 +904,7 @@ static const StringRef initParametersF16AttentionGfx1000[nInitParametersF16Atten
 {"gfx942_gemm_f32", {PopulateParamsXDL::initParametersF32GemmGfx942, PopulateParamsXDL::nInitParametersF32GemmGfx942}},
 
 {"gfx950_gemm_f32", {PopulateParamsXDL::initParametersF32GemmGfx950, PopulateParamsXDL::nInitParametersF32GemmGfx950}},
+
 {"gfx908_conv_f32", {PopulateParamsXDL::initParametersF32ConvGfx908, PopulateParamsXDL::nInitParametersF32ConvGfx908}},
 {"gfx90a_conv_f32", {PopulateParamsXDL::initParametersF32ConvGfx90a, PopulateParamsXDL::nInitParametersF32ConvGfx90a}},
 {"gfx942_conv_f32", {PopulateParamsXDL::initParametersF32ConvGfx942, PopulateParamsXDL::nInitParametersF32ConvGfx942}},
@@ -777,6 +915,7 @@ static const StringRef initParametersF16AttentionGfx1000[nInitParametersF16Atten
 {"gfx942_gemm_f16", {PopulateParamsXDL::initParametersF16GemmGfx942, PopulateParamsXDL::nInitParametersF16GemmGfx942}},
 
 {"gfx950_gemm_f16", {PopulateParamsXDL::initParametersF16GemmGfx950, PopulateParamsXDL::nInitParametersF16GemmGfx950}},
+
 {"gfx908_conv_f16", {PopulateParamsXDL::initParametersF16ConvGfx908, PopulateParamsXDL::nInitParametersF16ConvGfx908}},
 {"gfx90a_conv_f16", {PopulateParamsXDL::initParametersF16ConvGfx90a, PopulateParamsXDL::nInitParametersF16ConvGfx90a}},
 {"gfx942_conv_f16", {PopulateParamsXDL::initParametersF16ConvGfx942, PopulateParamsXDL::nInitParametersF16ConvGfx942}},
@@ -789,6 +928,7 @@ static const StringRef initParametersF16AttentionGfx1000[nInitParametersF16Atten
 {"gfx942_gemm_i8", {PopulateParamsXDL::initParametersI8GemmGfx942, PopulateParamsXDL::nInitParametersI8GemmGfx942}},
 
 {"gfx950_gemm_i8", {PopulateParamsXDL::initParametersI8GemmGfx950, PopulateParamsXDL::nInitParametersI8GemmGfx950}},
+
 {"gfx908_conv_i8", {PopulateParamsXDL::initParametersI8ConvGfx908, PopulateParamsXDL::nInitParametersI8ConvGfx908}},
 {"gfx90a_conv_i8", {PopulateParamsXDL::initParametersI8ConvGfx90a, PopulateParamsXDL::nInitParametersI8ConvGfx90a}},
 {"gfx942_conv_i8", {PopulateParamsXDL::initParametersI8ConvGfx942, PopulateParamsXDL::nInitParametersI8ConvGfx942}},
