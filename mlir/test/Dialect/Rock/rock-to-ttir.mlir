@@ -498,3 +498,4 @@ func.func @test_extf_f16_to_f32_unchanged(%arg0: tensor<64xf16>) -> tensor<64xf3
   %0 = arith.extf %arg0 : tensor<64xf16> to tensor<64xf32>
   return %0 : tensor<64xf32>
 }
+
