@@ -1609,7 +1609,8 @@ static std::optional<MemRefType> convertMemRefType(MemRefType memrefType,
     return std::nullopt;
   SmallVector<int64_t> newShape(memrefType.getShape());
   if (elemType.getIntOrFloatBitWidth() == 4) {
-    assert(newShape.back() % 2 == 0 && "The last dimension must be even");
+    if (newShape.back() % 2 != 0)
+      return std::nullopt;
     newShape.back() /= 2;
   }
   return MemRefType::get(newShape, i8Ty, memrefType.getLayout(),
