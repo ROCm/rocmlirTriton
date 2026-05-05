@@ -100,6 +100,25 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
         ImplicitLocOpBuilder bodyIb(nestedLoc, b);
         bodyIb.setInsertionPointToStart(block);
 
+        // Reject candidates whose loop rank is not 3 (i.e. not a `[par, par,
+        // red]` matmul shape) before any positional dim predicate runs.
+        // Without this guard, `match.structured.dim` with `raw_dim_list = [0,
+        // 1]` would call upstream `expandTargetSpecification` with `maxNumber
+        // == 0` on rank-0 generics (left behind by the unit-extent fold for a
+        // 1x1x1 matmul) and trip the `maxNumber > 0` assertion. The cmpi-eq
+        // predicate fails silenceably on a mismatch, so `collect_matching`
+        // simply skips the candidate.
+        auto rankParam = bodyIb.create<transform::MatchStructuredRankOp>(
+            /*rank=*/i64ParamType,
+            /*operand_handle=*/structHandle);
+        auto expectedRank = bodyIb.create<transform::ParamConstantOp>(
+            /*param=*/i64ParamType,
+            /*value=*/b.getI64IntegerAttr(3));
+        bodyIb.create<transform::MatchParamCmpIOp>(
+            /*param=*/rankParam.getResult(),
+            /*reference=*/expectedRank.getResult(),
+            /*predicate=*/transform::MatchCmpIPredicate::eq);
+
         // Iterator-type predicates: dims [0, 1] parallel, dim [2] reduction.
         bodyIb.create<transform::MatchStructuredDimOp>(
             /*result=*/Type{},
