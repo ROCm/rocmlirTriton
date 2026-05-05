@@ -2,7 +2,7 @@
 // CLONE: [1 1 1]
 
 module {
-  func.func @mlir_test(%arg0: !migraphx.shaped<544x1x1xf16, 1x1x1>, %arg1: !migraphx.shaped<32x544x7x7xf16, 28224x49x7x1>, %arg2: !migraphx.shaped<544xf16, 1>, %arg3: !migraphx.shaped<128x544x1x1xf16, 544x1x1x1>, %arg4: !migraphx.shaped<128xf16, 1>) -> !migraphx.shaped<32x128x7x7xf16, 6272x49x7x1> attributes {rock.arch = "gfx942:sramecc+:xnack-", rock.enable_splitk_for_tuning, rock.kernel = "mixr", rock.num_chiplets = 8 : i64, rock.num_cu = 304 : i64} {
+  func.func @mlir_test(%arg0: !migraphx.shaped<544x1x1xf16, 1x1x1>, %arg1: !migraphx.shaped<32x544x7x7xf16, 28224x49x7x1>, %arg2: !migraphx.shaped<544xf16, 1>, %arg3: !migraphx.shaped<128x544x1x1xf16, 544x1x1x1>, %arg4: !migraphx.shaped<128xf16, 1>) -> !migraphx.shaped<32x128x7x7xf16, 6272x49x7x1> attributes {rock.kernel} {
     %0 = migraphx.multibroadcast %arg0 {out_dyn_dims = [], out_lens = [32, 544, 7, 7]} : <544x1x1xf16, 1x1x1> -> <32x544x7x7xf16, 0x1x0x0>
     %1 = migraphx.broadcast %arg2 {axis = 1 : i64, out_lens = [32, 544, 7, 7]} : <544xf16, 1> -> <32x544x7x7xf16, 0x1x0x0>
     %2 = migraphx.mul %0, %arg1 : <32x544x7x7xf16, 0x1x0x0>, <32x544x7x7xf16, 28224x49x7x1> -> <32x544x7x7xf16, 26656x49x7x1>
