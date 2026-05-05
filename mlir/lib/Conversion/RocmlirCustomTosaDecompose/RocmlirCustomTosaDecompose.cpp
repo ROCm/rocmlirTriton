@@ -795,12 +795,10 @@ public:
     resultSliceLeft = std::min(resultSliceLeft, convExpandedWidth);
 
     // Try to slice the targetted result size, cap to the convolution extent.
-    int64_t resultSliceHeight =
-        std::min<int64_t>(convExpandedHeight - resultSliceTop,
-                          resultHeight - resultPadTop);
-    int64_t resultSliceWidth =
-        std::min<int64_t>(convExpandedWidth - resultSliceLeft,
-                          resultWidth - resultPadLeft);
+    int64_t resultSliceHeight = std::min<int64_t>(
+        convExpandedHeight - resultSliceTop, resultHeight - resultPadTop);
+    int64_t resultSliceWidth = std::min<int64_t>(
+        convExpandedWidth - resultSliceLeft, resultWidth - resultPadLeft);
 
     llvm::SmallVector<int64_t, 4> sliceBegin = {0, resultSliceTop,
                                                 resultSliceLeft, 0};
