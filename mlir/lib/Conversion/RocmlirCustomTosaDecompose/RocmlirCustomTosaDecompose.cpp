@@ -600,11 +600,6 @@ public:
       dilationVals = {1, 1};
     }
 
-    // We want to capture the height and width values after dilation expansion,
-    // but before padding is added later on.
-    int64_t origWeightHeight = weightHeight;
-    int64_t origWeightWidth = weightWidth;
-
     // Pad the weight so that it is modulo of the striding.
     llvm::SmallVector<int64_t, 8> weightPadding = {0, 0, 0, 0, 0, 0, 0, 0};
     weightPadding[3] =
@@ -744,57 +739,35 @@ public:
         rewriter, loc, UnrankedTensorType::get(resultETy), conv2d,
         convReshapeDims1Value);
 
-    // Effective pad = outPad + (paddedK - stride - 1) - (inPad * stride)
-    int64_t effPadTop = outPad[0] + (origWeightHeight - stride[0] - 1) -
-                        inPadVals[0] * stride[0];
-    int64_t effPadLeft = outPad[2] + (origWeightWidth - stride[1] - 1) -
-                         inPadVals[2] * stride[1];
-
-    // When we shrink from the orignal size to kPrime by grouping stride phases,
-    // we discard some positions that existed in the conceptual upsampled view.
-    // The total span of the original field is kOrig -1, and the span
-    // represented after factoring is kPrime - 1. The difference is the values
-    // that have been lost
     int64_t kHPrime = restridedWeightTy.getDimSize(1);
     int64_t kWPrime = restridedWeightTy.getDimSize(2);
-    auto lost = [](int64_t Korig, int64_t kPrime, int64_t S) {
-      return (Korig - 1) - (kPrime - 1) * S;
+
+    // After factoring stride phases out of the filter channels, a contribution
+    // from input index i and effective filter index k lands in the expanded
+    // result at:
+    //   i * stride + k + pad_low * (stride + 1) - stride * (kPrime - 1)
+    // where kPrime is the reduced spatial filter size used by the stride-1
+    // convolution. Convert that origin into a low-side crop or pad.
+    auto computeLowSideOffset = [](int64_t inPadLow, int64_t outPadLow,
+                                   int64_t strideVal, int64_t kPrime) {
+      return inPadLow * (strideVal + 1) - strideVal * (kPrime - 1) -
+             outPadLow;
     };
-    int64_t lostH = lost(origWeightHeight, kHPrime, stride[0]);
-    int64_t lostW = lost(origWeightWidth, kWPrime, stride[1]);
-
-    // If stride factoring compresses a dimension to a single spatial position,
-    // i.e., kPrime == 1, then we dropped a ring of values around that position.
-    // The adjustment pattern depends on which dimension has asymmetric padding.
-
-    // Height dimension compressed (kHPrime==1)
-    if (kHPrime == 1 && lostH > 0) {
-      int64_t adjustment = lostH / 2;
-      bool hasAsymmetricWidth = (weightPadding[4] != weightPadding[5]);
-      if (hasAsymmetricWidth) {
-        effPadTop -= adjustment;
-        effPadLeft += adjustment;
-      } else {
-        effPadLeft += adjustment;
-      }
-    }
-
-    // Width dimension compressed (kWPrime==1)
-    if (kWPrime == 1 && lostW > 0) {
-      effPadTop += lostW / 2;
-    }
+    int64_t offsetTop =
+        computeLowSideOffset(inPadVals[0], outPad[0], stride[0], kHPrime);
+    int64_t offsetLeft =
+        computeLowSideOffset(inPadVals[2], outPad[2], stride[1], kWPrime);
 
     int64_t resultSliceTop;
     int64_t resultSliceLeft;
     int64_t resultPadTop;
     int64_t resultPadLeft;
-    // Convert effective padding into slice (crop) and post-pad just like the
-    // prior logic but now using effPad*.
+    // Convert low-side offset into slice (crop) and post-pad.
     if (op->hasAttr("pad")) {
-      resultSliceTop = std::max<int64_t>(0, -effPadTop);
-      resultSliceLeft = std::max<int64_t>(0, -effPadLeft);
-      resultPadTop = std::max<int64_t>(0, effPadTop);
-      resultPadLeft = std::max<int64_t>(0, effPadLeft);
+      resultSliceTop = std::max<int64_t>(0, offsetTop);
+      resultSliceLeft = std::max<int64_t>(0, offsetLeft);
+      resultPadTop = std::max<int64_t>(0, -offsetTop);
+      resultPadLeft = std::max<int64_t>(0, -offsetLeft);
     } else {
       // Default to using legacy logic if input padding is not present
       resultSliceTop = std::max<int64_t>(0, -outPad[0]);
