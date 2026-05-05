@@ -794,15 +794,36 @@ static LogicalResult fixup4BitFusionOps(
   Type i8Ty = IntegerType::get(ctx, 8);
 
   for (auto &[op, info] : fusionInfoMap) {
-    bool has4bit = false;
+    bool has4bitOperand = false;
     for (Type t : info.origOperandTypes)
       if (isNonTTFloat(t, 4))
-        has4bit = true;
+        has4bitOperand = true;
+    bool has4bitResult = false;
     for (Type t : info.origResultTypes)
       if (isNonTTFloat(t, 4))
-        has4bit = true;
-    if (!has4bit)
+        has4bitResult = true;
+    if (!has4bitOperand && !has4bitResult)
       continue;
+
+    // We unpack f4 operands into low/high nibbles and clone the op for each
+    // half, producing two halved-shape result tensors that we then repack
+    // (low | high<<4) into the original packed i8 shape. That repack step
+    // only works when the result element type is f4. For ops that consume
+    // f4 inputs but produce a different element type (e.g. arith.cmpf or
+    // math.isfinite returning i1, or a truncf/fptoui to a wider int), we
+    // would have no way to interleave the two halved-shape results back
+    // into the original unpacked shape, so half the lanes would be lost.
+    // Reject these fusions explicitly rather than silently dropping data.
+    if (has4bitOperand) {
+      for (Type t : info.origResultTypes) {
+        auto resTensor = dyn_cast<RankedTensorType>(t);
+        if (resTensor && !isNonTTFloat(resTensor, 4))
+          return op->emitError(
+              "f4 fusion op produces a non-f4 tensor result; reconstructing "
+              "the unpacked result shape from packed nibble clones is not "
+              "supported");
+      }
+    }
 
     Location loc = op->getLoc();
 
