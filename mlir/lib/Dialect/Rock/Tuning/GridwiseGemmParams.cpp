@@ -259,43 +259,14 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
   return res;
 }
 
-/// Hard legality gate that runs in every tuning mode (Quick/Full/Exhaustive),
-/// unlike `specificCouldBePerformant` which is a Full-only performance prune.
-///
-/// MFMA on gfx90a/940-942/950 has 512 unified VGPR+AGPR slots per wave. With
-/// f32 accumulation each output element costs one slot, so when
-///   accPerLane = mPerBlock * nPerBlock / (numWaves * 64)
-/// exceeds 512 the C accumulator spills to scratch. Combined with splitK > 1
-/// and numStages == 1, the spilled kernel takes a runtime memory access fault
-/// on gfx942 (originally seen on 256x256, numWaves=1, splitK=3, K=1024). The
-/// non-crashing configs in this band underperform multi-wave / smaller-tile
-/// alternatives by 3-20x, so we filter the whole band rather than just the
-/// crash subset.
-///
-/// gfx908 has a stricter 256+256 split (lenient under 512). WMMA / RDNA take
-/// the `mnPerXdl == 0` early-out (different register file + wave size). See
-/// `specificCouldBePerformant.md` for the per-arch register-file table.
-bool mlir::rock::gemmParamsExceedRegisterBudget(GemmParamsAttr params) {
-  int64_t mnPerXdl = params.getMatrixInstrNonkdim();
-  if (mnPerXdl == 0)
-    return false;
-
-  int64_t numWaves = params.getNumWaves();
-  if (numWaves <= 0)
-    return false;
-
-  constexpr int64_t kCdnaWaveSize = 64;
-  constexpr int64_t kMaxAccPerThread = 512;
-  int64_t accPerThread = (params.getMPerBlock() * params.getNPerBlock()) /
-                         (numWaves * kCdnaWaveSize);
-  return accPerThread > kMaxAccPerThread;
-}
-
 LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
                                                         Type dataTypeA,
                                                         Type dataTypeB) {
   (void)dataTypeA;
   (void)dataTypeB;
+
+  static constexpr int64_t kGemmCdnaWaveSize = 64;
+  static constexpr int64_t kGemmMaxAccPerThread = 512;
 
   /// MFMA/XDL-only heuristic (rocMLIR `PopulateParamsXDL::specificCouldBePerformant`):
   /// factor total wave count into an M×N wave grid; `nPerWave` is
@@ -313,7 +284,10 @@ LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
   if (numWaves != 1 && numWaves != 2 && numWaves != 4)
     return failure();
 
-  if (gemmParamsExceedRegisterBudget(params))
+  // Heuristic to limit the per-thread accumulator size.
+  int64_t accPerThread = (params.getMPerBlock() * params.getNPerBlock()) /
+                         (numWaves * kGemmCdnaWaveSize);
+  if (accPerThread > kGemmMaxAccPerThread)
     return failure();
 
   return success();
