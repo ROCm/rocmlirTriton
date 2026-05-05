@@ -546,7 +546,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   }
 
   // Restore host functions (main, wrapper) that were stored during
-  // RockFuncToTritonFuncPass. This converts func.call @kernel to 
+  // RockFuncToTritonFuncPass. This converts func.call @kernel to
   // gpu.launch_func.
   rock::RockRestoreHostCodePassOptions restoreOpts;
   restoreOpts.triple = options.triple;
