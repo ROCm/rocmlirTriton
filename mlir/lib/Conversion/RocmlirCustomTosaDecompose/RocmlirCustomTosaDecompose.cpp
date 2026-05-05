@@ -794,7 +794,7 @@ public:
     resultSliceTop = std::min(resultSliceTop, convExpandedHeight);
     resultSliceLeft = std::min(resultSliceLeft, convExpandedWidth);
 
-    // Try to slice the targetted result size, cap to the convolution extent.
+    // Try to slice the targeted result size, cap to the convolution extent.
     int64_t resultSliceHeight = std::min<int64_t>(
         convExpandedHeight - resultSliceTop, resultHeight - resultPadTop);
     int64_t resultSliceWidth = std::min<int64_t>(
