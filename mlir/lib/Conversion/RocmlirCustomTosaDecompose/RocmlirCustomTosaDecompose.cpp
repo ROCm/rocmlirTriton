@@ -750,8 +750,7 @@ public:
     // convolution. Convert that origin into a low-side crop or pad.
     auto computeLowSideOffset = [](int64_t inPadLow, int64_t outPadLow,
                                    int64_t strideVal, int64_t kPrime) {
-      return inPadLow * (strideVal + 1) - strideVal * (kPrime - 1) -
-             outPadLow;
+      return inPadLow * (strideVal + 1) - strideVal * (kPrime - 1) - outPadLow;
     };
     int64_t offsetTop =
         computeLowSideOffset(inPadVals[0], outPad[0], stride[0], kHPrime);
