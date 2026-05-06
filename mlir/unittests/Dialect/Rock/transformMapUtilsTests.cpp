@@ -10,6 +10,8 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -263,6 +265,123 @@ TEST(AddPassThroughIndicesTest, InvalidPositionOutOfBounds) {
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {3, 4}, 5);
 
   ASSERT_TRUE(failed(result));
+}
+
+//===----------------------------------------------------------------------===//
+// isIdentityOnShape Tests
+//===----------------------------------------------------------------------===//
+
+// Test: Plain identity map matches any shape of equal rank.
+TEST(IsIdentityOnShapeTest, PlainIdentity) {
+  TestEnv env;
+  MLIRContext &ctx = env.ctx;
+
+  AffineMap map = AffineMap::getMultiDimIdentityMap(3, &ctx);
+
+  EXPECT_TRUE(isIdentityOnShape(map, {1, 124, 664}));
+  EXPECT_TRUE(isIdentityOnShape(map, {4, 8, 16}));
+}
+
+// Test: Constant 0 in a unit-bound position is treated as identity.
+// Mirrors the documented example `(d0,d1,d2) -> (0,d1,d2)` with shape
+// `[1, 124, 664]`.
+TEST(IsIdentityOnShapeTest, BroadcastingOnUnitDim) {
+  TestEnv env;
+  MLIRContext &ctx = env.ctx;
+
+  SmallVector<AffineExpr> exprs = {getAffineConstantExpr(0, &ctx),
+                                   getAffineDimExpr(1, &ctx),
+                                   getAffineDimExpr(2, &ctx)};
+  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
+                                 &ctx);
+
+  EXPECT_TRUE(isIdentityOnShape(map, {1, 124, 664}));
+}
+
+// Test: Constant 0 in a non-unit-bound position is not identity, since the
+// dimension actually takes nonzero values at runtime.
+TEST(IsIdentityOnShapeTest, BroadcastingOnNonUnitDim) {
+  TestEnv env;
+  MLIRContext &ctx = env.ctx;
+
+  SmallVector<AffineExpr> exprs = {getAffineConstantExpr(0, &ctx),
+                                   getAffineDimExpr(1, &ctx),
+                                   getAffineDimExpr(2, &ctx)};
+  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
+                                 &ctx);
+
+  EXPECT_FALSE(isIdentityOnShape(map, {2, 124, 664}));
+}
+
+// Test: A transposition is not identity, even on shapes whose unit dims would
+// otherwise allow broadcasting. Mirrors `(d0,d1,d2) -> (d0,d2,d1)`.
+TEST(IsIdentityOnShapeTest, TransposeIsNotIdentity) {
+  TestEnv env;
+  MLIRContext &ctx = env.ctx;
+
+  SmallVector<AffineExpr> exprs = {getAffineDimExpr(0, &ctx),
+                                   getAffineDimExpr(2, &ctx),
+                                   getAffineDimExpr(1, &ctx)};
+  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
+                                 &ctx);
+
+  EXPECT_FALSE(isIdentityOnShape(map, {1, 124, 664}));
+  EXPECT_FALSE(isIdentityOnShape(map, {4, 4, 4}));
+}
+
+// Test: A nonzero constant in a unit-bound position is not identity.
+// Mirrors the documented example `(d0,d1,d2) -> (1,d1,d2)`.
+TEST(IsIdentityOnShapeTest, WrongConstantOnUnitDim) {
+  TestEnv env;
+  MLIRContext &ctx = env.ctx;
+
+  SmallVector<AffineExpr> exprs = {getAffineConstantExpr(1, &ctx),
+                                   getAffineDimExpr(1, &ctx),
+                                   getAffineDimExpr(2, &ctx)};
+  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
+                                 &ctx);
+
+  EXPECT_FALSE(isIdentityOnShape(map, {1, 124, 664}));
+}
+
+// Test: A null map is rejected rather than crashing.
+TEST(IsIdentityOnShapeTest, NullMap) {
+  EXPECT_FALSE(isIdentityOnShape(AffineMap(), {1, 124, 664}));
+}
+
+// Test: Maps whose result count does not match the shape rank are rejected.
+TEST(IsIdentityOnShapeTest, ShapeRankMismatch) {
+  TestEnv env;
+  MLIRContext &ctx = env.ctx;
+
+  AffineMap map = AffineMap::getMultiDimIdentityMap(3, &ctx);
+
+  EXPECT_FALSE(isIdentityOnShape(map, {1, 124}));
+  EXPECT_FALSE(isIdentityOnShape(map, {1, 124, 664, 2}));
+}
+
+// Test: Maps with a different number of input dims than results are not
+// considered identity (the function requires a square map).
+TEST(IsIdentityOnShapeTest, NonSquareMap) {
+  TestEnv env;
+  MLIRContext &ctx = env.ctx;
+
+  SmallVector<AffineExpr> exprs = {getAffineDimExpr(0, &ctx),
+                                   getAffineDimExpr(1, &ctx)};
+  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
+                                 &ctx);
+
+  EXPECT_FALSE(isIdentityOnShape(map, {4, 8}));
+}
+
+// Test: The empty (rank-0) identity map matches the empty shape.
+TEST(IsIdentityOnShapeTest, EmptyShape) {
+  TestEnv env;
+  MLIRContext &ctx = env.ctx;
+
+  AffineMap map = AffineMap::getMultiDimIdentityMap(0, &ctx);
+
+  EXPECT_TRUE(isIdentityOnShape(map, {}));
 }
 
 } // end anonymous namespace
