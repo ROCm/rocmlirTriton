@@ -703,6 +703,22 @@ def Rock_BlockwiseLoadPtrOp
   }];
 }
 
+/// Marking rock.blockwise_store as Pure currently makes sense, but
+/// it might be risky in the future if we implement mega-kernel support.
+/// Consider the following example:
+///
+/// %result = rock.blockwise_store %tile, %dest
+/// ...
+/// global GPU sync
+/// ...
+/// %tile = rock.blockwise_load %tileSrc
+///
+/// Where %tileSrc overlaps %dest in memory. This might not make sense logically,
+/// as rock.blockwise_store doesn't store to %dest, it just returns %result.
+///
+/// See more details in: 
+/// https://github.com/ROCm/rocmlirTriton/pull/165#issuecomment-4379381305
+
 // blockwise_store
 def Rock_BlockwiseStoreOp
     : Rock_Op<"blockwise_store",
