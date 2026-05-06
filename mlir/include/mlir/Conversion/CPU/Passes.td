@@ -21,23 +21,36 @@
 include "mlir/Pass/PassBase.td"
 
 def CpuConvToGemmPass : Pass<"cpu-conv-to-gemm", "::mlir::ModuleOp"> {
-  let summary = "Convert linalg.generic convolutions to matmul operations";
+  let summary = "Rewrite conv-shaped linalg.generic ops in CPU verifier "
+                "functions into a fused contraction with an inlined im2col";
   let description = [{
-    This pass identifies linalg.generic operations that represent convolutions
-    and converts them to matrix multiplication operations using the im2col
-    transformation.
+    Rewrite 2-D convolution-shaped `linalg.generic` ops that live inside
+    `rock.cpu_verifier` functions into a single fused `linalg.generic`
+    whose input affine map inlines the im2col gather. The rewritten op is
+    tagged with the `rock.cpu_fused_conv` unit attribute so downstream
+    transform schedules can find it and so this pass does not match it
+    again on a second invocation.
 
-    The pass currently supports:
-    - Backward data convolution (computing input gradients)
+    The rewritten op keeps the original 8-D iteration space
+    (5 parallel + 3 reduction: `(N, G, C, Ho, Wo, KC, Fh, Fw)`) and a
+    standard mul+add contraction body. Operand maps are kept in the
+    user's original tensor layout, with the input's spatial dims
+    expressed as `(Ho + Fh)` / `(Wo + Fw)` sums. Forward and backward-data
+    convolutions are both supported -- they share the same fused form.
 
-    The transformation follows the im2col approach:
-    1. Identify linalg.generic with convolution semantics based on indexing maps
-    2. Create an im2col tensor that rearranges the input data
-    3. Replace the convolution with a matmul (linalg.generic with GEMM semantics)
-    4. Reshape results back to the expected output shape
+    Compared to a classical im2col + batched-GEMM lowering (which would
+    materialise an explicit `tensor<G x N x Ho x Wo x K x Fh x Fw>`
+    intermediate), this rewrite avoids the multi-hundred-GB im2col
+    tensor that ResNet-scale shapes would otherwise produce. The 8-D op
+    is later collapsed to a 3-D matmul shape by the
+    `FusedConvToMatmulSchedule` step inside `--cpu-lower-verifier`.
 
-    This transformation can improve performance by leveraging highly optimized
-    GEMM implementations.
+    Restrictions:
+    - Only convolutions inside `rock.cpu_verifier` funcs are rewritten;
+      conv-shaped ops elsewhere are left alone.
+    - Stride and dilation must both be 1. Anything else (e.g. forward
+      conv with stride > 1) is rejected up-front by the matcher and
+      reported as "NOT CONVERTED" via a debug-only diagnostic.
   }];
   let dependentDialects = [
     "func::FuncDialect",

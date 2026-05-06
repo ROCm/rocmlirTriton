@@ -29,11 +29,6 @@
 using namespace mlir;
 using namespace mlir::cpu;
 
-/// Marker attribute placed on the rewritten conv by `--cpu-conv-to-gemm`.
-/// Kept in sync with the same constant in `ConvToGemm.cpp`; if either
-/// changes, both must be updated.
-static constexpr llvm::StringLiteral kFusedConvAttrName = "rock.cpu_fused_conv";
-
 /// Build the iterator-types `DictionaryAttr` corresponding to the
 /// rocmlir-gen batched-GEMM iter-space `(G, M, N, K)` -> `[par, par, par,
 /// red]`. Used by the transform-dialect matcher below.
@@ -56,11 +51,7 @@ cpu::buildFusedConvToMatmulSchedule(MLIRContext *ctx) {
                                          BlockArgument arg) {
     auto anyOpType = getAnyOpType(ctx);
 
-    // ----- Stage 1a: fused 8-D conv -> shape-normalized matmul ---------
-    //
-    // Match the fused 8-D conv emitted by --cpu-conv-to-gemm. Matching by
-    // the marker attribute (rather than by the 8 iterator types) is both
-    // shorter and robust against future iter-space tweaks in ConvToGemm.
+    // Match the fused 8-D conv emitted by --cpu-conv-to-gemm.
     auto fusedConvAttrs = DictionaryAttr::get(
         ctx, {NamedAttribute(StringAttr::get(ctx, kFusedConvAttrName),
                              UnitAttr::get(ctx))});
@@ -90,13 +81,7 @@ cpu::buildFusedConvToMatmulSchedule(MLIRContext *ctx) {
     // `linalg.generic` at full extent. After unit-extent folding below,
     // those collapse to a 3-D `(C, Wo, KC)` matmul shape with iter types
     // `[par, par, red]` (G is unit and folds away too).
-    //
-    // Tile sizes follow iter-space order; size 0 means "do not tile this
-    // dim, keep it inside the inner op at full extent":
-    //
-    //                              d0  d1  d2  d3  d4  d5  d6  d7
-    //                               N   G   C  Ho  Wo  KC  Fh  Fw
-    SmallVector<int64_t> convTileSizes = {1,  0,  0,  1,  0,  0,  1,  1};
+    SmallVector<int64_t> convTileSizes = {1,0,0,1,0,0,1,1};
 
     // Number of returned `scf.for` loops equals the count of non-zero tile
     // sizes. Build the loop-result type list to match.
@@ -112,16 +97,7 @@ cpu::buildFusedConvToMatmulSchedule(MLIRContext *ctx) {
         /*interchange=*/ArrayRef<int64_t>{},
         /*scalableSizes=*/std::nullopt);
 
-    // ----- Stage 1b: batched GEMM -> shape-normalized matmul -----------
-    //
-    // rocmlir-gen emits plain GEMM verifiers as a 4-D
-    // `linalg.generic` with iter-space `(d0=G, d1=M, d2=N, d3=K)` and
-    // iter types `[par, par, par, red]`. To unify the downstream matcher
-    // / tiling / vectorization paths on the canonical 3-D
-    // `[par, par, red]` shape, peel the batch dim off into an outer
-    // `scf.for` and let the unit-extent fold below collapse the
-    // resulting size-1 G dim of the inner op.
-    //
+    // Now tile the G dimension, to get a 3D matmul.
     // Tile sizes index by iter-space dim; G is at d0:
     //                                d0 d1 d2 d3
     //                                 G  M  N  K
@@ -145,15 +121,10 @@ cpu::buildFusedConvToMatmulSchedule(MLIRContext *ctx) {
         /*interchange=*/ArrayRef<int64_t>{},
         /*scalableSizes=*/std::nullopt);
 
-    // ----- Stage 1c: collapse the now-unit batch / spatial dims --------
-    //
     // Drop the unit-extent iteration dims that tiling introduced on the
     // inner ops (plus any pre-existing unit dims like G=1) so each inner
     // kernel collapses to the matmul shape that downstream schedules
-    // recognise. Canonicalize in the same pattern set so the resulting
-    // `tensor.extract_slice` / `tensor.insert_slice` chains simplify
-    // (and the trip-1 outer `scf.for`s introduced for genuinely-G=1
-    // GEMMs disappear) before the next schedule runs.
+    // recognise.
     auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
     ib.create<transform::ApplyPatternsOp>(
         /*target=*/matchFunc.getResult(),

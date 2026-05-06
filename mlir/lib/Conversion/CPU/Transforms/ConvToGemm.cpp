@@ -37,6 +37,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/CPU/Passes.h"
+
+#include "Schedules/ScheduleUtils.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -165,6 +168,18 @@ static bool hasContractionBody(linalg::GenericOp op) {
     mulOp = addOp.getRhs().getDefiningOp<arith::MulFOp>();
 
   return mulOp != nullptr;
+}
+
+/// Return `true` when `op`'s nearest enclosing `func::FuncOp` carries the
+/// `rock.cpu_verifier` attribute. This pass is only meant to rewrite convs
+/// that live in CPU verifier functions emitted by rocmlir-gen; gating the
+/// rewrite pattern on this predicate keeps any convolution-shaped
+/// `linalg.generic` in the host module (or in user code that happens to
+/// flow through this pipeline) untouched, even though the greedy driver
+/// is invoked at module scope.
+static bool isInsideCpuVerifierFunc(Operation *op) {
+  auto func = op->getParentOfType<func::FuncOp>();
+  return func && func->hasAttr("rock.cpu_verifier");
 }
 
 /// Try to interpret a `linalg.generic` as a 2D convolution contraction (any
@@ -388,11 +403,6 @@ static bool hasBwdDataFilterRotation(Value filter) {
   return false;
 }
 
-/// Marker attribute placed on the rewritten `linalg.generic` so the matcher
-/// can skip it on subsequent rewrite-driver iterations and so the pass's
-/// diagnostic walk doesn't classify it as an unconverted candidate.
-static constexpr llvm::StringLiteral kFusedConvAttrName = "rock.cpu_fused_conv";
-
 /// Build the fused 8-D conv-as-matmul `linalg.generic`. The iteration space
 /// is `(n, g, c, ho, wo, kc, fh, fw)` (5 parallel + 3 reduction); each
 /// operand's indexing map is in the user's original tensor layout, with the
@@ -505,6 +515,12 @@ struct ConvToGemmPattern : public OpRewritePattern<linalg::GenericOp> {
     if (op->hasAttr(kFusedConvAttrName))
       return failure();
 
+    // Only rewrite convolutions inside CPU verifier funcs. The greedy
+    // driver runs at module scope, so without this gate any conv-shaped
+    // `linalg.generic` in the host module would also be rewritten.
+    if (!isInsideCpuVerifierFunc(op))
+      return failure();
+
     LLVM_DEBUG(llvm::dbgs() << "Checking linalg.generic for conv pattern: "
                             << op.getLoc() << "\n");
 
@@ -527,14 +543,17 @@ struct ConvToGemmPattern : public OpRewritePattern<linalg::GenericOp> {
 };
 
 /// Heuristic: a `linalg.generic` is considered convolution-like (i.e. a
-/// candidate for this pass) when it has a mul+add contraction body and an
-/// iteration space larger than the canonical batched matmul (4 dims:
-/// `[g, m, n, k]`). A plain matmul / batched matmul is intentionally excluded
-/// so we do not mistakenly flag it as "unconverted convolution". Already-
-/// rewritten ops (carrying `rock.cpu_fused_conv`) are excluded too: they
-/// also have a mul+add body and >4 iter dims, but they are the *output* of
-/// this pass, not unconverted candidates.
+/// candidate for this pass) when it lives inside a `rock.cpu_verifier`
+/// function, has a mul+add contraction body, and an iteration space larger
+/// than the canonical batched matmul (4 dims: `[g, m, n, k]`). A plain
+/// matmul / batched matmul is intentionally excluded so we do not
+/// mistakenly flag it as "unconverted convolution". Already-rewritten ops
+/// (carrying `rock.cpu_fused_conv`) are excluded too: they also have a
+/// mul+add body and >4 iter dims, but they are the *output* of this pass,
+/// not unconverted candidates.
 static bool isConvolutionLikeGeneric(linalg::GenericOp op) {
+  if (!isInsideCpuVerifierFunc(op))
+    return false;
   if (op->hasAttr(kFusedConvAttrName))
     return false;
   if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1)

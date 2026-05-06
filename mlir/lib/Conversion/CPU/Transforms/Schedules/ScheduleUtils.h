@@ -32,6 +32,7 @@
 #include "mlir/IR/OwningOpRef.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 
 #include <functional>
 
@@ -39,6 +40,22 @@ namespace mlir {
 class MLIRContext;
 
 namespace cpu {
+
+/// Unit-attribute name placed on the fused 8-D `linalg.generic` produced by
+/// the `--cpu-conv-to-gemm` pass. Single source of truth shared by:
+///   - the producer in `ConvToGemm.cpp` (sets the attribute on the rewritten
+///     op so the pattern matcher does not loop and so downstream survival
+///     diagnostics can recognise the rewritten form);
+///   - `FusedConvToMatmulSchedule.cpp` (matches the fused op via this
+///     attribute to drive the conv -> 3-D matmul collapse).
+///
+/// The matcher in `FusedConvToMatmulSchedule.cpp` also relies on the
+/// iteration-space ordering of the fused op being `(N, G, C, Ho, Wo, KC,
+/// Fh, Fw)` (5 parallel + 3 reduction). That ordering is fixed by
+/// `createFusedConvOp` in `ConvToGemm.cpp`; do not reorder without
+/// updating the static tile-size array in `buildFusedConvToMatmulSchedule`.
+inline constexpr llvm::StringLiteral kFusedConvAttrName =
+    "rock.cpu_fused_conv";
 
 /// Callback type for building the body of a transform sequence.
 /// The callback receives the ImplicitLocOpBuilder and the block argument
