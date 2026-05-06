@@ -395,8 +395,6 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                           gemmKPerBlock, gemmKPack, numCTAs, numWaves,
                           matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU,
                           gridGroupSize);
-                      if (gemmParamsExceedRegisterBudget(gemmParams))
-                        continue;
                       if (kind != TuningParamSetKind::Full ||
                           succeeded(
                               tuningInfo->couldBePerformant(info, gemmParams)))
