@@ -391,7 +391,7 @@ func.func @test_attention(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg
     qk = %6 * %3 : tensor<1x32x16xf16>, tensor<1x16x64xf16>
     qk = elementwise {
   ^bb0(%arg3: tensor<1x32x64xf16>, %arg4: tensor<1x32x64xf16>):
-    rock.yield
+    rock.yield %arg3 : tensor<1x32x64xf16>
   }
     softmax(qk) * %1 : tensor<1x64x8xf16>
   } {firstGemmIndices = array<i64: 0>, splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:128,128,16,1,1,4,0,4,1,0,0"} -> tensor<1x32x8xf16>
