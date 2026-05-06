@@ -831,10 +831,11 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
     iTilda[1] = (kernelId % product) / divisor;
     iTilda[0] = kernelId / product;
   }
+
   // `kernelId` must come from `backwardDataKernelIds`, which filters out
   // phases where `iTilda[i] >= convDims.fil[i]`. Without that filter,
   // `divideCeil`'s unsigned-converting overload would wrap a negative
-  // numerator into a huge value here. See AIROCMLIR-825.
+  // numerator into a huge value here.
   for (size_t i = 0; i < convDims.fil.size(); i++) {
     assert(iTilda[i] < convDims.fil[i] &&
            "kernelId not pre-filtered by backwardDataKernelIds");

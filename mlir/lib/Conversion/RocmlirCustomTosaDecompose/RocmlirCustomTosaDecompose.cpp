@@ -431,7 +431,7 @@ public:
     ShapedType inputTy = cast<ShapedType>(input.getType());
     ShapedType weightTy = cast<ShapedType>(weight.getType());
     ShapedType biasTy = cast<ShapedType>(bias.getType());
-    ShapedType resultTy = cast<ShapedType>(op->getResult(0).getType());
+    auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
 
     Type inputETy = inputTy.getElementType();
     Type weightETy = weightTy.getElementType();
@@ -754,9 +754,6 @@ public:
     //   offset = pad_low * (stride + 1) - stride * (kPrime - 1) - out_pad_low
     // Positive offset means we crop the expanded result on the low side;
     // negative offset means we pre-pad the result on the low side.
-    // Defined as a local lambda (rather than a file-scope helper) so the
-    // implementation stays adjacent to the derivation comment above and reads
-    // as a single visual unit at its two call sites just below.
     auto computeLowSideOffset = [](int64_t inPadLow, int64_t outPadLow,
                                    int64_t strideVal, int64_t kPrime) {
       return inPadLow * (strideVal + 1) - strideVal * (kPrime - 1) - outPadLow;
@@ -770,7 +767,8 @@ public:
     int64_t resultSliceLeft;
     int64_t resultPadTop;
     int64_t resultPadLeft;
-    // Convert low-side offset into slice (crop) and post-pad.
+    // Convert low-side offset into slice (crop) and post-pad. Both branches
+    // feed into the shared clamping + zero-result-overlap logic below.
     if (op->hasAttr("pad")) {
       resultSliceTop = std::max<int64_t>(0, offsetTop);
       resultSliceLeft = std::max<int64_t>(0, offsetLeft);
@@ -813,10 +811,9 @@ public:
       // TOSA requires positive slice sizes. If the output window has no
       // overlap with the expanded convolution result, materialize the pre-bias
       // result directly as zeros.
-      auto resultTensorTy = cast<RankedTensorType>(op.getType(0));
       resultPad = tosa::ConstOp::create(
-          rewriter, loc, resultTensorTy,
-          DenseElementsAttr::get(resultTensorTy, rewriter.getZeroAttr(resultETy)));
+          rewriter, loc, resultTy,
+          DenseElementsAttr::get(resultTy, rewriter.getZeroAttr(resultETy)));
     } else {
       llvm::SmallVector<int64_t, 4> sliceBegin = {0, resultSliceTop,
                                                   resultSliceLeft, 0};
@@ -825,12 +822,11 @@ public:
       sliceSize[1] = resultSliceHeight;
       sliceSize[2] = resultSliceWidth;
 
-      auto slice =
-          CreateOpAndInferShape<tosa::SliceOp>(
-              rewriter, loc, UnrankedTensorType::get(resultETy), conv2d,
-              getTosaConstShape(rewriter, loc, sliceBegin),
-              getTosaConstShape(rewriter, loc, sliceSize))
-              .getResult();
+      auto slice = CreateOpAndInferShape<tosa::SliceOp>(
+                       rewriter, loc, UnrankedTensorType::get(resultETy),
+                       conv2d, getTosaConstShape(rewriter, loc, sliceBegin),
+                       getTosaConstShape(rewriter, loc, sliceSize))
+                       .getResult();
 
       llvm::SmallVector<int64_t, 8> resultPadding = {0, 0, 0, 0, 0, 0, 0, 0};
       resultPadding[2] = resultPadTop;

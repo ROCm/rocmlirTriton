@@ -1,17 +1,11 @@
-// Regression tests for AIROCMLIR-825: backwardDataKernelIds used to emit
-// phantom kernel IDs for stride phases whose filter slice is empty.
-//
+// backwardDataKernelIds used to emit phantom kernel IDs for stride phases whose
+// filter slice is empty.
+
 // The pre-fix implementation expressed the slice extent as
 // `divideCeil(filterDims[i] - iTilda[i], filTilda[i])`. LLVM's default
-// `divideCeil` is the unsigned-converting overload, so a negative
-// numerator wrapped to a huge positive value -- making an empty phase
-// look like real GEMM work and emitting a bogus per-phase rock.gemm.
-// The fix detects iTilda[i] >= filterDims[i] and short-circuits
-// gemmKproduct to 0 so the phase is correctly excluded.
-//
-// We pin the count of `rock.gemm` ops emitted by `rock-conv-to-gemm`,
-// since that pass calls backwardDataKernelIds once per ConvBwdDataOp and
-// emits one rock.gemm per returned kernel ID.
+// `divideCeil` is the unsigned-converting overload, so a negative numerator wrapped to a huge positive value -- making an empty phase look like real GEMM work and emitting a bogus per-phase rock.gemm.
+// The fix detects iTilda[i] >= filterDims[i] and short-circuits gemmKproduct to 0 so the phase is correctly excluded.
+// We pin the count of `rock.gemm` ops emitted by `rock-conv-to-gemm`, since that pass calls backwardDataKernelIds once per ConvBwdDataOp and emits one rock.gemm per returned kernel ID.
 
 // Rank-2 reproducer for the originally failing shape: filTilda = {2, 3},
 // filterDims = {2, 1}. The fix prunes iTilda[1] in {1, 2}, leaving the
@@ -28,7 +22,7 @@
 // RUN: | FileCheck %s --check-prefix=RANK2
 
 // Rank-3 reproducer exercising the rank-3 switch arm of
-// backwardDataKernelIds (which the originally landed PR did not cover):
+// backwardDataKernelIds:
 // filTilda = {2, 2, 3}, filterDims = {2, 2, 1}, so only iTilda[2]
 // (the dim with filterDims[i] < filTilda[i]) can index out of bounds.
 // The fix prunes iTilda[2] in {1, 2}, leaving kernel IDs
@@ -44,10 +38,8 @@
 // RUN: | rocmlir-driver -c --mlir-print-ir-after=rock-conv-to-gemm 2>&1 \
 // RUN: | FileCheck %s --check-prefix=RANK3
 
-// The `[^_]` excludes the `rock.gemm_params` attribute name from the match;
-// only the actual `rock.gemm` op invocations should be counted.
-// RANK2-COUNT-2: {{rock\.gemm[^_]}}
-// RANK2-NOT: {{rock\.gemm[^_]}}
+// RANK2-COUNT-2: {{rock\.gemm[[:>:]]}}
+// RANK2-NOT: {{rock\.gemm[[:>:]]}}
 
-// RANK3-COUNT-4: {{rock\.gemm[^_]}}
-// RANK3-NOT: {{rock\.gemm[^_]}}
+// RANK3-COUNT-4: {{rock\.gemm[[:>:]]}}
+// RANK3-NOT: {{rock\.gemm[[:>:]]}}
