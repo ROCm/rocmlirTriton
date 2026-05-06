@@ -804,44 +804,49 @@ public:
         convExpandedWidth - resultSliceLeft, resultWidth - resultPadLeft);
 
     // The clamping above guarantees both arguments to each `min` are
-    // non-negative, so the slice extents must be too. A zero slice extent
-    // is reachable for pathological pad/out_pad inputs that just barely pass
-    // verifyConvTranspose, and is intentionally handled rather than rejected:
-    // tosa.slice and tosa.pad both accept zero-extent dimensions per the TOSA
-    // spec, and downstream TosaToLinalg lowers them to well-defined linalg
-    // generics. The post-pad below will fill the full requested result extent
-    // with the pad constant, which is the correct value when the expanded
-    // convolution has no overlap with the requested output region.
+    // non-negative, so the slice extents must be too.
     assert(resultSliceHeight >= 0 && resultSliceWidth >= 0 &&
            "slice extents must be non-negative after clamping");
 
-    llvm::SmallVector<int64_t, 4> sliceBegin = {0, resultSliceTop,
-                                                resultSliceLeft, 0};
-    llvm::SmallVector<int64_t, 4> sliceSize(convReshapeDims1.begin(),
-                                            convReshapeDims1.end());
-    sliceSize[1] = resultSliceHeight;
-    sliceSize[2] = resultSliceWidth;
+    Value resultPad;
+    if (resultSliceHeight == 0 || resultSliceWidth == 0) {
+      // TOSA requires positive slice sizes. If the output window has no
+      // overlap with the expanded convolution result, materialize the pre-bias
+      // result directly as zeros.
+      auto resultTensorTy = cast<RankedTensorType>(op.getType(0));
+      resultPad = tosa::ConstOp::create(
+          rewriter, loc, resultTensorTy,
+          DenseElementsAttr::get(resultTensorTy, rewriter.getZeroAttr(resultETy)));
+    } else {
+      llvm::SmallVector<int64_t, 4> sliceBegin = {0, resultSliceTop,
+                                                  resultSliceLeft, 0};
+      llvm::SmallVector<int64_t, 4> sliceSize(convReshapeDims1.begin(),
+                                              convReshapeDims1.end());
+      sliceSize[1] = resultSliceHeight;
+      sliceSize[2] = resultSliceWidth;
 
-    auto slice = CreateOpAndInferShape<tosa::SliceOp>(
-                     rewriter, loc, UnrankedTensorType::get(resultETy), conv2d,
-                     getTosaConstShape(rewriter, loc, sliceBegin),
-                     getTosaConstShape(rewriter, loc, sliceSize))
-                     .getResult();
+      auto slice =
+          CreateOpAndInferShape<tosa::SliceOp>(
+              rewriter, loc, UnrankedTensorType::get(resultETy), conv2d,
+              getTosaConstShape(rewriter, loc, sliceBegin),
+              getTosaConstShape(rewriter, loc, sliceSize))
+              .getResult();
 
-    llvm::SmallVector<int64_t, 8> resultPadding = {0, 0, 0, 0, 0, 0, 0, 0};
-    resultPadding[2] = resultPadTop;
-    resultPadding[3] = resultHeight - resultPadTop - sliceSize[1];
-    resultPadding[4] = resultPadLeft;
-    resultPadding[5] = resultWidth - resultPadLeft - sliceSize[2];
-    assert(resultPadding[3] >= 0 && resultPadding[5] >= 0 &&
-           "post-slice pad extents must be non-negative");
+      llvm::SmallVector<int64_t, 8> resultPadding = {0, 0, 0, 0, 0, 0, 0, 0};
+      resultPadding[2] = resultPadTop;
+      resultPadding[3] = resultHeight - resultPadTop - sliceSize[1];
+      resultPadding[4] = resultPadLeft;
+      resultPadding[5] = resultWidth - resultPadLeft - sliceSize[2];
+      assert(resultPadding[3] >= 0 && resultPadding[5] >= 0 &&
+             "post-slice pad extents must be non-negative");
 
-    Value resultPaddingVal =
-        getTosaConstShape(rewriter, op->getLoc(), resultPadding);
+      Value resultPaddingVal =
+          getTosaConstShape(rewriter, op->getLoc(), resultPadding);
 
-    Value resultPad = CreateOpAndInferShape<tosa::PadOp>(
-        rewriter, loc, UnrankedTensorType::get(resultETy), slice,
-        resultPaddingVal);
+      resultPad = CreateOpAndInferShape<tosa::PadOp>(
+          rewriter, loc, UnrankedTensorType::get(resultETy), slice,
+          resultPaddingVal);
+    }
 
     if (EqualizeRanks(rewriter, op.getLoc(), resultPad, bias).failed()) {
       return failure();
