@@ -63,9 +63,11 @@ static LogicalResult rewriteDivByReciprocal(func::FuncOp func) {
   for (arith::DivFOp divOp : divOps) {
     assert(divOp.getNumOperands() == 2);
     LLVM_DEBUG(llvm::dbgs() << "Op to modify: " << divOp << "\n");
+    arith::FastMathFlags combinedFlags =
+        divOp.getFastmath() | arith::FastMathFlags::arcp;
     rewriter.setInsertionPoint(divOp);
     rewriter.replaceOpWithNewOp<arith::DivFOp>(divOp, divOp.getLhs(),
-                                                divOp.getRhs(),  arith::FastMathFlags::arcp);
+                                                divOp.getRhs(), combinedFlags);
   }
   return success();
 }
