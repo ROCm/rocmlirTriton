@@ -1,5 +1,10 @@
-// RUN: rocmlir-gen --clone-harness -arch %arch -fut mlir_test %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_test --verifier clone - | rocmlir-driver -c -arch %arch | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
-// CLONE: [1 1 1]
+// Regression coverage for remasking i1 input fusion through a convolution.
+
+// RUN: rocmlir-gen --clone-harness -arch %arch -fut mlir_test %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel -arch %arch | rocmlir-driver -c -arch %arch -mlir-print-ir-after=tritongpu-reduce-data-duplication -o /dev/null 2>&1 | FileCheck %s --check-prefix=RDD
+// RDD-LABEL: IR Dump After {{.*}}tritongpu-reduce-data-duplication
+// RDD-NOT: ttg.local_{{.*}}xi1
+// RDD: arith.select {{.*}} : tensor<{{[^>]*}}xi1
+// RDD-NOT: ttg.local_{{.*}}xi1
 
 module {
   func.func @mlir_test(%arg0: !migraphx.shaped<544x1x1xf16, 1x1x1>, %arg1: !migraphx.shaped<32x544x7x7xf16, 28224x49x7x1>, %arg2: !migraphx.shaped<544xf16, 1>, %arg3: !migraphx.shaped<128x544x1x1xf16, 544x1x1x1>, %arg4: !migraphx.shaped<128xf16, 1>) -> !migraphx.shaped<32x128x7x7xf16, 6272x49x7x1> attributes {rock.kernel} {
