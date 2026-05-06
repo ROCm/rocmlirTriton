@@ -1144,7 +1144,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
         ]
 
     verification_commands = [
-        rocmlir_gen_command, host_pipeline_command, rocmlir_driver_command, rocprof_command
+        rocmlir_gen_command, host_pipeline_command, rocmlir_driver_command, profiler_command
     ]
     verification_pipeline = " | ".join(' '.join(command) for command in verification_commands)
     gpu_logger.debug(f"Verifying perfconfig '{perfconfig}'\nCommand: {verification_pipeline}")
@@ -1175,7 +1175,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
                                   env=env,
                                   cwd=tmpdir)
             host_pipeline.stdout.close()
-            p3 = subprocess.Popen(rocprof_command,
+            p3 = subprocess.Popen(profiler_command,
                                   stdin=p2.stdout,
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE,
@@ -1378,10 +1378,9 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                              exit_code=tuning_driver.returncode,
                              gpu_id=gpu_id))
             return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
-        # else:
-        # Log any stderr output from tuning driver because it may contain warnings
-        # if tuning_errors.strip():
-        # gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
+        elif options.verbose and tuning_errors.strip():
+            # Log any stderr output from tuning driver because it may contain warnings
+            gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
 
         winning_config, max_tflops, entries = find_best_perfconfig(tuning_output.splitlines(),
                                                                    config, paths, options, gpu_id)
