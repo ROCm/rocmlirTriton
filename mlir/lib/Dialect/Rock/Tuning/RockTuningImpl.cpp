@@ -142,7 +142,7 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
           : std::vector<uint32_t>{32, 64};
 
   if (is8b && isMfma)
-  kPerBlockMFMA = {32, 64, 128};
+    kPerBlockMFMA = {32, 64, 128};
 
   // MFMA (CDNA) parameters
   // Note: kPack max is 2
