@@ -67,19 +67,6 @@ OwningOpRef<ModuleOp> cpu::buildTransformModule(MLIRContext *ctx,
 }
 
 llvm::ArrayRef<utils::IteratorType> cpu::getMatmulIteratorTypes() {
-  // Canonical 3-D matmul iter-type signature: two parallel dims (M, N)
-  // followed by one reduction dim (K). This is the shape we rely on
-  // *after* `fold_unit_extent_dims_via_slices` collapses the size-1
-  // batch dim present in both the rocmlir-gen GEMM (G=1) and the
-  // fused-conv-derived matmul (N=1, G=1, Ho=1, Fh=1, Fw=1 -> all
-  // folded). Keeping the signature 3-D unifies the conv-and-pure-gemm
-  // code paths.
-  //
-  // NOTE: This describes the *iter-type* signature, not the iter-space
-  // *order*: the position of M / N / K within the iter-space depends on
-  // how the op was generated. Callers that need the per-dim role should
-  // recover it from the operand maps (see
-  // `LowerCpuVerifier::classifyMatmulDims`).
   static constexpr utils::IteratorType kIters[] = {
       utils::IteratorType::parallel, utils::IteratorType::parallel,
       utils::IteratorType::reduction};
@@ -87,6 +74,8 @@ llvm::ArrayRef<utils::IteratorType> cpu::getMatmulIteratorTypes() {
 }
 
 DictionaryAttr cpu::getMatmulIteratorTypesAttr(MLIRContext *ctx) {
+  // Create iterator_types attribute to match matmul pattern:
+  // [parallel, parallel, parallel, reduction]
   SmallVector<Attribute> iteratorTypeAttrs;
   iteratorTypeAttrs.reserve(getMatmulIteratorTypes().size());
   for (utils::IteratorType iter : getMatmulIteratorTypes())

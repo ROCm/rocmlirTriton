@@ -110,42 +110,26 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
   return buildTransformModule(
       ctx, [ctx, tileSizes](ImplicitLocOpBuilder &ib, BlockArgument arg) {
         auto anyOpType = getAnyOpType(ctx);
-        // Typed handle for `scf.for` payloads -- required as the operand
-        // type of `transform.loop.peel`, so we ask `fuse` and the K-tile
-        // to return their loops as `!transform.op<"scf.for">` instead of
-        // the generic `!transform.any_op`.
         auto scfForType = transform::OperationType::get(ctx, "scf.for");
-
-        // Single source of truth for the SIMD vector width; see
-        // `MatmulTileSizes::kVectorSize` for the rationale.
         constexpr int64_t vectorSize = MatmulTileSizes::kVectorSize;
 
         // Flatten extf/truncf linalg.generic ops to 1D to avoid IR explosion
         // when lowering multi-dimensional vectors to LLVM
         flattenExtfTruncfOps(ib, ctx, arg);
 
-        // Tile elementwise ops of different dimensions to prevent huge vectors
+        // Tile elementwise ops of different dimensions. In general, this
+        // improves performance.
         for (int numDims = 1; numDims <= 8; numDims++) {
           tileElementwiseOps(ib, ctx, arg, vectorSize, numDims);
         }
 
-        // Now tile (and optionally fuse) the matmul. The matmul iter-type
-        // signature is the canonical 3-D `[par, par, red]` (see
-        // `getMatmulIteratorTypes()`), but the *position* of M / N / K
-        // within the iter-space depends on how the op was generated. The
-        // caller picks tile sizes and per-dim positions by inspecting
-        // the actual op via `classifyMatmulDims`; below we map those
-        // back to the positional `static_tile_sizes` arrays expected by
-        // the transform ops.
+        // Now tile (and optionally fuse) the matmul.
         auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
 
         const unsigned mDim = tileSizes.mDim;
         const unsigned nDim = tileSizes.nDim;
         const unsigned kDim = tileSizes.kDim;
 
-        // Outer fuse over (M, N): tile sizes are placed at the M / N
-        // positions in the 3-D iter-space and 0 at the K position so the
-        // reduction dim is left intact for the K-tile step below.
         // Interchange puts N on the outside (i.e. iterate over N first)
         // by listing parallel dims in [N, M, K] order.
         SmallVector<int64_t, 3> fuseTileSizes(3, 0);
@@ -161,7 +145,6 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
             /*applyCleanup=*/false,
             /*useForall=*/false);
 
-        // Helper: peel a loop's last (partial) iteration.
         auto peelLoop = [&](Value loop) {
           ib.create<transform::LoopPeelOp>(
               /*peeled_loop=*/scfForType,
@@ -171,9 +154,8 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
               /*fail_if_already_divisible=*/false);
         };
 
-        // Loop nest after fuse with interchange [N, M, K]:
-        //   fuse.loops[0] -> N (outermost)
-        //   fuse.loops[1] -> M (innermost of the fuse pair)
+        // Peel if tiling does not perfectly divide the loop.
+        // We do this to make sure we can vectorize the loop.
         bool peeledFuseLoop = false;
         if (!tileSizes.mDivisible) {
           peelLoop(fuse.getLoops()[1]);

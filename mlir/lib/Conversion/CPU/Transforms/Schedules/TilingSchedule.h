@@ -33,23 +33,14 @@ class MLIRContext;
 
 namespace cpu {
 
-/// Tile sizes used by the matmul portion of the tiling schedule.
-/// Tile sizes do not have to divide their corresponding problem dim. The
-/// `*Divisible` flags below tell the schedule whether each dim is a clean
-/// multiple of its tile, so the schedule can decide how to handle the
-/// remainder (peel, mask, scalar fallback, ...).
+/// Hold data used during tiling schedule.
 struct MatmulTileSizes {
-  /// CPU SIMD vector width (in fp32 lanes) the schedule targets. AVX is
-  /// 256 bits = 8 fp32 lanes; this is the single source of truth shared
-  /// by the elementwise-tile, micro-tile, and `chooseMatmulTileSizes`
-  /// fallback paths so they can't drift out of sync.
+  /// AVX is 256 bits = 8 fp32 lanes.
   static constexpr int64_t kVectorSize = 8;
 
-  /// Outer fuse tile (M, N); applied with interchange [1, 0] so the
-  /// loop nest order becomes N -> M.
+  /// Tile sizes for M,N,K.
   int64_t mFuse = 256;
   int64_t nFuse = 64;
-  /// K reduction tile applied by the second `tile_using_for`.
   int64_t kTile = 64;
   /// Innermost register-blocking micro-tile (M, N, K). Defaults to the
   /// SIMD vector width so the inner kernel maps to a single AVX register.
@@ -58,18 +49,12 @@ struct MatmulTileSizes {
   int64_t microTileK = kVectorSize;
 
   /// Per-dim divisibility: true when the corresponding problem dim is a
-  /// clean multiple of the chosen tile (for M/N at the outer fuse level,
-  /// for K at the reduction-tile level), false otherwise.
+  /// clean multiple of the chosen tile, false otherwise.
   bool mDivisible = true;
   bool nDivisible = true;
   bool kDivisible = true;
 
   /// Position of the (M, N, K) iter dims within the matmul's iter-space.
-  /// The matcher only constrains the iter-type signature, not the order
-  /// of dims, so the same schedule needs to retarget different
-  /// positions for ops produced by different paths (rocmlir-gen GEMMs
-  /// vs. fused-conv-to-matmul). Defaults match the order that
-  /// rocmlir-gen produces.
   unsigned mDim = 0;
   unsigned nDim = 1;
   unsigned kDim = 2;

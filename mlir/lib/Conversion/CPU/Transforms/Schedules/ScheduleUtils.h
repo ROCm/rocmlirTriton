@@ -41,19 +41,6 @@ class MLIRContext;
 
 namespace cpu {
 
-/// Unit-attribute name placed on the fused 8-D `linalg.generic` produced by
-/// the `--cpu-conv-to-gemm` pass. Single source of truth shared by:
-///   - the producer in `ConvToGemm.cpp` (sets the attribute on the rewritten
-///     op so the pattern matcher does not loop and so downstream survival
-///     diagnostics can recognise the rewritten form);
-///   - `FusedConvToMatmulSchedule.cpp` (matches the fused op via this
-///     attribute to drive the conv -> 3-D matmul collapse).
-///
-/// The matcher in `FusedConvToMatmulSchedule.cpp` also relies on the
-/// iteration-space ordering of the fused op being `(N, G, C, Ho, Wo, KC,
-/// Fh, Fw)` (5 parallel + 3 reduction). That ordering is fixed by
-/// `createFusedConvOp` in `ConvToGemm.cpp`; do not reorder without
-/// updating the static tile-size array in `buildFusedConvToMatmulSchedule`.
 inline constexpr llvm::StringLiteral kFusedConvAttrName =
     "rock.cpu_fused_conv";
 
@@ -78,11 +65,7 @@ OwningOpRef<ModuleOp> buildTransformModule(MLIRContext *ctx,
 
 /// Iterator-type signature of the matmul-shaped `linalg.generic` ops the CPU
 /// verifier pipeline targets: `[parallel, parallel, reduction]`, i.e. the
-/// canonical 3-D `(M, N, K)` matmul iter-space. Both rocmlir-gen GEMMs and
-/// fused-conv-derived matmuls land on this shape after
-/// `fold_unit_extent_dims_via_slices` collapses the size-1 batch / spatial
-/// dims. Single source of truth shared by the transform-side matchers and
-/// the payload-side predicates.
+/// canonical 3-D `(M, N, K)` matmul iter-space.
 llvm::ArrayRef<utils::IteratorType> getMatmulIteratorTypes();
 
 /// Create a DictionaryAttr containing the iterator_types attribute for
