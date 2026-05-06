@@ -1,19 +1,79 @@
 #!/bin/bash
+#
+# rocm-run: convenience wrapper around mlir-runner that auto-loads the shared
+# libraries needed by rocMLIR-generated code (rocm runtime, conv validation
+# wrappers, MLIR runner-utils, c-runner-utils, float16-utils).
+#
+# The rocMLIR build directory is located by:
+#   1. Co-location: if this script lives next to rocmlir-driver (i.e. it has
+#      been copied into a build's bin/ dir by CMake), use that directory.
+#   2. A few well-known source-tree fallbacks.
+#
+# The matching LLVM build directory is then located by:
+#   1. The Triton-based layout (<repo>/external/triton/llvm-project/build).
+#   2. The LLVM_DIR entry in the rocMLIR build's CMakeCache.txt.
 
-# Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Project root is 3 levels up from mlir/utils/widgets/
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-declare -g BASEDIR="none-such"
-for dir in "$PROJECT_ROOT/build" "$PWD/.." "$PWD" "$PWD/build" \
-                  "$HOME/rocmlir/build"; do
-    if [[ -x "$dir/bin/rocmlir-driver" ]]; then
-        BASEDIR="$dir"
-        break
+find_rocmlir_build() {
+    # Co-located in <build>/bin/ (the cmake-installed location).
+    if [[ -x "$SCRIPT_DIR/rocmlir-driver" ]]; then
+        ( cd "$SCRIPT_DIR/.." && pwd )
+        return 0
     fi
-done
 
-LLVM_BUILD="${PROJECT_ROOT}/external/triton/llvm-project/build"
+    # Source-tree fallbacks (script in mlir/utils/widgets/).
+    local repo_root
+    repo_root="$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd)"
+    for dir in "$repo_root/build" "$PWD/.." "$PWD" "$PWD/build" \
+               "$HOME/rocmlir/build"; do
+        if [[ -x "$dir/bin/rocmlir-driver" ]]; then
+            ( cd "$dir" && pwd )
+            return 0
+        fi
+    done
 
-exec "${LLVM_BUILD}/bin/mlir-runner" "-O2" "--shared-libs=${LLVM_BUILD}/lib/libmlir_rocm_runtime.so,${BASEDIR}/lib/libconv-validation-wrappers.so,${LLVM_BUILD}/lib/libmlir_runner_utils.so,${LLVM_BUILD}/lib/libmlir_float16_utils.so,${LLVM_BUILD}/lib/libmlir_c_runner_utils.so" --entry-point-result=void "$@"
+    echo "rocm-run: cannot locate rocMLIR build directory" >&2
+    return 1
+}
+
+find_llvm_build() {
+    local rocmlir_build="$1"
+
+    # Triton-based layout: <repo>/external/triton/llvm-project/build, where
+    # <repo> is the parent of the rocMLIR build directory.
+    local triton_llvm
+    triton_llvm="$(cd "$rocmlir_build/.." 2>/dev/null && pwd)/external/triton/llvm-project/build"
+    if [[ -x "$triton_llvm/bin/mlir-runner" ]]; then
+        ( cd "$triton_llvm" && pwd )
+        return 0
+    fi
+
+    # Fall back to LLVM_DIR in CMakeCache.txt. Match "LLVM_DIR:" specifically
+    # so we don't pick up "LLVM_DIR-ADVANCED:INTERNAL=1" if it appears first.
+    local cache="$rocmlir_build/CMakeCache.txt"
+    if [[ -f "$cache" ]]; then
+        local llvm_dir
+        llvm_dir="$(awk '/^LLVM_DIR:/ {sub(/^[^=]*=/, ""); print; exit}' "$cache")"
+        if [[ -n "$llvm_dir" ]]; then
+            local candidate
+            candidate="$(cd "$llvm_dir/../../.." 2>/dev/null && pwd)"
+            if [[ -x "$candidate/bin/mlir-runner" ]]; then
+                echo "$candidate"
+                return 0
+            fi
+        fi
+    fi
+
+    echo "rocm-run: cannot locate LLVM build directory" >&2
+    return 1
+}
+
+BASEDIR="$(find_rocmlir_build)" || exit 1
+LLVM_BUILD="$(find_llvm_build "$BASEDIR")" || exit 1
+
+exec "${LLVM_BUILD}/bin/mlir-runner" \
+    -O2 \
+    "--shared-libs=${LLVM_BUILD}/lib/libmlir_rocm_runtime.so,${BASEDIR}/lib/libconv-validation-wrappers.so,${LLVM_BUILD}/lib/libmlir_runner_utils.so,${LLVM_BUILD}/lib/libmlir_float16_utils.so,${LLVM_BUILD}/lib/libmlir_c_runner_utils.so" \
+    --entry-point-result=void \
+    "$@"
