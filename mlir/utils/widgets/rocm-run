@@ -49,11 +49,12 @@ find_llvm_build() {
         return 0
     fi
 
-    # Fall back to LLVM_DIR in CMakeCache.txt.
+    # Fall back to LLVM_DIR in CMakeCache.txt. Match "LLVM_DIR:" specifically
+    # so we don't pick up "LLVM_DIR-ADVANCED:INTERNAL=1" if it appears first.
     local cache="$rocmlir_build/CMakeCache.txt"
     if [[ -f "$cache" ]]; then
         local llvm_dir
-        llvm_dir="$(awk -F= '/^LLVM_DIR/ {print $2; exit}' "$cache")"
+        llvm_dir="$(awk '/^LLVM_DIR:/ {sub(/^[^=]*=/, ""); print; exit}' "$cache")"
         if [[ -n "$llvm_dir" ]]; then
             local candidate
             candidate="$(cd "$llvm_dir/../../.." 2>/dev/null && pwd)"
