@@ -168,7 +168,7 @@ def RockFusionSplitkRegularizationPass
 
 def RockRewriteDivByReciprocalPass
     : Pass<"rock-rewrite-div-by-reciprocal", "::mlir::func::FuncOp"> {
-  let summary = "Rewrite floating-point division using reciprocal multiply where applicable";
+  let summary = "Tag floating-point division ops with the fast-math reciprocal (arcp) flag where applicable";
   let dependentDialects = ["arith::ArithDialect", "func::FuncDialect"];
 }
 
