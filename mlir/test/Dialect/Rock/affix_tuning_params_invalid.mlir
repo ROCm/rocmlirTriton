@@ -105,3 +105,4 @@ func.func @mlir_dot_max_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280
     %out = rock.store %res to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
     return %out : tensor<1x2x320xf32>
   }
+  
