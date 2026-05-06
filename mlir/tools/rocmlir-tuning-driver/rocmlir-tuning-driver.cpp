@@ -310,13 +310,21 @@ createCompilationContext(SmallVector<std::string> &bufferedDiags) {
   DialectRegistry registry;
   registerRocMLIRDialects(registry);
   auto ctx = std::make_unique<MLIRContext>(registry);
+  // Consume *all* diagnostics so they don't pollute tuning output during the
+  // parallel sweep. Errors are additionally buffered into `bufferedDiags` so
+  // the caller can surface them on real failures; warnings/remarks/notes are
+  // intentionally dropped (matches the long-standing behavior of this tool).
   ctx->getDiagEngine().registerHandler([&bufferedDiags](Diagnostic &diag) {
     if (diag.getSeverity() == DiagnosticSeverity::Error) {
       std::string buf;
-      llvm::raw_string_ostream os(buf);
-      os << "Diagnostic error: " << diag << "\n";
-      for (auto &note : diag.getNotes())
-        os << "  note: " << note << "\n";
+      // `os` holds a reference to `buf`; destroy it (flushing any pending
+      // internal buffer into `buf`) before moving `buf` into `bufferedDiags`.
+      {
+        llvm::raw_string_ostream os(buf);
+        os << "Diagnostic error: " << diag << "\n";
+        for (auto &note : diag.getNotes())
+          os << "  note: " << note << "\n";
+      }
       bufferedDiags.push_back(std::move(buf));
     }
     return success();
