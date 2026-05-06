@@ -103,11 +103,7 @@ class MLIRPaths:
     rocmlir_gen_path: str
     rocmlir_driver_path: str
     rocmlir_opt_path: str
-    cpu_runner_path: str
-    libmlir_rocm_runtime_path: str
-    libconv_validation_wrappers_path: str
-    libmlir_runtime_utils_path: str
-    libmlir_c_runner_utils_path: str
+    rocm_run_path: str
     rocmlir_tuning_driver_path: str
     ck_gemm_benchmark_driver_path: Optional[str] = None
     hipblaslt_benchmark_driver_path: Optional[str] = None
@@ -204,29 +200,6 @@ def initialize_dtypes_attn():
     return DATA_TYPES_ATTENTION  # For modules that import this function
 
 
-def _find_llvm_build_dir(mlir_build_dir_path) -> Optional[str]:
-    """Locate the LLVM build directory for the given rocMLIR build.
-
-    Checks the Triton-based layout first (external/triton/llvm-project/build),
-    then falls back to reading LLVM_DIR from CMakeCache.txt.
-    """
-    repo_root = Path(mlir_build_dir_path).parent
-    triton_llvm = repo_root / 'external/triton/llvm-project/build'
-    if (triton_llvm / 'bin').exists():
-        return str(triton_llvm.resolve())
-
-    cmake_cache = Path(mlir_build_dir_path) / 'CMakeCache.txt'
-    if cmake_cache.exists():
-        with open(cmake_cache) as f:
-            for line in f:
-                if line.startswith('LLVM_DIR'):
-                    llvm_cmake_dir = Path(line.split('=', 1)[1].strip())
-                    llvm_build_root = llvm_cmake_dir.parent.parent.parent
-                    if (llvm_build_root / 'bin').exists():
-                        return str(llvm_build_root.resolve())
-    return None
-
-
 def create_paths(config_file_path, mlir_build_dir_path) -> Paths:
     """Creates the composite Paths structure using build dir paths"""
 
@@ -236,23 +209,12 @@ def create_paths(config_file_path, mlir_build_dir_path) -> Paths:
         mlir_bin_dir = str(mlir_bin_dir_path)
         ck_gemm_benchmark_driver_location = mlir_bin_dir_path / 'ck-gemm-benchmark-driver'
         hipblaslt_benchmark_driver_location = mlir_bin_dir_path / 'hipblaslt-benchmark-driver'
-        mlir_lib_dir = str((Path(mlir_build_dir_path) / 'lib').resolve())
-
-        llvm_build_dir = _find_llvm_build_dir(mlir_build_dir_path)
-        if not llvm_build_dir:
-            raise RuntimeError("Cannot find LLVM build directory")
-        llvm_bin_dir = str(Path(llvm_build_dir, 'bin'))
-        llvm_lib_dir = str(Path(llvm_build_dir, 'lib'))
 
         mlir_paths = MLIRPaths(
             rocmlir_gen_path=mlir_bin_dir + '/rocmlir-gen',
             rocmlir_driver_path=mlir_bin_dir + '/rocmlir-driver',
             rocmlir_opt_path=mlir_bin_dir + '/rocmlir-opt',
-            cpu_runner_path=llvm_bin_dir + '/mlir-runner',
-            libmlir_rocm_runtime_path=llvm_lib_dir + '/libmlir_rocm_runtime.so',
-            libconv_validation_wrappers_path=mlir_lib_dir + '/libconv-validation-wrappers.so',
-            libmlir_runtime_utils_path=llvm_lib_dir + '/libmlir_runner_utils.so',
-            libmlir_c_runner_utils_path=llvm_lib_dir + '/libmlir_c_runner_utils.so',
+            rocm_run_path=mlir_bin_dir + '/rocm-run',
             rocmlir_tuning_driver_path=mlir_bin_dir + '/rocmlir-tuning-driver',
             ck_gemm_benchmark_driver_path=(str(ck_gemm_benchmark_driver_location)
                                            if ck_gemm_benchmark_driver_location.exists() else None),
@@ -1796,14 +1758,10 @@ def run_config_with_mlir(config: PerfConfiguration,
         if debug:
             print("Using rocprof for benchmarking")
         rocmlir_driver_cmd = [paths.mlir_paths.rocmlir_driver_path, '-c']
-        mlir_cpu_runner_args = [
-            f'--shared-libs={paths.mlir_paths.libmlir_rocm_runtime_path},{paths.mlir_paths.libconv_validation_wrappers_path},{paths.mlir_paths.libmlir_runtime_utils_path},{paths.mlir_paths.libmlir_c_runner_utils_path}',
-            '--entry-point-result=void'
-        ]
         profiler_cmd = [ROCPROF] + get_metric_args_for_rocprof(arch) + [
             '--kernel-trace', '--stats', '-f', 'csv', '-o', BENCHMARKING_RESULT_FILE_NAME, '--',
-            paths.mlir_paths.cpu_runner_path
-        ] + mlir_cpu_runner_args
+            paths.mlir_paths.rocm_run_path
+        ]
 
         outs, noerr = run_pipeline([rocmlir_gen_cmd.split(), rocmlir_driver_cmd, profiler_cmd])
         if noerr:
@@ -2080,13 +2038,9 @@ def run_fusion_kernel(filename, rocmlir_gen_args, paths: Paths):
         'full'
     ]
     commands.append(kernel_pipeline_cmd)
-    mlir_cpu_runner_args = [
-        f'--shared-libs={paths.mlir_paths.libmlir_rocm_runtime_path},{paths.mlir_paths.libconv_validation_wrappers_path},{paths.mlir_paths.libmlir_runtime_utils_path},{paths.mlir_paths.libmlir_c_runner_utils_path}',
-        '--entry-point-result=void'
-    ]
     profiler_cmd = [ROCPROF] + get_metric_args_for_rocprof(chip) + [
         '--kernel-trace', '--stats', '-f', 'csv', '-o', BENCHMARKING_RESULT_FILE_NAME
-    ] + ['--', paths.mlir_paths.cpu_runner_path] + mlir_cpu_runner_args
+    ] + ['--', paths.mlir_paths.rocm_run_path]
     commands.append(profiler_cmd)
     outs, noerr = run_pipeline(commands)
     nanoseconds = np.nan

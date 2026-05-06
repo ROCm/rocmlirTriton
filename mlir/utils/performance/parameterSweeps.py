@@ -272,13 +272,7 @@ Errors = {tune_errs.decode('utf-8')}
                                                     stderr=asyncio.subprocess.PIPE)
     os.close(lowering_to_runner)
 
-    mlir_cpu_runner_args = [
-        '-O2',
-        f'--shared-libs={paths.mlir_paths.libmlir_rocm_runtime_path},{paths.mlir_paths.libconv_validation_wrappers_path},{paths.mlir_paths.libmlir_runtime_utils_path}',
-        '--entry-point-result=void'
-    ]
-    runner = await asyncio.create_subprocess_exec(paths.mlir_paths.cpu_runner_path,
-                                                  *mlir_cpu_runner_args,
+    runner = await asyncio.create_subprocess_exec(paths.mlir_paths.rocm_run_path,
                                                   stdin=runner_from_lowering,
                                                   stdout=asyncio.subprocess.PIPE,
                                                   stderr=asyncio.subprocess.PIPE)
