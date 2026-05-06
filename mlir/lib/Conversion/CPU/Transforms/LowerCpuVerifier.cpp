@@ -169,12 +169,13 @@ static FailureOr<MatmulDims> classifyMatmulDims(linalg::GenericOp op) {
 ///
 /// Policy: pick the largest tile in a candidate ladder that divides the
 /// corresponding loop dim cleanly; if none divides (or the dim is
-/// dynamic), fall back to `vectorSize` and record the dim as
-/// non-divisible via the `*Divisible` flags on `MatmulTileSizes`. The
-/// schedule uses those flags to decide how to handle the partial last
-/// iteration (peel, mask, scalar fallback, ...).
+/// dynamic), fall back to `MatmulTileSizes::kVectorSize` and record the
+/// dim as non-divisible via the `*Divisible` flags on `MatmulTileSizes`.
+/// The schedule uses those flags to decide how to handle the partial
+/// last iteration (peel, mask, scalar fallback, ...).
 static std::optional<MatmulTileSizes>
-chooseMatmulTileSizes(func::FuncOp func, int64_t vectorSize) {
+chooseMatmulTileSizes(func::FuncOp func) {
+  constexpr int64_t vectorSize = MatmulTileSizes::kVectorSize;
   linalg::GenericOp matmul;
   func.walk([&](linalg::GenericOp g) {
     if (isMatmulIteratorTypes(g))
@@ -380,35 +381,22 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   if (phase == CPU_PHASE_OPTIMIZE) {
     // Optimization phase splits into two stages around `chooseMatmulTileSizes`:
     //
-    //   stage 1 -- shape normalization
+    //   Stage 1 -- shape normalization
     //     Run `fusedConvToMatmul` first. For functions that came out of
     //     `cpu-conv-to-gemm` this rewrites the 8-D `rock.cpu_fused_conv`
     //     into a 3-D matmul-shaped `linalg.generic` (and folds the
     //     unit-extent batch/group dims). For plain GEMM verifiers the
     //     schedule is a no-op.
     //
-    //   choose tile sizes
-    //     Inspect the now-canonical matmul to pick (mFuse, nFuse, kTile)
-    //     based on the static (M, N, K) extents. Crucially this happens
-    //     *after* stage 1 so the matcher actually sees a 3-D matmul --
-    //     otherwise it would always fall back to the default tiles
-    //     (which assert static divisibility and silently disable
-    //     peeling, see AIROCMLIR-???).
-    //
-    //   stage 2 -- tile / vectorize / unroll
-    //     Use the per-function tiling schedule built from the chosen
-    //     tile sizes, then vectorize and unroll.
+    //   Stage 2 -- tile / vectorize / unroll.
     if (failed(applyTransformStep(
             moduleRef,
             {schedules.fusedConvToMatmulModule.get(), "fusedConvToMatmul"},
             schedules, func)))
       return failure();
 
-    // AVX vector width is 256 bits -> 8 fp32 lanes. Keep this in sync with
-    // the `vectorSize` constant in TilingSchedule.cpp.
-    constexpr int64_t kVectorSize = 8;
     OwningOpRef<ModuleOp> perFuncTiling;
-    if (auto t = chooseMatmulTileSizes(func, kVectorSize)) {
+    if (auto t = chooseMatmulTileSizes(func)) {
       LLVM_DEBUG(llvm::dbgs()
                  << "  Chose matmul tile sizes for " << funcName
                  << ": M=" << t->mFuse << " N=" << t->nFuse

@@ -32,7 +32,8 @@ using namespace mlir::cpu;
 /// Match and tile N-dimensional elementwise ops (linalg.generic with N parallel
 /// iterator types).
 static void tileElementwiseOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
-                               Value target, int vectorSize, unsigned numDims) {
+                               Value target, int64_t vectorSize,
+                               unsigned numDims) {
   auto anyOpType = getAnyOpType(ctx);
   auto parallelIterType =
       linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel);
@@ -115,9 +116,9 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
         // the generic `!transform.any_op`.
         auto scfForType = transform::OperationType::get(ctx, "scf.for");
 
-        // AVX vector width is 256 bits.
-        // For fp32, AVX takes 8 elements.
-        int vectorSize = 8;
+        // Single source of truth for the SIMD vector width; see
+        // `MatmulTileSizes::kVectorSize` for the rationale.
+        constexpr int64_t vectorSize = MatmulTileSizes::kVectorSize;
 
         // Flatten extf/truncf linalg.generic ops to 1D to avoid IR explosion
         // when lowering multi-dimensional vectors to LLVM
