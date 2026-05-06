@@ -642,23 +642,26 @@ struct CpuConvToGemmPass
       bool converted = !surviving.contains(c.op);
       if (converted) {
         ++numConverted;
-        llvm::errs() << "[cpu-conv-to-gemm] CONVERTED conv in @" << c.funcName
-                     << "\n"
-                     << c.description;
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[cpu-conv-to-gemm] CONVERTED conv in @" << c.funcName
+                   << "\n"
+                   << c.description);
       } else {
         ++numUnconverted;
-        llvm::errs() << "[cpu-conv-to-gemm] NOT CONVERTED conv in @"
-                     << c.funcName << " (no matching pattern)\n"
-                     << c.description;
+        LLVM_DEBUG(llvm::dbgs() << "[cpu-conv-to-gemm] NOT CONVERTED conv in @"
+                                << c.funcName << " (no matching pattern)\n"
+                                << c.description);
       }
     }
 
-    if (!candidates.empty()) {
-      llvm::errs() << "[cpu-conv-to-gemm] summary: " << numConverted
-                   << " converted, " << numUnconverted << " not converted (of "
-                   << candidates.size() << " convolution-like ops in "
-                   << "cpu_verifier funcs)\n";
-    }
+    LLVM_DEBUG({
+      if (!candidates.empty()) {
+        llvm::dbgs() << "[cpu-conv-to-gemm] summary: " << numConverted
+                     << " converted, " << numUnconverted
+                     << " not converted (of " << candidates.size()
+                     << " convolution-like ops in cpu_verifier funcs)\n";
+      }
+    });
   }
 };
 
