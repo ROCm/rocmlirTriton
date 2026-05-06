@@ -1,0 +1,32 @@
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
+index def4f5ad7..e59400ac9 100644
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
+@@ -59,6 +59,13 @@ int getWmmaVersion(StringRef archGen) {
+   return 0;
+ }
+-
++
++static bool hasAsymmetricMfmaBroadcastOperand(unsigned mDim, unsigned nDim) {
++  // The MFMA lowering handles these asymmetric instruction shapes by
++  // broadcasting the narrow operand with the cbsz/abid intrinsic operands.
++  // Keep this predicate in sync with DotOpToLLVM/MFMA.cpp.
++  return (mDim == 64 && nDim == 4) || (mDim == 4 && nDim == 64);
++}
++
+ FailureOr<ScaleDotElemType> mlirTypeToScaledElemType(Type type) {
+   return llvm::TypeSwitch<Type, FailureOr<ScaleDotElemType>>(type)
+       .Case<Float8E4M3FNType>([](Type) { return ScaleDotElemType::E4M3; })
+@@ -708,6 +715,11 @@ public:
+     // to increase ds_read vector size
+     // However, in FA, the second dot can only use kWidth = kBase since it's
+     // limited by the result of the first dot, which is of mfmaLayout.
++    // kPack increases LDS vectorization by making each thread load multiple
++    // kBase-sized K groups. For 64x4 and 4x64 MFMA instructions, lowering
++    // reuses one operand through hardware broadcast before advancing to the
++    // next kBase group. Since DotOperandEncodingAttr stores one kWidth for both
++    // operands, keep these shapes at kBase.
+     auto isDotChainTail = isChainDotTail(dotOp);
+-    if (!isDotChainTail)
++    if (!hasAsymmetricMfmaBroadcastOperand(mDim, nDim) && !isDotChainTail)
+       kWidth *= kPack;
