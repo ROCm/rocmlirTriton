@@ -38,20 +38,6 @@ using namespace mlir::rock;
 namespace mlir {
 namespace rock {
 
-FailureOr<int64_t> checkLDSUsage(ModuleOp moduleOp, int64_t maxSharedMemPerWG) {
-  int64_t sharedMemory = 0;
-  if (auto sharedAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.shared"))
-    sharedMemory = sharedAttr.getInt();
-  // Validate LDS usage
-  if (sharedMemory >= maxSharedMemPerWG) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "ttg.shared: too much LDS usage (" << sharedMemory << " >= "
-               << maxSharedMemPerWG << ")\n");
-    return failure();
-  }
-  return sharedMemory;
-}
-
 LogicalResult collectKernelInfo(ModuleOp moduleOp,
                                 SmallVectorImpl<KernelInfo> &kernels) {
   // Get Triton metadata from module attributes
