@@ -84,7 +84,27 @@ Using MLIR to optimize GEMM for CPU has already been studied in previous work [2
 In particular, the last trend is to use the transform dialect [3] and upstream MLIR to do so [4].
 
 # 5. Convolution
-To optimize convolutions, the approach is using an im2col approach to translate the convolution into a matrix multiplication. Then, the matrix multiplication will be optimized using the standard optimization path. This conversion is implemented in mlir/lib/Conversion/CPU/Transforms/ConvToGemm.cpp. This conversion supports all types of convolutions except for forward convolutions with stride > 1. If such a convolution is given, it will not be matched and converted into a matmul.
+To optimize convolutions, the approach is using an im2col approach to translate the convolution into a matrix multiplication. Then, the matrix multiplication will be optimized using the standard optimization path. This conversion is implemented in mlir/lib/Conversion/CPU/Transforms/ConvToGemm.cpp. 
+
+Originally, the im2col was implemented like this:
+
+```
+%0 = tensor.empty
+%1 = linalg.generic  %0 { yield }
+%2 = matmul(%2)
+```
+
+Where the yield essentially did the im2col layout conversion. For big convs, that tensor.empty (which materialised im2col matrix) can potentially be huge. For example:
+
+```
+%0 = tensor.empty() : tensor<1x256x230x230x64x7x7xf32>
+```
+
+That case is 170GB!
+
+The solution to avoid huge tensors is to merge the yield with the matmul-like op in a single op, thus avoiding to allocate the whole tensor at once. This has the big disadvantage that the new op is not a matmul anymore (because it's 8D, not 2D/3D and it has multiple reduction dimensions). The solution to that problem is simple: We tile this op later (in FusedConvToMatmulSchedule) and tile only the dimensions that come from the convolution itself. This way, the result is purely a matmul. 
+
+This conversion supports all types of convolutions except for forward convolutions with stride > 1. If such a convolution is given, it will not be matched and converted into a matmul.
 
 ## References
 [1] https://www.cs.utexas.edu/~flame/pubs/GotoTOMS_final.pdf
