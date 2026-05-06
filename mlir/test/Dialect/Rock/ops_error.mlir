@@ -1761,3 +1761,27 @@ func.func @attention_pre_softmax_multi_block(
   return %r : tensor<1x4x2xf16>
 }
 
+// Sanity check that the body verifier also runs for
+// `rock.conv_elementwise_gemm`'s single-block requirement.
+func.func @conv_elementwise_gemm_pre_second_gemm_multi_block(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<2x2x2x1x2xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x8x3xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM region must contain a single block}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<2x2x2x1x2xf32>
+   ab = elementwise {
+   ^bb0(%ab_in: tensor<1x4x8xf32>):
+     cf.br ^bb1(%ab_in : tensor<1x4x8xf32>)
+   ^bb1(%ab2: tensor<1x4x8xf32>):
+     rock.yield %ab2 : tensor<1x4x8xf32>
+   }
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
+  return %r : tensor<1x8x3xf32>
+}
+

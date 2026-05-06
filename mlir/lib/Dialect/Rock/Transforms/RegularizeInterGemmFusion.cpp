@@ -99,7 +99,7 @@ namespace {
 ///      the only kind this pass accepts, that condition holds, so the
 ///      new shape flows down the DAG to the value the yield was rewired
 ///      to consume.
-static void eraseYieldBoundaryTransform(Block &block) {
+static LogicalResult eraseYieldBoundaryTransform(Operation *op, Block &block) {
   auto yieldOp = cast<rock::YieldOp>(block.getTerminator());
 
   // arg0 is the first GEMM's result (e.g. QK^T for attention, A*B for
@@ -115,7 +115,7 @@ static void eraseYieldBoundaryTransform(Block &block) {
   auto firstResShape =
       cast<RankedTensorType>(yieldOp.getOperand(0).getType()).getShape();
   if (firstResShape != rootShape)
-    return;
+    return success();
 
   // Walk the (possibly stacked) boundary transforms in walking order from
   // yield inward, without modifying the IR. Each link must be single-
@@ -141,10 +141,10 @@ static void eraseYieldBoundaryTransform(Block &block) {
       // block arg the yield-rooted chain can reach is arg0 itself, whose
       // chain is then picked up by collectArgTransformChains.
       if (isa<BlockArgument>(tOp.getInput())) {
-        assert(tOp.getInput() == firstGemmRes &&
-               "yield-rooted single-use transform chain should only ever "
-               "land on arg0 (the first GEMM result); other block args' "
-               "chains are handled by collectArgTransformChains");
+        if (tOp.getInput() != firstGemmRes)
+          return op->emitOpError()
+                 << "yield-rooted single-use transform chain must land on "
+                    "arg0 (the first GEMM result)";
         break;
       }
 
@@ -154,7 +154,7 @@ static void eraseYieldBoundaryTransform(Block &block) {
   }
 
   if (boundaryAttrs.empty())
-    return;
+    return success();
 
   // Walk arg0's in-body transform chain (linear single-use chain of
   // TransformOps) and collect its attributes in walking order from arg0
@@ -184,7 +184,7 @@ static void eraseYieldBoundaryTransform(Block &block) {
     roundTrip.push_back(attr);
   AffineMap composed = composeTransforms(roundTrip);
   if (!isIdentityOnShape(composed, rootShape))
-    return;
+    return success();
 
   // All checks passed, perform the erasure. Same loop structure as the
   // walking step above; we re-derive each tOp from yield's current
@@ -193,7 +193,7 @@ static void eraseYieldBoundaryTransform(Block &block) {
     auto tOp = yieldOp.getOperand(0).getDefiningOp<TransformOp>();
     if (!tOp || isa<BlockArgument>(tOp.getInput()) ||
         !tOp.getResult().hasOneUse())
-      return;
+      return success();
     yieldOp.setOperand(0, tOp.getInput());
     tOp.erase();
   }
@@ -505,7 +505,8 @@ static LogicalResult regularizeGemmGemmBody(OpBuilder &builder,
   if (failed(inlineExternalConstants(builder, op, block)))
     return failure();
 
-  eraseYieldBoundaryTransform(block);
+  if (failed(eraseYieldBoundaryTransform(op, block)))
+    return failure();
 
   if (failed(sinkTransformsToLeaves(op, block)))
     return failure();
