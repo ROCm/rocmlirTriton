@@ -109,4 +109,27 @@ func.func @bwd_data_conv1d(%arg0: tensor<64xf32>, %arg1: tensor<672xf32>, %arg2:
 }
 
 // -----
+// Regression test for the no-overlap zero-result branch in
+// TransposeConvStridedConverter. With weightHeight=4 and stride_h=2 we get
+// kHPrime=2, so the low-side height offset is
+//   inPadLow*(stride+1) - stride*(kPrime-1) - outPadLow = 2*3 - 2*1 - 0 = 4.
+// convExpandedHeight = 4, so resultSliceTop saturates at convExpandedHeight
+// and resultSliceHeight collapses to 0. The lowering must materialize the
+// pre-bias result as a zero constant rather than emit a zero-extent
+// tosa.slice (TOSA disallows empty slice extents).
+//
+// CHECK-LABEL: func @bwd_data_conv2d_empty_slice
+// CHECK-NOT: tosa.custom
+// CHECK-NOT: tosa.slice
+// CHECK: %[[Z:.*]] = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1x2x4x1xf32>}> : () -> tensor<1x2x4x1xf32>
+// CHECK: tosa.add %[[Z]], %{{.*}} : (tensor<1x2x4x1xf32>, tensor<1x1x1x1xf32>) -> tensor<1x2x4x1xf32>
+func.func @bwd_data_conv2d_empty_slice(%grad_out: tensor<1x1x4x1xf32>, %weight: tensor<1x4x1x1xf32>) -> tensor<1x2x4x1xf32> {
+  %izp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %wzp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %bias = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %0 = tosa.custom %grad_out, %weight, %bias, %izp, %wzp {acc_type = f32, dilation = array<i64: 1, 1>, domain_name = "rocmlir", group = 1 : i64, implementation_attrs = "", operator_name = "conv_bwd_data", out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 2, 0, 0, 0>, stride = array<i64: 2, 1>} : (tensor<1x1x4x1xf32>, tensor<1x4x1x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x2x4x1xf32>
+  return %0 : tensor<1x2x4x1xf32>
+}
+
+// -----
 
