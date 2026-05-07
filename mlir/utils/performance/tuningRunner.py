@@ -1148,7 +1148,7 @@ def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
     if config.datatype in ['f32', 'bf16'] and config.seq_len_k > 1024:
         flags.append('--host-f64-reference')
 
-    if config.datatype == 'f32':
+    if config.datatype == 'f32' and config.seq_len_k > 256:
         k_eff = max(1, config.seq_len_k // max(1, config.split_kv))
         red_len = max(2, config.head_dim_qk + 2 * k_eff)
         floor = _F32_EPS * math.log2(red_len)
