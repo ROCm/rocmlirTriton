@@ -393,6 +393,14 @@ def Rock_CpuVerifier : Rock_Attr<"CpuVerifier"> {
   }];
 }
 
+def Rock_CpuFusedConv : Rock_Attr<"CpuFusedConv"> {
+  let mnemonic = "rock.cpu_fused_conv";
+  let description = [{
+    Marker attribute set on the fused convolution `linalg.generic` produced
+    by the `--cpu-conv-to-gemm` pass.
+  }];
+}
+
 def Rock_NotApplicable : Rock_Attr<"NotApplicable"> {
   let mnemonic = "rock.not_applicable";
   let description = [{

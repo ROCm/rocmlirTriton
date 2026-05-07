@@ -20,6 +20,7 @@
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/SCF/TransformOps/SCFTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
@@ -53,8 +54,10 @@ cpu::buildFusedConvToMatmulSchedule(MLIRContext *ctx) {
 
     // Match the fused 8-D conv emitted by --cpu-conv-to-gemm.
     auto fusedConvAttrs = DictionaryAttr::get(
-        ctx, {NamedAttribute(StringAttr::get(ctx, kFusedConvAttrName),
-                             UnitAttr::get(ctx))});
+        ctx,
+        {NamedAttribute(
+            StringAttr::get(ctx, rock::CpuFusedConvAttr::getMnemonic()),
+            UnitAttr::get(ctx))});
     auto matchFused = ib.create<transform::MatchOp>(
         /*resultTypes=*/anyOpType,
         /*target=*/arg,

@@ -32,7 +32,6 @@
 #include "mlir/IR/OwningOpRef.h"
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/StringRef.h"
 
 #include <functional>
 
@@ -40,9 +39,6 @@ namespace mlir {
 class MLIRContext;
 
 namespace cpu {
-
-inline constexpr llvm::StringLiteral kFusedConvAttrName =
-    "rock.cpu_fused_conv";
 
 /// Callback type for building the body of a transform sequence.
 /// The callback receives the ImplicitLocOpBuilder and the block argument
