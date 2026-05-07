@@ -251,11 +251,6 @@ def _print_failure(config,
         msg.append(f"Errors = {errors}")
     print("\n".join(msg), file=sys.stderr)
 
-    runner = await asyncio.create_subprocess_exec(paths.mlir_paths.rocm_run_path,
-                                                  stdin=runner_from_lowering,
-                                                  stdout=asyncio.subprocess.PIPE,
-                                                  stderr=asyncio.subprocess.PIPE)
-    os.close(runner_from_lowering)
 
 def _positive_int(s: str) -> int:
     """argparse type for `--samples`: must parse to an int > 0."""
@@ -363,16 +358,7 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
         os.close(lowering_to_runner)
         active.append(lowering)
 
-        mlir_cpu_runner_args = [
-            '-O2', '--shared-libs=' + ','.join([
-                paths.mlir_paths.libmlir_rocm_runtime_path,
-                paths.mlir_paths.libconv_validation_wrappers_path,
-                paths.mlir_paths.libmlir_runtime_utils_path,
-                paths.mlir_paths.libmlir_c_runner_utils_path,
-            ]), '--entry-point-result=void'
-        ]
-        runner = await asyncio.create_subprocess_exec(paths.mlir_paths.cpu_runner_path,
-                                                      *mlir_cpu_runner_args,
+        runner = await asyncio.create_subprocess_exec(paths.mlir_paths.rocm_run_path,
                                                       stdin=runner_from_lowering,
                                                       stdout=asyncio.subprocess.PIPE,
                                                       stderr=asyncio.subprocess.PIPE)

@@ -196,6 +196,7 @@ def get_chip():
     chip = GFX_CHIP_RE.search(arch).group(0)
     return chip
 
+
 def create_paths(config_file_path, mlir_build_dir_path) -> Paths:
     """Creates the composite Paths structure using build dir paths"""
 

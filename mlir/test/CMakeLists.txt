@@ -94,6 +94,13 @@ set(ROCMLIR_TEST_DEPENDS
   rocmlir-gen
   rocmlir-common-python-test-utils
 
+  # Build the perf-script bundle (parameterSweeps.py, attentionSweeps.py,
+  # perfRunner.py, rocm-run, ...) so the lit smoke tests under
+  # ``mlir/test/perf-scripts/`` always have it available, and so developers
+  # iterating on those scripts pick up failures via ``ninja check-rocmlir``
+  # instead of waiting for the weekly Jenkins parameter-sweeps run.
+  ci-performance-scripts
+
   opt
   llc
 
