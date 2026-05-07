@@ -28,6 +28,7 @@ import functools
 import glob
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -1119,6 +1120,43 @@ def format_error(context: str,
 # Core Tuning Logic
 # =============================================================================
 
+# f32 machine epsilon: 2^-23 ~= 1.1920929e-7.
+_F32_EPS = 2.0**-23
+
+def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
+    """Return precision-aware rocmlir-gen flags for verification.
+
+    Tuner verification compares the GPU output against the host CPU reference
+    With long seq_length attention (f32/bf16), the kernel error accumulates due to reduction drift,
+    masking the GPU's actual precision. We mitigate this with two flags:
+      * `--host-f64-reference` promotes the host kernel's interior to f64,
+        eliminating the reference-side drift. 
+      * `-relDiff_threshold T` lifts the per-element relative threshold to ride
+        on top of the predicted GPU f32 noise floor: `delta ~ eps_f32 * log2(D_qk + 2 * K_eff)`
+        where `K_eff = seq_len_k / split_kv`. This is only effective for f32 attention as 
+        other attention types have enough noise space.
+        
+    """
+    flags: List[str] = []
+    if not isinstance(config, AttentionConfiguration):
+        return flags
+
+    flags.append('--host-f64-reference')
+
+    if config.datatype == 'f32':
+        k_eff = max(1, config.seq_len_k // max(1, config.split_kv))
+        red_len = max(2, config.head_dim_qk + 2 * k_eff)
+        floor = _F32_EPS * math.log2(red_len)
+        # Only override when the predicted floor is at or above the default
+        # 1e-6 -- below that, the existing default already has headroom and
+        # we don't want to mask small-shape regressions.
+        if floor > 1e-6:
+            threshold = 4.0 * floor
+            flags += ['-relDiff_threshold', f'{threshold:.2e}']
+
+    return flags
+
+
 def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, options: Options,
                       gpu_id: int) -> float:
     """Verify a performance config by running with profiling.
@@ -1131,8 +1169,10 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
 
     command_line_options = config.generate_mlir_driver_commandline(options.rocmlir_gen_flags,
                                                                    kernel_repeats=VERIFY_REPEATS)
+    precision_flags = auto_precision_flags_att(config)
     rocmlir_gen_command = [
-        paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary', '-pv'
+        paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary', '-pv',
+        *precision_flags,
     ] + command_line_options.split()
 
     host_pipeline_command = [paths.mlir_paths.rocmlir_driver_path, '--host-pipeline=highlevel']
