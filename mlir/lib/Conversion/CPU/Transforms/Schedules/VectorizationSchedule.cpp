@@ -33,7 +33,7 @@ namespace {
 
 /// Name of the named matcher sequence used by `transform.collect_matching` to
 /// pick out only the static-shaped matmul-like `linalg.generic` op.
-constexpr llvm::StringLiteral kStaticMatmulMatcherName =
+constexpr llvm::StringLiteral staticMatmulMatcherName =
     "match_static_matmul_generic";
 
 /// Populate the body of a `transform.apply_patterns` op with the same set of
@@ -72,7 +72,7 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
   builder.setInsertionPointToEnd(module.getBody());
 
   auto matcher = builder.create<transform::NamedSequenceOp>(
-      loc, kStaticMatmulMatcherName,
+      loc, staticMatmulMatcherName,
       /*rootType=*/anyOpType,
       /*resultTypes=*/TypeRange{anyOpType},
       /*bodyBuilder=*/
@@ -170,15 +170,15 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
 OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
   // Match parameters that VectorizeChildrenAndApplyPatternsOp used to be
   // invoked with.
-  constexpr bool kVectorizePadding = true;
-  constexpr bool kVectorizeNDExtract = true;
-  constexpr bool kFoldTypeExtensionsIntoContract = false;
+  constexpr bool vectorizePadding = true;
+  constexpr bool vectorizeNDExtract = true;
+  constexpr bool foldTypeExtensionsIntoContract = false;
 
   // If peeling was applied, we will have multiple matmuls with different shapes:
   // The original matmul plus the peeled one. But we want to vectorize only the
   // original one, which we know that has the static shape {8, 8, 8} after the
   // 3-D matmul micro-tile. So match that only.
-  static constexpr int64_t kExpectedDims[] = {8, 8, 8};
+  static constexpr int64_t expectedDims[] = {8, 8, 8};
 
   OwningOpRef<ModuleOp> module = createTransformModule(ctx);
   auto loc = UnknownLoc::get(ctx);
@@ -186,7 +186,7 @@ OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
 
   // Emit the matcher named sequence at module scope first so it can be
   // referenced by symbol from `__transform_main`.
-  buildStaticMatmulMatcher(builder, loc, *module, kExpectedDims);
+  buildStaticMatmulMatcher(builder, loc, *module, expectedDims);
 
   // Emit `__transform_main` as a sibling named sequence.
   builder.setInsertionPointToEnd(module->getBody());
@@ -202,19 +202,19 @@ OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
         auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
 
         // Collect only matmul `linalg.generic` ops whose static loop ranges
-        // match `kExpectedDims` -- i.e. the post-peeling main-loop matmuls.
+        // match `expectedDims` -- i.e. the post-peeling main-loop matmuls.
         auto staticMatmuls = ib.create<transform::CollectMatchingOp>(
             /*results=*/TypeRange{anyOpType},
             /*root=*/arg,
             /*matcher=*/
-            SymbolRefAttr::get(StringAttr::get(ctx, kStaticMatmulMatcherName)));
+            SymbolRefAttr::get(StringAttr::get(ctx, staticMatmulMatcherName)));
 
         ib.create<transform::VectorizeOp>(
             /*target=*/staticMatmuls.getResults().front(),
             /*vector_sizes=*/ValueRange{},
             /*static_vector_sizes=*/DenseI64ArrayAttr{},
             /*vectorize_nd_extract=*/
-            kVectorizeNDExtract ? UnitAttr::get(ctx) : UnitAttr{},
+            vectorizeNDExtract ? UnitAttr::get(ctx) : UnitAttr{},
             /*assume_dynamic_dims_match_vec_sizes=*/UnitAttr{},
             /*create_named_contraction=*/UnitAttr{},
             /*scalable_sizes=*/DenseBoolArrayAttr{});
@@ -226,8 +226,8 @@ OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
             /*bodyBuilder=*/
             [&](OpBuilder &nb, Location loc) {
               ImplicitLocOpBuilder nested(loc, nb);
-              populateVectorizationCleanup(nested, kVectorizePadding,
-                                           kFoldTypeExtensionsIntoContract);
+              populateVectorizationCleanup(nested, vectorizePadding,
+                                           foldTypeExtensionsIntoContract);
             });
 
         ib.create<transform::YieldOp>();
