@@ -65,46 +65,6 @@ static void tileElementwiseOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
       /*scalableSizes=*/std::nullopt);
 }
 
-/// Flatten elementwise linalg.generic ops containing arith.extf or
-/// arith.truncf. This prevents IR explosion when lowering multi-dimensional
-/// vectors to LLVM, since LLVM only supports 1D vectors and must decompose each
-/// leaf vector individually for operations on nested arrays.
-static void flattenExtfTruncfOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
-                                 Value target) {
-  auto anyOpType = getAnyOpType(ctx);
-
-  // Match arith.extf ops and get their parent linalg.generic
-  auto matchExtf = ib.create<transform::MatchOp>(
-      anyOpType, target, ArrayRef<StringRef>{"arith.extf"});
-  auto extfLinalg = ib.create<transform::GetParentOp>(
-      /*parent=*/anyOpType,
-      /*target=*/matchExtf.getResult(),
-      /*isolated_from_above=*/UnitAttr{},
-      /*allow_empty_results=*/UnitAttr{},
-      /*op_name=*/StringAttr::get(ctx, "linalg.generic"),
-      /*deduplicate=*/UnitAttr{},
-      /*nth_parent=*/IntegerAttr{});
-
-  // Match arith.truncf ops and get their parent linalg.generic
-  auto matchTruncf = ib.create<transform::MatchOp>(
-      anyOpType, target, ArrayRef<StringRef>{"arith.truncf"});
-  auto truncfLinalg = ib.create<transform::GetParentOp>(
-      /*parent=*/anyOpType,
-      /*target=*/matchTruncf.getResult(),
-      /*isolated_from_above=*/UnitAttr{},
-      /*allow_empty_results=*/UnitAttr{},
-      /*op_name=*/StringAttr::get(ctx, "linalg.generic"),
-      /*deduplicate=*/UnitAttr{},
-      /*nth_parent=*/IntegerAttr{});
-
-  // Merge handles and flatten the elementwise ops
-  auto merged = ib.create<transform::MergeHandlesOp>(
-      anyOpType, ValueRange{extfLinalg.getResult(), truncfLinalg.getResult()},
-      /*deduplicate=*/UnitAttr{});
-  ib.create<transform::FlattenElementwiseLinalgOp>(anyOpType,
-                                                   merged.getResult());
-}
-
 OwningOpRef<ModuleOp>
 cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {  
   return buildTransformModule(
@@ -112,10 +72,6 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
         auto anyOpType = getAnyOpType(ctx);
         auto scfForType = transform::OperationType::get(ctx, "scf.for");
         constexpr int64_t vectorSize = MatmulTileSizes::kVectorSize;
-
-        // Flatten extf/truncf linalg.generic ops to 1D to avoid IR explosion
-        // when lowering multi-dimensional vectors to LLVM
-        flattenExtfTruncfOps(ib, ctx, arg);
 
         // Tile elementwise ops of different dimensions. In general, this
         // improves performance.
