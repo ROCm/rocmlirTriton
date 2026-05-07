@@ -65,6 +65,9 @@ from perfRunner import (
 # Constants
 # =============================================================================
 
+# rocmlir-gen wraps the GPU kernel in a loop when --kernel-repeats > 1. Split-K
+# GEMM uses atomic_add on the output buffer; each repeat accumulates another
+# full result (e.g. 10 repeats → ~10× vs reference). Verification must use 1.
 TUNE_REPEATS = 10
 VERIFY_REPEATS = 1
 WARMUP_ITERATIONS = 1

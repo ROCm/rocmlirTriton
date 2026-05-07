@@ -138,10 +138,6 @@ ParamLookupTable<GemmParamsAttr>::buildTable() {
 #define Accel_LOOKUP_TABLE_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
 #undef Accel_LOOKUP_TABLE_GEN
-
-#define NonAccel_LOOKUP_TABLE_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef NonAccel_LOOKUP_TABLE_GEN
   };
 }
 

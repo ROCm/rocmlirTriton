@@ -34,13 +34,6 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
   return os;
 }
 
-/// Non-xdlops
-// clang-format off
-#define NonAccel_DEFINITIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef NonAccel_DEFINITIONS_GEN
-// clang-format on
-
 /// Static data for XDL tuning parameters (used by ParamLookupTable)
 // clang-format off
 #define XDL_DEFINITIONS_GEN
