@@ -645,10 +645,19 @@ static llvm::cl::alias
                                 llvm::cl::aliasopt(printValidationResults));
 
 // populate host validation logic.
+//
+// `mlir` (a.k.a. `-pv`, the "fast" CPU verifier) widens narrow floats to f32
+// for vectorisation. That trades GPU-faithful rounding for speed and is the
+// right default for most tests.
+//
+// `mlir-strict` (a.k.a. `-pv_strict`) preserves IR-level dtypes through the
+// pre-softmax fusion in attention so the CPU rounds between mul/add the way
+// the GPU does (e.g. `v_dot2_bf16_bf16` on RDNA). Use it when an existing
+// test had to relax thresholds because of CPU/GPU dtype divergence.
 static llvm::cl::opt<std::string> genValidation(
     "verifier",
-    llvm::cl::desc(
-        "Select verification from: none(default), cpu, mlir, clone"),
+    llvm::cl::desc("Select verification from: none(default), cpu, mlir, "
+                   "mlir-strict, clone"),
     llvm::cl::cb<void, std::string>([](const std::string &v) {
       if (!v.empty())
         genHostHarness = true;
@@ -672,6 +681,21 @@ static llvm::cl::opt<bool>
                           genHostHarness = true;
                         }
                       }));
+
+// Convenience alias for `--verifier=mlir-strict`. The strict CPU verifier
+// preserves narrow-float dtypes through the pre-softmax fusion so the CPU
+// reference rounds between operations the way the GPU does. Tests that
+// previously had to relax thresholds (see PrAttentionBF16.toml GQA + KV
+// Cache configs and PR #161) can opt in here to recover tight thresholds.
+static llvm::cl::opt<bool>
+    genCPUValidationStrict("pv_strict", llvm::cl::Hidden, llvm::cl::init(false),
+                           llvm::cl::Optional,
+                           llvm::cl::cb<void, bool>([](bool v) {
+                             if (v) {
+                               genValidation = "mlir-strict";
+                               genHostHarness = true;
+                             }
+                           }));
 
 static llvm::cl::opt<bool>
     genCPUKernel("cpu-kernels", llvm::cl::desc("Generate CPU kernel for test"),
@@ -889,6 +913,12 @@ struct GenParams {
   std::optional<const rock::ConvGenerator::Config *> convConfig = std::nullopt;
   StringRef arch;
   StringRef perfConfig;
+
+  /// When true, the CPU verifier preserves narrow-float dtypes through the
+  /// pre-softmax fusion (mul / add) so the CPU rounds between operations
+  /// the way the GPU does. Selected via `-pv_strict` /
+  /// `--verifier=mlir-strict`.
+  bool strictMode = false;
 };
 
 namespace test {
@@ -4428,6 +4458,72 @@ createCpuGemmElementwiseGemmKernelWithMlir(ModuleOp module,
   return func;
 }
 
+/// Force a narrow-float `tensor` to round-trip through its bit-equivalent
+/// integer type so the result physically goes through the narrow dtype's
+/// rounding once. Used by the strict CPU verifier between operations that
+/// the GPU executes back-to-back at narrow precision (e.g. `bf16` mul / add
+/// fused into `v_dot2_bf16_bf16` on RDNA).
+///
+/// Why bitcast and not just `arith.truncf` + `arith.extf`? On the host the
+/// `arith.mulf %a, %b : bf16` pair lowers to LLVM `fmul %a, %b : bf16`,
+/// which the x86 backend further legalises as `fpext -> fmul f32 ->
+/// fptrunc`. If we left the IR types narrow but didn't materialise the
+/// rounding, LLVM's `instcombine` happily folds the inner
+/// `fptrunc bf16 -> bf16; fpext bf16 -> f32` pair away and we end up with a
+/// single fused-precision f32 `mul`/`add` chain -- exactly what PR #161 had
+/// to relax thresholds for. Bitcasting through `iN` makes the rounded bit
+/// pattern an opaque integer value that LLVM can't fold across, so the
+/// narrow rounding survives all the way to codegen.
+///
+/// Returns `tensor` unchanged when the element type isn't a narrow float
+/// (the round-trip would be a no-op for `f32` or wider, and integer types
+/// don't have rounding to begin with).
+static Value forceNarrowFloatRoundTrip(OpBuilder &b, Location loc,
+                                       Value tensor) {
+  auto tensorType = dyn_cast<RankedTensorType>(tensor.getType());
+  if (!tensorType)
+    return tensor;
+  auto floatType = dyn_cast<FloatType>(tensorType.getElementType());
+  if (!floatType || floatType.getWidth() >= 32)
+    return tensor;
+
+  MLIRContext *ctx = b.getContext();
+  Type intType = b.getIntegerType(floatType.getWidth());
+  auto intTensorType = RankedTensorType::get(tensorType.getShape(), intType);
+
+  AffineMap identityMap =
+      AffineMap::getMultiDimIdentityMap(tensorType.getRank(), ctx);
+  SmallVector<utils::IteratorType> iteratorTypes(tensorType.getRank(),
+                                                 utils::IteratorType::parallel);
+
+  // bitcast bf16 -> i16
+  Value emptyInt =
+      tensor::EmptyOp::create(b, loc, intTensorType, ValueRange{});
+  Value asInt =
+      linalg::GenericOp::create(
+          b, loc, intTensorType, ValueRange{tensor}, ValueRange{emptyInt},
+          ArrayRef<AffineMap>{identityMap, identityMap}, iteratorTypes,
+          [&](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
+            Value bits =
+                arith::BitcastOp::create(nestedB, nestedLoc, intType, args[0]);
+            linalg::YieldOp::create(nestedB, nestedLoc, bits);
+          })
+          .getResult(0);
+
+  // bitcast i16 -> bf16
+  Value emptyFloat =
+      tensor::EmptyOp::create(b, loc, tensorType, ValueRange{});
+  return linalg::GenericOp::create(
+             b, loc, tensorType, ValueRange{asInt}, ValueRange{emptyFloat},
+             ArrayRef<AffineMap>{identityMap, identityMap}, iteratorTypes,
+             [&](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
+               Value back = arith::BitcastOp::create(nestedB, nestedLoc,
+                                                     floatType, args[0]);
+               linalg::YieldOp::create(nestedB, nestedLoc, back);
+             })
+      .getResult(0);
+}
+
 static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
                                                      const GenParams &params) {
   MLIRContext *ctx = module.getContext();
@@ -4586,6 +4682,15 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     qkTensor = rock::tosa::getMulOp(
         builder, loc, qkTensor, scaleTensor,
         cast<ShapedType>(scaleTensor.getType()).getElementType());
+
+    // In strict mode, force the narrow-float rounding the GPU performs
+    // between the `scale * QK` multiply and the bias add (e.g. the
+    // round-to-bf16 implicit in `v_dot2_bf16_bf16`). Without this the
+    // host backend folds the intervening truncate/extend pair away and
+    // the chain runs at f32, which is the divergence PR #161 had to
+    // relax thresholds for.
+    if (params.strictMode && hasAttnBias)
+      qkTensor = forceNarrowFloatRoundTrip(builder, loc, qkTensor);
   }
 
   if (hasAttnBias) {
@@ -4604,6 +4709,12 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     qkTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
         builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
         qkTensor, biasTensor);
+
+    // Strict mode: force the rounding the GPU performs between the bias
+    // add result and the subsequent cast/softmax stage so the handoff to
+    // the next operation matches GPU bit-for-bit.
+    if (params.strictMode)
+      qkTensor = forceNarrowFloatRoundTrip(builder, loc, qkTensor);
   }
   // cast to softmaxType
   auto softmaxType = typeFromString(softmaxDataType.getValue(), ctx);
@@ -5950,6 +6061,7 @@ int main(int argc, char **argv) {
 
   OwningOpRef<ModuleOp> module;
   GenParams genParams;
+  genParams.strictMode = (genValidation.getValue() == "mlir-strict");
 
   if (!inputFilename.empty()) {
     module = readTestFile(inputFilename.getValue(), hasUserKernel, &context);
