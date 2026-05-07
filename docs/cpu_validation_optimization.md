@@ -108,7 +108,7 @@ That case is 170GB!
 
 The solution to avoid huge tensors is to merge the yield with the matmul-like op in a single op, thus avoiding to allocate the whole tensor at once. This has the big disadvantage that the new op is not a matmul anymore (because it's 8D, not 2D/3D and it has multiple reduction dimensions). The solution to that problem is simple: We tile this op later (in FusedConvToMatmulSchedule) and tile only the dimensions that come from the convolution itself. This way, the result is purely a matmul. 
 
-This conversion supports all types of convolutions except for forward convolutions with stride > 1. If such a convolution is given, it will not be matched and converted into a matmul.
+This conversion supports all types of convolutions except for forward convolutions with stride > 1 or dilation > 1. If such a convolution is given, it will not be matched and converted into a matmul.
 
 ## References
 [1] https://www.cs.utexas.edu/~flame/pubs/GotoTOMS_final.pdf
