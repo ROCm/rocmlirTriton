@@ -2,7 +2,7 @@ find_package(composable_kernel 1.1.0 COMPONENTS device_gemm_operations CONFIG)
 
 if (composable_kernel_FOUND)
   message(STATUS "Found Composable Kernel Library")
-  find_package(hip REQUIRED PATHS /opt/rocm)
+  find_package(hip REQUIRED PATHS ${ROCM_PATH})
   set(LIBS composable_kernel::device_gemm_operations hip::device benchmark-driver-utils)
 
   add_library(ck-common INTERFACE IMPORTED)

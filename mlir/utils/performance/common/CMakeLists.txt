@@ -1,4 +1,4 @@
-find_package(hip PATHS /opt/rocm)
+find_package(hip PATHS ${ROCM_PATH})
 
 if (hip_FOUND)
   add_library(benchmark-driver-utils EXCLUDE_FROM_ALL benchmarkUtils.cpp)
