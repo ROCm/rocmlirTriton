@@ -180,7 +180,8 @@ PopulateParamsAccel::couldBePerformant(const PopulateParamsInfo &info,
                                            params.getNPerBlock());
   }
 
-  return specificCouldBePerformant(params, info.gemmAType, info.gemmBType);
+  return specificCouldBePerformant(params, info.gemmAType, info.gemmBType,
+                                   info.arch);
 }
 
 FailureOr<GemmParamsAttr> PopulateParamsAccel::obtainTuningParameters(
@@ -261,12 +262,10 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
 
 LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
                                                         Type dataTypeA,
-                                                        Type dataTypeB) {
+                                                        Type dataTypeB,
+                                                        StringRef arch) {
   (void)dataTypeA;
   (void)dataTypeB;
-
-  static constexpr int64_t kGemmCdnaWaveSize = 64;
-  static constexpr int64_t kGemmMaxAccPerThread = 512;
 
   /// MFMA/XDL-only heuristic (rocMLIR `PopulateParamsXDL::specificCouldBePerformant`):
   /// factor total wave count into an M×N wave grid; `nPerWave` is
@@ -284,9 +283,15 @@ LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
   if (numWaves != 1 && numWaves != 2 && numWaves != 4)
     return failure();
 
-  // Heuristic to limit the per-thread accumulator size.
-  int64_t accPerThread = (params.getMPerBlock() * params.getNPerBlock()) /
-                         (numWaves * kGemmCdnaWaveSize);
+  // Filter the `mPerBlock = nPerBlock = 256, numWaves = 1` corner: it blows
+  // the per-thread accumulator register budget, no winning config on gfx90a /
+  // gfx942 / gfx950 uses it, and it has been observed to derail tuning.
+  // Threshold 512 catches that case (256·256 / (1·64) = 1024) but not the
+  // same tile with `numWaves >= 2` (e.g. 512 at two waves, not greater).
+  static constexpr int64_t kGemmMaxAccPerThread = 512;
+  int64_t waveSize = rock::getWaveSize(arch);
+  int64_t accPerThread =
+      (params.getMPerBlock() * params.getNPerBlock()) / (numWaves * waveSize);
   if (accPerThread > kGemmMaxAccPerThread)
     return failure();
 
