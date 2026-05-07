@@ -58,7 +58,9 @@ param(
     # windows-enablement fork; .gitmodules and the recorded gitlink are not
     # modified.
     [string]$TritonRemote = 'https://github.com/triton-lang/triton-windows.git',
-    [string]$TritonRef    = 'main-windows'
+    # Empty -> read pinned SHA from triton-windows-hash.txt (see below).
+    # Pass -TritonRef <sha> or -TritonRef main-windows to override.
+    [string]$TritonRef    = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,6 +78,17 @@ try {
 $RepoRoot = $RepoRoot -replace '\\', '/'
 Write-Host "=== rocmlirTriton LLVM build wrapper (Windows) ===" -ForegroundColor Cyan
 Write-Host "Repo root: $RepoRoot"
+
+# Pinned triton-windows commit (analogous to external/triton/cmake/llvm-hash.txt).
+# Bump by editing triton-windows-hash.txt and verifying the build.
+if (-not $TritonRef) {
+    $TritonHashFile = "$RepoRoot/triton-windows-hash.txt"
+    if (-not (Test-Path $TritonHashFile)) {
+        throw "Pinned triton-windows hash not found: $TritonHashFile"
+    }
+    $TritonRef = (Get-Content $TritonHashFile -TotalCount 1).Trim()
+}
+Write-Host "Triton ref: $TritonRef"
 
 # ---------------------------------------------------------------------------
 # Resolve HIP SDK
@@ -123,23 +136,19 @@ Write-Host "  remote: $TritonRemote"
 Write-Host "  ref:    $TritonRef"
 
 if (-not (Test-Path "$TritonDir/.git")) {
-    # Fresh clone: skip `git submodule update` entirely (it would clone
-    # upstream and try to check out a commit not in the fork's lineage).
-    # Clone the fork directly into the submodule path.
     Write-Host "  external/triton/.git absent -- direct-cloning fork" `
         -ForegroundColor Yellow
     if (Test-Path $TritonDir) { Remove-Item -Recurse -Force $TritonDir }
-    git clone --filter=blob:none --branch $TritonRef $TritonRemote $TritonDir
+    git clone --filter=blob:none $TritonRemote $TritonDir
     if ($LASTEXITCODE -ne 0) { throw "git clone fork failed ($LASTEXITCODE)" }
 } else {
-    # Existing clone: switch its remote URL and fast-forward to the fork ref.
     git -C $TritonDir remote set-url origin $TritonRemote
     if ($LASTEXITCODE -ne 0) { throw "remote set-url failed ($LASTEXITCODE)" }
-    git -C $TritonDir fetch --depth 1 origin $TritonRef
-    if ($LASTEXITCODE -ne 0) { throw "git fetch $TritonRef failed ($LASTEXITCODE)" }
-    git -C $TritonDir checkout -B $TritonRef FETCH_HEAD
-    if ($LASTEXITCODE -ne 0) { throw "git checkout $TritonRef failed ($LASTEXITCODE)" }
 }
+git -C $TritonDir fetch --depth 1 origin $TritonRef
+if ($LASTEXITCODE -ne 0) { throw "git fetch $TritonRef failed ($LASTEXITCODE)" }
+git -C $TritonDir reset --hard $TritonRef
+if ($LASTEXITCODE -ne 0) { throw "git reset $TritonRef failed ($LASTEXITCODE)" }
 
 git -C $TritonDir submodule update --init --recursive
 if ($LASTEXITCODE -ne 0) { throw "nested submodule update failed ($LASTEXITCODE)" }
