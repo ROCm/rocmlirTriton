@@ -1143,8 +1143,10 @@ def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
     flags: List[str] = []
     if not isinstance(config, AttentionConfiguration):
         return flags
-
-    flags.append('--host-f64-reference')
+        
+    # Only observed for f32/bf16 attention at long seq_len_k
+    if config.datatype in ['f32', 'bf16'] and config.seq_len_k > 1024:
+        flags.append('--host-f64-reference')
 
     if config.datatype == 'f32':
         k_eff = max(1, config.seq_len_k // max(1, config.split_kv))
