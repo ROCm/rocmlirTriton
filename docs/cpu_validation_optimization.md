@@ -7,15 +7,17 @@ You can use the `--cpu-timers` option to measure different parts of CPU runtime.
 
 ```
 mlir/lib/Conversion/CPU/Transforms/
-├── LowerCpuVerifier.cpp          # Main pass that orchestrates the lowering pipeline
-├── Schedules.cpp                 # Creates and applies transform schedules
+├── LowerCpuVerifier              # Main pass that orchestrates the lowering pipeline
+├── ConvToGemm                    # im2col-style conversion of conv ops into fused matmul ops
+├── Schedules                     # Creates and applies transform schedules
 └── Schedules/                    # Individual transform schedule implementations
-    ├── ScheduleUtils.cpp         # Common utilities (module creation, matmul matching)
-    ├── TilingSchedule.cpp        # Schedule 1. Tiles linalg.generic ops to prevent huge vectors
-    ├── VectorizationSchedule.cpp # Schedule 2. Vectorizes tiled operations
-    ├── UnrollSchedule.cpp        # Schedule 3. Unrolls small loops for better codegen
-    ├── PrePostSchedules.cpp      # Pre (canonicalize+cse) and Post (LICM+hoisting) passes 
-    └── LowerToLLVMSchedule.cpp   # Schedule 4. Bufferization + LLVM dialect lowering
+    ├── ScheduleUtils             # Common utilities (module creation, matmul matching)
+    ├── FusedConvToMatmulSchedule # Schedule 1. Tiles fused conv ops so they become pure matmuls
+    ├── TilingSchedule            # Schedule 2. Tiles linalg.generic ops to prevent huge vectors
+    ├── VectorizationSchedule     # Schedule 3. Vectorizes tiled operations
+    ├── UnrollSchedule            # Schedule 4. Unrolls small loops for better codegen
+    ├── PrePostSchedules          # Pre (canonicalize+cse) and Post (LICM+hoisting) passes
+    └── LowerToLLVMSchedule       # Schedule 5. Bufferization + LLVM dialect lowering
 ```
 
 ## 1.2 Key Components
@@ -24,17 +26,19 @@ mlir/lib/Conversion/CPU/Transforms/
 
 | Schedule | Name      | Purpose |
 |----------| ----------|---------|
-| 1.       | `TilingSchedule` | Tiles elementwise ops (1D/2D/3D) with tile size 8, and matmul with cache-friendly tiles |
-| 2.       | `VectorizationSchedule` | Applies `transform.vectorize` to convert loops to vector operations |
-| 3.       | `UnrollSchedule` | Unrolls inner loops for better instruction-level parallelism |
-| 4.       | `LowerToLLVMSchedule` | Bufferization, vector lowering, and conversion to LLVM dialect |
+| 1.       | `FusedConvToMatmulSchedule` | Tiles the fused conv-as-matmul op produced by `ConvToGemm` so its inner body becomes a pure matmul |
+| 2.       | `TilingSchedule` | Tiles elementwise ops (1D/2D/3D) with tile size 8, and matmul with cache-friendly tiles |
+| 3.       | `VectorizationSchedule` | Applies `transform.vectorize` to convert loops to vector operations |
+| 4.       | `UnrollSchedule` | Unrolls inner loops for better instruction-level parallelism |
+| 5.       | `LowerToLLVMSchedule` | Bufferization, vector lowering, and conversion to LLVM dialect |
 
-We also have other 2 files:
+We also have these supporting files:
 
 | Name               | Purpose |
 |--------------------|---------|
 | `PrePostSchedules` | Pre: canonicalize+CSE. Post: LICM + redundant transfer hoisting |
-| `ScheduleUtils`    | Shared helpers |
+| `ScheduleUtils`    | Shared helpers (module creation, matmul matching, etc.) |
+| `ConvToGemm`       | Non-schedule pass that rewrites convolutions into a single fused matmul-like op (see §5) |
 
 ## 2. Transform dialect (this approach) vs. passes (rocMLIR approach)
 Note that the best approach may vary depending on the use case. There is no single right answer to this question. 
