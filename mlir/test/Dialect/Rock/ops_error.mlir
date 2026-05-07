@@ -1608,3 +1608,180 @@ func.func @transform_output_shape_mismatch(%arg0: tensor<256x128xf16>) -> tensor
   return %0 : tensor<8x32x128xf16>
 }
 
+// =============================================================================
+// Pre-second-GEMM body verification tests
+//
+// `verifyGemmPlusGemmLikeOp` requires that, when the pre-second-GEMM region is
+// non-empty, it contains a single block with at least one block argument whose
+// terminator is a `rock.yield` that yields exactly one value. The same verifier
+// is shared by `rock.gemm_elementwise_gemm`, `rock.conv_elementwise_gemm` and
+// `rock.attention`.
+// =============================================================================
+
+// An empty pre-second-GEMM region is legal: the assembly format makes the
+// elementwise clause optional, and the verifier should accept the op as-is.
+func.func @gemm_elementwise_gemm_empty_body_is_legal(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Multi-block region: the body must be a single block.
+func.func @gemm_elementwise_gemm_body_multi_block(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM region must contain a single block}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     cf.br ^bb1(%qk : tensor<1x4x4xf32>)
+   ^bb1(%qk2: tensor<1x4x4xf32>):
+     rock.yield %qk2 : tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Zero block arguments: the body's entry block must accept at least the
+// running first-GEMM result as a block argument.
+func.func @gemm_elementwise_gemm_body_no_block_args(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must have at least one block argument}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise {
+   ^bb0:
+     %cst = arith.constant dense<0.0> : tensor<1x4x4xf32>
+     rock.yield %cst : tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Wrong terminator: the body must be terminated by a `rock.yield`. Use a
+// self-branch to keep the region single-block while replacing the terminator.
+func.func @gemm_elementwise_gemm_body_wrong_terminator(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must be terminated by a rock.yield}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     cf.br ^bb0(%qk : tensor<1x4x4xf32>)
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Yield with zero operands: must yield exactly one value.
+func.func @gemm_elementwise_gemm_body_yield_zero_operands(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must yield exactly one value}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     rock.yield
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Yield with too many operands: must yield exactly one value.
+func.func @gemm_elementwise_gemm_body_yield_two_operands(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>,
+    %bias: tensor<1x4x4xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must yield exactly one value}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise otherIns(%bias : tensor<1x4x4xf32>) {
+   ^bb0(%qk: tensor<1x4x4xf32>, %b_in: tensor<1x4x4xf32>):
+     %sum = arith.addf %qk, %b_in : tensor<1x4x4xf32>
+     rock.yield %qk, %sum : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// The same body verifier is invoked for `rock.attention`. Sanity check that a
+// malformed pre-softmax region is rejected on attention too.
+func.func @attention_pre_softmax_yield_zero_operands(
+    %q: tensor<1x4x4xf16>, %k: tensor<1x4x4xf16>,
+    %v: tensor<1x4x2xf16>) -> tensor<1x4x2xf16>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must yield exactly one value}}
+  %r = rock.attention{
+   qk = %q * %k : tensor<1x4x4xf16>, tensor<1x4x4xf16>
+   qk = elementwise {
+   ^bb0(%qk_in: tensor<1x4x4xf16>):
+     rock.yield
+   }
+   softmax(qk) * %v : tensor<1x4x2xf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x4x2xf16>
+  return %r : tensor<1x4x2xf16>
+}
+
+// Sanity check that the body verifier also runs for `rock.attention`'s
+// single-block requirement.
+func.func @attention_pre_softmax_multi_block(
+    %q: tensor<1x4x4xf16>, %k: tensor<1x4x4xf16>,
+    %v: tensor<1x4x2xf16>) -> tensor<1x4x2xf16>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM region must contain a single block}}
+  %r = rock.attention{
+   qk = %q * %k : tensor<1x4x4xf16>, tensor<1x4x4xf16>
+   qk = elementwise {
+   ^bb0(%qk_in: tensor<1x4x4xf16>):
+     cf.br ^bb1(%qk_in : tensor<1x4x4xf16>)
+   ^bb1(%qk2: tensor<1x4x4xf16>):
+     rock.yield %qk2 : tensor<1x4x4xf16>
+   }
+   softmax(qk) * %v : tensor<1x4x2xf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x4x2xf16>
+  return %r : tensor<1x4x2xf16>
+}
+
+// Sanity check that the body verifier also runs for
+// `rock.conv_elementwise_gemm`'s single-block requirement.
+func.func @conv_elementwise_gemm_pre_second_gemm_multi_block(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<2x2x2x1x2xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x8x3xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM region must contain a single block}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<2x2x2x1x2xf32>
+   ab = elementwise {
+   ^bb0(%ab_in: tensor<1x4x8xf32>):
+     cf.br ^bb1(%ab_in : tensor<1x4x8xf32>)
+   ^bb1(%ab2: tensor<1x4x8xf32>):
+     rock.yield %ab2 : tensor<1x4x8xf32>
+   }
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
+  return %r : tensor<1x8x3xf32>
+}
+

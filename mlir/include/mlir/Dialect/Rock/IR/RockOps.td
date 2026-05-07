@@ -49,7 +49,8 @@ defvar commonConvAttrs = (ins IndexArrayLength<4>:$padding,
     OptionalAttr<RockTuningParamAttrInterface>:$params);
 
 class Rock_ConvOpBase<string mnemonic>
-    : Rock_Op<mnemonic, [DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
+    : Rock_Op<mnemonic, [Pure,
+                         DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
                          DeclareOpInterfaceMethods<RockConvInterface>,
                          RockFusionRoot]> {
   let results = (outs AnyRankedTensor:$result);
@@ -122,7 +123,8 @@ def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
 }
 
 def Rock_GemmOp
-    : Rock_Op<"gemm", [DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
+    : Rock_Op<"gemm", [Pure,
+                       DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
                        RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins Arg<TensorOf<GemmInputTypes>, "matrix A">:$a,
           Arg<TensorOf<GemmInputTypes>, "matrix B">:$b,
@@ -169,7 +171,7 @@ def Rock_GemmOp
 }
 
 def Rock_ReduceOp
-    : Rock_Op<"reduce", [AllElementTypesMatch<["in", "result"]>]>,
+    : Rock_Op<"reduce", [Pure, AllElementTypesMatch<["in", "result"]>]>,
       Arguments<(ins Arg<TensorOf<[BF16, F16, F32]>, "input">:$in,
           ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
       Results<(outs TensorOf<[BF16, F16, F32]>:$result)> {
@@ -182,7 +184,8 @@ def Rock_ReduceOp
 
 def Rock_AttentionOp
     : Rock_Op<
-          "attention", [DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
+          "attention", [RecursiveMemoryEffects, RecursivelySpeculatable,
+                        DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
                         RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<[F32, F16, BF16, I8]>:$queries,
           TensorOf<[F32, F16, BF16, I8]>:$keys,
@@ -254,9 +257,10 @@ def Rock_AttentionOp
 }
 
 def Rock_GemmElementwiseGemmOp
-    : Rock_Op<"gemm_elementwise_gemm", [DeclareOpInterfaceMethods<
-                                            RockGemmGemmWrapperInterface>,
-                                        RockFusionRoot]>,
+    : Rock_Op<"gemm_elementwise_gemm",
+              [RecursiveMemoryEffects, RecursivelySpeculatable,
+               DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
+               RockFusionRoot]>,
       AllElementTypesMatch<["a", "b"]>,
       Arguments<(ins TensorOf<[F32, F16, BF16]>:$a,
           TensorOf<[F32, F16, BF16]>:$b, TensorOf<[F32, F16, BF16]>:$c,
@@ -297,9 +301,10 @@ def Rock_GemmElementwiseGemmOp
 }
 
 def Rock_ConvElementwiseGemmOp
-    : Rock_Op<"conv_elementwise_gemm", [DeclareOpInterfaceMethods<
-                                            RockGemmGemmWrapperInterface>,
-                                        RockFusionRoot]>,
+    : Rock_Op<"conv_elementwise_gemm",
+              [RecursiveMemoryEffects, RecursivelySpeculatable,
+               DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
+               RockFusionRoot]>,
       AllElementTypesMatch<["filter", "input"]>,
       Arguments<(ins TensorOf<[F32, F16, BF16]>:$filter,
           TensorOf<[F32, F16, BF16]>:$input, TensorOf<[F32, F16, BF16]>:$c,
@@ -340,11 +345,11 @@ def Rock_ConvElementwiseGemmOp
   }];
 }
 
-def Rock_TransformOp :
-    Rock_Op<"transform", [Pure, ViewLikeOpInterface,
-                          AllElementTypesMatch<["input", "output"]>]>,
-    Arguments<(ins AnyShaped:$input, Rock_TransformMapAttr:$transform)>,
-    Results<(outs AnyShaped:$output)> {
+def Rock_TransformOp
+    : Rock_Op<"transform", [Pure, ViewLikeOpInterface,
+                            AllElementTypesMatch<["input", "output"]>]>,
+      Arguments<(ins AnyShaped:$input, Rock_TransformMapAttr:$transform)>,
+      Results<(outs AnyShaped:$output)> {
   let summary = "Tensor transformation";
   let description = [{
     Create a view `output` of the tensor `input` with the same element type
@@ -375,10 +380,10 @@ def Rock_TransformOp :
 }
 
 // untile
-def Rock_UntileOp : Rock_Op<"untile",
-                            [Pure, AllElementTypesMatch<["source", "result"]>]>,
-                    Arguments<(ins AnyRankedTensor:$source)>,
-                    Results<(outs AnyRankedTensor:$result)> {
+def Rock_UntileOp
+    : Rock_Op<"untile", [Pure, AllElementTypesMatch<["source", "result"]>]>,
+      Arguments<(ins AnyRankedTensor:$source)>,
+      Results<(outs AnyRankedTensor:$result)> {
   let summary = "Convert a tile tensor back to a full tensor type";
   let description = [{
     The rock.untile op maps a tile tensor (e.g., from a BlockwiseLoadOp) to a
@@ -394,8 +399,8 @@ def Rock_UntileOp : Rock_Op<"untile",
 
 // store_marker
 def Rock_StoreMarkerOp
-    : Rock_Op<"store_marker",
-              [Pure, AllElementTypesMatch<["source", "result"]>]>,
+    : Rock_Op<"store_marker", [Pure,
+                               AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
           Variadic<I32>:$extraIndices)>,
       Results<(outs AnyRankedTensor:$result)> {
@@ -428,8 +433,8 @@ def Rock_StoreMarkerOp
 
 // load_marker
 def Rock_LoadMarkerOp
-    : Rock_Op<"load_marker",
-              [Pure, AllElementTypesMatch<["source", "result"]>]>,
+    : Rock_Op<"load_marker", [Pure,
+                              AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
           Variadic<I32>:$extraIndices)>,
       Results<(outs AnyRankedTensor:$result)> {
@@ -474,11 +479,11 @@ def Rock_LoadMarkerOp
 }
 
 // store
-def Rock_StoreOp : Rock_Op<"store",
-                           [AllElementTypesMatch<["source", "dest", "result"]>]>,
-                   Arguments<(ins AnyRankedTensor:$source,
-                       AnyRankedTensor:$dest, StoreMethodAttr:$storeMethod)>,
-                   Results<(outs AnyRankedTensor:$result)> {
+def Rock_StoreOp
+    : Rock_Op<"store", [AllElementTypesMatch<["source", "dest", "result"]>]>,
+      Arguments<(ins AnyRankedTensor:$source, AnyRankedTensor:$dest,
+          StoreMethodAttr:$storeMethod)>,
+      Results<(outs AnyRankedTensor:$result)> {
   let summary = "Store tensor result to destination";
   let description = [{
     The rock.store op is a placeholder marking where stores to global memory need to happen. 
@@ -496,7 +501,8 @@ def Rock_StoreOp : Rock_Op<"store",
 
 // gridwise_gemm
 def Rock_GridwiseGemmOp
-    : Rock_Op<"gridwise_gemm", [RockFusionRoot, AttrSizedOperandSegments]>,
+    : Rock_Op<"gridwise_gemm", [Pure, RockFusionRoot,
+                                AttrSizedOperandSegments]>,
       Arguments<(ins Arg<TensorRankOf<GemmInputTypes, [3]>, "matrix A view">:$a,
           Arg<TensorRankOf<GemmInputTypes, [3]>, "matrix B view">:$b,
           Optional<TensorRankOf<[F8E8M0FNU], [3]>>:$scaleA,
@@ -528,8 +534,9 @@ def Rock_GridwiseGemmOp
 
 // gridwise_attention
 def Rock_GridwiseAttentionOp
-    : Rock_Op<"gridwise_attention", [RockFusionRoot, AttrSizedOperandSegments,
-]>,
+    : Rock_Op<"gridwise_attention", [RecursiveMemoryEffects,
+                                     RecursivelySpeculatable, RockFusionRoot,
+                                     AttrSizedOperandSegments]>,
       Arguments<(ins TensorRankOf<[F32, F16, BF16, I8], [3]>:$queries,
           TensorRankOf<[F32, F16, BF16, I8], [3]>:$keys,
           TensorRankOf<[F32, F16, BF16], [3]>:$values,
@@ -608,7 +615,7 @@ defvar LdsBufferTypes = GemmInputTypes # [VectorOfRankAndType<[1], GemmInputType
 
 // blockwise_gemm
 def Rock_BlockwiseGemmOp
-    : Rock_Op<"blockwise_gemm", [AttrSizedOperandSegments]>,
+    : Rock_Op<"blockwise_gemm", [Pure, AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<GemmInputTypes>:$matrixA,
           TensorOf<GemmInputTypes>:$matrixB, TensorOf<GemmOutputTypes>:$matrixC,
           Optional<TensorOf<[F8E8M0FNU, I8]>>:$matrixScaleA,
@@ -661,8 +668,8 @@ def Rock_BlockwiseGemmOp
 
 // blockwise_load
 def Rock_BlockwiseLoadOp
-    : Rock_Op<"blockwise_load",
-              [AllElementTypesMatch<["source", "result"]>]>,
+    : Rock_Op<"blockwise_load", [Pure,
+                                 AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source global memory">:$source,
           Variadic<I32>:$sourceIndices)>,
@@ -681,9 +688,10 @@ def Rock_BlockwiseLoadOp
 
 // blockwise_load_ptr
 def Rock_BlockwiseLoadPtrOp
-    : Rock_Op<"blockwise_load_ptr",
-              [AllShapesMatch<["pointerTensor", "maskTensor", "result"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32]>, "Pointer tensor">:$pointerTensor,
+    : Rock_Op<"blockwise_load_ptr", [AllShapesMatch<["pointerTensor",
+                                                     "maskTensor", "result"]>]>,
+      Arguments<(ins Arg<RankedTensorOf<[I32]>,
+                         "Pointer tensor", [MemRead]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor)>,
       Results<(outs TensorOf<NativeMemoryOpTypes>:$result)> {
   let summary = "Blockwise load from global memory";
@@ -694,6 +702,22 @@ def Rock_BlockwiseLoadPtrOp
     `:` type($pointerTensor) `,` type($maskTensor) `->` type($result)
   }];
 }
+
+/// Marking rock.blockwise_store as Pure currently makes sense, but
+/// it might be risky in the future if we implement mega-kernel support.
+/// Consider the following example:
+///
+/// %result = rock.blockwise_store %tile, %dest
+/// ...
+/// global GPU sync
+/// ...
+/// %tile = rock.blockwise_load %tileSrc
+///
+/// Where %tileSrc overlaps %dest in memory. This might not make sense logically,
+/// as rock.blockwise_store doesn't store to %dest, it just returns %result.
+///
+/// See more details in: 
+/// https://github.com/ROCm/rocmlirTriton/pull/165#issuecomment-4379381305
 
 // blockwise_store
 def Rock_BlockwiseStoreOp
@@ -722,7 +746,8 @@ def Rock_BlockwiseStorePtrOp
     : Rock_Op<"blockwise_store_ptr",
               [AllShapesMatch<["pointerTensor", "maskTensor", "source"]>,
                AllElementTypesMatch<["source", "result"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32]>, "Pointer tensor">:$pointerTensor,
+      Arguments<(ins Arg<RankedTensorOf<[I32]>,
+                         "Pointer tensor", [MemWrite]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           StoreMethodAttr:$storeMethod)>,
@@ -740,13 +765,12 @@ def Rock_BlockwiseStorePtrOp
 }
 
 def Rock_TransformsToPtrOp
-    : Rock_Op<"transforms_to_ptr",
-              [AllShapesMatch<["pointers", "mask"]>]>,
-      Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
-                         "source">:$source,
+    : Rock_Op<"transforms_to_ptr", [Pure,
+                                    AllShapesMatch<["pointers", "mask"]>]>,
+      Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Variadic<I32>:$extraIndices)>,
       Results<(outs RankedTensorOf<[I32]>:$pointers,
-               RankedTensorOf<[I1]>:$mask)> {
+          RankedTensorOf<[I1]>:$mask)> {
   let summary = "Convert transforms to pointer and mask tensors";
 
   let description = [{
@@ -763,8 +787,8 @@ def Rock_TransformsToPtrOp
 
 // blockwise_reduction
 def Rock_BlockwiseReduceOp
-    : Rock_Op<"blockwise_reduce",
-              [AllElementTypesMatch<["input", "result"]>]>,
+    : Rock_Op<"blockwise_reduce", [Pure,
+                                   AllElementTypesMatch<["input", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$input, IndexAttr:$axis,
           ReduceMethodAttr:$reduceMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
@@ -779,8 +803,8 @@ def Rock_BlockwiseReduceOp
   }];
 }
 
-def Rock_CastToPtrOp : Rock_Op<"cast_to_ptr",
-                               [Pure, AllShapesMatch<["src", "result"]>]> {
+def Rock_CastToPtrOp
+    : Rock_Op<"cast_to_ptr", [Pure, AllShapesMatch<["src", "result"]>]> {
   let summary = "Cast a tensor to a pointer tensor";
 
   let description = [{
