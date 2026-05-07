@@ -403,6 +403,11 @@ static bool hasBwdDataFilterRotation(Value filter) {
   return false;
 }
 
+/// Marker attribute placed on the rewritten `linalg.generic` so the matcher
+/// can skip it on subsequent rewrite-driver iterations and so the pass's
+/// diagnostic walk doesn't classify it as an unconverted candidate.
+static constexpr llvm::StringLiteral fusedConvAttrName = "rock.cpu_fused_conv";
+
 /// Build the fused 8-D conv-as-matmul `linalg.generic`. The iteration space
 /// is `(n, g, c, ho, wo, kc, fh, fw)` (5 parallel + 3 reduction); each
 /// operand's indexing map is in the user's original tensor layout, with the
@@ -491,7 +496,7 @@ static Value createFusedConvOp(PatternRewriter &rewriter, Location loc,
         Value add = arith::AddFOp::create(nb, nl, args[2], mul);
         linalg::YieldOp::create(nb, nl, add);
       });
-  fused->setAttr(kFusedConvAttrName, UnitAttr::get(ctx));
+  fused->setAttr(fusedConvAttrName, UnitAttr::get(ctx));
 
   return fused.getResult(0);
 }
@@ -512,7 +517,7 @@ struct ConvToGemmPattern : public OpRewritePattern<linalg::GenericOp> {
     // Skip ops we have already rewritten -- otherwise the greedy driver
     // would re-match the fused result (it has the same iter-type signature
     // as the input) and loop forever.
-    if (op->hasAttr(kFusedConvAttrName))
+    if (op->hasAttr(fusedConvAttrName))
       return failure();
 
     // Only rewrite convolutions inside CPU verifier funcs. The greedy
@@ -554,7 +559,7 @@ struct ConvToGemmPattern : public OpRewritePattern<linalg::GenericOp> {
 static bool isConvolutionLikeGeneric(linalg::GenericOp op) {
   if (!isInsideCpuVerifierFunc(op))
     return false;
-  if (op->hasAttr(kFusedConvAttrName))
+  if (op->hasAttr(fusedConvAttrName))
     return false;
   if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1)
     return false;
