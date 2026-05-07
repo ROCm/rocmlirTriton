@@ -1,12 +1,11 @@
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-index def4f5ad7..e59400ac9 100644
+index def4f5ad7..c830292a8 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
 @@ -59,6 +59,13 @@ int getWmmaVersion(StringRef archGen) {
    return 0;
  }
--
-+
+ 
 +static bool hasAsymmetricMfmaBroadcastOperand(unsigned mDim, unsigned nDim) {
 +  // The MFMA lowering handles these asymmetric instruction shapes by
 +  // broadcasting the narrow operand with the cbsz/abid intrinsic operands.
@@ -17,16 +16,39 @@ index def4f5ad7..e59400ac9 100644
  FailureOr<ScaleDotElemType> mlirTypeToScaledElemType(Type type) {
    return llvm::TypeSwitch<Type, FailureOr<ScaleDotElemType>>(type)
        .Case<Float8E4M3FNType>([](Type) { return ScaleDotElemType::E4M3; })
-@@ -708,6 +715,11 @@ public:
-     // to increase ds_read vector size
+@@ -568,6 +575,7 @@ public:
+     Value b = dotOp.getB();
+     auto oldAType = cast<RankedTensorType>(a.getType());
+     auto oldBType = cast<RankedTensorType>(b.getType());
++    int64_t inputKSize = oldAType.getShape().back();
+     auto ctx = oldAType.getContext();
+ 
+     Type aElemType = oldAType.getElementType();
+@@ -704,13 +712,22 @@ public:
+     //    ds_read_b128, which is the largest vector size for shared memory load.
+     auto kWidth = kBase;
+ 
+-    // We want to extend kWidth by kPack (kPack=1 means no extension)
+-    // to increase ds_read vector size
++    // We want to extend kWidth by kPack (kPack=1 means no extension) to
++    // increase ds_read vector size. Only apply packing when the resulting dot
++    // operand layout still fits within the input dot's K dimension; some MFMA
++    // shapes cover multiple K groups per warp, so kWidth * kPack is not the
++    // complete K coverage.
      // However, in FA, the second dot can only use kWidth = kBase since it's
-     // limited by the result of the first dot, which is of mfmaLayout.
-+    // kPack increases LDS vectorization by making each thread load multiple
-+    // kBase-sized K groups. For 64x4 and 4x64 MFMA instructions, lowering
-+    // reuses one operand through hardware broadcast before advancing to the
-+    // next kBase group. Since DotOperandEncodingAttr stores one kWidth for both
-+    // operands, keep these shapes at kBase.
+-    // limited by the result of the first dot, which is of mfmaLayout.
++    // limited by the result of the first dot, which is of mfmaLayout. Also keep
++    // kWidth at kBase for 64x4 and 4x64 MFMA instructions: lowering reuses one
++    // operand through hardware broadcast before advancing to the next kBase
++    // group, but DotOperandEncodingAttr stores one kWidth for both operands.
      auto isDotChainTail = isChainDotTail(dotOp);
 -    if (!isDotChainTail)
-+    if (!hasAsymmetricMfmaBroadcastOperand(mDim, nDim) && !isDotChainTail)
-       kWidth *= kPack;
+-      kWidth *= kPack;
++    unsigned packedKWidth = kWidth * kPack;
++    auto packedOperandShape = mfmaEnc.getInstrShapeForOperand(packedKWidth, 0);
++    if (!hasAsymmetricMfmaBroadcastOperand(mDim, nDim) && !isDotChainTail &&
++        inputKSize >= packedOperandShape[1])
++      kWidth = packedKWidth;
+ 
+     // For FA fwd kernel with f16 elementTy, we limit the 2nd dot to have
+     // kWidth = 4 so that the coversion from #mma (result of 1st dot)
