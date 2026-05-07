@@ -8,9 +8,10 @@ Use [GitHub Issues](../../issues) to report bugs or request features. Include a 
 
 ## Pull Request Workflow
 
-1. Clone the repository and create a branch from `develop`:
+1. Get the source and create a branch from `develop`. External contributors should [fork the repository](../../fork) first; AMD contributors with write access can clone the upstream directly:
    ```bash
-   git clone https://github.com/ROCm/rocmlirTriton.git
+   # Replace <owner> with your fork's owner, or `ROCm` if you have write access.
+   git clone https://github.com/<owner>/rocmlirTriton.git
    cd rocmlirTriton
    git checkout -b feature/short-description
    ```
@@ -36,6 +37,17 @@ The codebase follows the [MLIR coding conventions](https://mlir.llvm.org/getting
 Style is enforced via `.clang-format` (LLVM base style) and `.clang-tidy` at the repo root. Step 3 of the workflow above (`git clang-format .`) is the minimum expectation before opening a PR.
 
 Python helpers (under `scripts/` and `mlir/utils/performance/`) follow [`yapf`](.style.yapf) and [`flake8`](.flake8). Format with `yapf -i <files>` and lint with `flake8 <files>` before committing changes there.
+
+## AI Tool Use
+
+This project follows the [LLVM AI Tool Use Policy](https://llvm.org/docs/AIToolPolicy.html). In short:
+
+- You may use any tool (LLMs, copilots, code-gen agents, etc.) to produce contributions, but there must be a **human in the loop**: read and understand everything you submit, and be ready to answer questions about it during review.
+- Submitting unreviewed tool output that shifts the review burden onto maintainers (an "extractive contribution") is not acceptable.
+- Be transparent. If a contribution contains a substantial amount of tool-generated content, note it in the PR description or commit message (an `Assisted-by:` trailer is the recommended form).
+- Automated agents that open PRs, post review comments, or otherwise act in this repository without human approval are not allowed.
+
+See the linked policy for the full rationale and details.
 
 ## External Contributors
 

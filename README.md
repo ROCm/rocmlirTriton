@@ -1,6 +1,7 @@
 <!-- Badges -->
-[![License](https://img.shields.io/github/license/ROCm/rocmlirTriton.svg?style=flat)](LICENSE)
-[![Contributors](https://img.shields.io/github/contributors/ROCm/rocmlirTriton.svg?style=flat)](https://github.com/ROCm/rocmlirTriton/graphs/contributors)
+<!-- Uncomment when the project is made public -->
+<!-- [![License](https://img.shields.io/github/license/ROCm/rocmlirTriton.svg?style=flat)](LICENSE) -->
+<!-- [![Contributors](https://img.shields.io/github/contributors/ROCm/rocmlirTriton.svg?style=flat)](https://github.com/ROCm/rocmlirTriton/graphs/contributors) -->
 <!-- Uncomment when CI is configured: -->
 <!-- [![Build Status](https://github.com/ROCm/rocmlirTriton/actions/workflows/ci.yml/badge.svg)](https://github.com/ROCm/rocmlirTriton/actions) -->
 <!-- [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/YOUR-ID/badge)](https://www.bestpractices.dev/projects/YOUR-ID) -->
@@ -11,7 +12,7 @@
 
 rocmlirTriton is a fork of [rocMLIR](https://github.com/ROCm/rocMLIR) that swaps the code-generation backend for Triton. Upstream rocMLIR lowers ops in its `rock` dialect through MLIR's AMDGPU and ROCDL dialects together with general-purpose dialects such as `vector`, `memref`, and `gpu`, and from there to LLVM IR / HSACO via the LLVM AMDGPU backend. In this fork, after the high-level Rock lowering, the IR is handed off to Triton's TTIR -> TTGIR -> LLIR pipeline (see `Pipelines.cpp` / `TritonToHsaco.cpp`), and Triton's bundled LLVM/MLIR (vendored as a git submodule under `external/triton`) produces the final HSACO.
 
-It targets AMD CDNA and RDNA GPUs (gfx9xx / gfx10xx / gfx11xx, including gfx950), and is primarily consumed as the static `librockCompiler` library by [MIGraphX](https://github.com/ROCm/AMDMIGraphX), though it can also be driven standalone for kernel generation, validation, and performance tuning.
+It targets AMD CDNA and RDNA GPUs (gfx9xx / gfx10xx / gfx11xx / gfx12xx), and is primarily consumed as the static `librockCompiler` library by [MIGraphX](https://github.com/ROCm/AMDMIGraphX), though it can also be driven standalone for kernel generation, validation, and performance tuning.
 
 ## Prerequisites
 
@@ -37,7 +38,7 @@ To install `librockCompiler` so MIGraphX can find it:
 cmake --install build --prefix /path/to/MIGraphX/deps
 ```
 
-For details on bumping the embedded Triton (and the LLVM version it pins), see [`docs/bump_triton_version.md`](docs/bump_triton_version.md). Additional developer documentation lives under [`docs/`](docs/).
+Additional developer documentation lives under [`docs/`](docs/).
 
 ## Usage
 

@@ -103,7 +103,7 @@ pythonenv*
 /.ccls-cache
 # Jupyter notebook checkpoints
 .ipynb_checkpoints
-# rocMLIR project-specific dependencies
+# rocmlirTriton project-specific dependencies
 /MIOpen
 /MIOpenDeps
 # Plan files, scratch notes, and working documents (per workspace-hygiene rule)
