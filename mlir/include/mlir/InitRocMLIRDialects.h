@@ -109,7 +109,14 @@
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 
 #include "triton/Tools/PluginUtils.h"
+// Triton renamed Sys/GetEnv.hpp to GetEnv.h on the Windows fork
+// (triton-windows@main-windows). Upstream Linux-side Triton may still ship
+// the original .hpp. Pick whichever exists at the include path.
+#if __has_include("triton/Tools/Sys/GetEnv.hpp")
 #include "triton/Tools/Sys/GetEnv.hpp"
+#else
+#include "triton/Tools/Sys/GetEnv.h"
+#endif
 
 namespace mlir {
 
