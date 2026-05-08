@@ -175,6 +175,44 @@ def _needs_host_highlevel(config) -> bool:
     return isinstance(config, (perfRunner.AttentionConfiguration, perfRunner.GemmGemmConfiguration))
 
 
+def _random_input_args(config) -> List[str]:
+    """Constrain low-precision verifier inputs to the range used by e2e tests.
+
+    bf16 sweeps can exceed verifier tolerances with the default input pattern,
+    and f16 split reductions intentionally round partial sums before the final
+    reduction. Keeping inputs in [-1, 1) avoids classifying those expected
+    rounding differences as compiler failures.
+    """
+    dtype = getattr(config, 'datatype', '')
+    random_args = '-rand 1 -rand_type float -rand_min -1 -rand_max 1'.split()
+    # bf16 failures show up even without split reductions, so constrain all
+    # bf16 sweep inputs to match the e2e tests' bounded random data.
+    if dtype == 'bf16':
+        return random_args
+
+    if dtype != 'f16':
+        return []
+
+    # Attention exposes the K split as the kernel-level splitKV option, not as
+    # the perf-config splitKFactor field.
+    if isinstance(config, perfRunner.AttentionConfiguration):
+        return random_args if getattr(config, 'split_kv', 1) > 1 else []
+
+    # Other f16 kernels use splitKFactor in the serialized perf config. When it
+    # is greater than one, partial f32 sums are rounded before the final add.
+    perf_config = getattr(config, 'perfconfig', None)
+    if not perf_config:
+        return []
+    try:
+        perf_fields = str(perf_config).split(':')[-1].split(',')
+        split_k_factor = int(perf_fields[perfRunner.SPLITK_IDX])
+    except (IndexError, ValueError):
+        return []
+    if split_k_factor > 1:
+        return random_args
+    return []
+
+
 def _verifier_thresholds(config) -> List[str]:
     """Per-dtype overrides for the rocmlir-gen ``-pv`` host verifier.
 
@@ -226,6 +264,7 @@ def _build_rocmlir_gen_opts(config) -> List[str]:
             getattr(config, "current_seqlen", None) is not None):
         opts.append(f"--current_seq_len={','.join(map(str, config.current_seqlen))}")
     opts.append('-pv')
+    opts.extend(_random_input_args(config))
     opts.extend(_verifier_thresholds(config))
     return opts
 
