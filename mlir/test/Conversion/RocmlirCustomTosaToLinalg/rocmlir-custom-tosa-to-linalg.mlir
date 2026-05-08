@@ -192,7 +192,7 @@ func.func @matmul_acc_type_matches_output(%arg0: tensor<1x4x8xf16>, %arg1: tenso
 func.func @matmul_no_acc_type(%arg0: tensor<1x4x8xf16>, %arg1: tensor<1x8x4xf16>) -> tensor<1x4x4xf16> {
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
-  %0 = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x4x8xf16>, tensor<1x8x4xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<1x4x4xf16>
+  %0 = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) : (tensor<1x4x8xf16>, tensor<1x8x4xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<1x4x4xf16>
   func.return %0 : tensor<1x4x4xf16>
 }
 
