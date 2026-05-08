@@ -258,6 +258,97 @@ func.func @test_max_reduce_uses_neg_inf(
 }
 
 // ============================================================
+// Mixed consumers: one fusion-chain leaf feeds both a rock.blockwise_reduce
+// max (needs -inf fill) and a rock.blockwise_store_ptr (needs zero fill).
+// Each consumer must get its own arith.select with the right neutral value.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_mixed_consumers_max_and_store
+// CHECK-SAME: (%{{.*}}: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>,
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK]]]
+// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
+// CHECK: %[[SAFE_MAX:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: rock.blockwise_reduce max %[[SAFE_MAX]]
+// CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
+// CHECK: %[[SAFE_STORE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: rock.blockwise_store_ptr %[[SAFE_STORE]]
+func.func @test_mixed_consumers_max_and_store(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>)
+    -> (tensor<64xf32>, tensor<4096xf32>) attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %cst = arith.constant dense<1.0> : tensor<64x64xf32>
+  %fused = arith.addf %tile, %cst : tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  %stored = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf32>
+  return %reduced, %stored : tensor<64xf32>, tensor<4096xf32>
+}
+
+// ============================================================
+// Sum reduction: zero is already the neutral element for sum, so the fill
+// stays at zero and must NOT switch to -inf.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_sum_reduce_uses_zero
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: rock.blockwise_reduce sum %[[SAFE]]
+func.func @test_sum_reduce_uses_zero(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %cst = arith.constant dense<1.0> : tensor<64x64xf32>
+  %fused = arith.addf %tile, %cst : tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce sum %fused {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  return %reduced : tensor<64xf32>
+}
+
+// ============================================================
+// Integer max reduction: zero is wrong because masked-out positive lanes
+// would dominate negative real values. Signless integers are treated as
+// signed, so the fill is the signed minimum of the bit width (INT_MIN).
+// (Unsigned integer fusion chains aren't constructable through the
+// rock.blockwise_load_ptr -> arith path, so they aren't tested here.)
+// ============================================================
+
+// CHECK-LABEL: func.func @test_int_max_reduce_uses_signed_min
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addi %[[LOAD]], %{{.*}} : tensor<64x64xi32>
+// CHECK: %[[INT_MIN:.*]] = arith.constant dense<-2147483648> : tensor<64x64xi32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[INT_MIN]] : tensor<64x64xi1>, tensor<64x64xi32>
+// CHECK: rock.blockwise_reduce max %[[SAFE]]
+func.func @test_int_max_reduce_uses_signed_min(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xi32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi32>
+  %cst = arith.constant dense<1> : tensor<64x64xi32>
+  %fused = arith.addi %tile, %cst : tensor<64x64xi32>
+  %reduced = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xi32> -> tensor<64xi32>
+  return %reduced : tensor<64xi32>
+}
+
+// ============================================================
+// Integer sum reduction: zero is the neutral element for sum and the fill
+// must NOT switch to INT_MIN.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_int_sum_reduce_uses_zero
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addi %[[LOAD]], %{{.*}} : tensor<64x64xi32>
+// CHECK: %[[ZERO:.*]] = arith.constant dense<0> : tensor<64x64xi32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xi32>
+// CHECK: rock.blockwise_reduce sum %[[SAFE]]
+func.func @test_int_sum_reduce_uses_zero(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xi32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi32>
+  %cst = arith.constant dense<1> : tensor<64x64xi32>
+  %fused = arith.addi %tile, %cst : tensor<64x64xi32>
+  %reduced = rock.blockwise_reduce sum %fused {axis = 1 : index} : tensor<64x64xi32> -> tensor<64xi32>
+  return %reduced : tensor<64xi32>
+}
+
+// ============================================================
 // Non-kernel function: pass should skip entirely.
 // Even with a non-zero-preserving fusion, no select is inserted.
 // ============================================================
