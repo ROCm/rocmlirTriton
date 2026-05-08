@@ -21,12 +21,13 @@
 // When a BlockwiseLoadPtrOp has Pad or Embed transforms, its mask tensor marks
 // out-of-bounds (OOB) positions. tt.load returns 0 for those positions. If the
 // loaded tile feeds into a non-zero-preserving fusion (e.g. arith.addf %tile,
-// 1.0), OOB positions become non-zero and corrupt the GEMM result (tt.dot has
-// no mask).
+// 1.0), OOB positions become non-zero and can corrupt consumers that do not
+// carry the original mask.
 //
 // This pass detects such cases and inserts:
-//   %safe = arith.select %mask, %fused_result, %zero
-// at the end of the fusion chain, ensuring OOB positions remain zero.
+//   %safe = arith.select %mask, %fused_result, %fill
+// at non-fusion uses of the fusion chain. The fill value is chosen for the
+// consumer: zero for most uses, or -inf for floating-point max reductions.
 //
 //===----------------------------------------------------------------------===//
 
@@ -294,7 +295,8 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
                           << " non-zero-preserving fusion chain leaves\n");
 
   // ---- Phase 2: Emit masking IR ----
-  // For each remaining leaf, insert arith.select to re-zero OOB positions.
+  // For each remaining leaf, insert arith.select to restore a neutral value at
+  // OOB positions.
   for (auto &[leaf, masks] : leafMasks) {
     LLVM_DEBUG(llvm::dbgs()
                << "Non-zero-preserving fusion chain, inserting mask for: "
@@ -303,6 +305,8 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
     Location loc = leaf.getLoc();
     auto leafType = cast<RankedTensorType>(leaf.getType());
 
+    // Gather non-fusion uses before rewriting so that newly inserted selects do
+    // not perturb the use-list walk.
     SmallVector<std::pair<Operation *, unsigned>> usesToReplace;
     for (OpOperand &use : leaf.getUses()) {
       Operation *owner = use.getOwner();
@@ -312,14 +316,19 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
 
     for (auto [owner, operandNumber] : usesToReplace) {
       builder.setInsertionPoint(owner);
+      // Combine masks with AND at the consumer so the mask dominates the use.
       auto it = masks.begin();
       Value combinedMask = *it;
       for (++it; it != masks.end(); ++it)
         combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
 
+      // Insert arith.select %mask, %fused, %fill, where %fill is chosen for the
+      // consuming op (for example, -inf for max reductions).
       Value fill = createMaskFillValue(builder, loc, leafType, owner);
       Value safe =
           arith::SelectOp::create(builder, loc, combinedMask, leaf, fill);
+
+      // Replace this non-fusion use of the leaf with the masked version.
       owner->setOperand(operandNumber, safe);
     }
   }
