@@ -1280,11 +1280,12 @@ static std::pair<int64_t, int64_t> getMandNPerBlock(OpBuilder builder,
 
 // Compute the number of valid split-KV entries for each batch-head.
 // This determines which splits should have valid results vs -inf.
-// In the Triton attention lowering, split-KV partitions the first GEMM's N
-// dimension, which is the key sequence dimension. That makes this block size
-// gemm0NPerBlock, not gemm0MPerBlock. This is intentionally different from the
-// rocMLIR blockwise attention lowering, where the corresponding loop uses the
-// M dimension naming convention.
+// Note on the M/N convention: rocMLIR's blockwise attention computes the
+// transposed product V * (K * Q^T) rather than the standard (Q * K^T) * V,
+// which puts the key-sequence dimension on GEMM0's M axis. The Triton
+// attention lowering keeps the standard formulation, so the key-sequence
+// dimension is GEMM0's N axis. Split-KV partitions the first GEMM along
+// the key-sequence dimension, hence we use gemm0NPerBlock here.
 static SmallVector<int32_t> computeValidSplitKV(int64_t nPerBlock) {
   SmallVector<int32_t> validSplitKV;
   for (int64_t i = 0; i < groupSize; ++i) {
