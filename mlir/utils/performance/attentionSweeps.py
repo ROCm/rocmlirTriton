@@ -31,6 +31,7 @@ import perfRunner
 from parameterSweeps import (
     Options,
     PerfConfig,
+    _split_k_choices,
     add_common_args,
     build_options_and_paths,
     default_seed,
@@ -150,7 +151,7 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
     )
 
 
-def random_attn_cases(num_samples: int, seed: Optional[int] = None):
+def random_attn_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     """Yields ``num_samples`` random ``(attn_shape, perf_config)`` tuples.
 
     The perf-config's ``splitKFactor`` is pinned to 1: attention exposes its
@@ -163,7 +164,7 @@ def random_attn_cases(num_samples: int, seed: Optional[int] = None):
     limitation on ``seq_len_q``."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
-        perf = sample_perf_config(rng, split_k_factor=1)
+        perf = sample_perf_config(rng, arch, [1])
         n_per_block = perf[1]
         yield (_sample_attn_shape(rng, n_per_block=n_per_block), perf)
 
@@ -193,7 +194,7 @@ def _sample_gemm_gemm_shape(rng: random.Random):
     )
 
 
-def random_gemm_gemm_cases(num_samples: int, seed: Optional[int] = None):
+def random_gemm_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     """Yields ``num_samples`` random ``(gemm_gemm_shape, perf_config)`` tuples.
 
     Unlike attention, ``splitKFactor`` is left free (any of the values in
@@ -202,7 +203,10 @@ def random_gemm_gemm_cases(num_samples: int, seed: Optional[int] = None):
     separate kernel arg."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
-        yield (_sample_gemm_gemm_shape(rng), sample_perf_config(rng))
+        shape = _sample_gemm_gemm_shape(rng)
+        # shape[0] is the input dtype (dtype, g, m, k, n, o, trans_a, ...).
+        yield (shape,
+               sample_perf_config(rng, arch, _split_k_choices(shape[0])))
 
 
 def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfiguration:
@@ -274,11 +278,11 @@ def main() -> bool:
     options, paths = build_options_and_paths(args)
 
     if args.config == 'attention':
-        param_iter = random_attn_cases(args.samples, seed=args.seed)
+        param_iter = random_attn_cases(args.samples, options.arch, seed=args.seed)
         return asyncio.run(
             run_config(param_iter, to_attn_test, options, paths, samples=args.samples))
     if args.config == 'gemm_gemm':
-        param_iter = random_gemm_gemm_cases(args.samples, seed=args.seed)
+        param_iter = random_gemm_gemm_cases(args.samples, options.arch, seed=args.seed)
         return asyncio.run(
             run_config(param_iter, to_gemm_gemm_test, options, paths, samples=args.samples))
     raise ValueError(f"Unknown config {args.config!r} (expected 'attention' or 'gemm_gemm')")

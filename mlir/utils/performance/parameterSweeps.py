@@ -519,7 +519,9 @@ PERF_CONFIG_OPTIONS = {
     'm_per_block': [16, 32, 64, 128, 256],
     'n_per_block': [16, 32, 64, 128, 256],
     'k_per_block': [16, 32, 64, 128],
-    'kpack': [1, 2],
+    # `kpack` is sampled via _kpack_choices(arch); see below. `kpack != 1` is
+    # deprecated on gfx950 and gfx1250 (and newer); older archs still take
+    # {1, 2}.
     # numCTAs is hardcoded to 1 in RockTuningImpl::createGemmTuningRangeBF
     # (TODO(roctriton): numCTAs for gfx1250).
     'num_ctas': [1],
@@ -569,25 +571,69 @@ GEMM_SHAPE_OPTIONS = {
 }
 
 
-def sample_perf_config(rng: random.Random,
-                       *,
-                       split_k_factor: Optional[int] = None) -> Tuple[int, ...]:
+def _arch_id(arch: str) -> Optional[int]:
+    """Return the integer encoding of ``arch`` (parsed as hex, so 'gfx950'
+    -> 0x950, 'gfx90a' -> 0x90a, 'gfx1250' -> 0x1250) for ordered
+    comparisons. Returns ``None`` if no ``gfxNNN`` token is found or the
+    digits don't parse as hex.
+
+    Reuses ``perfRunner.GFX_CHIP_RE`` (the project's chip-token primitive)
+    so it transparently accepts every arch-string form already in use:
+    bare 'gfx950', HIP gcnArchName 'gfx950:sramecc+:xnack-' (from
+    ``get_arch()``), LLVM-triple 'amdgcn-amd-amdhsa:gfx950[:...]', and the
+    rocminfo double-dash 'amdgcn-amd-amdhsa--gfx950:...' form parsed by
+    Jenkinsfile."""
+    if not arch:
+        return None
+    m = perfRunner.GFX_CHIP_RE.search(arch)
+    if not m:
+        return None
+    try:
+        return int(m.group(0)[len('gfx'):], 16)
+    except ValueError:
+        return None
+
+
+def _kpack_choices(arch: str) -> List[int]:
+    """Valid ``kpack`` values for the perf-config sweep, by arch.
+
+    ``kpack != 1`` is deprecated on gfx950 and gfx1250 (and any newer arch);
+    older archs (gfx9 < gfx950, all of gfx10/gfx11, gfx12 < gfx1250) still
+    accept ``kpack in {1, 2}``.
+
+    Cutoffs are expressed on the gfx target id (parsed as hex) so any new
+    arch in the same family (gfx951, gfx1260, ...) and any new family
+    (gfx13xx, gfx14xx, ...) automatically falls into the ``[1]`` bucket
+    without requiring a code change here."""
+    n = _arch_id(arch)
+    if n is None:
+        return [1]                          # unknown target -> safest
+    if n < 0x950:                           # gfx9 pre-CDNA4
+        return [1, 2]
+    if 0x1000 <= n < 0x1250:                # all of gfx10/gfx11, gfx12 before gfx1250
+        return [1, 2]
+    return [1]                              # gfx950+, gfx1250+, gfx13+, ...
+
+
+def sample_perf_config(rng: random.Random, arch: str,
+                       split_k_choices: Sequence[int]) -> Tuple[int, ...]:
     """Returns one random 11-field perf-config tuple (gemm:v1 / attn:v1).
 
-    ``split_k_factor`` callers can pin the ``splitKFactor`` field to a fixed
-    value instead of letting it be sampled. Attention sweeps use this to force
-    ``splitKFactor=1`` (attention's own K-split is exposed via the separate
-    ``-split_kv`` kernel arg, not via the perf-config's splitK)."""
+    ``arch`` selects the valid ``kpack`` set (see :func:`_kpack_choices`).
+    ``split_k_choices`` is the list of permissible ``splitKFactor`` values
+    for this caller — typically :func:`_split_k_choices(dtype)` for conv/gemm
+    and ``[1]`` for attention (whose K-split is exposed via the separate
+    ``-split_kv`` kernel arg, not via the perf-config splitK)."""
     opts = PERF_CONFIG_OPTIONS
     return (
         rng.choice(opts['m_per_block']),
         rng.choice(opts['n_per_block']),
         rng.choice(opts['k_per_block']),
-        rng.choice(opts['kpack']),
+        rng.choice(_kpack_choices(arch)),
         rng.choice(opts['num_ctas']),
         rng.choice(opts['num_waves']),
         rng.choice(opts['matrix_instr_nonkdim']),
-        split_k_factor if split_k_factor is not None else rng.choice(opts['split_k_factor']),
+        rng.choice(split_k_choices),
         rng.choice(opts['num_stages']),
         rng.choice(opts['waves_per_eu']),
         rng.choice(opts['grid_group_size']),
@@ -692,18 +738,48 @@ def default_seed() -> int:
     return datetime.now(timezone.utc).isocalendar()[1]
 
 
-def random_conv_cases(num_samples: int, seed: Optional[int] = None):
+# Accumulator/output dtype used to decide whether splitK is legal in the
+# sweep. Any floating-point input lowers to an f32 accumulator on AMD GPUs;
+# i8 is the odd one out (i32 accumulator). This is intentionally simpler
+# than ``perfRunner.OUTPUT_DATA_TYPES_MAP`` — for the splitK gate we only
+# care about the f32 / not-f32 boundary, not the exact user-visible output.
+_OUTPUT_DTYPE_FOR_SPLITK = {
+    'f32': 'f32',
+    'f16': 'f32',
+    'bf16': 'f32',
+    'fp8': 'f32',
+    'i8': 'i32',
+}
+
+
+def _split_k_choices(input_dtype: str) -> List[int]:
+    """Permissible ``splitKFactor`` values for ``input_dtype``. ``splitKFactor
+    > 1`` is only legal when the accumulator is f32, so non-f32 outputs
+    (i.e. i8) are restricted to ``[1]``; everything else gets the full
+    ``PERF_CONFIG_OPTIONS['split_k_factor']`` set."""
+    if _OUTPUT_DTYPE_FOR_SPLITK[input_dtype] == 'f32':
+        return PERF_CONFIG_OPTIONS['split_k_factor']
+    return [1]
+
+
+def random_conv_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     """Yields ``num_samples`` random ``(conv_shape, perf_config)`` tuples."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
-        yield (_sample_conv_shape(rng), sample_perf_config(rng))
+        shape = _sample_conv_shape(rng)
+        # shape[2] is the input dtype (op, layout, dtype, n, c, k, ...).
+        yield (shape,
+               sample_perf_config(rng, arch, _split_k_choices(shape[2])))
 
 
-def random_gemm_cases(num_samples: int, seed: Optional[int] = None):
+def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     """Yields ``num_samples`` random ``(gemm_shape, perf_config)`` tuples."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
-        yield (_sample_gemm_shape(rng), sample_perf_config(rng))
+        shape = _sample_gemm_shape(rng)
+        # shape[0] is the input dtype (dtype, g, m, k, n, trans_a, trans_b).
+        yield (shape,
+               sample_perf_config(rng, arch, _split_k_choices(shape[0])))
 
 
 def to_conv_test(params, options: Options) -> ConvConfiguration:
@@ -866,11 +942,11 @@ def main() -> bool:
     options, paths = build_options_and_paths(args)
 
     if args.config == 'conv':
-        param_iter = random_conv_cases(args.samples, seed=args.seed)
+        param_iter = random_conv_cases(args.samples, options.arch, seed=args.seed)
         return asyncio.run(
             run_config(param_iter, to_conv_test, options, paths, samples=args.samples))
     if args.config == 'gemm':
-        param_iter = random_gemm_cases(args.samples, seed=args.seed)
+        param_iter = random_gemm_cases(args.samples, options.arch, seed=args.seed)
         return asyncio.run(
             run_config(param_iter, to_gemm_test, options, paths, samples=args.samples))
     raise ValueError(f"Unknown config {args.config!r} (expected 'conv' or 'gemm')")
