@@ -215,8 +215,9 @@ def RockMaskNonZeroPreservingFusionsPass
     When a blockwise load has Pad or Embed transforms, OOB positions are masked
     to zero. If the loaded tile feeds into a non-zero-preserving fusion (e.g.
     arith.addf %tile, 1.0), those positions become non-zero. This pass detects
-    such cases and inserts arith.select with the load mask to re-zero OOB
-    positions at the end of the fusion chain.
+    such cases and inserts arith.select with the load mask at non-fusion uses
+    of the fusion chain. The masked-out value is chosen for the consumer: zero
+    for most uses, or -inf for floating-point max reductions.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect"];
