@@ -8,7 +8,7 @@
 func.func private @dot_add(%arg0: tensor<1x128x64xf32>, %arg1: tensor<1x64x256xf32>, %arg2: tensor<1x128x256xf32>) -> tensor<1x128x1xf32> attributes {rock.kernel} {
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %0 = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) {perf_config = "gemm:v1:128,128,16,1,1,4,0,1,2,0,0"} : (tensor<1x128x64xf32>, tensor<1x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x128x256xf32>
+  %0 = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) {acc_type = f32, perf_config = "gemm:v1:128,128,16,1,1,4,0,1,2,0,0"} : (tensor<1x128x64xf32>, tensor<1x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x128x256xf32>
   %1 = "tosa.add"(%0, %arg2) : (tensor<1x128x256xf32>, tensor<1x128x256xf32>) -> tensor<1x128x256xf32>
   %2 = "tosa.reduce_sum"(%1) {axis = 2 : i32} : (tensor<1x128x256xf32>) -> tensor<1x128x1xf32>
   return %2 : tensor<1x128x1xf32>
