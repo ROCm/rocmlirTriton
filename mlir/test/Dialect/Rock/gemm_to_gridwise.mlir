@@ -20,7 +20,6 @@ func.func @gemm_easy_case_from_conv(%a: tensor<1x72x128xf32>, %b: tensor<1x72x51
   // CHECK: %[[transA:.*]] = rock.transform %[[a]] by {{.*}} : tensor<1x72x128xf32> to tensor<1x128x72xf32>
   // CHECK: rock.gridwise_gemm(%[[transA]], %[[b]]) 
   %result = rock.gemm tr %a * %b {
-    gridSize = 4 : i32,
     params = #general_gemm_params0
   } : tensor<1x72x128xf32> * tensor<1x72x512xf32> -> tensor<1x128x512xf32>
   %out = rock.store %result to %c by set : tensor<1x128x512xf32> -> tensor<1x128x512xf32> to tensor<1x128x512xf32>
@@ -34,7 +33,6 @@ func.func @gemm_splitk(%a: tensor<1x72x128xf32>, %b: tensor<1x72x512xf32>, %c: t
   // CHECK: rock.gridwise_gemm({{.*}}, {{.*}})
   // CHECK: rock.store {{.*}} by atomic_add
   %result = rock.gemm tr %a * %b {
-    gridSize = 4 : i32,
     params = #general_gemm_params_splitk
   } : tensor<1x72x128xf32> * tensor<1x72x512xf32> -> tensor<1x128x512xf32>
   %out = rock.store %result to %c by set : tensor<1x128x512xf32> -> tensor<1x128x512xf32> to tensor<1x128x512xf32>
@@ -48,8 +46,6 @@ func.func @gemm_easy_case_from_conv_xdlops(%a: tensor<1x72x128xf32>, %b: tensor<
   // CHECK: %[[transA:.*]] = rock.transform %[[a]] by {{.*}} : tensor<1x72x128xf32> to tensor<1x128x72xf32>
   // CHECK: rock.gridwise_gemm(%[[transA]], %[[b]])
   %result = rock.gemm tr %a * %b {
-    derivedBlockSize = 256 : i32,
-    gridSize = 4 : i32,
     params = #xdlops_gemm_params0
   } : tensor<1x72x128xf32> * tensor<1x72x512xf32> -> tensor<1x128x512xf32>
   %out = rock.store %result to %c by set : tensor<1x128x512xf32> -> tensor<1x128x512xf32> to tensor<1x128x512xf32>
@@ -66,7 +62,6 @@ func.func @gemm_most_general_padding_case(%a: tensor<1x1x1xf32>, %b: tensor<1x1x
   // CHECK: rock.transform %[[c]] by {{.*}} : tensor<1x1x1xf32> to tensor<1x64x64xf32>
   // CHECK: rock.gridwise_gemm({{.*}}, {{.*}}) 
   %result = rock.gemm tr %a * %b {
-    gridSize = 1 : i32,
     params = #general_gemm_params1
   } : tensor<1x1x1xf32> * tensor<1x1x1xf32> -> tensor<1x1x1xf32>
   %out = rock.store %result to %c by set : tensor<1x1x1xf32> -> tensor<1x1x1xf32> to tensor<1x1x1xf32>
@@ -82,7 +77,6 @@ func.func @gemm_in_standard_form(%a: tensor<128x72xf32>, %b: tensor<72x512xf32>,
   // CHECK: %[[normalizeC:.*]] = rock.transform %[[c]] by {{.*}} : tensor<128x512xf32> to tensor<1x128x512xf32>
   // CHECK: rock.gridwise_gemm(%[[normalizeA]], %[[normalizeB]]) 
   %result = rock.gemm %a * %b {
-    gridSize = 4 : i32,
     params = #general_gemm_params0
   } : tensor<128x72xf32> * tensor<72x512xf32> -> tensor<128x512xf32>
   %out = rock.store %result to %c by set : tensor<128x512xf32> -> tensor<128x512xf32> to tensor<128x512xf32>
@@ -97,7 +91,6 @@ func.func @gemm_transposed_from_gridwise(%a: tensor<1x128x72xf32>, %b: tensor<1x
   // CHECK-DAG: %[[normalizeC:.*]] = rock.transform %[[c]] {{.*}} : tensor<1x512x128xf32> to tensor<1x128x512xf32{{.*}}>
   // CHECK: rock.gridwise_gemm(%[[a]], %[[normalizeB]])
   %result = rock.gemm %a * tr %b {
-    gridSize = 4 : i32,
     params = #general_gemm_params0,
     oTransposed
   } : tensor<1x128x72xf32> * tensor<1x512x72xf32> -> tensor<1x512x128xf32>
@@ -115,8 +108,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
   // CHECK: rock.gridwise_gemm({{.*}}, {{.*}})
   // CHECK: rock.store {{.*}} by atomic_add
   %result = rock.gemm %a * %b {
-    derivedBlockSize = 256 : i32,
-    gridSize = 4 : i32,
     params = #xdlops_gemm_params3
   } : tensor<1x128x238xf32> * tensor<1x238x512xf32> -> tensor<1x128x512xf32>
   %out = rock.store %result to %c by set : tensor<1x128x512xf32> -> tensor<1x128x512xf32> to tensor<1x128x512xf32>
@@ -138,11 +129,9 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   // DISABLED-CHECK: rock.gridwise_gemm
 //   // DISABLED-CHECK-SAME: storeMethod( atomic_add)
 //   %result = rock.gemm %a * %b {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 4 : i32,
 //     params = #xdlops_gemm_params3
 //   } : tensor<1x128x238xf32> * tensor<1x238x512xf32> -> tensor<1x128x512xf32>
-//   rock.reduce sum %result into %alloc2 {axis = 2 : index, blockSize = 256 : i32, gridSize = 2 : i32} : tensor<1x128x512xf32> into tensor<1x128x1xf32>
+//   rock.reduce sum %result into %alloc2 {axis = 2 : index} : tensor<1x128x512xf32> into tensor<1x128x1xf32>
 //   %out_d = rock.store %result to %d by set : tensor<1x128x512xf32> -> tensor<1x128x512xf32> to tensor<1x128x512xf32>
 //   %out_c = rock.store %alloc2 to %c by set : tensor<1x128x1xf32> -> tensor<1x128x1xf32> to tensor<1x128x1xf32>
 //   func.return %out_c, %out_d : tensor<1x128x1xf32>, tensor<1x128x512xf32>
@@ -162,11 +151,9 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   // DISABLED-CHECK: rock.gridwise_gemm
 //   // DISABLED-CHECK-SAME: storeMethod( atomic_add)
 //   %result = rock.gemm %a * %b {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 4 : i32,
 //     params = #xdlops_gemm_params3
 //   } : tensor<1x128x238xf32> * tensor<1x238x512xf32> -> tensor<1x128x512xf32>
-//   rock.reduce sum %result into %c {axis = 2 : index, blockSize = 256 : i32, gridSize = 2 : i32} : tensor<1x128x512xf32> into tensor<1x128x1xf32>
+//   rock.reduce sum %result into %c {axis = 2 : index} : tensor<1x128x512xf32> into tensor<1x128x1xf32>
 //   %out_d = rock.store %result to %d by set : tensor<1x128x512xf32> -> tensor<1x128x512xf32> to tensor<1x128x512xf32>
 //   func.return %c, %out_d : tensor<1x128x1xf32>, tensor<1x128x512xf32>
 // }
@@ -179,8 +166,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   %alloc = tensor.empty() : tensor<1x5x3xf16>
 //   // DISABLED-CHECK: rock.gridwise_gemm
 //   %result = rock.gemm %arg0 * %arg1 {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 4 : i32,
 //     params = #xdlops_gemm_params3
 //   } : tensor<1x5x4xf16> * tensor<1x4x3xf16> -> tensor<1x5x3xf16>
 //   %alloc_0 = tensor.empty() : tensor<1x5x3xf32>
@@ -202,8 +187,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   %alloc = tensor.empty() : tensor<1x5x3xf32>
 //   // DISABLED-CHECK: rock.gridwise_gemm
 //   %result = rock.gemm %arg0 * %arg1 {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 4 : i32,
 //     params = #xdlops_gemm_params3
 //   } : tensor<1x5x4xf32> * tensor<1x4x3xf32> -> tensor<1x5x3xf32>
 //   %alloc_0 = tensor.empty() : tensor<1x5x3xf16>
@@ -464,7 +447,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   // DISABLED-CHECK-DAG: %[[o:.*]] = rock.transform %[[oSplit]] by <affine_map<(d0, d1, d2) -> (0, d0, d1, d2)> by [<Merge{1, 4} ["gemmG"] at [0] -> ["gemmG", "gemmNSplit"] at [0, 1]>, <PassThrough ["gemmM", "gemmO"] at [1, 2] -> ["gemmM", "gemmO"] at [2, 3]>] bounds = [4, 1024, 64] -> [1, 4, 1024, 64]> : tensor<1x4x1024x64xf32> to tensor<4x1024x64xf32>
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[a]], %[[b]], %[[c]], %[[o]])
 //   // DISABLED-CHECK-NEXT: enableSoftmax = false
-//   // DISABLED-CHECK-SAME: gridSize = 128 : i32
 //   // DISABLED-CHECK-SAME: storeMethod = #rock<StoreMethod atomic_add>
 //   %result = rock.gemm_elementwise_gemm{
 //      ab = tr %arg0 * %arg1 : tensor<1x64x1024xf32>, tensor<1x64x1024xf32>
@@ -513,7 +495,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // 
 //   // DISABLED-CHECK: rock.gridwise_attention(%[[aPad]], %[[bPad]], %[[cPad]], %[[oPad]])
 //   // DISABLED-CHECK-NEXT: enableSoftmax = false
-//   // DISABLED-CHECK-SAME: gridSize = 8 : i32
 //   // DISABLED-CHECK-SAME: storeMethod = #rock<StoreMethod atomic_add>
 //   %result = rock.gemm_elementwise_gemm{
 //    ab = %2 * %1 : tensor<1x64x64xf32>, tensor<1x64x64xf32>
@@ -528,13 +509,13 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 // 
 //   // DISABLED-CHECK-DAG: %[[outCopy:.*]] = rock.transform %[[gemmOut]] {{.*}} tensor<1x64x64xf32> to tensor<4096xf32>
 //   // DISABLED-CHECK-DAG: %[[allocReduce:.*]] = tensor.empty() : tensor<1x64x1xf32>
-//   // DISABLED-CHECK-DAG: rock.reduce  sum %[[gemmOut]] into %[[allocReduce]] {axis = 2 : index, blockSize = 256 : i32, gridSize = 16 : i32} : tensor<1x64x64xf32> into tensor<1x64x1xf32>
+//   // DISABLED-CHECK-DAG: rock.reduce  sum %[[gemmOut]] into %[[allocReduce]] {axis = 2 : index} : tensor<1x64x64xf32> into tensor<1x64x1xf32>
 // 
 //   // DISABLED-CHECK-DAG: %[[reduceCopy:.*]] = rock.transform %[[allocReduce]] by <affine_map<(d0) -> (0, d0, 0)> by [<Merge{1, 64, 1} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [64] -> [1, 64, 1]> : tensor<1x64x1xf32> to tensor<64xf32>
 //   // DISABLED-CHECK-DAG: rock.store %[[outCopy]] to %[[oRaw]] by set : tensor<4096xf32> -> tensor<4096xf32> to tensor<4096xf32>
 //   // DISABLED-CHECK-DAG: rock.store %[[reduceCopy]] to %[[reduceOut]] by set : tensor<64xf32> -> tensor<64xf32> to tensor<64xf32>
 //   
-//   %reduce_result = rock.reduce sum %result into %alloc_0 {axis = 2 : index, blockSize = 256 : i32, gridSize = 16 : i32} : tensor<1x64x64xf32> into tensor<1x64x1xf32>
+//   %reduce_result = rock.reduce sum %result into %alloc_0 {axis = 2 : index} : tensor<1x64x64xf32> into tensor<1x64x1xf32>
 //   %4 = rock.transform %reduce_result by <affine_map<(d0) -> (0, d0, 0)> by [<Merge{1, 64, 1} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [64] -> [1, 64, 1]> : tensor<1x64x1xf32> to tensor<64xf32>
 //   %out1 = rock.store %3 to %arg3 by set : tensor<4096xf32> -> tensor<4096xf32> to tensor<4096xf32>
 //   %out2 = rock.store %4 to %arg4 by set : tensor<64xf32> -> tensor<64xf32> to tensor<64xf32>
@@ -586,8 +567,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   // DISABLED-CHECK: %[[normalizeScaleA:.*]] = rock.transform %[[scaleA]] by {{.*}} : tensor<1x128x72xf8E8M0FNU> to tensor<1x72x128xf8E8M0FNU{{.*}}>
 //   // DISABLED-CHECK: rock.gridwise_gemm(%[[a]], %[[b]], %[[c]], %[[normalizeScaleA]], %[[scaleB]])
 //   %result = rock.gemm tr %a scaled by %scaleA * %b scaled by %scaleB {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 16 : i32,
 //     params = #xdlops_gemm_params0
 //   } : tensor<1x72x128xf4E2M1FN> scaled by tensor<1x128x72xf8E8M0FNU> * tensor<1x72x512xf4E2M1FN> scaled by tensor<1x72x512xf8E8M0FNU> -> tensor<1x128x512xf32>
 //   %out = rock.store %result to %c by set : tensor<1x128x512xf32> -> tensor<1x128x512xf32> to tensor<1x128x512xf32>
@@ -606,8 +585,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   // DISABLED-CHECK-DAG: %[[padScaleB:.*]] = rock.transform %[[scaleB]] by {{.*}} : tensor<1x1x1xf8E8M0FNU> to tensor<1x8x64xf8E8M0FNU{{.*}}>
 //   // DISABLED-CHECK: rock.gridwise_gemm(%[[padA]], %[[padB]], %[[padC]], %[[padScaleA]], %[[padScaleB]])
 //   %result = rock.gemm tr %a scaled by %scaleA * %b scaled by %scaleB {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 1 : i32,
 //     params = #xdlops_gemm_params0
 //   } : tensor<1x1x1xf4E2M1FN> scaled by tensor<1x1x1xf8E8M0FNU> * tensor<1x1x1xf4E2M1FN> scaled by tensor<1x1x1xf8E8M0FNU> -> tensor<1x1x1xf32>
 //   %out = rock.store %result to %c by set : tensor<1x1x1xf32> -> tensor<1x1x1xf32> to tensor<1x1x1xf32>
@@ -624,8 +601,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   // DISABLED-CHECK-DAG: %[[normalizeC:.*]] = rock.transform %[[c]] {{.*}} : tensor<1x512x128xf32> to tensor<1x128x512xf32{{.*}}>
 //   // DISABLED-CHECK: rock.gridwise_gemm(%[[normalizeA]], %[[normalizeB]], %[[normalizeC]], %[[scaleA]], %[[scaleB]])
 //   %result = rock.gemm tr %c = %a scaled by tr %scaleA * tr %b scaled by %scaleB {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 16 : i32,
 //     params = #xdlops_gemm_params0
 //   } : tensor<1x128x72xf4E2M1FN> scaled by tensor<1x72x128xf8E8M0FNU> * tensor<1x512x72xf4E2M1FN> scaled by tensor<1x72x512xf8E8M0FNU> -> tensor<1x512x128xf32>
 //   %out = rock.store %result to %c by set : tensor<1x512x128xf32> -> tensor<1x512x128xf32> to tensor<1x512x128xf32>
@@ -646,8 +621,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   // DISABLED-CHECK: linalg.generic {{{.*}}} ins(%[[scaleB]] : tensor<1x72x512xf32>) outs(%[[allocScaleB]] : tensor<1x72x512xf8E8M0FNU>)
 //   // DISABLED-CHECK: rock.gridwise_gemm(%[[a]], %[[b]], %[[c]], %[[allocScaleA]], %[[allocScaleB]])
 //   %result = rock.gemm tr %a scaled by %scaleA * %b scaled by %scaleB {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 16 : i32,
 //     params = #xdlops_gemm_params0
 //   } : tensor<1x72x128xf4E2M1FN> scaled by tensor<1x128x72xf32> * tensor<1x72x512xf4E2M1FN> scaled by tensor<1x72x512xf32> -> tensor<1x128x512xf32>
 //   %out = rock.store %result to %c by set : tensor<1x128x512xf32> -> tensor<1x128x512xf32> to tensor<1x128x512xf32>
@@ -684,8 +657,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   
 //   // DISABLED-CHECK: rock.gridwise_gemm({{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}) storeMethod( atomic_add) {{.*}} : tensor<2x48x128xf4E2M1FN>, tensor<2x48x512xf4E2M1FN>, tensor<2x128x512xf32>, tensor<2x48x128xf8E8M0FNU>, tensor<2x48x512xf8E8M0FNU>
 //   %result = rock.gemm tr %a scaled by %scaleA * %b scaled by %scaleB {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 16 : i32,
 //     params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 8, kpack = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 2, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   } : tensor<1x72x128xf4E2M1FN> scaled by tensor<1x128x72xf8E8M0FNU> * tensor<1x72x512xf4E2M1FN> scaled by tensor<1x72x512xf8E8M0FNU> -> tensor<1x128x512xf32>
 //   %out = rock.store %result to %c by set : tensor<1x128x512xf32> -> tensor<1x128x512xf32> to tensor<1x128x512xf32>
@@ -754,8 +725,6 @@ func.func @gemm_pad_for_split_k(%a: tensor<1x128x238xf32>, %b: tensor<1x238x512x
 //   %9 = rock.transform %8 by <affine_map<(d0, d1, d2, d3) -> (d0, d1, 0, d3)> by [<Broadcast{1} ["block"] at [2] -> ["block"] at [2]>, <PassThrough ["g", "kScale", "n"] at [0, 1, 3] -> ["g", "kScale", "n"] at [0, 1, 3]>] bounds = [3, 24, 32, 256] -> [3, 24, 1, 256]> : tensor<3x24x1x256xf8E8M0FNU> to tensor<3x24x32x256xf8E8M0FNU>
 //   %10 = rock.transform %9 by <affine_map<(d0, d1, d2) -> (d0, d1 floordiv 32, d1 mod 32, d2)> by [<PassThrough ["g", "n"] at [0, 2] -> ["g", "n"] at [0, 3]>, <Merge{24, 32} ["k"] at [1] -> ["kScale", "block"] at [1, 2]>] bounds = [3, 768, 256] -> [3, 24, 32, 256]> : tensor<3x24x32x256xf8E8M0FNU> to tensor<3x768x256xf8E8M0FNU>
 //   %result = rock.gemm %0 scaled by %7 * %1 scaled by %10 {
-//     derivedBlockSize = 256 : i32,
-//     gridSize = 12 : i32,
 //     params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 512, kpack = 32, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 5, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   } : tensor<3x256x768xf4E2M1FN> scaled by tensor<3x256x768xf8E8M0FNU> * tensor<3x768x256xf4E2M1FN> scaled by tensor<3x768x256xf8E8M0FNU> -> tensor<3x256x256xf32>
 //   %result_flat = rock.transform %result by <affine_map<(d0) -> (d0 floordiv 65536, (d0 mod 65536) floordiv 256, d0 mod 256)> by [<Merge{3, 256, 256} ["raw"] at [0] -> ["g", "m", "n"] at [0, 1, 2]>] bounds = [196608] -> [3, 256, 256]> : tensor<3x256x256xf32> to tensor<196608xf32>

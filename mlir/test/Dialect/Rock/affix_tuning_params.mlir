@@ -710,7 +710,6 @@ func.func @rock_attn_perfconfig_numstages4(%arg0: tensor<32768xf16>, %arg1: tens
 //   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   // DISABLED-CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   // DISABLED-GRID: rock.gridwise_attention
-//   // DISABLED-GRID: gridSize = 12
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>

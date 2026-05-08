@@ -1,9 +1,7 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): This test shows different transforms compared to what we used to have in rocMLIR. Investigate why
-// RUN: rocmlir-opt -rock-affix-params -rock-conv-to-gemm %s | FileCheck %s
+// RUN: rocmlir-opt --rock-affix-params --rock-lower-reduce --rock-regularize-output --rock-regularize-inter-gemm-fusion --rock-conv-to-gemm %s | FileCheck %s
 module  {
-  func.func @rock_conv_bwd_weight_gkcyx_ngchw_ngkhw_0(%arg0: tensor<1x32x32x3x3xf32>, %arg1: tensor<32x1x32x7x7xf32>, %arg2: tensor<32x1x32x9x9xf32>) -> tensor<1x32x32x3x3xf32> attributes {rock.kernel = 0 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908", numCU = 120 : i32} {
-    %result = rock.conv_bwd_weight(%arg0, %arg1, %arg2) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [2 : index, 2 : index, 2 : index, 2 : index], strides = [1 : index, 1 : index]} : tensor<1x32x32x3x3xf32>, tensor<32x1x32x7x7xf32>, tensor<32x1x32x9x9xf32> -> tensor<1x32x32x3x3xf32>
+  func.func @rock_conv_bwd_weight_gkcyx_ngchw_ngkhw_0(%arg0: tensor<1x32x32x3x3xf32>, %arg1: tensor<32x1x32x7x7xf32>, %arg2: tensor<32x1x32x9x9xf32>) -> tensor<1x32x32x3x3xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
+    %result = rock.conv_bwd_weight(%arg1, %arg2) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [2 : index, 2 : index, 2 : index, 2 : index], strides = [1 : index, 1 : index], perf_config = "gemm:v1:32,32,32,1,1,4,0,1,2,0,0"} : tensor<32x1x32x7x7xf32>, tensor<32x1x32x9x9xf32> -> tensor<1x32x32x3x3xf32>
     %out = rock.store %result to %arg0 by set : tensor<1x32x32x3x3xf32> -> tensor<1x32x32x3x3xf32> to tensor<1x32x32x3x3xf32>
     return %out : tensor<1x32x32x3x3xf32>
   }
@@ -23,3 +21,7 @@ module  {
 // CHECK-DAG: #rock.transform_map<#[[map4]] by [<Merge{1, 1} ["gemmG"] at [0] -> ["gi", "n0"] at [2, 0]>, <Merge{32, 9, 9} ["gemmK"] at [1] -> ["n1", "0o", "1o"] at [1, 5, 7]>, <Merge{32, 3, 3} ["gemmN"] at [2] -> ["ci", "0", "1"] at [3, 4, 6]>] bounds = [1, 2592, 288] -> [1, 32, 1, 32, 3, 9, 3, 9]>
 // CHECK-DAG: #rock.transform_map<#[[map5]] by [<PassThrough ["go"] at [2] -> ["go"] at [1]>, <Unmerge{1, 32} ["n0", "n1"] at [0, 1] -> ["no"] at [0]>, <PassThrough ["ko", "0o", "1o"] at [3, 4, 5] -> ["ko", "0o", "1o"] at [2, 3, 4]>] bounds = [1, 32, 1, 32, 9, 9] -> [32, 1, 32, 9, 9]>
 // CHECK-DAG: #rock.transform_map<#[[map6]] by [<Merge{1, 1} ["gemmG"] at [0] -> ["go", "n0"] at [2, 0]>, <Merge{32, 9, 9} ["gemmK"] at [1] -> ["n1", "0o", "1o"] at [1, 4, 5]>, <PassThrough ["gemmM"] at [2] -> ["ko"] at [3]>] bounds = [1, 2592, 32] -> [1, 32, 1, 32, 9, 9]>
+
+// CHECK-LABEL: func.func @rock_conv_bwd_weight_gkcyx_ngchw_ngkhw_0
+// CHECK:       %[[gemm:.*]] = rock.gemm tr %{{.*}} * %{{.*}}
+// CHECK:       rock.store %[[gemm]] to %{{.*}} by atomic_add
