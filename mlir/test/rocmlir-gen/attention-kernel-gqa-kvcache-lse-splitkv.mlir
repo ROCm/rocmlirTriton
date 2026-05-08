@@ -9,7 +9,7 @@
 // VALID-SPLIT-KV-LABEL: func.func @rock_attention_gpu
 // With current_seq_len=255,18,268,69,317 and nPerBlockG0=64, the valid split
 // mask is [4, 1, 5, 2, 5]. Using mPerBlockG0=128 would produce [2, 1, 3, 1, 3].
-// VALID-SPLIT-KV: arith.constant dense<[4, 1, 5, 2, 5]> : tensor<5xi32>
+// VALID-SPLIT-KV: "tosa.const"() <{values = dense<{{\[+}}4{{\]+}}, {{\[+}}1{{\]+}}, {{\[+}}5{{\]+}}, {{\[+}}2{{\]+}}, {{\[+}}5{{\]+}}> : tensor<5x1x1x1xi32>}>
 
 // CHECK-LABEL: func.func @rock_attention
 // CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<128xf32>,
