@@ -34,18 +34,12 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
   return os;
 }
 
-/// Static data for XDL tuning parameters (used by ParamLookupTable)
+/// Static data for tuning parameters (used by ParamLookupTable).
+/// Covers both MFMA (gfx9) and WMMA (gfx1*) architectures.
 // clang-format off
-#define XDL_DEFINITIONS_GEN
+#define Gemm_DEFINITIONS_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef XDL_DEFINITIONS_GEN
-// clang-format on
-
-/// Static data for WMMA tuning parameters (used by ParamLookupTable)
-// clang-format off
-#define Wmma_DEFINITIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef Wmma_DEFINITIONS_GEN
+#undef Gemm_DEFINITIONS_GEN
 // clang-format on
 
 PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
