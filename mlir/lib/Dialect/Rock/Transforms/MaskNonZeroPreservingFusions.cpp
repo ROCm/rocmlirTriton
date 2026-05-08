@@ -219,7 +219,9 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
                 matchPattern(clonedLeaf, m_Zero());
 
   LLVM_DEBUG(llvm::dbgs() << "  Zero-preservation test: "
-                          << (isZero ? "PRESERVES" : (anyFoldFailed ? "Fold failed!" : "DOES NOT preserve"))
+                          << (isZero ? "PRESERVES"
+                                     : (anyFoldFailed ? "Fold failed!"
+                                                      : "DOES NOT preserve"))
                           << " zero\n");
 
   for (auto it = toErase.rbegin(); it != toErase.rend(); ++it) {
@@ -228,6 +230,15 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
   }
 
   return isZero;
+}
+
+static bool hasMaxReduceConsumer(Value value) {
+  for (OpOperand &use : value.getUses()) {
+    auto reduceOp = dyn_cast<BlockwiseReduceOp>(use.getOwner());
+    if (reduceOp && reduceOp.getReduceMethod() == ReduceMethod::Max)
+      return true;
+  }
+  return false;
 }
 
 /// Choose the neutral fill value for masked-out lanes of a fusion-chain leaf
@@ -297,45 +308,55 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
   // ---- Phase 1: Analysis ----
   // Process each load independently. For each load with a non-trivial mask,
   // follow its fusion chain to find leaves. Skip leaves whose chains preserve
-  // zero. Record the mask contribution for the rest.
+  // zero unless a max-reduction consumer needs the type's minimum value instead
+  // of zero. Record the mask contribution for the rest.
   // Result: leafMasks[leaf] = set of non-trivial masks from contributing loads
   //         that need re-masking.
   DenseMap<Value, SetVector<Value>> leafMasks;
   DenseSet<Value> zeroPreserving;
   OpBuilder builder(funcOp.getContext());
 
+  auto recordMaskCandidate = [&](Value candidate, Value mask) {
+    bool needsMaxNeutralFill = hasMaxReduceConsumer(candidate);
+    if (!needsMaxNeutralFill && zeroPreserving.contains(candidate))
+      return;
+
+    if (!needsMaxNeutralFill && !leafMasks.count(candidate) &&
+        fusionChainPreservesZero(candidate, builder)) {
+      zeroPreserving.insert(candidate);
+      return;
+    }
+
+    leafMasks[candidate].insert(mask);
+  };
+
   funcOp.walk([&](BlockwiseLoadPtrOp loadOp) {
     if (isTrivialMask(loadOp.getMaskTensor()))
       return;
 
     Value mask = loadOp.getMaskTensor();
-    SmallVector<Value> leaves;
-    collectFusionChainLeaves(loadOp.getResult(), leaves);
+    Value loadResult = loadOp.getResult();
+    if (hasMaxReduceConsumer(loadResult))
+      recordMaskCandidate(loadResult, mask);
 
-    for (Value leaf : leaves) {
-      if (zeroPreserving.contains(leaf))
-        continue;
-      if (!leafMasks.count(leaf) && fusionChainPreservesZero(leaf, builder)) {
-        zeroPreserving.insert(leaf);
-        continue;
-      }
-      leafMasks[leaf].insert(mask);
-    }
+    SmallVector<Value> leaves;
+    collectFusionChainLeaves(loadResult, leaves);
+
+    for (Value leaf : leaves)
+      recordMaskCandidate(leaf, mask);
   });
 
   if (leafMasks.empty())
     return;
 
   LLVM_DEBUG(llvm::dbgs() << "Found " << leafMasks.size()
-                          << " non-zero-preserving fusion chain leaves\n");
+                          << " values needing OOB re-masking\n");
 
   // ---- Phase 2: Emit masking IR ----
   // For each remaining leaf, insert arith.select to restore a neutral value at
   // OOB positions.
   for (auto &[leaf, masks] : leafMasks) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "Non-zero-preserving fusion chain, inserting mask for: "
-               << leaf << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Inserting OOB mask for: " << leaf << "\n");
 
     Location loc = leaf.getLoc();
     auto leafType = cast<RankedTensorType>(leaf.getType());
