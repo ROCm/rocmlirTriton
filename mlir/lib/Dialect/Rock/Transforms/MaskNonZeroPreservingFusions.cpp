@@ -27,7 +27,9 @@
 // This pass detects such cases and inserts:
 //   %safe = arith.select %mask, %fused_result, %fill
 // at non-fusion uses of the fusion chain. The fill value is chosen for the
-// consumer: zero for most uses, or -inf for floating-point max reductions.
+// consumer: zero by default, or the type's smallest representable value (e.g.
+// -inf for IEEE floats, signed INT_MIN for integers) for `rock.blockwise_reduce
+// max` consumers, so masked-out lanes do not influence the reduction.
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,7 +38,6 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
-#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -44,13 +45,13 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
-
-#include <limits>
 
 namespace mlir {
 namespace rock {
@@ -229,20 +230,54 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
   return isZero;
 }
 
+/// Choose the neutral fill value for masked-out lanes of a fusion-chain leaf
+/// based on what `useOwner` is going to do with the tensor.
+/// For `rock.blockwise_reduce max`, masked-out lanes must not influence the
+/// reduction. The neutral element of max is the smallest representable value
+/// of the element type, which depends on the type:
+///   - IEEE-like floats (f32, f16, bf16, f64, f8E5M2, ...): -inf
+///   - FP formats without inf (f8E4M3FN, f8E4M3FNUZ): the most negative finite
+///     value (`APFloat::getLargest(..., negative=true)`)
+///   - Signless / signed integers: the signed minimum of the bit width.
+///     Unsigned integers can't reach this helper (`BlockwiseLoadPtrOp`'s
+///     NativeMemoryOpTypes only contains signless integers and arith doesn't
+///     accept unsigned operands), so we don't special-case them here.
+/// All other consumers (stores, sum reductions, etc.) get plain zero, which is
+/// the neutral element for sum and a safe default for ops whose semantics
+/// preserve zero across OOB lanes.
 static Value createMaskFillValue(OpBuilder &builder, Location loc,
                                  RankedTensorType type, Operation *useOwner) {
-  if (auto reduceOp = dyn_cast<BlockwiseReduceOp>(useOwner)) {
-    Type elemType = type.getElementType();
-    if (reduceOp.getReduceMethod() == ReduceMethod::Max &&
-        isa<FloatType>(elemType)) {
-      return rock::createConstantFloatOp(
-          builder, loc, type, elemType, -std::numeric_limits<float>::infinity(),
-          APFloat::opOK);
-    }
+  auto zeroFill = [&]() {
+    return arith::ConstantOp::create(builder, loc, type,
+                                     builder.getZeroAttr(type));
+  };
+
+  auto reduceOp = dyn_cast<BlockwiseReduceOp>(useOwner);
+  if (!reduceOp || reduceOp.getReduceMethod() != ReduceMethod::Max)
+    return zeroFill();
+
+  Type elemType = type.getElementType();
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    const llvm::fltSemantics &semantics = floatType.getFloatSemantics();
+    APFloat fillValue = APFloat::semanticsHasInf(semantics)
+                            ? APFloat::getInf(semantics, /*Negative=*/true)
+                            : APFloat::getLargest(semantics, /*Negative=*/true);
+    return arith::ConstantOp::create(
+        builder, loc, type,
+        SplatElementsAttr::get(type,
+                               builder.getFloatAttr(elemType, fillValue)));
   }
 
-  return arith::ConstantOp::create(builder, loc, type,
-                                   builder.getZeroAttr(type));
+  if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    APInt fillValue = APInt::getSignedMinValue(intType.getWidth());
+    return arith::ConstantOp::create(
+        builder, loc, type,
+        SplatElementsAttr::get(type,
+                               builder.getIntegerAttr(elemType, fillValue)));
+  }
+
+  // Fallback to filling with zero.
+  return zeroFill();
 }
 
 struct RockMaskNonZeroPreservingFusionsPass
@@ -314,21 +349,23 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
         usesToReplace.emplace_back(owner, use.getOperandNumber());
     }
 
+    // Combine masks with `and` once, right after the leaf. Each mask is an
+    // operand of a BlockwiseLoadPtrOp upstream of the leaf, so the `and`
+    // dominates every non-fusion use of the leaf and can be shared across
+    // them.
+    builder.setInsertionPointAfterValue(leaf);
+    auto it = masks.begin();
+    Value combinedMask = *it;
+    for (++it; it != masks.end(); ++it)
+      combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
+
+    // Insert one arith.select per non-fusion use, choosing the fill for the
+    // consuming op (for example, -inf for floating-point max reductions).
     for (auto [owner, operandNumber] : usesToReplace) {
       builder.setInsertionPoint(owner);
-      // Combine masks with AND at the consumer so the mask dominates the use.
-      auto it = masks.begin();
-      Value combinedMask = *it;
-      for (++it; it != masks.end(); ++it)
-        combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
-
-      // Insert arith.select %mask, %fused, %fill, where %fill is chosen for the
-      // consuming op (for example, -inf for max reductions).
       Value fill = createMaskFillValue(builder, loc, leafType, owner);
       Value safe =
           arith::SelectOp::create(builder, loc, combinedMask, leaf, fill);
-
-      // Replace this non-fusion use of the leaf with the masked version.
       owner->setOperand(operandNumber, safe);
     }
   }

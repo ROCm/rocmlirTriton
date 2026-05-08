@@ -232,7 +232,10 @@ def RockMaskNonZeroPreservingFusionsPass
     arith.addf %tile, 1.0), those positions become non-zero. This pass detects
     such cases and inserts arith.select with the load mask at non-fusion uses
     of the fusion chain. The masked-out value is chosen for the consumer: zero
-    for most uses, or -inf for floating-point max reductions.
+    by default, or the type's smallest representable value for
+    `rock.blockwise_reduce max` (e.g. -inf for IEEE floats, the most negative
+    finite value for FP8 formats without infinity, signed INT_MIN for signed
+    integers) so masked-out lanes do not influence the reduction.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect"];
