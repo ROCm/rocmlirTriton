@@ -607,12 +607,12 @@ def _kpack_choices(arch: str) -> List[int]:
     without requiring a code change here."""
     n = _arch_id(arch)
     if n is None:
-        return [1]                          # unknown target -> safest
-    if n < 0x950:                           # gfx9 pre-CDNA4
+        return [1]  # unknown target -> safest
+    if n < 0x950:  # gfx9 pre-CDNA4
         return [1, 2]
-    if 0x1000 <= n < 0x1250:                # all of gfx10/gfx11, gfx12 before gfx1250
+    if 0x1000 <= n < 0x1250:  # all of gfx10/gfx11, gfx12 before gfx1250
         return [1, 2]
-    return [1]                              # gfx950+, gfx1250+, gfx13+, ...
+    return [1]  # gfx950+, gfx1250+, gfx13+, ...
 
 
 def sample_perf_config(rng: random.Random, arch: str,
@@ -768,8 +768,7 @@ def random_conv_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     for _ in range(num_samples):
         shape = _sample_conv_shape(rng)
         # shape[2] is the input dtype (op, layout, dtype, n, c, k, ...).
-        yield (shape,
-               sample_perf_config(rng, arch, _split_k_choices(shape[2])))
+        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[2])))
 
 
 def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
@@ -778,8 +777,7 @@ def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     for _ in range(num_samples):
         shape = _sample_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, trans_a, trans_b).
-        yield (shape,
-               sample_perf_config(rng, arch, _split_k_choices(shape[0])))
+        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[0])))
 
 
 def to_conv_test(params, options: Options) -> ConvConfiguration:

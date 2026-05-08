@@ -205,8 +205,7 @@ def random_gemm_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = No
     for _ in range(num_samples):
         shape = _sample_gemm_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, o, trans_a, ...).
-        yield (shape,
-               sample_perf_config(rng, arch, _split_k_choices(shape[0])))
+        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[0])))
 
 
 def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfiguration:
