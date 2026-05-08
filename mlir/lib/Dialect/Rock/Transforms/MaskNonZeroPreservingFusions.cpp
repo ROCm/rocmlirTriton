@@ -35,6 +35,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -47,6 +48,8 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+
+#include <limits>
 
 namespace mlir {
 namespace rock {
@@ -225,6 +228,22 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
   return isZero;
 }
 
+static Value createMaskFillValue(OpBuilder &builder, Location loc,
+                                 RankedTensorType type, Operation *useOwner) {
+  if (auto reduceOp = dyn_cast<BlockwiseReduceOp>(useOwner)) {
+    Type elemType = type.getElementType();
+    if (reduceOp.getReduceMethod() == ReduceMethod::Max &&
+        isa<FloatType>(elemType)) {
+      return rock::createConstantFloatOp(
+          builder, loc, type, elemType,
+          -std::numeric_limits<float>::infinity(), APFloat::opOK);
+    }
+  }
+
+  return arith::ConstantOp::create(builder, loc, type,
+                                   builder.getZeroAttr(type));
+}
+
 struct RockMaskNonZeroPreservingFusionsPass
     : public rock::impl::RockMaskNonZeroPreservingFusionsPassBase<
           RockMaskNonZeroPreservingFusionsPass> {
@@ -281,25 +300,27 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
                << "Non-zero-preserving fusion chain, inserting mask for: "
                << leaf << "\n");
 
-    // Combine masks with AND.
-    builder.setInsertionPointAfterValue(leaf);
     Location loc = leaf.getLoc();
-    auto it = masks.begin();
-    Value combinedMask = *it;
-    for (++it; it != masks.end(); ++it)
-      combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
-
-    // Insert arith.select %mask, %fused, %zero.
     auto leafType = cast<RankedTensorType>(leaf.getType());
-    auto zeroAttr = builder.getZeroAttr(leafType);
-    Value zero = arith::ConstantOp::create(builder, loc, leafType, zeroAttr);
-    Value safe =
-        arith::SelectOp::create(builder, loc, combinedMask, leaf, zero);
 
-    // Replace non-fusion uses of the leaf with the masked version.
-    leaf.replaceUsesWithIf(safe, [&](OpOperand &use) {
-      return use.getOwner() != safe.getDefiningOp() &&
-             !rock::isFusionOp(use.getOwner());
-    });
+    SmallVector<std::pair<Operation *, unsigned>> usesToReplace;
+    for (OpOperand &use : leaf.getUses()) {
+      Operation *owner = use.getOwner();
+      if (!rock::isFusionOp(owner))
+        usesToReplace.emplace_back(owner, use.getOperandNumber());
+    }
+
+    for (auto [owner, operandNumber] : usesToReplace) {
+      builder.setInsertionPoint(owner);
+      auto it = masks.begin();
+      Value combinedMask = *it;
+      for (++it; it != masks.end(); ++it)
+        combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
+
+      Value fill = createMaskFillValue(builder, loc, leafType, owner);
+      Value safe =
+          arith::SelectOp::create(builder, loc, combinedMask, leaf, fill);
+      owner->setOperand(operandNumber, safe);
+    }
   }
 }
