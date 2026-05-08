@@ -258,6 +258,43 @@ func.func @test_max_reduce_uses_neg_inf(
 }
 
 // ============================================================
+// Direct max reduction: even without a fusion chain, the load's zero-filled
+// masked-out lanes are not neutral for max and must be remasked to -inf.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_direct_load_max_reduce_uses_neg_inf
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[LOAD]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: rock.blockwise_reduce max %[[SAFE]]
+func.func @test_direct_load_max_reduce_uses_neg_inf(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce max %tile {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  return %reduced : tensor<64xf32>
+}
+
+// ============================================================
+// Zero-preserving fusion before max reduction: zero-preservation is enough for
+// zero-fill consumers, but max still needs -inf for masked-out lanes.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_zero_preserving_chain_max_reduce_uses_neg_inf
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[SCALED:.*]] = arith.mulf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[SCALED]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: rock.blockwise_reduce max %[[SAFE]]
+func.func @test_zero_preserving_chain_max_reduce_uses_neg_inf(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %cst = arith.constant dense<2.0> : tensor<64x64xf32>
+  %scaled = arith.mulf %tile, %cst : tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce max %scaled {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  return %reduced : tensor<64xf32>
+}
+
+// ============================================================
 // Mixed consumers: one fusion-chain leaf feeds both a rock.blockwise_reduce
 // max (needs -inf fill) and a rock.blockwise_store_ptr (needs zero fill).
 // Each consumer must get its own arith.select with the right neutral value.
