@@ -236,8 +236,8 @@ static Value createMaskFillValue(OpBuilder &builder, Location loc,
     if (reduceOp.getReduceMethod() == ReduceMethod::Max &&
         isa<FloatType>(elemType)) {
       return rock::createConstantFloatOp(
-          builder, loc, type, elemType,
-          -std::numeric_limits<float>::infinity(), APFloat::opOK);
+          builder, loc, type, elemType, -std::numeric_limits<float>::infinity(),
+          APFloat::opOK);
     }
   }
 
