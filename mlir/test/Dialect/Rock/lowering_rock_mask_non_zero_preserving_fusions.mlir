@@ -306,6 +306,28 @@ func.func @test_sum_reduce_uses_zero(
 }
 
 // ============================================================
+// FP8 max reduction (f8E4M3FN): the format has no infinity, so the fill must
+// be the most negative finite value (-448.0, the largest representable
+// magnitude in E4M3FN) rather than -inf. This exercises the
+// `APFloat::semanticsHasInf` == false branch of `createMaskFillValue`.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_fp8_max_reduce_uses_largest_finite
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf8E4M3FN>
+// CHECK: %[[NEG_MAX:.*]] = arith.constant dense<-4.480000e+02> : tensor<64x64xf8E4M3FN>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEG_MAX]] : tensor<64x64xi1>, tensor<64x64xf8E4M3FN>
+// CHECK: rock.blockwise_reduce max %[[SAFE]]
+func.func @test_fp8_max_reduce_uses_largest_finite(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf8E4M3FN> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf8E4M3FN>
+  %cst = arith.constant dense<1.0> : tensor<64x64xf8E4M3FN>
+  %fused = arith.addf %tile, %cst : tensor<64x64xf8E4M3FN>
+  %reduced = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xf8E4M3FN> -> tensor<64xf8E4M3FN>
+  return %reduced : tensor<64xf8E4M3FN>
+}
+
+// ============================================================
 // Integer max reduction: zero is wrong because masked-out positive lanes
 // would dominate negative real values. Signless integers are treated as
 // signed, so the fill is the signed minimum of the bit width (INT_MIN).
