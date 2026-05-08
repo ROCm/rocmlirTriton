@@ -238,6 +238,26 @@ func.func @test_negf(
 }
 
 // ============================================================
+// Max reduction: non-zero-preserving fusion still needs remasking, but the
+// neutral value for max is -inf rather than zero.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_max_reduce_uses_neg_inf
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: rock.blockwise_reduce max %[[SAFE]]
+func.func @test_max_reduce_uses_neg_inf(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %cst = arith.constant dense<1.0> : tensor<64x64xf32>
+  %fused = arith.addf %tile, %cst : tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  return %reduced : tensor<64xf32>
+}
+
+// ============================================================
 // Non-kernel function: pass should skip entirely.
 // Even with a non-zero-preserving fusion, no select is inserted.
 // ============================================================
