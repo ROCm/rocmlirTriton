@@ -299,17 +299,35 @@ struct CompilationResult {
 // Each compilation stores large artifacts (HSACO binaries as StringAttrs,
 // LLVM types, etc.) in the context, so reusing a context across many
 // compilations causes unbounded memory growth.
-static std::unique_ptr<MLIRContext> createCompilationContext() {
+//
+// Error diagnostics emitted while using this context are buffered into
+// `bufferedDiags` rather than printed eagerly. This lets the caller decide,
+// after the fact, whether a failure represents a real bug (flush) or an
+// expected "not applicable" outcome (drop). `bufferedDiags` must outlive the
+// returned context.
+static std::unique_ptr<MLIRContext>
+createCompilationContext(SmallVector<std::string> &bufferedDiags) {
   DialectRegistry registry;
   registerRocMLIRDialects(registry);
   auto ctx = std::make_unique<MLIRContext>(registry);
-  ctx->getDiagEngine().registerHandler([](Diagnostic &diag) {
+  // Consume *all* diagnostics so they don't pollute tuning output during the
+  // parallel sweep. Errors are additionally buffered into `bufferedDiags` so
+  // the caller can surface them on real failures; warnings/remarks/notes are
+  // intentionally dropped (matches the long-standing behavior of this tool).
+  ctx->getDiagEngine().registerHandler([&bufferedDiags](Diagnostic &diag) {
     if (diag.getSeverity() == DiagnosticSeverity::Error) {
-      llvm::errs() << "Diagnostic error: " << diag << "\n";
-      for (auto &note : diag.getNotes()) {
-        llvm::errs() << "  note: " << note << "\n";
+      std::string buf;
+      // `os` holds a reference to `buf`; destroy it (flushing any pending
+      // internal buffer into `buf`) before moving `buf` into `bufferedDiags`.
+      {
+        llvm::raw_string_ostream os(buf);
+        os << "Diagnostic error: " << diag << "\n";
+        for (auto &note : diag.getNotes())
+          os << "  note: " << note << "\n";
       }
+      bufferedDiags.push_back(std::move(buf));
     }
+    return success();
   });
   return ctx;
 }
@@ -786,12 +804,28 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       // Create a fresh context for this compilation. It will be destroyed
       // when this lambda returns, freeing all accumulated MLIR data.
-      auto ctx = createCompilationContext();
+      // `bufferedDiags` collects error diagnostics so we can suppress them
+      // for expected "not applicable" failures and surface them otherwise.
+      SmallVector<std::string> bufferedDiags;
+      auto ctx = createCompilationContext(bufferedDiags);
+      // Report a real failure: print the per-path header followed by any
+      // buffered diagnostics atomically under outputMutex, mark the result
+      // as failed, and signal early termination to peer workers.
+      auto reportFailure = [&](const llvm::Twine &header) {
+        {
+          std::lock_guard<std::mutex> lock(outputMutex);
+          llvm::errs() << header << "\n";
+          for (auto &msg : bufferedDiags)
+            llvm::errs() << msg;
+        }
+        result.status = CompilationStatus::CompilationFailed;
+        compilationFailed.store(true, std::memory_order_relaxed);
+      };
       OwningOpRef<ModuleOp> sourceModule =
           parseSourceString<ModuleOp>(sourceModuleStr, ctx.get());
       if (!sourceModule || !*sourceModule) {
-        result.status = CompilationStatus::CompilationFailed;
-        compilationFailed.store(true, std::memory_order_relaxed);
+        reportFailure("Failed to parse source module for config: " +
+                      llvm::Twine(result.perfConfig));
         return result;
       }
 
@@ -839,8 +873,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       // Parse perfConfig
       if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
                                         backendOpts))) {
-        result.status = CompilationStatus::CompilationFailed;
-        compilationFailed.store(true, std::memory_order_relaxed);
+        reportFailure("Failed to parse perfConfig for config: " +
+                      llvm::Twine(result.perfConfig));
         return result;
       }
 
@@ -854,11 +888,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         if (sourceCopy.get()->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
           result.status = CompilationStatus::NotApplicable;
         } else {
-          std::lock_guard<std::mutex> lock(outputMutex);
-          llvm::errs() << "Compilation pipeline failed for config: "
-                       << result.perfConfig << "\n";
-          result.status = CompilationStatus::CompilationFailed;
-          compilationFailed.store(true, std::memory_order_relaxed);
+          reportFailure("Compilation pipeline failed for config: " +
+                        llvm::Twine(result.perfConfig));
         }
         return result;
       }
@@ -867,19 +898,14 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       // argument types).
       SmallVector<rock::KernelInfo> localKernels;
       if (failed(rock::collectKernelInfo(sourceCopy.get(), localKernels))) {
-        std::lock_guard<std::mutex> lock(outputMutex);
-        llvm::errs() << "Failed to collect kernel info\n";
-        result.status = CompilationStatus::CompilationFailed;
-        compilationFailed.store(true, std::memory_order_relaxed);
+        reportFailure("Failed to collect kernel info for config: " +
+                      llvm::Twine(result.perfConfig));
         return result;
       }
 
       if (localKernels.empty()) {
-        std::lock_guard<std::mutex> lock(outputMutex);
-        llvm::errs() << "No kernels found for config: " << result.perfConfig
-                     << "\n";
-        result.status = CompilationStatus::CompilationFailed;
-        compilationFailed.store(true, std::memory_order_relaxed);
+        reportFailure("No kernels found for config: " +
+                      llvm::Twine(result.perfConfig));
         return result;
       }
 
@@ -887,11 +913,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       auto hsacoAttr =
           sourceCopy.get()->getAttrOfType<StringAttr>("triton.hsaco");
       if (!hsacoAttr) {
-        std::lock_guard<std::mutex> lock(outputMutex);
-        llvm::errs() << "No triton.hsaco found for config: "
-                     << result.perfConfig << "\n";
-        result.status = CompilationStatus::CompilationFailed;
-        compilationFailed.store(true, std::memory_order_relaxed);
+        reportFailure("No triton.hsaco found for config: " +
+                      llvm::Twine(result.perfConfig));
         return result;
       }
 

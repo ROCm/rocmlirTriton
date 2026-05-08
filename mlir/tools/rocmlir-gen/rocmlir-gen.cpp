@@ -1287,7 +1287,13 @@ static std::pair<int64_t, int64_t> getMandNPerBlock(OpBuilder builder,
 
 // Compute the number of valid split-KV entries for each batch-head.
 // This determines which splits should have valid results vs -inf.
-static SmallVector<int32_t> computeValidSplitKV(int64_t mPerBlock) {
+// Note on the M/N convention: rocMLIR's blockwise attention computes the
+// transposed product V * (K * Q^T) rather than the standard (Q * K^T) * V,
+// which puts the key-sequence dimension on GEMM0's M axis. The Triton
+// attention lowering keeps the standard formulation, so the key-sequence
+// dimension is GEMM0's N axis. Split-KV partitions the first GEMM along
+// the key-sequence dimension, hence we use gemm0NPerBlock here.
+static SmallVector<int32_t> computeValidSplitKV(int64_t nPerBlock) {
   SmallVector<int32_t> validSplitKV;
   for (int64_t i = 0; i < groupSize; ++i) {
     int32_t currSeqLen =
@@ -1306,8 +1312,8 @@ static SmallVector<int32_t> computeValidSplitKV(int64_t mPerBlock) {
       // currSeqLen = min(currSeqLen, n_block * gemm0NPerBlock)
       currSeqLen = 0;
     }
-    int32_t numPerBlock = (currSeqLen + mPerBlock) / mPerBlock;
-    int32_t itersPerBlock = mPerBlock * llvm::divideCeil(numPerBlock, splitKV);
+    int32_t numPerBlock = (currSeqLen + nPerBlock) / nPerBlock;
+    int32_t itersPerBlock = nPerBlock * llvm::divideCeil(numPerBlock, splitKV);
     int32_t numValidKV = llvm::divideCeil(currSeqLen + 1, itersPerBlock);
     for (int64_t j = 0; j < numHeadsQ; ++j)
       validSplitKV.push_back(numValidKV);
@@ -1453,8 +1459,7 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   // hack for split-kv:
   // use LSE and output tensors to compute final attention result
   if (splitKV > 1) {
-    int64_t mPerBlock, nPerBlock;
-    std::tie(mPerBlock, nPerBlock) = getMandNPerBlock(b, params);
+    int64_t nPerBlock = getMandNPerBlock(b, params).second;
 
     // TODO: causal masking is not implemented yet
     // typically, causal masking is used in the prefill phase, where split-KV is
@@ -1465,7 +1470,10 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
       exit(1);
     }
 
-    SmallVector<int32_t> validSplitKV = computeValidSplitKV(mPerBlock);
+    // The split-KV finalization below masks out split slots that did not run.
+    // Match GridwiseAttnToBlockwise's Triton lowering, which splits the
+    // current_seq_len / key-sequence work over gemm0NPerBlock.
+    SmallVector<int32_t> validSplitKV = computeValidSplitKV(nPerBlock);
 
     // split KV to batch
     Value resultTensor = bufferization::ToTensorOp::create(

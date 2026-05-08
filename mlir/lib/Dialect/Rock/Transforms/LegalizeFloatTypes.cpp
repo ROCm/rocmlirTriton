@@ -1403,15 +1403,36 @@ static LogicalResult fixup4BitFusionOps(
   Type i8Ty = IntegerType::get(ctx, 8);
 
   for (auto &[op, info] : fusionInfoMap) {
-    bool has4bit = false;
+    bool has4bitOperand = false;
     for (Type t : info.origOperandTypes)
       if (isNonTTFloat(t, 4))
-        has4bit = true;
+        has4bitOperand = true;
+    bool has4bitResult = false;
     for (Type t : info.origResultTypes)
       if (isNonTTFloat(t, 4))
-        has4bit = true;
-    if (!has4bit)
+        has4bitResult = true;
+    if (!has4bitOperand && !has4bitResult)
       continue;
+
+    // We unpack f4 operands into low/high nibbles and clone the op for each
+    // half, producing two halved-shape result tensors that we then repack
+    // (low | high<<4) into the original packed i8 shape. That repack step
+    // only works when the result element type is f4. For ops that consume
+    // f4 inputs but produce a different element type (e.g. arith.cmpf or
+    // math.isfinite returning i1, or a truncf/fptoui to a wider int), we
+    // would have no way to interleave the two halved-shape results back
+    // into the original unpacked shape, so half the lanes would be lost.
+    // Reject these fusions explicitly rather than silently dropping data.
+    if (has4bitOperand) {
+      for (Type t : info.origResultTypes) {
+        auto resTensor = dyn_cast<RankedTensorType>(t);
+        if (resTensor && !isNonTTFloat(resTensor, 4))
+          return op->emitError(
+              "f4 fusion op produces a non-f4 tensor result; reconstructing "
+              "the unpacked result shape from packed nibble clones is not "
+              "supported");
+      }
+    }
 
     Location loc = op->getLoc();
 
@@ -1486,13 +1507,42 @@ static LogicalResult fixup4BitFusionOps(
       return op->emitError("f4 fusion op has no f4 operands or results to "
                            "derive packed shape from");
 
+    // Decide whether to promote f4 operands/result through f32 for the cloned
+    // op. Cast-like ops (bitcast, truncf, extf) operate on f4 by design and
+    // have valid lowerings (arith-expand handles f4 truncf/extf), so we leave
+    // them as-is. All other arith/math ops on f4 (e.g. addf, mulf) cannot be
+    // lowered to LLVM because LLVM has no native f4 arithmetic, so we wrap
+    // the cloned op with extf (operands) and truncf (result) so it runs on
+    // f32; arith-expand will then expand those casts to integer ops.
+    bool promoteThroughF32 =
+        !isa<arith::BitcastOp, arith::TruncFOp, arith::ExtFOp>(op);
+
+    if (promoteThroughF32) {
+      builder.setInsertionPoint(op);
+      Type f32Ty = builder.getF32Type();
+      auto promoteToF32 = [&](Value v) -> Value {
+        auto tType = dyn_cast<RankedTensorType>(v.getType());
+        if (!tType || !isNonTTFloat(tType.getElementType(), 4))
+          return v;
+        auto f32TensorType = RankedTensorType::get(
+            tType.getShape(), f32Ty, tType.getEncoding());
+        return arith::ExtFOp::create(builder, loc, f32TensorType, v);
+      };
+      for (unsigned i = 0; i < lowOperands.size(); ++i) {
+        lowOperands[i] = promoteToF32(lowOperands[i]);
+        highOperands[i] = promoteToF32(highOperands[i]);
+      }
+    }
+
     SmallVector<Type> cloneResultTypes;
     for (unsigned i = 0; i < info.origResultTypes.size(); ++i) {
       auto origTensorType =
           dyn_cast<RankedTensorType>(info.origResultTypes[i]);
       if (origTensorType && isNonTTFloat(origTensorType, 4)) {
+        Type elemType = promoteThroughF32 ? builder.getF32Type()
+                                          : origTensorType.getElementType();
         cloneResultTypes.push_back(RankedTensorType::get(
-            packedRefType.getShape(), origTensorType.getElementType(),
+            packedRefType.getShape(), elemType,
             packedRefType.getEncoding()));
       } else {
         cloneResultTypes.push_back(op->getResult(i).getType());
@@ -1514,13 +1564,35 @@ static LogicalResult fixup4BitFusionOps(
     for (unsigned i = 0; i < cloneResultTypes.size(); ++i)
       highClone->getResult(i).setType(cloneResultTypes[i]);
 
-    // Repack each result: f4 -> i4 -> i8 (low | high<<4).
+    // If we promoted to f32, truncate the cloned ops' f4-typed results back
+    // to f4 so the downstream bitcast f4 -> i4 still works.
     builder.setInsertionPointAfter(highClone);
+    SmallVector<Value> lowResults(op->getNumResults());
+    SmallVector<Value> highResults(op->getNumResults());
+    for (unsigned i = 0; i < op->getNumResults(); ++i) {
+      auto origTensorType =
+          dyn_cast<RankedTensorType>(info.origResultTypes[i]);
+      if (promoteThroughF32 && origTensorType &&
+          isNonTTFloat(origTensorType, 4)) {
+        auto f4Type = RankedTensorType::get(packedRefType.getShape(),
+                                            origTensorType.getElementType(),
+                                            packedRefType.getEncoding());
+        lowResults[i] = arith::TruncFOp::create(builder, loc, f4Type,
+                                                lowClone->getResult(i));
+        highResults[i] = arith::TruncFOp::create(builder, loc, f4Type,
+                                                 highClone->getResult(i));
+      } else {
+        lowResults[i] = lowClone->getResult(i);
+        highResults[i] = highClone->getResult(i);
+      }
+    }
+
+    // Repack each result: f4 -> i4 -> i8 (low | high<<4).
     for (unsigned i = 0; i < op->getNumResults(); ++i) {
       auto origTensorType =
           dyn_cast<RankedTensorType>(info.origResultTypes[i]);
       if (!origTensorType || !isNonTTFloat(origTensorType, 4)) {
-        op->getResult(i).replaceAllUsesWith(lowClone->getResult(i));
+        op->getResult(i).replaceAllUsesWith(lowResults[i]);
         continue;
       }
 
@@ -1530,9 +1602,9 @@ static LogicalResult fixup4BitFusionOps(
                                                 packedRefType.getEncoding());
 
       Value resLowI4 = arith::BitcastOp::create(builder, loc, i4PackedType,
-                                                  lowClone->getResult(i));
+                                                  lowResults[i]);
       Value resHighI4 = arith::BitcastOp::create(builder, loc, i4PackedType,
-                                                   highClone->getResult(i));
+                                                   highResults[i]);
       Value resLowI8 =
           arith::ExtUIOp::create(builder, loc, i8PackedType, resLowI4);
       Value resHighI8 =
