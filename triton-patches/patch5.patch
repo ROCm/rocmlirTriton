@@ -1,19 +1,22 @@
 diff --git a/lib/Dialect/TritonGPU/IR/Dialect.cpp b/lib/Dialect/TritonGPU/IR/Dialect.cpp
-index 3da2732e8..54c49d499 100644
+index 3da2732e8..3d771840f 100644
 --- a/lib/Dialect/TritonGPU/IR/Dialect.cpp
 +++ b/lib/Dialect/TritonGPU/IR/Dialect.cpp
-@@ -2548,9 +2548,13 @@ SwizzledSharedEncodingAttr AMDWmmaEncodingAttr::composeSharedLayoutForOperand(
+@@ -2548,9 +2548,16 @@ SwizzledSharedEncodingAttr AMDWmmaEncodingAttr::composeSharedLayoutForOperand(
    bool isKContig = sharedOrder[0] == kDimIndex;
  
    if (!isKContig) {
 -    // Do not swizzle. In this case accesses will go in different banks even
 -    // without swizzling.
 -    return SwizzledSharedEncodingAttr::get(getContext(), 1, 1, 1, sharedOrder,
-+    // Bank-conflict swizzling is not needed when the source layout is not
-+    // K-contiguous. That source order is separate from the representation order
-+    // expected by the WMMA operand, though: local_store can write an
-+    // N-contiguous source tile into a shared layout that local_load will
-+    // present to the dot as the operand's K-contiguous fragment order.
++    // Do not apply bank-conflict swizzling. When K is not the fastest source
++    // dimension, accesses already distribute across LDS banks without
++    // swizzling.
++    //
++    // The no-swizzle shared layout still must use the WMMA operand's
++    // representation order, not the source memory order. For operand B, the
++    // source may be N-contiguous, but the dot consumes a K-contiguous fragment;
++    // local_store performs that layout conversion when staging through LDS.
 +    auto dotOrder = getRepOrderForOperand(operandIdx);
 +    return SwizzledSharedEncodingAttr::get(getContext(), 1, 1, 1, dotOrder,
                                             cgaLayout);
