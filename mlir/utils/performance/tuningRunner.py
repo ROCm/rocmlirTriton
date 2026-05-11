@@ -1122,6 +1122,7 @@ def format_error(context: str,
 # Core Tuning Logic
 # =============================================================================
 
+
 def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, options: Options,
                       gpu_id: int) -> float:
     """Verify a performance config by running with profiling.

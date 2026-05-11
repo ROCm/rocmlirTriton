@@ -181,7 +181,8 @@ protected:
   /// out the class hierarchy in this file.
   virtual LogicalResult specificCouldBePerformant(GemmParamsAttr params,
                                                   Type dataTypeA,
-                                                  Type dataTypeB) = 0;
+                                                  Type dataTypeB,
+                                                  StringRef arch) = 0;
 };
 
 //
@@ -207,7 +208,8 @@ public:
 
 protected:
   LogicalResult specificCouldBePerformant(GemmParamsAttr params, Type dataTypeA,
-                                          Type dataTypeB) override;
+                                          Type dataTypeB,
+                                          StringRef arch) override;
 };
 
 } // namespace rock
