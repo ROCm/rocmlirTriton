@@ -125,17 +125,6 @@ build/bin/rocmlir-gen --causal -num_heads_q 4 -num_heads_kv 2 -rand 1  -pv --arc
 # coverage on all hosts lives in the lit test under
 # mlir/test/rocmlir-driver/; this block is the GPU-validated companion
 # and is therefore gated on actually running on a gfx950.
-#
-# -relDiff_threshold matches PrAttentionF32.toml: the f32 attention
-# reduces over head_dim_qk * seq_len_k ~ 8e4 elements, so a single-
-# element maxRelDiff of a few times ULP * sqrt(K) is expected rounding
-# noise, not a real fault. Without the bump, the verifier prints
-# "[1 1 0]" on a numerically clean kernel and reviewers have to
-# second-guess whether it's actually a regression.
-#
-# Verification is by visual inspection of the verifier line, matching
-# the rest of the attention smoke tests above.
-
 if [[ "$ARCH" == *"gfx950"* ]]; then
   build/bin/rocmlir-gen -operation attention -t f32 --arch gfx950:sramecc+:xnack- --num_cu $NUM_CU --num_chiplets 8 -g 8 -seq_len_q 1 -seq_len_k 349 -num_heads_q 128 -num_heads_kv 2 -head_dim_qk 233 -head_dim_v 236 -with-attn-scale=True -with-attn-bias=True -return_lse=True -split_kv=8 --perf_config=attn:v1:64,32,16,2,1,1,32,1,2,2,2 --current_seq_len=255,148,29,264,122,189,61,184 -pv -relDiff_threshold 0.00005 | build/bin/rocmlir-driver --host-pipeline=highlevel | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so --entry-point-result=void
 else
