@@ -224,9 +224,8 @@ LogicalResult mlir::rock::testFusionLegalityBwdDataConv(ModuleOp mod) {
 // perfConfig. Mirrors how `getGemm1Params` derives `gemm1NPerBlock` and the
 // operand-staging strategy in `GridwiseAttnToBlockwise.cpp`. Returns the
 // upper-bound peak LDS in bytes for the fused kernel.
-static int64_t
-estimateGemmGemmPeakLDSBytes(RockGemmGemmWrapperInterface op,
-                             GemmGemmParamsAttr params) {
+static int64_t estimateGemmGemmPeakLDSBytes(RockGemmGemmWrapperInterface op,
+                                            GemmGemmParamsAttr params) {
   int64_t mPerBlockG0 = params.getMPerBlockG0();
   int64_t nPerBlockG0 = params.getNPerBlockG0();
   int64_t kPerBlock = params.getKPerBlock();
