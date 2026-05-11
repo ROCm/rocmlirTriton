@@ -8,8 +8,6 @@ func.func @gridwise_gemm_m_too_big(%a: tensor<1x2147483648x1xf32>,
                         %c: tensor<1x2147483648x1xf32>) attributes {rock.arch = "gfx906"} {
   // expected-error@+1 {{'rock.gridwise_gemm' op M dimmension 2147483648 cannot be greater than int32_max 2147483647}}
   %result = rock.gridwise_gemm(%a, %b) {
-    gridSize = 1 : i32,
-    rock.numCU = 64 : i32,
     params = #gemm_params2}
   : tensor<1x2147483648x1xf32>, tensor<1x1x1xf32> -> tensor<1x2147483648x1xf32>
   func.return
@@ -23,8 +21,6 @@ func.func @gridwise_gemm_k_too_big(%a: tensor<1x1x2147483648xf32>,
                         %c: tensor<1x1x1xf32>) attributes {rock.arch = "gfx906"} {
   // expected-error@+1 {{'rock.gridwise_gemm' op K dimmension 2147483648 cannot be greater than int32_max 2147483647}}
   %result = rock.gridwise_gemm(%a, %b) {
-    gridSize = 1 : i32,
-    rock.numCU = 64 : i32,
     params = #gemm_params3}
   : tensor<1x1x2147483648xf32>, tensor<1x2147483648x1xf32> -> tensor<1x1x1xf32>
   func.return
@@ -37,8 +33,6 @@ func.func @gridwise_gemm_n_too_big(%a: tensor<1x1x1xf32>,
                         %c: tensor<1x1x2147483648xf32>) attributes {rock.arch = "gfx906"} {
   // expected-error@+1 {{'rock.gridwise_gemm' op N dimmension 2147483648 cannot be greater than int32_max 2147483647}}
   %result = rock.gridwise_gemm(%a, %b) {
-    gridSize = 1 : i32,
-    rock.numCU = 64 : i32,
     params = #gemm_params4}
   : tensor<1x1x1xf32>, tensor<1x1x2147483648xf32> -> tensor<1x1x2147483648xf32>
   func.return

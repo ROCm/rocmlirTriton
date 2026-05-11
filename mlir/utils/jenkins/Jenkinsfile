@@ -533,11 +533,16 @@ void check_randomE2ETests(String codepath) {
              """)
 }
 
-void parameterSweep(String CONFIG, String codepath) {
+// Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
+// one of its operation kinds. parameterSweeps.py exposes ``conv`` and ``gemm``;
+// attentionSweeps.py exposes ``attention`` and ``gemm_gemm``. Both share the
+// same ``-j``/``--samples``/``--log-failures`` interface and ship in
+// <build>/bin/ via the ``ci-performance-scripts`` target.
+void runSweep(String script, String kind, int samples, String codepath) {
     int limit_lit_workers = setLitWorkerCount()
     timeout(time: 300, activity: true, unit: 'MINUTES') {
         dir('build') {
-            sh """python3 ./bin/parameterSweeps.py -j ${limit_lit_workers} ${CONFIG} --log-failures"""
+            sh """python3 ./bin/${script} -j ${limit_lit_workers} --samples ${samples} ${kind} --log-failures"""
         }
     }
 }
@@ -1042,8 +1047,10 @@ pipeline {
                                                     }
 
                                                     stage("Parameter Sweep") {
-                                                        parameterSweep("conv_structure", "${CODEPATH}")
-                                                        parameterSweep("perf_config", "${CODEPATH}")
+                                                        runSweep("parameterSweeps.py", "conv",       300, "${CODEPATH}")
+                                                        runSweep("parameterSweeps.py", "gemm",       300, "${CODEPATH}")
+                                                        runSweep("attentionSweeps.py", "attention",  300, "${CODEPATH}")
+                                                        runSweep("attentionSweeps.py", "gemm_gemm",  300, "${CODEPATH}")
                                                     }
                                                 }
                                             }

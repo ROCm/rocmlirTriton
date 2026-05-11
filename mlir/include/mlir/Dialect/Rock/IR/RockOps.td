@@ -157,7 +157,7 @@ def Rock_GemmOp
     scaling convention used by hardware instructions such as
     V_MFMA_SCALE_F32_*_F8F6F4 on AMD gfx950.
 
-    The parameters `derivedBlockSize`, `gridSize`, and `params` are optional as
+    The parameters `gridSize` and `params` are optional as
     they can be inferred by a tuning process or a heuristic, but they must be
     set before the `gemm` is lowered into the `gridwise_gemm` stage of the code
     generation pipeline.

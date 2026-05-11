@@ -361,6 +361,19 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // adaptor that runs AFTER SerializeHostFuncs.
   pm.addPass(rock::createRockSerializeHostFuncsPass());
 
+  // Emulate arith ops on narrow floats (f4/f8) by promoting to f32: LLVM has
+  // no native arithmetic for these types. The pass wraps affected arith ops
+  // with extf/truncf; ext/trunc/bitcast/select/constant stay legal so tt.dot
+  // still sees the original narrow-float tensors. Must run BEFORE arith-expand
+  // so the f4 extf/truncf it introduces are expanded to bitwise integer ops.
+  {
+    arith::ArithEmulateUnsupportedFloatsOptions emulateOpts;
+    emulateOpts.sourceTypeStrs = {"f4E2M1FN",   "f8E4M3FN", "f8E4M3FNUZ",
+                                  "f8E5M2FNUZ", "f8E5M2",   "f8E8M0FNU"};
+    emulateOpts.targetTypeStr = "f32";
+    pm.addPass(arith::createArithEmulateUnsupportedFloats(emulateOpts));
+  }
+
   // Expand f8E8M0FNU and f4E2M1FN truncf/extf to bitwise integer ops.
   // Must run AFTER SerializeHostFuncs (arith-expand would corrupt linalg body
   // regions in host code) and BEFORE RockToTTIR, because LLVM lowering cannot

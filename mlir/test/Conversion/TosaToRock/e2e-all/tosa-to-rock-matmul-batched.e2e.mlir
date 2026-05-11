@@ -9,7 +9,7 @@
 func.func @test_fusion(%a: tensor<10x128x64xf32>, %b: tensor<10x64x256xf32>) -> tensor<10x128x256xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %0 = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {} : (tensor<10x128x64xf32>, tensor<10x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<10x128x256xf32>
+  %0 = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = f32} : (tensor<10x128x64xf32>, tensor<10x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<10x128x256xf32>
 
   return %0 : tensor<10x128x256xf32>
 }

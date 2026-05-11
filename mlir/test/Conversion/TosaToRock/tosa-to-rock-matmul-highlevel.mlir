@@ -15,7 +15,7 @@ module {
     // CHECK: rock.gemm %[[TRANSFORM1]] * tr %[[TRANSFORM0]]
     %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
     %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-    %3 = "tosa.matmul"(%1, %2, %a_zp, %b_zp) : (tensor<12x384x64xf32>, tensor<12x64x384xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<12x384x384xf32>
+    %3 = "tosa.matmul"(%1, %2, %a_zp, %b_zp) {acc_type = f32} : (tensor<12x384x64xf32>, tensor<12x64x384xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<12x384x384xf32>
     %const_shape3 = "tosa.const_shape"() { values = dense<[1, 12, 384, 384]> : tensor<4xindex> } : () -> !tosa.shape<4>
     %4 = "tosa.reshape"(%3, %const_shape3) : (tensor<12x384x384xf32>, !tosa.shape<4>) -> tensor<1x12x384x384xf32>
     %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
@@ -43,7 +43,7 @@ module {
     %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
     %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
     // CHECK:  rock.gemm tr %[[TRANSFORM_ARG0_3]] * %[[TRANSFORM_ARG1_1]]
-    %3 = "tosa.matmul"(%2, %0, %a_zp, %b_zp) : (tensor<2x4096x320xf32>, tensor<2x320x320xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x4096x320xf32>
+    %3 = "tosa.matmul"(%2, %0, %a_zp, %b_zp) {acc_type = f32} : (tensor<2x4096x320xf32>, tensor<2x320x320xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x4096x320xf32>
     return %3 : tensor<2x4096x320xf32>
   }
 }

@@ -44,6 +44,17 @@
 using namespace llvm;
 using namespace mlir;
 
+// Exit codes: 0 = success, EXIT_FAILURE (from <cstdlib>) = real failure,
+// EXIT_NOT_APPLICABLE = rock.not_applicable marker set (config refused, not a
+// bug). parameterSweeps.py keys on this contract: it treats 0 as PASS, 2 as
+// NOT_APPLICABLE, and anything else as FAIL — so EXIT_FAILURE just needs to
+// be non-zero and distinct from EXIT_NOT_APPLICABLE.
+#define EXIT_NOT_APPLICABLE 2
+static_assert(EXIT_FAILURE != 0 && EXIT_FAILURE != EXIT_NOT_APPLICABLE,
+              "rocmlir-driver exit-code contract: EXIT_FAILURE must be "
+              "non-zero and distinct from EXIT_NOT_APPLICABLE "
+              "(parameterSweeps.py keys on this)");
+
 static cl::opt<std::string> inputFilename(llvm::cl::Positional,
                                           llvm::cl::desc("<input file>"),
                                           llvm::cl::init("-"));
@@ -446,7 +457,7 @@ int main(int argc, char **argv) {
   auto file = openInputFile(inputFilename, &errorMessage);
   if (!file) {
     llvm::errs() << errorMessage << "\n";
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
   // Parse the input file.
@@ -454,21 +465,32 @@ int main(int argc, char **argv) {
   moduleRef = parseSourceFile<mlir::ModuleOp>(sourceMgr, &context);
   if (!moduleRef) {
     llvm::errs() << "Parse host harness " << inputFilename << " failed.\n";
-    exit(1);
+    exit(EXIT_FAILURE);
   }
   module = moduleRef.get();
 
-  // Run MLIR passes with passed in tuning parameters
+  // Run MLIR passes with passed in tuning parameters. If a rock pass
+  // determined the (kernel x perf-config x hw) combination is structurally
+  // inapplicable it will have signalled pass failure AND set the
+  // `rock.not_applicable` marker on the module (see RockAttrDefs.td and
+  // ResolveKernelLaunchParamsPass for the canonical example). Distinguish
+  // that from a real lowering bug via a dedicated exit code so callers
+  // (parameterSweeps.py, tuning frontends, ...) can classify the failure
+  // without having to scrape stderr.
   if (failed(runMLIRPasses(module, passPipeline))) {
+    if (module->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
+      llvm::errs() << "Lowering not applicable.\n";
+      exit(EXIT_NOT_APPLICABLE);
+    }
     llvm::errs() << "Lowering failed.\n";
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
   // Set up the output file.
   auto output = openOutputFile(outputFilename, &errorMessage);
   if (!output) {
     llvm::errs() << errorMessage << "\n";
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
   module.print(output->os());

@@ -604,10 +604,11 @@ func.func @test_f4_merge_passthrough_chain(
 // -----
 
 // Test: Fusion op (arith.addf) on f4 data between blockwise_load and
-// blockwise_gemm. The pass should unpack each i8 into two f4 nibbles, promote
-// the f4 nibbles to f32, run the fusion on f32, truncate back to f4, then
-// repack into i8. The promotion through f32 is required because LLVM has no
-// native f4 arithmetic; arith-expand will lower the truncf/extf later.
+// blockwise_gemm. The pass should unpack each i8 into two f4 nibbles, run the
+// (cloned) fusion on f4, then repack into i8. LLVM has no native f4
+// arithmetic, but the later arith-emulate-unsupported-floats pass wraps the
+// cloned arith.addf with extf/truncf via f32 (and arith-expand then lowers
+// those casts to integer ops).
 
 // CHECK-LABEL: func.func @test_f4_fusion
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<2048xi8>, %[[ARG1:.*]]: tensor<2048xi8>,
@@ -619,18 +620,13 @@ func.func @test_f4_merge_passthrough_chain(
 // CHECK: %[[HIGH_I8:.*]] = arith.shrui %{{.*}}, %{{.*}} : tensor<64x32xi8>
 // CHECK: %[[HIGH_I4:.*]] = arith.trunci %[[HIGH_I8]] : tensor<64x32xi8> to tensor<64x32xi4>
 // CHECK: %[[HIGH_F4:.*]] = arith.bitcast %[[HIGH_I4]] : tensor<64x32xi4> to tensor<64x32xf4E2M1FN>
-// Promote f4 operands to f32 for the cloned op
-// CHECK: arith.extf %{{.*}} : tensor<64x32xf4E2M1FN> to tensor<64x32xf32>
-// CHECK: arith.extf %{{.*}} : tensor<64x32xf4E2M1FN> to tensor<64x32xf32>
-// Fusion on each promoted nibble (operates on f32)
-// CHECK: %[[FUSED_LOW:.*]] = arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf32>
-// CHECK: %[[FUSED_HIGH:.*]] = arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf32>
-// Truncate back to f4
-// CHECK: %[[FUSED_LOW_F4:.*]] = arith.truncf %[[FUSED_LOW]] : tensor<64x32xf32> to tensor<64x32xf4E2M1FN>
-// CHECK: %[[FUSED_HIGH_F4:.*]] = arith.truncf %[[FUSED_HIGH]] : tensor<64x32xf32> to tensor<64x32xf4E2M1FN>
+// Cloned fusion ops stay on f4 (arith-emulate-unsupported-floats wraps them
+// with extf/truncf later in the pipeline).
+// CHECK: %[[FUSED_LOW:.*]] = arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf4E2M1FN>
+// CHECK: %[[FUSED_HIGH:.*]] = arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf4E2M1FN>
 // Repack: bitcast to i4, extui to i8, shift high, OR
-// CHECK: %[[RES_LOW_I4:.*]] = arith.bitcast %[[FUSED_LOW_F4]] : tensor<64x32xf4E2M1FN> to tensor<64x32xi4>
-// CHECK: %[[RES_HIGH_I4:.*]] = arith.bitcast %[[FUSED_HIGH_F4]] : tensor<64x32xf4E2M1FN> to tensor<64x32xi4>
+// CHECK: %[[RES_LOW_I4:.*]] = arith.bitcast %[[FUSED_LOW]] : tensor<64x32xf4E2M1FN> to tensor<64x32xi4>
+// CHECK: %[[RES_HIGH_I4:.*]] = arith.bitcast %[[FUSED_HIGH]] : tensor<64x32xf4E2M1FN> to tensor<64x32xi4>
 // CHECK: %[[RES_LOW_I8:.*]] = arith.extui %[[RES_LOW_I4]] : tensor<64x32xi4> to tensor<64x32xi8>
 // CHECK: %[[RES_HIGH_I8:.*]] = arith.extui %[[RES_HIGH_I4]] : tensor<64x32xi4> to tensor<64x32xi8>
 // CHECK: %[[SHIFTED:.*]] = arith.shli %[[RES_HIGH_I8]], %{{.*}} : tensor<64x32xi8>
@@ -703,12 +699,11 @@ func.func @test_f4_fusion(
 // CHECK-LABEL: func.func @test_f4_fusion_with_f8_scale_convert
 // CHECK-SAME: (%{{.*}}: tensor<2048xi8>, %{{.*}}: tensor<2048xi8>,
 // CHECK-SAME:  %{{.*}}: tensor<64x1xf32>, %{{.*}}: tensor<64x1xi8>)
-// f4 addf fusion: unpacked into low/high nibbles, promoted to f32, fused on
-// f32, truncated back to f4, then repacked.
-// CHECK: arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf32>
-// CHECK: arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf32>
-// CHECK: arith.truncf %{{.*}} : tensor<64x32xf32> to tensor<64x32xf4E2M1FN>
-// CHECK: arith.truncf %{{.*}} : tensor<64x32xf32> to tensor<64x32xf4E2M1FN>
+// f4 addf fusion: unpacked into low/high nibbles, cloned fusion ops stay on
+// f4 (arith-emulate-unsupported-floats wraps them with extf/truncf later),
+// then repacked.
+// CHECK: arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf4E2M1FN>
+// CHECK: arith.addf %{{.*}}, %{{.*}} : tensor<64x32xf4E2M1FN>
 // Scale A: truncf f32 -> f8, then bitcast f8 -> i8
 // CHECK: arith.truncf %{{.*}} : tensor<64x1xf32> to tensor<64x1xf8E8M0FNU>
 // CHECK: arith.bitcast %{{.*}} : tensor<64x1xf8E8M0FNU> to tensor<64x1xi8>

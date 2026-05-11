@@ -1,5 +1,6 @@
 // UNSUPPORTED: true
-// TODO(rocmlirTriton): Triton does not generate prefetch for gfx1250. Looks like we need to ask for it at the kernel level?
+// TODO(gfx1250): Triton does not generate prefetch for gfx1250. Looks like we need to ask for it at the kernel level?
+// Ticket: https://amd-hub.atlassian.net/browse/AIROCMLIR-723
 
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX950

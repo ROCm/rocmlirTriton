@@ -1,6 +1,15 @@
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -return_lse -split_kv 8 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 
+// Use a perf_config with mPerBlockG0 != nPerBlockG0 so the split-KV finalization
+// must use the key-sequence block size rather than the query block size.
+// RUN: rocmlir-gen --arch gfx942 --operation attention -t f16 -g 5 -seq_len_q 1 -seq_len_k 331 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 69 -head_dim_v 208 -with-attn-scale=False -with-attn-bias=False -transQ=False -transK=True -transV=True -transO=False -causal=False -return_lse=True -split_kv=8 --perf_config=attn:v1:128,64,32,2,1,16,32,1,1,4,4 --current_seq_len=255,18,268,69,317 -pv | rocmlir-opt | FileCheck %s --check-prefix=VALID-SPLIT-KV
+
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
+
+// VALID-SPLIT-KV-LABEL: func.func @rock_attention_gpu
+// With current_seq_len=255,18,268,69,317 and nPerBlockG0=64, the valid split
+// mask is [4, 1, 5, 2, 5]. Using mPerBlockG0=128 would produce [2, 1, 3, 1, 3].
+// VALID-SPLIT-KV: "tosa.const"() <{values = dense<{{\[+}}4{{\]+}}, {{\[+}}1{{\]+}}, {{\[+}}5{{\]+}}, {{\[+}}2{{\]+}}, {{\[+}}5{{\]+}}> : tensor<5x1x1x1xi32>}>
 
 // CHECK-LABEL: func.func @rock_attention
 // CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<128xf32>,
