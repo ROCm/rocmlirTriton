@@ -38,6 +38,22 @@ namespace rock {
 using namespace mlir;
 using namespace mlir::rock;
 
+static LogicalResult validateNumCTAs(Operation *op, int64_t numCTAs) {
+  StringRef arch = rock::getArchValue(op);
+  int64_t maxNumCTAs = rock::getMaxNumCTAs(arch);
+  if (numCTAs > maxNumCTAs) {
+    op->emitError("numCTAs=")
+        << numCTAs << " exceeds max (" << maxNumCTAs << ") for " << arch;
+    return failure();
+  }
+  if (numCTAs != 1 && !rock::supportsMultiCTALaunch(arch)) {
+    op->emitError("numCTAs=")
+        << numCTAs << " but multi-CTA launch is not supported on " << arch;
+    return failure();
+  }
+  return success();
+}
+
 namespace {
 struct AffixTuningParameters
     : public rock::impl::RockAffixTuningParametersPassBase<
@@ -176,6 +192,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   if (auto bwdOp = dyn_cast<ConvBwdWeightOp>(op.getOperation()))
     bwdOp->setAttr(bwdOp.getKBlocksAttrName(), b.getIndexAttr(gemmKBlocks));
 
+  if (failed(validateNumCTAs(op, gemmParams.getNumCTAs())))
+    return signalPassFailure();
+
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
   int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
   assert(blockSize > 0);
@@ -221,6 +240,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   }
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
+
+  if (failed(validateNumCTAs(op, attnPerfConfig.getNumCTAs())))
+    return signalPassFailure();
 
   auto accelParams =
       PopulateParamsGemmGemm::getGemmParams(builder, op, attnPerfConfig);

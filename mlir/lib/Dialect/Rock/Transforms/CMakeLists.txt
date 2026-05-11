@@ -80,6 +80,13 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   TritonAnalysis
 )
 
+# HIP needed transitively via tritonUtils.h (included by RockToTTIR.cpp)
+if (NOT WIN32)
+  find_package(hip REQUIRED PATHS ${ROCM_PATH})
+  target_link_libraries(MLIRRockTransforms PUBLIC hip::host hip::amdhip64)
+  target_link_libraries(obj.MLIRRockTransforms PUBLIC hip::host hip::amdhip64)
+endif()
+
 # Add Triton include directories for compilation
 target_include_directories(MLIRRockTransforms PRIVATE
   ${TRITON_PROJECT_DIR}/include

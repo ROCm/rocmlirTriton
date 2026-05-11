@@ -29,6 +29,8 @@
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -665,10 +667,17 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     numWarps = totalNumWarps.getInt();
   }
 
+  int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(module);
+  if (numCTAs != options.numCTAs) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "numCTAs mismatch: TritonGPUDialect::getNumCTAs=" << numCTAs
+               << " vs options.numCTAs=" << options.numCTAs << "\n");
+  }
+
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
-  setKernelAttributes(*llvmModule, arch, features, numWarps,
-                      options.wavesPerEU, options.numCTAs, options.allowFlushDenorm,
-                      enableAsan, options.scheduleHint);
+  setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
+                      numCTAs, options.allowFlushDenorm, enableAsan,
+                      options.scheduleHint);
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
   // compiler.py lines 412-423
