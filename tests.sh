@@ -108,6 +108,23 @@ build/bin/rocmlir-gen -rand 1 --causal -pv --arch $ARCH --operation attention -t
 
 build/bin/rocmlir-gen --causal -num_heads_q 4 -num_heads_kv 2 -rand 1  -pv --arch $ARCH --operation attention -t f16 -seq_len_q 32 -seq_len_k 32 -head_dim_qk 32 -head_dim_v 32 -g 1 | build/bin/rocmlir-driver --host-pipeline=highlevel | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
 
+# f32 split-KV attention with bias on gfx950 (AGPR spill-elimination regression)
+#
+# Without llvm-patches/patch4.patch (cherry-picked llvm/llvm-project#167347),
+# the gfx950 AGPR spill-elimination helper in AMDGPURewriteAGPRCopyMFMA
+# rewrites spill reloads that are not jointly dominated by spill stores, so
+# the produced MachineFunction violates SSA and the MachineVerifier aborts
+# rocmlir-driver -c with "Virtual register defs don't dominate all uses".
+# Hardcoded arch because the buggy code path is gfx95x-specific (the bisect
+# narrowed it to a 64x32 attention tile + attn-bias + split_kv > 1 pattern
+# that the gfx950 AGPR allocator handles via the affected helper).
+
+if [[ "$ARCH" == *"gfx950"* ]]; then
+  build/bin/rocmlir-gen -operation attention -t f32 --arch gfx950:sramecc+:xnack- --num_cu $NUM_CU --num_chiplets 8 -g 8 -seq_len_q 1 -seq_len_k 349 -num_heads_q 128 -num_heads_kv 2 -head_dim_qk 233 -head_dim_v 236 -with-attn-scale=True -with-attn-bias=True -return_lse=True -split_kv=8 --perf_config=attn:v1:64,32,16,2,1,1,32,1,2,2,2 --current_seq_len=255,148,29,264,122,189,61,184 -pv | build/bin/rocmlir-driver --host-pipeline=highlevel | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so --entry-point-result=void
+else
+  echo "Skipping gfx950 f32 attention AGPR spill-elimination regression (requires gfx950, detected $ARCH)"
+fi
+
 # fusion test
 
 sed -e "s/gfx1100/$ARCH/g" -e "s/rock.num_cu = 96/rock.num_cu = $NUM_CU/g" fusion_with_host.mlir | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
