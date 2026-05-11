@@ -1983,9 +1983,9 @@ static Value ensureFloatIsF32(OpBuilder &b, Location loc, Value tensor,
     assert(floatElemType.getWidth() <= 32 &&
            "ensureFloatIsF32 does not support types larger than f32");
   } else if (auto intElemType = dyn_cast<IntegerType>(elemType)) {
-    // Allow i64 for i8 GEMM/conv verification which uses i64 accumulation
-    assert(intElemType.getWidth() <= 64 &&
-           "ensureFloatIsF32 does not support integer types larger than i64");
+    // Allow up to i32 for i8 GEMM/conv verification.
+    assert(intElemType.getWidth() <= 32 &&
+           "ensureFloatIsF32 does not support integer types larger than i32");
   }
 
   // Create a new tensor with f32 elements and convert
@@ -2027,18 +2027,18 @@ static void convBodyBuilderF32(OpBuilder &b, Location loc,
   linalg::YieldOp::create(b, loc, add);
 }
 
-/// Helper function for linalg.generic convolution body (MAC operation) - i64
-/// Used for i8 inputs to detect overflow by accumulating in i64.
-static void convBodyBuilderI64(OpBuilder &b, Location loc,
+/// Helper function for linalg.generic convolution body (MAC operation) - i32.
+/// Used for i8 inputs to match the GPU's i32 accumulator semantics
+/// (e.g. the i8 MFMA instructions accumulate into i32).
+static void convBodyBuilderI32(OpBuilder &b, Location loc,
                                ValueRange blockArgs) {
   assert(blockArgs.size() == 3 && "convBodyBuilder expects 3 arguments");
   Value inputVal = blockArgs[0];   // i8
   Value filterVal = blockArgs[1];  // i8
-  Value outputVal = blockArgs[2];  // i64
-  // Extend i8 inputs to i64 for multiplication
-  Type i64Type = b.getIntegerType(64);
-  Value inputExt = arith::ExtSIOp::create(b, loc, i64Type, inputVal);
-  Value filterExt = arith::ExtSIOp::create(b, loc, i64Type, filterVal);
+  Value outputVal = blockArgs[2];  // i32
+  Type i32Type = b.getIntegerType(32);
+  Value inputExt = arith::ExtSIOp::create(b, loc, i32Type, inputVal);
+  Value filterExt = arith::ExtSIOp::create(b, loc, i32Type, filterVal);
   Value mul = arith::MulIOp::create(b, loc, inputExt, filterExt);
   Value add = arith::AddIOp::create(b, loc, outputVal, mul);
   linalg::YieldOp::create(b, loc, add);
@@ -2458,7 +2458,7 @@ createCPUConvWithMLIR(ModuleOp module,
   if (genConfig.inputDataTypeStr == "i8") {
     inputElemType = b.getI8Type();
     filterElemType = b.getI8Type();
-    outputElemType = b.getIntegerType(64);
+    outputElemType = b.getIntegerType(32);
     assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
   }
 
@@ -2526,9 +2526,9 @@ createCPUConvWithMLIR(ModuleOp module,
     break;
   }
 
-  // i8 convolutions use i64 accumulation to detect overflow, f32 otherwise
+  // i8 convolutions use i32 / f32 accumulation.
   bool isI8Conv = genConfig.inputDataTypeStr == "i8";
-  Type computeType = isI8Conv ? Type(b.getIntegerType(64)) : Type(b.getF32Type());
+  Type computeType = isI8Conv ? Type(b.getIntegerType(32)) : Type(b.getF32Type());
   size_t nSpatialDims = genConfig.strideDims.size();
 
   // Helper to expand flat tensor to logical shape
@@ -2633,9 +2633,9 @@ createCPUConvWithMLIR(ModuleOp module,
 
   // Emit the convolution using linalg.generic with layout-aware indexing
   // No transposes needed - the indexing maps use actual dimension positions!
-  // Use i64 body builder for i8 inputs, f32 otherwise.
+  // Use i32 body builder for i8 inputs, f32 otherwise.
   Value result;
-  ConvBodyBuilder bodyBuilder = isI8Conv ? convBodyBuilderI64 : convBodyBuilderF32;
+  ConvBodyBuilder bodyBuilder = isI8Conv ? convBodyBuilderI32 : convBodyBuilderF32;
   switch (genConfig.operation.value()) {
   case rock::ConvOpType::Fwd:
     result = emitConvGeneric(b, loc, resultType, input, filter,
@@ -2718,9 +2718,11 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
                          SmallVectorImpl<Type> &result, bool isCpuVerifier) {
   Type cElemType = elemTypes[2];
   OpBuilder b(elemTypes[0].getContext());
-  // Verify in int64_t to detect overflow
+  // i8 GEMM accumulates in i32 on the GPU (e.g. the i8 MFMA instructions
+  // accumulate into i32). Mirror that in the CPU verifier so the reference
+  // matches the GPU compute precision.
   if (elemTypes[0].isInteger(8) && isCpuVerifier)
-    cElemType = IntegerType::get(cElemType.getContext(), 64);
+    cElemType = IntegerType::get(cElemType.getContext(), 32);
 
   int64_t quantK = llvm::divideCeil(gemmK, quantBlockSize);
   SmallVector<int64_t> aDims = {groupSize, transposeA ? gemmK : gemmM,
@@ -5434,8 +5436,10 @@ static LogicalResult populateHostHarnessLogic(
       if (genParams.operation.has_value()) {
         if (idx < genParams.types.size())
           elemType = genParams.types[idx];
+        // The CPU verifier for i8 GEMM/conv accumulates in i32 to match the
+        // GPU's MFMA semantics; allocate the output buffer as i32 as well.
         if (isa<IntegerType>(elemType) && llvm::is_contained(outIndices, idx))
-          elemType = b.getIntegerType(64);
+          elemType = b.getIntegerType(32);
         paramMRType = MemRefType::get(paramShapedType.getShape(), elemType);
       }
     }
@@ -5483,7 +5487,7 @@ static LogicalResult populateHostHarnessLogic(
       if (genParams.operation.has_value() && isa<IntegerType>(elemType)) {
         valElemType = elemType;
         if (llvm::is_contained(outIndices, idx))
-          valElemType = b.getIntegerType(64);
+          valElemType = b.getIntegerType(32);
       } else if ((genValidation == "clone") || elemType.isInteger(8) ||
                  elemType.isInteger(32)) {
         valElemType = elemType;
