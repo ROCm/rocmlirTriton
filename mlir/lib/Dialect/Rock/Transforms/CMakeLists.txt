@@ -19,7 +19,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   SerializeHostFuncs.cpp
   FuncToTritonFunc.cpp
   ResolveKernelLaunchParams.cpp
-  RestoreHostCode.cpp
+  RockEmitGpuBinary.cpp
   SortDimensionsMemoryLayout.cpp
   InsertOutputStores.cpp
   InsertOutputFusionLoads.cpp

@@ -55,13 +55,13 @@
 // GPU-NEXT:cse))
 
 // `--kernel-pipeline=binary` is now strictly the GPU-only compile: it must
-// produce `gpu.binary` (via TritonToHsaco + RockRestoreHostCode) but must NOT
+// produce `gpu.binary` (via TritonToHsaco + RockEmitGpuBinary) but must NOT
 // chain in any host-side lowering.  Host lowering is opt-in via
 // `--host-pipeline=backend` (covered by runner-pipelines.mlir).
 // BINARY:Kernel pipeline:
 // BINARY-NEXT:builtin.module(resolve-kernel-launch-params,
 // BINARY-NEXT:triton-to-hsaco{allow-flush-denorm=false arch={{gfx90a|gfx942|gfx950}} enable-fp-fusion=true features= num-ctas=1 num-warps=4 opt-level=3 scalarize-packed-fops=false schedule-hint=none triple=amdgcn-amd-amdhsa waves-per-eu=0},
-// BINARY-NEXT:rock-restore-host-code{arch={{gfx90a|gfx942|gfx950}} features= opt-level=3 triple=amdgcn-amd-amdhsa})
+// BINARY-NEXT:rock-emit-gpu-binary{arch={{gfx90a|gfx942|gfx950}} features= opt-level=3 triple=amdgcn-amd-amdhsa})
 
 // HIGHLEVEL:Kernel Highlevel pipeline:
 // HIGHLEVEL-NEXT:builtin.module(rock-flatten-tosa-func-args,

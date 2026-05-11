@@ -407,7 +407,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
-                                     const rock::BackendOptions &options) {
+                                    StringRef dumpCpuSchedules) {
   // Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
   // OneShotBufferize / CpuLowerVerifier below — otherwise stray
   // arith.extf/truncf on fp8 element types crash bufferization with
@@ -420,7 +420,7 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   // types (f8E8M0FNU, f4E2M1FN) used by scaled GEMMs, because those conflict
   // with ConvertNarrowTypeSignatures / EmulateNarrowTypes passes below.
   cpu::CpuLowerVerifierPassOptions cpuOpts;
-  cpuOpts.dumpSchedulesPath = options.dumpCpuSchedules;
+  cpuOpts.dumpSchedulesPath = dumpCpuSchedules.str();
   cpuOpts.phase = cpu::CPU_PHASE_OPTIMIZE;
   pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
 
@@ -521,8 +521,8 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   // memory to static LDS allocation, and strip unused Triton workspace
   // arguments from the kernel signature.  Runs before TritonToHsaco so the
   // static LDS size is baked into the kernel descriptor, and before any
-  // downstream consumer of the kernel argument list (e.g. RestoreHostCode in
-  // the host lowering pipeline) sees the trimmed signature.
+  // downstream consumer of the kernel argument list (e.g. RockEmitGpuBinaryPass
+  // in the host lowering pipeline) sees the trimmed signature.
   pm.addPass(rock::createResolveKernelLaunchParamsPass());
 
   // Optionally generate the HSACO binary
@@ -545,15 +545,15 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
   }
 
-  // Restore host functions (main, wrapper) that were stored during
-  // RockFuncToTritonFuncPass. This converts func.call @kernel to
-  // gpu.launch_func.
-  rock::RockRestoreHostCodePassOptions restoreOpts;
-  restoreOpts.triple = options.triple;
-  restoreOpts.arch = options.chip;
-  restoreOpts.features = options.features;
-  restoreOpts.optLevel = options.optLevel;
-  pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
+  // Emit gpu.binary from HSACO, restore host functions (main, wrapper) if
+  // serialized during RockFuncToTritonFuncPass, and convert func.call @kernel
+  // to gpu.launch_func when applicable.
+  rock::RockEmitGpuBinaryPassOptions emitGpuBinaryOpts;
+  emitGpuBinaryOpts.triple = options.triple;
+  emitGpuBinaryOpts.arch = options.chip;
+  emitGpuBinaryOpts.features = options.features;
+  emitGpuBinaryOpts.optLevel = options.optLevel;
+  pm.addPass(rock::createRockEmitGpuBinaryPass(emitGpuBinaryOpts));
 }
 
 //===----------------------------------------------------------------------===//

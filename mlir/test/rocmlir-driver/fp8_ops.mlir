@@ -1,10 +1,10 @@
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t fp8 -p | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=MFMA
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t fp8 -p | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=MFMA
-// COM: This runs the kernel pipeline so that we still get a good test with the
-// COM: host pipeline off as in the static library build, using the fact that
-// COM: the fp8 expander isn't limited to GPU code.
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t fp8 -p -pv | rocmlir-driver -kernel-pipeline=full | FileCheck %s --check-prefix=HOST
-// RUN: rocmlir-gen --arch gfx950 --operation gemm -t fp8 -p -pv | rocmlir-driver -kernel-pipeline=full | FileCheck %s --check-prefix=HOST_GFX950
+// COM: Run the full pipeline (kernel + host) so that EmulateFp8ExtTrunc, which
+// COM: now lives in the host lowering pipeline, emits the fp8 conversion tables
+// COM: we want to check below.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t fp8 -p -pv | rocmlir-driver -kernel-pipeline=full -host-pipeline=backend | FileCheck %s --check-prefix=HOST
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t fp8 -p -pv | rocmlir-driver -kernel-pipeline=full -host-pipeline=backend | FileCheck %s --check-prefix=HOST_GFX950
 
 // MFMA: rocdl.mfma
 // MFMA-NOT: llvm.mlir.global private constant @__rocmlir_extf_tbl_f8E4M3FNUZ

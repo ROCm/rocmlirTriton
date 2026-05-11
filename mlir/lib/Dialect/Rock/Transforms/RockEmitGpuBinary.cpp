@@ -1,5 +1,4 @@
-//===- RestoreHostCode.cpp - Restore host functions after Triton compilation
-//-------------------------===//
+//===- RockEmitGpuBinary.cpp - Emit GPU binary after Triton compilation -------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -16,9 +15,9 @@
 // limitations under the License.
 // =============================================================================
 //
-// This pass restores host functions that were stored during
-// RockFuncToTritonFuncPass and converts them to use gpu.launch_func with a
-// gpu.binary containing the HSACO.
+// This pass builds gpu.binary from HSACO (and kernel metadata), optionally
+// restores host functions stored during RockFuncToTritonFuncPass, and converts
+// kernel func.call ops to gpu.launch_func when host code is present.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,19 +40,19 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKRESTOREHOSTCODEPASS
+#define GEN_PASS_DEF_ROCKEMITGPUBINARYPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-restore-host-code"
+#define DEBUG_TYPE "rock-emit-gpu-binary"
 
 using namespace mlir;
 using namespace mlir::rock;
 
 static FailureOr<std::pair<gpu::ObjectAttr, DenseMap<StringRef, size_t>>>
 createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
-                RockRestoreHostCodePassOptions &options,
+                RockEmitGpuBinaryPassOptions &options,
                 SmallVectorImpl<KernelInfo> &kernels) {
   // Get the HSACO binary from the triton.hsaco attribute
   auto hsacoAttr = moduleOp->getAttrOfType<StringAttr>("triton.hsaco");
@@ -143,9 +142,9 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
 
 namespace {
 
-struct RockRestoreHostCodePass
-    : public rock::impl::RockRestoreHostCodePassBase<RockRestoreHostCodePass> {
-  using RockRestoreHostCodePassBase::RockRestoreHostCodePassBase;
+struct RockEmitGpuBinaryPass
+    : public rock::impl::RockEmitGpuBinaryPassBase<RockEmitGpuBinaryPass> {
+  using RockEmitGpuBinaryPassBase::RockEmitGpuBinaryPassBase;
 
   void runOnOperation() override;
 
@@ -156,7 +155,7 @@ private:
   /// Create gpu.binary from HSACO and convert calls to gpu.launch_func
   LogicalResult
   createGpuBinaryAndLaunchFuncs(ModuleOp moduleOp,
-                                RockRestoreHostCodePassOptions &options,
+                                RockEmitGpuBinaryPassOptions &options,
                                 SmallVector<KernelInfo> &kernels);
 
   /// Remove kernel LLVM functions (they're now in the binary)
@@ -166,7 +165,7 @@ private:
 } // end anonymous namespace
 
 /// Parse and restore host functions from the serialized attribute
-bool RockRestoreHostCodePass::restoreHostFunctions(ModuleOp moduleOp) {
+bool RockEmitGpuBinaryPass::restoreHostFunctions(ModuleOp moduleOp) {
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
 
@@ -209,8 +208,8 @@ bool RockRestoreHostCodePass::restoreHostFunctions(ModuleOp moduleOp) {
   return true;
 }
 
-LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
-    ModuleOp moduleOp, RockRestoreHostCodePassOptions &options,
+LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
+    ModuleOp moduleOp, RockEmitGpuBinaryPassOptions &options,
     SmallVector<KernelInfo> &kernels) {
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
@@ -355,7 +354,7 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
   return success();
 }
 
-void RockRestoreHostCodePass::removeKernelFunctions(
+void RockEmitGpuBinaryPass::removeKernelFunctions(
     SmallVector<KernelInfo> &kernels) {
   // Remove the LLVM kernel functions since they're now in the binary
   for (KernelInfo &kernel : kernels) {
@@ -364,13 +363,13 @@ void RockRestoreHostCodePass::removeKernelFunctions(
   }
 }
 
-void RockRestoreHostCodePass::runOnOperation() {
+void RockEmitGpuBinaryPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
 
   // Build options from pass parameters
-  RockRestoreHostCodePassOptions options;
+  RockEmitGpuBinaryPassOptions options;
   options.triple = triple.getValue();
   options.arch = arch.getValue();
   options.features = features.getValue();

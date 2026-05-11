@@ -202,7 +202,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     return failure();
   }
   backendOpts.optLevel = optLevel;
-  backendOpts.dumpCpuSchedules = dumpCpuSchedules.getValue();
 
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
   OpBuilder builder(m.getContext());
@@ -370,16 +369,15 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   // Phase 4: Host backend lowering (func + memref + GPU ops -> LLVM).
   //
   // Runs AFTER kernel compilation so the host module already contains
-  // `gpu.launch_func` (created by RestoreHostCode in buildBackendPipeline);
+  // `gpu.launch_func` (created by RockEmitGpuBinaryPass in buildBackendPipeline);
   // gpu-to-llvm at the end of this pipeline then translates those into HIP
   // runtime calls.  Safe to run standalone too: with no kernel pipeline,
   // there is no `gpu.launch_func` and gpu-to-llvm is a no-op.
   if (hostPipelineSet.contains("backend")) {
-    rock::BackendOptions hostOpts;
-    hostOpts.dumpCpuSchedules = dumpCpuSchedules.getValue();
     if (failed(runWithDetach(module, "Host Backend", isKernel,
                              [&](PassManager &pm) {
-                               rock::buildHostLoweringPipeline(pm, hostOpts);
+                               rock::buildHostLoweringPipeline(
+                                   pm, dumpCpuSchedules.getValue());
                              })))
       return failure();
   }

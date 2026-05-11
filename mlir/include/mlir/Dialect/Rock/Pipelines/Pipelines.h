@@ -102,9 +102,6 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> suppressDiagnostic{
       *this, "suppress-diagnostic",
       desc("should we suppress diagnostic messages"), init(false)};
-  PassOptions::Option<std::string> dumpCpuSchedules{
-      *this, "dump-cpu-schedules",
-      desc("Path to dump CPU verifier IR and transform schedules"), init("")};
 };
 
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.
@@ -113,7 +110,7 @@ void buildBackendPipeline(OpPassManager &pm,
 
 /// Adds the CPU/host lowering pass sequence to the `OpPassManager`.
 void buildHostLoweringPipeline(OpPassManager &pm,
-                               const BackendOptions &options = {});
+                               StringRef dumpCpuSchedules = "");
 
 /// Registers all pipelines for the `rock` dialect.
 void registerPipelines();

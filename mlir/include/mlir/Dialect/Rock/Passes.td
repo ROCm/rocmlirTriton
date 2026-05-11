@@ -383,16 +383,18 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
   ];
 }
 
-def RockRestoreHostCodePass : Pass<"rock-restore-host-code", "::mlir::ModuleOp"> {
-  let summary = "Restore host functions after Triton kernel compilation";
+def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
+  let summary = "Emit GPU binary and wire kernel launches after Triton compilation";
   let description = [{
-    This pass restores host functions (like the GPU wrapper and main) that were
-    stored during RockFuncToTritonFuncPass. It:
-    1. Reads the serialized host functions from the module attribute
-    2. Parses them back into the module
-    3. Updates kernel calls to use the compiled kernel
+    After Triton lowers kernels to LLVM IR and `TritonToHsacoPass` produces
+    HSACO, this pass materializes a `gpu.binary` from that HSACO (with kernel
+    metadata), marks the module as a GPU container, and when host functions
+    were serialized by `RockFuncToTritonFuncPass`, restores them from
+    `rock.host_functions` and rewrites `func.call` to `gpu.launch_func`.
 
-    This allows the full test harness to work with the Triton-compiled kernel.
+    The `gpu.binary` is emitted whenever kernels and HSACO are present, even if
+    no host functions are restored, so downstream consumers can read kernel
+    metadata from the module.
   }];
   let dependentDialects = ["bufferization::BufferizationDialect",
                            "func::FuncDialect", "gpu::GPUDialect",
