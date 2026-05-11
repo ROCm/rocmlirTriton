@@ -728,8 +728,9 @@ static llvm::cl::opt<bool>
 static llvm::cl::opt<bool> hostF64Reference(
     "host-f64-reference",
     llvm::cl::desc("Run the host CPU attention reference internally in f64 "
-                   "for higher precision validation of f32 / bf16 attention "
-                   "at long seq_len_k. No effect on the i8 attention."),
+                   "for higher precision validation of non-quantized "
+                   "attention, especially at long seq_len_k. No effect on "
+                   "the i8 attention."),
     llvm::cl::init(false));
 
 // Input data spec
