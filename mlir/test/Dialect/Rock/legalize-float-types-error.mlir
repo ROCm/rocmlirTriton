@@ -1,13 +1,19 @@
 // Negative tests for rock-legalize-float-types pass.
 
 // RUN: rocmlir-opt -rock-legalize-float-types --split-input-file -verify-diagnostics %s
+// RUN: rocmlir-opt -rock-legalize-float-types --split-input-file -verify-diagnostics %s \
+// RUN:   --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=NA --implicit-check-not=rock.not_applicable
 
 // Test: Broadcast on the halving dimension should fail.
 // A has 64 real elements (M=64, K_raw=1); K is broadcast from 1 to 64.
 // K-packing fails (broadcast dim has maxVec=1, no contiguous data).
 // D-packing also fails: M=64 is the outer sub-dim in Unmerge{64,1}, so
 // the halving path cannot reach the innermost (stride-1) sub-dim (k_raw).
+// This failure path does NOT mark the module as not-applicable: it surfaces
+// before the vectorization-legality check.
 
+// NA-LABEL: 'func.func' operation: @test_f4_broadcast_on_k_fails
 func.func @test_f4_broadcast_on_k_fails(
     %arg0: tensor<64xf4E2M1FN>,
     %arg1: tensor<4096xf4E2M1FN>,
@@ -75,8 +81,12 @@ func.func @test_f4_broadcast_on_k_fails(
 
 // Test: AddDim on the K dimension, with M=1 so D-packing also fails.
 // K is created via AddDim (no backing data). M=1 can't be halved (odd).
-// Both K and D fail -> error.
+// Both K and D fail -> error. The pass marks the enclosing module with
+// `rock.not_applicable` so the tuning driver classifies this as a
+// non-applicable config rather than a real compilation bug.
 
+// NA-LABEL: 'func.func' operation: @test_f4_adddim_on_k_fails
+// NA: module attributes {rock.not_applicable
 func.func @test_f4_adddim_on_k_fails(
     %arg0: tensor<1xf4E2M1FN>,
     %arg1: tensor<4096xf4E2M1FN>,
@@ -144,6 +154,9 @@ func.func @test_f4_adddim_on_k_fails(
 // Layout: raw = m * K*G + k * G + g (G is stride-1 instead of K or N).
 // Both K and D (M for A) have non-unit stride -> max vectorization = 1 for both.
 // The pass cannot find a dimension to halve for f4 packing.
+
+// NA-LABEL: 'func.func' operation: @test_f4_batch_fastest
+// NA: module attributes {rock.not_applicable
 func.func @test_f4_batch_fastest(
     %a_raw: tensor<12288xf4E2M1FN>,
     %b_raw: tensor<12288xf4E2M1FN>,
@@ -200,6 +213,9 @@ func.func @test_f4_batch_fastest(
 // For i4 types (4-bit), gcd(33, 128/4) = gcd(33, 32) = 1, so
 // max vectorization = 1. M (stride K=33) is also not vectorizable.
 // The pass cannot halve any dimension for f4 packing.
+
+// NA-LABEL: 'func.func' operation: @test_f4_odd_k
+// NA: module attributes {rock.not_applicable
 func.func @test_f4_odd_k(
     %a_raw: tensor<2112xf4E2M1FN>,
     %b_raw: tensor<2112xf4E2M1FN>,
@@ -254,7 +270,9 @@ func.func @test_f4_odd_k(
 
 // TODO(rocmlirTriton): Support arith.truncf f32 -> f4E2M1FN feeding into blockwise_gemm.
 // Fusion-produced f4 (no f4 kernel argument) is not yet supported.
+// This failure path does NOT mark the module as not-applicable.
 
+// NA-LABEL: 'func.func' operation: @test_f4_truncf_input_to_gemm
 func.func @test_f4_truncf_input_to_gemm(
     %arg0: tensor<4096xf32>,
     %arg1: tensor<4096xf4E2M1FN>,
@@ -303,6 +321,74 @@ func.func @test_f4_truncf_input_to_gemm(
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
   // expected-error @+1 {{4-bit operand produced by fusion (e.g. arith.truncf) rather than from a 4-bit kernel argument is not yet supported}}
   %result = rock.blockwise_gemm(%a_tile scaled by %sa_tile, %b_tile scaled by %sb_tile, %cst)
+    {quantBlockSize = 64 : i64}
+    : tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
+      tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: A fusion op consuming packed f4 data but producing a non-f4 tensor
+// result (e.g. arith.cmpf returning i1, math.isfinite returning i1) cannot
+// be reconstructed back to the original unpacked shape from the two
+// halved-shape nibble clones, so the pass rejects it explicitly rather than
+// silently dropping half of the lanes.
+
+func.func @test_f4_fusion_non_f4_tensor_result_rejected(
+    %arg0: tensor<4096xf4E2M1FN>,
+    %arg1: tensor<4096xf4E2M1FN>,
+    %arg2: tensor<64x1xf8E8M0FNU>,
+    %arg3: tensor<64x1xf8E8M0FNU>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %c0 = arith.constant 0 : i32
+
+  %a_3d = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
+    by [<Unmerge{64, 64} ["m", "k"] at [1, 2] -> ["raw"] at [0]>,
+        <AddDim{1} ["g"] at [0] -> [] at []>]
+    bounds = [1, 64, 64] -> [4096]>
+    : tensor<4096xf4E2M1FN> to tensor<1x64x64xf4E2M1FN>
+  %a_6d = rock.transform %a_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 64 + d4, d0 * 64 + d5)>
+    by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
+        <Unmerge{1, 64} ["k_loop", "k_iter"] at [0, 5] -> ["k"] at [2]>,
+        <Unmerge{1, 64} ["m_block", "m_iter"] at [2, 4] -> ["m"] at [1]>,
+        <AddDim{1} ["n_block"] at [3] -> [] at []>]
+    bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
+    : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
+
+  // arith.cmpf on f4 inputs produces a tensor<64x64xi1> result, which has
+  // a non-f4 element type. The fusion fixup cannot interleave the two
+  // halved-shape clone results into the original unpacked i1 shape.
+  // expected-error @+1 {{f4 fusion op produces a non-f4 tensor result}}
+  %cmp = arith.cmpf ogt, %a_tile, %a_tile : tensor<64x64xf4E2M1FN>
+  %a_filtered = arith.select %cmp, %a_tile, %a_tile
+    : tensor<64x64xi1>, tensor<64x64xf4E2M1FN>
+
+  %b_3d = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
+    by [<Unmerge{64, 64} ["k", "n"] at [1, 2] -> ["raw"] at [0]>,
+        <AddDim{1} ["g"] at [0] -> [] at []>]
+    bounds = [1, 64, 64] -> [4096]>
+    : tensor<4096xf4E2M1FN> to tensor<1x64x64xf4E2M1FN>
+  %b_6d = rock.transform %b_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
+    by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>,
+        <Unmerge{1, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>,
+        <Unmerge{1, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>,
+        <AddDim{1} ["m_block"] at [2] -> [] at []>]
+    bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
+    : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
+  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0]
+    : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
+
+  %sa_tile = rock.blockwise_load %arg2[]
+    : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
+  %sb_tile = rock.blockwise_load %arg3[]
+    : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
+
+  %cst = arith.constant dense<0.0> : tensor<64x64xf32>
+  %result = rock.blockwise_gemm(%a_filtered scaled by %sa_tile, %b_tile scaled by %sb_tile, %cst)
     {quantBlockSize = 64 : i64}
     : tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
       tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,

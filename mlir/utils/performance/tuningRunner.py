@@ -67,16 +67,11 @@ def verify_kernel_with_perfconfig(perfconfig, config, paths: Paths, options: Opt
         ' -print-verify-results=summary ' + \
         config.generate_mlir_driver_commandline(options.rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS)
     rocmlir_driver_command = [paths.mlir_paths.rocmlir_driver_path, '-c']
-    mlir_cpu_runner_args = [
-        '-O2',
-        f'--shared-libs={paths.mlir_paths.libmlir_rocm_runtime_path},{paths.mlir_paths.libconv_validation_wrappers_path},{paths.mlir_paths.libmlir_runtime_utils_path}',
-        '--entry-point-result=void'
-    ]
     profiler_command = [perfRunner.ROCPROF] + perfRunner.get_metric_args_for_rocprof(
         options.arch) + [
             '--kernel-trace', '--stats', '-f', 'csv', '-o',
-            perfRunner.BENCHMARKING_RESULT_FILE_NAME, '--', paths.mlir_paths.cpu_runner_path
-        ] + mlir_cpu_runner_args
+            perfRunner.BENCHMARKING_RESULT_FILE_NAME, '--', paths.mlir_paths.rocm_run_path
+        ]
 
     if options.debug:
         print('Running commands:', file=sys.stderr)

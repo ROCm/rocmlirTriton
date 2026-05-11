@@ -1,6 +1,7 @@
 // UNSUPPORTED: true
 
-// TOOD(rocmlirTriton): Implement proper error checking for invalid perf_configs and adapt this test.
+// TODO(rocmlirTriton): Implement proper error checking for invalid perf_configs and adapt this test.
+// TODO(rocmlirTriton): https://amd-hub.atlassian.net/browse/AIROCMLIR-690
 // Negative test to deliberately pass incorrect tuning parameters.
 
 // RUN: rocmlir-gen --arch gfx90a -p -mfma=on -t f16 --perf_config "v3:128,128,2,64,64,2,1,1,2,1,1" | rocmlir-opt -rock-affix-params -verify-diagnostics

@@ -1,5 +1,5 @@
 llvm_canonicalize_cmake_booleans(
-    MLIR_ENABLE_ROCM_CONVERSIONS
+    LLVM_HAS_AMDGPU_TARGET
 )
 
 # Find LLD package for linking AMDGPU objects

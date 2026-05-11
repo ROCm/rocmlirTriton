@@ -27,7 +27,6 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -164,20 +163,24 @@ struct RockLoadPtrOpRewritePattern
     Value ptrTensorOfPtrs =
         rock::CastToPtrOp::create(rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
-    // Create tt.load operation
-    // LoadOp takes: ptr, mask (optional), other (optional), boundaryCheck,
-    // padding, cache, evict, isVolatile Create attributes with default values
-    auto boundaryCheckAttr = rewriter.getDenseI32ArrayAttr({});
+    // Create tt.load operation.
+    // LoadOp takes: ptr, mask (optional), other (optional), cache, evict,
+    // isVolatile.
     auto cacheAttr = triton::CacheModifierAttr::get(
         rewriter.getContext(), triton::CacheModifier::NONE);
     auto evictAttr = triton::EvictionPolicyAttr::get(
         rewriter.getContext(), triton::EvictionPolicy::NORMAL);
     auto isVolatileAttr = rewriter.getBoolAttr(false);
 
+    // Pass a zero splat as `other` so masked-off lanes contribute zero to
+    // consumers (e.g. tt.dot in GEMM).
+    auto zeroAttr = rewriter.getZeroAttr(resultTensorType);
+    Value otherTensor =
+        arith::ConstantOp::create(rewriter, loc, resultTensorType, zeroAttr);
+
     Value result = triton::LoadOp::create(
         rewriter, loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
-        /*other=*/Value(), boundaryCheckAttr,
-        /*padding=*/nullptr, cacheAttr, evictAttr, isVolatileAttr);
+        /*other=*/otherTensor, cacheAttr, evictAttr, isVolatileAttr);
 
     // Replace the op with the loaded tensor result
     rewriter.replaceOp(op, result);
@@ -324,10 +327,9 @@ struct RockStorePtrOpRewritePattern
           triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else {
       // Default: StoreMethod::Set - regular store
-      // Signature: (ptr, value, mask, boundaryCheck, cache, evict)
+      // Signature: (ptr, value, mask, cache, evict)
       triton::StoreOp::create(
           rewriter, loc, ptrTensorOfPtrs, valueToStore, maskTensor,
-          /*boundaryCheck=*/ArrayRef<int32_t>{},
           /*cache=*/triton::CacheModifier::NONE,
           /*evict=*/triton::EvictionPolicy::NORMAL);
     }

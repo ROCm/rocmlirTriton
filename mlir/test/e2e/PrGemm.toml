@@ -1,5 +1,3 @@
-# TODO(rocmlirTriton): Test also num_waves and num_stages.
-
 directory = "PrGemm"
 prefix = "rocmlir-gen"
 suffix = "--operation gemm --arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
@@ -25,11 +23,6 @@ prefix = "--transA="
 name = "data type"
 values = ["f32", "f16", "i8", "fp8_fp8"]
 prefix = "-t "
-
-[[axis]]
-name = "schedule_version"
-values = ["1", "2"]
-prefix = "--schedule_version  "
 
 ## Gemm variants
 [[suite]]

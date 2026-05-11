@@ -4,7 +4,7 @@
 // parameters made here should be reflected in that file
 
 // RUN: rocmlir-driver -mlir-print-local-scope -rock-affix-params  %s | FileCheck %s --check-prefix=CHECK
-// RUN: rocmlir-driver -mlir-print-local-scope -rock-affix-params -rock-conv-to-gemm -rock-gemm-to-gridwise %s | FileCheck %s --check-prefix=GRID
+// RUN: rocmlir-driver -mlir-print-local-scope -rock-affix-params -rock-lower-reduce -rock-regularize-output -rock-regularize-inter-gemm-fusion -rock-conv-to-gemm -rock-fusion-splitk-regularization -rock-gemm-to-gridwise %s | FileCheck %s --check-prefix=GRID
 
 // CHECK-LABEL: @rock_conv
 // GRID-LABEL: rock_conv
@@ -26,9 +26,9 @@ func.func @rock_conv(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x
   return %out : tensor<128x1x128x30x30xf32>
 }
 
-// CHECK-LABEL: @rock_conv_schedulev2
-// GRID-LABEL: rock_conv_schedulev2
-func.func @rock_conv_schedulev2(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x128x30x30xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+// CHECK-LABEL: @rock_conv_numstages2
+// GRID-LABEL: rock_conv_numstages2
+func.func @rock_conv_numstages2(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x128x30x30xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
   // CHECK: rock.conv
   // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.grid_size = 3600
@@ -331,9 +331,9 @@ func.func @rock_gemm_from_i8_conv(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115
   return %out : tensor<1x128x115200xi32>
 }
 
-// CHECK-LABEL: func.func @rock_gemm_from_i8_conv_schedule_v2
-// GRID-LABEL: rock_gemm_from_i8_conv_schedule_v2
-func.func @rock_gemm_from_i8_conv_schedule_v2(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115200xi8>, %c : tensor<1x128x115200xi32>) -> tensor<1x128x115200xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
+// CHECK-LABEL: func.func @rock_gemm_from_i8_conv_numstages2
+// GRID-LABEL: rock_gemm_from_i8_conv_numstages2
+func.func @rock_gemm_from_i8_conv_numstages2(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115200xi8>, %c : tensor<1x128x115200xi32>) -> tensor<1x128x115200xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
   // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 4, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.grid_size = 3600
@@ -642,107 +642,65 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
   return %out : tensor<64x1x1x14x14xf32>
 }
 
-// TODO(roctriton): We need to unbufferize attention
-// DISABLED-CHECK-LABEL: @rock_attn_schedulev2
-// DISABLED-GRID-LABEL: @rock_attn_schedulev2
-// func.func @rock_attn_schedulev2(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-//   // DISABLED-CHECK: rock.attention
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-GRID: rock.gridwise_attention
-//   // DISABLED-GRID: gridSize = 12
-//   %result = rock.attention{
-//    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
-//   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
-//   return %out : tensor<1x384x64xf16>
-// }
+// CHECK-LABEL: @rock_attn_perfconfig_numstages2
+func.func @rock_attn_perfconfig_numstages2(%arg0: tensor<32768xf16>, %arg1: tensor<32768xf16>, %arg2: tensor<32768xf16>, %arg3: tensor<32768xf16>) -> tensor<32768xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.kernel} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_q", "head_qk"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
+  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 1024 + d2)> by [<Unmerge{32, 1024} ["head_qk", "seq_k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 32, 1024] -> [32768]> : tensor<32768xf16> to tensor<1x32x1024xf16>
+  %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_k", "head_v"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
+  // CHECK: rock.attention
+  // CHECK: numStages = 2
+  %result = rock.attention{
+    qk = %0 * %1 : tensor<1x1024x32xf16>, tensor<1x32x1024xf16>
+    qk = elementwise {
+  ^bb0(%arg4: tensor<1x1024x1024xf16>):
+    rock.yield %arg4 : tensor<1x1024x1024xf16>
+  }
+    softmax(qk) * %2 : tensor<1x1024x32xf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,2,0,0", softmaxType = f32, splitKV = 1 : i32} -> tensor<1x1024x32xf16>
+  %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 32, d0 mod 32)> by [<Merge{1024, 32} ["raw"] at [0] -> ["seq_q", "head_v"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [32768] -> [1, 1024, 32]> : tensor<1x1024x32xf16> to tensor<32768xf16>
+  %4 = rock.store %3 to %arg3 by  set : tensor<32768xf16> -> tensor<32768xf16> to tensor<32768xf16>
+  return %4 : tensor<32768xf16>
+}
 
-// TODO(roctriton): We need to unbufferize attention
-// DISABLED-CHECK-LABEL: @rock_attn_schedulev3
-// DISABLED-GRID-LABEL: @rock_attn_schedulev3
-// func.func @rock_attn_schedulev3(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc+:xnack-"} {
-//   // DISABLED-CHECK: rock.attention
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 3, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 3, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-GRID: rock.gridwise_attention
-//   // DISABLED-GRID: gridSize = 12
-//   %result = rock.attention{
-//    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
-//   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
-//   return %out : tensor<1x384x64xf16>
-// }
+// CHECK-LABEL: @rock_attn_perfconfig_numstages3
+func.func @rock_attn_perfconfig_numstages3(%arg0: tensor<32768xf16>, %arg1: tensor<32768xf16>, %arg2: tensor<32768xf16>, %arg3: tensor<32768xf16>) -> tensor<32768xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_q", "head_qk"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
+  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 1024 + d2)> by [<Unmerge{32, 1024} ["head_qk", "seq_k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 32, 1024] -> [32768]> : tensor<32768xf16> to tensor<1x32x1024xf16>
+  %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_k", "head_v"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
+  // CHECK: rock.attention
+  // CHECK: numStages = 3
+  %result = rock.attention{
+    qk = %0 * %1 : tensor<1x1024x32xf16>, tensor<1x32x1024xf16>
+    qk = elementwise {
+  ^bb0(%arg4: tensor<1x1024x1024xf16>):
+    rock.yield %arg4 : tensor<1x1024x1024xf16>
+  }
+    softmax(qk) * %2 : tensor<1x1024x32xf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,3,0,0", softmaxType = f32, splitKV = 1 : i32} -> tensor<1x1024x32xf16>
+  %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 32, d0 mod 32)> by [<Merge{1024, 32} ["raw"] at [0] -> ["seq_q", "head_v"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [32768] -> [1, 1024, 32]> : tensor<1x1024x32xf16> to tensor<32768xf16>
+  %4 = rock.store %3 to %arg3 by  set : tensor<32768xf16> -> tensor<32768xf16> to tensor<32768xf16>
+  return %4 : tensor<32768xf16>
+}
 
-// TODO(roctriton): We need to unbufferize attention
-// DISABLED-CHECK-LABEL: @rock_attn_schedulev4
-// DISABLED-GRID-LABEL: @rock_attn_schedulev4
-// func.func @rock_attn_schedulev4(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc+:xnack-"} {
-//   // DISABLED-CHECK: rock.attention
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 4, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 4, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-GRID: rock.gridwise_attention
-//   // DISABLED-GRID: gridSize = 12
-//   %result = rock.attention{
-//    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
-//   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
-//   return %out : tensor<1x384x64xf16>
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// DISABLED-CHECK-LABEL: @rock_attn_perfconfig_schedulev2
-// DISABLED-GRID-LABEL: @rock_attn_perfconfig_schedulev2
-// func.func @rock_attn_perfconfig_schedulev2(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-//   // DISABLED-CHECK: rock.attention
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-GRID: rock.gridwise_attention
-//   // DISABLED-GRID: gridSize = 12
-//   %result = rock.attention{
-//    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
-//   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
-//   return %out : tensor<1x384x64xf16>
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// DISABLED-CHECK-LABEL: @rock_attn_perfconfig_schedulev3
-// DISABLED-GRID-LABEL: @rock_attn_perfconfig_schedulev3
-// func.func @rock_attn_perfconfig_schedulev3(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc+:xnack-"} {
-//   // DISABLED-CHECK: rock.attention
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-GRID: rock.gridwise_attention
-//   // DISABLED-GRID: gridSize = 12
-//   %result = rock.attention{
-//    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
-//   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
-//   return %out : tensor<1x384x64xf16>
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// DISABLED-CHECK-LABEL: @rock_attn_perfconfig_schedulev4
-// DISABLED-GRID-LABEL: @rock_attn_perfconfig_schedulev4
-// func.func @rock_attn_perfconfig_schedulev4(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc+:xnack-"} {
-//   // DISABLED-CHECK: rock.attention
-//   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-//   // DISABLED-GRID: rock.gridwise_attention
-//   // DISABLED-GRID: gridSize = 12
-//   %result = rock.attention{
-//    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
-//   %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
-//   return %out : tensor<1x384x64xf16>
-// }
+// CHECK-LABEL: @rock_attn_perfconfig_numstages4
+func.func @rock_attn_perfconfig_numstages4(%arg0: tensor<32768xf16>, %arg1: tensor<32768xf16>, %arg2: tensor<32768xf16>, %arg3: tensor<32768xf16>) -> tensor<32768xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_q", "head_qk"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
+  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 1024 + d2)> by [<Unmerge{32, 1024} ["head_qk", "seq_k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 32, 1024] -> [32768]> : tensor<32768xf16> to tensor<1x32x1024xf16>
+  %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 32 + d2)> by [<Unmerge{1024, 32} ["seq_k", "head_v"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 1024, 32] -> [32768]> : tensor<32768xf16> to tensor<1x1024x32xf16>
+  // CHECK: rock.attention
+  // CHECK: numStages = 4
+  %result = rock.attention{
+    qk = %0 * %1 : tensor<1x1024x32xf16>, tensor<1x32x1024xf16>
+    qk = elementwise {
+  ^bb0(%arg4: tensor<1x1024x1024xf16>):
+    rock.yield %arg4 : tensor<1x1024x1024xf16>
+  }
+    softmax(qk) * %2 : tensor<1x1024x32xf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:32,32,32,1,1,1,0,1,4,0,0", softmaxType = f32, splitKV = 1 : i32} -> tensor<1x1024x32xf16>
+  %3 = rock.transform %result by <affine_map<(d0) -> (0, d0 floordiv 32, d0 mod 32)> by [<Merge{1024, 32} ["raw"] at [0] -> ["seq_q", "head_v"] at [1, 2]>, <ConstDim{0, 1} [] at [] -> ["g"] at [0]>] bounds = [32768] -> [1, 1024, 32]> : tensor<1x1024x32xf16> to tensor<32768xf16>
+  %4 = rock.store %3 to %arg3 by  set : tensor<32768xf16> -> tensor<32768xf16> to tensor<32768xf16>
+  return %4 : tensor<32768xf16>
+}
 
 // TODO(roctriton): We need to unbufferize attention
 // DISABLED-CHECK-LABEL: @rock_attn_schedule_default
@@ -752,7 +710,6 @@ func.func @rock_conv_tuning(%arg0: tensor<1x1x1x3x3xf32>, %arg1: tensor<64x1x1x1
 //   // DISABLED-CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   // DISABLED-CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, numWaves = 1, kPerBlock = 32, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 //   // DISABLED-GRID: rock.gridwise_attention
-//   // DISABLED-GRID: gridSize = 12
 //   %result = rock.attention{
 //    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
 //    %arg3 = softmax(qk) * %arg2 : tensor<1x384x64xf16> -> tensor<1x384x64xf16>

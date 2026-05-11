@@ -777,3 +777,12 @@ arith::NarrowTypeEmulationConverter rock::create4BitTypeConverter() {
   });
   return typeConverter;
 }
+
+void mlir::rock::markAsNotApplicable(Operation *op) {
+  assert(op && "markAsNotApplicable: op must be non-null");
+  ModuleOp moduleOp =
+      isa<ModuleOp>(op) ? cast<ModuleOp>(op) : op->getParentOfType<ModuleOp>();
+  assert(moduleOp && "markAsNotApplicable: op must be inside a ModuleOp");
+  moduleOp->setAttr(rock::NotApplicableAttr::getMnemonic(),
+                    UnitAttr::get(op->getContext()));
+}

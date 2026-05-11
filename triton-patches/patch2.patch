@@ -1,34 +1,26 @@
-diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/MFMA.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/MFMA.cpp
-index c93c4e612..44b70f205 100644
---- a/third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/MFMA.cpp
-+++ b/third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/MFMA.cpp
-@@ -258,9 +258,18 @@ struct DotOpMFMAConversionHelper {
-     bool allowXF32 =
-         op.getInputPrecision() == InputPrecision::TF32 && mfmaVersion == 3;
-     StringRef intrinsicName;
-+    // When mfmaLayout is transposed, operands will be swapped later (op1, op2
-+    // swap). For asymmetric types (e.g., bf8_fp8), we need to select the
-+    // intrinsic with swapped types so the hardware interprets the data
-+    // correctly after the swap.
-+    Type intrinsicElemTyA = elemTyA;
-+    Type intrinsicElemTyB = elemTyB;
-+    if (mfmaLayout.getIsTransposed() && elemTyA != elemTyB) {
-+      std::swap(intrinsicElemTyA, intrinsicElemTyB);
-+    }
-     FailureOr<MfmaIntrinsic> maybeMfmaIntrinsic = MfmaIntrinsic::get(
--        op.getLoc(), mfmaVersion, mDim, nDim, kDim, elemTyA, elemTyB,
--        /*withScale=*/false, allowXF32);
-+        op.getLoc(), mfmaVersion, mDim, nDim, kDim, intrinsicElemTyA,
-+        intrinsicElemTyB, /*withScale=*/false, allowXF32);
-     if (failed(maybeMfmaIntrinsic))
-       return op.emitError("no matching matrix core intrinsic ")
-              << "for mfma version " << mfmaVersion
-@@ -320,7 +329,7 @@ struct DotOpMFMAConversionHelper {
-         aTensorTy.getElementType(), allowXF32, preserveBF16);
-     auto operandB = getValuesFromDotOperandLayoutStruct(
-         loadedB, numRepB, numRepN, numRepKB, kWidth, kBase,
--        aTensorTy.getElementType(), allowXF32, preserveBF16);
-+        bTensorTy.getElementType(), allowXF32, preserveBF16);
+diff --git a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
+index ba59773d6..8c4bceea6 100644
+--- a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
++++ b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
+@@ -685,6 +685,7 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
+   POPULATE_UNARY_OP(math::Exp2Op, math::Exp2Op)
+   POPULATE_UNARY_OP(math::ErfOp, math::ErfOp)
+   POPULATE_UNARY_OP(triton::BitcastOp, LLVM::BitcastOp)
++  POPULATE_UNARY_OP(arith::BitcastOp, LLVM::BitcastOp)
+   POPULATE_UNARY_OP(triton::IntToPtrOp, LLVM::IntToPtrOp)
+   POPULATE_UNARY_OP(triton::PtrToIntOp, LLVM::PtrToIntOp)
+ #undef POPULATE_UNARY_OP
+diff --git a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
+index 780d0fd5a..8e5f0d10b 100644
+--- a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
++++ b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
+@@ -109,7 +109,8 @@ void populateArithPatternsAndLegality(TritonGPUTypeConverter &typeConverter,
+       GenericOpPattern<arith::ExtUIOp>, GenericOpPattern<arith::ExtSIOp>,
+       GenericOpPattern<arith::ExtFOp>, GenericOpPattern<arith::SIToFPOp>,
+       GenericOpPattern<arith::FPToSIOp>, GenericOpPattern<arith::FPToUIOp>,
+-      GenericOpPattern<arith::UIToFPOp>>(typeConverter, context);
++      GenericOpPattern<arith::UIToFPOp>, GenericOpPattern<arith::BitcastOp>>(
++      typeConverter, context);
+ }
  
-     int warpSize = triton::gpu::lookupThreadsPerWarp(rewriter);
-     int elemsPerVec = mDim * nDim / warpSize;
+ void populateMathPatternsAndLegality(TritonGPUTypeConverter &typeConverter,

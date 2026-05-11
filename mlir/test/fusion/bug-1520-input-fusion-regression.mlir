@@ -1,13 +1,9 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Fusions need rework
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch | rocmlir-driver -kernel-pipeline gpu -arch %arch | rocmlir-opt | FileCheck %s
 
-// RUN: rocmlir-driver --kernel-pipeline=migraphx,highlevel %s | FileCheck %s
-// Note: if we move bufferization, this should be a check for three emptys or
-// alloc_tensors unless there's a wider refactoring.
-// CHECK-COUNT-3: memref.alloc
-// CHECK-NOT: memref.alloc
+// CHECK: tt.dot
+// CHECK: tt.store
 module {
-  func.func @mlir_add_sigmoid_mul_slice_reshape_transpose_slice_dot_add_sigmoid_mul_add_add_tanh_sub_mul_add(%arg0: !migraphx.shaped<2x5xf32, 5x1>, %arg1: !migraphx.shaped<2x5xf32, 5x1>, %arg2: !migraphx.shaped<2x5xf32, 5x1>, %arg3: !migraphx.shaped<2x5xf32, 5x1>, %arg4: !migraphx.shaped<2x5xf32, 5x1>, %arg5: !migraphx.shaped<2x5xf32, 5x1>, %arg6: !migraphx.shaped<2x5xf32, 5x1>, %arg7: !migraphx.shaped<2x5xf32, 5x1>, %arg8: !migraphx.shaped<2x15x5xf32, 75x5x1>) -> !migraphx.shaped<2x5xf32, 5x1> attributes {rock.arch = "gfx908:sramecc+:xnack-", rock.enable_splitk_for_tuning = true, rock.kernel = "mixr", rock.num_cu = 120 : i64} {
+  func.func @mlir_add_sigmoid_mul_slice_reshape_transpose_slice_dot_add_sigmoid_mul_add_add_tanh_sub_mul_add(%arg0: !migraphx.shaped<2x5xf32, 5x1>, %arg1: !migraphx.shaped<2x5xf32, 5x1>, %arg2: !migraphx.shaped<2x5xf32, 5x1>, %arg3: !migraphx.shaped<2x5xf32, 5x1>, %arg4: !migraphx.shaped<2x5xf32, 5x1>, %arg5: !migraphx.shaped<2x5xf32, 5x1>, %arg6: !migraphx.shaped<2x5xf32, 5x1>, %arg7: !migraphx.shaped<2x5xf32, 5x1>, %arg8: !migraphx.shaped<2x15x5xf32, 75x5x1>) -> !migraphx.shaped<2x5xf32, 5x1> attributes {rock.arch = "##TOKEN_ARCH##", rock.enable_splitk_for_tuning = true, rock.kernel = "mixr", rock.num_cu = 120 : i64} {
     %0 = migraphx.add %arg0, %arg1 : <2x5xf32, 5x1>, <2x5xf32, 5x1> -> <2x5xf32, 5x1>
     %1 = migraphx.sigmoid %0 : <2x5xf32, 5x1> -> <2x5xf32, 5x1>
     %2 = migraphx.mul %1, %arg2 : <2x5xf32, 5x1>, <2x5xf32, 5x1> -> <2x5xf32, 5x1>

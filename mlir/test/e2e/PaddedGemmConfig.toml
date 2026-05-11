@@ -17,11 +17,6 @@ name = "data type"
 values = ["f32", "f16", "bf16", "i8"]
 prefix = "-t "
 
-[[axis]]
-name = "schedule_version"
-values = ["1", "2"]
-prefix = "--schedule_version  "
-
 ## PaddedGemm
 [[suite]]
 name = "padded_gemm"

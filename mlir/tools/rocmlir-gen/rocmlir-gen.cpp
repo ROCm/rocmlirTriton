@@ -819,19 +819,6 @@ static llvm::cl::opt<F8TypesChoice> forceF8Types(
                                 "'OCP' or 'OFP8' types")),
     llvm::cl::init(F8TypesChoice::Arch));
 
-enum class GEMMScheduleVersion : int { V1 = 1, V2 = 2, V3 = 3, V4 = 4 };
-
-static llvm::cl::opt<GEMMScheduleVersion> gemmScheduleVersion(
-    "schedule_version",
-    llvm::cl::desc(
-        "select amongst different available scheduling strategies for GEMM"),
-    llvm::cl::values(
-        clEnumValN(GEMMScheduleVersion::V1, "1", "Select GEMM Schedule V1"),
-        clEnumValN(GEMMScheduleVersion::V2, "2", "Select GEMM Schedule V2"),
-        clEnumValN(GEMMScheduleVersion::V3, "3", "Select GEMM Schedule V3"),
-        clEnumValN(GEMMScheduleVersion::V4, "4", "Select GEMM Schedule V4")),
-    llvm::cl::init(GEMMScheduleVersion::V1));
-
 ////////////////////////////////////////////////////////////////////////////////
 ////  Struct KernelIF
 ////  - Detected/capture kernel interface
@@ -1293,7 +1280,13 @@ static std::pair<int64_t, int64_t> getMandNPerBlock(OpBuilder builder,
 
 // Compute the number of valid split-KV entries for each batch-head.
 // This determines which splits should have valid results vs -inf.
-static SmallVector<int32_t> computeValidSplitKV(int64_t mPerBlock) {
+// Note on the M/N convention: rocMLIR's blockwise attention computes the
+// transposed product V * (K * Q^T) rather than the standard (Q * K^T) * V,
+// which puts the key-sequence dimension on GEMM0's M axis. The Triton
+// attention lowering keeps the standard formulation, so the key-sequence
+// dimension is GEMM0's N axis. Split-KV partitions the first GEMM along
+// the key-sequence dimension, hence we use gemm0NPerBlock here.
+static SmallVector<int32_t> computeValidSplitKV(int64_t nPerBlock) {
   SmallVector<int32_t> validSplitKV;
   for (int64_t i = 0; i < groupSize; ++i) {
     int32_t currSeqLen =
@@ -1312,8 +1305,8 @@ static SmallVector<int32_t> computeValidSplitKV(int64_t mPerBlock) {
       // currSeqLen = min(currSeqLen, n_block * gemm0NPerBlock)
       currSeqLen = 0;
     }
-    int32_t numPerBlock = (currSeqLen + mPerBlock) / mPerBlock;
-    int32_t itersPerBlock = mPerBlock * llvm::divideCeil(numPerBlock, splitKV);
+    int32_t numPerBlock = (currSeqLen + nPerBlock) / nPerBlock;
+    int32_t itersPerBlock = nPerBlock * llvm::divideCeil(numPerBlock, splitKV);
     int32_t numValidKV = llvm::divideCeil(currSeqLen + 1, itersPerBlock);
     for (int64_t j = 0; j < numHeadsQ; ++j)
       validSplitKV.push_back(numValidKV);
@@ -1459,8 +1452,7 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   // hack for split-kv:
   // use LSE and output tensors to compute final attention result
   if (splitKV > 1) {
-    int64_t mPerBlock, nPerBlock;
-    std::tie(mPerBlock, nPerBlock) = getMandNPerBlock(b, params);
+    int64_t nPerBlock = getMandNPerBlock(b, params).second;
 
     // TODO: causal masking is not implemented yet
     // typically, causal masking is used in the prefill phase, where split-KV is
@@ -1471,7 +1463,10 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
       exit(1);
     }
 
-    SmallVector<int32_t> validSplitKV = computeValidSplitKV(mPerBlock);
+    // The split-KV finalization below masks out split slots that did not run.
+    // Match GridwiseAttnToBlockwise's Triton lowering, which splits the
+    // current_seq_len / key-sequence work over gemm0NPerBlock.
+    SmallVector<int32_t> validSplitKV = computeValidSplitKV(nPerBlock);
 
     // split KV to batch
     Value resultTensor = bufferization::ToTensorOp::create(
@@ -3896,8 +3891,8 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   Value outputArg = func.getArgument(func.getNumArguments() - 1);
   Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
                                           flatResult, outputArg, storeMethod);
-  func::ReturnOp::create(builder, loc, {storedOut});
 
+  func::ReturnOp::create(builder, loc, {storedOut});
   if (!disableSplitKForTuning)
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),
                   builder.getUnitAttr());
@@ -5755,11 +5750,10 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     }
 
     convGenerator = rock::ConvGenerator(
-        arch, chip, disableSplitKForTuning,
-        int(gemmScheduleVersion.getValue()), triple, chipFeatures,
+        arch, chip, disableSplitKForTuning, triple, chipFeatures,
         perfConfig.getValue(),
         num_cu.getNumOccurrences() ? std::optional<int>(num_cu.getValue())
-                                    : std::nullopt,
+                                   : std::nullopt,
         numChiplets.getNumOccurrences()
             ? std::optional<int>(numChiplets.getValue())
             : std::nullopt,

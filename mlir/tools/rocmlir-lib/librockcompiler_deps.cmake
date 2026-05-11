@@ -79,8 +79,6 @@ MLIRAMDGPUDialect
 MLIRAMDGPUToROCDL
 MLIRAMDGPUTransforms
 MLIRAMDGPUUtils
-MLIRAMXDialect
-MLIRAMXTransforms
 MLIRAffineAnalysis
 MLIRAffineDialect
 MLIRAffineToStandard
@@ -163,6 +161,7 @@ MLIRMaskingOpInterface
 MLIRMathDialect
 MLIRMathToLLVM
 MLIRMathToLibm
+MLIRMathToNVVM
 MLIRMathToROCDL
 MLIRMathTransforms
 MLIRMemOpInterfaces
@@ -172,6 +171,7 @@ MLIRMemRefTransformOps
 MLIRMemRefTransforms
 MLIRMemRefUtils
 MLIRMemorySlotInterfaces
+MLIRMemorySlotUtils
 MLIRNVGPUDialect
 MLIRNVGPUToNVVM
 MLIRNVVMDialect
@@ -250,9 +250,9 @@ MLIRVectorTransformOps
 MLIRVectorTransforms
 MLIRVectorUtils
 MLIRViewLikeInterface
-MLIRX86VectorDialect
-MLIRX86VectorTransforms
-MLIRX86VectorUtils
+MLIRX86Dialect
+MLIRX86Transforms
+MLIRX86Utils
 MLIRXeVMDialect
 lldCommon
 lldELF
@@ -277,5 +277,6 @@ MLIRTosaToRock
 RocmlirCustomTosaDecompose
 RocmlirCustomTosaToLinalg
 RocmlirEmulateFp8ExtTrunc
+RocmlirPromoteSoftmaxPrecision
 TritonToHsacoTranslation
 )

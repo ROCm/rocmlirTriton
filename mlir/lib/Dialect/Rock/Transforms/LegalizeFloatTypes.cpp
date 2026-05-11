@@ -40,6 +40,7 @@
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/Support/WalkResult.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
@@ -139,8 +140,14 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
 
     Operation *defOp = cur.getDefiningOp();
     if (!defOp) {
-      emitError(cur.getLoc(), "reached block arg without blockwise_load");
-      return failure();
+      // Hit a block argument that isn't from a blockwise_load (e.g. an
+      // scf.for iter_arg or function arg).  Such block args cannot
+      // themselves be 4-bit kernel inputs, so just stop traversing this
+      // branch.  If the caller expected to find a 4-bit input it will emit
+      // a clearer diagnostic when `inputs` ends up empty.
+      LLVM_DEBUG(llvm::dbgs()
+                 << "stopping 4-bit walk at non-load block arg\n");
+      continue;
     }
 
     if (auto loadOp = dyn_cast<BlockwiseLoadOp>(defOp)) {
@@ -169,8 +176,22 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
       continue;
     }
 
-    defOp->emitError("unexpected op in 4-bit transform chain walk");
-    return failure();
+    // This walk is searching for i4 block arguments that feed through
+    // transform chains into blockwise_loads.  Constants (e.g. inlined scale
+    // or zero-point literals) can appear as operands of fusion
+    // ops in dequant chains, but they are leaf values with no further operands
+    // to trace, and they can never be i4 block arguments that need packing.
+    if (isa<arith::ConstantOp>(defOp))
+      continue;
+
+    // Anything else (e.g. scf.for results from an inner GEMM accumulator,
+    // tt.* loads, etc.) cannot lead to a 4-bit kernel block arg.  Stop
+    // traversing this branch silently; the caller checks `inputs.empty()`
+    // and emits a precise diagnostic when the GEMM operand was actually
+    // 4-bit but no inputs were found.
+    LLVM_DEBUG(llvm::dbgs()
+               << "stopping 4-bit walk at unsupported op: " << *defOp << "\n");
+    continue;
   }
   return inputs;
 }
@@ -548,10 +569,587 @@ static LogicalResult rewriteTransformChain(MLIRContext *ctx, OperandInput input,
   return success();
 }
 
+/// Insert a three-step broadcast transform composition between a halved 1-D
+/// block arg and the existing transform chain:
+///
+///   [flat/2]  -- AddDim -->  [flat/2, 1]
+///             -- Broadcast -->  [flat/2, 2]
+///             -- Merge -->  [flat]
+///
+/// fallback path only. This is used by processSubByteInput when the packing
+/// path goes through an existing Broadcast/Merge with non-unit stride factor
+/// (e.g. the broadcasted zero-point or per-block scale tensor in a quant GEMM).
+/// In that case the byte's two nibbles must land at non-adjacent positions in
+/// the load tile, which the simpler unpack-after-load fast path cannot
+/// express.  The trick here is to halve only the block arg, then re-inflate
+/// the logical view via AddDim+Broadcast+Merge so that the EXISTING chain
+/// keeps working unchanged, and finally pick the correct nibble per element
+/// via a position-dependent shift constant.
+///
+/// This means tile elements that map to the same physical byte will issue
+/// duplicate loads; that is acceptable here because the only inputs that hit
+/// this path are tiny (zero-points, scales) and their loads are already
+/// dominated by the user-level multibroadcast in the chain.  The DATA tensor
+/// always takes the fast path (no duplicate loads), which is the place where
+/// load bandwidth actually matters.
+static Value insertSubByteBroadcast(OpBuilder &builder, MLIRContext *ctx,
+                                    Location loc, Value halvedArg,
+                                    int64_t halfSize, int64_t fullSize) {
+  auto addDimMap = TransformMapAttr::get(
+      {TransformAttr::get(ctx, TransformType::PassThrough, {}, {"raw"},
+                          {uint32_t(0)}, {"raw"}, {uint32_t(0)}),
+       TransformAttr::get(ctx, TransformType::AddDim, {1}, {"dup"},
+                          {uint32_t(1)}, {}, {})},
+      {halfSize, 1}, {halfSize});
+  Value step1 = TransformOp::create(builder, loc, halvedArg, addDimMap);
+
+  auto broadcastMap = TransformMapAttr::get(
+      {TransformAttr::get(ctx, TransformType::PassThrough, {}, {"raw"},
+                          {uint32_t(0)}, {"raw"}, {uint32_t(0)}),
+       TransformAttr::get(ctx, TransformType::Broadcast, {1}, {"dup"},
+                          {uint32_t(1)}, {"dup"}, {uint32_t(1)})},
+      {halfSize, 2}, {halfSize, 1});
+  Value step2 = TransformOp::create(builder, loc, step1, broadcastMap);
+
+  auto mergeMap = TransformMapAttr::get(
+      {TransformAttr::get(ctx, TransformType::Merge, {halfSize, 2}, {"flat"},
+                          {uint32_t(0)}, {"raw", "dup"},
+                          {uint32_t(0), uint32_t(1)})},
+      {fullSize}, {halfSize, 2});
+  return TransformOp::create(builder, loc, step2, mergeMap);
+}
+
+/// Figure out which tile axis (K or D) to use for sub-byte extraction.
+/// The block arg is a flat 1-D tensor whose last element is "stride-1" (i.e.
+/// adjacent elements in the flat buffer are adjacent in memory).  The transform
+/// chain reshapes that flat buffer into a 6-D tile.  We need to know which
+/// tile axis (K or D) ends up being contiguous in the flat buffer, because
+/// that is the axis along which two consecutive i4 values share the same i8
+/// byte, and therefore the axis along which we alternate the shift pattern.
+static FailureOr<int64_t> findSubBytePackingDim(
+    MutableArrayRef<TransformOp> chain, int64_t kDimIdx, int64_t dDimIdx,
+    SmallVector<std::pair<TransformOp, int64_t>> &pathOut, Operation *emitLoc) {
+  int64_t targetUpperDim = -1;
+  TransformMapAttr bottomMap = chain.back().getTransform();
+  for (TransformAttr trAttr : bottomMap.getOps()) {
+    if (trAttr.getType() == TransformType::Unmerge) {
+      targetUpperDim = trAttr.getUpperDims().back();
+      break;
+    }
+  }
+  if (targetUpperDim < 0)
+    return emitLoc->emitError(
+        "bottom transform has no Unmerge for stride-1 trace");
+
+  if (findHalvingPath(chain, targetUpperDim, 0, kDimIdx, pathOut))
+    return kDimIdx;
+  pathOut.clear();
+  if (findHalvingPath(chain, targetUpperDim, 0, dDimIdx, pathOut))
+    return dDimIdx;
+  return emitLoc->emitError(
+      "cannot determine stride-1 source dim for sub-byte arg");
+}
+
+/// Check whether a transform attribute involves `lowerDim` in its lower dims.
+static bool transformTouchesLowerDim(TransformAttr trAttr, int64_t lowerDim) {
+  for (auto ld : trAttr.getLowerDims())
+    if ((int64_t)ld == lowerDim)
+      return true;
+  return false;
+}
+
+/// Compute the effective stride factor from a halving path.
+///
+/// The sub-byte shift pattern has a base period of 2 (alternating every
+/// element).  However, when the halving path passes through a Merge, multiple
+/// consecutive tile positions map to the same flat block-arg index, which
+/// stretches the period.  The stride factor is the product of the "tail sizes"
+/// at each Merge along the path.
+///
+/// Example: Merge{2, 2} following lower dim 0 has tail size = product of
+/// param sizes after index 0 = 2, so the sub-byte period doubles from 2 to 4,
+/// giving the pattern [0, 0, 4, 4, 0, 0, 4, 4, ...].
+///
+/// strideFactor == 1 means the byte's two nibbles map to ADJACENT tile
+/// positions along the halved axis (the simple, fast case handled by the
+/// unpack-after-load path).  strideFactor > 1 means they map to non-adjacent
+/// positions and we must fall back to the broadcast trick.
+static FailureOr<int64_t> computeSubByteStrideFactor(
+    MutableArrayRef<std::pair<TransformOp, int64_t>> path) {
+  int64_t strideFactor = 1;
+  for (auto &[trOp, lowerDim] : path) {
+    for (TransformAttr trAttr : trOp.getTransform().getOps()) {
+      if (!transformTouchesLowerDim(trAttr, lowerDim))
+        continue;
+
+      switch (trAttr.getType()) {
+      case TransformType::PassThrough:
+      case TransformType::Unmerge:
+      case TransformType::Broadcast:
+      case TransformType::AddDim:
+      case TransformType::ConstDim:
+        break;
+      case TransformType::Merge: {
+        auto lowerDims = trAttr.getLowerDims();
+        for (size_t i = 0; i < lowerDims.size(); ++i) {
+          if ((int64_t)lowerDims[i] == lowerDim) {
+            auto params = trAttr.getParams();
+            int64_t tailSize = 1;
+            for (size_t j = i + 1; j < params.size(); ++j)
+              tailSize *= params[j];
+            strideFactor *= tailSize;
+            break;
+          }
+        }
+        break;
+      }
+      case TransformType::Pad:
+      case TransformType::Slice:
+        // Pad/Slice only add/remove elements at the boundary without
+        // changing the stride relationship within the real data region.
+        break;
+      case TransformType::Embed:
+        return trOp.emitError("unsupported transform type (Embed) on traced "
+                              "dimension in sub-byte stride factor "
+                              "computation");
+      }
+    }
+  }
+  return strideFactor;
+}
+
+/// Build the 2-D shift tensor for sub-byte extraction (FALLBACK PATH, static
+/// in-tile case).
+///
+/// For a tile of shape [D, K], the shift at position (d, k) is determined by
+/// which nibble (low or high) that tile element corresponds to:
+///   shift = ((pos / strideFactor) % 2) * 4
+/// where `pos` is the index along `loadAxisIdx` (0 for D, 1 for K).
+///
+/// The pattern is emitted as `tt.make_range` + arith ops + `tt.expand_dims` +
+/// `tt.broadcast` rather than as a single dense `arith.constant`.  Materialising
+/// the full 2-D dense blob hangs Triton's downstream GPU passes for non-trivial
+/// tile sizes, so we keep the symbolic form all the way through to the LLVM
+/// lowering, which folds the make_range chain into cheap register code.
+///
+/// This static path is only valid when `strideFactor < axisLen`, i.e. the
+/// nibble alternation can be expressed entirely within a single tile.  When
+/// `strideFactor >= axisLen` the in-tile pattern is degenerate (every element
+/// of one tile shares the same shift) and the alternation must be driven by
+/// the outer K-loop induction variable; that case is handled separately by
+/// `buildSubByteShiftDynamic`.
+static Value buildSubByteShiftConstant(OpBuilder &builder, Location loc,
+                                       ArrayRef<int64_t> tileShape,
+                                       RankedTensorType i8TileType,
+                                       int64_t loadAxisIdx,
+                                       int64_t strideFactor) {
+  int64_t axisLen = tileShape[loadAxisIdx];
+  int64_t otherAxis = 1 - loadAxisIdx;
+
+  Type i32Ty = builder.getI32Type();
+  Type i8Ty = builder.getI8Type();
+  auto i32RangeType = RankedTensorType::get({axisLen}, i32Ty);
+
+  Value pos =
+      triton::MakeRangeOp::create(builder, loc, i32RangeType, 0, axisLen);
+
+  Value divided = pos;
+  if (strideFactor > 1) {
+    Value hp = arith::ConstantOp::create(
+        builder, loc,
+        DenseElementsAttr::get(i32RangeType,
+                               builder.getI32IntegerAttr(strideFactor)));
+    divided = arith::DivUIOp::create(builder, loc, pos, hp);
+  }
+
+  Value two = arith::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(i32RangeType, builder.getI32IntegerAttr(2)));
+  Value rem = arith::RemUIOp::create(builder, loc, divided, two);
+
+  // Map nibble index to byte shift: low nibble -> 0, high nibble -> 4.
+  Value four = arith::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(i32RangeType, builder.getI32IntegerAttr(4)));
+  Value shiftI32 = arith::MulIOp::create(builder, loc, rem, four);
+
+  auto i8RangeType = RankedTensorType::get({axisLen}, i8Ty);
+  Value shiftI8 =
+      arith::TruncIOp::create(builder, loc, i8RangeType, shiftI32);
+
+  // Insert a unit dim for the OTHER axis, then broadcast to the full tile
+  // shape so it can be SHRed against the loaded i8 tile.
+  SmallVector<int64_t> expandedShape(2, 1);
+  expandedShape[loadAxisIdx] = axisLen;
+  auto expandedType = RankedTensorType::get(expandedShape, i8Ty);
+  Value expanded = triton::ExpandDimsOp::create(builder, loc, expandedType,
+                                                shiftI8, otherAxis);
+  return triton::BroadcastOp::create(builder, loc, i8TileType, expanded);
+}
+
+/// Build a loop-variant tile of nibble-shift values for the FALLBACK PATH
+/// case where `strideFactor` is at least the tile axis length.  In that
+/// regime every element in a single tile shares the *same* shift (low or
+/// high nibble), determined purely by the enclosing K-loop iv:
+///
+///   shift = ((iv * tileExtent) / strideFactor) % 2 * 4
+///
+/// The result is `tt.splat`-broadcast to a `tensor<DxKxi8>`.  Because the
+/// result has a real SSA dependency on the iv it cannot be hoisted out of the
+/// scf.for by LICM/canonicalization, which is why we emit the dynamic ops
+/// here instead of relying on the marker-and-late-lower mechanism used for
+/// the static case.
+static FailureOr<Value> buildSubByteShiftDynamic(OpBuilder &builder,
+                                                 Location loc,
+                                                 RankedTensorType i8TileType,
+                                                 int64_t strideFactor,
+                                                 int64_t tileExtent,
+                                                 Operation *anchor) {
+  auto forOp = anchor->getParentOfType<scf::ForOp>();
+  if (!forOp)
+    return emitError(loc, "sub-byte load with broadcast period >= tile extent "
+                          "must be inside an scf.for whose iv is the K-loop "
+                          "counter");
+
+  Type i32 = builder.getI32Type();
+  Value iv = forOp.getInductionVar();
+  if (iv.getType() != i32) {
+    auto ivIntTy = dyn_cast<IntegerType>(iv.getType());
+    if (!ivIntTy)
+      return emitError(loc, "sub-byte K-loop iv must be an integer; got ")
+             << iv.getType();
+    if (ivIntTy.getWidth() > 32)
+      iv = arith::TruncIOp::create(builder, loc, i32, iv);
+    else
+      iv = arith::ExtSIOp::create(builder, loc, i32, iv);
+  }
+
+  Value tileExtentVal = arith::ConstantOp::create(
+      builder, loc, builder.getI32IntegerAttr(tileExtent));
+  Value origin = arith::MulIOp::create(builder, loc, iv, tileExtentVal);
+  Value halfPeriodVal = arith::ConstantOp::create(
+      builder, loc, builder.getI32IntegerAttr(strideFactor));
+  Value div = arith::DivUIOp::create(builder, loc, origin, halfPeriodVal);
+  Value two = arith::ConstantOp::create(builder, loc,
+                                        builder.getI32IntegerAttr(2));
+  Value mod = arith::RemUIOp::create(builder, loc, div, two);
+  Value four = arith::ConstantOp::create(builder, loc,
+                                         builder.getI32IntegerAttr(4));
+  Value shiftI32 = arith::MulIOp::create(builder, loc, mod, four);
+  Value shiftI8 =
+      arith::TruncIOp::create(builder, loc, builder.getI8Type(), shiftI32);
+  Value shifts =
+      triton::SplatOp::create(builder, loc, i8TileType, shiftI8);
+  return shifts;
+}
+
+/// Replace arith.extui / arith.extsi / arith.uitofp / arith.sitofp users of a
+/// loaded i8 tile with sub-byte extraction logic that uses position-dependent
+/// shifts:
+///
+///   extui  ->  (loaded >> shifts) & 0x0F
+///   extsi  ->  ((loaded >> shifts) & 0x0F) << 4  >> s 4   (sign-extend)
+///   uitofp ->  uitofp((loaded >> shifts) & 0x0F)          (rewire operand)
+///   sitofp ->  sitofp(sign-extend((loaded >> shifts) & 0x0F)) (rewire operand)
+///
+/// The fp paths cover dequant chains where the i4 -> wider-float conversion is
+/// fused into a single arith.uitofp / arith.sitofp at the tensor level (no
+/// intermediate arith.extui), e.g. `arith.uitofp %x : i4 to f16`.
+static void replaceExtUsersWithSubByteExtract(OpBuilder &builder, Location loc,
+                                              Value loadResult,
+                                              RankedTensorType i8TileType,
+                                              Value shifts, Value mask) {
+  auto extractLow = [&](Operation *user) -> Value {
+    builder.setInsertionPoint(user);
+    Value shifted = arith::ShRUIOp::create(builder, loc, loadResult, shifts);
+    return arith::AndIOp::create(builder, loc, shifted, mask);
+  };
+  auto signExtendNibble = [&](Value subByte) -> Value {
+    Value four = arith::ConstantOp::create(
+        builder, loc,
+        DenseElementsAttr::get(i8TileType, builder.getI8IntegerAttr(4)));
+    Value shl = arith::ShLIOp::create(builder, loc, subByte, four);
+    return arith::ShRSIOp::create(builder, loc, shl, four);
+  };
+
+  for (auto *user :
+       llvm::make_early_inc_range(loadResult.getUsers())) {
+    if (isa<arith::ExtUIOp>(user)) {
+      Value subByte = extractLow(user);
+      user->getResult(0).replaceAllUsesWith(subByte);
+      user->erase();
+    } else if (isa<arith::ExtSIOp>(user)) {
+      Value subByte = extractLow(user);
+      Value sext = signExtendNibble(subByte);
+      user->getResult(0).replaceAllUsesWith(sext);
+      user->erase();
+    } else if (isa<arith::UIToFPOp>(user)) {
+      Value subByte = extractLow(user);
+      user->setOperand(0, subByte);
+    } else if (isa<arith::SIToFPOp>(user)) {
+      Value subByte = extractLow(user);
+      Value sext = signExtendNibble(subByte);
+      user->setOperand(0, sext);
+    }
+  }
+}
+
+/// Emit andi/shrui + tt.join + tt.reshape (with optional
+/// tt.trans wraps) right after a halved blockwise_load to materialise
+/// the original logical [D, K] tile from a halved [D, K/2] (or [D/2, K])
+/// load.  Used when the packing path's stride factor is 1 (the common
+/// case for the actual data tensor in any quantized GEMM).
+///
+/// Lowers to free SSA-level register interleaves at the LLVM stage:
+/// tt.join -> JoinOpConversion (no memory ops); tt.reshape -> no-op when
+/// the encoding inference produces a compatible blocked layout (the
+/// expected case here); tt.trans -> always free per TransOpConversion.
+static LogicalResult
+emitSubByteUnpackFastPath(OpBuilder &builder, OperandInput &input,
+                          int64_t halveDimIdx, int64_t sourceRank, Type i8Ty) {
+  // After halving, update the load result type to the new halved 2-D tile.
+  auto newSrcType =
+      cast<RankedTensorType>(input.loadOp.getSource().getType());
+  int64_t srcRank = newSrcType.getRank();
+  SmallVector<int64_t> halvedTileShape{newSrcType.getShape()[srcRank - 2],
+                                       newSrcType.getShape()[srcRank - 1]};
+  auto halvedLoadType = RankedTensorType::get(halvedTileShape, i8Ty);
+  input.loadOp.getResult().setType(halvedLoadType);
+
+  // Determine which load-tile dim got halved.  tt.join always interleaves
+  // along a *new* most-minor dim; if the halved dim is the outer tile dim
+  // (load tile dim 0 - happens for matrixA D-pack / matrixB K-pack with
+  // transposed inputs), wrap the unpack in tt.trans on each side.
+  bool needsTrans = (halveDimIdx != sourceRank - 1);
+
+  Location loc = input.loadOp.getLoc();
+  builder.setInsertionPointAfter(input.loadOp);
+
+  Value loaded = input.loadOp.getResult();
+  Value mask = arith::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(halvedLoadType, builder.getI8IntegerAttr(15)));
+  Value four = arith::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(halvedLoadType, builder.getI8IntegerAttr(4)));
+  Value low = arith::AndIOp::create(builder, loc, loaded, mask);
+  Value high = arith::ShRUIOp::create(builder, loc, loaded, four);
+
+  Value lowJ = low;
+  Value highJ = high;
+  auto swapOrderAttr = builder.getDenseI32ArrayAttr({1, 0});
+  if (needsTrans) {
+    lowJ = triton::TransOp::create(builder, loc, lowJ, swapOrderAttr);
+    highJ = triton::TransOp::create(builder, loc, highJ, swapOrderAttr);
+  }
+
+  Value joined = triton::JoinOp::create(builder, loc, lowJ, highJ);
+
+  SmallVector<int64_t> reshapedShape =
+      needsTrans
+          ? SmallVector<int64_t>{halvedTileShape[1], halvedTileShape[0] * 2}
+          : SmallVector<int64_t>{halvedTileShape[0], halvedTileShape[1] * 2};
+  Value unpacked =
+      triton::ReshapeOp::create(builder, loc, reshapedShape, joined);
+
+  if (needsTrans)
+    unpacked =
+        triton::TransOp::create(builder, loc, unpacked, swapOrderAttr);
+
+  auto unpackedType = cast<RankedTensorType>(unpacked.getType());
+
+  // Mirror the four user kinds handled by replaceExtUsersWithSubByteExtract:
+  // here the unpacked tile is already materialized, so extui/uitofp users just
+  // need to point at `unpacked`, while extsi/sitofp users need a sign-extend
+  // (shl 4; ashr 4) on the unsigned-nibble values first.
+  auto signExtendUnpacked = [&]() {
+    Value sextFour = arith::ConstantOp::create(
+        builder, loc,
+        DenseElementsAttr::get(unpackedType, builder.getI8IntegerAttr(4)));
+    Value shl = arith::ShLIOp::create(builder, loc, unpacked, sextFour);
+    return arith::ShRSIOp::create(builder, loc, shl, sextFour);
+  };
+
+  for (auto *user : llvm::make_early_inc_range(loaded.getUsers())) {
+    if (isa<arith::ExtUIOp>(user)) {
+      user->getResult(0).replaceAllUsesWith(unpacked);
+      user->erase();
+    } else if (isa<arith::ExtSIOp>(user)) {
+      builder.setInsertionPoint(user);
+      Value sext = signExtendUnpacked();
+      user->getResult(0).replaceAllUsesWith(sext);
+      user->erase();
+    } else if (isa<arith::UIToFPOp>(user)) {
+      user->setOperand(0, unpacked);
+    } else if (isa<arith::SIToFPOp>(user)) {
+      builder.setInsertionPoint(user);
+      Value sext = signExtendUnpacked();
+      user->setOperand(0, sext);
+    }
+  }
+  return success();
+}
+
+/// Keep the original load tile shape, prepend an
+/// AddDim+Broadcast+Merge group to re-inflate the halved block arg back to
+/// its original logical size, and replace arith.extui/extsi with a
+/// position-dependent shift+mask extraction.  This is required when the
+/// packing path goes through a Broadcast+Merge with stride factor != 1
+/// (typical for tensors that are themselves multibroadcast, e.g. per-block
+/// quantization scales and zero points).
+///
+/// IMPORTANT: this path causes the same byte to be loaded multiple times
+/// (one read per non-broadcasted tile position).  We accept this only
+/// because the affected tensors are tiny (a handful of unique bytes) and
+/// the user-level multibroadcast that lives in their chain is the dominant
+/// source of redundant reads anyway.  The data tensor never reaches this
+/// branch its path has stride factor 1 and goes through the fast path.
+static LogicalResult emitSubByteBroadcastFallback(
+    OpBuilder &builder, OperandInput &input, int64_t halveDimIdx,
+    int64_t sourceRank, Type i8Ty,
+    SmallVectorImpl<std::pair<TransformOp, int64_t>> &path,
+    int64_t strideFactor) {
+  MLIRContext *ctx = builder.getContext();
+
+  // Halve the block arg only (NOT the chain): tensor<N x i4> -> tensor<N/2 x i8>.
+  auto oldArgType = cast<RankedTensorType>(input.rootArg.getType());
+  int64_t flatSize = oldArgType.getShape()[0];
+  if (flatSize % 2 != 0)
+    return input.loadOp.emitError("sub-byte block arg flat size must be even");
+  input.rootArg.setType(
+      RankedTensorType::get({flatSize / 2}, i8Ty, oldArgType.getEncoding()));
+
+  // Re-inflate via AddDim+Broadcast+Merge so the original chain still sees
+  // a logical N-element view (each pair of consecutive logical positions
+  // aliases to the same physical byte).
+  Value cur = input.loadOp.getSource();
+  TransformOp bottomTransform;
+  while (auto trOp = cur.getDefiningOp<TransformOp>()) {
+    bottomTransform = trOp;
+    cur = trOp.getInput();
+  }
+  builder.setInsertionPoint(bottomTransform);
+  Location loc = input.loadOp.getLoc();
+  Value broadcastOut = insertSubByteBroadcast(builder, ctx, loc,
+                                              input.rootArg, flatSize / 2,
+                                              flatSize);
+  bottomTransform->setOperand(0, broadcastOut);
+
+  // Update the load result type from i4 to i8 (shape stays the same).
+  auto loadResultType =
+      cast<RankedTensorType>(input.loadOp.getResult().getType());
+  auto tileShape = loadResultType.getShape();
+  auto i8TileType = RankedTensorType::get(tileShape, i8Ty);
+  input.loadOp.getResult().setType(i8TileType);
+
+  int64_t loadAxisIdx = halveDimIdx - (sourceRank - 2);
+  Value shifts;
+  int64_t axisLen = tileShape[loadAxisIdx];
+  if (strideFactor >= axisLen) {
+    builder.setInsertionPoint(input.loadOp);
+    auto dynamicShiftsOrErr = buildSubByteShiftDynamic(
+        builder, loc, i8TileType, strideFactor, axisLen, input.loadOp);
+    if (failed(dynamicShiftsOrErr))
+      return failure();
+    shifts = *dynamicShiftsOrErr;
+  } else {
+    shifts = buildSubByteShiftConstant(builder, loc, tileShape, i8TileType,
+                                       loadAxisIdx, strideFactor);
+  }
+  Value mask = arith::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(i8TileType, builder.getI8IntegerAttr(15)));
+  replaceExtUsersWithSubByteExtract(builder, loc, input.loadOp.getResult(),
+                                    i8TileType, shifts, mask);
+  return success();
+}
+
+/// Handle a single OperandInput whose block arg is i4 but whose GEMM operand
+/// is wider (e.g. f16, behind a dequant fusion chain).
+///
+/// Two-path dispatch based on the halving path's stride factor:
+///
+/// * Fast path (strideFactor == 1, the common case for the actual data
+///   tensor of any quantized GEMM): halves the block arg and every transform
+///   in the chain via rewriteTransformChain so the blockwise_load reads each
+///   packed i8 byte exactly once.  After the load, andi/shrui + tt.join +
+///   tt.reshape (with tt.trans wraps when the halved dim is the outer tile
+///   dim) interleave the low/high nibbles back to the original logical tile
+///   shape.  Lowers to free register-level shuffles at the LLVM stage.
+///
+/// * Fallback path (strideFactor > 1, hit only by tensors whose chain
+///   contains a Broadcast+Merge such as per-block scales / zero points):
+///   keeps the original load tile shape, halves only the block arg, and
+///   restores the original logical view via an AddDim+Broadcast+Merge group
+///   (so the existing chain works unchanged), then a position-dependent
+///   shift+mask picks the correct nibble per tile element.  This causes the
+///   same byte to be loaded multiple times (one read per non-broadcast tile
+///   position), but is acceptable because the affected tensors are tiny and
+///   their loads are already dominated by the user-level multibroadcast.
+///   The DATA tensor never reaches this branch.
+static LogicalResult processSubByteInput(OpBuilder &builder,
+                                         OperandInput &input, bool isA,
+                                         int64_t sourceRank, Type i8Ty) {
+  MLIRContext *ctx = builder.getContext();
+  int64_t kDimIdx = isA ? (sourceRank - 1) : (sourceRank - 2);
+  int64_t dDimIdx = isA ? (sourceRank - 2) : (sourceRank - 1);
+
+  Value cur = input.loadOp.getSource();
+  TransformOp bottomTransform;
+  SmallVector<TransformOp> chain;
+  while (auto trOp = cur.getDefiningOp<TransformOp>()) {
+    chain.push_back(trOp);
+    bottomTransform = trOp;
+    cur = trOp.getInput();
+  }
+  if (!bottomTransform)
+    return input.loadOp.emitError("no transform chain for sub-byte block arg");
+
+  // Pick which source dim to halve (K preferred, fall back to D) and trace
+  // the path.  This is the same selection the direct-f4 path makes, but
+  // driven by the path tracer rather than getMaxVectorization so that it
+  // still works for chains that include broadcast/merge transforms in the
+  // dequant pattern.
+  SmallVector<std::pair<TransformOp, int64_t>> path;
+  auto halveDimOrErr =
+      findSubBytePackingDim(chain, kDimIdx, dDimIdx, path, bottomTransform);
+  if (failed(halveDimOrErr))
+    return failure();
+  int64_t halveDimIdx = *halveDimOrErr;
+
+  // strideFactor selects the path: 1 -> fast unpack, >1 -> broadcast trick.
+  // See the helper docs for why this distinction is correctness-critical.
+  auto strideFactorOrErr = computeSubByteStrideFactor(path);
+  if (failed(strideFactorOrErr))
+    return failure();
+  int64_t strideFactor = *strideFactorOrErr;
+
+  if (strideFactor == 1) {
+    if (failed(rewriteTransformChain(ctx, input, halveDimIdx)))
+      return failure();
+    return emitSubByteUnpackFastPath(builder, input, halveDimIdx, sourceRank,
+                                     i8Ty);
+  }
+
+  return emitSubByteBroadcastFallback(builder, input, halveDimIdx, sourceRank,
+                                      i8Ty, path, strideFactor);
+}
+
 /// Pack 4-bit (i4) kernel arguments to i8 with dimension halving.
+///
 /// For each BlockwiseGemmOp, traces matrixA/matrixB backwards through
 /// blockwise_loads and transform chains, then halves the stride-1 dimension
 /// (K preferred, then D) and converts i4 -> i8.
+///
+/// Two paths depending on whether the GEMM operand itself is 4-bit:
+///
+///   Direct 4-bit GEMM:  Halves dimensions through the entire transform chain
+///     via rewriteTransformChain.  Sets kPack attributes.
+///
+///   Sub-byte (i4 behind a dequant chain):  Handled by processSubByteInput,
+///     which dispatches between a fast halve+unpack path (DATA tensor, no
+///     duplicate loads) and a broadcast-trick fallback for tiny tensors with
+///     a Broadcast in their packing path (scales / zero points).
 static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
   OpBuilder builder(ctx);
   Type i8Ty = IntegerType::get(ctx, 8);
@@ -560,17 +1158,19 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
   WalkResult walkResult = funcOp.walk([&](BlockwiseGemmOp gemmOp) {
     auto processOperand = [&](Value operand, bool isA) -> LogicalResult {
       auto tensorType = cast<RankedTensorType>(operand.getType());
-      if (!is4Bit(tensorType.getElementType()))
-        return success();
+      bool gemmOperandIs4Bit = is4Bit(tensorType.getElementType());
 
       auto maybeInputs = collectOperandInputs(operand);
       if (failed(maybeInputs))
-        return failure();
+        return gemmOperandIs4Bit ? failure() : success();
       SmallVector<OperandInput> &inputs = maybeInputs.value();
-      if (inputs.empty())
-        return gemmOp.emitError(
-            "4-bit operand produced by fusion (e.g. arith.truncf) rather than "
-            "from a 4-bit kernel argument is not yet supported");
+      if (inputs.empty()) {
+        if (gemmOperandIs4Bit)
+          return gemmOp.emitError(
+              "4-bit operand produced by fusion (e.g. arith.truncf) rather than "
+              "from a 4-bit kernel argument is not yet supported");
+        return success();
+      }
 
       std::optional<bool> kPack = std::nullopt;
       for (OperandInput &input : inputs) {
@@ -583,6 +1183,7 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
         }
         if (!input.loadOp)
           return gemmOp.emitError("transform chain has no blockwise_load");
+
         Value source = input.loadOp.getSource();
 
         // The outermost transform's upper view is the 6D source i.e. (k_loop,
@@ -596,51 +1197,63 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
         int64_t kDimIdx = isA ? (sourceRank - 1) : (sourceRank - 2);
         int64_t dDimIdx = isA ? (sourceRank - 2) : (sourceRank - 1);
 
-        // Try K first, then D.
-        std::optional<int64_t> halveDimIdx = std::nullopt;
+        if (gemmOperandIs4Bit) {
+          // Direct 4-bit GEMM: halve via vectorization + rewriteTransformChain.
+          std::optional<int64_t> halveDimIdx = std::nullopt;
+          VectorizationResult kVectorRes =
+              getMaxVectorization(source, kDimIdx);
+          if (kVectorRes.max > 1)
+            halveDimIdx = kDimIdx;
 
-        VectorizationResult kVectorRes = getMaxVectorization(source, kDimIdx);
+          if (!halveDimIdx.has_value()) {
+            localKPack = false;
+            VectorizationResult dVectorRes =
+                getMaxVectorization(source, dDimIdx);
+            if (dVectorRes.max > 1)
+              halveDimIdx = dDimIdx;
+          }
+          if (!halveDimIdx.has_value()) {
+            rock::markAsNotApplicable(gemmOp);
+            return gemmOp.emitError(
+                "max vectorization of both D and K is 1");
+          }
 
-        if (kVectorRes.max > 1)
-          halveDimIdx = kDimIdx;
+          if (kPack.has_value() && kPack.value() != localKPack) {
+            rock::markAsNotApplicable(gemmOp);
+            return gemmOp.emitError(
+                "all inputs must agree whether to either pack along K or not");
+          }
+          if (!kPack.has_value())
+            kPack = localKPack;
 
-        if (!halveDimIdx.has_value()) {
-          localKPack = false;
-          VectorizationResult dVectorRes = getMaxVectorization(source, dDimIdx);
-          if (dVectorRes.max > 1)
-            halveDimIdx = dDimIdx;
+          if (failed(rewriteTransformChain(ctx, input, halveDimIdx.value())))
+            return failure();
+
+          auto newSrcType =
+              cast<RankedTensorType>(input.loadOp.getSource().getType());
+          int64_t srcRank = newSrcType.getRank();
+          SmallVector<int64_t> newResShape;
+          newResShape.push_back(newSrcType.getShape()[srcRank - 2]);
+          newResShape.push_back(newSrcType.getShape()[srcRank - 1]);
+          input.loadOp.getResult().setType(
+              RankedTensorType::get(newResShape, i8Ty));
+        } else {
+          // Sub-byte path: i4 behind a dequant fusion chain.
+          if (failed(processSubByteInput(builder, input, isA, sourceRank,
+                                         i8Ty)))
+            return failure();
         }
-        if (!halveDimIdx.has_value())
-          return gemmOp.emitError("max vectorization of both D and K is 1");
-
-        if (kPack.has_value() && kPack.value() != localKPack)
-          return gemmOp.emitError(
-              "all inputs must agree whether to either pack along K or not");
-
-        if (!kPack.has_value())
-          kPack = localKPack;
-
-        if (failed(rewriteTransformChain(ctx, input, halveDimIdx.value())))
-          return failure();
         processedArgs.insert(input.rootArg);
-
-        auto newSrcType =
-            cast<RankedTensorType>(input.loadOp.getSource().getType());
-        int64_t srcRank = newSrcType.getRank();
-        SmallVector<int64_t> newResShape;
-        newResShape.push_back(newSrcType.getShape()[srcRank - 2]);
-        newResShape.push_back(newSrcType.getShape()[srcRank - 1]);
-        input.loadOp.getResult().setType(
-            RankedTensorType::get(newResShape, i8Ty));
       }
 
-      if (!kPack.has_value())
-        return gemmOp.emitError("kPack is undefined");
-
-      if (isA)
-        gemmOp.setMatrixAKPackAttr(builder.getBoolAttr(kPack.value()));
-      else
-        gemmOp.setMatrixBKPackAttr(builder.getBoolAttr(kPack.value()));
+      if (gemmOperandIs4Bit) {
+        if (!kPack.has_value())
+          return gemmOp.emitError("kPack is undefined");
+        if (isA)
+          gemmOp.setMatrixAKPackAttr(builder.getBoolAttr(kPack.value()));
+        else
+          gemmOp.setMatrixBKPackAttr(builder.getBoolAttr(kPack.value()));
+      }
       return success();
     };
 
@@ -790,15 +1403,36 @@ static LogicalResult fixup4BitFusionOps(
   Type i8Ty = IntegerType::get(ctx, 8);
 
   for (auto &[op, info] : fusionInfoMap) {
-    bool has4bit = false;
+    bool has4bitOperand = false;
     for (Type t : info.origOperandTypes)
       if (isNonTTFloat(t, 4))
-        has4bit = true;
+        has4bitOperand = true;
+    bool has4bitResult = false;
     for (Type t : info.origResultTypes)
       if (isNonTTFloat(t, 4))
-        has4bit = true;
-    if (!has4bit)
+        has4bitResult = true;
+    if (!has4bitOperand && !has4bitResult)
       continue;
+
+    // We unpack f4 operands into low/high nibbles and clone the op for each
+    // half, producing two halved-shape result tensors that we then repack
+    // (low | high<<4) into the original packed i8 shape. That repack step
+    // only works when the result element type is f4. For ops that consume
+    // f4 inputs but produce a different element type (e.g. arith.cmpf or
+    // math.isfinite returning i1, or a truncf/fptoui to a wider int), we
+    // would have no way to interleave the two halved-shape results back
+    // into the original unpacked shape, so half the lanes would be lost.
+    // Reject these fusions explicitly rather than silently dropping data.
+    if (has4bitOperand) {
+      for (Type t : info.origResultTypes) {
+        auto resTensor = dyn_cast<RankedTensorType>(t);
+        if (resTensor && !isNonTTFloat(resTensor, 4))
+          return op->emitError(
+              "f4 fusion op produces a non-f4 tensor result; reconstructing "
+              "the unpacked result shape from packed nibble clones is not "
+              "supported");
+      }
+    }
 
     Location loc = op->getLoc();
 
@@ -873,13 +1507,42 @@ static LogicalResult fixup4BitFusionOps(
       return op->emitError("f4 fusion op has no f4 operands or results to "
                            "derive packed shape from");
 
+    // Decide whether to promote f4 operands/result through f32 for the cloned
+    // op. Cast-like ops (bitcast, truncf, extf) operate on f4 by design and
+    // have valid lowerings (arith-expand handles f4 truncf/extf), so we leave
+    // them as-is. All other arith/math ops on f4 (e.g. addf, mulf) cannot be
+    // lowered to LLVM because LLVM has no native f4 arithmetic, so we wrap
+    // the cloned op with extf (operands) and truncf (result) so it runs on
+    // f32; arith-expand will then expand those casts to integer ops.
+    bool promoteThroughF32 =
+        !isa<arith::BitcastOp, arith::TruncFOp, arith::ExtFOp>(op);
+
+    if (promoteThroughF32) {
+      builder.setInsertionPoint(op);
+      Type f32Ty = builder.getF32Type();
+      auto promoteToF32 = [&](Value v) -> Value {
+        auto tType = dyn_cast<RankedTensorType>(v.getType());
+        if (!tType || !isNonTTFloat(tType.getElementType(), 4))
+          return v;
+        auto f32TensorType = RankedTensorType::get(
+            tType.getShape(), f32Ty, tType.getEncoding());
+        return arith::ExtFOp::create(builder, loc, f32TensorType, v);
+      };
+      for (unsigned i = 0; i < lowOperands.size(); ++i) {
+        lowOperands[i] = promoteToF32(lowOperands[i]);
+        highOperands[i] = promoteToF32(highOperands[i]);
+      }
+    }
+
     SmallVector<Type> cloneResultTypes;
     for (unsigned i = 0; i < info.origResultTypes.size(); ++i) {
       auto origTensorType =
           dyn_cast<RankedTensorType>(info.origResultTypes[i]);
       if (origTensorType && isNonTTFloat(origTensorType, 4)) {
+        Type elemType = promoteThroughF32 ? builder.getF32Type()
+                                          : origTensorType.getElementType();
         cloneResultTypes.push_back(RankedTensorType::get(
-            packedRefType.getShape(), origTensorType.getElementType(),
+            packedRefType.getShape(), elemType,
             packedRefType.getEncoding()));
       } else {
         cloneResultTypes.push_back(op->getResult(i).getType());
@@ -901,13 +1564,35 @@ static LogicalResult fixup4BitFusionOps(
     for (unsigned i = 0; i < cloneResultTypes.size(); ++i)
       highClone->getResult(i).setType(cloneResultTypes[i]);
 
-    // Repack each result: f4 -> i4 -> i8 (low | high<<4).
+    // If we promoted to f32, truncate the cloned ops' f4-typed results back
+    // to f4 so the downstream bitcast f4 -> i4 still works.
     builder.setInsertionPointAfter(highClone);
+    SmallVector<Value> lowResults(op->getNumResults());
+    SmallVector<Value> highResults(op->getNumResults());
+    for (unsigned i = 0; i < op->getNumResults(); ++i) {
+      auto origTensorType =
+          dyn_cast<RankedTensorType>(info.origResultTypes[i]);
+      if (promoteThroughF32 && origTensorType &&
+          isNonTTFloat(origTensorType, 4)) {
+        auto f4Type = RankedTensorType::get(packedRefType.getShape(),
+                                            origTensorType.getElementType(),
+                                            packedRefType.getEncoding());
+        lowResults[i] = arith::TruncFOp::create(builder, loc, f4Type,
+                                                lowClone->getResult(i));
+        highResults[i] = arith::TruncFOp::create(builder, loc, f4Type,
+                                                 highClone->getResult(i));
+      } else {
+        lowResults[i] = lowClone->getResult(i);
+        highResults[i] = highClone->getResult(i);
+      }
+    }
+
+    // Repack each result: f4 -> i4 -> i8 (low | high<<4).
     for (unsigned i = 0; i < op->getNumResults(); ++i) {
       auto origTensorType =
           dyn_cast<RankedTensorType>(info.origResultTypes[i]);
       if (!origTensorType || !isNonTTFloat(origTensorType, 4)) {
-        op->getResult(i).replaceAllUsesWith(lowClone->getResult(i));
+        op->getResult(i).replaceAllUsesWith(lowResults[i]);
         continue;
       }
 
@@ -917,9 +1602,9 @@ static LogicalResult fixup4BitFusionOps(
                                                 packedRefType.getEncoding());
 
       Value resLowI4 = arith::BitcastOp::create(builder, loc, i4PackedType,
-                                                  lowClone->getResult(i));
+                                                  lowResults[i]);
       Value resHighI4 = arith::BitcastOp::create(builder, loc, i4PackedType,
-                                                   highClone->getResult(i));
+                                                   highResults[i]);
       Value resLowI8 =
           arith::ExtUIOp::create(builder, loc, i8PackedType, resLowI4);
       Value resHighI8 =
@@ -986,15 +1671,18 @@ static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
 // GPU wrapper conversion
 //===----------------------------------------------------------------------===//
 
-/// Legalize a memref type with a non-TT_Float element type to its i8
-/// equivalent: f8E8M0FNU -> i8 (same shape), f4E2M1FN -> i8 (halved last dim).
+/// Legalize a memref type with a non-TT_Float or integer i4 element type to
+/// its i8 equivalent: f8E8M0FNU -> i8 (same shape), f4E2M1FN / i4 -> i8
+/// (halved last dim).
 static std::optional<MemRefType> convertMemRefType(MemRefType memrefType,
                                                    Type i8Ty) {
-  if (!isNonTTFloat(memrefType.getElementType()))
+  Type elemType = memrefType.getElementType();
+  if (!isNonTTFloat(elemType) && !elemType.isInteger(4))
     return std::nullopt;
   SmallVector<int64_t> newShape(memrefType.getShape());
-  if (memrefType.getElementType().getIntOrFloatBitWidth() == 4) {
-    assert(newShape.back() % 2 == 0 && "The last dimension must be even");
+  if (elemType.getIntOrFloatBitWidth() == 4) {
+    if (newShape.back() % 2 != 0)
+      return std::nullopt;
     newShape.back() /= 2;
   }
   return MemRefType::get(newShape, i8Ty, memrefType.getLayout(),

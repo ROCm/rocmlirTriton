@@ -1,10 +1,10 @@
-// UNSUPPORTED: true
-// TODO(rocmlirTriton): Fusions need rework
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline highlevel | FileCheck %s
 
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline highlevel | rocmlir-opt --rock-affix-params --rock-conv-to-gemm --rock-gemm-to-gridwise -rock-regularize | FileCheck %s
-
-// CHECK-COUNT-1: linalg.generic
-// CHECK-NOT: linalg.generic
+// Verify that the add is fused with the conv (arith.addf on tensors, single store).
+// CHECK: rock.conv
+// CHECK: arith.addf
+// CHECK-COUNT-1: rock.store
+// CHECK-NOT: rock.store
 
 module {
   func.func @test_fusion(%arg0: tensor<256x128x28x28xf32>, %arg1: tensor<64x128x3x3xf32>, %arg2: tensor<256x64x28x28xf32>) -> tensor<256x28x28x64xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {

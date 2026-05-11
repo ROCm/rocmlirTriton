@@ -7,7 +7,7 @@ add_subdirectory(common_utils)
 llvm_canonicalize_cmake_booleans(
   MLIR_BINDINGS_PYTHON_ENABLED
   LLVM_BUILD_EXAMPLES
-  MLIR_ENABLE_ROCM_CONVERSIONS
+  LLVM_HAS_AMDGPU_TARGET
   MLIR_ENABLE_ROCM_RUNNER
 
   ROCMLIR_DRIVER_E2E_TEST_ENABLED
@@ -93,6 +93,13 @@ set(ROCMLIR_TEST_DEPENDS
   rocmlir-driver
   rocmlir-gen
   rocmlir-common-python-test-utils
+
+  # Build the perf-script bundle (parameterSweeps.py, attentionSweeps.py,
+  # perfRunner.py, rocm-run, ...) so the lit smoke tests under
+  # ``mlir/test/perf-scripts/`` always have it available, and so developers
+  # iterating on those scripts pick up failures via ``ninja check-rocmlir``
+  # instead of waiting for the weekly Jenkins parameter-sweeps run.
+  ci-performance-scripts
 
   opt
   llc

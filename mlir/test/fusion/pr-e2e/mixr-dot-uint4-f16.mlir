@@ -1,5 +1,3 @@
-// TODO(rocmlirTriton): error: 'rock.transform' op failed to verify that all of {input, output} have same element type
-// UNSUPPORTED: true
 // RUN: rocmlir-driver -kernel-pipeline=migraphx %s | rocmlir-gen -fut mlir_unpack_uint4_f16 --arch %arch --clone-harness - | rocmlir-driver -host-pipeline=highlevel -kernel-pipeline=highlevel | rocmlir-gen -ph -fut mlir_unpack_uint4_f16 --verifier clone - | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
 // COM: Runs the MIGraphX pipeline first to rewrite out the int4

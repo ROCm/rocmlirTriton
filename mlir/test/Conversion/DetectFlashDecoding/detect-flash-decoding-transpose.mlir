@@ -57,7 +57,7 @@ module {
       %18 = tosa.cast %17 : (tensor<1x12x2x256x128xf16>) -> tensor<1x12x2x256x128xf32>
       %19 = bufferization.to_buffer %18 : tensor<1x12x2x256x128xf32> to memref<1x12x2x256x128xf32>
       memref.copy %19, %arg4 : memref<1x12x2x256x128xf32> to memref<1x12x2x256x128xf32>
-      rock.yield
+      rock.yield %arg3 : memref<24x256x128xf16>
     }
      softmax(qk) * %10 : tensor<24x128x256xf16>
     } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<24x256x256xf16>, tensor<24x256xf32>

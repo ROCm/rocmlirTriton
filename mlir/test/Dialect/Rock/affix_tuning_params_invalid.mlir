@@ -1,6 +1,9 @@
 // This tests the error handling in the rock-affix-params pass
 
 // RUN: rocmlir-opt -rock-affix-params %s -verify-diagnostics
+// RUN: rocmlir-opt -rock-affix-params %s -verify-diagnostics --mlir-disable-threading \
+// RUN:   --mlir-print-ir-after-failure --mlir-print-ir-module-scope 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=NA --implicit-check-not=rock.not_applicable
 
 // TODO(roctriton): We need to unbufferize attention
 // func.func @rock_attention_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
@@ -48,56 +51,6 @@ func.func @two_gemms(
   return %out0, %out1 : tensor<1x128x115200xf32>, tensor<1x128x115200xf32>
 }
 
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_schedulev2(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {schedule_version =  #rock.schedule_version<2>, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
-//   // expected-disabled-error @+1 {{kernel has both perf_config and schedule_version attribute set. Please modify schedule version directly inside perf_config and remove schedule_version}}
-//   rock.attention{
-//     qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//     %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {perf_config = "attn:v1:16,128,64,1,1,1,0,1,1,0,0", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_perfconfig_schedulev3_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_perfconfig_schedulev4_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>, perf_config = "attn:v1:32,32,32,1,1,1,0,1,1,0,0"}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_schedulev3_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {schedule_version =  #rock.schedule_version<3>, rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
-
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attn_schedulev4_navi(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {schedule_version =  #rock.schedule_version<4>, rock.arch = "amdgcn-amd-amdhsa:gfx1200"} {
-//   // expected-disabled-error @+1 {{schedule version not supported}}
-//   rock.attention{
-//    qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//    %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
-
 // expected-error @below {{unknown attribute 'kernel' on function 'bare_kernel_attr'}}
 func.func @bare_kernel_attr(%arg0: tensor<1x128x128xf32>, %arg1: tensor<1x128x128xf32>, %arg2: tensor<1x128x128xf32>) -> tensor<1x128x128xf32>
     attributes {kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
@@ -116,6 +69,11 @@ func.func @unknown_arg_attr(%arg0: tensor<1x128x128xf32> {rock.prefil}, %arg1: t
   return %out : tensor<1x128x128xf32>
 }
 
+// Verifies that a SplitK perfConfig that fails fusion legality marks the
+// module with `rock.not_applicable` so the tuning driver classifies it as a
+// non-applicable config rather than a compilation bug.
+// NA-LABEL: 'func.func' operation: @rock_gemm_gemm_splitk
+// NA: module attributes {rock.not_applicable
 func.func @rock_gemm_gemm_splitk(%arg0: tensor<1474560xf16>, %arg1: tensor<1474560xf16>, %arg2: tensor<1474560xf16>, %arg3: tensor<1474560xf16>)  -> tensor<1474560xf16> attributes {rock.enable_splitk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
     %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 360 + d2)> by [<Unmerge{4096, 360} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : tensor<1474560xf16> to tensor<1x4096x360xf16>
     %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 4096 + d2)> by [<Unmerge{360, 4096} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 360, 4096] -> [1474560]> : tensor<1474560xf16> to tensor<1x360x4096xf16>
@@ -126,7 +84,7 @@ func.func @rock_gemm_gemm_splitk(%arg0: tensor<1474560xf16>, %arg1: tensor<14745
      ab = %0 * %1 : tensor<1x4096x360xf16>, tensor<1x360x4096xf16>
      ab = elementwise {
     ^bb0(%arg4: tensor<1x4096x4096xf16>, %arg5: tensor<1x4096x4096xf16>):
-      rock.yield
+      rock.yield %arg4 : tensor<1x4096x4096xf16>
     }
      out = ab * %2 : tensor<1x4096x360xf16>
     } {firstGemmIndices = array<i64: 0>, perf_config="attn:v1:32,32,32,1,1,4,0,3,1,0,0"}  -> tensor<1x4096x360xf16>
@@ -137,6 +95,8 @@ func.func @rock_gemm_gemm_splitk(%arg0: tensor<1474560xf16>, %arg1: tensor<14745
     return %7 : tensor<1474560xf16>
   }
 
+// NA-LABEL: 'func.func' operation: @mlir_dot_max_splitk
+// NA: module attributes {rock.not_applicable
 func.func @mlir_dot_max_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280x320xf32>, %arg3: tensor<1x2x320xf32>) -> tensor<1x2x320xf32> attributes {rock.enable_splitk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
     %cst = arith.constant dense<0.000000e+00> : tensor<1x2x320xf32>
     // expected-error @+1 {{Fusion with SplitK perfConfig is not legal}}

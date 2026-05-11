@@ -6,8 +6,6 @@
 //   
 //   // expected-disabled-error @below {{Only set store method is supported for attention.}}
 //   rock.gridwise_attention(%0, %arg1, %arg2, %arg3) preSoftmaxOps = {} {
-//     blockSize = 64 : i32,
-//     gridSize = 24 : i32,
 //     params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
 //     params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
 //     storeMethod = #rock<StoreMethod atomic_add>,
@@ -25,8 +23,6 @@
 //   
 //   // expected-disabled-error @below {{prefixOffset requires causal to be enabled}}
 //   rock.gridwise_attention(%0, %arg1, %arg2, %arg4, %arg3) preSoftmaxOps = {} {
-//     blockSize = 64 : i32,
-//     gridSize = 24 : i32,
 //     params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
 //     params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
 //     storeMethod = #rock<StoreMethod set>,
@@ -328,8 +324,6 @@ func.func @gemm_scaleB_type_invalid(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x
 func.func @gridwise_gemm_accel_scale_presence_a_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA: tensor<1x4x8xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{both scaleA and scaleB must be provided or neither}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA) {
-    blockSize = 64 : i32,
-    gridSize = 1 : i32,
     params = #common_params
   } : tensor<1x4x8xf4E2M1FN>, tensor<1x4x16xf4E2M1FN>, tensor<1x4x8xf8E8M0FNU> -> tensor<1x8x16xf32>
   %stored = rock.store %result to %C by set : tensor<1x8x16xf32> -> tensor<1x8x16xf32> to tensor<1x8x16xf32>
@@ -340,8 +334,6 @@ func.func @gridwise_gemm_accel_scale_presence_a_only(%A: tensor<1x4x8xf4E2M1FN>,
 func.func @gridwise_gemm_accel_scale_presence_b_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleB: tensor<1x4x16xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{both scaleA and scaleB must be provided or neither}}
   %result = rock.gridwise_gemm(%A, %B, %scaleB) {
-    blockSize = 64 : i32,
-    gridSize = 1 : i32,
     params = #common_params
   } : tensor<1x4x8xf4E2M1FN>, tensor<1x4x16xf4E2M1FN>, tensor<1x4x16xf8E8M0FNU> -> tensor<1x8x16xf32>
   %stored = rock.store %result to %C by set : tensor<1x8x16xf32> -> tensor<1x8x16xf32> to tensor<1x8x16xf32>
@@ -352,8 +344,6 @@ func.func @gridwise_gemm_accel_scale_presence_b_only(%A: tensor<1x4x8xf4E2M1FN>,
 func.func @gridwise_gemm_accel_scaleA_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x7xf8E8M0FNU>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{ScaleA shape must match matrixA shape.}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA_bad_dims, %scaleB) {
-    blockSize = 64 : i32,
-    gridSize = 1 : i32,
     quantBlockSize = 32 : i64,
     params = #common_params
   } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x7xf8E8M0FNU>, tensor<1x16x1xf8E8M0FNU> -> tensor<1x8x16xf32>
@@ -365,8 +355,6 @@ func.func @gridwise_gemm_accel_scaleA_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>,
 func.func @gridwise_gemm_accel_scaleB_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x1xf8E8M0FNU>, %scaleB: tensor<1x16x2xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{ScaleB shape must match matrixB shape.}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA_bad_dims, %scaleB) {
-    blockSize = 64 : i32,
-    gridSize = 1 : i32,
     quantBlockSize = 32 : i64,
     params = #common_params
   } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x1xf8E8M0FNU>, tensor<1x16x2xf8E8M0FNU> -> tensor<1x8x16xf32>
@@ -379,8 +367,6 @@ func.func @gridwise_gemm_scaleA_type_invalid(%A: tensor<1x8x32xf4E2M1FN>, %B: te
     %scaleA_bad: tensor<1x8x1xf8E4M3FN>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{'rock.gridwise_gemm' op operand #2 must be 3D tensor of f8E8M0FNU type values, but got 'tensor<1x8x1xf8E4M3FN>'}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA_bad, %scaleB) {
-    blockSize = 64 : i32,
-    gridSize = 1 : i32,
     quantBlockSize = 32 : i64,
     params = #common_params
   } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x1xf8E4M3FN>, tensor<1x16x1xf8E8M0FNU> -> tensor<1x8x16xf32>
@@ -393,8 +379,6 @@ func.func @gridwise_gemm_scaleB_type_invalid(%A: tensor<1x8x32xf4E2M1FN>, %B: te
     %scaleA: tensor<1x8x1xf8E8M0FNU>, %scaleB_bad: tensor<1x16x1xf8E4M3FN>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   // expected-error @+1 {{'rock.gridwise_gemm' op operand #3 must be 3D tensor of f8E8M0FNU type values, but got 'tensor<1x16x1xf8E4M3FN>'}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB_bad) {
-    blockSize = 64 : i32,
-    gridSize = 1 : i32,
     quantBlockSize = 32 : i64,
     params = #common_params
   } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x1xf8E8M0FNU>, tensor<1x16x1xf8E4M3FN> -> tensor<1x8x16xf32>
@@ -516,8 +500,6 @@ func.func @blockwise_gemm_3d_matrix(
 //     scaled by %bufferScaleA
 //     * %bufferB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
-//       blockSize = 256 : i32,
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //       params = #blockwise_params
@@ -546,10 +528,8 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-//       blockSize = 256 : i32,
 //       params = #blockwise_params
 //     } : memref<4xvector<16xf32>, #gpu.address_space<private>>
 //         += memref<4xf4E2M1FN, #gpu.address_space<private>> from memref<256xvector<2xf4E2M1FN>, #gpu.address_space<workgroup>>
@@ -578,10 +558,8 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-//       blockSize = 256 : i32,
 //       params = #blockwise_params
 //     } : memref<4xvector<16xf32>, #gpu.address_space<private>>
 //         += memref<4xf4E2M1FN, #gpu.address_space<private>> from memref<256xvector<2xf4E2M1FN>, #gpu.address_space<workgroup>>
@@ -610,10 +588,8 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-//       blockSize = 256 : i32,
 //       params = #blockwise_params
 //     } : memref<4xvector<16xf32>, #gpu.address_space<private>>
 //         += memref<4xf4E2M1FN, #gpu.address_space<private>> from memref<256xvector<2xf4E2M1FN>, #gpu.address_space<workgroup>>
@@ -642,10 +618,8 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f16, elementTypeLoad = f16, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-//       blockSize = 256 : i32,
 //       params = #blockwise_params
 //     } : memref<4xvector<16xf32>, #gpu.address_space<private>>
 //         += memref<4xf4E2M1FN, #gpu.address_space<private>> from memref<256xvector<2xf16>, #gpu.address_space<workgroup>>
@@ -674,8 +648,6 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
-//       blockSize = 256 : i32,
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //       params = #blockwise_params
@@ -706,10 +678,8 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-//       blockSize = 256 : i32,
 //       params = #blockwise_params
 //     } : memref<4xvector<16xf32>, #gpu.address_space<private>>
 //         += memref<4xf4E2M1FN, #gpu.address_space<private>> from memref<256xvector<2xf4E2M1FN>, #gpu.address_space<workgroup>>
@@ -738,8 +708,6 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
-//       blockSize = 256 : i32,
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //       params = #blockwise_params
@@ -766,8 +734,6 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB
 //     scaled by %bufferScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
-//       blockSize = 256 : i32,
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //       params = #blockwise_params
@@ -797,10 +763,8 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB_bad
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-//       blockSize = 256 : i32,
 //       params = #blockwise_params
 //     } : memref<4xvector<16xf32>, #gpu.address_space<private>>
 //         += memref<4xf4E2M1FN, #gpu.address_space<private>> from memref<256xvector<2xf4E2M1FN>, #gpu.address_space<workgroup>>
@@ -829,10 +793,8 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB_bad
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-//       blockSize = 256 : i32,
 //       params = #blockwise_params
 //     } : memref<4xvector<16xf32>, #gpu.address_space<private>>
 //         += memref<4xf4E2M1FN, #gpu.address_space<private>> from memref<256xvector<2xf4E2M1FN>, #gpu.address_space<workgroup>>
@@ -861,10 +823,8 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB_bad
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f16, elementTypeLoad = f16, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
-//       blockSize = 256 : i32,
 //       params = #blockwise_params
 //     } : memref<4xvector<16xf32>, #gpu.address_space<private>>
 //         += memref<4xf4E2M1FN, #gpu.address_space<private>> from memref<256xvector<2xf4E2M1FN>, #gpu.address_space<workgroup>>
@@ -893,8 +853,6 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB_bad from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
-//       blockSize = 256 : i32,
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //       params = #blockwise_params
@@ -925,8 +883,6 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB_bad from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
-//       blockSize = 256 : i32,
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //       params = #blockwise_params
@@ -957,8 +913,6 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB_bad from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx950",
-//       blockSize = 256 : i32,
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //       params = #blockwise_params
@@ -989,10 +943,8 @@ func.func @blockwise_gemm_3d_matrix(
 //     * %bufferB from %matrixB
 //     scaled by %bufferScaleB from %matrixScaleB
 //     {
-//       rock.arch = "amdgcn-amd-amdhsa:gfx942",
 //       loadAfromLDS,
 //       loadBfromLDS,
-//       blockSize = 256 : i32,
 //       matrixParamsA = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 64, inDPerThread = 2>, 
 //       matrixParamsB = #rock.blockwise_matrix_params<elementType = f4E2M1FN, elementTypeLoad = f4E2M1FN, rotateDWithK = false, swapThreadIterSubDims = false, LDSLayoutDxK = false, directToLDS = false, splitKAcrossThreadsFirst = false, g = 1, d = 256, inDPerThread = 2>,
 //       params = #blockwise_params    
@@ -1606,5 +1558,182 @@ func.func @transform_output_shape_mismatch(%arg0: tensor<256x128xf16>) -> tensor
   // expected-error @+1 {{output shape must match transform upper bounds}}
   %0 = rock.transform %arg0 by #xform : tensor<256x128xf16> to tensor<8x32x128xf16>
   return %0 : tensor<8x32x128xf16>
+}
+
+// =============================================================================
+// Pre-second-GEMM body verification tests
+//
+// `verifyGemmPlusGemmLikeOp` requires that, when the pre-second-GEMM region is
+// non-empty, it contains a single block with at least one block argument whose
+// terminator is a `rock.yield` that yields exactly one value. The same verifier
+// is shared by `rock.gemm_elementwise_gemm`, `rock.conv_elementwise_gemm` and
+// `rock.attention`.
+// =============================================================================
+
+// An empty pre-second-GEMM region is legal: the assembly format makes the
+// elementwise clause optional, and the verifier should accept the op as-is.
+func.func @gemm_elementwise_gemm_empty_body_is_legal(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Multi-block region: the body must be a single block.
+func.func @gemm_elementwise_gemm_body_multi_block(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM region must contain a single block}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     cf.br ^bb1(%qk : tensor<1x4x4xf32>)
+   ^bb1(%qk2: tensor<1x4x4xf32>):
+     rock.yield %qk2 : tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Zero block arguments: the body's entry block must accept at least the
+// running first-GEMM result as a block argument.
+func.func @gemm_elementwise_gemm_body_no_block_args(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must have at least one block argument}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise {
+   ^bb0:
+     %cst = arith.constant dense<0.0> : tensor<1x4x4xf32>
+     rock.yield %cst : tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Wrong terminator: the body must be terminated by a `rock.yield`. Use a
+// self-branch to keep the region single-block while replacing the terminator.
+func.func @gemm_elementwise_gemm_body_wrong_terminator(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must be terminated by a rock.yield}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     cf.br ^bb0(%qk : tensor<1x4x4xf32>)
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Yield with zero operands: must yield exactly one value.
+func.func @gemm_elementwise_gemm_body_yield_zero_operands(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must yield exactly one value}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     rock.yield
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Yield with too many operands: must yield exactly one value.
+func.func @gemm_elementwise_gemm_body_yield_two_operands(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>,
+    %bias: tensor<1x4x4xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must yield exactly one value}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise otherIns(%bias : tensor<1x4x4xf32>) {
+   ^bb0(%qk: tensor<1x4x4xf32>, %b_in: tensor<1x4x4xf32>):
+     %sum = arith.addf %qk, %b_in : tensor<1x4x4xf32>
+     rock.yield %qk, %sum : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// The same body verifier is invoked for `rock.attention`. Sanity check that a
+// malformed pre-softmax region is rejected on attention too.
+func.func @attention_pre_softmax_yield_zero_operands(
+    %q: tensor<1x4x4xf16>, %k: tensor<1x4x4xf16>,
+    %v: tensor<1x4x2xf16>) -> tensor<1x4x2xf16>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must yield exactly one value}}
+  %r = rock.attention{
+   qk = %q * %k : tensor<1x4x4xf16>, tensor<1x4x4xf16>
+   qk = elementwise {
+   ^bb0(%qk_in: tensor<1x4x4xf16>):
+     rock.yield
+   }
+   softmax(qk) * %v : tensor<1x4x2xf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x4x2xf16>
+  return %r : tensor<1x4x2xf16>
+}
+
+// Sanity check that the body verifier also runs for `rock.attention`'s
+// single-block requirement.
+func.func @attention_pre_softmax_multi_block(
+    %q: tensor<1x4x4xf16>, %k: tensor<1x4x4xf16>,
+    %v: tensor<1x4x2xf16>) -> tensor<1x4x2xf16>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM region must contain a single block}}
+  %r = rock.attention{
+   qk = %q * %k : tensor<1x4x4xf16>, tensor<1x4x4xf16>
+   qk = elementwise {
+   ^bb0(%qk_in: tensor<1x4x4xf16>):
+     cf.br ^bb1(%qk_in : tensor<1x4x4xf16>)
+   ^bb1(%qk2: tensor<1x4x4xf16>):
+     rock.yield %qk2 : tensor<1x4x4xf16>
+   }
+   softmax(qk) * %v : tensor<1x4x2xf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x4x2xf16>
+  return %r : tensor<1x4x2xf16>
+}
+
+// Sanity check that the body verifier also runs for
+// `rock.conv_elementwise_gemm`'s single-block requirement.
+func.func @conv_elementwise_gemm_pre_second_gemm_multi_block(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<2x2x2x1x2xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x8x3xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM region must contain a single block}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<2x2x2x1x2xf32>
+   ab = elementwise {
+   ^bb0(%ab_in: tensor<1x4x8xf32>):
+     cf.br ^bb1(%ab_in : tensor<1x4x8xf32>)
+   ^bb1(%ab2: tensor<1x4x8xf32>):
+     rock.yield %ab2 : tensor<1x4x8xf32>
+   }
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
+  return %r : tensor<1x8x3xf32>
 }
 

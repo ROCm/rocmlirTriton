@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
@@ -92,6 +93,7 @@ struct ResolveKernelLaunchParamsPass
 
     int64_t maxLDS = rock::getLDSSize(archStr);
     if (sharedMemSize > maxLDS) {
+      rock::markAsNotApplicable(moduleOp);
       moduleOp.emitError("ttg.shared (")
           << sharedMemSize << ") exceeds LDS limit (" << maxLDS << ") for "
           << archStr;

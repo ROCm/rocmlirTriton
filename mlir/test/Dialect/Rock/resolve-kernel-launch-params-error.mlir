@@ -1,4 +1,6 @@
 // RUN: rocmlir-opt -resolve-kernel-launch-params --split-input-file %s -verify-diagnostics
+// RUN: rocmlir-opt -resolve-kernel-launch-params --split-input-file %s -verify-diagnostics --mlir-print-ir-after-failure 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=NA --implicit-check-not=rock.not_applicable
 
 // Verifies that a missing ttg.shared triggers an error.
 // expected-error @+1 {{ttg.shared attribute not found on module}}
@@ -42,9 +44,12 @@ module attributes {
 
 // -----
 
-// Verifies that ttg.shared exceeding the hardware LDS limit triggers an error.
-// gfx90a has 65536 bytes of LDS.
-// expected-error @+1 {{ttg.shared (65537) exceeds LDS limit (65536) for amdgcn-amd-amdhsa:gfx90a}}
+// Verifies that ttg.shared exceeding the hardware LDS limit triggers an error
+// AND that the pass marks the module with `rock.not_applicable` so that the
+// tuning driver can classify the failure as "config doesn't fit" rather than
+// a real compilation bug. gfx90a has 65536 bytes of LDS.
+// expected-error @+2 {{ttg.shared (65537) exceeds LDS limit (65536) for amdgcn-amd-amdhsa:gfx90a}}
+// NA: module attributes {rock.not_applicable, {{.*}}ttg.shared = 65537
 module attributes {
     "ttg.shared" = 65537 : i32,
     "ttg.num-warps" = 4 : i32,

@@ -1,31 +1,18 @@
-diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-index 00afaf713..f20aaf072 100644
---- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-+++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-@@ -1432,13 +1432,11 @@ static void decomposeMixedModeDotOp(ModuleOp mod) {
-     auto D = dotOp.getD();
-     OpBuilder builder(dotOp);
-     Type AElType = dotOp.getA().getType().getElementType();
-+    Type BElType = dotOp.getB().getType().getElementType();
-+    auto maxBitWidth = std::max(AElType.getIntOrFloatBitWidth(),
-+                                BElType.getIntOrFloatBitWidth());
-     Type promoteType;
-     if (isa<ttg::AMDMfmaEncodingAttr>(D.getType().getEncoding())) {
--      Type BElType = dotOp.getB().getType().getElementType();
--
--      auto maxBitWidth = std::max(AElType.getIntOrFloatBitWidth(),
--                                  BElType.getIntOrFloatBitWidth());
--
-       // TODO check mfma tensor core version compatibility
-       if (maxBitWidth == 8)
+diff --git a/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp b/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp
+index 3f9b247d0..5d8df38ea 100644
+--- a/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp
++++ b/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp
+@@ -38,6 +38,13 @@ public:
+       auto srcEncoding = srcType.getEncoding();
+       if (isa<triton::gpu::SharedEncodingTrait>(srcEncoding))
          return;
-@@ -1451,7 +1449,8 @@ static void decomposeMixedModeDotOp(ModuleOp mod) {
-       else if (maxBitWidth <= 32)
-         promoteType = builder.getF32Type();
-     } else if (isa<ttg::AMDWmmaEncodingAttr>(D.getType().getEncoding())) {
--      Type BElType = dotOp.getB().getType().getElementType();
-+      if (maxBitWidth == 8)
++      // Do not materialize sub-byte tensors through local memory. The LLVM
++      // lowering for convert_layout already widens these transfers to i8 and
++      // truncates them back to their logical element type.
++      Type elementType = srcType.getElementType();
++      if (elementType.isIntOrFloat() &&
++          elementType.getIntOrFloatBitWidth() < 8)
 +        return;
- 
-       if (AElType == BElType)
-         return;
+       auto dstDotOp =
+           dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
+       if (!dstDotOp)
