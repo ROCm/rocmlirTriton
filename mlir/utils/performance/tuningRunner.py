@@ -1132,7 +1132,7 @@ def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
     Tuner verification compares the GPU output against the host CPU reference
     With long seq_length attention (f32/bf16), the kernel error accumulates due to reduction drift,
     masking the GPU's actual precision. We mitigate this with two flags:
-      * `--host-f64-reference` promotes the host kernel's interior to f64,
+      * `--pv_f64` promotes the host kernel's interior to f64,
         eliminating the reference-side drift. 
       * `-relDiff_threshold T` lifts the per-element relative threshold to ride
         on top of the predicted GPU f32 noise floor: `delta ~ eps_f32 * log2(D_qk + 2 * K_eff)`
@@ -1146,10 +1146,10 @@ def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
         
     # CPU drift observed for f32 attention at long seq_len_k > 1024
     if config.datatype in ['f32'] and config.seq_len_k > 1024:
-        flags.append('--host-f64-reference')
+        flags.append('--pv_f64')
     # CPU drift observed for bf16 attention at long seq_len_k > 70
     if config.datatype in ['bf16'] and config.seq_len_k > 70:
-        flags.append('--host-f64-reference')
+        flags.append('--pv_f64')
 
     if config.datatype == 'f32' and config.seq_len_k > 256:
         k_eff = max(1, config.seq_len_k // max(1, config.split_kv))

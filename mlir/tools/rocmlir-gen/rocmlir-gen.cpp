@@ -725,8 +725,8 @@ static llvm::cl::opt<bool>
                              "validation"),
               llvm::cl::init(false));
 
-static llvm::cl::opt<bool> hostF64Reference(
-    "host-f64-reference",
+static llvm::cl::opt<bool> pvF64(
+    "pv_f64",
     llvm::cl::desc("Run the host CPU attention reference internally in f64 "
                    "for higher precision validation of non-quantized "
                    "attention, especially at long seq_len_k. No effect on "
@@ -4472,7 +4472,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   bool isQuantized = params.types[0] == IntegerType::get(ctx, 8);
   // Optionally run the host reference's interior in f64 to get more 
   // accurate validation answer when running attention with a large seq len.
-  const bool promoteHost = hostF64Reference.getValue() && !isQuantized;
+  const bool promoteHost = pvF64.getValue() && !isQuantized;
   Type f64Type = Float64Type::get(ctx);
   auto upcastF = [&](Value v) -> Value {
     if (!promoteHost)
