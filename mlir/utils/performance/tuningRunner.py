@@ -1136,7 +1136,7 @@ def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
         eliminating the reference-side drift. 
       * `-relDiff_threshold T` lifts the per-element relative threshold to ride
         on top of the predicted GPU f32 noise floor: `delta ~ eps_f32 * log2(D_qk + 2 * K_eff)`
-        where `K_eff = seq_len_k / split_kv`. This is only effective for f32 attention as 
+        where `K_eff = seq_len_k // max(1, split_kv)`. This is only effective for f32 attention as 
         other attention types have enough noise space.
         
     """
@@ -1158,7 +1158,7 @@ def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
         # Only override when the predicted floor is at or above the default
         # 1e-6 -- below that, the existing default already has headroom and
         # we don't want to mask small-shape regressions.
-        if floor > 1e-6:
+        if floor >= 1e-6:
             threshold = 4.0 * floor
             flags += ['-relDiff_threshold', f'{threshold:.2e}']
 
