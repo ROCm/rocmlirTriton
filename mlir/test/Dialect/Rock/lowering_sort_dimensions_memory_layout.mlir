@@ -210,6 +210,48 @@ func.func @gemm_elementwise_and_sort(%arg0: tensor<32xf16>, %arg1: tensor<32xf16
 
 // -----
 
+// Ambiguous tracing through elementwise ops:
+// A is built from two slices of the same transformed source tensor. This
+// creates multiple transform paths to the same block arg that differ only in
+// slice offsets, but have the same stride signature. The pass should handle it
+// without crashing and still rewrite/keep the gemm as valid IR.
+// CHECK-LABEL: func.func @gemm_ambiguous_slice_chains
+// CHECK: arith.mulf
+// CHECK: rock.gemm %{{.*}} * %{{.*}} :
+#map_gm2k = affine_map<(d0, d1, d2) -> (d1 * 8 + d2)>
+#unmerge_gm2k = #rock.transform_map<#map_gm2k by [
+  <AddDim{1} ["g"] at [0] -> [] at []>,
+  <Unmerge{8, 8} ["m", "k2"] at [1, 2] -> ["raw"] at [0]>
+] bounds = [1, 8, 8] -> [64]>
+
+#map_slice_hi = affine_map<(d0, d1, d2) -> (d0, d1, d2 + 4)>
+#slice_hi = #rock.transform_map<#map_slice_hi by [
+  <Slice{0, 1, 0, 8, 4, 8} ["g_sliced", "m_sliced", "k_sliced"] at [0, 1, 2] -> ["g", "m", "k2"] at [0, 1, 2]>
+] bounds = [1, 8, 4] -> [1, 8, 8]>
+
+#map_slice_lo = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+#slice_lo = #rock.transform_map<#map_slice_lo by [
+  <Slice{0, 1, 0, 8, 0, 4} ["g_sliced", "m_sliced", "k_sliced"] at [0, 1, 2] -> ["g", "m", "k2"] at [0, 1, 2]>
+] bounds = [1, 8, 4] -> [1, 8, 8]>
+
+#map_gkn_amb = affine_map<(d0, d1, d2) -> (d1 * 8 + d2)>
+#unmerge_gkn_amb = #rock.transform_map<#map_gkn_amb by [
+  <AddDim{1} ["g"] at [0] -> [] at []>,
+  <Unmerge{4, 8} ["k", "n"] at [1, 2] -> ["raw"] at [0]>
+] bounds = [1, 4, 8] -> [32]>
+
+func.func @gemm_ambiguous_slice_chains(%arg0: tensor<64xf16>, %arg1: tensor<32xf16>) -> tensor<1x8x8xf16> attributes {rock.kernel} {
+  %a_src = rock.transform %arg0 by #unmerge_gm2k : tensor<64xf16> to tensor<1x8x8xf16>
+  %a_hi = rock.transform %a_src by #slice_hi : tensor<1x8x8xf16> to tensor<1x8x4xf16>
+  %a_lo = rock.transform %a_src by #slice_lo : tensor<1x8x8xf16> to tensor<1x8x4xf16>
+  %a = arith.mulf %a_hi, %a_lo : tensor<1x8x4xf16>
+  %b = rock.transform %arg1 by #unmerge_gkn_amb : tensor<32xf16> to tensor<1x4x8xf16>
+  %0 = rock.gemm %a * %b : tensor<1x8x4xf16> * tensor<1x4x8xf16> -> tensor<1x8x8xf16>
+  return %0 : tensor<1x8x8xf16>
+}
+
+// -----
+
 // Conv with filter layout ["g", "c", "k", "0", "1"] that needs sorting.
 // Filter: flat → Unmerge [1, 8, 4, 1, 1] (G, K, C, Y, X) → PassThrough swap
 //         to [1, 4, 8, 1, 1] with layout ["g", "c", "k", "0", "1"].
