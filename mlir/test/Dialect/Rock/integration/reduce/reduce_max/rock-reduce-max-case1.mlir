@@ -12,7 +12,7 @@
 func.func @test_reduce(%arg0: tensor<5x4x1xf32>, %arg1: tensor<5x1x3xf32>) -> tensor<1x4x3xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %gemm = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) : (tensor<5x4x1xf32>, tensor<5x1x3xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<5x4x3xf32>
+  %gemm = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) {acc_type = f32} : (tensor<5x4x1xf32>, tensor<5x1x3xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<5x4x3xf32>
   %reduced = "tosa.reduce_max"(%gemm) {axis = 0 : i32} : (tensor<5x4x3xf32>) -> tensor<1x4x3xf32>
   return %reduced : tensor<1x4x3xf32>
 }

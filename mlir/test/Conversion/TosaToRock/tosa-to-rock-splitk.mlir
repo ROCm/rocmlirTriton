@@ -5,7 +5,7 @@
 func.func @test_basic(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> tensor<2x128x256xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
+  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = f32, perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
   // CHECK: %{{.*}} = rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xf32> * tensor<2x64x256xf32> -> tensor<2x128x256xf32>
   return %c : tensor<2x128x256xf32>
 }
@@ -18,7 +18,7 @@ func.func @test_basic_f16(%a: tensor<2x128x64xf16>, %b: tensor<2x64x256xf16>) ->
   // CHECK: %{{.*}} = rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xf16> * tensor<2x64x256xf16> -> tensor<2x128x256xf16>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>
-  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf16>, tensor<2x64x256xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<2x128x256xf16>
+  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = f32, perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf16>, tensor<2x64x256xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<2x128x256xf16>
   return %c : tensor<2x128x256xf16>
 }
 
@@ -30,7 +30,7 @@ func.func @test_basic_bf16(%a: tensor<2x128x64xbf16>, %b: tensor<2x64x256xbf16>)
   // CHECK: %{{.*}} = rock.gemm %arg0 * %arg1 {perf_config = "gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : tensor<2x128x64xbf16> * tensor<2x64x256xbf16> -> tensor<2x128x256xbf16>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xbf16>}> : () -> tensor<1xbf16>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xbf16>}> : () -> tensor<1xbf16>
-  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xbf16>, tensor<2x64x256xbf16>, tensor<1xbf16>, tensor<1xbf16>) -> tensor<2x128x256xbf16>
+  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = f32, perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xbf16>, tensor<2x64x256xbf16>, tensor<1xbf16>, tensor<1xbf16>) -> tensor<2x128x256xbf16>
   return %c : tensor<2x128x256xbf16>
 }
 
@@ -43,7 +43,7 @@ func.func @test_reduce(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> te
   // CHECK: rock.reduce sum %[[gemmOut]] {axis = 2 : index} : tensor<2x128x256xf32> -> tensor<2x128x1xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
+  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = f32, perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
   %1 = "tosa.reduce_sum"(%c) {axis = 2 : i32} : (tensor<2x128x256xf32>) -> tensor<2x128x1xf32>
   return %1 : tensor<2x128x1xf32>
 }
@@ -59,7 +59,7 @@ func.func @test_reduce_two_outputs(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256
   // CHECK: rock.reduce sum %[[outGemm]] {axis = 1 : index} : tensor<2x128x256xf32> -> tensor<2x1x256xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
+  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = f32, perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
   %1 = "tosa.reduce_sum"(%c) {axis = 2 : i32} : (tensor<2x128x256xf32>) -> tensor<2x128x1xf32>
   %2 = "tosa.reduce_sum"(%c) {axis = 1 : i32} : (tensor<2x128x256xf32>) -> tensor<2x1x256xf32>
   return %1, %2 : tensor<2x128x1xf32>, tensor<2x1x256xf32>
@@ -75,7 +75,7 @@ func.func @test_reduce_two_outputs2(%a: tensor<2x128x64xf32>, %b: tensor<2x64x25
   // CHECK: rock.reduce sum %[[outGemm]] {axis = 2 : index} : tensor<2x128x256xf32> -> tensor<2x128x1xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
+  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = f32, perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
   %1 = "tosa.reduce_sum"(%c) {axis = 2 : i32} : (tensor<2x128x256xf32>) -> tensor<2x128x1xf32>
   return %1, %c : tensor<2x128x1xf32>, tensor<2x128x256xf32>
 }
@@ -90,7 +90,7 @@ func.func @test_add_two_outputs(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf3
   // CHECK: tosa.add %[[outGemm]], %arg2 : (tensor<2x128x256xf32>, tensor<2x128x256xf32>) -> tensor<2x128x256xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
+  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = f32, perf_config="gemm:v1:16,32,4,16,16,4,4,2,1,1,1"} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
   %1 = "tosa.add"(%c, %arg3) {} : (tensor<2x128x256xf32>, tensor<2x128x256xf32>) -> tensor<2x128x256xf32>
   return %1, %c : tensor<2x128x256xf32>, tensor<2x128x256xf32>
 }
