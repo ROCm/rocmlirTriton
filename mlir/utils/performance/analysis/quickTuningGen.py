@@ -40,7 +40,7 @@ def get_instruction_type(arch, dtype, op):
     """Determine instruction type based on architecture, data type, and operation."""
     if op == "attention":
         return "GemmGemm"
-    if arch.startswith("gfx9") or arch.startswith("gfx1"):
+    else:
         return "Gemm"
     raise ValueError(f"Unsupported architecture for quick tuning: {arch}")
 
