@@ -45,14 +45,6 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
 
   PassOptions::Option<std::string> arch{
       *this, "arch", desc("AMDGPU ISA version: e.g. gfx908"), init("")};
-  /// When false (default), run `rock-allow-fast-math-flags` immediately
-  /// after `rock-fusion-splitk-regularization`. Set to true to skip that pass.
-  PassOptions::Option<bool> disableDivByReciprocal{
-      *this, "disable-div-by-reciprocal",
-      desc("Skip `rock-allow-fast-math-flags` after split-k regularization "
-           "(by default the pass runs and tags floating-point divisions with "
-           "fastmath `arcp` for reciprocal-style lowering)"),
-      init(false)};
 };
 
 /// Adds the `kernel` pipeline to the `OpPassManager`.

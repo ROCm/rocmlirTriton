@@ -5,10 +5,9 @@
 // RUN: rocmlir-opt -rock-fusion-splitk-regularization -mlir-print-local-scope %s | FileCheck %s
 
 // Split-K introduces `arith.divf` to scale the fused bias/other term. When
-// `rock-allow-fast-math-flags` runs after (same order as the kernel pipeline
-// runs it by default unless `disable-div-by-reciprocal` is set), those
-// divisions pick up `fastmath<arcp>` so lowering may treat them as
-// multiply-by-reciprocal.
+// `rock-allow-fast-math-flags` runs after (same order as the kernel
+// pipeline), those divisions pick up `fastmath<arcp>` so lowering may treat
+// them as multiply-by-reciprocal.
 
 // RUN: rocmlir-opt -rock-fusion-splitk-regularization -rock-allow-fast-math-flags -mlir-print-local-scope %s | FileCheck %s --check-prefix=RECIP
 
