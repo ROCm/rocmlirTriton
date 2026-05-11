@@ -1,11 +1,11 @@
-// Exercise rock-rewrite-div-by-reciprocal: each arith.divf is replaced with the
+// Exercise rock-allow-fast-math-flags: each arith.divf is replaced with the
 // same operands and type, with fastmath extended by `arcp`.
 
-// RUN: rocmlir-opt -rock-rewrite-div-by-reciprocal -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt -rock-allow-fast-math-flags -mlir-print-local-scope %s | FileCheck %s
 
 // Further lowering (scalar `arith.divf` → `llvm.fdiv`; tensor case still needs
 // a tensor/vector pipeline before `arith` fully disappears). Example:
-//   rocmlir-opt -rock-rewrite-div-by-reciprocal \
+//   rocmlir-opt -rock-allow-fast-math-flags \
 //     -convert-arith-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts %s
 
 module {

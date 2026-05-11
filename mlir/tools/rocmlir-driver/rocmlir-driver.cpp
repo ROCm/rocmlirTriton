@@ -104,8 +104,8 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
 
 static cl::opt<bool> disableDivByReciprocal(
     "disable-div-by-reciprocal", cl::init(false),
-    cl::desc("Skip rock-rewrite-div-by-reciprocal after split-k regularization "
-             "(by default the pass tags arith.divf with fastmath arcp)));
+    cl::desc("Skip rock-allow-fast-math-flags after split-k regularization "
+             "(by default the pass tags arith.divf with fastmath arcp)"));
 
 namespace test {
 void registerTestDialect(DialectRegistry &);

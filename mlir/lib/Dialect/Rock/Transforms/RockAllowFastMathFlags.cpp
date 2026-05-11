@@ -1,4 +1,4 @@
-//===- rewriteDivByReciprocal.cpp ------------===//
+//===- RockAllowFastMathFlags.cpp ------------===//
 //
 // Copyright 2026 Advanced Micro Devices.
 //
@@ -35,25 +35,25 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKREWRITEDIVBYRECIPROCALPASS
+#define GEN_PASS_DEF_ROCKALLOWFASTMATHFLAGSPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-rewrite-div-by-reciprocal"
+#define DEBUG_TYPE "rock-allow-fast-math-flags"
 
 using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-class RockRewriteDivByReciprocalPass
-    : public rock::impl::RockRewriteDivByReciprocalPassBase<
-          RockRewriteDivByReciprocalPass> {
+class RockAllowFastMathFlagsPass
+    : public rock::impl::RockAllowFastMathFlagsPassBase<
+          RockAllowFastMathFlagsPass> {
   void runOnOperation() override;
 };
 } // end namespace
 
-static LogicalResult rewriteDivByReciprocal(func::FuncOp func) {
+static LogicalResult allowFastMathFlags(func::FuncOp func) {
   IRRewriter rewriter(func->getContext());
 
   // Collect first: walk + replace in place can invalidate the walk iterator.
@@ -72,10 +72,10 @@ static LogicalResult rewriteDivByReciprocal(func::FuncOp func) {
   return success();
 }
 
-void RockRewriteDivByReciprocalPass::runOnOperation() {
+void RockAllowFastMathFlagsPass::runOnOperation() {
   func::FuncOp func = getOperation();
 
-  if (failed(rewriteDivByReciprocal(func))) {
+  if (failed(allowFastMathFlags(func))) {
     return signalPassFailure();
   }
 }

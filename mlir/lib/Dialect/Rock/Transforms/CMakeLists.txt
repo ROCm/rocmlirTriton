@@ -32,7 +32,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RegularizeOutput.cpp
   RockFlattenTosaFuncArgs.cpp
   RockTosaToElementwise.cpp
-  rewriteDivByReciprocal.cpp
+  RockAllowFastMathFlags.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/Rock
