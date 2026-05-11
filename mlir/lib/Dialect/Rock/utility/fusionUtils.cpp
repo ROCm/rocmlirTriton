@@ -224,9 +224,9 @@ LogicalResult mlir::rock::testFusionLegalityBwdDataConv(ModuleOp mod) {
 // perfConfig. Mirrors how `getGemm1Params` derives `gemm1NPerBlock` and the
 // operand-staging strategy in `GridwiseAttnToBlockwise.cpp`. Returns the
 // upper-bound peak LDS in bytes for the fused kernel.
-static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
-                                            int64_t gemm1N,
-                                            int64_t elemBitWidth) {
+static int64_t
+estimateGemmGemmPeakLDSBytes(RockGemmGemmWrapperInterface op,
+                             GemmGemmParamsAttr params) {
   int64_t mPerBlockG0 = params.getMPerBlockG0();
   int64_t nPerBlockG0 = params.getNPerBlockG0();
   int64_t kPerBlock = params.getKPerBlock();
@@ -236,13 +236,34 @@ static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
   // because gemm0's per-block N tile becomes gemm1's per-block K tile), and
   // gemm1NPerBlock is pinned to PowerOf2Ceil(N1) by `getGemm1Params`.
   int64_t gemm1KPerBlock = PopulateParamsGemmGemm::getGemm1KPerBlock(params);
-  int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(gemm1N);
+  int64_t gemm1NPerBlock =
+      llvm::PowerOf2Ceil(PopulateParamsGemmGemm::getGemm1N(op));
+
+  // Per-tile element widths. Each LDS-resident tile is sized in its own
+  // element type, since a fused gemm-gemm/attention can mix precisions:
+  //   - A/B (gemm0 inputs) share a width: enforced by `AllElementTypesMatch`
+  //     on `rock.gemm_elementwise_gemm` and by Q/K being constrained to the
+  //     same element type on `rock.attention`.
+  //   - The P tile (gemm0 output staged for gemm1's A operand) is cast to
+  //     the op's `softmaxType` when set (e.g. f32 for mixed-precision
+  //     attention, see `GridwiseAttnToBlockwise.cpp` `elemTypeSoftmax`),
+  //     otherwise to the V/C element type. `rock.gemm_elementwise_gemm`
+  //     never sets `softmaxType`, so for the GEG path this resolves to C.
+  //   - The V tile (gemm1's B operand) is in the C element type.
+  int64_t abBits =
+      cast<ShapedType>(op.getAType()).getElementType().getIntOrFloatBitWidth();
+  int64_t cBits =
+      cast<ShapedType>(op.getCType()).getElementType().getIntOrFloatBitWidth();
+  int64_t pBits = cBits;
+  if (auto softmaxAttr = op->getAttrOfType<TypeAttr>("softmaxType"))
+    pBits = softmaxAttr.getValue().getIntOrFloatBitWidth();
 
   // Phase A (gemm0): A tile (M x K) + B tile (K x N) live in LDS.
-  int64_t gemm0Elems = mPerBlockG0 * kPerBlock + nPerBlockG0 * kPerBlock;
+  int64_t phaseABits =
+      abBits * (mPerBlockG0 * kPerBlock + nPerBlockG0 * kPerBlock);
   // Phase B (gemm1): P tile (M x K1) + V tile (K1 x N1) live in LDS.
-  int64_t gemm1Elems =
-      mPerBlockG0 * gemm1KPerBlock + gemm1KPerBlock * gemm1NPerBlock;
+  int64_t phaseBBits = pBits * (mPerBlockG0 * gemm1KPerBlock) +
+                       cBits * (gemm1KPerBlock * gemm1NPerBlock);
 
   // The Triton allocator does liveness-based reuse across the phase boundary,
   // so peak LDS is roughly the larger of the two phases. We then multiply
@@ -250,13 +271,15 @@ static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
   // pipelining: in reality only the globally-loaded operand tiles need
   // `numStages` slots (A and B in phase A; V in phase B), while tiles
   // produced in LDS by an earlier phase (the P tile passed from gemm0 to
-  // gemm1) do not. Applying the uniform multiplier means we may reject some
-  // configs that would actually fit, but we will never accept one that
-  // wouldn't fit -- which is the safe direction for a pre-lowering legality
-  // check. Compute the footprint in bits (so sub-byte element types like i4
-  // aren't rounded up to 1 byte/elem) and convert to bytes at the end.
-  int64_t peakBits =
-      numStages * elemBitWidth * std::max(gemm0Elems, gemm1Elems);
+  // gemm1) do not. Applying the uniform multiplier may reject some configs
+  // that would actually fit. Compute the footprint in bits (so sub-byte
+  // element types like i4 aren't rounded up to 1 byte/elem) and convert to
+  // bytes at the end. We do not account for kpack alignment padding or any
+  // auxiliary persistent buffers (e.g. softmax accumulators), so this is a
+  // best-effort estimate but it catches the
+  // very bad cases (`PowerOf2Ceil(N1)` blowing up `gemm1NPerBlock`)
+  // that the original LDS overflow at ResolveKernelLaunchPass exposed.
+  int64_t peakBits = numStages * std::max(phaseABits, phaseBBits);
   return llvm::divideCeil(peakBits, int64_t{8});
 }
 
@@ -314,13 +337,7 @@ LogicalResult mlir::rock::testFusionLegalityGemmGemmLDS(func::FuncOp func,
           params = maybeParams.value();
         }
 
-        Type elemType =
-            cast<ShapedType>(gemmGemmOp.getAType()).getElementType();
-        int64_t elemBits = elemType.getIntOrFloatBitWidth();
-        int64_t gemm1N = PopulateParamsGemmGemm::getGemm1N(gemmGemmOp);
-
-        int64_t peakLDS =
-            estimateGemmGemmPeakLDSBytes(params, gemm1N, elemBits);
+        int64_t peakLDS = estimateGemmGemmPeakLDSBytes(gemmGemmOp, params);
         if (peakLDS > maxLDS)
           return WalkResult::interrupt();
         return WalkResult::advance();
