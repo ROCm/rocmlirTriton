@@ -94,6 +94,14 @@ int64_t PopulateParamsGemmGemm::getGemm1N(RockGemmGemmWrapperInterface op) {
   return cShape[idx];
 }
 
+int64_t PopulateParamsGemmGemm::getGemm1KPerBlock(GemmGemmParamsAttr params) {
+  // gemm1's per-block K tile is exactly gemm0's per-block N tile: the gemm0
+  // output tile of shape (mPerBlockG0, nPerBlockG0) is consumed (after the
+  // optional elementwise) as gemm1's A operand, so gemm1KPerBlock ==
+  // nPerBlockG0.
+  return params.getNPerBlockG0();
+}
+
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
     OpBuilder &b, RockGemmGemmWrapperInterface op, GemmGemmParamsAttr params) {
   // Due to limitations, gemm1NPerBlock must be equal to gemm1N
@@ -101,7 +109,7 @@ GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
   int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(getGemm1N(op));
   return GemmParamsAttr::get(
       b.getContext(), params.getMPerBlockG0(), gemm1NPerBlock,
-      params.getNPerBlockG0(), params.getKpack(), params.getNumCTAs(),
+      getGemm1KPerBlock(params), params.getKpack(), params.getNumCTAs(),
       params.getNumWaves(), params.getMatrixInstrNonkdim(),
       params.getSplitKFactor(), params.getNumStages(), params.getWavesPerEU(),
       params.getGridGroupSize());

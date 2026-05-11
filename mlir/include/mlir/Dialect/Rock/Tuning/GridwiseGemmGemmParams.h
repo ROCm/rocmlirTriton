@@ -34,7 +34,17 @@ public:
   static FailureOr<GemmGemmParamsAttr>
   obtainTuningParameters(OpBuilder &b, RockGemmGemmWrapperInterface op);
 
+  /// Trailing N (gemmO) dimension of `op`'s C operand, accounting for the
+  /// optional G dim and the transposed-C flag. This is the N dimension of
+  /// the second GEMM (the one whose tile size feeds into gemm1NPerBlock).
   static int64_t getGemm1N(RockGemmGemmWrapperInterface op);
+
+  /// Per-block K tile size for the second GEMM, derived from `params`. Pinned
+  /// to `nPerBlockG0` because the second GEMM's K dim is the first GEMM's N
+  /// dim (gemm0's per-block N tile becomes gemm1's per-block K tile). Kept
+  /// here so the lowering (`getGemm1Params`) and any pre-lowering analyses
+  /// (e.g. LDS budgeting in `fusionUtils`) share a single source of truth.
+  static int64_t getGemm1KPerBlock(GemmGemmParamsAttr params);
 
 protected:
   static GemmGemmParamsAttr

@@ -232,10 +232,10 @@ static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
   int64_t kPerBlock = params.getKPerBlock();
   int64_t numStages = std::max<int64_t>(1, params.getNumStages());
 
-  // gemm1KPerBlock is constrained to equal nPerBlockG0 (gemm0's N becomes
-  // gemm1's K), and gemm1NPerBlock is pinned to PowerOf2Ceil(N1) by
-  // getGemm1Params.
-  int64_t gemm1KPerBlock = nPerBlockG0;
+  // gemm1KPerBlock comes from PopulateParamsGemmGemm (pinned to nPerBlockG0
+  // because gemm0's per-block N tile becomes gemm1's per-block K tile), and
+  // gemm1NPerBlock is pinned to PowerOf2Ceil(N1) by `getGemm1Params`.
+  int64_t gemm1KPerBlock = PopulateParamsGemmGemm::getGemm1KPerBlock(params);
   int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(gemm1N);
 
   // Phase A (gemm0): A tile (M x K) + B tile (K x N) live in LDS.
@@ -245,11 +245,16 @@ static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
       mPerBlockG0 * gemm1KPerBlock + gemm1KPerBlock * gemm1NPerBlock;
 
   // The Triton allocator does liveness-based reuse across the phase boundary,
-  // so peak LDS is roughly the larger of the two phases. Multiply by
-  // numStages because Triton multibuffers operand tiles to overlap
-  // global loads with compute, so each live tile costs `numStages` slots.
-  // Compute the footprint in bits (so sub-byte element types like i4 aren't
-  // rounded up to 1 byte/elem), then convert to bytes at the end.
+  // so peak LDS is roughly the larger of the two phases. We then multiply
+  // each phase by `numStages` as an over-approximation of software
+  // pipelining: in reality only the globally-loaded operand tiles need
+  // `numStages` slots (A and B in phase A; V in phase B), while tiles
+  // produced in LDS by an earlier phase (the P tile passed from gemm0 to
+  // gemm1) do not. Applying the uniform multiplier means we may reject some
+  // configs that would actually fit, but we will never accept one that
+  // wouldn't fit -- which is the safe direction for a pre-lowering legality
+  // check. Compute the footprint in bits (so sub-byte element types like i4
+  // aren't rounded up to 1 byte/elem) and convert to bytes at the end.
   int64_t peakBits =
       numStages * elemBitWidth * std::max(gemm0Elems, gemm1Elems);
   return llvm::divideCeil(peakBits, int64_t{8});
@@ -257,22 +262,6 @@ static int64_t estimateGemmGemmPeakLDSBytes(GemmGemmParamsAttr params,
 
 LogicalResult mlir::rock::testFusionLegalityGemmGemmLDS(func::FuncOp func,
                                                         StringRef perfConfig) {
-  // The arch is a function/module-level attribute, so all ops in `func`
-  // share the same LDS budget; resolve it once. A func that doesn't carry
-  // `rock.arch` (e.g., a host helper alongside a kernel) has nothing to
-  // budget. Treat it as trivially fusible.
-  auto maybeArch = getArch(func);
-  if (failed(maybeArch))
-    llvm_unreachable("rock.arch missing on func passed to "
-                     "testFusionLegalityGemmGemmLDS; Any callers should have "
-                     "set it before calling isModuleFusible");
-
-  int64_t maxLDS = getLDSSize(maybeArch->getValue());
-  if (maxLDS <= 0)
-    llvm_unreachable(
-        "getLDSSize returned non-positive for an arch that getArch accepted; "
-        "this should have failed during target selection");
-
   // If the caller passed a gemm-gemm perfConfig, use it for every gemm-gemm
   // op in the function. Otherwise (empty string, or a non-gemm-gemm config
   // such as `gemm:v1:...` for a module that only contains `rock.gemm`), fall
@@ -294,8 +283,28 @@ LogicalResult mlir::rock::testFusionLegalityGemmGemmLDS(func::FuncOp func,
   }
 
   OpBuilder builder(func.getContext());
+  // Walk only the GEG ops; if the func has none (e.g., a `rock.gemm`-only
+  // module funnelled through `isModuleFusible`, or a host helper sitting
+  // next to a kernel) we return success immediately without touching
+  // `rock.arch` or the LDS DB.
   WalkResult walkResult =
       func.walk([&](RockGemmGemmWrapperInterface gemmGemmOp) -> WalkResult {
+        // The arch is a module-level attribute so it's the same for every
+        // GEG op in `func`, but resolving it here keeps the no-GEG path
+        // arch-free and matches the `llvm_unreachable` contract -- if we
+        // reach a GEG op, MIGraphX has set `rock.arch` on the module.
+        auto maybeArch = getArch(gemmGemmOp);
+        if (failed(maybeArch))
+          llvm_unreachable(
+              "rock.arch missing on a kernel containing a "
+              "RockGemmGemmWrapperInterface op; callers (e.g. MIGraphX) "
+              "must set it before invoking isModuleFusible");
+        int64_t maxLDS = getLDSSize(maybeArch->getValue());
+        if (maxLDS <= 0)
+          llvm_unreachable("getLDSSize returned non-positive for an arch "
+                           "that getArch accepted; this should have failed "
+                           "during target selection");
+
         GemmGemmParamsAttr params = explicitParams;
         if (!params) {
           auto maybeParams = PopulateParamsGemmGemm::obtainTuningParameters(
