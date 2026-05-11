@@ -111,16 +111,35 @@ build/bin/rocmlir-gen --causal -num_heads_q 4 -num_heads_kv 2 -rand 1  -pv --arc
 # f32 split-KV attention with bias on gfx950 (AGPR spill-elimination regression)
 #
 # Without llvm-patches/patch4.patch (cherry-picked llvm/llvm-project#167347),
-# the gfx950 AGPR spill-elimination helper in AMDGPURewriteAGPRCopyMFMA
-# rewrites spill reloads that are not jointly dominated by spill stores, so
-# the produced MachineFunction violates SSA and the MachineVerifier aborts
+# the AGPR spill-elimination helper in AMDGPURewriteAGPRCopyMFMA rewrites
+# spill reloads that are not jointly dominated by spill stores, so the
+# produced MachineFunction violates SSA and the MachineVerifier aborts
 # rocmlir-driver -c with "Virtual register defs don't dominate all uses".
-# Hardcoded arch because the buggy code path is gfx95x-specific (the bisect
-# narrowed it to a 64x32 attention tile + attn-bias + split_kv > 1 pattern
-# that the gfx950 AGPR allocator handles via the affected helper).
+#
+# The buggy pass runs on every MFMA-capable subtarget (gfx908/gfx90a/
+# gfx94x/gfx95x via FeatureMAIInsts), but in this repo the only shape we
+# know reliably trips the dominance bug is this one, and only on gfx950
+# -- the gfx950 register allocator places spill reloads in the pattern
+# that exposes the missing dominance check, while the same source
+# compiles cleanly on gfx908/gfx90a/gfx942. Compile-time regression
+# coverage on all hosts lives in the lit test under
+# mlir/test/rocmlir-driver/; this block is the GPU-validated companion
+# and is therefore gated on actually running on a gfx950.
+#
+# -relDiff_threshold matches PrAttentionF32.toml: the f32 attention
+# reduces over head_dim_qk * seq_len_k ~ 8e4 elements, so a single-
+# element maxRelDiff of a few times ULP * sqrt(K) is expected rounding
+# noise, not a real fault. mlir-runner exits 0 even on a failed
+# verifier, so we grep for the explicit "[1 1 1]" pass marker to fail
+# the smoke if the verifier ever drops a bit.
 
 if [[ "$ARCH" == *"gfx950"* ]]; then
-  build/bin/rocmlir-gen -operation attention -t f32 --arch gfx950:sramecc+:xnack- --num_cu $NUM_CU --num_chiplets 8 -g 8 -seq_len_q 1 -seq_len_k 349 -num_heads_q 128 -num_heads_kv 2 -head_dim_qk 233 -head_dim_v 236 -with-attn-scale=True -with-attn-bias=True -return_lse=True -split_kv=8 --perf_config=attn:v1:64,32,16,2,1,1,32,1,2,2,2 --current_seq_len=255,148,29,264,122,189,61,184 -pv | build/bin/rocmlir-driver --host-pipeline=highlevel | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so --entry-point-result=void
+  agpr_out=$(build/bin/rocmlir-gen -operation attention -t f32 --arch gfx950:sramecc+:xnack- --num_cu $NUM_CU --num_chiplets 8 -g 8 -seq_len_q 1 -seq_len_k 349 -num_heads_q 128 -num_heads_kv 2 -head_dim_qk 233 -head_dim_v 236 -with-attn-scale=True -with-attn-bias=True -return_lse=True -split_kv=8 --perf_config=attn:v1:64,32,16,2,1,1,32,1,2,2,2 --current_seq_len=255,148,29,264,122,189,61,184 -pv -relDiff_threshold 0.00005 | build/bin/rocmlir-driver --host-pipeline=highlevel | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so --entry-point-result=void)
+  echo "$agpr_out"
+  if ! echo "$agpr_out" | grep -q '^\[1 1 1\]$'; then
+    echo "Error: gfx950 f32 attention AGPR spill-elimination regression did not produce [1 1 1]"
+    exit 1
+  fi
 else
   echo "Skipping gfx950 f32 attention AGPR spill-elimination regression (requires gfx950, detected $ARCH)"
 fi

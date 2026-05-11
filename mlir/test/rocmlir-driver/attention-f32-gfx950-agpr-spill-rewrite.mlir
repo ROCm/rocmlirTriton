@@ -10,10 +10,15 @@
 // are not jointly dominated by spill stores, breaking SSA on the
 // produced MachineFunction.
 //
-// The arch is hardcoded because the crash only reproduces on
-// AGPR-capable subtargets (gfx90a/gfx94x/gfx95x); the gfx95x AGPR
-// allocator is what triggers the buggy code path here. Compile-only,
-// no GPU required.
+// The bug itself lives in a pass that runs on every MFMA-capable
+// subtarget (gfx908/gfx90a/gfx94x/gfx95x via FeatureMAIInsts), but the
+// only in-tree shape we have that actually trips the dominance
+// violation is this one, and only on gfx950 -- the gfx950 register
+// allocator places spill reloads in the pattern that exposes the
+// missing dominance check, while gfx908/gfx90a/gfx942 happen to land
+// on safer placements for the same source. Hence the hardcoded
+// --arch; we cross-compile so the test runs on every CI host
+// regardless of GPU. Compile-only, no GPU required.
 
 // RUN: rocmlir-gen -operation attention -t f32 \
 // RUN:   --arch gfx950:sramecc+:xnack- \
