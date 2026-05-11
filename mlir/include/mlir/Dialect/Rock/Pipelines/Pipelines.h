@@ -45,12 +45,13 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
 
   PassOptions::Option<std::string> arch{
       *this, "arch", desc("AMDGPU ISA version: e.g. gfx908"), init("")};
-  /// When true, run `rock-rewrite-div-by-reciprocal` immediately after
-  /// `rock-fusion-splitk-regularization` (tags `arith.divf` with `arcp`).
-  PassOptions::Option<bool> rewriteDivByReciprocal{
-      *this, "rewrite-div-by-reciprocal",
-      desc("After split-k regularization, tag floating-point divisions with "
-           "fastmath `arcp` for reciprocal-style lowering"),
+  /// When false (default), run `rock-rewrite-div-by-reciprocal` immediately
+  /// after `rock-fusion-splitk-regularization` Set to true to skip that pass.
+  PassOptions::Option<bool> disableDivByReciprocal{
+      *this, "disable-div-by-reciprocal",
+      desc("Skip `rock-rewrite-div-by-reciprocal` after split-k "
+           "regularization (by default the pass runs and tags floating-point "
+           "divisions with fastmath `arcp` for reciprocal-style lowering)"),
       init(false)};
 };
 

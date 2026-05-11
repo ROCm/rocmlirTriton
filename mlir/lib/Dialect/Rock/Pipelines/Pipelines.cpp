@@ -355,7 +355,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockRegularizeInterGemmFusionPass());
   addWithDCE(rock::createRockConvToGemmPass());
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
-  if (options.rewriteDivByReciprocal)
+  if (!options.disableDivByReciprocal)
     addWithDCE(rock::createRockRewriteDivByReciprocalPass());
   addWithDCE(rock::createRockGemmToGridwisePass());
   addWithDCE(rock::createRockAttnToGridwisePass());

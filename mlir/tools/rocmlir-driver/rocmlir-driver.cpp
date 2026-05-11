@@ -44,17 +44,6 @@
 using namespace llvm;
 using namespace mlir;
 
-// Exit codes: 0 = success, EXIT_FAILURE (from <cstdlib>) = real failure,
-// EXIT_NOT_APPLICABLE = rock.not_applicable marker set (config refused, not a
-// bug). parameterSweeps.py keys on this contract: it treats 0 as PASS, 2 as
-// NOT_APPLICABLE, and anything else as FAIL — so EXIT_FAILURE just needs to
-// be non-zero and distinct from EXIT_NOT_APPLICABLE.
-#define EXIT_NOT_APPLICABLE 2
-static_assert(EXIT_FAILURE != 0 && EXIT_FAILURE != EXIT_NOT_APPLICABLE,
-              "rocmlir-driver exit-code contract: EXIT_FAILURE must be "
-              "non-zero and distinct from EXIT_NOT_APPLICABLE "
-              "(parameterSweeps.py keys on this)");
-
 static cl::opt<std::string> inputFilename(llvm::cl::Positional,
                                           llvm::cl::desc("<input file>"),
                                           llvm::cl::init("-"));
@@ -113,10 +102,10 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
                                  cl::init(""));
 
-static cl::opt<bool> rewriteDivByReciprocal(
-    "rewrite-div-by-reciprocal", cl::init(false),
-    cl::desc("After split-k regularization, tag arith.divf with fastmath arcp "
-             "(see rock-rewrite-div-by-reciprocal pass)"));
+static cl::opt<bool> disableDivByReciprocal(
+    "disable-div-by-reciprocal", cl::init(false),
+    cl::desc("Skip rock-rewrite-div-by-reciprocal after split-k regularization "
+             "(by default the pass tags arith.divf with fastmath arcp)));
 
 namespace test {
 void registerTestDialect(DialectRegistry &);
@@ -162,7 +151,6 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
   PassManager pm(module->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
-  applyDefaultTimingPassManagerCLOptions(pm);
   pm.enableVerifier(!disableVerifyPasses);
   buildPipeline(pm);
 
@@ -188,7 +176,6 @@ runKernelPipeline(StringRef archName, ModuleOp m,
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
-  applyDefaultTimingPassManagerCLOptions(pm);
   pm.enableVerifier(!disableVerifyPasses);
   bool needArch = kernelPipelineSet.contains("binary");
   RocmDeviceName devName;
@@ -266,6 +253,7 @@ runKernelPipeline(StringRef archName, ModuleOp m,
     rock::KernelOptions opts;
     opts.arch = archName.str();
     opts.rewriteDivByReciprocal = rewriteDivByReciprocal.getValue();
+
     rock::buildKernelPipeline(pm, opts);
   }
   if (kernelPipelineSet.contains("triton")) {
@@ -404,7 +392,6 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     PassManager pm(module->getName(), PassManager::Nesting::Implicit);
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
-    applyDefaultTimingPassManagerCLOptions(pm);
     pm.enableVerifier(!disableVerifyPasses);
     auto errorHandler = [&](const Twine &msg) {
       emitError(UnknownLoc::get(module.getContext())) << msg;
@@ -459,7 +446,7 @@ int main(int argc, char **argv) {
   auto file = openInputFile(inputFilename, &errorMessage);
   if (!file) {
     llvm::errs() << errorMessage << "\n";
-    exit(EXIT_FAILURE);
+    exit(1);
   }
 
   // Parse the input file.
@@ -467,32 +454,21 @@ int main(int argc, char **argv) {
   moduleRef = parseSourceFile<mlir::ModuleOp>(sourceMgr, &context);
   if (!moduleRef) {
     llvm::errs() << "Parse host harness " << inputFilename << " failed.\n";
-    exit(EXIT_FAILURE);
+    exit(1);
   }
   module = moduleRef.get();
 
-  // Run MLIR passes with passed in tuning parameters. If a rock pass
-  // determined the (kernel x perf-config x hw) combination is structurally
-  // inapplicable it will have signalled pass failure AND set the
-  // `rock.not_applicable` marker on the module (see RockAttrDefs.td and
-  // ResolveKernelLaunchParamsPass for the canonical example). Distinguish
-  // that from a real lowering bug via a dedicated exit code so callers
-  // (parameterSweeps.py, tuning frontends, ...) can classify the failure
-  // without having to scrape stderr.
+  // Run MLIR passes with passed in tuning parameters
   if (failed(runMLIRPasses(module, passPipeline))) {
-    if (module->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
-      llvm::errs() << "Lowering not applicable.\n";
-      exit(EXIT_NOT_APPLICABLE);
-    }
     llvm::errs() << "Lowering failed.\n";
-    exit(EXIT_FAILURE);
+    exit(1);
   }
 
   // Set up the output file.
   auto output = openOutputFile(outputFilename, &errorMessage);
   if (!output) {
     llvm::errs() << errorMessage << "\n";
-    exit(EXIT_FAILURE);
+    exit(1);
   }
 
   module.print(output->os());

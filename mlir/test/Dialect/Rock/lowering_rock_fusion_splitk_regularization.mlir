@@ -6,8 +6,9 @@
 
 // Split-K introduces `arith.divf` to scale the fused bias/other term. When
 // `rock-rewrite-div-by-reciprocal` runs after (same order as the kernel
-// pipeline with `rewrite-div-by-reciprocal`), those divisions pick up
-// `fastmath<arcp>` so lowering may treat them as multiply-by-reciprocal.
+// pipeline runs it by default unless `disable-div-by-reciprocal` is set),
+// those divisions pick up `fastmath<arcp>` so lowering may treat them as
+// multiply-by-reciprocal.
 
 // RUN: rocmlir-opt -rock-fusion-splitk-regularization -rock-rewrite-div-by-reciprocal -mlir-print-local-scope %s | FileCheck %s --check-prefix=RECIP
 
