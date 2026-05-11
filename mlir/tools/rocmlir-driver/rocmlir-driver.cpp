@@ -264,13 +264,17 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     llvm::errs() << "Kernel pipeline:\n";
     pm.printAsTextualPipeline(llvm::errs());
     llvm::errs() << "\n";
-
-    // Return success in dump-pipelines if the module is empty
-    // Otherwise rocmlir-driver will return failure when we run
-    // certain passes like triton-to-hsaco (which fail on empty modules)
-    if (m.getBody()->empty())
-      return success();
   }
+
+  // Skip the kernel-backend pipeline on CPU-only / kernel-less modules
+  // Mirrors the kernel/host gating that Phases 1-2 get from `runWithDetach`
+  bool hasKernel =
+      llvm::any_of(m.getOps<func::FuncOp>(), [](func::FuncOp f) {
+        return f->hasAttr(rock::KernelAttr::getMnemonic());
+      });
+  if (!hasKernel)
+    return success();
+
   return pm.run(m);
 }
 
