@@ -26,7 +26,7 @@ module {
 
   // Prior fast-math bits are kept; `arcp` is merged in.
   // CHECK-LABEL: func.func @divf_preserves_other_fastmath
-  // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<arcp> : f32
+  // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<{{(nnan,arcp|arcp,nnan)}}> : f32
   func.func @divf_preserves_other_fastmath(%a: f32, %b: f32) -> f32 {
     %0 = arith.divf %a, %b fastmath<nnan> : f32
     return %0 : f32
