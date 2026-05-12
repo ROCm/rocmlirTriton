@@ -1,12 +1,17 @@
 // Exercise rock-allow-fast-math-flags: each arith.divf is replaced with the
 // same operands and type, with fastmath extended by `arcp`.
-
 // RUN: rocmlir-opt -rock-allow-fast-math-flags -mlir-print-local-scope %s | FileCheck %s
 
-// Further lowering (scalar `arith.divf` → `llvm.fdiv`; tensor case still needs
-// a tensor/vector pipeline before `arith` fully disappears). Example:
-//   rocmlir-opt -rock-allow-fast-math-flags \
-//     -convert-arith-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts %s
+// End-to-end check
+// migraphx -> tosa
+// RUN: rocmlir-driver -kernel-pipeline=migraphx %s | FileCheck %s --check-prefix=TOSA
+
+// tosa -> rock
+// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | FileCheck %s --check-prefix=ROCK
+
+// rock-allow-fast-math-flags
+// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-opt -rock-allow-fast-math-flags -mlir-print-local-scope | FileCheck %s --check-prefix=ARCP
+
 
 module {
 
@@ -30,5 +35,23 @@ module {
   func.func @divf_preserves_other_fastmath(%a: f32, %b: f32) -> f32 {
     %0 = arith.divf %a, %b fastmath<nnan> : f32
     return %0 : f32
+  }
+
+  // TOSA-LABEL: func.func @migraphx_div_adds_arcp
+  // TOSA:      tosa.reciprocal %{{.*}} : (tensor<2x3xf32>) -> tensor<2x3xf32>
+  // TOSA-NEXT: tosa.mul %{{.*}}, %{{.*}}, %{{.*}} : (tensor<2x3xf32>, tensor<2x3xf32>, tensor<1xi8>) -> tensor<2x3xf32>
+
+  // ROCK-LABEL: func.func @migraphx_div_adds_arcp
+  // ROCK:      %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<2x3xf32>
+  // ROCK:      %[[RECIP:.*]] = arith.divf %[[ONE]], %{{.*}} : tensor<2x3xf32>
+  // ROCK-NEXT: arith.mulf %{{.*}}, %[[RECIP]] : tensor<2x3xf32>
+
+  // ARCP-LABEL: func.func @migraphx_div_adds_arcp
+  // ARCP:      %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<2x3xf32>
+  // ARCP:      %[[RECIP:.*]] = arith.divf %[[ONE]], %{{.*}} fastmath<arcp> : tensor<2x3xf32>
+  // ARCP-NEXT: arith.mulf %{{.*}}, %[[RECIP]] : tensor<2x3xf32>
+  func.func @migraphx_div_adds_arcp(%a: !migraphx.shaped<2x3xf32, 3x1>, %b: !migraphx.shaped<2x3xf32, 3x1>) -> !migraphx.shaped<2x3xf32, 3x1> attributes {kernel, arch = "gfx90a", rock.kernel} {
+    %0 = migraphx.div %a, %b : <2x3xf32, 3x1>, <2x3xf32, 3x1> -> <2x3xf32, 3x1>
+    return %0 : !migraphx.shaped<2x3xf32, 3x1>
   }
 }

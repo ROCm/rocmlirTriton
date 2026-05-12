@@ -21,17 +21,10 @@
 //===-----------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
-#include "mlir/Dialect/Rock/IR/RockTypes.h"
-#include "mlir/Dialect/Rock/utility/fusionUtils.h"
-#include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
-#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/LogicalResult.h"
 
 namespace mlir {
 namespace rock {
@@ -53,29 +46,11 @@ class RockAllowFastMathFlagsPass
 };
 } // end namespace
 
-static LogicalResult allowFastMathFlags(func::FuncOp func) {
-  IRRewriter rewriter(func->getContext());
-
-  // Collect first: walk + replace in place can invalidate the walk iterator.
-  SmallVector<arith::DivFOp, 8> divOps;
-  func.walk([&](arith::DivFOp divOp) { divOps.push_back(divOp); });
-
-  for (arith::DivFOp divOp : divOps) {
-    assert(divOp.getNumOperands() == 2);
-    LLVM_DEBUG(llvm::dbgs() << "Op to modify: " << divOp << "\n");
-    arith::FastMathFlags combinedFlags =
-        divOp.getFastmath() | arith::FastMathFlags::arcp;
-    rewriter.setInsertionPoint(divOp);
-    rewriter.replaceOpWithNewOp<arith::DivFOp>(divOp, divOp.getLhs(),
-                                               divOp.getRhs(), combinedFlags);
-  }
-  return success();
-}
-
 void RockAllowFastMathFlagsPass::runOnOperation() {
   func::FuncOp func = getOperation();
 
-  if (failed(allowFastMathFlags(func))) {
-    return signalPassFailure();
-  }
+  func.walk([](arith::DivFOp divOp) {
+    LLVM_DEBUG(llvm::dbgs() << "Tagging arcp on " << divOp << "\n");
+    divOp.setFastmath(divOp.getFastmath() | arith::FastMathFlags::arcp);
+  });
 }
