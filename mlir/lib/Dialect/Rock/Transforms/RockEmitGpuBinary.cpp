@@ -1,4 +1,5 @@
-//===- RockEmitGpuBinary.cpp - Emit GPU binary after Triton compilation -------===//
+//===- RockEmitGpuBinary.cpp - Emit GPU binary after Triton compilation
+//-------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -269,8 +270,8 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
       if (auto tensorType = dyn_cast<TensorType>(operand.getType())) {
         auto memrefType =
             MemRefType::get(tensorType.getShape(), tensorType.getElementType());
-        memrefVal =
-            bufferization::ToBufferOp::create(builder, callLoc, memrefType, operand);
+        memrefVal = bufferization::ToBufferOp::create(builder, callLoc,
+                                                      memrefType, operand);
       }
 
       if (isa<MemRefType>(memrefVal.getType())) {

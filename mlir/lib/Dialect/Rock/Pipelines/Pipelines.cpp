@@ -420,7 +420,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // Follows the pattern from mlir-hal/lib/Dialect/MHAL/Pipelines/Pipelines.cpp
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
-                                    StringRef dumpCpuSchedules) {
+                                     StringRef dumpCpuSchedules) {
   // Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
   // OneShotBufferize / CpuLowerVerifier below — otherwise stray
   // arith.extf/truncf on fp8 element types crash bufferization with

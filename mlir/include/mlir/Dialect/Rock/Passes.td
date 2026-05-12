@@ -384,7 +384,8 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
 }
 
 def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
-  let summary = "Emit GPU binary and wire kernel launches after Triton compilation";
+  let summary =
+      "Emit GPU binary and wire kernel launches after Triton compilation";
   let description = [{
     After Triton lowers kernels to LLVM IR and `TritonToHsacoPass` produces
     HSACO, this pass materializes a `gpu.binary` from that HSACO (with kernel

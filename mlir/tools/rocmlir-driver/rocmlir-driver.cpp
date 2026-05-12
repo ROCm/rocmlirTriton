@@ -278,10 +278,9 @@ runKernelPipeline(StringRef arch, ModuleOp m,
 
   // Skip the kernel-backend pipeline on CPU-only / kernel-less modules
   // Mirrors the kernel/host gating that Phases 1-2 get from `runWithDetach`
-  bool hasKernel =
-      llvm::any_of(m.getOps<func::FuncOp>(), [](func::FuncOp f) {
-        return f->hasAttr(rock::KernelAttr::getMnemonic());
-      });
+  bool hasKernel = llvm::any_of(m.getOps<func::FuncOp>(), [](func::FuncOp f) {
+    return f->hasAttr(rock::KernelAttr::getMnemonic());
+  });
   if (!hasKernel)
     return success();
 
@@ -382,16 +381,16 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   // Phase 4: Host backend lowering (func + memref + GPU ops -> LLVM).
   //
   // Runs AFTER kernel compilation so the host module already contains
-  // `gpu.launch_func` (created by RockEmitGpuBinaryPass in buildBackendPipeline);
-  // gpu-to-llvm at the end of this pipeline then translates those into HIP
-  // runtime calls.  Safe to run standalone too: with no kernel pipeline,
-  // there is no `gpu.launch_func` and gpu-to-llvm is a no-op.
+  // `gpu.launch_func` (created by RockEmitGpuBinaryPass in
+  // buildBackendPipeline); gpu-to-llvm at the end of this pipeline then
+  // translates those into HIP runtime calls.  Safe to run standalone too: with
+  // no kernel pipeline, there is no `gpu.launch_func` and gpu-to-llvm is a
+  // no-op.
   if (hostPipelineSet.contains("backend")) {
-    if (failed(runWithDetach(module, "Host Backend", isKernel,
-                             [&](PassManager &pm) {
-                               rock::buildHostLoweringPipeline(
-                                   pm, dumpCpuSchedules.getValue());
-                             })))
+    if (failed(runWithDetach(
+            module, "Host Backend", isKernel, [&](PassManager &pm) {
+              rock::buildHostLoweringPipeline(pm, dumpCpuSchedules.getValue());
+            })))
       return failure();
   }
 
