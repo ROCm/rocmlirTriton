@@ -1,24 +1,10 @@
-// Regression test for an LLVM AMDGPU backend crash in
-// AMDGPURewriteAGPRCopyMFMA::eliminateSpillsOfReassignedVGPRs.
+// Regression for an LLVM AMDGPU backend crash in
+// AMDGPURewriteAGPRCopyMFMA on gfx950: without the cherry-picked
+// fix in llvm-patches/patch4.patch, rocmlir-driver -c aborts on
+// this attention shape. Compile-only; cross-compiles to gfx950 so
+// the test runs on every CI host.
 //
-// Without the cherry-picked llvm/llvm-project#167347 (carried as
-// llvm-patches/patch4.patch), this command aborts during
-// TritonToHsacoPass with:
-//   *** Bad machine code: Virtual register defs don't dominate all uses. ***
-//   LLVM ERROR: Found 1 machine code errors.
-// because the AGPR spill-elimination helper rewrites spill reloads that
-// are not jointly dominated by spill stores, breaking SSA on the
-// produced MachineFunction.
-//
-// The bug itself lives in a pass that runs on every MFMA-capable
-// subtarget (gfx908/gfx90a/gfx94x/gfx95x via FeatureMAIInsts), but the
-// only in-tree shape we have that actually trips the dominance
-// violation is this one, and only on gfx950 -- the gfx950 register
-// allocator places spill reloads in the pattern that exposes the
-// missing dominance check, while gfx908/gfx90a/gfx942 happen to land
-// on safer placements for the same source. Hence the hardcoded
-// --arch; we cross-compile so the test runs on every CI host
-// regardless of GPU. Compile-only, no GPU required.
+// Ticket: AIROCMLIR-826
 
 // RUN: rocmlir-gen -operation attention -t f32 \
 // RUN:   --arch gfx950:sramecc+:xnack- \
