@@ -1,4 +1,4 @@
-// Currently only PR CI is enabled. Nightly/weekly is commented out.
+// PR CI and nightly MIGraphX stage are enabled. Other nightly/weekly stages are commented out.
 // ON CHANGING THESE, ALSO CHANGE Jenkinsfile.downstream
 // used for private CI
 import groovy.transform.Field
@@ -10,8 +10,8 @@ import org.jenkinsci.plugins.workflow.support.steps.AgentOfflineException
 @Field
 ConcurrentHashMap<String,String> DOCKER_ARGS_BY_NODE = new ConcurrentHashMap<>()
 
-// @Field
-// String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
+@Field
+String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
 
 /* //
 void buildProject(String target, String cmakeOpts) {
@@ -250,6 +250,7 @@ void buildCK(String cmakeOpts) {
                      """
     sh 'cd build; make -j $(nproc)'
 }
+*/
 
 void buildMIGraphX(String cmakeOpts) {
     sh '[ ! -d build ] || rm -rf build'
@@ -270,11 +271,13 @@ void getAndBuildMIGraphX(String cmakeOpts) {
     buildMIGraphX(cmakeOpts)
 }
 
+/*
 void getAndBuildCK(String cmakeOpts) {
     git branch: params.CKBranch, poll: false,\
         url: 'https://github.com/ROCm/composable_kernel.git'
     buildCK(cmakeOpts)
 }
+*/
 
 void showEnv() {
     echo "$env.NODE_NAME"
@@ -286,14 +289,12 @@ void showEnv() {
     sh 'id'
     sh 'printenv'
 }
-*/
 
 String dockerImage() {
     // If this is being changed please change Dockerfile.migraphx-ci's base image as well
     return 'rocm/mlir:rocm7.0-latest'
 }
 
-/* //
 String dockerImageCIMIGraphX() {
     return 'rocm/mlir-migraphx-ci:rocm7.0-latest'
 }
@@ -306,7 +307,6 @@ void explicitDockerLogin() {
         sh "echo $D_PASS | docker login -u $D_USER --password-stdin"
     }
 }
-*/
 
 void preMergeCheck(String codepath) {
     // Only do static check on mfma codepath during PR CI
@@ -392,7 +392,6 @@ void postProcessPerfRes(String chip) {
 }
 */
 
-/*
 //Get the GPU name of architecture
 def get_gpu_architecture() {
     try {
@@ -408,7 +407,6 @@ def get_gpu_architecture() {
         return 'N/A'
     }
 }
-*/
 
 //makes sure multiple builds are not triggered for branch indexing
 def resetBuild() {
@@ -753,9 +751,9 @@ pipeline {
                      description: 'Can this CI instance use xdlops (no for public server)')
         booleanParam(name: 'weekly', defaultValue: params.weekly ? true : false,
                      description: 'Run weekly-only jobs')
-        // // Temporary change to MIGraphX branch because of upstream merge.
-        // string(name: 'MIGraphXBranch', defaultValue: 'develop',
-        //        description: 'The MIGraphX branch/commit to verify against.')
+        // Temporary change to MIGraphX branch because of upstream merge.
+        string(name: 'MIGraphXBranch', defaultValue: 'develop',
+               description: 'The MIGraphX branch/commit to verify against.')
         // string(name: 'CKBranch', defaultValue: 'develop',
         //     description: 'The Composable Kernel branch to be used with the job')
 
@@ -765,8 +763,8 @@ pipeline {
         //              description: 'Run the shared library stage')
         // booleanParam(name: 'staticLib', defaultValue: true,
         //              description: 'Run the static library stage')
-        // booleanParam(name: 'checkMIGraphX', defaultValue: false,
-        //              description: 'Run the MIGraphX integration tests')
+        booleanParam(name: 'checkMIGraphX', defaultValue: false,
+                     description: 'Run the MIGraphX integration tests')
         // booleanParam(name: 'checkCK', defaultValue: true,
         //              description: 'Compare performance against CK')
         // booleanParam(name: 'runCodeCoverage', defaultValue: params.weekly || (!params.weekly && !params.nightly),
@@ -1494,6 +1492,7 @@ PY
                 }
             }
         }
+        */ // --- END Benchmark/Report NIGHTLY STAGE ---
         stage ("MIGraphX") {
             when {
                 beforeAgent true;
@@ -1558,8 +1557,14 @@ PY
                                                         echo "codepath is ${CODEPATH}"
                                                         echo "Container environment:"
                                                         showEnv()
-                                                        // Package and install current checkout of rocMLIR as MIGraphX dependency.
-                                                        sh 'cget -p ${WORKSPACE}/MIGraphXDeps install ${WORKSPACE} -DBUILD_FAT_LIBROCKCOMPILER=On -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang'
+                                                        // Build and install current checkout of rocmlirTriton as MIGraphX dependency.
+                                                        sh '''
+                                                            export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+                                                            export C_COMPILER=/opt/rocm/llvm/bin/clang
+                                                            bash cmake.sh
+                                                            cd build && ninja librockCompiler
+                                                        '''
+                                                        sh 'cmake --install build --prefix ${WORKSPACE}/MIGraphXDeps'
                                                     }
 
                                                     stage("Build and Verify MIGraphX with MLIR") {
@@ -1617,6 +1622,7 @@ PY
                 }
             }
         }
+        /* // --- Code coverage and remaining NIGHTLY/WEEKLY STAGES (commented out) ---
         stage ("Code coverage") {
             when {
                 beforeAgent true;
