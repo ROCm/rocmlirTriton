@@ -1,74 +1,43 @@
-# MI350 (gfx950) attention/conv/gemm/gemm_gemm reproducer scripts
+# MI350 (gfx950) reproducer scripts
 
-These scripts reproduce the **real numerical bugs** found in the MI350
-performance sweeps logged in
-`mi350/{attn,conv,gemm,gemm_gemm}_errors.log` (sweep run 2026-05-07).
+These scripts reproduce the **bugs that still fire on MI350 after the
+2026-05-07 sweep + recent PR fixes**. The original analysis produced
+nine candidate scripts; after running on MI350, seven of them (attention
+groups 1-6 and standalone GEMM) had all of their cases PASS and have
+been deleted. Only two scripts remain:
 
-They were classified from a host on Navi3 hardware (no MI350 available
-locally), so the scripts have *not* been runtime-verified on gfx950.
-Run them on an MI350 box to confirm which cases still reproduce.
+- `group7_conv.sh` -- 1 conv numerical-result bug (the [0 0 0] case)
+- `group9_gemm_gemm.sh` -- 3 gemm_gemm bugs: 1 numerical-result FAIL,
+  1 compiler OOM, 1 compiler crash (`std::bad_array_new_length`)
 
-## Filtering rules
+## What was filtered out
 
-A failure in the raw log is treated as a **real bug** if it is *all*
-of the following:
+A failure in the raw log is kept only if running it on the **current
+MI350 build** still reproduces a real bug. We removed:
 
-- A `FAIL: Runner returned incorrect result` block (i.e. the kernel
-  built and ran, but produced wrong values).
-- Not pure threshold noise. We exclude cases where `maxAbsDiff < 1e-2`
-  *and* `RMS < 5e-2` *and* no metric is `nan`. Everything with a
-  detectable kernel divergence or any NaN is kept.
-- Not the already-reported `rock::TransformMapAttr::getUpperBounds()`
-  SIGSEGV crash (13 conv cases). Those are tracked separately.
-- Not a timeout (3 cases across the four logs).
-
-After filtering: **201 real bugs** distributed across 9 scripts.
-
-## Scripts
-
-| Script | Op | Cases | Pattern |
-|---|---|---|---|
-| `group1_attn_decode_kvcache.sh` | attention | 18 | KV-cache decode (`seq_len_q=1`, `--current_seq_len`), basic split |
-| `group2_attn_decode_kvcache_lse_split.sh` | attention | 12 | KV-cache decode + `return_lse` + `split_kv>1` (online-softmax merge) |
-| `group3_attn_prefill_plain.sh` | attention | 11 | Prefill, no mask, no KV-cache |
-| `group4_attn_prefill_causal.sh` | attention | 9 | Prefill + `causal=True` |
-| `group5_attn_prefill_split_lse.sh` | attention | 7 | Prefill + `return_lse` + `split_kv>1` |
-| `group6_attn_nan.sh` | attention | 3 | Per-element NaN injection / zero-output saturation |
-| `group7_conv.sh` | conv | 45 | Conv fwd/bwd_data/bwd_weight wrong results (excl. SIGSEGV) |
-| `group8_gemm.sh` | gemm | 51 | Standalone GEMM wrong results |
-| `group9_gemm_gemm.sh` | gemm_gemm | 45 | Back-to-back fused GEMM+GEMM wrong results |
+- Cases that now PASS (presumably fixed by recent PRs).
+- The already-reported `rock::TransformMapAttr::getUpperBounds()`
+  SIGSEGV (8 conv cases hit it on this run).
+- Structural-rejection failures the sweep harness would have classified
+  as `NOT_APPLICABLE` but which surface as crashes when the scripts run
+  the pipeline directly:
+  - "Fusion with SplitK perfConfig is not legal" (3 conv cases).
+  - "ttg.shared exceeds LDS limit" (2 gemm_gemm cases).
 
 ## Usage
 
 ```bash
 # from the rocmlirTriton repo root, with a built tree in ./build
-./mi350/group1_attn_decode_kvcache.sh
+./mi350/group7_conv.sh
+./mi350/group9_gemm_gemm.sh
 # or
-BUILD_DIR=/path/to/build ./mi350/group1_attn_decode_kvcache.sh
+BUILD_DIR=/path/to/build ./mi350/group7_conv.sh
 ```
 
-Each script invokes the same pipeline the sweep harness uses
-(per `mlir/utils/performance/parameterSweeps.py::test_config`):
+The pipelines mirror `mlir/utils/performance/parameterSweeps.py::test_config`:
 
-- Attention & GEMM+GEMM:
-  `rocmlir-gen <args> | rocmlir-driver --host-pipeline=highlevel - | rocmlir-driver -c | rocm-run`
-- GEMM & Conv:
-  `rocmlir-gen <args> | rocmlir-driver -c | rocm-run`
+- conv: `rocmlir-gen <args> | rocmlir-driver -c | rocm-run`
+- gemm_gemm: `rocmlir-gen <args> | rocmlir-driver --host-pipeline=highlevel - | rocmlir-driver -c | rocm-run`
 
-Each kernel prints the verifier flag triple `[RMS_pass absDiff_pass
-relDiff_pass]` on the last line. `[1 1 1]` is PASS; any zero (or a
-crash/hang/timeout, or missing output) is a FAIL.
-
-## Caveats
-
-- Inputs are deterministic (`rocmlir-gen -rand "fixed"` is the
-  default), so individual cases reproduce bit-for-bit unless the
-  GPU kernel itself is non-deterministic (atomics, reduction order).
-- Intermittent failures (a case that passes most runs but fails some)
-  are still bugs. Re-run cases multiple times if a single PASS is
-  observed before declaring it fixed.
-- Some cases may now PASS due to fixes landed after the sweep was
-  run on 2026-05-07. For attention this is especially likely for
-  `split_kv > 1` cases, because commit `eec615b55cd1` (2026-05-08)
-  fixed a buggy CPU split-KV reference path that produced false
-  positives on Navi3.
+`[1 1 1]` on the last line is PASS; any zero, missing output, crash,
+OOM, hang, or timeout is a FAIL.
