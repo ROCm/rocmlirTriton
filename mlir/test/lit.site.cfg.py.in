@@ -89,7 +89,8 @@ if config.rocm_path:
                 config.substitutions.append(('%features', config.features))
         if not config.arch:
             config.no_AMD_GPU = True
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, RuntimeError):
+        # RuntimeError: hip-python loaded but a HIP API call failed at runtime.
         config.no_AMD_GPU = True
 
 import lit.llvm

@@ -4,6 +4,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 import tempfile
 
 import lit.formats
@@ -57,6 +58,16 @@ tool_patterns = [
     ToolSubst('count', config.count_executable, unresolved='fatal'),
 ]
 config.substitutions.append(('%python', '"%s"' % (sys.executable)))
+
+# Windows does not honour Python shebangs; invoke perf-scripts via python.exe.
+if sys.platform == 'win32':
+    for _script in ('parameterSweeps.py', 'attentionSweeps.py',
+                    'perfRunner.py', 'tuningRunner.py'):
+        _path = os.path.join(config.mlir_rock_tools_dir, _script)
+        config.substitutions.append(
+            (r'\b' + re.escape(_script) + r'\b',
+             '"%s" "%s"' % (sys.executable, _path)))
+
 llvm_config.add_tool_substitutions(tool_patterns, [config.llvm_tools_dir])
 ##############
 

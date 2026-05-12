@@ -1,11 +1,10 @@
+import os
+import shutil
 import subprocess
+import sys
 
-# hip-python is required to enumerate AMD GPUs at lit-config time. It is the
-# default on Linux ROCm installs but is typically absent on the Windows HIP SDK,
-# where the test framework still wants to load common.py. Tolerate its absence:
-# get_agents() will raise subprocess.CalledProcessError, which lit.site.cfg.py
-# already handles by setting config.no_AMD_GPU = True (so GPU-needing tests
-# are skipped rather than failing the whole suite).
+# hip-python is the in-process enumeration path on Linux; the Windows HIP SDK
+# has no published wheel, so tolerate its absence and fall back below.
 try:
     from hip import hip
 except ImportError:
@@ -69,20 +68,34 @@ def hip_check(call_result):
 
 
 def get_agents():
-    if hip is None:
-        # Match the exception type lit.site.cfg.py catches to mark no_AMD_GPU.
-        raise subprocess.CalledProcessError(
-            1, 'hip-python', output=b'',
-            stderr=b'hip-python not installed; cannot enumerate AMD GPUs')
-    agents = set()
-    device_count = hip_check(hip.hipGetDeviceCount())
-    for device in range(device_count):
-        props = hip.hipDeviceProp_t()
-        hip_check(hip.hipGetDeviceProperties(props, device))
-        agent = props.gcnArchName.decode('utf-8')
-        agents.add(agent)
+    # Explicit override via env var (e.g. on Windows hosts without hip-python).
+    env_arch = os.environ.get('ROCMLIR_TEST_TARGET_ARCH')
+    if env_arch:
+        return set(a.strip() for a in env_arch.split(',') if a.strip())
 
-    return agents
+    # Linux primary path: hip-python FFI (unchanged from upstream).
+    if hip is not None:
+        agents = set()
+        device_count = hip_check(hip.hipGetDeviceCount())
+        for device in range(device_count):
+            props = hip.hipDeviceProp_t()
+            hip_check(hip.hipGetDeviceProperties(props, device))
+            agents.add(props.gcnArchName.decode('utf-8'))
+        return agents
+
+    # Windows fallback: amdgpu-arch ships with the HIP SDK.
+    if sys.platform == 'win32':
+        tool = shutil.which('amdgpu-arch')
+        if tool:
+            out = subprocess.check_output(
+                [tool], stderr=subprocess.DEVNULL).decode()
+            agents = {line.strip() for line in out.splitlines() if line.strip()}
+            if agents:
+                return agents
+
+    raise subprocess.CalledProcessError(
+        1, 'hip-python/amdgpu-arch', output=b'',
+        stderr=b'no GPU enumeration mechanism available')
 
 
 def is_xdlops_present() -> bool:
