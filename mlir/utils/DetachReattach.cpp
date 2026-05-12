@@ -24,9 +24,8 @@ DetachedFuncs mlir::detachFuncs(ModuleOp module,
       continue;
 
     OpBuilder stubBuilder(funcOp);
-    auto stub =
-        func::FuncOp::create(stubBuilder, funcOp.getLoc(), funcOp.getName(),
-                             funcOp.getFunctionType());
+    auto stub = func::FuncOp::create(stubBuilder, funcOp.getLoc(),
+                                     funcOp.getName(), funcOp.getFunctionType());
     stub.setVisibility(SymbolTable::Visibility::Private);
 
     funcOp->remove();
