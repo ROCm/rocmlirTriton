@@ -650,10 +650,18 @@ static llvm::cl::alias
 // for vectorisation. That trades GPU-faithful rounding for speed and is the
 // right default for most tests.
 //
-// `mlir-strict` (a.k.a. `-pv_strict`) preserves IR-level dtypes through the
-// pre-softmax fusion in attention so the CPU rounds between mul/add the way
-// the GPU does (e.g. `v_dot2_bf16_bf16` on RDNA). Use it when an existing
-// test had to relax thresholds because of CPU/GPU dtype divergence.
+// `mlir-strict` (a.k.a. `-pv_strict`) matches the GPU's effective precision
+// for attention by choosing the first-GEMM output element type
+// structurally:
+//   * No pre-softmax scale/bias: the GPU's truncf-store / load-extf
+//     round-trip folds away, so the chain effectively runs at f32. The CPU
+//     verifier promotes the first GEMM output to f32 to match.
+//   * With scale and/or bias: the round-trip cannot fold because narrow
+//     arithmetic (e.g. `v_dot2_bf16_bf16` on RDNA) sits between, so the GPU
+//     genuinely runs in the narrow type. The CPU verifier keeps the first
+//     GEMM output narrow so it rounds between operations the same way.
+// Use it when an existing test had to relax thresholds because of CPU/GPU
+// dtype divergence (see PR #161 / PrAttentionBF16.toml).
 static llvm::cl::opt<std::string> genValidation(
     "verifier",
     llvm::cl::desc("Select verification from: none(default), cpu, mlir, "
@@ -914,10 +922,12 @@ struct GenParams {
   StringRef arch;
   StringRef perfConfig;
 
-  /// When true, the CPU verifier preserves narrow-float dtypes through the
-  /// pre-softmax fusion (mul / add) so the CPU rounds between operations
-  /// the way the GPU does. Selected via `-pv_strict` /
-  /// `--verifier=mlir-strict`.
+  /// When true, the CPU attention verifier picks the first-GEMM output
+  /// element type to match the GPU's effective precision: f32 when no
+  /// pre-softmax scale/bias is present (the GPU's truncf/extf round-trip
+  /// folds away), and the original narrow float type otherwise (the GPU
+  /// genuinely runs the scale*QK / qk+bias chain in the narrow type).
+  /// Selected via `-pv_strict` / `--verifier=mlir-strict`.
   bool strictMode = false;
 };
 
@@ -4460,72 +4470,6 @@ createCpuGemmElementwiseGemmKernelWithMlir(ModuleOp module,
   return func;
 }
 
-/// Force a narrow-float `tensor` to round-trip through its bit-equivalent
-/// integer type so the result physically goes through the narrow dtype's
-/// rounding once. Used by the strict CPU verifier between operations that
-/// the GPU executes back-to-back at narrow precision (e.g. `bf16` mul / add
-/// fused into `v_dot2_bf16_bf16` on RDNA).
-///
-/// Why bitcast and not just `arith.truncf` + `arith.extf`? On the host the
-/// `arith.mulf %a, %b : bf16` pair lowers to LLVM `fmul %a, %b : bf16`,
-/// which the x86 backend further legalises as `fpext -> fmul f32 ->
-/// fptrunc`. If we left the IR types narrow but didn't materialise the
-/// rounding, LLVM's `instcombine` happily folds the inner
-/// `fptrunc bf16 -> bf16; fpext bf16 -> f32` pair away and we end up with a
-/// single fused-precision f32 `mul`/`add` chain -- exactly what PR #161 had
-/// to relax thresholds for. Bitcasting through `iN` makes the rounded bit
-/// pattern an opaque integer value that LLVM can't fold across, so the
-/// narrow rounding survives all the way to codegen.
-///
-/// Returns `tensor` unchanged when the element type isn't a narrow float
-/// (the round-trip would be a no-op for `f32` or wider, and integer types
-/// don't have rounding to begin with).
-static Value forceNarrowFloatRoundTrip(OpBuilder &b, Location loc,
-                                       Value tensor) {
-  auto tensorType = dyn_cast<RankedTensorType>(tensor.getType());
-  if (!tensorType)
-    return tensor;
-  auto floatType = dyn_cast<FloatType>(tensorType.getElementType());
-  if (!floatType || floatType.getWidth() >= 32)
-    return tensor;
-
-  MLIRContext *ctx = b.getContext();
-  Type intType = b.getIntegerType(floatType.getWidth());
-  auto intTensorType = RankedTensorType::get(tensorType.getShape(), intType);
-
-  AffineMap identityMap =
-      AffineMap::getMultiDimIdentityMap(tensorType.getRank(), ctx);
-  SmallVector<utils::IteratorType> iteratorTypes(tensorType.getRank(),
-                                                 utils::IteratorType::parallel);
-
-  // bitcast bf16 -> i16
-  Value emptyInt =
-      tensor::EmptyOp::create(b, loc, intTensorType, ValueRange{});
-  Value asInt =
-      linalg::GenericOp::create(
-          b, loc, intTensorType, ValueRange{tensor}, ValueRange{emptyInt},
-          ArrayRef<AffineMap>{identityMap, identityMap}, iteratorTypes,
-          [&](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
-            Value bits =
-                arith::BitcastOp::create(nestedB, nestedLoc, intType, args[0]);
-            linalg::YieldOp::create(nestedB, nestedLoc, bits);
-          })
-          .getResult(0);
-
-  // bitcast i16 -> bf16
-  Value emptyFloat =
-      tensor::EmptyOp::create(b, loc, tensorType, ValueRange{});
-  return linalg::GenericOp::create(
-             b, loc, tensorType, ValueRange{asInt}, ValueRange{emptyFloat},
-             ArrayRef<AffineMap>{identityMap, identityMap}, iteratorTypes,
-             [&](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
-               Value back = arith::BitcastOp::create(nestedB, nestedLoc,
-                                                     floatType, args[0]);
-               linalg::YieldOp::create(nestedB, nestedLoc, back);
-             })
-      .getResult(0);
-}
-
 static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
                                                      const GenParams &params) {
   MLIRContext *ctx = module.getContext();
@@ -4605,6 +4549,23 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   Type firstGemmOutElemType = params.types[0];
   if (isQuantized) {
     firstGemmOutElemType = IntegerType::get(ctx, 32);
+  } else if (params.strictMode) {
+    // Strict mode (`-pv_strict`) must match the GPU's effective precision for
+    // the first GEMM. For narrow floats (f16, bf16), the GPU emits a
+    // round-to-narrow store of the first-GEMM result followed by a load+extend
+    // before softmax. Without any pre-softmax elementwise op, that
+    // truncf -> store -> load -> extf round-trip folds away during host/GPU
+    // lowering, so the GPU effectively runs the chain at f32. Promote the CPU
+    // reference accordingly so it also runs at f32.
+    //
+    // When a scale or bias sits between the round and the extend, the GPU
+    // genuinely computes scale*QK / qk+bias in the narrow type
+    // (e.g. `v_dot2_bf16_bf16` on RDNA), and the fold cannot fire. Keep the
+    // CPU reference in the narrow type so it rounds between operations the
+    // same way -- this is the divergence PR #161 had to relax thresholds for.
+    if (auto floatTy = dyn_cast<FloatType>(firstGemmOutElemType);
+        floatTy && floatTy.getWidth() < 32 && !hasAttnScale && !hasAttnBias)
+      firstGemmOutElemType = builder.getF32Type();
   }
   auto queriesZp =
       tosa::createZeroPointTensor(builder, loc, queriesTensor.getType(), 0)
@@ -4684,15 +4645,6 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     qkTensor = rock::tosa::getMulOp(
         builder, loc, qkTensor, scaleTensor,
         cast<ShapedType>(scaleTensor.getType()).getElementType());
-
-    // In strict mode, force the narrow-float rounding the GPU performs
-    // between the `scale * QK` multiply and the bias add (e.g. the
-    // round-to-bf16 implicit in `v_dot2_bf16_bf16`). Without this the
-    // host backend folds the intervening truncate/extend pair away and
-    // the chain runs at f32, which is the divergence PR #161 had to
-    // relax thresholds for.
-    if (params.strictMode && hasAttnBias)
-      qkTensor = forceNarrowFloatRoundTrip(builder, loc, qkTensor);
   }
 
   if (hasAttnBias) {
@@ -4711,12 +4663,6 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     qkTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
         builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
         qkTensor, biasTensor);
-
-    // Strict mode: force the rounding the GPU performs between the bias
-    // add result and the subsequent cast/softmax stage so the handoff to
-    // the next operation matches GPU bit-for-bit.
-    if (params.strictMode)
-      qkTensor = forceNarrowFloatRoundTrip(builder, loc, qkTensor);
   }
   // cast to softmaxType
   auto softmaxType = typeFromString(softmaxDataType.getValue(), ctx);
@@ -4818,6 +4764,18 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
          "All optional args should be consumed by now");
 
   auto outputType = cast<mlir::bufferization::BufferLikeType>(output.getType());
+
+  // If we promoted intermediate computation to f32 (strict mode, no
+  // pre-softmax scale/bias), cast the result back to the original output
+  // element type before writing it to the output buffer.
+  Type resultElemType =
+      cast<ShapedType>(resultTensor.getType()).getElementType();
+  Type outputElemType = cast<ShapedType>(outputType).getElementType();
+  if (resultElemType != outputElemType) {
+    resultTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(
+        builder, loc, outputElemType, resultTensor);
+  }
+
   ImplicitLocOpBuilder implicitBuilder(loc, builder);
   auto shapeValue = tosa::getTosaConstShape(
       implicitBuilder, cast<ShapedType>(outputType).getShape());
