@@ -180,8 +180,7 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
 
 static LogicalResult
 runKernelPipeline(StringRef arch, ModuleOp m,
-                  llvm::SmallDenseSet<StringRef> &kernelPipelineSet,
-                  llvm::SmallDenseSet<StringRef> &hostPipelineSet) {
+                  llvm::SmallDenseSet<StringRef> &kernelPipelineSet) {
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
@@ -376,8 +375,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                 .getValue();
       }
     }
-    if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet,
-                                 hostPipelineSet)))
+    if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet)))
       return failure();
   }
 

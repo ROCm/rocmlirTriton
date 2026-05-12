@@ -106,7 +106,6 @@ pythonenv*
 # rocmlirTriton project-specific dependencies
 /MIOpen
 /MIOpenDeps
-.cursor/
 # Plan files, scratch notes, and working documents (per workspace-hygiene rule)
 /plans/
 /scratch/
