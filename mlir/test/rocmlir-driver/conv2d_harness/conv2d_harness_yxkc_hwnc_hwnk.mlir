@@ -1,6 +1,6 @@
 // RUN: rocmlir-gen --arch %arch -p -fil_layout=gyxkc -in_layout=hwngc -out_layout=hwngk %s | FileCheck %s --check-prefix=HARNESS
 // RUN: rocmlir-gen --arch %arch -p -fil_layout=gyxkc -in_layout=hwngc -out_layout=hwngk %s | rocmlir-driver -c | FileCheck %s --check-prefix=LOWERING
-// RUN: rocmlir-gen --arch %arch -p -fil_layout=gyxkc -in_layout=hwngc -out_layout=hwngk %s | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=E2E
+// RUN: rocmlir-gen --arch %arch -p -fil_layout=gyxkc -in_layout=hwngc -out_layout=hwngk %s | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/%shlibprefixmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/%shlibprefixconv-validation-wrappers%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_runner_utils%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=E2E
 
 func.func private @rock_conv_g01kc_01ngc_01ngk_0(%arg0: tensor<9216xf32>, %arg1: tensor<1048576xf32>, %arg2: tensor<14745600xf32>) -> tensor<14745600xf32>
 

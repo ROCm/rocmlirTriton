@@ -32,6 +32,9 @@ config.test_exec_root = os.path.join(config.mlir_obj_root, 'test')
 
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
+# CMAKE_SHARED_LIBRARY_PREFIX: 'lib' on Unix, '' on Windows MSVC.
+config.substitutions.append(('%shlibprefix',
+                             '' if sys.platform == 'win32' else 'lib'))
 config.substitutions.append(("%mlir_src_root", config.mlir_src_root))
 config.substitutions.append(('%random_data', config.random_data))
 config.substitutions.append(
