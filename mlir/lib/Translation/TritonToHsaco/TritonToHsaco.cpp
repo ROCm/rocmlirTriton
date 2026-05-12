@@ -224,50 +224,43 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   kernelFn->addFnAttr("uniform-work-group-size", "true");
 
   // Cap the requested wavesPerEU at what's achievable given the kernel's
-  // static LDS usage. `ResolveKernelLaunchParamsPass` has already rewritten
-  // `@global_smem` to an internally-linked, statically-sized global (which
-  // is why we must pass `AllowInternal=true` to the lookup here, or it
-  // silently returns nullptr).
+  // static LDS usage, and supply that ceiling as a default when the caller
+  // didn't request one (otherwise the AMDGPU backend defaults to the
+  // per-arch max, which triggers the same pathology). Stamping an
+  // unachievable occupancy hint sends `RegAllocGreedy` into a pathological
+  // eviction loop on the AMDGPU backend (multi-minute compile times on
+  // attention kernels with large MFMA tiles).
   //
-  // Stamping an unachievable occupancy hint sends `RegAllocGreedy` into a
-  // pathological eviction loop on the AMDGPU backend (multi-minute compile
-  // times on attention kernels with large MFMA tiles). The cap is a
-  // necessary lower bound from LDS; VGPR pressure may impose a tighter one
-  // that we can't observe here, but capping at the LDS ceiling already
-  // resolves every reproduced compile-time blowup we've seen. See
-  // `plans/slow-attention-regalloc/TICKET.md` for the full bisection.
+  // `ResolveKernelLaunchParamsPass` has already rewritten `@global_smem` to
+  // an internally-linked, statically-sized global, which is why we must
+  // pass `AllowInternal=true` to the lookup here -- otherwise it silently
+  // returns nullptr and we miss the kernel's LDS footprint entirely. See
+  // `rock::resolveWavesPerEU` for the policy.
   int64_t kernelLdsBytes = 0;
   if (auto *smem =
           module.getGlobalVariable("global_smem", /*AllowInternal=*/true)) {
     if (auto *arrTy = dyn_cast<llvm::ArrayType>(smem->getValueType()))
       kernelLdsBytes = static_cast<int64_t>(arrTy->getNumElements());
   }
-  int64_t ldsBoundWavesPerEU = rock::computeLdsBoundWavesPerEU(
-      archStr, kernelLdsBytes, /*blockSize=*/totalThreads);
+  auto resolution = rock::resolveWavesPerEU(
+      archStr, kernelLdsBytes, /*blockSize=*/totalThreads, wavesPerEU);
 
-  // When the caller didn't request a value (wavesPerEU == 0), stamp the
-  // LDS-bound ceiling explicitly *if* the kernel uses LDS at all. Leaving
-  // the attribute absent makes the AMDGPU backend default to the per-arch
-  // max waves/EU, which is what triggers the same RegAllocGreedy blowup
-  // when LDS is the binding constraint.
-  int effectiveWavesPerEU = wavesPerEU;
-  if (wavesPerEU > 0 && wavesPerEU > ldsBoundWavesPerEU)
-    effectiveWavesPerEU = static_cast<int>(ldsBoundWavesPerEU);
-  else if (wavesPerEU == 0 && kernelLdsBytes > 0 &&
-           ldsBoundWavesPerEU < rock::getMaxWavesPerEU(archStr))
-    effectiveWavesPerEU = static_cast<int>(ldsBoundWavesPerEU);
-
-  if (effectiveWavesPerEU > 0) {
-    std::string wavesStr = std::to_string(effectiveWavesPerEU) + ", " +
-                           std::to_string(effectiveWavesPerEU);
+  if (resolution.effective > 0) {
+    std::string wavesStr = std::to_string(resolution.effective) + ", " +
+                           std::to_string(resolution.effective);
     kernelFn->addFnAttr("amdgpu-waves-per-eu", wavesStr);
     LLVM_DEBUG({
-      if (effectiveWavesPerEU != wavesPerEU)
+      if (resolution.overRequested)
         llvm::dbgs() << "amdgpu-waves-per-eu: capping requested " << wavesPerEU
-                     << " to LDS-achievable " << effectiveWavesPerEU
+                     << " to LDS-achievable " << resolution.effective
                      << " (kernel uses " << kernelLdsBytes
                      << " B LDS, block_size=" << totalThreads << ", " << archStr
                      << ")\n";
+      else if (wavesPerEU == 0)
+        llvm::dbgs() << "amdgpu-waves-per-eu: defaulting to LDS-achievable "
+                     << resolution.effective << " (kernel uses "
+                     << kernelLdsBytes << " B LDS, block_size=" << totalThreads
+                     << ", " << archStr << ")\n";
     });
   }
 

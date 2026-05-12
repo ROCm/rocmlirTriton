@@ -102,11 +102,11 @@ struct ResolveKernelLaunchParamsPass
 
     // If the perfConfig requested a wavesPerEU that the LDS allocation
     // cannot support, reject this candidate now -- compiling it would only
-    // get the LLVM AMDGPU backend stuck in a RegAllocGreedy eviction loop
-    // (see plans/slow-attention-regalloc/TICKET.md). The cap in
-    // setKernelAttributes still applies for callers that bypass this pass,
-    // but here we want the tuner to surface the over-request rather than
-    // silently measuring a kernel whose occupancy gets clamped downstream.
+    // get the LLVM AMDGPU backend stuck in a RegAllocGreedy eviction loop.
+    // The cap in `setKernelAttributes` still applies for callers that bypass
+    // this pass, but here we want the tuner to surface the over-request
+    // rather than silently measuring a kernel whose occupancy gets clamped
+    // downstream.
     int64_t requestedWavesPerEU = wavesPerEU.getValue();
     if (requestedWavesPerEU > 0) {
       // numWarps/threads-per-warp are required for the achievable-occupancy
@@ -120,13 +120,13 @@ struct ResolveKernelLaunchParamsPass
         return signalPassFailure();
       }
       int64_t blockSize = numWarpsAttr.getInt() * threadsPerWarpAttr.getInt();
-      int64_t ldsBound =
-          rock::computeLdsBoundWavesPerEU(archStr, sharedMemSize, blockSize);
-      if (requestedWavesPerEU > ldsBound) {
+      auto resolution = rock::resolveWavesPerEU(archStr, sharedMemSize,
+                                                blockSize, requestedWavesPerEU);
+      if (resolution.overRequested) {
         rock::markAsNotApplicable(moduleOp);
         moduleOp.emitError("perfConfig waves-per-eu (")
             << requestedWavesPerEU << ") exceeds LDS-achievable maximum ("
-            << ldsBound << ") for " << archStr << " (kernel uses "
+            << resolution.ldsBound << ") for " << archStr << " (kernel uses "
             << sharedMemSize << " B LDS, block_size=" << blockSize << ")";
         return signalPassFailure();
       }

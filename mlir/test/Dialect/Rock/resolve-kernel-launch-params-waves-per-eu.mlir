@@ -7,9 +7,8 @@
 // than the kernel's static LDS allocation can support must be rejected and
 // the module marked `rock.not_applicable`, so the tuner skips the candidate
 // instead of measuring a kernel whose occupancy gets capped downstream.
-// See plans/slow-attention-regalloc/TICKET.md for the underlying compile-time
-// pathology this gate prevents. Behavior for `waves-per-eu = 0` (the default
-// when no perfConfig occupancy is requested) is already covered by the other
+// Behavior for `waves-per-eu = 0` (the default when no perfConfig occupancy
+// is requested) is already covered by the other
 // `resolve-kernel-launch-params*.mlir` tests in this directory.
 
 // Achievable request -- passes through unchanged.

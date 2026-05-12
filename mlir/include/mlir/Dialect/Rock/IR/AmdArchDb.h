@@ -96,9 +96,38 @@ int64_t getMaxWavesPerEU(StringRef arch);
 /// pressure may impose a tighter bound that we can't observe at this
 /// pipeline stage. Capping callers to this LDS-bound ceiling prevents
 /// `RegAllocGreedy` from chasing an occupancy target that is provably
-/// unachievable -- see `plans/slow-attention-regalloc/TICKET.md`.
+/// unachievable.
 int64_t computeLdsBoundWavesPerEU(StringRef arch, int64_t kernelLdsBytes,
                                   int64_t blockSize);
+
+/// Result of resolving the `amdgpu-waves-per-eu` value for a kernel against
+/// its LDS-bound occupancy ceiling. See `resolveWavesPerEU`.
+struct WavesPerEUResolution {
+  /// The value to stamp on `amdgpu-waves-per-eu`, or 0 if the attribute
+  /// should be left absent (no LDS pressure and nothing was requested).
+  int64_t effective;
+  /// The LDS-bound occupancy ceiling for this kernel/arch.
+  int64_t ldsBound;
+  /// True iff the caller asked for more occupancy than LDS can support
+  /// (`requested > 0 && requested > ldsBound`). Callers driving a tuner
+  /// sweep use this to reject the configuration; callers compiling a final
+  /// binary silently use `effective`.
+  bool overRequested;
+};
+
+/// Decide the effective `amdgpu-waves-per-eu` value for a kernel that uses
+/// \p kernelLdsBytes of static LDS and has \p blockSize threads, given that
+/// the caller \p requested a particular value (0 = unspecified).
+///
+/// Policy:
+/// - When `requested > 0`, the effective value is `min(requested, ldsBound)`
+///   and `overRequested` is set when the request had to be clamped.
+/// - When `requested == 0`, the effective value is the LDS-bound ceiling
+///   *if* the kernel uses LDS and that ceiling is below the per-arch max,
+///   so the AMDGPU backend does not default to an unachievable target.
+///   Otherwise it is 0 (leave the attribute absent).
+WavesPerEUResolution resolveWavesPerEU(StringRef arch, int64_t kernelLdsBytes,
+                                       int64_t blockSize, int64_t requested);
 
 /// Whether there's fast atomic add support
 bool isFastAtomicAddSupported(StringRef arch, Type type);

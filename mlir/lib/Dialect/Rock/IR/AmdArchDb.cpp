@@ -413,6 +413,22 @@ int64_t mlir::rock::computeLdsBoundWavesPerEU(StringRef arch,
   return std::clamp<int64_t>(ldsBound, 1, maxWavesPerEU);
 }
 
+mlir::rock::WavesPerEUResolution
+mlir::rock::resolveWavesPerEU(StringRef arch, int64_t kernelLdsBytes,
+                              int64_t blockSize, int64_t requested) {
+  int64_t ldsBound = computeLdsBoundWavesPerEU(arch, kernelLdsBytes, blockSize);
+  WavesPerEUResolution out;
+  out.ldsBound = ldsBound;
+  out.overRequested = (requested > 0 && requested > ldsBound);
+  if (requested > 0)
+    out.effective = std::min(requested, ldsBound);
+  else if (kernelLdsBytes > 0 && ldsBound < getMaxWavesPerEU(arch))
+    out.effective = ldsBound;
+  else
+    out.effective = 0;
+  return out;
+}
+
 bool mlir::rock::supportsMultiCTALaunch(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());
