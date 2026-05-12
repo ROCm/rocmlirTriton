@@ -4557,12 +4557,6 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     // truncf -> store -> load -> extf round-trip folds away during host/GPU
     // lowering, so the GPU effectively runs the chain at f32. Promote the CPU
     // reference accordingly so it also runs at f32.
-    //
-    // When a scale or bias sits between the round and the extend, the GPU
-    // genuinely computes scale*QK / qk+bias in the narrow type
-    // (e.g. `v_dot2_bf16_bf16` on RDNA), and the fold cannot fire. Keep the
-    // CPU reference in the narrow type so it rounds between operations the
-    // same way -- this is the divergence PR #161 had to relax thresholds for.
     if (auto floatTy = dyn_cast<FloatType>(firstGemmOutElemType);
         floatTy && floatTy.getWidth() < 32 && !hasAttnScale && !hasAttnBias)
       firstGemmOutElemType = builder.getF32Type();
