@@ -46,18 +46,16 @@ static DictionaryAttr getBatchedGemmIteratorTypesAttr(MLIRContext *ctx) {
                            ArrayAttr::get(ctx, iteratorTypeAttrs))});
 }
 
-OwningOpRef<ModuleOp>
-cpu::buildFusedConvToMatmulSchedule(MLIRContext *ctx) {
+OwningOpRef<ModuleOp> cpu::buildFusedConvToMatmulSchedule(MLIRContext *ctx) {
   return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib,
                                          BlockArgument arg) {
     auto anyOpType = getAnyOpType(ctx);
 
     // Match the fused 8-D conv emitted by --cpu-conv-to-gemm.
     auto fusedConvAttrs = DictionaryAttr::get(
-        ctx,
-        {NamedAttribute(
-            StringAttr::get(ctx, rock::CpuFusedConvAttr::getMnemonic()),
-            UnitAttr::get(ctx))});
+        ctx, {NamedAttribute(
+                 StringAttr::get(ctx, rock::CpuFusedConvAttr::getMnemonic()),
+                 UnitAttr::get(ctx))});
     auto matchFused = ib.create<transform::MatchOp>(
         /*resultTypes=*/anyOpType,
         /*target=*/arg,
@@ -84,7 +82,7 @@ cpu::buildFusedConvToMatmulSchedule(MLIRContext *ctx) {
     // `linalg.generic` at full extent. After unit-extent folding below,
     // those collapse to a 3-D `(C, Wo, KC)` matmul shape with iter types
     // `[par, par, red]` (G is unit and folds away too).
-    SmallVector<int64_t> convTileSizes = {1,0,0,1,0,0,1,1};
+    SmallVector<int64_t> convTileSizes = {1, 0, 0, 1, 0, 0, 1, 1};
 
     // Number of returned `scf.for` loops equals the count of non-zero tile
     // sizes. Build the loop-result type list to match.
@@ -134,7 +132,8 @@ cpu::buildFusedConvToMatmulSchedule(MLIRContext *ctx) {
         /*bodyBuilder=*/
         [&](OpBuilder &nb, Location loc) {
           ImplicitLocOpBuilder nested(loc, nb);
-          nested.create<transform::ApplyFoldUnitExtentDimsViaSlicesPatternsOp>();
+          nested
+              .create<transform::ApplyFoldUnitExtentDimsViaSlicesPatternsOp>();
           nested.create<transform::ApplyCanonicalizationPatternsOp>();
         });
   });

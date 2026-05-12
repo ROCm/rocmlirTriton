@@ -57,7 +57,8 @@ static void populateVectorizationCleanup(ImplicitLocOpBuilder &ib,
 
 /// Build the matcher named sequence:
 ///   transform.named_sequence @match_static_matmul_generic(
-///       %candidate: !transform.any_op {transform.readonly}) -> !transform.any_op
+///       %candidate: !transform.any_op {transform.readonly}) ->
+///       !transform.any_op
 static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
                                      ModuleOp module,
                                      ArrayRef<int64_t> expectedDims) {
@@ -88,8 +89,8 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
             transform::FailurePropagationModeAttr{});
 
         Region &body = matchStructured.getBodyRegion();
-        Block *block = b.createBlock(&body, body.begin(), {anyOpType},
-                                     {nestedLoc});
+        Block *block =
+            b.createBlock(&body, body.begin(), {anyOpType}, {nestedLoc});
         BlockArgument structHandle = block->getArgument(0);
 
         ImplicitLocOpBuilder bodyIb(nestedLoc, b);
@@ -140,7 +141,8 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
           auto capturedOp = bodyIb.create<transform::MatchStructuredDimOp>(
               /*result=*/i64ParamType,
               /*operand_handle=*/structHandle,
-              /*raw_dim_list=*/b.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
+              /*raw_dim_list=*/
+              b.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
               /*is_inverted=*/UnitAttr{},
               /*is_all=*/UnitAttr{},
               /*parallel=*/UnitAttr{},
@@ -174,10 +176,10 @@ OwningOpRef<ModuleOp> cpu::buildVectorizationSchedule(MLIRContext *ctx) {
   constexpr bool vectorizeNDExtract = true;
   constexpr bool foldTypeExtensionsIntoContract = false;
 
-  // If peeling was applied, we will have multiple matmuls with different shapes:
-  // The original matmul plus the peeled one. But we want to vectorize only the
-  // original one, which we know that has the static shape {8, 8, 8} after the
-  // 3-D matmul micro-tile. So match that only.
+  // If peeling was applied, we will have multiple matmuls with different
+  // shapes: The original matmul plus the peeled one. But we want to vectorize
+  // only the original one, which we know that has the static shape {8, 8, 8}
+  // after the 3-D matmul micro-tile. So match that only.
   static constexpr int64_t expectedDims[] = {8, 8, 8};
 
   OwningOpRef<ModuleOp> module = createTransformModule(ctx);

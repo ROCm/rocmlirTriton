@@ -122,14 +122,14 @@ struct ConvInfo {
   SmallVector<unsigned, 8> filterDimPos;
 
   // Shapes (read from the operand tensors via the *DimPos lookups).
-  int64_t batchSize;     // N
-  int64_t groupSize;     // G
-  int64_t outChannels;   // C (matcher's parallel-channel-in-output-and-filter)
-  int64_t outHeight;     // Ho
-  int64_t outWidth;      // Wo
-  int64_t inChannels;    // K (matcher's reduction-channel-in-input-and-filter)
-  int64_t filterHeight;  // Fh
-  int64_t filterWidth;   // Fw
+  int64_t batchSize;    // N
+  int64_t groupSize;    // G
+  int64_t outChannels;  // C (matcher's parallel-channel-in-output-and-filter)
+  int64_t outHeight;    // Ho
+  int64_t outWidth;     // Wo
+  int64_t inChannels;   // K (matcher's reduction-channel-in-input-and-filter)
+  int64_t filterHeight; // Fh
+  int64_t filterWidth;  // Fw
 
   // Operands (in the user's original layout).
   Value input;
@@ -232,9 +232,8 @@ static LogicalResult matchConvolutionLikeGeneric(linalg::GenericOp op,
                << "  Not a conv: unsupported dim layout (got "
                << dims->batch.size() << "B/" << dims->depth.size() << "D/"
                << dims->outputChannel.size() << "OC/"
-               << dims->inputChannel.size() << "IC/"
-               << dims->outputImage.size() << "OI/" << dims->filterLoop.size()
-               << "FL)\n");
+               << dims->inputChannel.size() << "IC/" << dims->outputImage.size()
+               << "OI/" << dims->filterLoop.size() << "FL)\n");
     return failure();
   }
 
@@ -393,8 +392,8 @@ static bool hasBwdDataFilterRotation(Value filter) {
       });
       return found;
     }
-    if (isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp,
-            tensor::ReshapeOp>(def)) {
+    if (isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp, tensor::ReshapeOp>(
+            def)) {
       v = def->getOperand(0);
       continue;
     }
@@ -535,8 +534,7 @@ struct ConvToGemmPattern : public OpRewritePattern<linalg::GenericOp> {
 
     LLVM_DEBUG({
       bool bwd = hasBwdDataFilterRotation(info.filter);
-      llvm::dbgs() << "Rewriting "
-                   << (bwd ? "backward data" : "forward")
+      llvm::dbgs() << "Rewriting " << (bwd ? "backward data" : "forward")
                    << " convolution to fused linalg.generic\n";
     });
 
@@ -574,12 +572,10 @@ static bool isConvolutionLikeGeneric(linalg::GenericOp op) {
 static void printConvOpTag(llvm::raw_ostream &os, linalg::GenericOp op) {
   os << "    loc: " << op.getLoc() << "\n";
   os << "    iterators: " << op.getNumLoops() << " (";
-  llvm::interleaveComma(op.getIteratorTypesArray(), os,
-                        [&](utils::IteratorType it) {
-                          os << (it == utils::IteratorType::parallel
-                                     ? "par"
-                                     : "red");
-                        });
+  llvm::interleaveComma(
+      op.getIteratorTypesArray(), os, [&](utils::IteratorType it) {
+        os << (it == utils::IteratorType::parallel ? "par" : "red");
+      });
   os << ")\n";
   SmallVector<AffineMap> maps = op.getIndexingMapsArray();
   for (auto [idx, map] : llvm::enumerate(maps)) {
@@ -617,9 +613,8 @@ struct CpuConvToGemmPass
         std::string desc;
         llvm::raw_string_ostream os(desc);
         printConvOpTag(os, generic);
-        candidates.push_back(
-            {generic.getOperation(), func.getName(), generic.getLoc(),
-             std::move(desc)});
+        candidates.push_back({generic.getOperation(), func.getName(),
+                              generic.getLoc(), std::move(desc)});
       });
     });
 
@@ -647,10 +642,9 @@ struct CpuConvToGemmPass
       bool converted = !surviving.contains(c.op);
       if (converted) {
         ++numConverted;
-        LLVM_DEBUG(llvm::dbgs()
-                   << "[cpu-conv-to-gemm] CONVERTED conv in @" << c.funcName
-                   << "\n"
-                   << c.description);
+        LLVM_DEBUG(llvm::dbgs() << "[cpu-conv-to-gemm] CONVERTED conv in @"
+                                << c.funcName << "\n"
+                                << c.description);
       } else {
         ++numUnconverted;
         LLVM_DEBUG(llvm::dbgs() << "[cpu-conv-to-gemm] NOT CONVERTED conv in @"

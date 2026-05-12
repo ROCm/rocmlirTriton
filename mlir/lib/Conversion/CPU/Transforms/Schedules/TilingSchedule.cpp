@@ -66,7 +66,7 @@ static void tileElementwiseOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
 }
 
 OwningOpRef<ModuleOp>
-cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {  
+cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
   return buildTransformModule(
       ctx, [ctx, tileSizes](ImplicitLocOpBuilder &ib, BlockArgument arg) {
         auto anyOpType = getAnyOpType(ctx);
@@ -123,10 +123,9 @@ cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
         }
 
         // Re-match the matmul after peeling.
-        Value kTileTarget =
-            peeledFuseLoop
-                ? createMatchMatmulOp(ib, ctx, arg).getResults()
-                : fuse.getTransformed();
+        Value kTileTarget = peeledFuseLoop
+                                ? createMatchMatmulOp(ib, ctx, arg).getResults()
+                                : fuse.getTransformed();
 
         // Tile only the K (reduction) dim: tile sizes index by iter-space
         // dim, so we put `kTile` at the K position and 0 elsewhere.

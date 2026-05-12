@@ -173,8 +173,7 @@ static FailureOr<MatmulDims> classifyMatmulDims(linalg::GenericOp op) {
 /// dim as non-divisible via the `*Divisible` flags on `MatmulTileSizes`.
 /// The schedule uses those flags to decide how to handle the partial
 /// last iteration (peel, mask, scalar fallback, ...).
-static std::optional<MatmulTileSizes>
-chooseMatmulTileSizes(func::FuncOp func) {
+static std::optional<MatmulTileSizes> chooseMatmulTileSizes(func::FuncOp func) {
   constexpr int64_t vectorSize = MatmulTileSizes::kVectorSize;
   linalg::GenericOp matmul;
   func.walk([&](linalg::GenericOp g) {
@@ -226,8 +225,8 @@ chooseMatmulTileSizes(func::FuncOp func) {
 
 /// Describes a single transform step in the lowering pipeline.
 struct TransformStep {
-  ModuleOp module;  // The transform module to apply.
-  StringRef name;   // Name of this step (e.g., "tiling", "vectorization").
+  ModuleOp module; // The transform module to apply.
+  StringRef name;  // Name of this step (e.g., "tiling", "vectorization").
 };
 
 struct CpuLowerVerifierPass
@@ -285,8 +284,8 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
   }
 
   // Create filename: cpu_dump/cpu_verifier_<funcname>_<phase>.mlir
-  std::string filename =
-      dumpDir + "/cpu_verifier_" + funcName.str() + "_" + phaseName.str() + ".mlir";
+  std::string filename = dumpDir + "/cpu_verifier_" + funcName.str() + "_" +
+                         phaseName.str() + ".mlir";
 
   llvm::raw_fd_ostream outFile(filename, ec, llvm::sys::fs::OF_Text);
 
@@ -296,9 +295,12 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
     return;
   }
 
-  outFile << "// =============================================================\n";
-  outFile << "// CPU Verifier Dump: " << funcName << " - " << phaseName << " phase\n";
-  outFile << "// =============================================================\n\n";
+  outFile
+      << "// =============================================================\n";
+  outFile << "// CPU Verifier Dump: " << funcName << " - " << phaseName
+          << " phase\n";
+  outFile
+      << "// =============================================================\n\n";
 
   outFile << "// --- Target IR (before " << phaseName << ") ---\n";
   targetModule.print(outFile);
@@ -308,7 +310,8 @@ void CpuLowerVerifierPass::dumpBeforeTransform(ModuleOp targetModule,
   transformModule.print(outFile);
   outFile << "\n";
 
-  LLVM_DEBUG(llvm::dbgs() << "Dumped IR and transform to: " << filename << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "Dumped IR and transform to: " << filename
+                          << "\n");
 }
 
 /// Apply one transform step (pre + main + post) to `moduleRef`. Returns
@@ -337,8 +340,8 @@ LogicalResult CpuLowerVerifierPass::applyTransformStep(
   // Main transform.
   LLVM_DEBUG(llvm::dbgs() << "    Applying " << step.name << "...\n");
   dumpBeforeTransform(module, step.module, funcName, step.name);
-  if (failed(applyTransformSequence(moduleRef, step.module, step.name,
-                                    funcName)))
+  if (failed(
+          applyTransformSequence(moduleRef, step.module, step.name, funcName)))
     return func.emitError("Transform failed at ") << step.name;
 
   // Post-sequence.
@@ -397,10 +400,9 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
 
     OwningOpRef<ModuleOp> perFuncTiling;
     if (auto t = chooseMatmulTileSizes(func)) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "  Chose matmul tile sizes for " << funcName
-                 << ": M=" << t->mFuse << " N=" << t->nFuse
-                 << " K=" << t->kTile << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  Chose matmul tile sizes for " << funcName
+                              << ": M=" << t->mFuse << " N=" << t->nFuse
+                              << " K=" << t->kTile << "\n");
       perFuncTiling = buildTilingSchedule(&getContext(), *t);
     } else {
       LLVM_DEBUG(llvm::dbgs() << "  Using default matmul tile sizes for "
@@ -487,7 +489,8 @@ void CpuLowerVerifierPass::runOnOperation() {
   TransformSchedules &schedules = maybeSchedules.value();
 
   // Lower each function in isolation using detach/reattach pattern
-  // For each function, we detach all other operations, run transforms, then reattach
+  // For each function, we detach all other operations, run transforms, then
+  // reattach
   for (func::FuncOp func : cpuVerifierFuncs) {
     // TODO: CpuLowerVerifier doesn't work well with our passes to do
     // f4E2M1FN -> i4 -> packed i8 (ConvertNarrowTypeSignatures and
