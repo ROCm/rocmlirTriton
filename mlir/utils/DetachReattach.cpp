@@ -24,12 +24,14 @@ DetachedFuncs mlir::detachFuncs(ModuleOp module,
       continue;
 
     OpBuilder stubBuilder(funcOp);
-    auto stub = func::FuncOp::create(stubBuilder, funcOp.getLoc(),
-                                     funcOp.getName(), funcOp.getFunctionType());
+    auto stub =
+        func::FuncOp::create(stubBuilder, funcOp.getLoc(), funcOp.getName(),
+                             funcOp.getFunctionType());
     stub.setVisibility(SymbolTable::Visibility::Private);
 
     funcOp->remove();
-    detached.entries.push_back({funcOp, stub});
+    detached.entries.push_back(
+        {funcOp, stub.getSymNameAttr(), funcOp.getFunctionType()});
   }
 
   return detached;
@@ -38,17 +40,19 @@ DetachedFuncs mlir::detachFuncs(ModuleOp module,
 void mlir::reattachFuncs(ModuleOp module, DetachedFuncs &detached) {
   for (auto &entry : detached.entries) {
     auto *realFunc = entry.realFunc;
-    auto stub = entry.stub;
+    // Re-resolve the stub by symbol name: the host pipeline may have erased
+    // and replaced the original stub op (e.g. ConvertFuncToLLVMPass rewrites
+    // every `func.func` into an `llvm.func`).
+    Operation *stub = SymbolTable::lookupSymbolIn(module, entry.stubName);
+    assert(stub && "detached function stub disappeared from module");
 
-    FunctionType stubType = stub.getFunctionType();
-    FunctionType realType = cast<func::FuncOp>(realFunc).getFunctionType();
-    if (stubType != realType) {
-      assert(SymbolTable::symbolKnownUseEmpty(stub, module) &&
+    auto funcStub = dyn_cast<func::FuncOp>(stub);
+    if (funcStub && funcStub.getFunctionType() != entry.originalType)
+      assert(SymbolTable::symbolKnownUseEmpty(funcStub, module) &&
              "detached function signature changed but stub still has callers");
-    }
 
     stub->getBlock()->getOperations().insert(stub->getIterator(), realFunc);
-    stub.erase();
+    stub->erase();
   }
   detached.entries.clear();
 }

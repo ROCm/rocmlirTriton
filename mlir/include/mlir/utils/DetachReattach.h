@@ -26,7 +26,8 @@ namespace mlir {
 struct DetachedFuncs {
   struct Entry {
     Operation *realFunc;
-    func::FuncOp stub;
+    StringAttr stubName;
+    FunctionType originalType;
   };
   llvm::SmallVector<Entry> entries;
 };
