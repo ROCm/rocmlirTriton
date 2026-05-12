@@ -100,6 +100,38 @@ struct ResolveKernelLaunchParamsPass
       return signalPassFailure();
     }
 
+    // If the perfConfig requested a wavesPerEU that the LDS allocation
+    // cannot support, reject this candidate now -- compiling it would only
+    // get the LLVM AMDGPU backend stuck in a RegAllocGreedy eviction loop
+    // (see plans/slow-attention-regalloc/TICKET.md). The cap in
+    // setKernelAttributes still applies for callers that bypass this pass,
+    // but here we want the tuner to surface the over-request rather than
+    // silently measuring a kernel whose occupancy gets clamped downstream.
+    int64_t requestedWavesPerEU = wavesPerEU.getValue();
+    if (requestedWavesPerEU > 0) {
+      // numWarps/threads-per-warp are required for the achievable-occupancy
+      // computation. Both are set by Triton's lowering on the module.
+      auto numWarpsAttr = moduleOp->getAttrOfType<IntegerAttr>("ttg.num-warps");
+      auto threadsPerWarpAttr =
+          moduleOp->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
+      if (!numWarpsAttr || !threadsPerWarpAttr) {
+        moduleOp.emitError("waves-per-eu validation requires ttg.num-warps and "
+                           "ttg.threads-per-warp module attributes");
+        return signalPassFailure();
+      }
+      int64_t blockSize = numWarpsAttr.getInt() * threadsPerWarpAttr.getInt();
+      int64_t ldsBound =
+          rock::computeLdsBoundWavesPerEU(archStr, sharedMemSize, blockSize);
+      if (requestedWavesPerEU > ldsBound) {
+        rock::markAsNotApplicable(moduleOp);
+        moduleOp.emitError("perfConfig waves-per-eu (")
+            << requestedWavesPerEU << ") exceeds LDS-achievable maximum ("
+            << ldsBound << ") for " << archStr << " (kernel uses "
+            << sharedMemSize << " B LDS, block_size=" << blockSize << ")";
+        return signalPassFailure();
+      }
+    }
+
     auto globalOp = moduleOp.lookupSymbol<LLVM::GlobalOp>("global_smem");
     if (!globalOp) {
       moduleOp.emitError("@global_smem not found in module");

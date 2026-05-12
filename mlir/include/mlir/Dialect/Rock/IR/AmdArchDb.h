@@ -71,6 +71,35 @@ int64_t getMaxNumChiplets(StringRef arch);
 /// Get maximum number of waves per EU per arch
 int64_t getMaxWavesPerEU(StringRef arch);
 
+/// Compute the largest `amdgpu-waves-per-eu` value that is achievable on
+/// \p arch given a workgroup that uses \p kernelLdsBytes of static LDS and
+/// has \p blockSize threads.
+///
+/// Standard occupancy formula:
+///
+///   blocks_per_lds_unit = floor(LDS_per_lds_unit / kernel_LDS_bytes)
+///   waves_per_block     = max(1, block_size / wave_size)
+///   waves_per_lds_unit  = blocks_per_lds_unit * waves_per_block
+///   waves_per_EU        = waves_per_lds_unit / EUs_per_lds_unit
+///
+/// where the "LDS unit" is the CU on CDNA and the WGP on RDNA (the LDS
+/// region exposed by `getLDSSize`), and `EUs_per_lds_unit = 4` for both
+/// CDNA (4 SIMD/CU) and RDNA (4 SIMD32/WGP -- the granularity LLVM's
+/// `amdgpu-waves-per-eu` accounts against).
+///
+/// The result is clamped to `[1, getMaxWavesPerEU(arch)]`. When
+/// \p kernelLdsBytes is zero (no LDS pressure), this returns
+/// `getMaxWavesPerEU(arch)` so callers can use the result as a safe ceiling
+/// for any kernel.
+///
+/// This is a *necessary* condition for the requested occupancy; VGPR/SGPR
+/// pressure may impose a tighter bound that we can't observe at this
+/// pipeline stage. Capping callers to this LDS-bound ceiling prevents
+/// `RegAllocGreedy` from chasing an occupancy target that is provably
+/// unachievable -- see `plans/slow-attention-regalloc/TICKET.md`.
+int64_t computeLdsBoundWavesPerEU(StringRef arch, int64_t kernelLdsBytes,
+                                  int64_t blockSize);
+
 /// Whether there's fast atomic add support
 bool isFastAtomicAddSupported(StringRef arch, Type type);
 

@@ -62,6 +62,7 @@ module attributes {
   }
 }
 
+
 // -----
 
 // Verifies that a missing rock.arch on the kernel triggers an error.

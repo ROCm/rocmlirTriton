@@ -385,6 +385,34 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   return 1;
 }
 
+int64_t mlir::rock::computeLdsBoundWavesPerEU(StringRef arch,
+                                              int64_t kernelLdsBytes,
+                                              int64_t blockSize) {
+  int64_t maxWavesPerEU = getMaxWavesPerEU(arch);
+  // No LDS pressure -> only the per-arch hardware ceiling matters.
+  if (kernelLdsBytes <= 0)
+    return maxWavesPerEU;
+
+  int64_t ldsPerUnit = getLDSSize(arch);
+  // Defensive: caller should have validated this earlier (ResolveKernelLaunch
+  // ParamsPass markAsNotApplicables when sharedMemSize > maxLDS), but if it
+  // somehow slips through, a single workgroup is the most we can ever fit.
+  if (kernelLdsBytes >= ldsPerUnit)
+    return 1;
+
+  int64_t waveSize = getWaveSize(arch);
+  // Each LDS region (CU on CDNA, WGP on RDNA) exposes 4 SIMD/EU units to
+  // LLVM's amdgpu-waves-per-eu accounting.
+  constexpr int64_t kEUsPerLdsUnit = 4;
+
+  int64_t wavesPerBlock = std::max<int64_t>(1, blockSize / waveSize);
+  int64_t blocksPerLdsUnit = ldsPerUnit / kernelLdsBytes;
+  int64_t wavesPerLdsUnit = blocksPerLdsUnit * wavesPerBlock;
+  int64_t ldsBound = wavesPerLdsUnit / kEUsPerLdsUnit;
+
+  return std::clamp<int64_t>(ldsBound, 1, maxWavesPerEU);
+}
+
 bool mlir::rock::supportsMultiCTALaunch(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());

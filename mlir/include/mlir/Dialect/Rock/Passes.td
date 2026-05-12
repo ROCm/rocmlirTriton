@@ -334,12 +334,23 @@ def ResolveKernelLaunchParamsPass
 
     The pass also validates that `ttg.shared` does not exceed the hardware LDS
     limit for the target architecture (read from the `rock.arch` attribute on
-    the kernel function).
+    the kernel function).  When a `waves-per-eu` value is supplied, it is
+    additionally checked against the LDS-bound occupancy ceiling and the
+    module is marked `rock.not_applicable` if the perfConfig requests more
+    occupancy than the LDS allocation can support (see
+    `computeLdsBoundWavesPerEU` in `AmdArchDb.h`).
 
     After this pass the `ttg.shared` attribute is removed (shared memory is now
     static), so downstream launch code should pass 0 for dynamic shared memory.
   }];
   let dependentDialects = ["LLVM::LLVMDialect"];
+  let options = [Option<
+      "wavesPerEU", "waves-per-eu", "int64_t", "0",
+      "Requested amdgpu-waves-per-eu from the perfConfig (0 means "
+      "unspecified). When > 0 and the kernel's LDS usage makes this "
+      "occupancy unachievable, the module is marked rock.not_applicable "
+      "so the tuner skips this perfConfig instead of measuring a kernel "
+      "whose occupancy was silently capped downstream.">];
 }
 
 def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {

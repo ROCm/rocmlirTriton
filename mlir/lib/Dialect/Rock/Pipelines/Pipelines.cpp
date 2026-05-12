@@ -529,7 +529,11 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   // arguments from the kernel signature.  Runs before TritonToHsaco so the
   // static LDS size is baked into the kernel descriptor, and before
   // RestoreHostCode so that collectKernelInfo sees the trimmed argument list.
-  pm.addPass(rock::createResolveKernelLaunchParamsPass());
+  // Forward the perfConfig's wavesPerEU so the pass can also reject
+  // candidates whose requested occupancy exceeds what LDS allows.
+  rock::ResolveKernelLaunchParamsPassOptions rklpOpts;
+  rklpOpts.wavesPerEU = options.wavesPerEU;
+  pm.addPass(rock::createResolveKernelLaunchParamsPass(rklpOpts));
 
   // Optionally generate the HSACO binary
   if (options.compile) {
