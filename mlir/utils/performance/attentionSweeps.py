@@ -22,7 +22,75 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import random
+import os
+
+from perfRunner import AttentionConfiguration
+from perfRunner import get_arch, get_num_cu, get_num_chiplets, initialize_dtypes_attn
+from perfRunner import create_paths
+from perfRunner import find_mlir_build_dir
+from perfRunner import GFX_CHIP_RE
+from parameterSweeps import Options, sweep_parameters, multiline_repr
+
+# f32 machine epsilon: 2^-23 ~= 1.1920929e-7.
+_F32_EPS = 2.0**-23
+
+
+def auto_precision_flags_att(config: AttentionConfiguration) -> List[str]:
+    """Return precision-aware rocmlir-gen flags for verification.
+
+    Sweep verification compares the GPU output against the host CPU reference.
+    With long seq_length attention (f32/bf16), the kernel error accumulates due
+    to reduction drift, masking the GPU's actual precision. We mitigate this
+    with two flags:
+      * `--pv-f64` promotes the host kernel's interior to f64, eliminating the
+        reference-side drift.
+      * `-relDiff_threshold T` lifts the per-element relative threshold to ride
+        on top of the predicted GPU f32 noise floor:
+        `delta ~ eps_f32 * log2(D_qk + 2 * K_eff)` where
+        `K_eff = seq_len_k // max(1, split_kv)`. Only effective for f32
+        attention; other attention types have enough noise space.
+
+    Keep in sync with the equivalent helper in tuningRunner.py.
+    """
+    flags: List[str] = []
+    if not isinstance(config, AttentionConfiguration):
+        return flags
+
+    # CPU drift observed for f32 attention at long seq_len_k > 1024
+    if config.datatype in ['f32'] and config.seq_len_k > 1024:
+        flags.append('--pv-f64')
+    # CPU drift observed for bf16 attention at long seq_len_k > 70
+    if config.datatype in ['bf16'] and config.seq_len_k > 70:
+        flags.append('--pv-f64')
+
+    if config.datatype == 'f32' and config.seq_len_k > 256:
+        k_eff = max(1, config.seq_len_k // max(1, config.split_kv))
+        red_len = max(2, config.head_dim_qk + 2 * k_eff)
+        floor = _F32_EPS * math.log2(red_len)
+        # Only override when the predicted floor is at or above the default
+        # 1e-6 -- below that, the existing default already has headroom and
+        # we don't want to mask small-shape regressions.
+        if floor >= 1e-6:
+            threshold = 4.0 * floor
+            flags += ['-relDiff_threshold', f'{threshold:.2e}']
+
+    return flags
+
+
+# GLOBAL VARIABLES
+DATA_TYPES_ATTENTION = initialize_dtypes_attn()
+BOOLS = [True, False]
+SPLIT_KV_OPTIONS = [1, 2, 4, 8, 16, 32, 64, 128]
+
+# Week number is used as seed to make sure weekly CI is reproducible
+seed = datetime.utcnow().isocalendar()[1]
+random.seed(seed)
+
+
+def to_attn_config(params, options: Options) -> AttentionConfiguration:
+    """Converts a sampled parameter tuple into a AttentionConfiguration instance."""
 import sys
 
 from typing import Optional
@@ -234,6 +302,153 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
 
 def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
     shape, perf = params
+    *shape_params, current_seqlen = shape
+    dtype, g, slq, slk, nhq, nhkv, hdqk, hdv, scale, bias, tq, tk, tv, to, causal, rlse, split_kv = shape_params
+    perf_str = f"attn:v3:{','.join(str(x) for x in perf)}"
+    attn_config = AttentionConfiguration(dtype=dtype,
+                                         g=g,
+                                         seq_len_q=slq,
+                                         seq_len_k=slk,
+                                         num_heads_q=nhq,
+                                         num_heads_kv=nhkv,
+                                         head_dim_qk=hdqk,
+                                         head_dim_v=hdv,
+                                         with_attn_scale=scale,
+                                         with_attn_bias=bias,
+                                         transQ=tq,
+                                         transK=tk,
+                                         transV=tv,
+                                         transO=to,
+                                         causal=causal,
+                                         return_lse=rlse,
+                                         split_kv=split_kv,
+                                         arch=options.arch,
+                                         num_cu=options.num_cu,
+                                         num_chiplets=options.num_chiplets,
+                                         perf_config=perf_str)
+    attn_config.current_seqlen = current_seqlen
+    # Precision-aware rocmlir-gen flags (e.g. --pv-f64, -relDiff_threshold) that
+    # are picked up per-config in parameterSweeps.test_config to combat CPU
+    # reference drift at long seq_len for f32/bf16 attention.
+    attn_config.extra_rocmlir_gen_flags = auto_precision_flags_att(attn_config)
+    return attn_config
+
+
+IterType = TypeVar('IterType')
+
+
+def grouper(iterable: Iterable[IterType], n: int):
+    it = iter(iterable)
+    while True:
+        chunk = tuple(itertools.islice(it, n))
+        if not chunk:
+            return
+        yield chunk
+
+
+def gen_current_seqlens(g: int, max_seqlen: int) -> list[int]:
+    return [random.randint(0, max_seqlen - 1) for _ in range(g)]
+
+
+def sample_attn_shape():
+    g = random.randint(1, 256)  # GROUPS
+    seqlen_k = random.randint(1, 16384)  # SEQ_LEN_K
+
+    use_kvcache = random.choice(BOOLS)
+    current_seqlen = gen_current_seqlens(g, seqlen_k) if use_kvcache else None
+    seqlen_q = 1 if use_kvcache else random.randint(1, 16384)  # SEQ_LEN_Q
+
+    num_heads_q = 1
+    num_heads_kv = 1
+    '''By default num_heads_q and num_heads_kv are both 1. If num_heads_q
+    and num_heads_kv are equal GQA is disabled. Both values are powers
+    of 2 typically. And num_heads_q is divisible by num_heads_kv
+    Here we decide randomly if we will use num_heads_q and num_heads_kv
+    different from the default values.
+
+    Requirements:
+        - num_heads_q >= num_heads_kv
+        - num_heads_q % num_heads_kv == 0'''
+    gen_num_heads = random.choice(BOOLS)
+    if gen_num_heads:
+        while True:
+            num_heads_q = 2**random.randint(1, 6)
+            num_heads_kv = 2**random.randint(1, 6)
+
+            if num_heads_q > num_heads_kv and num_heads_q % num_heads_kv == 0:  # found valid case
+                break
+
+    split_kv = 1
+    return_lse = random.choice(BOOLS)
+    if return_lse:
+        split_kv = random.choice(SPLIT_KV_OPTIONS)
+
+    return (
+        random.choice(DATA_TYPES_ATTENTION),
+        g,  # GROUPS
+        seqlen_q,  # SEQ_LEN_Q
+        seqlen_k,  # SEQ_LEN_K
+        num_heads_q,  # NUM_HEADS_Q
+        num_heads_kv,  # NUM_HEADS_KV
+        random.randint(1, 1024),  # HEAD_DIM_QK
+        random.randint(1, 1024),  # HEAD_DIM_V
+        random.choice(BOOLS),  # with_attn_scale
+        random.choice(BOOLS),  # with_attn_bias
+        random.choice(BOOLS),  # transQ
+        random.choice(BOOLS),  # transK
+        random.choice(BOOLS),  # transV
+        random.choice(BOOLS),  # transO
+        random.choice(BOOLS),  # causal
+        return_lse,
+        split_kv,
+        current_seqlen)
+
+
+# Keep in sync with RockTuningImpl.cpp
+perfconfig_space_mfma = list(
+    itertools.product(  # MFMA perfConfig space
+        [16, 32, 64, 128, 256],  # M/block G0
+        [16, 32, 64, 128, 256],  # M/block G1
+        [16, 32, 64, 128, 256],  # N/block G0
+        [8, 16, 32, 64],  # Kpack/Block
+        [16, 32, 64, 128, 256],  # M/Wave
+        [16, 32, 64, 128, 256],  # N/Wave
+        [4, 16, 32],  # MN/Xdl
+        [4, 8, 16],  # kPack
+        [1],  # splitKFactor
+        [1, 2, 3, 4],  # scheduleVersion
+        [0, 1, 2],  # outputSwizzle
+        [0, 1, 2, 4, 8],  # wavesPerEU
+        [0, 1]  # forceUnroll
+    ))
+
+perfconfig_space_wmma = list(
+    itertools.product(  # WMMA perfConfig space
+        [16, 32, 64, 128],  # M/block G0
+        [16, 32, 64, 128],  # M/block G1
+        [16, 32, 64, 128, 256],  # N/block G0
+        [8, 16, 32, 64],  # Kpack/Block
+        [16, 32, 64],  # M/Wave
+        [16, 32, 64],  # N/Wave
+        [0],  # MN/Xdl
+        [4, 8, 16],  # kPack
+        [1],  # splitKFactor
+        [1, 2, 3, 4],  # scheduleVersion
+        [0, 1, 2],  # outputSwizzle
+        [0, 1, 2, 4, 8, 16],  # wavesPerEU
+        [0, 1]  # forceUnroll
+    ))
+
+
+def log_failing_configs(configs: List[AttentionConfiguration], filename: str):
+    with open(filename, mode='w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['CommandLine'])
+        for config in configs:
+            writer.writerow([config.generate_mlir_driver_commandline('', kernel_repeats=None)])
+
+
+def main():
     (dtype, g, slq, slk, nhq, nhkv, hdqk, hdv, scale, bias, tq, tk, tv, to, causal, return_lse,
      split_kv, current_seqlen) = shape
     return perfRunner.AttentionConfiguration(
