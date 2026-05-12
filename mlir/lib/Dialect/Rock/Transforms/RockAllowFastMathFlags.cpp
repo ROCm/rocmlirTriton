@@ -15,15 +15,24 @@
 // limitations under the License.
 // ============================================================
 //
-// Tags floating-point divisions with fastmath `arcp` so backends may lower
-// them as multiply-by-reciprocal (same idea as attention output scaling).
-//
+// Tags float ops in kernels with the fast-math flags the AMDGPU backend can
+// exploit, choosing per-op what's actually beneficial:
+//   * `arcp`     on `arith.divf`  -> hardware reciprocal (v_rcp_f32).
+//   * `contract` on `arith.{add,sub,mul}f` -> mul+add fused to v_fma_f32.
+//   * `nsz`      on `arith.{add,sub,mul,div,neg}f` -> permits ignoring the
+//                sign of zero (enables a handful of LLVM peepholes such as
+//                `x + 0 -> x`, `0 - x -> -x` via sign-bit XOR).
+//   * `afn`      on `math.*` transcendentals -> hardware approximations
+//                (v_exp_f32, v_log_f32, v_sqrt_f32, ...).
+
 //===-----------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
 namespace mlir {
@@ -46,11 +55,40 @@ class RockAllowFastMathFlagsPass
 };
 } // end namespace
 
-void RockAllowFastMathFlagsPass::runOnOperation() {
-  func::FuncOp func = getOperation();
+template <typename OpTy>
+static void addFastMathFlags(OpTy op, arith::FastMathFlags extra) {
+  LLVM_DEBUG(llvm::dbgs() << "Adding fast-math flags to " << *op.getOperation()
+                          << "\n");
+  op.setFastmath(op.getFastmath() | extra);
+}
 
-  func.walk([](arith::DivFOp divOp) {
-    LLVM_DEBUG(llvm::dbgs() << "Tagging arcp on " << divOp << "\n");
-    divOp.setFastmath(divOp.getFastmath() | arith::FastMathFlags::arcp);
+void RockAllowFastMathFlagsPass::runOnOperation() {
+
+  getOperation().walk([&](Operation *op) {
+    TypeSwitch<Operation *>(op)
+        // x / y -> x * rcp(y) via hardware reciprocal.
+        .Case<arith::DivFOp>([&](auto operation) {
+          addFastMathFlags(operation, arith::FastMathFlags::arcp |
+                                          arith::FastMathFlags::nsz);
+        })
+        // Allow mul+add to fuse into fma (v_fma_f32).
+        .Case<arith::AddFOp, arith::SubFOp, arith::MulFOp>([&](auto operation) {
+          addFastMathFlags(operation, arith::FastMathFlags::contract |
+                                          arith::FastMathFlags::nsz);
+        })
+        // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too.
+        .Case<arith::NegFOp>([&](auto operation) {
+          addFastMathFlags(operation, arith::FastMathFlags::nsz);
+        })
+        // Hardware approximate transcendentals (v_exp_f32, v_log_f32, ...).
+        .Case<math::ExpOp, math::Exp2Op, math::ExpM1Op, math::LogOp,
+              math::Log2Op, math::Log10Op, math::Log1pOp, math::SinOp,
+              math::CosOp, math::TanOp, math::AsinOp, math::AcosOp,
+              math::AtanOp, math::Atan2Op, math::SinhOp, math::CoshOp,
+              math::TanhOp, math::SqrtOp, math::RsqrtOp, math::CbrtOp,
+              math::PowFOp, math::FPowIOp, math::ErfOp, math::ErfcOp>(
+            [&](auto operation) {
+              addFastMathFlags(operation, arith::FastMathFlags::afn);
+            });
   });
 }
