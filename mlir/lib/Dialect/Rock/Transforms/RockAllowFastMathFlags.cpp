@@ -67,7 +67,7 @@ static LogicalResult allowFastMathFlags(func::FuncOp func) {
         divOp.getFastmath() | arith::FastMathFlags::arcp;
     rewriter.setInsertionPoint(divOp);
     rewriter.replaceOpWithNewOp<arith::DivFOp>(divOp, divOp.getLhs(),
-                                                divOp.getRhs(), combinedFlags);
+                                               divOp.getRhs(), combinedFlags);
   }
   return success();
 }
