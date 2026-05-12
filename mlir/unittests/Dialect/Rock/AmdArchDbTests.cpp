@@ -446,7 +446,7 @@ TEST(AmdArchDbTest, ResolveUnspecifiedNoLdsLeavesAttrAbsent) {
 TEST(AmdArchDbTest, ResolveUnspecifiedLdsBoundEqualsArchMaxLeavesAbsent) {
   // requested=0 + LDS so light that LDS-bound matches the per-arch ceiling
   // -> nothing to stamp (the backend's default already targets the max).
-  // gfx950, block_size=256, kernelLDS=4096 KB: blocks=40, waves=160,
+  // gfx950, block_size=256, kernelLDS=4096 B (4 KiB): blocks=40, waves=160,
   // EU-waves=40, clamped to maxWavesPerEU=8 == ldsBound.
   auto r = resolveWavesPerEU("gfx950", 4096, 256, /*requested=*/0);
   EXPECT_EQ(r.ldsBound, 8);
@@ -456,10 +456,14 @@ TEST(AmdArchDbTest, ResolveUnspecifiedLdsBoundEqualsArchMaxLeavesAbsent) {
 
 TEST(AmdArchDbTest, ResolveRequestEqualToLdsBoundIsAchievable) {
   // Boundary: requested == ldsBound -> achievable, no clamp, no
-  // overRequested. (Reviewer-flagged boundary case.)
-  auto r = resolveWavesPerEU("gfx950", 16384, 64, /*requested=*/2);
-  EXPECT_EQ(r.ldsBound, 2);
-  EXPECT_EQ(r.effective, 2);
+  // overRequested. Lock this on a non-cfg2 arch (gfx1100, 32-wide
+  // wavefront, maxWavesPerEU=16) so it's independent of the cfg2 case
+  // covered above. 64 KB LDS, kernelLDS=8 KB, block_size=128:
+  //   blocks=8, wavesPerBlock=128/32=4, wavesPerLdsUnit=32, ldsBound=8.
+  // Asking for 8 hits the boundary exactly.
+  auto r = resolveWavesPerEU("gfx1100", 8192, 128, /*requested=*/8);
+  EXPECT_EQ(r.ldsBound, 8);
+  EXPECT_EQ(r.effective, 8);
   EXPECT_FALSE(r.overRequested);
 }
 
