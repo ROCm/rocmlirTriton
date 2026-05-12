@@ -189,10 +189,9 @@ void setABIVersion(llvm::Module &module, int version) {
 
 /// Set kernel function attributes
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
-                                  StringRef features, int numWarps,
-                                  int wavesPerEU, int numCTAs,
-                                  bool allowFlushDenorm, bool enableAsan,
-                                  StringRef scheduleHint) {
+                         StringRef features, int numWarps, int wavesPerEU,
+                         int numCTAs, bool allowFlushDenorm, bool enableAsan,
+                         StringRef scheduleHint) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
@@ -659,10 +658,14 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   addControlConstant(*llvmModule, "__oclc_wavefrontsize64", 8, waveSize == 64);
 
   int numWarps = options.numWarps;
-  if(auto totalNumWarps = module->getAttrOfType<IntegerAttr>("ttg.total-num-warps")) {
-    if(numWarps != totalNumWarps.getInt()) {
-      LLVM_DEBUG(llvm::dbgs() << "ttg.total-num-warps != rock.num_waves ("<<totalNumWarps.getInt()<<" != "<<numWarps<<")\n");
-      LLVM_DEBUG(llvm::dbgs() << "This can happen due to warp-specialization\n");
+  if (auto totalNumWarps =
+          module->getAttrOfType<IntegerAttr>("ttg.total-num-warps")) {
+    if (numWarps != totalNumWarps.getInt()) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "ttg.total-num-warps != rock.num_waves ("
+                 << totalNumWarps.getInt() << " != " << numWarps << ")\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << "This can happen due to warp-specialization\n");
     }
     numWarps = totalNumWarps.getInt();
   }
@@ -729,8 +732,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   }
 
   // optimize_module in llvm.cc
-  optimizeModule(*llvmModule, tm.get(), arch, optLevel.value(),
-                 enableAsan);
+  optimizeModule(*llvmModule, tm.get(), arch, optLevel.value(), enableAsan);
 
   // Handle architected SGPRs (compiler.py lines 427-434)
   if (hasArchitectedSGPRs(triple, arch)) {
@@ -790,7 +792,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_DUMP")) {
     std::string envVal(dumpEnv);
     if (envVal == "1") {
-      llvm::errs() << "// -----// AMDGCN Dump //----- //\n" << amdgcnAsm << "\n";
+      llvm::errs() << "// -----// AMDGCN Dump //----- //\n"
+                   << amdgcnAsm << "\n";
     }
   }
 

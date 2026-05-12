@@ -145,8 +145,7 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
       // themselves be 4-bit kernel inputs, so just stop traversing this
       // branch.  If the caller expected to find a 4-bit input it will emit
       // a clearer diagnostic when `inputs` ends up empty.
-      LLVM_DEBUG(llvm::dbgs()
-                 << "stopping 4-bit walk at non-load block arg\n");
+      LLVM_DEBUG(llvm::dbgs() << "stopping 4-bit walk at non-load block arg\n");
       continue;
     }
 
@@ -727,7 +726,7 @@ static FailureOr<int64_t> computeSubByteStrideFactor(
 /// where `pos` is the index along `loadAxisIdx` (0 for D, 1 for K).
 ///
 /// The pattern is emitted as `tt.make_range` + arith ops + `tt.expand_dims` +
-/// `tt.broadcast` rather than as a single dense `arith.constant`.  Materialising
+/// `tt.broadcast` rather than as a single dense `arith.constant`. Materialising
 /// the full 2-D dense blob hangs Triton's downstream GPU passes for non-trivial
 /// tile sizes, so we keep the symbolic form all the way through to the LLVM
 /// lowering, which folds the make_range chain into cheap register code.
@@ -774,8 +773,7 @@ static Value buildSubByteShiftConstant(OpBuilder &builder, Location loc,
   Value shiftI32 = arith::MulIOp::create(builder, loc, rem, four);
 
   auto i8RangeType = RankedTensorType::get({axisLen}, i8Ty);
-  Value shiftI8 =
-      arith::TruncIOp::create(builder, loc, i8RangeType, shiftI32);
+  Value shiftI8 = arith::TruncIOp::create(builder, loc, i8RangeType, shiftI32);
 
   // Insert a unit dim for the OTHER axis, then broadcast to the full tile
   // shape so it can be SHRed against the loaded i8 tile.
@@ -799,12 +797,10 @@ static Value buildSubByteShiftConstant(OpBuilder &builder, Location loc,
 /// scf.for by LICM/canonicalization, which is why we emit the dynamic ops
 /// here instead of relying on the marker-and-late-lower mechanism used for
 /// the static case.
-static FailureOr<Value> buildSubByteShiftDynamic(OpBuilder &builder,
-                                                 Location loc,
-                                                 RankedTensorType i8TileType,
-                                                 int64_t strideFactor,
-                                                 int64_t tileExtent,
-                                                 Operation *anchor) {
+static FailureOr<Value>
+buildSubByteShiftDynamic(OpBuilder &builder, Location loc,
+                         RankedTensorType i8TileType, int64_t strideFactor,
+                         int64_t tileExtent, Operation *anchor) {
   auto forOp = anchor->getParentOfType<scf::ForOp>();
   if (!forOp)
     return emitError(loc, "sub-byte load with broadcast period >= tile extent "
@@ -830,16 +826,15 @@ static FailureOr<Value> buildSubByteShiftDynamic(OpBuilder &builder,
   Value halfPeriodVal = arith::ConstantOp::create(
       builder, loc, builder.getI32IntegerAttr(strideFactor));
   Value div = arith::DivUIOp::create(builder, loc, origin, halfPeriodVal);
-  Value two = arith::ConstantOp::create(builder, loc,
-                                        builder.getI32IntegerAttr(2));
+  Value two =
+      arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(2));
   Value mod = arith::RemUIOp::create(builder, loc, div, two);
-  Value four = arith::ConstantOp::create(builder, loc,
-                                         builder.getI32IntegerAttr(4));
+  Value four =
+      arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(4));
   Value shiftI32 = arith::MulIOp::create(builder, loc, mod, four);
   Value shiftI8 =
       arith::TruncIOp::create(builder, loc, builder.getI8Type(), shiftI32);
-  Value shifts =
-      triton::SplatOp::create(builder, loc, i8TileType, shiftI8);
+  Value shifts = triton::SplatOp::create(builder, loc, i8TileType, shiftI8);
   return shifts;
 }
 
@@ -872,8 +867,7 @@ static void replaceExtUsersWithSubByteExtract(OpBuilder &builder, Location loc,
     return arith::ShRSIOp::create(builder, loc, shl, four);
   };
 
-  for (auto *user :
-       llvm::make_early_inc_range(loadResult.getUsers())) {
+  for (auto *user : llvm::make_early_inc_range(loadResult.getUsers())) {
     if (isa<arith::ExtUIOp>(user)) {
       Value subByte = extractLow(user);
       user->getResult(0).replaceAllUsesWith(subByte);
@@ -904,12 +898,12 @@ static void replaceExtUsersWithSubByteExtract(OpBuilder &builder, Location loc,
 /// tt.join -> JoinOpConversion (no memory ops); tt.reshape -> no-op when
 /// the encoding inference produces a compatible blocked layout (the
 /// expected case here); tt.trans -> always free per TransOpConversion.
-static LogicalResult
-emitSubByteUnpackFastPath(OpBuilder &builder, OperandInput &input,
-                          int64_t halveDimIdx, int64_t sourceRank, Type i8Ty) {
+static LogicalResult emitSubByteUnpackFastPath(OpBuilder &builder,
+                                               OperandInput &input,
+                                               int64_t halveDimIdx,
+                                               int64_t sourceRank, Type i8Ty) {
   // After halving, update the load result type to the new halved 2-D tile.
-  auto newSrcType =
-      cast<RankedTensorType>(input.loadOp.getSource().getType());
+  auto newSrcType = cast<RankedTensorType>(input.loadOp.getSource().getType());
   int64_t srcRank = newSrcType.getRank();
   SmallVector<int64_t> halvedTileShape{newSrcType.getShape()[srcRank - 2],
                                        newSrcType.getShape()[srcRank - 1]};
@@ -953,8 +947,7 @@ emitSubByteUnpackFastPath(OpBuilder &builder, OperandInput &input,
       triton::ReshapeOp::create(builder, loc, reshapedShape, joined);
 
   if (needsTrans)
-    unpacked =
-        triton::TransOp::create(builder, loc, unpacked, swapOrderAttr);
+    unpacked = triton::TransOp::create(builder, loc, unpacked, swapOrderAttr);
 
   auto unpackedType = cast<RankedTensorType>(unpacked.getType());
 
@@ -1011,7 +1004,8 @@ static LogicalResult emitSubByteBroadcastFallback(
     int64_t strideFactor) {
   MLIRContext *ctx = builder.getContext();
 
-  // Halve the block arg only (NOT the chain): tensor<N x i4> -> tensor<N/2 x i8>.
+  // Halve the block arg only (NOT the chain): tensor<N x i4> -> tensor<N/2 x
+  // i8>.
   auto oldArgType = cast<RankedTensorType>(input.rootArg.getType());
   int64_t flatSize = oldArgType.getShape()[0];
   if (flatSize % 2 != 0)
@@ -1030,9 +1024,8 @@ static LogicalResult emitSubByteBroadcastFallback(
   }
   builder.setInsertionPoint(bottomTransform);
   Location loc = input.loadOp.getLoc();
-  Value broadcastOut = insertSubByteBroadcast(builder, ctx, loc,
-                                              input.rootArg, flatSize / 2,
-                                              flatSize);
+  Value broadcastOut = insertSubByteBroadcast(builder, ctx, loc, input.rootArg,
+                                              flatSize / 2, flatSize);
   bottomTransform->setOperand(0, broadcastOut);
 
   // Update the load result type from i4 to i8 (shape stays the same).
@@ -1167,7 +1160,8 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
       if (inputs.empty()) {
         if (gemmOperandIs4Bit)
           return gemmOp.emitError(
-              "4-bit operand produced by fusion (e.g. arith.truncf) rather than "
+              "4-bit operand produced by fusion (e.g. arith.truncf) rather "
+              "than "
               "from a 4-bit kernel argument is not yet supported");
         return success();
       }
@@ -1200,8 +1194,7 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
         if (gemmOperandIs4Bit) {
           // Direct 4-bit GEMM: halve via vectorization + rewriteTransformChain.
           std::optional<int64_t> halveDimIdx = std::nullopt;
-          VectorizationResult kVectorRes =
-              getMaxVectorization(source, kDimIdx);
+          VectorizationResult kVectorRes = getMaxVectorization(source, kDimIdx);
           if (kVectorRes.max > 1)
             halveDimIdx = kDimIdx;
 
@@ -1214,8 +1207,7 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
           }
           if (!halveDimIdx.has_value()) {
             rock::markAsNotApplicable(gemmOp);
-            return gemmOp.emitError(
-                "max vectorization of both D and K is 1");
+            return gemmOp.emitError("max vectorization of both D and K is 1");
           }
 
           if (kPack.has_value() && kPack.value() != localKPack) {
@@ -1239,8 +1231,8 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
               RankedTensorType::get(newResShape, i8Ty));
         } else {
           // Sub-byte path: i4 behind a dequant fusion chain.
-          if (failed(processSubByteInput(builder, input, isA, sourceRank,
-                                         i8Ty)))
+          if (failed(
+                  processSubByteInput(builder, input, isA, sourceRank, i8Ty)))
             return failure();
         }
         processedArgs.insert(input.rootArg);
@@ -1365,15 +1357,14 @@ static LogicalResult fixup8BitFusionOps(
         continue;
 
       Value operand = op->getOperand(i);
-      Value bc = arith::BitcastOp::create(builder, loc, origTensorType,
-                                          operand);
+      Value bc =
+          arith::BitcastOp::create(builder, loc, origTensorType, operand);
       op->setOperand(i, bc);
     }
 
     // Fix results: restore float type, bitcast back to i8
     for (unsigned i = 0; i < info.origResultTypes.size(); ++i) {
-      auto origTensorType =
-          dyn_cast<RankedTensorType>(info.origResultTypes[i]);
+      auto origTensorType = dyn_cast<RankedTensorType>(info.origResultTypes[i]);
       if (!origTensorType || !isNonTTFloat(origTensorType, 8))
         continue;
 
@@ -1456,7 +1447,7 @@ static LogicalResult fixup4BitFusionOps(
       auto packedType = cast<RankedTensorType>(operand.getType());
       auto f4ElemType = origTensorType.getElementType();
       auto i4TensorType = RankedTensorType::get(packedType.getShape(), i4Ty,
-                                                 packedType.getEncoding());
+                                                packedType.getEncoding());
       auto f4TensorType = RankedTensorType::get(
           packedType.getShape(), f4ElemType, packedType.getEncoding());
 
@@ -1469,8 +1460,7 @@ static LogicalResult fixup4BitFusionOps(
 
       Value lowI8 = arith::AndIOp::create(builder, loc, operand, cst0F);
       Value lowI4 = arith::TruncIOp::create(builder, loc, i4TensorType, lowI8);
-      Value lowF4 =
-          arith::BitcastOp::create(builder, loc, f4TensorType, lowI4);
+      Value lowF4 = arith::BitcastOp::create(builder, loc, f4TensorType, lowI4);
 
       Value highI8 = arith::ShRUIOp::create(builder, loc, operand, cst4);
       Value highI4 =
@@ -1515,8 +1505,7 @@ static LogicalResult fixup4BitFusionOps(
     // then expands f4 truncf/extf to bitwise integer ops.
     SmallVector<Type> cloneResultTypes;
     for (unsigned i = 0; i < info.origResultTypes.size(); ++i) {
-      auto origTensorType =
-          dyn_cast<RankedTensorType>(info.origResultTypes[i]);
+      auto origTensorType = dyn_cast<RankedTensorType>(info.origResultTypes[i]);
       if (origTensorType && isNonTTFloat(origTensorType, 4)) {
         cloneResultTypes.push_back(RankedTensorType::get(
             packedRefType.getShape(), origTensorType.getElementType(),
@@ -1544,8 +1533,7 @@ static LogicalResult fixup4BitFusionOps(
     // Repack each result: f4 -> i4 -> i8 (low | high<<4).
     builder.setInsertionPointAfter(highClone);
     for (unsigned i = 0; i < op->getNumResults(); ++i) {
-      auto origTensorType =
-          dyn_cast<RankedTensorType>(info.origResultTypes[i]);
+      auto origTensorType = dyn_cast<RankedTensorType>(info.origResultTypes[i]);
       if (!origTensorType || !isNonTTFloat(origTensorType, 4)) {
         op->getResult(i).replaceAllUsesWith(lowClone->getResult(i));
         continue;
