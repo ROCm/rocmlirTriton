@@ -111,8 +111,7 @@ namespace {
 class SuppressWarningHandler : public llvm::DiagnosticHandler {
 public:
   bool handleDiagnostics(const llvm::DiagnosticInfo &diag) override {
-    auto *optDiag =
-        llvm::dyn_cast<llvm::DiagnosticInfoOptimizationBase>(&diag);
+    auto *optDiag = llvm::dyn_cast<llvm::DiagnosticInfoOptimizationBase>(&diag);
     if (!optDiag)
       return false;
 
@@ -645,8 +644,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   // Translate MLIR to LLVM IR (llvm.to_module in compiler.py)
   llvm::LLVMContext llvmContext;
-  llvmContext.setDiagnosticHandler(
-      std::make_unique<SuppressWarningHandler>());
+  llvmContext.setDiagnosticHandler(std::make_unique<SuppressWarningHandler>());
   std::unique_ptr<llvm::Module> llvmModule =
       translateModuleToLLVMIR(module, llvmContext);
   if (!llvmModule) {
