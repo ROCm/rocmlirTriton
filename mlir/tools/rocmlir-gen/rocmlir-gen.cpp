@@ -4470,7 +4470,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   Location loc = module->getLoc();
 
   bool isQuantized = params.types[0] == IntegerType::get(ctx, 8);
-  // Optionally run the host reference's interior in f64 to get more 
+  // Optionally run the host reference's interior in f64 to get more
   // accurate validation answer when running attention with a large seq len.
   const bool promoteHost = pvF64.getValue() && !isQuantized;
   Type f64Type = Float64Type::get(ctx);
@@ -4480,8 +4480,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     Type elem = cast<ShapedType>(v.getType()).getElementType();
     if (!isa<FloatType>(elem) || elem == f64Type)
       return v;
-    return rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc, f64Type,
-                                                      v);
+    return rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc, f64Type, v);
   };
   auto wideF = [&](Type t) -> Type {
     return (promoteHost && isa<FloatType>(t)) ? f64Type : t;
@@ -4747,10 +4746,9 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
           .value();
 
   // accumulate in 32 bit (or f64 when promoting the host reference)
-  Type secondAccType =
-      promoteHost
-          ? f64Type
-          : rock::getAccType(resultOutElementType, resultOutElementType);
+  Type secondAccType = promoteHost ? f64Type
+                                   : rock::getAccType(resultOutElementType,
+                                                      resultOutElementType);
   auto resultTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, resultOutElementType, softmaxTensor, valuesTensor,
       softmaxZp, valuesZp);
