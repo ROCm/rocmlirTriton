@@ -29,13 +29,21 @@ The configuration files are in TOML format.  Below is an example:
     values = ["conv_bwd_data"]
 
 """
-import tomli
+try:
+    import tomllib as tomli
+except ImportError:
+    import tomli
 import itertools
 import os
+import shutil
+import subprocess
 import sys
 import getopt
 import glob
-from hip import hip
+try:
+    from hip import hip
+except ImportError:
+    hip = None
 
 
 def hip_check(call_result):
@@ -49,15 +57,34 @@ def hip_check(call_result):
 
 
 def get_arch():
-    agents = set()
-    device_count = hip_check(hip.hipGetDeviceCount())
-    for device in range(device_count):
-        props = hip.hipDeviceProp_t()
-        hip_check(hip.hipGetDeviceProperties(props, device))
-        agent = props.gcnArchName.decode('utf-8')
-        agents.add(agent)
+    # Explicit override via env var (build hosts without hip-python).
+    env_arch = os.environ.get('ROCMLIR_TEST_TARGET_ARCH')
+    if env_arch:
+        return {a.strip() for a in env_arch.split(',') if a.strip()}
 
-    return agents
+    # Linux primary path: hip-python FFI.
+    if hip is not None:
+        agents = set()
+        device_count = hip_check(hip.hipGetDeviceCount())
+        for device in range(device_count):
+            props = hip.hipDeviceProp_t()
+            hip_check(hip.hipGetDeviceProperties(props, device))
+            agents.add(props.gcnArchName.decode('utf-8'))
+        return agents
+
+    # Windows fallback: amdgpu-arch ships with the HIP SDK.
+    if sys.platform == 'win32':
+        tool = shutil.which('amdgpu-arch')
+        if tool:
+            out = subprocess.check_output(
+                [tool], stderr=subprocess.DEVNULL).decode()
+            agents = {line.strip() for line in out.splitlines() if line.strip()}
+            if agents:
+                return agents
+
+    raise RuntimeError(
+        'hip-python and amdgpu-arch not available; set '
+        'ROCMLIR_TEST_TARGET_ARCH to generate E2E tests on this host')
 
 
 def generate_option_list(prefixes: dict, table: list, key1: str, key2: str):

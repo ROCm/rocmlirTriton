@@ -4,7 +4,10 @@ import os
 import argparse
 import shutil
 import itertools
-import tomli
+try:
+    import tomllib as tomli
+except ImportError:
+    import tomli
 
 RANDTYPE = {'f32': 'float', 'f16': 'float', 'bf16': 'float', 'i32': 'int', 'i8': 'int'}
 
