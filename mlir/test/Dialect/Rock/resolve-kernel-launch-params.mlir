@@ -76,4 +76,3 @@ module attributes {
     llvm.return
   }
 }
-

@@ -293,6 +293,204 @@ TEST(AmdArchDbTest, MatrixAccelScaledWmma) {
             MatrixAccelKind::WMMA);
 }
 
+// --- computeLdsBoundWavesPerEU ---
+//
+// The formula is
+//   blocks_per_lds_unit = floor(LDS_per_lds_unit / kernel_LDS_bytes)
+//   waves_per_block     = max(1, block_size / wave_size)
+//   waves_per_lds_unit  = blocks_per_lds_unit * waves_per_block
+//   waves_per_EU        = waves_per_lds_unit / 4 (EUs/SIMDs per LDS unit)
+// clamped to [1, getMaxWavesPerEU(arch)].
+
+TEST(AmdArchDbTest, LdsBoundNoLdsPressureReturnsArchMax) {
+  // kernelLdsBytes == 0 -> only the per-arch ceiling applies.
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx908", 0, 256), 8);   // CDNA1
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 0, 256), 8);   // CDNA2
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx942", 0, 256), 8);   // CDNA3
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx950", 0, 256), 8);   // CDNA4
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx1030", 0, 256), 16); // RDNA2
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx1100", 0, 256), 16); // RDNA3
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx1200", 0, 256), 16); // RDNA4
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx1250", 0, 256), 16); // GFX1250
+  // blockSize doesn't matter when there is no LDS pressure.
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 0, 1), 8);
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 0, 8192), 8);
+}
+
+TEST(AmdArchDbTest, LdsBoundLdsEqualsUnitClampsToOne) {
+  // kernelLdsBytes == ldsPerUnit -> only a single workgroup fits, so even
+  // with a maxed-out workgroup the bound clamps to 1 (the floor of 1/4 = 0
+  // before clamping).
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 65536, 64),
+            1); // 64 KB on CDNA2
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx942", 65536, 64),
+            1); // 64 KB on CDNA3
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx950", 163840, 64),
+            1); // 160 KB on CDNA4
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx1100", 65536, 64),
+            1); // 64 KB on RDNA3
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx1250", 327680, 64),
+            1); // 320 KB on GFX1250
+}
+
+TEST(AmdArchDbTest, LdsBoundLdsExceedsUnitClampsToOne) {
+  // Defensive: kernelLdsBytes > ldsPerUnit shouldn't happen in practice
+  // (caller rejects it earlier) but the helper still returns 1.
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 100000, 64), 1);
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx950", 200000, 64), 1);
+}
+
+TEST(AmdArchDbTest, LdsBoundBlockSmallerThanWave) {
+  // blockSize < waveSize -> wavesPerBlock = max(1, blockSize/waveSize) = 1.
+  // For gfx90a (waveSize=64, LDS=64 KB) with kernelLDS=8 KB:
+  //   blocksPerLdsUnit = 65536/8192 = 8
+  //   wavesPerBlock    = max(1, 32/64) = 1
+  //   wavesPerLdsUnit  = 8 * 1 = 8
+  //   ldsBound         = 8 / 4 = 2
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 8192, 32), 2);
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 8192, 1), 2);
+}
+
+TEST(AmdArchDbTest, LdsBoundBlockEqualsWave) {
+  // The four attention configs that motivated the fix all have block_size=64
+  // (1 warp). LDS-bound = floor(LDS_per_unit / kernel_LDS) * 1 / 4.
+  // gfx950 (LDS_per_unit = 160 KB = 163840 B):
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx950", 19456, 64), 2);  // cfg1
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx950", 16384, 64), 2);  // cfg2
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx950", 65536, 64), 1);  // cfg3
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx950", 131072, 64), 1); // cfg4
+  // gfx90a (LDS_per_unit = 64 KB = 65536 B):
+  //   kernelLDS=8192 -> blocks=8, waves=8, EU-waves=2.
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 8192, 64), 2);
+  //   kernelLDS=16384 -> blocks=4, waves=4, EU-waves=1.
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 16384, 64), 1);
+}
+
+TEST(AmdArchDbTest, LdsBoundLargeBlock) {
+  // 4 warps on gfx90a (block_size = 256, wave_size = 64 -> wavesPerBlock=4)
+  // with kernelLDS=4096: blocks=16, waves=64, EU-waves=16 -> clamp to 8.
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx90a", 4096, 256), 8);
+  // Same kernelLDS on gfx1100 (32-wave, max=16): block_size=256 -> 8 waves;
+  // blocks=16; waves=128; EU-waves=32 -> clamp to 16.
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx1100", 4096, 256), 16);
+  // gfx1100 with heavier LDS=16384: blocks=4, waves=32, EU-waves=8.
+  EXPECT_EQ(computeLdsBoundWavesPerEU("gfx1100", 16384, 256), 8);
+}
+
+TEST(AmdArchDbTest, LdsBoundArchTripleAccepted) {
+  // The arch string can include the LLVM triple prefix; getArch parses it
+  // off, so the result must be identical to the bare gfx string.
+  EXPECT_EQ(computeLdsBoundWavesPerEU("amdgcn-amd-amdhsa:gfx950", 16384, 64),
+            computeLdsBoundWavesPerEU("gfx950", 16384, 64));
+  EXPECT_EQ(computeLdsBoundWavesPerEU(
+                "amdgcn-amd-amdhsa:gfx950:sramecc+:xnack-", 19456, 64),
+            computeLdsBoundWavesPerEU("gfx950", 19456, 64));
+}
+
+// --- resolveWavesPerEU ---
+//
+// Policy:
+//   requested > 0     -> effective = min(requested, ldsBound),
+//                        overRequested = (requested > ldsBound).
+//   requested == 0    -> effective = ldsBound iff kernelLdsBytes > 0 and
+//                        ldsBound < maxWavesPerEU; else 0 (leave attribute
+//                        absent, the AMDGPU backend default suffices).
+
+TEST(AmdArchDbTest, ResolveRequestAchievablePassesThrough) {
+  // gfx950 cfg2 LDS (16 KB), block_size=64 -> ldsBound = 2.
+  // Asking for 2 is fine.
+  auto r = resolveWavesPerEU("gfx950", 16384, 64, /*requested=*/2);
+  EXPECT_EQ(r.ldsBound, 2);
+  EXPECT_EQ(r.effective, 2);
+  EXPECT_FALSE(r.overRequested);
+  // Asking for 1 (below ldsBound) is also fine.
+  r = resolveWavesPerEU("gfx950", 16384, 64, /*requested=*/1);
+  EXPECT_EQ(r.ldsBound, 2);
+  EXPECT_EQ(r.effective, 1);
+  EXPECT_FALSE(r.overRequested);
+}
+
+TEST(AmdArchDbTest, ResolveRequestOverLdsBoundClampsAndFlagsOverRequested) {
+  // gfx950 cfg1 / cfg3 / cfg4: requested=8, but LDS pushes the bound to
+  // {2, 1, 1} respectively -> effective clamps and overRequested=true so
+  // the tuner-side gate rejects.
+  for (auto [ldsBytes, expectedBound] :
+       std::initializer_list<std::pair<int64_t, int64_t>>{
+           {19456, 2}, {65536, 1}, {131072, 1}}) {
+    auto r = resolveWavesPerEU("gfx950", ldsBytes, 64, /*requested=*/8);
+    EXPECT_EQ(r.ldsBound, expectedBound);
+    EXPECT_EQ(r.effective, expectedBound);
+    EXPECT_TRUE(r.overRequested);
+  }
+}
+
+TEST(AmdArchDbTest, ResolveUnspecifiedFillsInLdsBoundForLdsHeavyKernel) {
+  // This is the cfg2 production-path branch: requested=0 + LDS pressure
+  // means the LDS-bound is stamped so the AMDGPU backend doesn't default
+  // to the per-arch max (which would re-trigger the RegAllocGreedy blowup).
+  auto r = resolveWavesPerEU("gfx950", 16384, 64, /*requested=*/0);
+  EXPECT_EQ(r.ldsBound, 2);
+  EXPECT_EQ(r.effective, 2);
+  EXPECT_FALSE(r.overRequested);
+}
+
+TEST(AmdArchDbTest, ResolveUnspecifiedNoLdsLeavesAttrAbsent) {
+  // requested=0, no LDS -> effective=0 (attribute should not be stamped,
+  // AMDGPU default is fine).
+  auto r = resolveWavesPerEU("gfx950", 0, 256, /*requested=*/0);
+  EXPECT_EQ(r.ldsBound, 8); // == getMaxWavesPerEU(gfx950)
+  EXPECT_EQ(r.effective, 0);
+  EXPECT_FALSE(r.overRequested);
+}
+
+TEST(AmdArchDbTest, ResolveUnspecifiedLdsBoundEqualsArchMaxLeavesAbsent) {
+  // requested=0 + LDS so light that LDS-bound matches the per-arch ceiling
+  // -> nothing to stamp (the backend's default already targets the max).
+  // gfx950, block_size=256, kernelLDS=4096 KB: blocks=40, waves=160,
+  // EU-waves=40, clamped to maxWavesPerEU=8 == ldsBound.
+  auto r = resolveWavesPerEU("gfx950", 4096, 256, /*requested=*/0);
+  EXPECT_EQ(r.ldsBound, 8);
+  EXPECT_EQ(r.effective, 0);
+  EXPECT_FALSE(r.overRequested);
+}
+
+TEST(AmdArchDbTest, ResolveRequestEqualToLdsBoundIsAchievable) {
+  // Boundary: requested == ldsBound -> achievable, no clamp, no
+  // overRequested. (Reviewer-flagged boundary case.)
+  auto r = resolveWavesPerEU("gfx950", 16384, 64, /*requested=*/2);
+  EXPECT_EQ(r.ldsBound, 2);
+  EXPECT_EQ(r.effective, 2);
+  EXPECT_FALSE(r.overRequested);
+}
+
+TEST(AmdArchDbTest, ResolveRdnaArchesUseArchMaxAndWaveSize) {
+  // Per-arch coverage for resolveWavesPerEU. RDNA arches have a 32-wide
+  // wavefront and a higher per-arch max (16). 64 KB LDS, block_size=128
+  // (4 warps on RDNA):
+  //   gfx1100: blocks=floor(65536/4096)=16, wavesPerBlock=128/32=4,
+  //   wavesPerLdsUnit=64, ldsBound=16, clamped to 16. Requested=8 is fine.
+  auto r = resolveWavesPerEU("gfx1100", 4096, 128, /*requested=*/8);
+  EXPECT_EQ(r.ldsBound, 16);
+  EXPECT_EQ(r.effective, 8);
+  EXPECT_FALSE(r.overRequested);
+  // ...and with heavier LDS so the bound is lower than the requested 16:
+  // gfx1100 kernelLDS=16384, block_size=128: blocks=4, waves=16,
+  // EU-waves=4. Requested=16 is over the LDS bound.
+  r = resolveWavesPerEU("gfx1100", 16384, 128, /*requested=*/16);
+  EXPECT_EQ(r.ldsBound, 4);
+  EXPECT_EQ(r.effective, 4);
+  EXPECT_TRUE(r.overRequested);
+}
+
+TEST(AmdArchDbTest, ResolveGfx1250UsesLargerLdsUnit) {
+  // gfx1250 has 320 KB of LDS per LDS-unit and a 32-wide wavefront. With
+  // block_size=128, kernelLDS=16 KB: blocks=20, waves=80, EU-waves=20,
+  // clamped to maxWavesPerEU=16.
+  auto r = resolveWavesPerEU("gfx1250", 16384, 128, /*requested=*/0);
+  EXPECT_EQ(r.ldsBound, 16);
+  EXPECT_EQ(r.effective, 0); // ldsBound == maxWavesPerEU -> no stamp.
+}
+
 // --- supportsTDM ---
 
 TEST(AmdArchDbTest, SupportsTDM) {

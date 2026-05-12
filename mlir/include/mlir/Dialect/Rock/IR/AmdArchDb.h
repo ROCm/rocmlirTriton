@@ -105,14 +105,14 @@ int64_t computeLdsBoundWavesPerEU(StringRef arch, int64_t kernelLdsBytes,
 struct WavesPerEUResolution {
   /// The value to stamp on `amdgpu-waves-per-eu`, or 0 if the attribute
   /// should be left absent (no LDS pressure and nothing was requested).
-  int64_t effective;
+  int64_t effective = 0;
   /// The LDS-bound occupancy ceiling for this kernel/arch.
-  int64_t ldsBound;
+  int64_t ldsBound = 0;
   /// True iff the caller asked for more occupancy than LDS can support
   /// (`requested > 0 && requested > ldsBound`). Callers driving a tuner
   /// sweep use this to reject the configuration; callers compiling a final
   /// binary silently use `effective`.
-  bool overRequested;
+  bool overRequested = false;
 };
 
 /// Decide the effective `amdgpu-waves-per-eu` value for a kernel that uses

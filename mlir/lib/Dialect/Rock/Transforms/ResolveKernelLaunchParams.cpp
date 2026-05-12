@@ -103,10 +103,14 @@ struct ResolveKernelLaunchParamsPass
     // If the perfConfig requested a wavesPerEU that the LDS allocation
     // cannot support, reject this candidate now -- compiling it would only
     // get the LLVM AMDGPU backend stuck in a RegAllocGreedy eviction loop.
-    // The cap in `setKernelAttributes` still applies for callers that bypass
-    // this pass, but here we want the tuner to surface the over-request
-    // rather than silently measuring a kernel whose occupancy gets clamped
-    // downstream.
+    //
+    // The cap in `setKernelAttributes` is the defense-in-depth fallback for
+    // direct callers of `translateTritonToHsaco` (existing/future tests and
+    // tools) that skip this pass; in the standard pipeline ordering pinned
+    // by `mlir/test/rocmlir-driver/pipelines.mlir`, this pass runs back to
+    // back with the translation. Here we want the tuner to surface the
+    // over-request rather than silently measuring a kernel whose occupancy
+    // gets clamped downstream.
     int64_t requestedWavesPerEU = wavesPerEU.getValue();
     if (requestedWavesPerEU > 0) {
       // numWarps/threads-per-warp are required for the achievable-occupancy
