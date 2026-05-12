@@ -108,6 +108,15 @@ namespace {
 // Helper functions
 //===----------------------------------------------------------------------===//
 
+/// Diagnostic handler that swallows one specific LLVM optimization-failure
+/// warning emitted by the AMDGPU backend.
+///
+/// The default `llvm::DiagnosticHandler` (installed by `LLVMContextImpl`)
+/// is a no-op stub whose `handleDiagnostics` returns `false`, causing
+/// `LLVMContext::diagnose` to fall through to its built-in stderr printer
+/// (and `exit(1)` for `DS_Error`). Returning `false` here preserves that
+/// exact behaviour for every diagnostic that doesn't match the predicate
+/// below, so non-matching errors, remarks, and warnings are unaffected.
 class SuppressWarningHandler : public llvm::DiagnosticHandler {
 public:
   bool handleDiagnostics(const llvm::DiagnosticInfo &diag) override {
