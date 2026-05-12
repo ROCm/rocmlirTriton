@@ -108,10 +108,17 @@ foreach(config ${CONFIGS})
   set(config_file ${CONFIG_DIR}/${config}.toml)
   set(lit_cfg_file ${CONFIG_DIR}/${config}.cfg)
   set(config_file_copy ${E2E_DIR}/${config}.copy)
+  # Optional per-config lit.local.cfg: copy at CMake-configure time only when
+  # the .cfg sibling actually exists, avoiding bash 'if [ -f ... ]; then ...' syntax.
+  set(copy_lit_local_cfg_cmd "")
+  if(EXISTS ${lit_cfg_file})
+    set(copy_lit_local_cfg_cmd
+      COMMAND ${CMAKE_COMMAND} -E copy ${lit_cfg_file} ${E2E_DIR}/${config}/lit.local.cfg)
+  endif()
   add_custom_command(OUTPUT ${config_file_copy}
     COMMAND ${CMAKE_COMMAND} -E copy ${config_file} ${config_file_copy}
     COMMAND ${Python3_EXECUTABLE} ${E2E_GEN_SCRIPT} -d ${E2E_DIR} -i ${config_file} ${GEN_MODE}
-    COMMAND if [ -f "${lit_cfg_file}" ]\; then cp "${lit_cfg_file}" ${E2E_DIR}/${config}/lit.local.cfg\; fi
+    ${copy_lit_local_cfg_cmd}
     DEPENDS ${config_file}
     COMMENT "Generating rock E2E tests for ${config}"
   )
@@ -129,9 +136,14 @@ add_custom_target(re-gen-e2e-tests)
 foreach(config ${CONFIGS})
   set(config_file ${CONFIG_DIR}/${config}.toml)
   set(lit_cfg_file ${CONFIG_DIR}/${config}.cfg)
+  set(copy_lit_local_cfg_cmd "")
+  if(EXISTS ${lit_cfg_file})
+    set(copy_lit_local_cfg_cmd
+      COMMAND ${CMAKE_COMMAND} -E copy ${lit_cfg_file} ${E2E_DIR}/${config}/lit.local.cfg)
+  endif()
   add_custom_command(TARGET re-gen-e2e-tests
     COMMAND ${Python3_EXECUTABLE} ${E2E_GEN_SCRIPT} -d ${E2E_DIR} -i ${config_file} ${GEN_MODE}
-    COMMAND if [ -f "${lit_cfg_file}" ]\; then cp "${lit_cfg_file}" ${E2E_DIR}/${config}/lit.local.cfg\; fi
+    ${copy_lit_local_cfg_cmd}
   )
 endforeach()
 
