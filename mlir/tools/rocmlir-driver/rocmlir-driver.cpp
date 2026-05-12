@@ -29,9 +29,9 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/utils/DetachReattach.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/utils/DetachReattach.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -355,10 +355,16 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
 
   // Phase 2.5: Host backend lowering (func + memref + GPU ops -> LLVM)
   if (hostPipelineSet.contains("backend")) {
-    if (failed(runWithDetach(module, "Host Backend", isKernel,
-                             [](PassManager &pm) {
-                               rock::buildHostLoweringPipeline(pm);
-                             })))
+    for (auto funcOp : module.getOps<func::FuncOp>()) {
+      if (isKernel(funcOp)) {
+        funcOp.emitError() << "--host-pipeline=...,backend cannot be run on a "
+                              "module with kernel functions";
+        return failure();
+      }
+    }
+    if (failed(runWithDetach(
+            module, "Host Backend", isKernel,
+            [](PassManager &pm) { rock::buildHostLoweringPipeline(pm); })))
       return failure();
   }
 
