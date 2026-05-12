@@ -726,7 +726,7 @@ static llvm::cl::opt<bool>
               llvm::cl::init(false));
 
 static llvm::cl::opt<bool> pvF64(
-    "pv_f64",
+    "pv-f64",
     llvm::cl::desc("Run the host CPU attention reference internally in f64 "
                    "for higher precision validation of non-quantized "
                    "attention, especially at long seq_len_k. No effect on "
