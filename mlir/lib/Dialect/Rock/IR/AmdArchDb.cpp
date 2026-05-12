@@ -397,6 +397,30 @@ int64_t mlir::rock::getMaxNumCTAs(StringRef arch) {
   return 16;
 }
 
+int64_t mlir::rock::getMaxKpack(StringRef arch) {
+  // kpack != 1 is deprecated on gfx950 and gfx1250 (and any newer arch);
+  // older archs (gfx9 < gfx950, all of gfx10/gfx11, gfx12 < gfx1250) still
+  // accept kpack in {1, 2}.
+  auto [chip, _] = parseArchString(arch);
+  // consume_front does double duty: it checks for the "gfx" prefix and
+  // strips it from `chip` in-place when present
+  if (!chip.consume_front("gfx"))
+    return 1; // not a gfx target -> safest
+
+  // Parse the stripped digits as hex (e.g. "950" -> n = 0x950).
+  unsigned n = 0;
+  if (chip.getAsInteger(/*radix=*/16, n))
+    return 1; // malformed id (e.g. "gfx" alone) -> safest
+
+  if (n < 0x950) // gfx9 pre-CDNA4 (gfx900/906/908/90a/940/941/942/...)
+    return 2;
+
+  if (0x1000 <= n && n < 0x1250) // all of gfx10/gfx11 + gfx12 < gfx1250
+    return 2;
+
+  return 1; // gfx950+, gfx1250+, gfx13xx+, anything else
+}
+
 bool mlir::rock::supportsTDM(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());

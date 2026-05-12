@@ -54,6 +54,20 @@ static LogicalResult validateNumCTAs(Operation *op, int64_t numCTAs) {
   return success();
 }
 
+// kpack > 1 is not supported on certain architectures. Reject configs
+// that violate this regardless of where they came from.
+static LogicalResult validateKpack(Operation *op, int64_t kpack) {
+  StringRef arch = rock::getArchValue(op);
+  int64_t maxKpack = rock::getMaxKpack(arch);
+  if (kpack > maxKpack) {
+    rock::markAsNotApplicable(op);
+    op->emitError("kpack=")
+        << kpack << " exceeds max (" << maxKpack << ") for " << arch;
+    return failure();
+  }
+  return success();
+}
+
 namespace {
 struct AffixTuningParameters
     : public rock::impl::RockAffixTuningParametersPassBase<
@@ -195,6 +209,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   if (failed(validateNumCTAs(op, gemmParams.getNumCTAs())))
     return signalPassFailure();
 
+  if (failed(validateKpack(op, gemmParams.getKpack())))
+    return signalPassFailure();
+
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
   int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
   assert(blockSize > 0);
@@ -242,6 +259,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
   if (failed(validateNumCTAs(op, attnPerfConfig.getNumCTAs())))
+    return signalPassFailure();
+
+  if (failed(validateKpack(op, attnPerfConfig.getKpack())))
     return signalPassFailure();
 
   auto accelParams =
