@@ -123,7 +123,8 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   std::vector<uint32_t> gridGroupSizeList = {0};
   // std::vector<uint32_t> wavesPerEUList;
   // wavesPerEUList.push_back(0); // use heuristic
-  // for (uint32_t wavesPerEU = 1; wavesPerEU <= maxWavesPerEU; wavesPerEU *= 2) {
+  // for (uint32_t wavesPerEU = 1; wavesPerEU <= maxWavesPerEU; wavesPerEU *= 2)
+  // {
   //   wavesPerEUList.push_back(wavesPerEU);
   // }
 
@@ -280,8 +281,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
 
 static double computeWorkImbalance(GemmSize origGemmSize, int32_t gemmMPerBlock,
                                    int32_t gemmNPerBlock, int32_t gemmKPerBlock,
-                                   uint32_t numCUs,
-                                   int32_t splitKFactor = 1) {
+                                   uint32_t numCUs, int32_t splitKFactor = 1) {
   // Use calculatePaddedGemmSize with individual parameters
   const GemmSize gemmSize = calculatePaddedGemmSize(
       gemmKPerBlock, gemmMPerBlock, gemmNPerBlock, origGemmSize);
@@ -295,10 +295,11 @@ static double computeWorkImbalance(GemmSize origGemmSize, int32_t gemmMPerBlock,
   return (maxWorkGroupsPerCU * numCUs) / totalNumWorkGroups;
 }
 
-static SmallVector<int64_t>
-computeOptimalSplitKFactors(GemmSize origGemmSize, int32_t gemmMPerBlock,
-                            int32_t gemmNPerBlock, int32_t gemmKPerBlock,
-                            uint32_t numCUs) {
+static SmallVector<int64_t> computeOptimalSplitKFactors(GemmSize origGemmSize,
+                                                        int32_t gemmMPerBlock,
+                                                        int32_t gemmNPerBlock,
+                                                        int32_t gemmKPerBlock,
+                                                        uint32_t numCUs) {
   SmallVector<int64_t> splitKValues = {1};
 
   const auto dataParallelGemmImbalance = computeWorkImbalance(
@@ -362,8 +363,7 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
   }
 
   return computeOptimalSplitKFactors(info.gemmSize, gemmMPerBlock,
-                                     gemmNPerBlock, gemmKPerBlock, 
-                                     numCUs);
+                                     gemmNPerBlock, gemmKPerBlock, numCUs);
 }
 
 // The full space is a brute-force search starting with the configs that have
@@ -1103,8 +1103,7 @@ LogicalResult tuningTableLookup(TuningTable *perfTable, ModuleOp &mod,
   return failure();
 }
 
-static int64_t retrieveSplitKValue(
-                                   StringAttr perfConfig) {
+static int64_t retrieveSplitKValue(StringAttr perfConfig) {
   auto gemmGemmPerfConfig = GemmGemmParamsAttr::get(perfConfig);
   if (gemmGemmPerfConfig)
     return gemmGemmPerfConfig.getSplitKFactor();

@@ -5,16 +5,10 @@
 // COM: the fp8 expander isn't limited to GPU code.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t fp8 -p -pv | rocmlir-driver -kernel-pipeline=full | FileCheck %s --check-prefix=HOST
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t fp8 -p -pv | rocmlir-driver -kernel-pipeline=full | FileCheck %s --check-prefix=HOST_GFX950
+// RUN: rocmlir-gen --arch gfx1100 --operation gemm -t fp8 -p -pv | rocmlir-driver -kernel-pipeline=full | FileCheck %s --check-prefix=GFX11
 
 // MFMA: rocdl.mfma
 // MFMA-NOT: llvm.mlir.global private constant @__rocmlir_extf_tbl_f8E4M3FNUZ
-
-// TODO(rocmlirTriton): Add meaningul tests to gfx1100 here
-
-// XXX: rocmlir-gen --arch gfx1100 --operation gemm -t fp8 -p | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=GFX11
-// XXX: rocmlir-gen --arch gfx1100 --operation gemm -t fp8 -p --force-f8-types=ocp | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=GFX11_OCP
-
 // GFX11: llvm.mlir.global private constant @__rocmlir_extf_tbl_f8E4M3FNUZ
-// GFX11_OCP{LITERAL}: llvm.mlir.global private constant @__rocmlir_extf_tbl_f8E4M3FN(
 // HOST: llvm.mlir.global private constant @__rocmlir_extf_tbl_f8E4M3FNUZ
 // HOST_GFX950: llvm.mlir.global private constant @__rocmlir_extf_tbl_f8E4M3FN

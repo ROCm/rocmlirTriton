@@ -132,7 +132,6 @@ static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
   }
 }
 
-// TODO(rocmlirTriton): Propagate the type to fusions as well.
 /// Update any StoreOp that uses the conv result to use the gemm result instead.
 /// The conv result type differs from the gemm result type (due to shape
 /// transformations), so we need to update the StoreOp to use the gemm result

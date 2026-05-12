@@ -216,7 +216,7 @@ struct FoldBroadcast : public OpRewritePattern<rock::GemmOp> {
             unbroadcastBatch(rw, loc, cast<TypedValue<ShapedType>>(scaleA));
       if (scaleB)
         newScaleB = mergeBatch(rw, loc, cast<TypedValue<ShapedType>>(scaleB),
-                               !op.getBScaleTransposed());
+                               op.getBScaleTransposed());
     }
 
     // Compute the new result type based on transformed A and B shapes

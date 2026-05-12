@@ -656,7 +656,7 @@ struct RockTosaToElementwise
     // math.tanh and math.powf so we use upstream
     // math::populateExpansionPatterns to expand them into ops Triton supports.
     //
-    // TODO(rocmlirTriton): gfx1250 will have dedicated instructions for tanh,
+    // TODO(gfx1250): gfx1250 will have dedicated instructions for tanh,
     // we need to make sure we emit those instead of using the math.tanh
     // expansion.
     math::populateExpansionPatterns(patterns, {"tanh", "powf"});
