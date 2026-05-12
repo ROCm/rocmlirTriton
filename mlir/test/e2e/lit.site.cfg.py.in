@@ -44,7 +44,7 @@ except KeyError:
 # because the default target will lead to compilation failures.
 config.no_AMD_GPU = False
 config.arch = ""
-config.features = None
+config.features = ""
 config.arch_support_mfma = False
 config.arch_support_wmma = False
 config.arch_support_accel_fp8 = False
@@ -59,7 +59,8 @@ if config.rocm_path:
         # Check other features here
         if not config.arch:
             config.no_AMD_GPU = True
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, RuntimeError):
+        # RuntimeError: hip-python loaded but a HIP API call failed at runtime.
         config.no_AMD_GPU = True
 
 import lit.llvm
