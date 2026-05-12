@@ -650,7 +650,7 @@ static llvm::cl::alias
 // for vectorisation. That trades GPU-faithful rounding for speed and is the
 // right default for most tests.
 //
-// `mlir-strict` (a.k.a. `-pv_strict`) matches the GPU's effective precision
+// `mlir-strict` (a.k.a. `-pv-strict`) matches the GPU's effective precision
 // for attention by choosing the first-GEMM output element type
 // structurally:
 //   * No pre-softmax scale/bias: the GPU's truncf-store / load-extf
@@ -696,7 +696,7 @@ static llvm::cl::opt<bool>
 // previously had to relax thresholds (see PrAttentionBF16.toml GQA + KV
 // Cache configs and PR #161) can opt in here to recover tight thresholds.
 static llvm::cl::opt<bool>
-    genCPUValidationStrict("pv_strict", llvm::cl::Hidden, llvm::cl::init(false),
+    genCPUValidationStrict("pv-strict", llvm::cl::Hidden, llvm::cl::init(false),
                            llvm::cl::Optional,
                            llvm::cl::cb<void, bool>([](bool v) {
                              if (v) {
@@ -927,7 +927,7 @@ struct GenParams {
   /// pre-softmax scale/bias is present (the GPU's truncf/extf round-trip
   /// folds away), and the original narrow float type otherwise (the GPU
   /// genuinely runs the scale*QK / qk+bias chain in the narrow type).
-  /// Selected via `-pv_strict` / `--verifier=mlir-strict`.
+  /// Selected via `-pv-strict` / `--verifier=mlir-strict`.
   bool strictMode = false;
 };
 
@@ -4550,7 +4550,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   if (isQuantized) {
     firstGemmOutElemType = IntegerType::get(ctx, 32);
   } else if (params.strictMode) {
-    // Strict mode (`-pv_strict`) must match the GPU's effective precision for
+    // Strict mode (`-pv-strict`) must match the GPU's effective precision for
     // the first GEMM. For narrow floats (f16, bf16), the GPU emits a
     // round-to-narrow store of the first-GEMM result followed by a load+extend
     // before softmax. Without any pre-softmax elementwise op, that

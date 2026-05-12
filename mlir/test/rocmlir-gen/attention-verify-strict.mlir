@@ -1,9 +1,9 @@
 // Tests for the CPU attention verifier. The CPU verifier exists in two flavours:
 // -pv: the fast verifier. May not exactly match GPU semantics.
-// -pv_strict. Matches GPU semantics.
+// -pv-strict. Matches GPU semantics.
 
 // =============================================================================
-// `-pv_strict` matches GPU semantics
+// `-pv-strict` matches GPU semantics
 // =============================================================================
 //
 // (1) No scale/bias, narrow-float type. The GPU's truncf/extf round-trip on
@@ -15,7 +15,7 @@
 //     narrow output element type once at the boundary, matching the single
 //     bf16 store the GPU performs to the output buffer.
 
-// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 -t bf16 -pv_strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-PLAIN
+// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 -t bf16 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-PLAIN
 
 // STRICT-PLAIN-LABEL: func.func @host_naive_attention
 // First GEMM: bf16 inputs, f32 output (promoted to match folded GPU semantics).
@@ -37,7 +37,7 @@
 //   * scale*QK and/or qk+bias run on bf16 tensors.
 //   * The pre-softmax `tosa.cast` widens bf16 -> f32 once before softmax.
 
-// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-bias -t bf16 -pv_strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-BIAS
+// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-bias -t bf16 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-BIAS
 
 // STRICT-BIAS-LABEL: func.func @host_naive_attention
 // STRICT-BIAS:       tosa.matmul {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>) -> tensor<{{.*}}xbf16>
@@ -45,7 +45,7 @@
 // STRICT-BIAS:       tosa.cast {{.*}} : (tensor<{{.*}}xbf16>) -> tensor<{{.*}}xf32>
 // STRICT-BIAS:       return
 
-// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-scale -t bf16 -pv_strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-SCALE
+// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-scale -t bf16 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-SCALE
 
 // STRICT-SCALE-LABEL: func.func @host_naive_attention
 // STRICT-SCALE:       tosa.matmul {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>) -> tensor<{{.*}}xbf16>
@@ -53,7 +53,7 @@
 // STRICT-SCALE:       tosa.cast {{.*}} : (tensor<{{.*}}xbf16>) -> tensor<{{.*}}xf32>
 // STRICT-SCALE:       return
 
-// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-scale --with-attn-bias -t bf16 -pv_strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-BOTH
+// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-scale --with-attn-bias -t bf16 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-BOTH
 
 // STRICT-BOTH-LABEL: func.func @host_naive_attention
 // STRICT-BOTH:       tosa.matmul {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>) -> tensor<{{.*}}xbf16>
@@ -65,7 +65,7 @@
 // (3) `f16` narrow-float type behaves the same as bf16: with no scale/bias
 // the first-GEMM output is promoted to f32.
 
-// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 -t f16 -pv_strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-PLAIN-F16
+// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 -t f16 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-PLAIN-F16
 
 // STRICT-PLAIN-F16-LABEL: func.func @host_naive_attention
 // STRICT-PLAIN-F16:       tosa.matmul {{.*}} : (tensor<{{.*}}xf16>, tensor<{{.*}}xf16>, tensor<{{.*}}xf16>, tensor<{{.*}}xf16>) -> tensor<{{.*}}xf32>
@@ -75,7 +75,7 @@
 // STRICT-PLAIN-F16:       return
 
 // (4) The `verifier=mlir-strict` alias spelling must produce the same IR as
-// `-pv_strict`.
+// `-pv-strict`.
 // RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 -t bf16 --verifier=mlir-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-PLAIN
 
 // =============================================================================
@@ -89,7 +89,7 @@
 //   * `tosa.matmul` produces bf16 -- a single rounding the GPU does not do.
 //   * The pre-softmax `tosa.cast` widens bf16 -> f32 before softmax, while
 //     on the GPU the chain stays at f32 throughout.
-// This is the precision divergence `-pv_strict` exists to close. Pinning it
+// This is the precision divergence `-pv-strict` exists to close. Pinning it
 // here documents that `-pv` deliberately trades fidelity for speed.
 
 // RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 -t bf16 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=NONSTRICT-PLAIN
@@ -100,9 +100,9 @@
 // NONSTRICT-PLAIN:       return
 
 // (2) `-pv` with scale and/or bias keeps the narrow chain too -- same op
-// sequence as `-pv_strict` for these cases, because both flavours need to
+// sequence as `-pv-strict` for these cases, because both flavours need to
 // match a GPU that genuinely runs in the narrow type. Pinning this confirms
-// `-pv` and `-pv_strict` only differ in the no-scale-no-bias case.
+// `-pv` and `-pv-strict` only differ in the no-scale-no-bias case.
 
 // RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-scale --with-attn-bias -t bf16 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=NONSTRICT-BOTH
 
@@ -118,7 +118,7 @@
 // rounding to mimic in the first place.
 // =============================================================================
 
-// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 -t f32 -pv_strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-F32
+// RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 -t f32 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-F32
 // RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 -t f32 -pv         | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-F32
 
 // STRICT-F32-LABEL: func.func @host_naive_attention
