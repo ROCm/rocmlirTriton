@@ -95,9 +95,11 @@ LogicalResult earlyFailInvalidConfig(Operation *op, GemmParamsAttr params,
   };
   static const DenylistEntry kKnownProblematicConfigs[] = {
       // TODO(roctriton): root-cause and remove.
-      // Tracked in ticket ... 
+      // Tracked in ticket AIROCMLIR-861
       {"gfx950", "attn:v1:16,16,512,2,1,1,16,1,2,0,0"},
       {"gfx950", "attn:v1:16,16,512,2,1,1,16,1,3,0,0"},
+      // Tracked in ticket AIROCMLIR-859
+      {"gfx942", "gemm:v1:64,64,256,1,1,1,16,3,1,0,0"},
   };
   for (const auto &entry : kKnownProblematicConfigs) {
     if (arch.contains(entry.chip) && perfConfig == entry.perfConfig) {
