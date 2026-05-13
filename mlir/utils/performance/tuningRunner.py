@@ -1142,7 +1142,9 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
                                                                    kernel_repeats=VERIFY_REPEATS)
     precision_flags = auto_precision_flags_att(config)
     rocmlir_gen_command = [
-        paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary', '-pv',
+        paths.mlir_paths.rocmlir_gen_path,
+        '-print-verify-results=summary',
+        '-pv',
         *precision_flags,
     ] + command_line_options.split()
 

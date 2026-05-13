@@ -1706,7 +1706,7 @@ class AttentionConfiguration(PerfConfiguration):
             f"-return_lse {str(self.return_lse).lower()} " + f"-split_kv {str(self.split_kv)} " +
             f"-g {self.g} " +
             f"-seq_len_q {str(self.seq_len_q)} -seq_len_k {str(self.seq_len_k)} -num_heads_q {str(self.num_heads_q)} -num_heads_kv {str(self.num_heads_kv)} -head_dim_qk {str(self.head_dim_qk)} -head_dim_v {str(self.head_dim_v)} "
-            +             f"-with-attn-scale {str(self.with_attn_scale).lower()} " +
+            + f"-with-attn-scale {str(self.with_attn_scale).lower()} " +
             f"-with-attn-bias {str(self.with_attn_bias).lower()}")
 
 

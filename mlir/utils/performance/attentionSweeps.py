@@ -32,7 +32,6 @@ from perfRunner import find_mlir_build_dir
 from perfRunner import GFX_CHIP_RE
 from parameterSweeps import Options, sweep_parameters, multiline_repr
 
-
 # GLOBAL VARIABLES
 DATA_TYPES_ATTENTION = initialize_dtypes_attn()
 BOOLS = [True, False]
@@ -45,6 +44,8 @@ random.seed(seed)
 
 def to_attn_config(params, options: Options) -> AttentionConfiguration:
     """Converts a sampled parameter tuple into a AttentionConfiguration instance."""
+
+
 import sys
 
 from typing import Optional
