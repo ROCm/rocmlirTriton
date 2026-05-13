@@ -1035,6 +1035,22 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="The build directory of MLIR based kernel generator",
     )
+    # Offline cap-validation flags. --dry-run prints sampled (shape, perf)
+    # pairs and whether the per-thread state cap (see _perf_within_budget)
+    # would ACCEPT or REJECT each one, without running rocmlir-gen,
+    # rocmlir-driver, or mlir-runner. Combine with --arch-override to
+    # evaluate the cap for a target other than the host GPU.
+    parser.add_argument('--dry-run',
+                        action='store_true',
+                        help='Sample configs and print whether the cap would '
+                        'accept or reject each. No subprocesses are spawned.')
+    parser.add_argument('--arch-override',
+                        type=str,
+                        default=None,
+                        help='Force the target arch (e.g. "gfx1100") for cap '
+                        'evaluation in --dry-run. Has no effect outside '
+                        '--dry-run; for real runs the arch is probed from the '
+                        'local GPU.')
 
 
 def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
@@ -1057,6 +1073,45 @@ def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
     return options, paths
 
 
+def _dry_run(kind: str, num_samples: int, arch: str, seed: Optional[int]) -> bool:
+    """Print sampled (shape, perf) pairs together with the cap's verdict.
+
+    Does NOT spawn rocmlir-gen / rocmlir-driver / mlir-runner. The point is to
+    verify the per-thread state cap (_perf_within_budget) cheaply on a host
+    that doesn't have the target GPU. Use --arch-override to set the arch
+    used for the cap computation; on a gfx950 host without that override
+    nothing will ever be REJECTed because the gfx950 budget is loose.
+
+    The RNG sequence here matches a *real* run only until the first rejection
+    (in a real run, _sampled_perf_within_budget resamples on reject and so
+    consumes extra RNG state). That's fine for the purpose of finding a seed
+    whose first N draws contain a rejection."""
+    rng = random.Random(seed if seed is not None else default_seed())
+    accept = 0
+    reject = 0
+    print(f"# dry-run: arch={arch}, kind={kind}, samples={num_samples}, "
+          f"seed={seed if seed is not None else default_seed()}")
+    print(f"# budget = {_build_budget(arch)} on num_elements_per_thread * alpha")
+    for i in range(num_samples):
+        if kind == 'gemm':
+            shape = _sample_gemm_shape(rng)
+            dtype = shape[0]
+        else:  # 'conv'
+            shape = _sample_conv_shape(rng)
+            dtype = shape[2]
+        perf = sample_perf_config(rng, arch, _split_k_choices(dtype))
+        score = _effective_state(perf, dtype, arch)
+        verdict = "ACCEPT" if _perf_within_budget(perf, dtype, arch) else "REJECT"
+        if verdict == "ACCEPT":
+            accept += 1
+        else:
+            reject += 1
+        print(f"[{i:4d}] {verdict} score={score:8.1f} dtype={dtype!s:5} "
+              f"perf={perf} shape={shape}")
+    print(f"# total: accept={accept} reject={reject}")
+    return reject > 0
+
+
 def main() -> bool:
     parser = argparse.ArgumentParser(
         description='Sweep parameter values to check correctness of MLIR')
@@ -1067,6 +1122,13 @@ def main() -> bool:
                         "on every iteration.")
     add_common_args(parser)
     args = parser.parse_args()
+
+    if args.dry_run:
+        arch = args.arch_override or get_arch()
+        # Returns True iff at least one config was rejected by the cap; that
+        # makes `--dry-run` a usable success indicator for "found a seed that
+        # exercises the filter".
+        return _dry_run(args.config, args.samples, arch, args.seed)
 
     options, paths = build_options_and_paths(args)
 
