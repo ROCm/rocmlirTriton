@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -triton-to-hsaco %s &> %t.log && FileCheck %s < %t.log
+// RUN: rocmlir-opt -triton-to-hsaco %s > %t.log 2>&1 && FileCheck %s < %t.log
 
 // Verify that SuppressWarningHandler in TritonToHsaco.cpp narrowly silences
 // only the "failed to meet occupancy target given by 'amdgpu-waves-per-eu'"
