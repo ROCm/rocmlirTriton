@@ -731,7 +731,13 @@ static llvm::cl::opt<bool> pvF64(
                   "for higher precision validation of non-quantized "
                   "attention, especially at long seq_len_k. No effect on "
                   "the i8 attention."),
-  llvm::cl::init(false));
+  llvm::cl::init(false), llvm::cl::Optional,
+                 llvm::cl::cb<void, bool>([](bool v) {
+                   if (v) {
+                     genValidation = "mlir-strict";
+                     genHostHarness = true;
+                   }
+                 }));
 
 // Input data spec
 static llvm::cl::opt<std::string> randomSeed(
