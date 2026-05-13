@@ -206,17 +206,22 @@ def RockEmulateNarrowTypesPass
   ];
 }
 
-def RockMaskNonZeroPreservingFusionsPass
-    : Pass<"rock-mask-non-zero-preserving-fusions", "::mlir::func::FuncOp"> {
-  let summary = "Insert arith.select masks after non-zero-preserving fusions "
-                "fed by Pad/Embed loads";
+def RockPreserveMaskedLoadSemanticsPass
+    : Pass<"rock-preserve-masked-load-semantics", "::mlir::func::FuncOp"> {
+  let summary = "Preserve masked-load OOB semantics across fusion chains";
   let description = [{
     This pass runs AFTER LowerBlockwiseToPtr and BEFORE TransformsToPointerArith.
     When a blockwise load has Pad or Embed transforms, OOB positions are masked
     to zero. If the loaded tile feeds into a non-zero-preserving fusion (e.g.
-    arith.addf %tile, 1.0), those positions become non-zero. This pass detects
-    such cases and inserts arith.select with the load mask to re-zero OOB
-    positions at the end of the fusion chain.
+    arith.addf %tile, 1.0), those positions become non-zero. Zero-preserving
+    fusions can also need remasking when they feed `rock.blockwise_reduce max`,
+    because zero is not max-neutral. This pass detects such cases and inserts
+    arith.select with the load mask at non-fusion uses of the fusion chain. The
+    masked-out value is chosen for the consumer: zero by default, or the type's
+    smallest representable value for `rock.blockwise_reduce max` (e.g. -inf for
+    IEEE floats, the most negative finite value for FP8 formats without
+    infinity, signed INT_MIN for signed integers) so masked-out lanes do not
+    influence the reduction.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect"];
@@ -383,16 +388,19 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
   ];
 }
 
-def RockRestoreHostCodePass : Pass<"rock-restore-host-code", "::mlir::ModuleOp"> {
-  let summary = "Restore host functions after Triton kernel compilation";
+def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
+  let summary =
+      "Emit GPU binary and wire kernel launches after Triton compilation";
   let description = [{
-    This pass restores host functions (like the GPU wrapper and main) that were
-    stored during RockFuncToTritonFuncPass. It:
-    1. Reads the serialized host functions from the module attribute
-    2. Parses them back into the module
-    3. Updates kernel calls to use the compiled kernel
+    After Triton lowers kernels to LLVM IR and `TritonToHsacoPass` produces
+    HSACO, this pass materializes a `gpu.binary` from that HSACO (with kernel
+    metadata), marks the module as a GPU container, and when host functions
+    were serialized by `RockFuncToTritonFuncPass`, restores them from
+    `rock.host_functions` and rewrites `func.call` to `gpu.launch_func`.
 
-    This allows the full test harness to work with the Triton-compiled kernel.
+    The `gpu.binary` is emitted whenever kernels and HSACO are present, even if
+    no host functions are restored, so downstream consumers can read kernel
+    metadata from the module.
   }];
   let dependentDialects = ["bufferization::BufferizationDialect",
                            "func::FuncDialect", "gpu::GPUDialect",

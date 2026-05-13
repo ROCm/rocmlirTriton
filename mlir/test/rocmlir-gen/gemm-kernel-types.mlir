@@ -15,8 +15,8 @@
 
 // CHECK-LABEL: func @host_naive_gemm
 // F16-SAME: (%{{.*}}: tensor<2362368xf16>, %{{.*}}: tensor<1181184xf16>, %{{.*}}: tensor<1572864xf16>)
-// I8-SAME: (%{{.*}}: tensor<2362368xi8>, %{{.*}}: tensor<1181184xi8>, %{{.*}}: tensor<1572864xi64>)
-// I8-I8-SAME: (%{{.*}}: tensor<2362368xi8>, %{{.*}}: tensor<1181184xi8>, %{{.*}}: tensor<1572864xi64>)
+// I8-SAME: (%{{.*}}: tensor<2362368xi8>, %{{.*}}: tensor<1181184xi8>, %{{.*}}: tensor<1572864xi32>)
+// I8-I8-SAME: (%{{.*}}: tensor<2362368xi8>, %{{.*}}: tensor<1181184xi8>, %{{.*}}: tensor<1572864xi32>)
 // FP8-BF8-SAME: (%{{.*}}: tensor<2362368xf8E4M3FNUZ>, %{{.*}}: tensor<1181184xf8E5M2FNUZ>, %{{.*}}: tensor<1572864xf32>)
 // FP8-BF8-OCP-SAME: (%{{.*}}: tensor<2362368xf8E4M3FN>, %{{.*}}: tensor<1181184xf8E5M2>, %{{.*}}: tensor<1572864xf32>)
 
