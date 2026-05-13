@@ -256,3 +256,117 @@ func.func @test_non_kernel(
   %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
   return %r : tensor<4096xf16>
 }
+
+// ============================================================
+// Filler-kind selection (chooseFillerKind):
+// the OOB filler must match the algebraic identity of the
+// downstream reduction so masked lanes are inert.
+// ============================================================
+
+// ============================================================
+// Leaf consumed by `blockwise_reduce max`: filler must be -inf.
+// (Regression: bug fixed when this used to be 0, breaking causal-
+// attention softmax when the row max was negative.)
+// ============================================================
+
+// CHECK-LABEL: func.func @test_leaf_to_max_reduce_f32
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[NEGINF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEGINF]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: rock.blockwise_reduce max %[[SAFE]]
+func.func @test_leaf_to_max_reduce_f32(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %cst = arith.constant dense<1.0> : tensor<64x64xf32>
+  %fused = arith.addf %tile, %cst : tensor<64x64xf32>
+  %r = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  return %r : tensor<64xf32>
+}
+
+// ============================================================
+// Same as above but f16: -inf encoding for f16 is 0xFC00.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_leaf_to_max_reduce_f16
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf16>
+// CHECK: %[[NEGINF:.*]] = arith.constant dense<0xFC00> : tensor<64x64xf16>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEGINF]] : tensor<64x64xi1>, tensor<64x64xf16>
+// CHECK: rock.blockwise_reduce max %[[SAFE]]
+func.func @test_leaf_to_max_reduce_f16(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf16> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %cst = arith.constant dense<1.0> : tensor<64x64xf16>
+  %fused = arith.addf %tile, %cst : tensor<64x64xf16>
+  %r = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xf16> -> tensor<64xf16>
+  return %r : tensor<64xf16>
+}
+
+// ============================================================
+// Leaf consumed by `blockwise_reduce sum`: filler stays at 0.
+// Sanity check that the new filler logic doesn't regress the
+// sum-reduce (additive identity) path.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_leaf_to_sum_reduce
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: rock.blockwise_reduce sum %[[SAFE]]
+func.func @test_leaf_to_sum_reduce(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %cst = arith.constant dense<1.0> : tensor<64x64xf32>
+  %fused = arith.addf %tile, %cst : tensor<64x64xf32>
+  %r = rock.blockwise_reduce sum %fused {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  return %r : tensor<64xf32>
+}
+
+// ============================================================
+// Max-reduce reached through additional fusion ops downstream of
+// the leaf. chooseFillerKind() walks fusion-op users transitively,
+// so the filler must still be -inf even when the reduce isn't a
+// direct user of the leaf.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_max_reduce_through_fusion_chain
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[ADD:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[SCALED:.*]] = arith.mulf %[[ADD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[NEGINF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[SCALED]], %[[NEGINF]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: rock.blockwise_reduce max %[[SAFE]]
+func.func @test_max_reduce_through_fusion_chain(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %cst1 = arith.constant dense<1.0> : tensor<64x64xf32>
+  %cst2 = arith.constant dense<2.0> : tensor<64x64xf32>
+  %add = arith.addf %tile, %cst1 : tensor<64x64xf32>
+  %scaled = arith.mulf %add, %cst2 : tensor<64x64xf32>
+  %r = rock.blockwise_reduce max %scaled {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  return %r : tensor<64xf32>
+}
+
+// ============================================================
+// Integer leaf type with a max-reduce consumer: there's no
+// representable -inf for ints, so createFillerConstant() falls back
+// to zero. Documents this corner of the behavior so a future change
+// to honour int min doesn't silently break.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_max_reduce_int_falls_back_to_zero
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[FUSED:.*]] = arith.addi %[[LOAD]], %{{.*}} : tensor<64x64xi32>
+// CHECK: %[[ZERO:.*]] = arith.constant dense<0> : tensor<64x64xi32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xi32>
+// CHECK: rock.blockwise_reduce max %[[SAFE]]
+func.func @test_max_reduce_int_falls_back_to_zero(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xi32> attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi32>
+  %cst = arith.constant dense<1> : tensor<64x64xi32>
+  %fused = arith.addi %tile, %cst : tensor<64x64xi32>
+  %r = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xi32> -> tensor<64xi32>
+  return %r : tensor<64xi32>
+}
