@@ -680,6 +680,120 @@ def _kpack_choices(arch: str) -> List[int]:
     return [1]  # gfx950+, gfx1250+, gfx13+, ...
 
 
+def _wave_size(arch: str) -> int:
+    """Wave size used by the perf-config tuner for ``arch``.
+    32 for RDNA, 64 for GCN/CDNA and gfx1250."""
+    n = _arch_id(arch)
+    if n is None:
+        # Unknown arch: conservative (yields a smaller num_elements_per_thread,
+        # i.e. less likely to filter).
+        return 64
+    if 0x1000 <= n < 0x1250:  # gfx10xx, gfx11xx, gfx12 < 1250
+        return 32
+    return 64
+
+def _dtype_amplifier(dtype: str, arch: str) -> int:
+    """Dtypes whose Triton fp_to_fp lowering expands into many LLVM ops on AMD
+    targets that lack a packed hardware conversion. On CDNA3/4 the
+    fp8->f16 path uses a packed hw intrinsic, avoiding the LLVM IR explosion."""
+    _AMPLIFIED_DTYPES = frozenset({'fp8', 'fp8_fp8', 'bf8'})
+    
+    """On CDNA3, fp8 stays packed via v_cvt_pk_f32_fp8 in the
+    Triton lowering, and on CDNA4 (gfx950) fp8 doesn't need conversion at
+    all because tt.dot_scaled accepts fp8 operands natively, so neither
+    family suffer from this problem. Every other AMD target (RDNA, older GCN) does."""
+    if dtype in _AMPLIFIED_DTYPES:
+        n = _arch_id(arch)
+        is_cdna3_or_4 = (n is not None and 0x940 <= n <= 0x95f)
+        if not is_cdna3_or_4:
+            return 10
+    return 1
+
+def _build_budget(arch: str) -> int:
+    """Per-arch cap on ``num_elements_per_thread * alpha``.
+
+    Picked empirically so every (shape, perf) we've measured to compile in <10s
+    passes, and the rest are rejected."""
+    n = _arch_id(arch)
+    if n is None:
+        return 4000
+    # RDNA3 / RDNA4: smaller budget. This is due to empirically observed
+    # more expensive LLVM processing, in particular, due to post‑RA machine scheduler
+    # and register allocator.
+    if 0x1000 <= n < 0x1100:
+        return 2000
+    # gfx9 / gfx940-942-950 / gfx1250 can handle larger budget due to more
+    # efficient LLVM processing.
+    return 4000
+
+# --- Per-thread "effective state" cap ----------------------------------------
+#
+# For a GEMM tile of size MPB x NPB with reduction tile KPB, distributed over
+# ``threads = numWaves * waveSize`` lanes, each thread holds:
+#
+#     La = (MPB * KPB) / (threads * kpack)   (operand A, fp_in)
+#     Lb = (NPB * KPB) / (threads * kpack)   (operand B, fp_in)
+#     Lc = (MPB * NPB) /  threads            (accumulator, fp32)
+#     num_elements_per_thread = La + Lb + Lc
+#
+# AMDGPU codegen scales super-linearly with the MI count in a single
+# scheduling region, and the inner GEMM loop is one big region.
+# ``num_elements_per_thread`` is a good proxy for that region size *as long as
+# the per-element MI count is constant*. fp8 inputs break that assumption on
+# RDNA: tt.fp_to_fp lowers scalar (no CDNA3-style packed hw conversion), so
+# each fp8 lane expands to ~25 LLVM ops vs ~1 for f16/bf16/f32. We capture
+# that with a dtype amplifier ``alpha``; the effective budget is on
+# ``num_elements_per_thread * alpha``.
+#
+# Numbers below were chosen so:
+#   - Every (shape, perf) pair that already compiled in <30s passes.
+#   - The hand-picked SLOW_GEMM_CASES_GFX1100_FP8 entries are rejected.
+# We deliberately keep the CDNA cap looser because CDNA has 2x the wave size
+# (so num_elements_per_thread is half) *and* native fp8 MFMA / async copies,
+# both of which we've observed compile orders of magnitude faster at the same
+# (MPB, NPB, KPB).
+
+def _effective_state(perf: Sequence[int], dtype: str, arch: str) -> float:
+    """Compute ``num_elements_per_thread * alpha`` for a perf-config tuple."""
+    mpb, npb, kpb, kpack, _ctas, num_waves, *_rest = perf
+    threads = max(1, num_waves * _wave_size(arch))
+    la = (mpb * kpb) / (threads * max(1, kpack))
+    lb = (npb * kpb) / (threads * max(1, kpack))
+    lc = (mpb * npb) / threads
+    num_elements_per_thread = la + lb + lc
+    return num_elements_per_thread * _dtype_amplifier(dtype, arch)
+
+
+def _perf_within_budget(perf: Sequence[int], dtype: str, arch: str) -> bool:
+    """Whether this (perf-config, dtype, arch) tuple passes the cap on
+    ``num_elements_per_thread * alpha`` (see _effective_state /
+    _build_budget)."""
+    return _effective_state(perf, dtype, arch) <= _build_budget(arch)
+
+
+# Hard cap on resampling in the random-cases generators; defensive in case
+# the budget is misconfigured for an arch and rejects nearly everything.
+_MAX_PERF_CONFIG_RETRIES = 256
+
+
+def _sampled_perf_within_budget(rng: random.Random, arch: str, dtype: str,
+                                split_k_choices: Sequence[int]) -> Tuple[int, ...]:
+    """Like :func:`sample_perf_config` but rejects perf-configs whose
+    effective per-thread state exceeds the arch budget. We loop with a
+    generous retry cap rather than enumerating the valid subspace because the
+    rejection rate is small (~few %) under PERF_CONFIG_OPTIONS for the archs
+    we care about, and we don't want to silently bias the sample distribution
+    by filtering an enumerated list."""
+    for _ in range(_MAX_PERF_CONFIG_RETRIES):
+        perf = sample_perf_config(rng, arch, split_k_choices)
+        if _perf_within_budget(perf, dtype, arch):
+            return perf
+    raise RuntimeError(
+        f"sample_perf_config exceeded {_MAX_PERF_CONFIG_RETRIES} retries for "
+        f"arch={arch!r} dtype={dtype!r}; PERF_CONFIG_OPTIONS may have no "
+        "config inside the effective-state budget.")
+
+
 def sample_perf_config(rng: random.Random, arch: str,
                        split_k_choices: Sequence[int]) -> Tuple[int, ...]:
     """Returns one random 11-field perf-config tuple (gemm:v1 / attn:v1).
@@ -828,21 +942,33 @@ def _split_k_choices(input_dtype: str) -> List[int]:
 
 
 def random_conv_cases(num_samples: int, arch: str, seed: Optional[int] = None):
-    """Yields ``num_samples`` random ``(conv_shape, perf_config)`` tuples."""
+    """Yields ``num_samples`` random ``(conv_shape, perf_config)`` tuples.
+
+    Perf-configs are filtered through :func:`_sampled_perf_within_budget` so
+    we never feed the pipeline a (tile, dtype, arch) combination known to
+    drive TritonToHsacoPass into the multi-minute regime."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
         shape = _sample_conv_shape(rng)
         # shape[2] is the input dtype (op, layout, dtype, n, c, k, ...).
-        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[2])))
+        dtype = shape[2]
+        yield (shape, _sampled_perf_within_budget(rng, arch, dtype,
+                                                  _split_k_choices(dtype)))
 
 
 def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
-    """Yields ``num_samples`` random ``(gemm_shape, perf_config)`` tuples."""
+    """Yields ``num_samples`` random ``(gemm_shape, perf_config)`` tuples.
+
+    Perf-configs are filtered through :func:`_sampled_perf_within_budget` so
+    we never feed the pipeline a (tile, dtype, arch) combination known to
+    drive TritonToHsacoPass into the multi-minute regime."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
         shape = _sample_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, trans_a, trans_b).
-        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[0])))
+        dtype = shape[0]
+        yield (shape, _sampled_perf_within_budget(rng, arch, dtype,
+                                                  _split_k_choices(dtype)))
 
 
 def to_conv_test(params, options: Options) -> ConvConfiguration:
