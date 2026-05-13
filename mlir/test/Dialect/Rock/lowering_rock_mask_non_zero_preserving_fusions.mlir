@@ -238,173 +238,247 @@ func.func @test_negf(
 }
 
 // ============================================================
-// Max reduction: non-zero-preserving fusion still needs remasking, but the
-// neutral value for max is -inf rather than zero.
+// Max reduction after GEMM: a non-zero-preserving epilogue load fusion still
+// needs remasking, but the neutral value for max is -inf rather than zero.
 // ============================================================
 
-// CHECK-LABEL: func.func @test_max_reduce_uses_neg_inf
+// CHECK-LABEL: func.func @test_gemm_output_add_load_max_reduce_uses_neg_inf
+// CHECK: %[[GEMM:.*]] = rock.blockwise_gemm
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
-// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[ADD:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[FUSED:.*]] = arith.addf %[[GEMM]], %[[ADD]] : tensor<64x64xf32>
 // CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
 // CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
-// CHECK: rock.blockwise_reduce max %[[SAFE]]
-func.func @test_max_reduce_uses_neg_inf(
-    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
-  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+// CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce max %[[SAFE]]
+// CHECK: rock.blockwise_store_ptr %[[REDUCED]]
+func.func @test_gemm_output_add_load_max_reduce_uses_neg_inf(
+    %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
+    %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
+    %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
+    -> tensor<64xf32> attributes {rock.kernel} {
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %zero = arith.constant dense<0.0> : tensor<64x64xf32>
+  %c = rock.blockwise_gemm(%a, %b, %zero) : tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %d = rock.blockwise_load_ptr %d_ptrs[%d_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %cst = arith.constant dense<1.0> : tensor<64x64xf32>
-  %fused = arith.addf %tile, %cst : tensor<64x64xf32>
-  %reduced = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  return %reduced : tensor<64xf32>
+  %d2 = arith.addf %d, %cst : tensor<64x64xf32>
+  %res = arith.addf %c, %d2 : tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
+  return %stored : tensor<64xf32>
 }
 
 // ============================================================
-// Direct max reduction: even without a fusion chain, the load's zero-filled
-// masked-out lanes are not neutral for max and must be remasked to -inf.
+// Zero-preserving epilogue load fusion before max reduction: zero-preservation
+// is enough for zero-fill consumers, but max still needs -inf for masked-out
+// lanes.
 // ============================================================
 
-// CHECK-LABEL: func.func @test_direct_load_max_reduce_uses_neg_inf
-// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
-// CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
-// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[LOAD]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
-// CHECK: rock.blockwise_reduce max %[[SAFE]]
-func.func @test_direct_load_max_reduce_uses_neg_inf(
-    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
-  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
-  %reduced = rock.blockwise_reduce max %tile {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  return %reduced : tensor<64xf32>
-}
-
-// ============================================================
-// Zero-preserving fusion before max reduction: zero-preservation is enough for
-// zero-fill consumers, but max still needs -inf for masked-out lanes.
-// ============================================================
-
-// CHECK-LABEL: func.func @test_zero_preserving_chain_max_reduce_uses_neg_inf
+// CHECK-LABEL: func.func @test_gemm_output_zero_preserving_chain_max_reduce_uses_neg_inf
+// CHECK: %[[GEMM:.*]] = rock.blockwise_gemm
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
 // CHECK: %[[SCALED:.*]] = arith.mulf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[FUSED:.*]] = arith.addf %[[GEMM]], %[[SCALED]] : tensor<64x64xf32>
 // CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
-// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[SCALED]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
-// CHECK: rock.blockwise_reduce max %[[SAFE]]
-func.func @test_zero_preserving_chain_max_reduce_uses_neg_inf(
-    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
-  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce max %[[SAFE]]
+// CHECK: rock.blockwise_store_ptr %[[REDUCED]]
+func.func @test_gemm_output_zero_preserving_chain_max_reduce_uses_neg_inf(
+    %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
+    %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
+    %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
+    -> tensor<64xf32> attributes {rock.kernel} {
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %zero = arith.constant dense<0.0> : tensor<64x64xf32>
+  %c = rock.blockwise_gemm(%a, %b, %zero) : tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %d = rock.blockwise_load_ptr %d_ptrs[%d_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %cst = arith.constant dense<2.0> : tensor<64x64xf32>
-  %scaled = arith.mulf %tile, %cst : tensor<64x64xf32>
-  %reduced = rock.blockwise_reduce max %scaled {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  return %reduced : tensor<64xf32>
+  %scaled = arith.mulf %d, %cst : tensor<64x64xf32>
+  %res = arith.addf %c, %scaled : tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
+  return %stored : tensor<64xf32>
 }
 
 // ============================================================
-// Mixed consumers: one fusion-chain leaf feeds both a rock.blockwise_reduce
-// max (needs -inf fill) and a rock.blockwise_store_ptr (needs zero fill).
-// Each consumer must get its own arith.select with the right neutral value.
+// Mixed consumers after GEMM: one epilogue fusion leaf feeds both a
+// rock.blockwise_reduce max (needs -inf fill) and a rock.blockwise_store_ptr
+// (needs zero fill). Each consumer must get its own arith.select with the
+// right neutral value.
 // ============================================================
 
-// CHECK-LABEL: func.func @test_mixed_consumers_max_and_store
-// CHECK-SAME: (%{{.*}}: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>,
-// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK]]]
-// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK-LABEL: func.func @test_gemm_output_mixed_consumers_max_and_store
+// CHECK: %[[GEMM:.*]] = rock.blockwise_gemm
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[ADD:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[FUSED:.*]] = arith.addf %[[GEMM]], %[[ADD]] : tensor<64x64xf32>
 // CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
 // CHECK: %[[SAFE_MAX:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
-// CHECK: rock.blockwise_reduce max %[[SAFE_MAX]]
+// CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce max %[[SAFE_MAX]]
 // CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
 // CHECK: %[[SAFE_STORE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xf32>
 // CHECK: rock.blockwise_store_ptr %[[SAFE_STORE]]
-func.func @test_mixed_consumers_max_and_store(
-    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
+// CHECK: rock.blockwise_store_ptr %[[REDUCED]]
+func.func @test_gemm_output_mixed_consumers_max_and_store(
+    %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
+    %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
+    %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>,
     %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>)
     -> (tensor<64xf32>, tensor<4096xf32>) attributes {rock.kernel} {
-  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %zero = arith.constant dense<0.0> : tensor<64x64xf32>
+  %c = rock.blockwise_gemm(%a, %b, %zero) : tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %d = rock.blockwise_load_ptr %d_ptrs[%d_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %cst = arith.constant dense<1.0> : tensor<64x64xf32>
-  %fused = arith.addf %tile, %cst : tensor<64x64xf32>
-  %reduced = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  %stored = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf32>
-  return %reduced, %stored : tensor<64xf32>, tensor<4096xf32>
+  %d2 = arith.addf %d, %cst : tensor<64x64xf32>
+  %res = arith.addf %c, %d2 : tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  %stored = rock.blockwise_store_ptr %res -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf32>
+  %stored_reduced = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
+  return %stored_reduced, %stored : tensor<64xf32>, tensor<4096xf32>
 }
 
 // ============================================================
-// Sum reduction: zero is already the neutral element for sum, so the fill
-// stays at zero and must NOT switch to -inf.
+// Sum reduction after GEMM: zero is already the neutral element for sum, so
+// the fill stays at zero and must NOT switch to -inf.
 // ============================================================
 
-// CHECK-LABEL: func.func @test_sum_reduce_uses_zero
+// CHECK-LABEL: func.func @test_gemm_output_add_load_sum_reduce_uses_zero
+// CHECK: %[[GEMM:.*]] = rock.blockwise_gemm
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
-// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[ADD:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[FUSED:.*]] = arith.addf %[[GEMM]], %[[ADD]] : tensor<64x64xf32>
 // CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
 // CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xf32>
-// CHECK: rock.blockwise_reduce sum %[[SAFE]]
-func.func @test_sum_reduce_uses_zero(
-    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf32> attributes {rock.kernel} {
-  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+// CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce sum %[[SAFE]]
+// CHECK: rock.blockwise_store_ptr %[[REDUCED]]
+func.func @test_gemm_output_add_load_sum_reduce_uses_zero(
+    %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
+    %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
+    %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
+    -> tensor<64xf32> attributes {rock.kernel} {
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %zero = arith.constant dense<0.0> : tensor<64x64xf32>
+  %c = rock.blockwise_gemm(%a, %b, %zero) : tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %d = rock.blockwise_load_ptr %d_ptrs[%d_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %cst = arith.constant dense<1.0> : tensor<64x64xf32>
-  %fused = arith.addf %tile, %cst : tensor<64x64xf32>
-  %reduced = rock.blockwise_reduce sum %fused {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  return %reduced : tensor<64xf32>
+  %d2 = arith.addf %d, %cst : tensor<64x64xf32>
+  %res = arith.addf %c, %d2 : tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce sum %res {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
+  return %stored : tensor<64xf32>
 }
 
 // ============================================================
-// FP8 max reduction (f8E4M3FN): the format has no infinity, so the fill must
-// be the most negative finite value (-448.0, the largest representable
-// magnitude in E4M3FN) rather than -inf. This exercises the
+// FP8 max reduction after GEMM (f8E4M3FN): the format has no infinity, so the
+// fill must be the most negative finite value (-448.0, the largest
+// representable magnitude in E4M3FN) rather than -inf. This exercises the
 // `APFloat::semanticsHasInf` == false branch of `createMaskFillValue`.
 // ============================================================
 
-// CHECK-LABEL: func.func @test_fp8_max_reduce_uses_largest_finite
+// CHECK-LABEL: func.func @test_gemm_output_fp8_max_reduce_uses_largest_finite
+// CHECK: %[[GEMM:.*]] = rock.blockwise_gemm
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
-// CHECK: %[[FUSED:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf8E4M3FN>
+// CHECK: %[[ADD:.*]] = arith.addf %[[LOAD]], %{{.*}} : tensor<64x64xf8E4M3FN>
+// CHECK: %[[FUSED:.*]] = arith.addf %[[GEMM]], %[[ADD]] : tensor<64x64xf8E4M3FN>
 // CHECK: %[[NEG_MAX:.*]] = arith.constant dense<-4.480000e+02> : tensor<64x64xf8E4M3FN>
 // CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEG_MAX]] : tensor<64x64xi1>, tensor<64x64xf8E4M3FN>
-// CHECK: rock.blockwise_reduce max %[[SAFE]]
-func.func @test_fp8_max_reduce_uses_largest_finite(
-    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xf8E4M3FN> attributes {rock.kernel} {
-  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf8E4M3FN>
+// CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce max %[[SAFE]]
+// CHECK: rock.blockwise_store_ptr %[[REDUCED]]
+func.func @test_gemm_output_fp8_max_reduce_uses_largest_finite(
+    %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
+    %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
+    %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
+    -> tensor<64xf8E4M3FN> attributes {rock.kernel} {
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf8E4M3FN>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf8E4M3FN>
+  %zero = arith.constant dense<0.0> : tensor<64x64xf8E4M3FN>
+  %c = rock.blockwise_gemm(%a, %b, %zero) : tensor<64x64xf8E4M3FN>, tensor<64x64xf8E4M3FN>, tensor<64x64xf8E4M3FN> -> tensor<64x64xf8E4M3FN>
+  %d = rock.blockwise_load_ptr %d_ptrs[%d_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf8E4M3FN>
   %cst = arith.constant dense<1.0> : tensor<64x64xf8E4M3FN>
-  %fused = arith.addf %tile, %cst : tensor<64x64xf8E4M3FN>
-  %reduced = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xf8E4M3FN> -> tensor<64xf8E4M3FN>
-  return %reduced : tensor<64xf8E4M3FN>
+  %d2 = arith.addf %d, %cst : tensor<64x64xf8E4M3FN>
+  %res = arith.addf %c, %d2 : tensor<64x64xf8E4M3FN>
+  %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xf8E4M3FN> -> tensor<64xf8E4M3FN>
+  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf8E4M3FN> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf8E4M3FN>
+  return %stored : tensor<64xf8E4M3FN>
 }
 
 // ============================================================
-// Integer max reduction: zero is wrong because masked-out positive lanes
-// would dominate negative real values. Signless integers are treated as
+// Integer max reduction after GEMM: zero is wrong because masked-out positive
+// lanes would dominate negative real values. Signless integers are treated as
 // signed, so the fill is the signed minimum of the bit width (INT_MIN).
 // (Unsigned integer fusion chains aren't constructable through the
 // rock.blockwise_load_ptr -> arith path, so they aren't tested here.)
 // ============================================================
 
-// CHECK-LABEL: func.func @test_int_max_reduce_uses_signed_min
+// CHECK-LABEL: func.func @test_gemm_output_int_max_reduce_uses_signed_min
+// CHECK: %[[GEMM:.*]] = rock.blockwise_gemm
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
-// CHECK: %[[FUSED:.*]] = arith.addi %[[LOAD]], %{{.*}} : tensor<64x64xi32>
+// CHECK: %[[ADD:.*]] = arith.addi %[[LOAD]], %{{.*}} : tensor<64x64xi32>
+// CHECK: %[[FUSED:.*]] = arith.addi %[[GEMM]], %[[ADD]] : tensor<64x64xi32>
 // CHECK: %[[INT_MIN:.*]] = arith.constant dense<-2147483648> : tensor<64x64xi32>
 // CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[INT_MIN]] : tensor<64x64xi1>, tensor<64x64xi32>
-// CHECK: rock.blockwise_reduce max %[[SAFE]]
-func.func @test_int_max_reduce_uses_signed_min(
-    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xi32> attributes {rock.kernel} {
-  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi32>
+// CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce max %[[SAFE]]
+// CHECK: rock.blockwise_store_ptr %[[REDUCED]]
+func.func @test_gemm_output_int_max_reduce_uses_signed_min(
+    %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
+    %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
+    %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
+    -> tensor<64xi32> attributes {rock.kernel} {
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
+  %zero = arith.constant dense<0> : tensor<64x64xi32>
+  %c = rock.blockwise_gemm(%a, %b, %zero) : tensor<64x64xi8>, tensor<64x64xi8>, tensor<64x64xi32> -> tensor<64x64xi32>
+  %d = rock.blockwise_load_ptr %d_ptrs[%d_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi32>
   %cst = arith.constant dense<1> : tensor<64x64xi32>
-  %fused = arith.addi %tile, %cst : tensor<64x64xi32>
-  %reduced = rock.blockwise_reduce max %fused {axis = 1 : index} : tensor<64x64xi32> -> tensor<64xi32>
-  return %reduced : tensor<64xi32>
+  %d2 = arith.addi %d, %cst : tensor<64x64xi32>
+  %res = arith.addi %c, %d2 : tensor<64x64xi32>
+  %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xi32> -> tensor<64xi32>
+  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xi32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xi32>
+  return %stored : tensor<64xi32>
 }
 
 // ============================================================
-// Integer sum reduction: zero is the neutral element for sum and the fill
-// must NOT switch to INT_MIN.
+// Integer sum reduction after GEMM: zero is the neutral element for sum and
+// the fill must NOT switch to INT_MIN.
 // ============================================================
 
-// CHECK-LABEL: func.func @test_int_sum_reduce_uses_zero
+// CHECK-LABEL: func.func @test_gemm_output_int_sum_reduce_uses_zero
+// CHECK: %[[GEMM:.*]] = rock.blockwise_gemm
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
-// CHECK: %[[FUSED:.*]] = arith.addi %[[LOAD]], %{{.*}} : tensor<64x64xi32>
+// CHECK: %[[ADD:.*]] = arith.addi %[[LOAD]], %{{.*}} : tensor<64x64xi32>
+// CHECK: %[[FUSED:.*]] = arith.addi %[[GEMM]], %[[ADD]] : tensor<64x64xi32>
 // CHECK: %[[ZERO:.*]] = arith.constant dense<0> : tensor<64x64xi32>
 // CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xi32>
-// CHECK: rock.blockwise_reduce sum %[[SAFE]]
-func.func @test_int_sum_reduce_uses_zero(
-    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64xi32> attributes {rock.kernel} {
-  %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi32>
+// CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce sum %[[SAFE]]
+// CHECK: rock.blockwise_store_ptr %[[REDUCED]]
+func.func @test_gemm_output_int_sum_reduce_uses_zero(
+    %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
+    %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
+    %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
+    -> tensor<64xi32> attributes {rock.kernel} {
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
+  %zero = arith.constant dense<0> : tensor<64x64xi32>
+  %c = rock.blockwise_gemm(%a, %b, %zero) : tensor<64x64xi8>, tensor<64x64xi8>, tensor<64x64xi32> -> tensor<64x64xi32>
+  %d = rock.blockwise_load_ptr %d_ptrs[%d_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi32>
   %cst = arith.constant dense<1> : tensor<64x64xi32>
-  %fused = arith.addi %tile, %cst : tensor<64x64xi32>
-  %reduced = rock.blockwise_reduce sum %fused {axis = 1 : index} : tensor<64x64xi32> -> tensor<64xi32>
-  return %reduced : tensor<64xi32>
+  %d2 = arith.addi %d, %cst : tensor<64x64xi32>
+  %res = arith.addi %c, %d2 : tensor<64x64xi32>
+  %reduced = rock.blockwise_reduce sum %res {axis = 1 : index} : tensor<64x64xi32> -> tensor<64xi32>
+  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xi32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xi32>
+  return %stored : tensor<64xi32>
 }
 
 // ============================================================
