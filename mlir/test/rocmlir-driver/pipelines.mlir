@@ -29,6 +29,8 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-gemm-to-gridwise),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:func.func(rock-attn-to-gridwise),
+// GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-gridwise-attn-to-blockwise),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-gridwise-gemm-to-blockwise),

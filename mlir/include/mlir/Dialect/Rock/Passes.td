@@ -11,10 +11,11 @@
 
 include "mlir/Pass/PassBase.td"
 
-def RockViewToTransformPass : Pass<"rock-view-to-transform", "::mlir::func::FuncOp"> {
+def RockViewToTransformPass
+    : Pass<"rock-view-to-transform", "::mlir::func::FuncOp"> {
   let summary = "convert tensor view ops to rock.transform";
   let dependentDialects = ["rock::RockDialect", "tensor::TensorDialect",
-    "tosa::TosaDialect"];
+                           "tosa::TosaDialect"];
 }
 
 def RockDetectFlashDecodingPass
@@ -39,19 +40,33 @@ def RockConvToGemmPass : Pass<"rock-conv-to-gemm", "::mlir::func::FuncOp"> {
                            "scf::SCFDialect", "gpu::GPUDialect"];
 }
 
-def RockAffixTuningParametersPass : Pass<"rock-affix-params", "::mlir::func::FuncOp"> {
+def RockAffixTuningParametersPass
+    : Pass<"rock-affix-params", "::mlir::func::FuncOp"> {
   let summary = "populate tuning parameters for gemm and convolution ops";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
-def RockGemmToGridwisePass : Pass<"rock-gemm-to-gridwise", "::mlir::func::FuncOp"> {
+def RockGemmToGridwisePass
+    : Pass<"rock-gemm-to-gridwise", "::mlir::func::FuncOp"> {
   let summary = "convert gemm to gridwise gemm, adding padding";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect"];
 }
 
-def RockFoldBroadcastPass: Pass<"rock-fold-broadcast", "::mlir::func::FuncOp"> {
-  let summary = "Convert Gemm([g, M, K], [broadcast{1}, K, N]) to Gemm([g*M, K], [K, N])";
+def RockAttnToGridwisePass
+    : Pass<"rock-attn-to-gridwise", "::mlir::func::FuncOp"> {
+  let summary =
+      "This pass converts rock.attention and rock.gemm_elementwise_gemm "
+      "into the appropriate rock.gridwise_attention adding padding and "
+      "group dimensions if needed.";
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect"];
+}
+
+def RockFoldBroadcastPass
+    : Pass<"rock-fold-broadcast", "::mlir::func::FuncOp"> {
+  let summary =
+      "Convert Gemm([g, M, K], [broadcast{1}, K, N]) to Gemm([g*M, K], [K, N])";
   let dependentDialects = ["rock::RockDialect"];
 }
 
@@ -126,8 +141,10 @@ def RockRegularizeInterGemmFusionPass
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }
 
-def RockGridwiseGemmToBlockwisePass : Pass<"rock-gridwise-gemm-to-blockwise", "::mlir::func::FuncOp"> {
-  let summary = "expand gridwise gemm into blockwise copy, blockwise gemm, and threadwise copy";
+def RockGridwiseGemmToBlockwisePass
+    : Pass<"rock-gridwise-gemm-to-blockwise", "::mlir::func::FuncOp"> {
+  let summary = "expand gridwise gemm into blockwise copy, blockwise gemm, and "
+                "threadwise copy";
   let dependentDialects = ["rock::RockDialect", "affine::AffineDialect",
                            "scf::SCFDialect", "triton::TritonDialect"];
 }
@@ -143,7 +160,9 @@ def RockGridwiseAttnToBlockwisePass
 
 def RockFusionSplitkRegularizationPass
     : Pass<"rock-fusion-splitk-regularization", "::mlir::func::FuncOp"> {
-  let summary = "This pass modifies fusion ops for split-k fusions. It converts any arith.addf/arith.subf gemmOut, other to arith.addf gemmOut, other/splitkFactor";
+  let summary = "This pass modifies fusion ops for split-k fusions. It "
+                "converts any arith.addf/arith.subf gemmOut, other to "
+                "arith.addf gemmOut, other/splitkFactor";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
@@ -197,13 +216,9 @@ def RockEmulateNarrowTypesPass
     ConvertMemRefLoad/ConvertMemrefStore patterns that call
     extract_strided_metadata on the original (pre-conversion) memref value.
   }];
-  let dependentDialects = [
-    "affine::AffineDialect",
-    "arith::ArithDialect",
-    "memref::MemRefDialect",
-    "func::FuncDialect",
-    "scf::SCFDialect"
-  ];
+  let dependentDialects = ["affine::AffineDialect", "arith::ArithDialect",
+                           "memref::MemRefDialect", "func::FuncDialect",
+                           "scf::SCFDialect"];
 }
 
 def RockMaskNonZeroPreservingFusionsPass
@@ -222,20 +237,18 @@ def RockMaskNonZeroPreservingFusionsPass
                            "arith::ArithDialect"];
 }
 
-def RockTransformsToPointerArithPass : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
+def RockTransformsToPointerArithPass
+    : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
   let summary =
       "Expand transform map chains into pointer arithmetic and validity masks";
-  let dependentDialects = ["rock::RockDialect", "func::FuncDialect", "triton::TritonDialect"];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "triton::TritonDialect"];
 }
 
 def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   let summary = "Convert Rock dialect operations to Triton IR";
-  let dependentDialects = [
-    "rock::RockDialect",
-    "func::FuncDialect",
-    "arith::ArithDialect",
-    "triton::TritonDialect"
-  ];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect", "triton::TritonDialect"];
 }
 
 def RockSortDimensionsMemoryLayoutPass
@@ -290,8 +303,10 @@ def RockSerializeHostFuncsPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
-def RockFuncToTritonFuncPass : Pass<"rock-func-to-triton-func", "::mlir::ModuleOp"> {
-  let summary = "Convert func.func kernels to tt.func with Triton pointer arguments";
+def RockFuncToTritonFuncPass
+    : Pass<"rock-func-to-triton-func", "::mlir::ModuleOp"> {
+  let summary =
+      "Convert func.func kernels to tt.func with Triton pointer arguments";
   let description = [{
     This pass transforms Rock kernel functions from the standard `func.func` dialect
     to Triton's `tt.func` dialect, preparing them for the Triton compilation pipeline.
@@ -305,11 +320,8 @@ def RockFuncToTritonFuncPass : Pass<"rock-func-to-triton-func", "::mlir::ModuleO
     6. Stores host functions (wrappers, main) as module attributes for later restoration
     7. Preserves grid size as module attributes for gpu.launch_func
   }];
-  let dependentDialects = [
-    "rock::RockDialect",
-    "func::FuncDialect",
-    "arith::ArithDialect",
-    "triton::TritonDialect",
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect", "triton::TritonDialect",
   ];
 }
 
@@ -354,33 +366,28 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
 
     The resulting HSACO binary is stored as a "triton.hsaco" attribute on the module.
   }];
-  let dependentDialects = [
-    "LLVM::LLVMDialect",
-  ];
-  let options = [
-    Option<"triple", "triple", "std::string", "\"amdgcn-amd-amdhsa\"",
-      "Triple">,
-    Option<"arch", "arch", "std::string", "\"gfx90a\"",
-      "AMDGPU architecture (e.g., gfx90a, gfx942, gfx1100)">,
-    Option<"features", "features", "std::string", "\"\"",
-      "Arch features">,
-    Option<"optLevel", "opt-level", "int", "3",
-      "Compiler optimization level">,
-    Option<"numWarps", "num-warps", "int", "4",
-      "Number of warps per block">,
-    Option<"numCTAs", "num-ctas", "int", "1",
-      "Number of CTAs">,
-    Option<"wavesPerEU", "waves-per-eu", "int", "0",
-      "Waves per execution unit hint (0 for default)">,
-    Option<"enableFpFusion", "enable-fp-fusion", "bool", "true",
-      "Enable FP fusion optimizations">,
-    Option<"allowFlushDenorm", "allow-flush-denorm", "bool", "false",
-      "Allow flushing denormal numbers">,
-    Option<"scalarizePackedFops", "scalarize-packed-fops", "bool", "false",
-      "Scalarize packed float operations">,
-    Option<"scheduleHint", "schedule-hint", "std::string", "\"none\"",
-      "Scheduling hint (e.g., 'memory-bound-attention' for iterative-ilp scheduler)">
-  ];
+  let dependentDialects = ["LLVM::LLVMDialect", ];
+  let options =
+      [Option<"triple", "triple", "std::string", "\"amdgcn-amd-amdhsa\"",
+              "Triple">,
+       Option<"arch", "arch", "std::string", "\"gfx90a\"",
+              "AMDGPU architecture (e.g., gfx90a, gfx942, gfx1100)">,
+       Option<"features", "features", "std::string", "\"\"", "Arch features">,
+       Option<"optLevel", "opt-level", "int", "3",
+              "Compiler optimization level">,
+       Option<"numWarps", "num-warps", "int", "4", "Number of warps per block">,
+       Option<"numCTAs", "num-ctas", "int", "1", "Number of CTAs">,
+       Option<"wavesPerEU", "waves-per-eu", "int", "0",
+              "Waves per execution unit hint (0 for default)">,
+       Option<"enableFpFusion", "enable-fp-fusion", "bool", "true",
+              "Enable FP fusion optimizations">,
+       Option<"allowFlushDenorm", "allow-flush-denorm", "bool", "false",
+              "Allow flushing denormal numbers">,
+       Option<"scalarizePackedFops", "scalarize-packed-fops", "bool", "false",
+              "Scalarize packed float operations">,
+       Option<"scheduleHint", "schedule-hint", "std::string", "\"none\"",
+              "Scheduling hint (e.g., 'memory-bound-attention' for "
+              "iterative-ilp scheduler)">];
 }
 
 def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
@@ -402,19 +409,19 @@ def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
                            "arith::ArithDialect", "memref::MemRefDialect",
                            "ROCDL::ROCDLDialect",
   ];
-  let options = [
-    Option<"triple", "triple", "std::string", "\"amdgcn-amd-amdhsa\"",
-      "Triple">,
-    Option<"arch", "arch", "std::string", "\"gfx90a\"",
-      "AMDGPU architecture (e.g., gfx90a, gfx942, gfx1100)">,
-    Option<"features", "features", "std::string", "\"\"",
-      "Arch features">,
-    Option<"optLevel", "opt-level", "int", "3",
-      "Compiler optimization level">,
+  let options = [Option<"triple", "triple", "std::string",
+                        "\"amdgcn-amd-amdhsa\"", "Triple">,
+                 Option<"arch", "arch", "std::string", "\"gfx90a\"",
+                        "AMDGPU architecture (e.g., gfx90a, gfx942, gfx1100)">,
+                 Option<"features", "features", "std::string", "\"\"",
+                        "Arch features">,
+                 Option<"optLevel", "opt-level", "int", "3",
+                        "Compiler optimization level">,
   ];
 }
 
-def RockInsertOutputFusionLoadsPass : Pass<"rock-insert-output-fusion-loads", "::mlir::func::FuncOp"> {
+def RockInsertOutputFusionLoadsPass
+    : Pass<"rock-insert-output-fusion-loads", "::mlir::func::FuncOp"> {
   let summary = "Insert BlockwiseLoadOp for output fusion loads";
   let description = [{
     This pass runs AFTER ToBlockwise and BEFORE RockLowerLoads.
