@@ -37,6 +37,7 @@
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
@@ -61,6 +62,86 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
+
+/// Identity element to use as the OOB filler when re-masking a fusion chain
+/// leaf. The filler must be the algebraic identity for the leaf's downstream
+/// consumer so that masked-out lanes don't perturb the consumer's result.
+///
+/// Note: rock::ReduceMethod currently only defines Sum and Max. If a Min
+/// (or other identity-bearing) reduction is added later, extend FillerKind
+/// (e.g. with PosInf for Min) and update chooseFillerKind() accordingly.
+enum class FillerKind {
+  /// Additive identity (0). Safe for tt.dot and sum-reductions.
+  Zero,
+  /// Max-reduction identity (-inf). Needed when a max-reduce consumes the
+  /// leaf and valid values can be negative (e.g., causal-attention softmax).
+  NegInf,
+};
+
+/// Choose the filler element to use for a fusion-chain `leaf` based on the
+/// reductions that consume it (transitively, through fusion ops).
+///
+/// Heuristic, not a complete analysis. Caveats:
+/// - Only inspects `rock.blockwise_reduce` consumers; other reduction-like ops
+///   (e.g. elementwise max into a later reduce, `tt.reduce`) are ignored.
+/// - Assumes the chosen filler propagates safely through the intervening
+///   fusion ops without sign flips (`arith.negf`, `arith.subf %x, %leaf`)
+///   that would invert the identity.
+/// - Picks one filler for all consumers of the leaf, even if there are
+///   multiple with conflicting identities.
+///
+/// The current attention pipeline satisfies these assumptions: the masked
+/// softmax input feeds a max-reduce, then `exp2(x - max)`, then a sum-reduce,
+/// then `tt.dot`. `-inf` propagates as `0` through `exp2`, which is the
+/// additive identity expected by sum-reduce and tt.dot, so the heuristic
+/// is safe end-to-end.
+static FillerKind chooseFillerKind(Value leaf) {
+  SmallVector<Operation *> worklist;
+  DenseSet<Operation *> visited;
+  for (Operation *user : leaf.getUsers())
+    worklist.push_back(user);
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    if (!visited.insert(op).second)
+      continue;
+    if (auto reduce = dyn_cast<rock::BlockwiseReduceOp>(op)) {
+      if (reduce.getReduceMethod() == rock::ReduceMethod::Max)
+        return FillerKind::NegInf;
+      // Sum-reductions and other future kinds without a representable
+      // identity are handled by the default Zero. Don't descend past the
+      // reduction: lanes are already collapsed.
+      continue;
+    }
+    if (rock::isFusionOp(op)) {
+      for (Value result : op->getResults())
+        for (Operation *u : result.getUsers())
+          worklist.push_back(u);
+    }
+  }
+  return FillerKind::Zero;
+}
+
+/// Build a constant tensor whose elements are the identity value
+/// corresponding to `kind`, typed as `tensorType`. For non-float element
+/// types, NegInf falls back to zero (no representable infinity for ints).
+static Value createFillerConstant(OpBuilder &builder, Location loc,
+                                  RankedTensorType tensorType,
+                                  FillerKind kind) {
+  Attribute fillerAttr;
+  Type elemType = tensorType.getElementType();
+  if (kind == FillerKind::NegInf) {
+    if (auto floatTy = dyn_cast<FloatType>(elemType)) {
+      APFloat negInf =
+          APFloat::getInf(floatTy.getFloatSemantics(), /*Negative=*/true);
+      fillerAttr =
+          DenseElementsAttr::get(tensorType, FloatAttr::get(elemType, negInf));
+    }
+  }
+  if (!fillerAttr)
+    fillerAttr = builder.getZeroAttr(tensorType);
+  return arith::ConstantOp::create(builder, loc, tensorType,
+                                   cast<TypedAttr>(fillerAttr));
+}
 
 /// Check if a mask tensor is trivial (constant splat of true).
 /// A trivial mask means no Pad/Embed validity constraints exist.
@@ -289,12 +370,21 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
     for (++it; it != masks.end(); ++it)
       combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
 
-    // Insert arith.select %mask, %fused, %zero.
+    // Insert arith.select %mask, %fused, %filler.
+    // 
+    // Filler value: 
+    // - tt.dot consumers: zero
+    // - sum-reduce consumers: zero
+    // - max-reduce consumers: -inf
+    // 
+    // A max-reduce consumer needs -inf so that masked-out lanes don't
+    // become the row max when actual valid values are negative (this happens
+    // in causal-attention softmax when the row max is < 0).
     auto leafType = cast<RankedTensorType>(leaf.getType());
-    auto zeroAttr = builder.getZeroAttr(leafType);
-    Value zero = arith::ConstantOp::create(builder, loc, leafType, zeroAttr);
+    FillerKind fillerKind = chooseFillerKind(leaf);
+    Value filler = createFillerConstant(builder, loc, leafType, fillerKind);
     Value safe =
-        arith::SelectOp::create(builder, loc, combinedMask, leaf, zero);
+        arith::SelectOp::create(builder, loc, combinedMask, leaf, filler);
 
     // Replace non-fusion uses of the leaf with the masked version.
     leaf.replaceUsesWithIf(safe, [&](OpOperand &use) {
