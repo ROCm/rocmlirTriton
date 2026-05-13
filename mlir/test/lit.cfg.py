@@ -35,6 +35,15 @@ config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 # CMAKE_SHARED_LIBRARY_PREFIX: 'lib' on Unix, '' on Windows MSVC.
 config.substitutions.append(('%shlibprefix',
                              '' if sys.platform == 'win32' else 'lib'))
+# rocm-run is a bash widget; redirect to its Python companion on Windows.
+# Must be registered *before* the generic %mlir_src_root substitution because
+# Lit applies substitutions in registration order.
+if sys.platform == 'win32':
+    _rocm_run_py = os.path.join(config.mlir_src_root, 'utils', 'widgets',
+                                'rocm-run.py')
+    config.substitutions.append(
+        ('%mlir_src_root/utils/widgets/rocm-run',
+         '"%s" "%s"' % (sys.executable, _rocm_run_py)))
 config.substitutions.append(("%mlir_src_root", config.mlir_src_root))
 config.substitutions.append(('%random_data', config.random_data))
 config.substitutions.append(
