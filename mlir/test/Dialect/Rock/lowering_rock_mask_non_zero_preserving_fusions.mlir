@@ -271,16 +271,15 @@ func.func @test_gemm_output_add_load_max_reduce_uses_neg_inf(
 }
 
 // ============================================================
-// Zero-preserving epilogue load fusion before max reduction: zero-preservation
-// is enough for zero-fill consumers, but max still needs -inf for masked-out
-// lanes.
+// Zero-preserving epilogue fusion before max reduction: zero-preservation is
+// enough for zero-fill consumers, but max still needs -inf for masked-out lanes.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_gemm_output_zero_preserving_chain_max_reduce_uses_neg_inf
 // CHECK: %[[GEMM:.*]] = rock.blockwise_gemm
 // CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
 // CHECK: %[[SCALED:.*]] = arith.mulf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
-// CHECK: %[[FUSED:.*]] = arith.addf %[[GEMM]], %[[SCALED]] : tensor<64x64xf32>
+// CHECK: %[[FUSED:.*]] = arith.mulf %[[GEMM]], %[[SCALED]] : tensor<64x64xf32>
 // CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
 // CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
 // CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce max %[[SAFE]]
@@ -298,8 +297,44 @@ func.func @test_gemm_output_zero_preserving_chain_max_reduce_uses_neg_inf(
   %d = rock.blockwise_load_ptr %d_ptrs[%d_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %cst = arith.constant dense<2.0> : tensor<64x64xf32>
   %scaled = arith.mulf %d, %cst : tensor<64x64xf32>
-  %res = arith.addf %c, %scaled : tensor<64x64xf32>
+  %res = arith.mulf %c, %scaled : tensor<64x64xf32>
   %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
+  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
+  return %stored : tensor<64xf32>
+}
+
+// ============================================================
+// Zero-preserving epilogue fusion before a view-like op and max reduction:
+// the max consumer is not a direct user of the fusion leaf, but it still needs
+// -inf for masked-out lanes.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_gemm_output_zero_preserving_transform_max_reduce_uses_neg_inf
+// CHECK: %[[GEMM:.*]] = rock.blockwise_gemm
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
+// CHECK: %[[SCALED:.*]] = arith.mulf %[[LOAD]], %{{.*}} : tensor<64x64xf32>
+// CHECK: %[[FUSED:.*]] = arith.mulf %[[GEMM]], %[[SCALED]] : tensor<64x64xf32>
+// CHECK: %[[NEG_INF:.*]] = arith.constant dense<0xFF800000> : tensor<64x64xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[NEG_INF]] : tensor<64x64xi1>, tensor<64x64xf32>
+// CHECK: %[[VIEW:.*]] = rock.transform %[[SAFE]]
+// CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce max %[[VIEW]]
+// CHECK: rock.blockwise_store_ptr %[[REDUCED]]
+func.func @test_gemm_output_zero_preserving_transform_max_reduce_uses_neg_inf(
+    %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
+    %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
+    %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
+    -> tensor<64xf32> attributes {rock.kernel} {
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %zero = arith.constant dense<0.0> : tensor<64x64xf32>
+  %c = rock.blockwise_gemm(%a, %b, %zero) : tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %d = rock.blockwise_load_ptr %d_ptrs[%d_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
+  %cst = arith.constant dense<2.0> : tensor<64x64xf32>
+  %scaled = arith.mulf %d, %cst : tensor<64x64xf32>
+  %res = arith.mulf %c, %scaled : tensor<64x64xf32>
+  %view = rock.transform %res by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["dim0", "dim1"] at [0, 1] -> ["dim0", "dim1"] at [0, 1]>] bounds = [64, 64] -> [64, 64]> : tensor<64x64xf32> to tensor<64x64xf32>
+  %reduced = rock.blockwise_reduce max %view {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
   %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
   return %stored : tensor<64xf32>
 }
