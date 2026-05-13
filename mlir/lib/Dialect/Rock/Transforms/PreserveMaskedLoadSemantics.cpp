@@ -1,4 +1,4 @@
-//===- MaskNonZeroPreservingFusions.cpp - Re-mask OOB after fusions -------===//
+//===- PreserveMaskedLoadSemantics.cpp - Re-mask OOB after fusions -------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -58,12 +58,12 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKMASKNONZEROPRESERVINGFUSIONSPASS
+#define GEN_PASS_DEF_ROCKPRESERVEMASKEDLOADSEMANTICSPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-mask-non-zero-preserving-fusions"
+#define DEBUG_TYPE "rock-preserve-masked-load-semantics"
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -324,15 +324,15 @@ static Value createMaskFillValue(OpBuilder &builder, Location loc,
   return zeroFill();
 }
 
-struct RockMaskNonZeroPreservingFusionsPass
-    : public rock::impl::RockMaskNonZeroPreservingFusionsPassBase<
-          RockMaskNonZeroPreservingFusionsPass> {
+struct RockPreserveMaskedLoadSemanticsPass
+    : public rock::impl::RockPreserveMaskedLoadSemanticsPassBase<
+          RockPreserveMaskedLoadSemanticsPass> {
   void runOnOperation() override;
 };
 
 } // end anonymous namespace
 
-void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
+void RockPreserveMaskedLoadSemanticsPass::runOnOperation() {
   func::FuncOp funcOp = getOperation();
 
   if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))

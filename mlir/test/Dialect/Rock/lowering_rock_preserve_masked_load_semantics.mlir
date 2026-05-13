@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -rock-mask-non-zero-preserving-fusions -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt -rock-preserve-masked-load-semantics -mlir-print-local-scope %s | FileCheck %s
 
 // ============================================================
 // addf with constant: non-zero-preserving (0 + 1 = 1).
