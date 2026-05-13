@@ -292,35 +292,6 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
     try:
         generator = await asyncio.create_subprocess_exec(paths.mlir_paths.rocmlir_gen_path,
                                                          *rocmlir_gen_opts,
-    """Runs the given configuration and returns whether it successfully concluded,
-    failed validation, or was inapplicable."""
-    if isinstance(config, MLIROnlyConfig):
-        rocmlir_gen_opts = config.generate_mlir_driver_commandline(options.flags)
-    else:
-        rocmlir_gen_opts = config.generate_mlir_driver_commandline(' '.join(options.flags),
-                                                                   kernel_repeats=None).split()
-        if getattr(config, "currentSeqLen") is not None:
-            rocmlir_gen_opts.append(f"--current_seq_len={','.join(map(str, config.currentSeqLen))}")
-    rocmlir_gen_opts.append('-pv')
-    # Per-config precision-aware rocmlir-gen flags (e.g. --pv-f64,
-    # -relDiff_threshold) attached by callers such as attentionSweeps to combat
-    # CPU reference drift at long seq_len.
-    extra_flags = getattr(config, "extra_rocmlir_gen_flags", None)
-    if extra_flags:
-        rocmlir_gen_opts.extend(extra_flags)
-
-    applicable_from_gen, gen_to_applicable = os.pipe()
-    generator = await asyncio.create_subprocess_exec(paths.mlir_paths.rocmlir_gen_path,
-                                                     *rocmlir_gen_opts,
-                                                     stdout=gen_to_applicable,
-                                                     stderr=asyncio.subprocess.PIPE,
-                                                     stdin=asyncio.subprocess.DEVNULL)
-    os.close(gen_to_applicable)
-
-    applicability = await asyncio.create_subprocess_exec(paths.mlir_paths.rocmlir_driver_path,
-                                                         '--kernel-pipeline=applicability',
-                                                         '-',
-                                                         stdin=applicable_from_gen,
                                                          stdout=asyncio.subprocess.PIPE,
                                                          stderr=asyncio.subprocess.PIPE,
                                                          stdin=asyncio.subprocess.DEVNULL)
