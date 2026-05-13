@@ -1,10 +1,12 @@
 // Verify that -pv-f64 promotes the host CPU attention reference's interior
-// to f64 for non-quantized attention (f32, f16), and that it has no effect
-// on quantized i8 attention.
+// to f64 for non-quantized attention (f32, f16), and that it errors out
+// when used with quantized i8 attention or with non-attention kernels.
 
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv -pv-f64 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_F32
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv -pv-f64 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_F16
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -t i8 -pv -pv-f64 -RMS_threshold 0.003 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_I8
+// `-pv-f64` must reject i8 (quantized) attention. The f64 promotion does
+// not apply to the i8 reference path, so rocmlir-gen errors out.
+// RUN: not rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -t i8 -pv-f64 2>&1 | FileCheck %s --check-prefix=CHECK_I8
 
 // f32 attention with -pv-f64
 
@@ -48,12 +50,6 @@
 // CHECK_F16:       memref.copy %{{.*}}, %[[outArg]]
 // CHECK_F16:       return
 
-// i8 attention with -pv-f64
+// i8 attention with -pv-f64 must error out (no IR is produced).
 
-// CHECK_I8-LABEL: func.func @host_naive_attention
-// CHECK_I8-NOT:   f64
-// CHECK_I8:       tosa.matmul {{.*}} {acc_type = i32} : (tensor<{{.*}}xi8>, tensor<{{.*}}xi8>, tensor<1xi8>, tensor<1xi8>) -> tensor<{{.*}}xi32>
-// CHECK_I8-NOT:   f64
-// CHECK_I8:       tosa.matmul {{.*}} {acc_type = f32} : (tensor<{{.*}}xf16>, tensor<{{.*}}xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<{{.*}}xf16>
-// CHECK_I8-NOT:   f64
-// CHECK_I8:       return
+// CHECK_I8: -pv-f64 is not supported for i8 (quantized) attention

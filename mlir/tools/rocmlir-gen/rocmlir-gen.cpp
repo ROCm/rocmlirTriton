@@ -726,12 +726,12 @@ static llvm::cl::opt<bool>
               llvm::cl::init(false));
 
 static llvm::cl::opt<bool> pvF64(
-    "pv-f64",
-    llvm::cl::desc("Run the host CPU attention reference internally in f64 "
-                   "for higher precision validation of non-quantized "
-                   "attention, especially at long seq_len_k. No effect on "
-                   "the i8 attention."),
-    llvm::cl::init(false));
+  "pv-f64",
+  llvm::cl::desc("Run the host CPU attention reference internally in f64 "
+                  "for higher precision validation of non-quantized "
+                  "attention, especially at long seq_len_k. No effect on "
+                  "the i8 attention."),
+  llvm::cl::init(false));
 
 // Input data spec
 static llvm::cl::opt<std::string> randomSeed(
@@ -6061,6 +6061,12 @@ int main(int argc, char **argv) {
 
   if (cpuTimers && !genHostHarness) {
     llvm::errs() << "--cpu-timers requires host harness generation\n";
+    return EXIT_FAILURE;
+  }
+
+  // `-pv-f64` does not apply to i8 (quantized) attention.
+  if (pvF64.getValue() && inputDataType.getValue() == "i8") {
+    llvm::errs() << "-pv-f64 is not supported for i8 (quantized) attention\n";
     return EXIT_FAILURE;
   }
 
