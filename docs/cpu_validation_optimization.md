@@ -108,7 +108,7 @@ That case is 170GB!
 
 The solution to avoid huge tensors is to merge the yield with the matmul-like op in a single op, thus avoiding to allocate the whole tensor at once. This has the big disadvantage that the new op is not a matmul anymore (because it's 8D, not 2D/3D and it has multiple reduction dimensions). The solution to that problem is simple: We tile this op later (in FusedConvToMatmulSchedule) and tile only the dimensions that come from the convolution itself. This way, the result is purely a matmul. 
 
-This conversion supports all types of convolutions except for forward convolutions with stride > 1 or dilation > 1, and 3-D convolutions (regardless of direction). If such a convolution is given, it will not be matched and converted into a matmul; it stays as the original convolution-shaped `linalg.generic` and is executed by the standard tiling/vectorization path with no im2col fusion.
+The section below details what convolutions are supported and what is not supported.
 
 ### 5.1 Support matrix
 
@@ -125,6 +125,8 @@ The matcher in `ConvToGemm.cpp` walks the `linalg.generic`'s affine maps via `li
 | 3D         | Forward / Backward | any    | any      | any     | any            | ❌         | 3D convs are not supported |
 
 Tests for each row live in `mlir/test/Conversion/CPU/cpu_conv_to_gemm.mlir`.
+
+Any convolution not listed in the above table is considered not supported.
 
 ## References
 [1] https://www.cs.utexas.edu/~flame/pubs/GotoTOMS_final.pdf
