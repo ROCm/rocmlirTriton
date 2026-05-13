@@ -3,8 +3,8 @@
 // proving that LDS is allocated statically in the binary rather than passed
 // dynamically at launch time.
 
-// RUN: rocmlir-gen --arch gfx90a --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX90A
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942
+// RUN: rocmlir-gen --arch gfx90a --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX90A
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942
 
 // The fixed size must be greater than zero — this means LDS is baked into the
 // binary (static), not supplied at launch (dynamic).

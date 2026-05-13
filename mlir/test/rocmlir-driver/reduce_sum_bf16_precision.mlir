@@ -21,7 +21,7 @@
 // RUN: rocmlir-gen -fut dot_add --arch gfx950 --clone-harness %s \
 // RUN:   | rocmlir-driver -kernel-pipeline highlevel -host-pipeline highlevel \
 // RUN:   | rocmlir-gen -ph -fut dot_add --verifier clone - \
-// RUN:   | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c -arch gfx950 2>&1 \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c -arch gfx950 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=GFX950
 
 // --- CPU LLVM IR (host reference) ---
