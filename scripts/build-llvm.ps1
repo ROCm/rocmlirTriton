@@ -150,6 +150,12 @@ if ($LASTEXITCODE -ne 0) { throw "git fetch $TritonRef failed ($LASTEXITCODE)" }
 git -C $TritonDir reset --hard $TritonRef
 if ($LASTEXITCODE -ne 0) { throw "git reset $TritonRef failed ($LASTEXITCODE)" }
 
+# Drop any orphan files left over from a half-applied patch / failed previous
+# build. Without this, `git apply --check` against a clean tree can still see
+# stale junk and we silently fall through to the "assuming present" branch.
+git -C $TritonDir clean -fd
+if ($LASTEXITCODE -ne 0) { throw "git clean failed for Triton ($LASTEXITCODE)" }
+
 git -C $TritonDir submodule update --init --recursive
 if ($LASTEXITCODE -ne 0) { throw "nested submodule update failed ($LASTEXITCODE)" }
 
@@ -159,79 +165,25 @@ if ($LASTEXITCODE -ne 0) { throw "nested submodule update failed ($LASTEXITCODE)
 # Originally we applied every triton-patches/*.patch on top of the gitlinked
 # Triton tree. An audit against triton-windows@main-windows showed that on
 # the Windows path:
-#   - patch1:         logically merged with context drift in the fork.
+#   - patch1:         AtomicRMW fmax/smax disambiguation. Logically NOT
+#                     present in the fork: emitAtomicRMW still concatenates
+#                     `stringifyRMWOp(MAX) == "max"` and emits the nonexistent
+#                     `llvm.amdgcn.raw.ptr.buffer.atomic.max` intrinsic.
+#                     Required for fp/integer reduce_max correctness.
 #   - patch2, patch3: cleanly merged into the fork.
 #   - patch4, patch5: apply cleanly but proven not to be compile-time critical.
 #   - patch6:         hard compile blocker on clang-cl (overload ambiguity in
 #                     PartitionLoops.cpp). MUST be applied.
 #
-# We therefore disable the generic patch loop on Windows (commented out
-# below for easy reversion) and apply only patch6. The other .patch files
+# We apply patch1 and patch6 explicitly on Windows. The other .patch files
 # remain on disk so the Linux build path (scripts/build-llvm.sh) keeps
 # applying them against upstream Triton.
 # ---------------------------------------------------------------------------
 
-# --- Generic patch loop (disabled on Windows; uncomment to re-enable) ------
-# if (Test-Path $PatchesDir) {
-#     $patches = Get-ChildItem -Path $PatchesDir -Filter '*.patch' -File |
-#                Sort-Object Name
-#     if ($patches.Count -gt 0) {
-#         Write-Host "--- Applying triton patches ---" -ForegroundColor Cyan
-#         $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "rocmlir-patches-$PID"
-#         New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
-#         # Lower ErrorActionPreference for the patch loop. Under 'Stop',
-#         # PowerShell wraps any native-command stderr in a NativeCommandError
-#         # *at invocation time* -- the `2>$null` / `2>&1` redirections happen
-#         # too late to suppress it. We manage failures ourselves via
-#         # $LASTEXITCODE inside the loop.
-#         $savedPref = $ErrorActionPreference
-#         $ErrorActionPreference = 'Continue'
-#         try {
-#             foreach ($patch in $patches) {
-#                 # Rewrite patch to LF before handing to `git apply`.
-#                 $bytes = [System.IO.File]::ReadAllBytes($patch.FullName)
-#                 $text  = [System.Text.Encoding]::UTF8.GetString($bytes) -replace "`r`n", "`n"
-#                 $lfPath = Join-Path $TmpDir $patch.Name
-#                 [System.IO.File]::WriteAllBytes(
-#                     $lfPath, [System.Text.Encoding]::UTF8.GetBytes($text))
-#
-#                 & git -C $TritonDir apply --check $lfPath 2>$null | Out-Null
-#                 if ($LASTEXITCODE -eq 0) {
-#                     Write-Host "Applying:  $($patch.Name)"
-#                     & git -C $TritonDir apply $lfPath 2>&1 | Write-Host
-#                     if ($LASTEXITCODE -ne 0) {
-#                         throw "git apply failed for $($patch.Name)"
-#                     }
-#                     continue
-#                 }
-#                 & git -C $TritonDir apply --check --reverse $lfPath 2>$null | Out-Null
-#                 if ($LASTEXITCODE -eq 0) {
-#                     Write-Host "Skipping:  $($patch.Name) (already applied)"
-#                 } else {
-#                     # The Windows build targets triton-windows@main-windows
-#                     # rather than the gitlink upstream triton recorded in
-#                     # .gitmodules. Some patches authored against the older
-#                     # upstream pin no longer apply forward or reverse here
-#                     # because their logical change is present but the
-#                     # surrounding context drifted. Warn loudly but continue;
-#                     # the per-patch context is documented in
-#                     # triton-patches/*.patch headers.
-#                     Write-Warning ("Patch does not apply cleanly: " +
-#                         "$($patch.Name) -- assuming the change is " +
-#                         "present in this Triton tree (Windows-only override).")
-#                 }
-#             }
-#         } finally {
-#             $ErrorActionPreference = $savedPref
-#             Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
-#         }
-#     }
-# }
-
-# --- Apply only patch6 (the hard compile blocker on clang-cl) -------------
-$Patch6 = Join-Path $PatchesDir 'patch6.patch'
-if (Test-Path $Patch6) {
-    Write-Host "--- Applying triton patch6 ---" -ForegroundColor Cyan
+$TritonPatchNames = @('patch1.patch', 'patch6.patch')
+$AnyPatchOnDisk = $TritonPatchNames | Where-Object { Test-Path (Join-Path $PatchesDir $_) }
+if ($AnyPatchOnDisk) {
+    Write-Host "--- Applying triton patches ---" -ForegroundColor Cyan
     $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "rocmlir-patches-$PID"
     New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
     # Lower ErrorActionPreference for the patch block. Under 'Stop',
@@ -241,28 +193,42 @@ if (Test-Path $Patch6) {
     $savedPref = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        # Rewrite patch to LF before handing to `git apply`.
-        $bytes  = [System.IO.File]::ReadAllBytes($Patch6)
-        $text   = [System.Text.Encoding]::UTF8.GetString($bytes) -replace "`r`n", "`n"
-        $lfPath = Join-Path $TmpDir 'patch6.patch'
-        [System.IO.File]::WriteAllBytes(
-            $lfPath, [System.Text.Encoding]::UTF8.GetBytes($text))
-
-        & git -C $TritonDir apply --check $lfPath 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "Applying:  patch6.patch"
-            & git -C $TritonDir apply $lfPath 2>&1 | Write-Host
-            if ($LASTEXITCODE -ne 0) {
-                throw "git apply failed for patch6.patch"
+        foreach ($patchName in $TritonPatchNames) {
+            $patchPath = Join-Path $PatchesDir $patchName
+            if (-not (Test-Path $patchPath)) {
+                Write-Warning "$patchName not found on disk; skipping."
+                continue
             }
-        } else {
+            # Rewrite patch to LF before handing to `git apply`; Windows
+            # core.autocrlf=true otherwise rejects the patch.
+            $bytes  = [System.IO.File]::ReadAllBytes($patchPath)
+            $text   = [System.Text.Encoding]::UTF8.GetString($bytes) -replace "`r`n", "`n"
+            $lfPath = Join-Path $TmpDir $patchName
+            [System.IO.File]::WriteAllBytes(
+                $lfPath, [System.Text.Encoding]::UTF8.GetBytes($text))
+
+            & git -C $TritonDir apply --check $lfPath 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "Applying:  $patchName"
+                & git -C $TritonDir apply $lfPath 2>&1 | Write-Host
+                if ($LASTEXITCODE -ne 0) {
+                    throw "git apply failed for $patchName"
+                }
+                continue
+            }
             & git -C $TritonDir apply --check --reverse $lfPath 2>$null | Out-Null
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "Skipping:  patch6.patch (already applied)"
+                Write-Host "Skipping:  $patchName (already applied)"
             } else {
-                Write-Warning ("patch6.patch does not apply cleanly -- " +
-                    "assuming the change is present in this Triton tree " +
-                    "(Windows-only override).")
+                # Do NOT silently assume the patch is "absorbed". On Windows we
+                # have repeatedly seen reset --hard leave garbage that makes both
+                # forward and reverse `apply --check` fail -- which used to be
+                # logged as a warning and then turned into mysterious test
+                # failures (e.g. reduce_max -> missing buffer.atomic.max
+                # intrinsic). Fail hard so the CI / developer notices.
+                throw ("$patchName does not apply cleanly to $TritonDir -- " +
+                    "neither forward nor reverse apply succeeds. Re-run with " +
+                    "a clean external/triton checkout.")
             }
         }
     } finally {
@@ -299,6 +265,10 @@ if ($LASTEXITCODE -ne 0) { throw "git fetch failed ($LASTEXITCODE)" }
 git -C $LlvmSrc reset --hard $LlvmHash
 if ($LASTEXITCODE -ne 0) { throw "git reset failed ($LASTEXITCODE)" }
 
+# As above: scrub any orphan files so `git apply --check` sees a pristine tree.
+git -C $LlvmSrc clean -fd
+if ($LASTEXITCODE -ne 0) { throw "git clean failed for LLVM ($LASTEXITCODE)" }
+
 # Apply llvm-patches/*.patch in sorted order, mirroring the Linux build-llvm.sh
 # hook (which splices the same loop into Triton's build script). Each patch is
 # CRLF-normalized so `git apply` accepts it under Windows core.autocrlf=true,
@@ -333,8 +303,14 @@ if (Test-Path $LlvmPatchesDir) {
                     if ($LASTEXITCODE -eq 0) {
                         Write-Host "Skipping:  $($patch.Name) (already applied)"
                     } else {
-                        Write-Warning ("$($patch.Name) does not apply cleanly -- " +
-                            "assuming the change is present in this LLVM tree.")
+                        # See the matching note in the triton-patches block:
+                        # silently assuming presence has burned us before
+                        # (430+ tests fell over with `tosa.target_env` parse
+                        # errors when patch2 was quietly skipped). Fail hard.
+                        throw ("$($patch.Name) does not apply cleanly to " +
+                            "$LlvmSrc -- neither forward nor reverse apply " +
+                            "succeeds. Re-run with a clean llvm-project " +
+                            "checkout.")
                     }
                 }
             }
