@@ -22,61 +22,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import math
 import random
 import os
 
-from perfRunner import AttentionConfiguration
+from perfRunner import AttentionConfiguration, auto_precision_flags_att
 from perfRunner import get_arch, get_num_cu, get_num_chiplets, initialize_dtypes_attn
 from perfRunner import create_paths
 from perfRunner import find_mlir_build_dir
 from perfRunner import GFX_CHIP_RE
 from parameterSweeps import Options, sweep_parameters, multiline_repr
-
-# f32 machine epsilon: 2^-23 ~= 1.1920929e-7.
-_F32_EPS = 2.0**-23
-
-
-def auto_precision_flags_att(config: AttentionConfiguration) -> List[str]:
-    """Return precision-aware rocmlir-gen flags for verification.
-
-    Sweep verification compares the GPU output against the host CPU reference.
-    With long seq_length attention (f32/bf16), the kernel error accumulates due
-    to reduction drift, masking the GPU's actual precision. We mitigate this
-    with two flags:
-      * `--pv-f64` promotes the host kernel's interior to f64, eliminating the
-        reference-side drift.
-      * `-relDiff_threshold T` lifts the per-element relative threshold to ride
-        on top of the predicted GPU f32 noise floor:
-        `delta ~ eps_f32 * log2(D_qk + 2 * K_eff)` where
-        `K_eff = seq_len_k // max(1, split_kv)`. Only effective for f32
-        attention; other attention types have enough noise space.
-
-    Keep in sync with the equivalent helper in tuningRunner.py.
-    """
-    flags: List[str] = []
-    if not isinstance(config, AttentionConfiguration):
-        return flags
-
-    # CPU drift observed for f32 attention at long seq_len_k > 1024
-    if config.datatype in ['f32'] and config.seq_len_k > 1024:
-        flags.append('--pv-f64')
-    # CPU drift observed for bf16 attention at long seq_len_k > 70
-    if config.datatype in ['bf16'] and config.seq_len_k > 70:
-        flags.append('--pv-f64')
-
-    if config.datatype == 'f32' and config.seq_len_k > 256:
-        k_eff = max(1, config.seq_len_k // max(1, config.split_kv))
-        red_len = max(2, config.head_dim_qk + 2 * k_eff)
-        floor = _F32_EPS * math.log2(red_len)
-        # Only override when the predicted floor is at or above the default
-        # 1e-6 -- below that, the existing default already has headroom and
-        # we don't want to mask small-shape regressions.
-        if floor >= 1e-6:
-            threshold = 4.0 * floor
-            flags += ['-relDiff_threshold', f'{threshold:.2e}']
-
-    return flags
 
 
 # GLOBAL VARIABLES
