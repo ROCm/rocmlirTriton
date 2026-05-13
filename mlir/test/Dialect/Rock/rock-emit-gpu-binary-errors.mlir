@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -rock-restore-host-code="arch=gfx90a" -verify-diagnostics --split-input-file %s
+// RUN: rocmlir-opt -rock-emit-gpu-binary="arch=gfx90a" -verify-diagnostics --split-input-file %s
 
 // Verifies that a missing rock.grid_size attribute causes a diagnostic
 module attributes {

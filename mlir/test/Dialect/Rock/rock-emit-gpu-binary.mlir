@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -rock-restore-host-code="arch=gfx90a" --split-input-file %s | FileCheck %s
+// RUN: rocmlir-opt -rock-emit-gpu-binary="arch=gfx90a" --split-input-file %s | FileCheck %s
 
 // Verifies gpu.binary is created with block_size and grid_size metadata
 // CHECK: gpu.container_module
@@ -120,7 +120,7 @@ module attributes {
 // -----
 
 // Verifies no dynamic_shared_memory_size is emitted — LDS is statically
-// baked into the binary by ResolveKernelLaunchParams before RestoreHostCode runs.
+// baked into the binary by ResolveKernelLaunchParams before RockEmitGpuBinaryPass runs.
 // CHECK: gpu.binary @rock_kernels
 // CHECK: func.func @host_with_lds
 // CHECK: gpu.launch_func @rock_kernels::@test_lds_kernel

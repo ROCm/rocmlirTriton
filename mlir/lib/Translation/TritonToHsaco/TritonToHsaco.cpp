@@ -17,6 +17,7 @@
 
 #include "mlir/Translation/TritonToHsaco.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -234,9 +235,6 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
       break;
     }
   }
-
-  if (!kernelFn)
-    return;
 
   kernelFn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
   kernelFn->addFnAttr("amdgpu-cluster-dims", std::to_string(numCTAs) + ",1,1");
