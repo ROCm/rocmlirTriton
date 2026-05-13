@@ -4,6 +4,11 @@
 
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv -pv-f64 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_F32
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv -pv-f64 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_F16
+
+// `-pv-f64` implies both `pv-f64` and `-pv-strict`. Check if they produce the same IR.
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv-f64 | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_F16
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv-f64 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_F16
+
 // `-pv-f64` must reject i8 (quantized) attention. The f64 promotion does
 // not apply to the i8 reference path, so rocmlir-gen errors out.
 // RUN: not rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -t i8 -pv-f64 2>&1 | FileCheck %s --check-prefix=CHECK_I8
