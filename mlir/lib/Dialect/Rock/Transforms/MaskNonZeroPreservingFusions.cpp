@@ -247,8 +247,8 @@ static bool hasMaxReduceConsumer(Value value) {
 /// reduction. The neutral element of max is the smallest representable value
 /// of the element type, which depends on the type:
 ///   - IEEE-like floats (f32, f16, bf16, f64, f8E5M2, ...): -inf
-///   - FP formats without inf (f8E4M3FN, f8E4M3FNUZ): the most negative finite
-///     value (`APFloat::getLargest(..., negative=true)`)
+///   - FP formats without inf (f4E2M1FN, f8E4M3FN, f8E4M3FNUZ): the most
+///     negative finite value (`APFloat::getLargest(..., negative=true)`)
 ///   - Signless / signed integers: the signed minimum of the bit width.
 ///     Unsigned integers can't reach this helper (`BlockwiseLoadPtrOp`'s
 ///     NativeMemoryOpTypes only contains signless integers and arith doesn't
