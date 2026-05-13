@@ -811,21 +811,6 @@ static llvm::cl::opt<bool> disableSplitKForTuning(
     llvm::cl::desc("disable split-K GEMM scheme for tuning"),
     llvm::cl::init(false));
 
-enum class F8TypesChoice : int { Arch = 0, Nanoo = 1, OCP = 2 };
-
-static llvm::cl::opt<F8TypesChoice> forceF8Types(
-    "force-f8-types",
-    llvm::cl::desc("use OCP F8 types;  otherwise, use old F8 types"),
-    llvm::cl::values(clEnumValN(F8TypesChoice::Arch, "arch",
-                                "usual F8 types for architecture"),
-                     clEnumValN(F8TypesChoice::Nanoo, "nanoo",
-                                "older 'NANOO' or 'FNUZ' types"),
-                     clEnumValN(F8TypesChoice::Nanoo, "fnuz",
-                                "older 'NANOO' or 'FNUZ' types"),
-                     clEnumValN(F8TypesChoice::OCP, "ocp",
-                                "'OCP' or 'OFP8' types")),
-    llvm::cl::init(F8TypesChoice::Arch));
-
 ////////////////////////////////////////////////////////////////////////////////
 ////  Struct KernelIF
 ////  - Detected/capture kernel interface
@@ -5965,20 +5950,11 @@ int main(int argc, char **argv) {
     }
     chipset = *maybeChipset;
     bool archPrefersOCP = amdgpu::hasOcpFp8(chipset);
-    DenseMap<F8TypesChoice, std::string> f8e4m3TypeNames{
-        {F8TypesChoice::Arch, archPrefersOCP ? "f8E4M3FN" : "f8E4M3FNUZ"},
-        {F8TypesChoice::Nanoo, "f8E4M3FNUZ"},
-        {F8TypesChoice::OCP, "f8E4M3FN"}};
-    DenseMap<F8TypesChoice, std::string> f8e5m2TypeNames{
-        {F8TypesChoice::Arch, archPrefersOCP ? "f8E5M2" : "f8E5M2FNUZ"},
-        {F8TypesChoice::Nanoo, "f8E5M2FNUZ"},
-        {F8TypesChoice::OCP, "f8E5M2"}};
-
-    auto canonicaliseF8Type = [&](std::string name) {
+    auto canonicaliseF8Type = [&](std::string name) -> std::string {
       if (name == "fp8")
-        return f8e4m3TypeNames[forceF8Types.getValue()];
+        return archPrefersOCP ? "f8E4M3FN" : "f8E4M3FNUZ";
       if (name == "bf8")
-        return f8e5m2TypeNames[forceF8Types.getValue()];
+        return archPrefersOCP ? "f8E5M2" : "f8E5M2FNUZ";
       return name;
     };
 

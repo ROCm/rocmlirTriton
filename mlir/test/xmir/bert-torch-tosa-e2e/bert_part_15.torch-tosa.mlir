@@ -6,7 +6,7 @@ module {
       %0 = "tosa.reshape"(%arg1, %const_shape) : (tensor<1536x384xf32>, !tosa.shape<3>) -> tensor<1x1536x384xf32>
       %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
       %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-      %1 = "tosa.matmul"(%arg0, %0, %a_zp, %b_zp) : (tensor<1x12x1536xf32>, tensor<1x1536x384xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x12x384xf32>
+      %1 = "tosa.matmul"(%arg0, %0, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x12x1536xf32>, tensor<1x1536x384xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x12x384xf32>
       %2 = "tosa.add"(%1, %arg2) : (tensor<1x12x384xf32>, tensor<1x1x384xf32>) -> tensor<1x12x384xf32>
       %3 = "tosa.add"(%2, %arg3) : (tensor<1x12x384xf32>, tensor<1x12x384xf32>) -> tensor<1x12x384xf32>
       return %3 : tensor<1x12x384xf32>

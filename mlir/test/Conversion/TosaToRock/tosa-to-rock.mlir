@@ -229,7 +229,7 @@ func.func private @mlir_dot_transpose_add(%arg0: tensor<20xf32>, %arg1: tensor<2
   %2 = "tosa.reshape"(%arg1, %const_shape3) : (tensor<20xf32>, !tosa.shape<3>) -> tensor<1x4x5xf32> 
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %3 = "tosa.matmul"(%2, %1, %a_zp, %b_zp) : (tensor<1x4x5xf32>, tensor<1x5x5xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x4x5xf32>
+  %3 = "tosa.matmul"(%2, %1, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x4x5xf32>, tensor<1x5x5xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x4x5xf32>
   %const_shape4 = "tosa.const_shape"() {values = dense<[20]> : tensor<1xindex>} : () -> !tosa.shape<1>
   %4 = "tosa.reshape"(%3, %const_shape4) : (tensor<1x4x5xf32>, !tosa.shape<1>) -> tensor<20xf32> 
   %6 = "tosa.transpose"(%3) {perms = array<i32: 0, 2, 1>} : (tensor<1x4x5xf32>) -> tensor<1x5x4xf32>

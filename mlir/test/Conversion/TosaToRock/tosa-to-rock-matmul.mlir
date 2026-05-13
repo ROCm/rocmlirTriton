@@ -8,7 +8,7 @@ func.func @test_basic(%a: tensor<2x128x64xf32>, %b: tensor<2x64x256xf32>) -> ten
   // CHECK: return %[[res]] : tensor<2x128x256xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
+  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = f32} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
 
   return %c : tensor<2x128x256xf32>
 }
@@ -20,7 +20,7 @@ func.func @test_quant(%a: tensor<2x128x64xi8>, %b: tensor<2x64x256xi8>) -> tenso
   // CHECK: return %[[res]] : tensor<2x128x256xi32>
   %a_zp = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %b_zp = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
-  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) : (tensor<2x128x64xi8>, tensor<2x64x256xi8>, tensor<1xi8>, tensor<1xi8>) -> tensor<2x128x256xi32>
+  %c = "tosa.matmul"(%a, %b, %a_zp, %b_zp) {acc_type = i32} : (tensor<2x128x64xi8>, tensor<2x64x256xi8>, tensor<1xi8>, tensor<1xi8>) -> tensor<2x128x256xi32>
   return %c : tensor<2x128x256xi32>
 }
 
@@ -33,7 +33,7 @@ func.func @test_transpose(%a: tensor<2x64x128xf32>, %b: tensor<2x64x256xf32>) ->
   %b_tr = "tosa.transpose"(%b) {perms = array<i32: 0, 1, 2>} : (tensor<2x64x256xf32>) -> tensor<2x64x256xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %c_tr = "tosa.matmul"(%a_tr, %b_tr, %a_zp, %b_zp) {} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
+  %c_tr = "tosa.matmul"(%a_tr, %b_tr, %a_zp, %b_zp) {acc_type = f32} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
   %c = "tosa.transpose"(%c_tr) {perms = array<i32: 0, 2, 1>} : (tensor<2x128x256xf32>) -> tensor<2x256x128xf32>
   return %c : tensor<2x256x128xf32>
 }
@@ -46,7 +46,7 @@ func.func @test_transpose_b(%a: tensor<2x128x64xf32>, %b: tensor<2x256x64xf32>) 
   %b_tr = "tosa.transpose"(%b) {perms = array<i32: 0, 2, 1>} : (tensor<2x256x64xf32>) -> tensor<2x64x256xf32>
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %c = "tosa.matmul"(%a, %b_tr, %a_zp, %b_zp) {} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
+  %c = "tosa.matmul"(%a, %b_tr, %a_zp, %b_zp) {acc_type = f32} : (tensor<2x128x64xf32>, tensor<2x64x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x128x256xf32>
 
   return %c : tensor<2x128x256xf32>
 }

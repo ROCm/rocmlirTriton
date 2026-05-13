@@ -29,11 +29,15 @@
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Config/Targets.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DiagnosticHandler.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -103,6 +107,33 @@ namespace {
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
+
+/// Diagnostic handler that swallows one specific LLVM optimization-failure
+/// warning emitted by the AMDGPU backend.
+///
+/// The default `llvm::DiagnosticHandler` (installed by `LLVMContextImpl`)
+/// is a no-op stub whose `handleDiagnostics` returns `false`, causing
+/// `LLVMContext::diagnose` to fall through to its built-in stderr printer
+/// (and `exit(1)` for `DS_Error`). Returning `false` here preserves that
+/// exact behaviour for every diagnostic that doesn't match the predicate
+/// below, so non-matching errors, remarks, and warnings are unaffected.
+class SuppressWarningHandler : public llvm::DiagnosticHandler {
+public:
+  bool handleDiagnostics(const llvm::DiagnosticInfo &diag) override {
+    auto *optDiag = llvm::dyn_cast<llvm::DiagnosticInfoOptimizationBase>(&diag);
+    if (!optDiag)
+      return false;
+
+    std::string msg = optDiag->getMsg();
+    if (diag.getKind() == llvm::DK_OptimizationFailure &&
+        diag.getSeverity() == llvm::DS_Warning &&
+        llvm::StringRef(msg).starts_with(
+            "failed to meet occupancy target given by 'amdgpu-waves-per-eu'"))
+      return true;
+
+    return false;
+  }
+};
 
 /// Initialize LLVM targets (call once) - from init_targets in llvm.cc
 void initializeLLVMTargets() {
@@ -187,10 +218,9 @@ void setABIVersion(llvm::Module &module, int version) {
 
 /// Set kernel function attributes
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
-                                  StringRef features, int numWarps,
-                                  int wavesPerEU, int numCTAs,
-                                  bool allowFlushDenorm, bool enableAsan,
-                                  StringRef scheduleHint) {
+                         StringRef features, int numWarps, int wavesPerEU,
+                         int numCTAs, bool allowFlushDenorm, bool enableAsan,
+                         StringRef scheduleHint) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
@@ -623,6 +653,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   // Translate MLIR to LLVM IR (llvm.to_module in compiler.py)
   llvm::LLVMContext llvmContext;
+  llvmContext.setDiagnosticHandler(std::make_unique<SuppressWarningHandler>());
   std::unique_ptr<llvm::Module> llvmModule =
       translateModuleToLLVMIR(module, llvmContext);
   if (!llvmModule) {
@@ -657,18 +688,29 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   addControlConstant(*llvmModule, "__oclc_wavefrontsize64", 8, waveSize == 64);
 
   int numWarps = options.numWarps;
-  if(auto totalNumWarps = module->getAttrOfType<IntegerAttr>("ttg.total-num-warps")) {
-    if(numWarps != totalNumWarps.getInt()) {
-      LLVM_DEBUG(llvm::dbgs() << "ttg.total-num-warps != rock.num_waves ("<<totalNumWarps.getInt()<<" != "<<numWarps<<")\n");
-      LLVM_DEBUG(llvm::dbgs() << "This can happen due to warp-specialization\n");
+  if (auto totalNumWarps =
+          module->getAttrOfType<IntegerAttr>("ttg.total-num-warps")) {
+    if (numWarps != totalNumWarps.getInt()) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "ttg.total-num-warps != rock.num_waves ("
+                 << totalNumWarps.getInt() << " != " << numWarps << ")\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << "This can happen due to warp-specialization\n");
     }
     numWarps = totalNumWarps.getInt();
   }
 
+  int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(module);
+  if (numCTAs != options.numCTAs) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "numCTAs mismatch: TritonGPUDialect::getNumCTAs=" << numCTAs
+               << " vs options.numCTAs=" << options.numCTAs << "\n");
+  }
+
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
-  setKernelAttributes(*llvmModule, arch, features, numWarps,
-                      options.wavesPerEU, options.numCTAs, options.allowFlushDenorm,
-                      enableAsan, options.scheduleHint);
+  setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
+                      numCTAs, options.allowFlushDenorm, enableAsan,
+                      options.scheduleHint);
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
   // compiler.py lines 412-423
@@ -720,8 +762,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   }
 
   // optimize_module in llvm.cc
-  optimizeModule(*llvmModule, tm.get(), arch, optLevel.value(),
-                 enableAsan);
+  optimizeModule(*llvmModule, tm.get(), arch, optLevel.value(), enableAsan);
 
   // Handle architected SGPRs (compiler.py lines 427-434)
   if (hasArchitectedSGPRs(triple, arch)) {
@@ -781,7 +822,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_DUMP")) {
     std::string envVal(dumpEnv);
     if (envVal == "1") {
-      llvm::errs() << "// -----// AMDGCN Dump //----- //\n" << amdgcnAsm << "\n";
+      llvm::errs() << "// -----// AMDGCN Dump //----- //\n"
+                   << amdgcnAsm << "\n";
     }
   }
 

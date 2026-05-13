@@ -385,6 +385,18 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   return 1;
 }
 
+bool mlir::rock::supportsMultiCTALaunch(StringRef arch) {
+  auto [_, chip] = getArch(arch);
+  triton::AMD::TargetInfo targetInfo(chip.str());
+  return targetInfo.supportsMultiCTALaunch();
+}
+
+int64_t mlir::rock::getMaxNumCTAs(StringRef arch) {
+  if (!supportsMultiCTALaunch(arch))
+    return 1;
+  return 16;
+}
+
 bool mlir::rock::supportsTDM(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());

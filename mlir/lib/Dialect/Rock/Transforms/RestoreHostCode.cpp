@@ -254,8 +254,8 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
 
     // Create grid and block dimensions
     Value one = arith::ConstantIndexOp::create(builder, callLoc, 1);
-    Value gridX =
-        arith::ConstantIndexOp::create(builder, callLoc, kernel.gridSize);
+    Value gridX = arith::ConstantIndexOp::create(
+        builder, callLoc, kernel.gridSize * kernel.clusterSize);
     Value blockX =
         arith::ConstantIndexOp::create(builder, callLoc, kernel.blockSize);
 
@@ -299,6 +299,17 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
              "are unexpectedly used";
       return failure();
     }
+
+    // Set cluster size for multi-CTA launch
+    std::optional<gpu::KernelDim3> clusterSize;
+    if (kernel.clusterSize > 1) {
+      Value numCTAsVal =
+          arith::ConstantIndexOp::create(builder, callLoc, kernel.clusterSize);
+      clusterSize = gpu::KernelDim3{numCTAsVal, one, one};
+    }
+
+    // Create gpu.launch_func
+    // Note: gpu.launch_func expects kernel operands to have proper types
     gpu::LaunchFuncOp::create(
         builder, callLoc,
         SymbolRefAttr::get(ctx, binaryOp.getName(),
@@ -307,8 +318,7 @@ LogicalResult RockRestoreHostCodePass::createGpuBinaryAndLaunchFuncs(
         gpu::KernelDim3{blockX, one, one}, // block dimensions
         /*dynamicSharedMemorySize=*/nullptr, launchArgs,
         /*asyncTokenType=*/nullptr,
-        /*asyncDependencies=*/ValueRange{},
-        /*clusterSize=*/std::nullopt);
+        /*asyncDependencies=*/ValueRange{}, clusterSize);
 
     // gpu.launch_func doesn't return values - it modifies buffers in-place.
     // Replace uses of the func.call results with the corresponding output

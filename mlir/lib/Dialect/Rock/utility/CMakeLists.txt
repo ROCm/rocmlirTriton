@@ -40,3 +40,10 @@ target_include_directories(obj.MLIRRockUtility PRIVATE
   ${TRITON_PROJECT_DIR}/include
   ${TRITON_BINARY_DIR}/include
 )
+
+# HIP needed by tritonUtils.cpp (launchKernel)
+if (NOT WIN32)
+  find_package(hip REQUIRED PATHS ${ROCM_PATH})
+  target_link_libraries(MLIRRockUtility PUBLIC hip::host hip::amdhip64)
+  target_link_libraries(obj.MLIRRockUtility PUBLIC hip::host hip::amdhip64)
+endif()

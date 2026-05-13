@@ -54,7 +54,7 @@ OwningOpRef<ModuleOp> cpu::buildUnrollSchedule(MLIRContext *ctx) {
                                    {ib.getLoc()});
       ib.create<transform::LoopUnrollOp>(
           /*target=*/body->getArgument(0),
-          /*factor=*/4);
+          /*factor=*/8);
       ib.create<transform::YieldOp>(/*operands=*/ValueRange{});
     }
   });
