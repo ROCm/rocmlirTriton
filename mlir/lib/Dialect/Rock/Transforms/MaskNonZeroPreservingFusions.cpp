@@ -64,17 +64,12 @@ using namespace mlir::rock;
 namespace {
 
 /// Identity element to use as the OOB filler when re-masking a fusion chain
-/// leaf. The filler must be the algebraic identity for the leaf's downstream
-/// consumer so that masked-out lanes don't perturb the consumer's result.
-///
-/// Note: rock::ReduceMethod currently only defines Sum and Max. If a Min
-/// (or other identity-bearing) reduction is added later, extend FillerKind
-/// (e.g. with PosInf for Min) and update chooseFillerKind() accordingly.
+/// leaf.
+/// NOTE: If we ever support min reductions, we'll need to add a PosInf option.
 enum class FillerKind {
-  /// Additive identity (0). Safe for tt.dot and sum-reductions.
+  /// Safe for tt.dot and sum-reductions.
   Zero,
-  /// Max-reduction identity (-inf). Needed when a max-reduce consumes the
-  /// leaf and valid values can be negative (e.g., causal-attention softmax).
+  /// Safe for max-reductions (e.g., causal-attention softmax).
   NegInf,
 };
 
