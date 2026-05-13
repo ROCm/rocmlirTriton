@@ -36,6 +36,8 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Config/Targets.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DiagnosticHandler.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -105,6 +107,33 @@ namespace {
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
+
+/// Diagnostic handler that swallows one specific LLVM optimization-failure
+/// warning emitted by the AMDGPU backend.
+///
+/// The default `llvm::DiagnosticHandler` (installed by `LLVMContextImpl`)
+/// is a no-op stub whose `handleDiagnostics` returns `false`, causing
+/// `LLVMContext::diagnose` to fall through to its built-in stderr printer
+/// (and `exit(1)` for `DS_Error`). Returning `false` here preserves that
+/// exact behaviour for every diagnostic that doesn't match the predicate
+/// below, so non-matching errors, remarks, and warnings are unaffected.
+class SuppressWarningHandler : public llvm::DiagnosticHandler {
+public:
+  bool handleDiagnostics(const llvm::DiagnosticInfo &diag) override {
+    auto *optDiag = llvm::dyn_cast<llvm::DiagnosticInfoOptimizationBase>(&diag);
+    if (!optDiag)
+      return false;
+
+    std::string msg = optDiag->getMsg();
+    if (diag.getKind() == llvm::DK_OptimizationFailure &&
+        diag.getSeverity() == llvm::DS_Warning &&
+        llvm::StringRef(msg).starts_with(
+            "failed to meet occupancy target given by 'amdgpu-waves-per-eu'"))
+      return true;
+
+    return false;
+  }
+};
 
 /// Initialize LLVM targets (call once) - from init_targets in llvm.cc
 void initializeLLVMTargets() {
@@ -624,6 +653,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   // Translate MLIR to LLVM IR (llvm.to_module in compiler.py)
   llvm::LLVMContext llvmContext;
+  llvmContext.setDiagnosticHandler(std::make_unique<SuppressWarningHandler>());
   std::unique_ptr<llvm::Module> llvmModule =
       translateModuleToLLVMIR(module, llvmContext);
   if (!llvmModule) {
