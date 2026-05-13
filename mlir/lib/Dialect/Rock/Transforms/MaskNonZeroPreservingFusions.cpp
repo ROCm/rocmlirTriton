@@ -22,7 +22,9 @@
 // out-of-bounds (OOB) positions. tt.load returns 0 for those positions. If the
 // loaded tile feeds into a non-zero-preserving fusion (e.g. arith.addf %tile,
 // 1.0), OOB positions become non-zero and can corrupt consumers that do not
-// carry the original mask.
+// carry the original mask. Even zero-preserving fusions need special handling
+// when they feed a max reduction, because zero is not the neutral element for
+// max.
 //
 // This pass detects such cases and inserts:
 //   %safe = arith.select %mask, %fused_result, %fill
@@ -44,6 +46,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -233,9 +236,40 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
 }
 
 static bool hasMaxReduceConsumer(Value value) {
-  for (OpOperand &use : value.getUses()) {
-    auto reduceOp = dyn_cast<BlockwiseReduceOp>(use.getOwner());
-    if (reduceOp && reduceOp.getReduceMethod() == ReduceMethod::Max)
+  SmallVector<Value> worklist{value};
+  DenseSet<Value> visited;
+
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    if (!visited.insert(current).second)
+      continue;
+
+    for (OpOperand &use : current.getUses()) {
+      Operation *owner = use.getOwner();
+      auto reduceOp = dyn_cast<BlockwiseReduceOp>(owner);
+      if (reduceOp && reduceOp.getReduceMethod() == ReduceMethod::Max)
+        return true;
+
+      if (isa<ViewLikeOpInterface>(owner)) {
+        for (Value result : owner->getResults())
+          worklist.push_back(result);
+      }
+    }
+  }
+
+  return false;
+}
+
+static bool useNeedsMaxNeutralFill(Operation *useOwner) {
+  auto reduceOp = dyn_cast<BlockwiseReduceOp>(useOwner);
+  if (reduceOp)
+    return reduceOp.getReduceMethod() == ReduceMethod::Max;
+
+  if (!isa<ViewLikeOpInterface>(useOwner))
+    return false;
+
+  for (Value result : useOwner->getResults()) {
+    if (hasMaxReduceConsumer(result))
       return true;
   }
   return false;
@@ -263,8 +297,7 @@ static Value createMaskFillValue(OpBuilder &builder, Location loc,
                                      builder.getZeroAttr(type));
   };
 
-  auto reduceOp = dyn_cast<BlockwiseReduceOp>(useOwner);
-  if (!reduceOp || reduceOp.getReduceMethod() != ReduceMethod::Max)
+  if (!useNeedsMaxNeutralFill(useOwner))
     return zeroFill();
 
   Type elemType = type.getElementType();
