@@ -7,7 +7,6 @@
 #map4 = affine_map<(d0, d1, d2, d3) -> ((d1 * 2 + d2) * 128 + d3)>
 #map5 = affine_map<(d0, d1, d2, d3) -> (d0, d3, d1, d2)>
 #map6 = affine_map<(d0, d1, d2) -> (0, d0, d1, d2)>
-#map7 = affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>
 #map8 = affine_map<(d0, d1, d2, d3) -> (d1, d2)>
 #map9 = affine_map<(d0) -> (0, d0 floordiv 256, d0 mod 256, 0)>
 #map10 = affine_map<(d0) -> (d0 floordiv 65536, (d0 mod 65536) floordiv 256, d0 mod 256)>
@@ -20,7 +19,6 @@
 #transform_map6 = #rock.transform_map<#map6 by [<Merge{1, 2} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [3]>] bounds = [2, 256, 256] -> [1, 2, 256, 256]>
 #transform_map7 = #rock.transform_map<#map6 by [<Merge{1, 2} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [3]>] bounds = [2, 256, 128] -> [1, 2, 256, 128]>
 #transform_map8 = #rock.transform_map<#map6 by [<Merge{1, 2} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [3]>] bounds = [2, 128, 256] -> [1, 2, 128, 256]>
-#transform_map9 = #rock.transform_map<#map7 by [<Unmerge{2} ["exp1"] at [1] -> ["dim0"] at [0]>, <PassThrough ["dim1"] at [2] -> ["dim1"] at [1]>, <PassThrough ["dim2"] at [3] -> ["dim2"] at [2]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 2, 256, 128] -> [2, 256, 128]>
 #transform_map10 = #rock.transform_map<#map8 by [<Unmerge{2} ["exp1"] at [1] -> ["dim0"] at [0]>, <Unmerge{256} ["exp2"] at [2] -> ["dim1"] at [1]>, <AddDim{1} ["unit0"] at [0] -> [] at []>, <AddDim{1} ["unit3"] at [3] -> [] at []>] bounds = [1, 2, 256, 1] -> [2, 256]>
 #transform_map11 = #rock.transform_map<#map9 by [<Merge{1, 2, 256, 1} ["dim0"] at [0] -> ["col0", "col1", "col2", "col3"] at [0, 1, 2, 3]>] bounds = [512] -> [1, 2, 256, 1]>
 #transform_map12 = #rock.transform_map<#map10 by [<Merge{2, 256, 256} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [131072] -> [2, 256, 256]>
@@ -42,15 +40,6 @@ module {
 
     %result, %lseOut = rock.attention{
      qk = %6 * %7 : tensor<2x256x256xf16>, tensor<2x256x128xf16>
-     qk = elementwise {
-    ^bb0(%arg3: memref<2x256x128xf16>, %arg4: memref<1x2x256x128xf32>):
-      %14 = bufferization.to_tensor %arg3 restrict : memref<2x256x128xf16> to tensor<2x256x128xf16>
-      %15 = rock.transform %14 by #transform_map9 : tensor<2x256x128xf16> to tensor<1x2x256x128xf16>
-      %16 = tosa.cast %15 : (tensor<1x2x256x128xf16>) -> tensor<1x2x256x128xf32>
-      %17 = bufferization.to_buffer %16 : tensor<1x2x256x128xf32> to memref<1x2x256x128xf32>
-      memref.copy %17, %arg4 : memref<1x2x256x128xf32> to memref<1x2x256x128xf32>
-      rock.yield %arg3 : memref<2x256x128xf16>
-    }
      softmax(qk) * %8 : tensor<2x128x256xf16>
     } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<2x256x256xf16>, tensor<2x256xf32>
     %11 = rock.transform %lseOut by #transform_map10 : tensor<2x256xf32> to tensor<1x2x256x1xf32>
