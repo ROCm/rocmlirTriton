@@ -1,0 +1,25 @@
+diff --git a/llvm/lib/Target/AMDGPU/GCNSchedStrategy.cpp b/llvm/lib/Target/AMDGPU/GCNSchedStrategy.cpp
+index ad24bad1fd5d..649019d28be8 100644
+--- a/llvm/lib/Target/AMDGPU/GCNSchedStrategy.cpp
++++ b/llvm/lib/Target/AMDGPU/GCNSchedStrategy.cpp
+@@ -2196,6 +2196,20 @@ void GCNSchedStage::modifyRegionSchedule(unsigned RegionIdx,
+       if (NonDebugReordered)
+         DAG.LIS->handleMove(*MI, true);
+     } else {
++      // MI is already at the expected position. However, earlier splices in
++      // this loop may have changed neighboring slot indices, so this MI's
++      // slot index can become non-monotonic w.r.t. the physical MBB order.
++      // Only re-seat when monotonicity is actually violated to avoid
++      // unnecessary LiveInterval changes that could perturb scheduling.
++      // Cherry-pick of upstream LLVM commit d1fd44fac1bb (PR #192039); drop
++      // this patch on the next Triton bump that pulls that fix into the
++      // pinned LLVM.
++      if (!MI->isDebugInstr()) {
++        SlotIndex MIIdx = DAG.LIS->getInstructionIndex(*MI);
++        SlotIndex PrevIdx = DAG.LIS->getSlotIndexes()->getIndexBefore(*MI);
++        if (PrevIdx >= MIIdx)
++          DAG.LIS->handleMove(*MI, true);
++      }
+       ++RegionEnd;
+     }
+     if (MI->isDebugInstr()) {

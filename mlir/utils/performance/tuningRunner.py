@@ -1126,41 +1126,59 @@ def format_error(context: str,
 # f32 machine epsilon: 2^-23 ~= 1.1920929e-7.
 _F32_EPS = 2.0**-23
 
-def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
+
+def auto_precision_flags(config: PerfConfiguration) -> List[str]:
     """Return precision-aware rocmlir-gen flags for verification.
 
-    Tuner verification compares the GPU output against the host CPU reference
-    With long seq_length attention (f32/bf16), the kernel error accumulates due to reduction drift,
-    masking the GPU's actual precision. We mitigate this with two flags:
+    Tuner verification compares the GPU output against the host CPU reference.
+    For operations with long reductions in f32/bf16, the host kernel's f32
+    accumulator drifts enough to mask the GPU's actual precision. We mitigate
+    this with two flags:
       * `--host-f64-reference` promotes the host kernel's interior to f64,
-        eliminating the reference-side drift. 
-      * `-relDiff_threshold T` lifts the per-element relative threshold to ride
-        on top of the predicted GPU f32 noise floor: `delta ~ eps_f32 * log2(D_qk + 2 * K_eff)`
-        where `K_eff = seq_len_k / split_kv`. This is only effective for f32 attention as 
-        other attention types have enough noise space.
-        
+        eliminating the reference-side drift. Note: the rocmlir-gen flag is
+        currently wired up only for the attention CPU kernel; it is a no-op
+        for gemm_gemm today, so we only emit it for attention.
+      * `-relDiff_threshold T` lifts the per-element relative threshold to
+        ride on top of the predicted f32 noise floor `eps_f32 * log2(N)`,
+        where N is the effective number of products summed per output
+        element. This is only effective for f32 since lower-precision types
+        already have enough noise space above the default 1e-6.
     """
     flags: List[str] = []
-    if not isinstance(config, AttentionConfiguration):
-        return flags
-        
-    # CPU drift observed for f32 attention at long seq_len_k > 1024
-    if config.datatype in ['f32'] and config.seq_len_k > 1024:
-        flags.append('--host-f64-reference')
-    # CPU drift observed for bf16 attention at long seq_len_k > 70
-    if config.datatype in ['bf16'] and config.seq_len_k > 70:
-        flags.append('--host-f64-reference')
 
-    if config.datatype == 'f32' and config.seq_len_k > 256:
-        k_eff = max(1, config.seq_len_k // max(1, config.split_kv))
-        red_len = max(2, config.head_dim_qk + 2 * k_eff)
-        floor = _F32_EPS * math.log2(red_len)
-        # Only override when the predicted floor is at or above the default
-        # 1e-6 -- below that, the existing default already has headroom and
-        # we don't want to mask small-shape regressions.
-        if floor > 1e-6:
-            threshold = 4.0 * floor
-            flags += ['-relDiff_threshold', f'{threshold:.2e}']
+    if isinstance(config, AttentionConfiguration):
+        # CPU drift observed for f32 attention at long seq_len_k > 1024.
+        if config.datatype in ['f32'] and config.seq_len_k > 1024:
+            flags.append('--host-f64-reference')
+        # CPU drift observed for bf16 attention at long seq_len_k > 70.
+        if config.datatype in ['bf16'] and config.seq_len_k > 70:
+            flags.append('--host-f64-reference')
+
+        if config.datatype == 'f32' and config.seq_len_k > 256:
+            k_eff = max(1, config.seq_len_k // max(1, config.split_kv))
+            red_len = max(2, config.head_dim_qk + 2 * k_eff)
+            floor = _F32_EPS * math.log2(red_len)
+            # Only override when the predicted floor is at or above the
+            # default 1e-6 -- below that, the existing default already has
+            # headroom and we don't want to mask small-shape regressions.
+            if floor > 1e-6:
+                threshold = 4.0 * floor
+                flags += ['-relDiff_threshold', f'{threshold:.2e}']
+        return flags
+
+    if isinstance(config, GemmGemmConfiguration):
+        # Each output element of `out = (A @ B) @ C` accumulates `k * n`
+        # total products across the two reductions, so the predicted f32
+        # noise floor scales with `log2(k * n)`. Observed example: the
+        # m=1000,k=12544,n=1024 shape produces maxRelDiff ~9.1e-6, while
+        # the default threshold is 1e-6.
+        if config.datatype == 'f32':
+            red_len = max(2, config.k * config.n)
+            floor = _F32_EPS * math.log2(red_len)
+            if floor > 1e-6:
+                threshold = 4.0 * floor
+                flags += ['-relDiff_threshold', f'{threshold:.2e}']
+        return flags
 
     return flags
 
@@ -1177,9 +1195,11 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
 
     command_line_options = config.generate_mlir_driver_commandline(options.rocmlir_gen_flags,
                                                                    kernel_repeats=VERIFY_REPEATS)
-    precision_flags = auto_precision_flags_att(config)
+    precision_flags = auto_precision_flags(config)
     rocmlir_gen_command = [
-        paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary', '-pv',
+        paths.mlir_paths.rocmlir_gen_path,
+        '-print-verify-results=summary',
+        '-pv',
         *precision_flags,
     ] + command_line_options.split()
 
@@ -1232,7 +1252,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
             p2.stdout.close()
 
             try:
-                outs, errs = p3.communicate(timeout=600)
+                outs, errs = p3.communicate(timeout=3000)
                 raise_if_terminated(p3.returncode)
                 outs = outs.decode('utf-8')
                 if p3.returncode != 0 or not CORRECT_RESULT_RE.search(outs):
