@@ -39,11 +39,6 @@ class Options:
     num_chiplets: int
     log_failures: bool
     test_timeout_sec: int
-    # When True, skip the mlir-runner stage in test_config and treat a clean
-    # rocmlir-driver -c exit as PASS. Lets us measure compile time on a host
-    # whose GPU doesn't match --arch-override (where the runner couldn't
-    # launch the kernel anyway).
-    compile_only: bool = False
 
 
 async def _kill_process(proc: asyncio.subprocess.Process):
@@ -357,72 +352,42 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
                                errors=_decode_cmd_output(host_errs))
                 return TestResult.FAIL
 
-        # In compile-only mode we skip the runner entirely: discard the
-        # driver's HSACO output and treat a clean exit (0) as PASS, 2 as
-        # NOT_APPLICABLE, anything else as FAIL. The runner is the part that
-        # actually launches the kernel, so we *must* skip it when
-        # --arch-override targets a GPU not present on the host.
-        if options.compile_only:
-            lowering = await asyncio.create_subprocess_exec(
-                paths.mlir_paths.rocmlir_driver_path,
-                '-c',
-                '-',
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE)
-            active.append(lowering)
-            try:
-                _, lowering_errs = await _communicate_with_timeout(lowering,
-                                                                   timeout,
-                                                                   input_data=lowering_in)
-            except asyncio.TimeoutError:
-                await _kill_process(lowering)
-                _print_failure(config, rocmlir_gen_opts,
-                               f"Timeout in rocmlir-driver stage ({timeout}s)")
-                return TestResult.FAIL
-            runner = None
-            runner_out = ""
-            runner_errs = b""
-        else:
-            # Pipe is created here (right before its only use) so early-return paths
-            # above don't have to remember to close it.
-            runner_from_lowering, lowering_to_runner = os.pipe()
-            lowering = await asyncio.create_subprocess_exec(
-                paths.mlir_paths.rocmlir_driver_path,
-                '-c',
-                '-',
-                stdin=asyncio.subprocess.PIPE,
-                stdout=lowering_to_runner,
-                stderr=asyncio.subprocess.PIPE)
-            os.close(lowering_to_runner)
-            active.append(lowering)
+        # Pipe is created here (right before its only use) so early-return paths
+        # above don't have to remember to close it.
+        runner_from_lowering, lowering_to_runner = os.pipe()
+        lowering = await asyncio.create_subprocess_exec(paths.mlir_paths.rocmlir_driver_path,
+                                                        '-c',
+                                                        '-',
+                                                        stdin=asyncio.subprocess.PIPE,
+                                                        stdout=lowering_to_runner,
+                                                        stderr=asyncio.subprocess.PIPE)
+        os.close(lowering_to_runner)
+        active.append(lowering)
 
-            runner = await asyncio.create_subprocess_exec(
-                paths.mlir_paths.rocm_run_path,
-                stdin=runner_from_lowering,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
-            os.close(runner_from_lowering)
-            active.append(runner)
+        runner = await asyncio.create_subprocess_exec(paths.mlir_paths.rocm_run_path,
+                                                      stdin=runner_from_lowering,
+                                                      stdout=asyncio.subprocess.PIPE,
+                                                      stderr=asyncio.subprocess.PIPE)
+        os.close(runner_from_lowering)
+        active.append(runner)
 
-            try:
-                _, lowering_errs = await _communicate_with_timeout(lowering,
-                                                                   timeout,
-                                                                   input_data=lowering_in)
-            except asyncio.TimeoutError:
-                await _kill_process(lowering)
-                await _kill_process(runner)
-                _print_failure(config, rocmlir_gen_opts,
-                               f"Timeout in rocmlir-driver stage ({timeout}s)")
-                return TestResult.FAIL
-            try:
-                runner_out, runner_errs = await _communicate_with_timeout(runner, timeout)
-            except asyncio.TimeoutError:
-                await _kill_process(runner)
-                _print_failure(config, rocmlir_gen_opts,
-                               f"Timeout in mlir-runner stage ({timeout}s)")
-                return TestResult.FAIL
-            runner_out = _decode_cmd_output(runner_out)
+        try:
+            _, lowering_errs = await _communicate_with_timeout(lowering,
+                                                               timeout,
+                                                               input_data=lowering_in)
+        except asyncio.TimeoutError:
+            await _kill_process(lowering)
+            await _kill_process(runner)
+            _print_failure(config, rocmlir_gen_opts,
+                           f"Timeout in rocmlir-driver stage ({timeout}s)")
+            return TestResult.FAIL
+        try:
+            runner_out, runner_errs = await _communicate_with_timeout(runner, timeout)
+        except asyncio.TimeoutError:
+            await _kill_process(runner)
+            _print_failure(config, rocmlir_gen_opts, f"Timeout in mlir-runner stage ({timeout}s)")
+            return TestResult.FAIL
+        runner_out = _decode_cmd_output(runner_out)
 
         # Exit code 2 from rocmlir-driver = `rock.not_applicable` marker was set,
         # i.e. a rock pass cleanly rejected the config. Any other non-zero exit
@@ -443,10 +408,6 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
                            f"Lowering failed (exit {lowering.returncode})",
                            errors=_decode_cmd_output(lowering_errs))
             return TestResult.FAIL
-
-        # In compile-only mode the lowering exit code is the whole verdict.
-        if options.compile_only:
-            return TestResult.PASS
 
         if runner.returncode != 0:
             _print_failure(config,
@@ -613,27 +574,6 @@ GEMM_SHAPE_OPTIONS = {
     'trans_a': [False, True],
     'trans_b': [False, True],
 }
-
-# Fixed list of (shape, perf-config) pairs that reliably trigger a multi-minute
-# TritonToHsacoPass on gfx1100 fp8. Each shape tuple matches the layout of
-# _sample_gemm_shape (dtype, g, m, k, n, trans_a, trans_b); each perf tuple
-# matches sample_perf_config (mPerBlock, nPerBlock, kPerBlock, kpack, numCTAs,
-# numWaves, matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU,
-# gridGroupSize). Used by --slow-repro to skip random sampling and run only
-# these configs, for measuring the slowdown before/after a tuning-space cap.
-SLOW_GEMM_CASES_GFX1100_FP8 = [
-    (('fp8', 2, 140, 332, 268, True,  True),  (256, 256, 128, 2, 1, 2, 0, 1, 2, 0, 8)),
-    (('fp8', 2, 256, 256, 256, True,  True),  (256, 256, 128, 2, 1, 2, 0, 1, 2, 0, 8)),
-    (('fp8', 2, 256, 512, 256, True,  True),  (256, 256, 128, 2, 1, 2, 0, 1, 2, 0, 8)),
-    (('fp8', 2, 140, 332, 268, True,  True),  (256, 256, 128, 2, 1, 4, 0, 1, 2, 0, 8)),
-    (('fp8', 1, 512, 512, 512, False, False), (256, 256, 128, 2, 1, 2, 0, 1, 2, 0, 8)),
-]
-
-
-def slow_gemm_cases():
-    """Yield the fixed hand-picked list of slow (shape, perf) pairs."""
-    for case in SLOW_GEMM_CASES_GFX1100_FP8:
-        yield case
 
 
 def _arch_id(arch: str) -> Optional[int]:
@@ -1095,36 +1035,6 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="The build directory of MLIR based kernel generator",
     )
-    # Cross-compile / repro support: lets you compile for a target the host
-    # GPU isn't. Required for reproducing the gfx1100 TritonToHsacoPass
-    # slowdown from a gfx950 host. When set, get_arch / get_num_cu /
-    # get_num_chiplets are bypassed (we can't probe a chip that isn't here),
-    # so --num-cu and --num-chiplets must also be supplied. Typically
-    # combined with --compile-only because mlir-runner can't launch on a
-    # mismatched agent.
-    parser.add_argument('--arch-override',
-                        type=str,
-                        default=None,
-                        help='Force the target architecture (e.g. "gfx1100") '
-                        'instead of probing the local GPU via HIP. Requires '
-                        '--num-cu and --num-chiplets. Almost certainly wants '
-                        '--compile-only.')
-    parser.add_argument('--num-cu',
-                        type=_positive_int,
-                        default=None,
-                        help='Override the number of CUs (skips the rocminfo '
-                        'probe). Required with --arch-override.')
-    parser.add_argument('--num-chiplets',
-                        type=_positive_int,
-                        default=None,
-                        help='Override the number of chiplets. Required with '
-                        '--arch-override.')
-    parser.add_argument('--compile-only',
-                        action='store_true',
-                        help='Skip the mlir-runner stage; treat a clean '
-                        'rocmlir-driver -c exit as PASS. Use when you only '
-                        'care about compile time, or when --arch-override '
-                        'targets a GPU not present on this host.')
 
 
 def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
@@ -1132,32 +1042,17 @@ def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
     from a Namespace produced by a parser populated via ``add_common_args``."""
     mlir_build_dir = args.mlir_build_dir or perfRunner.find_mlir_build_dir()
 
-    if args.arch_override:
-        # User-supplied target; don't probe the local GPU. --num-cu and
-        # --num-chiplets must also be supplied because get_num_cu /
-        # get_num_chiplets only know about chips physically present on the
-        # host (get_num_cu asserts otherwise).
-        if args.num_cu is None or args.num_chiplets is None:
-            raise SystemExit("--arch-override requires --num-cu and --num-chiplets")
-        arch = args.arch_override
-        num_cu = args.num_cu
-        num_chiplets = args.num_chiplets
-    else:
-        arch = get_arch()
-        chip = perfRunner.get_chip()
-        num_cu = args.num_cu if args.num_cu is not None else get_num_cu(chip)
-        num_chiplets = (args.num_chiplets if args.num_chiplets is not None
-                        else get_num_chiplets(chip, num_cu))
-
+    arch = get_arch()
+    chip = perfRunner.get_chip()
+    num_cu = get_num_cu(chip)
     options = Options(debug=args.debug,
                       quiet=args.quiet,
                       log_failures=args.log_failures,
                       arch=arch,
                       concurrent_tests=args.jobs,
                       num_cu=num_cu,
-                      num_chiplets=num_chiplets,
-                      test_timeout_sec=args.test_timeout_sec,
-                      compile_only=args.compile_only)
+                      num_chiplets=get_num_chiplets(chip, num_cu),
+                      test_timeout_sec=args.test_timeout_sec)
     paths = perfRunner.create_paths(None, mlir_build_dir)
     return options, paths
 
@@ -1171,25 +1066,7 @@ def main() -> bool:
                         "modes randomly sample problem shape and perf-config "
                         "on every iteration.")
     add_common_args(parser)
-    # gemm-only: run the fixed SLOW_GEMM_CASES_GFX1100_FP8 list instead of
-    # random sampling. Useful to confirm/measure the multi-minute
-    # TritonToHsacoPass slowdown before/after a tuning-space cap.
-    parser.add_argument('--slow-repro',
-                        action='store_true',
-                        help='gemm only: skip random sampling and run the '
-                        'hand-picked SLOW_GEMM_CASES_GFX1100_FP8 list. '
-                        'Implies samples = len(SLOW_GEMM_CASES_GFX1100_FP8). '
-                        'You almost certainly want --test-timeout-sec 900 '
-                        '--jobs 1 with this flag.')
     args = parser.parse_args()
-
-    if args.slow_repro and args.config != 'gemm':
-        parser.error("--slow-repro is only supported with 'gemm'")
-    # --slow-repro is purely a compile-time-measurement workflow: imply
-    # --compile-only so the user doesn't have to remember to add it (and
-    # so it works on a host whose GPU doesn't match --arch-override).
-    if args.slow_repro and not args.compile_only:
-        args.compile_only = True
 
     options, paths = build_options_and_paths(args)
 
@@ -1198,14 +1075,9 @@ def main() -> bool:
         return asyncio.run(
             run_config(param_iter, to_conv_test, options, paths, samples=args.samples))
     if args.config == 'gemm':
-        if args.slow_repro:
-            param_iter = slow_gemm_cases()
-            samples = len(SLOW_GEMM_CASES_GFX1100_FP8)
-        else:
-            param_iter = random_gemm_cases(args.samples, options.arch, seed=args.seed)
-            samples = args.samples
+        param_iter = random_gemm_cases(args.samples, options.arch, seed=args.seed)
         return asyncio.run(
-            run_config(param_iter, to_gemm_test, options, paths, samples=samples))
+            run_config(param_iter, to_gemm_test, options, paths, samples=args.samples))
     raise ValueError(f"Unknown config {args.config!r} (expected 'conv' or 'gemm')")
 
 
