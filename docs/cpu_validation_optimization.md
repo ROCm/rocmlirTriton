@@ -124,9 +124,10 @@ The matcher in `ConvToGemm.cpp` walks the `linalg.generic`'s affine maps via `li
 | 2D         | Backward           | any    | any      | any     | any            | ✅         | `rocmlir-gen` generates bwd-data as a stride-1 / dilation-1 conv (zero-stuffed gradient + rotated filter), so conversion works even with stride > 1 and/or dilation > 1. |
 | 3D         | Forward / Backward | any    | any      | any     | any            | ❌         | 3D convs are not supported |
 
-Tests for each row live in `mlir/test/Conversion/CPU/cpu_conv_to_gemm.mlir`.
-
-Any convolution not listed in the above table is considered not supported.
+NOTES:
+- Regarding 1D conv: Neither rocmlir-gen nor MIGraphX→TOSA has a native 1D path; they both model 1D as 2D with a unit spatial dimension (TOSA has no tosa.conv1d/tosa.transpose_conv1d).
+- Tests for each row live in `mlir/test/Conversion/CPU/cpu_conv_to_gemm.mlir`.
+- Any convolution not listed in the above table is considered not supported.
 
 ## References
 [1] https://www.cs.utexas.edu/~flame/pubs/GotoTOMS_final.pdf
