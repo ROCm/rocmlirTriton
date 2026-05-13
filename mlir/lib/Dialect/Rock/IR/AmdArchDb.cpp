@@ -397,6 +397,11 @@ int64_t mlir::rock::getMaxNumCTAs(StringRef arch) {
   return 16;
 }
 
+// Triton's HIPOptions currently normalizes kpack to 1 only for gfx950 in
+// compiler.py. Instead of updating Pipelines.cpp, we make this function
+// available here since rock uses this helper earlier for tuning and perf-config
+// validation, and applies the same unsupported policy forward to gfx950 and
+// future archs instead of generating configs that the backend should not use.
 int64_t mlir::rock::getMaxKpack(StringRef arch) {
   // kpack != 1 is unsupported on gfx950 and gfx1250 (and any newer arch);
   // older archs (gfx9 < gfx950, all of gfx10/gfx11, gfx12 < gfx1250) still
