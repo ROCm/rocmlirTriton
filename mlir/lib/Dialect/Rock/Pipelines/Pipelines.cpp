@@ -389,7 +389,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
 
   auto &funcPm2 = pm.nest<func::FuncOp>();
   funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
-  funcPm2.addPass(rock::createRockMaskNonZeroPreservingFusionsPass());
+  funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());

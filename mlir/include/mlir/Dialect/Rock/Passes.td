@@ -206,10 +206,9 @@ def RockEmulateNarrowTypesPass
   ];
 }
 
-def RockMaskNonZeroPreservingFusionsPass
-    : Pass<"rock-mask-non-zero-preserving-fusions", "::mlir::func::FuncOp"> {
-  let summary = "Insert arith.select masks after fusions fed by Pad/Embed "
-                "loads";
+def RockPreserveMaskedLoadSemanticsPass
+    : Pass<"rock-preserve-masked-load-semantics", "::mlir::func::FuncOp"> {
+  let summary = "Preserve masked-load OOB semantics across fusion chains";
   let description = [{
     This pass runs AFTER LowerBlockwiseToPtr and BEFORE TransformsToPointerArith.
     When a blockwise load has Pad or Embed transforms, OOB positions are masked

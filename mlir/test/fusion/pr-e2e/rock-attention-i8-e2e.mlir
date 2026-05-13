@@ -1,4 +1,4 @@
-// Regression coverage for MaskNonZeroPreservingFusions: this i8 causal
+// Regression coverage for PreserveMaskedLoadSemantics: this i8 causal
 // attention shape previously kept invalid masked lanes alive in the softmax max
 // reduction. Those lanes are loaded as zero, which is not the neutral value for
 // max and can dominate real negative scores unless the pass remasks them to the
