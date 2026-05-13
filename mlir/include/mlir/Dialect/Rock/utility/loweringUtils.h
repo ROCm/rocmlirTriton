@@ -227,6 +227,15 @@ arith::NarrowTypeEmulationConverter create4BitTypeConverter();
 /// distinguish a "not-applicable" config from a real compilation bug.
 void markAsNotApplicable(Operation *op);
 
+/// Estimation of LDS usage for a blockwise GEMM's A and B operand tiles:
+///
+///   mPerBlock * kPerBlock * ceil(aBitsPerElement/8)
+/// + nPerBlock * kPerBlock * ceil(bBitsPerElement/8)
+int64_t estimateLDSUsageForOperandTiles(int64_t mPerBlock, int64_t nPerBlock,
+                                      int64_t kPerBlock,
+                                      int64_t aBitsPerElement,
+                                      int64_t bBitsPerElement);
+
 } // end namespace rock
 } // end namespace mlir
 #endif

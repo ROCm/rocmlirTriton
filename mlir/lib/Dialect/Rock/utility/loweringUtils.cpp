@@ -787,3 +787,14 @@ void mlir::rock::markAsNotApplicable(Operation *op) {
   moduleOp->setAttr(rock::NotApplicableAttr::getMnemonic(),
                     UnitAttr::get(op->getContext()));
 }
+
+int64_t mlir::rock::estimateLDSUsageForOperandTiles(int64_t mPerBlock,
+                                                    int64_t nPerBlock,
+                                                    int64_t kPerBlock,
+                                                    int64_t aBitsPerElement,
+                                                    int64_t bBitsPerElement) {
+  int64_t aBytesPerElement = llvm::divideCeil(aBitsPerElement, 8);
+  int64_t bBytesPerElement = llvm::divideCeil(bBitsPerElement, 8);
+  return mPerBlock * kPerBlock * aBytesPerElement +
+         nPerBlock * kPerBlock * bBytesPerElement;
+}

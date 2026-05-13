@@ -105,3 +105,81 @@ func.func @mlir_dot_max_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280
     %out = rock.store %res to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
     return %out : tensor<1x2x320xf32>
   }
+
+// Verifies LDS overflow config found in practice for GEMM
+// NA-LABEL: 'func.func' operation: @rock_gemm_lds_overflow
+// NA: module attributes {rock.not_applicable
+func.func @rock_gemm_lds_overflow(%a: tensor<1x256x128xf16>, %b: tensor<1x256x128xf16>, %c: tensor<1x128x128xf16>)
+    -> tensor<1x128x128xf16>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+  // expected-error @+1 {{requires at least 131072 bytes of LDS for operand tiles}}
+  %result = rock.gemm tr %a * %b
+    {perf_config = "gemm:v1:128,128,256,1,1,1,0,1,2,0,0"}
+    : tensor<1x256x128xf16> * tensor<1x256x128xf16> -> tensor<1x128x128xf16>
+  %out = rock.store %result to %c by set : tensor<1x128x128xf16> -> tensor<1x128x128xf16> to tensor<1x128x128xf16>
+  return %out : tensor<1x128x128xf16>
+}
+
+// Verifies LDS overflow config found in practice for GEMMGEMM
+// NA-LABEL: 'func.func' operation: @rock_attention_lds_overflow
+// NA: module attributes {rock.not_applicable
+func.func @rock_attention_lds_overflow(%arg0: tensor<1x1024x512xf16>, %arg1: tensor<1x512x1024xf16>, %arg2: tensor<1x1024x32xf16>, %arg3: tensor<1x1024x32xf16>)
+    -> tensor<1x1024x32xf16>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+  // expected-error @+1 {{requires at least 131072 bytes of LDS for first-GEMM operand tiles}}
+  %result = rock.attention{
+    qk = %arg0 * %arg1 : tensor<1x1024x512xf16>, tensor<1x512x1024xf16>
+    qk = elementwise {
+  ^bb0(%arg4: tensor<1x1024x1024xf16>):
+    rock.yield %arg4 : tensor<1x1024x1024xf16>
+  }
+    softmax(qk) * %arg2 : tensor<1x1024x32xf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:128,128,256,1,1,4,0,1,2,0,0", softmaxType = f32, splitKV = 1 : i32} -> tensor<1x1024x32xf16>
+  %out = rock.store %result to %arg3 by set : tensor<1x1024x32xf16> -> tensor<1x1024x32xf16> to tensor<1x1024x32xf16>
+  return %out : tensor<1x1024x32xf16>
+}
+
+// Verifies Verifies LDS overflow config found in practice for attention
+// NA-LABEL: 'func.func' operation: @rock_attention_kperblock_oversized
+// NA: module attributes {rock.not_applicable
+func.func @rock_attention_kperblock_oversized(%arg0: tensor<1x256x64xbf16>, %arg1: tensor<1x256x64xbf16>, %arg2: tensor<1x256x32xbf16>, %arg3: tensor<1x256x32xbf16>)
+    -> tensor<1x256x32xbf16>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+  // expected-error @+1 {{requires at least 262144 bytes of LDS for first-GEMM operand tiles}}
+  %result = rock.attention{
+    qk = %arg0 * tr %arg1 : tensor<1x256x64xbf16>, tensor<1x256x64xbf16>
+    qk = elementwise {
+  ^bb0(%arg4: tensor<1x256x256xbf16>):
+    rock.yield %arg4 : tensor<1x256x256xbf16>
+  }
+    softmax(qk) * %arg2 : tensor<1x256x32xbf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:256,256,256,1,1,4,0,1,1,0,0", softmaxType = f32, splitKV = 1 : i32} -> tensor<1x256x32xbf16>
+  %out = rock.store %result to %arg3 by set : tensor<1x256x32xbf16> -> tensor<1x256x32xbf16> to tensor<1x256x32xbf16>
+  return %out : tensor<1x256x32xbf16>
+}
+
+// Verify same config with larger LDS arch passes
+func.func @rock_gemm_rdna_overflow_config_fits_in_cdna4_lds(%a: tensor<1x256x128xf16>, %b: tensor<1x256x128xf16>, %c: tensor<1x128x128xf16>)
+    -> tensor<1x128x128xf16>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %result = rock.gemm tr %a * %b
+    {perf_config = "gemm:v1:128,128,256,1,1,1,0,1,2,0,0"}
+    : tensor<1x256x128xf16> * tensor<1x256x128xf16> -> tensor<1x128x128xf16>
+  %out = rock.store %result to %c by set : tensor<1x128x128xf16> -> tensor<1x128x128xf16> to tensor<1x128x128xf16>
+  return %out : tensor<1x128x128xf16>
+}
+
+func.func @rock_attention_rdna_overflow_config_fits_in_cdna4_lds(%arg0: tensor<1x1024x512xf16>, %arg1: tensor<1x512x1024xf16>, %arg2: tensor<1x1024x32xf16>, %arg3: tensor<1x1024x32xf16>)
+    -> tensor<1x1024x32xf16>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %result = rock.attention{
+    qk = %arg0 * %arg1 : tensor<1x1024x512xf16>, tensor<1x512x1024xf16>
+    qk = elementwise {
+  ^bb0(%arg4: tensor<1x1024x1024xf16>):
+    rock.yield %arg4 : tensor<1x1024x1024xf16>
+  }
+    softmax(qk) * %arg2 : tensor<1x1024x32xf16>
+  } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, perf_config = "attn:v1:128,128,256,1,1,4,0,1,2,0,0", softmaxType = f32, splitKV = 1 : i32} -> tensor<1x1024x32xf16>
+  %out = rock.store %result to %arg3 by set : tensor<1x1024x32xf16> -> tensor<1x1024x32xf16> to tensor<1x1024x32xf16>
+  return %out : tensor<1x1024x32xf16>
+}

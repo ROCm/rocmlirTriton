@@ -16,9 +16,9 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Pass/Pass.h"
-#include "llvm/Support/MathExtras.h"
 
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
@@ -70,6 +70,61 @@ private:
 
   LogicalResult validateRockAttributes(func::FuncOp func);
 };
+
+/// Early fail invalid configs before the rest of the pipeline allocates 
+/// large amounts of memory expanding the IR for an unbuildable kernel.
+/// This resolves the OOM issue on Navi attention tuning, and also accelerates
+/// the tuning process by skipping invalid configs early.
+///
+/// Two checks are performed:
+/// 1. Known-problematic configs: manually maintained denylist found during 
+///    exhaustive tuning to unblock known-problematic configs.
+/// 2. LDS overflow: early fail estimation of LDS usage based on the operand-tile sizes.
+/// not-applicable.
+LogicalResult earlyFailInvalidConfig(Operation *op, GemmParamsAttr params,
+                                     Type aType, Type bType,
+                                     StringAttr perfConfigAttr,
+                                     StringRef errorContextLabel) {
+  StringRef arch = rock::getArchValue(op);
+  StringRef perfConfig = perfConfigAttr.getValue();
+
+  // 1. Skip known-problematic configs.
+  struct DenylistEntry {
+    StringRef chip;
+    StringRef perfConfig;
+  };
+  static const DenylistEntry kKnownProblematicConfigs[] = {
+      // TODO(roctriton): root-cause and remove.
+      // Tracked in ticket ... 
+      {"gfx950", "attn:v1:16,16,512,2,1,1,16,1,2,0,0"},
+      {"gfx950", "attn:v1:16,16,512,2,1,1,16,1,3,0,0"},
+  };
+  for (const auto &entry : kKnownProblematicConfigs) {
+    if (arch.contains(entry.chip) && perfConfig == entry.perfConfig) {
+      rock::markAsNotApplicable(op);
+      op->emitError() << "perf config '" << perfConfig
+                      << "' is on the known-problematic list for " << arch;
+      return failure();
+    }
+  }
+
+  // 2. Operand-tile LDS lower-bound check.
+  int64_t maxLDS = rock::getLDSSize(arch);
+  int64_t aBits = getElementTypeOrSelf(aType).getIntOrFloatBitWidth();
+  int64_t bBits = getElementTypeOrSelf(bType).getIntOrFloatBitWidth();
+  int64_t lowerBoundLDS = rock::estimateLDSUsageForOperandTiles(
+      params.getMPerBlock(), params.getNPerBlock(), params.getKPerBlock(),
+      aBits, bBits);
+  if (lowerBoundLDS <= maxLDS)
+    return success();
+
+  rock::markAsNotApplicable(op);
+  op->emitError() << "perf config '" << perfConfig << "' requires at least "
+                  << lowerBoundLDS << " bytes of LDS for " << errorContextLabel
+                  << ", but " << arch << " has only " << maxLDS
+                  << " bytes available";
+  return failure();
+}
 } // anonymous namespace
 
 LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
@@ -204,6 +259,12 @@ void AffixTuningParameters::affixTuningParametersImpl(
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           b.getI32IntegerAttr(blockSize));
 
+  // Early fail check
+  if (failed(earlyFailInvalidConfig(op, gemmParams, op.getAType(),
+                                    op.getBType(), perfConfigAttr,
+                                    "operand tiles")))
+    return signalPassFailure();
+
   // Check fusion legality. These checks should happen after perfConfig is
   // picked either through heuristics or user provided.
   auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
@@ -284,4 +345,10 @@ void AffixTuningParameters::affixTuningParametersImpl(
   assert(blockSize > 0);
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           builder.getI32IntegerAttr(blockSize));
+
+  // Early fail check
+  if (failed(earlyFailInvalidConfig(op, accelParams0, op.getAType(),
+                                    op.getBType(), perfConfigAttr,
+                                    "first-GEMM operand tiles")))
+    return signalPassFailure();
 }
