@@ -398,7 +398,7 @@ int64_t mlir::rock::getMaxNumCTAs(StringRef arch) {
 }
 
 int64_t mlir::rock::getMaxKpack(StringRef arch) {
-  // kpack != 1 is deprecated on gfx950 and gfx1250 (and any newer arch);
+  // kpack != 1 is unsupported on gfx950 and gfx1250 (and any newer arch);
   // older archs (gfx9 < gfx950, all of gfx10/gfx11, gfx12 < gfx1250) still
   // accept kpack in {1, 2}.
   auto [chip, _] = parseArchString(arch);
