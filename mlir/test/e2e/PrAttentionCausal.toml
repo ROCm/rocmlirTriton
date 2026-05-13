@@ -5,7 +5,7 @@ suffix = "--operation attention --arch %arch -causal=true -pv %random_data %rocm
 # Causal-attention regression suite. These configs were observed to produce
 # numerical errors (NaNs / zeros from corrupted softmax) before the fix to
 # MaskNonZeroPreservingFusions, where the OOB filler was unconditionally `0`
-# instead of the algebraic identity (`-inf`) of the downstream `max` reduce.
+# instead of `-inf` when consumer is `max` reduce.
 #
 # Each [[suite.test]] below carries its own dtype, perf_config, transposes and
 # thresholds, so no [[axis]] expansion is needed -- but the key must still be
@@ -15,50 +15,32 @@ axis = []
 [[suite]]
 name = "pr_attention_causal"
 
-# === Originally-failing cases from repro-daniel-orig-orig.sh =================
-
-# [1/6] dtype=i8, GQA, transQ, with-attn-scale.
+# Taken relevant tests from https://amd-hub.atlassian.net/browse/AIROCMLIR-852
 [[suite.test]]
 config = "-t i8 -g 3 -seq_len_q 935 -seq_len_k 152 -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 216 -head_dim_v 172 --with-attn-scale -transQ=true -perf_config attn:v1:64,128,128,1,1,16,16,1,2,1,4"
 
-# [3/6] dtype=f16, GQA, all transposes, with-attn-scale, N-padding inside a
-# single N-block (seq_len_k=162 padded to NPerBlock=256). This is the original
-# failing repro that motivated the MaskNonZeroPreservingFusions fix; -rand 1 is
-# required to expose the bug (uniform input data masks it).
 [[suite.test]]
 config = "-t f16 -rand 1 -g 1 -seq_len_q 1216 -seq_len_k 162 -num_heads_q 2 -num_heads_kv 2 -head_dim_qk 200 -head_dim_v 128 --with-attn-scale -transQ=true -transK=true -transV=true -perf_config attn:v1:16,256,64,2,1,8,16,1,1,2,2"
 
-# [4/6] dtype=i8, transQ+transK+transO, with-attn-bias.
 [[suite.test]]
 config = "-t i8 -g 6 -seq_len_q 567 -seq_len_k 408 -head_dim_qk 131 -head_dim_v 91 --with-attn-bias -transQ=true -transK=true -transO=true -perf_config attn:v1:64,128,32,1,1,16,32,1,1,4,4"
 
-# === seq_len_k sweep around the bug-triggering perf_config (NPerBlock=256) ===
+# seq_len_k sweep around the bug-triggering perf_config (NPerBlock=256)
 #
 # All five share the same f16 GQA-32->2 config from repro [3/6] (with the
-# original head_dim_qk=217) and only vary seq_len_k. They cover the
-# (single-N-block / multi-N-block) x (padded / unpadded) matrix that was
-# critical for isolating the bug.
+# original head_dim_qk=217) and only vary seq_len_k.
 
-# T1: seq_len_k=162 -> padded to 256, single N-block, 36% of N is padding.
-#     Pre-fix: this was the canonical failure mode.
 [[suite.test]]
 config = "-t f16 -rand 1 -g 1 -seq_len_q 1216 -seq_len_k 162 -num_heads_q 32 -num_heads_kv 2 -head_dim_qk 217 -head_dim_v 128 --with-attn-scale -transQ=true -transK=true -transV=true -perf_config attn:v1:16,256,64,2,1,8,16,1,1,2,2"
 
-# T3: seq_len_k=256 -> exact fit, no N-padding, single N-block.
-#     Confirms the fix doesn't regress the unpadded single-block path.
 [[suite.test]]
 config = "-t f16 -rand 1 -g 1 -seq_len_q 1216 -seq_len_k 256 -num_heads_q 32 -num_heads_kv 2 -head_dim_qk 217 -head_dim_v 128 --with-attn-scale -transQ=true -transK=true -transV=true -perf_config attn:v1:16,256,64,2,1,8,16,1,1,2,2"
 
-# T4: seq_len_k=128 -> padded to 256, single N-block, 50% padded (heavier
-#     padding than T1).
 [[suite.test]]
 config = "-t f16 -rand 1 -g 1 -seq_len_q 1216 -seq_len_k 128 -num_heads_q 32 -num_heads_kv 2 -head_dim_qk 217 -head_dim_v 128 --with-attn-scale -transQ=true -transK=true -transV=true -perf_config attn:v1:16,256,64,2,1,8,16,1,1,2,2"
 
-# T5: seq_len_k=512 -> exact fit, no N-padding, two N-blocks.
 [[suite.test]]
 config = "-t f16 -rand 1 -g 1 -seq_len_q 1216 -seq_len_k 512 -num_heads_q 32 -num_heads_kv 2 -head_dim_qk 217 -head_dim_v 128 --with-attn-scale -transQ=true -transK=true -transV=true -perf_config attn:v1:16,256,64,2,1,8,16,1,1,2,2"
 
-# T6: seq_len_k=400 -> padded to 512, two N-blocks, padding only in the last.
-#     Multi-block padded path; the bug should be inert here even pre-fix.
 [[suite.test]]
 config = "-t f16 -rand 1 -g 1 -seq_len_q 1216 -seq_len_k 400 -num_heads_q 32 -num_heads_kv 2 -head_dim_qk 217 -head_dim_v 128 --with-attn-scale -transQ=true -transK=true -transV=true -perf_config attn:v1:16,256,64,2,1,8,16,1,1,2,2"
