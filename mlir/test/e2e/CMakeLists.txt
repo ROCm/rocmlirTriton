@@ -24,8 +24,7 @@ set(LOCAL_CONFIG_FILE_BIN ${CMAKE_CURRENT_BINARY_DIR}/lit.local.cfg)
 # GEN_MODE is used by E2E_GEN_SCRIPT to determine the test generation format.
 # By default, each generated file contains all combinations of one config in
 # the toml file. When GEN_MODE is set to '-s', each generated file contains
-# only one test.
-# single_mode is enabled for nightly CI and disabled for PR CI
+# only one test, enabling LIT to parallelize test execution.
 set(GEN_MODE "-s")
 if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
   list(APPEND CONFIGS
@@ -51,7 +50,6 @@ if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
     PrConvElementwiseGemmF16SplitK
     PrConvElementwiseGemmBF16SplitK
   )
-  set(GEN_MODE "")
 endif()
 if (ROCK_E2E_TEST_ENABLED)
   list(APPEND CONFIGS

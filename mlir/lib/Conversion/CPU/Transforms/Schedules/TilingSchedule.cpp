@@ -20,6 +20,7 @@
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
+#include "mlir/Dialect/SCF/TransformOps/SCFTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
@@ -31,7 +32,8 @@ using namespace mlir::cpu;
 /// Match and tile N-dimensional elementwise ops (linalg.generic with N parallel
 /// iterator types).
 static void tileElementwiseOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
-                               Value target, int vectorSize, unsigned numDims) {
+                               Value target, int64_t vectorSize,
+                               unsigned numDims) {
   auto anyOpType = getAnyOpType(ctx);
   auto parallelIterType =
       linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::parallel);
@@ -63,59 +65,118 @@ static void tileElementwiseOps(ImplicitLocOpBuilder &ib, MLIRContext *ctx,
       /*scalableSizes=*/std::nullopt);
 }
 
+OwningOpRef<ModuleOp>
+cpu::buildTilingSchedule(MLIRContext *ctx, const MatmulTileSizes &tileSizes) {
+  return buildTransformModule(
+      ctx, [ctx, tileSizes](ImplicitLocOpBuilder &ib, BlockArgument arg) {
+        auto anyOpType = getAnyOpType(ctx);
+        auto scfForType = transform::OperationType::get(ctx, "scf.for");
+        constexpr int64_t vectorSize = MatmulTileSizes::kVectorSize;
+
+        // Tile elementwise ops of different dimensions. In general, this
+        // improves performance.
+        for (int numDims = 1; numDims <= 8; numDims++) {
+          tileElementwiseOps(ib, ctx, arg, vectorSize, numDims);
+        }
+
+        // Now tile (and optionally fuse) the matmul.
+        auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
+
+        const unsigned mDim = tileSizes.mDim;
+        const unsigned nDim = tileSizes.nDim;
+        const unsigned kDim = tileSizes.kDim;
+
+        // Interchange puts N on the outside (i.e. iterate over N first)
+        // by listing parallel dims in [N, M, K] order.
+        SmallVector<int64_t, 3> fuseTileSizes(3, 0);
+        fuseTileSizes[mDim] = tileSizes.mFuse;
+        fuseTileSizes[nDim] = tileSizes.nFuse;
+        SmallVector<int64_t, 3> fuseInterchange = {nDim, mDim, kDim};
+        SmallVector<Type> fuseLoopTypes(2, scfForType);
+        auto fuse = ib.create<transform::FuseOp>(
+            /*loopTypes=*/fuseLoopTypes,
+            /*target=*/matchMatmul.getResults(),
+            /*staticTileSizes=*/fuseTileSizes,
+            /*staticTileInterchange=*/fuseInterchange,
+            /*applyCleanup=*/false,
+            /*useForall=*/false);
+
+        auto peelLoop = [&](Value loop) {
+          ib.create<transform::LoopPeelOp>(
+              /*peeled_loop=*/scfForType,
+              /*remainder_loop=*/scfForType,
+              /*target=*/loop,
+              /*peel_front=*/false,
+              /*fail_if_already_divisible=*/false);
+        };
+
+        // Peel if tiling does not perfectly divide the loop.
+        // We do this to make sure we can vectorize the loop.
+        bool peeledFuseLoop = false;
+        if (!tileSizes.mDivisible) {
+          peelLoop(fuse.getLoops()[1]);
+          peeledFuseLoop = true;
+        }
+        if (!tileSizes.nDivisible) {
+          peelLoop(fuse.getLoops()[0]);
+          peeledFuseLoop = true;
+        }
+
+        // Re-match the matmul after peeling.
+        Value kTileTarget = peeledFuseLoop
+                                ? createMatchMatmulOp(ib, ctx, arg).getResults()
+                                : fuse.getTransformed();
+
+        // Tile only the K (reduction) dim: tile sizes index by iter-space
+        // dim, so we put `kTile` at the K position and 0 elsewhere.
+        SmallVector<int64_t, 3> kTileSizes(3, 0);
+        kTileSizes[kDim] = tileSizes.kTile;
+        SmallVector<Type> tile1LoopTypes(1, scfForType);
+        auto tile1 = ib.create<transform::TileUsingForOp>(
+            /*loopTypes=*/tile1LoopTypes,
+            /*target=*/kTileTarget,
+            /*staticTileSizes=*/kTileSizes,
+            /*interchange=*/ArrayRef<int64_t>{},
+            /*scalableSizes=*/std::nullopt);
+
+        // Same for K: peel if the K dim isn't a multiple of kTile,
+        // then re-match the matmul before the inner micro-tile runs.
+        Value microTileTarget = tile1.getTiledLinalgOp();
+        if (!tileSizes.kDivisible) {
+          peelLoop(tile1.getLoops()[0]);
+          microTileTarget = createMatchMatmulOp(ib, ctx, arg).getResults();
+        }
+
+        // Innermost register-blocking micro-tile over (M, N, K). Place
+        // each per-dim micro-tile at its iter-space position.
+        SmallVector<int64_t, 3> microTileSizes(3, 0);
+        microTileSizes[mDim] = tileSizes.microTileM;
+        microTileSizes[nDim] = tileSizes.microTileN;
+        microTileSizes[kDim] = tileSizes.microTileK;
+        SmallVector<Type> tile2LoopTypes(3, anyOpType);
+        ib.create<transform::TileUsingForOp>(
+            /*loopTypes=*/tile2LoopTypes,
+            /*target=*/microTileTarget,
+            /*staticTileSizes=*/microTileSizes,
+            /*interchange=*/ArrayRef<int64_t>{},
+            /*scalableSizes=*/std::nullopt);
+
+        auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
+
+        auto canonicalize = ib.create<transform::ApplyRegisteredPassOp>(
+            anyOpType, matchFunc.getResults(),
+            /*passName=*/"canonicalize",
+            /*options=*/DictionaryAttr::get(ctx),
+            /*dynamicOptions=*/ValueRange{});
+
+        ib.create<transform::ApplyRegisteredPassOp>(
+            anyOpType, canonicalize.getResult(),
+            /*passName=*/"lower-affine",
+            /*options=*/DictionaryAttr::get(ctx),
+            /*dynamicOptions=*/ValueRange{});
+      });
+}
+
 OwningOpRef<ModuleOp> cpu::buildTilingSchedule(MLIRContext *ctx) {
-  return buildTransformModule(ctx, [ctx](ImplicitLocOpBuilder &ib, BlockArgument arg) {
-    auto anyOpType = getAnyOpType(ctx);
-
-    // AVX vector width is 256 bits. 
-    // For fp32, AVX takes 8 elements.
-    int vectorSize = 8;
-
-    // Tile elementwise ops of different dimensions to prevent huge vectors
-    tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/1);
-    tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/2);
-    tileElementwiseOps(ib, ctx, arg, vectorSize, /*numDims=*/3);
-
-    // Now tile (and optionally fuse) the matmul
-    auto matchMatmul = createMatchMatmulOp(ib, ctx, arg);
-
-    SmallVector<Type> fuseLoopTypes(3, anyOpType);
-    auto fuse = ib.create<transform::FuseOp>(
-        /*loopTypes=*/fuseLoopTypes,
-        /*target=*/matchMatmul.getResults(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{1, 256, 64},
-        /*staticTileInterchange=*/ArrayRef<int64_t>{},
-        /*applyCleanup=*/false,
-        /*useForall=*/false);
-
-    SmallVector<Type> tile1LoopTypes(1, anyOpType);
-    auto tile1 = ib.create<transform::TileUsingForOp>(
-        /*loopTypes=*/tile1LoopTypes,
-        /*target=*/fuse.getTransformed(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{0, 0, 0, 64},
-        /*interchange=*/ArrayRef<int64_t>{},
-        /*scalableSizes=*/std::nullopt);
-
-    SmallVector<Type> tile2LoopTypes(3, anyOpType);
-    ib.create<transform::TileUsingForOp>(
-        /*loopTypes=*/tile2LoopTypes,
-        /*target=*/tile1.getTiledLinalgOp(),
-        /*staticTileSizes=*/ArrayRef<int64_t>{0, vectorSize, vectorSize, 1},
-        /*interchange=*/ArrayRef<int64_t>{},
-        /*scalableSizes=*/std::nullopt);
-
-    auto matchFunc = createMatchCpuVerifierFuncOp(ib, ctx, arg);
-
-    auto canonicalize = ib.create<transform::ApplyRegisteredPassOp>(
-        anyOpType, matchFunc.getResults(),
-        /*passName=*/"canonicalize",
-        /*options=*/DictionaryAttr::get(ctx),
-        /*dynamicOptions=*/ValueRange{});
-
-    ib.create<transform::ApplyRegisteredPassOp>(
-        anyOpType, canonicalize.getResult(),
-        /*passName=*/"lower-affine",
-        /*options=*/DictionaryAttr::get(ctx),
-        /*dynamicOptions=*/ValueRange{});
-  });
+  return buildTilingSchedule(ctx, MatmulTileSizes{});
 }

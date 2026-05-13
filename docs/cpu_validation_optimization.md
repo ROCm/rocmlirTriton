@@ -7,15 +7,17 @@ You can use the `--cpu-timers` option to measure different parts of CPU runtime.
 
 ```
 mlir/lib/Conversion/CPU/Transforms/
-├── LowerCpuVerifier.cpp          # Main pass that orchestrates the lowering pipeline
-├── Schedules.cpp                 # Creates and applies transform schedules
+├── LowerCpuVerifier              # Main pass that orchestrates the lowering pipeline
+├── ConvToGemm                    # im2col-style conversion of conv ops into fused matmul ops
+├── Schedules                     # Creates and applies transform schedules
 └── Schedules/                    # Individual transform schedule implementations
-    ├── ScheduleUtils.cpp         # Common utilities (module creation, matmul matching)
-    ├── TilingSchedule.cpp        # Schedule 1. Tiles linalg.generic ops to prevent huge vectors
-    ├── VectorizationSchedule.cpp # Schedule 2. Vectorizes tiled operations
-    ├── UnrollSchedule.cpp        # Schedule 3. Unrolls small loops for better codegen
-    ├── PrePostSchedules.cpp      # Pre (canonicalize+cse) and Post (LICM+hoisting) passes 
-    └── LowerToLLVMSchedule.cpp   # Schedule 4. Bufferization + LLVM dialect lowering
+    ├── ScheduleUtils             # Common utilities (module creation, matmul matching)
+    ├── FusedConvToMatmulSchedule # Schedule 1. Tiles fused conv ops so they become pure matmuls
+    ├── TilingSchedule            # Schedule 2. Tiles linalg.generic ops to prevent huge vectors
+    ├── VectorizationSchedule     # Schedule 3. Vectorizes tiled operations
+    ├── UnrollSchedule            # Schedule 4. Unrolls small loops for better codegen
+    ├── PrePostSchedules          # Pre (canonicalize+cse) and Post (LICM+hoisting) passes
+    └── LowerToLLVMSchedule       # Schedule 5. Bufferization + LLVM dialect lowering
 ```
 
 ## 1.2 Key Components
@@ -24,17 +26,19 @@ mlir/lib/Conversion/CPU/Transforms/
 
 | Schedule | Name      | Purpose |
 |----------| ----------|---------|
-| 1.       | `TilingSchedule` | Tiles elementwise ops (1D/2D/3D) with tile size 8, and matmul with cache-friendly tiles |
-| 2.       | `VectorizationSchedule` | Applies `transform.vectorize` to convert loops to vector operations |
-| 3.       | `UnrollSchedule` | Unrolls inner loops for better instruction-level parallelism |
-| 4.       | `LowerToLLVMSchedule` | Bufferization, vector lowering, and conversion to LLVM dialect |
+| 1.       | `FusedConvToMatmulSchedule` | Tiles the fused conv-as-matmul op produced by `ConvToGemm` so its inner body becomes a pure matmul |
+| 2.       | `TilingSchedule` | Tiles elementwise ops (1D/2D/3D) with tile size 8, and matmul with cache-friendly tiles |
+| 3.       | `VectorizationSchedule` | Applies `transform.vectorize` to convert loops to vector operations |
+| 4.       | `UnrollSchedule` | Unrolls inner loops for better instruction-level parallelism |
+| 5.       | `LowerToLLVMSchedule` | Bufferization, vector lowering, and conversion to LLVM dialect |
 
-We also have other 2 files:
+We also have these supporting files:
 
 | Name               | Purpose |
 |--------------------|---------|
 | `PrePostSchedules` | Pre: canonicalize+CSE. Post: LICM + redundant transfer hoisting |
-| `ScheduleUtils`    | Shared helpers |
+| `ScheduleUtils`    | Shared helpers (module creation, matmul matching, etc.) |
+| `ConvToGemm`       | Non-schedule pass that rewrites convolutions into a single fused matmul-like op (see §5) |
 
 ## 2. Transform dialect (this approach) vs. passes (rocMLIR approach)
 Note that the best approach may vary depending on the use case. There is no single right answer to this question. 
@@ -70,6 +74,11 @@ If we apply a loop pipelining transform that targets all `scf.for` operations wi
 
 Previously (in rocMLIR, or before the CPU optimization landed on develop), this level of isolation wasn't necessary. The original CPU code path only performed bufferization and LLVM lowering—passes that are safe to apply to the entire module without side effects on unrelated functions. However, the transform dialect operations used for CPU optimization (such as tiling, vectorization, and loop pipelining) require more precise targeting, making function isolation neccesary.
 
+## 3.1 Debugging: dumping per-step IR and transform schedules
+
+`rocmlir-driver` accepts the optional flag `-dump-cpu-schedules=<dir>`.
+When set, the pass writes one `.mlir` file per (function, schedule) pair, capturing the CPU verifier IR *before* the step runs together with the transform sequence that is about to be applied.
+
 ## 4. Optimization strategy
 The high-level idea is following GOTO's paper [1] while trying to be reasonably simple.
 In other words, optimize the code while keeping complexity low.
@@ -78,18 +87,47 @@ We want our CPU verifier to be fast enough, not cutting edge performance.
 Using MLIR to optimize GEMM for CPU has already been studied in previous work [2] with high success.
 In particular, the last trend is to use the transform dialect [3] and upstream MLIR to do so [4].
 
-## 5. Large JIT time issue
-## 5.1 Description
-With certain IR inputs, we can get huge JIT times if we are not careful (in order of several seconds).
-This is because we unconditionally vectorize all IR in the `VectorizationSchedule`. 
-So, if the `linalg.generic` was not tiled, it can be vectorized with huge vector sizes, so the JIT will have a very hard time with this IR.
+# 5. Convolution
+To optimize convolutions, the approach is using an im2col approach to translate the convolution into a matrix multiplication. Then, the matrix multiplication will be optimized using the standard optimization path. This conversion is implemented in mlir/lib/Conversion/CPU/Transforms/ConvToGemm.cpp. 
 
-To overcome this issue, in `TilingSchedule`, we make sure that we tile all the `linalg.generic` in the IR to a reasonable vector size (8).
+Originally, the im2col was implemented like this:
 
-## 5.2 Can we vectorize only linalg.generics that are tiled?
-Yes, but we need to use `transform.structured.vectorize` which, in my experience, is less mature compared to `transform.structured.vectorize_children_and_apply_patterns`. The former will attempt to vectorize a specific op, whereas the latter will attempt to vectorize all ops and apply different paterns. The problem with the former is that it's very brittle in practice. If the target op is not ready for vectorization, it will fail. If the target op is ready, but needs some cleanup before vectorization, it will fail as well. The latter, however, will apply cleanup patterns before/after vectorization, so it is more likely that it will work. 
+```
+%0 = tensor.empty
+%1 = linalg.generic  %0 { yield }
+%2 = matmul(%2)
+```
 
-We may want to use `vectorize` in the long term if we find corner cases with `vectorize_children_and_apply_patterns` since it will attempt vectorizing all ops, but in general `vectorize_children_and_apply_patterns` should be more reliable.
+Where the yield essentially did the im2col layout conversion. For big convs, that tensor.empty (which materialised im2col matrix) can potentially be huge. For example:
+
+```
+%0 = tensor.empty() : tensor<1x256x230x230x64x7x7xf32>
+```
+
+That case is 170GB!
+
+The solution to avoid huge tensors is to merge the yield with the matmul-like op in a single op, thus avoiding to allocate the whole tensor at once. This has the big disadvantage that the new op is not a matmul anymore (because it's 8D, not 2D/3D and it has multiple reduction dimensions). The solution to that problem is simple: We tile this op later (in FusedConvToMatmulSchedule) and tile only the dimensions that come from the convolution itself. This way, the result is purely a matmul. 
+
+The section below details what convolutions are supported and what is not supported.
+
+### 5.1 Support matrix
+
+The matcher in `ConvToGemm.cpp` walks the `linalg.generic`'s affine maps via `linalg::inferConvolutionDims` and only accepts ops with **exactly 2 output-spatial dims, 2 filter-loop dims, unit strides, and unit dilations**. Everything else is layout- and direction-agnostic. The user-facing flags below describe what `rocmlir-gen` is called with; what matters for the matcher is whatever the verifier function's `linalg.generic` *ends up looking like* after `rocmlir-gen` has lowered it.
+
+| Dimensions | Direction          | Stride | Dilation | Padding | Groups (G ≥ 1) | Converted? | Why                                                                                                                                                                                                                            |
+| ---------- | ------------------ | ------ | -------- | ------- | -------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1D         | Forward            | 1      | 1        | any     | any            | ✅         | `rocmlir-gen` has no native 1-D path; we model 1-D as a 2-D conv with `in_h = fil_h = 1`.
+| 1D         | Backward           | any    | any      | any     | any            | ✅         | Modeled as 2D (see above). |
+| 2D         | Forward            | 1      | 1        | any     | any            | ✅         | Canonical supported case. The group axis is reported by `inferConvolutionDims` as a single `depth` dim, so any `G ≥ 1` matches. |
+| 2D         | Forward            | > 1    | 1        | any     | any            | ❌         | No support for strided convs. |
+| 2D         | Forward            | 1      | > 1      | any     | any            | ❌         | No support for dilation. |
+| 2D         | Backward           | any    | any      | any     | any            | ✅         | `rocmlir-gen` generates bwd-data as a stride-1 / dilation-1 conv (zero-stuffed gradient + rotated filter), so conversion works even with stride > 1 and/or dilation > 1. |
+| 3D         | Forward / Backward | any    | any      | any     | any            | ❌         | 3D convs are not supported |
+
+NOTES:
+- Regarding 1D conv: Neither rocmlir-gen nor MIGraphX→TOSA has a native 1D path; they both model 1D as 2D with a unit spatial dimension (TOSA has no tosa.conv1d/tosa.transpose_conv1d).
+- Tests for each row live in `mlir/test/Conversion/CPU/cpu_conv_to_gemm.mlir`.
+- Any convolution not listed in the above table is considered not supported.
 
 ## References
 [1] https://www.cs.utexas.edu/~flame/pubs/GotoTOMS_final.pdf

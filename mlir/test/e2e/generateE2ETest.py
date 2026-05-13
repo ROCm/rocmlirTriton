@@ -153,18 +153,19 @@ if __name__ == '__main__':
                     continue
                 if len(opt) >= 3 and "bf16" in opt[2] and "gfx11" in arch:
                     continue
-                opt_idx = opt_idx + 1
-                config = prefix + ' ' + test["config"]
+                # Skip combinations matched by the per-test exclude clauses. We
+                # don't emit a file at all for these: in single-test mode an
+                # excluded combination would otherwise produce a .mlir with no
+                # RUN line, which lit reports as UNRESOLVED.
                 skip = False
                 for exclude in exclusions:
-                    if (all(x in opt for x in exclude)):
+                    if all(x in opt for x in exclude):
                         skip = True
                         break
-                if not skip:
-                    leading = "// RUN: "
-                else:
-                    leading = "// FIXME: "
-                config = leading + config + ' ' + ' '.join(opt)
+                if skip:
+                    continue
+                opt_idx = opt_idx + 1
+                config = "// RUN: " + prefix + ' ' + test["config"] + ' ' + ' '.join(opt)
                 output = output_path + '/' + suite_name + '_' + str(test_idx) + '_' + str(
                     opt_idx) + '.mlir'
                 with open(output, 'w') as f:
