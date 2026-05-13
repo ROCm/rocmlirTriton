@@ -1,33 +1,4 @@
 #!/usr/bin/env bash
-# group9_gemm_gemm.sh -- GEMM+GEMM remaining bugs after MI350 sweep + PR fixes (3 cases)
-#
-# Originally generated with 45 candidate cases from mi350/gemm_gemm_errors.log
-# (sweep 2026-05-07). Re-run on MI350 reduced this to 3 persistent bugs;
-# the rest are either now-PASS or structurally not-applicable.
-#
-# Status from MI350 re-run:
-#   PASS                          : 40/45  (removed -- presumably fixed by recent PRs)
-#   FAIL [0 1 1]                  :  1/45  KEPT  (was 2/45)
-#   LLVM ERROR: out of memory     :  1/45  KEPT  (was 12/45) -- compiler OOM
-#   std::bad_array_new_length crash: 1/45  KEPT  (was 14/45) -- compiler crash
-#   "ttg.shared exceeds LDS limit" (structural NOT_APPLICABLE; not a real bug):
-#                                    2/45  removed (was 16, 44)
-#
-# Pipeline (per parameterSweeps.py::test_config and README.md):
-#   rocmlir-gen <args> | rocmlir-driver --host-pipeline=highlevel - |
-#       rocmlir-driver -c | rocm-run
-#
-# Each kernel prints the verifier flag triple `[RMS_pass absDiff_pass
-# relDiff_pass]` on the last line of output. `[1 1 1]` is a clean
-# PASS; any zero (or missing output, crash, OOM, hang, timeout) is a FAIL.
-#
-# Hardware: gfx950 (MI350); the harness was sampled with
-# --num_cu 256 --num_chiplets 8.
-#
-# Usage (from the rocmlirTriton repo root):
-#   ./mi350/group9_gemm_gemm.sh
-# or with a non-default build directory:
-#   BUILD_DIR=/path/to/build ./mi350/group9_gemm_gemm.sh
 
 set -u -o pipefail
 # Note: -e is intentionally NOT set -- failing pipelines are the point.
