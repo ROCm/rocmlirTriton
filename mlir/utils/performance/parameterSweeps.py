@@ -632,22 +632,28 @@ def _wave_size(arch: str) -> int:
         return 32
     return 64
 
+
+# Dtypes whose Triton fp_to_fp lowering expands into many LLVM ops on AMD
+# targets that lack a packed hardware conversion.
+_AMPLIFIED_DTYPES = frozenset({'fp8', 'fp8_fp8', 'bf8'})
+
+
 def _dtype_amplifier(dtype: str, arch: str) -> int:
-    """Dtypes whose Triton fp_to_fp lowering expands into many LLVM ops on AMD
-    targets that lack a packed hardware conversion. On CDNA3/4 the
-    fp8->f16 path uses a packed hw intrinsic, avoiding the LLVM IR explosion."""
-    _AMPLIFIED_DTYPES = frozenset({'fp8', 'fp8_fp8', 'bf8'})
-    
-    """On CDNA3, fp8 stays packed via v_cvt_pk_f32_fp8 in the
-    Triton lowering, and on CDNA4 (gfx950) fp8 doesn't need conversion at
-    all because tt.dot_scaled accepts fp8 operands natively, so neither
-    family suffer from this problem. Every other AMD target (RDNA, older GCN) does."""
+    """Multiplier on the per-element MI count for dtypes whose Triton
+    fp_to_fp lowering expands into many LLVM ops on AMD targets that lack
+    a packed hardware conversion.
+
+    On CDNA3, fp8 stays packed via v_cvt_pk_f32_fp8 in the Triton lowering,
+    and on CDNA4 (gfx950) fp8 doesn't need conversion at all because
+    tt.dot_scaled accepts fp8 operands natively, so neither family suffers
+    from this problem. Every other AMD target (RDNA, older GCN) does."""
     if dtype in _AMPLIFIED_DTYPES:
         n = _arch_id(arch)
         is_cdna3_or_4 = (n is not None and 0x940 <= n <= 0x95f)
         if not is_cdna3_or_4:
             return 10
     return 1
+
 
 # --- Compile cost cap --------------------------------------------------------
 #
@@ -673,6 +679,8 @@ def _dtype_amplifier(dtype: str, arch: str) -> int:
 # ~25 scalar LLVM ops per element (no packed hw conversion), inflating the
 # K-loop body specifically; on CDNA3/4 the conversion is packed/native and
 # alpha == 1.
+
+
 def _compile_cost_score(perf: Sequence[int], dtype: str, arch: str) -> float:
     """Estimate AMDGPU codegen cost for this (perf-config, dtype, arch).
 
