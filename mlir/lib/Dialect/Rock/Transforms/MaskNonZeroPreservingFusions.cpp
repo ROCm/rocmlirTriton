@@ -116,24 +116,42 @@ static FillerKind chooseFillerKind(Value leaf) {
   return FillerKind::Zero;
 }
 
-/// Build a constant tensor whose elements are the identity value
-/// corresponding to `kind`, typed as `tensorType`. For non-float element
-/// types, NegInf falls back to zero (no representable infinity for ints).
+/// Build a constant tensor whose elements are the algebraic identity
+/// corresponding to `kind`, typed as `tensorType`.
+///
+/// For NegInf:
+/// - Float element types use IEEE-754 negative infinity.
+/// - Integer element types use the signed minimum (e.g. INT32_MIN for i32),
+///   matching the `arith.maxsi` lowering of `rock.blockwise_reduce max` on
+///   integers (see RockToTTIR.cpp).
+///
+/// Any unhandled (kind, element type) combination falls back to zero so the
+/// pass cannot leave a null attribute, but the fallback is *not* always a
+/// safe identity -- callers should expand the cases above before relying on
+/// it for new combinations.
 static Value createFillerConstant(OpBuilder &builder, Location loc,
                                   RankedTensorType tensorType,
                                   FillerKind kind) {
-  Attribute fillerAttr;
   Type elemType = tensorType.getElementType();
-  if (kind == FillerKind::NegInf) {
+  Attribute fillerAttr;
+  switch (kind) {
+  case FillerKind::NegInf:
     if (auto floatTy = dyn_cast<FloatType>(elemType)) {
       APFloat negInf =
           APFloat::getInf(floatTy.getFloatSemantics(), /*Negative=*/true);
       fillerAttr =
           DenseElementsAttr::get(tensorType, FloatAttr::get(elemType, negInf));
+    } else if (auto intTy = dyn_cast<IntegerType>(elemType)) {
+      APInt sMin = APInt::getSignedMinValue(intTy.getWidth());
+      fillerAttr =
+          DenseElementsAttr::get(tensorType, IntegerAttr::get(intTy, sMin));
     }
-  }
-  if (!fillerAttr)
+    break;
+  case FillerKind::Zero:
     fillerAttr = builder.getZeroAttr(tensorType);
+    break;
+  }
+  assert(fillerAttr && "filler attribute must be set");
   return arith::ConstantOp::create(builder, loc, tensorType,
                                    cast<TypedAttr>(fillerAttr));
 }
@@ -290,7 +308,9 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
                 matchPattern(clonedLeaf, m_Zero());
 
   LLVM_DEBUG(llvm::dbgs() << "  Zero-preservation test: "
-                          << (isZero ? "PRESERVES" : (anyFoldFailed ? "Fold failed!" : "DOES NOT preserve"))
+                          << (isZero ? "PRESERVES"
+                                     : (anyFoldFailed ? "Fold failed!"
+                                                      : "DOES NOT preserve"))
                           << " zero\n");
 
   for (auto it = toErase.rbegin(); it != toErase.rend(); ++it) {
@@ -366,12 +386,12 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
       combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
 
     // Insert arith.select %mask, %fused, %filler.
-    // 
-    // Filler value: 
+    //
+    // Filler value:
     // - tt.dot consumers: zero
     // - sum-reduce consumers: zero
     // - max-reduce consumers: -inf
-    // 
+    //
     // A max-reduce consumer needs -inf so that masked-out lanes don't
     // become the row max when actual valid values are negative (this happens
     // in causal-attention softmax when the row max is < 0).

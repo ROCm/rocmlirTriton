@@ -340,19 +340,19 @@ func.func @test_max_reduce_through_fusion_chain(%arg0: tensor<64x64xi32>, %arg1:
 }
 
 // ============================================================
-// Integer leaf type with a max-reduce consumer: there's no
-// representable -inf for ints, so createFillerConstant() falls back
-// to zero. Documents this corner of the behavior so a future change
-// to honour int min doesn't silently break.
+// Integer leaf type with a max-reduce consumer: filler must be the
+// signed minimum of the element type (matches the `arith.maxsi`
+// lowering of `rock.blockwise_reduce max` on integers). Using zero
+// here would silently corrupt results when valid lanes are negative.
 // ============================================================
 
-// CHECK-LABEL: func.func @test_max_reduce_int_falls_back_to_zero
+// CHECK-LABEL: func.func @test_max_reduce_int_uses_signed_min
 // CHECK:         %[[LOAD:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[MASK:.*]]]
 // CHECK:         %[[FUSED:.*]] = arith.addi %[[LOAD]], %{{.*}} : tensor<64x64xi32>
-// CHECK:         %[[ZERO:.*]] = arith.constant dense<0> : tensor<64x64xi32>
-// CHECK:         %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xi32>
+// CHECK:         %[[SMIN:.*]] = arith.constant dense<-2147483648> : tensor<64x64xi32>
+// CHECK:         %[[SAFE:.*]] = arith.select %[[MASK]], %[[FUSED]], %[[SMIN]] : tensor<64x64xi1>, tensor<64x64xi32>
 // CHECK:         rock.blockwise_reduce max %[[SAFE]]
-func.func @test_max_reduce_int_falls_back_to_zero(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1>) -> tensor<64xi32> attributes {rock.kernel} {
+func.func @test_max_reduce_int_uses_signed_min(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1>) -> tensor<64xi32> attributes {rock.kernel} {
   %cst = arith.constant dense<1> : tensor<64x64xi32>
   %0 = rock.blockwise_load_ptr %arg0[%arg1] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi32>
   %1 = arith.addi %0, %cst : tensor<64x64xi32>
