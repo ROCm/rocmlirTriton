@@ -320,6 +320,82 @@ mcpuVerifyFloat(float *gpuAllocated, float *gpuAligned, int64_t gpuOffset,
 // longer gate pass/fail -- only the allclose predicate does. To preserve the
 // "[%d %d %d]" output format that ~100 existing FileCheck tests pin, the same
 // allclose result is repeated three times.
+// Print the allclose-specific diagnostic block: the worst-offender element
+// (the one with the largest absDiff/tolerance ratio), the histogram of
+// absDiff/tolerance ratios, and the "smallest atol/rtol that would pass
+// everything else, holding the other one fixed" calibration hints. These
+// metrics make the verifier's decision auditable -- the legacy diagnostics
+// (RMS/maxAbsDiff/maxRelDiff/relDiff histogram) live alongside but tell you
+// nothing about why allclose failed or what tolerance would make it pass.
+//
+// "ratio" buckets follow a 0/passing/failing structure:
+//   [0]: ratio == 0                          (exact match or subnormal-equal)
+//   [1..3]: 0 < ratio <= {0.1, 0.5, 1.0}     (PASSING -- with headroom)
+//   [4..7]: 1.0 < ratio <= {2.0, 10.0, 100.0, +inf}   (FAILING)
+//   [8]: ratio == +inf                       (tolerance == 0 and absDiff > 0)
+static void printAllcloseStats(long long dataSize, long long failingElements,
+                               float atol, float rtol, float maxRatio,
+                               float maxRatioValNum, float maxRatioGpuNum,
+                               double maxRatioAbsDiff, double maxRatioTolerance,
+                               bool maxRatioIsInf, long long ratioInfCount,
+                               double minAtolForCurrentRtol,
+                               double minRtolForCurrentAtol,
+                               bool minRtolWellDefined, const int *hist_ratio,
+                               size_t numRatioBuckets) {
+  static const double RATIO_BOUNDARIES[7] = {0.1,  0.5,   1.0,     2.0,
+                                             10.0, 100.0, INFINITY};
+  printf("allclose statistics:\n");
+  if (failingElements == 0) {
+    printf("  all elements within tolerance (atol=%.3e, rtol=%.3e)\n", atol,
+           rtol);
+  } else {
+    if (maxRatioIsInf) {
+      printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=0 "
+             "(ratio=inf)\n",
+             maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff);
+    } else {
+      printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=%.3e "
+             "(ratio=%.2fx)\n",
+             maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff, maxRatioTolerance,
+             maxRatio);
+    }
+    // Calibration hints: smallest atol/rtol that would make everything pass
+    // (holding the other fixed).
+    printf("  to pass with current rtol=%.3e: atol >= %.3e\n", rtol,
+           minAtolForCurrentRtol);
+    if (minRtolWellDefined) {
+      printf("  to pass with current atol=%.3e: rtol >= %.3e\n", atol,
+             minRtolForCurrentAtol);
+    } else {
+      printf("  to pass with current atol=%.3e: rtol >= n/a "
+             "(failures only at valNum == 0; increase atol)\n",
+             atol);
+    }
+  }
+  printf("  histogram of absDiff/tolerance:\n");
+  for (size_t i = 0; i < numRatioBuckets; ++i) {
+    if (i == 0)
+      printf("           ratio == 0     ");
+    else if (i == 1)
+      printf("       0 < ratio <= %5.1f ", RATIO_BOUNDARIES[0]);
+    else if (i == numRatioBuckets - 2)
+      printf("   %5.1f < ratio <  inf  ", RATIO_BOUNDARIES[i - 2]);
+    else if (i == numRatioBuckets - 1)
+      printf("           ratio == inf   ");
+    else
+      printf("   %5.1f < ratio <= %5.1f ", RATIO_BOUNDARIES[i - 2],
+             RATIO_BOUNDARIES[i - 1]);
+    printf(": %d/%lld (%.4f%%)%s\n", hist_ratio[i], dataSize,
+           100.0 * static_cast<double>(hist_ratio[i]) /
+               static_cast<double>(dataSize),
+           (i >= 4 && hist_ratio[i] > 0) ? "  <-- failing" : "");
+  }
+  if (ratioInfCount > 0)
+    printf("  note: %lld element(s) had tolerance == 0 with absDiff > 0 "
+           "(only possible when -atol=0 and valNum==0)\n",
+           ratioInfCount);
+}
+
 template <typename T>
 void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
                         float atol, float rtol, char printDebug, bool isFP32) {
@@ -341,6 +417,37 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
   int hist_relDiff[NUM_BUCKETS] = {0};
   PrintOption print_option = static_cast<PrintOption>(printDebug);
 
+  // allclose-specific diagnostics. RATIO_BOUNDARIES must stay in sync with
+  // printAllcloseStats; the ratio histogram has 9 buckets total:
+  // [==0], [(0, 0.1], (0.1, 0.5], (0.5, 1.0]],         <- passing
+  // [(1.0, 2.0], (2.0, 10.0], (10.0, 100.0], (100.0, inf)], <- failing
+  // [==inf].
+  static const double RATIO_BOUNDARIES[7] = {0.1,  0.5,   1.0,     2.0,
+                                             10.0, 100.0, INFINITY};
+  constexpr size_t NUM_RATIO_BUCKETS = 9;
+  int hist_ratio[NUM_RATIO_BUCKETS] = {0};
+  // Worst offender by ratio = absDiff / tolerance. We track it separately
+  // from maxAbsDiff because the legacy "worst by absDiff" element is often
+  // *not* the element that drives the allclose verdict (e.g. an element with
+  // large absolute value can have a large absDiff but still pass thanks to
+  // the rtol*|valNum| component).
+  float maxRatio = 0.0f;
+  float maxRatioValNum = 0.0f;
+  float maxRatioGpuNum = 0.0f;
+  double maxRatioAbsDiff = 0.0;
+  double maxRatioTolerance = 0.0;
+  bool maxRatioIsInf = false;
+  long long ratioInfCount = 0;
+  // Calibration hints: smallest atol/rtol that would make every failing
+  // element pass, holding the other tolerance fixed.
+  //   minAtolForCurrentRtol = max over elements of (absDiff - rtol*|valNum|)
+  //   minRtolForCurrentAtol = max over elements of (absDiff - atol)/|valNum|
+  // Both clamped at 0 (a "negative" tolerance is meaningless). The rtol hint
+  // skips elements with valNum == 0, since rtol can't fix those.
+  double minAtolForCurrentRtol = 0.0;
+  double minRtolForCurrentAtol = 0.0;
+  bool minRtolWellDefined = false;
+
   long long failingElements = 0;
   for (long long i = 0; i < dataSize; ++i) {
     valNum = static_cast<float>(validationResults[i]);
@@ -350,6 +457,7 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
 
     if (valNum == gpuNum) {
       hist_relDiff[0]++;
+      hist_ratio[0]++;
       continue;
     }
     if ((std::fpclassify(valNum) == FP_SUBNORMAL) && isFP32) {
@@ -358,6 +466,7 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
       // the GPU side without the result being wrong. Same affordance as the
       // legacy mcpuVerify path.
       hist_relDiff[0]++;
+      hist_ratio[0]++;
       continue;
     }
     // Clamp +/-inf on the validation side to fp16 max so that the subsequent
@@ -397,8 +506,56 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
         static_cast<double>(atol) +
         static_cast<double>(rtol) * static_cast<double>(fabs(valNum));
     bool elemPass = static_cast<double>(absDiff) <= tolerance;
+
+    // allclose-specific bookkeeping: ratio, worst-offender, calibration.
+    if (tolerance == 0.0) {
+      // absDiff > 0 (we are past the valNum == gpuNum early-out) and
+      // tolerance == 0 can only happen with atol == 0 && (rtol == 0 ||
+      // valNum == 0). Record as ratio == inf.
+      ratioInfCount++;
+      hist_ratio[NUM_RATIO_BUCKETS - 1]++;
+      if (!maxRatioIsInf) {
+        maxRatioIsInf = true;
+        maxRatio = std::numeric_limits<float>::infinity();
+        maxRatioValNum = valNum;
+        maxRatioGpuNum = gpuNum;
+        maxRatioAbsDiff = absDiff;
+        maxRatioTolerance = 0.0;
+      }
+    } else {
+      double ratio = static_cast<double>(absDiff) / tolerance;
+      // Find the ratio histogram bucket: 1..7 cover the boundaries, 0 is
+      // exact-match (already handled by early-out), 8 is ratio == inf.
+      size_t bucket = 1;
+      while (bucket < 7 && ratio > RATIO_BOUNDARIES[bucket - 1])
+        bucket++;
+      hist_ratio[bucket]++;
+      if (!maxRatioIsInf && ratio > maxRatio) {
+        maxRatio = static_cast<float>(ratio);
+        maxRatioValNum = valNum;
+        maxRatioGpuNum = gpuNum;
+        maxRatioAbsDiff = absDiff;
+        maxRatioTolerance = tolerance;
+      }
+    }
     if (!elemPass) {
       failingElements++;
+      // Update calibration hints (clamped at 0 implicitly: we only consider
+      // failing elements, and for those absDiff > tolerance >= atol).
+      double atolNeeded =
+          static_cast<double>(absDiff) -
+          static_cast<double>(rtol) * static_cast<double>(fabs(valNum));
+      if (atolNeeded > minAtolForCurrentRtol)
+        minAtolForCurrentRtol = atolNeeded;
+      if (valNum != 0.0f) {
+        double rtolNeeded =
+            (static_cast<double>(absDiff) - static_cast<double>(atol)) /
+            static_cast<double>(fabs(valNum));
+        if (rtolNeeded > minRtolForCurrentAtol) {
+          minRtolForCurrentAtol = rtolNeeded;
+          minRtolWellDefined = true;
+        }
+      }
       if (print_option == PrintOption::Always ||
           print_option == PrintOption::Failure)
         printf("%lld: %f %f %f %lf (tol=%.3e)\n", i, valNum, gpuNum, absDiff,
@@ -420,6 +577,11 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
                             aveAbsDiff, maxRelDiff, maxVAL_rel, maxGPU_rel,
                             aveRelDiff, err_RMS, BUCKET_BOUNDARIES, NUM_BUCKETS,
                             hist_relDiff);
+    printAllcloseStats(dataSize, failingElements, atol, rtol, maxRatio,
+                       maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff,
+                       maxRatioTolerance, maxRatioIsInf, ratioInfCount,
+                       minAtolForCurrentRtol, minRtolForCurrentAtol,
+                       minRtolWellDefined, hist_ratio, NUM_RATIO_BUCKETS);
   }
   // Repeat the allclose result three times to preserve the legacy output
   // format that existing FileCheck tests match against.
