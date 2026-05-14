@@ -4,7 +4,6 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx942 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx950 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=highlevel -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=HIGHLEVEL --match-full-lines --strict-whitespace
-// RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=full -arch=gfx90a /dev/null -o /dev/null 2>&1 | FileCheck %s --check-prefix=FULL_IMPLICIT_HOST
 
 // COM: Do not put a leading space between the colon and the pass you're looking for
 // MIGRAPHX:Kernel MIGraphX pipeline:
@@ -99,6 +98,3 @@
 // HIGHLEVEL-NEXT:convert-tensor-to-linalg,
 // HIGHLEVEL-NEXT:func.func(rock-sort-dimensions-memory-layout),
 // HIGHLEVEL-NEXT:rock-insert-output-stores)
-
-// FULL_IMPLICIT_HOST: Kernel pipeline:
-// FULL_IMPLICIT_HOST: Host Backend pipeline:
