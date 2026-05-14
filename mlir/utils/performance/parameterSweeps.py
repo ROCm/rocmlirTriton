@@ -625,8 +625,8 @@ def _wave_size(arch: str) -> int:
     32 for RDNA, 64 for GCN/CDNA and gfx1250."""
     n = _arch_id(arch)
     if n is None:
-        # Unknown arch: conservative (yields a smaller num_elements_per_thread,
-        # i.e. less likely to filter).
+        # Unknown arch: conservative (wider wave -> smaller per-thread
+        # state -> less likely to filter).
         return 64
     if 0x1000 <= n < 0x1250:  # gfx10xx, gfx11xx, gfx12 < 1250
         return 32
@@ -649,66 +649,68 @@ def _dtype_amplifier(dtype: str, arch: str) -> int:
             return 10
     return 1
 
-def _build_budget(arch: str) -> int:
-    """Per-arch cap on ``num_elements_per_thread * alpha``.
+# --- Compile cost cap --------------------------------------------------------
+#
+# AMDGPU codegen, in particular the PostRA machine instruction scheduler,
+# scales super-linearly with the MI count *per basic block*, not in the total
+# across the kernel. A GEMM kernel has two basic blocks that matter for cost,
+# each measured in number of elements held per thread:
+#
+#   1. The K-loop body. Each iteration loads a tile slice of A and B into
+#      registers, contributing
+#          num_elements_kloop_body = (MPB + NPB) * KPB / (threads * kpack)
+#      elements per thread, where ``threads = numWaves * waveSize``.
+#
+#   2. The C-tile epilogue. The accumulator is held per-thread at
+#          num_elements_c_epilogue = (MPB * NPB) / threads
+#      elements per thread, and is stored back in one shot.
+#
+# The scheduler's cost is roughly the *larger* of these, not their sum:
+# halving KPB shortens the K-loop body but leaves the C-epilogue unchanged,
+# and vice versa. So we cap on
+#     max(num_elements_kloop_body, num_elements_c_epilogue) * alpha
+# where ``alpha`` is a dtype amplifier: fp8 on RDNA lowers tt.fp_to_fp into
+# ~25 scalar LLVM ops per element (no packed hw conversion), inflating the
+# K-loop body specifically; on CDNA3/4 the conversion is packed/native and
+# alpha == 1.
+def _compile_cost_score(perf: Sequence[int], dtype: str, arch: str) -> float:
+    """Estimate AMDGPU codegen cost for this (perf-config, dtype, arch).
 
-    Picked empirically so every (shape, perf) we've measured to compile in <10s
-    passes, and the rest are rejected."""
-    n = _arch_id(arch)
-    if n is None:
-        return 4000
-    # RDNA3 / RDNA4: smaller budget. This is due to empirically observed
-    # more expensive LLVM processing, in particular, due to post‑RA machine scheduler
-    # and register allocator.
-    if 0x1000 <= n < 0x1100:
-        return 2000
-    # gfx9 / gfx940-942-950 / gfx1250 can handle larger budget due to more
-    # efficient LLVM processing.
-    return 4000
-
-# --- Per-thread "effective state" cap ----------------------------------------
-#
-# For a GEMM tile of size MPB x NPB with reduction tile KPB, distributed over
-# ``threads = numWaves * waveSize`` lanes, each thread holds:
-#
-#     La = (MPB * KPB) / (threads * kpack)   (operand A, fp_in)
-#     Lb = (NPB * KPB) / (threads * kpack)   (operand B, fp_in)
-#     Lc = (MPB * NPB) /  threads            (accumulator, fp32)
-#     num_elements_per_thread = La + Lb + Lc
-#
-# AMDGPU codegen scales super-linearly with the MI count in a single
-# scheduling region, and the inner GEMM loop is one big region.
-# ``num_elements_per_thread`` is a good proxy for that region size *as long as
-# the per-element MI count is constant*. fp8 inputs break that assumption on
-# RDNA: tt.fp_to_fp lowers scalar (no CDNA3-style packed hw conversion), so
-# each fp8 lane expands to ~25 LLVM ops vs ~1 for f16/bf16/f32. We capture
-# that with a dtype amplifier ``alpha``; the effective budget is on
-# ``num_elements_per_thread * alpha``.
-#
-# Numbers below were chosen so:
-#   - Every (shape, perf) pair that already compiled in <30s passes.
-#   - The hand-picked SLOW_GEMM_CASES_GFX1100_FP8 entries are rejected.
-# We deliberately keep the CDNA cap looser because CDNA has 2x the wave size
-# (so num_elements_per_thread is half) *and* native fp8 MFMA / async copies,
-# both of which we've observed compile orders of magnitude faster at the same
-# (MPB, NPB, KPB).
-
-def _effective_state(perf: Sequence[int], dtype: str, arch: str) -> float:
-    """Compute ``num_elements_per_thread * alpha`` for a perf-config tuple."""
+    Returns a unit-less score; higher means the LLVM backend is expected
+    to take longer to compile the kernel. The score is
+        max(num_elements_kloop_body, num_elements_c_epilogue) * alpha
+    where each term counts elements held per thread in the larger of the
+    two cost-dominating basic blocks (the K-loop body and the C-epilogue).
+    The PostRA scheduler bottlenecks on whichever basic block is larger,
+    so the per-block max is a better proxy than their sum."""
     mpb, npb, kpb, kpack, _ctas, num_waves, *_rest = perf
     threads = max(1, num_waves * _wave_size(arch))
-    la = (mpb * kpb) / (threads * max(1, kpack))
-    lb = (npb * kpb) / (threads * max(1, kpack))
-    lc = (mpb * npb) / threads
-    num_elements_per_thread = la + lb + lc
-    return num_elements_per_thread * _dtype_amplifier(dtype, arch)
+    num_elements_kloop_body = (mpb + npb) * kpb / (threads * max(1, kpack))
+    num_elements_c_epilogue = (mpb * npb) / threads
+    largest_num_elements = max(num_elements_kloop_body, num_elements_c_epilogue)
+    return largest_num_elements * _dtype_amplifier(dtype, arch)
+
+
+def _compile_cost_budget(arch: str) -> int:
+    """Per-arch cap on the compile cost score (see :func:`_compile_cost_score`).
+
+    RDNA build times start to go wild above 8000.
+    CDNA archs process the same workload faster (wider waves, native fp8 paths)
+    we give them a bit more budget."""
+    n = _arch_id(arch)
+    if n is None:
+        return 8000
+    # RDNA3 / RDNA4: more expensive LLVM processing (post-RA scheduler).
+    if 0x1000 <= n < 0x1100:
+        return 8000
+    # gfx9 / gfx940-942-950 / gfx1250: better LLVM throughput, looser cap.
+    return 12000
 
 
 def _perf_within_budget(perf: Sequence[int], dtype: str, arch: str) -> bool:
-    """Whether this (perf-config, dtype, arch) tuple passes the cap on
-    ``num_elements_per_thread * alpha`` (see _effective_state /
-    _build_budget)."""
-    return _effective_state(perf, dtype, arch) <= _build_budget(arch)
+    """Whether this (perf-config, dtype, arch) tuple's compile cost score
+    is within the per-arch budget."""
+    return _compile_cost_score(perf, dtype, arch) <= _compile_cost_budget(arch)
 
 
 # Hard cap on resampling in the random-cases generators; defensive in case
@@ -1091,7 +1093,8 @@ def _dry_run(kind: str, num_samples: int, arch: str, seed: Optional[int]) -> boo
     reject = 0
     print(f"# dry-run: arch={arch}, kind={kind}, samples={num_samples}, "
           f"seed={seed if seed is not None else default_seed()}")
-    print(f"# budget = {_build_budget(arch)} on num_elements_per_thread * alpha")
+    print(f"# budget = {_compile_cost_budget(arch)} on "
+          f"max(num_elements_kloop_body, num_elements_c_epilogue) * alpha")
     for i in range(num_samples):
         if kind == 'gemm':
             shape = _sample_gemm_shape(rng)
@@ -1100,7 +1103,7 @@ def _dry_run(kind: str, num_samples: int, arch: str, seed: Optional[int]) -> boo
             shape = _sample_conv_shape(rng)
             dtype = shape[2]
         perf = sample_perf_config(rng, arch, _split_k_choices(dtype))
-        score = _effective_state(perf, dtype, arch)
+        score = _compile_cost_score(perf, dtype, arch)
         verdict = "ACCEPT" if _perf_within_budget(perf, dtype, arch) else "REJECT"
         if verdict == "ACCEPT":
             accept += 1
