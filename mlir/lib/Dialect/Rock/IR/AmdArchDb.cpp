@@ -417,7 +417,7 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
   if (chip.getAsInteger(/*radix=*/16, n))
     return 1; // malformed id (e.g. "gfx" alone) -> safest
 
-  if (n < 0x950) // gfx9 pre-CDNA4 (gfx900/906/908/90a/940/941/942/...)
+  if (n < 0x950) // gfx9 pre-CDNA4 (e.g., gfx908/90a)
     return 2;
 
   if (0x1000 <= n && n < 0x1250) // all of gfx10/gfx11 + gfx12 < gfx1250

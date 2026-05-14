@@ -163,7 +163,7 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       dPerBlock,         // M/block
       dPerBlock,         // N/block
       kPerBlockMFMA,     // K/block
-      kPackList,         // kPack
+      kPackList,         // kPackList
       numWavesRange,     // numWaves
       {16, 32},          // matrixInstrNonkdim
       {1, 2, 3},         // numStages
@@ -178,7 +178,7 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       dPerBlock,         // M/block
       dPerBlock,         // N/block
       kPerBlockWMMA,     // K/block
-      {1},               // kPack
+      {1},               // kPackList
       {4, 8},            // numWaves
       {0},               // matrixInstrNonkdim
       {1, 2, 3},         // numStages
@@ -224,7 +224,7 @@ getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       /*gemm0MPerBlock=*/dPerBlock,
       /*gemm0NPerBlock=*/dPerBlock,
       kPerBlock,
-      /*kPack=*/kPackList,
+      kPackList,
       numWavesRange,
       /*matrixInstrNonkdim=*/{16, 32},
       {1, 2, 3},
@@ -235,7 +235,7 @@ getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       /*gemm0MPerBlock=*/dPerBlock,
       /*gemm0NPerBlock=*/dPerBlock,
       kPerBlock,
-      /*kPacList=*/{1},
+      /*kPackList=*/{1},
       numWavesRange,
       /*matrixInstrNonkdim=*/{0},
       {1, 2},
