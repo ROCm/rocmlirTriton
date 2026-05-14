@@ -76,3 +76,69 @@ module attributes {
     llvm.return
   }
 }
+
+// -----
+
+// Verifies that ttg.shared equal to the per-arch LDS limit compiles successfully
+// for gfx942 (CDNA3) has 64 KiB = 65536 B.
+// CHECK-LABEL: module
+// CHECK-NOT: ttg.shared
+// CHECK-NOT: rock.not_applicable
+// CHECK: llvm.mlir.global internal @global_smem(#llvm.undef) {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<65536 x i8>
+// CHECK: llvm.func @max_lds_gfx942(%arg0: !llvm.ptr)
+// CHECK-NOT: ptr<1>
+module attributes {
+    "ttg.shared" = 65536 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @max_lds_gfx942(%arg0: !llvm.ptr, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that ttg.shared equal to the per-arch LDS limit compiles successfully
+// for gfx950 (CDNA4), which has 160 KiB = 163840 B.
+// CHECK-LABEL: module
+// CHECK-NOT: ttg.shared
+// CHECK-NOT: rock.not_applicable
+// CHECK: llvm.mlir.global internal @global_smem(#llvm.undef) {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<163840 x i8>
+// CHECK: llvm.func @max_lds_gfx950(%arg0: !llvm.ptr)
+// CHECK-NOT: ptr<1>
+module attributes {
+    "ttg.shared" = 163840 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @max_lds_gfx950(%arg0: !llvm.ptr, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that ttg.shared equal to the per-arch LDS limit compiles successfully
+// for gfx1250, which has 320 KiB = 327680 B.
+// CHECK-LABEL: module
+// CHECK-NOT: ttg.shared
+// CHECK-NOT: rock.not_applicable
+// CHECK: llvm.mlir.global internal @global_smem(#llvm.undef) {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<327680 x i8>
+// CHECK: llvm.func @max_lds_gfx1250(%arg0: !llvm.ptr)
+// CHECK-NOT: ptr<1>
+module attributes {
+    "ttg.shared" = 327680 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 32 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @max_lds_gfx1250(%arg0: !llvm.ptr, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1250", rock.kernel} {
+    llvm.return
+  }
+}
