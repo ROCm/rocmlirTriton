@@ -667,10 +667,16 @@ static llvm::cl::alias
 //     GEMM output narrow so it rounds between operations the same way.
 // Use it when an existing test had to relax thresholds because of CPU/GPU
 // dtype divergence (see PR #161 / PrAttentionBF16.toml).
+//
+// `allclose` is a shorthand for "mlir reference + allclose comparator with
+// per-dtype defaults". It's equivalent to `-pv -atol=<dtype-default>
+// -rtol=<dtype-default>` and is the recommended way to opt into the new
+// comparator without having to remember the right defaults. The atol
+// default is K-scaled (see computeReductionK / sumErrorTolerance).
 static llvm::cl::opt<std::string> genValidation(
     "verifier",
     llvm::cl::desc("Select verification from: none(default), cpu, mlir, "
-                   "mlir-strict, clone"),
+                   "mlir-strict, allclose, clone"),
     llvm::cl::cb<void, std::string>([](const std::string &v) {
       if (!v.empty())
         genHostHarness = true;
@@ -811,17 +817,36 @@ static llvm::cl::opt<float>
                      llvm::cl::desc("Threshold for relDiff metric"),
                      llvm::cl::value_desc("error"), llvm::cl::init(0.000001f));
 
-// Allclose-style verification flags. 
+// Comparator selection: independent of --verifier (which picks the CPU
+// reference). `legacy` is the three-gate RMS/absDiff/relDiff verifier
+// emitted by mcpuVerifyFloat. `allclose` is the |a - b| <= atol + rtol*|b|
+// verifier emitted by mcpuVerifyFloatAllclose, with per-dtype K-scaled
+// defaults. Default stays `legacy` until the ~100 existing tests get
+// migrated in PR2; setting -atol or -rtol on the command line implies
+// `allclose` (back-compat for the original bridge mechanism).
+enum class ComparatorMode { Legacy, Allclose };
+static llvm::cl::opt<ComparatorMode> comparatorMode(
+    "comparator",
+    llvm::cl::desc(
+        "Comparator used by the verifier (orthogonal to --verifier)"),
+    llvm::cl::values(
+        clEnumValN(ComparatorMode::Legacy, "legacy",
+                   "Three-gate RMS/absDiff/relDiff (default)"),
+        clEnumValN(ComparatorMode::Allclose, "allclose",
+                   "|a - b| <= atol + rtol*|b| with per-dtype defaults")),
+    llvm::cl::init(ComparatorMode::Legacy));
+
+// Allclose tolerance overrides. Setting either implies --comparator=allclose.
 static llvm::cl::opt<float>
     atolThreshold("atol",
-                  llvm::cl::desc("Absolute tolerance for allclose-style "
-                                 "verification (|a - b| <= atol + rtol*|b|)"),
+                  llvm::cl::desc("Absolute tolerance for allclose comparator "
+                                 "(|a - b| <= atol + rtol*|b|)"),
                   llvm::cl::value_desc("error"));
 
 static llvm::cl::opt<float>
     rtolThreshold("rtol",
-                  llvm::cl::desc("Relative tolerance for allclose-style "
-                                 "verification (|a - b| <= atol + rtol*|b|)"),
+                  llvm::cl::desc("Relative tolerance for allclose comparator "
+                                 "(|a - b| <= atol + rtol*|b|)"),
                   llvm::cl::value_desc("error"));
 
 // A toggle to control what to print in the verification function
@@ -4886,7 +4911,78 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
   }
 }
 
-static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
+// Per-dtype "expected rounding error per accumulation step" constants for
+// the reduction-aware atol bound:
+//   atol_eff = atol + K_eff * sum_error_tolerance<T>
+// Values mirror rocBLAS's table:
+//   https://github.com/ROCm/rocBLAS/blob/develop/clients/include/near.hpp
+// (search for sum_error_tolerance). They are slightly looser than ulp(T) and
+// were calibrated empirically by rocBLAS for matrix-engine GEMM error.
+static float sumErrorTolerance(Type t) {
+  if (isa<Float16Type>(t))
+    return 1.0f / 100.0f;
+  if (isa<BFloat16Type>(t))
+    return 1.0f / 900.0f;
+  if (isa<Float32Type>(t))
+    return 1.0f / 10000.0f;
+  if (isa<Float64Type>(t))
+    return 1.0f / 1000000.0f;
+  // f8/f4 are not in rocBLAS's table. Pick a value larger than bf16 (~1.1e-3)
+  // since fp8 epsilon is ~6e-2 and fp4 is ~6e-1; treat them as 'one step of
+  // bf16-ish error'. Calibrate during the PR2 test migration.
+  if (isa<Float8E5M2Type, Float8E4M3FNType, Float8E5M2FNUZType,
+          Float8E4M3FNUZType>(t))
+    return 1.0f / 100.0f;
+  if (isa<Float4E2M1FNType>(t))
+    return 1.0f / 10.0f;
+  return 1.0f / 100.0f; // conservative
+}
+
+// Effective reduction length for the operation under test. For GEMM this is
+// K; for attention it is head_dim_qk + seq_len_k (two cascaded reductions);
+// for conv it is Cin * filter_volume (the im2col K). For element-wise ops it
+// is 1. Returns 0 if shape is unknown; caller should treat as "skip scaling".
+//
+// This mirrors how rocBLAS's testing_gemm scales `near_check` tolerance:
+//   tol = K * sum_error_tolerance<T>
+//   https://github.com/ROCm/rocBLAS/blob/develop/clients/include/blas3/testing_gemm.hpp
+static int64_t computeReductionK(const GenParams &genParams) {
+  if (!genParams.operation.has_value())
+    return 1;
+  switch (*genParams.operation) {
+  case rock::KernelType::Gemm:
+    return gemmK;
+  case rock::KernelType::Attention:
+    // Conservative additive model: errors from the QK^T reduction (over
+    // head_dim_qk) and the softmax-weighted-V reduction (over seq_len_k)
+    // are roughly independent and accumulate.
+    return headDimQK + sequenceLengthK;
+  case rock::KernelType::Conv:
+  case rock::KernelType::ConvBwdData:
+  case rock::KernelType::ConvBwdWeight:
+    if (genParams.convConfig.has_value()) {
+      // Cin * product(filter spatial dims). filterDimension is laid out per
+      // filterLayout; multiplying everything except K (output channels) and
+      // G (group) is equivalent to Cin * filter_volume.
+      int64_t k = 1;
+      const auto &dims = (*genParams.convConfig)->filterDimension;
+      const auto &layout = (*genParams.convConfig)->filterLayout;
+      assert(dims.size() == layout.size());
+      for (auto [d, l] : llvm::zip(dims, layout)) {
+        if (l == 'k' || l == 'g')
+          continue;
+        k *= d;
+      }
+      return k;
+    }
+    return inputChannel * filterHeight * filterWidth;
+  default:
+    return 1;
+  }
+}
+
+static func::FuncOp createVerifierFunc(const GenParams &genParams,
+                                       ModuleOp module, const KernelIF &kernel,
                                        MemRefType testType, MemRefType valType,
                                        std::string funcName) {
   func::FuncOp func = module.lookupSymbol<func::FuncOp>(funcName);
@@ -4946,11 +5042,12 @@ static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
   auto printDebugVal =
       arith::ConstantIntOp::create(b, loc, charType, printDebug);
 
-  // Allclose-style verification is opt-in via -atol or -rtol. When neither
-  // flag is set the legacy three-gate path is used (preserves behavior of the
-  // ~100 existing test files until the follow-up NFC migration PR).
-  bool useAllclose =
-      atolThreshold.getNumOccurrences() || rtolThreshold.getNumOccurrences();
+  // Comparator selection. The default stays `legacy` to preserve behavior of
+  // the ~100 existing test files until the follow-up migration PR. Setting
+  // -atol or -rtol implies allclose (back-compat with the original bridge).
+  bool useAllclose = (comparatorMode == ComparatorMode::Allclose) ||
+                     atolThreshold.getNumOccurrences() ||
+                     rtolThreshold.getNumOccurrences();
 
   // obtain function name of the verifier wrapper
   std::string verifyFuncName = "mcpuVerify";
@@ -5053,14 +5150,12 @@ static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
     auto isFP32Val = arith::ConstantIntOp::create(b, loc, boolType, isFP32);
 
     if (useAllclose) {
-      // Per-dtype defaults for allclose. fp16/bf16/fp32/fp64 mirror the
-      // _DTYPE_PRECISIONS table in torch/testing/_comparison.py. The fp8 and
-      // mxfp4 entries are starting-point estimates -- these dtypes' epsilon is
-      // much larger than fp16/bf16, so atol/rtol must be looser; we will
-      // calibrate them against the existing test suite during the migration
-      // PR. PyTorch (rtol, atol) ordering; rocmlir-gen exposes -atol and -rtol
-      // independently.
-      auto allcloseDefault = [&](Type t) -> std::pair<float, float> {
+      // Per-dtype (atol, rtol) baselines for K=1 (element-wise) kernels.
+      // fp16/bf16/fp32/fp64 mirror PyTorch's _DTYPE_PRECISIONS:
+      //   https://github.com/pytorch/pytorch/blob/main/torch/testing/_comparison.py
+      // fp8/fp4 are not in PyTorch's table; values chosen to roughly track
+      // the dtype's epsilon. Calibrate during PR2.
+      auto allcloseBaseline = [&](Type t) -> std::pair<float, float> {
         if (isa<Float16Type>(t))
           return {1e-5f, 1e-3f};
         if (isa<BFloat16Type>(t))
@@ -5074,16 +5169,24 @@ static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
           return {1e-2f, 1.6e-2f};
         if (isa<Float4E2M1FNType>(t))
           return {1e-2f, 1.25e-1f};
-        // Conservative fallback for any future float dtype.
         return {1e-2f, 1e-2f};
       };
-      auto [defaultAtol, defaultRtol] = allcloseDefault(testElemType);
+      auto [baseAtol, baseRtol] = allcloseBaseline(testElemType);
+
+      // Reduction-aware atol bound: atol_eff = baseAtol + K * sumErrTol.
+      // Matches rocBLAS's `tol = K * sum_error_tolerance<T>` in
+      //   clients/include/blas3/testing_gemm.hpp
+      // K_eff per op is computed by computeReductionK (see above).
+      int64_t kEff = computeReductionK(genParams);
+      float defaultAtol =
+          baseAtol + static_cast<float>(kEff) * sumErrorTolerance(testElemType);
+
       float atolValue = atolThreshold.getNumOccurrences()
                             ? atolThreshold.getValue()
                             : defaultAtol;
       float rtolValue = rtolThreshold.getNumOccurrences()
                             ? rtolThreshold.getValue()
-                            : defaultRtol;
+                            : baseRtol;
       Value atolVal = getF32Val(atolValue);
       Value rtolVal = getF32Val(rtolValue);
 
@@ -5281,8 +5384,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
     auto valType = dyn_cast<MemRefType>(valResult.getType());
     std::string funcName =
         root0.func.getName().str() + "_verify" + std::to_string(outIdx);
-    auto verifierFunc =
-        createVerifierFunc(module, root0, testType, valType, funcName);
+    auto verifierFunc = createVerifierFunc(genParams, module, root0, testType,
+                                           valType, funcName);
 
     func::CallOp::create(b, loc, verifierFunc,
                          ValueRange{testResult, valResult});
