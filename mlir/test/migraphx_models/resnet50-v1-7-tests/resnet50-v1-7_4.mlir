@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | rocmlir-gen -ph -print-results -rand none - | rocmlir-driver -kernel-pipeline full  -arch gfx1100 | rocmlir-opt
+// RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | rocmlir-gen -ph -print-results -rand none - | rocmlir-driver -c -arch gfx1100 | rocmlir-opt
 
 module {
   func.func @mlir_reshape_dot_add(%arg0: !migraphx.shaped<1x1000xf32, 0x1>, %arg1: !migraphx.shaped<1x2048x1x1xf32, 2048x1x1x1>, %arg2: !migraphx.shaped<2048x1000xf32, 1000x1>) -> !migraphx.shaped<1x1000xf32, 1000x1> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", rock.num_cu = 35 : i64} {
