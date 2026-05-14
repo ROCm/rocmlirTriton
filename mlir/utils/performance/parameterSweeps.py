@@ -620,6 +620,7 @@ def _kpack_choices(arch: str) -> List[int]:
     return [1]  # gfx950+, gfx1250+, gfx13+, ...
 
 
+# TODO: Use python bindings when available.
 def _wave_size(arch: str) -> int:
     """Wave size used by the perf-config tuner for ``arch``.
     32 for RDNA, 64 for GCN/CDNA and gfx1250."""
@@ -637,25 +638,32 @@ def _wave_size(arch: str) -> int:
 # targets that lack a packed hardware conversion.
 _AMPLIFIED_DTYPES = frozenset({'fp8', 'fp8_fp8', 'bf8'})
 
-
+# Returns the amplifier value for the given data type and arch.
+# - Amplifier=10 if fp8 and RDNA3 or RDNA4
+# - Amplifier=0 otherwise
 def _dtype_amplifier(dtype: str, arch: str) -> int:
-    """Multiplier on the per-element MI count for dtypes whose Triton
-    fp_to_fp lowering expands into many LLVM ops on AMD targets that lack
-    a packed hardware conversion.
+    """Multiplier on the number of elements held per thread for dtypes whose
+    Triton fp_to_fp lowering expands into many LLVM ops.
 
-    On CDNA3, fp8 stays packed via v_cvt_pk_f32_fp8 in the Triton lowering,
-    and on CDNA4 (gfx950) fp8 doesn't need conversion at all because
-    tt.dot_scaled accepts fp8 operands natively, so neither family suffers
-    from this problem. Every other AMD target (RDNA, older GCN) does."""
-    if dtype in _AMPLIFIED_DTYPES:
-        n = _arch_id(arch)
-        is_cdna3_or_4 = (n is not None and 0x940 <= n <= 0x95f)
-        if not is_cdna3_or_4:
-            return 10
-    return 1
+    On RDNA3 (gfx11xx) and RDNA4 (gfx12xx) the fp8->f16 path lowers to ~25
+    scalar LLVM ops per element because there is no packed hardware
+    conversion intrinsic available. CDNA3 keeps the conversion packed via
+    v_cvt_pk_f32_fp8, and CDNA4 (gfx950) doesn't need it at all because
+    tt.dot_scaled accepts fp8 operands natively, so they aren't amplified.
+    Any other AMD target (gfx9 pre-940, gfx10, gfx13+, future families)
+    defaults to alpha=1 until measured."""
+    if dtype not in _AMPLIFIED_DTYPES:
+        return 1
+    n = _arch_id(arch)
+    if n is None:
+        return 1
+    is_rdna3_or_4 = 0x1100 <= n < 0x1250  # gfx11xx, gfx12xx
+    return 10 if is_rdna3_or_4 else 1
 
 
-# --- Compile cost cap --------------------------------------------------------
+# Needed because IR explosion issue in Triton
+# https://github.com/ROCm/triton/issues/940
+# Remove this compile cost cap heuristic if the issue is fixed.
 #
 # AMDGPU codegen, in particular the PostRA machine instruction scheduler,
 # scales super-linearly with the MI count *per basic block*, not in the total
@@ -691,7 +699,7 @@ def _compile_cost_score(perf: Sequence[int], dtype: str, arch: str) -> float:
     two cost-dominating basic blocks (the K-loop body and the C-epilogue).
     The PostRA scheduler bottlenecks on whichever basic block is larger,
     so the per-block max is a better proxy than their sum."""
-    mpb, npb, kpb, kpack, _ctas, num_waves, *_rest = perf
+    mpb, npb, kpb, kpack, _, num_waves, *_ = perf
     threads = max(1, num_waves * _wave_size(arch))
     num_elements_kloop_body = (mpb + npb) * kpb / (threads * max(1, kpack))
     num_elements_c_epilogue = (mpb * npb) / threads
