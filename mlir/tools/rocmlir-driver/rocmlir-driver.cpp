@@ -320,6 +320,10 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     return failure();
   }
 
+  // If kernel pipeline is full, we need to run the host backend.
+  if (hostPipelineStr.empty() && kernelPipelineStr == "full")
+    hostPipelineSet.insert("backend");
+
   auto isKernel = [](func::FuncOp f) {
     return f->hasAttr(rock::KernelAttr::getMnemonic());
   };
