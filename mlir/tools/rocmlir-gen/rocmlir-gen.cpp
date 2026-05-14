@@ -6113,20 +6113,11 @@ int main(int argc, char **argv) {
     }
     chipset = *maybeChipset;
     bool archPrefersOCP = amdgpu::hasOcpFp8(chipset);
-    DenseMap<F8TypesChoice, std::string> f8e4m3TypeNames{
-        {F8TypesChoice::Arch, archPrefersOCP ? "f8E4M3FN" : "f8E4M3FNUZ"},
-        {F8TypesChoice::Nanoo, "f8E4M3FNUZ"},
-        {F8TypesChoice::OCP, "f8E4M3FN"}};
-    DenseMap<F8TypesChoice, std::string> f8e5m2TypeNames{
-        {F8TypesChoice::Arch, archPrefersOCP ? "f8E5M2" : "f8E5M2FNUZ"},
-        {F8TypesChoice::Nanoo, "f8E5M2FNUZ"},
-        {F8TypesChoice::OCP, "f8E5M2"}};
-
-    auto canonicaliseF8Type = [&](std::string name) {
+    auto canonicaliseF8Type = [&](std::string name) -> std::string {
       if (name == "fp8")
-        return f8e4m3TypeNames[forceF8Types.getValue()];
+        return archPrefersOCP ? "f8E4M3FN" : "f8E4M3FNUZ";
       if (name == "bf8")
-        return f8e5m2TypeNames[forceF8Types.getValue()];
+        return archPrefersOCP ? "f8E5M2" : "f8E5M2FNUZ";
       return name;
     };
 
