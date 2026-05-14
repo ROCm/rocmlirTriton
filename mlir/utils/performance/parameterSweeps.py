@@ -638,6 +638,7 @@ def _wave_size(arch: str) -> int:
 # targets that lack a packed hardware conversion.
 _AMPLIFIED_DTYPES = frozenset({'fp8', 'fp8_fp8', 'bf8'})
 
+
 # Returns the amplifier value for the given data type and arch.
 # - Amplifier=10 if fp8 and RDNA3 or RDNA4
 # - Amplifier=0 otherwise
@@ -666,7 +667,7 @@ def _dtype_amplifier(dtype: str, arch: str) -> int:
 # Remove this compile cost cap heuristic if the issue is fixed.
 #
 # AMDGPU codegen, in particular the PostRA machine instruction scheduler,
-# scales super-linearly with the MI count *per basic block*, not in the total
+# scales with the instruction count *per basic block*, not in the total
 # across the kernel. A GEMM kernel has two basic blocks that matter for cost,
 # each measured in number of elements held per thread:
 #
@@ -717,9 +718,10 @@ def _compile_cost_budget(arch: str) -> int:
     if n is None:
         return 8000
     # RDNA3 / RDNA4: more expensive LLVM processing (post-RA scheduler).
-    if 0x1000 <= n < 0x1100:
+    if 0x1000 <= n < 0x1250:
         return 8000
-    # gfx9 / gfx940-942-950 / gfx1250: better LLVM throughput, looser cap.
+    # Everything else (gfx9, gfx1030, gfx1250, gfx13+, future): looser cap
+    # until measured.
     return 12000
 
 
