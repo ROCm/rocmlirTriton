@@ -730,7 +730,7 @@ static llvm::cl::opt<bool> pvF64(
     llvm::cl::desc("Run the host CPU attention reference internally in f64 "
                    "for higher precision validation of non-quantized "
                    "attention, especially at long seq_len_k. No effect on "
-                   "the i8 attention."),
+                   "the i8 attention. This also enables pv-strict together"),
     llvm::cl::init(false), llvm::cl::Optional,
     llvm::cl::cb<void, bool>([](bool v) {
       if (v) {
