@@ -26,9 +26,11 @@
 #include <unordered_map>
 
 // Get program load time using function-local static (initialized on first call)
-// This measures time from first access, which happens at library load via constructor
-static std::chrono::steady_clock::time_point& getProgramLoadTime() {
-  static std::chrono::steady_clock::time_point loadTime = std::chrono::steady_clock::now();
+// This measures time from first access, which happens at library load via
+// constructor
+static std::chrono::steady_clock::time_point &getProgramLoadTime() {
+  static std::chrono::steady_clock::time_point loadTime =
+      std::chrono::steady_clock::now();
   return loadTime;
 }
 
@@ -44,7 +46,9 @@ static struct ProgramLoadTimeInitializer {
 // Called at the start of main() to measure JIT compilation time
 extern "C" void programStart() {
   auto now = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration<double, std::milli>(now - getProgramLoadTime()).count();
+  auto elapsed =
+      std::chrono::duration<double, std::milli>(now - getProgramLoadTime())
+          .count();
   printf("JIT compilation time: %.3f ms\n", elapsed);
 }
 
@@ -57,7 +61,9 @@ extern "C" void cpuTimerStart() {
 
 extern "C" void cpuTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - cpuTimerStartPoint).count();
+  auto elapsed =
+      std::chrono::duration<double, std::milli>(endPoint - cpuTimerStartPoint)
+          .count();
   printf("CPU validation time: %.3f ms\n", elapsed);
 }
 
@@ -70,7 +76,9 @@ extern "C" void gpuTimerStart() {
 
 extern "C" void gpuTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - gpuTimerStartPoint).count();
+  auto elapsed =
+      std::chrono::duration<double, std::milli>(endPoint - gpuTimerStartPoint)
+          .count();
   printf("GPU kernel time: %.3f ms\n", elapsed);
 }
 
@@ -83,7 +91,9 @@ extern "C" void initTimerStart() {
 
 extern "C" void initTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - initTimerStartPoint).count();
+  auto elapsed =
+      std::chrono::duration<double, std::milli>(endPoint - initTimerStartPoint)
+          .count();
   printf("Memory init time: %.3f ms\n", elapsed);
 }
 
@@ -299,6 +309,133 @@ mcpuVerifyFloat(float *gpuAllocated, float *gpuAligned, int64_t gpuOffset,
   assert(gpuSize == valSize);
   mcpuVerify<float>(gpuAligned, valAligned, valSize, thr_RMS, thr_absDiff,
                     thr_relDiff, printDebug, isFP32);
+}
+
+// Allclose-style verification, matching numpy.allclose /
+// torch.testing.assert_close:
+//   |gpuNum - valNum| <= atol + rtol * |valNum|
+//
+// The RMS, maxAbsDiff, maxRelDiff, and histogram values are still computed and
+// printed (when print_option warrants) for failure investigation, but they no
+// longer gate pass/fail -- only the allclose predicate does. To preserve the
+// "[%d %d %d]" output format that ~100 existing FileCheck tests pin, the same
+// allclose result is repeated three times.
+template <typename T>
+void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
+                        float atol, float rtol, char printDebug, bool isFP32) {
+  float valNum, gpuNum;
+  float maxAbsDiff = 0.0f;
+  double sumAbsDiff = 0.0;
+  float maxVAL_abs = 0.0f;
+  float maxGPU_abs = 0.0f;
+  double maxRelDiff = 0.0;
+  double sumRelDiff = 0.0;
+  float maxVAL_rel = 0.0f;
+  float maxGPU_rel = 0.0f;
+  float maxMag = 0.0f;
+  double sumDiffSq = 0.0;
+  constexpr size_t NUM_BOUNDARIES = 7;
+  static const double BUCKET_BOUNDARIES[NUM_BOUNDARIES] = {
+      1.0e-06, 1.0e-05, 1.0e-04, 1.0e-03, 1.0e-02, 0.1, 1.0};
+  constexpr size_t NUM_BUCKETS = NUM_BOUNDARIES + 3;
+  int hist_relDiff[NUM_BUCKETS] = {0};
+  PrintOption print_option = static_cast<PrintOption>(printDebug);
+
+  long long failingElements = 0;
+  for (long long i = 0; i < dataSize; ++i) {
+    valNum = static_cast<float>(validationResults[i]);
+    gpuNum = static_cast<float>(gpuResults[i]);
+    float maxNum = std::max(fabs(valNum), fabs(gpuNum));
+    maxMag = std::max(maxMag, maxNum);
+
+    if (valNum == gpuNum) {
+      hist_relDiff[0]++;
+      continue;
+    }
+    if ((std::fpclassify(valNum) == FP_SUBNORMAL) && isFP32) {
+      // Treat FP32 subnormals on the CPU side as exact matches; fusion can
+      // legitimately reorder ops to produce a different signed subnormal on
+      // the GPU side without the result being wrong. Same affordance as the
+      // legacy mcpuVerify path.
+      hist_relDiff[0]++;
+      continue;
+    }
+    // Clamp +/-inf on the validation side to fp16 max so that the subsequent
+    // arithmetic is well-defined (otherwise inf - finite = inf, |inf| = inf,
+    // and the allclose tolerance becomes inf which would mask true failures).
+    constexpr float fp16MaxVal = 65504;
+    if (std::isinf(valNum))
+      valNum = (valNum > 0 ? fp16MaxVal : -fp16MaxVal);
+    float absDiff = fabs(valNum - gpuNum);
+    if (absDiff > maxAbsDiff) {
+      maxVAL_abs = valNum;
+      maxGPU_abs = gpuNum;
+      maxAbsDiff = absDiff;
+    }
+    sumAbsDiff += static_cast<double>(absDiff);
+    double relDiff = 0.0;
+    if (valNum != 0.0f) {
+      constexpr float epsilon = 1e-8f;
+      double denominator = std::max(static_cast<double>(fabs(valNum)),
+                                    static_cast<double>(epsilon));
+      relDiff = static_cast<double>(absDiff) / denominator;
+      hist_relDiff[findIdxHistRelDiff(relDiff, BUCKET_BOUNDARIES,
+                                      NUM_BOUNDARIES)]++;
+      if (relDiff > maxRelDiff) {
+        maxVAL_rel = valNum;
+        maxGPU_rel = gpuNum;
+        maxRelDiff = relDiff;
+      }
+      sumRelDiff += relDiff;
+    } else {
+      hist_relDiff[NUM_BUCKETS - 1]++;
+    }
+    sumDiffSq += static_cast<double>(absDiff) * static_cast<double>(absDiff);
+
+    // The allclose predicate (asymmetric, matches PyTorch/NumPy convention).
+    double tolerance =
+        static_cast<double>(atol) +
+        static_cast<double>(rtol) * static_cast<double>(fabs(valNum));
+    bool elemPass = static_cast<double>(absDiff) <= tolerance;
+    if (!elemPass) {
+      failingElements++;
+      if (print_option == PrintOption::Always ||
+          print_option == PrintOption::Failure)
+        printf("%lld: %f %f %f %lf (tol=%.3e)\n", i, valNum, gpuNum, absDiff,
+               relDiff, tolerance);
+    }
+  }
+  double aveAbsDiff = sumAbsDiff / static_cast<double>(dataSize);
+  double aveRelDiff = sumRelDiff / static_cast<double>(dataSize);
+  double err_RMS = sqrt(sumDiffSq) / (static_cast<double>(maxMag) *
+                                      sqrt(static_cast<double>(dataSize)));
+  int all_pass = (failingElements == 0) ? 1 : 0;
+  if (print_option == PrintOption::Always ||
+      ((print_option == PrintOption::Failure ||
+        print_option == PrintOption::Summary) &&
+       all_pass == 0)) {
+    printf("allclose(atol=%.3e, rtol=%.3e): %lld/%lld failing element(s)\n",
+           atol, rtol, failingElements, dataSize);
+    printDebugVerifyResults(dataSize, maxAbsDiff, maxVAL_abs, maxGPU_abs,
+                            aveAbsDiff, maxRelDiff, maxVAL_rel, maxGPU_rel,
+                            aveRelDiff, err_RMS, BUCKET_BOUNDARIES, NUM_BUCKETS,
+                            hist_relDiff);
+  }
+  // Repeat the allclose result three times to preserve the legacy output
+  // format that existing FileCheck tests match against.
+  printf("[%d %d %d]\n", all_pass, all_pass, all_pass);
+}
+
+extern "C" void mcpuVerifyFloatAllclose(float *gpuAllocated, float *gpuAligned,
+                                        int64_t gpuOffset, int64_t gpuSize,
+                                        int64_t gpuStride, float *valAllocated,
+                                        float *valAligned, int64_t valOffset,
+                                        int64_t valSize, int64_t valStride,
+                                        float atol, float rtol, char printDebug,
+                                        bool isFP32) {
+  assert(gpuSize == valSize);
+  mcpuVerifyAllclose<float>(gpuAligned, valAligned, valSize, atol, rtol,
+                            printDebug, isFP32);
 }
 
 // Compare the results in int32
