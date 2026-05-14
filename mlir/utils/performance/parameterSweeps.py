@@ -738,10 +738,9 @@ def _sampled_perf_within_budget(rng: random.Random, arch: str, dtype: str,
         perf = sample_perf_config(rng, arch, split_k_choices)
         if _perf_within_budget(perf, dtype, arch):
             return perf
-    raise RuntimeError(
-        f"sample_perf_config exceeded {_MAX_PERF_CONFIG_RETRIES} retries for "
-        f"arch={arch!r} dtype={dtype!r}; PERF_CONFIG_OPTIONS may have no "
-        "config inside the effective-state budget.")
+    raise RuntimeError(f"sample_perf_config exceeded {_MAX_PERF_CONFIG_RETRIES} retries for "
+                       f"arch={arch!r} dtype={dtype!r}; PERF_CONFIG_OPTIONS may have no "
+                       "config inside the effective-state budget.")
 
 
 def sample_perf_config(rng: random.Random, arch: str,
@@ -902,8 +901,7 @@ def random_conv_cases(num_samples: int, arch: str, seed: Optional[int] = None):
         shape = _sample_conv_shape(rng)
         # shape[2] is the input dtype (op, layout, dtype, n, c, k, ...).
         dtype = shape[2]
-        yield (shape, _sampled_perf_within_budget(rng, arch, dtype,
-                                                  _split_k_choices(dtype)))
+        yield (shape, _sampled_perf_within_budget(rng, arch, dtype, _split_k_choices(dtype)))
 
 
 def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
@@ -917,8 +915,7 @@ def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
         shape = _sample_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, trans_a, trans_b).
         dtype = shape[0]
-        yield (shape, _sampled_perf_within_budget(rng, arch, dtype,
-                                                  _split_k_choices(dtype)))
+        yield (shape, _sampled_perf_within_budget(rng, arch, dtype, _split_k_choices(dtype)))
 
 
 def to_conv_test(params, options: Options) -> ConvConfiguration:
