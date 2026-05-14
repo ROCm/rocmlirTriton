@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | rocmlir-gen -ph -print-results -rand none - | rocmlir-driver -kernel-pipeline full  -arch gfx1100 | rocmlir-opt
+// RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | rocmlir-gen -ph -print-results -rand none - | rocmlir-driver -c -arch gfx1100 | rocmlir-opt
 
 module {
   func.func @mlir_convolution_add_relu(%arg0: !migraphx.shaped<1x64x56x56xf32, 0x1x0x0>, %arg1: !migraphx.shaped<1x256x56x56xf32, 802816x3136x56x1>, %arg2: !migraphx.shaped<64x256x1x1xf32, 256x1x1x1>) -> !migraphx.shaped<1x64x56x56xf32, 200704x3136x56x1> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", rock.num_cu = 35 : i64} {
