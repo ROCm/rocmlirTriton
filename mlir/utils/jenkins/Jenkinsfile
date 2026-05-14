@@ -1,5 +1,4 @@
 // PR CI and nightly MIGraphX stage are enabled. Other nightly/weekly stages are commented out.
-// ON CHANGING THESE, ALSO CHANGE Jenkinsfile.downstream
 // used for private CI
 import groovy.transform.Field
 import java.util.concurrent.ConcurrentHashMap
@@ -752,7 +751,6 @@ pipeline {
                      description: 'Can this CI instance use xdlops (no for public server)')
         booleanParam(name: 'weekly', defaultValue: params.weekly ? true : false,
                      description: 'Run weekly-only jobs')
-        // Temporary change to MIGraphX branch because of upstream merge.
         string(name: 'MIGraphXBranch', defaultValue: 'develop',
                description: 'The MIGraphX branch/commit to verify against.')
         // string(name: 'CKBranch', defaultValue: 'develop',
