@@ -792,6 +792,19 @@ static llvm::cl::opt<float>
                      llvm::cl::desc("Threshold for relDiff metric"),
                      llvm::cl::value_desc("error"), llvm::cl::init(0.000001f));
 
+// Allclose-style verification flags. 
+static llvm::cl::opt<float>
+    atolThreshold("atol",
+                  llvm::cl::desc("Absolute tolerance for allclose-style "
+                                 "verification (|a - b| <= atol + rtol*|b|)"),
+                  llvm::cl::value_desc("error"));
+
+static llvm::cl::opt<float>
+    rtolThreshold("rtol",
+                  llvm::cl::desc("Relative tolerance for allclose-style "
+                                 "verification (|a - b| <= atol + rtol*|b|)"),
+                  llvm::cl::value_desc("error"));
+
 // A toggle to control what to print in the verification function
 enum class VerificationPrintToggle : char {
   Always = 3,
@@ -4886,11 +4899,19 @@ static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
   auto printDebugVal =
       arith::ConstantIntOp::create(b, loc, charType, printDebug);
 
+  // Allclose-style verification is opt-in via -atol or -rtol. When neither
+  // flag is set the legacy three-gate path is used (preserves behavior of the
+  // ~100 existing test files until the follow-up NFC migration PR).
+  bool useAllclose =
+      atolThreshold.getNumOccurrences() || rtolThreshold.getNumOccurrences();
+
   // obtain function name of the verifier wrapper
   std::string verifyFuncName = "mcpuVerify";
   if (isa<FloatType>(valElemType)) {
     // f16, bf16, fp8, bf8 will be converted to f32 by wrapper.
     verifyFuncName += "Float";
+    if (useAllclose)
+      verifyFuncName += "Allclose";
   } else if (valElemType.isInteger(8) || valElemType.isInteger(32) ||
              valElemType.isInteger(64)) {
     verifyFuncName +=
@@ -4980,28 +5001,73 @@ static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
   func::FuncOp verifyFuncDecl;
 
   if (isa<FloatType>(testElemType)) {
-    constexpr float defaultRMSThreshold(0.00003f);
-    constexpr float defaultRMSThresholdFP16(0.001f);
-    float RMSThresholdValue = isa<Float16Type, BFloat16Type>(testElemType)
-                                  ? defaultRMSThresholdFP16
-                                  : defaultRMSThreshold;
-    if (RMSThreshold)
-      RMSThresholdValue = RMSThreshold.getValue();
-    Value thr_RMS = getF32Val(RMSThresholdValue);
-    Value thr_absDiff = getF32Val(absDiffThreshold.getValue());
-    Value thr_relDiff = getF32Val(relDiffThreshold.getValue());
-    if (isa<Float16Type, BFloat16Type>(testElemType))
-      thr_relDiff = getF32Val(100.0f);
     Type boolType = b.getIntegerType(1);
     bool isFP32 = isa<Float32Type>(testElemType);
     auto isFP32Val = arith::ConstantIntOp::create(b, loc, boolType, isFP32);
 
-    verifyFuncDecl = makeFuncDecl(module, verifyFuncName,
-                                  {mr1DUnkTestType, mr1DUnkValType, floatType,
-                                   floatType, floatType, charType, boolType});
-    func::CallOp::create(b, loc, verifyFuncDecl,
-                         ValueRange{testResult, valResult, thr_RMS, thr_absDiff,
-                                    thr_relDiff, printDebugVal, isFP32Val});
+    if (useAllclose) {
+      // Per-dtype defaults for allclose. fp16/bf16/fp32/fp64 mirror the
+      // _DTYPE_PRECISIONS table in torch/testing/_comparison.py. The fp8 and
+      // mxfp4 entries are starting-point estimates -- these dtypes' epsilon is
+      // much larger than fp16/bf16, so atol/rtol must be looser; we will
+      // calibrate them against the existing test suite during the migration
+      // PR. PyTorch (rtol, atol) ordering; rocmlir-gen exposes -atol and -rtol
+      // independently.
+      auto allcloseDefault = [&](Type t) -> std::pair<float, float> {
+        if (isa<Float16Type>(t))
+          return {1e-5f, 1e-3f};
+        if (isa<BFloat16Type>(t))
+          return {1e-5f, 1.6e-2f};
+        if (isa<Float32Type>(t))
+          return {1e-5f, 1.3e-6f};
+        if (isa<Float64Type>(t))
+          return {1e-7f, 1e-7f};
+        if (isa<Float8E5M2Type, Float8E4M3FNType, Float8E5M2FNUZType,
+                Float8E4M3FNUZType>(t))
+          return {1e-2f, 1.6e-2f};
+        if (isa<Float4E2M1FNType>(t))
+          return {1e-2f, 1.25e-1f};
+        // Conservative fallback for any future float dtype.
+        return {1e-2f, 1e-2f};
+      };
+      auto [defaultAtol, defaultRtol] = allcloseDefault(testElemType);
+      float atolValue = atolThreshold.getNumOccurrences()
+                            ? atolThreshold.getValue()
+                            : defaultAtol;
+      float rtolValue = rtolThreshold.getNumOccurrences()
+                            ? rtolThreshold.getValue()
+                            : defaultRtol;
+      Value atolVal = getF32Val(atolValue);
+      Value rtolVal = getF32Val(rtolValue);
+
+      verifyFuncDecl = makeFuncDecl(module, verifyFuncName,
+                                    {mr1DUnkTestType, mr1DUnkValType, floatType,
+                                     floatType, charType, boolType});
+      func::CallOp::create(b, loc, verifyFuncDecl,
+                           ValueRange{testResult, valResult, atolVal, rtolVal,
+                                      printDebugVal, isFP32Val});
+    } else {
+      constexpr float defaultRMSThreshold(0.00003f);
+      constexpr float defaultRMSThresholdFP16(0.001f);
+      float RMSThresholdValue = isa<Float16Type, BFloat16Type>(testElemType)
+                                    ? defaultRMSThresholdFP16
+                                    : defaultRMSThreshold;
+      if (RMSThreshold)
+        RMSThresholdValue = RMSThreshold.getValue();
+      Value thr_RMS = getF32Val(RMSThresholdValue);
+      Value thr_absDiff = getF32Val(absDiffThreshold.getValue());
+      Value thr_relDiff = getF32Val(relDiffThreshold.getValue());
+      if (isa<Float16Type, BFloat16Type>(testElemType))
+        thr_relDiff = getF32Val(100.0f);
+
+      verifyFuncDecl = makeFuncDecl(module, verifyFuncName,
+                                    {mr1DUnkTestType, mr1DUnkValType, floatType,
+                                     floatType, floatType, charType, boolType});
+      func::CallOp::create(b, loc, verifyFuncDecl,
+                           ValueRange{testResult, valResult, thr_RMS,
+                                      thr_absDiff, thr_relDiff, printDebugVal,
+                                      isFP32Val});
+    }
   } else {
     verifyFuncDecl = makeFuncDecl(module, verifyFuncName,
                                   {mr1DUnkTestType, mr1DUnkValType, charType});
@@ -5971,11 +6037,20 @@ int main(int argc, char **argv) {
     }
     chipset = *maybeChipset;
     bool archPrefersOCP = amdgpu::hasOcpFp8(chipset);
-    auto canonicaliseF8Type = [&](std::string name) -> std::string {
+    DenseMap<F8TypesChoice, std::string> f8e4m3TypeNames{
+        {F8TypesChoice::Arch, archPrefersOCP ? "f8E4M3FN" : "f8E4M3FNUZ"},
+        {F8TypesChoice::Nanoo, "f8E4M3FNUZ"},
+        {F8TypesChoice::OCP, "f8E4M3FN"}};
+    DenseMap<F8TypesChoice, std::string> f8e5m2TypeNames{
+        {F8TypesChoice::Arch, archPrefersOCP ? "f8E5M2" : "f8E5M2FNUZ"},
+        {F8TypesChoice::Nanoo, "f8E5M2FNUZ"},
+        {F8TypesChoice::OCP, "f8E5M2"}};
+
+    auto canonicaliseF8Type = [&](std::string name) {
       if (name == "fp8")
-        return archPrefersOCP ? "f8E4M3FN" : "f8E4M3FNUZ";
+        return f8e4m3TypeNames[forceF8Types.getValue()];
       if (name == "bf8")
-        return archPrefersOCP ? "f8E5M2" : "f8E5M2FNUZ";
+        return f8e5m2TypeNames[forceF8Types.getValue()];
       return name;
     };
 
