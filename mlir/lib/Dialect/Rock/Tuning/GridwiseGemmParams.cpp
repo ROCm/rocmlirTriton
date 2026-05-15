@@ -34,25 +34,12 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
   return os;
 }
 
-/// Non-xdlops
+/// Static data for tuning parameters (used by ParamLookupTable).
+/// Covers both MFMA (gfx9) and WMMA (gfx1*) architectures.
 // clang-format off
-#define NonAccel_DEFINITIONS_GEN
+#define Gemm_DEFINITIONS_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef NonAccel_DEFINITIONS_GEN
-// clang-format on
-
-/// Static data for XDL tuning parameters (used by ParamLookupTable)
-// clang-format off
-#define XDL_DEFINITIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef XDL_DEFINITIONS_GEN
-// clang-format on
-
-/// Static data for WMMA tuning parameters (used by ParamLookupTable)
-// clang-format off
-#define Wmma_DEFINITIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef Wmma_DEFINITIONS_GEN
+#undef Gemm_DEFINITIONS_GEN
 // clang-format on
 
 PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
@@ -180,7 +167,8 @@ PopulateParamsAccel::couldBePerformant(const PopulateParamsInfo &info,
                                            params.getNPerBlock());
   }
 
-  return specificCouldBePerformant(params, info.gemmAType, info.gemmBType);
+  return specificCouldBePerformant(params, info.gemmAType, info.gemmBType,
+                                   info.arch);
 }
 
 FailureOr<GemmParamsAttr> PopulateParamsAccel::obtainTuningParameters(
@@ -211,7 +199,8 @@ FailureOr<GemmParamsAttr> PopulateParamsAccel::obtainTuningParameters(
 
   GemmParamsAttr params = GemmParamsAttr::get(perfConfigAttr);
   if (!params) {
-    LLVM_DEBUG(llvm::dbgs() << "Invalid perfConfig: " << perfConfigAttr << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "Invalid perfConfig: " << perfConfigAttr << "\n");
     return failure();
   }
 
@@ -238,8 +227,9 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
   auto perfConfigs =
       ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
 
-  LLVM_DEBUG(llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "
-                          << perfConfigs.size() << "\n");
+  LLVM_DEBUG(
+      llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "
+                   << perfConfigs.size() << "\n");
   std::vector<GemmParamsAttr> res;
   for (StringRef perfConfig : perfConfigs) {
     auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
@@ -248,9 +238,8 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
     LLVM_DEBUG(llvm::dbgs()
                << "PopulateParams::getTuningParameters: perfConfigAttr: "
                << perfConfigAttr << "\n");
-    LLVM_DEBUG(llvm::dbgs()
-               << "PopulateParams::getTuningParameters: params: " << params
-               << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "PopulateParams::getTuningParameters: params: "
+                            << params << "\n");
     if (!params)
       continue;
 
@@ -261,7 +250,8 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
 
 LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
                                                         Type dataTypeA,
-                                                        Type dataTypeB) {
+                                                        Type dataTypeB,
+                                                        StringRef arch) {
   (void)dataTypeA;
   (void)dataTypeB;
 
@@ -269,16 +259,29 @@ LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
   /// factor total wave count into an M×N wave grid; `nPerWave` is
   /// `nPerBlock / nWaves`; `mnPerXdl` is `matrixInstrNonkdim`.
 
-
   /// WMMA uses `matrixInstrNonkdim == 0`; do not apply XDL pruning here so the
   /// full tuning space stays aligned with `computeNumWaves` (e.g. 2/4/8 on RDNA).
-  int64_t mnPerXdl = params.getMatrixInstrNonkdim();
-  if (mnPerXdl == 0)
+  MatrixAccelKind accelKind = getMatrixAccelKind(arch, dataTypeA, dataTypeB);
+  bool isMFMA = accelKind == MatrixAccelKind::MFMA ||
+                accelKind == MatrixAccelKind::ScaledMFMA;
+  if (!isMFMA)
     return success();
 
   int64_t numWaves = params.getNumWaves();
   // XDL: limit to wave counts this heuristic was derived for (see rocMLIR).
   if (numWaves != 1 && numWaves != 2 && numWaves != 4)
+    return failure();
+
+  // Filter the `mPerBlock = nPerBlock = 256, numWaves = 1` corner: it blows
+  // the per-thread accumulator register budget, no winning config on gfx90a /
+  // gfx942 / gfx950 uses it, and it has been observed to derail tuning.
+  // Threshold 512 catches that case (256·256 / (1·64) = 1024) but not the
+  // same tile with `numWaves >= 2` (e.g. 512 at two waves, not greater).
+  static constexpr int64_t kGemmMaxAccPerThread = 512;
+  int64_t waveSize = rock::getWaveSize(arch);
+  int64_t accPerThread =
+      (params.getMPerBlock() * params.getNPerBlock()) / (numWaves * waveSize);
+  if (accPerThread > kGemmMaxAccPerThread)
     return failure();
 
   return success();

@@ -36,4 +36,19 @@ config = "-g 1 -m 1024 -k 769 -n 1024"
 [[suite.test]]
 config = "-g 1 -m 1 -k 1 -n 1"
 
+# Mid-size shape with a pinned perf_config (validates a known-good
+# perf_config survives compilation across the dtype/trans sweep).
+[[suite.test]]
+config = "-g 1 -m 64 -k 256 -n 128 --perf_config=gemm:v1:64,64,64,1,1,4,16,1,2,0,0"
+
+# Small-shape corner case (m=n=8, smaller than common MFMA block sizes).
+[[suite.test]]
+config = "-g 1 -m 8 -k 128 -n 8"
+
+# Small-shape regression: a tiny gemm (m=4, n=4, k=128) that previously
+# exercised a compiler bug; pinning the perf_config keeps the
+# bug-triggering tile-mapping in scope.
+[[suite.test]]
+config = "-g 1 -m 4 -k 128 -n 4 --perf_config=gemm:v1:64,64,32,1,1,4,16,1,1,0,0"
+
 

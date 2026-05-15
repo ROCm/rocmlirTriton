@@ -4,6 +4,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   DetectFlashDecoding.cpp
   FoldBroadcast.cpp
   GemmToGridwise.cpp
+  AttnToGridwise.cpp
   GridwiseGemmToBlockwise.cpp
   GridwiseAttnToBlockwise.cpp
   GridLayoutEmitter.cpp
@@ -19,7 +20,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   SerializeHostFuncs.cpp
   FuncToTritonFunc.cpp
   ResolveKernelLaunchParams.cpp
-  RestoreHostCode.cpp
+  RockEmitGpuBinary.cpp
   SortDimensionsMemoryLayout.cpp
   InsertOutputStores.cpp
   InsertOutputFusionLoads.cpp

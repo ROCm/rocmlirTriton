@@ -404,7 +404,7 @@ void RockFuncToTritonFuncPass::runOnOperation() {
 
   // Store kernel metadata as module attributes before converting to
   // tt.func (which erases the func::FuncOp). These will be used later by
-  // collectKernelInfo / RestoreHostCodePass.
+  // collectKernelInfo / RockEmitGpuBinaryPass.
   OpBuilder builder(&getContext());
   for (func::FuncOp funcOp : funcsToProcess) {
     std::string kernelName = funcOp.getName().str();

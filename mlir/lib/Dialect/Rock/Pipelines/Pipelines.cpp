@@ -38,9 +38,9 @@
 #include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 
+#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Conversion/RocMLIRPasses.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
-#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Tosa/IR/TargetEnv.h"
@@ -159,14 +159,14 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   }
 
   // TODO(rocmlirTriton): if knobs.amd.use_buffer_ops
-    pm->addNestedPass<mlir::triton::FuncOp>(
-        mlir::createTritonAMDGPUCanonicalizePointers());
-    pm->addPass(mlir::createCanonicalizerPass());
-    pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
-        {options.arch, /*allowBufferAtomics*/true,
-        /*analyzeSmallTensorOfst*/false}));
-    pm->addNestedPass<mlir::triton::FuncOp>(
-        mlir::createTritonAMDGPUOptimizeBufferOpPtr());
+  pm->addNestedPass<mlir::triton::FuncOp>(
+      mlir::createTritonAMDGPUCanonicalizePointers());
+  pm->addPass(mlir::createCanonicalizerPass());
+  pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
+      {options.arch, /*allowBufferAtomics*/ true,
+       /*analyzeSmallTensorOfst*/ false}));
+  pm->addNestedPass<mlir::triton::FuncOp>(
+      mlir::createTritonAMDGPUOptimizeBufferOpPtr());
 
   pm->addPass(mlir::createTritonAMDFoldTrueCmpI());
   pm->addNestedPass<mlir::triton::FuncOp>(
@@ -288,7 +288,8 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   // pass std::nullopt as validation options to avoid running tosa-validate
   // pass
   tosa::addTosaToLinalgPasses(pm, tosaToLinalgOptions, tosaToLinalgNamedOptions,
-                              /*validationOptions=*/std::nullopt, /*attachTargetOptions*/std::nullopt);
+                              /*validationOptions=*/std::nullopt,
+                              /*attachTargetOptions*/ std::nullopt);
 
   // for tosa control flow
   /* rocmlir-opt --tosa-to-tensor --tosa-to-scf --tosa-to-arith
@@ -318,10 +319,21 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
 void rock::buildKernelPipeline(OpPassManager &pm,
                                const rock::KernelOptions &options) {
   // rock lowering (tuning, global to block)
-  /* rocmlir-opt --rock-affix-params --rock-conv-to-gemm
-   *   --rock-fold-broadcast --rock-affix-params --rock-gemm-to-gridwise
-   *   --rock-regularize --rock-gridwise-gemm-to-blockwise
-   * --rock-blockwise-load-tile-to-threadwise
+  /* rocmlir-opt
+   *   --rock-affix-params
+   *   --rock-lower-reduce
+   *   --rock-regularize-output
+   *   --rock-regularize-inter-gemm-fusion
+   *   --rock-conv-to-gemm
+   *   --rock-fusion-splitk-regularization
+   *   --rock-gemm-to-gridwise
+   *   --rock-attn-to-gridwise
+   *   --rock-gridwise-attn-to-blockwise
+   *   --rock-gridwise-gemm-to-blockwise
+   *   --rock-insert-output-fusion-loads
+   *   --rock-regularize-input
+   *   --rock-lower-loads
+   *   --rock-lower-stores
    */
 
   // We must use pm.nest<func::FuncOp>() inside the lambdas instead of a
@@ -344,6 +356,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockConvToGemmPass());
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
   addWithDCE(rock::createRockGemmToGridwisePass());
+  addWithDCE(rock::createRockAttnToGridwisePass());
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
@@ -421,8 +434,22 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                      StringRef dumpCpuSchedules) {
+  // Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
+  // OneShotBufferize / CpuLowerVerifier below — otherwise stray
+  // arith.extf/truncf on fp8 element types crash bufferization with
+  // unsupported builtin.unrealized_conversion_cast.
+  pm.addPass(createEmulateFp8ExtTruncPass());
 
   // CPU optimization phase.
+
+  // Rewrite linalg.generic convolutions in CPU-verifier funcs into a
+  // single 8-D fused linalg.generic whose input map inlines the im2col
+  // gather. The follow-up FusedConvToMatmulSchedule (inside
+  // LowerCpuVerifierPass) tiles the convolution-only dims away, leaving
+  // a 3-D matmul that the existing TilingSchedule and
+  // VectorizationSchedule can target.
+  pm.addPass(cpu::createCpuConvToGemmPass());
+
   // This transforms the function body but keeps tensor types at boundaries.
   // The pass internally skips verifier functions that involve non-TT float
   // types (f8E8M0FNU, f4E2M1FN) used by scaled GEMMs, because those conflict
@@ -520,6 +547,7 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   pm.addPass(createReconcileUnrealizedCastsPass());
 }
 
+// Build GPU lowering pipeline
 void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
   std::string arch = options.chip;
@@ -527,8 +555,9 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   // Validate LDS usage against the hardware limit, convert dynamic shared
   // memory to static LDS allocation, and strip unused Triton workspace
   // arguments from the kernel signature.  Runs before TritonToHsaco so the
-  // static LDS size is baked into the kernel descriptor, and before
-  // RestoreHostCode so that collectKernelInfo sees the trimmed argument list.
+  // static LDS size is baked into the kernel descriptor, and before any
+  // downstream consumer of the kernel argument list (e.g. RockEmitGpuBinaryPass
+  // in the host lowering pipeline) sees the trimmed signature.
   pm.addPass(rock::createResolveKernelLaunchParamsPass());
 
   // Optionally generate the HSACO binary
@@ -549,23 +578,17 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.enableFpFusion = options.enableFpFusion;
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
-
-    // Restore host functions (main, wrapper) that were stored during
-    // RockFuncToTritonFuncPass. This converts func.call @kernel to gpu.launch_func.
-    rock::RockRestoreHostCodePassOptions restoreOpts;
-    restoreOpts.triple = options.triple;
-    restoreOpts.arch = arch;
-    restoreOpts.features = options.features;
-    restoreOpts.optLevel = options.optLevel;
-    pm.addPass(rock::createRockRestoreHostCodePass(restoreOpts));
-
-    // Lower FP8 extf/truncf ops explicitly. Leaving this task to 
-    // buildHostLoweringPipeline would generate invalid builtin.unrealized_casts.
-    pm.addPass(createEmulateFp8ExtTruncPass());
-
-    // Lower host code (GPU launch + func/memref ops) to LLVM
-    buildHostLoweringPipeline(pm, options.dumpCpuSchedules);
   }
+
+  // Emit gpu.binary from HSACO, restore host functions (main, wrapper) if
+  // serialized during RockFuncToTritonFuncPass, and convert func.call @kernel
+  // to gpu.launch_func when applicable.
+  rock::RockEmitGpuBinaryPassOptions emitGpuBinaryOpts;
+  emitGpuBinaryOpts.triple = options.triple;
+  emitGpuBinaryOpts.arch = options.chip;
+  emitGpuBinaryOpts.features = options.features;
+  emitGpuBinaryOpts.optLevel = options.optLevel;
+  pm.addPass(rock::createRockEmitGpuBinaryPass(emitGpuBinaryOpts));
 }
 
 //===----------------------------------------------------------------------===//
@@ -586,6 +609,6 @@ void rock::registerPipelines() {
       buildTritonPipeline);
   PassPipelineRegistration<rock::BackendOptions>(
       "rock-backend-pipeline",
-      " representations and algorithms for sparse tensors.",
+      "GPU compilation: lower Triton LLVM-dialect kernels to HSACO binary.",
       buildBackendPipeline);
 }

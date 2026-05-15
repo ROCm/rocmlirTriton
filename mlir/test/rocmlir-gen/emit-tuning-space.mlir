@@ -2,7 +2,7 @@
 // CHECK-NAVI: gemm:v1:64,64,32,1,1,8,0,1,2,0,0
 
 // RUN: rocmlir-gen --arch gfx90a --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=104 --emit-tuning-space=full | FileCheck %s --check-prefixes=CHECK-MI
-// CHECK-MI: gemm:v1:64,64,128,2,1,4,16,4,1,0,0
+// CHECK-MI: gemm:v1:64,64,128,1,1,4,16,4,1,0,0
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM
 // CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:v1:16,16,16,1,1,1,16,1,1,0,0

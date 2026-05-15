@@ -29,9 +29,9 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/utils/DetachReattach.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/utils/DetachReattach.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -81,6 +81,7 @@ static cl::opt<bool> legacyRockPipeline("c", cl::Hidden, cl::init(false),
                                         cl::cb<void, bool>([](bool v) {
                                           if (v) {
                                             kernelPipeline.setValue("full");
+                                            hostPipeline.setValue("backend");
                                           }
                                         }));
 
@@ -92,10 +93,10 @@ static cl::opt<bool> dumpPipelines(
     "dump-pipelines", cl::init(false),
     cl::desc("Print out a textual form of the requested pipelines"));
 
-cl::opt<std::string> dumpCpuSchedules(
-    "dump-cpu-schedules", cl::init(""),
-    cl::value_desc("path"),
-    cl::desc("Dump CPU verifier IR and transform schedules to the specified directory"));
+cl::opt<std::string>
+    dumpCpuSchedules("dump-cpu-schedules", cl::init(""), cl::value_desc("path"),
+                     cl::desc("Dump CPU verifier IR and transform schedules to "
+                              "the specified directory"));
 
 /////////////////////////////////////////////////////////////////////////////
 //// Backend target spec
@@ -139,7 +140,6 @@ parsePipeline(StringRef pipeline, llvm::SmallDenseSet<StringRef> &pipelineSet,
 
   return success();
 }
-
 
 // Detach functions matching `detachPredicate`, run a pipeline on the
 // remaining functions, then reattach. Skips the pipeline entirely if
@@ -211,7 +211,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     return failure();
   }
   backendOpts.optLevel = optLevel;
-  backendOpts.dumpCpuSchedules = dumpCpuSchedules.getValue();
 
   // TODO(roctriton): add common params to RockTuningParamAttrInterface
   OpBuilder builder(m.getContext());
@@ -264,7 +263,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     rock::buildKernelPipeline(pm, opts);
   }
   if (kernelPipelineSet.contains("triton")) {
-
     rock::buildTritonPipeline(pm, tritonOpts);
   }
   if (kernelPipelineSet.contains("binary")) {
@@ -275,13 +273,16 @@ runKernelPipeline(StringRef arch, ModuleOp m,
     llvm::errs() << "Kernel pipeline:\n";
     pm.printAsTextualPipeline(llvm::errs());
     llvm::errs() << "\n";
-
-    // Return success in dump-pipelines if the module is empty
-    // Otherwise rocmlir-driver will return failure when we run
-    // certain passes like triton-to-hsaco (which fail on empty modules)
-    if (m.getBody()->empty())
-      return success();
   }
+
+  // Skip the kernel-backend pipeline on CPU-only / kernel-less modules
+  // Mirrors the kernel/host gating that Phases 1-2 get from `runWithDetach`
+  bool hasKernel = llvm::any_of(m.getOps<func::FuncOp>(), [](func::FuncOp f) {
+    return f->hasAttr(rock::KernelAttr::getMnemonic());
+  });
+  if (!hasKernel)
+    return success();
+
   return pm.run(m);
 }
 
@@ -353,16 +354,13 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       return failure();
   }
 
-  // Phase 2.5: Host backend lowering (func + memref + GPU ops -> LLVM)
-  if (hostPipelineSet.contains("backend")) {
-    if (failed(runWithDetach(module, "Host Backend", isKernel,
-                             [](PassManager &pm) {
-                               rock::buildHostLoweringPipeline(pm);
-                             })))
-      return failure();
-  }
-
-  // Phase 3: GPU / Triton / Backend (kernel pipeline only)
+  // Phase 3: GPU / Triton / Backend (kernel pipeline only).
+  //
+  // This runs before the host backend (Phase 4) when both are requested
+  // (e.g. via `-c`).  buildBackendPipeline produces `gpu.binary` and rewrites
+  // `func.call @kernel` -> `gpu.launch_func`; if the host were lowered first,
+  // those calls would already be `llvm.call @kernel` and the kernel-launch
+  // rewrite would silently fail to find them, leaving an unlinked module.
   bool needsKernelBackend = kernelPipelineSet.contains("gpu") ||
                             kernelPipelineSet.contains("triton") ||
                             kernelPipelineSet.contains("binary");
@@ -376,6 +374,22 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       }
     }
     if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet)))
+      return failure();
+  }
+
+  // Phase 4: Host backend lowering (func + memref + GPU ops -> LLVM).
+  //
+  // Runs AFTER kernel compilation so the host module already contains
+  // `gpu.launch_func` (created by RockEmitGpuBinaryPass in
+  // buildBackendPipeline); gpu-to-llvm at the end of this pipeline then
+  // translates those into HIP runtime calls.  Safe to run standalone too: with
+  // no kernel pipeline, there is no `gpu.launch_func` and gpu-to-llvm is a
+  // no-op.
+  if (hostPipelineSet.contains("backend")) {
+    if (failed(runWithDetach(
+            module, "Host Backend", isKernel, [&](PassManager &pm) {
+              rock::buildHostLoweringPipeline(pm, dumpCpuSchedules.getValue());
+            })))
       return failure();
   }
 

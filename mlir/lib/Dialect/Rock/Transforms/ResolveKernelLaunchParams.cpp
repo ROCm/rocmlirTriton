@@ -94,7 +94,7 @@ struct ResolveKernelLaunchParamsPass
     int64_t maxLDS = rock::getLDSSize(archStr);
     if (sharedMemSize > maxLDS) {
       rock::markAsNotApplicable(moduleOp);
-      moduleOp.emitError("ttg.shared (")
+      mlir::emitError(moduleOp.getLoc(), "ttg.shared (")
           << sharedMemSize << ") exceeds LDS limit (" << maxLDS << ") for "
           << archStr;
       return signalPassFailure();
@@ -130,7 +130,7 @@ struct ResolveKernelLaunchParamsPass
     //         Triton's amendFuncOp appends to every kernel
     //         (global-scratch ptr<1> and profile-scratch ptr<1>).
     //         These must be unused; if they have uses the pass fails
-    //         because downstream code (tuning driver, RestoreHostCode)
+    //         because downstream code (tuning driver, RockEmitGpuBinaryPass)
     //         assumes a 1:1 mapping between host args and kernel args.
     // ---------------------------------------------------------------
     constexpr unsigned kWorkspaceArgs = 2;

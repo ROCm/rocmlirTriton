@@ -22,10 +22,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "Schedules.h"
+#include "Schedules/FusedConvToMatmulSchedule.h"
 #include "Schedules/LowerToLLVMSchedule.h"
-#include "Schedules/UnrollSchedule.h"
 #include "Schedules/PrePostSchedules.h"
 #include "Schedules/TilingSchedule.h"
+#include "Schedules/UnrollSchedule.h"
 #include "Schedules/VectorizationSchedule.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -36,10 +37,11 @@
 #include "mlir/Dialect/Func/TransformOps/FuncTransformOps.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/MemRef/TransformOps/MemRefTransformOps.h"
-#include "mlir/Dialect/SCF/TransformOps/SCFTransformOps.h"
 #include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"
 #include "mlir/Dialect/SCF/IR/ValueBoundsOpInterfaceImpl.h"
+#include "mlir/Dialect/SCF/TransformOps/SCFTransformOps.h"
 #include "mlir/Dialect/Tensor/IR/ValueBoundsOpInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/TransformOps/TensorTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
@@ -71,6 +73,7 @@ void cpu::registerScheduleDialectExtensions(DialectRegistry &registry) {
   func::registerTransformDialectExtension(registry);
   memref::registerTransformDialectExtension(registry);
   scf::registerTransformDialectExtension(registry);
+  tensor::registerTransformDialectExtension(registry);
 
   // Register ValueBoundsOpInterface for dialects, required by
   // transform.structured.tile_using_for and other tiling transforms
@@ -103,6 +106,14 @@ FailureOr<TransformSchedules> cpu::createTransformSchedules(MLIRContext *ctx) {
   if (!schedules.postModule) {
     emitError(UnknownLoc::get(ctx))
         << "Failed to build post transform sequence for CPU verifier";
+    return failure();
+  }
+
+  schedules.fusedConvToMatmulModule = buildFusedConvToMatmulSchedule(ctx);
+  if (!schedules.fusedConvToMatmulModule) {
+    emitError(UnknownLoc::get(ctx))
+        << "Failed to build fused-conv-to-matmul transform sequence for CPU "
+        << "verifier";
     return failure();
   }
 

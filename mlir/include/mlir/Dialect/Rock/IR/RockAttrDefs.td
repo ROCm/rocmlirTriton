@@ -393,6 +393,25 @@ def Rock_CpuVerifier : Rock_Attr<"CpuVerifier"> {
   }];
 }
 
+def Rock_HostFunctions : Rock_Attr<"HostFunctions"> {
+  let mnemonic = "rock.host_functions";
+  let description = [{
+    Module attribute carrying serialized host (non-kernel) function bodies
+    that `RockSerializeHostFuncsPass` detached so kernel-only Triton/LLVM
+    transforms can run, and that `RockEmitGpuBinaryPass` re-parses
+    afterwards.  Stored as an `ArrayAttr` of `StringAttr`, where each
+    `StringAttr` is the pretty-printed text of one `func.func`.
+  }];
+}
+
+def Rock_CpuFusedConv : Rock_Attr<"CpuFusedConv"> {
+  let mnemonic = "rock.cpu_fused_conv";
+  let description = [{
+    Marker attribute set on the fused convolution `linalg.generic` produced
+    by the `--cpu-conv-to-gemm` pass.
+  }];
+}
+
 def Rock_NotApplicable : Rock_Attr<"NotApplicable"> {
   let mnemonic = "rock.not_applicable";
   let description = [{

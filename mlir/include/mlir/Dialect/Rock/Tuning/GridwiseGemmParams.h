@@ -181,28 +181,18 @@ protected:
   /// out the class hierarchy in this file.
   virtual LogicalResult specificCouldBePerformant(GemmParamsAttr params,
                                                   Type dataTypeA,
-                                                  Type dataTypeB) = 0;
+                                                  Type dataTypeB,
+                                                  StringRef arch) = 0;
 };
 
 //
-// TODO(roctriton): We should update QuickTuningPerfconfigs.inc at some point
-// to avoid doing this.
-// 
-// Data holders for static tuning parameter arrays from generated .inc file
-// These are kept for compatibility with the ParamLookupTable
+// Data holder for static tuning parameter arrays from generated .inc file.
+// Used by ParamLookupTable for both MFMA (gfx9) and WMMA (gfx1*) architectures.
 //
-struct PopulateParamsXDL {
-#define XDL_DECLARATIONS_GEN
+struct PopulateParamsGemm {
+#define Gemm_DECLARATIONS_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef XDL_DECLARATIONS_GEN
-
-  friend class ParamLookupTable<GemmParamsAttr>;
-};
-
-struct PopulateParamsWmma {
-#define Wmma_DECLARATIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef Wmma_DECLARATIONS_GEN
+#undef Gemm_DECLARATIONS_GEN
 
   friend class ParamLookupTable<GemmParamsAttr>;
 };
@@ -218,7 +208,8 @@ public:
 
 protected:
   LogicalResult specificCouldBePerformant(GemmParamsAttr params, Type dataTypeA,
-                                          Type dataTypeB) override;
+                                          Type dataTypeB,
+                                          StringRef arch) override;
 };
 
 } // namespace rock
