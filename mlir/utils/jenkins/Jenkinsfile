@@ -891,9 +891,7 @@ pipeline {
                                                         timeout(time: 30, activity: true, unit: 'MINUTES') {
                                                             dir('build') {
                                                                 int limit_lit_workers = setLitWorkerCount()
-                                                                withEnv(["LIT_OPTS=-j ${limit_lit_workers}"]) {
-                                                                    sh 'ninja check-rocmlir'
-                                                                }
+                                                                sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
                                                             }
                                                         }
                                                     }
