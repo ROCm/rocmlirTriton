@@ -185,6 +185,8 @@ class Options:
     num_cpus: Optional[int]
     wait_for_compiles: bool
     timeout: Optional[int]
+    num_iterations: int
+    warmup_iterations: int
 
 
 @dataclass
@@ -996,6 +998,28 @@ def raise_if_terminated(returncode: int) -> None:
         raise KeyboardInterrupt()
 
 
+def _positive_int(s: str) -> int:
+    """argparse type: parses to an int > 0."""
+    try:
+        n = int(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {s!r}")
+    if n <= 0:
+        raise argparse.ArgumentTypeError(f"must be > 0, got {s!r}")
+    return n
+
+
+def _non_negative_int(s: str) -> int:
+    """argparse type: parses to an int >= 0."""
+    try:
+        n = int(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {s!r}")
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {s!r}")
+    return n
+
+
 class TuningArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with custom validation for tuning arguments."""
 
@@ -1287,8 +1311,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
 
     tuning_driver_args = [
         f"--tuning-space={options.tuning_space_kind}",
-        f"--num-iterations={TUNE_REPEATS}",
-        f"--warmup-iterations={WARMUP_ITERATIONS}",
+        f"--num-iterations={options.num_iterations}",
+        f"--warmup-iterations={options.warmup_iterations}",
         "--use-median",
         f"--sleep-us={SLEEP_US}",
         f"--show-all-measurements={options.debug}",
@@ -1794,6 +1818,32 @@ def parse_arguments(gpu_topology: GpuTopology,
                         choices=["quick", "full", "greedy", "exhaustive"],
                         help="Tuning space kind to use")
 
+    # Per-config timing iterations. Defaults match the previous hardcoded
+    # values so existing tuning runs are unaffected; bumping --num-iterations
+    # to 10000 is what enables the Navi4 thermal-ramp experiment
+    # (AIROCMLIR-858).
+    parser.add_argument(
+        "--num-iterations",
+        type=_positive_int,
+        default=TUNE_REPEATS,
+        metavar='N',
+        help=
+        "Number of measured iterations per perf-config in the tuning driver "
+        "(must be > 0; default %(default)s). The tuning driver may run more "
+        "iterations than requested for small kernels to reach >= 1ms of total "
+        "kernel time.")
+
+    parser.add_argument(
+        "--warmup-iterations",
+        type=_non_negative_int,
+        default=WARMUP_ITERATIONS,
+        metavar='N',
+        help=
+        "Number of warmup iterations per perf-config in the tuning driver "
+        "(must be >= 0; default %(default)s). Warmup runs are used to decide "
+        "small- vs. large-kernel timing and are not counted in the measured "
+        "iterations.")
+
     logging_group = parser.add_mutually_exclusive_group()
 
     logging_group.add_argument("-q",
@@ -1976,7 +2026,9 @@ def main(args=None):
                       gpu_ids=parsed_args.gpus,
                       num_cpus=parsed_args.num_cpus,
                       wait_for_compiles=parsed_args.wait_for_compiles,
-                      timeout=parsed_args.timeout)
+                      timeout=parsed_args.timeout,
+                      num_iterations=parsed_args.num_iterations,
+                      warmup_iterations=parsed_args.warmup_iterations)
 
     ctx = TuningContext(configs=configs,
                         conf_class=get_config_class(op_type),
