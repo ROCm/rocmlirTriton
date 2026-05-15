@@ -363,7 +363,8 @@ def Rock_NumCU : Rock_Attr<"NumCU"> {
   let mnemonic = "rock.num_cu";
   let description = [{
     The number of compute units on the target GPU device.
-    Valid combinations include: gfx803(36/64), gfx900(56/64), gfx906(60/64), gfx908(120).
+    Valid combinations include: gfx906(60/64), gfx908(120), gfx90a(104),
+    gfx942(20), gfx950(256).
   }];
 }
 

@@ -43,6 +43,7 @@ struct ArchTestEnv {
 
 TEST(AmdArchDbTest, FastAtomicAddF32) {
   ArchTestEnv e;
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx906", e.f32));  // GCN5_1 (Vega20)
   EXPECT_TRUE(isFastAtomicAddSupported("gfx908", e.f32));  // CDNA1
   EXPECT_TRUE(isFastAtomicAddSupported("gfx90a", e.f32));  // CDNA2
   EXPECT_TRUE(isFastAtomicAddSupported("gfx942", e.f32));  // CDNA3
@@ -56,6 +57,7 @@ TEST(AmdArchDbTest, FastAtomicAddF32) {
 
 TEST(AmdArchDbTest, FastAtomicAddF16) {
   ArchTestEnv e;
+  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", e.f16));  // GCN5_1 (Vega20)
   EXPECT_TRUE(isFastAtomicAddSupported("gfx908", e.f16));   // CDNA1
   EXPECT_TRUE(isFastAtomicAddSupported("gfx90a", e.f16));   // CDNA2
   EXPECT_TRUE(isFastAtomicAddSupported("gfx942", e.f16));   // CDNA3
@@ -69,6 +71,7 @@ TEST(AmdArchDbTest, FastAtomicAddF16) {
 
 TEST(AmdArchDbTest, FastAtomicAddBf16) {
   ArchTestEnv e;
+  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", e.bf16));  // GCN5_1 (Vega20)
   EXPECT_FALSE(isFastAtomicAddSupported("gfx90a", e.bf16));  // CDNA2
   EXPECT_FALSE(isFastAtomicAddSupported("gfx942", e.bf16));  // CDNA3
   EXPECT_TRUE(isFastAtomicAddSupported("gfx950", e.bf16));   // CDNA4
@@ -81,6 +84,7 @@ TEST(AmdArchDbTest, FastAtomicAddBf16) {
 
 TEST(AmdArchDbTest, FastAtomicAddIntUnsupported) {
   ArchTestEnv e;
+  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", e.i32));  // GCN5_1 (Vega20)
   EXPECT_FALSE(isFastAtomicAddSupported("gfx90a", e.i32));  // CDNA2
   EXPECT_FALSE(isFastAtomicAddSupported("gfx942", e.i32));  // CDNA3
   EXPECT_FALSE(isFastAtomicAddSupported("gfx950", e.i32));  // CDNA4
@@ -98,6 +102,7 @@ TEST(AmdArchDbTest, FastAtomicAddWithTriple) {
 
 TEST(AmdArchDbTest, FastAtomicMaxF32) {
   ArchTestEnv e;
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx906", e.f32)); // GCN5_1 (Vega20)
   EXPECT_FALSE(isFastAtomicMaxSupported("gfx908", e.f32)); // CDNA1
   EXPECT_FALSE(isFastAtomicMaxSupported("gfx90a", e.f32)); // CDNA2
   EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", e.f32)); // CDNA4
@@ -122,6 +127,7 @@ TEST(AmdArchDbTest, FastAtomicMaxNonF32Unsupported) {
 // --- getMaxNumChiplets ---
 
 TEST(AmdArchDbTest, MaxNumChiplets) {
+  EXPECT_EQ(getMaxNumChiplets("gfx906"), 1);  // GCN5_1 (Vega20)
   EXPECT_EQ(getMaxNumChiplets("gfx908"), 1);  // CDNA1
   EXPECT_EQ(getMaxNumChiplets("gfx90a"), 1);  // CDNA2
   EXPECT_EQ(getMaxNumChiplets("gfx942"), 8);  // CDNA3
@@ -136,6 +142,7 @@ TEST(AmdArchDbTest, MaxNumChiplets) {
 // --- getMinNumCU ---
 
 TEST(AmdArchDbTest, MinNumCU) {
+  EXPECT_EQ(getMinNumCU("gfx906"), 10);   // GCN5_1 (Vega20)
   EXPECT_EQ(getMinNumCU("gfx908"), 120);  // CDNA1
   EXPECT_EQ(getMinNumCU("gfx90a"), 104);  // CDNA2
   EXPECT_EQ(getMinNumCU("gfx942"), 20);   // CDNA3
@@ -150,6 +157,7 @@ TEST(AmdArchDbTest, MinNumCU) {
 // --- getMaxWavesPerEU ---
 
 TEST(AmdArchDbTest, MaxWavesPerEU) {
+  EXPECT_EQ(getMaxWavesPerEU("gfx906"), 8);   // GCN5_1 (Vega20)
   EXPECT_EQ(getMaxWavesPerEU("gfx908"), 8);   // CDNA1
   EXPECT_EQ(getMaxWavesPerEU("gfx90a"), 8);   // CDNA2
   EXPECT_EQ(getMaxWavesPerEU("gfx942"), 8);   // CDNA3
@@ -164,6 +172,7 @@ TEST(AmdArchDbTest, MaxWavesPerEU) {
 // --- getWaveSize ---
 
 TEST(AmdArchDbTest, WaveSize) {
+  EXPECT_EQ(getWaveSize("gfx906"), 64);  // GCN5_1 (Vega20)
   EXPECT_EQ(getWaveSize("gfx908"), 64);  // CDNA1
   EXPECT_EQ(getWaveSize("gfx90a"), 64);  // CDNA2
   EXPECT_EQ(getWaveSize("gfx942"), 64);  // CDNA3
@@ -177,6 +186,7 @@ TEST(AmdArchDbTest, WaveSize) {
 // --- getLDSSize ---
 
 TEST(AmdArchDbTest, LDSSize) {
+  EXPECT_EQ(getLDSSize("gfx906"), 65536);   // GCN5_1 (Vega20): 64 KB
   EXPECT_EQ(getLDSSize("gfx90a"), 65536);   // CDNA2: 64 KB
   EXPECT_EQ(getLDSSize("gfx942"), 65536);   // CDNA3: 64 KB
   EXPECT_EQ(getLDSSize("gfx950"), 163840);  // CDNA4: 160 KB
@@ -190,6 +200,14 @@ TEST(AmdArchDbTest, LDSSize) {
 
 TEST(AmdArchDbTest, MatrixAccelMfma) {
   ArchTestEnv e;
+  // gfx906 (Vega20) has v_dot intrinsics but no MFMA/WMMA, so we expect None
+  // for every type combination here.
+  EXPECT_EQ(getMatrixAccelKind("gfx906", e.f16, e.f16),
+            MatrixAccelKind::None); // GCN5_1
+  EXPECT_EQ(getMatrixAccelKind("gfx906", e.f32, e.f32),
+            MatrixAccelKind::None); // GCN5_1
+  EXPECT_EQ(getMatrixAccelKind("gfx906", e.i8, e.i8),
+            MatrixAccelKind::None); // GCN5_1
   EXPECT_EQ(getMatrixAccelKind("gfx908", e.f16, e.f16),
             MatrixAccelKind::MFMA); // CDNA1
   EXPECT_EQ(getMatrixAccelKind("gfx90a", e.f16, e.f16),
@@ -296,6 +314,7 @@ TEST(AmdArchDbTest, MatrixAccelScaledWmma) {
 // --- supportsTDM ---
 
 TEST(AmdArchDbTest, SupportsTDM) {
+  EXPECT_FALSE(supportsTDM("gfx906"));  // GCN5_1 (Vega20)
   EXPECT_FALSE(supportsTDM("gfx908"));  // CDNA1
   EXPECT_FALSE(supportsTDM("gfx90a"));  // CDNA2
   EXPECT_FALSE(supportsTDM("gfx942"));  // CDNA3
@@ -305,4 +324,18 @@ TEST(AmdArchDbTest, SupportsTDM) {
   EXPECT_FALSE(supportsTDM("gfx1100")); // RDNA3
   EXPECT_FALSE(supportsTDM("gfx1200")); // RDNA4
   EXPECT_TRUE(supportsTDM("gfx1250"));  // GFX1250
+}
+
+// --- gfx906-specific arch-string forms ---
+
+// Verify that triple- and feature-suffixed forms of the gfx906 arch string
+// (the kind that show up as rock.arch attributes) all parse correctly and
+// dispatch to the GCN5_1 code paths.
+TEST(AmdArchDbTest, Gfx906ArchStringForms) {
+  ArchTestEnv e;
+  EXPECT_EQ(getMinNumCU("amdgcn-amd-amdhsa:gfx906"), 10);
+  EXPECT_EQ(getMinNumCU("amdgcn-amd-amdhsa:gfx906:xnack-"), 10);
+  EXPECT_EQ(getMaxWavesPerEU("amdgcn-amd-amdhsa:gfx906"), 8);
+  EXPECT_EQ(getWaveSize("amdgcn-amd-amdhsa:gfx906"), 64);
+  EXPECT_TRUE(isFastAtomicAddSupported("amdgcn-amd-amdhsa:gfx906", e.f32));
 }
