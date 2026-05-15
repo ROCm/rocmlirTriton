@@ -825,17 +825,23 @@ static llvm::cl::opt<ComparatorMode> comparatorMode(
     llvm::cl::init(ComparatorMode::Legacy));
 
 // Allclose tolerance overrides. Setting either implies --comparator=allclose.
-static llvm::cl::opt<float>
-    atolThreshold("atol",
-                  llvm::cl::desc("Absolute tolerance for allclose comparator "
-                                 "(|a - b| <= atol + rtol*|b|)"),
-                  llvm::cl::value_desc("error"));
+static llvm::cl::opt<float> atolThreshold(
+    "atol",
+    llvm::cl::desc(
+        "Absolute tolerance for allclose comparator "
+        "(|a - b| <= atol + rtol*|b|). Setting this flag forces "
+        "--comparator=allclose, overriding any other --comparator value, "
+        "and replaces the K-scaled atol default."),
+    llvm::cl::value_desc("error"));
 
-static llvm::cl::opt<float>
-    rtolThreshold("rtol",
-                  llvm::cl::desc("Relative tolerance for allclose comparator "
-                                 "(|a - b| <= atol + rtol*|b|)"),
-                  llvm::cl::value_desc("error"));
+static llvm::cl::opt<float> rtolThreshold(
+    "rtol",
+    llvm::cl::desc(
+        "Relative tolerance for allclose comparator "
+        "(|a - b| <= atol + rtol*|b|). Setting this flag forces "
+        "--comparator=allclose, overriding any other --comparator value, "
+        "and replaces the per-dtype rtol default."),
+    llvm::cl::value_desc("error"));
 
 // A toggle to control what to print in the verification function
 enum class VerificationPrintToggle : char {
