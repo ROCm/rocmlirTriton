@@ -31,8 +31,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
-#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
 namespace mlir {
@@ -53,58 +53,101 @@ class RockAllowFastMathFlagsPass
           RockAllowFastMathFlagsPass> {
   void runOnOperation() override;
 };
+
+/// Generic rewrite pattern that ORs a fixed set of `FastMathFlags` into any op
+/// implementing `arith::ArithFastMathInterface`. `OpTy` is the concrete op
+/// type so the pattern is rooted on it (cheap matching, no extra dyn_cast).
+template <typename OpTy>
+struct AddFastMathFlagsPattern : public OpRewritePattern<OpTy> {
+  AddFastMathFlagsPattern(MLIRContext *ctx, arith::FastMathFlags flagsToAdd,
+                          PatternBenefit benefit = 1)
+      : OpRewritePattern<OpTy>(ctx, benefit), flagsToAdd(flagsToAdd) {}
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    arith::ArithFastMathInterface fmIface = op;
+    arith::FastMathFlags current = fmIface.getFastMathFlagsAttr().getValue();
+    arith::FastMathFlags updated = current | flagsToAdd;
+    // Ensure greedy convergence: bail out once the desired bits are already on.
+    if (current == updated)
+      return failure();
+
+    LLVM_DEBUG(llvm::dbgs() << "Adding fast-math flags to " << *op << "\n");
+    rewriter.modifyOpInPlace(op, [&] {
+      op->setAttr(fmIface.getFastMathAttrName(),
+                  arith::FastMathFlagsAttr::get(op->getContext(), updated));
+    });
+    return success();
+  }
+
+  arith::FastMathFlags flagsToAdd;
+};
 } // end namespace
 
-template <typename OpTy>
-static void addFastMathFlags(OpTy op, arith::FastMathFlags extra) {
-  LLVM_DEBUG(llvm::dbgs() << "Adding fast-math flags to " << *op.getOperation()
-                          << "\n");
-  op.setFastmath(op.getFastmath() | extra);
-}
-
 void RockAllowFastMathFlagsPass::runOnOperation() {
+  MLIRContext *ctx = &getContext();
 
-  getOperation().walk([&](Operation *op) {
-    TypeSwitch<Operation *>(op)
-        // x / y -> x * rcp(y) via hardware reciprocal.
-        .Case<arith::DivFOp>([&](auto operation) {
-          addFastMathFlags(operation, arith::FastMathFlags::arcp |
-                                      arith::FastMathFlags::nsz |
-                                      arith::FastMathFlags::afn);
-        })
-        // Allow mul+add to fuse into fma (v_fma_f32).
-        .Case<arith::AddFOp, arith::SubFOp, arith::MulFOp>([&](auto operation) {
-          addFastMathFlags(operation, arith::FastMathFlags::contract |
-                                      arith::FastMathFlags::nsz |
-                                      arith::FastMathFlags::reassoc);
-        })
-        // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too.
-        .Case<arith::NegFOp, arith::RemFOp, arith::MaxiNumFOp, arith::MiniNumFOp>([&](auto operation) {
-          addFastMathFlags(operation, arith::FastMathFlags::nsz);
-        })
-        // Hardware approximate transcendentals (v_exp_f32, v_log_f32, ...).
-        .Case<math::ExpOp, math::Exp2Op, math::ExpM1Op, math::LogOp,
-              math::Log2Op, math::Log10Op, math::Log1pOp, math::SinOp,
-              math::CosOp, math::TanOp, math::AsinOp, math::AcosOp,
-              math::AtanOp, math::Atan2Op, math::SinhOp, math::CoshOp,
-              math::TanhOp, math::SqrtOp, math::RsqrtOp, math::CbrtOp,
-              math::PowFOp, math::FPowIOp, math::ErfOp, math::ErfcOp,
-              math::AcoshOp, math::AsinhOp, math::AtanhOp, math::SincosOp>(
-            [&](auto operation) {
-              addFastMathFlags(operation, arith::FastMathFlags::afn | 
-                                          arith::FastMathFlags::nsz | 
-                                          arith::FastMathFlags::contract);
-            });
-        
-        .Case<, math::ClampFOp, math::AbsFOp, math::CopysignFOp>(
-          [&](auto operation) {
-            addFastMathFlags(operation, arith::FastMathFlags::nsz);
-          });
-        
-        .Case<math::FmaOp>(
-          [&](auto operation) {
-            addFastMathFlags(operation, arith::FastMathFlags::nsz |
-                                        arith::FastMathFlags::contract);
-          });
-  });
+  // x / y -> x * rcp(y) via hardware reciprocal.
+  constexpr arith::FastMathFlags divFlags = arith::FastMathFlags::arcp |
+                                            arith::FastMathFlags::nsz |
+                                            arith::FastMathFlags::afn;
+  // Allow mul+add to fuse into fma (v_fma_f32).
+  constexpr arith::FastMathFlags fmaFlags = arith::FastMathFlags::contract |
+                                            arith::FastMathFlags::nsz |
+                                            arith::FastMathFlags::reassoc;
+  // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too.
+  constexpr arith::FastMathFlags nszOnly = arith::FastMathFlags::nsz;
+  // Hardware approximate transcendentals (v_exp_f32, v_log_f32, ...).
+  constexpr arith::FastMathFlags transcendentalFlags = arith::FastMathFlags::reassoc | 
+                                                       arith::FastMathFlags::nsz |
+                                                       arith::FastMathFlags::contract |
+                                                       arith::FastMathFlags::afn;
+  constexpr arith::FastMathFlags fmaContractFlags =
+      arith::FastMathFlags::nsz | arith::FastMathFlags::contract;
+
+  RewritePatternSet patterns(ctx);
+  patterns.add<AddFastMathFlagsPattern<arith::DivFOp>>(ctx, divFlags);
+  patterns.add<AddFastMathFlagsPattern<arith::AddFOp>,
+               AddFastMathFlagsPattern<arith::SubFOp>,
+               AddFastMathFlagsPattern<arith::MulFOp>>(ctx, fmaFlags);
+  patterns.add<AddFastMathFlagsPattern<arith::NegFOp>,
+               AddFastMathFlagsPattern<arith::RemFOp>,
+               AddFastMathFlagsPattern<arith::MaxiNumFOp>,
+               AddFastMathFlagsPattern<arith::MiniNumFOp>>(ctx, nszOnly);
+  patterns.add<AddFastMathFlagsPattern<math::ExpOp>,
+               AddFastMathFlagsPattern<math::Exp2Op>,
+               AddFastMathFlagsPattern<math::ExpM1Op>,
+               AddFastMathFlagsPattern<math::LogOp>,
+               AddFastMathFlagsPattern<math::Log2Op>,
+               AddFastMathFlagsPattern<math::Log10Op>,
+               AddFastMathFlagsPattern<math::Log1pOp>,
+               AddFastMathFlagsPattern<math::SinOp>,
+               AddFastMathFlagsPattern<math::CosOp>,
+               AddFastMathFlagsPattern<math::TanOp>,
+               AddFastMathFlagsPattern<math::AsinOp>,
+               AddFastMathFlagsPattern<math::AcosOp>,
+               AddFastMathFlagsPattern<math::AtanOp>,
+               AddFastMathFlagsPattern<math::Atan2Op>,
+               AddFastMathFlagsPattern<math::SinhOp>,
+               AddFastMathFlagsPattern<math::CoshOp>,
+               AddFastMathFlagsPattern<math::TanhOp>,
+               AddFastMathFlagsPattern<math::SqrtOp>,
+               AddFastMathFlagsPattern<math::RsqrtOp>,
+               AddFastMathFlagsPattern<math::CbrtOp>,
+               AddFastMathFlagsPattern<math::PowFOp>,
+               AddFastMathFlagsPattern<math::FPowIOp>,
+               AddFastMathFlagsPattern<math::ErfOp>,
+               AddFastMathFlagsPattern<math::ErfcOp>,
+               AddFastMathFlagsPattern<math::AcoshOp>,
+               AddFastMathFlagsPattern<math::AsinhOp>,
+               AddFastMathFlagsPattern<math::AtanhOp>,
+               AddFastMathFlagsPattern<math::SincosOp>>(ctx,
+                                                       transcendentalFlags);
+  patterns.add<AddFastMathFlagsPattern<math::ClampFOp>,
+               AddFastMathFlagsPattern<math::AbsFOp>,
+               AddFastMathFlagsPattern<math::CopysignFOp>>(ctx, nszOnly);
+  patterns.add<AddFastMathFlagsPattern<math::FmaOp>>(ctx, fmaContractFlags);
+
+  if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
+    signalPassFailure();
 }
