@@ -157,6 +157,29 @@ static llvm::cl::opt<unsigned> numCompileThreads(
     llvm::cl::desc("Number of parallel compilation threads (0 = auto)"),
     llvm::cl::value_desc("thread count"), llvm::cl::init(0));
 
+// Cache-flush knobs. See AIROCMLIR-858: the per-iteration cache state changes
+// the timing distribution (and the GPU clock ramp), so we expose each flush
+// independently and surface the chosen mode in the produced tuning CSV.
+static llvm::cl::opt<bool> flushICache(
+    "flush-icache",
+    llvm::cl::desc("Flush the instruction cache before every measured "
+                   "iteration. Disable to measure warm-icache behaviour."),
+    llvm::cl::init(true));
+
+static llvm::cl::opt<rocmlir::tuningdriver::L2FlushLevel> flushL2Level(
+    "flush-l2",
+    llvm::cl::desc("L2 cache flush strategy applied before every measured "
+                   "iteration."),
+    llvm::cl::values(
+        clEnumValN(rocmlir::tuningdriver::L2FlushLevel::All, "all",
+                   "Flush the whole L2 (memset a > L2-sized scratch buffer)"),
+        clEnumValN(rocmlir::tuningdriver::L2FlushLevel::None, "none",
+                   "Do not flush the L2; lets the GPU run with a warm cache"),
+        clEnumValN(rocmlir::tuningdriver::L2FlushLevel::Weights, "weights",
+                   "Only flush the kernel's weight buffers (heuristic: all "
+                   "kernel argument buffers except the last)")),
+    llvm::cl::init(rocmlir::tuningdriver::L2FlushLevel::All));
+
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef inputFilename,
                                             MLIRContext *context) {
@@ -278,6 +301,18 @@ struct BenchmarkParams {
   rock::TuningParamSetKind tuningSpaceKind;
   const unsigned numCompileThreads;
   std::string benchmarkConfig;
+  bool flushICache;
+  rocmlir::tuningdriver::L2FlushLevel flushL2Level;
+};
+
+// Bundles per-iteration cache-flush controls so the measurement loops don't
+// need a long argument list. The weight-buffer ArrayRefs are unused unless
+// ``l2Level == Weights``.
+struct FlushPolicy {
+  bool flushICache;
+  rocmlir::tuningdriver::L2FlushLevel l2Level;
+  llvm::ArrayRef<void *> weightBuffers;
+  llvm::ArrayRef<size_t> weightBufferSizes;
 };
 
 enum class CompilationStatus {
@@ -338,7 +373,8 @@ static LogicalResult measureSmallKernel(
     const std::vector<hipFunction_t> &functions, ArrayRef<uint32_t> blockSizes,
     ArrayRef<uint32_t> gridSizes, ArrayRef<uint32_t> numCTAsList,
     std::vector<void *> &argPointers, std::vector<double> &measurements,
-    double &smallKernelCpuMs, bool benchmarkMode) {
+    double &smallKernelCpuMs, bool benchmarkMode,
+    const FlushPolicy &flushPolicy) {
   // Special case for small kernels, where we measure the time for all kernels
   // at once, using CPU timers.
   auto iterationStart = std::chrono::steady_clock::now();
@@ -346,10 +382,12 @@ static LogicalResult measureSmallKernel(
     // Do not flush caches in benchmark mode, as we do not want to
     // time the cache flush (it's okay if we are running in tuning mode).
     if (!benchmarkMode) {
-      if (failed(flushInstructionCache(stream))) {
+      if (flushPolicy.flushICache && failed(flushInstructionCache(stream))) {
         return failure();
       }
-      if (failed(flushL2Cache(stream))) {
+      if (failed(flushL2Cache(stream, flushPolicy.l2Level,
+                              flushPolicy.weightBuffers,
+                              flushPolicy.weightBufferSizes))) {
         return failure();
       }
     }
@@ -374,13 +412,16 @@ static LogicalResult measureLargeKernel(
     unsigned iterations, hipStream_t stream,
     const std::vector<hipFunction_t> &functions, ArrayRef<uint32_t> blockSizes,
     ArrayRef<uint32_t> gridSizes, ArrayRef<uint32_t> numCTAsList,
-    std::vector<void *> &argPointers, std::vector<double> &measurements) {
+    std::vector<void *> &argPointers, std::vector<double> &measurements,
+    const FlushPolicy &flushPolicy) {
   // Measure runs normally.
   for (unsigned iter = 0; iter < iterations; ++iter) {
-    if (failed(flushInstructionCache(stream))) {
+    if (flushPolicy.flushICache && failed(flushInstructionCache(stream))) {
       return failure();
     }
-    if (failed(flushL2Cache(stream))) {
+    if (failed(flushL2Cache(stream, flushPolicy.l2Level,
+                            flushPolicy.weightBuffers,
+                            flushPolicy.weightBufferSizes))) {
       return failure();
     }
 
@@ -558,15 +599,32 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   std::vector<double> measurements;
   double smallKernelCpuMs = 0.0;
 
+  // Build the per-iteration cache-flush policy. For ``--flush-l2=weights`` we
+  // hand the L2 flusher every kernel arg except the last one (assumed to be
+  // the primary output by rocMLIR convention). When the kernel only has a
+  // single argument, leave the weight slice empty so the L2 flush is a no-op
+  // for that level.
+  llvm::ArrayRef<void *> weightBuffers;
+  llvm::ArrayRef<size_t> weightBufferSizes;
+  if (gpuBuffers.size() > 1) {
+    weightBuffers =
+        llvm::ArrayRef<void *>(gpuBuffers.data(), gpuBuffers.size() - 1);
+    weightBufferSizes =
+        llvm::ArrayRef<size_t>(bufferSizes.data(), bufferSizes.size() - 1);
+  }
+  const FlushPolicy flushPolicy{params.flushICache, params.flushL2Level,
+                                weightBuffers, weightBufferSizes};
+
   if (isSmallKernel) {
-    if (failed(measureSmallKernel(
-            iterations, stream, functions, blockSizes, gridSizes, numCTAsList,
-            argPointers, measurements, smallKernelCpuMs, benchmarkMode)))
+    if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
+                                  gridSizes, numCTAsList, argPointers,
+                                  measurements, smallKernelCpuMs, benchmarkMode,
+                                  flushPolicy)))
       return failure();
   } else {
     if (failed(measureLargeKernel(iterations, stream, functions, blockSizes,
                                   gridSizes, numCTAsList, argPointers,
-                                  measurements)))
+                                  measurements, flushPolicy)))
       return failure();
   }
 
@@ -731,10 +789,18 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
   // NOTE: Compilation (PassManager::run()) resets the cl opts, so we have to
   // save the values.
-  const BenchmarkParams benchmarkParams = {
-      numIterations,     warmupIterations, useMedian,           trimPercent,
-      sleepUs,           showStats,        showAllMeasurements, tuningSpaceKind,
-      numCompileThreads, benchmarkConfig};
+  const BenchmarkParams benchmarkParams = {numIterations,
+                                           warmupIterations,
+                                           useMedian,
+                                           trimPercent,
+                                           sleepUs,
+                                           showStats,
+                                           showAllMeasurements,
+                                           tuningSpaceKind,
+                                           numCompileThreads,
+                                           benchmarkConfig,
+                                           flushICache,
+                                           flushL2Level};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);

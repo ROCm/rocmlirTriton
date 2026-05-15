@@ -187,6 +187,8 @@ class Options:
     timeout: Optional[int]
     num_iterations: int
     warmup_iterations: int
+    flush_icache: bool
+    flush_l2: str
 
 
 @dataclass
@@ -1289,6 +1291,13 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
         entry = config.table_entry(nano_seconds)
         if options.debug:
             entry["MeasurementsMs"] = measurements
+        # Echo the per-iteration cache-flush settings so the .debug TSV
+        # records the exact configuration this row was measured under
+        # (AIROCMLIR-858). The values come from the runner (it owns the
+        # CLI flags), so we don't need the tuning driver to report them
+        # back.
+        entry["FlushICache"] = int(options.flush_icache)
+        entry["FlushL2Level"] = options.flush_l2
         entries.append(entry)
 
         if options.verify_all_perfconfigs and not np.isnan(nano_seconds):
@@ -1317,6 +1326,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         f"--sleep-us={SLEEP_US}",
         f"--show-all-measurements={options.debug}",
         f"--num-compile-threads={num_compile_threads}",
+        f"--flush-icache={options.flush_icache}",
+        f"--flush-l2={options.flush_l2}",
     ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
@@ -1844,6 +1855,29 @@ def parse_arguments(gpu_topology: GpuTopology,
         "small- vs. large-kernel timing and are not counted in the measured "
         "iterations.")
 
+    # Per-iteration cache-flush controls. Defaults match the previous
+    # always-on behaviour so existing tuning runs are unaffected (AIROCMLIR-858).
+    parser.add_argument(
+        "--flush-icache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=
+        "Flush the instruction cache before every measured iteration "
+        "(default %(default)s). Pass --no-flush-icache to measure warm-icache "
+        "behaviour.")
+
+    parser.add_argument(
+        "--flush-l2",
+        choices=["all", "none", "weights"],
+        default="all",
+        metavar='LEVEL',
+        help=
+        "L2 cache flush strategy applied before every measured iteration "
+        "(default %(default)s). 'all' overwrites a > L2-sized scratch buffer "
+        "(historical behaviour); 'none' leaves the L2 warm; 'weights' only "
+        "flushes the kernel's weight buffers (heuristic: every kernel "
+        "argument except the last).")
+
     logging_group = parser.add_mutually_exclusive_group()
 
     logging_group.add_argument("-q",
@@ -2028,7 +2062,9 @@ def main(args=None):
                       wait_for_compiles=parsed_args.wait_for_compiles,
                       timeout=parsed_args.timeout,
                       num_iterations=parsed_args.num_iterations,
-                      warmup_iterations=parsed_args.warmup_iterations)
+                      warmup_iterations=parsed_args.warmup_iterations,
+                      flush_icache=parsed_args.flush_icache,
+                      flush_l2=parsed_args.flush_l2)
 
     ctx = TuningContext(configs=configs,
                         conf_class=get_config_class(op_type),

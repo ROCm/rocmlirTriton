@@ -9,6 +9,7 @@
 #include "CacheFlush.h"
 
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -172,14 +173,46 @@ public:
     }
   }
 
-  LogicalResult flushL2Cache(hipStream_t stream) {
+  LogicalResult flushL2Cache(hipStream_t stream, L2FlushLevel level,
+                             llvm::ArrayRef<void *> weightBuffers,
+                             llvm::ArrayRef<size_t> weightBufferSizes) {
     std::lock_guard<std::mutex> lock(stateMutex);
-    if (failed(allocL2CacheFlushBuffer()))
-      return failure();
-    if (skipL2Flush)
+    switch (level) {
+    case L2FlushLevel::None:
       return success();
-    CHECK_HIP(hipMemsetAsync(flushBuffer.get(), 0, flushSize, stream));
-    return success();
+    case L2FlushLevel::All: {
+      if (failed(allocL2CacheFlushBuffer()))
+        return failure();
+      if (skipL2Flush)
+        return success();
+      CHECK_HIP(hipMemsetAsync(flushBuffer.get(), 0, flushSize, stream));
+      return success();
+    }
+    case L2FlushLevel::Weights: {
+      if (weightBuffers.size() != weightBufferSizes.size()) {
+        llvm::errs()
+            << "flushL2Cache(Weights): weight buffer pointer / size lists "
+               "must have the same length, got "
+            << weightBuffers.size() << " vs " << weightBufferSizes.size()
+            << "\n";
+        return failure();
+      }
+      // Memset over each weight buffer pushes the corresponding cache lines
+      // back through L2, evicting whatever data the previous kernel iteration
+      // left in cache. We don't have per-op metadata to identify the
+      // canonical weight tensor (e.g. B in C = A @ B), so the driver passes
+      // every kernel arg except the last one (assumed to be the primary
+      // output by rocMLIR convention).
+      for (size_t i = 0; i < weightBuffers.size(); ++i) {
+        if (!weightBuffers[i] || weightBufferSizes[i] == 0)
+          continue;
+        CHECK_HIP(hipMemsetAsync(weightBuffers[i], 0, weightBufferSizes[i],
+                                 stream));
+      }
+      return success();
+    }
+    }
+    llvm_unreachable("unhandled L2FlushLevel");
   }
 
   LogicalResult flushInstructionCache(hipStream_t stream) {
@@ -307,8 +340,11 @@ CacheFlushState &getState() {
 
 } // namespace
 
-LogicalResult flushL2Cache(hipStream_t stream) {
-  return getState().flushL2Cache(stream);
+LogicalResult flushL2Cache(hipStream_t stream, L2FlushLevel level,
+                           llvm::ArrayRef<void *> weightBuffers,
+                           llvm::ArrayRef<size_t> weightBufferSizes) {
+  return getState().flushL2Cache(stream, level, weightBuffers,
+                                 weightBufferSizes);
 }
 
 LogicalResult flushInstructionCache(hipStream_t stream) {
