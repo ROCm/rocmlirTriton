@@ -93,16 +93,13 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
                                             arith::FastMathFlags::afn;
   // Allow mul+add to fuse into fma (v_fma_f32).
   constexpr arith::FastMathFlags fmaFlags = arith::FastMathFlags::contract |
-                                            arith::FastMathFlags::nsz |
-                                            arith::FastMathFlags::reassoc;
+                                            arith::FastMathFlags::nsz;
   // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too.
   constexpr arith::FastMathFlags nszOnly = arith::FastMathFlags::nsz;
   // Hardware approximate transcendentals (v_exp_f32, v_log_f32, ...).
   constexpr arith::FastMathFlags transcendentalFlags = arith::FastMathFlags::nsz |
                                                        arith::FastMathFlags::contract |
                                                        arith::FastMathFlags::afn;
-  constexpr arith::FastMathFlags fmaContractFlags = arith::FastMathFlags::nsz |
-                                                    arith::FastMathFlags::contract;
 
   RewritePatternSet patterns(ctx);
   patterns.add<AddFastMathFlagsPattern<arith::DivFOp>>(ctx, divFlags);
@@ -145,7 +142,7 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   patterns.add<AddFastMathFlagsPattern<math::ClampFOp>,
                AddFastMathFlagsPattern<math::AbsFOp>,
                AddFastMathFlagsPattern<math::CopySignOp>>(ctx, nszOnly);
-  patterns.add<AddFastMathFlagsPattern<math::FmaOp>>(ctx, fmaContractFlags);
+  patterns.add<AddFastMathFlagsPattern<math::FmaOp>>(ctx, fmaFlags);
 
   if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
     signalPassFailure();

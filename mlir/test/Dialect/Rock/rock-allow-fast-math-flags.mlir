@@ -1,7 +1,7 @@
 // Exercise rock-allow-fast-math-flags: each op is tagged with the fast-math
 // flag(s) the AMDGPU backend can exploit for that specific kind of op.
 //   arith.divf                -> nsz + arcp + afn         (hw reciprocal + approx)
-//   arith.{add,sub,mul}f      -> reassoc + nsz + contract (fma fusion + reorder)
+//   arith.{add,sub,mul}f      -> nsz + contract           (nsz peepholes + fma fusion)
 //   arith.negf                -> nsz                      (sign-bit XOR peephole)
 //   math.* transcendental     -> nsz + contract + afn     (hw approximate impl)
 // RUN: rocmlir-opt -rock-allow-fast-math-flags -mlir-print-local-scope %s | FileCheck %s
@@ -45,9 +45,9 @@ module {
   // Binary float arith ops get `contract` (so LLVM can fuse mul+add into
   // fma) and `nsz` (so LLVM can apply ±0 peepholes around them).
   // CHECK-LABEL: func.func @binary_arith_adds_contract_nsz
-  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : f32
-  // CHECK: arith.subf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : f32
-  // CHECK: arith.mulf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : f32
+  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
+  // CHECK: arith.subf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
+  // CHECK: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
   func.func @binary_arith_adds_contract_nsz(%a: f32, %b: f32) -> f32 {
     %0 = arith.addf %a, %b : f32
     %1 = arith.subf %0, %b : f32
@@ -102,12 +102,12 @@ module {
   // ROCK-NEXT: arith.mulf %{{.*}}, %{{.*}} : tensor<2x3xf32>
 
   // FAST-LABEL: func.func @migraphx_pipeline_adds_per_op_flags
-  // FAST:      arith.subf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : tensor<2x3xf32>
+  // FAST:      arith.subf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
   // FAST-NEXT: math.exp %{{.*}} fastmath<nsz,contract,afn> : tensor<2x3xf32>
-  // FAST-NEXT: arith.addf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : tensor<2x3xf32>
+  // FAST-NEXT: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
   // FAST-NEXT: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : tensor<2x3xf32>
-  // FAST-NEXT: arith.mulf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : tensor<2x3xf32>
-  // FAST-NEXT: arith.mulf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : tensor<2x3xf32>
+  // FAST-NEXT: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
+  // FAST-NEXT: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
   func.func @migraphx_pipeline_adds_per_op_flags(
       %a: !migraphx.shaped<2x3xf32, 3x1>,
       %b: !migraphx.shaped<2x3xf32, 3x1>,
