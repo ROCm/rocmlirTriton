@@ -315,18 +315,19 @@ mcpuVerifyFloat(float *gpuAllocated, float *gpuAligned, int64_t gpuOffset,
 // torch.testing.assert_close:
 //   |gpuNum - valNum| <= atol + rtol * |valNum|
 //
-// The RMS, maxAbsDiff, maxRelDiff, and histogram values are still computed and
-// printed (when print_option warrants) for failure investigation, but they no
-// longer gate pass/fail -- only the allclose predicate does. To preserve the
+// Only the allclose predicate gates pass/fail. To preserve the
 // "[%d %d %d]" output format that ~100 existing FileCheck tests pin, the same
 // allclose result is repeated three times.
-// Print the allclose-specific diagnostic block: the worst-offender element
-// (the one with the largest absDiff/tolerance ratio), the histogram of
-// absDiff/tolerance ratios, and the "smallest atol/rtol that would pass
-// everything else, holding the other one fixed" calibration hints. These
-// metrics make the verifier's decision auditable -- the legacy diagnostics
-// (RMS/maxAbsDiff/maxRelDiff/relDiff histogram) live alongside but tell you
-// nothing about why allclose failed or what tolerance would make it pass.
+//
+// On failure we print the allclose-specific diagnostic block: the
+// worst-offender element (the one with the largest absDiff/tolerance ratio),
+// the histogram of absDiff/tolerance ratios, and the "smallest atol/rtol that
+// would pass everything else, holding the other one fixed" calibration hints.
+// We intentionally do *not* print the legacy RMS/maxAbsDiff/maxRelDiff/relDiff
+// stats here: they tell you nothing about why allclose failed or what
+// tolerance would make it pass, and they confuse the diagnostic by suggesting
+// thresholds that are no longer being checked. Use --comparator=legacy if you
+// need those numbers.
 //
 // "ratio" buckets follow a 0/passing/failing structure:
 //   [0]: ratio == 0                          (exact match or subnormal-equal)
@@ -400,21 +401,6 @@ template <typename T>
 void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
                         float atol, float rtol, char printDebug, bool isFP32) {
   float valNum, gpuNum;
-  float maxAbsDiff = 0.0f;
-  double sumAbsDiff = 0.0;
-  float maxVAL_abs = 0.0f;
-  float maxGPU_abs = 0.0f;
-  double maxRelDiff = 0.0;
-  double sumRelDiff = 0.0;
-  float maxVAL_rel = 0.0f;
-  float maxGPU_rel = 0.0f;
-  float maxMag = 0.0f;
-  double sumDiffSq = 0.0;
-  constexpr size_t NUM_BOUNDARIES = 7;
-  static const double BUCKET_BOUNDARIES[NUM_BOUNDARIES] = {
-      1.0e-06, 1.0e-05, 1.0e-04, 1.0e-03, 1.0e-02, 0.1, 1.0};
-  constexpr size_t NUM_BUCKETS = NUM_BOUNDARIES + 3;
-  int hist_relDiff[NUM_BUCKETS] = {0};
   PrintOption print_option = static_cast<PrintOption>(printDebug);
 
   // allclose-specific diagnostics. RATIO_BOUNDARIES must stay in sync with
@@ -452,11 +438,8 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
   for (long long i = 0; i < dataSize; ++i) {
     valNum = static_cast<float>(validationResults[i]);
     gpuNum = static_cast<float>(gpuResults[i]);
-    float maxNum = std::max(fabs(valNum), fabs(gpuNum));
-    maxMag = std::max(maxMag, maxNum);
 
     if (valNum == gpuNum) {
-      hist_relDiff[0]++;
       hist_ratio[0]++;
       continue;
     }
@@ -465,7 +448,6 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
       // legitimately reorder ops to produce a different signed subnormal on
       // the GPU side without the result being wrong. Same affordance as the
       // legacy mcpuVerify path.
-      hist_relDiff[0]++;
       hist_ratio[0]++;
       continue;
     }
@@ -476,30 +458,6 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
     if (std::isinf(valNum))
       valNum = (valNum > 0 ? fp16MaxVal : -fp16MaxVal);
     float absDiff = fabs(valNum - gpuNum);
-    if (absDiff > maxAbsDiff) {
-      maxVAL_abs = valNum;
-      maxGPU_abs = gpuNum;
-      maxAbsDiff = absDiff;
-    }
-    sumAbsDiff += static_cast<double>(absDiff);
-    double relDiff = 0.0;
-    if (valNum != 0.0f) {
-      constexpr float epsilon = 1e-8f;
-      double denominator = std::max(static_cast<double>(fabs(valNum)),
-                                    static_cast<double>(epsilon));
-      relDiff = static_cast<double>(absDiff) / denominator;
-      hist_relDiff[findIdxHistRelDiff(relDiff, BUCKET_BOUNDARIES,
-                                      NUM_BOUNDARIES)]++;
-      if (relDiff > maxRelDiff) {
-        maxVAL_rel = valNum;
-        maxGPU_rel = gpuNum;
-        maxRelDiff = relDiff;
-      }
-      sumRelDiff += relDiff;
-    } else {
-      hist_relDiff[NUM_BUCKETS - 1]++;
-    }
-    sumDiffSq += static_cast<double>(absDiff) * static_cast<double>(absDiff);
 
     // The allclose predicate (asymmetric, matches PyTorch/NumPy convention).
     double tolerance =
@@ -557,15 +515,15 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
         }
       }
       if (print_option == PrintOption::Always ||
-          print_option == PrintOption::Failure)
-        printf("%lld: %f %f %f %lf (tol=%.3e)\n", i, valNum, gpuNum, absDiff,
-               relDiff, tolerance);
+          print_option == PrintOption::Failure) {
+        double ratio = (tolerance == 0.0)
+                           ? std::numeric_limits<double>::infinity()
+                           : static_cast<double>(absDiff) / tolerance;
+        printf("%lld: valNum=%f gpuNum=%f absDiff=%f tol=%.3e ratio=%.2fx\n", i,
+               valNum, gpuNum, absDiff, tolerance, ratio);
+      }
     }
   }
-  double aveAbsDiff = sumAbsDiff / static_cast<double>(dataSize);
-  double aveRelDiff = sumRelDiff / static_cast<double>(dataSize);
-  double err_RMS = sqrt(sumDiffSq) / (static_cast<double>(maxMag) *
-                                      sqrt(static_cast<double>(dataSize)));
   int all_pass = (failingElements == 0) ? 1 : 0;
   if (print_option == PrintOption::Always ||
       ((print_option == PrintOption::Failure ||
@@ -573,10 +531,6 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
        all_pass == 0)) {
     printf("allclose(atol=%.3e, rtol=%.3e): %lld/%lld failing element(s)\n",
            atol, rtol, failingElements, dataSize);
-    printDebugVerifyResults(dataSize, maxAbsDiff, maxVAL_abs, maxGPU_abs,
-                            aveAbsDiff, maxRelDiff, maxVAL_rel, maxGPU_rel,
-                            aveRelDiff, err_RMS, BUCKET_BOUNDARIES, NUM_BUCKETS,
-                            hist_relDiff);
     printAllcloseStats(dataSize, failingElements, atol, rtol, maxRatio,
                        maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff,
                        maxRatioTolerance, maxRatioIsInf, ratioInfCount,
