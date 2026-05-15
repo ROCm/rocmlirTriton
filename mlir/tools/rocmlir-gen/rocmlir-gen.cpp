@@ -661,12 +661,6 @@ static llvm::cl::alias
 //     GEMM output narrow so it rounds between operations the same way.
 // Use it when an existing test had to relax thresholds because of CPU/GPU
 // dtype divergence (see PR #161 / PrAttentionBF16.toml).
-//
-// `allclose` is a shorthand for "mlir reference + allclose comparator with
-// per-dtype defaults". It's equivalent to `-pv -atol=<dtype-default>
-// -rtol=<dtype-default>` and is the recommended way to opt into the new
-// comparator without having to remember the right defaults. The atol
-// default is K-scaled (see computeReductionK / sumErrorTolerance).
 static llvm::cl::opt<std::string> genValidation(
     "verifier",
     llvm::cl::desc("Select verification from: none(default), cpu, mlir, "
