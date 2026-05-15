@@ -315,14 +315,13 @@ mcpuVerifyFloat(float *gpuAllocated, float *gpuAligned, int64_t gpuOffset,
 // torch.testing.assert_close:
 //   |gpuNum - valNum| <= atol + rtol * |valNum|
 //
-// Only the allclose predicate gates pass/fail. To preserve the
-// "[%d %d %d]" output format that ~100 existing FileCheck tests pin, the same
-// allclose result is repeated three times.
+// To preserve the "[%d %d %d]" output format that existing FileCheck tests check,
+// the allclose result is repeated three times.
 //
-// On failure we print the allclose-specific diagnostic block: the
-// worst-offender element (the one with the largest absDiff/tolerance ratio),
-// the histogram of absDiff/tolerance ratios, and the "smallest atol/rtol that
-// would pass everything else, holding the other one fixed" calibration hints.
+// On failure we print allclose-specific diagnostics:
+// - The worst-offender element (the one with the largest absDiff/tolerance ratio),
+// - The histogram of absDiff/tolerance ratios
+// - The "smallest atol/rtol that would pass everything else, holding the other one fixed" hints.
 // We intentionally do *not* print the legacy RMS/maxAbsDiff/maxRelDiff/relDiff
 // stats here: they tell you nothing about why allclose failed or what
 // tolerance would make it pass, and they confuse the diagnostic by suggesting
