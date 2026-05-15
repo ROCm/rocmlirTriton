@@ -4,7 +4,7 @@
 // parameters made here should be reflected in that file
 
 // RUN: rocmlir-driver -mlir-print-local-scope -rock-affix-params  %s | FileCheck %s --check-prefix=CHECK
-// RUN: rocmlir-driver -mlir-print-local-scope -rock-affix-params -rock-lower-reduce -rock-regularize-output -rock-regularize-inter-gemm-fusion -rock-conv-to-gemm -rock-fusion-splitk-regularization -rock-gemm-to-gridwise %s | FileCheck %s --check-prefix=GRID
+// RUN: rocmlir-driver -mlir-print-local-scope -rock-affix-params -rock-lower-reduce -rock-regularize-output -rock-regularize-inter-gemm-fusion -rock-conv-to-gemm -rock-fusion-splitk-regularization -rock-gemm-to-gridwise -rock-attn-to-gridwise %s | FileCheck %s --check-prefix=GRID
 
 // CHECK-LABEL: @rock_conv
 // GRID-LABEL: rock_conv

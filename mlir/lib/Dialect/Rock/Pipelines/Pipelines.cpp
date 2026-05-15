@@ -38,9 +38,9 @@
 #include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 
+#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Conversion/RocMLIRPasses.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
-#include "mlir/Conversion/CPU/Passes.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Tosa/IR/TargetEnv.h"
@@ -159,14 +159,14 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   }
 
   // TODO(rocmlirTriton): if knobs.amd.use_buffer_ops
-    pm->addNestedPass<mlir::triton::FuncOp>(
-        mlir::createTritonAMDGPUCanonicalizePointers());
-    pm->addPass(mlir::createCanonicalizerPass());
-    pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
-        {options.arch, /*allowBufferAtomics*/true,
-        /*analyzeSmallTensorOfst*/false}));
-    pm->addNestedPass<mlir::triton::FuncOp>(
-        mlir::createTritonAMDGPUOptimizeBufferOpPtr());
+  pm->addNestedPass<mlir::triton::FuncOp>(
+      mlir::createTritonAMDGPUCanonicalizePointers());
+  pm->addPass(mlir::createCanonicalizerPass());
+  pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
+      {options.arch, /*allowBufferAtomics*/ true,
+       /*analyzeSmallTensorOfst*/ false}));
+  pm->addNestedPass<mlir::triton::FuncOp>(
+      mlir::createTritonAMDGPUOptimizeBufferOpPtr());
 
   pm->addPass(mlir::createTritonAMDFoldTrueCmpI());
   pm->addNestedPass<mlir::triton::FuncOp>(
@@ -288,7 +288,8 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
   // pass std::nullopt as validation options to avoid running tosa-validate
   // pass
   tosa::addTosaToLinalgPasses(pm, tosaToLinalgOptions, tosaToLinalgNamedOptions,
-                              /*validationOptions=*/std::nullopt, /*attachTargetOptions*/std::nullopt);
+                              /*validationOptions=*/std::nullopt,
+                              /*attachTargetOptions*/ std::nullopt);
 
   // for tosa control flow
   /* rocmlir-opt --tosa-to-tensor --tosa-to-scf --tosa-to-arith
@@ -318,10 +319,21 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
 void rock::buildKernelPipeline(OpPassManager &pm,
                                const rock::KernelOptions &options) {
   // rock lowering (tuning, global to block)
-  /* rocmlir-opt --rock-affix-params --rock-conv-to-gemm
-   *   --rock-fold-broadcast --rock-affix-params --rock-gemm-to-gridwise
-   *   --rock-regularize --rock-gridwise-gemm-to-blockwise
-   * --rock-blockwise-load-tile-to-threadwise
+  /* rocmlir-opt
+   *   --rock-affix-params
+   *   --rock-lower-reduce
+   *   --rock-regularize-output
+   *   --rock-regularize-inter-gemm-fusion
+   *   --rock-conv-to-gemm
+   *   --rock-fusion-splitk-regularization
+   *   --rock-gemm-to-gridwise
+   *   --rock-attn-to-gridwise
+   *   --rock-gridwise-attn-to-blockwise
+   *   --rock-gridwise-gemm-to-blockwise
+   *   --rock-insert-output-fusion-loads
+   *   --rock-regularize-input
+   *   --rock-lower-loads
+   *   --rock-lower-stores
    */
 
   // We must use pm.nest<func::FuncOp>() inside the lambdas instead of a
@@ -344,6 +356,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockConvToGemmPass());
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
   addWithDCE(rock::createRockGemmToGridwisePass());
+  addWithDCE(rock::createRockAttnToGridwisePass());
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
