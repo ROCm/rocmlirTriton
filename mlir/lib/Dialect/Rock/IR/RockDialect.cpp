@@ -255,12 +255,12 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
   }
 
   SmallVector<StringRef> upperNames;
-  for (const std::string &name : upperNamesStorage) {
-    upperNames.push_back(name);
+  for (const std::string &nameStr : upperNamesStorage) {
+    upperNames.push_back(nameStr);
   }
   SmallVector<StringRef> lowerNames;
-  for (const std::string &name : lowerNamesStorage) {
-    lowerNames.push_back(name);
+  for (const std::string &nameStr : lowerNamesStorage) {
+    lowerNames.push_back(nameStr);
   }
 
   return parser.getChecked<TransformAttr>(
@@ -270,8 +270,8 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
 
 void TransformAttr::print(mlir::AsmPrinter &printer) const {
   printer << "<";
-  StringRef name = getNameForTransformType(getType());
-  printer.printKeywordOrString(name);
+  StringRef transformName = getNameForTransformType(getType());
+  printer.printKeywordOrString(transformName);
   ArrayRef<int64_t> params = getParams();
   if (params.size() > 0) {
     printer << "{";

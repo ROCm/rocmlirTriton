@@ -2582,10 +2582,10 @@ createCPUConvWithMLIR(ModuleOp module,
       newShape[pos] += lowP + highP;
     }
 
-    Type inputElemType = inputType.getElementType();
-    auto paddedType = RankedTensorType::get(newShape, inputElemType);
+    Type paddedElemType = inputType.getElementType();
+    auto paddedType = RankedTensorType::get(newShape, paddedElemType);
     Value padValue =
-        arith::ConstantOp::create(b, loc, b.getZeroAttr(inputElemType));
+        arith::ConstantOp::create(b, loc, b.getZeroAttr(paddedElemType));
     input = tensor::PadOp::create(b, loc, paddedType, input, lowPad, highPad,
                                   padValue)
                 .getResult();
@@ -3092,18 +3092,18 @@ getConvElementwiseGemmDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
     inputLayoutSpec.push_back(StringRef(&key, 1));
 
   result.reserve(elementTypes.size());
-  constexpr StringLiteral gName = "g", m = "m", n = "n", gemmO = "gemmO";
+  constexpr StringLiteral gName = "g", m = "m", n = "n", gemmONameStr = "gemmO";
 
   result.emplace_back(filterLayoutSpec);
   result.emplace_back(inputLayoutSpec);
   if (transposeC)
-    result.emplace_back(SmallVector<StringRef>{gName, gemmO, m});
+    result.emplace_back(SmallVector<StringRef>{gName, gemmONameStr, m});
   else
-    result.emplace_back(SmallVector<StringRef>{gName, m, gemmO});
+    result.emplace_back(SmallVector<StringRef>{gName, m, gemmONameStr});
   if (transposeO)
-    result.emplace_back(SmallVector<StringRef>{gName, gemmO, n});
+    result.emplace_back(SmallVector<StringRef>{gName, gemmONameStr, n});
   else
-    result.emplace_back(SmallVector<StringRef>{gName, n, gemmO});
+    result.emplace_back(SmallVector<StringRef>{gName, n, gemmONameStr});
 }
 
 static void
@@ -3111,7 +3111,7 @@ getGemmElementwiseGemmDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
                                ArrayRef<Type> elementTypes) {
   result.reserve(elementTypes.size());
   constexpr StringLiteral gName = "g", m = "m", n = "n", k = "k",
-                          gemmO = "gemmO";
+                          gemmONameStr = "gemmO";
   if (transposeA)
     result.emplace_back(SmallVector<StringRef>{gName, k, m});
   else
@@ -3121,13 +3121,13 @@ getGemmElementwiseGemmDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
   else
     result.emplace_back(SmallVector<StringRef>{gName, k, n});
   if (transposeC)
-    result.emplace_back(SmallVector<StringRef>{gName, gemmO, n});
+    result.emplace_back(SmallVector<StringRef>{gName, gemmONameStr, n});
   else
-    result.emplace_back(SmallVector<StringRef>{gName, n, gemmO});
+    result.emplace_back(SmallVector<StringRef>{gName, n, gemmONameStr});
   if (transposeO)
-    result.emplace_back(SmallVector<StringRef>{gName, gemmO, m});
+    result.emplace_back(SmallVector<StringRef>{gName, gemmONameStr, m});
   else
-    result.emplace_back(SmallVector<StringRef>{gName, m, gemmO});
+    result.emplace_back(SmallVector<StringRef>{gName, m, gemmONameStr});
 }
 
 static Value addTensorArgToBlock(OpBuilder &builder, Location loc,
@@ -3641,18 +3641,18 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
         RankedTensorType::get(qkShape, qkElemType);
     Value qkTensor = preSoftmaxElemwiseBlock->addArgument(qkTensorRefType, loc);
     if (isQuantized) {
-      auto qkShape = cast<ShapedType>(qkTensor.getType()).getShape();
+      auto qkBlockShape = cast<ShapedType>(qkTensor.getType()).getShape();
       Value quantBiasI8 =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, quantBias);
       Value quantScaleF16 = addTensorArgToBlock(
           builder, loc, preSoftmaxElemwiseBlock, quantScale);
       Value quantBiasI32 = rock::createTypeConversionOp(
           builder, loc, quantBiasI8,
-          RankedTensorType::get(qkShape, IntegerType::get(ctx, 32)));
+          RankedTensorType::get(qkBlockShape, IntegerType::get(ctx, 32)));
       qkTensor = arith::SubIOp::create(builder, loc, qkTensor, quantBiasI32);
       qkTensor = rock::createTypeConversionOp(
           builder, loc, qkTensor,
-          RankedTensorType::get(qkShape, Float16Type::get(ctx)));
+          RankedTensorType::get(qkBlockShape, Float16Type::get(ctx)));
 
       qkTensor = arith::MulFOp::create(builder, loc, qkTensor, quantScaleF16);
     }
@@ -6050,11 +6050,11 @@ int main(int argc, char **argv) {
     rock::TuningParamSpaceSettings settings;
     std::unique_ptr<rock::TuningParamSet> tunableParams(
         rock::createTunableParamSpace(*module, emitTuningSpace, settings));
-    SmallString<64> perfConfig;
+    SmallString<64> perfConfigStr;
     for (auto param : tunableParams->tuningRange) {
-      param.getPerfConfigStr(perfConfig);
-      llvm::outs() << perfConfig << "\n";
-      perfConfig.clear();
+      param.getPerfConfigStr(perfConfigStr);
+      llvm::outs() << perfConfigStr << "\n";
+      perfConfigStr.clear();
     }
     return 0;
   }

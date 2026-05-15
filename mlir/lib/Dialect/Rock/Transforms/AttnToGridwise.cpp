@@ -627,15 +627,15 @@ static LogicalResult commonAttentionGemmElmtGemm(
 
   auto postProcessOutput =
       [](ConversionPatternRewriter &rw, Value rootOut, Value newRootOut,
-         SmallVector<Value> outputViews, DenseMap<Value, Value> &fusionInputMap,
+         SmallVector<Value> viewsIn, DenseMap<Value, Value> &fusionInputMap,
          SetVector<StoreOp> &stores, int64_t splitKFactor) {
         rock::propagateOutputType(rootOut, newRootOut);
         rock::replaceFusionExtraInputs(newRootOut, fusionInputMap);
-        assert(stores.size() == outputViews.size() &&
-               "stores and outputViews must have the same size");
+        assert(stores.size() == viewsIn.size() &&
+               "stores and viewsIn must have the same size");
         for (size_t i = 0; i < stores.size(); ++i) {
           StoreOp storeOp = stores[i];
-          Value view = outputViews[i];
+          Value view = viewsIn[i];
           // adjust the store method
           StoreMethodAttr storeMethod = storeOp.getStoreMethodAttr();
           if (splitKFactor > 1)

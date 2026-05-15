@@ -72,8 +72,8 @@ static void buildStaticMatmulMatcher(OpBuilder &builder, Location loc,
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToEnd(module.getBody());
 
-  auto matcher = builder.create<transform::NamedSequenceOp>(
-      loc, staticMatmulMatcherName,
+  auto matcher = transform::NamedSequenceOp::create(
+      builder, loc, staticMatmulMatcherName,
       /*rootType=*/anyOpType,
       /*resultTypes=*/TypeRange{anyOpType},
       /*bodyBuilder=*/

@@ -47,7 +47,7 @@ target_link_libraries(rocmlir-gen PRIVATE ${LIBS})
 llvm_update_compile_flags(rocmlir-gen)
 
 # Add Triton include directories for compilation
-target_include_directories(rocmlir-gen PRIVATE
+target_include_directories(rocmlir-gen SYSTEM PRIVATE
   ${TRITON_PROJECT_DIR}/include
   ${TRITON_BINARY_DIR}/include
   ${TRITON_PROJECT_DIR}/third_party/amd

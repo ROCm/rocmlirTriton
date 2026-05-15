@@ -635,10 +635,10 @@ struct GridwiseAttentionRewritePattern
             loc, rewriter.getI32Type(), splitKV);
         Value constSplitKVM1 = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), splitKV - 1);
-        Value numerator =
+        Value splitKVNumerator =
             arith::AddIOp::create(rewriter, loc, end, constSplitKVM1);
-        Value gemm0NIterations =
-            rewriter.createOrFold<arith::DivUIOp>(loc, numerator, constSplitKV);
+        Value gemm0NIterations = rewriter.createOrFold<arith::DivUIOp>(
+            loc, splitKVNumerator, constSplitKV);
 
         // if split-kv is enabled, we need to compute the start and end indices.
         start = arith::MulIOp::create(
@@ -1167,7 +1167,7 @@ struct GridwiseAttentionRewritePattern
       scf::ForOp kLoopOp = scf::ForOp::create(rewriter, loc, zero, endKLoop,
                                               one, ValueRange{initAcc});
       {
-        PatternRewriter::InsertionGuard guard(rewriter);
+        PatternRewriter::InsertionGuard kLoopGuard(rewriter);
         rewriter.setInsertionPointToStart(kLoopOp.getBody());
         Value kLoopIV = kLoopOp.getInductionVar();
         Value accArg = kLoopOp.getRegionIterArg(0);
@@ -1226,7 +1226,6 @@ struct GridwiseAttentionRewritePattern
       // Apply splitKV transforms if needed
       // This transforms the GEMM0 output from [B*H, SeqQ, SeqK] to
       // [B*H*splitKV, SeqQ, SeqK/splitKV] to match the preSoftmax inputs.
-      int64_t splitKV = op.getSplitKV();
       if (splitKV > 1 && op.getPreSoftmaxHasSplitKVTransforms()) {
         ArrayAttr splitKVTransforms = createSplitKVTransformsForGemm0Out(
             rewriter, loc, unpaddedShape, splitKV);
