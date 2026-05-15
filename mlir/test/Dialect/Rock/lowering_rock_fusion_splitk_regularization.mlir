@@ -364,10 +364,10 @@ module {
   // ============================================================
 
   // RECIP-LABEL: func.func @test_multiply_with_reciprocal_addf
-  // RECIP: %[[G:.*]] = rock.gemm
-  // RECIP: %[[CST:.*]] = arith.constant dense<4.000000e+00> : tensor<1x4x4xf16>
-  // RECIP: %[[DIV:.*]] = arith.divf %{{.*}}, %[[CST]] fastmath<nsz,arcp> : tensor<1x4x4xf16>
-  // RECIP: %[[F:.*]] = arith.addf %[[G]], %[[DIV]] fastmath<nsz,contract> : tensor<1x4x4xf16>
+  // RECIP-DAG: %[[CST:.*]] = arith.constant dense<4.000000e+00> : tensor<1x4x4xf16>
+  // RECIP-DAG: %[[G:.*]] = rock.gemm
+  // RECIP: %[[DIV:.*]] = arith.divf %{{.*}}, %[[CST]] fastmath<nsz,arcp,afn> : tensor<1x4x4xf16>
+  // RECIP: %[[F:.*]] = arith.addf %[[G]], %[[DIV]] fastmath<reassoc,nsz,contract> : tensor<1x4x4xf16>
   // RECIP: rock.store %[[F]]
   func.func @test_multiply_with_reciprocal_addf(%a: tensor<1x4x4xf16>, %b: tensor<1x4x4xf16>, %ext: tensor<1x4x4xf16>, %dest: tensor<1x4x4xf16>) -> tensor<1x4x4xf16> attributes {rock.kernel} {
     %gemm = rock.gemm %a * %b {params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 16, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 2, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>} : tensor<1x4x4xf16> * tensor<1x4x4xf16> -> tensor<1x4x4xf16>

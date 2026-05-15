@@ -98,12 +98,11 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too.
   constexpr arith::FastMathFlags nszOnly = arith::FastMathFlags::nsz;
   // Hardware approximate transcendentals (v_exp_f32, v_log_f32, ...).
-  constexpr arith::FastMathFlags transcendentalFlags = arith::FastMathFlags::reassoc | 
-                                                       arith::FastMathFlags::nsz |
+  constexpr arith::FastMathFlags transcendentalFlags = arith::FastMathFlags::nsz |
                                                        arith::FastMathFlags::contract |
                                                        arith::FastMathFlags::afn;
-  constexpr arith::FastMathFlags fmaContractFlags =
-      arith::FastMathFlags::nsz | arith::FastMathFlags::contract;
+  constexpr arith::FastMathFlags fmaContractFlags = arith::FastMathFlags::nsz |
+                                                    arith::FastMathFlags::contract;
 
   RewritePatternSet patterns(ctx);
   patterns.add<AddFastMathFlagsPattern<arith::DivFOp>>(ctx, divFlags);
@@ -112,8 +111,8 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
                AddFastMathFlagsPattern<arith::MulFOp>>(ctx, fmaFlags);
   patterns.add<AddFastMathFlagsPattern<arith::NegFOp>,
                AddFastMathFlagsPattern<arith::RemFOp>,
-               AddFastMathFlagsPattern<arith::MaxiNumFOp>,
-               AddFastMathFlagsPattern<arith::MiniNumFOp>>(ctx, nszOnly);
+               AddFastMathFlagsPattern<arith::MaximumFOp>,
+               AddFastMathFlagsPattern<arith::MinimumFOp>>(ctx, nszOnly);
   patterns.add<AddFastMathFlagsPattern<math::ExpOp>,
                AddFastMathFlagsPattern<math::Exp2Op>,
                AddFastMathFlagsPattern<math::ExpM1Op>,
@@ -145,7 +144,7 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
                                                        transcendentalFlags);
   patterns.add<AddFastMathFlagsPattern<math::ClampFOp>,
                AddFastMathFlagsPattern<math::AbsFOp>,
-               AddFastMathFlagsPattern<math::CopysignFOp>>(ctx, nszOnly);
+               AddFastMathFlagsPattern<math::CopySignOp>>(ctx, nszOnly);
   patterns.add<AddFastMathFlagsPattern<math::FmaOp>>(ctx, fmaContractFlags);
 
   if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
