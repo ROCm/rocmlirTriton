@@ -4891,6 +4891,179 @@ static float sumErrorTolerance(Type t) {
   return 1.0f / 100.0f; // conservative
 }
 
+// Trace `value` backward through value-preserving / shape-only ops to find
+// a matmul-like op feeding `value`. Returns the matmul op
+// (RockGemmWrapperInterface / AttentionOp / RockGemmGemmWrapperInterface)
+// or nullptr if no such producer exists within a bounded search.
+//
+// "Value-preserving" here is conservative: rock.transform (pure layout
+// change) and any single-result op whose result shape matches the operand
+// shape (elementwise add/mul, arith.extf/truncf etc.). For multi-operand
+// elementwise ops the trace follows each operand that has the same shape
+// as the result, recursing until it finds a matmul or runs out of
+// candidates.
+//
+// This lets us match `rock.reduce -> arith.addf -> rock.gemm` chains so
+// the reduce can contribute its axis length to the matmul's K_eff for
+// patterns like `reduce_sum(matmul(A, B) + bias)`.
+static Operation *traceToMatmulLikeProducer(Value value, unsigned depth = 0) {
+  constexpr unsigned kMaxDepth = 8;
+  if (depth > kMaxDepth)
+    return nullptr;
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp)
+    return nullptr;
+  if (isa<rock::RockGemmWrapperInterface, rock::AttentionOp,
+          rock::RockGemmGemmWrapperInterface>(defOp))
+    return defOp;
+  if (auto xform = dyn_cast<rock::TransformOp>(defOp))
+    return traceToMatmulLikeProducer(xform.getInput(), depth + 1);
+  if (defOp->getNumResults() != 1)
+    return nullptr;
+  auto resTy = dyn_cast<ShapedType>(defOp->getResult(0).getType());
+  if (!resTy)
+    return nullptr;
+  // Follow every operand whose shape matches the result; recurse and return
+  // the first matmul-like producer found.
+  for (Value operand : defOp->getOperands()) {
+    auto opTy = dyn_cast<ShapedType>(operand.getType());
+    if (!opTy)
+      continue;
+    if (opTy.getShape() != resTy.getShape())
+      continue;
+    if (Operation *found = traceToMatmulLikeProducer(operand, depth + 1))
+      return found;
+  }
+  return nullptr;
+}
+
+// Return the narrowest float element type appearing on any matmul-like op
+// (rock.gemm / rock.conv* / rock.attention / rock.gemm_*_gemm) in
+// `module`, or std::nullopt if none are present. Used as a precision floor
+// when the kernel's *output* dtype is wider than the dtype in which the
+// computation actually happens (e.g. `arith.extf f16 -> f32` /
+// `migraphx.convert` right before the function return). In that case the
+// verifier should use the narrower dtype's allclose baseline, since the
+// values being compared cannot be more accurate than the narrowest float
+// in the dataflow.
+static std::optional<Type> scanModuleForNarrowestFloat(ModuleOp module) {
+  std::optional<Type> best;
+  auto consider = [&](Type t) {
+    auto ft = dyn_cast_or_null<FloatType>(t);
+    if (!ft)
+      return;
+    auto bestFt = best.has_value() ? dyn_cast<FloatType>(*best) : FloatType();
+    if (!bestFt || ft.getWidth() < bestFt.getWidth())
+      best = t;
+  };
+  module.walk([&](Operation *op) {
+    if (auto gemmLike = dyn_cast<rock::RockGemmWrapperInterface>(op)) {
+      consider(gemmLike.getAType());
+      consider(gemmLike.getBType());
+      consider(gemmLike.getCType());
+      return;
+    }
+    if (auto gemmGemm = dyn_cast<rock::RockGemmGemmWrapperInterface>(op)) {
+      consider(gemmGemm.getAType());
+      consider(gemmGemm.getBType());
+      consider(gemmGemm.getCType());
+      consider(gemmGemm.getOutType());
+      return;
+    }
+  });
+  return best;
+}
+
+// Scan an MLIR module for rock.gemm / rock.conv* / rock.attention /
+// gemm_elementwise_gemm / conv_elementwise_gemm ops and return the largest
+// effective reduction length found, or std::nullopt if no rock reduction
+// op is present.
+//
+// Used as a fallback when the kernel comes from a pre-lowered IR (e.g.
+// --clone-harness / --verifier=clone) and so the command-line -operation
+// flag is unset. The reduction axis is the source of truth for the
+// K-scaled atol bound, but for clone-harness flows it is only available by
+// inspecting the IR.
+//
+// Each matmul-like op's K is *multiplied* by every downstream rock.reduce
+// whose input traces back (through rock.transform) to that op. This
+// captures patterns like `reduce_sum(matmul(A, B))` where each output
+// element accumulates K_gemm * N_reduce products. The multiplicative model
+// matches the worst-case fp16/bf16 behaviour observed in rocBLAS-style
+// testing for chained reductions.
+//
+// Conventions follow rock dialect:
+//   rock.gemm / rock.conv*: getGemmSize().k via RockGemmWrapperInterface
+//   rock.attention: head_dim_qk + seq_len_k (additive model, matches the
+//     command-line path in computeReductionK below)
+//   rock.gemm_elementwise_gemm / conv_elementwise_gemm: K + N (additive)
+static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
+  // Pass 1: base K_eff per matmul-like op.
+  llvm::DenseMap<Operation *, int64_t> baseK;
+  module.walk([&](Operation *op) {
+    if (auto gemmLike = dyn_cast<rock::RockGemmWrapperInterface>(op)) {
+      baseK[op] = gemmLike.getGemmSize().k;
+      return;
+    }
+    // rock.attention -- checked before the generic GemmGemm fallback because
+    // AttentionOp implements RockGemmGemmWrapperInterface but its operand
+    // shapes encode K differently (head_dim_qk + seq_len_k via the
+    // q/kTransposed attributes), not GemmGemmSize.k + GemmGemmSize.n.
+    if (auto attn = dyn_cast<rock::AttentionOp>(op)) {
+      // queries: [G x] seq_q x head_qk (or transposed)
+      // keys:    [G x] head_qk x seq_k (or transposed)
+      auto qTy = dyn_cast<ShapedType>(attn.getQueries().getType());
+      auto kTy = dyn_cast<ShapedType>(attn.getKeys().getType());
+      if (!qTy || !kTy || qTy.getRank() < 2 || kTy.getRank() < 2)
+        return;
+      ArrayRef<int64_t> qShape = qTy.getShape();
+      ArrayRef<int64_t> kShape = kTy.getShape();
+      int64_t qLast = qShape[qShape.size() - 1];
+      int64_t qPenult = qShape[qShape.size() - 2];
+      int64_t kLast = kShape[kShape.size() - 1];
+      int64_t kPenult = kShape[kShape.size() - 2];
+      int64_t headDimQK = attn.getQTransposed() ? qPenult : qLast;
+      int64_t seqLenK = attn.getKTransposed() ? kPenult : kLast;
+      if (headDimQK > 0 && seqLenK > 0)
+        baseK[op] = headDimQK + seqLenK;
+      return;
+    }
+    if (auto gemmGemm = dyn_cast<rock::RockGemmGemmWrapperInterface>(op)) {
+      auto sz = gemmGemm.getGemmGemmSize();
+      baseK[op] = sz.k + sz.n;
+      return;
+    }
+  });
+
+  // Pass 2: multiply each matmul-like op's K by the extents of any
+  // downstream rock.reduce ops feeding off it.
+  llvm::DenseMap<Operation *, int64_t> kEff(baseK.begin(), baseK.end());
+  module.walk([&](rock::ReduceOp reduceOp) {
+    Operation *producer = traceToMatmulLikeProducer(reduceOp.getIn());
+    if (!producer)
+      return;
+    auto it = kEff.find(producer);
+    if (it == kEff.end())
+      return;
+    auto inTy = dyn_cast<ShapedType>(reduceOp.getIn().getType());
+    if (!inTy)
+      return;
+    int64_t axis = reduceOp.getAxis().getSExtValue();
+    if (axis < 0 || axis >= inTy.getRank())
+      return;
+    int64_t axisExtent = inTy.getShape()[axis];
+    if (axisExtent > 0)
+      it->second *= axisExtent;
+  });
+
+  int64_t best = 0;
+  for (auto &kv : kEff)
+    best = std::max(best, kv.second);
+  if (best == 0)
+    return std::nullopt;
+  return best;
+}
+
 // Effective reduction length for the operation under test. For GEMM this is
 // K; for attention it is head_dim_qk + seq_len_k (two cascaded reductions);
 // for conv it is Cin * filter_volume (the im2col K). For element-wise ops it
@@ -4899,24 +5072,22 @@ static float sumErrorTolerance(Type t) {
 // This mirrors how rocBLAS's testing_gemm scales `near_check` tolerance:
 //   tol = K * sum_error_tolerance<T>
 //   https://github.com/ROCm/rocBLAS/blob/develop/clients/include/blas3/testing_gemm.hpp
-static int64_t computeReductionK(const GenParams &genParams) {
-  if (!genParams.operation.has_value())
+//
+// When the command-line `-operation` flag is set, K is read from the gen
+// params (covers `rocmlir-gen -operation gemm/conv/attention ...`). When it
+// is not (clone-harness / pre-lowered IR flows), `module` is scanned for
+// rock reduction ops and the largest reduction length found is used.
+static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
+  if (!genParams.operation.has_value()) {
+    if (auto scanned = scanModuleForReductionK(module))
+      return *scanned;
     return 1;
-  switch (*genParams.operation) {
-  case rock::KernelType::Gemm:
-    return gemmK;
-  case rock::KernelType::Attention:
-    // Conservative additive model: errors from the QK^T reduction (over
-    // head_dim_qk) and the softmax-weighted-V reduction (over seq_len_k)
-    // are roughly independent and accumulate.
-    return headDimQK + sequenceLengthK;
-  case rock::KernelType::Conv:
-  case rock::KernelType::ConvBwdData:
-  case rock::KernelType::ConvBwdWeight:
+  }
+  // Helper: convolution im2col K = Cin * product(filter spatial dims).
+  // filterDimension is laid out per filterLayout; multiplying everything
+  // except K (output channels) and G (group) is equivalent to that product.
+  auto convK = [&]() -> int64_t {
     if (genParams.convConfig.has_value()) {
-      // Cin * product(filter spatial dims). filterDimension is laid out per
-      // filterLayout; multiplying everything except K (output channels) and
-      // G (group) is equivalent to Cin * filter_volume.
       int64_t k = 1;
       const auto &dims = (*genParams.convConfig)->filterDimension;
       const auto &layout = (*genParams.convConfig)->filterLayout;
@@ -4929,6 +5100,28 @@ static int64_t computeReductionK(const GenParams &genParams) {
       return k;
     }
     return inputChannel * filterHeight * filterWidth;
+  };
+  switch (*genParams.operation) {
+  case rock::KernelType::Gemm:
+    return gemmK;
+  case rock::KernelType::Attention:
+    // Conservative additive model: errors from the QK^T reduction (over
+    // head_dim_qk) and the softmax-weighted-V reduction (over seq_len_k)
+    // are roughly independent and accumulate.
+    return headDimQK + sequenceLengthK;
+  case rock::KernelType::Conv:
+  case rock::KernelType::ConvBwdData:
+  case rock::KernelType::ConvBwdWeight:
+    return convK();
+  case rock::KernelType::GemmElementwiseGemm:
+    // Fused (A.B).C: two cascaded reductions of length K and N. Additive
+    // model, same as attention.
+    return gemmK + gemmN;
+  case rock::KernelType::ConvElementwiseGemm:
+    // Fused (Conv(A,B)).C: first reduction is the conv im2col K, second
+    // is gemmN (the output channels of the conv become the K of the
+    // second GEMM).
+    return convK() + gemmN;
   default:
     return 1;
   }
@@ -5124,15 +5317,32 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
           return {1e-2f, 1.25e-1f};
         return {1e-2f, 1e-2f};
       };
-      auto [baseAtol, baseRtol] = allcloseBaseline(testElemType);
+      // If a matmul-like op in the module uses a narrower float dtype than
+      // the kernel's output (e.g. f16 GEMM up-cast to f32 via arith.extf or
+      // migraphx.convert right before return), the values being compared
+      // cannot be more accurate than that narrower dtype. Take the
+      // narrower of {output dtype, narrowest matmul dtype} as the baseline
+      // -- this is what hipBLASLt's `unit_check` vs `norm_check` selection
+      // is implicitly tracking via the "F8/B8 output" rule.
+      Type baselineType = testElemType;
+      if (auto narrowest = scanModuleForNarrowestFloat(module)) {
+        auto outFt = dyn_cast<FloatType>(testElemType);
+        auto narrowFt = cast<FloatType>(*narrowest);
+        if (outFt && narrowFt.getWidth() < outFt.getWidth())
+          baselineType = *narrowest;
+      }
+      auto [baseAtol, baseRtol] = allcloseBaseline(baselineType);
 
       // Reduction-aware atol bound: atol_eff = baseAtol + K * sumErrTol.
       // Matches rocBLAS's `tol = K * sum_error_tolerance<T>` in
       //   clients/include/blas3/testing_gemm.hpp
-      // K_eff per op is computed by computeReductionK (see above).
-      int64_t kEff = computeReductionK(genParams);
+      // K_eff per op is computed by computeReductionK (see above). For
+      // clone-harness / pre-lowered IR flows where -operation is unset, K
+      // is scanned from rock.gemm / rock.conv* / rock.attention in the
+      // module.
+      int64_t kEff = computeReductionK(genParams, module);
       float defaultAtol =
-          baseAtol + static_cast<float>(kEff) * sumErrorTolerance(testElemType);
+          baseAtol + static_cast<float>(kEff) * sumErrorTolerance(baselineType);
 
       float atolValue = atolThreshold.getNumOccurrences()
                             ? atolThreshold.getValue()
