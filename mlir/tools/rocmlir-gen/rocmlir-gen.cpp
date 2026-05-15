@@ -2028,22 +2028,12 @@ static void convBodyBuilderF32(OpBuilder &b, Location loc,
 static void convBodyBuilderI32(OpBuilder &b, Location loc,
                                ValueRange blockArgs) {
   assert(blockArgs.size() == 3 && "convBodyBuilder expects 3 arguments");
-<<<<<<< HEAD
   Value inputVal = blockArgs[0];   // i8
   Value filterVal = blockArgs[1];  // i8
   Value outputVal = blockArgs[2];  // i32
   Type i32Type = b.getIntegerType(32);
   Value inputExt = arith::ExtSIOp::create(b, loc, i32Type, inputVal);
   Value filterExt = arith::ExtSIOp::create(b, loc, i32Type, filterVal);
-=======
-  Value inputVal = blockArgs[0];  // i8
-  Value filterVal = blockArgs[1]; // i8
-  Value outputVal = blockArgs[2]; // i64
-  // Extend i8 inputs to i64 for multiplication
-  Type i64Type = b.getIntegerType(64);
-  Value inputExt = arith::ExtSIOp::create(b, loc, i64Type, inputVal);
-  Value filterExt = arith::ExtSIOp::create(b, loc, i64Type, filterVal);
->>>>>>> 695d8b236eba (clang format)
   Value mul = arith::MulIOp::create(b, loc, inputExt, filterExt);
   Value add = arith::AddIOp::create(b, loc, outputVal, mul);
   linalg::YieldOp::create(b, loc, add);
@@ -2519,12 +2509,8 @@ createCPUConvWithMLIR(ModuleOp module,
 
   // i8 convolutions use i32 / f32 accumulation.
   bool isI8Conv = genConfig.inputDataTypeStr == "i8";
-<<<<<<< HEAD
-  Type computeType = isI8Conv ? Type(b.getIntegerType(32)) : Type(b.getF32Type());
-=======
   Type computeType =
-      isI8Conv ? Type(b.getIntegerType(64)) : Type(b.getF32Type());
->>>>>>> 695d8b236eba (clang format)
+      isI8Conv ? Type(b.getIntegerType(32)) : Type(b.getF32Type());
   size_t nSpatialDims = genConfig.strideDims.size();
 
   // Helper to expand flat tensor to logical shape
@@ -2632,12 +2618,8 @@ createCPUConvWithMLIR(ModuleOp module,
   // No transposes needed - the indexing maps use actual dimension positions!
   // Use i32 body builder for i8 inputs, f32 otherwise.
   Value result;
-<<<<<<< HEAD
-  ConvBodyBuilder bodyBuilder = isI8Conv ? convBodyBuilderI32 : convBodyBuilderF32;
-=======
   ConvBodyBuilder bodyBuilder =
-      isI8Conv ? convBodyBuilderI64 : convBodyBuilderF32;
->>>>>>> 695d8b236eba (clang format)
+      isI8Conv ? convBodyBuilderI32 : convBodyBuilderF32;
   switch (genConfig.operation.value()) {
   case rock::ConvOpType::Fwd:
     result = emitConvGeneric(
