@@ -1720,7 +1720,7 @@ def parse_arguments(gpu_topology: GpuTopology,
                     args=None) -> argparse.Namespace:
     """Parse and validate command-line arguments."""
     parser = TuningArgumentParser(
-        prog="rocMLIR tuning runner",
+        prog="rocmlirTriton tuning runner",
         description="Automated performance tuning for rocMLIR generated kernels",
         allow_abbrev=False,
         gpu_topology=gpu_topology)

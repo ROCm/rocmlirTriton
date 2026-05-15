@@ -5,7 +5,7 @@
 #
 # RUN: tuningRunner.py --help | FileCheck %s
 #
-# CHECK: usage: rocMLIR tuning runner
+# CHECK: usage: rocmlirTriton tuning runner
 # CHECK-DAG: --op {{.*}}{conv,gemm,fusion,attention,gemm_gemm,conv_gemm}
 # CHECK-DAG: --tuning-space {quick,full,greedy,exhaustive}
 # CHECK-DAG: --configs_file
