@@ -6,9 +6,6 @@
 //
 //   atol_eff = baseAtol + K_eff * sumErrTol(elemType)
 //
-// For f32: baseAtol = 1e-5, sumErrTol = 1e-4. Picking the K values below means
-// the resulting constants are unambiguous decimal literals, so the FileCheck
-// lines do not need fuzzy matching.
 
 // ============================================================================
 // (1) Plain `rock.gemm`. K=64 -> atol = 1e-5 + 64*1e-4 = 6.41e-3.
@@ -38,8 +35,7 @@ func.func private @gemm_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128x
 // (2) Chained `rock.reduce` on `rock.gemm`. The scanner walks the reduce input
 // back to the matmul and multiplies K_gemm by the reduce axis extent. For
 // K_gemm=64 reduced along axis of extent 128, K_eff=64*128=8192 and
-// atol = 1e-5 + 8192*1e-4 ~= 0.81921. The trailing 1e-5 baseline shows up as
-// the ...92 at the end of the printed constant.
+// atol = 1e-5 + 8192*1e-4 ~= 0.81921.
 // ============================================================================
 
 // RUN: rocmlir-gen -fut gemm_reduce_fut --arch %arch --clone-harness %s \
@@ -64,8 +60,8 @@ func.func private @gemm_reduce_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x
 // GEMM_REDUCE:        call @mcpuVerifyFloatAllclose
 
 // ============================================================================
-// (3) Convolution. K_eff = Cin * product(filter_spatial). Cin=1, filter=3x3
-// gives K=9 and atol = 1e-5 + 9*1e-4 = 9.1e-4.
+// (3) Convolution from a MIGraphX kernel. K_eff = Cin * product(filter_spatial).
+// Cin=1, filter=3x3 gives K=9 and atol = 1e-5 + 9*1e-4 = 9.1e-4.
 // ============================================================================
 
 // RUN: rocmlir-gen -fut conv_fut --arch %arch --clone-harness %s \
@@ -105,3 +101,48 @@ func.func private @elemwise_fut(%arg0: tensor<256xf32>, %arg1: tensor<256xf32>) 
 // ELEMWISE:      arith.constant 1.09999994E-4 : f32
 // ELEMWISE-NEXT: arith.constant 1.300000e-06 : f32
 // ELEMWISE:      call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (5) MIGraphX `migraphx.dot`. Same shape as case (1); confirms the MIGraphX
+// pipeline lowers `migraphx.dot` to `rock.gemm` with the same K=64 that the
+// scanner picks up. Expected atol unchanged at 6.41e-3.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut mx_dot_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut mx_dot_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=MX_DOT --enable-var-scope
+
+func.func private @mx_dot_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384x64x1>, %arg1: !migraphx.shaped<1x64x128xf32, 8192x128x1>) -> !migraphx.shaped<1x256x128xf32, 32768x128x1> {
+  %0 = migraphx.dot %arg0, %arg1 : <1x256x64xf32, 16384x64x1>, <1x64x128xf32, 8192x128x1> -> <1x256x128xf32, 32768x128x1>
+  return %0 : !migraphx.shaped<1x256x128xf32, 32768x128x1>
+}
+
+// MX_DOT:        rock.gemm
+// MX_DOT:        arith.constant 6.410000e-03 : f32
+// MX_DOT-NEXT:   arith.constant 1.300000e-06 : f32
+// MX_DOT:        call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (6) MIGraphX `migraphx.dot` followed by `migraphx.reduce_sum`. Same shape as
+// case (2); confirms the multiplicative K_eff = K_gemm * reduce_axis_extent
+// rule fires for the MIGraphX -> rock lowering too (rock.reduce reaches the
+// scanner with `axis = 2 : index` and extent 128). Expected atol ~= 0.81921.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut mx_dot_reduce_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut mx_dot_reduce_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=MX_DOT_REDUCE --enable-var-scope
+
+func.func private @mx_dot_reduce_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384x64x1>, %arg1: !migraphx.shaped<1x64x128xf32, 8192x128x1>) -> !migraphx.shaped<1x256x1xf32, 256x1x1> {
+  %0 = migraphx.dot %arg0, %arg1 : <1x256x64xf32, 16384x64x1>, <1x64x128xf32, 8192x128x1> -> <1x256x128xf32, 32768x128x1>
+  %1 = migraphx.reduce_sum %0 {axes = [2]} : <1x256x128xf32, 32768x128x1> -> <1x256x1xf32, 256x1x1>
+  return %1 : !migraphx.shaped<1x256x1xf32, 256x1x1>
+}
+
+// MX_DOT_REDUCE:        rock.gemm
+// MX_DOT_REDUCE:        rock.reduce
+// MX_DOT_REDUCE:        arith.constant 0.819209992 : f32
+// MX_DOT_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
+// MX_DOT_REDUCE:        call @mcpuVerifyFloatAllclose
