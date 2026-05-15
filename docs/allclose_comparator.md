@@ -237,11 +237,6 @@ asymmetric NumPy/PyTorch formula:
 where `b` is the CPU reference and `a` is the GPU output. The kernel
 passes if *every* element satisfies this predicate; otherwise it fails.
 
-The legacy three-gate verifier remains in place, unchanged, and is still
-the default. Both verifiers print `[1 1 1]` on pass / `[0 0 0]` on fail so
-existing test infrastructure (FileCheck and friends) keeps working
-verbatim; only the meaning of the three slots differs (legacy: RMS / abs /
-rel; allclose: same verdict repeated 3x).
 
 ### 2.2 Per-dtype baseline tolerances
 
@@ -325,6 +320,48 @@ component-wise. Either flag implies `--comparator=allclose`. Use these for
 per-test calibration when the dtype default is wrong for a specific
 kernel shape -- analogous to PyTorch's `toleranceOverride` decorator.
 
+### 2.6 IR scanning for clone-harness flows
+
+Many tests do not run `rocmlir-gen` with `-operation gemm/conv/attention`;
+they use `--clone-harness` and a pre-lowered MLIR kernel from
+TOSA/MIGraphX. In those cases, we cannot infer the K dimension easily from the
+command invocation.
+
+In such case, we scan the IR (`rock.gemm`, `rock.conv`, etc) and take the
+largest `K_eff` across all matmul-like ops. For chained reductions
+(e.g. `tosa.reduce_sum(tosa.matmul(A, B))`), the scanner walks
+`rock.reduce` ops backward through `rock.transform` and shape-preserving
+elementwise ops (`arith.addf`, `arith.mulf`, `arith.extf` ...) to find
+the matmul that feeds them. The matmul's K is then *multiplied* by the
+reduce axis extent, since each output element of the reduce accumulates
+`K_gemm * N_reduce` products into a single scalar. 
+
+This is the classical forward-error bound for chained inner products: 
+
+`err = O(K * N * eps)`
+
+([Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed.,
+2002, ch. 3](https://epubs.siam.org/doi/book/10.1137/1.9780898718027)).
+
+There is no library that scales tolerances this way --
+rocBLAS / cuBLAS / hipBLASLt test primitive GEMM only and so do not
+face cases like this one, but the rule is necessary once kernels
+fuse a matmul with a reduction: a `(K=64) x (N=256)` fp16 chain needs
+`atol ≈ 16 384 / 100 ≈ 164` ulps, not `64 / 100 ≈ 0.64`.
+
+### 2.7 Precision floor from the narrowest float in the dataflow
+
+Some kernels compute in a narrow dtype and only widen at the very end
+(e.g. `rock.gemm <f16> -> arith.extf f16 to f32 -> return f32`). The
+output dtype declares fp32, but the values being returned are at best
+fp16-accurate. In those cases, we scan the IR for the narrowest float type appearing
+on any matmul-like op (`getAType` / `getBType` / `getCType` / `getOutType`
+via `RockGemmWrapperInterface` and `RockGemmGemmWrapperInterface`). If
+that is narrower than the kernel's output dtype, that narrower dtype's
+baseline is used instead. This mirrors how hipBLASLt implicitly switches
+to `norm_check` for f8/b8 output types (see § 1.5): the test must not
+demand precision the kernel cannot deliver.
+
 ## 3. References
 
 - NumPy: <https://numpy.org/doc/stable/reference/generated/numpy.allclose.html>
@@ -335,4 +372,5 @@ kernel shape -- analogous to PyTorch's `toleranceOverride` decorator.
 - rocBLAS `near.hpp`: <https://github.com/ROCm/rocBLAS/blob/develop/clients/include/near.hpp>
 - rocBLAS `norm.hpp`: <https://github.com/ROCm/rocBLAS/blob/develop/clients/include/norm.hpp>
 - hipBLASLt PR #674 (unit_check vs norm_check): <https://github.com/ROCm/hipBLASLt/pull/674>
+- Higham, *Accuracy and Stability of Numerical Algorithms* (2nd ed., SIAM, 2002), ch. 3 -- forward-error bounds for chained inner products: <https://epubs.siam.org/doi/book/10.1137/1.9780898718027>
 - rocmlirTriton implementation: `mlir/tools/rocmlir-gen/rocmlir-gen.cpp` (`computeReductionK`, `sumErrorTolerance`, `allcloseBaseline`); `mlir/lib/ExecutionEngine/conv-validation-wrappers.cpp` (`mcpuVerifyFloatAllclose`)
