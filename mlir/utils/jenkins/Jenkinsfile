@@ -889,7 +889,9 @@ pipeline {
 
                                                     stage('Run tests') {
                                                         timeout(time: 30, activity: true, unit: 'MINUTES') {
-                                                            sh 'bash tests.sh'
+                                                            dir('build') {
+                                                                sh 'ninja check-rocmlir'
+                                                            }
                                                         }
                                                     }
 

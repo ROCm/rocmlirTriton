@@ -1,0 +1,72 @@
+// Fused attention test (migraphx IR):
+//   q       = Q + fusionInput                                 (input fusion on Q)
+//   qk      = q @ K^T                                          (with GQA: 4 Q-heads share 2 KV-heads)
+//   qk_b    = qk + bias                                        (pre-softmax fusion)
+//   softmax = exp(qk_b - max) / sum(exp(qk_b - max))
+//   res     = softmax @ V                                      (with GQA)
+//   lse     = log(sum) + max                                   (log-sum-exp output)
+//   result  = res + result_fusion                              (output fusion on result)
+//   lse_out = lse + lse_fusion                                 (output fusion on LSE)
+//
+// The original uses 3D tensors (g, seq, dim); the migraphx attention pattern
+// matcher expects 4D (batch, head, seq, dim), so we add a batch dim of 1 and
+// express GQA via multibroadcast+reshape (the standard migraphx GQA pattern).
+// The migraphx pipeline pattern-matches this softmax+two-dots sequence back
+// into a single `rock.attention` with both `result` and `lse` outputs.
+
+// RUN: rocmlir-gen -fut rock_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -relDiff_threshold=1e-5 -fut rock_attention --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
+
+// CHECK: [1 1 1]
+// CHECK-NEXT: [1 1 1]
+module {
+  func.func @rock_attention(%q: !migraphx.shaped<1x4x70x70xf32, 19600x4900x70x1>,
+                            %qFusion: !migraphx.shaped<1x4x70x70xf32, 19600x4900x70x1>,
+                            %k: !migraphx.shaped<1x2x70x70xf32, 9800x4900x70x1>,
+                            %v: !migraphx.shaped<1x2x70x70xf32, 9800x4900x70x1>,
+                            %bias: !migraphx.shaped<1x4x70x70xf32, 19600x4900x70x1>,
+                            %lseFusion: !migraphx.shaped<1x4x70x1xf32, 280x70x1x1>,
+                            %resFusion: !migraphx.shaped<1x4x70x70xf32, 19600x4900x70x1>)
+      -> (!migraphx.shaped<1x4x70x70xf32, 19600x4900x70x1>,
+          !migraphx.shaped<1x4x70x1xf32, 280x70x1x1>)
+      attributes {rock.kernel} {
+    // Input fusion: Q = Q + qFusion
+    %qfused = migraphx.add %q, %qFusion : <1x4x70x70xf32, 19600x4900x70x1>, <1x4x70x70xf32, 19600x4900x70x1> -> <1x4x70x70xf32, 19600x4900x70x1>
+
+    // GQA broadcast K from 2 KV-heads to 4 Q-heads via [1,2,70,70] -> [1,2,2,70,70] -> [1,4,70,70]
+    %k5d = migraphx.reshape %k {dims = [1, 2, 1, 70, 70]} : <1x2x70x70xf32, 9800x4900x70x1> -> <1x2x1x70x70xf32, 9800x4900x4900x70x1>
+    %kbcast = migraphx.multibroadcast %k5d {out_dyn_dims = [], out_lens = [1, 2, 2, 70, 70]} : <1x2x1x70x70xf32, 9800x4900x4900x70x1> -> <1x2x2x70x70xf32, 9800x4900x0x70x1>
+    %kgqa = migraphx.reshape %kbcast {dims = [1, 4, 70, 70]} : <1x2x2x70x70xf32, 9800x4900x0x70x1> -> <1x4x70x70xf32, 19600x4900x70x1>
+    // K^T so the contraction dim (head_dim) aligns with Q's last dim
+    %kt = migraphx.transpose %kgqa {permutation = [0, 1, 3, 2]} : <1x4x70x70xf32, 19600x4900x70x1> -> <1x4x70x70xf32, 19600x4900x1x70>
+
+    // GQA broadcast V from 2 KV-heads to 4 Q-heads via the same pattern
+    %v5d = migraphx.reshape %v {dims = [1, 2, 1, 70, 70]} : <1x2x70x70xf32, 9800x4900x70x1> -> <1x2x1x70x70xf32, 9800x4900x4900x70x1>
+    %vbcast = migraphx.multibroadcast %v5d {out_dyn_dims = [], out_lens = [1, 2, 2, 70, 70]} : <1x2x1x70x70xf32, 9800x4900x4900x70x1> -> <1x2x2x70x70xf32, 9800x4900x0x70x1>
+    %vgqa = migraphx.reshape %vbcast {dims = [1, 4, 70, 70]} : <1x2x2x70x70xf32, 9800x4900x0x70x1> -> <1x4x70x70xf32, 19600x4900x70x1>
+
+    // qk = q @ K^T, with pre-softmax bias fusion
+    %qk = migraphx.dot %qfused, %kt : <1x4x70x70xf32, 19600x4900x70x1>, <1x4x70x70xf32, 19600x4900x1x70> -> <1x4x70x70xf32, 19600x4900x70x1>
+    %qk_b = migraphx.add %qk, %bias : <1x4x70x70xf32, 19600x4900x70x1>, <1x4x70x70xf32, 19600x4900x70x1> -> <1x4x70x70xf32, 19600x4900x70x1>
+
+    // Softmax (numerically stable: subtract row-max before exp)
+    %max = migraphx.reduce_max %qk_b {axes = [3 : i64]} : <1x4x70x70xf32, 19600x4900x70x1> -> <1x4x70x1xf32, 280x70x1x1>
+    %norm = migraphx.sub %qk_b, %max : <1x4x70x70xf32, 19600x4900x70x1>, <1x4x70x1xf32, 280x70x1x1> -> <1x4x70x70xf32, 19600x4900x70x1>
+    %exp = migraphx.exp %norm : <1x4x70x70xf32, 19600x4900x70x1> -> <1x4x70x70xf32, 19600x4900x70x1>
+    %se = migraphx.reduce_sum %exp {axes = [3 : i64]} : <1x4x70x70xf32, 19600x4900x70x1> -> <1x4x70x1xf32, 280x70x1x1>
+    %recip = migraphx.recip %se : <1x4x70x1xf32, 280x70x1x1> -> <1x4x70x1xf32, 280x70x1x1>
+    %att = migraphx.mul %exp, %recip : <1x4x70x70xf32, 19600x4900x70x1>, <1x4x70x1xf32, 280x70x1x1> -> <1x4x70x70xf32, 19600x4900x70x1>
+
+    // LSE = log(sum) + max
+    %lse = migraphx.log %se : <1x4x70x1xf32, 280x70x1x1> -> <1x4x70x1xf32, 280x70x1x1>
+    %lse_add = migraphx.add %lse, %max : <1x4x70x1xf32, 280x70x1x1>, <1x4x70x1xf32, 280x70x1x1> -> <1x4x70x1xf32, 280x70x1x1>
+
+    // res = softmax @ V (with GQA broadcasted V)
+    %res = migraphx.dot %att, %vgqa : <1x4x70x70xf32, 19600x4900x70x1>, <1x4x70x70xf32, 19600x4900x70x1> -> <1x4x70x70xf32, 19600x4900x70x1>
+
+    // Output fusions on both result and LSE
+    %res_final = migraphx.add %res, %resFusion : <1x4x70x70xf32, 19600x4900x70x1>, <1x4x70x70xf32, 19600x4900x70x1> -> <1x4x70x70xf32, 19600x4900x70x1>
+    %lse_final = migraphx.add %lse_add, %lseFusion : <1x4x70x1xf32, 280x70x1x1>, <1x4x70x1xf32, 280x70x1x1> -> <1x4x70x1xf32, 280x70x1x1>
+
+    return %res_final, %lse_final : !migraphx.shaped<1x4x70x70xf32, 19600x4900x70x1>, !migraphx.shaped<1x4x70x1xf32, 280x70x1x1>
+  }
+}
