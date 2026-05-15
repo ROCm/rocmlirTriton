@@ -1,4 +1,4 @@
-//===- MaskNonZeroPreservingFusions.cpp - Re-mask OOB after fusions -------===//
+//===- PreserveMaskedLoadSemantics.cpp - Re-mask OOB after fusions -------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -21,12 +21,17 @@
 // When a BlockwiseLoadPtrOp has Pad or Embed transforms, its mask tensor marks
 // out-of-bounds (OOB) positions. tt.load returns 0 for those positions. If the
 // loaded tile feeds into a non-zero-preserving fusion (e.g. arith.addf %tile,
-// 1.0), OOB positions become non-zero and corrupt the GEMM result (tt.dot has
-// no mask).
+// 1.0), OOB positions become non-zero and can corrupt consumers that do not
+// carry the original mask. Even zero-preserving fusions need special handling
+// when they feed a max reduction, because zero is not the neutral element for
+// max.
 //
 // This pass detects such cases and inserts:
-//   %safe = arith.select %mask, %fused_result, %zero
-// at the end of the fusion chain, ensuring OOB positions remain zero.
+//   %safe = arith.select %mask, %fused_result, %fill
+// at non-fusion uses of the fusion chain. The fill value is chosen for the
+// consumer: zero by default, or the type's smallest representable value (e.g.
+// -inf for IEEE floats, signed INT_MIN for integers) for `rock.blockwise_reduce
+// max` consumers, so masked-out lanes do not influence the reduction.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,7 +46,10 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
@@ -50,12 +58,12 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKMASKNONZEROPRESERVINGFUSIONSPASS
+#define GEN_PASS_DEF_ROCKPRESERVEMASKEDLOADSEMANTICSPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-mask-non-zero-preserving-fusions"
+#define DEBUG_TYPE "rock-preserve-masked-load-semantics"
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -214,7 +222,9 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
                 matchPattern(clonedLeaf, m_Zero());
 
   LLVM_DEBUG(llvm::dbgs() << "  Zero-preservation test: "
-                          << (isZero ? "PRESERVES" : (anyFoldFailed ? "Fold failed!" : "DOES NOT preserve"))
+                          << (isZero ? "PRESERVES"
+                                     : (anyFoldFailed ? "Fold failed!"
+                                                      : "DOES NOT preserve"))
                           << " zero\n");
 
   for (auto it = toErase.rbegin(); it != toErase.rend(); ++it) {
@@ -225,15 +235,104 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
   return isZero;
 }
 
-struct RockMaskNonZeroPreservingFusionsPass
-    : public rock::impl::RockMaskNonZeroPreservingFusionsPassBase<
-          RockMaskNonZeroPreservingFusionsPass> {
+static bool hasMaxReduceConsumer(Value value) {
+  SmallVector<Value> worklist{value};
+  DenseSet<Value> visited;
+
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    if (!visited.insert(current).second)
+      continue;
+
+    for (OpOperand &use : current.getUses()) {
+      Operation *owner = use.getOwner();
+      auto reduceOp = dyn_cast<BlockwiseReduceOp>(owner);
+      if (reduceOp && reduceOp.getReduceMethod() == ReduceMethod::Max)
+        return true;
+
+      if (isa<ViewLikeOpInterface>(owner)) {
+        for (Value result : owner->getResults())
+          worklist.push_back(result);
+      }
+    }
+  }
+
+  return false;
+}
+
+static bool useNeedsMaxNeutralFill(Operation *useOwner) {
+  auto reduceOp = dyn_cast<BlockwiseReduceOp>(useOwner);
+  if (reduceOp)
+    return reduceOp.getReduceMethod() == ReduceMethod::Max;
+
+  if (!isa<ViewLikeOpInterface>(useOwner))
+    return false;
+
+  for (Value result : useOwner->getResults()) {
+    if (hasMaxReduceConsumer(result))
+      return true;
+  }
+  return false;
+}
+
+/// Choose the neutral fill value for masked-out lanes of a fusion-chain leaf
+/// based on what `useOwner` is going to do with the tensor.
+/// For `rock.blockwise_reduce max`, masked-out lanes must not influence the
+/// reduction. The neutral element of max is the smallest representable value
+/// of the element type, which depends on the type:
+///   - IEEE-like floats (f32, f16, bf16, f64, f8E5M2, ...): -inf
+///   - FP formats without inf (f4E2M1FN, f8E4M3FN, f8E4M3FNUZ): the most
+///     negative finite value (`APFloat::getLargest(..., negative=true)`)
+///   - Signless / signed integers: the signed minimum of the bit width.
+///     Unsigned integers can't reach this helper (`BlockwiseLoadPtrOp`'s
+///     NativeMemoryOpTypes only contains signless integers and arith doesn't
+///     accept unsigned operands), so we don't special-case them here.
+/// All other consumers (stores, sum reductions, etc.) get plain zero, which is
+/// the neutral element for sum and a safe default for ops whose semantics
+/// preserve zero across OOB lanes.
+static Value createMaskFillValue(OpBuilder &builder, Location loc,
+                                 RankedTensorType type, Operation *useOwner) {
+  auto zeroFill = [&]() {
+    return arith::ConstantOp::create(builder, loc, type,
+                                     builder.getZeroAttr(type));
+  };
+
+  if (!useNeedsMaxNeutralFill(useOwner))
+    return zeroFill();
+
+  Type elemType = type.getElementType();
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    const llvm::fltSemantics &semantics = floatType.getFloatSemantics();
+    APFloat fillValue = APFloat::semanticsHasInf(semantics)
+                            ? APFloat::getInf(semantics, /*Negative=*/true)
+                            : APFloat::getLargest(semantics, /*Negative=*/true);
+    return arith::ConstantOp::create(
+        builder, loc, type,
+        SplatElementsAttr::get(type,
+                               builder.getFloatAttr(elemType, fillValue)));
+  }
+
+  if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    APInt fillValue = APInt::getSignedMinValue(intType.getWidth());
+    return arith::ConstantOp::create(
+        builder, loc, type,
+        SplatElementsAttr::get(type,
+                               builder.getIntegerAttr(elemType, fillValue)));
+  }
+
+  // Fallback to filling with zero.
+  return zeroFill();
+}
+
+struct RockPreserveMaskedLoadSemanticsPass
+    : public rock::impl::RockPreserveMaskedLoadSemanticsPassBase<
+          RockPreserveMaskedLoadSemanticsPass> {
   void runOnOperation() override;
 };
 
 } // end anonymous namespace
 
-void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
+void RockPreserveMaskedLoadSemanticsPass::runOnOperation() {
   func::FuncOp funcOp = getOperation();
 
   if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
@@ -242,64 +341,86 @@ void RockMaskNonZeroPreservingFusionsPass::runOnOperation() {
   // ---- Phase 1: Analysis ----
   // Process each load independently. For each load with a non-trivial mask,
   // follow its fusion chain to find leaves. Skip leaves whose chains preserve
-  // zero. Record the mask contribution for the rest.
+  // zero unless a max-reduction consumer needs the type's minimum value instead
+  // of zero. Record the mask contribution for the rest.
   // Result: leafMasks[leaf] = set of non-trivial masks from contributing loads
   //         that need re-masking.
   DenseMap<Value, SetVector<Value>> leafMasks;
   DenseSet<Value> zeroPreserving;
   OpBuilder builder(funcOp.getContext());
 
+  auto recordMaskCandidate = [&](Value candidate, Value mask) {
+    bool needsMaxNeutralFill = hasMaxReduceConsumer(candidate);
+    if (!needsMaxNeutralFill && zeroPreserving.contains(candidate))
+      return;
+
+    if (!needsMaxNeutralFill && !leafMasks.count(candidate) &&
+        fusionChainPreservesZero(candidate, builder)) {
+      zeroPreserving.insert(candidate);
+      return;
+    }
+
+    leafMasks[candidate].insert(mask);
+  };
+
   funcOp.walk([&](BlockwiseLoadPtrOp loadOp) {
     if (isTrivialMask(loadOp.getMaskTensor()))
       return;
 
     Value mask = loadOp.getMaskTensor();
-    SmallVector<Value> leaves;
-    collectFusionChainLeaves(loadOp.getResult(), leaves);
+    Value loadResult = loadOp.getResult();
+    if (hasMaxReduceConsumer(loadResult))
+      recordMaskCandidate(loadResult, mask);
 
-    for (Value leaf : leaves) {
-      if (zeroPreserving.contains(leaf))
-        continue;
-      if (!leafMasks.count(leaf) && fusionChainPreservesZero(leaf, builder)) {
-        zeroPreserving.insert(leaf);
-        continue;
-      }
-      leafMasks[leaf].insert(mask);
-    }
+    SmallVector<Value> leaves;
+    collectFusionChainLeaves(loadResult, leaves);
+
+    for (Value leaf : leaves)
+      recordMaskCandidate(leaf, mask);
   });
 
   if (leafMasks.empty())
     return;
 
   LLVM_DEBUG(llvm::dbgs() << "Found " << leafMasks.size()
-                          << " non-zero-preserving fusion chain leaves\n");
+                          << " values needing OOB re-masking\n");
 
   // ---- Phase 2: Emit masking IR ----
-  // For each remaining leaf, insert arith.select to re-zero OOB positions.
+  // For each remaining leaf, insert arith.select to restore a neutral value at
+  // OOB positions.
   for (auto &[leaf, masks] : leafMasks) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "Non-zero-preserving fusion chain, inserting mask for: "
-               << leaf << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Inserting OOB mask for: " << leaf << "\n");
 
-    // Combine masks with AND.
-    builder.setInsertionPointAfterValue(leaf);
     Location loc = leaf.getLoc();
+    auto leafType = cast<RankedTensorType>(leaf.getType());
+
+    // Gather non-fusion uses before rewriting so that newly inserted selects do
+    // not perturb the use-list walk.
+    SmallVector<std::pair<Operation *, unsigned>> usesToReplace;
+    for (OpOperand &use : leaf.getUses()) {
+      Operation *owner = use.getOwner();
+      if (!rock::isFusionOp(owner))
+        usesToReplace.emplace_back(owner, use.getOperandNumber());
+    }
+
+    // Combine masks with `and` once, right after the leaf. Each mask is an
+    // operand of a BlockwiseLoadPtrOp upstream of the leaf, so the `and`
+    // dominates every non-fusion use of the leaf and can be shared across
+    // them.
+    builder.setInsertionPointAfterValue(leaf);
     auto it = masks.begin();
     Value combinedMask = *it;
     for (++it; it != masks.end(); ++it)
       combinedMask = arith::AndIOp::create(builder, loc, combinedMask, *it);
 
-    // Insert arith.select %mask, %fused, %zero.
-    auto leafType = cast<RankedTensorType>(leaf.getType());
-    auto zeroAttr = builder.getZeroAttr(leafType);
-    Value zero = arith::ConstantOp::create(builder, loc, leafType, zeroAttr);
-    Value safe =
-        arith::SelectOp::create(builder, loc, combinedMask, leaf, zero);
-
-    // Replace non-fusion uses of the leaf with the masked version.
-    leaf.replaceUsesWithIf(safe, [&](OpOperand &use) {
-      return use.getOwner() != safe.getDefiningOp() &&
-             !rock::isFusionOp(use.getOwner());
-    });
+    // Insert one arith.select per non-fusion use, choosing the fill for the
+    // consuming op (for example, -inf for floating-point max reductions).
+    for (auto [owner, operandNumber] : usesToReplace) {
+      builder.setInsertionPoint(owner);
+      Value fill = createMaskFillValue(builder, loc, leafType, owner);
+      Value safe =
+          arith::SelectOp::create(builder, loc, combinedMask, leaf, fill);
+      owner->setOperand(operandNumber, safe);
+    }
   }
 }

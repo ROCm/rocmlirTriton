@@ -54,7 +54,7 @@
 // GPU-NEXT:f8E8M0FNU} target-type=f32},
 // GPU-NEXT:arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true},
 // GPU-NEXT:func.func(rock-lower-blockwise-to-ptr,
-// GPU-NEXT:rock-mask-non-zero-preserving-fusions,
+// GPU-NEXT:rock-preserve-masked-load-semantics,
 // GPU-NEXT:rock-transforms-to-pointer-arith,
 // GPU-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // GPU-NEXT:rock-to-ttir),

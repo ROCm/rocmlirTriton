@@ -221,17 +221,22 @@ def RockEmulateNarrowTypesPass
                            "scf::SCFDialect"];
 }
 
-def RockMaskNonZeroPreservingFusionsPass
-    : Pass<"rock-mask-non-zero-preserving-fusions", "::mlir::func::FuncOp"> {
-  let summary = "Insert arith.select masks after non-zero-preserving fusions "
-                "fed by Pad/Embed loads";
+def RockPreserveMaskedLoadSemanticsPass
+    : Pass<"rock-preserve-masked-load-semantics", "::mlir::func::FuncOp"> {
+  let summary = "Preserve masked-load OOB semantics across fusion chains";
   let description = [{
     This pass runs AFTER LowerBlockwiseToPtr and BEFORE TransformsToPointerArith.
     When a blockwise load has Pad or Embed transforms, OOB positions are masked
     to zero. If the loaded tile feeds into a non-zero-preserving fusion (e.g.
-    arith.addf %tile, 1.0), those positions become non-zero. This pass detects
-    such cases and inserts arith.select with the load mask to re-zero OOB
-    positions at the end of the fusion chain.
+    arith.addf %tile, 1.0), those positions become non-zero. Zero-preserving
+    fusions can also need remasking when they feed `rock.blockwise_reduce max`,
+    because zero is not max-neutral. This pass detects such cases and inserts
+    arith.select with the load mask at non-fusion uses of the fusion chain. The
+    masked-out value is chosen for the consumer: zero by default, or the type's
+    smallest representable value for `rock.blockwise_reduce max` (e.g. -inf for
+    IEEE floats, the most negative finite value for FP8 formats without
+    infinity, signed INT_MIN for signed integers) so masked-out lanes do not
+    influence the reduction.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect"];
