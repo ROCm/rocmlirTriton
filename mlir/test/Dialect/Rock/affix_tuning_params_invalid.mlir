@@ -5,35 +5,35 @@
 // RUN:   --mlir-print-ir-after-failure --mlir-print-ir-module-scope 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=NA --implicit-check-not=rock.not_applicable
 
-// TODO(roctriton): We need to unbufferize attention
-// func.func @rock_attention_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-//   // expected-disabled-error @+1 {{The provided perf config is not valid}}
-//   rock.attention{
-//     qk = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//     %arg3 = softmax(qk) * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {perf_config = "attn:v1:16,128,64,1,1,1,0,1,1,0,0", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
+func.func @rock_attention_invalid_perf_config(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+  // expected-error @+1 {{perf config string has an incorrect format}}
+  %result = rock.attention{
+    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+    softmax(qk) * %arg2 : tensor<1x384x64xf16>
+  } {perf_config = "attn:v1:bad", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32} -> tensor<1x384x64xf16>
+  %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
+  return %out : tensor<1x384x64xf16>
+}
 
-// TODO(roctriton): gemm_elementwise_gemm are broken
-// func.func @rock_gemm_gemm_invalid_perf_config(%arg0: memref<1x384x64xf16>, %arg1: memref<1x384x64xf16>, %arg2: memref<1x384x64xf16>, %arg3: memref<1x384x64xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-//   // expected-disabled-error @+1 {{The provided perf config is not valid}}
-//   rock.gemm_elementwise_gemm{
-//     ab = %arg0 * tr %arg1 : memref<1x384x64xf16>, memref<1x384x64xf16>
-//     %arg3 = ab * %arg2 : memref<1x384x64xf16> -> memref<1x384x64xf16>
-//   } {perf_config = "attn:v1:16,128,64,1,1,1,0,1,1,0,0", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, storeMethod = #rock<StoreMethod set>}
-//   return
-// }
+func.func @rock_gemm_gemm_invalid_perf_config(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+  // expected-error @+1 {{perf config string has an incorrect format}}
+  %result = rock.gemm_elementwise_gemm{
+    ab = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+    out = ab * %arg2 : tensor<1x384x64xf16>
+  } {perf_config = "attn:v1:bad"} -> tensor<1x384x64xf16>
+  %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
+  return %out : tensor<1x384x64xf16>
+}
 
-// TODO(roctriton): conv_elementwise_gemm are broken
-// func.func @rock_conv_gemm_invalid_perf_config(%arg0: memref<1x128x256x1x1xf16>, %arg1: memref<2x1x256x32x32xf16>, %arg2: memref<1x128x128xf16>, %arg3: memref<1x2048x128xf16>) attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-//   // expected-disabled-error @+1 {{The provided perf config is not valid}}
-//   rock.conv_elementwise_gemm{
-//     ab = conv(%arg0, %arg1) : memref<1x128x256x1x1xf16>, memref<2x1x256x32x32xf16>
-//     %arg3 = ab * %arg2 : memref<1x128x128xf16> -> memref<1x2048x128xf16>
-//   } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:16,128,64,1,1,1,0,1,1,0,0", filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], storeMethod = #rock<StoreMethod set>, strides = [1 : index, 1 : index]}
-//   return
-// }
+func.func @rock_conv_gemm_invalid_perf_config(%arg0: tensor<1x128x256x1x1xf16>, %arg1: tensor<2x1x256x32x32xf16>, %arg2: tensor<1x128x128xf16>, %arg3: tensor<1x2048x128xf16>) -> tensor<1x2048x128xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+  // expected-error @+1 {{perf config string has an incorrect format}}
+  %result = rock.conv_elementwise_gemm{
+    ab = conv(%arg0, %arg1) : tensor<1x128x256x1x1xf16>, tensor<2x1x256x32x32xf16>
+    out = ab * %arg2 : tensor<1x128x128xf16>
+  } {dilations = [1 : index, 1 : index], perf_config = "attn:v1:bad", filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} -> tensor<1x2048x128xf16>
+  %out = rock.store %result to %arg3 by set : tensor<1x2048x128xf16> -> tensor<1x2048x128xf16> to tensor<1x2048x128xf16>
+  return %out : tensor<1x2048x128xf16>
+}
 
 // expected-error @below {{Multiple Fusion Roots detected in a single function. This is not supported.}}
 func.func @two_gemms(
