@@ -802,9 +802,11 @@ static llvm::cl::opt<float>
 // reference). `legacy` is the three-gate RMS/absDiff/relDiff verifier
 // emitted by mcpuVerifyFloat. `allclose` is the |a - b| <= atol + rtol*|b|
 // verifier emitted by mcpuVerifyFloatAllclose, with per-dtype K-scaled
-// defaults. Default stays `legacy` until the ~100 existing tests get
-// migrated in PR2; setting -atol or -rtol on the command line implies
-// `allclose` (back-compat for the original bridge mechanism).
+// defaults. Default is `allclose` so the new comparator is exercised
+// across the existing ~100 test files; pass `--comparator=legacy`
+// explicitly to opt back into the three-gate verifier. Setting -atol or
+// -rtol on the command line is a no-op for the legacy path and only
+// affects the allclose path.
 enum class ComparatorMode { Legacy, Allclose };
 static llvm::cl::opt<ComparatorMode> comparatorMode(
     "comparator",
@@ -812,10 +814,11 @@ static llvm::cl::opt<ComparatorMode> comparatorMode(
         "Comparator used by the verifier (orthogonal to --verifier)"),
     llvm::cl::values(
         clEnumValN(ComparatorMode::Legacy, "legacy",
-                   "Three-gate RMS/absDiff/relDiff (default)"),
+                   "Three-gate RMS/absDiff/relDiff"),
         clEnumValN(ComparatorMode::Allclose, "allclose",
-                   "|a - b| <= atol + rtol*|b| with per-dtype defaults")),
-    llvm::cl::init(ComparatorMode::Legacy));
+                   "|a - b| <= atol + rtol*|b| with per-dtype defaults "
+                   "(default)")),
+    llvm::cl::init(ComparatorMode::Allclose));
 
 // Allclose tolerance overrides. Setting either implies --comparator=allclose.
 static llvm::cl::opt<float>
