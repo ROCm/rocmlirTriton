@@ -1,0 +1,17 @@
+diff --git a/mlir/lib/ExecutionEngine/CMakeLists.txt b/mlir/lib/ExecutionEngine/CMakeLists.txt
+index 2176ccaa6031..16ee9816f2d0 100644
+--- a/mlir/lib/ExecutionEngine/CMakeLists.txt
++++ b/mlir/lib/ExecutionEngine/CMakeLists.txt
+@@ -440,6 +440,12 @@ if(LLVM_ENABLE_PIC)
+     set_property(TARGET mlir_rocm_runtime
+       PROPERTY INSTALL_RPATH_USE_LINK_PATH ON)
+ 
++    # On Windows the source uses plain `extern "C"` without __declspec(dllexport),
++    # so MSVC-style linkers emit a DLL with an empty export table. Let CMake
++    # auto-generate a .def file from object symbols. No-op on Linux / macOS.
++    set_target_properties(mlir_rocm_runtime PROPERTIES
++      WINDOWS_EXPORT_ALL_SYMBOLS ON)
++
+     target_link_libraries(mlir_rocm_runtime
+       PUBLIC
+       hip::host hip::amdhip64

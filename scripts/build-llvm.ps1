@@ -299,6 +299,52 @@ if ($LASTEXITCODE -ne 0) { throw "git fetch failed ($LASTEXITCODE)" }
 git -C $LlvmSrc reset --hard $LlvmHash
 if ($LASTEXITCODE -ne 0) { throw "git reset failed ($LASTEXITCODE)" }
 
+# Apply llvm-patches/*.patch in sorted order, mirroring the Linux build-llvm.sh
+# hook (which splices the same loop into Triton's build script). Each patch is
+# CRLF-normalized so `git apply` accepts it under Windows core.autocrlf=true,
+# and we check forward then reverse so re-runs are idempotent.
+$LlvmPatchesDir = "$RepoRoot/llvm-patches"
+if (Test-Path $LlvmPatchesDir) {
+    $llvmPatches = Get-ChildItem -Path $LlvmPatchesDir -Filter '*.patch' -File |
+        Sort-Object Name
+    if ($llvmPatches.Count -gt 0) {
+        Write-Host "--- Applying llvm-patches ---" -ForegroundColor Cyan
+        $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "rocmlir-llvm-patches-$PID"
+        New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
+        $savedPref = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            foreach ($patch in $llvmPatches) {
+                $bytes  = [System.IO.File]::ReadAllBytes($patch.FullName)
+                $text   = [System.Text.Encoding]::UTF8.GetString($bytes) -replace "`r`n", "`n"
+                $lfPath = Join-Path $TmpDir $patch.Name
+                [System.IO.File]::WriteAllBytes(
+                    $lfPath, [System.Text.Encoding]::UTF8.GetBytes($text))
+
+                & git -C $LlvmSrc apply --check $lfPath 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "Applying:  $($patch.Name)"
+                    & git -C $LlvmSrc apply $lfPath 2>&1 | Write-Host
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "git apply failed for $($patch.Name)"
+                    }
+                } else {
+                    & git -C $LlvmSrc apply --check --reverse $lfPath 2>$null | Out-Null
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Host "Skipping:  $($patch.Name) (already applied)"
+                    } else {
+                        Write-Warning ("$($patch.Name) does not apply cleanly -- " +
+                            "assuming the change is present in this LLVM tree.")
+                    }
+                }
+            }
+        } finally {
+            $ErrorActionPreference = $savedPref
+            Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # If a previous build was configured against a different LLVM commit, wipe
 # its build dir to avoid stale-artifact / incremental-rebuild bugs (object
 # files compiled against the old MLIR headers, leftover lit configs, etc.).
