@@ -69,15 +69,17 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
         // x / y -> x * rcp(y) via hardware reciprocal.
         .Case<arith::DivFOp>([&](auto operation) {
           addFastMathFlags(operation, arith::FastMathFlags::arcp |
-                                          arith::FastMathFlags::nsz);
+                                      arith::FastMathFlags::nsz |
+                                      arith::FastMathFlags::afn);
         })
         // Allow mul+add to fuse into fma (v_fma_f32).
         .Case<arith::AddFOp, arith::SubFOp, arith::MulFOp>([&](auto operation) {
           addFastMathFlags(operation, arith::FastMathFlags::contract |
-                                          arith::FastMathFlags::nsz);
+                                      arith::FastMathFlags::nsz |
+                                      arith::FastMathFlags::reassoc);
         })
         // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too.
-        .Case<arith::NegFOp>([&](auto operation) {
+        .Case<arith::NegFOp, arith::RemFOp, arith::MaxiNumFOp, arith::MiniNumFOp>([&](auto operation) {
           addFastMathFlags(operation, arith::FastMathFlags::nsz);
         })
         // Hardware approximate transcendentals (v_exp_f32, v_log_f32, ...).
@@ -86,9 +88,23 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
               math::CosOp, math::TanOp, math::AsinOp, math::AcosOp,
               math::AtanOp, math::Atan2Op, math::SinhOp, math::CoshOp,
               math::TanhOp, math::SqrtOp, math::RsqrtOp, math::CbrtOp,
-              math::PowFOp, math::FPowIOp, math::ErfOp, math::ErfcOp>(
+              math::PowFOp, math::FPowIOp, math::ErfOp, math::ErfcOp,
+              math::AcoshOp, math::AsinhOp, math::AtanhOp, math::SincosOp>(
             [&](auto operation) {
-              addFastMathFlags(operation, arith::FastMathFlags::afn);
+              addFastMathFlags(operation, arith::FastMathFlags::afn | 
+                                          arith::FastMathFlags::nsz | 
+                                          arith::FastMathFlags::contract);
             });
+        
+        .Case<, math::ClampFOp, math::AbsFOp, math::CopysignFOp>(
+          [&](auto operation) {
+            addFastMathFlags(operation, arith::FastMathFlags::nsz);
+          });
+        
+        .Case<math::FmaOp>(
+          [&](auto operation) {
+            addFastMathFlags(operation, arith::FastMathFlags::nsz |
+                                        arith::FastMathFlags::contract);
+          });
   });
 }
