@@ -98,11 +98,12 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       desc("Override small-tensor range analysis in convert-to-buffer-ops "
            "(kKnobDefault=off, 0=off, 1=on; requires useBufferOps to be on)"),
       init(kKnobDefault)};
-  PassOptions::Option<std::string> scheduleHint{
+  PassOptions::Option<int64_t> scheduleHint{
       *this, "scheduleHint",
-      desc("Per-kernel scheduling hint: \"none\" or a comma-separated list "
-           "of variants (e.g. \"attention\", \"memory-bound-attention\")"),
-      init("none")};
+      desc("Per-kernel scheduling hint ordinal (kKnobDefault=arch default, "
+           "0=none, 1=attention, 2=memory-bound-attention). See "
+           "mlir/Dialect/Rock/utility/ScheduleHintUtils.h for the encoding."),
+      init(kKnobDefault)};
 };
 
 /// Adds the `triton` pipeline to the `OpPassManager`.
@@ -140,10 +141,11 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> suppressDiagnostic{
       *this, "suppress-diagnostic",
       desc("should we suppress diagnostic messages"), init(false)};
-  PassOptions::Option<std::string> scheduleHint{
+  PassOptions::Option<int64_t> scheduleHint{
       *this, "scheduleHint",
-      desc("Per-kernel scheduling hint forwarded to TritonToHsaco"),
-      init("none")};
+      desc("Per-kernel scheduling hint ordinal forwarded to TritonToHsaco "
+           "(see mlir/Dialect/Rock/utility/ScheduleHintUtils.h)"),
+      init(kKnobDefault)};
 };
 
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.

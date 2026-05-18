@@ -390,9 +390,10 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
               "Allow flushing denormal numbers">,
        Option<"scalarizePackedFops", "scalarize-packed-fops", "bool", "false",
               "Scalarize packed float operations">,
-       Option<"scheduleHint", "schedule-hint", "std::string", "\"none\"",
-              "Scheduling hint (e.g., 'memory-bound-attention' for "
-              "iterative-ilp scheduler)">];
+       Option<"scheduleHint", "schedule-hint", "int64_t", "-1",
+              "Scheduling hint ordinal (-1=arch default, 0=none, "
+              "1=attention, 2=memory-bound-attention). See "
+              "mlir/Dialect/Rock/utility/ScheduleHintUtils.h for the encoding.">];
 }
 
 def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {

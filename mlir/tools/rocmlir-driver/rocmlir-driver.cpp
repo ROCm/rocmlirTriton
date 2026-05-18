@@ -21,7 +21,6 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
-#include "mlir/Dialect/Rock/utility/ScheduleHintUtils.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/InitRocMLIRCLOptions.h"
@@ -114,58 +113,13 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
                                  cl::init(""));
 
-/////////////////////////////////////////////////////////////////////////////
-//// Knobs that mirror Triton's `knobs.amd.*`
-enum class TritonKnob { Auto = rock::kKnobDefault, Off = 0, On = 1 };
-
-static cl::ValuesClass tritonKnobValues() {
-  return cl::values(clEnumValN(TritonKnob::Auto, "auto",
-                               "use the default (per-arch where applicable)"),
-                    clEnumValN(TritonKnob::Off, "false", "force off"),
-                    clEnumValN(TritonKnob::On, "true", "force on"));
-}
-
-static cl::opt<TritonKnob>
-    useAsyncCopy("use-async-copy", cl::desc("Override async-copy schedule:"),
-                 tritonKnobValues(), cl::init(TritonKnob::Auto));
-
-static cl::opt<TritonKnob>
-    useBlockPingpong("use-block-pingpong",
-                     cl::desc("Override block-pingpong schedule:"),
-                     tritonKnobValues(), cl::init(TritonKnob::Auto));
-
-static cl::opt<TritonKnob>
-    useInThreadTranspose("use-in-thread-transpose",
-                         cl::desc("Override in-thread-transpose pass:"),
-                         tritonKnobValues(), cl::init(TritonKnob::Auto));
-
-static cl::opt<TritonKnob>
-    useBufferOps("use-buffer-ops",
-                 cl::desc("Override use-buffer-ops (canonicalize-pointers / "
-                          "convert-to-buffer-ops / optimize-buffer-op-ptr):"),
-                 tritonKnobValues(), cl::init(TritonKnob::Auto));
-
-static cl::opt<TritonKnob> useBufferAtomics(
-    "use-buffer-atomics",
-    cl::desc("Override buffer atomics in convert-to-buffer-ops "
-             "(no effect when --use-buffer-ops is off):"),
-    tritonKnobValues(), cl::init(TritonKnob::Auto));
-
-static cl::opt<TritonKnob> bufferOpsAnalyzeSmallTensorRange(
-    "buffer-ops-analyze-small-tensor-range",
-    cl::desc("Override small-tensor range analysis in "
-             "convert-to-buffer-ops (no effect when --use-buffer-ops "
-             "is off):"),
-    tritonKnobValues(), cl::init(TritonKnob::Auto));
-
-// The flag is prefixed `--triton-...` to avoid colliding with the
-// `schedule-hint` pass option exposed by `RockTritonToHsacoPass` if the
-// pass is ever registered into rocmlir-driver in the future.
-static cl::opt<std::string> scheduleHint(
-    "triton-schedule-hint",
-    cl::desc("Per-kernel Triton scheduling hint: \"none\", \"attention\", "
-             "\"memory-bound-attention\", or a comma-separated combination"),
-    cl::init("none"));
+// Triton knobs (useAsyncCopy, useBlockPingpong, useInThreadTranspose,
+// useBufferOps, useBufferAtomics, bufferOpsAnalyzeSmallTensorRange,
+// scheduleHint) are part of the perfConfig (see
+// `mlir/Dialect/Rock/IR/RockAttrDefs.td`) and reach the pipeline via
+// `fillCompilationConfigs`. There are intentionally no `rocmlir-driver`
+// CLI overrides: callers express knob values inside the `--perf_config`
+// string, the same surface MIGraphX uses.
 
 namespace test {
 void registerTestDialect(DialectRegistry &);
@@ -308,24 +262,6 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   if (fillCompilationResGemmGemm.wasInterrupted()) {
     return failure();
   }
-
-  // Apply Triton knobs after perf-config has been processed, so
-  // an explicit knob set via CLI flag wins.
-  tritonOpts.useAsyncCopy = static_cast<int>(useAsyncCopy.getValue());
-  tritonOpts.useBlockPingpong = static_cast<int>(useBlockPingpong.getValue());
-  tritonOpts.useInThreadTranspose =
-      static_cast<int>(useInThreadTranspose.getValue());
-  tritonOpts.useBufferOps = static_cast<int>(useBufferOps.getValue());
-  tritonOpts.useBufferAtomics = static_cast<int>(useBufferAtomics.getValue());
-  tritonOpts.bufferOpsAnalyzeSmallTensorRange =
-      static_cast<int>(bufferOpsAnalyzeSmallTensorRange.getValue());
-  // We only validate scheduleHint here, so that none of the consumers
-  // disagree about what was requested.
-  llvm::SmallVector<std::string, 2> parsedHints;
-  if (failed(rock::parseScheduleHint(scheduleHint.getValue(), parsedHints)))
-    return failure();
-  tritonOpts.scheduleHint = scheduleHint.getValue();
-  backendOpts.scheduleHint = scheduleHint.getValue();
 
   // Set up lowering pipeline.
   if (kernelPipelineSet.contains("gpu")) {

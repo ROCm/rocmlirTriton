@@ -2063,7 +2063,18 @@ LogicalResult AttentionOp::verify() {
 
 namespace {
 
-constexpr size_t SmallVectorInlineSize = 16;
+constexpr size_t SmallVectorInlineSize = 32;
+
+// Sentinel value emitted by the tuner for the seven Triton knob fields
+// (useAsyncCopy, useBlockPingpong, useInThreadTranspose, useBufferOps,
+// useBufferAtomics, bufferOpsAnalyzeSmallTensorRange, scheduleHint) when
+// parsing a v1 perfConfig string. Mirrors `rock::kKnobDefault` in
+// `mlir/Dialect/Rock/Pipelines/Pipelines.h`; duplicated here to keep the IR
+// library free of a dependency on the Pipelines header.
+constexpr int64_t kKnobDefault = -1;
+
+// Number of trailing knob fields appended in the v2 perfConfig schema.
+constexpr size_t kNumKnobFields = 7;
 
 struct PerfConfigParseResult {
   int version;
@@ -2123,7 +2134,13 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  size_t expectedCount = (version == 1) ? 11 : 0;
+  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
+  // v2: 11 tunable fields + 7 knob fields = 18 fields.
+  size_t expectedCount = 0;
+  if (version == 1)
+    expectedCount = 11;
+  else if (version == 2)
+    expectedCount = 11 + kNumKnobFields;
   if (expectedCount == 0 || params.size() != expectedCount) {
     return {};
   }
@@ -2140,11 +2157,29 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t numStages = params[idx++];
   int64_t wavesPerEU = params[idx++];
   int64_t gridGroupSize = params[idx++];
+  int64_t useAsyncCopy = kKnobDefault;
+  int64_t useBlockPingpong = kKnobDefault;
+  int64_t useInThreadTranspose = kKnobDefault;
+  int64_t useBufferOps = kKnobDefault;
+  int64_t useBufferAtomics = kKnobDefault;
+  int64_t bufferOpsAnalyzeSmallTensorRange = kKnobDefault;
+  int64_t scheduleHint = kKnobDefault;
+  if (version >= 2) {
+    useAsyncCopy = params[idx++];
+    useBlockPingpong = params[idx++];
+    useInThreadTranspose = params[idx++];
+    useBufferOps = params[idx++];
+    useBufferAtomics = params[idx++];
+    bufferOpsAnalyzeSmallTensorRange = params[idx++];
+    scheduleHint = params[idx++];
+  }
 
-  return GemmParamsAttr::get(perfConfigStrAttr.getContext(), mPerBlock,
-                             nPerBlock, kPerBlock, kpack, numCTAs, numWaves,
-                             matrixInstrNonkdim, splitKFactor, numStages,
-                             wavesPerEU, gridGroupSize);
+  return GemmParamsAttr::get(
+      perfConfigStrAttr.getContext(), mPerBlock, nPerBlock, kPerBlock, kpack,
+      numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
+      wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
+      useInThreadTranspose, useBufferOps, useBufferAtomics,
+      bufferOpsAnalyzeSmallTensorRange, scheduleHint);
 }
 
 //===-----------------------------------------------------===//
@@ -2160,7 +2195,13 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  size_t expectedCount = (version == 1) ? 11 : 0;
+  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
+  // v2: 11 tunable fields + 7 knob fields = 18 fields.
+  size_t expectedCount = 0;
+  if (version == 1)
+    expectedCount = 11;
+  else if (version == 2)
+    expectedCount = 11 + kNumKnobFields;
   if (expectedCount == 0 || params.size() != expectedCount) {
     return {};
   }
@@ -2177,11 +2218,29 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t numStages = params[idx++];
   int64_t wavesPerEU = params[idx++];
   int64_t gridGroupSize = params[idx++];
+  int64_t useAsyncCopy = kKnobDefault;
+  int64_t useBlockPingpong = kKnobDefault;
+  int64_t useInThreadTranspose = kKnobDefault;
+  int64_t useBufferOps = kKnobDefault;
+  int64_t useBufferAtomics = kKnobDefault;
+  int64_t bufferOpsAnalyzeSmallTensorRange = kKnobDefault;
+  int64_t scheduleHint = kKnobDefault;
+  if (version >= 2) {
+    useAsyncCopy = params[idx++];
+    useBlockPingpong = params[idx++];
+    useInThreadTranspose = params[idx++];
+    useBufferOps = params[idx++];
+    useBufferAtomics = params[idx++];
+    bufferOpsAnalyzeSmallTensorRange = params[idx++];
+    scheduleHint = params[idx++];
+  }
 
-  return GemmGemmParamsAttr::get(perfConfigStrAttr.getContext(), mPerBlockG0,
-                                 nPerBlockG0, kPerBlock, kpack, numCTAs,
-                                 numWaves, matrixInstrNonkdim, splitKFactor,
-                                 numStages, wavesPerEU, gridGroupSize);
+  return GemmGemmParamsAttr::get(
+      perfConfigStrAttr.getContext(), mPerBlockG0, nPerBlockG0, kPerBlock,
+      kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
+      wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
+      useInThreadTranspose, useBufferOps, useBufferAtomics,
+      bufferOpsAnalyzeSmallTensorRange, scheduleHint);
 }
 
 //===----------------------------------------------------------------------===//

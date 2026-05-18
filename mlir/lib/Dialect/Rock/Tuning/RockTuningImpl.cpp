@@ -38,6 +38,14 @@
 namespace mlir {
 namespace rock {
 
+namespace {
+// Sentinel value emitted by the tuner for the 7 Triton knob fields carried
+// in `GemmParamsAttr` / `GemmGemmParamsAttr`. Mirrors `rock::kKnobDefault`
+// in `mlir/Dialect/Rock/Pipelines/Pipelines.h`; duplicated here to keep
+// the Tuning library free of a dependency on the Pipelines header.
+constexpr int64_t kKnobDefault = -1;
+} // namespace
+
 static std::vector<uint32_t> computeDPerBlock(Operation *op,
                                               TuningParamSetKind tuningKind) {
   auto arch = rock::getArchValue(op);
@@ -268,11 +276,24 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                   for (uint32_t wavesPerEU : validRangeGemmGemmParams[7]) {
                     for (uint32_t gridGroupSize : validRangeGemmGemmParams[8]) {
                       for (uint32_t numCTAs : validRangeGemmGemmParams[9]) {
+                        // Triton knob fields (useAsyncCopy,
+                        // useBlockPingpong, useInThreadTranspose,
+                        // useBufferOps, useBufferAtomics,
+                        // bufferOpsAnalyzeSmallTensorRange, scheduleHint)
+                        // are carried in the perfConfig but not tuned
+                        // here; the tuner always emits `kKnobDefault`.
                         auto gemmGemmParams = GemmGemmParamsAttr::get(
                             gemmGemmOp.getContext(), gemm0MPerBlock,
                             gemm0NPerBlock, gemmKPerBlock, gemmKPack, numCTAs,
                             numWaves, matrixInstrNonkdim, splitKFactor,
-                            numStages, wavesPerEU, gridGroupSize);
+                            numStages, wavesPerEU, gridGroupSize,
+                            /*useAsyncCopy=*/kKnobDefault,
+                            /*useBlockPingpong=*/kKnobDefault,
+                            /*useInThreadTranspose=*/kKnobDefault,
+                            /*useBufferOps=*/kKnobDefault,
+                            /*useBufferAtomics=*/kKnobDefault,
+                            /*bufferOpsAnalyzeSmallTensorRange=*/kKnobDefault,
+                            /*scheduleHint=*/kKnobDefault);
                         newSpace->tuningRange.push_back(
                             cast<RockTuningParamAttrInterface>(gemmGemmParams));
                       }
@@ -405,11 +426,24 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                   for (int64_t wavesPerEU : accelParams[7]) {
                     for (int64_t gridGroupSize : accelParams[8]) {
                       for (uint32_t numCTAs : accelParams[9]) {
+                        // Triton knob fields (useAsyncCopy,
+                        // useBlockPingpong, useInThreadTranspose,
+                        // useBufferOps, useBufferAtomics,
+                        // bufferOpsAnalyzeSmallTensorRange, scheduleHint)
+                        // are carried in the perfConfig but not tuned
+                        // here; the tuner always emits `kKnobDefault`.
                         auto gemmParams = GemmParamsAttr::get(
                             b.getContext(), gemmMPerBlock, gemmNPerBlock,
                             gemmKPerBlock, gemmKPack, numCTAs, numWaves,
                             matrixInstrNonkdim, splitKFactor, numStages,
-                            wavesPerEU, gridGroupSize);
+                            wavesPerEU, gridGroupSize,
+                            /*useAsyncCopy=*/kKnobDefault,
+                            /*useBlockPingpong=*/kKnobDefault,
+                            /*useInThreadTranspose=*/kKnobDefault,
+                            /*useBufferOps=*/kKnobDefault,
+                            /*useBufferAtomics=*/kKnobDefault,
+                            /*bufferOpsAnalyzeSmallTensorRange=*/kKnobDefault,
+                            /*scheduleHint=*/kKnobDefault);
                         if (kind != TuningParamSetKind::Full ||
                             succeeded(tuningInfo->couldBePerformant(
                                 info, gemmParams)))

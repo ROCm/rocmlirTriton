@@ -169,17 +169,27 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::createTritonAMDGPUConvertToTensorOps());
   pm->addPass(mlir::createCanonicalizerPass());
 
-  // scheduleHint has already been validated, here we just parse
-  // the hints and add the corresponding passes.
-  SmallVector<std::string, 2> schedHints;
-  if (failed(rock::parseScheduleHint(options.scheduleHint, schedHints)))
-    llvm::report_fatal_error(
-        "TritonOptions::scheduleHint must be validated before pipeline build");
-  for (StringRef hint : schedHints) {
-    if (!triton::amdgpu::symbolizeSchedHint(hint))
-      continue;
-    pm->addPass(mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
-        {hint.str()}));
+  // Mirror upstream Triton's compiler.py make_ttgir():
+  //   if options.schedule_hint.lower() != "none":
+  //       for hint in options.schedule_hint.split(","):
+  //           amd.passes.ttgpuir.insert_instruction_sched_hints(pm, hint)
+  // We carry `scheduleHint` as a bitfield (see ScheduleHintUtils.h); the
+  // expansion helper iterates set bits in stable order and yields the
+  // variant names in the same order upstream's `split(",")` does.
+  // LLIR-only variants (e.g. memory-bound-attention) are emitted by
+  // this pass too; they're harmless until lowered in makeLLIR /
+  // TritonToHsaco.
+  if (options.scheduleHint != rock::kKnobDefault &&
+      options.scheduleHint != rock::kScheduleHintNone) {
+    llvm::SmallVector<std::string, 2> hints;
+    if (succeeded(rock::expandScheduleHintBitfield(options.scheduleHint,
+                                                   hints))) {
+      for (const std::string &hint : hints) {
+        pm->addPass(
+            mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
+                {hint}));
+      }
+    }
   }
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   pm->addPass(mlir::triton::gpu::createTritonGPUReduceDataDuplication());
@@ -226,7 +236,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int numStages, const std::string &scheduleHint) {
+                     int numStages, int64_t scheduleHint) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   pm->addPass(mlir::createSCFToControlFlowPass());
@@ -265,13 +275,14 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createSymbolDCEPass());
 
-  // scheduleHint has already been validated at the driver boundary; we only
-  // need to know whether any hint was requested to add the corresponding pass.
-  SmallVector<std::string, 2> schedHints;
-  if (failed(rock::parseScheduleHint(scheduleHint, schedHints)))
-    llvm::report_fatal_error(
-        "TritonOptions::scheduleHint must be validated before pipeline build");
-  if (!schedHints.empty()) {
+  // Mirror upstream Triton's compiler.py make_llir():
+  //   if options.schedule_hint.lower() != "none":
+  //       amd.passes.ttgpuir.lower_instruction_sched_hints(...)
+  // Upstream emits a single lowering pass that walks all hint ops left
+  // by make_ttgir, so we follow suit. `kKnobDefault` resolves to "no
+  // hint" today, same as `kScheduleHintNone`.
+  if (scheduleHint != rock::kKnobDefault &&
+      scheduleHint != rock::kScheduleHintNone) {
     pm->addPass(mlir::triton::createTritonAMDGPULowerInstructionSchedHintsPass(
         arch, numStages));
   }

@@ -233,21 +233,52 @@ def Rock_GemmParamsAttr
     - wavesPerEU: Hint to backend compiler for wavefronts per execution unit
     - gridGroupSize: Number of chiplets to group together to perform a spatially
       local tile
+    - useAsyncCopy: Overrides the per-arch default application for the async-copy schedule.
+    - useBlockPingpong: Overrides the per-arch default application for the block-pingpong schedule.
+    - useInThreadTranspose: Overrides the per-arch default application for the in-thread-transpose pass.
+    - useBufferOps: Overrides the convert-to-buffer-ops / canonicalize-pointers / optimize-buffer-op-ptr
+      pass cluster.
+    - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
+      to be enabled).
+    - bufferOpsAnalyzeSmallTensorRange: Overrides small-tensor range analysis in
+      convert-to-buffer-ops (requires useBufferOps to be enabled).
+    - scheduleHint: Bitfield selector mirroring upstream Triton's
+      `HIPOptions.schedule_hint`, which is a comma-separated multi-select
+      string ("attention,memory-bound-attention"). Encoded as a bitfield so
+      that combinations are expressible end-to-end.
+      kKnobDefault=-1=arch default, 0=none, bit 0 (=1)=attention,
+      bit 1 (=2)=memory-bound-attention. Bit assignments are append-only;
+      new variants must claim a new bit and the table in
+      ScheduleHintUtils.cpp must be extended in lockstep.
 
-    NOTE: The `wavesPerEU` and `gridGroupSize` fields are serialized into the
-    perfConfig but they are not actually tuned. Instead, the are always set to
-    `0` (use the backend heuristic) by the tuner.
+    NOTE: The following fields are serialized into the perfConfig but they are
+    not actually tuned. Instead, the are always set to `0` (use the backend heuristic)
+    by the tuner:
+
+    - `wavesPerEU`
+    - `gridGroupSize`
+    - `useAsyncCopy`
+    - `useBlockPingpong` 
+    - `useInThreadTranspose`
+    - `useBufferOps`
+    - `useBufferAtomics`
+    - `bufferOpsAnalyzeSmallTensorRange`    
   }];
 
   let parameters = (ins "int64_t":$mPerBlock,
       "int64_t":$nPerBlock, "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs, "int64_t":$numWaves,
       "int64_t":$matrixInstrNonkdim, "int64_t":$splitKFactor,
       "int64_t":$numStages, 
-      "int64_t":$wavesPerEU, "int64_t":$gridGroupSize);
+      "int64_t":$wavesPerEU, "int64_t":$gridGroupSize,
+      "int64_t":$useAsyncCopy, "int64_t":$useBlockPingpong,
+      "int64_t":$useInThreadTranspose, "int64_t":$useBufferOps,
+      "int64_t":$useBufferAtomics,
+      "int64_t":$bufferOpsAnalyzeSmallTensorRange,
+      "int64_t":$scheduleHint);
 
   let extraClassDeclaration = [{
     void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("gemm:v1:"
+        ("gemm:v2:"
         + Twine(getMPerBlock()) + ","
         + Twine(getNPerBlock()) + ","
         + Twine(getKPerBlock()) + ","
@@ -258,7 +289,14 @@ def Rock_GemmParamsAttr
         + Twine(getSplitKFactor()) + ","
         + Twine(getNumStages()) + ","
         + Twine(getWavesPerEU()) + ","
-        + Twine(getGridGroupSize())) 
+        + Twine(getGridGroupSize()) + ","
+        + Twine(getUseAsyncCopy()) + ","
+        + Twine(getUseBlockPingpong()) + ","
+        + Twine(getUseInThreadTranspose()) + ","
+        + Twine(getUseBufferOps()) + ","
+        + Twine(getUseBufferAtomics()) + ","
+        + Twine(getBufferOpsAnalyzeSmallTensorRange()) + ","
+        + Twine(getScheduleHint()))
         .toVector(perfStr);
     }
 
@@ -298,21 +336,52 @@ def Rock_GemmGemmParamsAttr
     - wavesPerEU: Hint to backend compiler for wavefronts per execution unit
     - gridGroupSize: Number of chiplets to group together to perform a spatially
       local tile
+    - useAsyncCopy: Overrides the per-arch default application for the async-copy schedule.
+    - useBlockPingpong: Overrides the per-arch default application for the block-pingpong schedule.
+    - useInThreadTranspose: Overrides the per-arch default application for the in-thread-transpose pass.
+    - useBufferOps: Overrides the convert-to-buffer-ops / canonicalize-pointers / optimize-buffer-op-ptr
+      pass cluster.
+    - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
+      to be enabled).
+    - bufferOpsAnalyzeSmallTensorRange: Overrides small-tensor range analysis in
+      convert-to-buffer-ops (requires useBufferOps to be enabled).
+    - scheduleHint: Bitfield selector mirroring upstream Triton's
+      `HIPOptions.schedule_hint`, which is a comma-separated multi-select
+      string ("attention,memory-bound-attention"). Encoded as a bitfield so
+      that combinations are expressible end-to-end.
+      kKnobDefault=-1=arch default, 0=none, bit 0 (=1)=attention,
+      bit 1 (=2)=memory-bound-attention. Bit assignments are append-only;
+      new variants must claim a new bit and the table in
+      ScheduleHintUtils.cpp must be extended in lockstep.
 
-    NOTE: The `wavesPerEU` and `gridGroupSize` fields are serialized into the
-    perfConfig but they are not actually tuned. Instead, the are always set to
-    `0` (use the backend heuristic) by the tuner.
+    NOTE: The following fields are serialized into the perfConfig but they are
+    not actually tuned. Instead, the are always set to `0` (use the backend heuristic)
+    by the tuner:
+
+    - `wavesPerEU`
+    - `gridGroupSize`
+    - `useAsyncCopy`
+    - `useBlockPingpong` 
+    - `useInThreadTranspose`
+    - `useBufferOps`
+    - `useBufferAtomics`
+    - `bufferOpsAnalyzeSmallTensorRange`   
   }];
 
   let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
       "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs,
       "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
       "int64_t":$splitKFactor, "int64_t":$numStages, "int64_t":$wavesPerEU,
-      "int64_t":$gridGroupSize);
+      "int64_t":$gridGroupSize,
+      "int64_t":$useAsyncCopy, "int64_t":$useBlockPingpong,
+      "int64_t":$useInThreadTranspose, "int64_t":$useBufferOps,
+      "int64_t":$useBufferAtomics,
+      "int64_t":$bufferOpsAnalyzeSmallTensorRange,
+      "int64_t":$scheduleHint);
 
   let extraClassDeclaration = [{
     void getPerfConfigStr(::llvm::SmallVectorImpl<char> &perfStr) {
-      ("attn:v1:"
+      ("attn:v2:"
       + Twine(getMPerBlockG0()) + ","
       + Twine(getNPerBlockG0()) + ","
       + Twine(getKPerBlock()) + ","
@@ -323,7 +392,14 @@ def Rock_GemmGemmParamsAttr
       + Twine(getSplitKFactor()) + ","
       + Twine(getNumStages()) + ","
       + Twine(getWavesPerEU()) + ","
-      + Twine(getGridGroupSize()))
+      + Twine(getGridGroupSize()) + ","
+      + Twine(getUseAsyncCopy()) + ","
+      + Twine(getUseBlockPingpong()) + ","
+      + Twine(getUseInThreadTranspose()) + ","
+      + Twine(getUseBufferOps()) + ","
+      + Twine(getUseBufferAtomics()) + ","
+      + Twine(getBufferOpsAnalyzeSmallTensorRange()) + ","
+      + Twine(getScheduleHint()))
       .toVector(perfStr);
     }
 

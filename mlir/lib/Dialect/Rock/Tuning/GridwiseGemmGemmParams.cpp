@@ -76,13 +76,19 @@ GemmParamsAttr
 PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
                                        GemmGemmParamsAttr params) {
   constexpr auto splitKFactor = 1;
-  
+
+  // Triton knob fields propagate from the parent GemmGemmParamsAttr to
+  // both synthetic per-GEMM attrs so the compilation pipeline sees the
+  // same knob values for the entire attention kernel.
   return GemmParamsAttr::get(
-      b.getContext(), params.getMPerBlockG0(),
-      params.getNPerBlockG0(), params.getKPerBlock(), params.getKpack(), params.getNumCTAs(),
+      b.getContext(), params.getMPerBlockG0(), params.getNPerBlockG0(),
+      params.getKPerBlock(), params.getKpack(), params.getNumCTAs(),
       params.getNumWaves(), params.getMatrixInstrNonkdim(), splitKFactor,
-      params.getNumStages(),
-      params.getWavesPerEU(), params.getGridGroupSize());
+      params.getNumStages(), params.getWavesPerEU(),
+      params.getGridGroupSize(), params.getUseAsyncCopy(),
+      params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
+      params.getUseBufferOps(), params.getUseBufferAtomics(),
+      params.getBufferOpsAnalyzeSmallTensorRange(), params.getScheduleHint());
 }
 
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
@@ -95,10 +101,16 @@ GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
   if (cShape.size() == 3)
     idx++;
   int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(cShape[idx]);
+  // Triton knob fields propagate from the parent GemmGemmParamsAttr to
+  // both synthetic per-GEMM attrs so the compilation pipeline sees the
+  // same knob values for the entire attention kernel.
   return GemmParamsAttr::get(
       b.getContext(), params.getMPerBlockG0(), gemm1NPerBlock,
       params.getNPerBlockG0(), params.getKpack(), params.getNumCTAs(),
       params.getNumWaves(), params.getMatrixInstrNonkdim(),
       params.getSplitKFactor(), params.getNumStages(), params.getWavesPerEU(),
-      params.getGridGroupSize());
+      params.getGridGroupSize(), params.getUseAsyncCopy(),
+      params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
+      params.getUseBufferOps(), params.getUseBufferAtomics(),
+      params.getBufferOpsAnalyzeSmallTensorRange(), params.getScheduleHint());
 }

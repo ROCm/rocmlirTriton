@@ -37,8 +37,9 @@ struct TritonToHsacoOptions {
   bool enableFpFusion = true;
   bool allowFlushDenorm = false;
   bool scalarizePackedFops = false; // Scalarize packed float ops
-  std::string scheduleHint =
-      "none"; // Scheduling hint (e.g., "memory-bound-attention")
+  // Scheduling hint ordinal (-1=arch default, 0=none, 1=attention,
+  // 2=memory-bound-attention). See ScheduleHintUtils.h for the encoding.
+  int64_t scheduleHint = -1;
   std::vector<std::string> externLibPaths; // Paths to external device libraries
                                            // (ocml.bc, ockl.bc, etc.)
 };

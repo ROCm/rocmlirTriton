@@ -223,7 +223,7 @@ void setABIVersion(llvm::Module &module, int version) {
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
                          int numCTAs, bool allowFlushDenorm, bool enableAsan,
-                         StringRef scheduleHint) {
+                         int64_t scheduleHint) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
@@ -243,17 +243,17 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   kernelFn->addFnAttr("amdgpu-flat-work-group-size",
                       "1," + std::to_string(totalThreads));
 
-  // memory-bound-attention schedule hint enables iterative-ilp scheduler
-  // (compiler.py lines 387-388). scheduleHint has already been validated
-  // here, so we just parse the hints and add the corresponding attribute.
+  // memory-bound-attention schedule hint enables iterative-ilp scheduler.
+  // Mirror upstream compiler.py:
+  //   if "memory-bound-attention" in options.schedule_hint.split(','):
+  //       kernel_fn.add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
+  // `scheduleHint` is a stable bitfield (see ScheduleHintUtils.h);
+  // multiple hint bits can be set simultaneously, so we test the
+  // memory-bound-attention bit instead of comparing for equality.
   //
   // TODO(roctriton): Set scheduleHint in ToBlockwise? or somewhere else?
   // Or should we just tune it?
-  SmallVector<std::string, 2> schedHints;
-  if (failed(rock::parseScheduleHint(scheduleHint, schedHints)))
-    llvm::report_fatal_error(
-        "BackendOptions::scheduleHint must be validated before TritonToHsaco");
-  if (llvm::is_contained(schedHints, rock::kMemoryBoundAttentionHint)) {
+  if (scheduleHint & rock::kScheduleHintMemoryBoundAttention) {
     kernelFn->addFnAttr("amdgpu-sched-strategy", "iterative-ilp");
   }
 
