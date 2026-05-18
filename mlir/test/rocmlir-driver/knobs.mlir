@@ -2,7 +2,7 @@
 // pass options in the Triton pipeline, mirroring Triton's `knobs.amd.*`
 // semantics.
 //
-// Tri-state knobs (`--use-async-copy`, `--use-block-pingpong`,
+// Triton knobs (`--use-async-copy`, `--use-block-pingpong`,
 // `--use-in-thread-transpose`, `--use-buffer-ops`, `--use-buffer-atomics`,
 // `--buffer-ops-analyze-small-tensor-range`) accept:
 //   auto (default) -> per-arch default

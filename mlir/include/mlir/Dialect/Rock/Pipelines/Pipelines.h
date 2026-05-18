@@ -68,7 +68,7 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       init(16)};
   PassOptions::Option<int> kpack{*this, "kpack", desc("kpack"), init(1)};
 
-  // Triton knobs. See `kKnobDefault` above for the tri-state convention.
+  // Triton knobs.
   PassOptions::Option<int> useAsyncCopy{
       *this, "useAsyncCopy",
       desc("Override async-copy schedule (kKnobDefault=arch default, "
