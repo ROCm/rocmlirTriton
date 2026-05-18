@@ -113,6 +113,20 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
                                  cl::init(""));
 
+/////////////////////////////////////////////////////////////////////////////
+//// Knobs that mirror Triton's `knobs.amd.*`
+enum class TriStateKnob { Auto = -1, Off = 0, On = 1 };
+
+static cl::opt<TriStateKnob> useAsyncCopy(
+    "use-async-copy",
+    cl::desc("Override async-copy schedule:"),
+    cl::values(
+        clEnumValN(TriStateKnob::Auto, "auto",
+                   "use the per-arch default (default)"),
+        clEnumValN(TriStateKnob::Off, "false", "force off"),
+        clEnumValN(TriStateKnob::On, "true", "force on")),
+    cl::init(TriStateKnob::Auto));
+
 namespace test {
 void registerTestDialect(DialectRegistry &);
 } // namespace test
@@ -254,6 +268,10 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   if (fillCompilationResGemmGemm.wasInterrupted()) {
     return failure();
   }
+
+  // Apply Triton knobs after perf-config has been processed, so
+  // an explicit knob set via CLI flag wins.
+  tritonOpts.useAsyncCopy = static_cast<int>(useAsyncCopy.getValue());
 
   // Set up lowering pipeline.
   if (kernelPipelineSet.contains("gpu")) {

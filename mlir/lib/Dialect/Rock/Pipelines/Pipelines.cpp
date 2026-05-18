@@ -94,7 +94,9 @@ static bool isInThreadTransposeEnabled(StringRef arch) {
   return arch.starts_with("gfx942");
 }
 
-static bool isAsyncCopyEnabled(StringRef arch) {
+static bool isAsyncCopyEnabled(StringRef arch, int useAsyncCopyOverride) {
+  if (useAsyncCopyOverride >= 0)
+    return useAsyncCopyOverride != 0;
   return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
 }
 
@@ -129,7 +131,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   // TODO(ROCm) Modify when corresponding run time flags are introduced.
   std::string scheduleHint = "none";
 
-  bool useAsyncCopy = isAsyncCopyEnabled(options.arch);
+  bool useAsyncCopy = isAsyncCopyEnabled(options.arch, options.useAsyncCopy);
   bool useBlockPingpong = isPingpongScheduleEnabled(options.arch, useAsyncCopy);
 
   pm->addPass(mlir::createTritonAMDGPUOptimizeDescriptorEncoding());

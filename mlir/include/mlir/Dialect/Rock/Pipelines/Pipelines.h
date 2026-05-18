@@ -65,6 +65,12 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       *this, "matrixInstrNonkdim", desc("Matrix instruction non-k dimension"),
       init(16)};
   PassOptions::Option<int> kpack{*this, "kpack", desc("kpack"), init(1)};
+
+  // Triton knobs
+  PassOptions::Option<int> useAsyncCopy{
+      *this, "useAsyncCopy",
+      desc("Override async-copy schedule: -1=arch default, 0=off, 1=on"),
+      init(-1)};
 };
 
 /// Adds the `triton` pipeline to the `OpPassManager`.
