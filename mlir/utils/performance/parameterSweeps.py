@@ -535,7 +535,7 @@ PERF_CONFIG_OPTIONS = {
     'split_k_factor': [1, 2, 3, 4],
     'num_stages': [1, 2, 3],
     # The C++ tuner pins these at 0 ("use heuristic"); the commented-out code
-    # in getAccelRangeGemm shows the intended sweep range. 0 is kept so the
+    # in getRangeGemm shows the intended sweep range. 0 is kept so the
     # heuristic path is also exercised.
     'waves_per_eu': [0, 1, 2, 4, 8],
     'grid_group_size': [0, 1, 2, 4, 8],

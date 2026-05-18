@@ -114,8 +114,8 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 }
 
 static std::vector<std::vector<uint32_t>>
-getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
-                  int64_t maxWavesPerEU, TuningParamSetKind kind) {
+getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
+             int64_t maxWavesPerEU, TuningParamSetKind kind) {
   auto dPerBlock = computeDPerBlock(gemmOp, kind);
   std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
 
@@ -185,8 +185,8 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
 }
 
 static std::vector<std::vector<uint32_t>>
-getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
-                      TuningParamSetKind kind) {
+getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
+                 TuningParamSetKind kind) {
   std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
   auto dPerBlock = computeDPerBlock(gemmGemmOp, kind);
   std::vector<uint32_t> wavesPerEUList = {0};
@@ -254,7 +254,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         TuningParamSetKind kind) {
   auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
-      getAccelRangeGemmGemm(gemmGemmOp, waveSize, kind);
+      getRangeGemmGemm(gemmGemmOp, waveSize, kind);
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
     for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
@@ -388,25 +388,25 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
 
   int64_t maxWavesPerEU = rock::getMaxWavesPerEU(rock::getArchValue(gemmOp));
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(gemmOp));
-  const std::vector<std::vector<uint32_t>> accelParams =
-      getAccelRangeGemm(gemmOp, waveSize, maxWavesPerEU, kind);
+  const std::vector<std::vector<uint32_t>> params =
+      getRangeGemm(gemmOp, waveSize, maxWavesPerEU, kind);
 
   auto tuningInfo = std::make_unique<PopulateParams>();
 
   OpBuilder b(gemmOp.getContext());
-  for (uint32_t gemmMPerBlock : accelParams[0]) {
-    for (uint32_t gemmNPerBlock : accelParams[1]) {
-      for (uint32_t gemmKPerBlock : accelParams[2]) {
-        for (uint32_t gemmKPack : accelParams[3]) {
-          for (uint32_t numWaves : accelParams[4]) {
-            for (uint32_t matrixInstrNonkdim : accelParams[5]) {
+  for (uint32_t gemmMPerBlock : params[0]) {
+    for (uint32_t gemmNPerBlock : params[1]) {
+      for (uint32_t gemmKPerBlock : params[2]) {
+        for (uint32_t gemmKPack : params[3]) {
+          for (uint32_t numWaves : params[4]) {
+            for (uint32_t matrixInstrNonkdim : params[5]) {
               auto optimalSplitKFactors = computeOptimalSplitKFactors(
                   gemmOp, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock);
               for (int64_t splitKFactor : optimalSplitKFactors) {
-                for (int64_t numStages : accelParams[6]) {
-                  for (int64_t wavesPerEU : accelParams[7]) {
-                    for (int64_t gridGroupSize : accelParams[8]) {
-                      for (uint32_t numCTAs : accelParams[9]) {
+                for (int64_t numStages : params[6]) {
+                  for (int64_t wavesPerEU : params[7]) {
+                    for (int64_t gridGroupSize : params[8]) {
+                      for (uint32_t numCTAs : params[9]) {
                         auto gemmParams = GemmParamsAttr::get(
                             b.getContext(), gemmMPerBlock, gemmNPerBlock,
                             gemmKPerBlock, gemmKPack, numCTAs, numWaves,

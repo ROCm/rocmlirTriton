@@ -287,8 +287,7 @@ static LogicalResult
 computeGridSizeAttentionGemmElmtGemm(ConversionPatternRewriter &rw, Op op,
                                      Value a, Value b, Value c,
                                      int64_t splitKV) {
-  GemmParamsAttr accelParams0 =
-      cast<GemmParamsAttr>(op.getGemm0Params().value());
+  GemmParamsAttr params0 = cast<GemmParamsAttr>(op.getGemm0Params().value());
 
   SmallVector<int64_t, 3> aShape =
       llvm::to_vector<3>(cast<ShapedType>(a.getType()).getShape());
@@ -304,7 +303,7 @@ computeGridSizeAttentionGemmElmtGemm(ConversionPatternRewriter &rw, Op op,
                      /*n=*/bShape[2]);
 
   int64_t gridSize =
-      (gemm0Size.m / accelParams0.getMPerBlock()) * gemm0Size.g * splitKV;
+      (gemm0Size.m / params0.getMPerBlock()) * gemm0Size.g * splitKV;
 
   IntegerAttr gridSizeAttr = rw.getI32IntegerAttr(gridSize);
   func::FuncOp funcOp = cast<func::FuncOp>(op->getParentOp());

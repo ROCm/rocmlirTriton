@@ -26,6 +26,8 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -1291,14 +1293,19 @@ static Value makeNDMemRef(OpBuilder &b, Value var, uint32_t ndim) {
 
 static std::pair<int64_t, int64_t> getMandNPerBlock(OpBuilder builder,
                                                     const GenParams &params) {
-  // default perfConfig is attn:v1:32,32,32,32,1,1,4,0,1,1,0,0
-  // keep in sync with AffixTuningParameters.cpp
-  if (params.perfConfig.empty())
-    return {32, 32};
-
-  auto attnPerfConfig =
-      rock::GemmGemmParamsAttr::get(builder.getStringAttr(params.perfConfig));
-  return {attnPerfConfig.getMPerBlockG0(), attnPerfConfig.getNPerBlockG0()};
+  // Mirrors PopulateParamsGemmGemm::obtainTuningParameters: prefer the
+  // user-supplied perfConfig, otherwise fall back to the first quick-tuning
+  // entry for this (arch, kernel, dtype).
+  assert(params.operation.has_value() && !params.types.empty());
+  std::vector<rock::GemmGemmParamsAttr> defaults =
+      rock::PopulateParamsGemmGemm::getTuningParameters(
+          builder, params.arch, *params.operation, params.types[0]);
+  FailureOr<rock::GemmGemmParamsAttr> attnPerfConfig =
+      rock::materializeTuningParams<rock::GemmGemmParamsAttr>(
+          builder, params.perfConfig, defaults);
+  assert(succeeded(attnPerfConfig) &&
+         "no quick-tuning entry for this arch / kernel / dtype");
+  return {attnPerfConfig->getMPerBlockG0(), attnPerfConfig->getNPerBlockG0()};
 }
 
 // Compute the number of valid split-KV entries for each batch-head.

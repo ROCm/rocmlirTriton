@@ -27,6 +27,12 @@ public:
   static std::vector<GemmGemmParamsAttr>
   getTuningParameters(OpBuilder &b, RockGemmGemmWrapperInterface op);
 
+  // Same as above, but for callers without a concrete op (e.g. rocmlir-gen
+  // computing default block sizes before the kernel exists).
+  static std::vector<GemmGemmParamsAttr>
+  getTuningParameters(OpBuilder &b, StringRef arch, KernelType kernelType,
+                      Type elementType);
+
   static FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
   getGemmParams(OpBuilder &b, RockGemmGemmWrapperInterface op,
                      GemmGemmParamsAttr params);
@@ -35,14 +41,6 @@ public:
   obtainTuningParameters(OpBuilder &b, RockGemmGemmWrapperInterface op);
 
 protected:
-  static GemmGemmParamsAttr
-  deserializePerfConfig(OpBuilder &b, RockGemmGemmWrapperInterface op,
-                        StringRef config);
-
-  static std::vector<GemmGemmParamsAttr>
-  deserializePerfConfigs(OpBuilder &b, RockGemmGemmWrapperInterface op,
-                         ArrayRef<StringRef> configs);
-
   static GemmParamsAttr getGemm0Params(OpBuilder &b,
                                             GemmGemmParamsAttr params);
 

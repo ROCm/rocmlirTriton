@@ -2118,8 +2118,10 @@ def benchmark_fusion_kernels(test_dir,
 
     if tuning_db:
         # Force all split-K factors to 1, to avoid trouble because fusion
-        # and split-K aren't compatible.  Crude parser approximating
-        # InitParamsAccel::visit().
+        # and split-K aren't compatible.  Crude parser mirroring the CSV
+        # layout serialized by GemmParamsAttr::getPerfConfigStr (see
+        # RockAttrDefs.td); SPLITK_IDX must match the splitKFactor field
+        # position.
         for (arch, config), perfconfig in tuning_db.items():
             split_perf = perfconfig.split(',')
             if int(split_perf[SPLITK_IDX]) > 1:

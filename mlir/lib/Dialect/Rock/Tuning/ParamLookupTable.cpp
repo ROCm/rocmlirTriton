@@ -61,7 +61,8 @@ StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
 template <typename ParamsType>
 SmallVector<StringRef, 12>
 ParamLookupTable<ParamsType>::getRelatives(StringRef target) {
-  // For non-accel params, fall back to any gfx
+  // Fall back within the same gfx major family (gfxN...), e.g. gfx942 ->
+  // gfx90a; never across families.
   constexpr auto fallbackArchPrefixLen = 4;
   const auto suffixLen = target.size() - target.find(separator);
 
@@ -135,9 +136,9 @@ template <>
 std::map<StringRef, ArrayRef<StringRef>>
 ParamLookupTable<GemmParamsAttr>::buildTable() {
   return {
-#define Accel_LOOKUP_TABLE_GEN
+#define Gemm_LOOKUP_TABLE_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef Accel_LOOKUP_TABLE_GEN
+#undef Gemm_LOOKUP_TABLE_GEN
   };
 }
 
