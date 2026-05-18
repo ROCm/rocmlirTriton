@@ -23,6 +23,9 @@ using namespace llvm::cl;
 namespace mlir {
 namespace rock {
 
+/// Triton knob sentinel for default value (per arch default)
+constexpr int kKnobDefault = -1;
+
 //===----------------------------------------------------------------------===//
 // Building and Registering.
 //===----------------------------------------------------------------------===//
@@ -66,33 +69,36 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       init(16)};
   PassOptions::Option<int> kpack{*this, "kpack", desc("kpack"), init(1)};
 
-  // Triton knobs.
+  // Triton knobs. See `kKnobDefault` above for the tri-state convention.
   PassOptions::Option<int> useAsyncCopy{
       *this, "useAsyncCopy",
-      desc("Override async-copy schedule: -1=arch default, 0=off, 1=on"),
-      init(-1)};
+      desc("Override async-copy schedule (kKnobDefault=arch default, "
+           "0=off, 1=on)"),
+      init(kKnobDefault)};
   PassOptions::Option<int> useBlockPingpong{
       *this, "useBlockPingpong",
-      desc("Override block-pingpong schedule: -1=arch default, 0=off, 1=on"),
-      init(-1)};
+      desc("Override block-pingpong schedule (kKnobDefault=arch default, "
+           "0=off, 1=on)"),
+      init(kKnobDefault)};
   PassOptions::Option<int> useInThreadTranspose{
       *this, "useInThreadTranspose",
-      desc("Override in-thread-transpose pass: -1=arch default, 0=off, 1=on"),
-      init(-1)};
+      desc("Override in-thread-transpose pass (kKnobDefault=arch default, "
+           "0=off, 1=on)"),
+      init(kKnobDefault)};
   PassOptions::Option<int> useBufferOps{
       *this, "useBufferOps",
-      desc("Override use-buffer-ops: -1=default (on), 0=off, 1=on"),
-      init(-1)};
+      desc("Override use-buffer-ops (kKnobDefault=on, 0=off, 1=on)"),
+      init(kKnobDefault)};
   PassOptions::Option<int> useBufferAtomics{
       *this, "useBufferAtomics",
-      desc("Override use-buffer-atomics: -1=default (on), 0=off, 1=on "
-           "(requires useBufferOps to be on)"),
-      init(-1)};
+      desc("Override use-buffer-atomics (kKnobDefault=on, 0=off, 1=on; "
+           "requires useBufferOps to be on)"),
+      init(kKnobDefault)};
   PassOptions::Option<int> bufferOpsAnalyzeSmallTensorRange{
       *this, "bufferOpsAnalyzeSmallTensorRange",
-      desc("Override small-tensor range analysis in convert-to-buffer-ops: "
-           "-1=default (off), 0=off, 1=on (requires useBufferOps to be on)"),
-      init(-1)};
+      desc("Override small-tensor range analysis in convert-to-buffer-ops "
+           "(kKnobDefault=off, 0=off, 1=on; requires useBufferOps to be on)"),
+      init(kKnobDefault)};
 };
 
 /// Adds the `triton` pipeline to the `OpPassManager`.

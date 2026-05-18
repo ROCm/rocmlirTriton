@@ -87,41 +87,41 @@ static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
 
 static bool isPingpongScheduleEnabled(StringRef arch, bool useAsyncCopy,
                                       int useBlockPingpongOverride) {
-  if (useBlockPingpongOverride >= 0)
-    return useBlockPingpongOverride != 0;
+  if (useBlockPingpongOverride != rock::kKnobDefault)
+    return useBlockPingpongOverride;
   return arch.starts_with("gfx942") ||
          (arch.starts_with("gfx950") && useAsyncCopy);
 }
 
 static bool isInThreadTransposeEnabled(StringRef arch,
                                        int useInThreadTransposeOverride) {
-  if (useInThreadTransposeOverride >= 0)
-    return useInThreadTransposeOverride != 0;
+  if (useInThreadTransposeOverride != rock::kKnobDefault)
+    return useInThreadTransposeOverride;
   return arch.starts_with("gfx942");
 }
 
 static bool isAsyncCopyEnabled(StringRef arch, int useAsyncCopyOverride) {
-  if (useAsyncCopyOverride >= 0)
-    return useAsyncCopyOverride != 0;
+  if (useAsyncCopyOverride != rock::kKnobDefault)
+    return useAsyncCopyOverride;
   return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
 }
 
 static bool isBufferOpsEnabled(int useBufferOpsOverride) {
-  if (useBufferOpsOverride >= 0)
-    return useBufferOpsOverride != 0;
+  if (useBufferOpsOverride != rock::kKnobDefault)
+    return useBufferOpsOverride;
   return true;
 }
 
 static bool isBufferAtomicsEnabled(int useBufferAtomicsOverride) {
-  if (useBufferAtomicsOverride >= 0)
-    return useBufferAtomicsOverride != 0;
+  if (useBufferAtomicsOverride != rock::kKnobDefault)
+    return useBufferAtomicsOverride;
   return true;
 }
 
 static bool
 isBufferOpsAnalyzeSmallTensorRangeEnabled(int analyzeSmallTensorRangeOverride) {
-  if (analyzeSmallTensorRangeOverride >= 0)
-    return analyzeSmallTensorRangeOverride != 0;
+  if (analyzeSmallTensorRangeOverride != rock::kKnobDefault)
+    return analyzeSmallTensorRangeOverride;
   return false;
 }
 

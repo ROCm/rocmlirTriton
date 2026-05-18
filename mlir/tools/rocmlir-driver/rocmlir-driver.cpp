@@ -115,7 +115,7 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
 
 /////////////////////////////////////////////////////////////////////////////
 //// Knobs that mirror Triton's `knobs.amd.*`
-enum class TritonKnob { Auto = -1, Off = 0, On = 1 };
+enum class TritonKnob { Auto = rock::kKnobDefault, Off = 0, On = 1 };
 
 static cl::ValuesClass tritonKnobValues() {
   return cl::values(
