@@ -36,6 +36,14 @@
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --use-async-copy=true --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=ASYNC_GFX942_ON
 
+// An invalid tri-state value must be rejected by the LLVM CommandLine
+// parser before the pipeline is built. This guards the `cl::values`
+// mapping for every tri-state knob -- `--use-async-copy` stands in for
+// all of them since they share `tritonKnobValues()`.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
+// RUN:   | not rocmlir-driver --kernel-pipeline=gpu,triton --use-async-copy=garbage --dump-pipelines 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=ASYNC_BAD
+
 // ASYNC_GFX950_DEFAULT: tritonamdgpu-pipeline{use_async_copy=true
 // ASYNC_GFX950_DEFAULT: tritonamdgpu-coalesce-async-copy{arch-generation-name=gfx950}
 
@@ -47,6 +55,8 @@
 
 // ASYNC_GFX942_ON: tritonamdgpu-pipeline{use_async_copy=true
 // ASYNC_GFX942_ON: tritonamdgpu-coalesce-async-copy{arch-generation-name=gfx942}
+
+// ASYNC_BAD: for the --use-async-copy option: Cannot find option named 'garbage'
 
 //===----------------------------------------------------------------------===//
 // --use-block-pingpong
