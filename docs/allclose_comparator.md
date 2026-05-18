@@ -23,7 +23,7 @@ The simplest case, and the original of the formula. The comparator is
 [`numpy.testing.assert_allclose`](https://numpy.org/doc/stable/reference/generated/numpy.testing.assert_allclose.html)):
 
 ```
-absolute(a - b) <= atol + rtol * absolute(b)
+absolute(a - b) <= (atol + rtol * absolute(b))
 ```
 
 with defaults `rtol=1e-5, atol=1e-8`. The formula is asymmetric in `a` and
@@ -107,7 +107,7 @@ defaults that loosen for reduction-bearing ops.
 ### 1.4 rocBLAS -- the established AMD pattern
 
 [rocBLAS](https://github.com/ROCm/rocBLAS) is the authoritative reference
-for "how does AMD test GEMM." Source files of interest:
+for how to check GEMM accuracy. Source files of interest:
 
 - [`clients/include/blas3/testing_gemm.hpp`](https://github.com/ROCm/rocBLAS/blob/develop/clients/include/blas3/testing_gemm.hpp)
 - [`clients/include/near.hpp`](https://github.com/ROCm/rocBLAS/blob/develop/clients/include/near.hpp)
