@@ -157,40 +157,53 @@
 // BUF_SMALL: tritonamdgpu-convert-buffer-ops{allow-buffer-atomics=true analyze-small-tensor-ofst=true
 
 //===----------------------------------------------------------------------===//
-// --schedule-hint
+// --triton-schedule-hint
 //===----------------------------------------------------------------------===//
 //
 // Mirrors upstream `HIPOptions.schedule_hint`. The string value selects
 // one or more scheduling-hint variants (comma-separated). The default
 // ("none") leaves both the TTGIR insert pass and the LLIR lower pass
-// out of the pipeline.
+// out of the pipeline. Only `attention` triggers the TTGIR insert pass;
+// `memory-bound-attention` is an LLIR-only variant (consumed by
+// setKernelAttributes in TritonToHsaco) so it does not schedule the
+// TTGIR insert pass, but it does keep the LLIR lower pass.
 
 // Default: no schedule-hint passes are scheduled.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=SH_DEFAULT
 
-// --schedule-hint=attention: insert-sched-hints with variant=attention
-// is scheduled, and the LLIR lower pass is enabled.
+// --triton-schedule-hint=attention: insert-sched-hints with
+// variant=attention is scheduled, and the LLIR lower pass is enabled.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --schedule-hint=attention --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --triton-schedule-hint=attention --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=SH_ATTN
 
-// --schedule-hint=memory-bound-attention.
+// --triton-schedule-hint=memory-bound-attention: TTGIR insert pass is
+// _not_ scheduled (this variant has no TTGIR hint), but the LLIR lower
+// pass still runs so the kernel-attribute step can see the request.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --schedule-hint=memory-bound-attention --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --triton-schedule-hint=memory-bound-attention --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=SH_MBA
 
-// --schedule-hint=attention,memory-bound-attention: the insert pass is
-// scheduled twice, once per variant.
+// --triton-schedule-hint=attention,memory-bound-attention: the insert
+// pass is scheduled once (for attention only) and the LLIR lower pass
+// runs once.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --schedule-hint=attention,memory-bound-attention --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --triton-schedule-hint=attention,memory-bound-attention --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=SH_BOTH
 
-// --schedule-hint=NONE is case-insensitive and behaves like the default.
+// --triton-schedule-hint=NONE is case-insensitive and behaves like the
+// default.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --schedule-hint=NONE --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --triton-schedule-hint=NONE --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=SH_NONE
+
+// An unknown variant must be rejected at the driver boundary with a
+// clear error and non-zero exit (no pass-pipeline dump).
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
+// RUN:   | not rocmlir-driver --kernel-pipeline=gpu,triton --triton-schedule-hint=bogus --dump-pipelines 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=SH_BAD
 
 // SH_DEFAULT-NOT: triton-amdgpu-insert-instruction-sched-hints
 // SH_DEFAULT-NOT: triton-amdgpu-lower-insert-instruction-sched-hints
@@ -198,12 +211,14 @@
 // SH_ATTN: triton-amdgpu-insert-instruction-sched-hints{variant=attention}
 // SH_ATTN: triton-amdgpu-lower-insert-instruction-sched-hints
 
-// SH_MBA: triton-amdgpu-insert-instruction-sched-hints{variant=memory-bound-attention}
+// SH_MBA-NOT: triton-amdgpu-insert-instruction-sched-hints
 // SH_MBA: triton-amdgpu-lower-insert-instruction-sched-hints
 
 // SH_BOTH: triton-amdgpu-insert-instruction-sched-hints{variant=attention}
-// SH_BOTH: triton-amdgpu-insert-instruction-sched-hints{variant=memory-bound-attention}
+// SH_BOTH-NOT: triton-amdgpu-insert-instruction-sched-hints{variant=memory-bound-attention}
 // SH_BOTH: triton-amdgpu-lower-insert-instruction-sched-hints
 
 // SH_NONE-NOT: triton-amdgpu-insert-instruction-sched-hints
 // SH_NONE-NOT: triton-amdgpu-lower-insert-instruction-sched-hints
+
+// SH_BAD: unknown scheduleHint variant 'bogus'

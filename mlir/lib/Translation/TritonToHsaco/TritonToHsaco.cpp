@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/ScheduleHintUtils.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -33,6 +34,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Config/Targets.h"
@@ -242,9 +244,14 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
                       "1," + std::to_string(totalThreads));
 
   // memory-bound-attention schedule hint enables iterative-ilp scheduler
-  // (compiler.py lines 387-388)
-  // TODO(roctriton): set this in ToBlockwise? or somewhere
-  if (scheduleHint.contains("memory-bound-attention")) {
+  // (compiler.py lines 387-388). scheduleHint has already been validated
+  // here, so we just parse the hints and add the corresponding attribute.
+  //
+  // TODO(roctriton): Set scheduleHint in ToBlockwise? or somewhere else?
+  // Or should we just tune it?
+  SmallVector<std::string, 2> schedHints;
+  (void)rock::parseScheduleHint(scheduleHint, schedHints);
+  if (llvm::is_contained(schedHints, rock::kMemoryBoundAttentionHint)) {
     kernelFn->addFnAttr("amdgpu-sched-strategy", "iterative-ilp");
   }
 

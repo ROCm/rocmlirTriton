@@ -43,6 +43,7 @@
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/ScheduleHintUtils.h"
 #include "mlir/Dialect/Tosa/IR/TargetEnv.h"
 #include "mlir/Dialect/Tosa/Transforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
@@ -56,6 +57,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
+#include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "amd/include/TritonAMDGPUToLLVM/Passes.h"
 #include "amd/include/TritonAMDGPUTransforms/Passes.h"
 
@@ -154,8 +156,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::createCanonicalizerPass());
 
   bool useAsyncCopy = isAsyncCopyEnabled(options.arch, options.useAsyncCopy);
-  bool useBlockPingpong = isPingpongScheduleEnabled(
-      options.arch, useAsyncCopy, options.useBlockPingpong);
+  bool useBlockPingpong = isPingpongScheduleEnabled(options.arch, useAsyncCopy,
+                                                    options.useBlockPingpong);
 
   pm->addPass(mlir::createTritonAMDGPUOptimizeDescriptorEncoding());
   pm->addPass(mlir::createTritonAMDGPUScheduleLoops({options.numStages}));
@@ -166,15 +168,16 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   }
   pm->addPass(mlir::createTritonAMDGPUConvertToTensorOps());
   pm->addPass(mlir::createCanonicalizerPass());
-  
-  if (!StringRef(options.scheduleHint).equals_insensitive("none")) {
-    SmallVector<StringRef, 2> hints;
-    StringRef(options.scheduleHint).split(hints, ',');
-    for (StringRef hint : hints) {
-      pm->addPass(
-          mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
-              {hint.str()}));
-    }
+
+  // scheduleHint has already been validated, here we just parse
+  // the hints and add the corresponding passes.
+  SmallVector<std::string, 2> schedHints;
+  (void)rock::parseScheduleHint(options.scheduleHint, schedHints);
+  for (StringRef hint : schedHints) {
+    if (!triton::amdgpu::symbolizeSchedHint(hint))
+      continue;
+    pm->addPass(mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
+        {hint.str()}));
   }
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   pm->addPass(mlir::triton::gpu::createTritonGPUReduceDataDuplication());
@@ -260,7 +263,11 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createSymbolDCEPass());
 
-  if (!StringRef(scheduleHint).equals_insensitive("none")) {
+  // scheduleHint has already been validated at the driver boundary; we only
+  // need to know whether any hint was requested to add the corresponding pass.
+  SmallVector<std::string, 2> schedHints;
+  (void)rock::parseScheduleHint(scheduleHint, schedHints);
+  if (!schedHints.empty()) {
     pm->addPass(mlir::triton::createTritonAMDGPULowerInstructionSchedHintsPass(
         arch, numStages));
   }

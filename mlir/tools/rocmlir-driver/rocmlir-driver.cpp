@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
+#include "mlir/Dialect/Rock/utility/ScheduleHintUtils.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/InitRocMLIRCLOptions.h"
@@ -118,16 +119,14 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
 enum class TritonKnob { Auto = rock::kKnobDefault, Off = 0, On = 1 };
 
 static cl::ValuesClass tritonKnobValues() {
-  return cl::values(
-      clEnumValN(TritonKnob::Auto, "auto",
-                 "use the default (per-arch where applicable)"),
-      clEnumValN(TritonKnob::Off, "false", "force off"),
-      clEnumValN(TritonKnob::On, "true", "force on"));
+  return cl::values(clEnumValN(TritonKnob::Auto, "auto",
+                               "use the default (per-arch where applicable)"),
+                    clEnumValN(TritonKnob::Off, "false", "force off"),
+                    clEnumValN(TritonKnob::On, "true", "force on"));
 }
 
 static cl::opt<TritonKnob>
-    useAsyncCopy("use-async-copy",
-                 cl::desc("Override async-copy schedule:"),
+    useAsyncCopy("use-async-copy", cl::desc("Override async-copy schedule:"),
                  tritonKnobValues(), cl::init(TritonKnob::Auto));
 
 static cl::opt<TritonKnob>
@@ -140,11 +139,11 @@ static cl::opt<TritonKnob>
                          cl::desc("Override in-thread-transpose pass:"),
                          tritonKnobValues(), cl::init(TritonKnob::Auto));
 
-static cl::opt<TritonKnob> useBufferOps(
-    "use-buffer-ops",
-    cl::desc("Override use-buffer-ops (canonicalize-pointers / "
-             "convert-to-buffer-ops / optimize-buffer-op-ptr):"),
-    tritonKnobValues(), cl::init(TritonKnob::Auto));
+static cl::opt<TritonKnob>
+    useBufferOps("use-buffer-ops",
+                 cl::desc("Override use-buffer-ops (canonicalize-pointers / "
+                          "convert-to-buffer-ops / optimize-buffer-op-ptr):"),
+                 tritonKnobValues(), cl::init(TritonKnob::Auto));
 
 static cl::opt<TritonKnob> useBufferAtomics(
     "use-buffer-atomics",
@@ -158,10 +157,13 @@ static cl::opt<TritonKnob> bufferOpsAnalyzeSmallTensorRange(
              "convert-to-buffer-ops (no effect when --use-buffer-ops "
              "is off):"),
     tritonKnobValues(), cl::init(TritonKnob::Auto));
-    
+
+// The flag is prefixed `--triton-...` to avoid colliding with the
+// `schedule-hint` pass option exposed by `RockTritonToHsacoPass` if the
+// pass is ever registered into rocmlir-driver in the future.
 static cl::opt<std::string> scheduleHint(
-    "schedule-hint",
-    cl::desc("Per-kernel scheduling hint: \"none\", \"attention\", "
+    "triton-schedule-hint",
+    cl::desc("Per-kernel Triton scheduling hint: \"none\", \"attention\", "
              "\"memory-bound-attention\", or a comma-separated combination"),
     cl::init("none"));
 
@@ -317,9 +319,11 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   tritonOpts.useBufferAtomics = static_cast<int>(useBufferAtomics.getValue());
   tritonOpts.bufferOpsAnalyzeSmallTensorRange =
       static_cast<int>(bufferOpsAnalyzeSmallTensorRange.getValue());
-  // scheduleHint flows through to both the TTGIR insert-sched-hints
-  // pass (in the triton pipeline) and to TritonToHsaco (in the backend
-  // pipeline), so populate both option structs.
+  // We only validate scheduleHint here, so that none of the consumers
+  // disagree about what was requested.
+  llvm::SmallVector<std::string, 2> parsedHints;
+  if (failed(rock::parseScheduleHint(scheduleHint.getValue(), parsedHints)))
+    return failure();
   tritonOpts.scheduleHint = scheduleHint.getValue();
   backendOpts.scheduleHint = scheduleHint.getValue();
 

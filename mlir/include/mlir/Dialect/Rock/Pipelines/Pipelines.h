@@ -13,7 +13,6 @@
 #ifndef MLIR_DIALECT_ROCK_PIPELINES_H_
 #define MLIR_DIALECT_ROCK_PIPELINES_H_
 
-#include "llvm/ADT/StringRef.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassOptions.h"
 
