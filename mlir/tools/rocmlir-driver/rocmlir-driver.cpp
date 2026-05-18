@@ -115,17 +115,49 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
 
 /////////////////////////////////////////////////////////////////////////////
 //// Knobs that mirror Triton's `knobs.amd.*`
-enum class TriStateKnob { Auto = -1, Off = 0, On = 1 };
+enum class TritonKnob { Auto = -1, Off = 0, On = 1 };
 
-static cl::opt<TriStateKnob> useAsyncCopy(
-    "use-async-copy",
-    cl::desc("Override async-copy schedule:"),
-    cl::values(
-        clEnumValN(TriStateKnob::Auto, "auto",
-                   "use the per-arch default (default)"),
-        clEnumValN(TriStateKnob::Off, "false", "force off"),
-        clEnumValN(TriStateKnob::On, "true", "force on")),
-    cl::init(TriStateKnob::Auto));
+static cl::ValuesClass tritonKnobValues() {
+  return cl::values(
+      clEnumValN(TritonKnob::Auto, "auto",
+                 "use the default (per-arch where applicable)"),
+      clEnumValN(TritonKnob::Off, "false", "force off"),
+      clEnumValN(TritonKnob::On, "true", "force on"));
+}
+
+static cl::opt<TritonKnob>
+    useAsyncCopy("use-async-copy",
+                 cl::desc("Override async-copy schedule:"),
+                 tritonKnobValues(), cl::init(TritonKnob::Auto));
+
+static cl::opt<TritonKnob>
+    useBlockPingpong("use-block-pingpong",
+                     cl::desc("Override block-pingpong schedule:"),
+                     tritonKnobValues(), cl::init(TritonKnob::Auto));
+
+static cl::opt<TritonKnob>
+    useInThreadTranspose("use-in-thread-transpose",
+                         cl::desc("Override in-thread-transpose pass:"),
+                         tritonKnobValues(), cl::init(TritonKnob::Auto));
+
+static cl::opt<TritonKnob> useBufferOps(
+    "use-buffer-ops",
+    cl::desc("Override use-buffer-ops (canonicalize-pointers / "
+             "convert-to-buffer-ops / optimize-buffer-op-ptr):"),
+    tritonKnobValues(), cl::init(TritonKnob::Auto));
+
+static cl::opt<TritonKnob> useBufferAtomics(
+    "use-buffer-atomics",
+    cl::desc("Override buffer atomics in convert-to-buffer-ops "
+             "(no effect when --use-buffer-ops is off):"),
+    tritonKnobValues(), cl::init(TritonKnob::Auto));
+
+static cl::opt<TritonKnob> bufferOpsAnalyzeSmallTensorRange(
+    "buffer-ops-analyze-small-tensor-range",
+    cl::desc("Override small-tensor range analysis in "
+             "convert-to-buffer-ops (no effect when --use-buffer-ops "
+             "is off):"),
+    tritonKnobValues(), cl::init(TritonKnob::Auto));
 
 namespace test {
 void registerTestDialect(DialectRegistry &);
@@ -272,6 +304,13 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   // Apply Triton knobs after perf-config has been processed, so
   // an explicit knob set via CLI flag wins.
   tritonOpts.useAsyncCopy = static_cast<int>(useAsyncCopy.getValue());
+  tritonOpts.useBlockPingpong = static_cast<int>(useBlockPingpong.getValue());
+  tritonOpts.useInThreadTranspose =
+      static_cast<int>(useInThreadTranspose.getValue());
+  tritonOpts.useBufferOps = static_cast<int>(useBufferOps.getValue());
+  tritonOpts.useBufferAtomics = static_cast<int>(useBufferAtomics.getValue());
+  tritonOpts.bufferOpsAnalyzeSmallTensorRange =
+      static_cast<int>(bufferOpsAnalyzeSmallTensorRange.getValue());
 
   // Set up lowering pipeline.
   if (kernelPipelineSet.contains("gpu")) {

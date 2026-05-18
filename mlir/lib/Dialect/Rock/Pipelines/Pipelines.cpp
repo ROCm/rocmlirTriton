@@ -85,12 +85,18 @@ static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::triton::createTritonLoopUnroll());
 }
 
-static bool isPingpongScheduleEnabled(StringRef arch, bool useAsyncCopy) {
+static bool isPingpongScheduleEnabled(StringRef arch, bool useAsyncCopy,
+                                      int useBlockPingpongOverride) {
+  if (useBlockPingpongOverride >= 0)
+    return useBlockPingpongOverride != 0;
   return arch.starts_with("gfx942") ||
          (arch.starts_with("gfx950") && useAsyncCopy);
 }
 
-static bool isInThreadTransposeEnabled(StringRef arch) {
+static bool isInThreadTransposeEnabled(StringRef arch,
+                                       int useInThreadTransposeOverride) {
+  if (useInThreadTransposeOverride >= 0)
+    return useInThreadTransposeOverride != 0;
   return arch.starts_with("gfx942");
 }
 
@@ -98,6 +104,25 @@ static bool isAsyncCopyEnabled(StringRef arch, int useAsyncCopyOverride) {
   if (useAsyncCopyOverride >= 0)
     return useAsyncCopyOverride != 0;
   return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
+}
+
+static bool isBufferOpsEnabled(int useBufferOpsOverride) {
+  if (useBufferOpsOverride >= 0)
+    return useBufferOpsOverride != 0;
+  return true;
+}
+
+static bool isBufferAtomicsEnabled(int useBufferAtomicsOverride) {
+  if (useBufferAtomicsOverride >= 0)
+    return useBufferAtomicsOverride != 0;
+  return true;
+}
+
+static bool
+isBufferOpsAnalyzeSmallTensorRangeEnabled(int analyzeSmallTensorRangeOverride) {
+  if (analyzeSmallTensorRangeOverride >= 0)
+    return analyzeSmallTensorRangeOverride != 0;
+  return false;
 }
 
 // Based on make_ttgir() in
@@ -132,7 +157,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   std::string scheduleHint = "none";
 
   bool useAsyncCopy = isAsyncCopyEnabled(options.arch, options.useAsyncCopy);
-  bool useBlockPingpong = isPingpongScheduleEnabled(options.arch, useAsyncCopy);
+  bool useBlockPingpong = isPingpongScheduleEnabled(
+      options.arch, useAsyncCopy, options.useBlockPingpong);
 
   pm->addPass(mlir::createTritonAMDGPUOptimizeDescriptorEncoding());
   pm->addPass(mlir::createTritonAMDGPUScheduleLoops({options.numStages}));
@@ -149,7 +175,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   }
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   pm->addPass(mlir::triton::gpu::createTritonGPUReduceDataDuplication());
-  if (isInThreadTransposeEnabled(options.arch)) {
+  if (isInThreadTransposeEnabled(options.arch, options.useInThreadTranspose)) {
     pm->addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonAMDGPUInThreadTranspose());
     pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
@@ -160,15 +186,17 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
 
-  // TODO(rocmlirTriton): if knobs.amd.use_buffer_ops
-  pm->addNestedPass<mlir::triton::FuncOp>(
-      mlir::createTritonAMDGPUCanonicalizePointers());
-  pm->addPass(mlir::createCanonicalizerPass());
-  pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
-      {options.arch, /*allowBufferAtomics*/ true,
-       /*analyzeSmallTensorOfst*/ false}));
-  pm->addNestedPass<mlir::triton::FuncOp>(
-      mlir::createTritonAMDGPUOptimizeBufferOpPtr());
+  if (isBufferOpsEnabled(options.useBufferOps)) {
+    pm->addNestedPass<mlir::triton::FuncOp>(
+        mlir::createTritonAMDGPUCanonicalizePointers());
+    pm->addPass(mlir::createCanonicalizerPass());
+    pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
+        {options.arch, isBufferAtomicsEnabled(options.useBufferAtomics),
+         isBufferOpsAnalyzeSmallTensorRangeEnabled(
+             options.bufferOpsAnalyzeSmallTensorRange)}));
+    pm->addNestedPass<mlir::triton::FuncOp>(
+        mlir::createTritonAMDGPUOptimizeBufferOpPtr());
+  }
 
   pm->addPass(mlir::createTritonAMDFoldTrueCmpI());
   pm->addNestedPass<mlir::triton::FuncOp>(
