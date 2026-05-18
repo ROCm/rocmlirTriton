@@ -153,17 +153,11 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
     numCTAsList.push_back(n);
 
-  // MFMA (CDNA) parameters.
-  // kpack > 1 is not supported on certain architectures.
-  std::vector<uint32_t> kPackList;
-  for (uint32_t kp = 1; kp <= rock::getMaxKpack(arch); kp *= 2)
-    kPackList.push_back(kp);
-
   std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
       dPerBlock,         // M/block
       dPerBlock,         // N/block
       kPerBlockMFMA,     // K/block
-      kPackList,         // kPackList
+      {1},               // kPackList
       numWavesRange,     // numWaves
       {16, 32},          // matrixInstrNonkdim
       {1, 2, 3},         // numStages
@@ -178,7 +172,7 @@ getAccelRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       dPerBlock,         // M/block
       dPerBlock,         // N/block
       kPerBlockWMMA,     // K/block
-      kPackList,         // kPackList
+      {1},               // kPackList
       {4, 8},            // numWaves
       {0},               // matrixInstrNonkdim
       {1, 2, 3},         // numStages
@@ -235,7 +229,7 @@ getAccelRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       /*gemm0MPerBlock=*/dPerBlock,
       /*gemm0NPerBlock=*/dPerBlock,
       kPerBlock,
-      kPackList,
+      /*kPackList=*/{1},
       numWavesRange,
       /*matrixInstrNonkdim=*/{0},
       {1, 2},
