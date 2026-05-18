@@ -158,6 +158,12 @@ static cl::opt<TritonKnob> bufferOpsAnalyzeSmallTensorRange(
              "convert-to-buffer-ops (no effect when --use-buffer-ops "
              "is off):"),
     tritonKnobValues(), cl::init(TritonKnob::Auto));
+    
+static cl::opt<std::string> scheduleHint(
+    "schedule-hint",
+    cl::desc("Per-kernel scheduling hint: \"none\", \"attention\", "
+             "\"memory-bound-attention\", or a comma-separated combination"),
+    cl::init("none"));
 
 namespace test {
 void registerTestDialect(DialectRegistry &);
@@ -311,6 +317,11 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   tritonOpts.useBufferAtomics = static_cast<int>(useBufferAtomics.getValue());
   tritonOpts.bufferOpsAnalyzeSmallTensorRange =
       static_cast<int>(bufferOpsAnalyzeSmallTensorRange.getValue());
+  // scheduleHint flows through to both the TTGIR insert-sched-hints
+  // pass (in the triton pipeline) and to TritonToHsaco (in the backend
+  // pipeline), so populate both option structs.
+  tritonOpts.scheduleHint = scheduleHint.getValue();
+  backendOpts.scheduleHint = scheduleHint.getValue();
 
   // Set up lowering pipeline.
   if (kernelPipelineSet.contains("gpu")) {

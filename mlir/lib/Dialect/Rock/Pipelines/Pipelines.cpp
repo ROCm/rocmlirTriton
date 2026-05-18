@@ -153,9 +153,6 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::createLoopInvariantCodeMotionPass());
   pm->addPass(mlir::createCanonicalizerPass());
 
-  // TODO(ROCm) Modify when corresponding run time flags are introduced.
-  std::string scheduleHint = "none";
-
   bool useAsyncCopy = isAsyncCopyEnabled(options.arch, options.useAsyncCopy);
   bool useBlockPingpong = isPingpongScheduleEnabled(
       options.arch, useAsyncCopy, options.useBlockPingpong);
@@ -169,9 +166,15 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   }
   pm->addPass(mlir::createTritonAMDGPUConvertToTensorOps());
   pm->addPass(mlir::createCanonicalizerPass());
-  if (scheduleHint != "none") {
-    pm->addPass(mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
-        {scheduleHint}));
+  
+  if (!StringRef(options.scheduleHint).equals_insensitive("none")) {
+    SmallVector<StringRef, 2> hints;
+    StringRef(options.scheduleHint).split(hints, ',');
+    for (StringRef hint : hints) {
+      pm->addPass(
+          mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
+              {hint.str()}));
+    }
   }
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   pm->addPass(mlir::triton::gpu::createTritonGPUReduceDataDuplication());
@@ -218,7 +221,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int numStages) {
+                     int numStages, const std::string &scheduleHint) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   pm->addPass(mlir::createSCFToControlFlowPass());
@@ -256,8 +259,8 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createSymbolDCEPass());
-  if (/*(instruction_sched_variant=="none") == */ /* DISABLES CODE */
-      (false)) {
+
+  if (!StringRef(scheduleHint).equals_insensitive("none")) {
     pm->addPass(mlir::triton::createTritonAMDGPULowerInstructionSchedHintsPass(
         arch, numStages));
   }
@@ -456,7 +459,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.numStages);
+  makeLLIR(&pm, arch, options.numStages, options.scheduleHint);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
@@ -607,6 +610,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.wavesPerEU = options.wavesPerEU;
     hsacoOpts.enableFpFusion = options.enableFpFusion;
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;
+    hsacoOpts.scheduleHint = options.scheduleHint;
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
   }
 

@@ -99,6 +99,11 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       desc("Override small-tensor range analysis in convert-to-buffer-ops "
            "(kKnobDefault=off, 0=off, 1=on; requires useBufferOps to be on)"),
       init(kKnobDefault)};
+  PassOptions::Option<std::string> scheduleHint{
+      *this, "scheduleHint",
+      desc("Per-kernel scheduling hint: \"none\" or a comma-separated list "
+           "of variants (e.g. \"attention\", \"memory-bound-attention\")"),
+      init("none")};
 };
 
 /// Adds the `triton` pipeline to the `OpPassManager`.
@@ -136,6 +141,10 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> suppressDiagnostic{
       *this, "suppress-diagnostic",
       desc("should we suppress diagnostic messages"), init(false)};
+  PassOptions::Option<std::string> scheduleHint{
+      *this, "scheduleHint",
+      desc("Per-kernel scheduling hint forwarded to TritonToHsaco"),
+      init("none")};
 };
 
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.

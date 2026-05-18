@@ -3,13 +3,14 @@
 // semantics.
 //
 // Tri-state knobs (`--use-async-copy`, `--use-block-pingpong`,
-// `--use-in-thread-transpose`) accept:
+// `--use-in-thread-transpose`, `--use-buffer-ops`, `--use-buffer-atomics`,
+// `--buffer-ops-analyze-small-tensor-range`) accept:
 //   auto (default) -> per-arch default
 //   false          -> force off
 //   true           -> force on
 //
-// Bool knobs (`--use-buffer-ops`, `--use-buffer-atomics`,
-// `--buffer-ops-analyze-small-tensor-range`) are plain on/off.
+// `--schedule-hint` is a string variant selector ("none", "attention",
+// "memory-bound-attention", or a comma-separated combination).
 
 //===----------------------------------------------------------------------===//
 // --use-async-copy
@@ -154,3 +155,55 @@
 // BUF_NOATOMICS: tritonamdgpu-convert-buffer-ops{allow-buffer-atomics=false analyze-small-tensor-ofst=false
 
 // BUF_SMALL: tritonamdgpu-convert-buffer-ops{allow-buffer-atomics=true analyze-small-tensor-ofst=true
+
+//===----------------------------------------------------------------------===//
+// --schedule-hint
+//===----------------------------------------------------------------------===//
+//
+// Mirrors upstream `HIPOptions.schedule_hint`. The string value selects
+// one or more scheduling-hint variants (comma-separated). The default
+// ("none") leaves both the TTGIR insert pass and the LLIR lower pass
+// out of the pipeline.
+
+// Default: no schedule-hint passes are scheduled.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=SH_DEFAULT
+
+// --schedule-hint=attention: insert-sched-hints with variant=attention
+// is scheduled, and the LLIR lower pass is enabled.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --schedule-hint=attention --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=SH_ATTN
+
+// --schedule-hint=memory-bound-attention.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --schedule-hint=memory-bound-attention --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=SH_MBA
+
+// --schedule-hint=attention,memory-bound-attention: the insert pass is
+// scheduled twice, once per variant.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --schedule-hint=attention,memory-bound-attention --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=SH_BOTH
+
+// --schedule-hint=NONE is case-insensitive and behaves like the default.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --schedule-hint=NONE --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=SH_NONE
+
+// SH_DEFAULT-NOT: triton-amdgpu-insert-instruction-sched-hints
+// SH_DEFAULT-NOT: triton-amdgpu-lower-insert-instruction-sched-hints
+
+// SH_ATTN: triton-amdgpu-insert-instruction-sched-hints{variant=attention}
+// SH_ATTN: triton-amdgpu-lower-insert-instruction-sched-hints
+
+// SH_MBA: triton-amdgpu-insert-instruction-sched-hints{variant=memory-bound-attention}
+// SH_MBA: triton-amdgpu-lower-insert-instruction-sched-hints
+
+// SH_BOTH: triton-amdgpu-insert-instruction-sched-hints{variant=attention}
+// SH_BOTH: triton-amdgpu-insert-instruction-sched-hints{variant=memory-bound-attention}
+// SH_BOTH: triton-amdgpu-lower-insert-instruction-sched-hints
+
+// SH_NONE-NOT: triton-amdgpu-insert-instruction-sched-hints
+// SH_NONE-NOT: triton-amdgpu-lower-insert-instruction-sched-hints
