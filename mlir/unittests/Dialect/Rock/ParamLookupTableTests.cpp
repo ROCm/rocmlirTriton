@@ -20,7 +20,7 @@ TEST(FindFallbackTest, ExactMatch) {
 }
 
 TEST(FindFallbackTest, OldestRelative) {
-  // gfx906 (Vega20 / GCN5_1) is supported but currently has no tuning entries
+  // gfx906 (GCN5_1) is supported but currently has no tuning entries
   // in the table (low priority, could be added later). A lookup for it should
   // fall back to the oldest available gfx9* relative, which is gfx908.
   EXPECT_EQ(

@@ -1,4 +1,4 @@
-// Compile-only smoke test for gfx906 (Vega20 / GCN5_1).
+// Compile-only smoke test for gfx906 (GCN5_1).
 //
 // gfx906 has no MFMA/WMMA accelerator instructions, so rocmlirTriton lowers
 // gemm/conv on it through Triton's non-accel codegen path (v_dot intrinsics
