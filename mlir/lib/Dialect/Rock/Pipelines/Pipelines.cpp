@@ -172,7 +172,9 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   // scheduleHint has already been validated, here we just parse
   // the hints and add the corresponding passes.
   SmallVector<std::string, 2> schedHints;
-  (void)rock::parseScheduleHint(options.scheduleHint, schedHints);
+  if (failed(rock::parseScheduleHint(options.scheduleHint, schedHints)))
+    llvm::report_fatal_error(
+        "TritonOptions::scheduleHint must be validated before pipeline build");
   for (StringRef hint : schedHints) {
     if (!triton::amdgpu::symbolizeSchedHint(hint))
       continue;
@@ -266,7 +268,9 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // scheduleHint has already been validated at the driver boundary; we only
   // need to know whether any hint was requested to add the corresponding pass.
   SmallVector<std::string, 2> schedHints;
-  (void)rock::parseScheduleHint(scheduleHint, schedHints);
+  if (failed(rock::parseScheduleHint(scheduleHint, schedHints)))
+    llvm::report_fatal_error(
+        "TritonOptions::scheduleHint must be validated before pipeline build");
   if (!schedHints.empty()) {
     pm->addPass(mlir::triton::createTritonAMDGPULowerInstructionSchedHintsPass(
         arch, numStages));

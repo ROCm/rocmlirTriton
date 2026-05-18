@@ -250,7 +250,9 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   // TODO(roctriton): Set scheduleHint in ToBlockwise? or somewhere else?
   // Or should we just tune it?
   SmallVector<std::string, 2> schedHints;
-  (void)rock::parseScheduleHint(scheduleHint, schedHints);
+  if (failed(rock::parseScheduleHint(scheduleHint, schedHints)))
+    llvm::report_fatal_error(
+        "BackendOptions::scheduleHint must be validated before TritonToHsaco");
   if (llvm::is_contained(schedHints, rock::kMemoryBoundAttentionHint)) {
     kernelFn->addFnAttr("amdgpu-sched-strategy", "iterative-ilp");
   }
