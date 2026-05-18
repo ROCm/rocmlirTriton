@@ -233,10 +233,6 @@ def Rock_GemmParamsAttr
     - wavesPerEU: Hint to backend compiler for wavefronts per execution unit
     - gridGroupSize: Number of chiplets to group together to perform a spatially
       local tile
-
-    NOTE: The `wavesPerEU` and `gridGroupSize` fields are serialized into the
-    perfConfig but they are not actually tuned. Instead, the are always set to
-    `0` (use the backend heuristic) by the tuner.
   }];
 
   let parameters = (ins "int64_t":$mPerBlock,
@@ -298,10 +294,6 @@ def Rock_GemmGemmParamsAttr
     - wavesPerEU: Hint to backend compiler for wavefronts per execution unit
     - gridGroupSize: Number of chiplets to group together to perform a spatially
       local tile
-
-    NOTE: The `wavesPerEU` and `gridGroupSize` fields are serialized into the
-    perfConfig but they are not actually tuned. Instead, the are always set to
-    `0` (use the backend heuristic) by the tuner.
   }];
 
   let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
