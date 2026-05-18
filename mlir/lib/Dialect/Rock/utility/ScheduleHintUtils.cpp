@@ -18,9 +18,10 @@ namespace mlir {
 namespace rock {
 
 // We could just reuse Triton's upstream symbolizeSchedHint to validate the
-// tokens. The downside is that for memory-bound-attention there is no validation,
-// which is a bit weak. Therefore, in rocmlirTriton we use upstream's
-// symbolizeSchedHint, but we also validate the memory-bound-attention token.
+// tokens. The downside is that for memory-bound-attention there is no
+// validation, which is a bit weak. Therefore, in rocmlirTriton we use
+// upstream's symbolizeSchedHint, but we also validate the
+// memory-bound-attention token.
 LogicalResult parseScheduleHint(StringRef raw,
                                 SmallVectorImpl<std::string> &hints) {
   hints.clear();
