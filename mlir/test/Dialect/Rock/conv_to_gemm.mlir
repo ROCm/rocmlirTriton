@@ -4,7 +4,7 @@
 // CHECK: <AddDim{1} ["0"] at [1] -> [] at []>, <PassThrough ["0o"] at [2] -> ["0ipad"] at [1]>, <AddDim{1} ["1"] at [3] -> [] at []>, <PassThrough ["1o"] at [4] -> ["1ipad"] at [2]>
 // CHECK-NOT: Embed
 // CHECK: rock.gemm
-func.func @nhwc_1x1(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>) -> tensor<64x14x14x1x256xf16> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_1x1(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>) -> tensor<64x14x14x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d0 * 256 + d1 + d2 + d3) * 64 + d4)> by [<Unmerge{1, 256, 1, 1, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 1, 1, 64] -> [16384]> : tensor<16384xf16> to tensor<1x256x1x1x64xf16>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf16> to tensor<64x14x14x1x64xf16>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 14, 14, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 256] -> [3211264]> : tensor<3211264xf16> to tensor<64x14x14x1x256xf16>
@@ -16,7 +16,7 @@ func.func @nhwc_1x1(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: 
 // CHECK-LABEL: @nhwc_1x1_stride_2
 // CHECK: <AddDim{1} ["0"] at [1] -> [] at []>, <Embed{2} ["0o"] at [2] -> ["0ipad"] at [1]>, <AddDim{1} ["1"] at [3] -> [] at []>, <Embed{2} ["1o"] at [4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm
-func.func @nhwc_1x1_stride_2(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<802816xf16>) -> tensor<64x7x7x1x256xf16> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_1x1_stride_2(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<802816xf16>) -> tensor<64x7x7x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d0 * 256 + d1 + d2 + d3) * 64 + d4)> by [<Unmerge{1, 256, 1, 1, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 1, 1, 64] -> [16384]> : tensor<16384xf16> to tensor<1x256x1x1x64xf16>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf16> to tensor<64x14x14x1x64xf16>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 7 + d1) * 7 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 7, 7, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 7, 7, 1, 256] -> [802816]> : tensor<802816xf16> to tensor<64x7x7x1x256xf16>
@@ -28,7 +28,7 @@ func.func @nhwc_1x1_stride_2(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>
 // CHECK-LABEL: @nhwc_3x3
 // CHECK: <Embed{1, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm
-func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<2359296xf16>) -> tensor<64x12x12x1x256xf16> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<2359296xf16>) -> tensor<64x12x12x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((((d0 * 256 + d1) * 3 + d2) * 3 + d3) * 64 + d4)> by [<Unmerge{1, 256, 3, 3, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 3, 3, 64] -> [147456]> : tensor<147456xf16> to tensor<1x256x3x3x64xf16>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf16> to tensor<64x14x14x1x64xf16>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 12 + d1) * 12 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 12, 12, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 12, 12, 1, 256] -> [2359296]> : tensor<2359296xf16> to tensor<64x12x12x1x256xf16>
@@ -44,7 +44,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 // CHECK: <Pad{1, 1, 1, 1} ["0ipad", "1ipad"] at [1, 2] -> ["0i", "1i"] at [1, 2]>
 // CHECK: <Embed{1, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm
-func.func @nhwc_3x3_padded(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>) -> tensor<64x14x14x1x256xf16> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_3x3_padded(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>) -> tensor<64x14x14x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((((d0 * 256 + d1) * 3 + d2) * 3 + d3) * 64 + d4)> by [<Unmerge{1, 256, 3, 3, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 3, 3, 64] -> [147456]> : tensor<147456xf16> to tensor<1x256x3x3x64xf16>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf16> to tensor<64x14x14x1x64xf16>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 14, 14, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 256] -> [3211264]> : tensor<3211264xf16> to tensor<64x14x14x1x256xf16>
@@ -59,7 +59,7 @@ func.func @nhwc_3x3_padded(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>,
 // CHECK-LABEL: @nhwc_3x3_dilated
 // CHECK: <Embed{2, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{2, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm
-func.func @nhwc_3x3_dilated(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<1638400xf16>) -> tensor<64x10x10x1x256xf16> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_3x3_dilated(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<1638400xf16>) -> tensor<64x10x10x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((((d0 * 256 + d1) * 3 + d2) * 3 + d3) * 64 + d4)> by [<Unmerge{1, 256, 3, 3, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 3, 3, 64] -> [147456]> : tensor<147456xf16> to tensor<1x256x3x3x64xf16>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf16> to tensor<64x14x14x1x64xf16>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 10 + d1) * 10 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 10, 10, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 10, 10, 1, 256] -> [1638400]> : tensor<1638400xf16> to tensor<64x10x10x1x256xf16>
@@ -74,7 +74,7 @@ func.func @nhwc_3x3_dilated(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>
 // CHECK-LABEL: @grouped_nhwc_1x1
 // CHECK: rock.gemm
 // CHECK-SAME: tensor<2x{{[0-9]+}}x{{[0-9]+}}xf16> * tensor<2x{{[0-9]+}}x{{[0-9]+}}xf16>
-func.func @grouped_nhwc_1x1(%arg0: tensor<8192xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>) -> tensor<64x14x14x2x128xf16> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @grouped_nhwc_1x1(%arg0: tensor<8192xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>) -> tensor<64x14x14x2x128xf16> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d0 * 128 + d1 + d2 + d3) * 32 + d4)> by [<Unmerge{2, 128, 1, 1, 32} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [2, 128, 1, 1, 32] -> [8192]> : tensor<8192xf16> to tensor<2x128x1x1x32xf16>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> ((((d0 * 14 + d1) * 14 + d2) * 2 + d3) * 32 + d4)> by [<Unmerge{64, 14, 14, 2, 32} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 2, 32] -> [802816]> : tensor<802816xf16> to tensor<64x14x14x2x32xf16>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> ((((d0 * 14 + d1) * 14 + d2) * 2 + d3) * 128 + d4)> by [<Unmerge{64, 14, 14, 2, 128} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 2, 128] -> [3211264]> : tensor<3211264xf16> to tensor<64x14x14x2x128xf16>
@@ -91,7 +91,7 @@ func.func @grouped_nhwc_1x1(%arg0: tensor<8192xf16>, %arg1: tensor<802816xf16>, 
 // CHECK-SAME: -> tensor<{{[0-9x]+}}xf32>
 // CHECK: arith.fptoui {{.*}} : tensor<{{[0-9x]+}}xf32> to tensor<{{[0-9x]+}}xi32>
 // CHECK: rock.store
-func.func @nhwc_1x1_fptoui_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816xf32>, %arg2: tensor<3211264xi32>) -> tensor<64x14x14x1x256xi32> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_1x1_fptoui_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816xf32>, %arg2: tensor<3211264xi32>) -> tensor<64x14x14x1x256xi32> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d0 * 256 + d1 + d2 + d3) * 64 + d4)> by [<Unmerge{1, 256, 1, 1, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 1, 1, 64] -> [16384]> : tensor<16384xf32> to tensor<1x256x1x1x64xf32>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf32> to tensor<64x14x14x1x64xf32>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 14, 14, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 256] -> [3211264]> : tensor<3211264xi32> to tensor<64x14x14x1x256xi32>
@@ -110,7 +110,7 @@ func.func @nhwc_1x1_fptoui_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816
 // CHECK-SAME: -> tensor<{{[0-9x]+}}xf32>
 // CHECK: arith.fptosi {{.*}} : tensor<{{[0-9x]+}}xf32> to tensor<{{[0-9x]+}}xi32>
 // CHECK: rock.store
-func.func @nhwc_1x1_fptosi_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816xf32>, %arg2: tensor<3211264xi32>) -> tensor<64x14x14x1x256xi32> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_1x1_fptosi_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816xf32>, %arg2: tensor<3211264xi32>) -> tensor<64x14x14x1x256xi32> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d0 * 256 + d1 + d2 + d3) * 64 + d4)> by [<Unmerge{1, 256, 1, 1, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 1, 1, 64] -> [16384]> : tensor<16384xf32> to tensor<1x256x1x1x64xf32>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf32> to tensor<64x14x14x1x64xf32>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 14, 14, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 256] -> [3211264]> : tensor<3211264xi32> to tensor<64x14x14x1x256xi32>
@@ -137,7 +137,7 @@ func.func @nhwc_1x1_fptosi_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816
 // CHECK-SAME: -> tensor<1x256x12544xf16>
 // CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %[[BIAS_VIEW]] : tensor<1x256x12544xf16>
 // CHECK: rock.store %[[ADD]] to %{{.*}} by set : tensor<1x256x12544xf16>
-func.func @nhwc_1x1_bias_add(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>, %arg3: tensor<3211264xf16>) -> tensor<64x14x14x1x256xf16> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_1x1_bias_add(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>, %arg3: tensor<3211264xf16>) -> tensor<64x14x14x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d0 * 256 + d1 + d2 + d3) * 64 + d4)> by [<Unmerge{1, 256, 1, 1, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 1, 1, 64] -> [16384]> : tensor<16384xf16> to tensor<1x256x1x1x64xf16>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf16> to tensor<64x14x14x1x64xf16>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 14, 14, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 256] -> [3211264]> : tensor<3211264xf16> to tensor<64x14x14x1x256xf16>
@@ -161,7 +161,7 @@ func.func @nhwc_1x1_bias_add(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>
 // CHECK: %[[ADD:.*]] = arith.addf %[[GEMM]], %[[BIAS_VIEW]] : tensor<1x256x12544xf16>
 // CHECK: %[[ABS:.*]] = math.absf %[[ADD]] : tensor<1x256x12544xf16>
 // CHECK: rock.store %[[ABS]] to %{{.*}} by set : tensor<1x256x12544xf16>
-func.func @nhwc_1x1_bias_add_then_absf(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>, %arg3: tensor<3211264xf16>) -> tensor<64x14x14x1x256xf16> attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_1x1_bias_add_then_absf(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>, %arg3: tensor<3211264xf16>) -> tensor<64x14x14x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d0 * 256 + d1 + d2 + d3) * 64 + d4)> by [<Unmerge{1, 256, 1, 1, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 1, 1, 64] -> [16384]> : tensor<16384xf16> to tensor<1x256x1x1x64xf16>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf16> to tensor<64x14x14x1x64xf16>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 14, 14, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 256] -> [3211264]> : tensor<3211264xf16> to tensor<64x14x14x1x256xf16>
@@ -197,7 +197,7 @@ func.func @nhwc_1x1_bias_add_then_absf(%arg0: tensor<16384xf16>, %arg1: tensor<8
 // CHECK: %[[CAST:.*]] = arith.fptoui %[[ADD]] : tensor<1x256x12544xf16> to tensor<1x256x12544xi8>
 // CHECK: rock.store %[[ADD]] to %{{.*}} by set : tensor<1x256x12544xf16>
 // CHECK: rock.store %[[CAST]] to %{{.*}} by set : tensor<1x256x12544xi8>
-func.func @nhwc_1x1_bias_add_two_outputs(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>, %arg3: tensor<3211264xf16>, %arg4: tensor<3211264xi8>) -> (tensor<64x14x14x1x256xf16>, tensor<64x14x14x1x256xi8>) attributes {rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##", rock.num_cu = 96 : i32} {
+func.func @nhwc_1x1_bias_add_two_outputs(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>, %arg3: tensor<3211264xf16>, %arg4: tensor<3211264xi8>) -> (tensor<64x14x14x1x256xf16>, tensor<64x14x14x1x256xi8>) attributes {rock.block_size = 128 : i32, rock.kernel = 0 : i32, rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d0 * 256 + d1 + d2 + d3) * 64 + d4)> by [<Unmerge{1, 256, 1, 1, 64} ["g", "k", "0", "1", "c"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 256, 1, 1, 64] -> [16384]> : tensor<16384xf16> to tensor<1x256x1x1x64xf16>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 64 + d4)> by [<Unmerge{64, 14, 14, 1, 64} ["ni", "0i", "1i", "gi", "ci"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 64] -> [802816]> : tensor<802816xf16> to tensor<64x14x14x1x64xf16>
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 14 + d1) * 14 + d2 + d3) * 256 + d4)> by [<Unmerge{64, 14, 14, 1, 256} ["no", "0o", "1o", "go", "ko"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [64, 14, 14, 1, 256] -> [3211264]> : tensor<3211264xf16> to tensor<64x14x14x1x256xf16>
