@@ -146,7 +146,7 @@ func.func @rock_scaled_gemm(%a : tensor<32x64xf4E2M1FN>, %b : tensor<1x32x128xf4
   (d1, d0, d2, d3 + d4, d5 + d6)>
 
 // test 1-1 dimension mappings.
-func.func @rock_transform_1_to_1(%tensor: tensor<1x2x3x4x5xf32>) -> tensor<2x1x3x6x9xf32, #map0> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_transform_1_to_1(%tensor: tensor<1x2x3x4x5xf32>) -> tensor<2x1x3x6x9xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %transformed_tensor = rock.transform %tensor by
     <#map0 by [
       <PassThrough ["g"] at [0] -> ["g"] at [1]>,
@@ -155,28 +155,28 @@ func.func @rock_transform_1_to_1(%tensor: tensor<1x2x3x4x5xf32>) -> tensor<2x1x3
       <Pad{1, 1} ["0ipad"] at [3] -> ["0i"] at [3]>,
       <Pad{2, 2} ["1ipad"] at [4] -> ["1i"] at [4]>
     ] bounds = [2, 1, 3, 6, 9] -> [1, 2, 3, 4, 5]>
-  : tensor<1x2x3x4x5xf32> to tensor<2x1x3x6x9xf32, #map0>
-  return %transformed_tensor : tensor<2x1x3x6x9xf32, #map0>
+  : tensor<1x2x3x4x5xf32> to tensor<2x1x3x6x9xf32>
+  return %transformed_tensor : tensor<2x1x3x6x9xf32>
 }
 // CHECK-LABEL: func.func @rock_transform_1_to_1
 //  CHECK-NEXT: rock.transform
 
 // test multiple source dimensions map to 1 target dimension.
-func.func @rock_transform_n_to_1(%tensor : tensor<1x128x64x32x16xf32>) -> tensor<1x32768x128xf32, #map1> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_transform_n_to_1(%tensor : tensor<1x128x64x32x16xf32>) -> tensor<1x32768x128xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %transformed_tensor = rock.transform %tensor by
     <#map1 by [
       #rock.transform<PassThrough ["gemmG"] at [0] -> ["g"] at [0]>,
       #rock.transform<Merge{64, 32, 16} ["gemmK"] at [1] -> ["c", "0", "1"] at [2, 3, 4]>,
       #rock.transform<PassThrough ["gemmM"] at [2] -> ["k"] at [1]>
     ] bounds = [1, 32768, 128] -> [1, 128, 64, 32, 16]>
-  : tensor<1x128x64x32x16xf32> to tensor<1x32768x128xf32, #map1>
-  return %transformed_tensor : tensor<1x32768x128xf32, #map1>
+  : tensor<1x128x64x32x16xf32> to tensor<1x32768x128xf32>
+  return %transformed_tensor : tensor<1x32768x128xf32>
 }
 // CHECK-LABEL: func.func @rock_transform_n_to_1
 //  CHECK-NEXT: rock.transform
 
 // test 1 source dimension map to multiple target dimensions.
-func.func @rock_transform_1_to_n(%tensor : tensor<1x128x64x32x16xf32>) -> tensor<128x1x64x32x1x16x1xf32, #map2> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_transform_1_to_n(%tensor : tensor<1x128x64x32x16xf32>) -> tensor<128x1x64x32x1x16x1xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %transformed_tensor = rock.transform %tensor by
     <#map2 by [
       #rock.transform<PassThrough ["n", "g", "c"] at [0, 1, 2] ->
@@ -184,8 +184,8 @@ func.func @rock_transform_1_to_n(%tensor : tensor<1x128x64x32x16xf32>) -> tensor
       #rock.transform<Embed{1, 1} ["0", "0o"] at [3, 4] -> ["0ipad"] at [3]>,
       #rock.transform<Embed{1, 1} ["1", "1o"] at [5, 6] -> ["1ipad"] at [4]>
      ] bounds = [128, 1, 64, 32, 1, 16, 1] -> [1, 128, 64, 32, 16]>
-  : tensor<1x128x64x32x16xf32> to tensor<128x1x64x32x1x16x1xf32, #map2>
-  return %transformed_tensor : tensor<128x1x64x32x1x16x1xf32, #map2>
+  : tensor<1x128x64x32x16xf32> to tensor<128x1x64x32x1x16x1xf32>
+  return %transformed_tensor : tensor<128x1x64x32x1x16x1xf32>
 }
 
 // CHECK-LABEL: func.func @rock_transform_1_to_n
