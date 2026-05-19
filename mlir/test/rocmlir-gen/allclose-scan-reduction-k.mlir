@@ -8,7 +8,7 @@
 //
 
 // ============================================================================
-// (1) Plain `rock.gemm`. K=64 -> atol = 1e-5 + 64*1e-4 = 6.41e-3.
+// (1) Plain `rock.gemm`. K=64 -> atol = 1e-5 + 64*1e-6 = 7.4e-5.
 // ============================================================================
 
 // RUN: rocmlir-gen -fut gemm_fut --arch %arch --clone-harness %s \
@@ -25,8 +25,8 @@ func.func private @gemm_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128x
 
 // The pipeline must produce a `rock.gemm` for the scanner to see.
 // GEMM:        rock.gemm
-// The K-scaled atol (matching K=64).
-// GEMM:        arith.constant 6.410000e-03 : f32
+// The K-scaled atol (matching K=64): 1e-5 + 64*1e-6 = 7.4e-5.
+// GEMM:        arith.constant 7.{{[0-9]+}}{{[eE]}}-{{0?}}5 : f32
 // The PyTorch f32 rtol is unchanged.
 // GEMM-NEXT:   arith.constant 1.300000e-06 : f32
 // GEMM:        call @mcpuVerifyFloatAllclose
@@ -35,7 +35,7 @@ func.func private @gemm_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128x
 // (2) Chained `rock.reduce` on `rock.gemm`. The scanner walks the reduce input
 // back to the matmul and multiplies K_gemm by the reduce axis extent. For
 // K_gemm=64 reduced along axis of extent 128, K_eff=64*128=8192 and
-// atol = 1e-5 + 8192*1e-4 ~= 0.81921.
+// atol = 1e-5 + 8192*1e-6 ~= 8.202e-3.
 // ============================================================================
 
 // RUN: rocmlir-gen -fut gemm_reduce_fut --arch %arch --clone-harness %s \
@@ -54,14 +54,15 @@ func.func private @gemm_reduce_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x
 // Both ops must reach the IR the scanner walks.
 // GEMM_REDUCE:        rock.gemm
 // GEMM_REDUCE:        rock.reduce
-// Multiplicative K_eff = 64*128 = 8192; atol ~= 0.819209992.
-// GEMM_REDUCE:        arith.constant 0.819209992 : f32
+// Multiplicative K_eff = 64*128 = 8192; atol = 1e-5 + 8192*1e-6 ~= 8.202e-3.
+// Magnitude >= 1e-3 -> MLIR fp32 printer uses decimal notation.
+// GEMM_REDUCE:        arith.constant 0.0082{{[0-9]+}} : f32
 // GEMM_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
 // GEMM_REDUCE:        call @mcpuVerifyFloatAllclose
 
 // ============================================================================
 // (3) Convolution from a MIGraphX kernel. K_eff = Cin * product(filter_spatial).
-// Cin=1, filter=3x3 gives K=9 and atol = 1e-5 + 9*1e-4 = 9.1e-4.
+// Cin=1, filter=3x3 gives K=9 and atol = 1e-5 + 9*1e-6 = 1.9e-5.
 // ============================================================================
 
 // RUN: rocmlir-gen -fut conv_fut --arch %arch --clone-harness %s \
@@ -76,13 +77,14 @@ func.func private @conv_fut(%arg0: !migraphx.shaped<1x1x32x32xf32, 1024x1024x32x
 
 // The migraphx pipeline lowers the convolution to a `rock.conv` op.
 // CONV:        rock.conv
-// CONV:        arith.constant 9.100000e-04 : f32
+// atol = 1e-5 + 9*1e-6 = 1.9e-5.
+// CONV:        arith.constant 1.{{8|9}}{{[0-9]*}}{{[eE]}}-{{0?}}5 : f32
 // CONV-NEXT:   arith.constant 1.300000e-06 : f32
 // CONV:        call @mcpuVerifyFloatAllclose
 
 // ============================================================================
 // (4) No reduction op in the module. The scanner returns nullopt, K_eff
-// defaults to 1, and atol = 1e-5 + 1*1e-4 = 1.1e-4 -- the PyTorch element-wise
+// defaults to 1, and atol = 1e-5 + 1*1e-6 = 1.1e-5 -- the PyTorch element-wise
 // default plus one unit of accumulation slack.
 // ============================================================================
 
@@ -98,14 +100,15 @@ func.func private @elemwise_fut(%arg0: tensor<256xf32>, %arg1: tensor<256xf32>) 
 
 // ELEMWISE-NOT:  rock.gemm
 // ELEMWISE-NOT:  rock.conv
-// ELEMWISE:      arith.constant 1.09999994E-4 : f32
+// atol = 1e-5 + 1*1e-6 = 1.1e-5.
+// ELEMWISE:      arith.constant 1.{{0|1}}{{[0-9]*}}{{[eE]}}-{{0?}}5 : f32
 // ELEMWISE-NEXT: arith.constant 1.300000e-06 : f32
 // ELEMWISE:      call @mcpuVerifyFloatAllclose
 
 // ============================================================================
 // (5) MIGraphX `migraphx.dot`. Same shape as case (1); confirms the MIGraphX
 // pipeline lowers `migraphx.dot` to `rock.gemm` with the same K=64 that the
-// scanner picks up. Expected atol unchanged at 6.41e-3.
+// scanner picks up. Expected atol matches case (1): 7.4e-5.
 // ============================================================================
 
 // RUN: rocmlir-gen -fut mx_dot_fut --arch %arch --clone-harness %s \
@@ -119,7 +122,8 @@ func.func private @mx_dot_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384x64x1>,
 }
 
 // MX_DOT:        rock.gemm
-// MX_DOT:        arith.constant 6.410000e-03 : f32
+// atol = 1e-5 + 64*1e-6 = 7.4e-5.
+// MX_DOT:        arith.constant 7.{{[0-9]+}}{{[eE]}}-{{0?}}5 : f32
 // MX_DOT-NEXT:   arith.constant 1.300000e-06 : f32
 // MX_DOT:        call @mcpuVerifyFloatAllclose
 
@@ -127,7 +131,7 @@ func.func private @mx_dot_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384x64x1>,
 // (6) MIGraphX `migraphx.dot` followed by `migraphx.reduce_sum`. Same shape as
 // case (2); confirms the multiplicative K_eff = K_gemm * reduce_axis_extent
 // rule fires for the MIGraphX -> rock lowering too (rock.reduce reaches the
-// scanner with `axis = 2 : index` and extent 128). Expected atol ~= 0.81921.
+// scanner with `axis = 2 : index` and extent 128). Expected atol ~= 8.202e-3.
 // ============================================================================
 
 // RUN: rocmlir-gen -fut mx_dot_reduce_fut --arch %arch --clone-harness %s \
@@ -143,7 +147,9 @@ func.func private @mx_dot_reduce_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384
 
 // MX_DOT_REDUCE:        rock.gemm
 // MX_DOT_REDUCE:        rock.reduce
-// MX_DOT_REDUCE:        arith.constant 0.819209992 : f32
+// atol = 1e-5 + 8192*1e-6 ~= 8.202e-3.
+// Magnitude >= 1e-3 -> MLIR fp32 printer uses decimal notation.
+// MX_DOT_REDUCE:        arith.constant 0.0082{{[0-9]+}} : f32
 // MX_DOT_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
 // MX_DOT_REDUCE:        call @mcpuVerifyFloatAllclose
 
@@ -152,7 +158,7 @@ func.func private @mx_dot_reduce_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384
 // same dtype; the harness must emit one `_verify` function per output (here
 // `_verify0` and `_verify1`) with its own `(atol, rtol)` constants. Each call
 // gets the per-output PyTorch f32 baseline scaled by K_eff=1, i.e.
-// atol = 1e-5 + 1*1e-4 = 1.1e-4 and rtol = 1.3e-6.
+// atol = 1e-5 + 1*1e-6 = 1.1e-5 and rtol = 1.3e-6.
 //
 // Note: this test exercises the per-output verification-emission path. It
 // uses same-dtype outputs because today rocmlir-gen has a known limitation
@@ -174,12 +180,13 @@ func.func private @multi_out_fut(%arg0: tensor<256xf32>, %arg1: tensor<256xf32>)
   return %0, %1 : tensor<256xf32>, tensor<256xf32>
 }
 
-// Two separate verifier functions are emitted, one per output.
+// Two separate verifier functions are emitted, one per output. Per-output
+// atol = 1e-5 + 1*1e-6 = 1.1e-5.
 // MULTI_OUT:      func.func @multi_out_fut_verify
-// MULTI_OUT:      arith.constant 1.09999994E-4 : f32
+// MULTI_OUT:      arith.constant 1.{{0|1}}{{[0-9]*}}{{[eE]}}-{{0?}}5 : f32
 // MULTI_OUT-NEXT: arith.constant 1.300000e-06 : f32
 // MULTI_OUT:      call @mcpuVerifyFloatAllclose
 // MULTI_OUT:      func.func @multi_out_fut_verify
-// MULTI_OUT:      arith.constant 1.09999994E-4 : f32
+// MULTI_OUT:      arith.constant 1.{{0|1}}{{[0-9]*}}{{[eE]}}-{{0?}}5 : f32
 // MULTI_OUT-NEXT: arith.constant 1.300000e-06 : f32
 // MULTI_OUT:      call @mcpuVerifyFloatAllclose

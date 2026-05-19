@@ -286,16 +286,17 @@ This mirrors rocBLAS's `tol = K * sum_error_tolerance<T>` in
 `clients/include/blas3/testing_gemm.hpp`, with the PyTorch baseline added
 back so element-wise ops (K_eff=1) match PyTorch's defaults.
 
-`sumErrorTolerance(Type)` in `rocmlir-gen.cpp` uses rocBLAS's constants for
-fp16/bf16/fp32/fp64, plus `eps(T)` for the fp8/fp4 dtypes rocBLAS
-does not test:
+`sumErrorTolerance(Type)` in `rocmlir-gen.cpp` keeps rocBLAS's constants
+for fp16/bf16 and uses `eps(T)` for the fp8/fp4 dtypes rocBLAS does not
+test. The fp32/fp64 values are *tighter* than rocBLAS uses and follow
+hipBLASLt's flat-`atol` policy instead; see the next subsection for why.
 
 | dtype | sum_error_tolerance | source |
 |---|---|---|
 | fp16 | `1/100` | rocBLAS `near.hpp` |
 | bf16 | `1/900` | rocBLAS `near.hpp` |
-| fp32 | `1/10000` | rocBLAS `near.hpp` |
-| fp64 | `1/1000000` | rocBLAS `near.hpp` |
+| fp32 | `1e-6` | ~`10 * eps(fp32)`, hipBLASLt-aligned (see below) |
+| fp64 | `1e-15` | ~`10 * eps(fp64)`, hipBLASLt-aligned (see below) |
 | fp8 e4m3* | `0.125` | `eps(e4m3) = 2^-3` |
 | fp8 e5m2* | `0.25`  | `eps(e5m2) = 2^-2` |
 | fp4 e2m1 | `0.5`   | `eps(e2m1) = 2^-1` |
@@ -303,10 +304,22 @@ does not test:
 Worked example -- fp32 GEMM with K=4096:
 
 ```
-atol_eff = 1e-5 + 4096 * 1e-4 = 0.4097
+atol_eff = 1e-5 + 4096 * 1e-6 = 4.106e-3
 ```
 
-vs PyTorch's flat `1e-5` (would fail) or rocBLAS's flat `0.4096` (matches).
+For context, rocBLAS's tolerance for the same K is
+`K * 1e-4 = 0.4096` (~100x looser); PyTorch's flat `1e-5` would fail.
+
+#### Why fp32/fp64 are tighter than rocBLAS
+
+rocBLAS uses higher tolerances because they expect to be compared against
+external libraries, which might have computed the kernel in a different order.
+We compara against our own CPU reference, so we can safely use tighter values.
+
+Our `1e-6` for fp32 is approximately `10 * eps(fp32)` and matches
+hipBLASLt's flat budget; the K-scaling on top of that lets the bound
+grow gracefully on long reductions without admitting orders of magnitude
+of unjustified slack. fp64 follows the same `~10 * eps(T)` rule.
 
 ### 2.4 `K_eff` per operation
 
