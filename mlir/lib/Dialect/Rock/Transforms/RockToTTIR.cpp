@@ -266,6 +266,16 @@ struct RockBlockwiseGemmOpRewritePattern
 /// a signed integer MAX is equivalent to fmax. For negative IEEE floats, a
 /// larger magnitude corresponds to a larger unsigned bit pattern, so unsigned
 /// MIN picks the one closest to zero, i.e. the maximum among negatives.
+///
+/// Only f32 is supported today. The op verifier for
+/// `rock.blockwise_store_ptr` (RockOps.td) constrains its source operand to
+/// `NativeMemoryOpTypes`, which excludes F64, so the f64 arm of upstream
+/// `semantic.py::atomic_max` is unreachable here. F16/BF16 are in
+/// `NativeMemoryOpTypes` and so can reach this guard via hand-written IR,
+/// but the production emitter, `rock.reduce max`, gated by
+/// `rock::isFastAtomicMaxSupported` only emits f32, so
+/// this diagnostic is primarily a safety net for test IR and any future
+/// direct emitter of `StoreMethod::AtomicMax`.
 static LogicalResult emitFloatAtomicMax(PatternRewriter &rewriter,
                                         Operation *op, Value value,
                                         Value ptrTensor, Value mask,
@@ -277,12 +287,11 @@ static LogicalResult emitFloatAtomicMax(PatternRewriter &rewriter,
   auto maskTensorType = cast<RankedTensorType>(mask.getType());
   auto fpType = cast<FloatType>(valueType.getElementType());
 
-  unsigned bw = fpType.getWidth();
-  if (bw != 32 && bw != 64) {
-    return op->emitError(
-               "atomic_max on floating point requires f32 or f64; got ")
+  if (!fpType.isF32()) {
+    return op->emitError("atomic_max on floating point requires f32; got ")
            << fpType;
   }
+  unsigned bw = fpType.getWidth();
 
   Type intElemType = rewriter.getIntegerType(bw);
   auto intTensorType = RankedTensorType::get(valueType.getShape(), intElemType,
