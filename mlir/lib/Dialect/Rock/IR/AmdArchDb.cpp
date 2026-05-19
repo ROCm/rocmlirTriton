@@ -397,6 +397,35 @@ int64_t mlir::rock::getMaxNumCTAs(StringRef arch) {
   return 16;
 }
 
+// Triton's HIPOptions currently normalizes kpack to 1 only for gfx950 in
+// compiler.py. Instead of updating Pipelines.cpp, we make this function
+// available here since rock uses this helper earlier for tuning and perf-config
+// validation, and applies the same unsupported policy forward to gfx950 and
+// future archs instead of generating configs that the backend should not use.
+int64_t mlir::rock::getMaxKpack(StringRef arch) {
+  // kpack != 1 is unsupported on gfx950 and gfx1250 (and any newer arch);
+  // older archs (gfx9 < gfx950, all of gfx10/gfx11, gfx12 < gfx1250) still
+  // accept kpack in {1, 2}.
+  auto [chip, _] = parseArchString(arch);
+  // consume_front does double duty: it checks for the "gfx" prefix and
+  // strips it from `chip` in-place when present
+  if (!chip.consume_front("gfx"))
+    return 1; // not a gfx target -> safest
+
+  // Parse the stripped digits as hex (e.g. "950" -> n = 0x950).
+  unsigned n = 0;
+  if (chip.getAsInteger(/*radix=*/16, n))
+    return 1; // malformed id (e.g. "gfx" alone) -> safest
+
+  if (n < 0x950) // gfx9 pre-CDNA4 (e.g., gfx908/90a)
+    return 2;
+
+  if (0x1000 <= n && n < 0x1250) // all of gfx10/gfx11 + gfx12 < gfx1250
+    return 2;
+
+  return 1; // gfx950+, gfx1250+, gfx13xx+, anything else
+}
+
 bool mlir::rock::supportsTDM(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());

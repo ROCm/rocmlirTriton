@@ -70,7 +70,7 @@ func.func @rock_conv_f16(%filter : tensor<1x128x8x3x3xf16>, %input : tensor<128x
 // GRID-LABEL: rock_conv_i8
 func.func @rock_conv_i8(%filter : tensor<1x128x8x3x3xi8>, %input : tensor<128x1x8x32x32xi8>, %output : tensor<128x1x128x30x30xi32>) -> tensor<128x1x128x30x30xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
   // CHECK: rock.conv
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 4, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 2, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.grid_size = 3600
   // GRID: rock.gridwise_gemm
   %result = rock.conv(%filter, %input) {
@@ -80,7 +80,7 @@ func.func @rock_conv_i8(%filter : tensor<1x128x8x3x3xi8>, %input : tensor<128x1x
     dilations = [1 : index, 1 : index],
     strides = [1 : index, 1 : index],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    perf_config = "gemm:v1:64,64,64,4,1,4,32,1,2,0,0"
+    perf_config = "gemm:v1:64,64,64,2,1,4,32,1,2,0,0"
   } : tensor<1x128x8x3x3xi8>, tensor<128x1x8x32x32xi8> -> tensor<128x1x128x30x30xi32>
   %out = rock.store %result to %output by set : tensor<128x1x128x30x30xi32> -> tensor<128x1x128x30x30xi32> to tensor<128x1x128x30x30xi32>
   return %out : tensor<128x1x128x30x30xi32>
@@ -322,10 +322,10 @@ func.func @rock_gemm_from_conv(%a : tensor<1x72x128xf32>, %b : tensor<1x72x11520
 // GRID-LABEL: rock_gemm_from_i8_conv
 func.func @rock_gemm_from_i8_conv(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115200xi8>, %c : tensor<1x128x115200xi32>) -> tensor<1x128x115200xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 4, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 2, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.grid_size = 3600
   // GRID: rock.gridwise_gemm
-  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,4,1,4,32,1,2,0,0"}
+  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,2,1,4,32,1,2,0,0"}
   : tensor<1x72x128xi8> * tensor<1x72x115200xi8> -> tensor<1x128x115200xi32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xi32> -> tensor<1x128x115200xi32> to tensor<1x128x115200xi32>
   return %out : tensor<1x128x115200xi32>
@@ -335,10 +335,10 @@ func.func @rock_gemm_from_i8_conv(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115
 // GRID-LABEL: rock_gemm_from_i8_conv_numstages2
 func.func @rock_gemm_from_i8_conv_numstages2(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115200xi8>, %c : tensor<1x128x115200xi32>) -> tensor<1x128x115200xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 4, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 2, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.grid_size = 3600
   // GRID: rock.gridwise_gemm
-  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,4,1,4,32,1,2,0,0"}
+  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,2,1,4,32,1,2,0,0"}
   : tensor<1x72x128xi8> * tensor<1x72x115200xi8> -> tensor<1x128x115200xi32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xi32> -> tensor<1x128x115200xi32> to tensor<1x128x115200xi32>
   return %out : tensor<1x128x115200xi32>
@@ -351,10 +351,10 @@ func.func @rock_gemm_from_i8_conv_numstages2(%a : tensor<1x72x128xi8>, %b : tens
 // GRID-LABEL: rock_gemm_from_i8_conv_gfx942
 func.func @rock_gemm_from_i8_conv_gfx942(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115200xi8>, %c : tensor<1x128x115200xi32>) -> tensor<1x128x115200xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 4, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 2, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.grid_size = 3600
   // GRID: rock.gridwise_gemm
-  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,4,1,4,32,1,2,0,0"}
+  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,2,1,4,32,1,2,0,0"}
   : tensor<1x72x128xi8> * tensor<1x72x115200xi8> -> tensor<1x128x115200xi32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xi32> -> tensor<1x128x115200xi32> to tensor<1x128x115200xi32>
   return %out : tensor<1x128x115200xi32>
@@ -365,10 +365,10 @@ func.func @rock_gemm_from_i8_conv_gfx942(%a : tensor<1x72x128xi8>, %b : tensor<1
 // GRID-LABEL: rock_gemm_xdlops_fp8_bf8
 func.func @rock_gemm_xdlops_fp8_bf8(%a : tensor<1x72x128xf8E4M3FNUZ>, %b : tensor<1x72x115200xf8E5M2FNUZ>, %c : tensor<1x128x115200xf32>) -> tensor<1x128x115200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 4, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 2, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.grid_size = 3600
   // GRID: rock.gridwise_gemm
-  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,4,1,4,32,1,2,0,0"}
+  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,2,1,4,32,1,2,0,0"}
   : tensor<1x72x128xf8E4M3FNUZ> * tensor<1x72x115200xf8E5M2FNUZ> -> tensor<1x128x115200xf32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xf32> -> tensor<1x128x115200xf32> to tensor<1x128x115200xf32>
   return %out : tensor<1x128x115200xf32>
@@ -379,10 +379,10 @@ func.func @rock_gemm_xdlops_fp8_bf8(%a : tensor<1x72x128xf8E4M3FNUZ>, %b : tenso
 // GRID-LABEL: rock_gemm_xdlops_fp8_bf8_ocp
 func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : tensor<1x72x115200xf8E5M2>, %c : tensor<1x128x115200xf32>) -> tensor<1x128x115200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 4, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.grid_size = 3600
   // GRID: rock.gridwise_gemm
-  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,4,1,4,32,1,2,0,0"}
+  %result = rock.gemm tr %a * %b {perf_config = "gemm:v1:64,64,64,1,1,4,32,1,2,0,0"}
   : tensor<1x72x128xf8E4M3FN> * tensor<1x72x115200xf8E5M2> -> tensor<1x128x115200xf32>
   %out = rock.store %result to %c by set : tensor<1x128x115200xf32> -> tensor<1x128x115200xf32> to tensor<1x128x115200xf32>
   return %out : tensor<1x128x115200xf32>

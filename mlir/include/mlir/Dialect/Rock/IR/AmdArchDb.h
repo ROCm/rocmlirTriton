@@ -90,6 +90,9 @@ bool supportsMultiCTALaunch(StringRef arch);
 /// Returns 1 if multi-CTA is not supported.
 int64_t getMaxNumCTAs(StringRef arch);
 
+/// Get the maximum supported `kpack` perf-config value for this arch.
+int64_t getMaxKpack(StringRef arch);
+
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 
