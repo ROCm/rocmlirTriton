@@ -146,3 +146,40 @@ func.func private @mx_dot_reduce_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384
 // MX_DOT_REDUCE:        arith.constant 0.819209992 : f32
 // MX_DOT_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
 // MX_DOT_REDUCE:        call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (7) Multi-output element-wise kernel. The kernel returns two tensors of the
+// same dtype; the harness must emit one `_verify` function per output (here
+// `_verify0` and `_verify1`) with its own `(atol, rtol)` constants. Each call
+// gets the per-output PyTorch f32 baseline scaled by K_eff=1, i.e.
+// atol = 1e-5 + 1*1e-4 = 1.1e-4 and rtol = 1.3e-6.
+//
+// Note: this test exercises the per-output verification-emission path. It
+// uses same-dtype outputs because today rocmlir-gen has a known limitation
+// when assembling the host harness for tensor-result kernels with multiple
+// outputs of *different* dtypes (the placeholder `outIndices` computation
+// in `populateHostHarnessLogic` indexes into the input localVars). The
+// observable that matters here -- two distinct `_verify` functions with
+// matching `(atol, rtol)` constants -- is independent of that limitation.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut multi_out_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=highlevel -host-pipeline=highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut multi_out_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=MULTI_OUT --enable-var-scope
+
+func.func private @multi_out_fut(%arg0: tensor<256xf32>, %arg1: tensor<256xf32>) -> (tensor<256xf32>, tensor<256xf32>) {
+  %0 = tosa.add %arg0, %arg1 : (tensor<256xf32>, tensor<256xf32>) -> tensor<256xf32>
+  %1 = tosa.sub %arg0, %arg1 : (tensor<256xf32>, tensor<256xf32>) -> tensor<256xf32>
+  return %0, %1 : tensor<256xf32>, tensor<256xf32>
+}
+
+// Two separate verifier functions are emitted, one per output.
+// MULTI_OUT:      func.func @multi_out_fut_verify
+// MULTI_OUT:      arith.constant 1.09999994E-4 : f32
+// MULTI_OUT-NEXT: arith.constant 1.300000e-06 : f32
+// MULTI_OUT:      call @mcpuVerifyFloatAllclose
+// MULTI_OUT:      func.func @multi_out_fut_verify
+// MULTI_OUT:      arith.constant 1.09999994E-4 : f32
+// MULTI_OUT-NEXT: arith.constant 1.300000e-06 : f32
+// MULTI_OUT:      call @mcpuVerifyFloatAllclose
