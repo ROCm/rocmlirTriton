@@ -1283,9 +1283,9 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
         config.set_perfconfig(perfconfig)
         entry = config.table_entry(nano_seconds)
         if options.thermal_test:
-            # AIROCMLIR-858 thermal_test set. Parse the unified JSON the driver
-            # emits under --unified-measurements-format=true and surface
-            # one column per knob (requested value) plus the per-iteration
+            # AIROCMLIR-858 thermal_test set. Parse the unified JSON the
+            # driver emits under --show-all-measurements and surface one
+            # column per knob (requested value) plus the per-iteration
             # arrays for downstream thermal-ramp analysis.
             if options.debug:
                 measurements_list: Optional[List[float]] = None
@@ -1347,7 +1347,6 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
             f"--timer={options.timer}",
             f"--per-iter-cpu-timing={options.per_iter_cpu_timing}",
             f"--timer-ensemble={options.timer_ensemble}",
-            "--unified-measurements-format=true",
         ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
