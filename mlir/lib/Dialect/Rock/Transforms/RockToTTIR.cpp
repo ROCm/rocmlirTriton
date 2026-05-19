@@ -409,7 +409,12 @@ struct RockStorePtrOpRewritePattern
                                       triton::MemSyncScope::GPU)))
           return failure();
       } else {
-        // Integer path: a single atomic suffices.
+        // Integer path: a single atomic suffices because the two's-complement
+        // ordering of a signed (or signless) integer and the magnitude ordering
+        // of an unsigned integer each have a direct LLVM atomicrmw counterpart
+        // (`max` vs. `umax`). Only the float case needs the sign-bit-split
+        // trick above because IEEE-754 floats have no single integer
+        // interpretation that orders both positive and negative values.
         triton::RMWOp rmwOp = elementType.isUnsignedInteger()
                                   ? triton::RMWOp::UMAX
                                   : triton::RMWOp::MAX;

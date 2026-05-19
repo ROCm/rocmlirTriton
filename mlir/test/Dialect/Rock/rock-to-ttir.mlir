@@ -379,6 +379,82 @@ func.func @test_unscaled_gemm_f8(
 
 // -----
 
+// Test: f32 GEMM lowers to tt.dot.
+
+// CHECK-LABEL: @test_gemm_f32
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf32>, %[[B:.*]]: tensor<64x64xf32>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f32(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: i8 GEMM lowers to tt.dot with i32 accumulator.
+
+// CHECK-LABEL: @test_gemm_i8
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xi8>, %[[B:.*]]: tensor<64x64xi8>, %[[C:.*]]: tensor<64x64xi32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xi8> * tensor<64x64xi8> -> tensor<64x64xi32>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_i8(
+    %a: tensor<64x64xi8>, %b: tensor<64x64xi8>,
+    %c: tensor<64x64xi32>) -> tensor<64x64xi32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xi8>, tensor<64x64xi8>,
+      tensor<64x64xi32> -> tensor<64x64xi32>
+  return %result : tensor<64x64xi32>
+}
+
+// -----
+
+// Test: FNUZ fp8 mixed GEMM (f8E4M3FNUZ x f8E5M2FNUZ) lowers to tt.dot.
+
+// CHECK-LABEL: @test_gemm_f8_fnuz
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf8E4M3FNUZ>, %[[B:.*]]: tensor<64x64xf8E5M2FNUZ>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xf8E4M3FNUZ> * tensor<64x64xf8E5M2FNUZ> -> tensor<64x64xf32>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f8_fnuz(
+    %a: tensor<64x64xf8E4M3FNUZ>, %b: tensor<64x64xf8E5M2FNUZ>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf8E4M3FNUZ>, tensor<64x64xf8E5M2FNUZ>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: Mixed OCP fp8 GEMM (f8E4M3FN x f8E5M2) lowers to tt.dot.
+
+// CHECK-LABEL: @test_gemm_f8_ocp_mixed
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf8E4M3FN>, %[[B:.*]]: tensor<64x64xf8E5M2>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xf8E4M3FN> * tensor<64x64xf8E5M2> -> tensor<64x64xf32>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f8_ocp_mixed(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E5M2>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf8E4M3FN>, tensor<64x64xf8E5M2>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
 // Test: Scaled GEMM with f8 data and i8 scales lowers to tt.dot_scaled.
 
 // CHECK-LABEL: @test_scaled_gemm_f8
