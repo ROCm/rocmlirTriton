@@ -1002,29 +1002,6 @@ def raise_if_terminated(returncode: int) -> None:
     if -returncode in TERMINATION_SIGNALS:
         raise KeyboardInterrupt()
 
-
-def _positive_int(s: str) -> int:
-    """argparse type: parses to an int > 0."""
-    try:
-        n = int(s)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"expected an integer, got {s!r}")
-    if n <= 0:
-        raise argparse.ArgumentTypeError(f"must be > 0, got {s!r}")
-    return n
-
-
-def _non_negative_int(s: str) -> int:
-    """argparse type: parses to an int >= 0."""
-    try:
-        n = int(s)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"expected an integer, got {s!r}")
-    if n < 0:
-        raise argparse.ArgumentTypeError(f"must be >= 0, got {s!r}")
-    return n
-
-
 class TuningArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with custom validation for tuning arguments."""
 
@@ -1878,7 +1855,6 @@ def parse_arguments(gpu_topology: GpuTopology,
     # (AIROCMLIR-858).
     parser.add_argument(
         "--num-iterations",
-        type=_positive_int,
         default=TUNE_REPEATS,
         metavar='N',
         help=
@@ -1889,7 +1865,6 @@ def parse_arguments(gpu_topology: GpuTopology,
 
     parser.add_argument(
         "--warmup-iterations",
-        type=_non_negative_int,
         default=WARMUP_ITERATIONS,
         metavar='N',
         help=
@@ -1911,15 +1886,13 @@ def parse_arguments(gpu_topology: GpuTopology,
 
     parser.add_argument(
         "--flush-l2",
-        choices=["all", "none", "weights"],
+        choices=["all", "none"],
         default="all",
         metavar='LEVEL',
         help=
         "L2 cache flush strategy applied before every measured iteration "
         "(default %(default)s). 'all' overwrites a > L2-sized scratch buffer "
-        "(historical behaviour); 'none' leaves the L2 warm; 'weights' only "
-        "flushes the kernel's weight buffers (heuristic: every kernel "
-        "argument except the last).")
+        "(historical behaviour); 'none' leaves the L2 warm.")
 
     parser.add_argument(
         "--timer",

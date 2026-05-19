@@ -174,10 +174,7 @@ static llvm::cl::opt<rocmlir::tuningdriver::L2FlushLevel> flushL2Level(
         clEnumValN(rocmlir::tuningdriver::L2FlushLevel::All, "all",
                    "Flush the whole L2 (memset a > L2-sized scratch buffer)"),
         clEnumValN(rocmlir::tuningdriver::L2FlushLevel::None, "none",
-                   "Do not flush the L2; lets the GPU run with a warm cache"),
-        clEnumValN(rocmlir::tuningdriver::L2FlushLevel::Weights, "weights",
-                   "Only flush the kernel's weight buffers (heuristic: all "
-                   "kernel argument buffers except the last)")),
+                   "Do not flush the L2; lets the GPU run with a warm cache")),
     llvm::cl::init(rocmlir::tuningdriver::L2FlushLevel::All));
 
 // Timing method (AIROCMLIR-858). Historically the driver auto-selects between
@@ -373,13 +370,10 @@ struct BenchmarkParams {
 };
 
 // Bundles per-iteration cache-flush controls so the measurement loops don't
-// need a long argument list. The weight-buffer ArrayRefs are unused unless
-// ``l2Level == Weights``.
+// need a long argument list.
 struct FlushPolicy {
   bool flushICache;
   rocmlir::tuningdriver::L2FlushLevel l2Level;
-  llvm::ArrayRef<void *> weightBuffers;
-  llvm::ArrayRef<size_t> weightBufferSizes;
 };
 
 enum class CompilationStatus {
@@ -462,9 +456,7 @@ static LogicalResult measureSmallKernel(
         if (flushPolicy.flushICache && failed(flushInstructionCache(stream))) {
           return failure();
         }
-        if (failed(flushL2Cache(stream, flushPolicy.l2Level,
-                                flushPolicy.weightBuffers,
-                                flushPolicy.weightBufferSizes))) {
+        if (failed(flushL2Cache(stream, flushPolicy.l2Level))) {
           return failure();
         }
       }
@@ -497,9 +489,7 @@ static LogicalResult measureSmallKernel(
       if (flushPolicy.flushICache && failed(flushInstructionCache(stream))) {
         return failure();
       }
-      if (failed(flushL2Cache(stream, flushPolicy.l2Level,
-                              flushPolicy.weightBuffers,
-                              flushPolicy.weightBufferSizes))) {
+      if (failed(flushL2Cache(stream, flushPolicy.l2Level))) {
         return failure();
       }
     }
@@ -531,9 +521,7 @@ static LogicalResult measureLargeKernel(
     if (flushPolicy.flushICache && failed(flushInstructionCache(stream))) {
       return failure();
     }
-    if (failed(flushL2Cache(stream, flushPolicy.l2Level,
-                            flushPolicy.weightBuffers,
-                            flushPolicy.weightBufferSizes))) {
+    if (failed(flushL2Cache(stream, flushPolicy.l2Level))) {
       return failure();
     }
 
@@ -613,9 +601,7 @@ static LogicalResult measureEnsemble(
         if (flushPolicy.flushICache && failed(flushInstructionCache(stream))) {
           return failure();
         }
-        if (failed(flushL2Cache(stream, flushPolicy.l2Level,
-                                flushPolicy.weightBuffers,
-                                flushPolicy.weightBufferSizes))) {
+        if (failed(flushL2Cache(stream, flushPolicy.l2Level))) {
           return failure();
         }
       }
@@ -826,21 +812,9 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   std::vector<double> measurements;
   double smallKernelCpuMs = 0.0;
 
-  // Build the per-iteration cache-flush policy. For ``--flush-l2=weights`` we
-  // hand the L2 flusher every kernel arg except the last one (assumed to be
-  // the primary output by rocMLIR convention). When the kernel only has a
-  // single argument, leave the weight slice empty so the L2 flush is a no-op
-  // for that level.
-  llvm::ArrayRef<void *> weightBuffers;
-  llvm::ArrayRef<size_t> weightBufferSizes;
-  if (gpuBuffers.size() > 1) {
-    weightBuffers =
-        llvm::ArrayRef<void *>(gpuBuffers.data(), gpuBuffers.size() - 1);
-    weightBufferSizes =
-        llvm::ArrayRef<size_t>(bufferSizes.data(), bufferSizes.size() - 1);
-  }
-  const FlushPolicy flushPolicy{params.flushICache, params.flushL2Level,
-                                weightBuffers, weightBufferSizes};
+  // Bundle the per-iteration cache-flush controls so the measurement loops
+  // don't need a long argument list.
+  const FlushPolicy flushPolicy{params.flushICache, params.flushL2Level};
 
   // Resolve the timer-ensemble setting (AIROCMLIR-858 #9). Sentinel ``0``
   // means "historical": dispatch to the legacy ``measureSmallKernel`` /

@@ -173,9 +173,7 @@ public:
     }
   }
 
-  LogicalResult flushL2Cache(hipStream_t stream, L2FlushLevel level,
-                             llvm::ArrayRef<void *> weightBuffers,
-                             llvm::ArrayRef<size_t> weightBufferSizes) {
+  LogicalResult flushL2Cache(hipStream_t stream, L2FlushLevel level) {
     std::lock_guard<std::mutex> lock(stateMutex);
     switch (level) {
     case L2FlushLevel::None:
@@ -186,29 +184,6 @@ public:
       if (skipL2Flush)
         return success();
       CHECK_HIP(hipMemsetAsync(flushBuffer.get(), 0, flushSize, stream));
-      return success();
-    }
-    case L2FlushLevel::Weights: {
-      if (weightBuffers.size() != weightBufferSizes.size()) {
-        llvm::errs()
-            << "flushL2Cache(Weights): weight buffer pointer / size lists "
-               "must have the same length, got "
-            << weightBuffers.size() << " vs " << weightBufferSizes.size()
-            << "\n";
-        return failure();
-      }
-      // Memset over each weight buffer pushes the corresponding cache lines
-      // back through L2, evicting whatever data the previous kernel iteration
-      // left in cache. We don't have per-op metadata to identify the
-      // canonical weight tensor (e.g. B in C = A @ B), so the driver passes
-      // every kernel arg except the last one (assumed to be the primary
-      // output by rocMLIR convention).
-      for (size_t i = 0; i < weightBuffers.size(); ++i) {
-        if (!weightBuffers[i] || weightBufferSizes[i] == 0)
-          continue;
-        CHECK_HIP(hipMemsetAsync(weightBuffers[i], 0, weightBufferSizes[i],
-                                 stream));
-      }
       return success();
     }
     }
@@ -340,11 +315,8 @@ CacheFlushState &getState() {
 
 } // namespace
 
-LogicalResult flushL2Cache(hipStream_t stream, L2FlushLevel level,
-                           llvm::ArrayRef<void *> weightBuffers,
-                           llvm::ArrayRef<size_t> weightBufferSizes) {
-  return getState().flushL2Cache(stream, level, weightBuffers,
-                                 weightBufferSizes);
+LogicalResult flushL2Cache(hipStream_t stream, L2FlushLevel level) {
+  return getState().flushL2Cache(stream, level);
 }
 
 LogicalResult flushInstructionCache(hipStream_t stream) {
