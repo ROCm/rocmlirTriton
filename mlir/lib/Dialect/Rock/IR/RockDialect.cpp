@@ -1160,8 +1160,12 @@ LogicalResult TransformOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   TransformOp::Adaptor adaptor(operands, attributes, properties, regions);
-  auto inputType = cast<ShapedType>(adaptor.getInput().getType());
+  auto inputType = dyn_cast<ShapedType>(adaptor.getInput().getType());
+  if (!inputType)
+    return emitOptionalError(location, "input must be a shaped type");
   TransformMapAttr transform = adaptor.getTransform();
+  if (!transform)
+    return emitOptionalError(location, "transform attribute is required");
   inferredReturnTypes.push_back(
       inputType.clone(transform.getUpperBounds().asArrayRef()));
   return success();
@@ -1485,8 +1489,15 @@ LogicalResult BlockwiseLoadOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   // Operand layout: source (index 0), then variadic sourceIndices.
-  auto sourceType = cast<RankedTensorType>(operands.front().getType());
+  if (operands.empty())
+    return emitOptionalError(location, "expected at least a source operand");
+  auto sourceType = dyn_cast<RankedTensorType>(operands.front().getType());
+  if (!sourceType)
+    return emitOptionalError(location, "source must be a ranked tensor");
   size_t numSourceIndices = operands.size() - 1;
+  if (numSourceIndices > static_cast<size_t>(sourceType.getRank()))
+    return emitOptionalError(location,
+                             "number of source indices exceeds source rank");
   auto shape =
       sourceType.getShape().take_back(sourceType.getRank() - numSourceIndices);
   inferredReturnTypes.push_back(
@@ -1636,6 +1647,9 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
     SmallVectorImpl<Type> &inferredReturnTypes) {
   // Result type equals matrixC's type (3rd operand; matrixA, matrixB, matrixC
   // are required and ordered first, before the optional scale operands).
+  if (operands.size() < 3)
+    return emitOptionalError(location,
+                             "expected at least matrixA, matrixB, matrixC");
   inferredReturnTypes.push_back(operands[2].getType());
   return success();
 }
@@ -1727,8 +1741,15 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   // Operand layout: source (index 0), then variadic extraIndices.
-  auto sourceType = cast<RankedTensorType>(operands.front().getType());
+  if (operands.empty())
+    return emitOptionalError(location, "expected at least a source operand");
+  auto sourceType = dyn_cast<RankedTensorType>(operands.front().getType());
+  if (!sourceType)
+    return emitOptionalError(location, "source must be a ranked tensor");
   size_t numExtraIndices = operands.size() - 1;
+  if (numExtraIndices > static_cast<size_t>(sourceType.getRank()))
+    return emitOptionalError(location,
+                             "number of extra indices exceeds source rank");
   auto shape =
       sourceType.getShape().take_back(sourceType.getRank() - numExtraIndices);
   inferredReturnTypes.push_back(
@@ -1768,8 +1789,12 @@ LogicalResult ReduceOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   ReduceOp::Adaptor adaptor(operands, attributes, properties, regions);
-  auto inputType = cast<RankedTensorType>(adaptor.getIn().getType());
+  auto inputType = dyn_cast<RankedTensorType>(adaptor.getIn().getType());
+  if (!inputType)
+    return emitOptionalError(location, "input must be a ranked tensor");
   int64_t axis = adaptor.getAxis().getSExtValue();
+  if (axis < 0 || axis >= inputType.getRank())
+    return emitOptionalError(location, "axis is out of range");
   SmallVector<int64_t> outShape(inputType.getShape());
   outShape[axis] = 1;
   inferredReturnTypes.push_back(
@@ -1806,8 +1831,12 @@ LogicalResult BlockwiseReduceOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   BlockwiseReduceOp::Adaptor adaptor(operands, attributes, properties, regions);
-  auto inputType = cast<RankedTensorType>(adaptor.getInput().getType());
+  auto inputType = dyn_cast<RankedTensorType>(adaptor.getInput().getType());
+  if (!inputType)
+    return emitOptionalError(location, "input must be a ranked tensor");
   int64_t axis = adaptor.getAxis().getSExtValue();
+  if (axis < 0 || axis >= inputType.getRank())
+    return emitOptionalError(location, "axis is out of range");
   SmallVector<int64_t> outShape;
   outShape.reserve(inputType.getRank() - 1);
   for (auto [i, dim] : llvm::enumerate(inputType.getShape())) {
