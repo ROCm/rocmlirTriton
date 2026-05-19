@@ -353,19 +353,6 @@ the matmul that feeds them. The matmul's K is then *multiplied* by the
 reduce axis extent, since each output element of the reduce accumulates
 `K_gemm * N_reduce` products into a single scalar. 
 
-This is the classical forward-error bound for chained inner products: 
-
-`err = O(K * N * eps)`
-
-([Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed.,
-2002, ch. 3](https://epubs.siam.org/doi/book/10.1137/1.9780898718027)).
-
-There is no library that scales tolerances this way --
-rocBLAS / cuBLAS / hipBLASLt test primitive GEMM only and so do not
-face cases like this one, but the rule is necessary once kernels
-fuse a matmul with a reduction: a `(K=64) x (N=256)` fp16 chain needs
-`atol ≈ 16 384 / 100 ≈ 164` ulps, not `64 / 100 ≈ 0.64`.
-
 For a kernel with multiple outputs, rocmlir-gen emits one verifier
 helper per output. With `--comparator=allclose`, each helper carries its own
 `(atol, rtol)` constants, picked from the per-output dtype baseline
