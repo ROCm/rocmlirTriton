@@ -1554,6 +1554,21 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
                     results_writer.write_result(result)
                     if debug_writer:
                         debug_writer.write_result(result)
+                    # Per-config success line on stderr (consumed by lit smoke
+                    # tests under mlir/test/perf-scripts/runtime/). Emitted
+                    # regardless of --quiet, matching the pre-rewrite behaviour.
+                    if result.verify_tflops is not None:
+                        print(
+                            f"Tuned and verified : {result.test_vector} : {result.winning_config} "
+                            f"with {result.max_tflops} TFlops and {result.verify_tflops} on verification",
+                            file=sys.stderr,
+                            flush=True)
+                    else:
+                        print(
+                            f"Tuned : {result.test_vector} : {result.winning_config} "
+                            f"with {result.max_tflops} TFlops",
+                            file=sys.stderr,
+                            flush=True)
                 else:
                     has_errors = True
                     logger.error(
@@ -1705,7 +1720,7 @@ def parse_arguments(gpu_topology: GpuTopology,
                     args=None) -> argparse.Namespace:
     """Parse and validate command-line arguments."""
     parser = TuningArgumentParser(
-        prog="tuningRunner.py",
+        prog="rocmlirTriton tuning runner",
         description="Automated performance tuning for rocMLIR generated kernels",
         allow_abbrev=False,
         gpu_topology=gpu_topology)

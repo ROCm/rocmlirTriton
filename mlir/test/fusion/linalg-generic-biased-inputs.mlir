@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -rock-lower-blockwise-to-ptr -rock-mask-non-zero-preserving-fusions %s | FileCheck %s
+// RUN: rocmlir-opt -rock-lower-blockwise-to-ptr -rock-preserve-masked-load-semantics %s | FileCheck %s
 
 #map = affine_map<(d0) -> (d0)>
 #transform_map = #rock.transform_map<#map by [<Pad{0, 12} ["xPad"] at [0] -> ["x"] at [0]>] bounds = [16] -> [4]>

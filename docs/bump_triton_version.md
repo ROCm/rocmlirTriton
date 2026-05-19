@@ -255,7 +255,7 @@ Because we embed Triton via
 ## Step 11: Run Tests
 
 ```bash
-bash tests.sh
+cd build && ninja check-rocmlir
 ```
 ## Checklist Summary
 
@@ -280,7 +280,7 @@ Use this checklist to track progress:
 - [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
-- [ ] Run tests with `tests.sh`
+- [ ] Run tests with `cd build && ninja check-rocmlir`
 - [ ] All tests pass
 - [ ] Commit all changes
 
@@ -336,7 +336,6 @@ If new Triton headers are needed:
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |
 | Triton AccelerateMatmul | `external/triton/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp` |
 | Build script | `cmake.sh` |
-| Test script | `tests.sh` |
 | LLVM build wrapper | `scripts/build-llvm.sh` |
 | Fat library deps generator | `mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl` |
 | Fat library deps list | `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` |

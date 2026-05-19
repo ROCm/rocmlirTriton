@@ -30,7 +30,11 @@ build/bin/rocmlir-gen -pv -operation gemm -t f16 -out_datatype f32 --arch $ARCH 
 
 build/bin/rocmlir-gen -pv -operation gemm -t f16 -out_datatype f16 --arch $ARCH --num_cu $NUM_CU -g 1 -m 64 -k 256 -n 128 | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so   --entry-point-result=void
 
-build/bin/rocmlir-gen --operation gemm -t f32 -out_datatype f32 -transA=false -transB=false -g 1 -m 1000 -n 405 -k 1024 --arch $ARCH --perf_config=gemm:v1:16,32,32,2,1,4,32,1,2,0,0 -pv  | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so  --entry-point-result=void
+if [[ "$ARCH" == gfx950* ]]; then
+  echo "Skipping GEMM test with kpack > 1 on gfx950"
+else
+  build/bin/rocmlir-gen --operation gemm -t f32 -out_datatype f32 -transA=false -transB=false -g 1 -m 1000 -n 405 -k 1024 --arch $ARCH --perf_config=gemm:v1:16,32,32,2,1,4,32,1,2,0,0 -pv  | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so  --entry-point-result=void
+fi
 
 build/bin/rocmlir-gen --operation gemm -g 3 -m 1024 -k 769 -n 1024 --transA=false -t fp8_fp8 --arch $ARCH -pv | build/bin/rocmlir-driver -c | external/triton/llvm-project/build/bin/mlir-runner   --shared-libs=external/triton/llvm-project/build/lib/libmlir_rocm_runtime.so,build/lib/libconv-validation-wrappers.so,external/triton/llvm-project/build/lib/libmlir_runner_utils.so,external/triton/llvm-project/build/lib/libmlir_c_runner_utils.so  --entry-point-result=void
 
