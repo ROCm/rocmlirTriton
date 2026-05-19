@@ -315,35 +315,32 @@ mcpuVerifyFloat(float *gpuAllocated, float *gpuAligned, int64_t gpuOffset,
 // torch.testing.assert_close:
 //   |gpuNum - valNum| <= atol + rtol * |valNum|
 //
-// To preserve the "[%d %d %d]" output format that existing FileCheck tests check,
-// the allclose result is repeated three times.
+// To preserve the "[%d %d %d]" output format that existing FileCheck tests
+// check, the allclose result is repeated three times.
 //
 // On failure we print allclose-specific diagnostics:
-// - The worst-offender element (the one with the largest absDiff/tolerance ratio),
+// - The worst-offender element (the one with the largest absDiff/tolerance
+// ratio),
 // - The histogram of absDiff/tolerance ratios
-// - The "smallest atol/rtol that would pass everything else, holding the other one fixed" hints.
-// We intentionally do *not* print the legacy RMS/maxAbsDiff/maxRelDiff/relDiff
-// stats here: they tell you nothing about why allclose failed or what
-// tolerance would make it pass, and they confuse the diagnostic by suggesting
-// thresholds that are no longer being checked. Use --comparator=legacy if you
-// need those numbers.
+// - The "smallest atol/rtol that would pass everything else, holding the other
+// one fixed" hints. We intentionally do *not* print the legacy
+// RMS/maxAbsDiff/maxRelDiff/relDiff stats here: they tell you nothing about why
+// allclose failed or what tolerance would make it pass, and they confuse the
+// diagnostic by suggesting thresholds that are no longer being checked. Use
+// --comparator=legacy if you need those numbers.
 //
 // "ratio" buckets follow a 0/passing/failing structure:
 //   [0]: ratio == 0                          (exact match or subnormal-equal)
 //   [1..3]: 0 < ratio <= {0.1, 0.5, 1.0}     (PASSING -- with headroom)
 //   [4..7]: 1.0 < ratio <= {2.0, 10.0, 100.0, +inf}   (FAILING)
 //   [8]: ratio == +inf                       (tolerance == 0 and absDiff > 0)
-static void printAllcloseStats(long long dataSize, long long failingElements,
-                               float atol, float rtol, float maxRatio,
-                               float maxRatioValNum, float maxRatioGpuNum,
-                               double maxRatioAbsDiff, double maxRatioTolerance,
-                               bool maxRatioIsInf, long long ratioInfCount,
-                               long long nanCount, float nanValNum,
-                               float nanGpuNum,
-                               double minAtolForCurrentRtol,
-                               double minRtolForCurrentAtol,
-                               bool minRtolWellDefined, const int *hist_ratio,
-                               size_t numRatioBuckets) {
+static void printAllcloseStats(
+    long long dataSize, long long failingElements, float atol, float rtol,
+    float maxRatio, float maxRatioValNum, float maxRatioGpuNum,
+    double maxRatioAbsDiff, double maxRatioTolerance, bool maxRatioIsInf,
+    long long ratioInfCount, long long nanCount, float nanValNum,
+    float nanGpuNum, double minAtolForCurrentRtol, double minRtolForCurrentAtol,
+    bool minRtolWellDefined, const int *hist_ratio, size_t numRatioBuckets) {
   static const double RATIO_BOUNDARIES[7] = {0.1,  0.5,   1.0,     2.0,
                                              10.0, 100.0, INFINITY};
   printf("allclose statistics:\n");
@@ -354,8 +351,8 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
     // NaN takes precedence over the worst finite ratio: no finite tolerance can
     // mask a NaN, so the user has to see it first.
     if (nanCount > 0) {
-      printf("  worst element: valNum=%g gpuNum=%g (NaN-mismatch)\n",
-             nanValNum, nanGpuNum);
+      printf("  worst element: valNum=%g gpuNum=%g (NaN-mismatch)\n", nanValNum,
+             nanGpuNum);
     } else if (maxRatioIsInf) {
       printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=0 "
              "(ratio=inf)\n",
