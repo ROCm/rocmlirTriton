@@ -285,8 +285,8 @@ static LogicalResult emitFloatAtomicMax(PatternRewriter &rewriter,
   }
 
   Type intElemType = rewriter.getIntegerType(bw);
-  auto intTensorType = RankedTensorType::get(
-      valueType.getShape(), intElemType, valueType.getEncoding());
+  auto intTensorType = RankedTensorType::get(valueType.getShape(), intElemType,
+                                             valueType.getEncoding());
   auto intPtrType = triton::PointerType::get(intElemType, 1);
   auto intPtrTensorType = RankedTensorType::get(
       ptrTensorType.getShape(), intPtrType, ptrTensorType.getEncoding());
@@ -297,8 +297,7 @@ static LogicalResult emitFloatAtomicMax(PatternRewriter &rewriter,
   // one of each here; CSE would otherwise dedupe them. The signed-vs-
   // unsigned distinction lives in the RMWOp attribute on the atomic, not
   // in the operand type.
-  Value intVal =
-      triton::BitcastOp::create(rewriter, loc, intTensorType, value);
+  Value intVal = triton::BitcastOp::create(rewriter, loc, intTensorType, value);
   Value intPtr =
       triton::BitcastOp::create(rewriter, loc, intPtrTensorType, ptrTensor);
 
@@ -335,12 +334,10 @@ static LogicalResult emitFloatAtomicMax(PatternRewriter &rewriter,
   Value posMask = arith::AndIOp::create(rewriter, loc, mask, pos);
   Value negMask = arith::AndIOp::create(rewriter, loc, mask, neg);
 
-  triton::AtomicRMWOp::create(rewriter, loc, intTensorType,
-                              triton::RMWOp::MAX, intPtr, intVal, posMask,
-                              sem, scope);
-  triton::AtomicRMWOp::create(rewriter, loc, intTensorType,
-                              triton::RMWOp::UMIN, intPtr, intVal, negMask,
-                              sem, scope);
+  triton::AtomicRMWOp::create(rewriter, loc, intTensorType, triton::RMWOp::MAX,
+                              intPtr, intVal, posMask, sem, scope);
+  triton::AtomicRMWOp::create(rewriter, loc, intTensorType, triton::RMWOp::UMIN,
+                              intPtr, intVal, negMask, sem, scope);
   return success();
 }
 
@@ -403,10 +400,9 @@ struct RockStorePtrOpRewritePattern
           triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else if (storeMethod == rock::StoreMethod::AtomicMax) {
       if (isa<FloatType>(elementType)) {
-        if (failed(emitFloatAtomicMax(rewriter, op, valueToStore,
-                                      ptrTensorOfPtrs, maskTensor,
-                                      triton::MemSemantic::RELAXED,
-                                      triton::MemSyncScope::GPU)))
+        if (failed(emitFloatAtomicMax(
+                rewriter, op, valueToStore, ptrTensorOfPtrs, maskTensor,
+                triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU)))
           return failure();
       } else {
         // Integer path: a single atomic suffices because the two's-complement
@@ -418,10 +414,10 @@ struct RockStorePtrOpRewritePattern
         triton::RMWOp rmwOp = elementType.isUnsignedInteger()
                                   ? triton::RMWOp::UMAX
                                   : triton::RMWOp::MAX;
-        triton::AtomicRMWOp::create(
-            rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore,
-            maskTensor, triton::MemSemantic::RELAXED,
-            triton::MemSyncScope::GPU);
+        triton::AtomicRMWOp::create(rewriter, loc, valueType, rmwOp,
+                                    ptrTensorOfPtrs, valueToStore, maskTensor,
+                                    triton::MemSemantic::RELAXED,
+                                    triton::MemSyncScope::GPU);
       }
     } else {
       // Default: StoreMethod::Set - regular store
