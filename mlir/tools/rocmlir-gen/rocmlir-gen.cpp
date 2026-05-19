@@ -4898,11 +4898,13 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
 // the reduction-aware atol bound:
 //   atol_eff = atol + K_eff * sum_error_tolerance<T>
 //
-// fp16/bf16/fp32/fp64 values mirror rocBLAS's table:
-//   https://github.com/ROCm/rocBLAS/blob/develop/clients/include/near.hpp
-// (search for sum_error_tolerance). They are empirically calibrated against
-// rocBLAS's matrix-engine GEMM error and do not follow a tidy `c * eps(T)`
-// formula -- bf16's value (1/900) is actually *tighter* than eps(bf16).
+// fp16 / bf16 use rocBLAS's general `sum_error_tolerance<T>` from
+// `near.hpp`. 
+//
+// fp32 / fp64 are *tighter* than rocBLAS uses. This is because
+// rocBLAS uses the loose
+// `K * 1e-4` only for K > 10000 or to compare against external libraries (see
+// `near.hpp::reduction_requires_near`).
 //
 // fp8/fp4 are not in rocBLAS's table. We use eps(T) directly as the
 // per-accumulation-step bound:
@@ -4915,9 +4917,9 @@ static float sumErrorTolerance(Type t) {
   if (isa<BFloat16Type>(t))
     return 1.0f / 900.0f;
   if (isa<Float32Type>(t))
-    return 1.0f / 10000.0f;
+    return 1e-6f;
   if (isa<Float64Type>(t))
-    return 1.0f / 1000000.0f;
+    return 1e-15f;
   if (isa<Float8E4M3FNType, Float8E4M3FNUZType>(t))
     return 0.125f;
   if (isa<Float8E5M2Type, Float8E5M2FNUZType>(t))
