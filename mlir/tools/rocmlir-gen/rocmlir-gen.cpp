@@ -670,7 +670,7 @@ static llvm::cl::alias
 static llvm::cl::opt<std::string> genValidation(
     "verifier",
     llvm::cl::desc("Select verification from: none(default), cpu, mlir, "
-                   "mlir-strict, allclose, clone"),
+                   "mlir-strict, clone"),
     llvm::cl::cb<void, std::string>([](const std::string &v) {
       if (!v.empty())
         genHostHarness = true;
@@ -811,13 +811,11 @@ static llvm::cl::opt<float>
                      llvm::cl::desc("Threshold for relDiff metric"),
                      llvm::cl::value_desc("error"), llvm::cl::init(0.000001f));
 
-// Comparator selection: independent of --verifier (which picks the CPU
-// reference). `legacy` is the three-gate RMS/absDiff/relDiff verifier
-// emitted by mcpuVerifyFloat. `allclose` is the |a - b| <= atol + rtol*|b|
-// verifier emitted by mcpuVerifyFloatAllclose, with per-dtype K-scaled
-// defaults. Default stays `legacy` until the ~100 existing tests get
-// migrated in PR2; setting -atol or -rtol on the command line implies
-// `allclose` (back-compat for the original bridge mechanism).
+// Comparator selection.
+// `legacy` is the three-gate RMS/absDiff/relDiff verifier emitted by mcpuVerifyFloat.
+// `allclose` is the |a - b| <= atol + rtol*|b| verifier emitted by mcpuVerifyFloatAllclose, with per-dtype K-scaled defaults. Default stays
+// `legacy` until the ~100 existing tests get migrated in PR2; setting -atol
+// or -rtol on the command line implies `allclose`.
 enum class ComparatorMode { Legacy, Allclose };
 static llvm::cl::opt<ComparatorMode> comparatorMode(
     "comparator",
@@ -5243,7 +5241,7 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
 
   // Comparator selection. The default stays `legacy` to preserve behavior of
   // the ~100 existing test files until the follow-up migration PR. Setting
-  // -atol or -rtol implies allclose (back-compat with the original bridge).
+  // -atol or -rtol on the command line implies allclose.
   bool useAllclose = (comparatorMode == ComparatorMode::Allclose) ||
                      atolThreshold.getNumOccurrences() ||
                      rtolThreshold.getNumOccurrences();
