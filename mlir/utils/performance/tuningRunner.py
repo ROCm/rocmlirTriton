@@ -192,6 +192,7 @@ class Options:
     timer: str
     per_iter_cpu_timing: bool
     timer_ensemble: int
+    thermal_test: bool
 
 
 @dataclass
@@ -1281,40 +1282,33 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
 
         config.set_perfconfig(perfconfig)
         entry = config.table_entry(nano_seconds)
-        if options.debug:
-            measurements_list: Optional[List[float]] = None
-            warmup_list: Optional[List[float]] = None
-            timing_method: Optional[str] = None
-            repetitions_per_batch: Optional[int] = None
-            if isinstance(measurements_payload, dict) and "measurements" in measurements_payload:
-                measurements_list = measurements_payload.get("measurements")
-                warmup_list = measurements_payload.get("warmup")
-                timing_method = measurements_payload.get("timing_method")
-                repetitions_per_batch = measurements_payload.get("repetitions_per_batch")
-            elif isinstance(measurements_payload, list):
-                # Legacy large-kernel format: bare array of ms values.
-                measurements_list = measurements_payload
-            elif isinstance(measurements_payload, dict):
-                # Legacy small-kernel format: {"total_cpu_time", "iterations"}.
-                total = measurements_payload.get("total_cpu_time")
-                iters = measurements_payload.get("iterations")
-                if total is not None and iters:
-                    measurements_list = [total / iters]
-                    repetitions_per_batch = iters
-                    timing_method = "cpu"
-            entry["MeasurementsMs"] = measurements_list
-            entry["WarmupMs"] = warmup_list
-            entry["TimingMethod"] = timing_method
-            entry["RepetitionsPerBatch"] = repetitions_per_batch
-        # Echo the per-iteration cache-flush and timer settings so the
-        # .debug TSV records the exact configuration this row was measured
-        # under (AIROCMLIR-858). ``Timer`` is the *requested* value;
-        # ``TimingMethod`` above is the *actual* path the driver took.
-        entry["FlushICache"] = int(options.flush_icache)
-        entry["FlushL2Level"] = options.flush_l2
-        entry["Timer"] = options.timer
-        entry["PerIterCpuTiming"] = int(options.per_iter_cpu_timing)
-        entry["TimerEnsemble"] = options.timer_ensemble
+        if options.thermal_test:
+            # AIROCMLIR-858 thermal_test set. Parse the unified JSON the driver
+            # emits under --unified-measurements-format=true and surface
+            # one column per knob (requested value) plus the per-iteration
+            # arrays for downstream thermal-ramp analysis.
+            if options.debug:
+                measurements_list: Optional[List[float]] = None
+                warmup_list: Optional[List[float]] = None
+                timing_method: Optional[str] = None
+                repetitions_per_batch: Optional[int] = None
+                if isinstance(measurements_payload, dict) and "measurements" in measurements_payload:
+                    measurements_list = measurements_payload.get("measurements")
+                    warmup_list = measurements_payload.get("warmup")
+                    timing_method = measurements_payload.get("timing_method")
+                    repetitions_per_batch = measurements_payload.get("repetitions_per_batch")
+                entry["MeasurementsMs"] = measurements_list
+                entry["WarmupMs"] = warmup_list
+                entry["TimingMethod"] = timing_method
+                entry["RepetitionsPerBatch"] = repetitions_per_batch
+            entry["FlushICache"] = int(options.flush_icache)
+            entry["FlushL2Level"] = options.flush_l2
+            entry["Timer"] = options.timer
+            entry["PerIterCpuTiming"] = int(options.per_iter_cpu_timing)
+            entry["TimerEnsemble"] = options.timer_ensemble
+        elif options.debug:
+            # Original debug behavior
+            entry["MeasurementsMs"] = measurements_payload
         entries.append(entry)
 
         if options.verify_all_perfconfigs and not np.isnan(nano_seconds):
@@ -1335,6 +1329,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
     """Tune a single configuration and return the result."""
     gpu_logger = get_gpu_logger(gpu_id)
 
+    # Original argument set.
     tuning_driver_args = [
         f"--tuning-space={options.tuning_space_kind}",
         f"--num-iterations={options.num_iterations}",
@@ -1343,12 +1338,17 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         f"--sleep-us={SLEEP_US}",
         f"--show-all-measurements={options.debug}",
         f"--num-compile-threads={num_compile_threads}",
-        f"--flush-icache={options.flush_icache}",
-        f"--flush-l2={options.flush_l2}",
-        f"--timer={options.timer}",
-        f"--per-iter-cpu-timing={options.per_iter_cpu_timing}",
-        f"--timer-ensemble={options.timer_ensemble}",
     ]
+    if options.thermal_test:
+        # AIROCMLIR-858 thermal_test knobs
+        tuning_driver_args += [
+            f"--flush-icache={options.flush_icache}",
+            f"--flush-l2={options.flush_l2}",
+            f"--timer={options.timer}",
+            f"--per-iter-cpu-timing={options.per_iter_cpu_timing}",
+            f"--timer-ensemble={options.timer_ensemble}",
+            "--unified-measurements-format=true",
+        ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
 
@@ -1849,40 +1849,44 @@ def parse_arguments(gpu_topology: GpuTopology,
                         choices=["quick", "full", "greedy", "exhaustive"],
                         help="Tuning space kind to use")
 
-    # Per-config timing iterations. Defaults match the previous hardcoded
-    # values so existing tuning runs are unaffected; bumping --num-iterations
-    # to 10000 is what enables the Navi4 thermal-ramp experiment
-    # (AIROCMLIR-858).
+    # Thermal-test knobs. Defaults match the previous hardcoded values so 
+    # existing tuning runs are unaffected. They are enabled ONLY when 
+    #--thermal-test is set.
+    parser.add_argument(
+        "--thermal-test",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=
+        "Master switch for the Thermal-test knobs. When OFF, the runner ignores"
+        "--num-iterations, --warmup-iterations, --flush-icache, --flush-l2, --timer,"
+        "--per-iter-cpu-timing, --timer-ensemble and uses their defaults so "
+        "the produced TSV / .debug TSV are bit-identical to the original runner. "
+        "Turn ON to enable the thermal-test instrumentation.")
+
     parser.add_argument(
         "--num-iterations",
         default=TUNE_REPEATS,
         metavar='N',
         help=
-        "Number of measured iterations per perf-config in the tuning driver "
-        "(must be > 0; default %(default)s). The tuning driver may run more "
-        "iterations than requested for small kernels to reach >= 1ms of total "
-        "kernel time.")
+        "[--thermal-test only] Number of measured iterations per perf-config "
+        "in the tuning driver.")
 
     parser.add_argument(
         "--warmup-iterations",
         default=WARMUP_ITERATIONS,
         metavar='N',
         help=
-        "Number of warmup iterations per perf-config in the tuning driver "
-        "(must be >= 0; default %(default)s). Warmup runs are used to decide "
-        "small- vs. large-kernel timing and are not counted in the measured "
-        "iterations.")
+        "[--thermal-test only] Number of warmup iterations per perf-config "
+        "in the tuning driver.")
 
-    # Per-iteration cache-flush controls. Defaults match the previous
-    # always-on behaviour so existing tuning runs are unaffected (AIROCMLIR-858).
     parser.add_argument(
         "--flush-icache",
         action=argparse.BooleanOptionalAction,
         default=True,
         help=
-        "Flush the instruction cache before every measured iteration "
-        "(default %(default)s). Pass --no-flush-icache to measure warm-icache "
-        "behaviour.")
+        "[--thermal-test only] Flush the instruction cache before every "
+        "measured iteration (default %(default)s). Pass --no-flush-icache "
+        "to measure warm-icache behaviour.")
 
     parser.add_argument(
         "--flush-l2",
@@ -1890,9 +1894,10 @@ def parse_arguments(gpu_topology: GpuTopology,
         default="all",
         metavar='LEVEL',
         help=
-        "L2 cache flush strategy applied before every measured iteration "
-        "(default %(default)s). 'all' overwrites a > L2-sized scratch buffer "
-        "(historical behaviour); 'none' leaves the L2 warm.")
+        "[--thermal-test only] L2 cache flush strategy applied before every "
+        "measured iteration (default %(default)s). 'all' overwrites a > "
+        "L2-sized scratch buffer (historical behaviour); 'none' leaves the "
+        "L2 warm. Ignored unless --thermal-test is set.")
 
     parser.add_argument(
         "--timer",
@@ -1900,24 +1905,20 @@ def parse_arguments(gpu_topology: GpuTopology,
         default="auto",
         metavar='KIND',
         help=
-        "How to time each measured iteration (default %(default)s). 'auto' "
-        "matches the historical behaviour: a single CPU batch timer for "
-        "small kernels (mean warmup runtime < 1ms) and per-iteration GPU "
-        "event timers otherwise. 'cpu' / 'gpu' force the corresponding path "
-        "across all kernels.")
+        "[--thermal-test only] How to time each measured iteration (default "
+        "%(default)s). 'auto' matches the historical behaviour; 'cpu' / "
+        "'gpu' force the corresponding path. Ignored unless --thermal-test "
+        "is set.")
 
     parser.add_argument(
         "--per-iter-cpu-timing",
         action=argparse.BooleanOptionalAction,
         default=False,
         help=
-        "When the CPU timer is in use (small kernels under --timer=auto or "
-        "any kernel under --timer=cpu), time each iteration individually "
-        "instead of wrapping the whole batch in one timer pair. Adds a "
-        "per-iter hipStreamSynchronize so the resulting samples include "
-        "kernel + flush cost; emits one measurement per iteration in the "
-        "--show-all-measurements JSON. Ignored when --timer-ensemble is "
-        "set. Default %(default)s.")
+        "[--thermal-test only] When the CPU timer is in use, time each "
+        "iteration individually instead of wrapping the whole batch in one "
+        "timer pair. Ignored when --timer-ensemble is set, and ignored "
+        "entirely unless --thermal-test is set. Default %(default)s.")
 
     parser.add_argument(
         "--timer-ensemble",
@@ -1925,12 +1926,12 @@ def parse_arguments(gpu_topology: GpuTopology,
         default=0,
         metavar='N',
         help=
-        "Number of kernel launches grouped into one timer pair (default "
-        "%(default)s). 0 preserves the historical timing semantics "
-        "(small-kernel CPU batch path = 1 sample, GPU path = per-iter "
-        "per-kernel events summed). N >= 1 switches every path to a "
-        "unified ensemble loop producing iterations/N samples (remainder "
-        "dropped, minimum one sample); overrides --per-iter-cpu-timing.")
+        "[--thermal-test only] Number of kernel launches grouped into one "
+        "timer pair (default %(default)s). 0 preserves the historical "
+        "timing semantics; N >= 1 switches every path to a unified "
+        "ensemble loop producing iterations/N samples (remainder dropped, "
+        "minimum one sample); overrides --per-iter-cpu-timing. Ignored "
+        "unless --thermal-test is set.")
 
     logging_group = parser.add_mutually_exclusive_group()
 
@@ -2096,6 +2097,30 @@ def main(args=None):
     num_cu = perfRunner.get_num_cu(chip)
     num_chiplets = perfRunner.get_num_chiplets(chip, num_cu)
 
+    # Ignore thermal-test knobs if --thermal-test is not set.
+    if not parsed_args.thermal_test:
+        _thermal_knob_defaults = {
+            "num_iterations": TUNE_REPEATS,
+            "warmup_iterations": WARMUP_ITERATIONS,
+            "flush_icache": True,
+            "flush_l2": "all",
+            "timer": "auto",
+            "per_iter_cpu_timing": False,
+            "timer_ensemble": 0,
+        }
+        _ignored = [
+            f"--{name.replace('_', '-')}={getattr(parsed_args, name)!r}"
+            for name, default in _thermal_knob_defaults.items()
+            if getattr(parsed_args, name) != default
+        ]
+        if _ignored:
+            logger.warning(
+                "Ignoring AIROCMLIR-858 thermal-test knobs (pass "
+                "--thermal-test to enable): %s",
+                ", ".join(_ignored))
+        for name, default in _thermal_knob_defaults.items():
+            setattr(parsed_args, name, default)
+
     options = Options(chip=chip,
                       arch=arch,
                       num_cu=num_cu,
@@ -2121,7 +2146,8 @@ def main(args=None):
                       flush_l2=parsed_args.flush_l2,
                       timer=parsed_args.timer,
                       per_iter_cpu_timing=parsed_args.per_iter_cpu_timing,
-                      timer_ensemble=parsed_args.timer_ensemble)
+                      timer_ensemble=parsed_args.timer_ensemble,
+                      thermal_test=parsed_args.thermal_test)
 
     ctx = TuningContext(configs=configs,
                         conf_class=get_config_class(op_type),

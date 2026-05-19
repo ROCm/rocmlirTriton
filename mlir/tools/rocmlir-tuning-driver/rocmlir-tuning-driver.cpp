@@ -241,6 +241,22 @@ static llvm::cl::opt<unsigned> timerEnsemble(
         "overrides --per-iter-cpu-timing when set."),
     llvm::cl::value_desc("ensemble size"), llvm::cl::init(0));
 
+// Output format selector for ``--show-all-measurements``. Default ``false`` 
+// reproduces the non-thermal test shape so downstream parsers and direct C++ 
+// users keep working bit-identical:
+//   * small kernel (CPU batch timer): ``{"total_cpu_time":..., "iterations":...}``
+//   * large kernel (GPU events):      ``[<ms>, <ms>, ...]``
+// Setting ``true`` emits the unified JSON object (with ``timing_method``, 
+// ``repetitions_per_batch``, ``warmup`` and ``measurements`` keys). The runner 
+// sends ``true`` only when ``--thermal-test`` is set.
+static llvm::cl::opt<bool> unifiedMeasurementsFormat(
+    "unified-measurements-format",
+    llvm::cl::desc(
+        "Emit the unified per-iteration JSON object for "
+        "--show-all-measurements. False (default) preserves the historical "
+        "small-dict / large-array shapes."),
+    llvm::cl::init(false));
+
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef inputFilename,
                                             MLIRContext *context) {
@@ -367,6 +383,7 @@ struct BenchmarkParams {
   TimerKind timer;
   bool perIterCpuTiming;
   unsigned timerEnsemble;
+  bool unifiedMeasurementsFormat;
 };
 
 // Bundles per-iteration cache-flush controls so the measurement loops don't
@@ -860,47 +877,59 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
       useCpuTimer && !params.perIterCpuTiming && !useExplicitEnsemble;
 
   if (params.showAllMeasurements) {
-    // Unified JSON shape (AIROCMLIR-858):
-    //   {
-    //     "timing_method": "cpu" | "gpu",
-    //     "repetitions_per_batch": N,    // 1 for GPU events; ``iterations``
-    //                                    // for the CPU batch timer
-    //     "warmup": [<ms>, ...],         // per-iter warmup samples
-    //     "measurements": [<ms>, ...]    // per-batch measurements (one
-    //                                    // entry per batch; for the CPU
-    //                                    // timer that's a single entry
-    //                                    // equal to the per-iter average)
-    //   }
-    // Emitted BEFORE the sort below so the array preserves temporal order.
-    // Resolution of ``repetitions_per_batch``:
-    //   * Explicit ``--timer-ensemble=N``: report ``effectiveEnsemble``
-    //     (may differ from the requested N if it was clamped to
-    //     ``iterations``).
-    //   * Sentinel mode: batched CPU timer collapses ``iterations`` launches
-    //     into one sample; all other historical paths produce one sample
-    //     per iteration.
-    unsigned repetitionsPerBatch;
-    if (useExplicitEnsemble) {
-      repetitionsPerBatch = effectiveEnsemble;
+    if (params.unifiedMeasurementsFormat) {
+      // Unified JSON shape (AIROCMLIR-858 ``--thermal-test``):
+      //   {
+      //     "timing_method": "cpu" | "gpu",
+      //     "repetitions_per_batch": N,
+      //     "warmup": [<ms>, ...],
+      //     "measurements": [<ms>, ...]
+      //   }
+      // Emitted BEFORE the sort below so the array preserves temporal
+      // order. Resolution of ``repetitions_per_batch``:
+      //   * Explicit ``--timer-ensemble=N``: report ``effectiveEnsemble``
+      //     (may differ from the requested N if it was clamped to
+      //     ``iterations``).
+      //   * Sentinel mode: batched CPU timer collapses ``iterations``
+      //     launches into one sample; all other paths produce one sample
+      //     per iteration.
+      unsigned repetitionsPerBatch;
+      if (useExplicitEnsemble) {
+        repetitionsPerBatch = effectiveEnsemble;
+      } else {
+        repetitionsPerBatch = isBatchedCpuTimer ? iterations : 1u;
+      }
+      llvm::outs() << "{\"timing_method\":\""
+                   << (useCpuTimer ? "cpu" : "gpu")
+                   << "\",\"repetitions_per_batch\":" << repetitionsPerBatch
+                   << ",\"warmup\":[";
+      for (size_t i = 0; i < warmupMeasurements.size(); ++i) {
+        if (i > 0)
+          llvm::outs() << ",";
+        llvm::outs() << warmupMeasurements[i];
+      }
+      llvm::outs() << "],\"measurements\":[";
+      for (size_t i = 0; i < measurements.size(); ++i) {
+        if (i > 0)
+          llvm::outs() << ",";
+        llvm::outs() << measurements[i];
+      }
+      llvm::outs() << "]}\t";
     } else {
-      repetitionsPerBatch = isBatchedCpuTimer ? iterations : 1u;
+      // Original shape.
+      if (isBatchedCpuTimer) {
+        llvm::outs() << "{\"total_cpu_time\":" << smallKernelCpuMs
+                     << ",\"iterations\":" << iterations << "}\t";
+      } else {
+        llvm::outs() << "[";
+        for (size_t i = 0; i < measurements.size(); ++i) {
+          if (i > 0)
+            llvm::outs() << ",";
+          llvm::outs() << measurements[i];
+        }
+        llvm::outs() << "]\t";
+      }
     }
-    llvm::outs() << "{\"timing_method\":\""
-                 << (useCpuTimer ? "cpu" : "gpu")
-                 << "\",\"repetitions_per_batch\":" << repetitionsPerBatch
-                 << ",\"warmup\":[";
-    for (size_t i = 0; i < warmupMeasurements.size(); ++i) {
-      if (i > 0)
-        llvm::outs() << ",";
-      llvm::outs() << warmupMeasurements[i];
-    }
-    llvm::outs() << "],\"measurements\":[";
-    for (size_t i = 0; i < measurements.size(); ++i) {
-      if (i > 0)
-        llvm::outs() << ",";
-      llvm::outs() << measurements[i];
-    }
-    llvm::outs() << "]}\t";
   }
 
   // NOTE: this sort is purely local to the median/trim-mean aggregate
@@ -1069,7 +1098,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            flushL2Level,
                                            timer,
                                            perIterCpuTiming,
-                                           timerEnsemble};
+                                           timerEnsemble,
+                                           unifiedMeasurementsFormat};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);
