@@ -191,6 +191,7 @@ class Options:
     flush_l2: str
     timer: str
     per_iter_cpu_timing: bool
+    timer_ensemble: int
 
 
 @dataclass
@@ -1336,6 +1337,7 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
         entry["FlushL2Level"] = options.flush_l2
         entry["Timer"] = options.timer
         entry["PerIterCpuTiming"] = int(options.per_iter_cpu_timing)
+        entry["TimerEnsemble"] = options.timer_ensemble
         entries.append(entry)
 
         if options.verify_all_perfconfigs and not np.isnan(nano_seconds):
@@ -1368,6 +1370,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         f"--flush-l2={options.flush_l2}",
         f"--timer={options.timer}",
         f"--per-iter-cpu-timing={options.per_iter_cpu_timing}",
+        f"--timer-ensemble={options.timer_ensemble}",
     ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
@@ -1940,7 +1943,21 @@ def parse_arguments(gpu_topology: GpuTopology,
         "instead of wrapping the whole batch in one timer pair. Adds a "
         "per-iter hipStreamSynchronize so the resulting samples include "
         "kernel + flush cost; emits one measurement per iteration in the "
-        "--show-all-measurements JSON. Default %(default)s.")
+        "--show-all-measurements JSON. Ignored when --timer-ensemble is "
+        "set. Default %(default)s.")
+
+    parser.add_argument(
+        "--timer-ensemble",
+        type=int,
+        default=0,
+        metavar='N',
+        help=
+        "Number of kernel launches grouped into one timer pair (default "
+        "%(default)s). 0 preserves the historical timing semantics "
+        "(small-kernel CPU batch path = 1 sample, GPU path = per-iter "
+        "per-kernel events summed). N >= 1 switches every path to a "
+        "unified ensemble loop producing iterations/N samples (remainder "
+        "dropped, minimum one sample); overrides --per-iter-cpu-timing.")
 
     logging_group = parser.add_mutually_exclusive_group()
 
@@ -2130,7 +2147,8 @@ def main(args=None):
                       flush_icache=parsed_args.flush_icache,
                       flush_l2=parsed_args.flush_l2,
                       timer=parsed_args.timer,
-                      per_iter_cpu_timing=parsed_args.per_iter_cpu_timing)
+                      per_iter_cpu_timing=parsed_args.per_iter_cpu_timing,
+                      timer_ensemble=parsed_args.timer_ensemble)
 
     ctx = TuningContext(configs=configs,
                         conf_class=get_config_class(op_type),

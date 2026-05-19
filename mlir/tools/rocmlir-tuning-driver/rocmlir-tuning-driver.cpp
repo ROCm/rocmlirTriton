@@ -215,8 +215,34 @@ static llvm::cl::opt<bool> perIterCpuTiming(
         "instead of wrapping the whole batch in one timer pair. Adds a "
         "per-iteration ``hipStreamSynchronize`` so the resulting samples "
         "include the full per-iter cost (kernel + flushes). Defaults to "
-        "false, matching the historical small-kernel CPU batch timer."),
+        "false, matching the historical small-kernel CPU batch timer. "
+        "Ignored when ``--timer-ensemble`` is set explicitly."),
     llvm::cl::init(false));
+
+// Timer ensemble (AIROCMLIR-858 #9). Number of kernel launches wrapped in
+// one timer pair (CPU steady_clock or GPU hipEvent). The default sentinel
+// ``0`` preserves the historical behaviour exactly:
+//   * CPU batch path (small-kernel or ``--timer=cpu`` without
+//     ``--per-iter-cpu-timing``): one timer pair around ``iterations``
+//     launches (one measurement sample).
+//   * CPU per-iter path (``--per-iter-cpu-timing=true``): one timer pair
+//     per launch (``iterations`` samples).
+//   * GPU path: one hipEvent pair *per kernel* per iteration; samples are
+//     the per-iter sum across all kernels in the pipeline. This
+//     per-kernel-event semantics only applies under the sentinel.
+// Setting ``N >= 1`` switches every path to a unified ensemble loop: one
+// timer pair wraps ``N`` launches of the whole kernel pipeline, repeated
+// ``iterations / N`` times (remainder dropped, minimum one sample). Under
+// the explicit mode the GPU path measures pipeline-wide elapsed time
+// rather than per-kernel sums.
+static llvm::cl::opt<unsigned> timerEnsemble(
+    "timer-ensemble",
+    llvm::cl::desc(
+        "Number of kernel launches grouped into one timer pair. 0 (default) "
+        "preserves the historical timing semantics. N >= 1 switches every "
+        "path to a unified ensemble loop producing iterations/N samples; "
+        "overrides --per-iter-cpu-timing when set."),
+    llvm::cl::value_desc("ensemble size"), llvm::cl::init(0));
 
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef inputFilename,
@@ -343,6 +369,7 @@ struct BenchmarkParams {
   rocmlir::tuningdriver::L2FlushLevel flushL2Level;
   TimerKind timer;
   bool perIterCpuTiming;
+  unsigned timerEnsemble;
 };
 
 // Bundles per-iteration cache-flush controls so the measurement loops don't
@@ -542,6 +569,93 @@ static LogicalResult measureLargeKernel(
   return success();
 }
 
+// Generalised ensemble loop shared by the CPU and GPU paths. ``ensemble`` is
+// the number of launches per timer pair (>= 1); ``numSamples`` is the number
+// of timer pairs to run (>= 1). The total number of launches is exactly
+// ``numSamples * ensemble`` (any remainder against the user's
+// ``--num-iterations`` is dropped by the caller). Each sample wraps a flush
+// + ``ensemble`` pipeline launches in one timer pair; the timer kind is
+// selected by ``useCpuTimer``. For ``useCpuTimer=true`` the per-sample sync
+// is a ``hipStreamSynchronize`` inside the timed window; for
+// ``useCpuTimer=false`` the timer is a single hipEvent pair spanning the
+// whole ensemble (so multi-kernel pipelines are measured pipeline-wide
+// rather than as the per-kernel sum used by the historical large-kernel
+// path).
+static LogicalResult measureEnsemble(
+    unsigned ensemble, unsigned numSamples, bool useCpuTimer,
+    hipStream_t stream, const std::vector<hipFunction_t> &functions,
+    ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
+    ArrayRef<uint32_t> numCTAsList, std::vector<void *> &argPointers,
+    std::vector<double> &measurements, double &smallKernelCpuMs,
+    bool benchmarkMode, const FlushPolicy &flushPolicy) {
+  measurements.reserve(measurements.size() + numSamples);
+  auto wallStart = std::chrono::steady_clock::now();
+  for (unsigned outer = 0; outer < numSamples; ++outer) {
+    // Set up the timer pair for this ensemble.
+    std::chrono::steady_clock::time_point cpuStart;
+    hipEvent_t startEvent = nullptr, stopEvent = nullptr;
+    if (useCpuTimer) {
+      cpuStart = std::chrono::steady_clock::now();
+    } else {
+      HIPCHECK(hipEventCreate(&startEvent));
+      HIPCHECK(hipEventCreate(&stopEvent));
+      HIPCHECK(hipEventRecord(startEvent, stream));
+    }
+
+    for (unsigned inner = 0; inner < ensemble; ++inner) {
+      // Flush policy applies to each individual launch (matches the
+      // historical small-kernel path which flushes inside its single
+      // batched window). ``benchmarkMode`` mirrors the historical CPU
+      // path's special-case: skip cache flushes when running a single
+      // pinned config so the reported number isn't dominated by the
+      // flush cost.
+      if (!(useCpuTimer && benchmarkMode)) {
+        if (flushPolicy.flushICache && failed(flushInstructionCache(stream))) {
+          return failure();
+        }
+        if (failed(flushL2Cache(stream, flushPolicy.l2Level,
+                                flushPolicy.weightBuffers,
+                                flushPolicy.weightBufferSizes))) {
+          return failure();
+        }
+      }
+      for (auto [func, blockSize, gridSize, numCTAs] :
+           llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
+        if (failed(rock::launchKernel(func, gridSize, blockSize,
+                                      /*shared_memory=*/0, numCTAs, stream,
+                                      argPointers.data())))
+          return failure();
+      }
+    }
+
+    // Close the timer pair for this ensemble.
+    double sampleMs = 0.0;
+    if (useCpuTimer) {
+      HIPCHECK(hipStreamSynchronize(stream));
+      sampleMs =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - cpuStart)
+              .count();
+    } else {
+      HIPCHECK(hipEventRecord(stopEvent, stream));
+      HIPCHECK(hipEventSynchronize(stopEvent));
+      float currentMilliseconds = 0.0;
+      HIPCHECK(
+          hipEventElapsedTime(&currentMilliseconds, startEvent, stopEvent));
+      HIPCHECK(hipEventDestroy(stopEvent));
+      HIPCHECK(hipEventDestroy(startEvent));
+      sampleMs = static_cast<double>(currentMilliseconds);
+    }
+    measurements.push_back(sampleMs);
+  }
+  // Total CPU wall time across all ensembles (mirrors the historical
+  // ``smallKernelCpuMs`` semantics so ``--show-stats`` continues to work).
+  smallKernelCpuMs = std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - wallStart)
+                         .count();
+  return success();
+}
+
 // In order to match rocprof, returns time in nanoseconds
 static FailureOr<double> benchmarkKernels(const CompilationResult &result,
                                           ArrayRef<void *> hostBuffers,
@@ -728,7 +842,29 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   const FlushPolicy flushPolicy{params.flushICache, params.flushL2Level,
                                 weightBuffers, weightBufferSizes};
 
-  if (useCpuTimer) {
+  // Resolve the timer-ensemble setting (AIROCMLIR-858 #9). Sentinel ``0``
+  // means "historical": dispatch to the legacy ``measureSmallKernel`` /
+  // ``measureLargeKernel`` paths exactly as before (so the multi-kernel
+  // GPU per-event-pair-per-kernel semantics is preserved). An explicit
+  // value of ``N >= 1`` switches every path through ``measureEnsemble``;
+  // we cap to ``iterations`` so the user can't ask for a bigger ensemble
+  // than they have launches.
+  const bool useExplicitEnsemble = params.timerEnsemble != 0;
+  unsigned effectiveEnsemble = 0;
+  unsigned numTimerSamples = 0;
+  if (useExplicitEnsemble) {
+    effectiveEnsemble = std::min(params.timerEnsemble, iterations);
+    // Always run at least one sample; remainder against ``iterations`` is
+    // dropped (e.g. iterations=10 ensemble=3 → 3 samples of 3 launches,
+    // one launch dropped). Document this in the runner's help text too.
+    numTimerSamples = std::max(1u, iterations / effectiveEnsemble);
+    if (failed(measureEnsemble(effectiveEnsemble, numTimerSamples,
+                               useCpuTimer, stream, functions, blockSizes,
+                               gridSizes, numCTAsList, argPointers,
+                               measurements, smallKernelCpuMs, benchmarkMode,
+                               flushPolicy)))
+      return failure();
+  } else if (useCpuTimer) {
     if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
                                   gridSizes, numCTAsList, argPointers,
                                   measurements, smallKernelCpuMs, benchmarkMode,
@@ -744,8 +880,10 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   // True when this run produced a single per-iter-average sample from one
   // batch CPU timer (the historical small-kernel path). Used by the
   // ``--show-stats`` and JSON blocks below since ``isSmallKernel`` is no
-  // longer a sufficient proxy after ``--timer`` / ``--per-iter-cpu-timing``.
-  const bool isBatchedCpuTimer = useCpuTimer && !params.perIterCpuTiming;
+  // longer a sufficient proxy after ``--timer`` / ``--per-iter-cpu-timing``
+  // / ``--timer-ensemble``.
+  const bool isBatchedCpuTimer =
+      useCpuTimer && !params.perIterCpuTiming && !useExplicitEnsemble;
 
   if (params.showAllMeasurements) {
     // Unified JSON shape (AIROCMLIR-858):
@@ -760,10 +898,19 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     //                                    // equal to the per-iter average)
     //   }
     // Emitted BEFORE the sort below so the array preserves temporal order.
-    // Only the batched CPU timer collapses multiple iterations into one
-    // sample (``repetitions_per_batch == iterations``); per-iter CPU and
-    // per-iter GPU paths each produce one sample per iteration.
-    const unsigned repetitionsPerBatch = isBatchedCpuTimer ? iterations : 1u;
+    // Resolution of ``repetitions_per_batch``:
+    //   * Explicit ``--timer-ensemble=N``: report ``effectiveEnsemble``
+    //     (may differ from the requested N if it was clamped to
+    //     ``iterations``).
+    //   * Sentinel mode: batched CPU timer collapses ``iterations`` launches
+    //     into one sample; all other historical paths produce one sample
+    //     per iteration.
+    unsigned repetitionsPerBatch;
+    if (useExplicitEnsemble) {
+      repetitionsPerBatch = effectiveEnsemble;
+    } else {
+      repetitionsPerBatch = isBatchedCpuTimer ? iterations : 1u;
+    }
     llvm::outs() << "{\"timing_method\":\""
                  << (useCpuTimer ? "cpu" : "gpu")
                  << "\",\"repetitions_per_batch\":" << repetitionsPerBatch
@@ -947,7 +1094,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            flushICache,
                                            flushL2Level,
                                            timer,
-                                           perIterCpuTiming};
+                                           perIterCpuTiming,
+                                           timerEnsemble};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);
