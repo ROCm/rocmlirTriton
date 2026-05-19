@@ -180,6 +180,27 @@ static llvm::cl::opt<rocmlir::tuningdriver::L2FlushLevel> flushL2Level(
                    "kernel argument buffers except the last)")),
     llvm::cl::init(rocmlir::tuningdriver::L2FlushLevel::All));
 
+// Timing method (AIROCMLIR-858). Historically the driver auto-selects between
+// a CPU-batch timer (small kernels, where per-iter GPU events dominate the
+// runtime) and a per-iter GPU event timer (large kernels). The ``--timer``
+// flag lets the user force one of those paths, e.g. to time small kernels
+// with GPU events for thermal-ramp studies.
+enum class TimerKind { Auto, Cpu, Gpu };
+
+static llvm::cl::opt<TimerKind> timer(
+    "timer",
+    llvm::cl::desc("How to time each measured iteration."),
+    llvm::cl::values(
+        clEnumValN(TimerKind::Auto, "auto",
+                   "Auto-select: CPU batch timer for kernels with average "
+                   "warmup runtime < 1ms, GPU event timer otherwise (default, "
+                   "matches historical behaviour)"),
+        clEnumValN(TimerKind::Cpu, "cpu",
+                   "Always use a single CPU timer wrapping all iterations"),
+        clEnumValN(TimerKind::Gpu, "gpu",
+                   "Always use per-iteration GPU event timers")),
+    llvm::cl::init(TimerKind::Auto));
+
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef inputFilename,
                                             MLIRContext *context) {
@@ -303,6 +324,7 @@ struct BenchmarkParams {
   std::string benchmarkConfig;
   bool flushICache;
   rocmlir::tuningdriver::L2FlushLevel flushL2Level;
+  TimerKind timer;
 };
 
 // Bundles per-iteration cache-flush controls so the measurement loops don't
@@ -533,13 +555,20 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
 
   bool isSmallKernel = false;
   unsigned iterations = params.numIterations;
+  // Per-iteration warmup samples. Each entry is the summed time across all
+  // kernels for one warmup pass (mirrors how ``totalMillisecondsWarmup``
+  // used to be accumulated). Collected unconditionally so the value is
+  // available to the unified ``--show-all-measurements`` JSON below
+  // (AIROCMLIR-858).
+  std::vector<double> warmupMeasurements;
 
   if (params.warmupIterations > 0) {
     // Warmup run. We measure the warmup to get an estimate of the kernel
     // runtime. We will use this estimate to determine if the kernel is small or
     // not.
-    double totalMillisecondsWarmup = 0.0;
+    warmupMeasurements.reserve(params.warmupIterations);
     for (unsigned iter = 0; iter < params.warmupIterations; ++iter) {
+      double thisWarmupMs = 0.0;
       for (auto [func, blockSize, gridSize, numCTAs] :
            llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
         hipEvent_t startEvent, stopEvent;
@@ -572,10 +601,14 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
           currentMilliseconds = minMeasurableMs;
         }
 
-        totalMillisecondsWarmup += static_cast<double>(currentMilliseconds);
+        thisWarmupMs += static_cast<double>(currentMilliseconds);
       }
+      warmupMeasurements.push_back(thisWarmupMs);
     }
-    totalMillisecondsWarmup /= params.warmupIterations;
+    double totalMillisecondsWarmup = 0.0;
+    for (double v : warmupMeasurements)
+      totalMillisecondsWarmup += v;
+    totalMillisecondsWarmup /= warmupMeasurements.size();
     assert(totalMillisecondsWarmup >= 0.0f &&
            "totalMillisecondsWarmup must be greater than 0");
 
@@ -593,6 +626,23 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     // 1ms to run.
     constexpr float smallKernelThreshold = 1.0f;
     isSmallKernel = totalMillisecondsWarmup < smallKernelThreshold;
+  }
+
+  // Resolve the effective timer kind. ``--timer=auto`` (the default) keeps
+  // the historical small-vs-large heuristic; ``--timer=cpu``/``gpu`` forces
+  // the corresponding path so the user can run a thermal-ramp study with a
+  // consistent timer across all kernels.
+  bool useCpuTimer;
+  switch (params.timer) {
+  case TimerKind::Cpu:
+    useCpuTimer = true;
+    break;
+  case TimerKind::Gpu:
+    useCpuTimer = false;
+    break;
+  case TimerKind::Auto:
+    useCpuTimer = isSmallKernel;
+    break;
   }
 
   // Measure runs
@@ -615,7 +665,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   const FlushPolicy flushPolicy{params.flushICache, params.flushL2Level,
                                 weightBuffers, weightBufferSizes};
 
-  if (isSmallKernel) {
+  if (useCpuTimer) {
     if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
                                   gridSizes, numCTAsList, argPointers,
                                   measurements, smallKernelCpuMs, benchmarkMode,
@@ -629,20 +679,40 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   }
 
   if (params.showAllMeasurements) {
-    if (isSmallKernel) {
-      llvm::outs() << "{\"total_cpu_time\":" << smallKernelCpuMs
-                   << ",\"iterations\":" << iterations << "}\t";
-    } else {
-      llvm::outs() << "[";
-      for (size_t i = 0; i < measurements.size(); ++i) {
-        if (i > 0)
-          llvm::outs() << ",";
-        llvm::outs() << measurements[i];
-      }
-      llvm::outs() << "]\t";
+    // Unified JSON shape (AIROCMLIR-858):
+    //   {
+    //     "timing_method": "cpu" | "gpu",
+    //     "repetitions_per_batch": N,    // 1 for GPU events; ``iterations``
+    //                                    // for the CPU batch timer
+    //     "warmup": [<ms>, ...],         // per-iter warmup samples
+    //     "measurements": [<ms>, ...]    // per-batch measurements (one
+    //                                    // entry per batch; for the CPU
+    //                                    // timer that's a single entry
+    //                                    // equal to the per-iter average)
+    //   }
+    // Emitted BEFORE the sort below so the array preserves temporal order.
+    const unsigned repetitionsPerBatch = useCpuTimer ? iterations : 1u;
+    llvm::outs() << "{\"timing_method\":\""
+                 << (useCpuTimer ? "cpu" : "gpu")
+                 << "\",\"repetitions_per_batch\":" << repetitionsPerBatch
+                 << ",\"warmup\":[";
+    for (size_t i = 0; i < warmupMeasurements.size(); ++i) {
+      if (i > 0)
+        llvm::outs() << ",";
+      llvm::outs() << warmupMeasurements[i];
     }
+    llvm::outs() << "],\"measurements\":[";
+    for (size_t i = 0; i < measurements.size(); ++i) {
+      if (i > 0)
+        llvm::outs() << ",";
+      llvm::outs() << measurements[i];
+    }
+    llvm::outs() << "]}\t";
   }
 
+  // NOTE: this sort is purely local to the median/trim-mean aggregate
+  // returned to the runner. The on-disk array emitted above for
+  // ``--show-all-measurements`` is in temporal order (AIROCMLIR-858 #11).
   std::sort(measurements.begin(), measurements.end());
 
   if (params.showStats) {
@@ -800,7 +870,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            numCompileThreads,
                                            benchmarkConfig,
                                            flushICache,
-                                           flushL2Level};
+                                           flushL2Level,
+                                           timer};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);

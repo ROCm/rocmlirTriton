@@ -189,6 +189,7 @@ class Options:
     warmup_iterations: int
     flush_icache: bool
     flush_l2: str
+    timer: str
 
 
 @dataclass
@@ -1276,13 +1277,25 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
 
         perfconfig = parts[0]
         time = parts[-1]
+        # ``measurements_payload`` is the parsed JSON object emitted by the
+        # tuning driver when ``--show-all-measurements=true``. Its shape is
+        # unified across small/large kernels (AIROCMLIR-858):
+        #   {
+        #     "timing_method": "cpu" | "gpu",
+        #     "repetitions_per_batch": int,
+        #     "warmup": [<ms>, ...],
+        #     "measurements": [<ms>, ...]
+        #   }
+        # Older tuning drivers would emit a bare list (large kernel) or a
+        # ``{"total_cpu_time", "iterations"}`` object (small kernel); the
+        # fallback below keeps debug rows usable if a stale binary is run.
         try:
             if time == "N/A":
                 nano_seconds = np.nan
-                measurements = None
+                measurements_payload = None
             else:
                 nano_seconds = float(time)
-                measurements = json.loads(parts[1]) if len(parts) == 3 else None
+                measurements_payload = json.loads(parts[1]) if len(parts) == 3 else None
         except (ValueError, json.JSONDecodeError):
             gpu_logger.debug(f"Skipping malformed tuning output line: '{result}'")
             continue
@@ -1290,14 +1303,37 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
         config.set_perfconfig(perfconfig)
         entry = config.table_entry(nano_seconds)
         if options.debug:
-            entry["MeasurementsMs"] = measurements
-        # Echo the per-iteration cache-flush settings so the .debug TSV
-        # records the exact configuration this row was measured under
-        # (AIROCMLIR-858). The values come from the runner (it owns the
-        # CLI flags), so we don't need the tuning driver to report them
-        # back.
+            measurements_list: Optional[List[float]] = None
+            warmup_list: Optional[List[float]] = None
+            timing_method: Optional[str] = None
+            repetitions_per_batch: Optional[int] = None
+            if isinstance(measurements_payload, dict) and "measurements" in measurements_payload:
+                measurements_list = measurements_payload.get("measurements")
+                warmup_list = measurements_payload.get("warmup")
+                timing_method = measurements_payload.get("timing_method")
+                repetitions_per_batch = measurements_payload.get("repetitions_per_batch")
+            elif isinstance(measurements_payload, list):
+                # Legacy large-kernel format: bare array of ms values.
+                measurements_list = measurements_payload
+            elif isinstance(measurements_payload, dict):
+                # Legacy small-kernel format: {"total_cpu_time", "iterations"}.
+                total = measurements_payload.get("total_cpu_time")
+                iters = measurements_payload.get("iterations")
+                if total is not None and iters:
+                    measurements_list = [total / iters]
+                    repetitions_per_batch = iters
+                    timing_method = "cpu"
+            entry["MeasurementsMs"] = measurements_list
+            entry["WarmupMs"] = warmup_list
+            entry["TimingMethod"] = timing_method
+            entry["RepetitionsPerBatch"] = repetitions_per_batch
+        # Echo the per-iteration cache-flush and timer settings so the
+        # .debug TSV records the exact configuration this row was measured
+        # under (AIROCMLIR-858). ``Timer`` is the *requested* value;
+        # ``TimingMethod`` above is the *actual* path the driver took.
         entry["FlushICache"] = int(options.flush_icache)
         entry["FlushL2Level"] = options.flush_l2
+        entry["Timer"] = options.timer
         entries.append(entry)
 
         if options.verify_all_perfconfigs and not np.isnan(nano_seconds):
@@ -1328,6 +1364,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         f"--num-compile-threads={num_compile_threads}",
         f"--flush-icache={options.flush_icache}",
         f"--flush-l2={options.flush_l2}",
+        f"--timer={options.timer}",
     ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
@@ -1878,6 +1915,18 @@ def parse_arguments(gpu_topology: GpuTopology,
         "flushes the kernel's weight buffers (heuristic: every kernel "
         "argument except the last).")
 
+    parser.add_argument(
+        "--timer",
+        choices=["auto", "cpu", "gpu"],
+        default="auto",
+        metavar='KIND',
+        help=
+        "How to time each measured iteration (default %(default)s). 'auto' "
+        "matches the historical behaviour: a single CPU batch timer for "
+        "small kernels (mean warmup runtime < 1ms) and per-iteration GPU "
+        "event timers otherwise. 'cpu' / 'gpu' force the corresponding path "
+        "across all kernels.")
+
     logging_group = parser.add_mutually_exclusive_group()
 
     logging_group.add_argument("-q",
@@ -2064,7 +2113,8 @@ def main(args=None):
                       num_iterations=parsed_args.num_iterations,
                       warmup_iterations=parsed_args.warmup_iterations,
                       flush_icache=parsed_args.flush_icache,
-                      flush_l2=parsed_args.flush_l2)
+                      flush_l2=parsed_args.flush_l2,
+                      timer=parsed_args.timer)
 
     ctx = TuningContext(configs=configs,
                         conf_class=get_config_class(op_type),
