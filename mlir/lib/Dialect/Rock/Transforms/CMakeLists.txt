@@ -14,7 +14,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   LowerBlockwiseToPtr.cpp
   ConvertNarrowTypeSignatures.cpp
   EmulateNarrowTypes.cpp
-  MaskNonZeroPreservingFusions.cpp
+  PreserveMaskedLoadSemantics.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
   SerializeHostFuncs.cpp
