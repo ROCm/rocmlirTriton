@@ -256,8 +256,8 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
       // Emit blockwise GEMM. This will load data from LDS (or registers) and
       // compute the MMA at the same time
       Value newAcc = BlockwiseGemmOp::create(
-          b, loc, accArg.getType(), loadedA, loadedB, accArg, loadedScaleA,
-          loadedScaleB, op.getQuantBlockSizeAttr(),
+          b, loc, loadedA, loadedB, accArg, loadedScaleA, loadedScaleB,
+          op.getQuantBlockSizeAttr(),
           /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
           /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
 

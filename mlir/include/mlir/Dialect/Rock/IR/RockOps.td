@@ -22,10 +22,12 @@ include "mlir/Dialect/Rock/IR/RockWriterOpInterface.td"
 include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferIntRangeInterface.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/LoopLikeInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/VectorInterfaces.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
+include "mlir/IR/OpAsmInterface.td"
 
 // Base class for Rock dialect ops.
 class Rock_Op<string mnemonic, list<Trait> traits = []> :
@@ -171,7 +173,8 @@ def Rock_GemmOp
 }
 
 def Rock_ReduceOp
-    : Rock_Op<"reduce", [Pure, AllElementTypesMatch<["in", "result"]>]>,
+    : Rock_Op<"reduce", [Pure, AllElementTypesMatch<["in", "result"]>,
+                         DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins Arg<TensorOf<[BF16, F16, F32]>, "input">:$in,
           ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
       Results<(outs TensorOf<[BF16, F16, F32]>:$result)> {
@@ -186,6 +189,8 @@ def Rock_AttentionOp
     : Rock_Op<
           "attention", [RecursiveMemoryEffects, RecursivelySpeculatable,
                         DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
+                        DeclareOpInterfaceMethods<
+                            OpAsmOpInterface, ["getAsmResultNames"]>,
                         RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<[F32, F16, BF16, I8]>:$queries,
           TensorOf<[F32, F16, BF16, I8]>:$keys,
@@ -347,7 +352,8 @@ def Rock_ConvElementwiseGemmOp
 
 def Rock_TransformOp
     : Rock_Op<"transform", [Pure, ViewLikeOpInterface,
-                            AllElementTypesMatch<["input", "output"]>]>,
+                            AllElementTypesMatch<["input", "output"]>,
+                            DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins AnyShaped:$input, Rock_TransformMapAttr:$transform)>,
       Results<(outs AnyShaped:$output)> {
   let summary = "Tensor transformation";
@@ -357,18 +363,6 @@ def Rock_TransformOp
     the coordinate transformations `transforms` from left to right,
     they become coordinates into the `input` tensor.
   }];
-  let builders = [
-   // Custom builder to populate bounds of input and output tensors as attributes.
-   OpBuilder<(ins "Value":$input, "TransformMapAttr":$transform),
-   [{
-     $_state.addOperands({input});
-     ShapedType lowerType = cast<ShapedType>(input.getType());
-     Type elemType = lowerType.getElementType();
-     ShapedType upperType = lowerType.cloneWith(transform.getUpperBounds().asArrayRef(), elemType);
-     $_state.addAttribute("transform", transform);
-     $_state.addTypes(upperType);
-   }]>,
-  ];
   let hasVerifier = 1;
   let assemblyFormat = [{
     $input `by` $transform attr-dict `:` type($input) `to` type($output)
@@ -534,9 +528,11 @@ def Rock_GridwiseGemmOp
 
 // gridwise_attention
 def Rock_GridwiseAttentionOp
-    : Rock_Op<"gridwise_attention", [RecursiveMemoryEffects,
-                                     RecursivelySpeculatable, RockFusionRoot,
-                                     AttrSizedOperandSegments]>,
+    : Rock_Op<
+          "gridwise_attention",
+          [RecursiveMemoryEffects, RecursivelySpeculatable, RockFusionRoot,
+           DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+           AttrSizedOperandSegments]>,
       Arguments<(ins TensorRankOf<[F32, F16, BF16, I8], [3]>:$queries,
           TensorRankOf<[F32, F16, BF16, I8], [3]>:$keys,
           TensorRankOf<[F32, F16, BF16], [3]>:$values,
@@ -615,7 +611,9 @@ defvar LdsBufferTypes = GemmInputTypes # [VectorOfRankAndType<[1], GemmInputType
 
 // blockwise_gemm
 def Rock_BlockwiseGemmOp
-    : Rock_Op<"blockwise_gemm", [Pure, AttrSizedOperandSegments]>,
+    : Rock_Op<
+          "blockwise_gemm", [Pure, AttrSizedOperandSegments,
+                             DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins TensorOf<GemmInputTypes>:$matrixA,
           TensorOf<GemmInputTypes>:$matrixB, TensorOf<GemmOutputTypes>:$matrixC,
           Optional<TensorOf<[F8E8M0FNU, I8]>>:$matrixScaleA,
@@ -668,8 +666,9 @@ def Rock_BlockwiseGemmOp
 
 // blockwise_load
 def Rock_BlockwiseLoadOp
-    : Rock_Op<"blockwise_load", [Pure,
-                                 AllElementTypesMatch<["source", "result"]>]>,
+    : Rock_Op<
+          "blockwise_load", [Pure, AllElementTypesMatch<["source", "result"]>,
+                             DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source global memory">:$source,
           Variadic<I32>:$sourceIndices)>,
@@ -744,29 +743,29 @@ def Rock_BlockwiseStoreOp
 // blockwise_store_ptr
 def Rock_BlockwiseStorePtrOp
     : Rock_Op<"blockwise_store_ptr",
-              [AllShapesMatch<["pointerTensor", "maskTensor", "source"]>,
-               AllElementTypesMatch<["source", "result"]>]>,
+              [AllShapesMatch<["pointerTensor", "maskTensor", "source"]>]>,
       Arguments<(ins Arg<RankedTensorOf<[I32]>,
                          "Pointer tensor", [MemWrite]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
-          StoreMethodAttr:$storeMethod)>,
-      Results<(outs TensorOf<NativeMemoryOpTypes>:$result)> {
+          StoreMethodAttr:$storeMethod)> {
   let summary = "Write out values to transformed destination";
 
   let description = [{
   }];
 
-  let hasVerifier = 1;
   let assemblyFormat = [{
     attr-dict $source  `->` $pointerTensor `(` $maskTensor `)` `by` $storeMethod
-    `:` type($source) `->` type($pointerTensor) `(` type($maskTensor) `)` `->` type($result)
+    `:` type($source) `->` type($pointerTensor) `(` type($maskTensor) `)`
   }];
 }
 
 def Rock_TransformsToPtrOp
-    : Rock_Op<"transforms_to_ptr", [Pure,
-                                    AllShapesMatch<["pointers", "mask"]>]>,
+    : Rock_Op<
+          "transforms_to_ptr",
+          [Pure, AllShapesMatch<["pointers", "mask"]>,
+           DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+           DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Variadic<I32>:$extraIndices)>,
       Results<(outs RankedTensorOf<[I32]>:$pointers,
@@ -787,8 +786,9 @@ def Rock_TransformsToPtrOp
 
 // blockwise_reduction
 def Rock_BlockwiseReduceOp
-    : Rock_Op<"blockwise_reduce", [Pure,
-                                   AllElementTypesMatch<["input", "result"]>]>,
+    : Rock_Op<"blockwise_reduce",
+              [Pure, AllElementTypesMatch<["input", "result"]>,
+               DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins AnyRankedTensor:$input, IndexAttr:$axis,
           ReduceMethodAttr:$reduceMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
@@ -819,7 +819,9 @@ def Rock_CastToPtrOp
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
 }
 
-def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {
+def Rock_ExtractPtrOp
+    : Rock_Op<"extract_ptr", [Pure, DeclareOpInterfaceMethods<
+                                        InferTypeOpInterface>]> {
   let summary = "Extract a pointer from a tensor as an i32";
 
   let description = [{

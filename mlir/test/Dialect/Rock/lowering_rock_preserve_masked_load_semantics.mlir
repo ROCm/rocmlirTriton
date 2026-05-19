@@ -14,12 +14,12 @@
 // CHECK: rock.blockwise_store_ptr %[[SAFE]]
 func.func @test_addf_constant(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %cst = arith.constant dense<1.0> : tensor<64x64xf16>
   %fused = arith.addf %tile, %cst : tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -34,12 +34,12 @@ func.func @test_addf_constant(
 // CHECK: rock.blockwise_store_ptr %[[FUSED]]
 func.func @test_mulf_constant(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %cst = arith.constant dense<2.0> : tensor<64x64xf16>
   %fused = arith.mulf %tile, %cst : tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -54,13 +54,13 @@ func.func @test_mulf_constant(
 // CHECK: rock.blockwise_store_ptr %[[FUSED]]
 func.func @test_trivial_mask(
     %ptrs: tensor<64x64xi32>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %trivial_mask = arith.constant dense<true> : tensor<64x64xi1>
   %tile = rock.blockwise_load_ptr %ptrs[%trivial_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %cst = arith.constant dense<1.0> : tensor<64x64xf16>
   %fused = arith.addf %tile, %cst : tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -74,10 +74,10 @@ func.func @test_trivial_mask(
 // CHECK: rock.blockwise_store_ptr %[[LOAD]]
 func.func @test_no_fusion(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %tile -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %tile -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -95,14 +95,14 @@ func.func @test_no_fusion(
 // CHECK: rock.blockwise_store_ptr %[[SAFE]]
 func.func @test_chain_mulf_addf(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %cst2 = arith.constant dense<2.0> : tensor<64x64xf16>
   %cst1 = arith.constant dense<1.0> : tensor<64x64xf16>
   %step1 = arith.mulf %tile, %cst2 : tensor<64x64xf16>
   %step2 = arith.addf %step1, %cst1 : tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %step2 -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %step2 -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -119,14 +119,14 @@ func.func @test_chain_mulf_addf(
 // CHECK: rock.blockwise_store_ptr %[[MUL2]]
 func.func @test_chain_mulf_mulf(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %cst2 = arith.constant dense<2.0> : tensor<64x64xf16>
   %cst3 = arith.constant dense<3.0> : tensor<64x64xf16>
   %step1 = arith.mulf %tile, %cst2 : tensor<64x64xf16>
   %step2 = arith.mulf %step1, %cst3 : tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %step2 -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %step2 -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -143,12 +143,12 @@ func.func @test_chain_mulf_mulf(
 func.func @test_two_loads_addf(
     %ptrs_a: tensor<64x64xi32>, %mask_a: tensor<64x64xi1>,
     %ptrs_b: tensor<64x64xi32>, %mask_b: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %ptrs_a[%mask_a] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %b = rock.blockwise_load_ptr %ptrs_b[%mask_b] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %fused = arith.addf %a, %b : tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -169,14 +169,14 @@ func.func @test_two_loads_addf(
 func.func @test_two_loads_then_const(
     %ptrs_a: tensor<64x64xi32>, %mask_a: tensor<64x64xi1>,
     %ptrs_b: tensor<64x64xi32>, %mask_b: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %ptrs_a[%mask_a] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %b = rock.blockwise_load_ptr %ptrs_b[%mask_b] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %sum = arith.addf %a, %b : tensor<64x64xf16>
   %cst = arith.constant dense<1.0> : tensor<64x64xf16>
   %fused = arith.addf %sum, %cst : tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -192,11 +192,11 @@ func.func @test_two_loads_then_const(
 // CHECK: rock.blockwise_store_ptr %[[SAFE]]
 func.func @test_math_exp(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf32> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %fused = math.exp %tile : tensor<64x64xf32>
-  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf32>
-  return %r : tensor<4096xf32>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -211,11 +211,11 @@ func.func @test_math_exp(
 // CHECK: rock.blockwise_store_ptr %[[EXT]]
 func.func @test_extf(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf32> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %fused = arith.extf %tile : tensor<64x64xf16> to tensor<64x64xf32>
-  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf32>
-  return %r : tensor<4096xf32>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -230,11 +230,11 @@ func.func @test_extf(
 // CHECK: rock.blockwise_store_ptr %[[NEG]]
 func.func @test_negf(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %fused = arith.negf %tile : tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // ============================================================
@@ -255,8 +255,7 @@ func.func @test_gemm_output_add_load_max_reduce_uses_neg_inf(
     %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
     %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
     %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
-    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
-    -> tensor<64xf32> attributes {rock.kernel} {
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %zero = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -266,8 +265,8 @@ func.func @test_gemm_output_add_load_max_reduce_uses_neg_inf(
   %d2 = arith.addf %d, %cst : tensor<64x64xf32>
   %res = arith.addf %c, %d2 : tensor<64x64xf32>
   %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
-  return %stored : tensor<64xf32>
+  rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>)
+  return
 }
 
 // ============================================================
@@ -288,8 +287,7 @@ func.func @test_gemm_output_zero_preserving_chain_max_reduce_uses_neg_inf(
     %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
     %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
     %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
-    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
-    -> tensor<64xf32> attributes {rock.kernel} {
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %zero = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -299,8 +297,8 @@ func.func @test_gemm_output_zero_preserving_chain_max_reduce_uses_neg_inf(
   %scaled = arith.mulf %d, %cst : tensor<64x64xf32>
   %res = arith.mulf %c, %scaled : tensor<64x64xf32>
   %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
-  return %stored : tensor<64xf32>
+  rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>)
+  return
 }
 
 // ============================================================
@@ -323,8 +321,7 @@ func.func @test_gemm_output_zero_preserving_transform_max_reduce_uses_neg_inf(
     %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
     %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
     %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
-    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
-    -> tensor<64xf32> attributes {rock.kernel} {
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %zero = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -335,8 +332,8 @@ func.func @test_gemm_output_zero_preserving_transform_max_reduce_uses_neg_inf(
   %res = arith.mulf %c, %scaled : tensor<64x64xf32>
   %view = rock.transform %res by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["dim0", "dim1"] at [0, 1] -> ["dim0", "dim1"] at [0, 1]>] bounds = [64, 64] -> [64, 64]> : tensor<64x64xf32> to tensor<64x64xf32>
   %reduced = rock.blockwise_reduce max %view {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
-  return %stored : tensor<64xf32>
+  rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>)
+  return
 }
 
 // ============================================================
@@ -363,8 +360,7 @@ func.func @test_gemm_output_mixed_consumers_max_and_store(
     %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
     %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
     %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>)
-    -> (tensor<64xf32>, tensor<4096xf32>) attributes {rock.kernel} {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %zero = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -374,9 +370,9 @@ func.func @test_gemm_output_mixed_consumers_max_and_store(
   %d2 = arith.addf %d, %cst : tensor<64x64xf32>
   %res = arith.addf %c, %d2 : tensor<64x64xf32>
   %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  %stored = rock.blockwise_store_ptr %res -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf32>
-  %stored_reduced = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
-  return %stored_reduced, %stored : tensor<64xf32>, tensor<4096xf32>
+  rock.blockwise_store_ptr %res -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>)
+  return
 }
 
 // ============================================================
@@ -397,8 +393,7 @@ func.func @test_gemm_output_add_load_sum_reduce_uses_zero(
     %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
     %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
     %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
-    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
-    -> tensor<64xf32> attributes {rock.kernel} {
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf32>
   %zero = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -408,8 +403,8 @@ func.func @test_gemm_output_add_load_sum_reduce_uses_zero(
   %d2 = arith.addf %d, %cst : tensor<64x64xf32>
   %res = arith.addf %c, %d2 : tensor<64x64xf32>
   %reduced = rock.blockwise_reduce sum %res {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
-  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf32>
-  return %stored : tensor<64xf32>
+  rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf32> -> tensor<64xi32>(tensor<64xi1>)
+  return
 }
 
 // ============================================================
@@ -432,8 +427,7 @@ func.func @test_gemm_output_fp8_max_reduce_uses_largest_finite(
     %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
     %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
     %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
-    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
-    -> tensor<64xf8E4M3FN> attributes {rock.kernel} {
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf8E4M3FN>
   %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf8E4M3FN>
   %zero = arith.constant dense<0.0> : tensor<64x64xf8E4M3FN>
@@ -443,8 +437,8 @@ func.func @test_gemm_output_fp8_max_reduce_uses_largest_finite(
   %d2 = arith.addf %d, %cst : tensor<64x64xf8E4M3FN>
   %res = arith.addf %c, %d2 : tensor<64x64xf8E4M3FN>
   %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xf8E4M3FN> -> tensor<64xf8E4M3FN>
-  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf8E4M3FN> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xf8E4M3FN>
-  return %stored : tensor<64xf8E4M3FN>
+  rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xf8E4M3FN> -> tensor<64xi32>(tensor<64xi1>)
+  return
 }
 
 // ============================================================
@@ -468,8 +462,7 @@ func.func @test_gemm_output_int_max_reduce_uses_signed_min(
     %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
     %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
     %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
-    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
-    -> tensor<64xi32> attributes {rock.kernel} {
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
   %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
   %zero = arith.constant dense<0> : tensor<64x64xi32>
@@ -479,8 +472,8 @@ func.func @test_gemm_output_int_max_reduce_uses_signed_min(
   %d2 = arith.addi %d, %cst : tensor<64x64xi32>
   %res = arith.addi %c, %d2 : tensor<64x64xi32>
   %reduced = rock.blockwise_reduce max %res {axis = 1 : index} : tensor<64x64xi32> -> tensor<64xi32>
-  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xi32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xi32>
-  return %stored : tensor<64xi32>
+  rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xi32> -> tensor<64xi32>(tensor<64xi1>)
+  return
 }
 
 // ============================================================
@@ -501,8 +494,7 @@ func.func @test_gemm_output_int_sum_reduce_uses_zero(
     %a_ptrs: tensor<64x64xi32>, %a_mask: tensor<64x64xi1>,
     %b_ptrs: tensor<64x64xi32>, %b_mask: tensor<64x64xi1>,
     %d_ptrs: tensor<64x64xi32>, %d_mask: tensor<64x64xi1>,
-    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>)
-    -> tensor<64xi32> attributes {rock.kernel} {
+    %out_ptrs: tensor<64xi32>, %out_mask: tensor<64xi1>) attributes {rock.kernel} {
   %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
   %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
   %zero = arith.constant dense<0> : tensor<64x64xi32>
@@ -512,8 +504,8 @@ func.func @test_gemm_output_int_sum_reduce_uses_zero(
   %d2 = arith.addi %d, %cst : tensor<64x64xi32>
   %res = arith.addi %c, %d2 : tensor<64x64xi32>
   %reduced = rock.blockwise_reduce sum %res {axis = 1 : index} : tensor<64x64xi32> -> tensor<64xi32>
-  %stored = rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xi32> -> tensor<64xi32>(tensor<64xi1>) -> tensor<64xi32>
-  return %stored : tensor<64xi32>
+  rock.blockwise_store_ptr %reduced -> %out_ptrs(%out_mask) by set : tensor<64xi32> -> tensor<64xi32>(tensor<64xi1>)
+  return
 }
 
 // ============================================================
@@ -528,10 +520,10 @@ func.func @test_gemm_output_int_sum_reduce_uses_zero(
 // CHECK: rock.blockwise_store_ptr %[[FUSED]]
 func.func @test_non_kernel(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>,
-    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) -> tensor<4096xf16> {
+    %dest_ptrs: tensor<64x64xi32>, %dest_mask: tensor<64x64xi1>) {
   %tile = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   %cst = arith.constant dense<1.0> : tensor<64x64xf16>
   %fused = arith.addf %tile, %cst : tensor<64x64xf16>
-  %r = rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<4096xf16>
-  return %r : tensor<4096xf16>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }

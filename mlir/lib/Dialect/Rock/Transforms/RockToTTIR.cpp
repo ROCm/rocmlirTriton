@@ -334,8 +334,7 @@ struct RockStorePtrOpRewritePattern
           /*evict=*/triton::EvictionPolicy::NORMAL);
     }
 
-    // Replace the op with the stored value (the result represents the stored tensor)
-    rewriter.replaceOp(op, valueToStore);
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -406,35 +405,6 @@ struct ArithExtFToFpToFpPattern
   }
 };
 
-//===----------------------------------------------------------------------===//
-// ReturnOpRewritePattern - Update return ops to return nothing and update
-// the parent function signature to return void
-//===----------------------------------------------------------------------===//
-struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
-  using OpRewritePattern<func::ReturnOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(func::ReturnOp returnOp,
-                                PatternRewriter &rewriter) const override {
-    // Only convert return ops that have operands
-    if (returnOp.getOperands().empty())
-      return failure();
-
-    // Update the parent function's signature to return void
-    auto funcOp = returnOp->getParentOfType<func::FuncOp>();
-    if (funcOp && funcOp.getFunctionType().getNumResults() > 0) {
-      FunctionType newFuncType = FunctionType::get(
-          rewriter.getContext(), funcOp.getFunctionType().getInputs(),
-          /*results=*/{});
-      rewriter.modifyOpInPlace(funcOp, [&]() {
-        funcOp.setFunctionType(newFuncType);
-        funcOp.setAllResultAttrs(ArrayRef<DictionaryAttr>{});
-      });
-    }
-
-    rewriter.replaceOpWithNewOp<func::ReturnOp>(returnOp);
-    return success();
-  }
-};
 } // end anonymous namespace
 
 void RockToTTIRPass::runOnOperation() {
@@ -459,8 +429,6 @@ void RockToTTIRPass::runOnOperation() {
   target.addLegalDialect<func::FuncDialect>();
   target.addLegalDialect<arith::ArithDialect>();
   target.addLegalDialect<math::MathDialect>();
-  target.addDynamicallyLegalOp<func::ReturnOp>(
-      [](func::ReturnOp op) { return op.getOperands().empty(); });
 
   // arith.truncf / arith.extf with FP8 types must be converted to
   // tt.fp_to_fp; Triton's LLVM lowering cannot handle them directly.
@@ -474,7 +442,6 @@ void RockToTTIRPass::runOnOperation() {
   patterns.add<RockLoadPtrOpRewritePattern>(ctx);
   patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
   patterns.add<RockStorePtrOpRewritePattern>(ctx);
-  patterns.add<ReturnOpRewritePattern>(ctx);
   patterns.add<ArithTruncFToFpToFpPattern>(ctx);
   patterns.add<ArithExtFToFpToFpPattern>(ctx);
 

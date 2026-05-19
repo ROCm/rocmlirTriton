@@ -1155,6 +1155,18 @@ LogicalResult TransformOp::verify() {
   return success();
 }
 
+LogicalResult TransformOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  TransformOp::Adaptor adaptor(operands, attributes, properties, regions);
+  auto inputType = cast<ShapedType>(adaptor.getInput().getType());
+  TransformMapAttr transform = adaptor.getTransform();
+  inferredReturnTypes.push_back(
+      inputType.clone(transform.getUpperBounds().asArrayRef()));
+  return success();
+}
+
 //===-----------------------------------------------------===//
 // UntileOp
 //===-----------------------------------------------------===//
@@ -1468,6 +1480,20 @@ LogicalResult BlockwiseLoadOp::verify() {
   return success();
 }
 
+LogicalResult BlockwiseLoadOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  // Operand layout: source (index 0), then variadic sourceIndices.
+  auto sourceType = cast<RankedTensorType>(operands.front().getType());
+  size_t numSourceIndices = operands.size() - 1;
+  auto shape =
+      sourceType.getShape().take_back(sourceType.getRank() - numSourceIndices);
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(shape, sourceType.getElementType()));
+  return success();
+}
+
 //===-----------------------------------------------------===//
 // BlockwiseStoreOp
 //===-----------------------------------------------------===//
@@ -1519,14 +1545,6 @@ LogicalResult BlockwiseStoreOp::verify() {
            << " != " << sourceType.getShape() << ")";
   }
 
-  return verifySingleReturnUse(*this, getResult());
-}
-
-//===-----------------------------------------------------===//
-// BlockwiseStorePtrOp
-//===-----------------------------------------------------===//
-
-LogicalResult BlockwiseStorePtrOp::verify() {
   return verifySingleReturnUse(*this, getResult());
 }
 
@@ -1612,6 +1630,16 @@ LogicalResult BlockwiseGemmOp::verify() {
   return success();
 }
 
+LogicalResult BlockwiseGemmOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  // Result type equals matrixC's type (3rd operand; matrixA, matrixB, matrixC
+  // are required and ordered first, before the optional scale operands).
+  inferredReturnTypes.push_back(operands[2].getType());
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
@@ -1653,6 +1681,13 @@ LogicalResult GridwiseAttentionOp::verify() {
   return success();
 }
 
+void GridwiseAttentionOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "attn");
+  if (Value lse = getLse())
+    setNameFn(lse, "lse");
+}
+
 //===-----------------------------------------------------===//
 // TransformsToPtrOp
 //===-----------------------------------------------------===//
@@ -1681,6 +1716,28 @@ LogicalResult TransformsToPtrOp::verify() {
   return success();
 }
 
+void TransformsToPtrOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getPointers(), "ptrs");
+  setNameFn(getMask(), "mask");
+}
+
+LogicalResult TransformsToPtrOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  // Operand layout: source (index 0), then variadic extraIndices.
+  auto sourceType = cast<RankedTensorType>(operands.front().getType());
+  size_t numExtraIndices = operands.size() - 1;
+  auto shape =
+      sourceType.getShape().take_back(sourceType.getRank() - numExtraIndices);
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(shape, IntegerType::get(context, 32)));
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(shape, IntegerType::get(context, 1)));
+  return success();
+}
+
 //===-----------------------------------------------------===//
 // ReduceOp
 //===-----------------------------------------------------===//
@@ -1706,6 +1763,20 @@ LogicalResult ReduceOp::verify() {
   return success();
 }
 
+LogicalResult ReduceOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  ReduceOp::Adaptor adaptor(operands, attributes, properties, regions);
+  auto inputType = cast<RankedTensorType>(adaptor.getIn().getType());
+  int64_t axis = adaptor.getAxis().getSExtValue();
+  SmallVector<int64_t> outShape(inputType.getShape());
+  outShape[axis] = 1;
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(outShape, inputType.getElementType()));
+  return success();
+}
+
 //===-----------------------------------------------------===//
 // BlockwiseReduceOp
 //===-----------------------------------------------------===//
@@ -1727,6 +1798,24 @@ LogicalResult BlockwiseReduceOp::verify() {
              << outDim;
     ++outDim;
   }
+  return success();
+}
+
+LogicalResult BlockwiseReduceOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  BlockwiseReduceOp::Adaptor adaptor(operands, attributes, properties, regions);
+  auto inputType = cast<RankedTensorType>(adaptor.getInput().getType());
+  int64_t axis = adaptor.getAxis().getSExtValue();
+  SmallVector<int64_t> outShape;
+  outShape.reserve(inputType.getRank() - 1);
+  for (auto [i, dim] : llvm::enumerate(inputType.getShape())) {
+    if (static_cast<int64_t>(i) != axis)
+      outShape.push_back(dim);
+  }
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(outShape, inputType.getElementType()));
   return success();
 }
 
@@ -2055,6 +2144,13 @@ LogicalResult AttentionOp::verify() {
 
   return verifyGemmPlusGemmLikeOp(*this, getCurrentSeqLen(), getLse(),
                                   getNumHeadsQ(), getNumHeadsKV());
+}
+
+void AttentionOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "attn");
+  if (Value lse = getLse())
+    setNameFn(lse, "lse");
 }
 
 //===-----------------------------------------------------===//

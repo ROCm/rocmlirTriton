@@ -47,7 +47,7 @@ func.func @test_transforms_to_ptr_load(%arg0: tensor<32768xf16>) -> tensor<64x64
 //      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   rock.blockwise_store_ptr {{.*}} by  set
 //  CHECK-NOT:   rock.transforms_to_ptr
-func.func @test_transforms_to_ptr_store(%arg0: tensor<64x64xf32>, %arg1: tensor<8192xf32>) -> tensor<8192xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @test_transforms_to_ptr_store(%arg0: tensor<64x64xf32>, %arg1: tensor<8192xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
 
@@ -57,9 +57,9 @@ func.func @test_transforms_to_ptr_store(%arg0: tensor<64x64xf32>, %arg1: tensor<
 
   // transforms_to_ptr should be expanded to pointer arithmetic
   %pointers, %mask = rock.transforms_to_ptr %1[%c0_i32, %c0_i32, %c1_i32] : tensor<1x1x2x64x64xf32> -> tensor<64x64xi32>, tensor<64x64xi1>
-  %2 = rock.blockwise_store_ptr %arg0 -> %pointers(%mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<8192xf32>
+  rock.blockwise_store_ptr %arg0 -> %pointers(%mask) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
 
-  return %2 : tensor<8192xf32>
+  return
 }
 
 
