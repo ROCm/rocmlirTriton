@@ -55,6 +55,13 @@ PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   WalkResult wRes = func.walk(
       [&](ReduceOp rOp) -> WalkResult { return WalkResult::interrupt(); });
   info.hasFusedReduction = wRes.wasInterrupted();
+
+  // Block-scaled GEMM metadata: `quantBlockSize` lives on `GemmOp`, scale
+  // element types come from the interface (null for ops without scales).
+  if (auto gemmOp = dyn_cast<GemmOp>(*op))
+    info.quantBlockSize = gemmOp.getQuantBlockSize();
+  info.aScaleType = op.getScaleAType();
+  info.bScaleType = op.getScaleBType();
   return info;
 }
 
@@ -210,13 +217,15 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
   // Under two scenarios can we receive a non-empty perfConfig:
   // 1. This is tuning mode
   // 2. This is running mode and we have succeeded with a perfdb load.
-  // Otherwise we fall back to the first quick-tuning entry, after ordering
-  // candidates so that padding-free ones come first.
-  auto paramSets = getTuningParameters(b, info.kernelType, info.gemmAType,
-                                       info.gemmBType, info.arch);
-  std::vector<GemmParamsAttr> orderedParams =
-      orderParams(paramSets, info.gemmSize);
-  return materializeTuningParams<GemmParamsAttr>(b, perfConfig, orderedParams);
+  // Otherwise we fall back to the first entry of the quick-tuning list, which
+  // `getTuningParameters` already reorders so that the first conservatively-
+  // applicable config (LDS budget, kpack/splitK/numCTAs constraints, plus
+  // block-scaling divisibility/LDS for scaled ops) is up front.
+  return materializeTuningParams<GemmParamsAttr>(
+      b, perfConfig,
+      getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
+                          info.arch, info.quantBlockSize, info.aScaleType,
+                          info.bScaleType));
 }
 
 FailureOr<GemmParamsAttr>
@@ -232,10 +241,10 @@ PopulateParams::obtainTuningParameters(OpBuilder &b,
   return obtainTuningParameters(b, info, perfConfig);
 }
 
-std::vector<GemmParamsAttr>
-PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
-                                    Type dataTypeA, Type dataTypeB,
-                                    StringRef arch) const {
+std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
+    OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
+    StringRef arch, std::optional<int64_t> quantBlockSize, Type aScaleType,
+    Type bScaleType) const {
   auto perfConfigs =
       ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
 
@@ -257,7 +266,20 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
 
     res.push_back(params);
   }
-  return res;
+  auto ordered = orderParams<GemmParamsAttr>(res, [&](GemmParamsAttr p) {
+    return isGemmParamsConservativelyApplicable(
+        p, dataTypeA, dataTypeB, arch, quantBlockSize, aScaleType, bScaleType);
+  });
+  // Guarantee MIGRAPHX_SKIP_BENCHMARKING consumers see an applicable
+  // `front()`: if no table entry passed the check, prepend the conservative
+  // default (which is rounded up to a multiple of `quantBlockSize` for
+  // scaled GEMMs so it also satisfies the divisibility constraint).
+  if (ordered.empty() || !isGemmParamsConservativelyApplicable(
+                             ordered.front(), dataTypeA, dataTypeB, arch,
+                             quantBlockSize, aScaleType, bScaleType))
+    ordered.insert(ordered.begin(), getConservativeDefaultGemmParams(
+                                        b.getContext(), quantBlockSize));
+  return ordered;
 }
 
 LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,

@@ -20,9 +20,8 @@ using namespace mlir::rock;
 
 FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
     OpBuilder &b, RockGemmGemmWrapperInterface op) {
-  // Prefer the user-supplied `perf_config` attribute on the op; if it's
-  // absent, fall back to the first entry of the per-(arch, kernel, dtype)
-  // quick tuning list as the default perfConfig.
+  // Prefer the op's `perf_config`; otherwise fall back to the
+  // (already-ordered) quick-tuning list and pick its front.
   StringRef perfConfig;
   if (auto mayBePerfConfig =
           dyn_cast_or_null<StringAttr>(op->getAttr("perf_config")))
@@ -34,12 +33,31 @@ FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
 std::vector<GemmGemmParamsAttr>
 PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
                                             RockGemmGemmWrapperInterface op) {
-  return getTuningParameters(b, rock::getArchValue(op), op.getKernelType(),
-                             cast<ShapedType>(op.getAType()).getElementType());
+  // Bump the first applicable config (Q + K + V LDS fit, kpack/splitK/numCTAs
+  // == 1) to the front for skip-benchmarking consumers.
+  auto elemType = cast<ShapedType>(op.getAType()).getElementType();
+  auto arch = rock::getArchValue(op);
+  auto list = getTuningParameters(b, arch, op.getKernelType(), elemType);
+  auto ordered =
+      orderParams<GemmGemmParamsAttr>(list, [&](GemmGemmParamsAttr p) {
+        return isGemmGemmParamsConservativelyApplicable(b, p, elemType,
+                                                        elemType, arch, op);
+      });
+  // Guarantee MIGRAPHX_SKIP_BENCHMARKING consumers see an applicable
+  // `front()`: if no table entry passed the check, prepend the conservative
+  // default.
+  if (ordered.empty() || !isGemmGemmParamsConservativelyApplicable(
+                             b, ordered.front(), elemType, elemType, arch, op))
+    ordered.insert(ordered.begin(),
+                   getConservativeDefaultGemmGemmParams(b.getContext()));
+  return ordered;
 }
 
 std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
     OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType) {
+  // Op-less path: gemm1NPerBlock is unknown, so we can't apply the attention
+  // LDS check. Just return the table order; callers without an op (e.g.
+  // rocmlir-gen) don't go through skip-benchmarking.
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
       arch, kernelType, elementType);
   std::vector<GemmGemmParamsAttr> ret;
@@ -77,7 +95,7 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
     OpBuilder &b, RockGemmGemmWrapperInterface op, GemmGemmParamsAttr params) {
   // Due to limitations, gemm1NPerBlock must be equal to gemm1N
-  // and gemm1NPerBlock must be a power of two
+  // and gemm1NPerBlock must be a power of two.
   auto cShape = cast<ShapedType>(op.getCType()).getShape();
   int idx = op.getTransposedC() ? 0 : 1;
   assert(cShape.size() == 3 || cShape.size() == 2);

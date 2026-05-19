@@ -13,10 +13,17 @@
 #ifndef MLIR_DIALECT_ROCK_GRIDWISE_GEMM_PARAMS_H
 #define MLIR_DIALECT_ROCK_GRIDWISE_GEMM_PARAMS_H
 
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
+#include "mlir/IR/Types.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/Support/MathExtras.h"
+#include <algorithm>
+#include <cstdint>
 #include <optional>
 
 namespace llvm {
@@ -68,6 +75,13 @@ struct PopulateParamsInfo {
   int64_t batchSize;
   uint32_t numCu;
   bool hasFusedReduction;
+  // Block-scaled (MXFP-style) GEMM metadata. `quantBlockSize` is unset for
+  // non-scaled ops; the scale element types come from
+  // `RockGemmWrapperInterface::getScale{A,B}Type()` and are null for ops that
+  // don't carry that operand.
+  std::optional<int64_t> quantBlockSize;
+  Type aScaleType;
+  Type bScaleType;
 
   PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
                      Type gemmBType, KernelType kernelType)
@@ -86,64 +100,81 @@ struct PopulateParamsInfo {
   static PopulateParamsInfo fromOp(RockGemmWrapperInterface op);
 };
 
+/// Conservative GEMM applicability: covers the perfconfig-driven
+/// `markAsNotApplicable` sites (kpack/splitK/numCTAs constraints + LDS
+/// budget over A+B tiles, `numStages`-buffered).
+///
+/// For block-scaled (MXFP-style) GEMMs, pass `quantBlockSize` and the
+/// `aScaleType`/`bScaleType` returned by `RockGemmWrapperInterface::
+/// getScaleAType()`/`getScaleBType()`. The check then also:
+///   - requires `kPerBlock % quantBlockSize == 0` (matches
+///     `GridwiseGemmToBlockwise`'s `markAsNotApplicable` site), and
+///   - charges per-tile scale storage to the LDS budget.
+/// Non-scaled callers leave these arguments at their defaults and behave
+/// exactly as before.
+inline bool isGemmParamsConservativelyApplicable(
+    GemmParamsAttr p, Type aElemType, Type bElemType, StringRef arch,
+    std::optional<int64_t> quantBlockSize = std::nullopt,
+    Type aScaleType = nullptr, Type bScaleType = nullptr) {
+  if (p.getKpack() != 1 || p.getSplitKFactor() != 1 || p.getNumCTAs() != 1)
+    return false;
+  if (quantBlockSize.has_value() && p.getKPerBlock() % *quantBlockSize != 0)
+    return false;
+  int64_t totalBits =
+      (p.getMPerBlock() * p.getKPerBlock() *
+       aElemType.getIntOrFloatBitWidth()) +
+      (p.getNPerBlock() * p.getKPerBlock() * bElemType.getIntOrFloatBitWidth());
+  if (quantBlockSize.has_value() && (aScaleType || bScaleType)) {
+    int64_t scaleK = llvm::divideCeil(p.getKPerBlock(), *quantBlockSize);
+    if (aScaleType)
+      totalBits +=
+          p.getMPerBlock() * scaleK * aScaleType.getIntOrFloatBitWidth();
+    if (bScaleType)
+      totalBits +=
+          p.getNPerBlock() * scaleK * bScaleType.getIntOrFloatBitWidth();
+  }
+  int64_t bytes =
+      llvm::divideCeil(totalBits, static_cast<int64_t>(8)) * p.getNumStages();
+  return bytes <= getLDSSize(arch);
+}
+
+/// Default config used as a guaranteed-applicable fallback when no entry in
+/// the quick-tuning table satisfies isGemmParamsConservativelyApplicable.
+///
+/// When `quantBlockSize` is provided, `kPerBlock` is rounded up to a multiple
+/// of it so the default also satisfies the divisibility constraint enforced
+/// in `GridwiseGemmToBlockwise`.
+inline GemmParamsAttr getConservativeDefaultGemmParams(
+    MLIRContext *ctx, std::optional<int64_t> quantBlockSize = std::nullopt) {
+  int64_t kPerBlock = 32;
+  if (quantBlockSize.has_value() && *quantBlockSize > 0)
+    kPerBlock = llvm::alignTo(kPerBlock, *quantBlockSize);
+  return GemmParamsAttr::get(ctx,
+                             /*mPerBlock=*/32, /*nPerBlock=*/32,
+                             /*kPerBlock=*/kPerBlock, /*kpack=*/1,
+                             /*numCTAs=*/1, /*numWaves=*/4,
+                             /*matrixInstrNonkdim=*/0,
+                             /*splitKFactor=*/1, /*numStages=*/1,
+                             /*wavesPerEU=*/0, /*gridGroupSize=*/0);
+}
+
+/// Bump the first param matching `isApplicable` to the front, preserving the
+/// relative order of the rest. Used by skip-benchmarking consumers that pick
+/// `front()` (e.g. MIGraphX with `MIGRAPHX_SKIP_BENCHMARKING`).
+template <typename ParamAttrType>
+std::vector<ParamAttrType>
+orderParams(ArrayRef<ParamAttrType> params,
+            llvm::function_ref<bool(ParamAttrType)> isApplicable) {
+  std::vector<ParamAttrType> ordered(params.begin(), params.end());
+  auto it = std::find_if(ordered.begin(), ordered.end(), isApplicable);
+  if (it != ordered.end() && it != ordered.begin())
+    std::rotate(ordered.begin(), it, std::next(it));
+  return ordered;
+}
+
 template <typename ParamAttrType>
 class BasePopulateParams {
-private:
-  struct ParamData {
-    ParamAttrType paramAttr;
-    size_t originalPos;
-    int64_t paddingAmount;
-
-    bool operator<(const ParamData &rhs) const {
-      if (this->paddingAmount < rhs.paddingAmount) {
-        return true;
-      }
-      if (this->paddingAmount == rhs.paddingAmount) {
-        return (this->originalPos < rhs.originalPos);
-      }
-      return false;
-    }
-  };
-
-  std::vector<ParamData> createParamData(ArrayRef<ParamAttrType> params,
-                                         const GemmSize &gemmSize) {
-    std::vector<ParamData> res;
-    for (size_t pos = 0; pos < params.size(); pos++) {
-      ParamAttrType paramAttr = params[pos];
-      ParamData paramData;
-      paramData.paramAttr = paramAttr;
-      paramData.originalPos = pos;
-      paramData.paddingAmount = calculatePaddingAmount(paramAttr, gemmSize);
-      assert(paramData.originalPos >= 0);
-      assert(paramData.paddingAmount >= 0);
-      res.push_back(paramData);
-    }
-    return res;
-  }
-
-  // Interface function to calculate padding amount of a given param set
-  virtual int64_t calculatePaddingAmount(ParamAttrType params,
-                                         const GemmSize &gemmSize) const = 0;
-
 public:
-  // This function will order the params used in a non-tuning flow to
-  // prioritize params that does not require padding to come first while
-  // otherwise maintaining the provided order.
-  std::vector<ParamAttrType> orderParams(ArrayRef<ParamAttrType> params,
-                                         const GemmSize &gemmSize) {
-    std::vector<ParamData> paramDataVec = createParamData(params, gemmSize);
-    std::sort(paramDataVec.begin(), paramDataVec.end());
-
-    std::vector<ParamAttrType> orderedParams;
-    orderedParams.resize(params.size());
-    std::transform(paramDataVec.begin(), paramDataVec.end(),
-                   orderedParams.begin(),
-                   [](ParamData paramData) -> ParamAttrType {
-                     return paramData.paramAttr;
-                   });
-    return orderedParams;
-  }
-
   // Succeed if `params` should be included in a "full" tuning space that
   // excludes those known to not yield good performance on the problem described
   // in `info`. This function uses hardcoded heuristics.
@@ -178,13 +209,17 @@ public:
                          const StringRef perfConfig);
 
   int64_t calculatePaddingAmount(GemmParamsAttr params,
-                                 const GemmSize &gemmSize) const override;
+                                 const GemmSize &gemmSize) const;
 
   // Return the set of heuristic tuning parameters for the given opType, data
-  // types, and architecture.
-  std::vector<GemmParamsAttr>
-  getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
-                      Type dataTypeB, StringRef arch) const;
+  // types, and architecture. Pass `quantBlockSize` / `aScaleType` /
+  // `bScaleType` for block-scaled (MXFP-style) GEMMs so the applicability
+  // check accounts for scale-tile LDS use and the `kPerBlock %
+  // quantBlockSize == 0` constraint.
+  std::vector<GemmParamsAttr> getTuningParameters(
+      OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
+      StringRef arch, std::optional<int64_t> quantBlockSize = std::nullopt,
+      Type aScaleType = nullptr, Type bScaleType = nullptr) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;
