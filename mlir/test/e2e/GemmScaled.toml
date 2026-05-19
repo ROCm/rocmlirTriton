@@ -58,3 +58,12 @@ values = ["false"]
 
 [[suite.test]]
 config = "-g 1 -m 512 -k 32 -n 512"
+
+# regression: 1x64x256x128 with a pinned perf_config (tile_k=32).
+[[suite.test]]
+config = "-g 1 -m 64 -k 256 -n 128 --perf_config=gemm:v1:64,64,64,1,1,4,32,1,2,0,0"
+
+# non-power-of-2 M and N (1x66x256x130) exercising the padding path, 
+# with tile_k=0 in the perf_config (forces the tuner to pick a tile_k).
+[[suite.test]]
+config = "-g 1 -m 66 -k 256 -n 130 --perf_config=gemm:v1:64,64,64,1,1,4,0,1,2,0,0"

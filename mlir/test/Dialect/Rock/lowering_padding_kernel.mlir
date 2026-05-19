@@ -1,7 +1,7 @@
 // This tests checks the following aspects of lowering component:
 // * The correct padding transformations are generated and added to the gemm
 
-// RUN: rocmlir-opt --rock-affix-params --rock-lower-reduce --rock-regularize-output --rock-regularize-inter-gemm-fusion --rock-conv-to-gemm --rock-fusion-splitk-regularization --rock-gemm-to-gridwise --mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt --rock-affix-params --rock-lower-reduce --rock-regularize-output --rock-regularize-inter-gemm-fusion --rock-conv-to-gemm --rock-fusion-splitk-regularization --rock-gemm-to-gridwise --rock-attn-to-gridwise --mlir-print-local-scope %s | FileCheck %s
 
 // CHECK-LABEL: func.func @rock_conv_kcyx_nchw_nkhw_padding_kernel
 // CHECK-SAME: %[[filter:.*]]: tensor<32x128x2x3x3xf32>

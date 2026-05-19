@@ -392,7 +392,6 @@ void postProcessPerfRes(String chip) {
 }
 */
 
-/*
 //Get the GPU name of architecture
 def get_gpu_architecture() {
     try {
@@ -408,7 +407,6 @@ def get_gpu_architecture() {
         return 'N/A'
     }
 }
-*/
 
 //makes sure multiple builds are not triggered for branch indexing
 def resetBuild() {
@@ -495,6 +493,7 @@ String getLabelFromChip(String chip) {
             return "mlir && gfx1201"
     }
 }
+*/
 
 int setLitWorkerCount() {
     int limit_lit_workers = 8
@@ -507,6 +506,7 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
+/*
 void build_fixedE2ETests(String codepath) {
     // Limit the number of lit workers for gfx908, gfx90a to (8, 30) on CI as a workaround for issue #1845 and #1841
     int limit_lit_workers = setLitWorkerCount()
@@ -889,7 +889,10 @@ pipeline {
 
                                                     stage('Run tests') {
                                                         timeout(time: 30, activity: true, unit: 'MINUTES') {
-                                                            sh 'bash tests.sh'
+                                                            dir('build') {
+                                                                int limit_lit_workers = setLitWorkerCount()
+                                                                sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
+                                                            }
                                                         }
                                                     }
 

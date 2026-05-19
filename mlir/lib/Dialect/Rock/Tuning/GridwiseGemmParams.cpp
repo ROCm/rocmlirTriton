@@ -199,7 +199,8 @@ FailureOr<GemmParamsAttr> PopulateParamsAccel::obtainTuningParameters(
 
   GemmParamsAttr params = GemmParamsAttr::get(perfConfigAttr);
   if (!params) {
-    LLVM_DEBUG(llvm::dbgs() << "Invalid perfConfig: " << perfConfigAttr << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "Invalid perfConfig: " << perfConfigAttr << "\n");
     return failure();
   }
 
@@ -226,8 +227,9 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
   auto perfConfigs =
       ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
 
-  LLVM_DEBUG(llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "
-                          << perfConfigs.size() << "\n");
+  LLVM_DEBUG(
+      llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "
+                   << perfConfigs.size() << "\n");
   std::vector<GemmParamsAttr> res;
   for (StringRef perfConfig : perfConfigs) {
     auto perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
@@ -236,9 +238,8 @@ PopulateParams::getTuningParameters(OpBuilder &b, KernelType opType,
     LLVM_DEBUG(llvm::dbgs()
                << "PopulateParams::getTuningParameters: perfConfigAttr: "
                << perfConfigAttr << "\n");
-    LLVM_DEBUG(llvm::dbgs()
-               << "PopulateParams::getTuningParameters: params: " << params
-               << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "PopulateParams::getTuningParameters: params: "
+                            << params << "\n");
     if (!params)
       continue;
 
