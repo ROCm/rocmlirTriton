@@ -4914,10 +4914,18 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
 // Per-dtype "expected rounding error per accumulation step" constants for
 // the reduction-aware atol bound:
 //   atol_eff = atol + K_eff * sum_error_tolerance<T>
-// Values mirror rocBLAS's table:
+//
+// fp16/bf16/fp32/fp64 values mirror rocBLAS's table:
 //   https://github.com/ROCm/rocBLAS/blob/develop/clients/include/near.hpp
-// (search for sum_error_tolerance). They are slightly looser than ulp(T) and
-// were calibrated empirically by rocBLAS for matrix-engine GEMM error.
+// (search for sum_error_tolerance). They are empirically calibrated against
+// rocBLAS's matrix-engine GEMM error and do not follow a tidy `c * eps(T)`
+// formula -- bf16's value (1/900) is actually *tighter* than eps(bf16).
+//
+// fp8/fp4 are not in rocBLAS's table. We use eps(T) directly as the
+// per-accumulation-step bound:
+//   - fp8 e4m3: eps = 2^-3 = 0.125
+//   - fp8 e5m2: eps = 2^-2 = 0.25
+//   - fp4 e2m1: eps = 2^-1 = 0.5
 static float sumErrorTolerance(Type t) {
   if (isa<Float16Type>(t))
     return 1.0f / 100.0f;
@@ -4927,14 +4935,12 @@ static float sumErrorTolerance(Type t) {
     return 1.0f / 10000.0f;
   if (isa<Float64Type>(t))
     return 1.0f / 1000000.0f;
-  // f8/f4 are not in rocBLAS's table. Pick a value larger than bf16 (~1.1e-3)
-  // since fp8 epsilon is ~6e-2 and fp4 is ~6e-1; treat them as 'one step of
-  // bf16-ish error'. Calibrate during the PR2 test migration.
-  if (isa<Float8E5M2Type, Float8E4M3FNType, Float8E5M2FNUZType,
-          Float8E4M3FNUZType>(t))
-    return 1.0f / 100.0f;
+  if (isa<Float8E4M3FNType, Float8E4M3FNUZType>(t))
+    return 0.125f;
+  if (isa<Float8E5M2Type, Float8E5M2FNUZType>(t))
+    return 0.25f;
   if (isa<Float4E2M1FNType>(t))
-    return 1.0f / 10.0f;
+    return 0.5f;
   return 1.0f / 100.0f; // conservative
 }
 
@@ -5344,10 +5350,24 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
 
     if (useAllclose) {
       // Per-dtype (atol, rtol) baselines for K=1 (element-wise) kernels.
+      //
       // fp16/bf16/fp32/fp64 mirror PyTorch's _DTYPE_PRECISIONS:
       //   https://github.com/pytorch/pytorch/blob/main/torch/testing/_comparison.py
-      // fp8/fp4 are not in PyTorch's table; values chosen to roughly track
-      // the dtype's epsilon. Calibrate during PR2.
+      //
+      // fp8/fp4 are not in PyTorch's table, so we use the per-dtype eps from
+      // the IEEE/OCP/AMD format definitions as rtol, and JAX's
+      // jax._src.public_test_util._default_tolerance value as atol:
+      //   - fp8 e4m3 eps = 2^-3 = 0.125; matches hipBLASLt's "F8 tolerance =
+      //     0.125" (ROCm/hipBLASLt PR #674) and NVIDIA TransformerEngine's
+      //     PR #501 table.
+      //   - fp8 e5m2 eps = 2^-2 = 0.25;  matches hipBLASLt's "B8 tolerance =
+      //     0.25" (same PR #674).
+      //   - fp4 e2m1 eps = 2^-1 = 0.5;   single mantissa bit, no upstream
+      //     citation, but consistent with the per-dtype-eps rule.
+      //   - atol = 1e-1 for fp8, 1e0 for fp4: from JAX's default_tolerance
+      //     table at jax-ml/jax:jax/_src/public_test_util.py. JAX uses one
+      //     scalar per dtype, applied as both atol and rtol; we use it as
+      //     atol only since rtol is already covered by the eps row.
       auto allcloseBaseline = [&](Type t) -> std::pair<float, float> {
         if (isa<Float16Type>(t))
           return {1e-5f, 1e-3f};
@@ -5357,11 +5377,15 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
           return {1e-5f, 1.3e-6f};
         if (isa<Float64Type>(t))
           return {1e-7f, 1e-7f};
-        if (isa<Float8E5M2Type, Float8E4M3FNType, Float8E5M2FNUZType,
-                Float8E4M3FNUZType>(t))
-          return {1e-2f, 1.6e-2f};
+        // e4m3 variants: 3-bit mantissa, eps = 2^-3 = 0.125.
+        if (isa<Float8E4M3FNType, Float8E4M3FNUZType>(t))
+          return {1e-1f, 0.125f};
+        // e5m2 variants: 2-bit mantissa, eps = 2^-2 = 0.25.
+        if (isa<Float8E5M2Type, Float8E5M2FNUZType>(t))
+          return {1e-1f, 0.25f};
+        // fp4 e2m1: 1-bit mantissa, eps = 2^-1 = 0.5.
         if (isa<Float4E2M1FNType>(t))
-          return {1e-2f, 1.25e-1f};
+          return {1e0f, 0.5f};
         return {1e-2f, 1e-2f};
       };
       // If a matmul-like op in the module uses a narrower float dtype than

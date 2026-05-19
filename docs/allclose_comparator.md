@@ -124,20 +124,7 @@ different questions:
 #### 1.4.1 Path A: `near_check_general` with K-scaled tolerance
 
 The tolerance is computed from the reduction dimension `K`. From
-[`testing_gemm.hpp` (rocm-6.2.2)](https://github.com/ROCm/rocBLAS/blob/rocm-6.2.2/clients/include/blas3/testing_gemm.hpp):
-
-```cpp
-if(arg.unit_check)
-{
-    if(arch_major == 11 && std::is_same_v<TiA, rocblas_half>) {
-        const double tol = K * sum_error_tolerance_for_gfx11<T, T, T>;
-        near_check_general<T>(M, N, ldc, hC_gold, hC_1, tol);
-    } else {
-        const double tol = K * sum_error_tolerance<T>;
-        near_check_general<T>(M, N, ldc, hC_gold, hC_1, tol);
-    }
-}
-```
+[`testing_gemm.hpp` (rocm-6.2.2)](https://github.com/ROCm/rocBLAS/blob/rocm-6.2.2/clients/include/blas3/testing_gemm.hpp)
 
 `tol = K * sum_error_tolerance<T>` -- the tolerance is literally K times a
 per-type constant. From [`near.hpp`](https://github.com/ROCm/rocBLAS/blob/develop/clients/include/near.hpp):
@@ -221,8 +208,9 @@ you have to fall back to the norm-based check. The bf8 `atol` of `0.25` is
 
 rocmlirTriton blends the PyTorch and rocBLAS patterns: same asymmetric
 allclose formula as PyTorch, per-dtype baselines from PyTorch's
-`_DTYPE_PRECISIONS`, plus a K-scaled atol term lifted from rocBLAS's
-`near_check`.
+`_DTYPE_PRECISIONS` *for fp16 / bf16 / fp32 / fp64* (PyTorch does not
+define tolerances for fp8 or fp4 -- see Section 2.2 for more details),
+plus a K-scaled atol term.
 
 ### 2.1 Formula
 
@@ -240,22 +228,50 @@ passes if *every* element satisfies this predicate; otherwise it fails.
 
 ### 2.2 Per-dtype baseline tolerances
 
-`allcloseBaseline(Type)` in `rocmlir-gen.cpp` mirrors PyTorch's
-`_DTYPE_PRECISIONS`, extended with placeholder values for the f8 / f4
-dtypes PyTorch does not cover:
+`allcloseBaseline(Type)` in `rocmlir-gen.cpp` follows PyTorch's
+`_DTYPE_PRECISIONS` for fp16/bf16/fp32/fp64 and combines two
+independent upstream sources for fp8/fp4:
 
-| dtype | atol | rtol |
-|---|---|---|
-| fp16 | `1e-5` | `1e-3` |
-| bf16 | `1e-5` | `1.6e-2` |
-| fp32 | `1e-5` | `1.3e-6` |
-| fp64 | `1e-7` | `1e-7` |
-| fp8 (all variants) | `1e-2` | `1.6e-2` |
-| fp4 | `1e-2` | `1.25e-1` |
+| dtype | atol | rtol | source |
+|---|---|---|---|
+| fp16 | `1e-5` | `1e-3` | PyTorch `_DTYPE_PRECISIONS` |
+| bf16 | `1e-5` | `1.6e-2` | PyTorch `_DTYPE_PRECISIONS` |
+| fp32 | `1e-5` | `1.3e-6` | PyTorch `_DTYPE_PRECISIONS` |
+| fp64 | `1e-7` | `1e-7` | PyTorch `_DTYPE_PRECISIONS` |
+| fp8 e4m3* | `1e-1` | `0.125` | atol: JAX `default_tolerance`; rtol: `eps(e4m3) = 2^-3` |
+| fp8 e5m2* | `1e-1` | `0.25`  | atol: JAX `default_tolerance`; rtol: `eps(e5m2) = 2^-2` |
+| fp4 e2m1 | `1e0`  | `0.5`   | atol: JAX `default_tolerance`; rtol: `eps(e2m1) = 2^-1` |
 
 These are the *element-wise* defaults -- what you would use for an
 add/mul/relu. They are deliberately tight for reduction-heavy kernels;
 that gap is closed by the K-scaling below.
+
+#### About the fp8 / fp4 values
+PyTorch does not define tolerances for any 1-byte float dtype.
+Two other projects do publish numbers, and they converge on the same values:
+
+- **`rtol = eps(T)`** is the per-dtype machine epsilon read directly
+  from the format definition: `2^-mantissa_bits`. fp8 e4m3 has 3
+  mantissa bits, e5m2 has 2, fp4 e2m1 has 1.
+  - [hipBLASLt PR #674](https://github.com/ROCm/hipBLASLt/pull/674)
+    states "the tolerance of F8 (0.125) or B8 (0.25) cannot be
+    ignored" -- those are exactly `eps(e4m3)` and `eps(e5m2)`.
+  - [NVIDIA TransformerEngine PR #501](https://github.com/NVIDIA/TransformerEngine/pull/501)
+    publishes a table computed by `eps^(2/3)`-relaxation that
+    independently produces `0.125`-class numbers for e4m3 and
+    `0.25`-class for e5m2.
+- **`atol`** comes from JAX's
+  [`jax._src.public_test_util._default_tolerance`](https://github.com/jax-ml/jax/blob/main/jax/_src/public_test_util.py):
+  fp8 (all variants) -> `1e-1`, fp4 e2m1fn -> `1e0`. JAX uses a single
+  scalar per dtype and applies it as both `atol` and `rtol`; we use
+  it only as `atol` since the `eps`-derived `rtol` above is tighter
+  and more dtype-specific.
+
+We split the fp8 row by mantissa-bit count (e4m3 / e5m2 are separate)
+because the `2x` precision gap is exactly what the `eps`-derivation
+captures and is large enough to matter in fp8 reduction tests. The
+FNUZ variants share `(atol, rtol)` with the corresponding non-FNUZ
+variant since they have the same mantissa width.
 
 ### 2.3 K-scaled atol (rocBLAS-style)
 
@@ -271,17 +287,18 @@ This mirrors rocBLAS's `tol = K * sum_error_tolerance<T>` in
 back so element-wise ops (K_eff=1) match PyTorch's defaults.
 
 `sumErrorTolerance(Type)` in `rocmlir-gen.cpp` uses rocBLAS's constants for
-fp16/bf16/fp32/fp64, plus extrapolated values for the f8/f4 dtypes
-rocBLAS does not test:
+fp16/bf16/fp32/fp64, plus `eps(T)` for the fp8/fp4 dtypes rocBLAS
+does not test:
 
-| dtype | sum_error_tolerance |
-|---|---|
-| fp16 | `1/100` |
-| bf16 | `1/900` |
-| fp32 | `1/10000` |
-| fp64 | `1/1000000` |
-| fp8 (all variants) | `1/100` |
-| fp4 | `1/10` |
+| dtype | sum_error_tolerance | source |
+|---|---|---|
+| fp16 | `1/100` | rocBLAS `near.hpp` |
+| bf16 | `1/900` | rocBLAS `near.hpp` |
+| fp32 | `1/10000` | rocBLAS `near.hpp` |
+| fp64 | `1/1000000` | rocBLAS `near.hpp` |
+| fp8 e4m3* | `0.125` | `eps(e4m3) = 2^-3` |
+| fp8 e5m2* | `0.25`  | `eps(e5m2) = 2^-2` |
+| fp4 e2m1 | `0.5`   | `eps(e2m1) = 2^-1` |
 
 Worked example -- fp32 GEMM with K=4096:
 
