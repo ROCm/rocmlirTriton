@@ -227,6 +227,12 @@ def _build_rocmlir_gen_opts(config) -> List[str]:
         opts.append(f"--current_seq_len={','.join(map(str, config.current_seqlen))}")
     opts.append('-pv')
     opts.extend(_verifier_thresholds(config))
+    # Per-config precision-aware rocmlir-gen flags (e.g. --pv-f64,
+    # -relDiff_threshold) attached by callers such as attentionSweeps.to_attn_test
+    # to combat CPU reference drift at long seq_len for f32/bf16 attention.
+    extra_flags = getattr(config, "extra_rocmlir_gen_flags", None)
+    if extra_flags:
+        opts.extend(extra_flags)
     return opts
 
 

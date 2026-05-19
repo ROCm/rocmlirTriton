@@ -59,6 +59,7 @@ from perfRunner import (
     GemmGemmConfiguration,
     Paths,
     PerfConfiguration,
+    auto_precision_flags_att,
 )
 
 # =============================================================================
@@ -1129,6 +1130,10 @@ def format_error(context: str,
 # Core Tuning Logic
 # =============================================================================
 
+# `auto_precision_flags_att` lives in perfRunner so the parameter sweeps
+# (attentionSweeps.py) can share the same per-config heuristic. See the
+# helper's docstring for the rationale behind --pv-f64 / -relDiff_threshold.
+
 
 def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, options: Options,
                       gpu_id: int) -> float:
@@ -1142,8 +1147,12 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
 
     command_line_options = config.generate_mlir_driver_commandline(options.rocmlir_gen_flags,
                                                                    kernel_repeats=VERIFY_REPEATS)
+    precision_flags = auto_precision_flags_att(config)
     rocmlir_gen_command = [
-        paths.mlir_paths.rocmlir_gen_path, '-print-verify-results=summary', '-pv'
+        paths.mlir_paths.rocmlir_gen_path,
+        '-print-verify-results=summary',
+        '-pv',
+        *precision_flags,
     ] + command_line_options.split()
 
     host_pipeline_command = [paths.mlir_paths.rocmlir_driver_path, '--host-pipeline=highlevel']
