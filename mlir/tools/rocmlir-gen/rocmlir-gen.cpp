@@ -806,10 +806,11 @@ static llvm::cl::opt<float>
                      llvm::cl::value_desc("error"), llvm::cl::init(0.000001f));
 
 // Comparator selection.
-// `legacy` is the three-gate RMS/absDiff/relDiff verifier emitted by mcpuVerifyFloat.
-// `allclose` is the |a - b| <= atol + rtol*|b| verifier emitted by mcpuVerifyFloatAllclose, with per-dtype K-scaled defaults. Default stays
-// `legacy` until the ~100 existing tests get migrated in PR2; setting -atol
-// or -rtol on the command line implies `allclose`.
+// `legacy` is the three-gate RMS/absDiff/relDiff verifier emitted by
+// mcpuVerifyFloat. `allclose` is the |a - b| <= atol + rtol*|b| verifier
+// emitted by mcpuVerifyFloatAllclose, with per-dtype K-scaled defaults. Default
+// stays `legacy` until the ~100 existing tests get migrated in PR2; setting
+// -atol or -rtol on the command line implies `allclose`.
 enum class ComparatorMode { Legacy, Allclose };
 static llvm::cl::opt<ComparatorMode> comparatorMode(
     "comparator",
@@ -2082,9 +2083,9 @@ static void convBodyBuilderF32(OpBuilder &b, Location loc,
 static void convBodyBuilderI32(OpBuilder &b, Location loc,
                                ValueRange blockArgs) {
   assert(blockArgs.size() == 3 && "convBodyBuilder expects 3 arguments");
-  Value inputVal = blockArgs[0];   // i8
-  Value filterVal = blockArgs[1];  // i8
-  Value outputVal = blockArgs[2];  // i32
+  Value inputVal = blockArgs[0];  // i8
+  Value filterVal = blockArgs[1]; // i8
+  Value outputVal = blockArgs[2]; // i32
   Type i32Type = b.getIntegerType(32);
   Value inputExt = arith::ExtSIOp::create(b, loc, i32Type, inputVal);
   Value filterExt = arith::ExtSIOp::create(b, loc, i32Type, filterVal);
@@ -4899,7 +4900,7 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
 //   atol_eff = atol + K_eff * sum_error_tolerance<T>
 //
 // fp16 / bf16 use rocBLAS's general `sum_error_tolerance<T>` from
-// `near.hpp`. 
+// `near.hpp`.
 //
 // fp32 / fp64 are *tighter* than rocBLAS uses. This is because
 // rocBLAS uses the loose
