@@ -201,6 +201,23 @@ static llvm::cl::opt<TimerKind> timer(
                    "Always use per-iteration GPU event timers")),
     llvm::cl::init(TimerKind::Auto));
 
+// Per-iteration CPU timing (AIROCMLIR-858 #2). When the CPU timer is in use
+// (small kernels under ``--timer=auto`` or any kernel under ``--timer=cpu``)
+// the historical behaviour is to wrap *all* iterations in a single
+// ``steady_clock`` pair and report the per-iter average. That hides the
+// per-iter distribution that the thermal-ramp study needs. With this flag
+// each iteration gets its own CPU timer (plus an inline ``hipStreamSynchronize``
+// so the timer captures one iteration's worth of GPU work).
+static llvm::cl::opt<bool> perIterCpuTiming(
+    "per-iter-cpu-timing",
+    llvm::cl::desc(
+        "Time each iteration individually when the CPU timer is in use, "
+        "instead of wrapping the whole batch in one timer pair. Adds a "
+        "per-iteration ``hipStreamSynchronize`` so the resulting samples "
+        "include the full per-iter cost (kernel + flushes). Defaults to "
+        "false, matching the historical small-kernel CPU batch timer."),
+    llvm::cl::init(false));
+
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef inputFilename,
                                             MLIRContext *context) {
@@ -325,6 +342,7 @@ struct BenchmarkParams {
   bool flushICache;
   rocmlir::tuningdriver::L2FlushLevel flushL2Level;
   TimerKind timer;
+  bool perIterCpuTiming;
 };
 
 // Bundles per-iteration cache-flush controls so the measurement loops don't
@@ -396,9 +414,54 @@ static LogicalResult measureSmallKernel(
     ArrayRef<uint32_t> gridSizes, ArrayRef<uint32_t> numCTAsList,
     std::vector<void *> &argPointers, std::vector<double> &measurements,
     double &smallKernelCpuMs, bool benchmarkMode,
-    const FlushPolicy &flushPolicy) {
-  // Special case for small kernels, where we measure the time for all kernels
-  // at once, using CPU timers.
+    const FlushPolicy &flushPolicy, bool perIterCpuTiming) {
+  // Two CPU-timed paths:
+  //   * Batch (default, historical): one ``steady_clock`` pair wraps all
+  //     iterations. ``measurements`` receives a single per-iter average.
+  //   * Per-iter (AIROCMLIR-858 #2): one ``steady_clock`` pair per
+  //     iteration, with an inline ``hipStreamSynchronize`` to capture this
+  //     iteration's GPU work. ``measurements`` receives ``iterations``
+  //     samples in temporal order. The added sync makes per-iter samples
+  //     noisier for sub-100us kernels, which is why this is opt-in.
+  if (perIterCpuTiming) {
+    measurements.reserve(measurements.size() + iterations);
+    auto iterationStart = std::chrono::steady_clock::now();
+    for (unsigned iter = 0; iter < iterations; ++iter) {
+      auto iterTimerStart = std::chrono::steady_clock::now();
+      // Flushes live inside the timed window so each per-iter sample
+      // captures the full cost of starting a fresh iteration (mirrors
+      // the batch path's accounting).
+      if (!benchmarkMode) {
+        if (flushPolicy.flushICache && failed(flushInstructionCache(stream))) {
+          return failure();
+        }
+        if (failed(flushL2Cache(stream, flushPolicy.l2Level,
+                                flushPolicy.weightBuffers,
+                                flushPolicy.weightBufferSizes))) {
+          return failure();
+        }
+      }
+      for (auto [func, blockSize, gridSize, numCTAs] :
+           llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
+        if (failed(rock::launchKernel(func, gridSize, blockSize,
+                                      /*shared_memory=*/0, numCTAs, stream,
+                                      argPointers.data())))
+          return failure();
+      }
+      HIPCHECK(hipStreamSynchronize(stream));
+      auto iterTimerEnd = std::chrono::steady_clock::now();
+      measurements.push_back(
+          std::chrono::duration<double, std::milli>(iterTimerEnd -
+                                                    iterTimerStart)
+              .count());
+    }
+    smallKernelCpuMs = std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - iterationStart)
+                           .count();
+    return success();
+  }
+
+  // Batch CPU timer (historical small-kernel path).
   auto iterationStart = std::chrono::steady_clock::now();
   for (unsigned iter = 0; iter < iterations; ++iter) {
     // Do not flush caches in benchmark mode, as we do not want to
@@ -669,7 +732,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     if (failed(measureSmallKernel(iterations, stream, functions, blockSizes,
                                   gridSizes, numCTAsList, argPointers,
                                   measurements, smallKernelCpuMs, benchmarkMode,
-                                  flushPolicy)))
+                                  flushPolicy, params.perIterCpuTiming)))
       return failure();
   } else {
     if (failed(measureLargeKernel(iterations, stream, functions, blockSizes,
@@ -677,6 +740,12 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
                                   measurements, flushPolicy)))
       return failure();
   }
+
+  // True when this run produced a single per-iter-average sample from one
+  // batch CPU timer (the historical small-kernel path). Used by the
+  // ``--show-stats`` and JSON blocks below since ``isSmallKernel`` is no
+  // longer a sufficient proxy after ``--timer`` / ``--per-iter-cpu-timing``.
+  const bool isBatchedCpuTimer = useCpuTimer && !params.perIterCpuTiming;
 
   if (params.showAllMeasurements) {
     // Unified JSON shape (AIROCMLIR-858):
@@ -691,7 +760,10 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     //                                    // equal to the per-iter average)
     //   }
     // Emitted BEFORE the sort below so the array preserves temporal order.
-    const unsigned repetitionsPerBatch = useCpuTimer ? iterations : 1u;
+    // Only the batched CPU timer collapses multiple iterations into one
+    // sample (``repetitions_per_batch == iterations``); per-iter CPU and
+    // per-iter GPU paths each produce one sample per iteration.
+    const unsigned repetitionsPerBatch = isBatchedCpuTimer ? iterations : 1u;
     llvm::outs() << "{\"timing_method\":\""
                  << (useCpuTimer ? "cpu" : "gpu")
                  << "\",\"repetitions_per_batch\":" << repetitionsPerBatch
@@ -716,9 +788,12 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   std::sort(measurements.begin(), measurements.end());
 
   if (params.showStats) {
-    // We cannot show the rest of the stats because the small kernel case uses
-    // one timer only, so we cannot actually compute the min, max, etc.
-    if (isSmallKernel) {
+    // We cannot show the rest of the stats when the batched CPU timer was
+    // used because there is only one measurement (the per-iter average), so
+    // min/max/stddev are undefined. ``isBatchedCpuTimer`` (rather than the
+    // old ``isSmallKernel``) is the correct condition after
+    // ``--timer``/``--per-iter-cpu-timing`` are wired in.
+    if (isBatchedCpuTimer) {
       llvm::outs() << "{\"total_cpu_time\":" << smallKernelCpuMs
                    << ",\"iterations\":" << iterations << "}\t";
     }
@@ -871,7 +946,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            benchmarkConfig,
                                            flushICache,
                                            flushL2Level,
-                                           timer};
+                                           timer,
+                                           perIterCpuTiming};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);

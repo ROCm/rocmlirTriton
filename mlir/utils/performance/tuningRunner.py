@@ -190,6 +190,7 @@ class Options:
     flush_icache: bool
     flush_l2: str
     timer: str
+    per_iter_cpu_timing: bool
 
 
 @dataclass
@@ -1334,6 +1335,7 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
         entry["FlushICache"] = int(options.flush_icache)
         entry["FlushL2Level"] = options.flush_l2
         entry["Timer"] = options.timer
+        entry["PerIterCpuTiming"] = int(options.per_iter_cpu_timing)
         entries.append(entry)
 
         if options.verify_all_perfconfigs and not np.isnan(nano_seconds):
@@ -1365,6 +1367,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         f"--flush-icache={options.flush_icache}",
         f"--flush-l2={options.flush_l2}",
         f"--timer={options.timer}",
+        f"--per-iter-cpu-timing={options.per_iter_cpu_timing}",
     ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
@@ -1927,6 +1930,18 @@ def parse_arguments(gpu_topology: GpuTopology,
         "event timers otherwise. 'cpu' / 'gpu' force the corresponding path "
         "across all kernels.")
 
+    parser.add_argument(
+        "--per-iter-cpu-timing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=
+        "When the CPU timer is in use (small kernels under --timer=auto or "
+        "any kernel under --timer=cpu), time each iteration individually "
+        "instead of wrapping the whole batch in one timer pair. Adds a "
+        "per-iter hipStreamSynchronize so the resulting samples include "
+        "kernel + flush cost; emits one measurement per iteration in the "
+        "--show-all-measurements JSON. Default %(default)s.")
+
     logging_group = parser.add_mutually_exclusive_group()
 
     logging_group.add_argument("-q",
@@ -2114,7 +2129,8 @@ def main(args=None):
                       warmup_iterations=parsed_args.warmup_iterations,
                       flush_icache=parsed_args.flush_icache,
                       flush_l2=parsed_args.flush_l2,
-                      timer=parsed_args.timer)
+                      timer=parsed_args.timer,
+                      per_iter_cpu_timing=parsed_args.per_iter_cpu_timing)
 
     ctx = TuningContext(configs=configs,
                         conf_class=get_config_class(op_type),
