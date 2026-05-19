@@ -253,6 +253,97 @@ struct RockBlockwiseGemmOpRewritePattern
   }
 };
 
+/// Emit a float atomic_max as two integer atomic_rmw ops on disjoint masks,
+/// mirroring upstream Triton's frontend trick in
+/// python/triton/language/semantic.py::atomic_max.
+///
+/// The float operand is bitcast to a signless integer of matching width and
+/// the operation is split by the sign bit:
+///   * positive lanes (signbit == 0)  -> RMWOp::MAX  (signed int)
+///   * negative lanes (signbit == 1)  -> RMWOp::UMIN (unsigned int)
+///
+/// For non-negative IEEE floats the int reinterpretation preserves order, so
+/// a signed integer MAX is equivalent to fmax. For negative IEEE floats, a
+/// larger magnitude corresponds to a larger unsigned bit pattern, so unsigned
+/// MIN picks the one closest to zero, i.e. the maximum among negatives.
+static LogicalResult emitFloatAtomicMax(PatternRewriter &rewriter,
+                                        Operation *op, Value value,
+                                        Value ptrTensor, Value mask,
+                                        triton::MemSemantic sem,
+                                        triton::MemSyncScope scope) {
+  Location loc = op->getLoc();
+  auto valueType = cast<RankedTensorType>(value.getType());
+  auto ptrTensorType = cast<RankedTensorType>(ptrTensor.getType());
+  auto maskTensorType = cast<RankedTensorType>(mask.getType());
+  auto fpType = cast<FloatType>(valueType.getElementType());
+
+  unsigned bw = fpType.getWidth();
+  if (bw != 32 && bw != 64) {
+    return op->emitError(
+               "atomic_max on floating point requires f32 or f64; got ")
+           << fpType;
+  }
+
+  Type intElemType = rewriter.getIntegerType(bw);
+  auto intTensorType = RankedTensorType::get(
+      valueType.getShape(), intElemType, valueType.getEncoding());
+  auto intPtrType = triton::PointerType::get(intElemType, 1);
+  auto intPtrTensorType = RankedTensorType::get(
+      ptrTensorType.getShape(), intPtrType, ptrTensorType.getEncoding());
+
+  // tt.bitcast value and pointer to signless integer. Upstream emits two
+  // bitcasts (one to the signed Triton-language int type, one to the
+  // unsigned), but both lower to the same signless MLIR op so we only emit
+  // one of each here; CSE would otherwise dedupe them. The signed-vs-
+  // unsigned distinction lives in the RMWOp attribute on the atomic, not
+  // in the operand type.
+  Value intVal =
+      triton::BitcastOp::create(rewriter, loc, intTensorType, value);
+  Value intPtr =
+      triton::BitcastOp::create(rewriter, loc, intPtrTensorType, ptrTensor);
+
+  // _signbit(val) mirrors semantic.py:1285-1290 exactly:
+  //   ix      = bitcast(val, uint{bw})    # == intVal above
+  //   shifted = lshr(ix, bw - 1)          # arith.shrui  -- not ashr
+  //   neg     = cast(shifted, i1)
+  // The final cast to i1 takes the int->bool branch of cast() at
+  // semantic.py:872-875, which lowers to not_equal(shifted, 0), i.e.
+  // arith.cmpi ne -- NOT an arith.trunci. Using shrui (logical, not
+  // arithmetic) matters: ashr would smear the sign bit and produce
+  // non-{0,1} bytes that the cmpi-ne would still flatten correctly, but
+  // the IR would no longer match upstream.
+  Value shiftAmt = arith::ConstantOp::create(
+      rewriter, loc, intTensorType,
+      DenseElementsAttr::get(intTensorType,
+                             rewriter.getIntegerAttr(intElemType, bw - 1)));
+  Value shifted = arith::ShRUIOp::create(rewriter, loc, intVal, shiftAmt);
+  Value zeroInt = arith::ConstantOp::create(
+      rewriter, loc, intTensorType, rewriter.getZeroAttr(intTensorType));
+  Value neg = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ne,
+                                    shifted, zeroInt);
+
+  // pos = not_(neg) -- semantic.py invert() xors against an all-ones value
+  // of the operand type; for i1 that's a true splat (semantic.py:454-457,
+  // 487-492).
+  Value trueSplat = arith::ConstantOp::create(
+      rewriter, loc, maskTensorType,
+      DenseElementsAttr::get(maskTensorType, rewriter.getBoolAttr(true)));
+  Value pos = arith::XOrIOp::create(rewriter, loc, neg, trueSplat);
+
+  // Disjoint per-lane masks: every lane participates in exactly one of the
+  // two atomics, so the trick stays per-lane atomic.
+  Value posMask = arith::AndIOp::create(rewriter, loc, mask, pos);
+  Value negMask = arith::AndIOp::create(rewriter, loc, mask, neg);
+
+  triton::AtomicRMWOp::create(rewriter, loc, intTensorType,
+                              triton::RMWOp::MAX, intPtr, intVal, posMask,
+                              sem, scope);
+  triton::AtomicRMWOp::create(rewriter, loc, intTensorType,
+                              triton::RMWOp::UMIN, intPtr, intVal, negMask,
+                              sem, scope);
+  return success();
+}
+
 struct RockStorePtrOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseStorePtrOp> {
   using OpRewritePattern<rock::BlockwiseStorePtrOp>::OpRewritePattern;
@@ -311,20 +402,22 @@ struct RockStorePtrOpRewritePattern
           rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
           triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else if (storeMethod == rock::StoreMethod::AtomicMax) {
-      // Use UMAX for unsigned int, MAX for signed int and float.
-      // Triton's RMWOp enum lacks a dedicated FMAX, so we reuse MAX.
-      // Downstream will map MAX to the correct LLVM intrinsic for
-      // float operands.
-      triton::RMWOp rmwOp;
-      if (elementType.isUnsignedInteger()) {
-        rmwOp = triton::RMWOp::UMAX;
+      if (isa<FloatType>(elementType)) {
+        if (failed(emitFloatAtomicMax(rewriter, op, valueToStore,
+                                      ptrTensorOfPtrs, maskTensor,
+                                      triton::MemSemantic::RELAXED,
+                                      triton::MemSyncScope::GPU)))
+          return failure();
       } else {
-        // Signed integer or floating point - use MAX
-        rmwOp = triton::RMWOp::MAX;
+        // Integer path: a single atomic suffices.
+        triton::RMWOp rmwOp = elementType.isUnsignedInteger()
+                                  ? triton::RMWOp::UMAX
+                                  : triton::RMWOp::MAX;
+        triton::AtomicRMWOp::create(
+            rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore,
+            maskTensor, triton::MemSemantic::RELAXED,
+            triton::MemSyncScope::GPU);
       }
-      triton::AtomicRMWOp::create(
-          rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
-          triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else {
       // Default: StoreMethod::Set - regular store
       // Signature: (ptr, value, mask, cache, evict)
