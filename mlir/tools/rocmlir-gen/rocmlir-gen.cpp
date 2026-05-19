@@ -725,6 +725,20 @@ static llvm::cl::opt<bool>
                              "validation"),
               llvm::cl::init(false));
 
+static llvm::cl::opt<bool> pvF64(
+    "pv-f64",
+    llvm::cl::desc("Run the host CPU attention reference internally in f64 "
+                   "for higher precision validation of non-quantized "
+                   "attention, especially at long seq_len_k. No effect on "
+                   "the i8 attention. This also enables pv-strict together"),
+    llvm::cl::init(false), llvm::cl::Optional,
+    llvm::cl::cb<void, bool>([](bool v) {
+      if (v) {
+        genValidation = "mlir-strict";
+        genHostHarness = true;
+      }
+    }));
+
 // Input data spec
 static llvm::cl::opt<std::string> randomSeed(
     "rand",
@@ -4448,6 +4462,22 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   Location loc = module->getLoc();
 
   bool isQuantized = params.types[0] == IntegerType::get(ctx, 8);
+  // Optionally run the host reference's interior in f64 to get more
+  // accurate validation answer when running attention with a large seq len.
+  const bool promoteHost = pvF64.getValue() && !isQuantized;
+  Type f64Type = Float64Type::get(ctx);
+  auto upcastF = [&](Value v) -> Value {
+    if (!promoteHost)
+      return v;
+    Type elem = cast<ShapedType>(v.getType()).getElementType();
+    if (!isa<FloatType>(elem) || elem == f64Type)
+      return v;
+    return rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc, f64Type, v);
+  };
+  auto wideF = [&](Type t) -> Type {
+    return (promoteHost && isa<FloatType>(t)) ? f64Type : t;
+  };
+
   SmallVector<Type, 5> argTypes;
   getAttentionTypes(argTypes, params.types);
   // Convert tensor types to memref types for CPU verifier
@@ -4498,17 +4528,17 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     return reshapedTensor;
   };
 
-  auto queriesTensor = getTensorForBlockArg(0);
+  auto queriesTensor = upcastF(getTensorForBlockArg(0));
   if (transposeQ) {
     queriesTensor =
         rock::tosa::getTransposeOp(builder, loc, queriesTensor, {0, 2, 1});
   }
-  auto keysTensor = getTensorForBlockArg(1);
+  auto keysTensor = upcastF(getTensorForBlockArg(1));
   if (transposeK) {
     keysTensor =
         rock::tosa::getTransposeOp(builder, loc, keysTensor, {0, 2, 1});
   }
-  auto valuesTensor = getTensorForBlockArg(2);
+  auto valuesTensor = upcastF(getTensorForBlockArg(2));
   if (transposeV) {
     valuesTensor =
         rock::tosa::getTransposeOp(builder, loc, valuesTensor, {0, 2, 1});
@@ -4517,7 +4547,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   keysTensor = broadcastGQATosa(builder, loc, keysTensor);
   valuesTensor = broadcastGQATosa(builder, loc, valuesTensor);
 
-  Type firstGemmOutElemType = params.types[0];
+  Type firstGemmOutElemType = wideF(params.types[0]);
   if (isQuantized) {
     firstGemmOutElemType = IntegerType::get(ctx, 32);
   } else if (params.strictMode) {
@@ -4538,8 +4568,10 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   auto keysZp =
       tosa::createZeroPointTensor(builder, loc, keysTensor.getType(), 0)
           .value();
-  // accumulate in 32 bit
-  Type firstAccType = rock::getAccType(firstGemmOutElemType, params.types[1]);
+  // accumulate in 32 bit (or f64 when promoting the host reference)
+  Type firstAccType =
+      promoteHost ? f64Type
+                  : rock::getAccType(firstGemmOutElemType, params.types[1]);
   auto qkTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, firstGemmOutElemType, queriesTensor, keysTensor, queriesZp,
       keysZp);
@@ -4595,7 +4627,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   if (hasAttnScale) {
-    auto scaleTensor = getTensorForBlockArg(optionalArgsCounter++);
+    auto scaleTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
     if (!currentSeqLen.empty())
       scaleTensor =
           maskKVCacheTosa(builder, loc, scaleTensor, currentSeqLenTensor, 1.0f);
@@ -4613,7 +4645,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   if (hasAttnBias) {
-    auto biasTensor = getTensorForBlockArg(optionalArgsCounter++);
+    auto biasTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
     if (!currentSeqLen.empty())
       biasTensor =
           maskKVCacheTosa(builder, loc, biasTensor, currentSeqLenTensor, 0.0f);
@@ -4629,8 +4661,8 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
         builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
         qkTensor, biasTensor);
   }
-  // cast to softmaxType
-  auto softmaxType = typeFromString(softmaxDataType.getValue(), ctx);
+  // cast to softmaxType (overridden to f64 when promoting the host reference)
+  auto softmaxType = wideF(typeFromString(softmaxDataType.getValue(), ctx));
   qkTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc,
                                                         softmaxType, qkTensor);
 
@@ -4678,14 +4710,17 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   // lse = (log(expsSums) + qkMaxs)
   if (returnLSE) {
     Type lseType = cast<ShapedType>(lseOut.getType()).getElementType();
+    // When promoting the host reference, keep LSE in f64 too; we cast back
+    // to lseType right before storing into the output memref.
+    Type lseComputeType = wideF(lseType);
     Value expsSumsForLSE = rock::tosa::createOpAndInfer<tosa::CastOp>(
-        builder, loc, lseType, expsSums);
+        builder, loc, lseComputeType, expsSums);
     Value qkMaxsForLSE = rock::tosa::createOpAndInfer<tosa::CastOp>(
-        builder, loc, lseType, qkMaxs);
-    lseTensor = rock::tosa::createOpAndInfer<tosa::LogOp>(builder, loc, lseType,
-                                                          expsSumsForLSE);
+        builder, loc, lseComputeType, qkMaxs);
+    lseTensor = rock::tosa::createOpAndInfer<tosa::LogOp>(
+        builder, loc, lseComputeType, expsSumsForLSE);
     lseTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
-        builder, loc, lseType, lseTensor, qkMaxsForLSE);
+        builder, loc, lseComputeType, lseTensor, qkMaxsForLSE);
   }
 
   auto invExpsSums = rock::tosa::createOpAndInfer<tosa::ReciprocalOp>(
@@ -4702,9 +4737,10 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
       tosa::createZeroPointTensor(builder, loc, valuesTensor.getType(), 0)
           .value();
 
-  // accumulate in 32 bit
-  Type secondAccType =
-      rock::getAccType(resultOutElementType, resultOutElementType);
+  // accumulate in 32 bit (or f64 when promoting the host reference)
+  Type secondAccType = promoteHost ? f64Type
+                                   : rock::getAccType(resultOutElementType,
+                                                      resultOutElementType);
   auto resultTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, resultOutElementType, softmaxTensor, valuesTensor,
       softmaxZp, valuesZp);
@@ -4742,6 +4778,15 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   ImplicitLocOpBuilder implicitBuilder(loc, builder);
+  // When promoting, downcast the f64 result to the output memref's element
+  // type before reshape/buffer-write so the bufferization op sees a matching
+  // element type.
+  if (promoteHost) {
+    Type outElem = cast<ShapedType>(outputType).getElementType();
+    if (cast<ShapedType>(resultTensor.getType()).getElementType() != outElem)
+      resultTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(
+          builder, loc, outElem, resultTensor);
+  }
   auto shapeValue = tosa::getTosaConstShape(
       implicitBuilder, cast<ShapedType>(outputType).getShape());
   auto flatResultTensor =
@@ -4755,6 +4800,12 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   // return LSE (log-sum-exp)
   if (returnLSE) {
     auto lseOutType = cast<bufferization::BufferLikeType>(lseOut.getType());
+    if (promoteHost) {
+      Type lseElem = cast<ShapedType>(lseOutType).getElementType();
+      if (cast<ShapedType>(lseTensor.getType()).getElementType() != lseElem)
+        lseTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(
+            builder, loc, lseElem, lseTensor);
+    }
     auto lseShapeValue = tosa::getTosaConstShape(
         implicitBuilder, cast<ShapedType>(lseOutType).getShape());
     auto flatLseTensor =
@@ -6007,6 +6058,12 @@ int main(int argc, char **argv) {
 
   if (cpuTimers && !genHostHarness) {
     llvm::errs() << "--cpu-timers requires host harness generation\n";
+    return EXIT_FAILURE;
+  }
+
+  // `-pv-f64` does not apply to i8 (quantized) attention.
+  if (pvF64.getValue() && inputDataType.getValue() == "i8") {
+    llvm::errs() << "-pv-f64 is not supported for i8 (quantized) attention\n";
     return EXIT_FAILURE;
   }
 
