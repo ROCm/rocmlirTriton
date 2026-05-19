@@ -366,6 +366,16 @@ face cases like this one, but the rule is necessary once kernels
 fuse a matmul with a reduction: a `(K=64) x (N=256)` fp16 chain needs
 `atol ≈ 16 384 / 100 ≈ 164` ulps, not `64 / 100 ≈ 0.64`.
 
+For a kernel with multiple outputs, rocmlir-gen emits one verifier
+helper per output. With `--comparator=allclose`, each helper carries its own
+`(atol, rtol)` constants, picked from the per-output dtype baseline
+(Section 2.1) so that, for example, an `f16` output gets looser
+tolerances than an `f32` output in the same kernel. The `K_eff`
+multiplier (Section 2.4), on the other hand, is currently a single
+module-wide value (the max over all matmul-like ops in the module), so
+two outputs of the same dtype always end up with identical `(atol,
+rtol)` even if only one of them depends on the reduction.
+
 ### 2.7 Precision floor from the narrowest float in the dataflow
 
 Some kernels compute in a narrow dtype and only widen at the very end
