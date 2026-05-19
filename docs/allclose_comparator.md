@@ -373,8 +373,31 @@ on any matmul-like op (`getAType` / `getBType` / `getCType` / `getOutType`
 via `RockGemmWrapperInterface` and `RockGemmGemmWrapperInterface`). If
 that is narrower than the kernel's output dtype, that narrower dtype's
 baseline is used instead. This mirrors how hipBLASLt implicitly switches
-to `norm_check` for f8/b8 output types (see § 1.5): the test must not
+to `norm_check` for f8/b8 output types: the test must not
 demand precision the kernel cannot deliver.
+
+### 2.8 Non-finite values
+
+The validation runtime treats three classes of non-finite values
+specially. These policies live in `conv-validation-wrappers.cpp` and
+are shared between the legacy and allclose comparators except where
+noted.
+
+- FP32 subnormals: Handled identically
+  by both comparators; see `mcpuVerify`
+  (legacy) and `mcpuVerifyAllclose` in `conv-validation-wrappers.cpp`
+  for details
+- Infinite values: Handled identically
+  by both comparators; see `mcpuVerify`
+  (legacy) and `mcpuVerifyAllclose` in `conv-validation-wrappers.cpp`
+  for details.
+- NaNs (on CPU or GPU side): **allclose only**. NaNs is always a failure. The
+  element is excluded from the ratio histogram (NaN is unordered with
+  every finite bucket boundary, so it would otherwise silently land in
+  the `(0, 0.1]` passing bucket), the worst-element line surfaces it
+  as `(NaN-mismatch)`, the calibration hints are suppressed (no finite
+  `(atol, rtol)` can mask a NaN), and a dedicated `ratio == nan` row
+  is appended to the histogram.
 
 ## 3. References
 

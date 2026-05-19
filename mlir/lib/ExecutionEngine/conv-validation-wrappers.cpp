@@ -338,6 +338,8 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
                                float maxRatioValNum, float maxRatioGpuNum,
                                double maxRatioAbsDiff, double maxRatioTolerance,
                                bool maxRatioIsInf, long long ratioInfCount,
+                               long long nanCount, float nanValNum,
+                               float nanGpuNum,
                                double minAtolForCurrentRtol,
                                double minRtolForCurrentAtol,
                                bool minRtolWellDefined, const int *hist_ratio,
@@ -349,7 +351,12 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
     printf("  all elements within tolerance (atol=%.3e, rtol=%.3e)\n", atol,
            rtol);
   } else {
-    if (maxRatioIsInf) {
+    // NaN takes precedence over the worst finite ratio: no finite tolerance can
+    // mask a NaN, so the user has to see it first.
+    if (nanCount > 0) {
+      printf("  worst element: valNum=%g gpuNum=%g (NaN-mismatch)\n",
+             nanValNum, nanGpuNum);
+    } else if (maxRatioIsInf) {
       printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=0 "
              "(ratio=inf)\n",
              maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff);
@@ -359,17 +366,23 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
              maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff, maxRatioTolerance,
              maxRatio);
     }
-    // Calibration hints: smallest atol/rtol that would make everything pass
-    // (holding the other fixed).
-    printf("  to pass with current rtol=%.3e: atol >= %.3e\n", rtol,
-           minAtolForCurrentRtol);
-    if (minRtolWellDefined) {
-      printf("  to pass with current atol=%.3e: rtol >= %.3e\n", atol,
-             minRtolForCurrentAtol);
+    if (nanCount > 0) {
+      // Calibration hints are meaningless when any NaN is present; replace
+      // them with an explicit directive to fix the kernel.
+      printf("  no tolerance can mask a NaN-mismatch; fix the kernel\n");
     } else {
-      printf("  to pass with current atol=%.3e: rtol >= n/a "
-             "(failures only at valNum == 0; increase atol)\n",
-             atol);
+      // Calibration hints: smallest atol/rtol that would make everything pass
+      // (holding the other fixed).
+      printf("  to pass with current rtol=%.3e: atol >= %.3e\n", rtol,
+             minAtolForCurrentRtol);
+      if (minRtolWellDefined) {
+        printf("  to pass with current atol=%.3e: rtol >= %.3e\n", atol,
+               minRtolForCurrentAtol);
+      } else {
+        printf("  to pass with current atol=%.3e: rtol >= n/a "
+               "(failures only at valNum == 0; increase atol)\n",
+               atol);
+      }
     }
   }
   printf("  histogram of absDiff/tolerance:\n");
@@ -390,10 +403,20 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
                static_cast<double>(dataSize),
            (i >= 4 && hist_ratio[i] > 0) ? "  <-- failing" : "");
   }
+  // NaN gets its own dedicated histogram row; it is not bucketed by ratio
+  // because NaN is unordered with respect to every finite boundary and would
+  // otherwise be silently counted as a passing low ratio.
+  if (nanCount > 0)
+    printf("           ratio == nan   : %lld/%lld (%.4f%%)  <-- failing\n",
+           nanCount, dataSize,
+           100.0 * static_cast<double>(nanCount) /
+               static_cast<double>(dataSize));
   if (ratioInfCount > 0)
     printf("  note: %lld element(s) had tolerance == 0 with absDiff > 0 "
            "(only possible when -atol=0 and valNum==0)\n",
            ratioInfCount);
+  if (nanCount > 0)
+    printf("  note: %lld element(s) had NaN on either side\n", nanCount);
 }
 
 template <typename T>
@@ -423,6 +446,14 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
   double maxRatioTolerance = 0.0;
   bool maxRatioIsInf = false;
   long long ratioInfCount = 0;
+  // NaN bookkeeping. We can't fold NaN into the ratio histogram because
+  // NaN-vs-finite comparisons are always false (NaN > x is false), so a NaN
+  // element would silently end up in the (0, 0.1] passing bucket and never
+  // update the worst-element ratio. Track them separately and surface them in
+  // the diagnostic as a dedicated row.
+  long long nanCount = 0;
+  float nanValNum = 0.0f;
+  float nanGpuNum = 0.0f;
   // Calibration hints: smallest atol/rtol that would make every failing
   // element pass, holding the other tolerance fixed.
   //   minAtolForCurrentRtol = max over elements of (absDiff - rtol*|valNum|)
@@ -440,6 +471,22 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
 
     if (valNum == gpuNum) {
       hist_ratio[0]++;
+      continue;
+    }
+    // NaN handling has to come *before* the subnormal/infinity normalization
+    // and the absDiff/tolerance arithmetic, because every comparison and
+    // arithmetic op with NaN produces NaN-or-false, which would otherwise
+    // mis-bucket the element and skip the worst-element update.
+    if (std::isnan(valNum) || std::isnan(gpuNum)) {
+      failingElements++;
+      if (nanCount == 0) {
+        nanValNum = valNum;
+        nanGpuNum = gpuNum;
+      }
+      nanCount++;
+      if (print_option == PrintOption::Always ||
+          print_option == PrintOption::Failure)
+        printf("%lld: valNum=%f gpuNum=%f (NaN-mismatch)\n", i, valNum, gpuNum);
       continue;
     }
     if ((std::fpclassify(valNum) == FP_SUBNORMAL) && isFP32) {
@@ -533,8 +580,9 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
     printAllcloseStats(dataSize, failingElements, atol, rtol, maxRatio,
                        maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff,
                        maxRatioTolerance, maxRatioIsInf, ratioInfCount,
-                       minAtolForCurrentRtol, minRtolForCurrentAtol,
-                       minRtolWellDefined, hist_ratio, NUM_RATIO_BUCKETS);
+                       nanCount, nanValNum, nanGpuNum, minAtolForCurrentRtol,
+                       minRtolForCurrentAtol, minRtolWellDefined, hist_ratio,
+                       NUM_RATIO_BUCKETS);
   }
   // Repeat the allclose result three times to preserve the legacy output
   // format that existing FileCheck tests match against.
