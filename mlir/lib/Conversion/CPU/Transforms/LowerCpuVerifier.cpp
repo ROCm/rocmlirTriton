@@ -376,7 +376,7 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
   // We need to wrap the module in OwningOpRef for applyTransformSequence
   // but we don't own it, so we use a non-owning reference pattern.
   OwningOpRef<ModuleOp> moduleRef(module);
-  auto cleanup = llvm::make_scope_exit([&] {
+  llvm::scope_exit cleanup([&] {
     (void)moduleRef.release();
     reattachFuncs(module, detached);
   });

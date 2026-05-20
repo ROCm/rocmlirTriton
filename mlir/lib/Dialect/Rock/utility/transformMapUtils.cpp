@@ -2106,13 +2106,13 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
                                     << ",lower=" << lowerDim << "\n");
             upperToLower[upperDim] = lowerDim;
           };
-          for (auto [dim, subDimInfo] : currSubDimInfo) {
+          for (auto [dim, subDims] : currSubDimInfo) {
             if (upperToLower.contains(dim)) {
               if (isSlice)
                 LLVM_DEBUG(llvm::dbgs() << "slice ");
               LLVM_DEBUG(llvm::dbgs() << "remapping:" << dim << " to "
                                       << upperToLower[dim] << "\n");
-              nextSubDimInfo[upperToLower[dim]] = subDimInfo;
+              nextSubDimInfo[upperToLower[dim]] = subDims;
             }
           }
         } break;

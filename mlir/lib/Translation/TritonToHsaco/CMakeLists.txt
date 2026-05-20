@@ -65,8 +65,9 @@ if("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD AND LLD_FOUND)
   )
 endif()
 
-# Add Triton include directories
-target_include_directories(obj.TritonToHsacoTranslation PRIVATE
+# Add Triton include directories.
+# Marked SYSTEM so our strict warnings (-Wshadow, etc.) don't fire on them.
+target_include_directories(obj.TritonToHsacoTranslation SYSTEM PRIVATE
   ${TRITON_PROJECT_DIR}/include
   ${TRITON_BINARY_DIR}/include
   ${TRITON_PROJECT_DIR}/third_party/amd/include

@@ -178,7 +178,7 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
 }
 
 static LogicalResult
-runKernelPipeline(StringRef arch, ModuleOp m,
+runKernelPipeline(StringRef archName, ModuleOp m,
                   llvm::SmallDenseSet<StringRef> &kernelPipelineSet) {
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
@@ -187,14 +187,14 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   pm.enableVerifier(!disableVerifyPasses);
   bool needArch = kernelPipelineSet.contains("binary");
   RocmDeviceName devName;
-  if (arch.empty() && needArch) {
+  if (archName.empty() && needArch) {
     llvm::errs()
         << "Architecture not specified for this pipeline, but one is required\n"
         << "Use --arch or set arch\n";
     return failure();
   }
-  if (failed(devName.parse(arch)) && needArch) {
-    llvm::errs() << "Invalid architecture: " << arch << "\n";
+  if (failed(devName.parse(archName)) && needArch) {
+    llvm::errs() << "Invalid architecture: " << archName << "\n";
     return failure();
   }
 
@@ -259,7 +259,7 @@ runKernelPipeline(StringRef arch, ModuleOp m,
   if (kernelPipelineSet.contains("gpu")) {
     // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
-    opts.arch = arch.str();
+    opts.arch = archName.str();
     rock::buildKernelPipeline(pm, opts);
   }
   if (kernelPipelineSet.contains("triton")) {

@@ -360,20 +360,20 @@ void TransformMapBuilder::passThrough(ArrayRef<StringRef> outNames,
                outDims);
 }
 
-void TransformMapBuilder::passThrough(ArrayRef<uint32_t> endIndices,
-                                      ArrayRef<uint32_t> startIndices) {
-  assert(endIndices.size() == startIndices.size() && "One output per input");
+void TransformMapBuilder::passThrough(ArrayRef<uint32_t> endIdxs,
+                                      ArrayRef<uint32_t> startIdxs) {
+  assert(endIdxs.size() == startIdxs.size() && "One output per input");
 
   llvm::SmallVector<StringRef> names;
-  names.reserve(endIndices.size());
-  for (auto tuple : llvm::zip(endIndices, startIndices)) {
+  names.reserve(endIdxs.size());
+  for (auto tuple : llvm::zip(endIdxs, startIdxs)) {
     uint32_t index = std::get<1>(tuple);
     StringRef name = startNames[index];
     names.push_back(name);
     defineDim(name, std::get<0>(tuple), startSize(index));
   }
-  addTransform(TransformType::PassThrough, {}, names, startIndices, names,
-               endIndices);
+  addTransform(TransformType::PassThrough, {}, names, startIdxs, names,
+               endIdxs);
 }
 
 void TransformMapBuilder::pad(ArrayRef<StringRef> names,

@@ -158,11 +158,11 @@ static llvm::cl::opt<unsigned> numCompileThreads(
     llvm::cl::value_desc("thread count"), llvm::cl::init(0));
 
 // Ripped out of JitRunner.cpp
-static OwningOpRef<ModuleOp> parseMLIRInput(StringRef inputFilename,
+static OwningOpRef<ModuleOp> parseMLIRInput(StringRef filename,
                                             MLIRContext *context) {
   // Set up the input file.
   std::string errorMessage;
-  auto file = openInputFile(inputFilename, &errorMessage);
+  auto file = openInputFile(filename, &errorMessage);
   if (!file) {
     llvm::errs() << errorMessage << "\n";
     return nullptr;
@@ -428,7 +428,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   bool benchmarkMode = !params.benchmarkConfig.empty();
   hipStream_t stream;
   HIPCHECK(hipStreamCreate(&stream));
-  auto streamCleanup = llvm::make_scope_exit([&]() {
+  llvm::scope_exit streamCleanup([&]() {
     hipError_t destroyStatus = hipStreamDestroy(stream);
     if (destroyStatus != hipSuccess) {
       llvm::errs() << "HIP error in hipStreamDestroy: "
@@ -453,7 +453,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   // Load ONE module from the single HSACO binary (contains all kernels)
   hipModule_t module = nullptr;
   std::vector<hipFunction_t> functions;
-  auto moduleCleanup = llvm::make_scope_exit([&]() {
+  llvm::scope_exit moduleCleanup([&]() {
     if (module) {
       hipError_t status = hipModuleUnload(module);
       if (status != hipSuccess) {
@@ -484,7 +484,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   }
 
   // Sleep guard to avoid GPU throttling
-  auto sleepGuard = llvm::make_scope_exit([&params] {
+  llvm::scope_exit sleepGuard([&params] {
     if (params.sleepUs > 0) {
       std::this_thread::sleep_for(std::chrono::microseconds(params.sleepUs));
     }
@@ -691,7 +691,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   // 3. Initialize host buffers and allocate device buffers
   std::vector<void *> hostBuffers;
   std::vector<void *> gpuBuffers;
-  auto bufferCleanup = llvm::make_scope_exit([&]() {
+  llvm::scope_exit bufferCleanup([&]() {
     for (void *buffer : hostBuffers)
       free(buffer);
     for (void *buffer : gpuBuffers) {

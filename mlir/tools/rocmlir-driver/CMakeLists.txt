@@ -55,7 +55,7 @@ target_link_libraries(rocmlir-driver PRIVATE ${LIBS})
 llvm_update_compile_flags(rocmlir-driver)
 
 # Add Triton include directories for compilation
-target_include_directories(rocmlir-driver PRIVATE
+target_include_directories(rocmlir-driver SYSTEM PRIVATE
   ${TRITON_PROJECT_DIR}/include
   ${TRITON_BINARY_DIR}/include
   ${TRITON_PROJECT_DIR}/third_party/amd

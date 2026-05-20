@@ -114,7 +114,12 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   auto maybeViews = rock::traceOutputsAndFusionInputs(op.getResult());
   if (failed(maybeViews))
     return op.emitOpError("cannot trace to rock::StoreOp");
-  auto &[stores, outputViews, fusionInputMap] = maybeViews.value();
+  // Use plain references rather than structured bindings so the lambda below
+  // can capture them without requiring -Wc++20-extensions.
+  auto &views = maybeViews.value();
+  SetVector<StoreOp> &stores = views.stores;
+  SmallVector<Value> &outputViews = views.outputViews;
+  DenseMap<Value, Value> &fusionInputMap = views.fusionInputMap;
 
   Value scaleA = adaptor.getScaleA(), scaleB = adaptor.getScaleB();
 
