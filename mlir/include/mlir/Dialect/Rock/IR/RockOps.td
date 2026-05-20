@@ -107,8 +107,7 @@ def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
 {
   let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$input,
                            RankedTensorOf<GemmInputTypes>:$gradient),
-                       commonConvAttrs,
-                       (ins OptionalAttr<IndexAttr>:$kBlocks));
+                       commonConvAttrs, (ins OptionalAttr<IndexAttr>:$kBlocks));
   let summary = "N-D convolution backward weight";
   let description = [{
     The `rock.conv_bwd_weight` op computes N-D convolution backward weight.

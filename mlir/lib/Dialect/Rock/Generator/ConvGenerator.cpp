@@ -669,7 +669,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
     func.erase();
   }
 
-
   StringAttr archStrAttr = builder.getStringAttr(config.arch);
   NamedAttribute archAttr =
       builder.getNamedAttr(rock::ArchAttr::getMnemonic(), archStrAttr);

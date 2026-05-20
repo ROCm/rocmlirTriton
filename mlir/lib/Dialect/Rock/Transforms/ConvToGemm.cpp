@@ -564,8 +564,8 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
     addKBlockWrap.passThrough(throughDims);
 
     TransformMapAttr addKBlockTransformAttr = addKBlockTransform.get();
-    Value withKBlock = rock::TransformOp::create(b, loc, filterDest,
-                                                 addKBlockTransformAttr);
+    Value withKBlock =
+        rock::TransformOp::create(b, loc, filterDest, addKBlockTransformAttr);
 
     // Create GEMM filter tensor
     // Here, we merge the KBlock dimension into the G dimension
