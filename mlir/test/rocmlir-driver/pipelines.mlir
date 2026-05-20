@@ -27,7 +27,7 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-regularize-inter-gemm-fusion),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
-// GPU-NEXT:func.func(rock-conv-to-gemm),
+// GPU-NEXT:rock-conv-to-gemm,
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-fusion-splitk-regularization),
 // GPU-NEXT:remove-dead-values{canonicalize=true},

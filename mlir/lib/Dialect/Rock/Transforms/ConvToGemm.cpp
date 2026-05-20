@@ -93,6 +93,10 @@ struct RockConvToGemmPass
   void runOnOperation() override;
 };
 
+/// Discardable marker attached to the extra `rock.store` ops produced by the
+/// multi-kernel `bwd_data` expansion.
+constexpr StringRef bwdDataStore = "rock.bwd_data_store";
+
 template <typename T>
 LogicalResult checkNames(ArrayRef<StringRef> actual,
                          ArrayRef<StringRef> expected, StringRef argName,
@@ -156,6 +160,16 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
   kernel.setFunctionType(FunctionType::get(kernel.getContext(),
                                            kernel.getFunctionType().getInputs(),
                                            newResultTypes));
+
+  if (ArrayAttr existingResAttrs = kernel.getAllResultAttrs()) {
+    SmallVector<DictionaryAttr> newResAttrs;
+    newResAttrs.reserve(newResultTypes.size());
+    for (Attribute a : existingResAttrs)
+      newResAttrs.push_back(cast<DictionaryAttr>(a));
+    newResAttrs.append(extraReturns.size(),
+                       DictionaryAttr::get(kernel.getContext()));
+    kernel.setAllResultAttrs(newResAttrs);
+  }
 
   StringRef kernelName = kernel.getName();
   TypeRange newResults = kernel.getFunctionType().getResults();
@@ -1198,9 +1212,13 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
       if (failed(maybe))
         return failure();
+
       auto [gemmResult, gemmDest] = maybe.value();
       auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
                                         gemmDest, storeMethod);
+
+      if (!storeResults.empty())
+        newStoreOp->setAttr(bwdDataStore, b.getUnitAttr());
       storeResults.push_back(newStoreOp.getResult());
     }
 
@@ -1775,9 +1793,12 @@ void RockConvToGemmPass::runOnOperation() {
   ModuleOp module = getOperation();
   llvm::MapVector<func::FuncOp, SmallVector<Value, 4>> extrasByFunc;
   module.walk([&](StoreOp storeOp) {
-    if (!storeOp.getResult().use_empty())
+    if (!storeOp->hasAttr(bwdDataStore))
       return;
 
+    storeOp->removeAttr(bwdDataStore);
+    assert(storeOp.getResult().use_empty() &&
+           "bwd_data keepalive store should be use_empty before fix-up");
     if (auto parentFunc = storeOp->getParentOfType<func::FuncOp>())
       extrasByFunc[parentFunc].push_back(storeOp.getResult());
   });
