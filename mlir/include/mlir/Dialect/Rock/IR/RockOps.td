@@ -469,8 +469,8 @@ def Rock_LoadMarkerOp
 
 // store
 def Rock_StoreOp
-    : Rock_Op<"store",
-              [Pure, AllElementTypesMatch<["source", "dest", "result"]>]>,
+    : Rock_Op<"store", [Pure,
+                        AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, AnyRankedTensor:$dest,
           StoreMethodAttr:$storeMethod)>,
       Results<(outs AnyRankedTensor:$result)> {

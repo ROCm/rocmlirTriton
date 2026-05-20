@@ -153,9 +153,9 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
   SmallVector<Type> newResultTypes(kernel.getResultTypes());
   for (Value v : extraReturns)
     newResultTypes.push_back(v.getType());
-  kernel.setFunctionType(FunctionType::get(
-      kernel.getContext(), kernel.getFunctionType().getInputs(),
-      newResultTypes));
+  kernel.setFunctionType(FunctionType::get(kernel.getContext(),
+                                           kernel.getFunctionType().getInputs(),
+                                           newResultTypes));
 
   StringRef kernelName = kernel.getName();
   TypeRange newResults = kernel.getFunctionType().getResults();
@@ -167,15 +167,13 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
 
   for (func::CallOp callOp : callsToRewrite) {
     if (callOp.getNumResults() != oldNumResults)
-      return callOp.emitOpError(
-                 "call site result count (")
+      return callOp.emitOpError("call site result count (")
              << callOp.getNumResults() << ") must match the kernel '"
-             << kernelName << "' pre-expansion arity (" << oldNumResults
-             << ")";
+             << kernelName << "' pre-expansion arity (" << oldNumResults << ")";
     OpBuilder builder(callOp);
     auto newCall = func::CallOp::create(builder, callOp.getLoc(), kernelName,
                                         newResults, callOp.getOperands());
-    
+
     // Don't use any of the new results, these are alias keepalives for the
     // kernel's output buffer.
     for (unsigned i = 0; i < oldNumResults; ++i)
