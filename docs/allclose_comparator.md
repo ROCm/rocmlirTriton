@@ -331,6 +331,8 @@ accumulation error growth:
 | GEMM | `K` |
 | Attention | `head_dim_qk + seq_len_k` (additive: two cascaded reductions) |
 | Conv (any direction) | `Cin * product(filter_spatial_dims)`, i.e. the im2col K |
+| GEMM -> elementwise -> GEMM | `K_gemm1 + K_gemm2` (additive; same rationale as attention) |
+| Conv -> elementwise -> GEMM | `K_conv + K_gemm2` (same: conv im2col K plus the GEMM's K) |
 | Element-wise / other | `1` |
 
 The attention model is the conservative choice: errors from the QK^T
