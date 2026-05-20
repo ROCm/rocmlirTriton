@@ -862,11 +862,8 @@ static llvm::cl::opt<bool> disableSplitKForTuning(
 struct KernelIF {
   func::FuncOp func;
   SmallVector<Type, 8> params;
-  SmallVector<Type, 2> resultTypes;
-  // For memref-style kernels, the indices in `params` whose backing memref is
-  // a `memref.copy` target (i.e. the kernel's output buffers). For
-  // tensor-result kernels, populated lazily by `getSignatureSlots()`.
   SmallVector<int32_t, 2> outIndices;
+  SmallVector<Type, 2> resultTypes;
 
   // CTOR w/ FuncOp
   KernelIF(func::FuncOp _f) : func(_f) {
