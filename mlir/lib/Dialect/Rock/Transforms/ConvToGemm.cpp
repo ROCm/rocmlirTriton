@@ -141,12 +141,35 @@ static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
 /// Append `extraReturns` to kernel's `func.return`, widen its function
 /// type to match, and rewrite every `func.call @kernel` in `module` so its
 /// result matches the new signature.
+///
+/// Preconditions enforced here:
+///   * `kernel` must be public. The trailing `extraReturns` are unused at
+///     every call site, so on a non-public kernel the very next
+///     `RemoveDeadValuesPass` run would strip them from the function
+///     signature, leaving the per-phase `rock.store` ops `use_empty()` and
+///     letting `Pure` DCE silently drop the writes.
+///   * `kernel` must contain exactly one `func.return`. The append-only
+///     widening below only touches one terminator; multiple returns would
+///     leave the function in an inconsistent state with mismatched arities.
 static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
                                          ValueRange extraReturns) {
   if (extraReturns.empty())
     return success();
 
-  auto returnOp = cast<func::ReturnOp>(kernel.front().getTerminator());
+  if (!kernel.isPublic())
+    return kernel.emitOpError(
+        "bwd_data multi-kernel keepalive requires public visibility; "
+        "RemoveDeadValuesPass would otherwise strip the extended return "
+        "signature and silently drop per-phase rock.store ops");
+
+  SmallVector<func::ReturnOp> returnOps;
+  kernel.walk([&](func::ReturnOp op) { returnOps.push_back(op); });
+  if (returnOps.size() != 1)
+    return kernel.emitOpError("bwd_data multi-kernel keepalive requires "
+                              "exactly one func.return, found ")
+           << returnOps.size();
+
+  func::ReturnOp returnOp = returnOps.front();
   unsigned oldNumResults = kernel.getNumResults();
 
   // Append-only: existing return operands and their corresponding kernel
