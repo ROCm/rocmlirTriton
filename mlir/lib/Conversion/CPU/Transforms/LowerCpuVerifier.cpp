@@ -28,6 +28,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "CpuTileLUT.h"
 #include "Schedules.h"
 #include "Schedules/ScheduleUtils.h"
 #include "Schedules/TilingSchedule.h"
@@ -162,17 +163,44 @@ static FailureOr<MatmulDims> classifyMatmulDims(linalg::GenericOp op) {
   return MatmulDims{*mDim, *nDim, *kDim};
 }
 
+/// Pick `(mFuse, nFuse, kTile)` using the divisor-ladder heuristic. This
+/// is the legacy policy: walk a candidate ladder largest-first and return
+/// the first entry that divides the dim cleanly, falling back to
+/// `vectorSize` when none does. It's used as the fallback when the per-CPU
+/// LUT has no entry for the current host.
+static cpu::CpuTileTriple pickDivisorLadderTiles(int64_t M, int64_t N,
+                                                 int64_t K) {
+  constexpr int64_t vectorSize = MatmulTileSizes::kVectorSize;
+
+  // Legacy ladders. Kept in lockstep with what was here before the LUT
+  // landed -- any CPU we haven't measured yet gets the same behaviour as
+  // before.
+  static constexpr int64_t mLadder[] = {512, 256, 128, 64, 32, 16, 8};
+  static constexpr int64_t nLadder[] = {16, 8};
+  static constexpr int64_t kLadder[] = {784, 392, 196, 128, 64, 32, 16, 8};
+
+  return {/*mFuse=*/pickDivisibleTile(M, mLadder, vectorSize),
+          /*nFuse=*/pickDivisibleTile(N, nLadder, vectorSize),
+          /*kTile=*/pickDivisibleTile(K, kLadder, vectorSize)};
+}
+
 /// Inspect the CPU verifier function `func` and choose tile sizes for its
 /// matmul-shaped `linalg.generic`. Returns `std::nullopt` only when no
 /// matmul-shaped op is found in the function -- in which case the caller
 /// should fall back to the default schedule.
 ///
-/// Policy: pick the largest tile in a candidate ladder that divides the
-/// corresponding loop dim cleanly; if none divides (or the dim is
-/// dynamic), fall back to `MatmulTileSizes::kVectorSize` and record the
-/// dim as non-divisible via the `*Divisible` flags on `MatmulTileSizes`.
-/// The schedule uses those flags to decide how to handle the partial
-/// last iteration (peel, mask, scalar fallback, ...).
+/// Selection policy:
+///   1. Consult `cpu::lookupHostCpuTileSizes` -- a LUT keyed on
+///      `llvm::sys::getHostCPUName()`. When the current CPU has an entry,
+///      use the tile triple it returns directly.
+///   2. Otherwise fall back to the divisor-ladder heuristic
+///      (`pickDivisorLadderTiles`), which preserves the legacy behaviour
+///      so untuned hardware doesn't regress.
+///
+/// The `*Divisible` flags on `MatmulTileSizes` are derived from the chosen
+/// tiles via `isStaticallyDivisible`; the schedule uses those flags to
+/// decide whether to peel the partial last iteration. A LUT-chosen tile is
+/// therefore free to *not* divide -- the schedule will peel as needed.
 static std::optional<MatmulTileSizes> chooseMatmulTileSizes(func::FuncOp func) {
   constexpr int64_t vectorSize = MatmulTileSizes::kVectorSize;
   linalg::GenericOp matmul;
@@ -200,16 +228,28 @@ static std::optional<MatmulTileSizes> chooseMatmulTileSizes(func::FuncOp func) {
   int64_t N = loopRanges[dims->nDim];
   int64_t K = loopRanges[dims->kDim];
 
-  // TODO: Properly figure out this values based on the target architecture.
-  // https://amd-hub.atlassian.net/browse/AIROCMLIR-812
-  static constexpr int64_t mLadder[] = {512, 256, 128, 64, 32, 16, 8};
-  static constexpr int64_t nLadder[] = {16, 8};
-  static constexpr int64_t kLadder[] = {784, 392, 196, 128, 64, 32, 16, 8};
+  // LUT first, ladder fallback. The LUT is keyed by host-CPU name so an
+  // entry is only used when we're actually running on hardware we've
+  // measured.
+  cpu::CpuTileTriple tiles;
+  if (auto lut = cpu::lookupHostCpuTileSizes(M, N, K)) {
+    tiles = *lut;
+    LLVM_DEBUG(llvm::dbgs()
+               << "  Using LUT tile sizes for " << func.getName()
+               << ": M=" << tiles.mFuse << " N=" << tiles.nFuse
+               << " K=" << tiles.kTile << "\n");
+  } else {
+    tiles = pickDivisorLadderTiles(M, N, K);
+    LLVM_DEBUG(llvm::dbgs()
+               << "  Using ladder tile sizes for " << func.getName()
+               << ": M=" << tiles.mFuse << " N=" << tiles.nFuse
+               << " K=" << tiles.kTile << "\n");
+  }
 
   MatmulTileSizes t;
-  t.mFuse = pickDivisibleTile(M, mLadder, vectorSize);
-  t.nFuse = pickDivisibleTile(N, nLadder, vectorSize);
-  t.kTile = pickDivisibleTile(K, kLadder, vectorSize);
+  t.mFuse = tiles.mFuse;
+  t.nFuse = tiles.nFuse;
+  t.kTile = tiles.kTile;
   t.microTileM = vectorSize;
   t.microTileN = vectorSize;
   t.microTileK = vectorSize;
@@ -400,9 +440,8 @@ CpuLowerVerifierPass::lowerSingleFunction(func::FuncOp func,
 
     OwningOpRef<ModuleOp> perFuncTiling;
     if (auto t = chooseMatmulTileSizes(func)) {
-      LLVM_DEBUG(llvm::dbgs() << "  Chose matmul tile sizes for " << funcName
-                              << ": M=" << t->mFuse << " N=" << t->nFuse
-                              << " K=" << t->kTile << "\n");
+      // `chooseMatmulTileSizes` already logs the chosen tile sizes and
+      // whether they came from the LUT or the ladder fallback.
       perFuncTiling = buildTilingSchedule(&getContext(), *t);
     } else {
       LLVM_DEBUG(llvm::dbgs() << "  Using default matmul tile sizes for "

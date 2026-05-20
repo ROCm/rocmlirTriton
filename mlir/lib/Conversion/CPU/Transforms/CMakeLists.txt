@@ -1,5 +1,6 @@
 add_rocmlir_dialect_library(MLIRCpuTransforms
   ConvToGemm.cpp
+  CpuTileLUT.cpp
   LowerCpuVerifier.cpp
   Schedules.cpp
   Schedules/FusedConvToMatmulSchedule.cpp
@@ -49,6 +50,10 @@ add_rocmlir_dialect_library(MLIRCpuTransforms
   MLIRVectorTransformOps
   MLIRFuncTransformOps
   MLIRMemRefTransformOps
+
+  # LLVMTargetParser provides `llvm::sys::getHostCPUName()`, used by the
+  # CPU tile LUT to identify the host CPU at runtime.
+  LLVMTargetParser
 )
 
 # HIP needed transitively via tritonUtils.h (included by LowerCpuVerifier.cpp)
