@@ -893,7 +893,8 @@ struct KernelIF {
   // Returns a pair of (signatureSlots, numKernelParams).
   // - signatureSlots is a mix of 2 things:
   //   1. The kernel's own parameters.
-  //   2. One synthetic output slot per tensor result that is not already aliased by a trailing parameter.
+  //   2. One synthetic output slot per tensor result that is not already
+  //   aliased by a trailing parameter.
   // - numKernelParams is the number of kernel parameters.
   std::pair<SmallVector<Type, 8>, size_t> getSignatureSlots() const {
     SmallVector<Type, 8> slots(params.begin(), params.end());
@@ -905,8 +906,9 @@ struct KernelIF {
     size_t numResults = resultTypes.size();
     bool aliased = numKernelParams >= numResults;
     // Step 1. Add kernel's own params to the signature slots.
-    // This also handles the case where the kernel's last `numResults` params already
-    // provide buffers for the results (like attention with `return_lse`).
+    // This also handles the case where the kernel's last `numResults` params
+    // already provide buffers for the results (like attention with
+    // `return_lse`).
     if (aliased) {
       size_t offset = numKernelParams - numResults;
       SmallVector<bool, 4> used(numResults, false);
@@ -941,7 +943,7 @@ struct KernelIF {
       // memref of the result's shape and element type so the rest of the
       // harness (which expects memref-typed localVars/valVars) can treat it
       // uniformly with the kernel's other slots.
-      // 
+      //
       // TODO(rocmlirTriton): This should be tensors once we have fully
       // unbufferized rocmlir-gen.
       for (Type resultType : resultTypes) {
