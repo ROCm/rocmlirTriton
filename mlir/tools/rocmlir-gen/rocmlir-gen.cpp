@@ -905,14 +905,30 @@ struct KernelIF {
     size_t numResults = resultTypes.size();
     bool aliased = numKernelParams >= numResults;
     // Step 1. Add kernel's own params to the signature slots.
+    // This also handles the case where the kernel's last `numResults` params already
+    // provide buffers for the results (like attention with `return_lse`).
     if (aliased) {
       size_t offset = numKernelParams - numResults;
+      SmallVector<bool, 4> used(numResults, false);
       for (size_t i = 0; i < numResults; ++i) {
-        auto paramST = dyn_cast<ShapedType>(params[offset + i]);
         auto resultST = dyn_cast<ShapedType>(resultTypes[i]);
-        if (!paramST || !resultST ||
-            paramST.getShape() != resultST.getShape() ||
-            paramST.getElementType() != resultST.getElementType()) {
+        if (!resultST) {
+          aliased = false;
+          break;
+        }
+        bool found = false;
+        for (size_t j = 0; j < numResults; ++j) {
+          if (used[j])
+            continue;
+          auto paramST = dyn_cast<ShapedType>(params[offset + j]);
+          if (paramST && paramST.getShape() == resultST.getShape() &&
+              paramST.getElementType() == resultST.getElementType()) {
+            used[j] = true;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
           aliased = false;
           break;
         }
