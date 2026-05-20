@@ -451,12 +451,16 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.nest<func::FuncOp>().addPass(std::move(pass));
     pm.addPass(createCSEPass());
   };
+  auto addModulePassWithDCE = [&pm](std::unique_ptr<Pass> pass) {
+    pm.addPass(std::move(pass));
+    pm.addPass(createRemoveDeadValuesPass());
+  };
 
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
   addWithDCE(rock::createRockRegularizeInterGemmFusionPass());
-  addWithDCE(rock::createRockConvToGemmPass());
+  addModulePassWithDCE(rock::createRockConvToGemmPass());
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
   addWithDCE(rock::createRockGemmToGridwisePass());
   addWithDCE(rock::createRockAttnToGridwisePass());

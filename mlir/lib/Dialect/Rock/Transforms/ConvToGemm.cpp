@@ -21,6 +21,7 @@
 //
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
@@ -44,6 +45,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
@@ -130,6 +132,57 @@ static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
     if (defOp->getBlock() == op->getBlock() && op->isBeforeInBlock(defOp))
       b.setInsertionPointAfter(defOp);
   }
+}
+
+/// Append `extraReturns` to kernel's `func.return`, widen its function
+/// type to match, and rewrite every `func.call @kernel` in `module` so its
+/// result matches the new signature.
+static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
+                                         ValueRange extraReturns) {
+  if (extraReturns.empty())
+    return success();
+
+  auto returnOp = cast<func::ReturnOp>(kernel.front().getTerminator());
+  unsigned oldNumResults = kernel.getNumResults();
+
+  // Append-only: existing return operands and their corresponding kernel
+  // result types stay at the same indices, so old callers' result uses
+  // need no remapping.
+  returnOp->insertOperands(returnOp.getNumOperands(), extraReturns);
+
+  SmallVector<Type> newResultTypes(kernel.getResultTypes());
+  for (Value v : extraReturns)
+    newResultTypes.push_back(v.getType());
+  kernel.setFunctionType(FunctionType::get(
+      kernel.getContext(), kernel.getFunctionType().getInputs(),
+      newResultTypes));
+
+  StringRef kernelName = kernel.getName();
+  TypeRange newResults = kernel.getFunctionType().getResults();
+  SmallVector<func::CallOp> callsToRewrite;
+  module.walk([&](func::CallOp callOp) {
+    if (callOp.getCallee() == kernelName)
+      callsToRewrite.push_back(callOp);
+  });
+
+  for (func::CallOp callOp : callsToRewrite) {
+    if (callOp.getNumResults() != oldNumResults)
+      return callOp.emitOpError(
+                 "call site result count (")
+             << callOp.getNumResults() << ") must match the kernel '"
+             << kernelName << "' pre-expansion arity (" << oldNumResults
+             << ")";
+    OpBuilder builder(callOp);
+    auto newCall = func::CallOp::create(builder, callOp.getLoc(), kernelName,
+                                        newResults, callOp.getOperands());
+    
+    // Don't use any of the new results, these are alias keepalives for the
+    // kernel's output buffer.
+    for (unsigned i = 0; i < oldNumResults; ++i)
+      callOp.getResult(i).replaceAllUsesWith(newCall.getResult(i));
+    callOp.erase();
+  }
+  return success();
 }
 
 /// Update any StoreOp that uses the conv result to use the gemm result instead.
@@ -1141,7 +1194,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     Value destBuffer = originalStoreOp.getDest();
     ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
 
-    Value lastStoreResult;
+    SmallVector<Value> storeResults;
+    storeResults.reserve(kernelIds.size());
     for (int64_t kid : kernelIds) {
       auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
       if (failed(maybe))
@@ -1149,12 +1203,21 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       auto [gemmResult, gemmDest] = maybe.value();
       auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
                                         gemmDest, storeMethod);
-      lastStoreResult = newStoreOp.getResult();
+      storeResults.push_back(newStoreOp.getResult());
     }
 
-    // Replace the original StoreOp with the last store result.
-    b.replaceOp(originalStoreOp, lastStoreResult);
+    // BwdData with multiple kernel IDs emits N independent gemm + store pairs,
+    // each writing a disjoint slice of the same output buffer. Under the
+    // `Pure` trait, every `rock.store` SSA result must have a live use or
+    // it will be DCE'd. We preserve the original store's use chain (the
+    // parent `func.return` operand) by replacing `originalStoreOp` with
+    // the first new store result. Stores 1..N-1 are intentionally left
+    // with `use_empty()`here as the post-conversion step in
+    // `RockConvToGemmPass::runOnOperation` is the single place that wires
+    // them into the parent function's `func.return`
+    b.replaceOp(originalStoreOp, storeResults.front());
     b.eraseOp(bwdDataOp);
+
     return std::make_tuple(Value(), Value(), Value());
   }
   Location loc = op.getLoc();
@@ -1706,6 +1769,26 @@ void RockConvToGemmPass::runOnOperation() {
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
     signalPassFailure();
+    return;
+  }
+
+  // Post-conversion: extend every parent `func.func` whose body contains
+  // `rock.store` ops the BwdData expansion left use_empty().
+  ModuleOp module = getOperation();
+  llvm::MapVector<func::FuncOp, SmallVector<Value, 4>> extrasByFunc;
+  module.walk([&](StoreOp storeOp) {
+    if (!storeOp.getResult().use_empty())
+      return;
+
+    if (auto parentFunc = storeOp->getParentOfType<func::FuncOp>())
+      extrasByFunc[parentFunc].push_back(storeOp.getResult());
+  });
+
+  for (auto &[parentFunc, extraReturns] : extrasByFunc) {
+    if (failed(expandKernelReturns(parentFunc, module, extraReturns))) {
+      signalPassFailure();
+      return;
+    }
   }
 }
 } // end anonymous namespace

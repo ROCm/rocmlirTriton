@@ -469,7 +469,8 @@ def Rock_LoadMarkerOp
 
 // store
 def Rock_StoreOp
-    : Rock_Op<"store", [AllElementTypesMatch<["source", "dest", "result"]>]>,
+    : Rock_Op<"store",
+              [Pure, AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, AnyRankedTensor:$dest,
           StoreMethodAttr:$storeMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
@@ -714,7 +715,7 @@ def Rock_BlockwiseLoadPtrOp
 // blockwise_store
 def Rock_BlockwiseStoreOp
     : Rock_Op<"blockwise_store",
-              [DeclareOpInterfaceMethods<RockAcceptingViewOpInterface>,
+              [Pure, DeclareOpInterfaceMethods<RockAcceptingViewOpInterface>,
                DeclareOpInterfaceMethods<RockWriterOpInterface>,
                AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
