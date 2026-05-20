@@ -1,0 +1,13 @@
+triton-patches/ -- downstream Triton cherry-picks
+=================================================
+
+This directory holds patches against the Triton submodule
+(external/triton/).
+
+----------------------------------------------------------------------
+patch1.patch
+patch2.patch
+patch3.patch
+patch5.patch
+----------------------------------------------------------------------
+TODO: Add missing patch descriptions
