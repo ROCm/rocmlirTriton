@@ -6,9 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 
@@ -235,6 +237,22 @@ TEST(PerfConfigOrderingGemmTest, ConservativeDefaultScaledKPerBlockBumpedUp) {
       128);
 }
 
+TEST(PerfConfigOrderingGemmTest, IsApplicableHandlesShapedScaleType) {
+  // `RockGemmWrapperInterface::getScale{A,B}Type()`'s default impl returns the
+  // tensor type of the scale operand, not the element type. The predicate
+  // must normalize so `getIntOrFloatBitWidth` doesn't assert on a shaped type
+  // (and so scale LDS isn't undercounted). Pass a shaped tensor type and a
+  // bare element type for the other side to lock the behaviour.
+  GemmOrderingTestEnv e;
+  auto p = e.gemm(128, 128, 128, 1, 1, 4, 0, 1, /*numStages=*/2, 0, 0);
+  Type shapedScale = RankedTensorType::get({1, 128, 128}, e.f8E8M0);
+  Type shapedA = RankedTensorType::get({1, 128, 128}, e.f8E4M3);
+  EXPECT_FALSE(isGemmParamsConservativelyApplicable(
+      p, shapedA, e.f8E4M3, "gfx942", /*quantBlockSize=*/1, shapedScale,
+      e.f8E8M0))
+      << "shaped scale type should be normalized like a bare element type";
+}
+
 TEST(PerfConfigOrderingGemmTest,
      ConservativeDefaultScaledPassesPredicateOnGfx950) {
   GemmOrderingTestEnv e;
@@ -247,4 +265,67 @@ TEST(PerfConfigOrderingGemmTest,
         p, e.f8E4M3, e.f8E4M3, "gfx950", qBS, e.f8E8M0, e.f8E8M0))
         << "scaled default not applicable for quantBlockSize=" << qBS;
   }
+}
+
+// Production wiring: build a real scaled rock.gemm and walk through
+// `PopulateParamsInfo::fromOp` to make sure the scale element type is what
+// reaches the predicate (`getScale{A,B}Type()` hands back a tensor type and
+// `fromOp` is responsible for normalizing it).
+TEST(PerfConfigOrderingGemmTest, FromOpExtractsScaleElementTypeOnRealGemmOp) {
+  MLIRContext ctx;
+  DialectRegistry reg;
+  reg.insert<rock::RockDialect>();
+  reg.insert<func::FuncDialect>();
+  ctx.appendDialectRegistry(reg);
+  ctx.loadAllAvailableDialects();
+  OpBuilder b(&ctx);
+  Location loc = b.getUnknownLoc();
+  Type f8E4M3 = Float8E4M3FNType::get(&ctx);
+  Type f8E8M0 = Float8E8M0FNUType::get(&ctx);
+
+  OwningOpRef<ModuleOp> module = ModuleOp::create(loc);
+  b.setInsertionPointToEnd(module->getBody());
+
+  // Shapes: A [G,M,K]=[1,64,64], B [G,K,N]=[1,64,64],
+  // scaleA [G,M,K/qBS]=[1,64,2], scaleB [G,N,K/qBS]=[1,64,2], qBS=32.
+  auto aT = RankedTensorType::get({1, 64, 64}, f8E4M3);
+  auto bT = RankedTensorType::get({1, 64, 64}, f8E4M3);
+  auto scaleT = RankedTensorType::get({1, 64, 2}, f8E8M0);
+  auto cT = RankedTensorType::get({1, 64, 64}, b.getF32Type());
+
+  auto funcType = b.getFunctionType({aT, bT, scaleT, scaleT}, {cT});
+  auto func = func::FuncOp::create(b, loc, "test", funcType);
+  Block *body = func.addEntryBlock();
+  b.setInsertionPointToStart(body);
+
+  auto gemmOp = GemmOp::create(
+      b, loc, /*c=*/cT, /*a=*/body->getArgument(0), /*b=*/body->getArgument(1),
+      /*scaleA=*/body->getArgument(2), /*scaleB=*/body->getArgument(3),
+      /*aTransposed=*/UnitAttr{}, /*bTransposed=*/UnitAttr{},
+      /*oTransposed=*/UnitAttr{}, /*aScaleTransposed=*/UnitAttr{},
+      /*bScaleTransposed=*/UnitAttr{},
+      /*quantBlockSize=*/b.getI64IntegerAttr(32),
+      /*params=*/nullptr);
+  // `arch` must be readable by `rock::getArchValue`, which walks up looking
+  // for the `rock.arch` attribute.
+  (*module)->setAttr(rock::ArchAttr::getMnemonic(),
+                     b.getStringAttr("amdgcn-amd-amdhsa:gfx950"));
+
+  auto info = PopulateParamsInfo::fromOp(
+      cast<RockGemmWrapperInterface>(gemmOp.getOperation()));
+
+  // Crucial: info must carry the *element* type, not the scale tensor type.
+  ASSERT_TRUE(info.aScaleType);
+  ASSERT_TRUE(info.bScaleType);
+  EXPECT_EQ(info.aScaleType, f8E8M0);
+  EXPECT_EQ(info.bScaleType, f8E8M0);
+  ASSERT_TRUE(info.quantBlockSize.has_value());
+  EXPECT_EQ(*info.quantBlockSize, 32);
+
+  // And feeding the predicate from `info` must not assert and must accept the
+  // conservative default for this op.
+  auto p = getConservativeDefaultGemmParams(&ctx, info.quantBlockSize);
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(
+      p, info.gemmAType, info.gemmBType, info.arch, info.quantBlockSize,
+      info.aScaleType, info.bScaleType));
 }

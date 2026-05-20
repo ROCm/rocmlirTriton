@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/Support/Debug.h"
@@ -57,11 +58,15 @@ PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   info.hasFusedReduction = wRes.wasInterrupted();
 
   // Block-scaled GEMM metadata: `quantBlockSize` lives on `GemmOp`, scale
-  // element types come from the interface (null for ops without scales).
+  // element types come from the interface. `getScale{A,B}Type` returns the
+  // shaped tensor type (or null if no scale operand), so peel off the
+  // element type before storing.
   if (auto gemmOp = dyn_cast<GemmOp>(*op))
     info.quantBlockSize = gemmOp.getQuantBlockSize();
-  info.aScaleType = op.getScaleAType();
-  info.bScaleType = op.getScaleBType();
+  if (Type aScaleTy = op.getScaleAType())
+    info.aScaleType = getElementTypeOrSelf(aScaleTy);
+  if (Type bScaleTy = op.getScaleBType())
+    info.bScaleType = getElementTypeOrSelf(bScaleTy);
   return info;
 }
 

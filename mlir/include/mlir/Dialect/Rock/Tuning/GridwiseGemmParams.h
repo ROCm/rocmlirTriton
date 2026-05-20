@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -104,9 +105,11 @@ struct PopulateParamsInfo {
 /// `markAsNotApplicable` sites (kpack/splitK/numCTAs constraints + LDS
 /// budget over A+B tiles, `numStages`-buffered).
 ///
-/// For block-scaled (MXFP-style) GEMMs, pass `quantBlockSize` and the
-/// `aScaleType`/`bScaleType` returned by `RockGemmWrapperInterface::
-/// getScaleAType()`/`getScaleBType()`. The check then also:
+/// For block-scaled (MXFP-style) GEMMs, pass `quantBlockSize` and the scale
+/// element types. Element types are extracted from whatever is passed (so
+/// shaped tensor types coming from
+/// `RockGemmWrapperInterface::getScale{A,B}Type()` are handled too). The
+/// check then also:
 ///   - requires `kPerBlock % quantBlockSize == 0` (matches
 ///     `GridwiseGemmToBlockwise`'s `markAsNotApplicable` site), and
 ///   - charges per-tile scale storage to the LDS budget.
@@ -120,18 +123,25 @@ inline bool isGemmParamsConservativelyApplicable(
     return false;
   if (quantBlockSize.has_value() && p.getKPerBlock() % *quantBlockSize != 0)
     return false;
+  // The element-type args may have been threaded from interface methods that
+  // hand back shaped types; normalize so `getIntOrFloatBitWidth()` is safe.
+  Type aElem = getElementTypeOrSelf(aElemType);
+  Type bElem = getElementTypeOrSelf(bElemType);
   int64_t totalBits =
-      (p.getMPerBlock() * p.getKPerBlock() *
-       aElemType.getIntOrFloatBitWidth()) +
-      (p.getNPerBlock() * p.getKPerBlock() * bElemType.getIntOrFloatBitWidth());
+      (p.getMPerBlock() * p.getKPerBlock() * aElem.getIntOrFloatBitWidth()) +
+      (p.getNPerBlock() * p.getKPerBlock() * bElem.getIntOrFloatBitWidth());
   if (quantBlockSize.has_value() && (aScaleType || bScaleType)) {
     int64_t scaleK = llvm::divideCeil(p.getKPerBlock(), *quantBlockSize);
-    if (aScaleType)
+    if (aScaleType) {
+      Type aScaleElem = getElementTypeOrSelf(aScaleType);
       totalBits +=
-          p.getMPerBlock() * scaleK * aScaleType.getIntOrFloatBitWidth();
-    if (bScaleType)
+          p.getMPerBlock() * scaleK * aScaleElem.getIntOrFloatBitWidth();
+    }
+    if (bScaleType) {
+      Type bScaleElem = getElementTypeOrSelf(bScaleType);
       totalBits +=
-          p.getNPerBlock() * scaleK * bScaleType.getIntOrFloatBitWidth();
+          p.getNPerBlock() * scaleK * bScaleElem.getIntOrFloatBitWidth();
+    }
   }
   int64_t bytes =
       llvm::divideCeil(totalBits, static_cast<int64_t>(8)) * p.getNumStages();
