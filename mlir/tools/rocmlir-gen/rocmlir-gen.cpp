@@ -861,11 +861,7 @@ static llvm::cl::opt<bool> disableSplitKForTuning(
 ////////////////////////////////////////////////////////////////////////////////
 struct KernelIF {
   func::FuncOp func;
-  // Literal kernel signature: one entry per func argument, in declaration
-  // order.
   SmallVector<Type, 8> params;
-  // Tensor result types of the kernel func, in declaration order. Empty for
-  // memref-style kernels that write outputs via `memref.copy` instead.
   SmallVector<Type, 2> resultTypes;
   // For memref-style kernels, the indices in `params` whose backing memref is
   // a `memref.copy` target (i.e. the kernel's output buffers). For
@@ -897,32 +893,11 @@ struct KernelIF {
     }
   }
 
-  // The list of buffer slots the harness needs to manage for this kernel, in
-  // a single uniform ordering: the kernel's own parameters first, followed
-  // by one synthetic output slot per tensor result that is not already
-  // aliased by a trailing parameter.
-  //
-  // A trailing parameter "aliases" a result if the last N parameters (where
-  // N == resultTypes.size()) have the same shape and element type as the N
-  // results, in order. This is the form a kernel takes after the
-  // `rock-insert-output-stores` pass (which appends one output arg per
-  // return value); for memref-style kernels with no func.return results,
-  // this is trivially true (numResults == 0) and signatureTypes ==
-  // numKernelParams == params.
-  //
-  // Returns (signatureTypes, numKernelParams). The caller can find:
-  //   * input slots:           signatureTypes[0 .. numKernelParams - numResults)
-  //   * trailing kernel slots: signatureTypes[numKernelParams - numResults
-  //                                           .. numKernelParams)  (Case 1
-  //                                           output args)
-  //                                           OR empty (Case 2, since
-  //                                           numResults trailing args
-  //                                           wouldn't alias)
-  //   * synthetic output slots:signatureTypes[numKernelParams .. end)
-  //
-  // The output slot indices (i.e. where to find each result's buffer) are
-  // always the LAST `numResults` entries of signatureTypes, regardless of
-  // case.
+  // Returns a pair of (signatureSlots, numKernelParams).
+  // - signatureSlots is a mix of 2 things:
+  //   1. The kernel's own parameters.
+  //   2. One synthetic output slot per tensor result that is not already aliased by a trailing parameter.
+  // - numKernelParams is the number of kernel parameters.
   std::pair<SmallVector<Type, 8>, size_t> getSignatureSlots() const {
     SmallVector<Type, 8> slots(params.begin(), params.end());
     size_t numKernelParams = params.size();
@@ -932,6 +907,7 @@ struct KernelIF {
 
     size_t numResults = resultTypes.size();
     bool aliased = numKernelParams >= numResults;
+    // Step 1. Add kernel's own params to the signature slots.
     if (aliased) {
       size_t offset = numKernelParams - numResults;
       for (size_t i = 0; i < numResults; ++i) {
@@ -945,11 +921,16 @@ struct KernelIF {
         }
       }
     }
+
+    // Step 2. If the results are not aliased, add one memref slot per result.
     if (!aliased) {
       // Synthesize one memref-shaped slot per result. The slot type is a
       // memref of the result's shape and element type so the rest of the
       // harness (which expects memref-typed localVars/valVars) can treat it
       // uniformly with the kernel's other slots.
+      // 
+      // TODO(rocmlirTriton): This should be tensors once we have fully
+      // unbufferized rocmlir-gen.
       for (Type resultType : resultTypes) {
         auto resultST = cast<ShapedType>(resultType);
         slots.push_back(
@@ -1442,13 +1423,8 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   OpBuilder b(context);
   auto loc = kernels[0].func->getLoc();
 
-  // The wrapper's signature is the kernel's full set of harness-managed
-  // buffer slots (see KernelIF::getSignatureSlots): the kernel's literal
-  // arguments first, followed by one synthetic output memref per tensor
-  // result that does not already alias a trailing argument. In Case 1
-  // (aliased results) this is just the kernel's params; in Case 2 (pure
-  // tensor results) it has additional trailing memref args for the harness
-  // to bind output buffers to.
+  // Create gpu wrapper function
+  // Convert tensor types to memref types for the wrapper function
   auto [signatureSlots, numKernelParams] = kernels[0].getSignatureSlots();
   SmallVector<Type, 4> wrapperArgTypes;
   for (Type t : signatureSlots) {
@@ -1510,10 +1486,7 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
     Value gpuAlloc = gpuAllocOp.getResult(0);
     gpuMem.push_back(gpuAlloc);
 
-    // Emit CPU->GPU memcpy function calls. Synthetic output slots get the
-    // same treatment as input slots; their contents are write-only from the
-    // kernel's perspective but the GPU side may need a sensible pre-state
-    // for prefilled / splitK-accumulated outputs.
+    // Emit CPU->GPU memcpy function calls.
     gpu::MemcpyOp::create(b, loc, TypeRange{}, ValueRange{gpuAlloc, arg});
   }
 
@@ -1551,9 +1524,7 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
           memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
         }
       } else {
-        // Legacy memref-based kernel - call directly. Memref-based kernels
-        // have no func.return results, so signatureSlots == params and
-        // gpuMem has exactly the kernel's arg count.
+        // Legacy memref-based kernel - call directly.
         func::CallOp::create(b, loc, kernel.func, gpuMem);
       }
     }
