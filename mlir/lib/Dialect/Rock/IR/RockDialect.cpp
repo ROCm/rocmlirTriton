@@ -1383,7 +1383,7 @@ GemmSize GemmOp::getGemmSize() {
 }
 
 //===-----------------------------------------------------===//
-//  GridwiseGemmAccel Op
+//  GridwiseGemm Op
 //===-----------------------------------------------------===//
 template <typename GridOp>
 static LogicalResult verifyGridwiseGemm(GridOp op) {

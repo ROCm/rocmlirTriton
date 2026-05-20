@@ -342,7 +342,7 @@ func.func @gemm_kperblock_not_divisible_by_quantblocksize(
   wavesPerEU = 0, gridGroupSize = 0,
   numCTAs = 1>
 
-func.func @gridwise_gemm_accel_scale_presence_a_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA: tensor<1x4x8xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @gridwise_gemm_scale_presence_a_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA: tensor<1x4x8xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{both scaleA and scaleB must be provided or neither}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA) {
     params = #common_params
@@ -352,7 +352,7 @@ func.func @gridwise_gemm_accel_scale_presence_a_only(%A: tensor<1x4x8xf4E2M1FN>,
 }
 
 // Scale presence B only
-func.func @gridwise_gemm_accel_scale_presence_b_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleB: tensor<1x4x16xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @gridwise_gemm_scale_presence_b_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleB: tensor<1x4x16xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{both scaleA and scaleB must be provided or neither}}
   %result = rock.gridwise_gemm(%A, %B, %scaleB) {
     params = #common_params
@@ -373,7 +373,7 @@ func.func @gridwise_gemm_scale_missing_quantblocksize(%A: tensor<1x8x32xf4E2M1FN
 }
 
 // scaleA dims mismatch
-func.func @gridwise_gemm_accel_scaleA_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x7xf8E8M0FNU>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @gridwise_gemm_scaleA_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x7xf8E8M0FNU>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{ScaleA shape must match matrixA shape.}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA_bad_dims, %scaleB) {
     quantBlockSize = 32 : i64,
@@ -384,7 +384,7 @@ func.func @gridwise_gemm_accel_scaleA_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>,
 }
 
 // scaleB dims mismatch
-func.func @gridwise_gemm_accel_scaleB_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x1xf8E8M0FNU>, %scaleB: tensor<1x16x2xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @gridwise_gemm_scaleB_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x1xf8E8M0FNU>, %scaleB: tensor<1x16x2xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{ScaleB shape must match matrixB shape.}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA_bad_dims, %scaleB) {
     quantBlockSize = 32 : i64,

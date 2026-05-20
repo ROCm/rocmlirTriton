@@ -269,9 +269,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   if (failed(validateKpack(op, attnPerfConfig.getKpack())))
     return signalPassFailure();
 
-  auto accelParams =
+  auto params =
       PopulateParamsGemmGemm::getGemmParams(builder, op, attnPerfConfig);
-  if (failed(accelParams)) {
+  if (failed(params)) {
     op.emitError("The provided perf config is not valid");
     return signalPassFailure();
   }
@@ -294,18 +294,18 @@ void AffixTuningParameters::affixTuningParametersImpl(
       return signalPassFailure();
     }
   }
-  GemmParamsAttr accelParams0, accelParams1;
-  accelParams0 = accelParams->first;
-  accelParams1 = accelParams->second;
-  LLVM_DEBUG(llvm::dbgs() << "accelParams0=" << accelParams0 << "\n");
-  LLVM_DEBUG(llvm::dbgs() << "accelParams1=" << accelParams1 << "\n");
-  op.setGemm0ParamsAttr(accelParams0);
-  op.setGemm1ParamsAttr(accelParams1);
+  GemmParamsAttr params0, params1;
+  params0 = params->first;
+  params1 = params->second;
+  LLVM_DEBUG(llvm::dbgs() << "params0=" << params0 << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "params1=" << params1 << "\n");
+  op.setGemm0ParamsAttr(params0);
+  op.setGemm1ParamsAttr(params1);
 
   // Set block size on the function (use gemm0 params since both gemms
   // share the same wave/block configuration).
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
-  int64_t blockSize = obtainBlockSize(waveSize, accelParams0);
+  int64_t blockSize = obtainBlockSize(waveSize, params0);
   assert(blockSize > 0);
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           builder.getI32IntegerAttr(blockSize));

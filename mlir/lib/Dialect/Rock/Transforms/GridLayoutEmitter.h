@@ -15,8 +15,9 @@
 // limitations under the License.
 // =============================================================================
 //
-// This class tries to abstract away the code-generation details needed to
-// generated calls to matrix multiply accelerator intrinsics (wmma, mfma).
+// Helpers that map a flat block id onto the kernel grid by emitting the
+// <group, m-block, n-block> triplet used by the generated gemm/attention
+// kernels.
 //
 //
 //===----------------------------------------------------------------------===//

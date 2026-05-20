@@ -1,4 +1,5 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir-c/Dialect/Rock.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/ConvolutionDims.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
@@ -35,7 +36,6 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
 }
 
 /// Static data for tuning parameters (used by ParamLookupTable).
-/// Covers both MFMA (gfx9) and WMMA (gfx1*) architectures.
 // clang-format off
 #define Gemm_DEFINITIONS_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
@@ -85,16 +85,16 @@ GemmSize mlir::rock::calculatePaddedGemmSize(int64_t kPerBlock,
   return gemmSize;
 }
 
-std::optional<GemmSize> mlir::rock::requiredPadding(Attribute params,
+std::optional<GemmSize> mlir::rock::requiredPadding(Attribute paramsAttr,
                                                     GemmSize gemmSize,
                                                     int64_t mulByKPerBlock,
                                                     int64_t mulByMPerBlock,
                                                     int64_t mulByNPerBlock) {
   int64_t kPerBlock, mPerBlock, nPerBlock;
-  if (auto accelParams = dyn_cast<GemmParamsAttr>(params)) {
-    kPerBlock = accelParams.getKPerBlock();
-    mPerBlock = accelParams.getMPerBlock();
-    nPerBlock = accelParams.getNPerBlock();
+  if (auto params = dyn_cast<GemmParamsAttr>(paramsAttr)) {
+    kPerBlock = params.getKPerBlock();
+    mPerBlock = params.getMPerBlock();
+    nPerBlock = params.getNPerBlock();
   } else {
     llvm_unreachable("The tuning parameters are general or xdlops");
   }
@@ -106,6 +106,42 @@ std::optional<GemmSize> mlir::rock::requiredPadding(Attribute params,
 int64_t mlir::rock::obtainBlockSize(int64_t waveSize, GemmParamsAttr params) {
   return waveSize * params.getNumWaves();
 }
+
+template <typename ParamsAttr>
+FailureOr<ParamsAttr>
+mlir::rock::materializeTuningParams(OpBuilder &b, StringRef perfConfig,
+                                    ArrayRef<ParamsAttr> defaults) {
+  StringAttr perfConfigAttr;
+  if (!perfConfig.empty()) {
+    perfConfigAttr = b.getStringAttr(perfConfig);
+  } else {
+    if (defaults.empty()) {
+      LLVM_DEBUG(llvm::dbgs() << "Quick tuning list is empty\n");
+      return failure();
+    }
+    ParamsAttr validParams = defaults.front();
+    LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
+    SmallVector<char, ROCMLIR_TUNING_PARAM_STRING_BUFSZ> buf;
+    validParams.getPerfConfigStr(buf);
+    perfConfigAttr = b.getStringAttr(buf);
+  }
+  ParamsAttr params = ParamsAttr::get(perfConfigAttr);
+  if (!params) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Invalid perfConfig: " << perfConfigAttr << "\n");
+    return failure();
+  }
+  return params;
+}
+
+// Explicit instantiations. Add new instantiations here if you need a new
+// ParamsAttr type to use this helper.
+template FailureOr<GemmParamsAttr>
+mlir::rock::materializeTuningParams<GemmParamsAttr>(OpBuilder &, StringRef,
+                                                    ArrayRef<GemmParamsAttr>);
+template FailureOr<GemmGemmParamsAttr>
+mlir::rock::materializeTuningParams<GemmGemmParamsAttr>(
+    OpBuilder &, StringRef, ArrayRef<GemmGemmParamsAttr>);
 
 static LogicalResult couldFusedReductionBePerformant(const GemmSize &gemmSize,
                                                      int64_t mPerBlock,
@@ -147,9 +183,8 @@ static int64_t calculatePaddingComplexity(const GemmSize &paddingAmount,
   return paddedComplexity - nonPaddedComplexity;
 }
 
-int64_t
-PopulateParamsAccel::calculatePaddingAmount(GemmParamsAttr params,
-                                            const GemmSize &gemmSize) const {
+int64_t PopulateParams::calculatePaddingAmount(GemmParamsAttr params,
+                                               const GemmSize &gemmSize) const {
   std::optional<GemmSize> maybeGemmExtraPad =
       calculatePadding(params.getKPerBlock(), params.getMPerBlock(),
                        params.getNPerBlock(), gemmSize);
@@ -159,9 +194,8 @@ PopulateParamsAccel::calculatePaddingAmount(GemmParamsAttr params,
   return 0;
 }
 
-LogicalResult
-PopulateParamsAccel::couldBePerformant(const PopulateParamsInfo &info,
-                                       GemmParamsAttr params) {
+LogicalResult PopulateParams::couldBePerformant(const PopulateParamsInfo &info,
+                                                GemmParamsAttr params) {
   if (info.hasFusedReduction) {
     return couldFusedReductionBePerformant(info.gemmSize, params.getMPerBlock(),
                                            params.getNPerBlock());
@@ -171,45 +205,23 @@ PopulateParamsAccel::couldBePerformant(const PopulateParamsInfo &info,
                                    info.arch);
 }
 
-FailureOr<GemmParamsAttr> PopulateParamsAccel::obtainTuningParameters(
+FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
     OpBuilder &b, const PopulateParamsInfo &info, const StringRef perfConfig) {
-
-  StringAttr perfConfigAttr;
-  if (!perfConfig.empty()) {
-    // Under two scenarios can we receive a perfConfig:
-    // 1. This is tuning mode
-    // 2. This is running mode and we have succeeded with a perfdb load
-    perfConfigAttr = StringAttr::get(b.getContext(), perfConfig);
-  } else {
-    auto paramSets = getTuningParameters(b, info.kernelType, info.gemmAType,
-                                         info.gemmBType, info.arch);
-
-    auto orderedParams = orderParams(paramSets, info.gemmSize);
-    if (orderedParams.empty()) {
-      LLVM_DEBUG(llvm::dbgs() << "Quick tuning list is empty\n");
-      return failure();
-    }
-
-    GemmParamsAttr validParams = orderedParams.front();
-    LLVM_DEBUG(llvm::dbgs() << validParams << "\n");
-    SmallVector<char, 64> perfConfigBuf;
-    validParams.getPerfConfigStr(perfConfigBuf);
-    perfConfigAttr = StringAttr::get(b.getContext(), perfConfigBuf);
-  }
-
-  GemmParamsAttr params = GemmParamsAttr::get(perfConfigAttr);
-  if (!params) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "Invalid perfConfig: " << perfConfigAttr << "\n");
-    return failure();
-  }
-
-  return params;
+  // Under two scenarios can we receive a non-empty perfConfig:
+  // 1. This is tuning mode
+  // 2. This is running mode and we have succeeded with a perfdb load.
+  // Otherwise we fall back to the first quick-tuning entry, after ordering
+  // candidates so that padding-free ones come first.
+  auto paramSets = getTuningParameters(b, info.kernelType, info.gemmAType,
+                                       info.gemmBType, info.arch);
+  std::vector<GemmParamsAttr> orderedParams =
+      orderParams(paramSets, info.gemmSize);
+  return materializeTuningParams<GemmParamsAttr>(b, perfConfig, orderedParams);
 }
 
 FailureOr<GemmParamsAttr>
-PopulateParamsAccel::obtainTuningParameters(OpBuilder &b,
-                                            RockGemmWrapperInterface op) {
+PopulateParams::obtainTuningParameters(OpBuilder &b,
+                                       RockGemmWrapperInterface op) {
   PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
 
   StringRef perfConfig;

@@ -20,43 +20,32 @@ using namespace mlir::rock;
 
 FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
     OpBuilder &b, RockGemmGemmWrapperInterface op) {
-  // default perfConfig
-  StringAttr perfConfig = b.getStringAttr("attn:v1:32,32,32,1,1,4,0,1,1,0,0");
-  if (StringAttr mayBePerfConfig =
-          dyn_cast_or_null<StringAttr>(op->getAttr("perf_config"))) {
-    perfConfig = mayBePerfConfig;
-  }
-  GemmGemmParamsAttr params = GemmGemmParamsAttr::get(perfConfig);
-  if (!params) {
-    LLVM_DEBUG(llvm::dbgs() << "Invalid perfConfig: " << perfConfig << "\n");
-    return failure();
-  }
-  return params;
+  // Prefer the user-supplied `perf_config` attribute on the op; if it's
+  // absent, fall back to the first entry of the per-(arch, kernel, dtype)
+  // quick tuning list as the default perfConfig.
+  StringRef perfConfig;
+  if (auto mayBePerfConfig =
+          dyn_cast_or_null<StringAttr>(op->getAttr("perf_config")))
+    perfConfig = mayBePerfConfig.getValue();
+  return materializeTuningParams<GemmGemmParamsAttr>(
+      b, perfConfig, getTuningParameters(b, op));
 }
 
 std::vector<GemmGemmParamsAttr>
 PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
                                             RockGemmGemmWrapperInterface op) {
+  return getTuningParameters(b, rock::getArchValue(op), op.getKernelType(),
+                             cast<ShapedType>(op.getAType()).getElementType());
+}
+
+std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
+    OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType) {
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
-      rock::getArchValue(op), op.getKernelType(),
-      cast<ShapedType>(op.getAType()).getElementType());
-  return deserializePerfConfigs(b, op, perfConfigs);
-}
-
-GemmGemmParamsAttr PopulateParamsGemmGemm::deserializePerfConfig(
-    OpBuilder &b, RockGemmGemmWrapperInterface op, StringRef config) {
-  auto stringAttr = b.getStringAttr(config);
-  return GemmGemmParamsAttr::get(stringAttr);
-}
-
-std::vector<GemmGemmParamsAttr>
-PopulateParamsGemmGemm::deserializePerfConfigs(OpBuilder &b,
-                                               RockGemmGemmWrapperInterface op,
-                                               ArrayRef<StringRef> configs) {
+      arch, kernelType, elementType);
   std::vector<GemmGemmParamsAttr> ret;
-  ret.reserve(configs.size());
-  for (StringRef config : configs) {
-    if (auto params = deserializePerfConfig(b, op, config))
+  ret.reserve(perfConfigs.size());
+  for (StringRef config : perfConfigs) {
+    if (auto params = GemmGemmParamsAttr::get(b.getStringAttr(config)))
       ret.push_back(params);
   }
   return ret;
@@ -66,10 +55,10 @@ FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
 PopulateParamsGemmGemm::getGemmParams(OpBuilder &b,
                                       RockGemmGemmWrapperInterface op,
                                       GemmGemmParamsAttr params) {
-  GemmParamsAttr accelParams0 = getGemm0Params(b, params);
-  GemmParamsAttr accelParams1 = getGemm1Params(b, op, params);
+  GemmParamsAttr params0 = getGemm0Params(b, params);
+  GemmParamsAttr params1 = getGemm1Params(b, op, params);
 
-  return std::make_pair(accelParams0, accelParams1);
+  return std::make_pair(params0, params1);
 }
 
 GemmParamsAttr
