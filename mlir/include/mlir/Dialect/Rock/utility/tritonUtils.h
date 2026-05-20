@@ -15,6 +15,8 @@
 //     ->
 //     triton/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
 //        (mlirTypeToScaledElemType, extended with BF16/FP16)
+//   emitFloatAtomicMax
+//     -> triton/python/triton/language/semantic.py::atomic_max
 //===----------------------------------------------------------------------===//
 
 #include "mlir/IR/Types.h"
@@ -25,8 +27,14 @@
 
 namespace mlir {
 
+class Operation;
+class PatternRewriter;
+class Value;
+
 namespace triton {
 enum class ScaleDotElemType : uint32_t;
+enum class MemSemantic : uint32_t;
+enum class MemSyncScope : uint32_t;
 namespace AMD {
 enum class ISAFamily;
 } // namespace AMD
@@ -60,6 +68,26 @@ LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
                            uint32_t blockSize, uint32_t shared_memory,
                            uint32_t num_ctas, hipStream_t stream,
                            void **params);
+
+/// Emit a float atomic_max as two integer atomic_rmw ops on disjoint masks,
+/// mirroring upstream Triton's frontend trick in
+/// python/triton/language/semantic.py::atomic_max.
+///
+/// The float operand is bitcast to a signless integer of matching width and
+/// the operation is split by the sign bit:
+///   * positive lanes (signbit == 0)  -> RMWOp::MAX  (signed int)
+///   * negative lanes (signbit == 1)  -> RMWOp::UMIN (unsigned int)
+///
+/// For non-negative IEEE floats the int reinterpretation preserves order, so
+/// a signed integer MAX is equivalent to fmax. For negative IEEE floats, a
+/// larger magnitude corresponds to a larger unsigned bit pattern, so unsigned
+/// MIN picks the one closest to zero, i.e. the maximum among negatives.
+///
+/// Only f32 is supported today; other widths emit a diagnostic on `op`.
+LogicalResult emitFloatAtomicMax(PatternRewriter &rewriter, Operation *op,
+                                 Value value, Value ptrTensor, Value mask,
+                                 triton::MemSemantic sem,
+                                 triton::MemSyncScope scope);
 
 } // namespace rock
 } // namespace mlir

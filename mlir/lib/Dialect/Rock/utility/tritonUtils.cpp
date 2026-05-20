@@ -7,7 +7,9 @@
 
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "TritonAMDGPUToLLVM/TargetUtils.h"
@@ -110,6 +112,89 @@ LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
     if (status != hipSuccess)
       return failure();
   }
+  return success();
+}
+
+// Mirrors python/triton/language/semantic.py::atomic_max. See header for the
+// per-lane sign-bit-split rationale. The op verifier for
+// `rock.blockwise_store_ptr` (RockOps.td) constrains its source operand to
+// `NativeMemoryOpTypes`, which excludes F64, so the f64 arm of upstream
+// `semantic.py::atomic_max` is unreachable here. F16/BF16 are in
+// `NativeMemoryOpTypes` and so can reach this guard via hand-written IR,
+// but the production emitter, `rock.reduce max`, gated by
+// `rock::isFastAtomicMaxSupported` only emits f32, so this diagnostic is
+// primarily a safety net for test IR and any future direct emitter of
+// `StoreMethod::AtomicMax`.
+LogicalResult emitFloatAtomicMax(PatternRewriter &rewriter, Operation *op,
+                                 Value value, Value ptrTensor, Value mask,
+                                 triton::MemSemantic sem,
+                                 triton::MemSyncScope scope) {
+  Location loc = op->getLoc();
+  auto valueType = cast<RankedTensorType>(value.getType());
+  auto ptrTensorType = cast<RankedTensorType>(ptrTensor.getType());
+  auto maskTensorType = cast<RankedTensorType>(mask.getType());
+  auto fpType = cast<FloatType>(valueType.getElementType());
+
+  if (!fpType.isF32()) {
+    return op->emitError("atomic_max on floating point requires f32; got ")
+           << fpType;
+  }
+  unsigned bw = fpType.getWidth();
+
+  Type intElemType = rewriter.getIntegerType(bw);
+  auto intTensorType = RankedTensorType::get(valueType.getShape(), intElemType,
+                                             valueType.getEncoding());
+  auto intPtrType = triton::PointerType::get(intElemType, 1);
+  auto intPtrTensorType = RankedTensorType::get(
+      ptrTensorType.getShape(), intPtrType, ptrTensorType.getEncoding());
+
+  // tt.bitcast value and pointer to signless integer. Upstream emits two
+  // bitcasts (one to the signed Triton-language int type, one to the
+  // unsigned), but both lower to the same signless MLIR op so we only emit
+  // one of each here; CSE would otherwise dedupe them. The signed-vs-
+  // unsigned distinction lives in the RMWOp attribute on the atomic, not
+  // in the operand type.
+  Value intVal = triton::BitcastOp::create(rewriter, loc, intTensorType, value);
+  Value intPtr =
+      triton::BitcastOp::create(rewriter, loc, intPtrTensorType, ptrTensor);
+
+  // _signbit(val) mirrors semantic.py:1285-1290 exactly:
+  //   ix      = bitcast(val, uint{bw})    # == intVal above
+  //   shifted = lshr(ix, bw - 1)          # arith.shrui  -- not ashr
+  //   neg     = cast(shifted, i1)
+  // The final cast to i1 takes the int->bool branch of cast() at
+  // semantic.py:872-875, which lowers to not_equal(shifted, 0), i.e.
+  // arith.cmpi ne -- NOT an arith.trunci. Using shrui (logical, not
+  // arithmetic) matters: ashr would smear the sign bit and produce
+  // non-{0,1} bytes that the cmpi-ne would still flatten correctly, but
+  // the IR would no longer match upstream.
+  Value shiftAmt = arith::ConstantOp::create(
+      rewriter, loc, intTensorType,
+      DenseElementsAttr::get(intTensorType,
+                             rewriter.getIntegerAttr(intElemType, bw - 1)));
+  Value shifted = arith::ShRUIOp::create(rewriter, loc, intVal, shiftAmt);
+  Value zeroInt = arith::ConstantOp::create(
+      rewriter, loc, intTensorType, rewriter.getZeroAttr(intTensorType));
+  Value neg = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ne,
+                                    shifted, zeroInt);
+
+  // pos = not_(neg) -- semantic.py invert() xors against an all-ones value
+  // of the operand type; for i1 that's a true splat (semantic.py:454-457,
+  // 487-492).
+  Value trueSplat = arith::ConstantOp::create(
+      rewriter, loc, maskTensorType,
+      DenseElementsAttr::get(maskTensorType, rewriter.getBoolAttr(true)));
+  Value pos = arith::XOrIOp::create(rewriter, loc, neg, trueSplat);
+
+  // Disjoint per-lane masks: every lane participates in exactly one of the
+  // two atomics, so the trick stays per-lane atomic.
+  Value posMask = arith::AndIOp::create(rewriter, loc, mask, pos);
+  Value negMask = arith::AndIOp::create(rewriter, loc, mask, neg);
+
+  triton::AtomicRMWOp::create(rewriter, loc, intTensorType, triton::RMWOp::MAX,
+                              intPtr, intVal, posMask, sem, scope);
+  triton::AtomicRMWOp::create(rewriter, loc, intTensorType, triton::RMWOp::UMIN,
+                              intPtr, intVal, negMask, sem, scope);
   return success();
 }
 
