@@ -42,6 +42,12 @@ struct CpuTileTriple {
 ///
 /// Dynamic dims are passed through as `ShapedType::kDynamic`; LUT entries
 /// are free to ignore those dims and return whatever default the CPU prefers.
+///
+/// Autotuning override: the env vars `ROCMLIR_CPU_TILE_M`,
+/// `ROCMLIR_CPU_TILE_N`, and `ROCMLIR_CPU_TILE_K` (all positive integers,
+/// all three set together) bypass the LUT and the per-CPU pickers
+/// entirely, returning the requested triple verbatim. This is intended for
+/// the Python autotuner in `mlir/utils/performance/cpuTileAutotuner.py`.
 std::optional<CpuTileTriple> lookupHostCpuTileSizes(int64_t M, int64_t N,
                                                     int64_t K);
 
