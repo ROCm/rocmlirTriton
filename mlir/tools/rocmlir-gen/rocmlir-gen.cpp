@@ -809,8 +809,8 @@ static llvm::cl::opt<float>
 // `legacy` is the three-gate RMS/absDiff/relDiff verifier emitted by
 // mcpuVerifyFloat. `allclose` is the |a - b| <= atol + rtol*|b| verifier
 // emitted by mcpuVerifyFloatAllclose, with per-dtype K-scaled defaults. Default
-// stays `legacy` until the ~100 existing tests get migrated in PR2; setting
-// -atol or -rtol on the command line implies `allclose`.
+// stays `legacy` until the ~100 existing tests get migrated in the follow-up PR
+// setting -atol or -rtol on the command line implies `allclose`.
 enum class ComparatorMode { Legacy, Allclose };
 static llvm::cl::opt<ComparatorMode> comparatorMode(
     "comparator",
