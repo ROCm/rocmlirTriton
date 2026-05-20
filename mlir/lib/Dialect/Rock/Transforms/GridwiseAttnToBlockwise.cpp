@@ -1100,7 +1100,8 @@ struct GridwiseAttentionRewritePattern
     // can prefetch the Q tile into regs outside of the
     // loop.
     Value loadedQ;
-    // TODO(roctriton): do this in an independent pass, hoist loads out of the loop if possible
+    // TODO(rocmlirTriton): do this in an independent pass, hoist loads out of
+    // the loop if possible
     if (prefetchQTile) {
       LLVM_DEBUG(llvm::dbgs()
                  << "rock.attention: gemm0K is equal to gemm0KPerBlock\n");
@@ -1177,7 +1178,6 @@ struct GridwiseAttentionRewritePattern
                            gridCoordsGemm0, gemm0KPerBlock, gemm0NPerBlock,
                            /*isKFirst=*/true, gemm0BidGridLengths);
 
-        // TODO(roctriton): scaled gemm
         Value newAcc = BlockwiseGemmOp::create(
             rewriter, loc, loadedQ, loadedK, accArg,
             /*matrixScaleA=*/nullptr,
@@ -1359,7 +1359,6 @@ struct GridwiseAttentionRewritePattern
                                      gemm1KPerBlock, gemm1NPerBlock,
                                      /*isKFirst=*/true, gemm1BidGridLengths);
 
-      // TODO(roctriton): scaled gemm
       Value gemm1Out = BlockwiseGemmOp::create(
           rewriter, loc, gemm0Out, loadedV, gemm1InitAcc,
           /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,

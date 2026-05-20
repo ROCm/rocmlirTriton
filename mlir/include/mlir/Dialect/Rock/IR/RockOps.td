@@ -27,7 +27,6 @@ include "mlir/Interfaces/LoopLikeInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/VectorInterfaces.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
-include "mlir/IR/OpAsmInterface.td"
 
 // Base class for Rock dialect ops.
 class Rock_Op<string mnemonic, list<Trait> traits = []> :
@@ -189,8 +188,6 @@ def Rock_AttentionOp
     : Rock_Op<
           "attention", [RecursiveMemoryEffects, RecursivelySpeculatable,
                         DeclareOpInterfaceMethods<RockGemmGemmWrapperInterface>,
-                        DeclareOpInterfaceMethods<
-                            OpAsmOpInterface, ["getAsmResultNames"]>,
                         RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins TensorOf<[F32, F16, BF16, I8]>:$queries,
           TensorOf<[F32, F16, BF16, I8]>:$keys,
@@ -528,11 +525,9 @@ def Rock_GridwiseGemmOp
 
 // gridwise_attention
 def Rock_GridwiseAttentionOp
-    : Rock_Op<
-          "gridwise_attention",
-          [RecursiveMemoryEffects, RecursivelySpeculatable, RockFusionRoot,
-           DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
-           AttrSizedOperandSegments]>,
+    : Rock_Op<"gridwise_attention", [RecursiveMemoryEffects,
+                                     RecursivelySpeculatable, RockFusionRoot,
+                                     AttrSizedOperandSegments]>,
       Arguments<(ins TensorRankOf<[F32, F16, BF16, I8], [3]>:$queries,
           TensorRankOf<[F32, F16, BF16, I8], [3]>:$keys,
           TensorRankOf<[F32, F16, BF16], [3]>:$values,
@@ -761,11 +756,9 @@ def Rock_BlockwiseStorePtrOp
 }
 
 def Rock_TransformsToPtrOp
-    : Rock_Op<
-          "transforms_to_ptr",
-          [Pure, AllShapesMatch<["pointers", "mask"]>,
-           DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
-           DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
+    : Rock_Op<"transforms_to_ptr", [Pure, AllShapesMatch<["pointers", "mask"]>,
+                                    DeclareOpInterfaceMethods<
+                                        InferTypeOpInterface>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Variadic<I32>:$extraIndices)>,
       Results<(outs RankedTensorOf<[I32]>:$pointers,

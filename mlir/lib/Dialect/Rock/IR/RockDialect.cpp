@@ -1488,13 +1488,11 @@ LogicalResult BlockwiseLoadOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-  // Operand layout: source (index 0), then variadic sourceIndices.
-  if (operands.empty())
-    return emitOptionalError(location, "expected at least a source operand");
-  auto sourceType = dyn_cast<RankedTensorType>(operands.front().getType());
+  BlockwiseLoadOp::Adaptor adaptor(operands, attributes, properties, regions);
+  auto sourceType = dyn_cast<RankedTensorType>(adaptor.getSource().getType());
   if (!sourceType)
     return emitOptionalError(location, "source must be a ranked tensor");
-  size_t numSourceIndices = operands.size() - 1;
+  size_t numSourceIndices = adaptor.getSourceIndices().size();
   if (numSourceIndices > static_cast<size_t>(sourceType.getRank()))
     return emitOptionalError(location,
                              "number of source indices exceeds source rank");
@@ -1645,12 +1643,8 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-  // Result type equals matrixC's type (3rd operand; matrixA, matrixB, matrixC
-  // are required and ordered first, before the optional scale operands).
-  if (operands.size() < 3)
-    return emitOptionalError(location,
-                             "expected at least matrixA, matrixB, matrixC");
-  inferredReturnTypes.push_back(operands[2].getType());
+  BlockwiseGemmOp::Adaptor adaptor(operands, attributes, properties, regions);
+  inferredReturnTypes.push_back(adaptor.getMatrixC().getType());
   return success();
 }
 
@@ -1695,13 +1689,6 @@ LogicalResult GridwiseAttentionOp::verify() {
   return success();
 }
 
-void GridwiseAttentionOp::getAsmResultNames(
-    function_ref<void(Value, StringRef)> setNameFn) {
-  setNameFn(getResult(), "attn");
-  if (Value lse = getLse())
-    setNameFn(lse, "lse");
-}
-
 //===-----------------------------------------------------===//
 // TransformsToPtrOp
 //===-----------------------------------------------------===//
@@ -1730,23 +1717,15 @@ LogicalResult TransformsToPtrOp::verify() {
   return success();
 }
 
-void TransformsToPtrOp::getAsmResultNames(
-    function_ref<void(Value, StringRef)> setNameFn) {
-  setNameFn(getPointers(), "ptrs");
-  setNameFn(getMask(), "mask");
-}
-
 LogicalResult TransformsToPtrOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-  // Operand layout: source (index 0), then variadic extraIndices.
-  if (operands.empty())
-    return emitOptionalError(location, "expected at least a source operand");
-  auto sourceType = dyn_cast<RankedTensorType>(operands.front().getType());
+  TransformsToPtrOp::Adaptor adaptor(operands, attributes, properties, regions);
+  auto sourceType = dyn_cast<RankedTensorType>(adaptor.getSource().getType());
   if (!sourceType)
     return emitOptionalError(location, "source must be a ranked tensor");
-  size_t numExtraIndices = operands.size() - 1;
+  size_t numExtraIndices = adaptor.getExtraIndices().size();
   if (numExtraIndices > static_cast<size_t>(sourceType.getRank()))
     return emitOptionalError(location,
                              "number of extra indices exceeds source rank");
@@ -2173,13 +2152,6 @@ LogicalResult AttentionOp::verify() {
 
   return verifyGemmPlusGemmLikeOp(*this, getCurrentSeqLen(), getLse(),
                                   getNumHeadsQ(), getNumHeadsKV());
-}
-
-void AttentionOp::getAsmResultNames(
-    function_ref<void(Value, StringRef)> setNameFn) {
-  setNameFn(getResult(), "attn");
-  if (Value lse = getLse())
-    setNameFn(lse, "lse");
 }
 
 //===-----------------------------------------------------===//

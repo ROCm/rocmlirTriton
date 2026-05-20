@@ -95,10 +95,6 @@ struct BlockwiseStoreRewritePattern
         TransformsToPtrOp::create(b, loc, dest, extraIndices);
     Value pointerTensor = transformsToPtrOp.getPointers();
     Value maskTensor = transformsToPtrOp.getMask();
-
-    // BlockwiseStorePtrOp has no results, so we cannot use replaceOpWithNewOp
-    // (it asserts on result-count mismatch). Step 1 of the pass guarantees the
-    // old store's result is dead by the time we get here.
     BlockwiseStorePtrOp::create(b, loc, pointerTensor, maskTensor, source,
                                 storeMethod);
     b.eraseOp(op);
@@ -140,6 +136,12 @@ struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
 
 void RockLowerBlockwiseToPtrPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
+
+  // Only operate on kernel functions; non-kernel funcs may legitimately return
+  // tensors and must not have their signatures rewritten to void.
+  auto funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
 
   // Step 1: rewrite returns to void before lowering stores. This must happen
   // first because BlockwiseStorePtrOp has no result, so any remaining use of
