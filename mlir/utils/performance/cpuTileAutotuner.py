@@ -76,7 +76,8 @@ class TrialResult:
     """Outcome of a single (triple, trial) measurement."""
 
     triple: Triple
-    ms: Optional[float]  # None if compile/run failed or timed out.
+    ms: Optional[float]  # CPU validation time in ms; None on failure/timeout.
+    wall_s: float = 0.0  # Wall time the subprocess pipeline took, in seconds.
     note: str = ""
 
 
@@ -199,16 +200,27 @@ def trial(
     triple: Triple,
     timeout_s: float,
 ) -> TrialResult:
-    """Run a single (triple, trial) pair and parse the timing."""
+    """Run a single (triple, trial) pair and parse the timing.
+
+    Records both the wall-clock duration of the whole pipeline and the
+    parsed CPU-validation time so the caller can separate the verifier
+    cost (what we're optimizing) from the JIT/init/GPU overhead (which
+    dominates wall time on small shapes).
+    """
+    t0 = time.monotonic()
     stdout, note = run_pipeline(cmds, triple.env(), timeout_s)
+    wall_s = time.monotonic() - t0
     if stdout is None:
-        return TrialResult(triple=triple, ms=None, note=note)
+        return TrialResult(triple=triple, ms=None, wall_s=wall_s, note=note)
     ms = parse_cpu_time_ms(stdout)
     if ms is None:
         return TrialResult(
-            triple=triple, ms=None, note="no `CPU validation time` line"
+            triple=triple,
+            ms=None,
+            wall_s=wall_s,
+            note="no `CPU validation time` line",
         )
-    return TrialResult(triple=triple, ms=ms, note=note)
+    return TrialResult(triple=triple, ms=ms, wall_s=wall_s, note=note)
 
 
 def autotune(args: argparse.Namespace) -> int:
@@ -227,35 +239,140 @@ def autotune(args: argparse.Namespace) -> int:
     candidates = [Triple(*t) for t in itertools.product(tile_values, repeat=3)]
     print(f"# Trials    : {args.trials} per candidate")
     print(f"# Candidates: {len(candidates)}")
-    print(f"# Timeout   : {args.timeout_s}s per trial")
+    print(f"# Timeout   : {args.timeout_s}s per trial (hard cap)")
+    if args.early_kill_factor > 0:
+        print(
+            f"# Early-kill: candidates whose verifier time exceeds "
+            f"{args.early_kill_factor:.1f}x the current best are skipped "
+            f"after one completed trial; wall-time-based abort fires when "
+            f"the subprocess itself exceeds the budgeted cap (useful on "
+            f"large shapes)"
+        )
+    else:
+        print("# Early-kill: disabled")
     print()
 
-    # Aggregate per-triple medians.
+    # Per-candidate aggregate: (median_ms_or_inf, triple, per_trial_list, note).
     medians: list[tuple[float, Triple, list[Optional[float]], str]] = []
+    # Best per-candidate aggregate (median verifier time, ms) across the
+    # sweep so far. None until the first candidate finishes. We compare
+    # against the candidate-level aggregate -- NOT the single best trial
+    # ever seen -- so single-trial outliers (a lucky low value or a
+    # cold-cache spike) don't move the early-kill bar.
+    best_ms: Optional[float] = None
+    # Running worst-case "other" wall-time overhead (seconds): the part of
+    # each trial that is NOT CPU validation -- JIT compile, memory init,
+    # GPU kernel launch, etc. On small shapes this dominates wall time
+    # (often >1 s while the verifier itself is ~20 ms), so the wall-time
+    # kill cap has to budget for it; otherwise it kills every candidate
+    # after the first one purely on JIT cost. We track the max observed
+    # across successful trials.
+    max_overhead_s = 0.0
     start = time.monotonic()
     for idx, triple in enumerate(candidates, 1):
         per_trial: list[Optional[float]] = []
         notes: list[str] = []
+        killed = False
         for _ in range(args.trials):
-            r = trial(cmds, triple, args.timeout_s)
+            # Compute the effective timeout for this trial. If we already
+            # have a best (from a previous candidate), cap the wall-clock
+            # timeout at `max_overhead + factor * best_ms / 1000 + grace`.
+            # The max-overhead term is essential: best_ms is the verifier
+            # cost, but the subprocess timeout is wall time, so we have
+            # to budget for everything else (JIT, init, GPU) on top.
+            # Otherwise we'd kill every trial purely because the JIT cost
+            # alone exceeds factor * best_ms.
+            effective_timeout = args.timeout_s
+            if args.early_kill_factor > 0 and best_ms is not None:
+                kill_at = (
+                    max_overhead_s
+                    + args.early_kill_factor * best_ms / 1000.0
+                    + 1.0  # extra grace to absorb cold-cache jitter
+                )
+                effective_timeout = min(args.timeout_s, kill_at)
+
+            r = trial(cmds, triple, effective_timeout)
             per_trial.append(r.ms)
             if r.ms is None:
+                if r.note == "timeout" and best_ms is not None and (
+                    effective_timeout < args.timeout_s
+                ):
+                    notes.append(
+                        f"killed >{args.early_kill_factor:.1f}x best"
+                    )
+                    killed = True
+                    break
                 notes.append(r.note)
+                continue
+
+            # Successful trial: update max-overhead estimate. We do NOT
+            # touch best_ms here -- that's updated once at the end of
+            # the candidate from its median, so the early-kill bar
+            # stays anchored to a steady-state aggregate.
+            trial_overhead_s = max(0.0, r.wall_s - r.ms / 1000.0)
+            if trial_overhead_s > max_overhead_s:
+                max_overhead_s = trial_overhead_s
+
+            # Verifier-time early-skip. Wall-time-based kill above
+            # rarely fires on small shapes where JIT cost dominates
+            # wall time; here we check the verifier cost itself,
+            # which IS the metric we're optimizing. As soon as one
+            # completed trial of this candidate exceeds
+            # `factor * best_ms`, abandon the remaining trials --
+            # the candidate is already disqualified. (We use the
+            # single-trial value here, not a partial median, because
+            # one trial already > 4x the *median* of the best
+            # candidate is decisive: even the best subsequent trials
+            # can't pull the median back into contention.)
+            if (
+                args.early_kill_factor > 0
+                and best_ms is not None
+                and r.ms > args.early_kill_factor * best_ms
+            ):
+                notes.append(
+                    f"skipped, trial >{args.early_kill_factor:.1f}x best"
+                )
+                killed = True
+                break
+
         valid = [v for v in per_trial if v is not None]
         if not valid:
             note = notes[0] if notes else "no valid trial"
-            medians.append((float("inf"), triple, per_trial, note))
+            median_ms = float("inf")
         else:
-            medians.append((statistics.median(valid), triple, per_trial, ""))
+            median_ms = statistics.median(valid)
+            note = notes[0] if notes else ""
+        medians.append((median_ms, triple, per_trial, note))
+
+        # Update best_ms from the *aggregate* of this candidate. We
+        # only consider candidates that completed all requested trials
+        # (no early-skip, no failures) so the aggregate is a fair
+        # comparison against future candidates' full aggregates.
+        if (
+            not killed
+            and len(valid) == args.trials
+            and (best_ms is None or median_ms < best_ms)
+        ):
+            best_ms = median_ms
         if args.verbose:
             elapsed = time.monotonic() - start
             est_total = elapsed / idx * len(candidates)
+            median_ms_disp = medians[-1][0]
+            median_str = (
+                f"{median_ms_disp:>9.3f}"
+                if median_ms_disp != float("inf")
+                else f"{'N/A':>9}"
+            )
+            best_str = f"{best_ms:.3f}" if best_ms is not None else "-"
+            note_disp = f" [{medians[-1][3]}]" if killed or medians[-1][3] else ""
             print(
                 f"  [{idx:>4}/{len(candidates)}] "
                 f"M={triple.m:>4} N={triple.n:>4} K={triple.k:>4}  "
-                f"median={medians[-1][0]:>9.3f} ms  "
+                f"median={median_str} ms  "
                 f"trials={per_trial}  "
-                f"({elapsed:.1f}s elapsed, ~{est_total:.0f}s total)",
+                f"(best={best_str} ms, overhead={max_overhead_s:.2f}s, "
+                f"{elapsed:.1f}s elapsed, ~{est_total:.0f}s total)"
+                f"{note_disp}",
                 flush=True,
             )
 
@@ -344,7 +461,18 @@ def main(argv: list[str]) -> int:
     p.add_argument("--trials", type=int, default=3,
                    help="Number of measurements per candidate (default: 3).")
     p.add_argument("--timeout-s", type=float, default=120.0,
-                   help="Per-trial timeout in seconds (default: 120).")
+                   help="Per-trial hard-cap timeout in seconds (default: 120). "
+                        "Always used for the first trial of the sweep; "
+                        "subsequent trials may be capped lower by "
+                        "--early-kill-factor.")
+    p.add_argument("--early-kill-factor", type=float, default=2.0,
+                   help="If positive, two complementary early-kill checks "
+                        "fire: (1) any in-flight subprocess whose wall "
+                        "time exceeds (max-overhead + factor * best_ms) "
+                        "is killed; (2) any candidate whose first "
+                        "completed trial reports a verifier time > "
+                        "factor * best_ms has its remaining trials "
+                        "skipped. 0 disables both. Default: 2.0.")
     p.add_argument("--show-top", type=int, default=20,
                    help="How many top entries to print (0 = all).")
     p.add_argument("--verbose", action="store_true",
