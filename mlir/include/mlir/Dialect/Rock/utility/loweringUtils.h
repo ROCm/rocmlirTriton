@@ -136,7 +136,8 @@ LogicalResult setStoreMethodAndPrefill(OpBuilder &builder, StoreOp storeOp,
 FailureOr<SmallVector<BlockArgument>> traceRootOutputToArgs(Value output,
                                                             func::FuncOp func);
 
-// Trace value to a block argument, going through view-like operations
+// Trace value to a block argument, going through view-like operations and
+// store-like result chains that model updated output buffers.
 FailureOr<BlockArgument> findBlockArgument(Value value);
 
 llvm::FailureOr<ArrayAttr>

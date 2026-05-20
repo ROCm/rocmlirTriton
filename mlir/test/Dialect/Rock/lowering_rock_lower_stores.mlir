@@ -172,6 +172,35 @@ module {
   }
 
   // ============================================================
+  // Threaded store chain: the first store result is used as the
+  // root for a later destination transform. LowerStores carries
+  // that dependency onto the first blockwise_store result.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_threaded_store_chain
+  // CHECK: %[[D0:.*]] = rock.transform %{{.*}} by
+  // CHECK: %[[D0_TILE:.*]] = rock.transform %[[D0]] by
+  // CHECK: %[[S0:.*]] = rock.blockwise_store %{{.*}} -> %[[D0_TILE]][%{{.*}}, %{{.*}}, %{{.*}}] by {{.*}}set
+  // CHECK-SAME: tensor<64x64xf32> -> tensor<1x4x2x64x64xf32> -> tensor<32768xf32>
+  // CHECK: %[[D1:.*]] = rock.transform %[[S0]] by
+  // CHECK: %[[D1_TILE:.*]] = rock.transform %[[D1]] by
+  // CHECK: %[[S1:.*]] = rock.blockwise_store %{{.*}} -> %[[D1_TILE]][%{{.*}}, %{{.*}}, %{{.*}}] by {{.*}}set
+  // CHECK: return %[[S1]]
+  func.func @test_threaded_store_chain(
+      %tile0: tensor<64x64xf32>,
+      %tile1: tensor<64x64xf32>,
+      %dest_raw: tensor<32768xf32>,
+      %g: i32, %m: i32, %n: i32) -> tensor<32768xf32> attributes {rock.kernel} {
+    %sm0 = rock.store_marker %tile0 views [#tmap] [%g, %m, %n] : tensor<64x64xf32> -> tensor<1x256x128xf32>
+    %dest0 = rock.transform %dest_raw by #tmap_dest : tensor<32768xf32> to tensor<1x256x128xf32>
+    %s0 = rock.store %sm0 to %dest0 by set : tensor<1x256x128xf32> -> tensor<32768xf32> to tensor<1x256x128xf32>
+    %sm1 = rock.store_marker %tile1 views [#tmap] [%g, %m, %n] : tensor<64x64xf32> -> tensor<1x256x128xf32>
+    %dest1 = rock.transform %s0 by #tmap_dest : tensor<32768xf32> to tensor<1x256x128xf32>
+    %s1 = rock.store %sm1 to %dest1 by set : tensor<1x256x128xf32> -> tensor<32768xf32> to tensor<1x256x128xf32>
+    return %s1 : tensor<32768xf32>
+  }
+
+  // ============================================================
   // Fusion with destination transforms: addf fusion + dest with
   // existing transform chain. Both fusion tiling and transform
   // combining happen.

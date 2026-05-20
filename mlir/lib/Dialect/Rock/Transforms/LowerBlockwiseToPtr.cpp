@@ -21,9 +21,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace mlir {
 namespace rock {
@@ -47,6 +51,41 @@ struct RockLowerBlockwiseToPtrPass
 } // end anonymous namespace
 
 namespace {
+
+static FailureOr<Value> buildStoreResultAlias(PatternRewriter &b,
+                                              BlockwiseStoreOp op) {
+  RankedTensorType resultType =
+      cast<RankedTensorType>(op.getResult().getType());
+  ArrayRef<int64_t> resultShape = resultType.getShape();
+
+  SmallVector<TransformMapAttr> transforms;
+  Value root = std::get<0>(rock::untransform(op.getDest(), transforms));
+  FailureOr<BlockArgument> maybeRoot = rock::findBlockArgument(root);
+  if (failed(maybeRoot))
+    return failure();
+
+  root = maybeRoot.value();
+  ArrayRef<int64_t> rootShape = cast<ShapedType>(root.getType()).getShape();
+  if (rootShape == resultShape)
+    return root;
+
+  SmallVector<Attribute> aliasTransforms;
+  ArrayRef<int64_t> currentShape = rootShape;
+  for (auto transform : llvm::reverse(transforms)) {
+    if (transform.getLowerBounds().asArrayRef() != currentShape)
+      return failure();
+
+    aliasTransforms.insert(aliasTransforms.begin(), transform);
+    currentShape = transform.getUpperBounds().asArrayRef();
+    if (currentShape == resultShape) {
+      OpBuilder::InsertionGuard guard(b);
+      b.setInsertionPoint(op);
+      return rock::transform(b, root, b.getArrayAttr(aliasTransforms));
+    }
+  }
+
+  return failure();
+}
 
 //===----------------------------------------------------------------------===//
 // BlockwiseLoadOp lowering.
@@ -123,7 +162,19 @@ struct BlockwiseStoreRewritePattern
     auto storeOp = BlockwiseStorePtrOp::create(
         b, loc, resultType, pointerTensor, maskTensor, source, storeMethod);
 
-    b.replaceOp(op, storeOp.getResult());
+    FailureOr<Value> destAlias = buildStoreResultAlias(b, op);
+    for (OpOperand &use :
+         llvm::make_early_inc_range(op.getResult().getUses())) {
+      if (isa<func::ReturnOp>(use.getOwner())) {
+        use.set(storeOp.getResult());
+        continue;
+      }
+      if (failed(destAlias))
+        return op.emitError("can't trace store destination to function "
+                            "argument");
+      use.set(destAlias.value());
+    }
+    b.eraseOp(op);
     return success();
   }
 };

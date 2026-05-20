@@ -115,6 +115,36 @@ func.func @test_store_atomic_max(%arg0: tensor<64x64xf32>, %arg1: tensor<4096xf3
 
 // -----
 
+// Threaded blockwise_store results are consumed before blockwise_store_ptr:
+// the second destination transform is rerooted at the underlying output arg.
+// CHECK-LABEL: @test_threaded_blockwise_store_chain
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xf32>, %[[ARG1:.*]]: tensor<64x64xf32>, %[[ARG2:.*]]: tensor<8192xf32>)
+//      CHECK:   %[[D0:.*]] = rock.transform %[[ARG2]] by
+//      CHECK:   %[[D0_TILE:.*]] = rock.transform %[[D0]] by
+//      CHECK:   %[[PTRS0:.*]], %[[MASK0:.*]] = rock.transforms_to_ptr %[[D0_TILE]][%{{.*}}, %{{.*}}, %{{.*}}] : tensor<1x1x2x64x64xf32> -> tensor<64x64xi32>, tensor<64x64xi1>
+//      CHECK:   rock.blockwise_store_ptr %[[ARG0]] -> %[[PTRS0]](%[[MASK0]]) by  set
+//      CHECK:   %[[D1:.*]] = rock.transform %[[ARG2]] by
+//      CHECK:   %[[D1_TILE:.*]] = rock.transform %[[D1]] by
+//      CHECK:   %[[PTRS1:.*]], %[[MASK1:.*]] = rock.transforms_to_ptr %[[D1_TILE]][%{{.*}}, %{{.*}}, %{{.*}}] : tensor<1x1x2x64x64xf32> -> tensor<64x64xi32>, tensor<64x64xi1>
+//      CHECK:   %[[RESULT:.*]] = rock.blockwise_store_ptr %[[ARG1]] -> %[[PTRS1]](%[[MASK1]]) by  set
+//      CHECK:   return %[[RESULT]] : tensor<8192xf32>
+//  CHECK-NOT:   rock.blockwise_store
+func.func @test_threaded_blockwise_store_chain(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xf32>, %arg2: tensor<8192xf32>) -> tensor<8192xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+
+  %0 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 128 + d2)> by [<Unmerge{64, 128} ["m", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 128] -> [8192]> : tensor<8192xf32> to tensor<1x64x128xf32>
+  %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 64 + d3, d2 * 64 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 64} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 1, 2, 64, 64] -> [1, 64, 128]> : tensor<1x64x128xf32> to tensor<1x1x2x64x64xf32>
+  %2 = rock.blockwise_store %arg0 -> %1[%c0_i32, %c0_i32, %c1_i32] by set : tensor<64x64xf32> -> tensor<1x1x2x64x64xf32> -> tensor<8192xf32>
+  %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (d1 * 128 + d2)> by [<Unmerge{64, 128} ["m", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 128] -> [8192]> : tensor<8192xf32> to tensor<1x64x128xf32>
+  %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 64 + d3, d2 * 64 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 64} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 1, 2, 64, 64] -> [1, 64, 128]> : tensor<1x64x128xf32> to tensor<1x1x2x64x64xf32>
+  %5 = rock.blockwise_store %arg1 -> %4[%c0_i32, %c0_i32, %c1_i32] by set : tensor<64x64xf32> -> tensor<1x1x2x64x64xf32> -> tensor<8192xf32>
+
+  return %5 : tensor<8192xf32>
+}
+
+// -----
+
 // Load with i8 element type (verifies element type handling)
 // CHECK-LABEL: @test_load_i8
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4096xi8>)

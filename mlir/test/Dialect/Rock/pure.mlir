@@ -69,6 +69,18 @@ func.func @dce_store_marker(%tile: tensor<64x64xf32>,
 
 // -----
 
+// CHECK-LABEL: func.func @dce_store
+// CHECK-NOT:     rock.store
+// CHECK:         return %arg2
+func.func @dce_store(%src: tensor<4x4xf32>, %dest: tensor<4x4xf32>,
+                     %sink: tensor<4x4xf32>) -> tensor<4x4xf32> {
+  %unused = rock.store %src to %dest by set
+      : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %sink : tensor<4x4xf32>
+}
+
+// -----
+
 // CHECK-LABEL: func.func @dce_gemm
 // CHECK-NOT:     rock.gemm
 // CHECK:         return %arg2
@@ -160,6 +172,19 @@ func.func @dce_blockwise_reduce(%input: tensor<64x64xf32>, %sink: tensor<64xf32>
   %unused = rock.blockwise_reduce sum %input {axis = 1 : index}
       : tensor<64x64xf32> -> tensor<64xf32>
   return %sink : tensor<64xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func.func @dce_blockwise_store
+// CHECK-NOT:     rock.blockwise_store
+// CHECK:         return %arg3
+func.func @dce_blockwise_store(%src: tensor<64x64xf32>,
+                               %dest: tensor<1x64x64xf32>, %idx: i32,
+                               %sink: tensor<4096xf32>) -> tensor<4096xf32> {
+  %unused = rock.blockwise_store %src -> %dest[%idx] by set
+      : tensor<64x64xf32> -> tensor<1x64x64xf32> -> tensor<4096xf32>
+  return %sink : tensor<4096xf32>
 }
 
 // -----

@@ -610,23 +610,6 @@ func.func @store_shape_mismatch(
   return %out : tensor<4x4xf32>
 }
 
-// Result used by a non-return op
-func.func @store_result_not_returned(
-    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return}}
-  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
-  %neg = arith.negf %out : tensor<4x4xf32>
-  return %neg : tensor<4x4xf32>
-}
-
-// Result has multiple uses
-func.func @store_result_multiple_uses(
-    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> (tensor<4x4xf32>, tensor<4x4xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must have at most one use (a func.return)}}
-  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
-  return %out, %out : tensor<4x4xf32>, tensor<4x4xf32>
-}
-
 // =============================================================================
 // rock.cast_to_ptr tests
 // =============================================================================
@@ -759,27 +742,6 @@ func.func @blockwise_store_rank_mismatch(
   %0 = rock.blockwise_store %src -> %dest[%i0] by set
     : tensor<16x16xf32> -> tensor<3x4x32x16x16xf32> -> tensor<32768xf32>
   return %0 : tensor<32768xf32>
-}
-
-// Result not used by return
-func.func @blockwise_store_not_returned(
-    %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
-    %i0: i32) -> tensor<768xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return}}
-  %0 = rock.blockwise_store %src -> %dest[%i0] by set
-    : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
-  %neg = arith.negf %0 : tensor<768xf32>
-  return %neg : tensor<768xf32>
-}
-
-// Result has multiple uses
-func.func @blockwise_store_multiple_uses(
-    %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
-    %i0: i32) -> (tensor<768xf32>, tensor<768xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must have at most one use (a func.return)}}
-  %0 = rock.blockwise_store %src -> %dest[%i0] by set
-    : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
-  return %0, %0 : tensor<768xf32>, tensor<768xf32>
 }
 
 // Dest last dimensions shape mismatch

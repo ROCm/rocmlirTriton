@@ -308,11 +308,14 @@ Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
 FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {
   auto maybeBlockArg = dyn_cast_or_null<BlockArgument>(value);
   while (!maybeBlockArg) {
-    // Keep going until the operation that defines the value is a
-    // view-like operation
-    if (auto viewOp =
-            dyn_cast_or_null<ViewLikeOpInterface>(value.getDefiningOp())) {
+    Operation *defOp = value.getDefiningOp();
+    if (auto viewOp = dyn_cast_or_null<ViewLikeOpInterface>(defOp)) {
       value = viewOp.getViewSource();
+    } else if (auto storeOp = dyn_cast_or_null<StoreOp>(defOp)) {
+      value = storeOp.getDest();
+    } else if (auto blockwiseStoreOp =
+                   dyn_cast_or_null<BlockwiseStoreOp>(defOp)) {
+      value = blockwiseStoreOp.getDest();
     } else {
       return failure();
     }

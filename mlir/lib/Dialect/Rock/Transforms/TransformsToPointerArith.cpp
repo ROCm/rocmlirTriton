@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -514,9 +515,13 @@ struct TransformsToPtrRewritePattern
     // a block argument (kernel input tensor) or an arith.constant (splat).
     if (!isa<BlockArgument>(buffer) &&
         !buffer.getDefiningOp<arith::ConstantOp>()) {
-      return op.emitOpError("expected transform chain root to be a block "
-                            "argument or arith.constant, but got: ")
-             << *buffer.getDefiningOp();
+      FailureOr<BlockArgument> maybeBuffer = rock::findBlockArgument(buffer);
+      if (failed(maybeBuffer)) {
+        return op.emitOpError("expected transform chain root to be a block "
+                              "argument or arith.constant, but got: ")
+               << *buffer.getDefiningOp();
+      }
+      buffer = maybeBuffer.value();
     }
 
     SmallVector<Value> initValues(extraIndices);

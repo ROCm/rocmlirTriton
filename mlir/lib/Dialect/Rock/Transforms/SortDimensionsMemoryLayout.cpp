@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -87,6 +88,11 @@ static LogicalResult traceToBlockArgs(
   ArrayAttr transforms;
   std::tie(source, transforms, std::ignore) =
       rock::untransform(b, inputArg, existingTransforms);
+  if (!isa<BlockArgument>(source)) {
+    FailureOr<BlockArgument> maybeSource = rock::findBlockArgument(source);
+    if (succeeded(maybeSource))
+      source = maybeSource.value();
+  }
 
   SmallVector<Attribute> newTransforms(transforms.begin(), transforms.end());
   auto [it, inserted] = transformAttrsMap.insert({source, newTransforms});

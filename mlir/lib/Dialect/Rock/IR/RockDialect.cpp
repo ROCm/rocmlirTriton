@@ -97,16 +97,6 @@ template <>
 struct rank<0> {};
 
 template <typename OpType>
-static void
-getCommonEffects(OpType &op,
-                 SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  auto *read = MemoryEffects::Read::get();
-  auto *write = MemoryEffects::Write::get();
-  effects.emplace_back(read, &op.getSourceMutable());
-  effects.emplace_back(write, &op.getDestMutable());
-}
-
-template <typename OpType>
 static LogicalResult verifyScales(OpType op, Value matrix, Value scale,
                                   std::optional<uint64_t> quantBlockSize,
                                   bool isA) {
@@ -1094,7 +1084,7 @@ LogicalResult StoreOp::verify() {
     return emitOpError("source and dest shapes must match")
            << " (source: " << sourceType << ", dest: " << destType << ")";
 
-  return verifySingleReturnUse(*this, getResult());
+  return success();
 }
 
 //===-----------------------------------------------------===//
@@ -1519,7 +1509,7 @@ LogicalResult BlockwiseStoreOp::verify() {
            << " != " << sourceType.getShape() << ")";
   }
 
-  return verifySingleReturnUse(*this, getResult());
+  return success();
 }
 
 //===-----------------------------------------------------===//

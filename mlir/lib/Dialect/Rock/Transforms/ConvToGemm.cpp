@@ -1148,9 +1148,14 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // reference layout that everything else is regularized against.
     Value destBuffer = originalStoreOp.getDest();
     ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
+    SmallVector<TransformMapAttr> destBufferTransforms;
+    Value destRoot =
+        std::get<0>(rock::untransform(destBuffer, destBufferTransforms));
+    SmallVector<Attribute> destBufferTransformAttrs(
+        destBufferTransforms.begin(), destBufferTransforms.end());
 
     Value lastStoreResult;
-    for (int64_t kid : kernelIds) {
+    for (auto [idx, kid] : llvm::enumerate(kernelIds)) {
       auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
       if (failed(maybe))
         return failure();
@@ -1158,6 +1163,24 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
                                         gemmDest, storeMethod);
       lastStoreResult = newStoreOp.getResult();
+      if (idx + 1 < kernelIds.size()) {
+        b.setInsertionPointAfter(newStoreOp);
+        if (lastStoreResult.getType() == originalStoreOp.getDest().getType()) {
+          destBuffer = lastStoreResult;
+        } else if (lastStoreResult.getType() == destRoot.getType()) {
+          destBuffer =
+              destBufferTransformAttrs.empty()
+                  ? lastStoreResult
+                  : rock::transform(b, lastStoreResult,
+                                    b.getArrayAttr(destBufferTransformAttrs));
+        } else {
+          return bwdDataOp.emitOpError()
+                 << "cannot thread store result of type "
+                 << lastStoreResult.getType()
+                 << " through destination buffer of type "
+                 << originalStoreOp.getDest().getType();
+        }
+      }
     }
 
     // Replace the original StoreOp with the last store result.
