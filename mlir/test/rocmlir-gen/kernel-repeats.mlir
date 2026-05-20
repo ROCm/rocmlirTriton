@@ -9,7 +9,7 @@
 // GEMM: func.call @rock_gemm
 // GEMM: }
 
-// CONV_WRW-LABEL: func.func @rock_conv_bwd_weight_gk01c_ng01c_ng01k_0
+// CONV_WRW-LABEL: func.func @rock_conv_bwd_weight_gk01c_ng01c_ng01k
 // CONV_WRW-SAME: %arg2: tensor<262144xf32> {rock.prefill = 0.000000e+00 : f32}
 // CONV_WRW: rock.conv_bwd_weight
 // CONV_WRW-LABEL: func.func @rock_conv_bwd_weight_gk01c_ng01c_ng01k_gpu
@@ -17,5 +17,5 @@
 // CONV_WRW-DAG: %[[five:.*]] = arith.constant 5 : index
 // CONV_WRW-DAG: %[[zero:.*]] = arith.constant 0 : index
 // CONV_WRW: scf.for %{{.*}} = %[[zero]] to %[[five]] step %[[one]] {
-// CONV_WRW: func.call @rock_conv_bwd_weight_gk01c_ng01c_ng01k_0
+// CONV_WRW: func.call @rock_conv_bwd_weight_gk01c_ng01c_ng01k
 // CONV_WRW: }

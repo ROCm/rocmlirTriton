@@ -1,7 +1,7 @@
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --padding_h=0 -batchsize=32 -in_channels=32 -out_channels=256 -in_h=14 -in_w=14 -fil_h=1 -fil_w=1  --padding_w_l=1 --padding_w_r=2 --mlir-print-local-scope | FileCheck %s --check-prefix=Padding_One
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --padding_h=3 -batchsize=32 -in_channels=32 -out_channels=256 -in_h=14 -in_w=14 -fil_h=1 -fil_w=1  --padding_w_l=1 --padding_w_r=2 --mlir-print-local-scope | FileCheck %s --check-prefix=Padding_Two
 
-// Padding_One-LABEL: func.func @rock_conv_gkc01_ngc01_ngk01_0
+// Padding_One-LABEL: func.func @rock_conv_gkc01_ngc01_ngk01
 // Padding_One-SAME: ([[arg0:%.+]]: tensor<8192xf32>, [[arg1:%.+]]: tensor<200704xf32>, [[arg2:%.+]]: tensor<1949696xf32>)
 // Padding_One-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // Padding_One-NEXT: [[exp0:%.+]] = rock.transform [[arg0]] by
@@ -16,7 +16,7 @@
 // Padding_One-NEXT: [[flat:%.+]] = rock.transform [[conv]] by
 // Padding_One: rock.store [[flat]] to [[arg2]] by {{.*}}set
 
-// Padding_Two-LABEL: func.func @rock_conv_gkc01_ngc01_ngk01_0
+// Padding_Two-LABEL: func.func @rock_conv_gkc01_ngc01_ngk01
 // Padding_Two-SAME: ([[arg0:%.+]]: tensor<8192xf32>, [[arg1:%.+]]: tensor<200704xf32>, [[arg2:%.+]]: tensor<2785280xf32>)
 // Padding_Two-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // Padding_Two-NEXT: [[exp0:%.+]] = rock.transform [[arg0]] by

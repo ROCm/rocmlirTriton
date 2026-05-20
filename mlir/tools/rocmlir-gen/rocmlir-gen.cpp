@@ -5943,15 +5943,10 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     } else if (genCPUKernel.getValue()) {
       (void)createCPUConvFunc(module, genConfig);
     } else {
-      // Every conv direction emits exactly one kernel; the `_0` suffix on
-      // the kernel name is preserved for downstream tooling and tests.
-      std::string kernelBaseName = genConfig.kernelBaseName;
-      convGenerator.setKernelName(kernelBaseName + "_0");
       if (failed(convGenerator.genConvModule(module))) {
         llvm::errs() << "Module population failed.\n";
         exit(1);
       }
-      convGenerator.setKernelName(kernelBaseName);
     }
   }
 }
