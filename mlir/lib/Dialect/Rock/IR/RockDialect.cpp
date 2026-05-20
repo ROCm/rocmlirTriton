@@ -1061,14 +1061,7 @@ LogicalResult ConvOp::verify() { return verifyConvLikeOp(*this); }
 
 LogicalResult ConvBwdDataOp::verify() { return verifyConvLikeOp(*this); }
 
-LogicalResult ConvBwdWeightOp::verify() {
-  if (failed(verifyConvLikeOp(*this)))
-    return failure();
-
-  // TODO: verify workspace size
-
-  return success();
-}
+LogicalResult ConvBwdWeightOp::verify() { return verifyConvLikeOp(*this); }
 
 //===-----------------------------------------------------===//
 // StoreOp

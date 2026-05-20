@@ -500,13 +500,6 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
   ShapedType filterType = cast<ShapedType>(op.getResult().getType());
   auto filterShape = filterType.getShape();
 
-  // Determine whether to use workspace.
-  bool hasWorkspace = (filterType.getElementType() == b.getF16Type());
-  if (hasWorkspace && !op.getWorkspace()) {
-    return op.emitOpError(
-        "workspace needed for f16 atomic add but none provided");
-  }
-
   // Get shape of input tensor.
   ShapedType inputType = op.getInput().getType();
   ArrayRef<int64_t> inputShape = inputType.getShape();
@@ -571,8 +564,7 @@ backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
     addKBlockWrap.passThrough(throughDims);
 
     TransformMapAttr addKBlockTransformAttr = addKBlockTransform.get();
-    Value filterTensorInUse = (hasWorkspace) ? op.getWorkspace() : filterDest;
-    Value withKBlock = rock::TransformOp::create(b, loc, filterTensorInUse,
+    Value withKBlock = rock::TransformOp::create(b, loc, filterDest,
                                                  addKBlockTransformAttr);
 
     // Create GEMM filter tensor

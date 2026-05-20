@@ -70,7 +70,6 @@ ConvGenerator::ConvGenerator(
              inputLayout,
              outputLayout,
              kernelBaseName,
-             -1,
              {},
              {},
              {},
@@ -243,56 +242,6 @@ LogicalResult ConvGenerator::hasValidDimension() const {
   return success();
 }
 
-LogicalResult ConvGenerator::getKernelCount(OpBuilder &builder,
-                                            int &kernelCount) const {
-  if (config.kernelId > 0) { // generate only 1 specified kernel
-    kernelCount = 1;
-    return success();
-  }
-  assert(config.operation.has_value());
-  switch (config.operation.value()) {
-  case ConvOpType::BwdData:
-    // All gemms are created inside a single kernel function by the ConvToGemm
-    // pass, so we only need one kernel.
-    kernelCount = 1;
-    return success();
-  case ConvOpType::Fwd:
-    kernelCount = 1;
-    return success();
-  case ConvOpType::BwdWeight:
-    LogicalResult res = getBwdWeightKernelCount(builder, kernelCount);
-    return res;
-  }
-  llvm_unreachable("Invalid conv2d operation");
-}
-
-LogicalResult ConvGenerator::getBwdWeightKernelCount(OpBuilder &builder,
-                                                     int &kernelCount) const {
-  assert(config.operation.value() == ConvOpType::BwdWeight);
-
-  kernelCount = 1;
-  bool needExtraPad = false;
-  if (failed(needExtraPadBwdWeight(builder, needExtraPad))) {
-    return failure();
-  }
-  if (!needExtraPad) {
-    Type dataType = getInputDataType(builder);
-    if (dataType.isF16()) {
-      // For the following case, use 2 kernels:
-      // - backward weight
-      // - XDLOPS
-      // - fp16
-      // - No need extra pad along Gemm M/N/K
-      // The first kernel will conduct the actual backward weight
-      // convolution, using atomic add instructions. The second kernel will do
-      // elementwise conversion from fp32 in the workspace to fp16 in the
-      // actual output (filter tensor).
-      kernelCount = 2;
-    }
-  }
-  return success();
-}
-
 static Type strToType(StringRef dataTypeStr, OpBuilder &builder) {
   std::optional<Type> type =
       llvm::StringSwitch<std::optional<Type>>(dataTypeStr)
@@ -364,54 +313,6 @@ LogicalResult ConvGenerator::needExtraPadBwdWeight(OpBuilder &builder,
     return success();
   }
   return failure();
-}
-
-LogicalResult ConvGenerator::hasWorkspace(OpBuilder &builder,
-                                          bool &needWorkspace) const {
-  // Decide if a workspace is needed.
-  // Preconditions:
-  // - data type: fp16
-  // - operation: backward weight conv2d.
-  // - use XDLOPS.
-  // - No need to pad along Gemm M/N/K dimension.
-
-  needWorkspace = false;
-  if (config.operation.has_value()) {
-    Type dataType = getInputDataType(builder);
-    ConvOpType dir = config.operation.value();
-    if ((dir == ConvOpType::BwdWeight) &&
-        (dataType == builder.getF16Type())) {
-      // In case we need extra padding, do not use workspace.
-      bool needPadding = false;
-      if (failed(needExtraPadBwdWeight(builder, needPadding))) {
-        return failure();
-      }
-      needWorkspace = !needPadding;
-    }
-  }
-  return success();
-}
-
-LogicalResult ConvGenerator::getWorkspaceSize(ModuleOp &module,
-                                              int &workspaceSize) const {
-  // Currently onlt in the following condition would a workspace is needed.
-  // - data type: fp16
-  // - operation: backward weight conv2d.
-  // - use XDLOPS.
-  // - No need to pad along Gemm M/N/K dimension.
-  // Workspace size is the same as the filter dimension, with fp32 type.
-  bool needWorkspace = false;
-  OpBuilder builder(module.getContext());
-  if (failed(hasWorkspace(builder, needWorkspace))) {
-    return failure();
-  }
-  if (needWorkspace) {
-    workspaceSize = std::accumulate(config.filterDimension.begin(),
-                                    config.filterDimension.end(), 1,
-                                    std::multiplies<int>()) *
-                    builder.getF32Type().getWidth() / 8;
-  }
-  return success();
 }
 
 uint32_t ConvGenerator::getNumCU() const {
@@ -524,7 +425,6 @@ LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,
     return type;
   };
   config.operation = op.value();
-  strToInt("kernel_id", config.kernelId);
   config.filterDataTypeStr = canonicalizeDataType(argMap["fil_type"]);
   config.inputDataTypeStr = canonicalizeDataType(argMap["in_type"]);
   config.outputDataTypeStr = canonicalizeDataType(argMap["out_type"]);
@@ -672,8 +572,6 @@ void ConvGenerator::setKernelName(const std::string &newName) {
   config.kernelBaseName = newName;
 }
 
-void ConvGenerator::setKernelId(int id) { config.kernelId = id; }
-
 void ConvGenerator::setDataTypes(const std::string &dataTypeStr) {
   config.filterDataTypeStr = config.inputDataTypeStr =
       config.outputDataTypeStr = dataTypeStr;
@@ -721,8 +619,8 @@ static void zeroInitArg(OpBuilder &builder, func::FuncOp func,
                    builder.getNamedAttr(attrName, zero));
 }
 
-LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
-                                           bool isVerifier, bool ignoreTuning) {
+LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
+                                           bool ignoreTuning) {
   OpBuilder builder(module.getContext());
 
   Type filterDataType = getFilterDataType(builder);
@@ -745,32 +643,12 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
                                               config.outputDimension.end()),
                             outputDataType);
 
-  bool hasWorkspace = false;
-  if (failed(this->hasWorkspace(builder, hasWorkspace))) {
-    return failure();
-  }
-  Type workspaceArgType;
-  if (hasWorkspace) {
-    workspaceArgType =
-        RankedTensorType::get(ArrayRef<int64_t>(config.filterDimension.begin(),
-                                                config.filterDimension.end()),
-                              builder.getF32Type());
-  }
-
-  // Build argument types in standard order, then reorder so the store
-  // destination (the result of the conv) is always the last argument.
-  // This simplifies downstream passes and host code that assume outputs
-  // are at the end of the kernel argument list.
-  SmallVector<Type, 4> logicalFuncArgTypes = {filterArgType, inputArgType,
+  // Build argument types in standard [filter, input, output] order, then
+  // reorder so the store destination (the result of the conv) is always the
+  // last argument. This simplifies downstream passes and host code that
+  // assume outputs are at the end of the kernel argument list.
+  SmallVector<Type, 3> logicalFuncArgTypes = {filterArgType, inputArgType,
                                               outputArgType};
-  if (hasWorkspace)
-    logicalFuncArgTypes.push_back(workspaceArgType);
-
-  // Reorder args so the tensor being computed (the "actual output") is last.
-  // The last element becomes the store destination (storeDestIdx).
-  // TODO(rocmlirTriton): The optional workspace is an fp32 intermediate
-  // buffer used for fp16 BwdWeight. This is not a path that is supported yet
-  // in rocmlirTriton.
   reorderConvArgsForKernel(config.operation.value(), logicalFuncArgTypes);
   unsigned storeDestIdx = logicalFuncArgTypes.size() - 1;
 
@@ -791,13 +669,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
     func.erase();
   }
 
-  // Fix raw kernel ID in case it is less than 0.
-  // The only case this could happen is to query the number of kernels needed
-  // from MIIR API, where the kernel ID is not yet unknown.
-  if (kernelId < 0)
-    kernelId = 0;
 
-  // Annotate kernel attribute to the FuncOp.
   StringAttr archStrAttr = builder.getStringAttr(config.arch);
   NamedAttribute archAttr =
       builder.getNamedAttr(rock::ArchAttr::getMnemonic(), archStrAttr);
@@ -812,7 +684,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
 
   SmallVector<NamedAttribute, 2> kernelAttrs = {
       builder.getNamedAttr(rock::KernelAttr::getMnemonic(),
-                           builder.getI32IntegerAttr(kernelId)),
+                           builder.getI32IntegerAttr(0)),
       archAttr, numCUAttr, numChipletsAttr};
 
   // Construct the FuncOp.
@@ -890,13 +762,11 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
     argDimNameRefs.push_back(llvm::map_to_vector(
         layout, [](StringAttr sa) { return sa.getValue(); }));
   };
-  // Build in standard [filter, input, output, workspace?] order, then
-  // apply the same reordering used for logicalFuncArgTypes.
+  // Build in standard [filter, input, output] order, then apply the same
+  // reordering used for logicalFuncArgTypes.
   referenceNames(filterLayoutSpec);
   referenceNames(inputLayoutSpec);
   referenceNames(outputLayoutSpec);
-  if (hasWorkspace)
-    referenceNames(filterLayoutSpec);
   reorderConvArgsForKernel(config.operation.value(), argDimNameRefs);
 
   // Expand all function arguments from flat 1D to their logical shapes,
@@ -933,11 +803,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
     convResult = convOp.getResult();
   } break;
   case ConvOpType::BwdWeight: {
-    int kernelCount = 0;
-    if (failed(getBwdWeightKernelCount(builder, kernelCount))) {
-      return failure();
-    }
-
     bool needsZeroInit = false;
     bool needExtraPad = false;
     if (succeeded(needExtraPadBwdWeight(builder, needExtraPad))) {
@@ -946,32 +811,13 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, int kernelId,
         needsZeroInit = dataType.isF32() || dataType.isF16();
       }
     }
+    if (needsZeroInit)
+      zeroInitArg(builder, func, storeDestIdx);
 
-    if (kernelId == 1) {
-      // Workspace -> filter tensor
-      // TODO(rocmlirTriton): Implement this
-      // ConvertingCopyKernelOp::create(
-      //     builder, builder.getUnknownLoc(), /*resultType=*/TypeRange{},
-      //     func.getArgument(storeDestIdx - 1),
-      //     func.getArgument(storeDestIdx),
-      //     /*blockSize=*/nullptr, /*gridSize=*/nullptr,
-      //     /*elemsPerThread=*/nullptr);
-      return failure();
-    } else {
-      if (needsZeroInit) {
-        // Zero the workspace (before filter) or the filter (store dest).
-        unsigned zeroIdx = hasWorkspace ? storeDestIdx - 1 : storeDestIdx;
-        zeroInitArg(builder, func, zeroIdx);
-      }
-      SmallVector<Value, 4> convArgs;
-      convArgs.push_back(args[0]); // input
-      convArgs.push_back(args[1]); // gradient
-      if (hasWorkspace)
-        convArgs.push_back(args[2]); // workspace
-      auto convOp = ConvBwdWeightOp::create(builder, builder.getUnknownLoc(),
-                                            resultType, convArgs, attributes);
-      convResult = convOp.getResult();
-    }
+    SmallVector<Value, 2> convArgs = {args[0], args[1]};
+    auto convOp = ConvBwdWeightOp::create(builder, builder.getUnknownLoc(),
+                                          resultType, convArgs, attributes);
+    convResult = convOp.getResult();
   } break;
   }
 

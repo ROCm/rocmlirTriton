@@ -195,3 +195,32 @@ func.func @bwd_weight_atomic(%arg0: tensor<1605632xf32>, %arg1: tensor<1179648xf
   %4 = rock.store %2 to %3 by set : tensor<1x64x64x3x3xf32> -> tensor<36864xf32> to tensor<1x64x64x3x3xf32>
   return %4 : tensor<36864xf32>
 }
+
+// -----
+
+// ============================================================================
+// @bwd_weight_atomic_fp16
+// Backward weight on gfx942 with fp16 element type. Mirrors
+// @bwd_weight_atomic but with f16 instead of f32. After removing the
+// historic fp32 workspace + cast-kernel pair, fp16 BwdWeight uses a single
+// kernel that atomic-adds partial sums directly into the f16 filter buffer.
+// `isFastAtomicAddSupported(gfx942, f16)` is true, so the atomic path runs;
+// the lowering must NOT materialize any f32 workspace tensor.
+// ============================================================================
+// CHECK-LABEL: @bwd_weight_atomic_fp16
+// CHECK-SAME: tensor<{{[0-9]+}}xf16> {rock.prefill = 0.000000e+00 : f16}
+// CHECK-NOT: tensor<{{[0-9]+}}xf32>
+// CHECK-NOT: rock.conv_bwd_weight
+// CHECK: <AddDim{32} ["kBlock"] at [1] -> [] at []>
+// CHECK: <Merge{1, 32} ["gemmG"] at [0] -> ["g", "kBlock"] at [0, 1]>
+// CHECK: rock.gemm tr {{.*}} : tensor<32x576x64xf16> * tensor<32x576x576xf16> -> tensor<32x64x576xf16>
+// CHECK: rock.store {{.*}} by atomic_add
+// CHECK-NOT: by set
+func.func @bwd_weight_atomic_fp16(%arg0: tensor<1605632xf16>, %arg1: tensor<1179648xf16>, %arg2: tensor<36864xf16> {rock.prefill = 0.000000e+00 : f16}) -> tensor<36864xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.block_size = 256 : i32, rock.kernel = 0 : i32} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 64 + d2) * 14 + d3) * 14 + d4)> by [<Unmerge{128, 64, 14, 14} ["ni", "ci", "0i", "1i"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [128, 1, 64, 14, 14] -> [1605632]> : tensor<1605632xf16> to tensor<128x1x64x14x14xf16>
+  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 64 + d2) * 12 + d3) * 12 + d4)> by [<Unmerge{128, 64, 12, 12} ["no", "ko", "0o", "1o"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["go"] at [1] -> [] at []>] bounds = [128, 1, 64, 12, 12] -> [1179648]> : tensor<1179648xf16> to tensor<128x1x64x12x12xf16>
+  %2 = rock.conv_bwd_weight(%0, %1) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], kBlocks = 32 : index, output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 0 : index, 0 : index], params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>, strides = [1 : index, 1 : index]} : tensor<128x1x64x14x14xf16>, tensor<128x1x64x12x12xf16> -> tensor<1x64x64x3x3xf16>
+  %3 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 64 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{64, 64, 3, 3} ["k", "c", "0", "1"] at [1, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 64, 3, 3] -> [36864]> : tensor<36864xf16> to tensor<1x64x64x3x3xf16>
+  %4 = rock.store %2 to %3 by set : tensor<1x64x64x3x3xf16> -> tensor<36864xf16> to tensor<1x64x64x3x3xf16>
+  return %4 : tensor<36864xf16>
+}
