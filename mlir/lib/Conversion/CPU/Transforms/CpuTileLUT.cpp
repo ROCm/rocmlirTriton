@@ -26,32 +26,58 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
 
+#include <map>
+#include <tuple>
+
 #define DEBUG_TYPE "cpu-tile-lut"
 
 using namespace mlir;
 
 namespace {
 
-/// Signature of a per-CPU tile-size picker. Each implementation may inspect
-/// `(M, N, K)` and return the tile triple it considers best on its target
-/// microarchitecture. `ShapedType::kDynamic` may appear for dims that
-/// weren't statically known; entries should treat those as "unknown" and
-/// pick a conservative default.
-using CpuPicker = cpu::CpuTileTriple (*)(int64_t M, int64_t N, int64_t K);
+/// Signature of a per-CPU tile-size picker. Each implementation owns a
+/// small map of measured `(M, N, K) -> (mFuse, nFuse, kTile)` entries for
+/// its target microarchitecture and returns `std::nullopt` for shapes it
+/// hasn't measured -- the dispatch loop in `lookupHostCpuTileSizes`
+/// treats that the same as "host CPU not in LUT", so the caller in
+/// `LowerCpuVerifier.cpp` falls through to the divisor-ladder heuristic.
+///
+/// `ShapedType::kDynamic` may appear for dims that weren't statically
+/// known; pickers should not assume positive M/N/K and should simply not
+/// have entries for dynamic shapes.
+using CpuPicker = std::optional<cpu::CpuTileTriple> (*)(int64_t M, int64_t N,
+                                                        int64_t K);
 
 //===----------------------------------------------------------------------===//
 // Per-CPU pickers.
 //===----------------------------------------------------------------------===//
 
 /// Intel Sapphire Rapids (Xeon Platinum 84xx series). AVX-512 + AMX, 2 MiB
-/// L2 per core, 56-105 MiB L3 per socket. These initial values are
-/// placeholders intended to be replaced by measurement -- the point of the
-/// LUT is to make that measurement workflow possible. The shape parameters
-/// are ignored for now; once tuning data is in, splits can be added.
-static cpu::CpuTileTriple pickSapphireRapids(int64_t /*M*/, int64_t /*N*/,
-                                             int64_t /*K*/) {
-  // TODO(AIROCMLIR-812): Replace with measured values per shape bucket.
-  return {/*mFuse=*/256, /*nFuse=*/64, /*kTile=*/128};
+/// L2 per core, 56-105 MiB L3 per socket.
+///
+/// Each entry is a per-shape `(mFuse, nFuse, kTile)` triple measured with
+/// `mlir/utils/performance/cpuTileAutotuner.py` against the gemm-f32 CPU
+/// verifier on a Xeon Platinum 8480C. To add a shape:
+///
+///   python3 mlir/utils/performance/cpuTileAutotuner.py \\
+///     --build-dir build --arch gfx942 \\
+///     --m M --n N --k K --trials 3
+///
+/// then paste the recommended triple into `kShapeTable` below.
+static std::optional<cpu::CpuTileTriple>
+pickSapphireRapids(int64_t M, int64_t N, int64_t K) {
+  // TODO(AIROCMLIR-812): Grow this table as more shapes get measured.
+  static const std::map<std::tuple<int64_t, int64_t, int64_t>,
+                        cpu::CpuTileTriple>
+      kShapeTable = {
+          //   M     N     K       mFuse  nFuse  kTile
+          {{10010, 405, 1024}, {/*mFuse=*/16, /*nFuse=*/16, /*kTile=*/32}},
+      };
+
+  auto it = kShapeTable.find({M, N, K});
+  if (it == kShapeTable.end())
+    return std::nullopt;
+  return it->second;
 }
 
 //===----------------------------------------------------------------------===//
@@ -139,14 +165,21 @@ std::optional<CpuTileTriple> lookupHostCpuTileSizes(int64_t M, int64_t N,
   LLVM_DEBUG(llvm::dbgs() << "cpu-tile-lut: host CPU = '" << hostCpu << "'\n");
 
   for (const CpuEntry &entry : kCpuTable) {
-    if (entry.cpuName == hostCpu) {
-      CpuTileTriple t = entry.picker(M, N, K);
+    if (entry.cpuName != hostCpu)
+      continue;
+    std::optional<CpuTileTriple> t = entry.picker(M, N, K);
+    if (!t) {
       LLVM_DEBUG(llvm::dbgs()
-                 << "cpu-tile-lut: hit for '" << hostCpu << "' -> mFuse="
-                 << t.mFuse << " nFuse=" << t.nFuse << " kTile=" << t.kTile
-                 << " (M=" << M << " N=" << N << " K=" << K << ")\n");
-      return t;
+                 << "cpu-tile-lut: hit for '" << hostCpu << "' but no entry "
+                 << "for shape (M=" << M << " N=" << N << " K=" << K
+                 << "), caller should fall back\n");
+      return std::nullopt;
     }
+    LLVM_DEBUG(llvm::dbgs()
+               << "cpu-tile-lut: hit for '" << hostCpu << "' -> mFuse="
+               << t->mFuse << " nFuse=" << t->nFuse << " kTile=" << t->kTile
+               << " (M=" << M << " N=" << N << " K=" << K << ")\n");
+    return t;
   }
   LLVM_DEBUG(llvm::dbgs() << "cpu-tile-lut: miss for '" << hostCpu
                           << "', caller should fall back\n");
