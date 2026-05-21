@@ -29,6 +29,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
+#include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
@@ -5329,19 +5330,17 @@ static LogicalResult populateHostHarnessLogic(
   // been lowered to the rock pipeline (kernels containing higher-level
   // dialects like tosa / migraphx have signatures whose tensor results may
   // not be aliased by trailing args, which silently mis-routes outputs in
-  // the harness). Require the input to be lowered first instead of trying
-  // to paper over the mismatch downstream.
+  // the harness).
   if (hasCloneValidation) {
     for (KernelIF kernel : kernels) {
       WalkResult res = kernel.func.walk([&](Operation *op) {
-        StringRef dialectNS = op->getDialect()
-                                  ? op->getDialect()->getNamespace()
-                                  : StringRef();
-        if (dialectNS == "tosa" || dialectNS == "migraphx") {
+        Dialect *dialect = op->getDialect();
+        if (isa_and_nonnull<tosa::TosaDialect, migraphx::MIGraphXDialect>(
+                dialect)) {
           op->emitError()
               << "--verifier=clone cannot build a host harness around a "
                  "kernel that still contains "
-              << dialectNS
+              << dialect->getNamespace()
               << " ops; run the kernel pipeline first (e.g. "
                  "`rocmlir-driver -kernel-pipeline=highlevel`)";
           return WalkResult::interrupt();
