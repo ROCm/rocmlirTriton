@@ -88,23 +88,7 @@ if (NOT WIN32)
   target_link_libraries(obj.MLIRRockTransforms PUBLIC hip::host hip::amdhip64)
 endif()
 
-# Add Triton include directories for compilation.
-# Marked SYSTEM so our strict warnings (-Wshadow, etc.) don't fire on them.
-# We need to set them on both the wrapper lib and its obj.* variant; MLIR's
-# add_mlir_library does not propagate PRIVATE include dirs from the wrapper
-# to the OBJECT target that actually compiles the sources.
-target_include_directories(MLIRRockTransforms SYSTEM PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party
-)
-target_include_directories(obj.MLIRRockTransforms SYSTEM PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party
-)
+rocmlir_add_triton_includes(MLIRRockTransforms CANONICAL)
 
 # Fix build order: TritonIR and TritonGPUIR include headers that need generated files
 # This ensures tablegen runs before these libraries build

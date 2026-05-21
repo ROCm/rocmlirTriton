@@ -126,17 +126,4 @@ target_link_libraries(mlir-reduce-fusible-test
   MLIRFuncInlinerExtension
 )
 
-# Add Triton include directories for compilation
-target_include_directories(mlir-mixr-split-k-test SYSTEM PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_BINARY_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/third_party/nvidia
-  ${TRITON_BINARY_DIR}/third_party/nvidia
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_PROJECT_DIR}
-  ${TRITON_BINARY_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party/amd/include
-  ${TRITON_BINARY_DIR}/third_party/nvidia/include
-)
+rocmlir_add_triton_includes(mlir-mixr-split-k-test)
