@@ -4,7 +4,7 @@
 // CHECK: [1 1 1]
 
 // NO-EXTF-LABEL: func.func @mlir_test(
-// NO-EXTF-NOT: arith.extf
+// NO-EXTF: arith.extf {{.*}} fastmath<contract>
 // NO-EXTF: return
 
 module {

@@ -175,15 +175,17 @@ def RockAllowFastMathFlagsPass
 }
 def RockRemoveRedundantCastsPass
     : Pass<"rock-remove-redundant-casts", "::mlir::func::FuncOp"> {
-  let summary = "Remove redundant arith.extf / arith.truncf round-trips";
+  let summary = "Tag extf(truncf) round-trips in rock.kernel functions as "
+                "contractible so canonicalize can fold them";
   let description = [{
-    Eliminates pure-SSA float-cast round-trips in kernel functions. Two
-    patterns are handled, each rewritten on the outer cast only. The
-    inner cast is left for dead-code elimination so other consumers, if
-    any, remain untouched:
-
-    1. `arith.extf(arith.truncf %wide)` -> `%wide`
-    2. `arith.truncf(arith.extf %narrow)` -> `%narrow`
+    For every `arith.extf(arith.truncf %wide)` pair inside a function
+    tagged with `rock.kernel` whose round-trip starts and ends at the
+    same wide precision, merge `fastmath<contract>` into both casts'
+    fast-math flag sets. The pass performs no rewrites itself; the
+    `-canonicalize` that follows in the kernel pipeline picks up the
+    now-tagged pair via upstream MLIR's `arith.ExtFOp::fold` (which
+    only fires when both ops carry `contract`) and removes the
+    redundant cast(s). Non-kernel (host) functions are skipped.
   }];
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }

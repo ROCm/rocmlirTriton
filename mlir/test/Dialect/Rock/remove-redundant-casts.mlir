@@ -1,6 +1,4 @@
-// Unit tests for the rock-remove-redundant-casts pass.
-
-// RUN: rocmlir-opt -rock-remove-redundant-casts -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt -rock-remove-redundant-casts -canonicalize -mlir-print-local-scope %s | FileCheck %s
 
 // ============================================================
 // Direct pure-SSA round-trip: extf(truncf %wide) -> %wide.
@@ -188,14 +186,23 @@ func.func @keep_dual_mismatched_narrow_types(%arg0: tensor<32x32xf16>)
 }
 
 // ============================================================
-// Dual non-kernel function: pass must remain a no-op even for the
-// new pattern outside `rock.kernel` functions.
+// Dual non-kernel function: the pass owns the precision-recovering
+// direction only, so it must remain a no-op outside `rock.kernel`
+// functions. The mirror direction `truncf(extf %narrow) -> %narrow`
+// is unconditionally safe and is folded by upstream MLIR's
+// `arith.TruncFOp::fold`, which `-canonicalize` runs regardless of
+// the kernel attribute. The combined output therefore collapses to
+// the identity here; that this happens via canonicalize (not via
+// our pass) is the property the dual `skip_non_kernel` case above
+// pins down for the pass-owned direction.
 // ============================================================
 
-// CHECK-LABEL: func.func @skip_dual_non_kernel
-//      CHECK:   arith.extf
-//      CHECK:   arith.truncf
-func.func @skip_dual_non_kernel(%arg0: tensor<32x32xf16>) -> tensor<32x32xf16> {
+// CHECK-LABEL: func.func @dual_non_kernel_folded_by_canonicalize
+// CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf16>)
+//  CHECK-NOT:   arith.extf
+//  CHECK-NOT:   arith.truncf
+//      CHECK:   return %[[ARG]]
+func.func @dual_non_kernel_folded_by_canonicalize(%arg0: tensor<32x32xf16>) -> tensor<32x32xf16> {
   %0 = arith.extf %arg0 : tensor<32x32xf16> to tensor<32x32xf32>
   %1 = arith.truncf %0 : tensor<32x32xf32> to tensor<32x32xf16>
   return %1 : tensor<32x32xf16>
