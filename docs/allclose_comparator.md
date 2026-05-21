@@ -314,7 +314,7 @@ For context, rocBLAS's tolerance for the same K is
 
 rocBLAS uses higher tolerances because they expect to be compared against
 external libraries, which might have computed the kernel in a different order.
-We compara against our own CPU reference, so we can safely use tighter values.
+We compare against our own CPU reference, so we can safely use tighter values.
 
 Our `1e-6` for fp32 is approximately `10 * eps(fp32)` and matches
 hipBLASLt's flat budget; the K-scaling on top of that lets the bound
