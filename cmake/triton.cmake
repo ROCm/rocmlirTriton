@@ -250,3 +250,4 @@ function(rocmlir_add_triton_includes target)
     target_include_directories(obj.${target} SYSTEM PRIVATE ${TRITON_INCLUDE_DIRS})
   endif()
 endfunction(rocmlir_add_triton_includes)
+

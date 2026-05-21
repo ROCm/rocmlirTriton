@@ -36,3 +36,4 @@ add_rocmlir_public_c_api_library(MLIRCAPIRegisterRocMLIR
 )
 
 rocmlir_add_triton_includes(MLIRCAPIRegisterRocMLIR)
+
