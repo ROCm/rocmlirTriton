@@ -61,6 +61,13 @@ bool isWrWAtomicKernel(StringRef arch, Type dataType, bool requiredPadding);
 // in memory.
 bool is4GBMemoryType(ShapedType type);
 
+// Returns true if `kBlocks` is a structurally valid backward-weight K-blocks
+// value for batch dimension `N`: strictly positive and an exact divisor of
+// `N`. The bwd-weight atomic-add lowering in `ConvToGemm` splits the batch
+// dimension into (kBlocks, N / kBlocks), so violating either constraint would
+// silently truncate the tensor.
+bool isValidKBlocks(int64_t kBlocks, int64_t N);
+
 // Heuristic logic to compute KBlock for backward weight atomic add kernel.
 // The logic is adopted from MIOpen.
 //

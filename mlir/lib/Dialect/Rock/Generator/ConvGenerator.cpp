@@ -683,7 +683,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
 
   SmallVector<NamedAttribute, 2> kernelAttrs = {
       builder.getNamedAttr(rock::KernelAttr::getMnemonic(),
-                           builder.getI32IntegerAttr(0)),
+                           builder.getUnitAttr()),
       archAttr, numCUAttr, numChipletsAttr};
 
   // Construct the FuncOp.

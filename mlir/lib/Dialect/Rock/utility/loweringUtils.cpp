@@ -63,6 +63,10 @@ bool mlir::rock::is4GBMemoryType(ShapedType type) {
          (int64_t)std::numeric_limits<uint32_t>::max();
 }
 
+bool mlir::rock::isValidKBlocks(int64_t kBlocks, int64_t N) {
+  return kBlocks >= 1 && N % kBlocks == 0;
+}
+
 LogicalResult mlir::rock::calculateKBlockNum(const int64_t batchSize,
                                              const GemmSize &gemmSize,
                                              int64_t MPerBlock,
@@ -91,7 +95,7 @@ LogicalResult mlir::rock::calculateKBlockNum(const int64_t batchSize,
   gemmKBlock = std::min(gemmKBlock, batchSize);
 
   for (; gemmKBlock > 1; --gemmKBlock) {
-    if (batchSize % gemmKBlock != 0)
+    if (!isValidKBlocks(gemmKBlock, batchSize))
       continue;
 
     if (gemmK % (gemmKBlock * KPerBlock * KPack) != 0)
