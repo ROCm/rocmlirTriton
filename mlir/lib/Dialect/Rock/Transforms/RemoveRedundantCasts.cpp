@@ -109,7 +109,6 @@ void RockRemoveRedundantCastsPass::runOnOperation() {
   RewritePatternSet patterns(&getContext());
   patterns.add<ExtfOfTruncfPattern, TruncfOfExtfPattern>(&getContext());
 
-  if (failed(
-          applyPatternsGreedily(funcOp.getOperation(), std::move(patterns))))
+  if (failed(applyPatternsGreedily(funcOp.getOperation(), std::move(patterns))))
     return signalPassFailure();
 }
