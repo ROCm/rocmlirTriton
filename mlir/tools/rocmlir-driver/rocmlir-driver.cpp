@@ -102,6 +102,11 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
                                  cl::init(""));
 
+static cl::opt<bool> disableDivByReciprocal(
+    "disable-div-by-reciprocal", cl::init(false),
+    cl::desc("Skip rock-rewrite-div-by-reciprocal after split-k regularization "
+             "(by default the pass tags arith.divf with fastmath arcp)"));
+
 namespace test {
 void registerTestDialect(DialectRegistry &);
 } // namespace test
@@ -247,7 +252,7 @@ runKernelPipeline(StringRef archName, ModuleOp m,
     // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
     opts.arch = archName.str();
-    opts.rewriteDivByReciprocal = rewriteDivByReciprocal.getValue();
+    opts.disableDivByReciprocal = disableDivByReciprocal.getValue();
 
     rock::buildKernelPipeline(pm, opts);
   }
