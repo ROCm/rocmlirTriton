@@ -44,7 +44,11 @@ set(LIBS
   TritonInstrumentTransforms
   )
 
-if(MLIR_INCLUDE_TESTS)
+# Only link MLIRTestIR when the test libraries actually exist as imported
+# targets. MLIR_INCLUDE_TESTS=ON only means "the upstream MLIR build included
+# tests"; it does *not* guarantee those targets are exported -- and they
+# aren't, when MLIR is consumed via an installed package (e.g. cget).
+if(MLIR_INCLUDE_TESTS AND TARGET MLIRTestIR)
   list(APPEND LIBS MLIRTestIR)
 endif()
 

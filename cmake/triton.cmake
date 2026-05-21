@@ -13,49 +13,45 @@ set(TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
 # Triton uses find_package(MLIR) - must be provided externally
 #===----------------------------------------------------------------------===//
 
-# User must provide MLIR_DIR (e.g., from a built LLVM or system installation)
+# Resolve MLIR_DIR.  Order of preference:
+#   1. Explicit MLIR_DIR (from CMake cache or -D on command line) -- highest priority.
+#   2. MLIR_DIR environment variable.
+#   3. CMAKE_PREFIX_PATH (e.g. cget/MIGraphX install prefix).
+#   4. In-tree LLVM build under external/triton/llvm-project/build/ (legacy
+#      build-llvm-project.sh workflow).
+# (3) MUST come before (4): when consumed via cget the source tarball can
+# contain a stale external/triton/llvm-project/build/ directory whose
+# MLIRConfig.cmake bakes in absolute paths from the dev tree (mlir-tblgen,
+# tablegen target paths). Picking those up silently makes the build try to
+# invoke a non-existent /mnt/data/.../mlir-tblgen.
 if(NOT DEFINED MLIR_DIR)
-  # Try common locations
   if(DEFINED ENV{MLIR_DIR})
     set(MLIR_DIR $ENV{MLIR_DIR} CACHE PATH "Path to MLIR CMake config")
-  elseif(EXISTS "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir/MLIRConfig.cmake")
-    # Default: Use LLVM built by Triton's build-llvm-project.sh script
-    set(MLIR_DIR "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir" CACHE PATH "Path to MLIR CMake config")
-  elseif(DEFINED LLVM_LIBRARY_DIR)
-    set(MLIR_DIR "${LLVM_LIBRARY_DIR}/cmake/mlir" CACHE PATH "Path to MLIR CMake config")
   else()
-    # LLVM/MLIR not found — automatically build it via our wrapper script
-    set(_build_llvm_script "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-llvm.sh")
-    if(EXISTS "${_build_llvm_script}")
-      message(STATUS "LLVM/MLIR not found. Running ${_build_llvm_script} to build it...")
-      execute_process(
-        COMMAND bash "${_build_llvm_script}"
-        RESULT_VARIABLE _build_llvm_result
-      )
-      if(NOT _build_llvm_result EQUAL 0)
-        message(FATAL_ERROR "scripts/build-llvm.sh failed (exit code: ${_build_llvm_result})")
-      endif()
-      # After building, the MLIR config should now exist
-      if(EXISTS "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir/MLIRConfig.cmake")
-        set(MLIR_DIR "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir" CACHE PATH "Path to MLIR CMake config")
-      else()
-        message(FATAL_ERROR
-          "scripts/build-llvm.sh completed but MLIRConfig.cmake was not found at\n"
-          "  ${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir/\n"
-          "Check the build output above for errors.")
-      endif()
-    else()
-      message(FATAL_ERROR 
-        "MLIR_DIR must be set to the path containing MLIRConfig.cmake\n"
-        "Example: cmake -DMLIR_DIR=/path/to/llvm-build/lib/cmake/mlir ..\n"
-        "You can build LLVM/MLIR using: bash scripts/build-llvm.sh")
+    # Let CMake search CMAKE_PREFIX_PATH (cget toolchain populates this).
+    find_package(MLIR QUIET CONFIG)
+    if(NOT MLIR_FOUND
+       AND EXISTS "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir/MLIRConfig.cmake")
+      # Legacy fallback: in-tree LLVM built via build-llvm-project.sh.
+      set(MLIR_DIR "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir"
+          CACHE PATH "Path to MLIR CMake config")
+    elseif(NOT MLIR_FOUND AND DEFINED LLVM_LIBRARY_DIR)
+      set(MLIR_DIR "${LLVM_LIBRARY_DIR}/cmake/mlir"
+          CACHE PATH "Path to MLIR CMake config")
+    elseif(NOT MLIR_FOUND)
+      message(FATAL_ERROR
+        "Could not locate MLIRConfig.cmake. Set -DMLIR_DIR=<path>, add the "
+        "LLVM/MLIR install prefix to CMAKE_PREFIX_PATH, or build LLVM in "
+        "external/triton/llvm-project/build/ via build-llvm-project.sh.")
     endif()
   endif()
 endif()
 
 message(STATUS "MLIR_DIR: ${MLIR_DIR}")
 
-# Find MLIR package (this also sets up LLVM variables)
+# Find MLIR package (this also sets up LLVM variables). If MLIR was already
+# located by the QUIET probe above this is a no-op; otherwise it forces lookup
+# at the path we just resolved.
 find_package(MLIR REQUIRED CONFIG PATHS ${MLIR_DIR})
 
 # Set up LLD_DIR based on MLIR_DIR location
