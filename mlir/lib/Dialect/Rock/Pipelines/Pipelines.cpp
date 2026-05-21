@@ -463,6 +463,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithCSE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
+  addWithDCE(rock::createRockRemoveRedundantCastsPass());
 
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).

@@ -173,6 +173,20 @@ def RockAllowFastMathFlagsPass
   let dependentDialects = ["arith::ArithDialect", "func::FuncDialect",
                            "math::MathDialect"];
 }
+def RockRemoveRedundantCastsPass
+    : Pass<"rock-remove-redundant-casts", "::mlir::func::FuncOp"> {
+  let summary = "Remove redundant arith.extf / arith.truncf round-trips";
+  let description = [{
+    Eliminates pure-SSA float-cast round-trips in kernel functions. Two
+    patterns are handled, each rewritten on the outer cast only. The
+    inner cast is left for dead-code elimination so other consumers, if
+    any, remain untouched:
+
+    1. `arith.extf(arith.truncf %wide)` -> `%wide`
+    2. `arith.truncf(arith.extf %narrow)` -> `%narrow`
+  }];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
+}
 
 def RockLegalizeFloatTypesPass
     : Pass<"rock-legalize-float-types", "::mlir::func::FuncOp"> {
