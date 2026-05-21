@@ -49,9 +49,7 @@ endif()
 
 message(STATUS "MLIR_DIR: ${MLIR_DIR}")
 
-# Find MLIR package (this also sets up LLVM variables). If MLIR was already
-# located by the QUIET probe above this is a no-op; otherwise it forces lookup
-# at the path we just resolved.
+# Find MLIR package (this also sets up LLVM variables)
 find_package(MLIR REQUIRED CONFIG PATHS ${MLIR_DIR})
 
 # Set up LLD_DIR based on MLIR_DIR location
