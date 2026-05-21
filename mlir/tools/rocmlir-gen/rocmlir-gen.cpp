@@ -1441,8 +1441,10 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
   // Create gpu wrapper function
   // Convert tensor types to memref types for the wrapper function
-  auto [signatureSlots, numKernelParams] =
+  auto [signatureSlotsBinding, numKernelParamsBinding] =
       kernels[0].getSignatureSlots(outIndices);
+  SmallVector<Type, 8> signatureSlots = signatureSlotsBinding;
+  size_t numKernelParams = numKernelParamsBinding;
   SmallVector<Type, 4> wrapperArgTypes;
   for (Type t : signatureSlots) {
     if (auto tensorType = dyn_cast<RankedTensorType>(t)) {
