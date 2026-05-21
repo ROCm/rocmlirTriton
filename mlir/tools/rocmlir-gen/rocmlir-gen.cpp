@@ -896,48 +896,49 @@ struct KernelIF {
   //   2. One synthetic output slot per tensor result that is not already
   //   aliased by a trailing parameter.
   // - numKernelParams is the number of kernel parameters.
-  std::pair<SmallVector<Type, 8>, size_t> getSignatureSlots() const {
+  std::pair<SmallVector<Type, 8>, size_t>
+  getSignatureSlots(ArrayRef<int32_t> preExistingOutIndices = {}) const {
     SmallVector<Type, 8> slots(params.begin(), params.end());
     size_t numKernelParams = params.size();
 
     if (resultTypes.empty())
       return {slots, numKernelParams};
 
+    // Trust a prefilled preExistingOutIndices when every
+    // pinned index names an actual kernel parameter (i.e. is in
+    // `[0, numKernelParams)`). If a caller passes indices that include
+    // synthetic-slot positions (`>= numKernelParams`), those indices came
+    // out of an earlier `getSignatureSlots(...)` call that already
+    // synthesized slots, and we must redo the same synthesis here so the
+    // signature is consistent across call sites.
+    if (!preExistingOutIndices.empty() &&
+        llvm::all_of(preExistingOutIndices, [&](int32_t idx) {
+          return idx >= 0 && static_cast<size_t>(idx) < numKernelParams;
+        }))
+      return {slots, numKernelParams};
+
     size_t numResults = resultTypes.size();
     bool aliased = numKernelParams >= numResults;
-    // Step 1. Add kernel's own params to the signature slots.
-    // This also handles the case where the kernel's last `numResults` params
-    // already provide buffers for the results (like attention with
-    // `return_lse`).
+    // Strict positional check: pair result i with trailing param i. The
+    // harness's output-index inference below assumes result i lives in
+    // slot `signatureSlots.size() - numResults + i`, which only holds for
+    // a positional match. Permuted cases must come through the
+    // `preExistingOutIndices` path above.
     if (aliased) {
       size_t offset = numKernelParams - numResults;
-      SmallVector<bool, 4> used(numResults, false);
       for (size_t i = 0; i < numResults; ++i) {
+        auto paramST = dyn_cast<ShapedType>(params[offset + i]);
         auto resultST = dyn_cast<ShapedType>(resultTypes[i]);
-        if (!resultST) {
-          aliased = false;
-          break;
-        }
-        bool found = false;
-        for (size_t j = 0; j < numResults; ++j) {
-          if (used[j])
-            continue;
-          auto paramST = dyn_cast<ShapedType>(params[offset + j]);
-          if (paramST && paramST.getShape() == resultST.getShape() &&
-              paramST.getElementType() == resultST.getElementType()) {
-            used[j] = true;
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
+        if (!paramST || !resultST ||
+            paramST.getShape() != resultST.getShape() ||
+            paramST.getElementType() != resultST.getElementType()) {
           aliased = false;
           break;
         }
       }
     }
 
-    // Step 2. If the results are not aliased, add one memref slot per result.
+    // If the results are not aliased, add one memref slot per result.
     if (!aliased) {
       // Synthesize one memref-shaped slot per result. The slot type is a
       // memref of the result's shape and element type so the rest of the
@@ -1440,7 +1441,8 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
   // Create gpu wrapper function
   // Convert tensor types to memref types for the wrapper function
-  auto [signatureSlots, numKernelParams] = kernels[0].getSignatureSlots();
+  auto [signatureSlots, numKernelParams] =
+      kernels[0].getSignatureSlots(outIndices);
   SmallVector<Type, 4> wrapperArgTypes;
   for (Type t : signatureSlots) {
     if (auto tensorType = dyn_cast<RankedTensorType>(t)) {
@@ -2121,9 +2123,9 @@ static void convBodyBuilderF32(OpBuilder &b, Location loc,
 static void convBodyBuilderI32(OpBuilder &b, Location loc,
                                ValueRange blockArgs) {
   assert(blockArgs.size() == 3 && "convBodyBuilder expects 3 arguments");
-  Value inputVal = blockArgs[0];   // i8
-  Value filterVal = blockArgs[1];  // i8
-  Value outputVal = blockArgs[2];  // i32
+  Value inputVal = blockArgs[0];  // i8
+  Value filterVal = blockArgs[1]; // i8
+  Value outputVal = blockArgs[2]; // i32
   Type i32Type = b.getIntegerType(32);
   Value inputExt = arith::ExtSIOp::create(b, loc, i32Type, inputVal);
   Value filterExt = arith::ExtSIOp::create(b, loc, i32Type, filterVal);
@@ -5483,17 +5485,17 @@ static LogicalResult populateHostHarnessLogic(
   // The harness allocates one memref slot per entry in `signatureSlots`,
   // which is the kernel's literal parameter list followed by one synthetic
   // memref-shaped slot per tensor result that is not already aliased by a
-  // trailing parameter. See KernelIF::getSignatureSlots for the full
-  // rationale. With this in hand, outputs always live in the last
-  // `numResults` slots regardless of whether the kernel signature aliases
-  // its results to trailing args, so downstream code can treat the two
-  // forms uniformly.
-  auto [signatureSlots, numKernelParams] = root0.getSignatureSlots();
+  // kernel argument. See KernelIF::getSignatureSlots for the full
+  // rationale. We pass `outIndices` through so that if a per-operation
+  // codepath above already pinned the result-to-arg mapping (e.g.
+  // attention with `return_lse`, whose result tuple is permuted relative
+  // to the trailing args), we do not synthesize phantom output slots.
+  auto [signatureSlots, numKernelParams] = root0.getSignatureSlots(outIndices);
 
   // If the per-operation logic above did not already pre-populate
-  // outIndices (e.g. attention with its non-trailing LSE output), derive it
-  // from the slot layout: the last `numResults` slots are always the
-  // outputs.
+  // outIndices, derive it from the slot layout: the last `numResults`
+  // slots are always the outputs (either positionally-aliasing trailing
+  // params or synthetic memref slots).
   if (outIndices.empty() && !root0.resultTypes.empty()) {
     size_t numResults = root0.resultTypes.size();
     for (size_t i = signatureSlots.size() - numResults;
