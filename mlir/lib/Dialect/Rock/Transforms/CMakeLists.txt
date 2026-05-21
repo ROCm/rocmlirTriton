@@ -88,7 +88,7 @@ if (NOT WIN32)
   target_link_libraries(obj.MLIRRockTransforms PUBLIC hip::host hip::amdhip64)
 endif()
 
-rocmlir_add_triton_includes(MLIRRockTransforms CANONICAL)
+rocmlir_add_triton_includes(MLIRRockTransforms)
 
 # Fix build order: TritonIR and TritonGPUIR include headers that need generated files
 # This ensures tablegen runs before these libraries build

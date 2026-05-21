@@ -110,22 +110,14 @@ set(TRITON_CODEGEN_BACKENDS "amd" "nvidia" CACHE STRING "Enable AMD codegen back
 # Include Directories
 #===----------------------------------------------------------------------===//
 
-# Triton includes
+# Triton include dirs. Used by every target that pulls in Triton headers
+# Add new Triton include paths here.
 list(APPEND TRITON_INCLUDE_DIRS
+  ${TRITON_PROJECT_DIR}
   ${TRITON_PROJECT_DIR}/include
   ${TRITON_BINARY_DIR}/include
   ${TRITON_PROJECT_DIR}/third_party
   ${TRITON_BINARY_DIR}/third_party
-)
-
-# Extended Triton include dirs (canonical roots plus per-backend roots and
-# the AMD/NVIDIA generated-header dirs). Used by targets that consume the
-# AMD/NVIDIA backend headers directly (e.g. MLIRRockPipeline, MLIRRockOps,
-# rocmlir-driver, ...). Add new Triton include paths here once instead of
-# in every consuming CMakeLists.txt.
-list(APPEND TRITON_INCLUDE_DIRS_FULL
-  ${TRITON_INCLUDE_DIRS}
-  ${TRITON_PROJECT_DIR}
   ${TRITON_PROJECT_DIR}/third_party/amd
   ${TRITON_PROJECT_DIR}/third_party/amd/include
   ${TRITON_BINARY_DIR}/third_party/amd
@@ -248,26 +240,13 @@ function(add_rocmlir_triton_library name)
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_triton_library)
 
-# Attach Triton include directories to <target> (and its obj.* variant when
-# one exists, as it does for libraries created via add_mlir_library). Marked
-# SYSTEM so our strict warnings (-Wshadow, -Wundef, ...) don't fire inside
-# Triton headers.
-#
-# Usage:
-#   rocmlir_add_triton_includes(<target>)              # extended list (default)
-#   rocmlir_add_triton_includes(<target> CANONICAL)    # 4-entry root list
-#
-# Add new Triton include paths to TRITON_INCLUDE_DIRS / TRITON_INCLUDE_DIRS_FULL
-# above rather than spelling them out at each call site.
+# Attach the Triton include directories (TRITON_INCLUDE_DIRS) to <target> and
+# its obj.* variant when one exists (as it does for libraries created via
+# add_mlir_library). Marked SYSTEM so our strict warnings (-Wshadow, -Wundef,
+# ...) don't fire inside Triton headers.
 function(rocmlir_add_triton_includes target)
-  cmake_parse_arguments(ARG "CANONICAL" "" "" ${ARGN})
-  if(ARG_CANONICAL)
-    set(_dirs ${TRITON_INCLUDE_DIRS})
-  else()
-    set(_dirs ${TRITON_INCLUDE_DIRS_FULL})
-  endif()
-  target_include_directories(${target} SYSTEM PRIVATE ${_dirs})
+  target_include_directories(${target} SYSTEM PRIVATE ${TRITON_INCLUDE_DIRS})
   if(TARGET obj.${target})
-    target_include_directories(obj.${target} SYSTEM PRIVATE ${_dirs})
+    target_include_directories(obj.${target} SYSTEM PRIVATE ${TRITON_INCLUDE_DIRS})
   endif()
 endfunction(rocmlir_add_triton_includes)
