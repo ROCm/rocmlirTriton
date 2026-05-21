@@ -1,4 +1,5 @@
 // RUN: rocmlir-opt -rock-remove-redundant-casts -canonicalize -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt -rock-remove-redundant-casts -mlir-print-local-scope %s | FileCheck %s --check-prefix=ANNOTATE
 
 // ============================================================
 // Direct pure-SSA round-trip: extf(truncf %wide) -> %wide.
@@ -206,4 +207,103 @@ func.func @dual_non_kernel_folded_by_canonicalize(%arg0: tensor<32x32xf16>) -> t
   %0 = arith.extf %arg0 : tensor<32x32xf16> to tensor<32x32xf32>
   %1 = arith.truncf %0 : tensor<32x32xf32> to tensor<32x32xf16>
   return %1 : tensor<32x32xf16>
+}
+
+// ============================================================
+// Annotation-only tests. With canonicalize disabled, the pass
+// must leave both casts in place but merge `fastmath<contract>`
+// into their flag sets. These cases exercise the annotation
+// behaviour directly so a future regression that drops the flag,
+// overwrites pre-existing flags, or clobbers the rounding mode
+// fails loudly.
+// ============================================================
+
+// Basic positive case: a clean round-trip with no pre-existing
+// flags. The pass must add `fastmath<contract>` to both casts.
+
+// ANNOTATE-LABEL: func.func @annotate_basic_roundtrip
+// ANNOTATE-SAME: (%[[ARG:.*]]: tensor<32x32xf32>)
+//      ANNOTATE: arith.truncf %[[ARG]] fastmath<contract> : tensor<32x32xf32> to tensor<32x32xf16>
+//      ANNOTATE: arith.extf {{.*}} fastmath<contract> : tensor<32x32xf16> to tensor<32x32xf32>
+func.func @annotate_basic_roundtrip(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
+    attributes {rock.kernel} {
+  %0 = arith.truncf %arg0 : tensor<32x32xf32> to tensor<32x32xf16>
+  %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
+  return %1 : tensor<32x32xf32>
+}
+
+// Pre-existing fast-math flags must be preserved verbatim. The
+// trunc keeps `nnan,ninf` and gains `contract`; the extf keeps
+// `arcp` and gains `contract`. Flags print in bit order
+// (reassoc, nnan, ninf, nsz, arcp, contract, afn) so the
+// concrete substrings below are stable.
+
+// ANNOTATE-LABEL: func.func @annotate_preserve_other_fastmath_flags
+//      ANNOTATE: arith.truncf {{.*}} fastmath<nnan,ninf,contract> : tensor<32x32xf32> to tensor<32x32xf16>
+//      ANNOTATE: arith.extf {{.*}} fastmath<arcp,contract> : tensor<32x32xf16> to tensor<32x32xf32>
+func.func @annotate_preserve_other_fastmath_flags(%arg0: tensor<32x32xf32>)
+    -> tensor<32x32xf32> attributes {rock.kernel} {
+  %0 = arith.truncf %arg0 fastmath<nnan,ninf>
+       : tensor<32x32xf32> to tensor<32x32xf16>
+  %1 = arith.extf %0 fastmath<arcp>
+       : tensor<32x32xf16> to tensor<32x32xf32>
+  return %1 : tensor<32x32xf32>
+}
+
+// The `arith.truncf` rounding-mode attribute is orthogonal to the
+// fast-math flags; it must survive the annotation untouched.
+
+// ANNOTATE-LABEL: func.func @annotate_preserve_rounding_mode
+//      ANNOTATE: arith.truncf {{.*}} downward fastmath<contract> : tensor<32x32xf32> to tensor<32x32xf16>
+//      ANNOTATE: arith.extf {{.*}} fastmath<contract> : tensor<32x32xf16> to tensor<32x32xf32>
+func.func @annotate_preserve_rounding_mode(%arg0: tensor<32x32xf32>)
+    -> tensor<32x32xf32> attributes {rock.kernel} {
+  %0 = arith.truncf %arg0 downward
+       : tensor<32x32xf32> to tensor<32x32xf16>
+  %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
+  return %1 : tensor<32x32xf32>
+}
+
+// Idempotency: casts that already carry `fastmath<contract>` must
+// come out of the pass with exactly the same flag set (no double
+// bit, no spurious rewrite).
+
+// ANNOTATE-LABEL: func.func @annotate_idempotent
+//      ANNOTATE: arith.truncf {{.*}} fastmath<contract> : tensor<32x32xf32> to tensor<32x32xf16>
+//      ANNOTATE: arith.extf {{.*}} fastmath<contract> : tensor<32x32xf16> to tensor<32x32xf32>
+func.func @annotate_idempotent(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
+    attributes {rock.kernel} {
+  %0 = arith.truncf %arg0 fastmath<contract>
+       : tensor<32x32xf32> to tensor<32x32xf16>
+  %1 = arith.extf %0 fastmath<contract>
+       : tensor<32x32xf16> to tensor<32x32xf32>
+  return %1 : tensor<32x32xf32>
+}
+
+// Mismatched wide types are not a real round-trip (f64 -> f16 -> f32
+// is genuine precision shaping), so the pass must NOT annotate
+// either cast. The `return` anchor bounds the NOT scope to this
+// function body.
+
+// ANNOTATE-LABEL: func.func @annotate_skip_mismatched_wide_types
+//  ANNOTATE-NOT: fastmath
+//      ANNOTATE: return
+func.func @annotate_skip_mismatched_wide_types(%arg0: tensor<32x32xf64>)
+    -> tensor<32x32xf32> attributes {rock.kernel} {
+  %0 = arith.truncf %arg0 : tensor<32x32xf64> to tensor<32x32xf16>
+  %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
+  return %1 : tensor<32x32xf32>
+}
+
+// Non-kernel (host) functions are skipped entirely, so even a
+// well-formed round-trip must come out unannotated. This pins
+// down the kernel gate at the flag level.
+
+// ANNOTATE-LABEL: func.func @annotate_skip_non_kernel
+//  ANNOTATE-NOT: fastmath
+//      ANNOTATE: return
+func.func @annotate_skip_non_kernel(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32> {
+  %0 = arith.truncf %arg0 : tensor<32x32xf32> to tensor<32x32xf16>
+  %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
+  return %1 : tensor<32x32xf32>
 }
