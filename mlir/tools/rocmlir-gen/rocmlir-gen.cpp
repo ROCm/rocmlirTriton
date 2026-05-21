@@ -5492,7 +5492,8 @@ static LogicalResult populateHostHarnessLogic(
   // codepath above already pinned the result-to-arg mapping (e.g.
   // attention with `return_lse`, whose result tuple is permuted relative
   // to the trailing args), we do not synthesize phantom output slots.
-  auto [signatureSlots, numKernelParams] = root0.getSignatureSlots(outIndices);
+  SmallVector<Type, 8> signatureSlots =
+      root0.getSignatureSlots(outIndices).first;
 
   // If the per-operation logic above did not already pre-populate
   // outIndices, derive it from the slot layout: the last `numResults`
