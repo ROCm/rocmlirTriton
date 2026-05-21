@@ -102,20 +102,6 @@ target_link_libraries(rocmlir-tuning-driver PUBLIC benchmark-driver-utils)
 target_link_libraries(rocmlir-tuning-driver PUBLIC hip::host hip::amdhip64 hiprtc::hiprtc)
 llvm_update_compile_flags(rocmlir-tuning-driver)
 
-# Add Triton include directories for compilation.
-# Marked SYSTEM so our strict warnings (-Wshadow, etc.) don't fire on them.
-target_include_directories(rocmlir-tuning-driver SYSTEM PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_BINARY_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/third_party/nvidia
-  ${TRITON_BINARY_DIR}/third_party/nvidia
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_PROJECT_DIR}
-  ${TRITON_BINARY_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party/amd/include
-  ${TRITON_BINARY_DIR}/third_party/nvidia/include
-)
+rocmlir_add_triton_includes(rocmlir-tuning-driver)
 
 endif()

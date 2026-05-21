@@ -30,17 +30,7 @@ add_rocmlir_dialect_library(MLIRRockUtility
 )
 
 # Triton include directories needed by tritonUtils.cpp.
-# Marked SYSTEM so our strict warnings (-Wshadow, etc.) don't fire on them.
-target_include_directories(MLIRRockUtility SYSTEM PRIVATE
-  ${CMAKE_SOURCE_DIR}/external/triton/third_party/amd/include
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-)
-target_include_directories(obj.MLIRRockUtility SYSTEM PRIVATE
-  ${CMAKE_SOURCE_DIR}/external/triton/third_party/amd/include
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-)
+rocmlir_add_triton_includes(MLIRRockUtility)
 
 # HIP needed by tritonUtils.cpp (launchKernel)
 if (NOT WIN32)

@@ -45,30 +45,4 @@ add_rocmlir_dialect_library(MLIRRockPipeline
   TritonToHsacoTranslation
 )
 
-# Add Triton include directories for compilation.
-# Marked SYSTEM so our strict warnings (-Wshadow, etc.) don't fire on them.
-# We need to set them on both the wrapper lib and its obj.* variant.
-target_include_directories(MLIRRockPipeline SYSTEM PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_BINARY_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/third_party/nvidia
-  ${TRITON_BINARY_DIR}/third_party/nvidia
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_PROJECT_DIR}
-  ${TRITON_BINARY_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party/amd/include
-)
-target_include_directories(obj.MLIRRockPipeline SYSTEM PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_BINARY_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/third_party/nvidia
-  ${TRITON_BINARY_DIR}/third_party/nvidia
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_PROJECT_DIR}
-  ${TRITON_BINARY_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party/amd/include
-)
+rocmlir_add_triton_includes(MLIRRockPipeline)

@@ -35,32 +35,5 @@ add_rocmlir_public_c_api_library(MLIRCAPIRegisterRocMLIR
   TritonInstrumentTransforms
 )
 
-# Add Triton include directories for compilation
-target_include_directories(MLIRCAPIRegisterRocMLIR SYSTEM PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_BINARY_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/third_party/nvidia
-  ${TRITON_BINARY_DIR}/third_party/nvidia
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_PROJECT_DIR}
-  ${TRITON_BINARY_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party/amd/include
-  ${TRITON_BINARY_DIR}/third_party/nvidia/include
-)
-# Also set on the OBJECT target since add_mlir_library doesn't propagate
-# PRIVATE include dirs from the wrapper.
-target_include_directories(obj.MLIRCAPIRegisterRocMLIR SYSTEM PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_BINARY_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/third_party/nvidia
-  ${TRITON_BINARY_DIR}/third_party/nvidia
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_PROJECT_DIR}
-  ${TRITON_BINARY_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party/amd/include
-  ${TRITON_BINARY_DIR}/third_party/nvidia/include
-)
+rocmlir_add_triton_includes(MLIRCAPIRegisterRocMLIR)
+

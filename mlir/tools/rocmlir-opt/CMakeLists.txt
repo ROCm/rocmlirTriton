@@ -73,19 +73,6 @@ add_rocmlir_tool(rocmlir-opt
 target_link_libraries(rocmlir-opt PRIVATE ${LIBS})
 llvm_update_compile_flags(rocmlir-opt)
 
-# Add Triton include directories for compilation
-target_include_directories(rocmlir-opt SYSTEM PRIVATE
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_BINARY_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/third_party/nvidia
-  ${TRITON_BINARY_DIR}/third_party/nvidia
-  ${TRITON_PROJECT_DIR}/third_party
-  ${TRITON_PROJECT_DIR}
-  ${TRITON_BINARY_DIR}/third_party
-  ${TRITON_BINARY_DIR}/third_party/amd/include
-  ${TRITON_BINARY_DIR}/third_party/nvidia/include
-)
+rocmlir_add_triton_includes(rocmlir-opt)
 
 mlir_check_all_link_libraries(rocmlir-opt)

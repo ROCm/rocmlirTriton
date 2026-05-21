@@ -24,21 +24,9 @@ add_rocmlir_dialect_library(MLIRRockOps
   MLIRRockOpsIncGen
   )
 
-# Add Triton AMD include paths for matrix acceleration detection APIs
-# and for lib/TritonAMDGPUToLLVM/TargetInfo.h (AMD::TargetInfo).
-# Marked SYSTEM so our strict warnings (-Wshadow, etc.) don't fire on them.
-target_include_directories(MLIRRockOps SYSTEM PRIVATE
-  ${CMAKE_SOURCE_DIR}/external/triton/third_party/amd/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-)
-target_include_directories(obj.MLIRRockOps SYSTEM PRIVATE
-  ${CMAKE_SOURCE_DIR}/external/triton/third_party/amd/include
-  ${TRITON_PROJECT_DIR}/third_party/amd
-  ${TRITON_PROJECT_DIR}/include
-  ${TRITON_BINARY_DIR}/include
-)
+# Triton AMD headers needed for matrix-acceleration detection APIs and
+# for lib/TritonAMDGPUToLLVM/TargetInfo.h (AMD::TargetInfo).
+rocmlir_add_triton_includes(MLIRRockOps)
 
 target_link_libraries(MLIRRockOps
   PUBLIC

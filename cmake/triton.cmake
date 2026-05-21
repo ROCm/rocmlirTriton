@@ -110,12 +110,21 @@ set(TRITON_CODEGEN_BACKENDS "amd" "nvidia" CACHE STRING "Enable AMD codegen back
 # Include Directories
 #===----------------------------------------------------------------------===//
 
-# Triton includes
+# Triton include dirs. Used by every target that pulls in Triton headers
+# Add new Triton include paths here.
 list(APPEND TRITON_INCLUDE_DIRS
+  ${TRITON_PROJECT_DIR}
   ${TRITON_PROJECT_DIR}/include
   ${TRITON_BINARY_DIR}/include
   ${TRITON_PROJECT_DIR}/third_party
   ${TRITON_BINARY_DIR}/third_party
+  ${TRITON_PROJECT_DIR}/third_party/amd
+  ${TRITON_PROJECT_DIR}/third_party/amd/include
+  ${TRITON_BINARY_DIR}/third_party/amd
+  ${TRITON_BINARY_DIR}/third_party/amd/include
+  ${TRITON_PROJECT_DIR}/third_party/nvidia
+  ${TRITON_BINARY_DIR}/third_party/nvidia
+  ${TRITON_BINARY_DIR}/third_party/nvidia/include
 )
 
 #===----------------------------------------------------------------------===//
@@ -230,3 +239,15 @@ function(add_rocmlir_triton_library name)
   set_property(GLOBAL APPEND PROPERTY ROCMLIR_TRITON_LIBS ${name})
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_triton_library)
+
+# Attach the Triton include directories (TRITON_INCLUDE_DIRS) to <target> and
+# its obj.* variant when one exists (as it does for libraries created via
+# add_mlir_library). Marked SYSTEM so our strict warnings (-Wshadow, -Wundef,
+# ...) don't fire inside Triton headers.
+function(rocmlir_add_triton_includes target)
+  target_include_directories(${target} SYSTEM PRIVATE ${TRITON_INCLUDE_DIRS})
+  if(TARGET obj.${target})
+    target_include_directories(obj.${target} SYSTEM PRIVATE ${TRITON_INCLUDE_DIRS})
+  endif()
+endfunction(rocmlir_add_triton_includes)
+
