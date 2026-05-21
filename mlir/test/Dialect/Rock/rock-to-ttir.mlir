@@ -5,10 +5,8 @@
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[ARG0]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
 //      CHECK:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf16>
 //      CHECK:   %[[RESULT:.*]] = tt.load %[[PTR_TENSOR]], %[[MASK]], %[[ZERO]] : tensor<64x64x!tt.ptr<f16>>
-//      CHECK:   return
-//      CHECK:   }
+//      CHECK:   return %[[RESULT]] : tensor<64x64xf16>
 //  CHECK-NOT:   rock.blockwise_load_ptr
-//  CHECK-NOT:   return %{{.*}}
 func.func @test_load_conversion(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
   %0 = rock.blockwise_load_ptr %arg0[%arg1] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
@@ -22,9 +20,9 @@ func.func @test_load_conversion(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1
 //      CHECK:   tt.store %[[PTR_TENSOR]], %[[VALUE]], %[[MASK]] : tensor<64x64x!tt.ptr<f32>>
 //      CHECK:   return
 //  CHECK-NOT:   rock.blockwise_store_ptr
-func.func @test_store_conversion(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
+func.func @test_store_conversion(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // -----
@@ -41,39 +39,14 @@ func.func @test_gemm_conversion(%arg0: tensor<64x64xf16>, %arg1: tensor<64x64xf1
 
 // -----
 
-// CHECK-LABEL: @test_return_conversion
-// CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xf32>, %[[PTRS:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
-//      CHECK:   tt.store
-//      CHECK:   return
-//  CHECK-NOT:   rock.blockwise_store_ptr
-func.func @test_return_conversion(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
-}
-
-// -----
-
-// CHECK-LABEL: @test_return_clears_res_attrs
-// CHECK-SAME: (%{{.*}}: tensor<64x64xf32>, %{{.*}}: tensor<64x64xi32>, %{{.*}}: tensor<64x64xi1>)
-//      CHECK:   tt.store
-//      CHECK:   return
-//  CHECK-NOT:   rock.blockwise_store_ptr
-//  CHECK-NOT:   res_attrs
-func.func @test_return_clears_res_attrs(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> (tensor<64x64xf32> {rock.prefill = 0.000000e+00 : f32}) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
-}
-
-// -----
-
 // CHECK-LABEL: @test_atomic_add_store
 // CHECK-SAME: (%[[VALUE:.*]]: tensor<64x64xf32>, %[[PTRS:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
 //      CHECK:   tt.atomic_rmw fadd, relaxed, gpu, %[[PTR_TENSOR]], %[[VALUE]], %[[MASK]]
 //  CHECK-NOT:   rock.blockwise_store_ptr
-func.func @test_atomic_add_store(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by atomic_add : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
+func.func @test_atomic_add_store(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by atomic_add : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // -----
@@ -83,9 +56,9 @@ func.func @test_atomic_add_store(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<i32>>
 //      CHECK:   tt.atomic_rmw max, relaxed, gpu, %[[PTR_TENSOR]], %[[VALUE]], %[[MASK]]
 //  CHECK-NOT:   rock.blockwise_store_ptr
-func.func @test_atomic_max_store(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> tensor<64x64xi32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by atomic_max : tensor<64x64xi32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xi32>
-  return %0 : tensor<64x64xi32>
+func.func @test_atomic_max_store(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by atomic_max : tensor<64x64xi32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // -----
@@ -211,7 +184,7 @@ func.func @test_inside_scf_for(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi32
 //  CHECK-NOT:   rock.blockwise_load_ptr
 //  CHECK-NOT:   rock.blockwise_gemm
 //  CHECK-NOT:   rock.blockwise_store_ptr
-func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.block_size = 256 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 1 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
+func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: tensor<64xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.block_size = 256 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 1 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
   %cst = arith.constant dense<128> : tensor<64x1xi32>
   %cst_0 = arith.constant dense<8> : tensor<64x1xi32>
   %cst_1 = arith.constant dense<8> : tensor<1x64xi32>
@@ -274,8 +247,8 @@ func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: te
   %16 = arith.addi %14, %15 : tensor<64x64xi32>
   %17 = tt.splat %0 : i32 -> tensor<64x64xi32>
   %18 = arith.addi %17, %16 : tensor<64x64xi32>
-  %19 = rock.blockwise_store_ptr %3 -> %18(%12) by  set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64xf32>
-  return %19 : tensor<64xf32>
+  rock.blockwise_store_ptr %3 -> %18(%12) by  set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // -----
@@ -286,9 +259,9 @@ func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: te
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<i32>>
 //      CHECK:   tt.atomic_rmw add, relaxed, gpu, %[[PTR_TENSOR]], %[[VALUE]], %[[MASK]]
 //  CHECK-NOT:   rock.blockwise_store_ptr
-func.func @test_atomic_add_int(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> tensor<64x64xi32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by atomic_add : tensor<64x64xi32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xi32>
-  return %0 : tensor<64x64xi32>
+func.func @test_atomic_add_int(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by atomic_add : tensor<64x64xi32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
 }
 
 // -----
@@ -301,19 +274,6 @@ func.func @test_atomic_add_int(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi32
 func.func @test_non_kernel_skipped(%arg0: tensor<64x64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.blockwise_reduce sum %arg0 {axis = 1 : index} : tensor<64x64xf32> -> tensor<64xf32>
   return %0 : tensor<64xf32>
-}
-
-// -----
-
-// Verifies the function return type is updated to void after conversion
-// CHECK-LABEL: @test_func_type_void
-// CHECK-SAME: ) attributes
-//      CHECK:   tt.store
-//      CHECK:   return
-//  CHECK-NOT:   return %{{.*}}
-func.func @test_func_type_void(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
 }
 
 // -----

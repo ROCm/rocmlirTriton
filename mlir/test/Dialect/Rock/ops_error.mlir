@@ -854,48 +854,29 @@ func.func @blockwise_load_ptr_shape_mismatch(
 
 // Pointer tensor element type not i32
 func.func @blockwise_store_ptr_ptr_not_i32(
-    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xf16>, %mask: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xf16>, %mask: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<64x64xf16>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
+  rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<64x64xf16>(tensor<64x64xi1>)
+  return
 }
 
 // Mask tensor element type not i1
 func.func @blockwise_store_ptr_mask_not_i1(
-    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi32>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{operand #1 must be ranked tensor of 1-bit signless integer values}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi32>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
+  rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi32>)
+  return
 }
 
 // Shape mismatch between pointers, mask, and source
 func.func @blockwise_store_ptr_shape_mismatch(
-    %src: tensor<64x64xf32>, %ptrs: tensor<32x32xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+    %src: tensor<64x64xf32>, %ptrs: tensor<32x32xi32>, %mask: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{failed to verify that all of {pointerTensor, maskTensor, source} have same shape}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<32x32xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
-}
-
-// Element type mismatch between source and result
-func.func @blockwise_store_ptr_elem_mismatch(
-    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf16>
-  return %0 : tensor<64x64xf16>
-}
-
-// Result not used by return
-func.func @blockwise_store_ptr_not_returned(
-    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  %neg = arith.negf %0 : tensor<64x64xf32>
-  return %neg : tensor<64x64xf32>
+  rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<32x32xi32>(tensor<64x64xi1>)
+  return
 }
 
 // =============================================================================

@@ -330,12 +330,9 @@ struct GridwiseAttentionRewritePattern
     ArrayAttr indexView = outputViewToIndex(rewriter, loc, tileView);
     fakeTensor = transform(rewriter, fakeTensor, indexView);
 
-    auto tileShape = cast<ShapedType>(firstGemmResult.getType()).getShape();
-    auto pointerTensorType = RankedTensorType::get(tileShape, rewriter.getI32Type());
-    auto maskTensorType = RankedTensorType::get(tileShape, rewriter.getI1Type());
     auto transformsToPtrOp = TransformsToPtrOp::create(
-        rewriter, loc, pointerTensorType, maskTensorType, fakeTensor, ValueRange{gridCoords.g_block, gridCoords.m_block,
-            gridCoords.n_block});
+        rewriter, loc, fakeTensor,
+        ValueRange{gridCoords.g_block, gridCoords.m_block, gridCoords.n_block});
     Value maskTensor = transformsToPtrOp.getMask();
     return arith::SelectOp::create(rewriter, loc, maskTensor, firstGemmResult, negInfTensor);
   }
@@ -354,20 +351,14 @@ struct GridwiseAttentionRewritePattern
       Value fakeTensorNview = transform(rewriter, fakeTensorN, nView);
       Value fakeTensorMview = transform(rewriter, fakeTensorM, mView);
 
-      auto tileShape = cast<ShapedType>(firstGemmResult.getType()).getShape();
-      auto pointerTensorType =
-          RankedTensorType::get(tileShape, rewriter.getI32Type());
-      auto maskTensorType =
-          RankedTensorType::get(tileShape, rewriter.getI1Type());
-
       auto transformsToPtrN = TransformsToPtrOp::create(
-          rewriter, loc, pointerTensorType, maskTensorType, fakeTensorNview,
+          rewriter, loc, fakeTensorNview,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block});
       Value nIndex = transformsToPtrN.getPointers();
 
       auto transformsToPtrM = TransformsToPtrOp::create(
-          rewriter, loc, pointerTensorType, maskTensorType, fakeTensorMview,
+          rewriter, loc, fakeTensorMview,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block});
       Value mIndex = transformsToPtrM.getPointers();
@@ -1109,7 +1100,8 @@ struct GridwiseAttentionRewritePattern
     // can prefetch the Q tile into regs outside of the
     // loop.
     Value loadedQ;
-    // TODO(roctriton): do this in an independent pass, hoist loads out of the loop if possible
+    // TODO(rocmlirTriton): do this in an independent pass, hoist loads out of
+    // the loop if possible
     if (prefetchQTile) {
       LLVM_DEBUG(llvm::dbgs()
                  << "rock.attention: gemm0K is equal to gemm0KPerBlock\n");
@@ -1186,9 +1178,8 @@ struct GridwiseAttentionRewritePattern
                            gridCoordsGemm0, gemm0KPerBlock, gemm0NPerBlock,
                            /*isKFirst=*/true, gemm0BidGridLengths);
 
-        // TODO(roctriton): scaled gemm
         Value newAcc = BlockwiseGemmOp::create(
-            rewriter, loc, accArg.getType(), loadedQ, loadedK, accArg,
+            rewriter, loc, loadedQ, loadedK, accArg,
             /*matrixScaleA=*/nullptr,
             /*matrixScaleB=*/nullptr, /*quantBlockSize=*/nullptr,
             /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
@@ -1317,19 +1308,20 @@ struct GridwiseAttentionRewritePattern
 
         auto softmaxShape = cast<ShapedType>(softmaxInput.getType()).getShape();
         assert(softmaxShape.size() == 2);
-        auto softmaxTensorType = RankedTensorType::get({softmaxShape[0]}, elemTypeSoftmax);
 
         // Softmax max reduction
         Value softmaxMax = BlockwiseReduceOp::create(
-            rewriter, loc, softmaxTensorType, softmaxInput, reductionAxis, rewriter.getAttr<rock::ReduceMethodAttr>(rock::ReduceMethod::Max));
+            rewriter, loc, softmaxInput, reductionAxis,
+            rewriter.getAttr<rock::ReduceMethodAttr>(rock::ReduceMethod::Max));
 
         softmaxExp = expSubstractMaxFromGemm0(rewriter, loc, softmaxInput,
                                  softmaxMax, maxRow);
 
         // Softmax sum reduction
         Value softmaxSum = BlockwiseReduceOp::create(
-            rewriter, loc, softmaxTensorType, softmaxExp, reductionAxis, rewriter.getAttr<rock::ReduceMethodAttr>(rock::ReduceMethod::Sum));
-            
+            rewriter, loc, softmaxExp, reductionAxis,
+            rewriter.getAttr<rock::ReduceMethodAttr>(rock::ReduceMethod::Sum));
+
         std::tie(maxRowDiffExp, sumRow, maxRow) = updateRowSum(rewriter, loc, softmaxSum, softmaxMax, sumRow, maxRow);
       }
 
@@ -1366,10 +1358,9 @@ struct GridwiseAttentionRewritePattern
                                      gemm1KPerBlock, gemm1NPerBlock,
                                      /*isKFirst=*/true, gemm1BidGridLengths);
 
-      // TODO(roctriton): scaled gemm
       Value gemm1Out = BlockwiseGemmOp::create(
-          rewriter, loc, gemm1InitAcc.getType(), gemm0Out, loadedV,
-          gemm1InitAcc, /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
+          rewriter, loc, gemm0Out, loadedV, gemm1InitAcc,
+          /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
           /*quantBlockSize=*/nullptr,
           /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
           /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);

@@ -3080,7 +3080,6 @@ typename std::enable_if_t<
                                                     ConversionPatternRewriter
                                                         &rw) {
   Location loc = op->getLoc();
-  auto outputType = cast<RankedTensorType>(op.getType());
 
   int32_t blockSize = 256;
   auto elementCount =
@@ -3091,10 +3090,9 @@ typename std::enable_if_t<
     gridSize = std::min((int32_t)(20 * numCU.value()), gridSize);
   }
 
-  auto rockReduce =
-      rock::ReduceOp::create(rw, loc, outputType, op.getInput(),
-                             rw.getAttr<rock::ReduceMethodAttr>(rMethod),
-                             rw.getIndexAttr(op.getAxis()));
+  auto rockReduce = rock::ReduceOp::create(
+      rw, loc, op.getInput(), rw.getAttr<rock::ReduceMethodAttr>(rMethod),
+      rw.getIndexAttr(op.getAxis()));
 
   func::FuncOp func = op->template getParentOfType<func::FuncOp>();
   SetVector<int64_t> resIndices = traceToRes(op.getOutput(), func);
