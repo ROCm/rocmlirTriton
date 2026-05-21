@@ -64,6 +64,7 @@ for f in \
     third_party/amd/backend/compiler.py \
     third_party/amd/python/triton_amd.cc \
     python/src/llvm.cc \
+    python/triton/language/semantic.py \
     third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp \
     third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h; do
   git diff ${OLD_COMMIT}..${NEW_COMMIT} --function-context -- "$f" > "$(basename "$f").diff"
@@ -95,20 +96,28 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 | `createTargetMachine()` | `TritonToHsaco.cpp::createTargetMachine()` |
 | `optimize_module()` | `TritonToHsaco.cpp::optimizeModule()` |
 
-### 5.3 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
+### 5.3 Triton Utility Functions (replicas of upstream Triton helpers)
 
 All Triton-internal helper functions that we replicate are centralized in a
-single module for easy updating:
+single module for easy updating. The "Source" column gives the upstream file
+each row should be diffed against on every bump:
 
-| Triton Function | C++ Location in rocmlirTriton |
-|----------------|-------------------------------|
-| `getMfmaVersion()` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
-| `getWmmaVersion()` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
-| `mlirTypeToScaledElemType()` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` (as `mlirTypeToScaleDotElemType`, extended with BF16/FP16) |
+| Triton Function | Source in `external/triton` | C++ Location in rocmlirTriton |
+|----------------|-----------------------------|-------------------------------|
+| `getMfmaVersion()` | `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
+| `getWmmaVersion()` | `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
+| `mlirTypeToScaledElemType()` | `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` (as `mlirTypeToScaleDotElemType`, extended with BF16/FP16) |
+| `atomic_max()` (float path) | `python/triton/language/semantic.py` | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` (as `emitFloatAtomicMax`; f32 only, with the sign-bit-split rationale documented in the comment above the function) |
 
 Header: `mlir/include/mlir/Dialect/Rock/utility/tritonUtils.h`
 
 If there are any new architecture not handled by our rocmlirTriton functions we should see warnings/errors because the switch would not be handling all cases.
+
+For `emitFloatAtomicMax`, watch upstream `semantic.py::atomic_max` for changes
+to the sign-bit-split lowering (the `_signbit` / `not_` / `where` sequence) or
+to the supported dtype set. The replica only handles the f32 arm today; if
+upstream adds a new branch (e.g. f16/bf16) or restructures the existing
+positive/negative split, mirror the change here and update the dtype guard.
 
 **Example mapping:**
 
@@ -267,6 +276,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `third_party/amd/backend/compiler.py`
 - [ ] Generate diff for `python/src/llvm.cc`
 - [ ] Generate diff for `third_party/amd/python/triton_amd.cc`
+- [ ] Generate diff for `python/triton/language/semantic.py`
 - [ ] Generate diff for `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp`
 - [ ] Generate diff for `third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h`
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
@@ -277,6 +287,7 @@ Use this checklist to track progress:
 - [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::mlirTypeToScaleDotElemType()` if changed
+- [ ] Update `tritonUtils.cpp::emitFloatAtomicMax()` if `semantic.py::atomic_max` changed
 - [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
@@ -335,6 +346,7 @@ If new Triton headers are needed:
 | Triton llvm.cc | `external/triton/python/src/llvm.cc` |
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |
 | Triton AccelerateMatmul | `external/triton/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp` |
+| Triton language semantics | `external/triton/python/triton/language/semantic.py` |
 | Build script | `cmake.sh` |
 | LLVM build wrapper | `scripts/build-llvm.sh` |
 | Fat library deps generator | `mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl` |
