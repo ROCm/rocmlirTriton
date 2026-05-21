@@ -93,10 +93,6 @@ struct RockConvToGemmPass
   void runOnOperation() override;
 };
 
-/// Discardable marker attached to the extra `rock.store` ops produced by the
-/// multi-kernel `bwd_data` expansion.
-constexpr StringRef bwdDataStore = "rock.bwd_data_store";
-
 template <typename T>
 LogicalResult checkNames(ArrayRef<StringRef> actual,
                          ArrayRef<StringRef> expected, StringRef argName,
@@ -1231,7 +1227,8 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
                                         gemmDest, storeMethod);
 
       if (!storeResults.empty())
-        newStoreOp->setAttr(bwdDataStore, b.getUnitAttr());
+        newStoreOp->setAttr(rock::BwdDataStoreAttr::getMnemonic(),
+                            b.getUnitAttr());
       storeResults.push_back(newStoreOp.getResult());
     }
 
@@ -1797,8 +1794,7 @@ void RockConvToGemmPass::runOnOperation() {
 
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
-    signalPassFailure();
-    return;
+    return signalPassFailure();
   }
 
   // Post-conversion: extend every parent `func.func` whose body contains
@@ -1806,10 +1802,10 @@ void RockConvToGemmPass::runOnOperation() {
   ModuleOp module = getOperation();
   llvm::MapVector<func::FuncOp, SmallVector<Value, 4>> extrasByFunc;
   module.walk([&](StoreOp storeOp) {
-    if (!storeOp->hasAttr(bwdDataStore))
+    if (!storeOp->hasAttr(rock::BwdDataStoreAttr::getMnemonic()))
       return;
 
-    storeOp->removeAttr(bwdDataStore);
+    storeOp->removeAttr(rock::BwdDataStoreAttr::getMnemonic());
     assert(storeOp.getResult().use_empty() &&
            "bwd_data keepalive store should be use_empty before fix-up");
     if (auto parentFunc = storeOp->getParentOfType<func::FuncOp>())

@@ -501,6 +501,18 @@ def Rock_CpuFusedConv : Rock_Attr<"CpuFusedConv"> {
   }];
 }
 
+def Rock_BwdDataStore : Rock_Attr<"BwdDataStore"> {
+  let mnemonic = "rock.bwd_data_store";
+  let description = [{
+    Discardable marker attached by `--rock-conv-to-gemm` to the extra
+    `rock.store` ops produced by the multi-kernel `bwd_data` expansion.
+    Stores 1..N-1 emitted by the expansion are intentionally left
+    `use_empty()` so the post-conversion fix-up step in
+    `RockConvToGemmPass::runOnOperation` can find them and wire their
+    results into the parent function's `func.return`.
+  }];
+}
+
 def Rock_NotApplicable : Rock_Attr<"NotApplicable"> {
   let mnemonic = "rock.not_applicable";
   let description = [{
