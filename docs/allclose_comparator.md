@@ -378,6 +378,15 @@ module-wide value (the max over all matmul-like ops in the module), so
 two outputs of the same dtype always end up with identical `(atol,
 rtol)` even if only one of them depends on the reduction.
 
+A consequence of the module-wide `K_eff` is that a real bug in a
+non-reduction output of a multi-output kernel can be masked. If the
+module contains a big matmul, `K_eff` is sized for that matmul, and
+every other output (including a pure element-wise op) is
+verified against the same bigger `atol`. The legacy comparator has
+the same shape of problem by default, since its thresholds
+are sized for the worst-case matmul, so every element-wise output
+is already verified at that matmul-loose budget.
+
 ### 2.7 Precision floor from the narrowest float in the dataflow
 
 Some kernels compute in a narrow dtype and only widen at the very end
