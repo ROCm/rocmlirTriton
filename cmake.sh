@@ -6,9 +6,6 @@ set -e
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Build LLVM/MLIR (handles submodule init, triton patches, ROCM_RUNNER, and building)
-bash "$SCRIPT_DIR/scripts/build-llvm.sh"
-
 rm -rf build
 mkdir build
 cd build
