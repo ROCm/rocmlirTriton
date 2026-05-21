@@ -870,11 +870,14 @@ pipeline {
                                                 ]) {
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            sh '''
+                                                            sh """
                                                                 export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
                                                                 export C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                                bash cmake.sh
-                                                            '''
+                                                                bash cmake.sh \\
+                                                                    -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'} \\
+                                                                    -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'} \\
+                                                                    -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
+                                                            """
                                                         }
                                                     }
 
