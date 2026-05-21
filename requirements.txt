@@ -1,0 +1,1 @@
+Triton,/mnt/data/pamartin/rocmlirTriton-triton/ -DTRITON_CACHE_PATH=/tmp/triton-cache -DTRITON_CODEGEN_BACKENDS=amd;nvidia -DTRITON_BUILD_PYTHON_MODULE=OFF -DTRITON_BUILD_PROTON=OFF -DTRITON_BUILD_UT=OFF
