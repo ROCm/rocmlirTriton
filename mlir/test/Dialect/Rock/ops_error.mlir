@@ -342,7 +342,7 @@ func.func @gemm_kperblock_not_divisible_by_quantblocksize(
   wavesPerEU = 0, gridGroupSize = 0,
   numCTAs = 1>
 
-func.func @gridwise_gemm_accel_scale_presence_a_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA: tensor<1x4x8xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @gridwise_gemm_scale_presence_a_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA: tensor<1x4x8xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{both scaleA and scaleB must be provided or neither}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA) {
     params = #common_params
@@ -352,7 +352,7 @@ func.func @gridwise_gemm_accel_scale_presence_a_only(%A: tensor<1x4x8xf4E2M1FN>,
 }
 
 // Scale presence B only
-func.func @gridwise_gemm_accel_scale_presence_b_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleB: tensor<1x4x16xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @gridwise_gemm_scale_presence_b_only(%A: tensor<1x4x8xf4E2M1FN>, %B: tensor<1x4x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleB: tensor<1x4x16xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{both scaleA and scaleB must be provided or neither}}
   %result = rock.gridwise_gemm(%A, %B, %scaleB) {
     params = #common_params
@@ -373,7 +373,7 @@ func.func @gridwise_gemm_scale_missing_quantblocksize(%A: tensor<1x8x32xf4E2M1FN
 }
 
 // scaleA dims mismatch
-func.func @gridwise_gemm_accel_scaleA_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x7xf8E8M0FNU>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @gridwise_gemm_scaleA_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x7xf8E8M0FNU>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{ScaleA shape must match matrixA shape.}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA_bad_dims, %scaleB) {
     quantBlockSize = 32 : i64,
@@ -384,7 +384,7 @@ func.func @gridwise_gemm_accel_scaleA_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>,
 }
 
 // scaleB dims mismatch
-func.func @gridwise_gemm_accel_scaleB_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x1xf8E8M0FNU>, %scaleB: tensor<1x16x2xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @gridwise_gemm_scaleB_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>, %scaleA_bad_dims: tensor<1x8x1xf8E8M0FNU>, %scaleB: tensor<1x16x2xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{ScaleB shape must match matrixB shape.}}
   %result = rock.gridwise_gemm(%A, %B, %scaleA_bad_dims, %scaleB) {
     quantBlockSize = 32 : i64,
@@ -854,48 +854,29 @@ func.func @blockwise_load_ptr_shape_mismatch(
 
 // Pointer tensor element type not i32
 func.func @blockwise_store_ptr_ptr_not_i32(
-    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xf16>, %mask: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xf16>, %mask: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<64x64xf16>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
+  rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<64x64xf16>(tensor<64x64xi1>)
+  return
 }
 
 // Mask tensor element type not i1
 func.func @blockwise_store_ptr_mask_not_i1(
-    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi32>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{operand #1 must be ranked tensor of 1-bit signless integer values}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi32>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
+  rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi32>)
+  return
 }
 
 // Shape mismatch between pointers, mask, and source
 func.func @blockwise_store_ptr_shape_mismatch(
-    %src: tensor<64x64xf32>, %ptrs: tensor<32x32xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+    %src: tensor<64x64xf32>, %ptrs: tensor<32x32xi32>, %mask: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{failed to verify that all of {pointerTensor, maskTensor, source} have same shape}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<32x32xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  return %0 : tensor<64x64xf32>
-}
-
-// Element type mismatch between source and result
-func.func @blockwise_store_ptr_elem_mismatch(
-    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf16>
-  return %0 : tensor<64x64xf16>
-}
-
-// Result not used by return
-func.func @blockwise_store_ptr_not_returned(
-    %src: tensor<64x64xf32>, %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return}}
-  %0 = rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
-    : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>) -> tensor<64x64xf32>
-  %neg = arith.negf %0 : tensor<64x64xf32>
-  return %neg : tensor<64x64xf32>
+  rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
+    : tensor<64x64xf32> -> tensor<32x32xi32>(tensor<64x64xi1>)
+  return
 }
 
 // =============================================================================

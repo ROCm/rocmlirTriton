@@ -586,9 +586,7 @@ struct TransformsToPtrRewritePattern
         b.setInsertionPointToStart(&parentFunc.front());
 
         // Extract the base pointer from the tensor as i32
-        baseAddr =
-              rock::ExtractPtrOp::create(b, loc, b.getI32Type(), buffer);
-              
+        baseAddr = rock::ExtractPtrOp::create(b, loc, buffer);
       }
     }
     // Use triton.splat for broadcasting scalar to triton

@@ -12,7 +12,7 @@
 // RUN:   -head_dim_qk 233 -head_dim_v 236 \
 // RUN:   -with-attn-scale=True -with-attn-bias=True \
 // RUN:   -return_lse=True -split_kv=8 \
-// RUN:   --perf_config=attn:v1:64,32,16,2,1,1,32,1,2,2,2 \
+// RUN:   --perf_config=attn:v1:64,32,16,1,1,1,32,1,2,2,2 \
 // RUN:   --current_seq_len=255,148,29,264,122,189,61,184 \
 // RUN:   | rocmlir-driver -c | FileCheck %s
 

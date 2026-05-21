@@ -601,7 +601,7 @@ static const StringRef initParametersF16AttentionGfx1000[nInitParametersF16Atten
 
 #endif // GemmGemm_DECLARATIONS_GEN
 
-#ifdef Accel_LOOKUP_TABLE_GEN
+#ifdef Gemm_LOOKUP_TABLE_GEN
 
 {"gfx908_gemm_f32", {PopulateParamsGemm::initParametersF32GemmGfx908, PopulateParamsGemm::nInitParametersF32GemmGfx908}},
 {"gfx90a_gemm_f32", {PopulateParamsGemm::initParametersF32GemmGfx90a, PopulateParamsGemm::nInitParametersF32GemmGfx90a}},
@@ -663,7 +663,7 @@ static const StringRef initParametersF16AttentionGfx1000[nInitParametersF16Atten
 {"gfx1150_conv_f16", {PopulateParamsGemm::initParametersF16ConvGfx1150, PopulateParamsGemm::nInitParametersF16ConvGfx1150}},
 {"gfx1150_conv_i8", {PopulateParamsGemm::initParametersI8ConvGfx1150, PopulateParamsGemm::nInitParametersI8ConvGfx1150}},
 
-#endif // Accel_LOOKUP_TABLE_GEN
+#endif // Gemm_LOOKUP_TABLE_GEN
 
 #ifdef GemmGemm_LOOKUP_TABLE_GEN
 

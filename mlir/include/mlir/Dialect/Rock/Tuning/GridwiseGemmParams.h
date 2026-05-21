@@ -43,12 +43,20 @@ GemmSize calculatePaddedGemmSize(int64_t kPerBlock, int64_t mPerBlock,
 /// values in the returned gemm context represent the number of 0s that need to
 /// be added to the given dimension. The mulBy* arguments multiply the
 /// corresponding dimension of the attributes.
-std::optional<GemmSize> requiredPadding(Attribute params, GemmSize gemmSize,
+std::optional<GemmSize> requiredPadding(Attribute paramsAttr, GemmSize gemmSize,
                                         int64_t mulByKPerBlock = 1,
                                         int64_t mulByMPerBlock = 1,
                                         int64_t mulByNPerBlock = 1);
 
 int64_t obtainBlockSize(int64_t waveSize, GemmParamsAttr params);
+
+/// Build a `ParamsAttr` from `perfConfig`, falling back to `defaults.front()`
+/// if `perfConfig` is empty. Fails if both are empty or the perfConfig fails
+/// to parse.
+template <typename ParamsAttr>
+FailureOr<ParamsAttr> materializeTuningParams(OpBuilder &b,
+                                              StringRef perfConfig,
+                                              ArrayRef<ParamsAttr> defaults);
 
 /// Store information useful for populating perf configurations
 struct PopulateParamsInfo {
@@ -146,9 +154,21 @@ public:
 };
 
 //
-// Acceleration parameter initialization interface
+// Data holder for static tuning parameter arrays from generated .inc file.
+// Used by ParamLookupTable.
 //
-class PopulateParamsAccel : public BasePopulateParams<GemmParamsAttr> {
+struct PopulateParamsGemm {
+#define Gemm_DECLARATIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef Gemm_DECLARATIONS_GEN
+
+  friend class ParamLookupTable<GemmParamsAttr>;
+};
+
+//
+// Tuning-parameter interface for single-gemm ops.
+//
+class PopulateParams : public BasePopulateParams<GemmParamsAttr> {
 public:
   FailureOr<GemmParamsAttr> obtainTuningParameters(OpBuilder &b,
                                                    RockGemmWrapperInterface op);
@@ -162,54 +182,16 @@ public:
 
   // Return the set of heuristic tuning parameters for the given opType, data
   // types, and architecture.
-  virtual std::vector<GemmParamsAttr>
+  std::vector<GemmParamsAttr>
   getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
-                      Type dataTypeB, StringRef arch) const = 0;
+                      Type dataTypeB, StringRef arch) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;
 
-protected:
-  LogicalResult populatePaddingKernelDerived(RockGemmWrapperInterface op,
-                                             GemmParamsAttr validParams,
-                                             GemmSize &gemmSize,
-                                             uint32_t &blockSize,
-                                             uint32_t &gridSize);
-
-  /// The actual implementation of couldBePerformant(), which shouldn't exist
-  /// once we merge gridwise_gemm and gridwise_gemm_accel and thus flatten
-  /// out the class hierarchy in this file.
-  virtual LogicalResult specificCouldBePerformant(GemmParamsAttr params,
-                                                  Type dataTypeA,
-                                                  Type dataTypeB,
-                                                  StringRef arch) = 0;
-};
-
-//
-// Data holder for static tuning parameter arrays from generated .inc file.
-// Used by ParamLookupTable for both MFMA (gfx9) and WMMA (gfx1*) architectures.
-//
-struct PopulateParamsGemm {
-#define Gemm_DECLARATIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef Gemm_DECLARATIONS_GEN
-
-  friend class ParamLookupTable<GemmParamsAttr>;
-};
-
-//
-// Unified MFMA/WMMA agnostic interface
-//
-class PopulateParams : public PopulateParamsAccel {
-public:
-  std::vector<GemmParamsAttr>
-  getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
-                      Type dataTypeB, StringRef arch) const override;
-
-protected:
+private:
   LogicalResult specificCouldBePerformant(GemmParamsAttr params, Type dataTypeA,
-                                          Type dataTypeB,
-                                          StringRef arch) override;
+                                          Type dataTypeB, StringRef arch);
 };
 
 } // namespace rock

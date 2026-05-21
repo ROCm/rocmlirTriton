@@ -151,9 +151,9 @@ struct MIGraphXTransforms
     // TODO: Remove this once tosa.matmul_t_block_scaled -> linalg conversion
     // is implemented in upstream TOSA passes.
     if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
-      RewritePatternSet patterns(&ctx);
-      patterns.add<QuantDotDecompose>(&ctx);
-      if (failed(applyPatternsGreedily(func, std::move(patterns))))
+      RewritePatternSet quantDotPatterns(&ctx);
+      quantDotPatterns.add<QuantDotDecompose>(&ctx);
+      if (failed(applyPatternsGreedily(func, std::move(quantDotPatterns))))
         signalPassFailure();
     }
   }

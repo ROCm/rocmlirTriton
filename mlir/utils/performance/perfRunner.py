@@ -1710,6 +1710,55 @@ class AttentionConfiguration(PerfConfiguration):
             f"-with-attn-bias {str(self.with_attn_bias).lower()}")
 
 
+# f32 machine epsilon: 2^-23 ~= 1.1920929e-7.
+_F32_EPS = 2.0**-23
+
+
+def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
+    """Return precision-aware rocmlir-gen flags for verification.
+
+    Verification compares the GPU output against the host CPU reference. With
+    long ``seq_length`` attention (f32/bf16), kernel error accumulates due to
+    reduction drift, masking the GPU's actual precision. We mitigate this with
+    two flags:
+      * ``--pv-f64`` promotes the host kernel's interior to f64, eliminating
+        the reference-side drift. It implies ``--pv-strict`` and is only valid
+        for non-quantized attention (rocmlir-gen errors out for non-attention
+        or i8 attention), so we only emit it for f32/bf16 attention here.
+      * ``-relDiff_threshold T`` lifts the per-element relative threshold to
+        ride on top of the predicted GPU f32 noise floor:
+        ``delta ~ eps_f32 * log2(D_qk + 2 * K_eff)`` where
+        ``K_eff = seq_len_k // max(1, split_kv)``. Only effective for f32
+        attention; other attention types have enough noise space.
+
+    Shared between the tuner (``tuningRunner``) and the parameter sweeps
+    (``attentionSweeps``); keep the only definition here.
+    """
+    flags: List[str] = []
+    if not isinstance(config, AttentionConfiguration):
+        return flags
+
+    # CPU drift observed for f32 attention at long seq_len_k > 1024.
+    if config.datatype == 'f32' and config.seq_len_k > 1024:
+        flags.append('--pv-f64')
+    # CPU drift observed for bf16 attention at long seq_len_k > 70.
+    if config.datatype == 'bf16' and config.seq_len_k > 70:
+        flags.append('--pv-f64')
+
+    if config.datatype == 'f32' and config.seq_len_k > 256:
+        k_eff = max(1, config.seq_len_k // max(1, config.split_kv))
+        red_len = max(2, config.head_dim_qk + 2 * k_eff)
+        floor = _F32_EPS * math.log2(red_len)
+        # Only override when the predicted floor is at or above the default
+        # 1e-6 -- below that, the existing default already has headroom and
+        # we don't want to mask small-shape regressions.
+        if floor >= 1e-6:
+            threshold = 6.0 * floor
+            flags += ['-relDiff_threshold', f'{threshold:.2e}']
+
+    return flags
+
+
 class HipBLASLtGemmConfig(GemmConfiguration):
     EXTERNAL_NAME = "hipBLASLt"
 
@@ -2118,8 +2167,10 @@ def benchmark_fusion_kernels(test_dir,
 
     if tuning_db:
         # Force all split-K factors to 1, to avoid trouble because fusion
-        # and split-K aren't compatible.  Crude parser approximating
-        # InitParamsAccel::visit().
+        # and split-K aren't compatible.  Crude parser mirroring the CSV
+        # layout serialized by GemmParamsAttr::getPerfConfigStr (see
+        # RockAttrDefs.td); SPLITK_IDX must match the splitKFactor field
+        # position.
         for (arch, config), perfconfig in tuning_db.items():
             split_perf = perfconfig.split(',')
             if int(split_perf[SPLITK_IDX]) > 1:

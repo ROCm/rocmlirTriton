@@ -21,6 +21,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -61,26 +62,13 @@ struct BlockwiseLoadRewritePattern : public OpRewritePattern<BlockwiseLoadOp> {
     Value source = op.getSource();
     auto sourceIndices = op.getSourceIndices();
 
-    // Get the shape from the result type
-    auto resultTensorType = cast<RankedTensorType>(op.getResult().getType());
-    auto shape = resultTensorType.getShape();
-    Type elementType = resultTensorType.getElementType();
-
-    // Create pointer tensor type (i32) and mask tensor type (i1)
-    auto pointerTensorType = RankedTensorType::get(shape, b.getI32Type());
-    auto maskTensorType = RankedTensorType::get(shape, b.getI1Type());
-
-    // Create rock.transforms_to_ptr operation (returns pointer and mask
-    // tensors)
-    auto transformsToPtrOp = TransformsToPtrOp::create(
-        b, loc, pointerTensorType, maskTensorType, source, sourceIndices);
+    auto transformsToPtrOp =
+        TransformsToPtrOp::create(b, loc, source, sourceIndices);
     Value pointerTensor = transformsToPtrOp.getPointers();
     Value maskTensor = transformsToPtrOp.getMask();
 
-    // Create rock.blockwise_load_ptr operation (returns loaded tensor)
-    auto resultType = RankedTensorType::get(shape, elementType);
-    auto loadOp = BlockwiseLoadPtrOp::create(b, loc, resultType, pointerTensor,
-                                             maskTensor);
+    auto loadOp = BlockwiseLoadPtrOp::create(b, loc, op.getResult().getType(),
+                                             pointerTensor, maskTensor);
 
     b.replaceOp(op, loadOp.getResult());
     return success();
@@ -103,27 +91,43 @@ struct BlockwiseStoreRewritePattern
     auto extraIndices = op.getExtraIndices();
     auto storeMethod = op.getStoreMethod();
 
-    // Get the shape from the source tensor
-    auto sourceType = cast<RankedTensorType>(source.getType());
-    auto shape = sourceType.getShape();
-
-    // Create pointer tensor type (i32) and mask tensor type (i1)
-    auto pointerTensorType = RankedTensorType::get(shape, b.getI32Type());
-    auto maskTensorType = RankedTensorType::get(shape, b.getI1Type());
-
-    // Create rock.transforms_to_ptr operation (returns pointer and mask
-    // tensors)
-    auto transformsToPtrOp = TransformsToPtrOp::create(
-        b, loc, pointerTensorType, maskTensorType, dest, extraIndices);
+    auto transformsToPtrOp =
+        TransformsToPtrOp::create(b, loc, dest, extraIndices);
     Value pointerTensor = transformsToPtrOp.getPointers();
     Value maskTensor = transformsToPtrOp.getMask();
+    BlockwiseStorePtrOp::create(b, loc, pointerTensor, maskTensor, source,
+                                storeMethod);
+    b.eraseOp(op);
+    return success();
+  }
+};
 
-    // Create rock.blockwise_store_ptr operation (returns stored tensor)
-    auto resultType = cast<RankedTensorType>(op.getResult().getType());
-    auto storeOp = BlockwiseStorePtrOp::create(
-        b, loc, resultType, pointerTensor, maskTensor, source, storeMethod);
+//===----------------------------------------------------------------------===//
+// ReturnOpRewritePattern - Update return ops to return nothing and update
+// the parent function signature to return void
+//===----------------------------------------------------------------------===//
+struct ReturnOpRewritePattern : public OpRewritePattern<func::ReturnOp> {
+  using OpRewritePattern<func::ReturnOp>::OpRewritePattern;
 
-    b.replaceOp(op, storeOp.getResult());
+  LogicalResult matchAndRewrite(func::ReturnOp returnOp,
+                                PatternRewriter &rewriter) const override {
+    // Only convert return ops that have operands
+    if (returnOp.getOperands().empty())
+      return failure();
+
+    // Update the parent function's signature to return void
+    auto funcOp = returnOp->getParentOfType<func::FuncOp>();
+    if (funcOp && funcOp.getFunctionType().getNumResults() > 0) {
+      FunctionType newFuncType = FunctionType::get(
+          rewriter.getContext(), funcOp.getFunctionType().getInputs(),
+          /*results=*/{});
+      rewriter.modifyOpInPlace(funcOp, [&]() {
+        funcOp.setFunctionType(newFuncType);
+        funcOp.setAllResultAttrs(ArrayRef<DictionaryAttr>{});
+      });
+    }
+
+    rewriter.replaceOpWithNewOp<func::ReturnOp>(returnOp);
     return success();
   }
 };
@@ -132,6 +136,33 @@ struct BlockwiseStoreRewritePattern
 
 void RockLowerBlockwiseToPtrPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
+
+  // Only operate on kernel functions; non-kernel funcs may legitimately return
+  // tensors and must not have their signatures rewritten to void.
+  auto funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
+  // Step 1: rewrite returns to void before lowering stores. This must happen
+  // first because BlockwiseStorePtrOp has no result, so any remaining use of
+  // a BlockwiseStoreOp's result (typically by func.return) would block
+  // erasure during the conversion below.
+  {
+    ConversionTarget target(*ctx);
+    target.addLegalOp<func::FuncOp>();
+    target.addDynamicallyLegalOp<func::ReturnOp>(
+        [](func::ReturnOp op) { return op.getOperands().empty(); });
+
+    RewritePatternSet patterns(ctx);
+    patterns.add<ReturnOpRewritePattern>(ctx);
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
+      signalPassFailure();
+      return;
+    }
+  }
+
+  // Step 2: lower blockwise_load/store to their pointer-based variants.
   ConversionTarget target(*ctx);
   target.addIllegalOp<BlockwiseLoadOp, BlockwiseStoreOp>();
   target

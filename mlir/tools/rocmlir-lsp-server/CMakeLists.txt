@@ -50,7 +50,7 @@ target_link_libraries(rocmlir-lsp-server PRIVATE ${LIBS})
 llvm_update_compile_flags(rocmlir-lsp-server)
 
 # Add Triton include directories for compilation
-target_include_directories(rocmlir-lsp-server PRIVATE
+target_include_directories(rocmlir-lsp-server SYSTEM PRIVATE
   ${TRITON_PROJECT_DIR}/include
   ${TRITON_BINARY_DIR}/include
   ${TRITON_PROJECT_DIR}/third_party/amd

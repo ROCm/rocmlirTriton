@@ -1094,10 +1094,10 @@ DivConverter::matchAndRewrite(migraphx::DivOp op, OpAdaptor adaptor,
       if (origAElementType != origBElementType)
         return op->emitError("Types of A and B must be the same");
       mlir::SmallVector<mlir::Value, 2> inputs = {inATensor, inBTensor};
-      auto op = tosa::CustomOp::create(rewriter, loc, inATensor.getType(),
-                                       ROCK_CUSTOMOP_UNSIGNED_DIV,
-                                       ROCK_CUSTOMOP_DOMAIN_NAME, "", inputs);
-      div = op->getResult(0);
+      auto customOp = tosa::CustomOp::create(
+          rewriter, loc, inATensor.getType(), ROCK_CUSTOMOP_UNSIGNED_DIV,
+          ROCK_CUSTOMOP_DOMAIN_NAME, "", inputs);
+      div = customOp->getResult(0);
     } else {
       div = rock::tosa::createOpAndInfer<tosa::IntDivOp>(
           rewriter, loc, elementType, inATensor, inBTensor);
@@ -1343,8 +1343,8 @@ LogicalResult
 SqrtConverter::matchAndRewrite(migraphx::SqrtOp op, OpAdaptor adaptor,
                                ConversionPatternRewriter &rewriter) const {
   auto resultType = getTypeConverter()->convertType(op.getResult().getType());
-  auto rsqrt =
-      rewriter.create<tosa::RsqrtOp>(op.getLoc(), resultType, adaptor.getInA());
+  auto rsqrt = tosa::RsqrtOp::create(rewriter, op.getLoc(), resultType,
+                                     adaptor.getInA());
   rewriter.replaceOpWithNewOp<tosa::ReciprocalOp>(op, resultType, rsqrt);
   return success();
 }

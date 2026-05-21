@@ -227,6 +227,12 @@ def _build_rocmlir_gen_opts(config) -> List[str]:
         opts.append(f"--current_seq_len={','.join(map(str, config.current_seqlen))}")
     opts.append('-pv')
     opts.extend(_verifier_thresholds(config))
+    # Per-config precision-aware rocmlir-gen flags (e.g. --pv-f64,
+    # -relDiff_threshold) attached by callers such as attentionSweeps.to_attn_test
+    # to combat CPU reference drift at long seq_len for f32/bf16 attention.
+    extra_flags = getattr(config, "extra_rocmlir_gen_flags", None)
+    if extra_flags:
+        opts.extend(extra_flags)
     return opts
 
 
@@ -535,7 +541,7 @@ PERF_CONFIG_OPTIONS = {
     'split_k_factor': [1, 2, 3, 4],
     'num_stages': [1, 2, 3],
     # The C++ tuner pins these at 0 ("use heuristic"); the commented-out code
-    # in getAccelRangeGemm shows the intended sweep range. 0 is kept so the
+    # in getRangeGemm shows the intended sweep range. 0 is kept so the
     # heuristic path is also exercised.
     'waves_per_eu': [0, 1, 2, 4, 8],
     'grid_group_size': [0, 1, 2, 4, 8],

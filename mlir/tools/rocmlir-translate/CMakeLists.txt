@@ -40,7 +40,7 @@ target_link_libraries(rocmlir-translate
 llvm_update_compile_flags(rocmlir-translate)
 
 # Add Triton include directories for compilation
-target_include_directories(rocmlir-translate PRIVATE
+target_include_directories(rocmlir-translate SYSTEM PRIVATE
   ${TRITON_PROJECT_DIR}/include
   ${TRITON_BINARY_DIR}/include
   ${TRITON_PROJECT_DIR}/third_party/amd

@@ -13,6 +13,14 @@ list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(TableGen)
 include(AddLLVM)
 include(AddMLIR)
+
+# Strict warnings for our code only. These are directory-scoped so they
+# don't leak into the Triton subdirectory; LLVM/MLIR headers are consumed 
+# via find_package and aren't built here, so they're unaffected as well.
+#
+# -Werror is wired through LLVM's HandleLLVMOptions, so it must be set BEFORE
+# the include() below.
+set(LLVM_ENABLE_WERROR ON)
 include(HandleLLVMOptions)
 
 # Forbid implicit function declaration: this may lead to subtle bugs and we
@@ -20,13 +28,31 @@ include(HandleLLVMOptions)
 check_c_compiler_flag("-Werror=implicit-function-declaration" C_SUPPORTS_WERROR_IMPLICIT_FUNCTION_DECLARATION)
 append_if(C_SUPPORTS_WERROR_IMPLICIT_FUNCTION_DECLARATION "-Werror=implicit-function-declaration" CMAKE_C_FLAGS)
 
+# Match Triton: -Wcovered-switch-default (on by default in Clang/LLVM) is
+# noisy on MLIR-style enums where a default: is intentionally present.
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-covered-switch-default>)
+
+# Extras on top of -Wall/-Wextra and the LLVM warning set.
+add_compile_options(
+  $<$<COMPILE_LANGUAGE:CXX>:-Wshadow>
+  $<$<COMPILE_LANGUAGE:CXX>:-Wnull-dereference>
+  $<$<COMPILE_LANGUAGE:CXX>:-Wformat=2>
+  $<$<COMPILE_LANGUAGE:CXX>:-Wundef>
+  $<$<COMPILE_LANGUAGE:CXX>:-Wmissing-declarations>
+)
+
 # Refer to https://reviews.llvm.org/D122088
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-include_directories(${LLVM_INCLUDE_DIRS})
-include_directories(${MLIR_INCLUDE_DIRS})
+# Treat upstream LLVM/MLIR headers as system headers so our strict warnings
+# (-Wshadow, -Wnull-dereference, etc.) don't fire on them.
+include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
+include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/mlir/include)
-include_directories(${PROJECT_BINARY_DIR}/mlir/include)
+# Generated TableGen output (*.h.inc, *.cpp.inc) goes under the build tree.
+# Treat it as system so the auto-generated code doesn't fail our lint.
+include_directories(SYSTEM ${PROJECT_BINARY_DIR}/mlir/include)
+
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 

@@ -26,6 +26,8 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -116,14 +118,17 @@ static llvm::cl::opt<rock::KernelType> operation(
 
 static llvm::cl::opt<std::string> arch(
     "arch",
-    llvm::cl::desc("amdgpu architecture, eg: gfx803, gfx900, gfx906, gfx908"),
+    llvm::cl::desc("amdgpu architecture, eg: gfx906, gfx908, gfx942, gfx950, "
+                   "gfx1100, gfx1200, gfx1250"),
     llvm::cl::value_desc("GFX architecture string"), llvm::cl::init(""));
 
 static llvm::cl::opt<int> num_cu(
     "num_cu",
-    llvm::cl::desc("Number of compute units, valid combinations include: "
-                   "gfx803(36/64), gfx900(56/64), "
-                   "gfx906(60/64), gfx908(120)"),
+    llvm::cl::desc("Number of compute units. If omitted, defaults to the "
+                   "per-arch minimum returned by rock::getMinNumCU (e.g. "
+                   "gfx906=10, gfx908=120, gfx90a=104, gfx942=20, "
+                   "gfx950=256, gfx1010/gfx1030=30, gfx1100=2, gfx1200=12, "
+                   "gfx1250=256). Any positive value is accepted."),
     llvm::cl::value_desc("compute unit value"), llvm::cl::init(0));
 
 static llvm::cl::opt<int> numChiplets("num_chiplets",
@@ -725,6 +730,20 @@ static llvm::cl::opt<bool>
                              "validation"),
               llvm::cl::init(false));
 
+static llvm::cl::opt<bool> pvF64(
+    "pv-f64",
+    llvm::cl::desc("Run the host CPU attention reference internally in f64 "
+                   "for higher precision validation of non-quantized "
+                   "attention, especially at long seq_len_k. No effect on "
+                   "the i8 attention. This also enables pv-strict together"),
+    llvm::cl::init(false), llvm::cl::Optional,
+    llvm::cl::cb<void, bool>([](bool v) {
+      if (v) {
+        genValidation = "mlir-strict";
+        genHostHarness = true;
+      }
+    }));
+
 // Input data spec
 static llvm::cl::opt<std::string> randomSeed(
     "rand",
@@ -1291,14 +1310,19 @@ static Value makeNDMemRef(OpBuilder &b, Value var, uint32_t ndim) {
 
 static std::pair<int64_t, int64_t> getMandNPerBlock(OpBuilder builder,
                                                     const GenParams &params) {
-  // default perfConfig is attn:v1:32,32,32,32,1,1,4,0,1,1,0,0
-  // keep in sync with AffixTuningParameters.cpp
-  if (params.perfConfig.empty())
-    return {32, 32};
-
-  auto attnPerfConfig =
-      rock::GemmGemmParamsAttr::get(builder.getStringAttr(params.perfConfig));
-  return {attnPerfConfig.getMPerBlockG0(), attnPerfConfig.getNPerBlockG0()};
+  // Mirrors PopulateParamsGemmGemm::obtainTuningParameters: prefer the
+  // user-supplied perfConfig, otherwise fall back to the first quick-tuning
+  // entry for this (arch, kernel, dtype).
+  assert(params.operation.has_value() && !params.types.empty());
+  std::vector<rock::GemmGemmParamsAttr> defaults =
+      rock::PopulateParamsGemmGemm::getTuningParameters(
+          builder, params.arch, *params.operation, params.types[0]);
+  FailureOr<rock::GemmGemmParamsAttr> attnPerfConfig =
+      rock::materializeTuningParams<rock::GemmGemmParamsAttr>(
+          builder, params.perfConfig, defaults);
+  assert(succeeded(attnPerfConfig) &&
+         "no quick-tuning entry for this arch / kernel / dtype");
+  return {attnPerfConfig->getMPerBlockG0(), attnPerfConfig->getNPerBlockG0()};
 }
 
 // Compute the number of valid split-KV entries for each batch-head.
@@ -2582,10 +2606,10 @@ createCPUConvWithMLIR(ModuleOp module,
       newShape[pos] += lowP + highP;
     }
 
-    Type inputElemType = inputType.getElementType();
-    auto paddedType = RankedTensorType::get(newShape, inputElemType);
+    Type paddedElemType = inputType.getElementType();
+    auto paddedType = RankedTensorType::get(newShape, paddedElemType);
     Value padValue =
-        arith::ConstantOp::create(b, loc, b.getZeroAttr(inputElemType));
+        arith::ConstantOp::create(b, loc, b.getZeroAttr(paddedElemType));
     input = tensor::PadOp::create(b, loc, paddedType, input, lowPad, highPad,
                                   padValue)
                 .getResult();
@@ -3092,18 +3116,18 @@ getConvElementwiseGemmDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
     inputLayoutSpec.push_back(StringRef(&key, 1));
 
   result.reserve(elementTypes.size());
-  constexpr StringLiteral gName = "g", m = "m", n = "n", gemmO = "gemmO";
+  constexpr StringLiteral gName = "g", m = "m", n = "n", gemmONameStr = "gemmO";
 
   result.emplace_back(filterLayoutSpec);
   result.emplace_back(inputLayoutSpec);
   if (transposeC)
-    result.emplace_back(SmallVector<StringRef>{gName, gemmO, m});
+    result.emplace_back(SmallVector<StringRef>{gName, gemmONameStr, m});
   else
-    result.emplace_back(SmallVector<StringRef>{gName, m, gemmO});
+    result.emplace_back(SmallVector<StringRef>{gName, m, gemmONameStr});
   if (transposeO)
-    result.emplace_back(SmallVector<StringRef>{gName, gemmO, n});
+    result.emplace_back(SmallVector<StringRef>{gName, gemmONameStr, n});
   else
-    result.emplace_back(SmallVector<StringRef>{gName, n, gemmO});
+    result.emplace_back(SmallVector<StringRef>{gName, n, gemmONameStr});
 }
 
 static void
@@ -3111,7 +3135,7 @@ getGemmElementwiseGemmDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
                                ArrayRef<Type> elementTypes) {
   result.reserve(elementTypes.size());
   constexpr StringLiteral gName = "g", m = "m", n = "n", k = "k",
-                          gemmO = "gemmO";
+                          gemmONameStr = "gemmO";
   if (transposeA)
     result.emplace_back(SmallVector<StringRef>{gName, k, m});
   else
@@ -3121,13 +3145,13 @@ getGemmElementwiseGemmDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
   else
     result.emplace_back(SmallVector<StringRef>{gName, k, n});
   if (transposeC)
-    result.emplace_back(SmallVector<StringRef>{gName, gemmO, n});
+    result.emplace_back(SmallVector<StringRef>{gName, gemmONameStr, n});
   else
-    result.emplace_back(SmallVector<StringRef>{gName, n, gemmO});
+    result.emplace_back(SmallVector<StringRef>{gName, n, gemmONameStr});
   if (transposeO)
-    result.emplace_back(SmallVector<StringRef>{gName, gemmO, m});
+    result.emplace_back(SmallVector<StringRef>{gName, gemmONameStr, m});
   else
-    result.emplace_back(SmallVector<StringRef>{gName, m, gemmO});
+    result.emplace_back(SmallVector<StringRef>{gName, m, gemmONameStr});
 }
 
 static Value addTensorArgToBlock(OpBuilder &builder, Location loc,
@@ -3641,18 +3665,18 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
         RankedTensorType::get(qkShape, qkElemType);
     Value qkTensor = preSoftmaxElemwiseBlock->addArgument(qkTensorRefType, loc);
     if (isQuantized) {
-      auto qkShape = cast<ShapedType>(qkTensor.getType()).getShape();
+      auto qkBlockShape = cast<ShapedType>(qkTensor.getType()).getShape();
       Value quantBiasI8 =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, quantBias);
       Value quantScaleF16 = addTensorArgToBlock(
           builder, loc, preSoftmaxElemwiseBlock, quantScale);
       Value quantBiasI32 = rock::createTypeConversionOp(
           builder, loc, quantBiasI8,
-          RankedTensorType::get(qkShape, IntegerType::get(ctx, 32)));
+          RankedTensorType::get(qkBlockShape, IntegerType::get(ctx, 32)));
       qkTensor = arith::SubIOp::create(builder, loc, qkTensor, quantBiasI32);
       qkTensor = rock::createTypeConversionOp(
           builder, loc, qkTensor,
-          RankedTensorType::get(qkShape, Float16Type::get(ctx)));
+          RankedTensorType::get(qkBlockShape, Float16Type::get(ctx)));
 
       qkTensor = arith::MulFOp::create(builder, loc, qkTensor, quantScaleF16);
     }
@@ -4448,6 +4472,22 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   Location loc = module->getLoc();
 
   bool isQuantized = params.types[0] == IntegerType::get(ctx, 8);
+  // Optionally run the host reference's interior in f64 to get more
+  // accurate validation answer when running attention with a large seq len.
+  const bool promoteHost = pvF64.getValue() && !isQuantized;
+  Type f64Type = Float64Type::get(ctx);
+  auto upcastF = [&](Value v) -> Value {
+    if (!promoteHost)
+      return v;
+    Type elem = cast<ShapedType>(v.getType()).getElementType();
+    if (!isa<FloatType>(elem) || elem == f64Type)
+      return v;
+    return rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc, f64Type, v);
+  };
+  auto wideF = [&](Type t) -> Type {
+    return (promoteHost && isa<FloatType>(t)) ? f64Type : t;
+  };
+
   SmallVector<Type, 5> argTypes;
   getAttentionTypes(argTypes, params.types);
   // Convert tensor types to memref types for CPU verifier
@@ -4498,17 +4538,17 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     return reshapedTensor;
   };
 
-  auto queriesTensor = getTensorForBlockArg(0);
+  auto queriesTensor = upcastF(getTensorForBlockArg(0));
   if (transposeQ) {
     queriesTensor =
         rock::tosa::getTransposeOp(builder, loc, queriesTensor, {0, 2, 1});
   }
-  auto keysTensor = getTensorForBlockArg(1);
+  auto keysTensor = upcastF(getTensorForBlockArg(1));
   if (transposeK) {
     keysTensor =
         rock::tosa::getTransposeOp(builder, loc, keysTensor, {0, 2, 1});
   }
-  auto valuesTensor = getTensorForBlockArg(2);
+  auto valuesTensor = upcastF(getTensorForBlockArg(2));
   if (transposeV) {
     valuesTensor =
         rock::tosa::getTransposeOp(builder, loc, valuesTensor, {0, 2, 1});
@@ -4517,7 +4557,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   keysTensor = broadcastGQATosa(builder, loc, keysTensor);
   valuesTensor = broadcastGQATosa(builder, loc, valuesTensor);
 
-  Type firstGemmOutElemType = params.types[0];
+  Type firstGemmOutElemType = wideF(params.types[0]);
   if (isQuantized) {
     firstGemmOutElemType = IntegerType::get(ctx, 32);
   } else if (params.strictMode) {
@@ -4538,8 +4578,10 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   auto keysZp =
       tosa::createZeroPointTensor(builder, loc, keysTensor.getType(), 0)
           .value();
-  // accumulate in 32 bit
-  Type firstAccType = rock::getAccType(firstGemmOutElemType, params.types[1]);
+  // accumulate in 32 bit (or f64 when promoting the host reference)
+  Type firstAccType =
+      promoteHost ? f64Type
+                  : rock::getAccType(firstGemmOutElemType, params.types[1]);
   auto qkTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, firstGemmOutElemType, queriesTensor, keysTensor, queriesZp,
       keysZp);
@@ -4595,7 +4637,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   if (hasAttnScale) {
-    auto scaleTensor = getTensorForBlockArg(optionalArgsCounter++);
+    auto scaleTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
     if (!currentSeqLen.empty())
       scaleTensor =
           maskKVCacheTosa(builder, loc, scaleTensor, currentSeqLenTensor, 1.0f);
@@ -4613,7 +4655,7 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   if (hasAttnBias) {
-    auto biasTensor = getTensorForBlockArg(optionalArgsCounter++);
+    auto biasTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
     if (!currentSeqLen.empty())
       biasTensor =
           maskKVCacheTosa(builder, loc, biasTensor, currentSeqLenTensor, 0.0f);
@@ -4629,8 +4671,8 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
         builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
         qkTensor, biasTensor);
   }
-  // cast to softmaxType
-  auto softmaxType = typeFromString(softmaxDataType.getValue(), ctx);
+  // cast to softmaxType (overridden to f64 when promoting the host reference)
+  auto softmaxType = wideF(typeFromString(softmaxDataType.getValue(), ctx));
   qkTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc,
                                                         softmaxType, qkTensor);
 
@@ -4678,14 +4720,17 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   // lse = (log(expsSums) + qkMaxs)
   if (returnLSE) {
     Type lseType = cast<ShapedType>(lseOut.getType()).getElementType();
+    // When promoting the host reference, keep LSE in f64 too; we cast back
+    // to lseType right before storing into the output memref.
+    Type lseComputeType = wideF(lseType);
     Value expsSumsForLSE = rock::tosa::createOpAndInfer<tosa::CastOp>(
-        builder, loc, lseType, expsSums);
+        builder, loc, lseComputeType, expsSums);
     Value qkMaxsForLSE = rock::tosa::createOpAndInfer<tosa::CastOp>(
-        builder, loc, lseType, qkMaxs);
-    lseTensor = rock::tosa::createOpAndInfer<tosa::LogOp>(builder, loc, lseType,
-                                                          expsSumsForLSE);
+        builder, loc, lseComputeType, qkMaxs);
+    lseTensor = rock::tosa::createOpAndInfer<tosa::LogOp>(
+        builder, loc, lseComputeType, expsSumsForLSE);
     lseTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
-        builder, loc, lseType, lseTensor, qkMaxsForLSE);
+        builder, loc, lseComputeType, lseTensor, qkMaxsForLSE);
   }
 
   auto invExpsSums = rock::tosa::createOpAndInfer<tosa::ReciprocalOp>(
@@ -4702,9 +4747,10 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
       tosa::createZeroPointTensor(builder, loc, valuesTensor.getType(), 0)
           .value();
 
-  // accumulate in 32 bit
-  Type secondAccType =
-      rock::getAccType(resultOutElementType, resultOutElementType);
+  // accumulate in 32 bit (or f64 when promoting the host reference)
+  Type secondAccType = promoteHost ? f64Type
+                                   : rock::getAccType(resultOutElementType,
+                                                      resultOutElementType);
   auto resultTensorMatMul = rock::tosa::createOpAndInfer<tosa::MatMulOp>(
       builder, loc, resultOutElementType, softmaxTensor, valuesTensor,
       softmaxZp, valuesZp);
@@ -4742,6 +4788,15 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   ImplicitLocOpBuilder implicitBuilder(loc, builder);
+  // When promoting, downcast the f64 result to the output memref's element
+  // type before reshape/buffer-write so the bufferization op sees a matching
+  // element type.
+  if (promoteHost) {
+    Type outElem = cast<ShapedType>(outputType).getElementType();
+    if (cast<ShapedType>(resultTensor.getType()).getElementType() != outElem)
+      resultTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(
+          builder, loc, outElem, resultTensor);
+  }
   auto shapeValue = tosa::getTosaConstShape(
       implicitBuilder, cast<ShapedType>(outputType).getShape());
   auto flatResultTensor =
@@ -4755,6 +4810,12 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   // return LSE (log-sum-exp)
   if (returnLSE) {
     auto lseOutType = cast<bufferization::BufferLikeType>(lseOut.getType());
+    if (promoteHost) {
+      Type lseElem = cast<ShapedType>(lseOutType).getElementType();
+      if (cast<ShapedType>(lseTensor.getType()).getElementType() != lseElem)
+        lseTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(
+            builder, loc, lseElem, lseTensor);
+    }
     auto lseShapeValue = tosa::getTosaConstShape(
         implicitBuilder, cast<ShapedType>(lseOutType).getShape());
     auto flatLseTensor =
@@ -6010,6 +6071,12 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
+  // `-pv-f64` does not apply to i8 (quantized) attention.
+  if (pvF64.getValue() && inputDataType.getValue() == "i8") {
+    llvm::errs() << "-pv-f64 is not supported for i8 (quantized) attention\n";
+    return EXIT_FAILURE;
+  }
+
   if (genCloneHarness.getValue()) {
     populateCloneHarnessLogic(*module);
   } else if (!hasUserKernel) {
@@ -6050,11 +6117,11 @@ int main(int argc, char **argv) {
     rock::TuningParamSpaceSettings settings;
     std::unique_ptr<rock::TuningParamSet> tunableParams(
         rock::createTunableParamSpace(*module, emitTuningSpace, settings));
-    SmallString<64> perfConfig;
+    SmallString<64> perfConfigStr;
     for (auto param : tunableParams->tuningRange) {
-      param.getPerfConfigStr(perfConfig);
-      llvm::outs() << perfConfig << "\n";
-      perfConfig.clear();
+      param.getPerfConfigStr(perfConfigStr);
+      llvm::outs() << perfConfigStr << "\n";
+      perfConfigStr.clear();
     }
     return 0;
   }

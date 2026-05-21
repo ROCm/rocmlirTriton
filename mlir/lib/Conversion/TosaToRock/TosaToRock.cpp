@@ -1251,9 +1251,10 @@ struct TransposeRewritePattern : public OpRewritePattern<tosa::TransposeOp> {
         }
         if (op->use_empty())
           rewriter.eraseOp(op);
-      } else if (auto op = dyn_cast<tensor::ExpandShapeOp>(use.getOwner())) {
+      } else if (auto expandOp =
+                     dyn_cast<tensor::ExpandShapeOp>(use.getOwner())) {
         return rewriter.notifyMatchFailure(
-            op, "We dont support expand shapes yet.");
+            expandOp, "We dont support expand shapes yet.");
       } else if (auto transposeConv2D =
                      dyn_cast<tosa::TransposeConv2DOp>(use.getOwner())) {
         return handleConv(transposeConv2D);
@@ -2077,9 +2078,9 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
                 addOpInput1.getDefiningOp<tosa::SubOp>()) {
           if (addOperandSubOp == subOp && addOpInput2 == subInput)
             return addOp.getOutput();
-        } else if (tosa::SubOp addOperandSubOp =
+        } else if (tosa::SubOp addOperandSubOp2 =
                        addOpInput2.getDefiningOp<tosa::SubOp>()) {
-          if (addOperandSubOp == subOp && addOpInput1 == subInput) {
+          if (addOperandSubOp2 == subOp && addOpInput1 == subInput) {
             return addOp.getOutput();
           }
         }
@@ -2134,18 +2135,18 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   Value getLSE(Operation *reduceSum, Operation *reduceMax,
                tosa::LogOp logOp = nullptr) const {
     for (auto *user : reduceSum->getUsers()) {
-      if (auto op = dyn_cast<tosa::CastOp>(user)) {
+      if (auto castOp = dyn_cast<tosa::CastOp>(user)) {
         // we already found a log
         if (logOp != nullptr)
           return nullptr;
-        Value val = getLSE(op, reduceMax);
+        Value val = getLSE(castOp, reduceMax);
         if (val)
           return val;
-      } else if (auto op = dyn_cast<tosa::LogOp>(user)) {
+      } else if (auto userLogOp = dyn_cast<tosa::LogOp>(user)) {
         // we already found a log
         if (logOp != nullptr)
           return nullptr;
-        Value val = getLSE(op, reduceMax, op);
+        Value val = getLSE(userLogOp, reduceMax, userLogOp);
         if (val)
           return val;
       } else if (auto addOp = dyn_cast<tosa::AddOp>(user)) {
@@ -2181,10 +2182,10 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
                "Expected to find reduce max op");
         auto *reduceMaxOpFromAdd = maybeReduceMaxOpFromAdd.value();
 
-        if (auto castOp = dyn_cast<tosa::CastOp>(reduceMaxOpFromAdd)) {
+        if (auto reduceMaxCastOp = dyn_cast<tosa::CastOp>(reduceMaxOpFromAdd)) {
           // if the reduceMax is a cast, we need to get the input of the cast
           auto maybeCast = getDefiningOpSkipping<Operation *>(
-              castOp.getInput(), expandAndCollapse);
+              reduceMaxCastOp.getInput(), expandAndCollapse);
           assert(succeeded(maybeCast) && "Expected a castOp");
           reduceMaxOpFromAdd = maybeCast.value();
         }
@@ -3079,7 +3080,6 @@ typename std::enable_if_t<
                                                     ConversionPatternRewriter
                                                         &rw) {
   Location loc = op->getLoc();
-  auto outputType = cast<RankedTensorType>(op.getType());
 
   int32_t blockSize = 256;
   auto elementCount =
@@ -3090,10 +3090,9 @@ typename std::enable_if_t<
     gridSize = std::min((int32_t)(20 * numCU.value()), gridSize);
   }
 
-  auto rockReduce =
-      rock::ReduceOp::create(rw, loc, outputType, op.getInput(),
-                             rw.getAttr<rock::ReduceMethodAttr>(rMethod),
-                             rw.getIndexAttr(op.getAxis()));
+  auto rockReduce = rock::ReduceOp::create(
+      rw, loc, op.getInput(), rw.getAttr<rock::ReduceMethodAttr>(rMethod),
+      rw.getIndexAttr(op.getAxis()));
 
   func::FuncOp func = op->template getParentOfType<func::FuncOp>();
   SetVector<int64_t> resIndices = traceToRes(op.getOutput(), func);

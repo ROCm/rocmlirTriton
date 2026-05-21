@@ -287,8 +287,7 @@ static LogicalResult
 computeGridSizeAttentionGemmElmtGemm(ConversionPatternRewriter &rw, Op op,
                                      Value a, Value b, Value c,
                                      int64_t splitKV) {
-  GemmParamsAttr accelParams0 =
-      cast<GemmParamsAttr>(op.getGemm0Params().value());
+  GemmParamsAttr params0 = cast<GemmParamsAttr>(op.getGemm0Params().value());
 
   SmallVector<int64_t, 3> aShape =
       llvm::to_vector<3>(cast<ShapedType>(a.getType()).getShape());
@@ -304,7 +303,7 @@ computeGridSizeAttentionGemmElmtGemm(ConversionPatternRewriter &rw, Op op,
                      /*n=*/bShape[2]);
 
   int64_t gridSize =
-      (gemm0Size.m / accelParams0.getMPerBlock()) * gemm0Size.g * splitKV;
+      (gemm0Size.m / params0.getMPerBlock()) * gemm0Size.g * splitKV;
 
   IntegerAttr gridSizeAttr = rw.getI32IntegerAttr(gridSize);
   func::FuncOp funcOp = cast<func::FuncOp>(op->getParentOp());
@@ -627,15 +626,15 @@ static LogicalResult commonAttentionGemmElmtGemm(
 
   auto postProcessOutput =
       [](ConversionPatternRewriter &rw, Value rootOut, Value newRootOut,
-         SmallVector<Value> outputViews, DenseMap<Value, Value> &fusionInputMap,
+         SmallVector<Value> viewsIn, DenseMap<Value, Value> &fusionInputMap,
          SetVector<StoreOp> &stores, int64_t splitKFactor) {
         rock::propagateOutputType(rootOut, newRootOut);
         rock::replaceFusionExtraInputs(newRootOut, fusionInputMap);
-        assert(stores.size() == outputViews.size() &&
-               "stores and outputViews must have the same size");
+        assert(stores.size() == viewsIn.size() &&
+               "stores and viewsIn must have the same size");
         for (size_t i = 0; i < stores.size(); ++i) {
           StoreOp storeOp = stores[i];
-          Value view = outputViews[i];
+          Value view = viewsIn[i];
           // adjust the store method
           StoreMethodAttr storeMethod = storeOp.getStoreMethodAttr();
           if (splitKFactor > 1)
