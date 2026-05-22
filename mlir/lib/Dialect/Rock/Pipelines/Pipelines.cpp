@@ -359,7 +359,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockAttnToGridwisePass());
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
-  if (!options.disableDivByReciprocal)
+  if (!options.disableFastMath)
     addWithDCE(rock::createRockAllowFastMathFlagsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());

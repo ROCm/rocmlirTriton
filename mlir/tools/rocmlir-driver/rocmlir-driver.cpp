@@ -102,10 +102,11 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
                                  cl::init(""));
 
-static cl::opt<bool> disableDivByReciprocal(
-    "disable-div-by-reciprocal", cl::init(false),
-    cl::desc("Skip rock-rewrite-div-by-reciprocal after split-k regularization "
-             "(by default the pass tags arith.divf with fastmath arcp)"));
+static cl::opt<bool> disableFastMath(
+    "disable-fast-math", cl::init(false),
+    cl::desc("Skip rock-allow-fast-math-flags after split-k regularization "
+             "(by default the pass tags float ops with fastmath flags like "
+             "arcp/contract/nsz/afn)"));
 
 namespace test {
 void registerTestDialect(DialectRegistry &);
@@ -252,7 +253,7 @@ runKernelPipeline(StringRef archName, ModuleOp m,
     // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
     opts.arch = archName.str();
-    opts.disableDivByReciprocal = disableDivByReciprocal.getValue();
+    opts.disableFastMath = disableFastMath.getValue();
 
     rock::buildKernelPipeline(pm, opts);
   }
