@@ -302,16 +302,25 @@ wiring above:
   They should be removed once the monolithic in-tree flow is the
   documented standalone entry point and the LLVM fork has the patches
   baked in.
-- **Latent missing `LINK_LIBS` exposed by `-Wl,-z,defs`.** LLVM's
-  `HandleLLVMOptions.cmake` appends `-Wl,-z,defs` to
-  `CMAKE_SHARED_LINKER_FLAGS` when building shared libraries on ELF, which
-  forces every `.so` to resolve all its referenced symbols at link time.
-  The monolithic in-tree flow triggers this (we `include(HandleLLVMOptions)`
-  in [`mlir/CMakeLists.txt`](../mlir/CMakeLists.txt)); the legacy
-  `find_package(MLIR)` flow did not, because importing an already-built
-  MLIR does not re-run that module against a built tree. As a result, the
-  monolithic build reveals pre-existing missing dependency declarations
-  that the dynamic linker used to paper over at runtime:
+- **`BUILD_SHARED_LIBS=ON` is not supported today.** Triton's
+  `add_triton_object` (in `external/triton/CMakeLists.txt`) declares every
+  Triton "library" as a CMake `OBJECT` library and re-exports its `.o`
+  files to consumers via `target_sources(... INTERFACE $<TARGET_OBJECTS:>)`.
+  Triton additionally compiles every TU with `-fvisibility=hidden`. When
+  `BUILD_SHARED_LIBS=ON`, our shared libraries that link Triton object
+  libs absorb thousands of Triton `.o` files (transitively, through
+  Triton's own `PUBLIC` chain) with hidden visibility. Template
+  instantiations of e.g. `mlir::triton::PTXBuilder` then surface as
+  undefined dynamic references in our `.so` (because the matching
+  non-template definitions live in `PTXAsmFormat.cpp` inside
+  `TritonNVIDIAGPUToLLVM`, which we do not transitively link). At
+  executable-link time `ld` fails with
+  `hidden symbol ... referenced by DSO` because the cross-DSO references
+  cannot be resolved against hidden symbols.
+
+  Several latent missing `LINK_LIBS` make the same situation worse — they
+  would surface as `-Wl,-z,defs` errors at `.so` link time before the
+  executable stage even runs:
 
   - `MLIRRockOps` invokes `rock::getAccType`, `rock::getMfmaVersion`,
     `rock::getWmmaVersion`, `rock::backwardDataKernelIds` — all defined
@@ -322,16 +331,15 @@ wiring above:
     `mlir::triton::AMD::deduceISAFamily` without linking
     `TritonAMDGPUToLLVM` (where both are defined).
 
-  To unblock the monolithic flow without a large dep-graph refactor, we
-  strip `-Wl,-z,defs` (and the matching `-Wl,-z,nodelete`) from
-  `CMAKE_SHARED_LINKER_FLAGS` in `mlir/CMakeLists.txt` immediately after
-  the `include(HandleLLVMOptions)` call. This matches what the develop
-  branch was effectively doing. The proper fixes are to either declare
-  the missing `LINK_LIBS` and accept the resulting cycle (ELF dynamic
-  linking handles cross-library cycles fine), or to lift the `rock::*`
-  helpers that `MLIRRockOps` consumes into `MLIRRockOps` itself so the
-  IR layer never depends on the utility layer. Either fix should land
-  before we re-enable `-Wl,-z,defs`.
+  Both classes of problem disappear under static linking, which is why
+  we default to `BUILD_SHARED_LIBS=OFF` (the same setting MIGraphX uses).
+  Re-enabling shared-by-default needs at minimum a Triton-side patch to
+  emit real `SHARED`/`STATIC` libraries instead of `OBJECT` ones, plus
+  the missing `LINK_LIBS` either declared (accepting a CMake cycle —
+  ELF dynamic linking handles cross-library cycles fine) or refactored
+  away by lifting the `rock::*` helpers that `MLIRRockOps` consumes into
+  `MLIRRockOps` itself so the IR layer never depends on the utility
+  layer.
 
 The cget flow (and [`docs/migraphx_build.md`](migraphx_build.md)) is not
 affected by any of these: `find_package(MLIR)` against `CMAKE_PREFIX_PATH`
