@@ -19,7 +19,6 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/Generator/ConvGenerator.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
@@ -5326,30 +5325,26 @@ static LogicalResult populateHostHarnessLogic(
   bool hasCloneValidation = hasValidation && (validationType == "clone");
   // `--verifier clone` builds a host harness that allocates one buffer per
   // kernel argument and feeds the kernel's tensor results back through the
-  // trailing args. That contract is only well-defined once the kernel has
-  // been lowered to the rock pipeline (kernels containing higher-level
-  // dialects like tosa / migraphx have signatures whose tensor results may
-  // not be aliased by trailing args, which silently mis-routes outputs in
-  // the harness).
+  // trailing args. That contract is only well-defined if the kernel is
+  // at the rock IR level, so make sure we at least have one rock op in the IR.
   if (hasCloneValidation) {
     for (KernelIF kernel : kernels) {
-      WalkResult res =
-          kernel.func.walk([&](Operation *op) {
-            Dialect *dialect = op->getDialect();
-            if (isa_and_nonnull<tosa::TosaDialect, migraphx::MIGraphXDialect>(
-                    dialect)) {
-              op->emitError()
-                  << "--verifier=clone cannot build a host harness around a "
-                     "kernel that still contains "
-                  << dialect->getNamespace()
-                  << " ops; run the kernel pipeline first (e.g. "
-                     "`rocmlir-driver -kernel-pipeline=highlevel`)";
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          });
-      if (res.wasInterrupted())
+      bool hasRockOp = false;
+      kernel.func.walk([&](Operation *op) {
+        if (isa_and_nonnull<rock::RockDialect>(op->getDialect())) {
+          hasRockOp = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (!hasRockOp) {
+        kernel.func.emitError()
+            << "--verifier=clone cannot build a host harness around a "
+               "kernel that does not contain any rock dialect ops; run the "
+               "kernel pipeline first (e.g. `rocmlir-driver "
+               "-kernel-pipeline=highlevel`)";
         return failure();
+      }
     }
   }
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
