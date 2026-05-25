@@ -3,7 +3,7 @@
 
 // Padding_One-LABEL: func.func @rock_conv_gkc01_ngc01_ngk01
 // Padding_One-SAME: ([[arg0:%.+]]: tensor<8192xf32>, [[arg1:%.+]]: tensor<200704xf32>, [[arg2:%.+]]: tensor<1949696xf32>)
-// Padding_One-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// Padding_One-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // Padding_One-NEXT: [[exp0:%.+]] = rock.transform [[arg0]] by
 // Padding_One-SAME: Unmerge{256, 32}
 // Padding_One-SAME: AddDim{1} ["g"]
@@ -18,7 +18,7 @@
 
 // Padding_Two-LABEL: func.func @rock_conv_gkc01_ngc01_ngk01
 // Padding_Two-SAME: ([[arg0:%.+]]: tensor<8192xf32>, [[arg1:%.+]]: tensor<200704xf32>, [[arg2:%.+]]: tensor<2785280xf32>)
-// Padding_Two-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel = 0 : i32, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// Padding_Two-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // Padding_Two-NEXT: [[exp0:%.+]] = rock.transform [[arg0]] by
 // Padding_Two-SAME: Unmerge{256, 32}
 // Padding_Two-SAME: AddDim{1} ["g"]
