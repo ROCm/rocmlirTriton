@@ -5340,7 +5340,7 @@ static LogicalResult populateHostHarnessLogic(
       if (!hasRockOp) {
         kernel.func.emitError()
             << "--verifier=clone cannot build a host harness around a "
-               "kernel that does not contain any rock dialect ops; run the "
+               "kernel that is not at the rock level; run the "
                "kernel pipeline first (e.g. `rocmlir-driver "
                "-kernel-pipeline=highlevel`)";
         return failure();
