@@ -16,6 +16,15 @@ name = "data type"
 values = ["f32", "f16", "bf16", "i8"]
 prefix = "-t "
 
+[[require]]
+feature = "random_data"
+[[require.match]]
+name = "operation"
+values = ["conv_bwd_weight"]
+[[require.match]]
+name = "data type"
+values = ["f16", "bf16"] 
+
 ## Resnet50
 [[suite]]
 name = "config"
