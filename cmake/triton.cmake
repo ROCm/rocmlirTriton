@@ -3,15 +3,14 @@ include(cmake/submodules.cmake)
 message(STATUS "Adding Triton src dependency")
 
 #===----------------------------------------------------------------------===//
-# Paths
+# Paths for building rocmlirTriton
 #===----------------------------------------------------------------------===//
 
 set(TRITON_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/triton")
 set(TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
-set(ROCMLIR_LLVM_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-project")
+set(ROCMLIRTRITON_LLVM_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-project")
 
-option(ROCMLIR_SKIP_SUBMODULE_UPDATE
-       "Skip 'git submodule update' during configure (e.g. source tarballs)" OFF)
+option(ROCMLIRTRITON_SKIP_SUBMODULE_UPDATE "Skip 'git submodule update'" OFF)
 
 rocmlir_ensure_submodules()
 
@@ -20,17 +19,14 @@ rocmlir_ensure_submodules()
 #
 # Two paths are supported, tried in this order:
 #
-#   (imported)  An externally-built MLIR is provided via MLIR_DIR (cache or
-#               -D), the MLIR_DIR env var, CMAKE_PREFIX_PATH (the cget /
-#               MIGraphX flow), or as a leftover from the legacy
-#               scripts/build-llvm.sh layout at
-#               external/llvm-project/build/. We import it via
-#               find_package(MLIR CONFIG).
+#   (imported)  An externally-built LLVM is provided via MLIR_DIR (cache or
+#               -D), the MLIR_DIR env var, CMAKE_PREFIX_PATH (used by
+#               MIGraphX flow).We import it via find_package(MLIR CONFIG).
 #
-#   (in-tree)   No external MLIR was found. We add_subdirectory the vendored
-#               external/llvm-project/llvm/, making LLVM, MLIR, and LLD part
-#               of the same CMake build. This is the standalone monolithic
-#               flow, see docs/rocmlirtriton_build.md.
+#   (in-tree)   No external LLVM was found. We add_subdirectory the vendored
+#               external/llvm-project/llvm/, making LLVM part
+#               of the same CMake build. This is the standalone build
+#               flow.
 #
 # In the in-tree flow we manually populate the MLIR_*/LLVM_* discovery
 # variables that find_package(MLIR) would normally set, so that Triton's
@@ -48,7 +44,7 @@ if(MLIR_DIR MATCHES "-NOTFOUND$"
 endif()
 
 set(_rocmlir_legacy_in_tree_mlir_dir
-    "${ROCMLIR_LLVM_PROJECT_DIR}/build/lib/cmake/mlir")
+    "${ROCMLIRTRITON_LLVM_PROJECT_DIR}/build/lib/cmake/mlir")
 
 set(_rocmlir_have_external_mlir FALSE)
 if(MLIR_DIR)
@@ -70,7 +66,7 @@ endif()
 
 if(_rocmlir_have_external_mlir)
   #===--------------------------------------------------------------------===//
-  # Imported MLIR (cget / MIGraphX / legacy scripts/build-llvm.sh / user-supplied)
+  # Imported MLIR (MIGraphX flow)
   #===--------------------------------------------------------------------===//
   message(STATUS "Using externally-built MLIR (MLIR_DIR=${MLIR_DIR})")
   find_package(MLIR REQUIRED CONFIG PATHS ${MLIR_DIR})
@@ -86,9 +82,9 @@ if(_rocmlir_have_external_mlir)
   include(AddMLIR)
 else()
   #===--------------------------------------------------------------------===//
-  # In-tree LLVM via add_subdirectory (standalone monolithic build)
+  # In-tree (rocmlirTriton standalone flow)
   #===--------------------------------------------------------------------===//
-  if(NOT EXISTS "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/CMakeLists.txt")
+  if(NOT EXISTS "${ROCMLIRTRITON_LLVM_PROJECT_DIR}/llvm/CMakeLists.txt")
     message(FATAL_ERROR
       "external/llvm-project/llvm/CMakeLists.txt is missing and no "
       "externally-built MLIR was found.\n"
@@ -100,8 +96,7 @@ else()
       "  -DMLIR_DIR=/path/to/lib/cmake/mlir\n"
       "  -DCMAKE_PREFIX_PATH=/path/to/llvm-install\n"
       "  export MLIR_DIR=/path/to/lib/cmake/mlir\n"
-      "\n"
-      "For the cget-driven MIGraphX build, see docs/migraphx_build.md.")
+      "\n")
   endif()
 
   message(STATUS "Adding LLVM/MLIR git-submodule src dependency")
@@ -113,13 +108,14 @@ else()
   set(LLVM_ENABLE_ZLIB OFF CACHE BOOL "")
   set(LLVM_ENABLE_TERMINFO OFF CACHE BOOL "")
   set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "")
-  # Required for downstream lit (FileCheck, count, not, llvm-lit) to work.
   set(LLVM_INSTALL_UTILS ON CACHE BOOL "")
+
   # In-tree dev builds do not install MLIR; consumers (us, Triton) use the
   # build tree directly. Skipping install(EXPORT MLIRTargets) also avoids
   # CMake errors about Triton's first-class targets (TritonGPUTransforms,
   # etc.) not being in MLIR's export set when our Rock libraries link them.
   set(LLVM_INSTALL_TOOLCHAIN_ONLY ON CACHE BOOL "")
+
   # Disable LLVM's PCH reuse machinery. When LLVM is in-tree, LLVM's
   # CMake (see llvm/lib/Support/CMakeLists.txt and add_llvm_library
   # PRECOMPILE_HEADERS) wires every library that links LLVMSupport to
@@ -130,26 +126,21 @@ else()
   # if our targets compile with -std=gnu++17 (the CMake default for
   # GCC/Clang when CMAKE_CXX_EXTENSIONS is left at its ON default),
   # Clang refuses to load the PCH with "GNU extensions was disabled in
-  # AST file ... but is currently enabled".
-  #
-  # The knob is the standard CMake variable CMAKE_DISABLE_PRECOMPILE_HEADERS,
-  # which LLVM honors via `if(NOT DEFINED ...)` in
-  # llvm/cmake/modules/HandleLLVMOptions.cmake. Setting it before
-  # add_subdirectory keeps LLVM from auto-enabling PCH for our
-  # compiler/launcher combination.
-  #
-  # Cost is ~10-20% of LLVM build time; binaries are identical. The
-  # cleaner long-term alternative is project-wide CMAKE_CXX_EXTENSIONS=OFF
-  # (matches upstream LLVM/rocMLIR) -- intentionally deferred until the
-  # monolithic flow is fully operational.
+  # AST file ... but is currently enabled".  
   set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON CACHE BOOL "")
+
   if(MLIR_ENABLE_ROCM_RUNNER)
     set(LLVM_TARGETS_TO_BUILD "X86;AMDGPU" CACHE STRING "")
   else()
     set(LLVM_TARGETS_TO_BUILD "AMDGPU" CACHE STRING "")
   endif()
 
-  add_subdirectory("${ROCMLIR_LLVM_PROJECT_DIR}/llvm"
+  # Matches rocMLIR approach in cmake/llvm-project.cmake.
+  # This is needed to compile rocmlirTriton and LLVM together.
+  # Before, we used to compile each project in a different build
+  # directory using a separate bash script. By doing a monolithic build,
+  # we avoid the bash script to handle the separate build process.
+  add_subdirectory("${ROCMLIRTRITON_LLVM_PROJECT_DIR}/llvm"
                    "external/llvm-project/llvm"
                    EXCLUDE_FROM_ALL)
 
@@ -176,10 +167,10 @@ else()
   set(LLVM_TOOLS_BINARY_DIR "${LLVM_EXTERNAL_BIN_DIR}")
 
   list(APPEND MLIR_INCLUDE_DIRS
-    "${ROCMLIR_LLVM_PROJECT_DIR}/mlir/include"
+    "${ROCMLIRTRITON_LLVM_PROJECT_DIR}/mlir/include"
     "${LLVM_EXTERNAL_BUILD_DIR}/llvm/tools/mlir/include")
   list(APPEND LLVM_INCLUDE_DIRS
-    "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/include"
+    "${ROCMLIRTRITON_LLVM_PROJECT_DIR}/llvm/include"
     "${LLVM_EXTERNAL_BUILD_DIR}/llvm/include")
 
   list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
@@ -207,7 +198,7 @@ message(STATUS "ROCM_PATH: ${ROCM_PATH}")
 list(APPEND CMAKE_MODULE_PATH "${ROCM_PATH}/hip/cmake")
 
 #===----------------------------------------------------------------------===//
-# Triton Build Options
+# Triton Build Options (matching external/triton/CMakeLists.txt)
 #===----------------------------------------------------------------------===//
 
 set(TRITON_BUILD_PYTHON_MODULE OFF CACHE BOOL "Don't build Python bindings")
@@ -238,14 +229,14 @@ list(APPEND TRITON_INCLUDE_DIRS
 )
 
 #===----------------------------------------------------------------------===//
-# Lit testing configuration
+# For lit testing configuration
 #===----------------------------------------------------------------------===//
 
 set(MLIR_CMAKE_CONFIG_DIR "${MLIR_DIR}")
 set(MLIR_TABLEGEN_EXE mlir-tblgen)
 
 #===----------------------------------------------------------------------===//
-# Triton cache path (mimics get_triton_cache_path() in upstream setup.py)
+# Configure TRITON_CACHE_PATH (mimics get_triton_cache_path() logic in setup.py)
 #===----------------------------------------------------------------------===//
 
 if(NOT TRITON_CACHE_PATH)
@@ -294,9 +285,8 @@ message(STATUS "LLVM_SYSPATH: ${LLVM_SYSPATH}")
 add_subdirectory("${TRITON_PROJECT_DIR}" "external/triton" EXCLUDE_FROM_ALL)
 
 #===----------------------------------------------------------------------===//
-# Dummy targets for MLIR tablegen dependencies
-# When using imported MLIR, tablegen targets do not exist but headers do.
-# In the in-tree flow these targets DO exist; the guard keeps both flows happy.
+# Create dummy targets for MLIR tablegen dependencies
+# When using pre-built MLIR, tablegen targets don't exist but headers do
 #===----------------------------------------------------------------------===//
 
 if(NOT TARGET MLIRConversionPassIncGen)
@@ -308,24 +298,24 @@ endif()
 #===----------------------------------------------------------------------===//
 
 function(add_rocmlir_dialect_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIR_DIALECT_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_DIALECT_LIBS ${name})
   set_property(GLOBAL APPEND PROPERTY MLIR_DIALECT_LIBS ${name})
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_dialect_library)
 
 function(add_rocmlir_conversion_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIR_CONVERSION_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_CONVERSION_LIBS ${name})
   set_property(GLOBAL APPEND PROPERTY MLIR_CONVERSION_LIBS ${name})
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_conversion_library)
 
 function(add_rocmlir_test_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIR_TEST_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_TEST_LIBS ${name})
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_test_library)
 
 function(add_rocmlir_public_c_api_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIR_PUBLIC_C_API_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_PUBLIC_C_API_LIBS ${name})
   add_mlir_library(${name}
     ${ARGN}
     EXCLUDE_FROM_LIBMLIR
@@ -353,8 +343,9 @@ function(add_rocmlir_tool name)
   add_mlir_tool(${name} ${exclude_from_all} ${ARGN})
 endfunction()
 
+# Helper function for Rock-to-Triton libraries
 function(add_rocmlir_triton_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIR_TRITON_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_TRITON_LIBS ${name})
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_triton_library)
 
