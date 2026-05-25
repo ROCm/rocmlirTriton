@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -33,6 +34,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Config/Targets.h"
@@ -221,7 +223,7 @@ void setABIVersion(llvm::Module &module, int version) {
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
                          int numCTAs, bool allowFlushDenorm, bool enableAsan,
-                         StringRef scheduleHint) {
+                         int64_t scheduleHint) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
@@ -241,10 +243,23 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   kernelFn->addFnAttr("amdgpu-flat-work-group-size",
                       "1," + std::to_string(totalThreads));
 
-  // memory-bound-attention schedule hint enables iterative-ilp scheduler
-  // (compiler.py lines 387-388)
-  // TODO(roctriton): set this in ToBlockwise? or somewhere
-  if (scheduleHint.contains("memory-bound-attention")) {
+  // memory-bound-attention schedule hint enables iterative-ilp scheduler.
+  // Mirror upstream compiler.py, function make_llir():
+  //   if "memory-bound-attention" in options.schedule_hint.split(','):
+  //       kernel_fn.add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
+  // `scheduleHint` is a stable bitfield (see KnobUtils.h);
+  // multiple hint bits can be set simultaneously, so we test the
+  // memory-bound-attention bit instead of comparing for equality.
+  //
+  // TODO(roctriton): Set scheduleHint in ToBlockwise? or somewhere else?
+  // Or should we just tune it?
+  if (!rock::isValidScheduleHintBitfield(scheduleHint)) {
+    llvm::errs() << "ignoring invalid scheduleHint bitfield " << scheduleHint
+                 << " in TritonToHsaco. Update kScheduleHintBitTable in "
+                    "KnobUtils.cpp if a new variant was added "
+                    "upstream.\n";
+  } else if (scheduleHint != rock::kKnobDefault &&
+             (scheduleHint & rock::kScheduleHintMemoryBoundAttention)) {
     kernelFn->addFnAttr("amdgpu-sched-strategy", "iterative-ilp");
   }
 

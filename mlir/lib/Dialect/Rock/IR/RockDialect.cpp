@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -2192,7 +2193,48 @@ LogicalResult AttentionOp::verify() {
 
 namespace {
 
-constexpr size_t SmallVectorInlineSize = 16;
+constexpr size_t SmallVectorInlineSize = 32;
+
+// Number of trailing knob fields appended in the v2 perfConfig schema.
+// The sentinel value (`rock::kKnobDefault` = `-1`) and the `scheduleHint`
+// bit constants live in `KnobUtils.h`.
+//
+// NOTE: If you want to bump the perfConfig to v3, you need to add a new
+// `kNumKnobFieldsV3` constant and update the parser to expect the new number
+// of fields.
+constexpr size_t kNumKnobFieldsV2 = 7;
+
+// Reject invalid knob values, reusing `rock::isValidKnobBoolean` and
+// `rock::isValidScheduleHintBitfield`.
+LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
+                                int64_t useBlockPingpong,
+                                int64_t useInThreadTranspose,
+                                int64_t useBufferOps, int64_t useBufferAtomics,
+                                int64_t bufferOpsAnalyzeSmallTensorRange,
+                                int64_t scheduleHint) {
+  const std::pair<StringRef, int64_t> boolKnobs[] = {
+      {"useAsyncCopy", useAsyncCopy},
+      {"useBlockPingpong", useBlockPingpong},
+      {"useInThreadTranspose", useInThreadTranspose},
+      {"useBufferOps", useBufferOps},
+      {"useBufferAtomics", useBufferAtomics},
+      {"bufferOpsAnalyzeSmallTensorRange", bufferOpsAnalyzeSmallTensorRange},
+  };
+  for (auto [name, value] : boolKnobs) {
+    if (!isValidKnobBoolean(value)) {
+      llvm::errs() << "invalid perfConfig '" << perfConfigStr << "': field `"
+                   << name << "` = " << value
+                   << "; expected -1 (arch default), 0 (off), or 1 (on)\n";
+      return failure();
+    }
+  }
+  if (!rock::isValidScheduleHintBitfield(scheduleHint)) {
+    llvm::errs() << "invalid perfConfig '" << perfConfigStr
+                 << "': field `scheduleHint` = " << scheduleHint << "\n";
+    return failure();
+  }
+  return success();
+}
 
 struct PerfConfigParseResult {
   int version;
@@ -2252,7 +2294,13 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  size_t expectedCount = (version == 1) ? 11 : 0;
+  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
+  // v2: 11 tunable fields + 7 knob fields = 18 fields.
+  size_t expectedCount = 0;
+  if (version == 1)
+    expectedCount = 11;
+  else if (version == 2)
+    expectedCount = 11 + kNumKnobFieldsV2;
   if (expectedCount == 0 || params.size() != expectedCount) {
     return {};
   }
@@ -2269,11 +2317,35 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t numStages = params[idx++];
   int64_t wavesPerEU = params[idx++];
   int64_t gridGroupSize = params[idx++];
+  int64_t useAsyncCopy = kKnobDefault;
+  int64_t useBlockPingpong = kKnobDefault;
+  int64_t useInThreadTranspose = kKnobDefault;
+  int64_t useBufferOps = kKnobDefault;
+  int64_t useBufferAtomics = kKnobDefault;
+  int64_t bufferOpsAnalyzeSmallTensorRange = kKnobDefault;
+  int64_t scheduleHint = kKnobDefault;
+  if (version >= 2) {
+    useAsyncCopy = params[idx++];
+    useBlockPingpong = params[idx++];
+    useInThreadTranspose = params[idx++];
+    useBufferOps = params[idx++];
+    useBufferAtomics = params[idx++];
+    bufferOpsAnalyzeSmallTensorRange = params[idx++];
+    scheduleHint = params[idx++];
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            bufferOpsAnalyzeSmallTensorRange, scheduleHint))) {
+      return {};
+    }
+  }
 
-  return GemmParamsAttr::get(perfConfigStrAttr.getContext(), mPerBlock,
-                             nPerBlock, kPerBlock, kpack, numCTAs, numWaves,
-                             matrixInstrNonkdim, splitKFactor, numStages,
-                             wavesPerEU, gridGroupSize);
+  return GemmParamsAttr::get(
+      perfConfigStrAttr.getContext(), mPerBlock, nPerBlock, kPerBlock, kpack,
+      numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
+      wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
+      useInThreadTranspose, useBufferOps, useBufferAtomics,
+      bufferOpsAnalyzeSmallTensorRange, scheduleHint);
 }
 
 //===-----------------------------------------------------===//
@@ -2289,7 +2361,13 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  size_t expectedCount = (version == 1) ? 11 : 0;
+  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
+  // v2: 11 tunable fields + 7 knob fields = 18 fields.
+  size_t expectedCount = 0;
+  if (version == 1)
+    expectedCount = 11;
+  else if (version == 2)
+    expectedCount = 11 + kNumKnobFieldsV2;
   if (expectedCount == 0 || params.size() != expectedCount) {
     return {};
   }
@@ -2306,11 +2384,35 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t numStages = params[idx++];
   int64_t wavesPerEU = params[idx++];
   int64_t gridGroupSize = params[idx++];
+  int64_t useAsyncCopy = kKnobDefault;
+  int64_t useBlockPingpong = kKnobDefault;
+  int64_t useInThreadTranspose = kKnobDefault;
+  int64_t useBufferOps = kKnobDefault;
+  int64_t useBufferAtomics = kKnobDefault;
+  int64_t bufferOpsAnalyzeSmallTensorRange = kKnobDefault;
+  int64_t scheduleHint = kKnobDefault;
+  if (version >= 2) {
+    useAsyncCopy = params[idx++];
+    useBlockPingpong = params[idx++];
+    useInThreadTranspose = params[idx++];
+    useBufferOps = params[idx++];
+    useBufferAtomics = params[idx++];
+    bufferOpsAnalyzeSmallTensorRange = params[idx++];
+    scheduleHint = params[idx++];
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            bufferOpsAnalyzeSmallTensorRange, scheduleHint))) {
+      return {};
+    }
+  }
 
-  return GemmGemmParamsAttr::get(perfConfigStrAttr.getContext(), mPerBlockG0,
-                                 nPerBlockG0, kPerBlock, kpack, numCTAs,
-                                 numWaves, matrixInstrNonkdim, splitKFactor,
-                                 numStages, wavesPerEU, gridGroupSize);
+  return GemmGemmParamsAttr::get(
+      perfConfigStrAttr.getContext(), mPerBlockG0, nPerBlockG0, kPerBlock,
+      kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
+      wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
+      useInThreadTranspose, useBufferOps, useBufferAtomics,
+      bufferOpsAnalyzeSmallTensorRange, scheduleHint);
 }
 
 //===----------------------------------------------------------------------===//

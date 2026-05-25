@@ -9,6 +9,7 @@ set(ROCK_UNITTEST_SOURCES
   TosaUtilsTests.cpp
   transformMapUtilsTests.cpp
   ParamLookupTableTests.cpp
+  KnobUtilsTests.cpp
 )
 
 add_rocmlir_unittest(MLIRRockUnitTests

@@ -211,16 +211,41 @@ The following Python features are **intentionally omitted** from the C++ impleme
 | Feature | Python Location | Reason |
 |---------|-----------------|--------|
 | `HIPBackend.instrumentation.patch()` | `compiler.py` make_llir, make_ttgir | Not needed for our use case |
-| `knobs.*` configuration | Throughout `compiler.py` | Hardcoded values are sufficient |
 | `passes.llvmir.add_di_scope()` | `compiler.py` make_llir | TODO, not critical |
 | `llvm.translate_to_mir()` | `compiler.py` make_amdgcn | Simplified implementation |
 | `llvm.dump_sched_dag()` | `compiler.py` make_amdgcn | Debugging feature not needed |
 | `knobs.amd.swap_mir` | `compiler.py` make_amdgcn | Debugging feature not needed |
 | `knobs.compilation.dump_ir_*` | `compiler.py` make_llir | Debugging feature not needed |
 | FPSan instrumentation mode | `compiler.py` make_ttgir | Not implemented |
-| `schedule_hint` loop processing | `compiler.py` make_ttgir | Partially hardcoded |
 
 When reviewing diffs, **skip changes** related to these features.
+
+### Knobs that we mirror
+
+On a bump, review the upstream diff and propagate any default/semantic changes:
+
+| Upstream (`compiler.py`)                          | perfConfig field (v2 trailing block)  | Pipeline option                                                |
+|---------------------------------------------------|---------------------------------------|----------------------------------------------------------------|
+| `knobs.amd.use_async_copy`                        | `useAsyncCopy`                        | `TritonOptions::useAsyncCopy`                                  |
+| `knobs.amd.use_block_pingpong`                    | `useBlockPingpong`                    | `TritonOptions::useBlockPingpong`                              |
+| `knobs.amd.use_in_thread_transpose`               | `useInThreadTranspose`                | `TritonOptions::useInThreadTranspose`                          |
+| `knobs.amd.use_buffer_ops`                        | `useBufferOps`                        | `TritonOptions::useBufferOps`                                  |
+| `knobs.amd.use_buffer_atomics`                    | `useBufferAtomics`                    | `TritonOptions::useBufferAtomics`                              |
+| `knobs.amd.buffer_ops_analyze_small_tensor_range` | `bufferOpsAnalyzeSmallTensorRange`    | `TritonOptions::bufferOpsAnalyzeSmallTensorRange`              |
+| `HIPOptions.schedule_hint`                        | `scheduleHint`                        | `TritonOptions::scheduleHint` / `BackendOptions::scheduleHint` |
+
+If upstream adds a new `knobs.amd.*` switch around an existing pass we
+already replicate, add the corresponding `Option<int>` to `TritonOptions`
+(use the `kKnobDefault = -1` tri-state sentinel), append a matching
+`int64_t` field to `Rock_GemmParamsAttr` / `Rock_GemmGemmParamsAttr` in
+`RockAttrDefs.td`, extend the `v2` parser in `RockDialect.cpp` (and its
+range validator), and propagate the value through `compileUtils.cpp`.
+
+If upstream adds a new `SchedHint` enum entry, claim a new bit in
+`kScheduleHintBitTable` in `KnobUtils.cpp` and document it in
+the `RockAttrDefs.td` docstring; `expandScheduleHintBitfield` will then
+pick it up automatically. The LLIR-only `memory-bound-attention`
+literal already has its own bit and lives next to the table.
 
 ## Step 9: Handling Pass Interface Changes
 
@@ -338,6 +363,7 @@ If new Triton headers are needed:
 | HSACO translation | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
 | Architecture database | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
 | Triton utility replicas | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
+| `schedule_hint` parser | `mlir/lib/Dialect/Rock/utility/KnobUtils.cpp` |
 | Triton compiler.py | `external/triton/third_party/amd/backend/compiler.py` |
 | Triton llvm.cc | `external/triton/python/src/llvm.cc` |
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |

@@ -23,6 +23,14 @@ New format (gemm:v1, 11 ints):
             matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU,
             gridGroupSize
 
+Note: rocmlirTriton's current schema is not v1 anymore (newer versions 
+adds 7 trailing Triton knob
+fields). This script still emits gemm:v1 because that is the documented
+migration path from upstream rocMLIR's v3/v4. The gemm:v1 strings produced
+here parse cleanly via the v1 back-compat path in
+`GemmParamsAttr::get(StringAttr)` and default all knob fields to the
+arch-default sentinel (-1).
+
 Usage:
     python update_perf_config_format.py <toml_file> [--dry-run] [--in-place]
     python update_perf_config_format.py --check <directory>  # Check all TOML files in directory
