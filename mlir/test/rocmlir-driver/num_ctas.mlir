@@ -11,7 +11,7 @@
 // RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f16 -p --perf_config "gemm:v1:64,64,64,1,1,4,16,1,2,0,0" | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=GFX1250_CTA1
 
 // gfx942 with default numCTAs=1
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=GFX942
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config "gemm:v1:64,64,64,1,1,4,16,1,2,0,0" | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=GFX942
 
 // Check module-level attributes
 // GFX1250_CTA2: rock.grid_size.rock_gemm = 128 : i32
