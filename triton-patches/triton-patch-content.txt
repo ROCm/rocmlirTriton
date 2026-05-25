@@ -13,8 +13,22 @@ patch10585.patch
 patch1.patch
 patch2.patch
 patch3.patch
+patch_buffer_atomics.patch
 ----------------------------------------------------------------------
 TODO: Add missing patch descriptions
+
+patch_buffer_atomics.patch
+  Enables buffer atomic RMW across all AMD GPU families in
+  TargetFeatures::supportsBufferAtomicRMW (gfx906/gfx908/gfx90a/gfx942/gfx950,
+  gfx101x/gfx103x/gfx11/gfx12, gfx1250). On older families BUFFER_ATOMIC_*
+  silently drops writes against fine-grained pinned host memory, but
+  rocmlirTriton never targets such allocations so this is safe.
+  Integer RMW works universally; the per-family FP restrictions for
+  BUFFER_ATOMIC_ADD_{F32,F64}/PK_ADD_{F16,BF16} are encoded in
+  supportsBufferAtomicFadd (e.g. gfx906/gfx101x/gfx103x have no FP buffer
+  atomic add; gfx11 only F32; gfx942 no PK_ADD_BF16; gfx12 no F64).
+  Upstreaming was attempted in https://github.com/triton-lang/triton/pull/10408
+  but it was rejected.
 
 patch10498.patch
   Extends patch10450's soffset-split safety check to peel sign-preserving

@@ -123,6 +123,11 @@ atomic operation. Without it, LLVM cannot emit native hardware atomics
 on architectures like RDNA3 (gfx1100) and CDNA2 (gfx90a), falling back
 to expensive CAS loops instead.
 
+The downstream Triton `TargetFeatures::supportsBufferAtomicRMW` patch
+also relies on this contract: it enables buffer atomic RMW on older ISA
+families where the hardware hazard applies only to fine-grained pinned
+host memory, which rocmlirTriton does not support.
+
 ### 2.2 No remote/peer memory (`no_remote_memory`)
 
 Tensor pointers must reside on the **local device**. Pointers to memory
