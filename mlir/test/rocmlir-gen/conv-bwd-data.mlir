@@ -3,7 +3,6 @@
 // BWD: module attributes {rock.arch = "[[$ARCH:.*]]"}
 // BWD: @rock_conv_bwd_data_gk01c_n01gc_n01gk({{.*}} rock.kernel
 // BWD: rock.conv_bwd_data(%0, %1) {{.*}}
-// BWD-NOT: rock.kernel = 1: i32
 
 // Test mixed dtype support: verify that CPU validation function uses correct types
 // when fil_dtype, in_dtype, and out_dtype are all different

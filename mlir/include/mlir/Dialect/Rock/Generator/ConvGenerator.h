@@ -77,7 +77,6 @@ public:
   ConvGenerator(const Config &_config);
 
   const Config &getConfig() const { return config; }
-  void setKernelName(const std::string &newName);
 
   Type getFilterDataType(OpBuilder &builder) const;
   Type getInputDataType(OpBuilder &builder) const;

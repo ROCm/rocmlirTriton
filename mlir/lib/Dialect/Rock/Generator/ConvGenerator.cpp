@@ -568,10 +568,6 @@ LogicalResult ConvGenerator::parseConvDims(int64_t batchSize, int64_t groupSize,
   return success();
 }
 
-void ConvGenerator::setKernelName(const std::string &newName) {
-  config.kernelBaseName = newName;
-}
-
 void ConvGenerator::setDataTypes(const std::string &dataTypeStr) {
   config.filterDataTypeStr = config.inputDataTypeStr =
       config.outputDataTypeStr = dataTypeStr;
