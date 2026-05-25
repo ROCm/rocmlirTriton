@@ -29,6 +29,18 @@ Notes:
 TritonLLVM,/path/to/rocmlirTriton-llvm -DLLVM_ENABLE_PROJECTS=mlir;llvm;lld;clang -DLLVM_TARGETS_TO_BUILD=Native;NVPTX;AMDGPU -DLLVM_ENABLE_ASSERTIONS=ON -DMLIR_ENABLE_ROCM_RUNNER=ON -DLLVM_OPTIMIZED_TABLEGEN=ON -DMLIR_ENABLE_BINDINGS_PYTHON=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LLD=ON -DLLVM_INSTALL_UTILS=ON
 ```
 
-Note:
+Notes:
 
+- The flag set matches what `external/triton/scripts/build-llvm-project.sh` uses, so the LLVM binaries are functionally identical to the legacy build.
 - `LLVM_INSTALL_UTILS=ON` is essential: without it, downstream `find_package` consumers cannot import `FileCheck`, `count`, `not`, `llvm-lit`, which rocmlirTriton's `check-rocmlir` lit target depends on.
+
+## Required environment hygiene
+
+Before invoking the build, make sure the shell is not contaminated by
+the legacy workflow:
+
+```bash
+unset LLVM_BUILD_DIR
+unset MLIR_DIR
+unset LLVM_SYSPATH
+```

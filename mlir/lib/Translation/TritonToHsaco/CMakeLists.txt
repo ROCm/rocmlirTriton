@@ -2,11 +2,18 @@ llvm_canonicalize_cmake_booleans(
     LLVM_HAS_AMDGPU_TARGET
 )
 
-# Find LLD package for linking AMDGPU objects
+# Find LLD package for linking AMDGPU objects. When LLD is added in-tree via
+# add_subdirectory(llvm-project/llvm) (the standalone monolithic build),
+# find_package would collide on imported targets, so detect the in-tree case
+# via TARGET lldELF instead.
 if("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
-  find_package(LLD CONFIG QUIET)
-  if(NOT LLD_FOUND)
-    message(SEND_ERROR "LLD is not found, please ensure LLD was built with LLVM")
+  if(TARGET lldELF)
+    set(LLD_FOUND TRUE)
+  else()
+    find_package(LLD CONFIG QUIET)
+    if(NOT LLD_FOUND)
+      message(SEND_ERROR "LLD is not found, please ensure LLD was built with LLVM")
+    endif()
   endif()
 endif()
 

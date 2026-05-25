@@ -10,7 +10,7 @@
 #   2. A few well-known source-tree fallbacks.
 #
 # The matching LLVM build directory is then located by:
-#   1. The Triton-based layout (<repo>/external/triton/llvm-project/build).
+#   1. The standalone layout (<repo>/external/llvm-project/build).
 #   2. The LLVM_DIR entry in the rocMLIR build's CMakeCache.txt.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
