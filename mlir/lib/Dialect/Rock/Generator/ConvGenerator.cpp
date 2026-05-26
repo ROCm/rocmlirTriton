@@ -379,8 +379,7 @@ LogicalResult ConvGenerator::hasWorkspace(OpBuilder &builder,
   if (config.operation.has_value()) {
     Type dataType = getInputDataType(builder);
     ConvOpType dir = config.operation.value();
-    if ((dir == ConvOpType::BwdWeight) &&
-        (dataType == builder.getF16Type())) {
+    if ((dir == ConvOpType::BwdWeight) && (dataType == builder.getF16Type())) {
       // In case we need extra padding, do not use workspace.
       bool needPadding = false;
       if (failed(needExtraPadBwdWeight(builder, needPadding))) {

@@ -41,8 +41,7 @@ public:
   obtainTuningParameters(OpBuilder &b, RockGemmGemmWrapperInterface op);
 
 protected:
-  static GemmParamsAttr getGemm0Params(OpBuilder &b,
-                                            GemmGemmParamsAttr params);
+  static GemmParamsAttr getGemm0Params(OpBuilder &b, GemmGemmParamsAttr params);
 
   static GemmParamsAttr getGemm1Params(OpBuilder &b,
                                        RockGemmGemmWrapperInterface op,
