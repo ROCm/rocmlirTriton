@@ -5099,8 +5099,6 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
     if (!inTy)
       return;
     int64_t axis = reduceOp.getAxis().getSExtValue();
-    if (axis < 0 || axis >= inTy.getRank())
-      return;
     int64_t axisExtent = inTy.getShape()[axis];
     if (axisExtent > 0)
       it->second *= axisExtent;
