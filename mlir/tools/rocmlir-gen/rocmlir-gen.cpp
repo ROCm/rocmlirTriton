@@ -4947,7 +4947,8 @@ static float sumErrorTolerance(Type t) {
 
 // Trace `value` backward through value-preserving / shape-only ops to find
 // a matmul-like op feeding `value`. Returns the matmul op
-// (RockGemmWrapperInterface / AttentionOp / RockGemmGemmWrapperInterface)
+// (RockGemmWrapperInterface / RockGemmGemmWrapperInterface; the latter
+// covers AttentionOp, GemmElementwiseGemmOp and ConvElementwiseGemmOp)
 // or nullptr if no such producer exists within a bounded search.
 //
 // "Value-preserving" here is conservative: rock.transform (pure layout
@@ -4967,8 +4968,8 @@ static Operation *traceToMatmulLikeProducer(Value value, unsigned depth = 0) {
   Operation *defOp = value.getDefiningOp();
   if (!defOp)
     return nullptr;
-  if (isa<rock::RockGemmWrapperInterface, rock::AttentionOp,
-          rock::RockGemmGemmWrapperInterface>(defOp))
+  if (isa<rock::RockGemmWrapperInterface, rock::RockGemmGemmWrapperInterface>(
+          defOp))
     return defOp;
   if (auto xform = dyn_cast<rock::TransformOp>(defOp))
     return traceToMatmulLikeProducer(xform.getInput(), depth + 1);
