@@ -4958,9 +4958,10 @@ static float sumErrorTolerance(Type t) {
 // as the result, recursing until it finds a matmul or runs out of
 // candidates.
 //
-// This lets us match `rock.reduce -> arith.addf -> rock.gemm` chains so
-// the reduce can contribute its axis length to the matmul's K_eff for
-// patterns like `reduce_sum(matmul(A, B) + bias)`.
+// This lets us match `rock.gemm -> arith.addf -> rock.reduce` dataflow
+// chains (arrow = "feeds into"). Walking backward from the reduce, we
+// recover the matmul so the reduce can contribute its axis length to the
+// matmul's K_eff for patterns like `reduce_sum(matmul(A, B) + bias)`.
 static Operation *traceToMatmulLikeProducer(Value value, unsigned depth = 0) {
   constexpr unsigned kMaxDepth = 8;
   if (depth > kMaxDepth)
