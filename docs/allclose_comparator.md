@@ -293,8 +293,8 @@ hipBLASLt's flat-`atol` policy instead; see the next subsection for why.
 
 | dtype | sum_error_tolerance | source |
 |---|---|---|
-| fp16 | `1/100` | rocBLAS `near.hpp` |
-| bf16 | `1/900` | rocBLAS `near.hpp` |
+| fp16 | `1/900` | rocBLAS `near.hpp` |
+| bf16 | `1/100` | rocBLAS `near.hpp` |
 | fp32 | `1e-6` | ~`10 * eps(fp32)`, hipBLASLt-aligned (see below) |
 | fp64 | `1e-15` | ~`10 * eps(fp64)`, hipBLASLt-aligned (see below) |
 | fp8 e4m3* | `0.125` | `eps(e4m3) = 2^-3` |
