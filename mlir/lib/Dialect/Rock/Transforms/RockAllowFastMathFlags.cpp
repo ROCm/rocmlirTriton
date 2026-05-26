@@ -22,8 +22,9 @@
 //   * `nsz`      on `arith.{add,sub,mul,div,neg}f` -> permits ignoring the
 //                sign of zero (enables a handful of LLVM peepholes such as
 //                `x + 0 -> x`, `0 - x -> -x` via sign-bit XOR).
-//   * `afn`      on `math.*` transcendentals -> hardware approximations
-//                (v_exp_f32, v_log_f32, v_sqrt_f32, ...).
+//   * `afn`      on `arith.divf` and `math.*` transcendentals -> hardware
+//                approximations (v_rcp_f32, v_exp_f32, v_log_f32,
+//                v_sqrt_f32, ...).
 
 //===-----------------------------------------------------===//
 
