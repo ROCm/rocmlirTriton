@@ -22,15 +22,28 @@
 //   * `nsz`      on `arith.{add,sub,mul,div,neg}f` -> permits ignoring the
 //                sign of zero (enables a handful of LLVM peepholes such as
 //                `x + 0 -> x`, `0 - x -> -x` via sign-bit XOR).
-//   * `afn`      on `arith.divf` and `math.*` transcendentals -> hardware
-//                approximations (v_rcp_f32, v_exp_f32, v_log_f32,
-//                v_sqrt_f32, ...).
+//   * `afn`      on `math.*` transcendentals -> hardware approximations
+//                (v_exp_f32, v_log_f32, v_sqrt_f32, ...).
+//   * `contract` on round-tripping `arith.extf(arith.truncf %wide) -> %wide`
+//                pairs inside `rock.kernel` functions, so the next
+//                `-canonicalize` collapses them via upstream MLIR's
+//                `arith.ExtFOp::fold` (which only fires when both casts
+//                carry `contract`). The rock-side lowering pipeline injects
+//                these pairs at splice points where the narrow type is only
+//                a transport format (e.g. an f32 accumulator briefly
+//                narrowed to f16 to match a downstream tile shape and then
+//                widened back); marking them contractible removes a pair of
+//                GPU conversion instructions that would otherwise run on
+//                every element of the tile. The round-trip walk is gated on
+//                the `rock.kernel` attribute so host functions are never
+//                touched.
 
 //===-----------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -83,6 +96,22 @@ struct AddFastMathFlagsPattern : public OpRewritePattern<OpTy> {
 
   arith::FastMathFlags flagsToAdd;
 };
+
+/// Merge `fastmath<contract>` into `op`'s existing fast-math flags. The op's
+/// other fast-math flags (`nnan`, `ninf`, ...) and its rounding mode are
+/// preserved verbatim, so this only relaxes precision in the contract sense
+/// without dropping any pre-existing IEEE guarantees the producer had set.
+template <typename CastOp>
+static void markContractible(CastOp op) {
+  arith::FastMathFlags existing =
+      op.getFastmath().value_or(arith::FastMathFlags::none);
+  arith::FastMathFlags merged = existing | arith::FastMathFlags::contract;
+  if (merged == existing)
+    return;
+
+  op.setFastmath(merged);
+  LLVM_DEBUG(llvm::dbgs() << "marking contractible: " << op << "\n");
+}
 } // end namespace
 
 void RockAllowFastMathFlagsPass::runOnOperation() {
@@ -151,4 +180,26 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
 
   if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
     signalPassFailure();
+
+  // Walk each `arith.extf` in kernel functions and check whether it sits on
+  // top of an `arith.truncf` whose input type matches the extf's output type.
+  // If so, tag both casts with `fastmath<contract>`. The next `-canonicalize`
+  // in the kernel pipeline will then collapse the pair via upstream MLIR's
+  // `arith.ExtFOp::fold`. The walk itself performs no IR rewrites and so is
+  // safe to run after the greedy driver. Non-kernel (host) functions are
+  // skipped: the precision-recovering direction is only known-safe at the
+  // splice points the rock-side pipeline introduces inside `rock.kernel`.
+  func::FuncOp funcOp = getOperation();
+  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
+  funcOp.walk([](arith::ExtFOp extOp) {
+    auto truncOp = extOp.getIn().getDefiningOp<arith::TruncFOp>();
+    if (!truncOp)
+      return;
+    if (extOp.getOut().getType() != truncOp.getIn().getType())
+      return;
+    markContractible(extOp);
+    markContractible(truncOp);
+  });
 }

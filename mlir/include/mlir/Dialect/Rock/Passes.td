@@ -173,22 +173,6 @@ def RockAllowFastMathFlagsPass
   let dependentDialects = ["arith::ArithDialect", "func::FuncDialect",
                            "math::MathDialect"];
 }
-def RockRemoveRedundantCastsPass
-    : Pass<"rock-remove-redundant-casts", "::mlir::func::FuncOp"> {
-  let summary = "Tag extf(truncf) round-trips in rock.kernel functions as "
-                "contractible so canonicalize can fold them";
-  let description = [{
-    For every `arith.extf(arith.truncf %wide)` pair inside a function
-    tagged with `rock.kernel` whose round-trip starts and ends at the
-    same wide precision, merge `fastmath<contract>` into both casts'
-    fast-math flag sets. The pass performs no rewrites itself; the
-    `-canonicalize` that follows in the kernel pipeline picks up the
-    now-tagged pair via upstream MLIR's `arith.ExtFOp::fold` (which
-    only fires when both ops carry `contract`) and removes the
-    redundant cast(s). Non-kernel (host) functions are skipped.
-  }];
-  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
-}
 
 def RockLegalizeFloatTypesPass
     : Pass<"rock-legalize-float-types", "::mlir::func::FuncOp"> {

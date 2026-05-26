@@ -1,5 +1,5 @@
-// RUN: rocmlir-opt -rock-remove-redundant-casts -canonicalize -mlir-print-local-scope %s | FileCheck %s
-// RUN: rocmlir-opt -rock-remove-redundant-casts -mlir-print-local-scope %s | FileCheck %s --check-prefix=ANNOTATE
+// RUN: rocmlir-opt -rock-allow-fast-math-flags -canonicalize -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt -rock-allow-fast-math-flags -mlir-print-local-scope %s | FileCheck %s --check-prefix=ANNOTATE
 
 // ============================================================
 // Direct pure-SSA round-trip: extf(truncf %wide) -> %wide.

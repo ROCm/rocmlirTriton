@@ -1,5 +1,5 @@
 // RUN: rocmlir-gen -fut mlir_test --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_test --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
-// RUN: rocmlir-gen -fut mlir_test --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-driver -arch %arch -c -mlir-print-ir-after=rock-remove-redundant-casts 2>&1 | FileCheck %s --check-prefix=NO-EXTF
+// RUN: rocmlir-gen -fut mlir_test --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-driver -arch %arch -c -mlir-print-ir-after=rock-allow-fast-math-flags 2>&1 | FileCheck %s --check-prefix=NO-EXTF
 
 // CHECK: [1 1 1]
 
