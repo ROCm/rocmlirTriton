@@ -2,10 +2,9 @@ directory = "Resnet101Config"
 prefix = "rocmlir-gen"
 suffix = "--arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
 
-# TODO(rocmlirTriton): add conv_bwd_weight
 [[axis]]
 name = "operation"
-values = ["conv", "conv_bwd_data"]
+values = ["conv", "conv_bwd_data", "conv_bwd_weight"]
 prefix = "--operation "
 
 [[axis]]
@@ -16,6 +15,15 @@ values = ["-fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw", "-fil_layout=g
 name = "data type"
 values = ["f32", "f16", "bf16"]
 prefix = "-t "
+
+[[require]]
+feature = "random_data"
+[[require.match]]
+name = "operation"
+values = ["conv_bwd_weight"]
+[[require.match]]
+name = "data type"
+values = ["f16", "bf16"]
 
 [[suite]]
 name = "config"

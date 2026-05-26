@@ -64,7 +64,7 @@ if (ROCK_E2E_TEST_ENABLED)
   )
   list(APPEND CONFIGS
   Resnext101Config
-  PaddedGemmConfig
+  PaddedConvConfig
   )
   list(APPEND CONFIGS
   conv_regression_fwd

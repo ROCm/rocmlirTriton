@@ -1,6 +1,8 @@
 set(ROCK_UNITTEST_SOURCES
   AmdArchDbTests.cpp
   BuilderUtilsTests.cpp
+  PerfConfigOrderingGemmTests.cpp
+  PerfConfigOrderingGemmGemmTests.cpp
   PerfConfigParsingTests.cpp
   RocmDeviceNameTests.cpp
   TransformMapBuilderTests.cpp

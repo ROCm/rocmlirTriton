@@ -54,7 +54,7 @@
 // CHECK-NEXT: %{{.*}} = bufferization.to_tensor %{{.*}} restrict writable : memref<[[GKCYX]]x[[TYPE]]> to tensor<[[GKCYX]]x[[TYPE]]>
 // CHECK-NEXT: %{{.*}} = bufferization.to_tensor %{{.*}} restrict writable : memref<[[NGCHIWI]]x[[TYPE]]> to tensor<[[NGCHIWI]]x[[TYPE]]>
 // CHECK-NEXT: %{{.*}} = bufferization.to_tensor %{{.*}} restrict writable : memref<[[NGKHOWO]]x[[OTYPE]]> to tensor<[[NGKHOWO]]x[[OTYPE]]>
-// CHECK-NEXT: %{{.*}} = call @rock_conv_gkc01_ngc01_ngk01_0(%{{.*}}, %{{.*}}, %{{.*}}) : (tensor<[[GKCYX]]x[[TYPE]]>, tensor<[[NGCHIWI]]x[[TYPE]]>, tensor<[[NGKHOWO]]x[[OTYPE]]>) -> tensor<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: %{{.*}} = call @rock_conv_gkc01_ngc01_ngk01(%{{.*}}, %{{.*}}, %{{.*}}) : (tensor<[[GKCYX]]x[[TYPE]]>, tensor<[[NGCHIWI]]x[[TYPE]]>, tensor<[[NGKHOWO]]x[[OTYPE]]>) -> tensor<[[NGKHOWO]]x[[OTYPE]]>
 // CHECK-NEXT: %{{.*}} = bufferization.to_buffer %{{.*}} : tensor<[[NGKHOWO]]x[[OTYPE]]> to memref<[[NGKHOWO]]x[[OTYPE]]>
 // CHECK-NEXT: memref.copy %{{.*}}, %{{.*}} : memref<[[NGKHOWO]]x[[OTYPE]]> to memref<[[NGKHOWO]]x[[OTYPE]]>
 // CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[GKCYX]]x[[TYPE]]>,  memref<[[GKCYX]]x[[TYPE]]>

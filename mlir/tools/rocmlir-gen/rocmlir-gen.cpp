@@ -162,12 +162,6 @@ static llvm::cl::alias groupSizeShort("g",
                                       llvm::cl::desc("alias for -groupsize"),
                                       llvm::cl::aliasopt(groupSize));
 
-static llvm::cl::opt<int> convKernelId(
-    "kernel_id",
-    llvm::cl::desc("When set, emit only the sub-kernel with this index "
-                   "(0-based)"),
-    llvm::cl::value_desc("index"), llvm::cl::init(-1));
-
 // N
 static llvm::cl::opt<int64_t> batchSize("batchsize",
                                         llvm::cl::desc("Batch size"),
@@ -2476,19 +2470,10 @@ createCPUConvWithMLIR(ModuleOp module,
   auto inputFlatType = RankedTensorType::get({inputElems}, inputElemType);
   auto outputFlatType = RankedTensorType::get({outputElems}, outputElemType);
 
-  rock::ConvGenerator convGenerator(genConfig);
-  bool hasWorkspace = false;
-  if (failed(convGenerator.hasWorkspace(b, hasWorkspace))) {
-    assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
-  }
-
-  // Build argument types in standard [filter, input, output, workspace?] order,
-  // then reorder so the store destination (result) is last.
-  SmallVector<Type, 4> funcArgTypes = {filterFlatType, inputFlatType,
+  // Build argument types in standard [filter, input, output] order, then
+  // reorder so the store destination (result) is last.
+  SmallVector<Type, 3> funcArgTypes = {filterFlatType, inputFlatType,
                                        outputFlatType};
-  if (hasWorkspace)
-    funcArgTypes.push_back(
-        RankedTensorType::get({filterElems}, b.getF32Type()));
   rock::reorderConvArgsForKernel(genConfig.operation.value(), funcArgTypes);
   Type resultFlatType = funcArgTypes.back();
 
@@ -2527,7 +2512,7 @@ createCPUConvWithMLIR(ModuleOp module,
   case rock::ConvOpType::BwdWeight:
     inputFlat = block->getArgument(0);
     outputFlat = block->getArgument(1);
-    filterFlat = block->getArgument(hasWorkspace ? 3 : 2);
+    filterFlat = block->getArgument(2);
     break;
   }
 
@@ -5323,6 +5308,30 @@ static LogicalResult populateHostHarnessLogic(
   bool isCPUKernel = !root0.func->hasAttr(rock::KernelAttr::getMnemonic());
   bool hasValidation = !validationType.empty() && !genCPUKernel.getValue();
   bool hasCloneValidation = hasValidation && (validationType == "clone");
+  // `--verifier clone` builds a host harness that allocates one buffer per
+  // kernel argument and feeds the kernel's tensor results back through the
+  // trailing args. That contract is only well-defined if the kernel is
+  // at the rock IR level, so make sure we at least have one rock op in the IR.
+  if (hasCloneValidation) {
+    for (KernelIF kernel : kernels) {
+      bool hasRockOp = false;
+      kernel.func.walk([&](Operation *op) {
+        if (isa_and_nonnull<rock::RockDialect>(op->getDialect())) {
+          hasRockOp = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (!hasRockOp) {
+        kernel.func.emitError()
+            << "--verifier=clone cannot build a host harness around a "
+               "kernel that is not at the rock level; run the "
+               "kernel pipeline first (e.g. `rocmlir-driver "
+               "-kernel-pipeline=highlevel`)";
+        return failure();
+      }
+    }
+  }
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
   bool isSplitK = (genParams.perfConfig.empty())
                       ? false
@@ -5894,9 +5903,6 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
       exit(1);
     }
 
-    if (convKernelId.getNumOccurrences() > 0)
-      convGenerator.setKernelId(convKernelId.getValue());
-
     if (!isConvElntwiseGemm) {
       genParams.types.push_back(convGenerator.getFilterDataType(builder));
       genParams.types.push_back(convGenerator.getInputDataType(builder));
@@ -5937,28 +5943,10 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     } else if (genCPUKernel.getValue()) {
       (void)createCPUConvFunc(module, genConfig);
     } else {
-      // Populate the module.
-      int kernelStart = genConfig.kernelId;
-      int kernelCount = 0;
-      if (failed(convGenerator.getKernelCount(builder, kernelCount))) {
-        llvm::errs() << "Getting kernel count failed.\n";
+      if (failed(convGenerator.genConvModule(module))) {
+        llvm::errs() << "Module population failed.\n";
         exit(1);
       }
-      if (kernelStart < 0) {
-        kernelStart = 0;
-      } else {
-        kernelCount = kernelStart + 1;
-      }
-      // generate all sub-kernels, and get corresponding gemmId
-      std::string kernelBaseName = genConfig.kernelBaseName;
-      for (int i = kernelStart; i < kernelCount; ++i) {
-        convGenerator.setKernelName(kernelBaseName + "_" + std::to_string(i));
-        if (failed(convGenerator.genConvModule(module, i))) {
-          llvm::errs() << "Module population failed.\n";
-          exit(1);
-        }
-      }
-      convGenerator.setKernelName(kernelBaseName);
     }
   }
 }

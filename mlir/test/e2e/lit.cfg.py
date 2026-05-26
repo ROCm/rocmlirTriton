@@ -34,6 +34,13 @@ config.substitutions.append(("%mlir_src_root", config.mlir_src_root))
 config.substitutions.append(('%random_data', config.random_data))
 config.substitutions.append(
     ('%constrained_float_range_random_data', config.constrained_float_range_random_data))
+
+# Expose a `random_data` lit feature so generated E2E tests can guard
+# combinations that are only stable when rocmlir-gen is invoked with `-rand`
+# (i.e. when ROCMLIR_DRIVER_RANDOM_DATA_SEED is set at CMake configure time).
+if config.random_data.strip():
+    config.available_features.add('random_data')
+
 config.substitutions.append(('%rocmlir_gen_flags', config.rocmlir_gen_flags))
 config.substitutions.append(('%arch', config.arch))
 config.substitutions.append(('%pv', config.populate_validation))
