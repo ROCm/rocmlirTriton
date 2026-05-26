@@ -298,24 +298,24 @@ endif()
 #===----------------------------------------------------------------------===//
 
 function(add_rocmlir_dialect_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_DIALECT_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIR_DIALECT_LIBS ${name})
   set_property(GLOBAL APPEND PROPERTY MLIR_DIALECT_LIBS ${name})
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_dialect_library)
 
 function(add_rocmlir_conversion_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_CONVERSION_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIR_CONVERSION_LIBS ${name})
   set_property(GLOBAL APPEND PROPERTY MLIR_CONVERSION_LIBS ${name})
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_conversion_library)
 
 function(add_rocmlir_test_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_TEST_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIR_TEST_LIBS ${name})
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_test_library)
 
 function(add_rocmlir_public_c_api_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_PUBLIC_C_API_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIR_PUBLIC_C_API_LIBS ${name})
   add_mlir_library(${name}
     ${ARGN}
     EXCLUDE_FROM_LIBMLIR
@@ -345,7 +345,7 @@ endfunction()
 
 # Helper function for Rock-to-Triton libraries
 function(add_rocmlir_triton_library name)
-  set_property(GLOBAL APPEND PROPERTY ROCMLIRTRITON_TRITON_LIBS ${name})
+  set_property(GLOBAL APPEND PROPERTY ROCMLIR_TRITON_LIBS ${name})
   add_mlir_library(${ARGV} DEPENDS mlir-headers)
 endfunction(add_rocmlir_triton_library)
 
