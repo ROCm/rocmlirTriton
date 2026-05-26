@@ -4929,9 +4929,9 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
 //   - fp4 e2m1: eps = 2^-1 = 0.5
 static float sumErrorTolerance(Type t) {
   if (isa<Float16Type>(t))
-    return 1.0f / 100.0f;
-  if (isa<BFloat16Type>(t))
     return 1.0f / 900.0f;
+  if (isa<BFloat16Type>(t))
+    return 1.0f / 100.0f;
   if (isa<Float32Type>(t))
     return 1e-6f;
   if (isa<Float64Type>(t))
