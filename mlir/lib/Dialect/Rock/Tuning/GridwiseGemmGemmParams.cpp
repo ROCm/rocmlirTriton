@@ -1,5 +1,6 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
@@ -91,14 +92,26 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
 
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
     OpBuilder &b, RockGemmGemmWrapperInterface op, GemmGemmParamsAttr params) {
-  // Due to limitations, gemm1NPerBlock must be equal to gemm1N
-  // and gemm1NPerBlock must be a power of two.
+  // Pick gemm1NPerBlock (the tile along the gemm1 output-N / "headDim" axis).
+  // First try PowerOf2Ceil(gemm1N) -- the wave layout requires a power of two,
+  // and it preserves the single-tile fast path. If that tile would overflow
+  // LDS (only possible for the GEG/CEG fusions, which can have a large output
+  // N), fall back to gemm0MPerBlock so the lowering statically unrolls along
+  // gemm1N. Attention always falls in the first case because head dim is
+  // small, so it keeps its fused single-tile invariant naturally.
   auto cShape = cast<ShapedType>(op.getCType()).getShape();
   int idx = op.getTransposedC() ? 0 : 1;
   assert(cShape.size() == 3 || cShape.size() == 2);
   if (cShape.size() == 3)
     idx++;
-  int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(cShape[idx]);
+  int64_t pow2Tile = llvm::PowerOf2Ceil(cShape[idx]);
+  auto aElemType = cast<ShapedType>(op.getAType()).getElementType();
+  auto bElemType = cast<ShapedType>(op.getBType()).getElementType();
+  int64_t pow2Bytes =
+      computeGemmGemmLdsBytes(params, aElemType, bElemType, pow2Tile);
+  int64_t ldsLimit = getLDSSize(rock::getArchValue(op));
+  int64_t gemm1NPerBlock =
+      (pow2Bytes <= ldsLimit) ? pow2Tile : params.getMPerBlockG0();
   return GemmParamsAttr::get(
       b.getContext(), params.getMPerBlockG0(), gemm1NPerBlock,
       params.getNPerBlockG0(), params.getKpack(), params.getNumCTAs(),

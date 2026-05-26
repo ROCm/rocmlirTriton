@@ -56,11 +56,26 @@ private:
   friend class ParamLookupTable<GemmGemmParamsAttr>;
 };
 
+/// Per-workgroup LDS footprint for the gemm+gemm/attention kernel: gemm0's A
+/// and B tiles (Q, K) plus gemm1's B tile (V) for the given gemm1NPerBlock,
+/// scaled by numStages. P stays in registers. V's bitwidth is approximated as
+/// `bElemType` (true for plain attention; conservative when V is wider).
+inline int64_t computeGemmGemmLdsBytes(GemmGemmParamsAttr p, Type aElemType,
+                                       Type bElemType,
+                                       int64_t gemm1NPerBlock) {
+  int64_t aBits = aElemType.getIntOrFloatBitWidth();
+  int64_t bBits = bElemType.getIntOrFloatBitWidth();
+  int64_t totalBits = (p.getMPerBlockG0() * p.getKPerBlock() * aBits) +
+                      (p.getNPerBlockG0() * p.getKPerBlock() * bBits) +
+                      (p.getNPerBlockG0() * gemm1NPerBlock * bBits);
+  return llvm::divideCeil(totalBits, static_cast<int64_t>(8)) *
+         p.getNumStages();
+}
+
 /// Gemm+gemm/attention counterpart of isGemmParamsConservativelyApplicable.
-/// LDS bound covers gemm0's A+B tiles (Q, K) plus gemm1's B tile (V); P stays
-/// in registers. V's bitwidth is approximated as `bElemType` (true for plain
-/// attention; conservative when V is wider). The gemm1 tile uses
-/// `getGemm1Params(...).getNPerBlock()` so there's a single source of truth.
+/// The gemm1 tile size comes from `getGemm1Params(...).getNPerBlock()` so
+/// there's a single source of truth, and the LDS formula is shared via
+/// `computeGemmGemmLdsBytes()`.
 inline bool isGemmGemmParamsConservativelyApplicable(
     OpBuilder &b, GemmGemmParamsAttr p, Type aElemType, Type bElemType,
     StringRef arch, RockGemmGemmWrapperInterface op) {
@@ -68,13 +83,8 @@ inline bool isGemmGemmParamsConservativelyApplicable(
     return false;
   int64_t gemm1NPerBlock =
       PopulateParamsGemmGemm::getGemm1Params(b, op, p).getNPerBlock();
-  int64_t aBits = aElemType.getIntOrFloatBitWidth();
-  int64_t bBits = bElemType.getIntOrFloatBitWidth();
-  int64_t totalBits = (p.getMPerBlockG0() * p.getKPerBlock() * aBits) +
-                      (p.getNPerBlockG0() * p.getKPerBlock() * bBits) +
-                      (p.getNPerBlockG0() * gemm1NPerBlock * bBits);
   int64_t bytes =
-      llvm::divideCeil(totalBits, static_cast<int64_t>(8)) * p.getNumStages();
+      computeGemmGemmLdsBytes(p, aElemType, bElemType, gemm1NPerBlock);
   return bytes <= getLDSSize(arch);
 }
 

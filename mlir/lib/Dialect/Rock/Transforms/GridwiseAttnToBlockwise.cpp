@@ -748,9 +748,11 @@ struct GridwiseAttentionRewritePattern
                                         std::optional<APInt> prePadG0N,
                                         bool isCausal, bool isKVCache,
                                         ArrayRef<Value> elseYieldValues) const {
-    assert((elseYieldValues.size() == 1 || elseYieldValues.size() == 2) &&
-           "early exit if must yield outAcc (length 1) or outAcc and lseOut "
-           "(length 2)");
+    // The early-exit IfOp yields one accumulator per gemm1-N sub-tile
+    // (gemm1NBlocks values, == 1 for attention / small GEG) optionally
+    // followed by lseOut when softmax + LSE is enabled.
+    assert(!elseYieldValues.empty() &&
+           "early exit if must yield at least one outAcc value");
 
     FailureOr<Value> maybeSomeWorkToDo =
         computeIfWorkToDo(rewriter, loc, start, end, splitKV, gemm0NPerBlock,
@@ -1000,8 +1002,17 @@ struct GridwiseAttentionRewritePattern
     assert(gemm0NPerBlock == gemm1KPerBlock);
     int64_t gemm1MPerBlock = gemm1TuningParams.getMPerBlock();
     int64_t gemm1NPerBlock = gemm1TuningParams.getNPerBlock();
-    assert(gemm1N == gemm1NPerBlock &&
-           "Current limitation, gemm1NPerBlock has to be equal to gemm1N");
+    // Attention keeps the fused single-tile invariant (head dim stays small).
+    // GEG/CEG may have a large output-N and tile it across an inner unrolled
+    // gemm1-N loop; gemm1NBlocks is then > 1.
+    if (op.getEnableSoftmax()) {
+      assert(gemm1N == gemm1NPerBlock &&
+             "Attention requires gemm1NPerBlock == gemm1N");
+    } else {
+      assert(gemm1N % gemm1NPerBlock == 0 &&
+             "non-attention gemm1N must be a multiple of gemm1NPerBlock");
+    }
+    int64_t gemm1NBlocks = gemm1N / gemm1NPerBlock;
 
     // params related to how we load Q
     bool prefetchQTile = gemm0K == gemm0KPerBlock;
@@ -1032,8 +1043,10 @@ struct GridwiseAttentionRewritePattern
     //   the batch dim (each split writes to a separate slice of the output)
     // Therefore, loadTile for V uses gemm1BidGridLengths, while the output
     // store transforms use gemm1BidGridLengthsForStore.
-    SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks, 1};
-    SmallVector<int64_t, 3> gemm1BidGridLengthsForStore = {gemm0G * splitKV, gemm1MBlocks, 1};
+    SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks,
+                                                   gemm1NBlocks};
+    SmallVector<int64_t, 3> gemm1BidGridLengthsForStore = {
+        gemm0G * splitKV, gemm1MBlocks, gemm1NBlocks};
 
     // if splitKV == 1, we define nullptr, and makeGxNGridLayout() will use
     // fewer instructions
@@ -1075,13 +1088,15 @@ struct GridwiseAttentionRewritePattern
                      isPrefixCausal, op.getNumRepeatsGQAAttr());
 
     // Early exit: Skip all computation when there's no work but always write
-    // output. The IfOp returns (outAcc, lseOut?) so the code after the if
-    // always has defined values; the else branch yields zero-initialized
-    // tensors.
+    // output. The IfOp returns (outAcc_0, ..., outAcc_{gemm1NBlocks-1}, lseOut?)
+    // so the code after the if always has defined values; the else branch
+    // yields zero-initialized tensors for every gemm1-N sub-tile.
     SmallVector<Value> earlyExitElseValues;
-    auto initOutAcc = rock::createZeroAccBuffer(
-        rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, elemTypeOut);
-    earlyExitElseValues.push_back(initOutAcc);
+    for (int64_t nb = 0; nb < gemm1NBlocks; ++nb) {
+      Value initOutAcc = rock::createZeroAccBuffer(
+          rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, elemTypeOut);
+      earlyExitElseValues.push_back(initOutAcc);
+    }
     RankedTensorType lseType;
     if (lse) {
       auto lseElemType = cast<ShapedType>(lse.getType()).getElementType();
@@ -1123,18 +1138,25 @@ struct GridwiseAttentionRewritePattern
     Type accType = rock::getAccType(elemTypeQ, elemTypeK);
     Type gemm1AccType = rock::getAccType(elemTypeV, elemTypeV);
 
-    // Create initial accumulator for nLoop with the shape of the final output
-    // tile. The second GEMM multiplies softmax output (cast to elemTypeV) by V,
-    // so its accumulator type may differ from the first GEMM's (e.g. f32 vs i32
+    // Create one initial accumulator per gemm1-N sub-tile. For attention
+    // (gemm1NBlocks == 1) this is the single existing accumulator; for GEG/CEG
+    // we thread `gemm1NBlocks` accs so the inner unrolled gemm1-N loop can
+    // accumulate one register-resident sub-tile per iteration without touching
+    // LDS. The second GEMM may have a different acc type (e.g. f32 vs i32
     // when Q/K are i8 but V is f16).
-    Value initNLoopAcc = rock::createZeroAccBuffer(
-        rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType);
+    SmallVector<Value> nLoopIterArgs;
+    nLoopIterArgs.reserve(gemm1NBlocks + 2);
+    for (int64_t nb = 0; nb < gemm1NBlocks; ++nb) {
+      nLoopIterArgs.push_back(rock::createZeroAccBuffer(
+          rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType));
+    }
+    nLoopIterArgs.push_back(maxRow);
+    nLoopIterArgs.push_back(sumRow);
 
     Value one = rewriter.createOrFold<arith::ConstantIntOp>(
         loc, rewriter.getI32Type(), 1);
     scf::ForOp nLoopOp =
-        scf::ForOp::create(rewriter, loc, start, end, one,
-                           ValueRange{initNLoopAcc, maxRow, sumRow});
+        scf::ForOp::create(rewriter, loc, start, end, one, nLoopIterArgs);
     {
       PatternRewriter::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(nLoopOp.getBody());
@@ -1142,11 +1164,16 @@ struct GridwiseAttentionRewritePattern
       // Convert loop IV to i32 for grid layout and load operations
       Value nLoopIV = rewriter.createOrFold<arith::IndexCastOp>(
           loc, rewriter.getI32Type(), nLoopOp.getInductionVar());
-      // Get the iteration arguments
-      Value attentionAcc = nLoopOp.getRegionIterArg(0);
+      // Get the iteration arguments. Per-sub-tile accumulators come first,
+      // followed by maxRow/sumRow (used only when softmax is enabled, but
+      // threaded through unconditionally to keep the iter_arg layout simple).
+      SmallVector<Value> accs;
+      accs.reserve(gemm1NBlocks);
+      for (int64_t nb = 0; nb < gemm1NBlocks; ++nb)
+        accs.push_back(nLoopOp.getRegionIterArg(nb));
 
-      maxRow = nLoopOp.getRegionIterArg(1);
-      sumRow = nLoopOp.getRegionIterArg(2);
+      maxRow = nLoopOp.getRegionIterArg(gemm1NBlocks);
+      sumRow = nLoopOp.getRegionIterArg(gemm1NBlocks + 1);
 
       layout::GridCoordinates gridCoordsGemm0 = layout::makeGxNGridLayout(
           rewriter, loc, bid, gemm0MBlocks, nLoopIV, gridSize, arch,
@@ -1337,57 +1364,80 @@ struct GridwiseAttentionRewritePattern
         gemm0Out = createTypeConversionOp(rewriter, loc, gemm0Out, destType);
       }
 
-      // For attention (softmax enabled), each nLoop iteration starts gemm1
-      // from zero because flash-attention corrections handle cross-iteration
-      // accumulation. For gemm_gemm (no softmax), we accumulate directly
-      // into attentionAcc across nLoop iterations.
-      Value gemm1InitAcc;
-      if (op.getEnableSoftmax()) {
-        gemm1InitAcc = rock::createZeroAccBuffer(
-            rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType);
-      } else {
-        gemm1InitAcc = attentionAcc;
+      // Statically unrolled inner loop over the gemm1-N sub-tiles. For
+      // attention this iterates once (gemm1NBlocks == 1) and the IR is
+      // identical to before. For GEG/CEG we run one BlockwiseGemmOp per
+      // sub-tile against the same P, reusing the gemm0 work.
+      SmallVector<Value> newAccs;
+      newAccs.reserve(gemm1NBlocks);
+      for (int64_t nb = 0; nb < gemm1NBlocks; ++nb) {
+        // For softmax/attention, each nLoop iteration starts gemm1 from zero
+        // because flash-attention corrections handle cross-iteration
+        // accumulation. For GEG (no softmax), we accumulate directly into
+        // accs[nb] across nLoop iterations.
+        Value gemm1InitAcc;
+        if (op.getEnableSoftmax()) {
+          gemm1InitAcc = rock::createZeroAccBuffer(
+              rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType);
+        } else {
+          gemm1InitAcc = accs[nb];
+        }
+
+        Value nBlockConst = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), nb);
+        auto gridCoordsGemm1Tile = layout::makeGxNGridLayout(
+            rewriter, loc, bid, gemm1MBlocks, nBlockConst, gridSize, arch,
+            rock::getNumChipletsValue(op), splitKVConst);
+
+        Value loadedV =
+            rock::loadTile(rewriter, loc, inV,
+                           /*kIter=*/nLoopIV, "n", gridCoordsGemm1Tile,
+                           gemm1KPerBlock, gemm1NPerBlock,
+                           /*isKFirst=*/true, gemm1BidGridLengths);
+
+        Value gemm1Out = BlockwiseGemmOp::create(
+            rewriter, loc, gemm0Out, loadedV, gemm1InitAcc,
+            /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
+            /*quantBlockSize=*/nullptr,
+            /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+            /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
+
+        // Apply flash attention correction. Only valid when softmax is
+        // enabled, which guarantees gemm1NBlocks == 1 here.
+        if (op.getEnableSoftmax()) {
+          newAccs.push_back(createAttentionRowStateCorrections(
+              rewriter, loc, gemm1Out, accs[nb], maxRowDiffExp));
+        } else {
+          newAccs.push_back(gemm1Out);
+        }
       }
 
-      auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-          rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
-          rock::getNumChipletsValue(op), splitKVConst);
-
-      Value loadedV = rock::loadTile(rewriter, loc, inV,
-                                     /*kIter=*/nLoopIV, "n", gridCoordsGemm1,
-                                     gemm1KPerBlock, gemm1NPerBlock,
-                                     /*isKFirst=*/true, gemm1BidGridLengths);
-
-      Value gemm1Out = BlockwiseGemmOp::create(
-          rewriter, loc, gemm0Out, loadedV, gemm1InitAcc,
-          /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
-          /*quantBlockSize=*/nullptr,
-          /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
-          /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
-
-      // Apply flash attention correction
-      if (op.getEnableSoftmax()) {
-        attentionAcc = createAttentionRowStateCorrections(
-            rewriter, loc, gemm1Out, attentionAcc, maxRowDiffExp);
-      } else {
-        attentionAcc = gemm1Out;
-      }
-        
-        // Yield the updated accumulators (attentionAcc, maxRow, sumRow)
-        scf::YieldOp::create(rewriter, loc, ValueRange{attentionAcc, maxRow, sumRow});
+      // Yield the updated accumulators followed by maxRow/sumRow.
+      SmallVector<Value> yieldVals(newAccs.begin(), newAccs.end());
+      yieldVals.push_back(maxRow);
+      yieldVals.push_back(sumRow);
+      scf::YieldOp::create(rewriter, loc, yieldVals);
     }
-    Value outAcc = nLoopOp.getResult(0);
-    maxRow = nLoopOp.getResult(1);
-    sumRow = nLoopOp.getResult(2);
+    SmallVector<Value> outAccs;
+    outAccs.reserve(gemm1NBlocks);
+    for (int64_t nb = 0; nb < gemm1NBlocks; ++nb)
+      outAccs.push_back(nLoopOp.getResult(nb));
+    maxRow = nLoopOp.getResult(gemm1NBlocks);
+    sumRow = nLoopOp.getResult(gemm1NBlocks + 1);
 
     if (op.getEnableSoftmax()) {
-        outAcc = scaleFinalOutput(rewriter, loc, outAcc,
-                            sumRow);
+      // Softmax invariant: gemm1NBlocks == 1.
+      outAccs[0] = scaleFinalOutput(rewriter, loc, outAccs[0], sumRow);
     }
-    if (cast<ShapedType>(outAcc.getType()).getElementType() != elemTypeOut) {
-        auto outAccTensorType = cast<RankedTensorType>(outAcc.getType());
-        auto destType = RankedTensorType::get(outAccTensorType.getShape(), elemTypeOut);
-        outAcc = createTypeConversionOp(rewriter, loc, outAcc, destType);
+    for (int64_t nb = 0; nb < gemm1NBlocks; ++nb) {
+      if (cast<ShapedType>(outAccs[nb].getType()).getElementType() !=
+          elemTypeOut) {
+        auto outAccTensorType = cast<RankedTensorType>(outAccs[nb].getType());
+        auto destType =
+            RankedTensorType::get(outAccTensorType.getShape(), elemTypeOut);
+        outAccs[nb] =
+            createTypeConversionOp(rewriter, loc, outAccs[nb], destType);
+      }
     }
     Value lseOut;
     if (lse) {
@@ -1396,32 +1446,31 @@ struct GridwiseAttentionRewritePattern
       lseOut = computeLse(rewriter, loc, lseType, sumRow, maxRow);
     }
 
-    // When early exit is enabled, the IfOp returns (outAcc, lseOut?). Yield
-    // from the then region and then take results from the if.
+    // When early exit is enabled, the IfOp returns
+    // (outAcc_0, ..., outAcc_{gemm1NBlocks-1}, lseOut?). Yield from the then
+    // region and then take results from the if.
     if (earlyExitIf.has_value()) {
       rewriter.setInsertionPointToEnd(&earlyExitIf->getThenRegion().front());
+      SmallVector<Value> thenYieldVals(outAccs.begin(), outAccs.end());
       if (lse)
-        scf::YieldOp::create(rewriter, loc, ValueRange{outAcc, lseOut});
-      else
-        scf::YieldOp::create(rewriter, loc, ValueRange{outAcc});
+        thenYieldVals.push_back(lseOut);
+      scf::YieldOp::create(rewriter, loc, thenYieldVals);
       rewriter.setInsertionPointAfter(*earlyExitIf);
-      outAcc = earlyExitIf->getResult(0);
+      for (int64_t nb = 0; nb < gemm1NBlocks; ++nb)
+        outAccs[nb] = earlyExitIf->getResult(nb);
       if (lse)
-        lseOut = earlyExitIf->getResult(1);
+        lseOut = earlyExitIf->getResult(gemm1NBlocks);
       LLVM_DEBUG(llvm::dbgs()
                  << "rock.attention: early exit enabled - "
                  << "output writes will execute unconditionally\n");
     }
 
-    // Note that we don't use splitKV here because that dimension belongs to the
-    // batch size already for output tensors
-    auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-        rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
-        rock::getNumChipletsValue(op));
-
-    // Compute output transforms - use grid lengths with splitKV for output
+    // Compute output transforms - use grid lengths with splitKV for output.
+    // The output view's n_block axis now has gemm1NBlocks lanes, so each
+    // store_marker addresses a disjoint sub-tile via its constant n_block.
     FailureOr<ArrayAttr> maybeOutputViews = computeOutputTransforms(
-        rewriter, loc, gemm1MPerBlock, gemm1NPerBlock, gemm1BidGridLengthsForStore);
+        rewriter, loc, gemm1MPerBlock, gemm1NPerBlock,
+        gemm1BidGridLengthsForStore);
 
     if (failed(maybeOutputViews)) {
       LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms\n");
@@ -1430,26 +1479,93 @@ struct GridwiseAttentionRewritePattern
 
     ArrayAttr idToMatrixCMaps = maybeOutputViews.value();
 
-    // Create StoreMarkerOp to mark the tile with output transforms for later
-    // store lowering. The result type is the full tensor type so that fusion
-    // ops can operate on it directly.
-    auto storeMarkerOp = StoreMarkerOp::create(
-        rewriter, loc, op.getResult().getType(), outAcc, idToMatrixCMaps,
-        ValueRange{gridCoordsGemm1.g_block, gridCoordsGemm1.m_block,
-                   gridCoordsGemm1.n_block});
+    // Note that we don't use splitKV here because that dimension belongs to
+    // the batch size already for output tensors.
+    SmallVector<Value> storeMarkers;
+    storeMarkers.reserve(gemm1NBlocks);
+    for (int64_t nb = 0; nb < gemm1NBlocks; ++nb) {
+      Value nBlockConst = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), nb);
+      auto gridCoordsGemm1Store = layout::makeGxNGridLayout(
+          rewriter, loc, bid, gemm1MBlocks, nBlockConst, gridSize, arch,
+          rock::getNumChipletsValue(op));
+
+      // Create StoreMarkerOp to mark the tile with output transforms for later
+      // store lowering. The result type is the full tensor type so that
+      // fusion ops can operate on it directly. Multiple store_markers with
+      // distinct n_block constants will be lowered by LowerStores into
+      // disjoint blockwise_stores covering the full gemm1-N axis.
+      auto storeMarkerOp = StoreMarkerOp::create(
+          rewriter, loc, op.getResult().getType(), outAccs[nb], idToMatrixCMaps,
+          ValueRange{gridCoordsGemm1Store.g_block,
+                     gridCoordsGemm1Store.m_block,
+                     gridCoordsGemm1Store.n_block});
+      storeMarkers.push_back(storeMarkerOp.getResult());
+    }
 
     if (lse) {
+      // LSE has no gemm1-N axis; it is keyed on (g_block, m_block) only and
+      // only exists when softmax is enabled (which forces gemm1NBlocks == 1).
+      assert(gemm1NBlocks == 1);
+      auto gridCoordsGemm1Lse = layout::makeGxNGridLayout(
+          rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
+          rock::getNumChipletsValue(op));
       ArrayAttr lseMap = computeOutputLseTransforms(
           rewriter, loc, gemm1MPerBlock, gemm1BidGridLengthsForStore);
 
       auto lseStoreMarkerOp = StoreMarkerOp::create(
           rewriter, loc, op.getLse().getType(), lseOut, lseMap,
-          ValueRange{gridCoordsGemm1.g_block, gridCoordsGemm1.m_block});
-      rewriter.replaceOp(op, ValueRange{storeMarkerOp, lseStoreMarkerOp});
-    } else {
-      rewriter.replaceOp(op, storeMarkerOp.getResult());
+          ValueRange{gridCoordsGemm1Lse.g_block, gridCoordsGemm1Lse.m_block});
+      rewriter.replaceOp(op,
+                         ValueRange{storeMarkers[0], lseStoreMarkerOp});
+      return success();
     }
 
+    if (gemm1NBlocks == 1) {
+      // Single-tile path (attention without LSE, or small GEG): byte-identical
+      // to the previous lowering.
+      rewriter.replaceOp(op, storeMarkers.front());
+      return success();
+    }
+
+    // Multi-tile GEG/CEG path: each store_marker writes a disjoint sub-tile of
+    // the output. RockLowerStores walks rock.store ops and traces back to a
+    // single store_marker per store, so we need one rock.store per marker.
+    // All clones write to the *same* destination view (so source/dest shapes
+    // agree); only the last clone's result feeds func.return, while the
+    // earlier clones have unused results. rock.store has no Pure trait and
+    // no memory-effect interface, so RemoveDeadValuesPass preserves them.
+    rock::StoreOp consumerStore = nullptr;
+    for (Operation *user : op.getResult().getUsers()) {
+      if (auto storeOp = dyn_cast<rock::StoreOp>(user)) {
+        if (consumerStore)
+          return op->emitOpError(
+              "expected exactly one rock.store consumer of the gridwise "
+              "result when tiling gemm1-N; multi-store fusion is not yet "
+              "supported");
+        consumerStore = storeOp;
+      } else {
+        return op->emitOpError(
+            "tiling gemm1-N requires a direct rock.store consumer; found "
+            "intervening op which is not yet supported");
+      }
+    }
+    if (!consumerStore)
+      return op->emitOpError(
+          "tiling gemm1-N requires at least one rock.store consumer");
+
+    rewriter.setInsertionPoint(consumerStore);
+    Value finalResult;
+    for (int64_t nb = 0; nb < gemm1NBlocks; ++nb) {
+      auto cloned = rock::StoreOp::create(
+          rewriter, consumerStore.getLoc(), consumerStore.getResult().getType(),
+          storeMarkers[nb], consumerStore.getDest(),
+          consumerStore.getStoreMethodAttr());
+      if (nb == gemm1NBlocks - 1)
+        finalResult = cloned.getResult();
+    }
+    rewriter.replaceOp(consumerStore, finalResult);
+    rewriter.eraseOp(op);
     return success();
   }
 };
