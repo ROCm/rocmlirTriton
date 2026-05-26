@@ -168,8 +168,8 @@ def RockFusionSplitkRegularizationPass
 
 def RockAllowFastMathFlagsPass
     : Pass<"rock-allow-fast-math-flags", "::mlir::func::FuncOp"> {
-  let summary = "Tag floating-point division ops with the fast-math reciprocal "
-                "(arcp) flag where applicable";
+  let summary = "Tag applicable floating-point arith and math ops with "
+                "fast-math flags such as arcp, nsz, contract, and afn";
   let dependentDialects = ["arith::ArithDialect", "func::FuncDialect",
                            "math::MathDialect"];
 }
