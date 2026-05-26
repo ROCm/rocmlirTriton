@@ -1065,7 +1065,39 @@ LogicalResult ConvBwdWeightOp::verify() {
   if (failed(verifyConvLikeOp(*this)))
     return failure();
 
-  // TODO: verify workspace size
+  // kBlocks is optional pre-lowering (affix-tuning-params sets it for the
+  // atomic backward-weight path). When present, the lowering in ConvToGemm
+  // splits the batch dimension N into (kBlocks, N / kBlocks), so kBlocks must
+  // satisfy the same structural invariant that `calculateKBlockNum` enforces.
+  IntegerAttr kBlocksAttr = getKBlocksAttr();
+  if (!kBlocksAttr)
+    return success();
+  int64_t kBlocks = kBlocksAttr.getInt();
+
+  // Recover N from the input tensor's layout. The layout attributes are not
+  // formally part of the op definition, so skip the divisibility check when
+  // they're absent or malformed rather than asserting.
+  auto inputLayoutAttr = (*this)->getAttrOfType<ArrayAttr>("input_layout");
+  ArrayRef<int64_t> inputShape = getInput().getType().getShape();
+  if (!inputLayoutAttr ||
+      inputLayoutAttr.size() != static_cast<size_t>(inputShape.size()))
+    return success();
+
+  int64_t batchSize = -1;
+  for (auto [layoutAttr, dimSize] : llvm::zip(inputLayoutAttr, inputShape)) {
+    auto nameAttr = dyn_cast<StringAttr>(layoutAttr);
+    if (nameAttr && nameAttr.getValue() == "ni") {
+      batchSize = dimSize;
+      break;
+    }
+  }
+  if (batchSize <= 0)
+    return success();
+
+  if (!isValidKBlocks(kBlocks, batchSize))
+    return emitOpError("kBlocks (")
+           << kBlocks << ") must be positive and evenly divide batch size N ("
+           << batchSize << ")";
 
   return success();
 }

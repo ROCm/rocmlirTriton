@@ -51,7 +51,6 @@ public:
     std::string outputLayout;
 
     std::string kernelBaseName;
-    int kernelId;
     SmallVector<int64_t, 5> filterDimension;
     SmallVector<int64_t, 5> inputDimension;
     SmallVector<int64_t, 5> outputDimension;
@@ -78,10 +77,6 @@ public:
   ConvGenerator(const Config &_config);
 
   const Config &getConfig() const { return config; }
-  void setKernelName(const std::string &newName);
-  void setKernelId(int id);
-
-  LogicalResult getKernelCount(OpBuilder &builder, int &kernelCount) const;
 
   Type getFilterDataType(OpBuilder &builder) const;
   Type getInputDataType(OpBuilder &builder) const;
@@ -110,8 +105,7 @@ public:
                               ArrayRef<int64_t> outputDims,
                               ArrayRef<int64_t> filterDims);
 
-  LogicalResult genConvModule(ModuleOp &module, int rawKernelId = -1,
-                              bool isVerifier = false,
+  LogicalResult genConvModule(ModuleOp &module, bool isVerifier = false,
                               bool ignoreTuning = false);
 
   func::FuncOp getKernelFunc() const;
@@ -139,12 +133,6 @@ public:
 
   LogicalResult isApplicable() const;
 
-  // Utility function to query if a config requires additional workspace.
-  LogicalResult hasWorkspace(OpBuilder &builder, bool &needWorkspace) const;
-
-  // Utility function to fetch the size of workspace.
-  LogicalResult getWorkspaceSize(ModuleOp &module, int &workspaceSize) const;
-
   // Utility function to get the number of CU for the specific GPU
   uint32_t getNumCU() const;
 
@@ -163,8 +151,6 @@ private:
                    });
     return permutation;
   }
-  LogicalResult getBwdWeightKernelCount(OpBuilder &builder,
-                                        int &kernelCount) const;
   LogicalResult needExtraPadBwdWeight(OpBuilder &builder,
                                       bool &needExtraPad) const;
   LogicalResult hasValidDimension() const;
@@ -176,12 +162,12 @@ private:
   func::FuncOp kernelFunc;
 };
 
-/// Reorder a vector of conv arguments from standard [filter, input, output,
-/// workspace?] order to kernel argument order, where the store destination
-/// (the tensor being computed) is always last:
-///   Fwd:       [filter, input, output]          (no change)
-///   BwdData:   [filter, output, input]           (swap input/output)
-///   BwdWeight: [input, output, workspace?, filter] (rotate filter to end)
+/// Reorder a vector of conv arguments from standard [filter, input, output]
+/// order to kernel argument order, where the store destination (the tensor
+/// being computed) is always last:
+///   Fwd:       [filter, input, output] (no change)
+///   BwdData:   [filter, output, input] (swap input/output)
+///   BwdWeight: [input, output, filter] (rotate filter to end)
 template <typename T>
 void reorderConvArgsForKernel(ConvOpType opType, SmallVectorImpl<T> &args) {
   switch (opType) {
