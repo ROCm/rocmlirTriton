@@ -334,15 +334,22 @@ mcpuVerifyFloat(float *gpuAllocated, float *gpuAligned, int64_t gpuOffset,
 //   [1..3]: 0 < ratio <= {0.1, 0.5, 1.0}     (PASSING -- with headroom)
 //   [4..7]: 1.0 < ratio <= {2.0, 10.0, 100.0, +inf}   (FAILING)
 //   [8]: ratio == +inf                       (tolerance == 0 and absDiff > 0)
+//
+// The 7 boundaries split the open interval (0, +inf) into the 7 buckets that
+// sit between the "ratio == 0" prefix bucket and the "ratio == inf" suffix
+// bucket, so NUM_RATIO_BUCKETS == NUM_RATIO_BOUNDARIES + 2.
+static constexpr size_t NUM_RATIO_BOUNDARIES = 7;
+static const double RATIO_BOUNDARIES[NUM_RATIO_BOUNDARIES] = {
+    0.1, 0.5, 1.0, 2.0, 10.0, 100.0, INFINITY};
+static constexpr size_t NUM_RATIO_BUCKETS = NUM_RATIO_BOUNDARIES + 2;
+
 static void printAllcloseStats(
     long long dataSize, long long failingElements, float atol, float rtol,
     float maxRatio, float maxRatioValNum, float maxRatioGpuNum,
     double maxRatioAbsDiff, double maxRatioTolerance, bool maxRatioIsInf,
     long long ratioInfCount, long long nanCount, float nanValNum,
     float nanGpuNum, double minAtolForCurrentRtol, double minRtolForCurrentAtol,
-    bool minRtolWellDefined, const int *hist_ratio, size_t numRatioBuckets) {
-  static const double RATIO_BOUNDARIES[7] = {0.1,  0.5,   1.0,     2.0,
-                                             10.0, 100.0, INFINITY};
+    bool minRtolWellDefined, const int *hist_ratio) {
   printf("allclose statistics:\n");
   if (failingElements == 0) {
     printf("  all elements within tolerance (atol=%.3e, rtol=%.3e)\n", atol,
@@ -383,14 +390,14 @@ static void printAllcloseStats(
     }
   }
   printf("  histogram of absDiff/tolerance:\n");
-  for (size_t i = 0; i < numRatioBuckets; ++i) {
+  for (size_t i = 0; i < NUM_RATIO_BUCKETS; ++i) {
     if (i == 0)
       printf("           ratio == 0     ");
     else if (i == 1)
       printf("       0 < ratio <= %5.1f ", RATIO_BOUNDARIES[0]);
-    else if (i == numRatioBuckets - 2)
+    else if (i == NUM_RATIO_BUCKETS - 2)
       printf("   %5.1f < ratio <  inf  ", RATIO_BOUNDARIES[i - 2]);
-    else if (i == numRatioBuckets - 1)
+    else if (i == NUM_RATIO_BUCKETS - 1)
       printf("           ratio == inf   ");
     else
       printf("   %5.1f < ratio <= %5.1f ", RATIO_BOUNDARIES[i - 2],
@@ -422,14 +429,9 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
   float valNum, gpuNum;
   PrintOption print_option = static_cast<PrintOption>(printDebug);
 
-  // allclose-specific diagnostics. RATIO_BOUNDARIES must stay in sync with
-  // printAllcloseStats; the ratio histogram has 9 buckets total:
-  // [==0], [(0, 0.1], (0.1, 0.5], (0.5, 1.0]],         <- passing
-  // [(1.0, 2.0], (2.0, 10.0], (10.0, 100.0], (100.0, inf)], <- failing
-  // [==inf].
-  static const double RATIO_BOUNDARIES[7] = {0.1,  0.5,   1.0,     2.0,
-                                             10.0, 100.0, INFINITY};
-  constexpr size_t NUM_RATIO_BUCKETS = 9;
+  // Ratio histogram. RATIO_BOUNDARIES, NUM_RATIO_BOUNDARIES and
+  // NUM_RATIO_BUCKETS are file-scope (defined just above printAllcloseStats)
+  // so both functions stay in sync by construction.
   int hist_ratio[NUM_RATIO_BUCKETS] = {0};
   // Worst offender by ratio = absDiff / tolerance. We track it separately
   // from maxAbsDiff because the legacy "worst by absDiff" element is often
@@ -525,10 +527,12 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
       }
     } else {
       double ratio = static_cast<double>(absDiff) / tolerance;
-      // Find the ratio histogram bucket: 1..7 cover the boundaries, 0 is
-      // exact-match (already handled by early-out), 8 is ratio == inf.
+      // Find the ratio histogram bucket: 1..NUM_RATIO_BOUNDARIES cover the
+      // boundaries, 0 is exact-match (already handled by early-out),
+      // NUM_RATIO_BUCKETS - 1 is ratio == inf.
       size_t bucket = 1;
-      while (bucket < 7 && ratio > RATIO_BOUNDARIES[bucket - 1])
+      while (bucket < NUM_RATIO_BOUNDARIES &&
+             ratio > RATIO_BOUNDARIES[bucket - 1])
         bucket++;
       hist_ratio[bucket]++;
       if (!maxRatioIsInf && ratio > maxRatio) {
@@ -578,8 +582,7 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
                        maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff,
                        maxRatioTolerance, maxRatioIsInf, ratioInfCount,
                        nanCount, nanValNum, nanGpuNum, minAtolForCurrentRtol,
-                       minRtolForCurrentAtol, minRtolWellDefined, hist_ratio,
-                       NUM_RATIO_BUCKETS);
+                       minRtolForCurrentAtol, minRtolWellDefined, hist_ratio);
   }
   // Repeat the allclose result three times to preserve the legacy output
   // format that existing FileCheck tests match against.
