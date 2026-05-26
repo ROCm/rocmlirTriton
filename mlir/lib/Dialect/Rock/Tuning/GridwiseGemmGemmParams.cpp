@@ -55,9 +55,6 @@ PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
 
 std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
     OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType) {
-  // Op-less path: gemm1NPerBlock is unknown, so we can't apply the attention
-  // LDS check. Just return the table order; callers without an op (e.g.
-  // rocmlir-gen) don't go through skip-benchmarking.
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
       arch, kernelType, elementType);
   std::vector<GemmGemmParamsAttr> ret;
