@@ -2,10 +2,10 @@
 // RUN: rocmlir-gen --arch %arch -p -fil_layout=gckyx -in_layout=gcnhw -out_layout=gknhw %s | rocmlir-driver -c | FileCheck %s --check-prefix=LOWERING
 // RUN: rocmlir-gen --arch %arch -p -fil_layout=gckyx -in_layout=gcnhw -out_layout=gknhw %s | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=E2E
 
-func.func private @rock_conv_gck01_gcn01_gkn01_0(%arg0: tensor<9216xf32>, %arg1: tensor<1048576xf32>, %arg2: tensor<14745600xf32>) -> tensor<14745600xf32>
+func.func private @rock_conv_gck01_gcn01_gkn01(%arg0: tensor<9216xf32>, %arg1: tensor<1048576xf32>, %arg2: tensor<14745600xf32>) -> tensor<14745600xf32>
 
 // HARNESS: module
-// HARNESS: func @rock_conv_gck01_gcn01_gkn01_0([[FILTER:%.*]]: tensor<9216xf32>, [[INPUT:%.*]]: tensor<1048576xf32>, [[OUTPUT:%.*]]: tensor<14745600xf32>) -> tensor<14745600xf32>
+// HARNESS: func @rock_conv_gck01_gcn01_gkn01([[FILTER:%.*]]: tensor<9216xf32>, [[INPUT:%.*]]: tensor<1048576xf32>, [[OUTPUT:%.*]]: tensor<14745600xf32>) -> tensor<14745600xf32>
 // LOWERING: module
 // LOWERING: gpu.binary @rock_kernels
 
@@ -37,7 +37,7 @@ func.func @main() {
   %output_tensor = bufferization.to_tensor %output {restrict, writable} : memref<14745600xf32> to tensor<14745600xf32>
 
   // launch kernel.
-  %result_tensor = call @rock_conv_gck01_gcn01_gkn01_0(%filter_tensor, %input_tensor, %output_tensor) : (tensor<9216xf32>, tensor<1048576xf32>, tensor<14745600xf32>) -> tensor<14745600xf32>
+  %result_tensor = call @rock_conv_gck01_gcn01_gkn01(%filter_tensor, %input_tensor, %output_tensor) : (tensor<9216xf32>, tensor<1048576xf32>, tensor<14745600xf32>) -> tensor<14745600xf32>
 
   // Convert result tensor back to memref and copy to original output.
   %result_memref = bufferization.to_buffer %result_tensor : tensor<14745600xf32> to memref<14745600xf32>

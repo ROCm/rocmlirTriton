@@ -549,9 +549,8 @@ PERF_CONFIG_OPTIONS = {
 
 # Conv problem-shape sweep. Sizes are a mix of common CNN shapes (e.g. 224, 56,
 # 28) and small/odd ones to hit padding/edge paths.
-# TODO(rocmlirTriton): enable 'wrw' when it's fully supported.
 CONV_SHAPE_OPTIONS = {
-    'op': ['fwd', 'bwd'],
+    'op': ['fwd', 'bwd', 'wrw'],
     'layout': ['NCHW', 'NHWC'],
     'dtype': ['f32', 'f16', 'bf16', 'i8', 'fp8'],
     'n': [1, 2, 4, 8, 16],
