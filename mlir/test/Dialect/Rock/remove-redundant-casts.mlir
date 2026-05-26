@@ -1,5 +1,4 @@
-// RUN: rocmlir-opt -rock-allow-fast-math-flags -canonicalize -mlir-print-local-scope %s | FileCheck %s
-// RUN: rocmlir-opt -rock-allow-fast-math-flags -mlir-print-local-scope %s | FileCheck %s --check-prefix=ANNOTATE
+// RUN: rocmlir-opt -rock-allow-fast-math-flags -mlir-print-local-scope %s | FileCheck %s
 
 // ============================================================
 // Direct pure-SSA round-trip: extf(truncf %wide) -> %wide.
@@ -9,9 +8,9 @@
 
 // CHECK-LABEL: func.func @fold_direct_roundtrip
 // CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf32>)
-//      CHECK:   %[[MUL:.*]] = arith.mulf %[[ARG]], %[[ARG]]
 //  CHECK-NOT:   arith.truncf
 //  CHECK-NOT:   arith.extf
+//      CHECK:   %[[MUL:.*]] = arith.mulf %[[ARG]], %[[ARG]]
 //      CHECK:   return %[[MUL]]
 func.func @fold_direct_roundtrip(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
     attributes {rock.kernel} {
@@ -27,9 +26,9 @@ func.func @fold_direct_roundtrip(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
 
 // CHECK-LABEL: func.func @fold_scalar_roundtrip
 // CHECK-SAME: (%[[ARG:.*]]: f32)
-//      CHECK:   %[[ADD:.*]] = arith.addf %[[ARG]], %[[ARG]]
 //  CHECK-NOT:   arith.truncf
 //  CHECK-NOT:   arith.extf
+//      CHECK:   %[[ADD:.*]] = arith.addf %[[ARG]], %[[ARG]]
 //      CHECK:   return %[[ADD]]
 func.func @fold_scalar_roundtrip(%arg0: f32) -> f32
     attributes {rock.kernel} {
@@ -40,38 +39,48 @@ func.func @fold_scalar_roundtrip(%arg0: f32) -> f32
 }
 
 // ============================================================
-// Multi-use of the narrow value: the truncf's result also feeds a
-// narrow store. The extf still folds (its consumer is rewritten to
-// use the wide source directly), but the truncf survives DCE
-// because the store keeps it alive. No precision drop is introduced
-// on the f32 side; the narrow store path is untouched.
+// Multi-use of the narrow value: the truncf's result feeds both the
+// extf and a narrow store. The extf still folds (its consumer is
+// rewritten to use the wide source directly), but the truncf
+// survives DCE because the narrow store keeps it alive. The wide
+// store on the mulf result is symmetric and verifies that the f32
+// path is untouched -- no precision drop on either side.
 // ============================================================
 
 // CHECK-LABEL: func.func @fold_extf_keep_truncf_with_extra_use
-// CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf32>, %[[DST:.*]]: tensor<32x32xf16>)
-//      CHECK:   %[[TR:.*]] = arith.truncf %[[ARG]]
+// CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf32>, %[[DST_F32:.*]]: tensor<32x32xf32>, %[[DST_F16:.*]]: tensor<32x32xf16>)
 //  CHECK-NOT:   arith.extf
+//      CHECK:   %[[TR:.*]] = arith.truncf %[[ARG]]
 //      CHECK:   %[[MUL:.*]] = arith.mulf %[[ARG]], %[[ARG]]
-//      CHECK:   rock.store %[[TR]] to %[[DST]]
+//      CHECK:   rock.store %[[MUL]] to %[[DST_F32]]
+//      CHECK:   rock.store %[[TR]] to %[[DST_F16]]
 func.func @fold_extf_keep_truncf_with_extra_use(%arg0: tensor<32x32xf32>,
-                                       %dst: tensor<32x32xf16>)
+                                       %dst_f32: tensor<32x32xf32>,
+                                       %dst_f16: tensor<32x32xf16>)
     -> (tensor<32x32xf32>, tensor<32x32xf16>) attributes {rock.kernel} {
   %0 = arith.truncf %arg0 : tensor<32x32xf32> to tensor<32x32xf16>
   %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
   %2 = arith.mulf %1, %arg0 : tensor<32x32xf32>
-  %3 = rock.store %0 to %dst by set
+  %3 = rock.store %2 to %dst_f32 by set
+       : tensor<32x32xf32> -> tensor<32x32xf32> to tensor<32x32xf32>
+  %4 = rock.store %0 to %dst_f16 by set
        : tensor<32x32xf16> -> tensor<32x32xf16> to tensor<32x32xf16>
-  return %2, %3 : tensor<32x32xf32>, tensor<32x32xf16>
+  return %3, %4 : tensor<32x32xf32>, tensor<32x32xf16>
 }
 
 // ============================================================
 // Mismatched wide types: f64 -> f16 -> f32 is genuine precision
-// shaping (the user is widening to f32, not f64). Must NOT fold.
+// shaping (the user is widening to f32, not f64). The pass must
+// NOT fold the pair and must NOT annotate either cast with
+// `fastmath<contract>` -- the `CHECK-NOT: fastmath` bounded by the
+// return anchor pins down the latter.
 // ============================================================
 
 // CHECK-LABEL: func.func @keep_mismatched_wide_types
+//  CHECK-NOT:   fastmath
 //      CHECK:   arith.truncf
 //      CHECK:   arith.extf
+//      CHECK:   return
 func.func @keep_mismatched_wide_types(%arg0: tensor<32x32xf64>)
     -> tensor<32x32xf32> attributes {rock.kernel} {
   %0 = arith.truncf %arg0 : tensor<32x32xf64> to tensor<32x32xf16>
@@ -94,13 +103,16 @@ func.func @keep_lone_extf(%arg0: tensor<32x32xf16>) -> tensor<32x32xf32>
 
 // ============================================================
 // Non-kernel function: pass must be a no-op even when the pattern
-// matches, since rocmlirTriton uses the rock.kernel attribute to
-// gate kernel-only rewrites.
+// would otherwise match, since rocmlirTriton uses the rock.kernel
+// attribute to gate kernel-only rewrites. Both casts must remain
+// and neither may pick up `fastmath<contract>` from this pass.
 // ============================================================
 
 // CHECK-LABEL: func.func @skip_non_kernel
+//  CHECK-NOT:   fastmath
 //      CHECK:   arith.truncf
 //      CHECK:   arith.extf
+//      CHECK:   return
 func.func @skip_non_kernel(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32> {
   %0 = arith.truncf %arg0 : tensor<32x32xf32> to tensor<32x32xf16>
   %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
@@ -117,9 +129,9 @@ func.func @skip_non_kernel(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32> {
 
 // CHECK-LABEL: func.func @attention_acc_to_softmax_pattern
 // CHECK-SAME: (%[[ACC:.*]]: tensor<32x32xf32>)
-//      CHECK:   %[[CST_SCALE:.*]] = arith.constant {{.*}}0.0883
 //  CHECK-NOT:   arith.truncf
 //  CHECK-NOT:   arith.extf
+//      CHECK:   %[[CST_SCALE:.*]] = arith.constant {{.*}}0.0883
 //      CHECK:   %[[SCALED:.*]] = arith.mulf %[[ACC]], %[[CST_SCALE]]
 //      CHECK:   return %[[SCALED]]
 func.func @attention_acc_to_softmax_pattern(%acc: tensor<32x32xf32>)
@@ -159,8 +171,8 @@ func.func @fold_dual_roundtrip(%arg0: tensor<32x32xf16>) -> tensor<32x32xf16>
 
 // CHECK-LABEL: func.func @fold_dual_keep_extf_with_extra_use
 // CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf16>)
-//      CHECK:   %[[EX:.*]] = arith.extf %[[ARG]]
 //  CHECK-NOT:   arith.truncf
+//      CHECK:   %[[EX:.*]] = arith.extf %[[ARG]]
 //      CHECK:   %[[MUL:.*]] = arith.mulf %[[EX]], %[[EX]]
 //      CHECK:   return %[[MUL]], %[[ARG]]
 func.func @fold_dual_keep_extf_with_extra_use(%arg0: tensor<32x32xf16>)
@@ -188,43 +200,52 @@ func.func @keep_dual_mismatched_narrow_types(%arg0: tensor<32x32xf16>)
 
 // ============================================================
 // Dual non-kernel function: the pass owns the precision-recovering
-// direction only, so it must remain a no-op outside `rock.kernel`
-// functions. The mirror direction `truncf(extf %narrow) -> %narrow`
-// is unconditionally safe and is folded by upstream MLIR's
-// `arith.TruncFOp::fold`, which `-canonicalize` runs regardless of
-// the kernel attribute. The combined output therefore collapses to
-// the identity here; that this happens via canonicalize (not via
-// our pass) is the property the dual `skip_non_kernel` case above
-// pins down for the pass-owned direction.
+// direction only, so the round-trip pattern must remain a no-op
+// outside `rock.kernel` functions. The mirror direction
+// `truncf(extf %narrow) -> %narrow` is unconditionally safe and is
+// folded by upstream MLIR's `arith.TruncFOp::fold`, which fires
+// regardless of the kernel attribute inside the pass's own greedy
+// rewrite phase. The output therefore still collapses to the
+// identity here; that this happens via the unconditional
+// dual-direction fold (not via our kernel-gated pattern) is the
+// property the `skip_non_kernel` case above pins down for the
+// pass-owned direction.
 // ============================================================
 
-// CHECK-LABEL: func.func @dual_non_kernel_folded_by_canonicalize
+// CHECK-LABEL: func.func @dual_non_kernel_folded_by_unconditional_truncf
 // CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf16>)
 //  CHECK-NOT:   arith.extf
 //  CHECK-NOT:   arith.truncf
 //      CHECK:   return %[[ARG]]
-func.func @dual_non_kernel_folded_by_canonicalize(%arg0: tensor<32x32xf16>) -> tensor<32x32xf16> {
+func.func @dual_non_kernel_folded_by_unconditional_truncf(%arg0: tensor<32x32xf16>) -> tensor<32x32xf16> {
   %0 = arith.extf %arg0 : tensor<32x32xf16> to tensor<32x32xf32>
   %1 = arith.truncf %0 : tensor<32x32xf32> to tensor<32x32xf16>
   return %1 : tensor<32x32xf16>
 }
 
 // ============================================================
-// Annotation-only tests. With canonicalize disabled, the pass
-// must leave both casts in place but merge `fastmath<contract>`
-// into their flag sets. These cases exercise the annotation
-// behaviour directly so a future regression that drops the flag,
-// overwrites pre-existing flags, or clobbers the rounding mode
-// fails loudly.
+// Flag-merge tests: the round-trip pattern merges
+// `fastmath<contract>` into both casts' flag sets and the greedy
+// driver then fires upstream MLIR's `arith.ExtFOp::fold` (which
+// requires `contract` on both) in the next iteration -- annotation
+// and fold therefore happen inside a single pass invocation.
+// Pre-existing fast-math flags and the truncf rounding mode must
+// be preserved across the merge; the cases below set up an extra
+// narrow-store use on the truncf so the surviving cast remains
+// observable after the extf folds, catching a regression that
+// drops a pre-existing flag or clobbers the rounding mode.
 // ============================================================
 
 // Basic positive case: a clean round-trip with no pre-existing
-// flags. The pass must add `fastmath<contract>` to both casts.
+// flags. The pattern annotates both casts with `fastmath<contract>`
+// and the greedy driver then folds the pair via `arith.ExtFOp::fold`
+// in the next iteration. A single pass invocation yields identity.
 
-// ANNOTATE-LABEL: func.func @annotate_basic_roundtrip
-// ANNOTATE-SAME: (%[[ARG:.*]]: tensor<32x32xf32>)
-//      ANNOTATE: arith.truncf %[[ARG]] fastmath<contract> : tensor<32x32xf32> to tensor<32x32xf16>
-//      ANNOTATE: arith.extf {{.*}} fastmath<contract> : tensor<32x32xf16> to tensor<32x32xf32>
+// CHECK-LABEL: func.func @annotate_basic_roundtrip
+// CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf32>)
+//  CHECK-NOT:   arith.truncf
+//  CHECK-NOT:   arith.extf
+//      CHECK:   return %[[ARG]] : tensor<32x32xf32>
 func.func @annotate_basic_roundtrip(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
     attributes {rock.kernel} {
   %0 = arith.truncf %arg0 : tensor<32x32xf32> to tensor<32x32xf16>
@@ -232,78 +253,64 @@ func.func @annotate_basic_roundtrip(%arg0: tensor<32x32xf32>) -> tensor<32x32xf3
   return %1 : tensor<32x32xf32>
 }
 
-// Pre-existing fast-math flags must be preserved verbatim. The
-// trunc keeps `nnan,ninf` and gains `contract`; the extf keeps
-// `arcp` and gains `contract`. Flags print in bit order
-// (reassoc, nnan, ninf, nsz, arcp, contract, afn) so the
-// concrete substrings below are stable.
+// Pre-existing fast-math flags must be merged with `contract`,
+// not overwritten. The narrow store on the truncf keeps it alive
+// after the extf folds away, so the surviving cast's flag set is
+// observable. Flags print in bit order (reassoc, nnan, ninf, nsz,
+// arcp, contract, afn) so the substring below is stable.
 
-// ANNOTATE-LABEL: func.func @annotate_preserve_other_fastmath_flags
-//      ANNOTATE: arith.truncf {{.*}} fastmath<nnan,ninf,contract> : tensor<32x32xf32> to tensor<32x32xf16>
-//      ANNOTATE: arith.extf {{.*}} fastmath<arcp,contract> : tensor<32x32xf16> to tensor<32x32xf32>
-func.func @annotate_preserve_other_fastmath_flags(%arg0: tensor<32x32xf32>)
-    -> tensor<32x32xf32> attributes {rock.kernel} {
-  %0 = arith.truncf %arg0 fastmath<nnan,ninf>
+// CHECK-LABEL: func.func @annotate_preserve_other_fastmath_flags
+// CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf32>, %[[DST:.*]]: tensor<32x32xf16>)
+//  CHECK-NOT:   arith.extf
+//      CHECK:   arith.truncf %[[ARG]] fastmath<nnan,ninf,arcp,contract> : tensor<32x32xf32> to tensor<32x32xf16>
+func.func @annotate_preserve_other_fastmath_flags(%arg0: tensor<32x32xf32>,
+                                                  %dst: tensor<32x32xf16>)
+    -> (tensor<32x32xf32>, tensor<32x32xf16>) attributes {rock.kernel} {
+  %0 = arith.truncf %arg0 fastmath<nnan,ninf,arcp>
        : tensor<32x32xf32> to tensor<32x32xf16>
-  %1 = arith.extf %0 fastmath<arcp>
-       : tensor<32x32xf16> to tensor<32x32xf32>
-  return %1 : tensor<32x32xf32>
+  %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
+  %2 = rock.store %0 to %dst by set
+       : tensor<32x32xf16> -> tensor<32x32xf16> to tensor<32x32xf16>
+  return %1, %2 : tensor<32x32xf32>, tensor<32x32xf16>
 }
 
 // The `arith.truncf` rounding-mode attribute is orthogonal to the
-// fast-math flags; it must survive the annotation untouched.
+// fast-math flags and must survive the merge untouched. The narrow
+// store keeps the truncf alive after the extf folds so both the
+// rounding mode and the newly-merged `contract` flag are visible.
 
-// ANNOTATE-LABEL: func.func @annotate_preserve_rounding_mode
-//      ANNOTATE: arith.truncf {{.*}} downward fastmath<contract> : tensor<32x32xf32> to tensor<32x32xf16>
-//      ANNOTATE: arith.extf {{.*}} fastmath<contract> : tensor<32x32xf16> to tensor<32x32xf32>
-func.func @annotate_preserve_rounding_mode(%arg0: tensor<32x32xf32>)
-    -> tensor<32x32xf32> attributes {rock.kernel} {
+// CHECK-LABEL: func.func @annotate_preserve_rounding_mode
+// CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf32>, %[[DST:.*]]: tensor<32x32xf16>)
+//  CHECK-NOT:   arith.extf
+//      CHECK:   arith.truncf %[[ARG]] downward fastmath<contract> : tensor<32x32xf32> to tensor<32x32xf16>
+func.func @annotate_preserve_rounding_mode(%arg0: tensor<32x32xf32>,
+                                           %dst: tensor<32x32xf16>)
+    -> (tensor<32x32xf32>, tensor<32x32xf16>) attributes {rock.kernel} {
   %0 = arith.truncf %arg0 downward
        : tensor<32x32xf32> to tensor<32x32xf16>
   %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
-  return %1 : tensor<32x32xf32>
+  %2 = rock.store %0 to %dst by set
+       : tensor<32x32xf16> -> tensor<32x32xf16> to tensor<32x32xf16>
+  return %1, %2 : tensor<32x32xf32>, tensor<32x32xf16>
 }
 
-// Idempotency: casts that already carry `fastmath<contract>` must
-// come out of the pass with exactly the same flag set (no double
-// bit, no spurious rewrite).
+// Pre-annotated round-trip: when both casts already carry
+// `fastmath<contract>` on pass entry, the round-trip pattern's
+// convergence guard returns failure (no spurious double-set) and
+// `arith.ExtFOp::fold` fires on the first greedy visit, collapsing
+// the pair in place. Verifying the identity output covers both the
+// guard (no infinite worklist churn) and the in-pass fold.
 
-// ANNOTATE-LABEL: func.func @annotate_idempotent
-//      ANNOTATE: arith.truncf {{.*}} fastmath<contract> : tensor<32x32xf32> to tensor<32x32xf16>
-//      ANNOTATE: arith.extf {{.*}} fastmath<contract> : tensor<32x32xf16> to tensor<32x32xf32>
+// CHECK-LABEL: func.func @annotate_idempotent
+// CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf32>)
+//  CHECK-NOT:   arith.truncf
+//  CHECK-NOT:   arith.extf
+//      CHECK:   return %[[ARG]] : tensor<32x32xf32>
 func.func @annotate_idempotent(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
     attributes {rock.kernel} {
   %0 = arith.truncf %arg0 fastmath<contract>
        : tensor<32x32xf32> to tensor<32x32xf16>
   %1 = arith.extf %0 fastmath<contract>
        : tensor<32x32xf16> to tensor<32x32xf32>
-  return %1 : tensor<32x32xf32>
-}
-
-// Mismatched wide types are not a real round-trip (f64 -> f16 -> f32
-// is genuine precision shaping), so the pass must NOT annotate
-// either cast. The `return` anchor bounds the NOT scope to this
-// function body.
-
-// ANNOTATE-LABEL: func.func @annotate_skip_mismatched_wide_types
-//  ANNOTATE-NOT: fastmath
-//      ANNOTATE: return
-func.func @annotate_skip_mismatched_wide_types(%arg0: tensor<32x32xf64>)
-    -> tensor<32x32xf32> attributes {rock.kernel} {
-  %0 = arith.truncf %arg0 : tensor<32x32xf64> to tensor<32x32xf16>
-  %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
-  return %1 : tensor<32x32xf32>
-}
-
-// Non-kernel (host) functions are skipped entirely, so even a
-// well-formed round-trip must come out unannotated. This pins
-// down the kernel gate at the flag level.
-
-// ANNOTATE-LABEL: func.func @annotate_skip_non_kernel
-//  ANNOTATE-NOT: fastmath
-//      ANNOTATE: return
-func.func @annotate_skip_non_kernel(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32> {
-  %0 = arith.truncf %arg0 : tensor<32x32xf32> to tensor<32x32xf16>
-  %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
   return %1 : tensor<32x32xf32>
 }

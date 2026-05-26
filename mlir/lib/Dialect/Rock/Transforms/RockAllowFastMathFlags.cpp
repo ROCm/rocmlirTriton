@@ -25,18 +25,7 @@
 //   * `afn`      on `math.*` transcendentals -> hardware approximations
 //                (v_exp_f32, v_log_f32, v_sqrt_f32, ...).
 //   * `contract` on round-tripping `arith.extf(arith.truncf %wide) -> %wide`
-//                pairs inside `rock.kernel` functions, so the next
-//                `-canonicalize` collapses them via upstream MLIR's
-//                `arith.ExtFOp::fold` (which only fires when both casts
-//                carry `contract`). The rock-side lowering pipeline injects
-//                these pairs at splice points where the narrow type is only
-//                a transport format (e.g. an f32 accumulator briefly
-//                narrowed to f16 to match a downstream tile shape and then
-//                widened back); marking them contractible removes a pair of
-//                GPU conversion instructions that would otherwise run on
-//                every element of the tile. The round-trip walk is gated on
-//                the `rock.kernel` attribute so host functions are never
-//                touched.
+//                pairs. 
 
 //===-----------------------------------------------------===//
 
@@ -97,21 +86,46 @@ struct AddFastMathFlagsPattern : public OpRewritePattern<OpTy> {
   arith::FastMathFlags flagsToAdd;
 };
 
-/// Merge `fastmath<contract>` into `op`'s existing fast-math flags. The op's
-/// other fast-math flags (`nnan`, `ninf`, ...) and its rounding mode are
-/// preserved verbatim, so this only relaxes precision in the contract sense
-/// without dropping any pre-existing IEEE guarantees the producer had set.
-template <typename CastOp>
-static void markContractible(CastOp op) {
-  arith::FastMathFlags existing =
-      op.getFastmath().value_or(arith::FastMathFlags::none);
-  arith::FastMathFlags merged = existing | arith::FastMathFlags::contract;
-  if (merged == existing)
-    return;
+/// Match `arith.extf(arith.truncf %wide) -> %wide` round-trips whose ends
+/// meet at the same wide precision, and merge `fastmath<contract>` into both
+/// casts' flag sets. Once both casts carry `contract`, upstream MLIR's
+/// `arith.ExtFOp::fold` collapses the pair in the next greedy iteration;
+/// pre-existing fast-math flags on either cast and the truncf rounding mode
+/// are preserved verbatim, so this only relaxes precision in the contract
+/// sense without dropping any IEEE guarantees the producer had set.
+struct AnnotateExtTruncRoundTripPattern
+    : public OpRewritePattern<arith::ExtFOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-  op.setFastmath(merged);
-  LLVM_DEBUG(llvm::dbgs() << "marking contractible: " << op << "\n");
-}
+  LogicalResult matchAndRewrite(arith::ExtFOp extOp,
+                                PatternRewriter &rewriter) const override {
+    auto truncOp = extOp.getIn().getDefiningOp<arith::TruncFOp>();
+    if (!truncOp)
+      return failure();
+    if (extOp.getOut().getType() != truncOp.getIn().getType())
+      return failure();
+
+    arith::FastMathFlags extFlags =
+        extOp.getFastmath().value_or(arith::FastMathFlags::none);
+    arith::FastMathFlags truncFlags =
+        truncOp.getFastmath().value_or(arith::FastMathFlags::none);
+    arith::FastMathFlags mergedExt =
+        extFlags | arith::FastMathFlags::contract;
+    arith::FastMathFlags mergedTrunc =
+        truncFlags | arith::FastMathFlags::contract;
+    // Ensure greedy convergence: bail out once both casts already carry the
+    // bit. The `arith.ExtFOp::fold` is then free to fire on the next visit.
+    if (mergedExt == extFlags && mergedTrunc == truncFlags)
+      return failure();
+
+    LLVM_DEBUG(llvm::dbgs() << "annotating round-trip extf/truncf: " << extOp
+                            << " / " << truncOp << "\n");
+    rewriter.modifyOpInPlace(extOp, [&] { extOp.setFastmath(mergedExt); });
+    rewriter.modifyOpInPlace(truncOp,
+                             [&] { truncOp.setFastmath(mergedTrunc); });
+    return success();
+  }
+};
 } // end namespace
 
 void RockAllowFastMathFlagsPass::runOnOperation() {
@@ -178,28 +192,10 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
                AddFastMathFlagsPattern<math::CopySignOp>>(ctx, nszOnly);
   patterns.add<AddFastMathFlagsPattern<math::FmaOp>>(ctx, fmaFlags);
 
-  if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
-    signalPassFailure();
-
-  // Walk each `arith.extf` in kernel functions and check whether it sits on
-  // top of an `arith.truncf` whose input type matches the extf's output type.
-  // If so, tag both casts with `fastmath<contract>`. The next `-canonicalize`
-  // in the kernel pipeline will then collapse the pair via upstream MLIR's
-  // `arith.ExtFOp::fold`. The walk itself performs no IR rewrites and so is
-  // safe to run after the greedy driver. Non-kernel (host) functions are
-  // skipped: the precision-recovering direction is only known-safe at the
-  // splice points the rock-side pipeline introduces inside `rock.kernel`.
   func::FuncOp funcOp = getOperation();
-  if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
-    return;
+  if (funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
+    patterns.add<AnnotateExtTruncRoundTripPattern>(ctx);
 
-  funcOp.walk([](arith::ExtFOp extOp) {
-    auto truncOp = extOp.getIn().getDefiningOp<arith::TruncFOp>();
-    if (!truncOp)
-      return;
-    if (extOp.getOut().getType() != truncOp.getIn().getType())
-      return;
-    markContractible(extOp);
-    markContractible(truncOp);
-  });
+  if (failed(applyPatternsGreedily(funcOp, std::move(patterns))))
+    signalPassFailure();
 }
