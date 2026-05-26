@@ -5323,6 +5323,30 @@ static LogicalResult populateHostHarnessLogic(
   bool isCPUKernel = !root0.func->hasAttr(rock::KernelAttr::getMnemonic());
   bool hasValidation = !validationType.empty() && !genCPUKernel.getValue();
   bool hasCloneValidation = hasValidation && (validationType == "clone");
+  // `--verifier clone` builds a host harness that allocates one buffer per
+  // kernel argument and feeds the kernel's tensor results back through the
+  // trailing args. That contract is only well-defined if the kernel is
+  // at the rock IR level, so make sure we at least have one rock op in the IR.
+  if (hasCloneValidation) {
+    for (KernelIF kernel : kernels) {
+      bool hasRockOp = false;
+      kernel.func.walk([&](Operation *op) {
+        if (isa_and_nonnull<rock::RockDialect>(op->getDialect())) {
+          hasRockOp = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (!hasRockOp) {
+        kernel.func.emitError()
+            << "--verifier=clone cannot build a host harness around a "
+               "kernel that is not at the rock level; run the "
+               "kernel pipeline first (e.g. `rocmlir-driver "
+               "-kernel-pipeline=highlevel`)";
+        return failure();
+      }
+    }
+  }
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
   bool isSplitK = (genParams.perfConfig.empty())
                       ? false
