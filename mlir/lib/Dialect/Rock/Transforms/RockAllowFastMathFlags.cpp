@@ -25,7 +25,7 @@
 //   * `afn`      on `math.*` transcendentals -> hardware approximations
 //                (v_exp_f32, v_log_f32, v_sqrt_f32, ...).
 //   * `contract` on round-tripping `arith.extf(arith.truncf %wide) -> %wide`
-//                pairs. 
+//                pairs.
 
 //===-----------------------------------------------------===//
 
@@ -109,8 +109,7 @@ struct AnnotateExtTruncRoundTripPattern
         extOp.getFastmath().value_or(arith::FastMathFlags::none);
     arith::FastMathFlags truncFlags =
         truncOp.getFastmath().value_or(arith::FastMathFlags::none);
-    arith::FastMathFlags mergedExt =
-        extFlags | arith::FastMathFlags::contract;
+    arith::FastMathFlags mergedExt = extFlags | arith::FastMathFlags::contract;
     arith::FastMathFlags mergedTrunc =
         truncFlags | arith::FastMathFlags::contract;
     // Ensure greedy convergence: bail out once both casts already carry the
