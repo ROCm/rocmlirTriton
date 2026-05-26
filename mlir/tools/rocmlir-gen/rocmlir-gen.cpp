@@ -4959,24 +4959,17 @@ static Operation *traceToMatmulLikeProducer(Value value, unsigned depth = 0) {
   if (isa<rock::RockGemmWrapperInterface, rock::RockGemmGemmWrapperInterface>(
           defOp))
     return defOp;
-  if (auto xform = dyn_cast<rock::TransformOp>(defOp))
-    return traceToMatmulLikeProducer(xform.getInput(), depth + 1);
-  if (defOp->getNumResults() != 1)
+  // Step through pure layout changes (rock.transform and any other
+  // ViewLikeOpInterface) and arith/math elementwise ops. These are the same
+  // op categories the rest of the Rock dialect treats as part of a fusion
+  // chain (see rock::isFusionOp and collectFusionInfo in loweringUtils.h).
+  if (auto view = dyn_cast<ViewLikeOpInterface>(defOp))
+    return traceToMatmulLikeProducer(view.getViewSource(), depth + 1);
+  if (!rock::isFusionOp(defOp))
     return nullptr;
-  auto resTy = dyn_cast<ShapedType>(defOp->getResult(0).getType());
-  if (!resTy)
-    return nullptr;
-  // Follow every operand whose shape matches the result; recurse and return
-  // the first matmul-like producer found.
-  for (Value operand : defOp->getOperands()) {
-    auto opTy = dyn_cast<ShapedType>(operand.getType());
-    if (!opTy)
-      continue;
-    if (opTy.getShape() != resTy.getShape())
-      continue;
+  for (Value operand : defOp->getOperands())
     if (Operation *found = traceToMatmulLikeProducer(operand, depth + 1))
       return found;
-  }
   return nullptr;
 }
 
