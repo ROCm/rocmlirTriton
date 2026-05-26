@@ -322,9 +322,17 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
 
     // gpu.launch_func doesn't return values - it modifies buffers in-place.
     // Replace uses of the func.call results with the corresponding output
-    // operands. Support a variable number of results: the last N tensor/memref
-    // operands (in reverse order) correspond to the N results (e.g. GEMM: 1
-    // result = last operand; attention with return_lse: 2 results = last two).
+    // operands. The usual contract is "the trailing tensor/memref operands map
+    // 1:1 to the results in reverse order" (e.g. GEMM: 1 result = last
+    // operand; attention with return_lse: 2 results = last two).
+    //
+    // The bwd_data multi-kernel expansion in `RockConvToGemmPass`
+    // (`expandKernelReturns` in ConvToGemm.cpp) breaks that 1:1 contract: it
+    // appends N-1 "keepalive" results that all alias the same single output
+    // operand and tags them on the call's `res_attrs` with
+    // `rock.bwd_data_store` (see `BwdDataStoreAttr`). We skip those by
+    // attribute so the remaining "real" results still pair against the
+    // trailing tensor/memref operands in reverse order.
     const unsigned numResults = callOp.getNumResults();
     if (numResults > 0) {
       // Collect redundant to_buffer + copy ops before replacing (they use the
@@ -351,9 +359,23 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
             break;
         }
       }
+      ArrayAttr resAttrs = callOp.getResAttrsAttr();
+      StringRef keepaliveMnemonic = rock::BwdDataStoreAttr::getMnemonic();
+      auto isKeepaliveResult = [&](unsigned idx) {
+        if (!resAttrs || idx >= resAttrs.size())
+          return false;
+        auto dict = dyn_cast<DictionaryAttr>(resAttrs[idx]);
+        return dict && dict.contains(keepaliveMnemonic);
+      };
       for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-        if (resultIdx < outputOperandsInReverseOrder.size())
-          result.replaceAllUsesWith(outputOperandsInReverseOrder[resultIdx]);
+        if (isKeepaliveResult(resultIdx) || result.use_empty())
+          continue;
+        if (resultIdx >= outputOperandsInReverseOrder.size())
+          return callOp.emitOpError(
+              "live kernel call result has no trailing tensor/memref operand "
+              "to alias to; the trailing-operands-as-outputs contract is "
+              "violated (see expandKernelReturns in ConvToGemm.cpp)");
+        result.replaceAllUsesWith(outputOperandsInReverseOrder[resultIdx]);
       }
       for (Operation *op : llvm::reverse(redundantOpsToErase))
         op->erase();

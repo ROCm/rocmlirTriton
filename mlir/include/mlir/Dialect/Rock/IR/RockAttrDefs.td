@@ -504,12 +504,23 @@ def Rock_CpuFusedConv : Rock_Attr<"CpuFusedConv"> {
 def Rock_BwdDataStore : Rock_Attr<"BwdDataStore"> {
   let mnemonic = "rock.bwd_data_store";
   let description = [{
-    Discardable marker attached by `--rock-conv-to-gemm` to the extra
-    `rock.store` ops produced by the multi-kernel `bwd_data` expansion.
-    Stores 1..N-1 emitted by the expansion are intentionally left
-    `use_empty()` so the post-conversion fix-up step in
-    `RockConvToGemmPass::runOnOperation` can find them and wire their
-    results into the parent function's `func.return`.
+    Discardable marker attached by `--rock-conv-to-gemm` to identify
+    "keepalive" SSA values produced by the multi-kernel `bwd_data`
+    expansion. The marker lives in two places:
+
+    1. On the extra `rock.store` ops emitted in `commonConvRewrite`.
+       Stores 1..N-1 are intentionally left `use_empty()` so the
+       post-conversion fix-up step in
+       `RockConvToGemmPass::runOnOperation` can find them and wire
+       their results into the parent function's `func.return`.
+
+    2. On the matching `res_attrs` entries of the rewritten kernel
+       `func.func` and `func.call` ops in `expandKernelReturns`. The
+       call op's attrs survive serialization in
+       `rock.host_functions`, so downstream consumers,in particular
+       `RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs`, can
+       identify the keepalive results explicitly instead of relying on
+       the structural `use_empty()` invariant.
   }];
 }
 

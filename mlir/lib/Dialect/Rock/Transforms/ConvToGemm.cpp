@@ -157,6 +157,7 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
 
   func::ReturnOp returnOp = returnOps.front();
   unsigned oldNumResults = kernel.getNumResults();
+  MLIRContext *ctx = kernel.getContext();
 
   // Append-only: existing return operands and their corresponding kernel
   // result types stay at the same indices, so old callers' result uses
@@ -166,19 +167,32 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
   SmallVector<Type> newResultTypes(kernel.getResultTypes());
   for (Value v : extraReturns)
     newResultTypes.push_back(v.getType());
-  kernel.setFunctionType(FunctionType::get(kernel.getContext(),
-                                           kernel.getFunctionType().getInputs(),
-                                           newResultTypes));
+  kernel.setFunctionType(
+      FunctionType::get(ctx, kernel.getFunctionType().getInputs(),
+                        newResultTypes));
 
+  // Tag the appended results with `rock.bwd_data_store` so downstream
+  // consumers (notably `RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs`)
+  // can identify the keepalive results explicitly instead of relying on the
+  // structural `use_empty()` invariant. The same marker is propagated to the
+  // rewritten `func.call` below; `func.func` result attrs are wiped when
+  // `RockLowerBlockwiseToPtrPass` voids the kernel signature, but the call
+  // op's attrs survive serialization in `rock.host_functions`.
+  auto keepaliveDict = DictionaryAttr::get(
+      ctx, {NamedAttribute(
+               StringAttr::get(ctx, rock::BwdDataStoreAttr::getMnemonic()),
+               UnitAttr::get(ctx))});
+
+  SmallVector<DictionaryAttr> newKernelResAttrs;
+  newKernelResAttrs.reserve(newResultTypes.size());
   if (ArrayAttr existingResAttrs = kernel.getAllResultAttrs()) {
-    SmallVector<DictionaryAttr> newResAttrs;
-    newResAttrs.reserve(newResultTypes.size());
     for (Attribute a : existingResAttrs)
-      newResAttrs.push_back(cast<DictionaryAttr>(a));
-    newResAttrs.append(extraReturns.size(),
-                       DictionaryAttr::get(kernel.getContext()));
-    kernel.setAllResultAttrs(newResAttrs);
+      newKernelResAttrs.push_back(cast<DictionaryAttr>(a));
+  } else {
+    newKernelResAttrs.append(oldNumResults, DictionaryAttr::get(ctx));
   }
+  newKernelResAttrs.append(extraReturns.size(), keepaliveDict);
+  kernel.setAllResultAttrs(newKernelResAttrs);
 
   StringRef kernelName = kernel.getName();
   TypeRange newResults = kernel.getFunctionType().getResults();
@@ -201,6 +215,21 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
     // kernel's output buffer.
     for (unsigned i = 0; i < oldNumResults; ++i)
       callOp.getResult(i).replaceAllUsesWith(newCall.getResult(i));
+
+    // Mirror the kernel's `res_attrs` onto the call so the keepalive marker
+    // is visible to consumers that only see the call op (i.e. host code
+    // restored by `RockEmitGpuBinary` after `RockSerializeHostFuncs`).
+    SmallVector<Attribute> newCallResAttrs;
+    newCallResAttrs.reserve(newResultTypes.size());
+    if (ArrayAttr existingCallResAttrs = callOp.getResAttrsAttr()) {
+      for (Attribute a : existingCallResAttrs)
+        newCallResAttrs.push_back(a);
+    } else {
+      newCallResAttrs.append(oldNumResults, DictionaryAttr::get(ctx));
+    }
+    newCallResAttrs.append(extraReturns.size(), keepaliveDict);
+    newCall.setResAttrsAttr(ArrayAttr::get(ctx, newCallResAttrs));
+
     callOp.erase();
   }
   return success();
@@ -1805,7 +1834,6 @@ void RockConvToGemmPass::runOnOperation() {
     if (!storeOp->hasAttr(rock::BwdDataStoreAttr::getMnemonic()))
       return;
 
-    storeOp->removeAttr(rock::BwdDataStoreAttr::getMnemonic());
     assert(storeOp.getResult().use_empty() &&
            "bwd_data keepalive store should be use_empty before fix-up");
     if (auto parentFunc = storeOp->getParentOfType<func::FuncOp>())
