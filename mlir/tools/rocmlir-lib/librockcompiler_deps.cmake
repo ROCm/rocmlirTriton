@@ -221,6 +221,7 @@ MLIRTensorDialect
 MLIRTensorInferTypeOpInterfaceImpl
 MLIRTensorTilingInterfaceImpl
 MLIRTensorToLinalg
+MLIRTensorTransformOps
 MLIRTensorTransforms
 MLIRTensorUtils
 MLIRTilingInterface
