@@ -20,16 +20,16 @@
 module {
 
   // Individual op check
-  // CHECK-LABEL: func.func @divf_scalar_adds_arcp_nsz
+  // CHECK-LABEL: func.func @divf_scalar_adds_arcp_nsz_afn
   // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : f32
-  func.func @divf_scalar_adds_arcp_nsz(%a: f32, %b: f32) -> f32 {
+  func.func @divf_scalar_adds_arcp_nsz_afn(%a: f32, %b: f32) -> f32 {
     %0 = arith.divf %a, %b : f32
     return %0 : f32
   }
 
-  // CHECK-LABEL: func.func @divf_tensor_adds_arcp_nsz
+  // CHECK-LABEL: func.func @divf_tensor_adds_arcp_nsz_afn
   // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : tensor<2x3xf32>
-  func.func @divf_tensor_adds_arcp_nsz(%x: tensor<2x3xf32>, %y: tensor<2x3xf32>) -> tensor<2x3xf32> {
+  func.func @divf_tensor_adds_arcp_nsz_afn(%x: tensor<2x3xf32>, %y: tensor<2x3xf32>) -> tensor<2x3xf32> {
     %0 = arith.divf %x, %y : tensor<2x3xf32>
     return %0 : tensor<2x3xf32>
   }
