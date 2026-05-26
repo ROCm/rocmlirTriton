@@ -1096,9 +1096,8 @@ LogicalResult ConvBwdWeightOp::verify() {
 
   if (!isValidKBlocks(kBlocks, batchSize))
     return emitOpError("kBlocks (")
-           << kBlocks
-           << ") must be positive and evenly divide batch size N (" << batchSize
-           << ")";
+           << kBlocks << ") must be positive and evenly divide batch size N ("
+           << batchSize << ")";
 
   return success();
 }
