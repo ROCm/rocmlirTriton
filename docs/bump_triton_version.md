@@ -83,6 +83,12 @@ The following tables map Python functions to their C++ equivalents. Each must be
 | `make_llir()` Part 1 | `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` |
 | `make_llir()` Part 2 + `make_amdgcn()` + `make_hsaco()` | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
 
+The `TRITON` CHECK prefix in `mlir/test/rocmlir-driver/pipelines.mlir` pins the exact ordering of every pass added by `rock::buildTritonPipeline` (i.e. the three functions above).
+
+A Triton bump that drops, renames, reorders, or changes the options on any pass in `makeTTIR` / `makeTTGIR` / `makeLLIR` will fail it. That is the desired behaviour: it forces an explicit review of the new pass ordering against upstream Triton's `compiler.py`. If the new behaviour is correct, regenerate the expected output and update the CHECK lines:
+
+If a Triton bump introduces a new arch-conditional branch in `Pipelines.cpp` that gfx942 doesn't exercise, prefer adding a second prefix (e.g. `TRITON_GFX1250`) for the relevant arch over weakening the existing one.
+
 ##### Understanding Pass Bindings (from `triton_amd.cc`)
 
 The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Python bindings for Triton passes. When `compiler.py` adds a new pass call, check `triton_amd.cc` to find the actual C++ pass creation function.
@@ -272,6 +278,7 @@ Use this checklist to track progress:
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
+- [ ] Refresh the `TRITON` prefix in `mlir/test/rocmlir-driver/pipelines.mlir` if any of `makeTTIR` / `makeTTGIR` / `makeLLIR` changed (see section 5.1)
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
 - [ ] Update `TritonToHsaco.cpp` for LLVM function changes (`initializeLLVMTargets`, `createTargetMachine`, `optimizeModule`)
 - [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed

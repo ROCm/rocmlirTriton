@@ -1,5 +1,6 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=migraphx -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=MIGRAPHX --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=gpu -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=GPU --match-full-lines --strict-whitespace
+// RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx942 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx942 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx950 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
@@ -61,6 +62,67 @@
 // GPU-NEXT:rock-func-to-triton-func,
 // GPU-NEXT:tt.func(canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // GPU-NEXT:cse))
+
+// TRITON:Kernel pipeline:
+// TRITON-NEXT:builtin.module(inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4 },
+// TRITON-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:triton-combine,
+// TRITON-NEXT:triton-reorder-broadcast,
+// TRITON-NEXT:cse,
+// TRITON-NEXT:loop-invariant-code-motion,
+// TRITON-NEXT:symbol-dce,
+// TRITON-NEXT:triton-loop-unroll,
+// TRITON-NEXT:convert-triton-to-tritongpu{enable-source-remat=false num-ctas=1 num-warps=4 target=hip:gfx942 threads-per-warp=64},
+// TRITON-NEXT:tritongpu-coalesce,
+// TRITON-NEXT:tritongpu-F32DotTC{emu-tf32=false},
+// TRITON-NEXT:tritongpu-remove-layout-conversions,
+// TRITON-NEXT:tritongpu-optimize-thread-locality,
+// TRITON-NEXT:tritonamdgpu-accelerate-matmul{arch-generation-name=gfx942 kPack=1 matrix-instruction-size=16},
+// TRITON-NEXT:tritongpu-remove-layout-conversions,
+// TRITON-NEXT:tritonamdgpu-optimize-epilogue,
+// TRITON-NEXT:tritonamdgpu-optimize-dot-operands{arch-generation-name=gfx942},
+// TRITON-NEXT:tt.func(tritonamdgpu-hoist-layout-conversions),
+// TRITON-NEXT:tt.func(tritonamdgpu-sink-layout-conversions),
+// TRITON-NEXT:tritongpu-fuse-nested-loops,
+// TRITON-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:loop-invariant-code-motion,
+// TRITON-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:tritonamdgpu-optimize-descriptor-encoding,
+// TRITON-NEXT:tritonamdgpu-schedule-loops{num_stages=2},
+// TRITON-NEXT:tritonamdgpu-pipeline{use_async_copy=false use_pingpong=true},
+// TRITON-NEXT:tritonamdgpu-convert-tensor-ops,
+// TRITON-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:tritongpu-remove-layout-conversions,
+// TRITON-NEXT:tritongpu-reduce-data-duplication,
+// TRITON-NEXT:tt.func(tritonamdgpu-in-thread-transpose),
+// TRITON-NEXT:tritongpu-remove-layout-conversions,
+// TRITON-NEXT:tt.func(tritonamdgpu-move-up-prologue-loads),
+// TRITON-NEXT:tritonamdgpu-block-pingpong{num-stages=2},
+// TRITON-NEXT:tt.func(tritonamdgpu-canonicalize-pointers{enable-large-tensor-ptr-canon=false}),
+// TRITON-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:tritonamdgpu-convert-buffer-ops{allow-buffer-atomics=true analyze-small-tensor-ofst=false arch-generation-name=gfx942},
+// TRITON-NEXT:tt.func(tritonamdgpu-optimize-buffer-op-ptr),
+// TRITON-NEXT:tritonamdgpu-fold-true-cmpi,
+// TRITON-NEXT:tt.func(tritonamdgpu-prepare-if-combining),
+// TRITON-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:cse,
+// TRITON-NEXT:symbol-dce,
+// TRITON-NEXT:tritonamdgpu-update-async-wait-count{arch-generation-name=gfx942},
+// TRITON-NEXT:convert-warp-pipeline{arch=gfx942},
+// TRITON-NEXT:convert-scf-to-cf{allow-pattern-rollback=true},
+// TRITON-NEXT:convert-index-to-llvm{index-bitwidth=0},
+// TRITON-NEXT:allocate-amdgpu-shared-memory,
+// TRITON-NEXT:tritongpu-global-scratch-memory-allocation,
+// TRITON-NEXT:convert-triton-amdgpu-to-llvm{arch=gfx942 ftz=true},
+// TRITON-NEXT:triton-amdgpu-convert-warp-specialize-to-llvm{arch=gfx942},
+// TRITON-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:cse,
+// TRITON-NEXT:convert-cf-to-llvm{index-bitwidth=0},
+// TRITON-NEXT:convert-arith-to-llvm{index-bitwidth=0},
+// TRITON-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:cse,
+// TRITON-NEXT:symbol-dce,
+// TRITON-NEXT:convert-builtin-func-to-llvm{arch=gfx942 ftz=true})
 
 // `--kernel-pipeline=binary` is now strictly the GPU-only compile: it must
 // produce `gpu.binary` (via TritonToHsaco + RockEmitGpuBinary) but must NOT
