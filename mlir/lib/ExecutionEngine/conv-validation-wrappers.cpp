@@ -343,13 +343,15 @@ static const double RATIO_BOUNDARIES[NUM_RATIO_BOUNDARIES] = {
     0.1, 0.5, 1.0, 2.0, 10.0, 100.0, INFINITY};
 static constexpr size_t NUM_RATIO_BUCKETS = NUM_RATIO_BOUNDARIES + 2;
 
-static void printAllcloseStats(
-    long long dataSize, long long failingElements, float atol, float rtol,
-    float maxRatio, float maxRatioValNum, float maxRatioGpuNum,
-    double maxRatioAbsDiff, double maxRatioTolerance, bool maxRatioIsInf,
-    long long ratioInfCount, long long nanCount, float nanValNum,
-    float nanGpuNum, double minAtolForCurrentRtol, double minRtolForCurrentAtol,
-    bool minRtolWellDefined, const int *hist_ratio) {
+static void printAllcloseStats(long long dataSize, long long failingElements,
+                               float atol, float rtol, float maxRatio,
+                               float maxRatioValNum, float maxRatioGpuNum,
+                               double maxRatioAbsDiff, double maxRatioTolerance,
+                               bool maxRatioIsInf, long long ratioInfCount,
+                               long long nanCount, float nanValNum,
+                               float nanGpuNum, double minAtolForCurrentRtol,
+                               double minRtolForCurrentAtol,
+                               bool minRtolWellDefined, const int *hist_ratio) {
   printf("allclose statistics:\n");
   if (failingElements == 0) {
     printf("  all elements within tolerance (atol=%.3e, rtol=%.3e)\n", atol,
