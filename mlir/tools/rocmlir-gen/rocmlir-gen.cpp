@@ -4948,6 +4948,8 @@ static float sumErrorTolerance(Type t) {
 // recover the matmul so the reduce can contribute its axis length to the
 // matmul's K_eff for patterns like `reduce_sum(matmul(A, B) + bias)`.
 static Operation *traceToMatmulLikeProducer(Value value, unsigned depth = 0) {
+  // Realistic gemm -> elementwise -> reduce chains are at most 6 hops;
+  // 8 gives a small safety margin.
   constexpr unsigned kMaxDepth = 8;
   if (depth > kMaxDepth)
     return nullptr;
