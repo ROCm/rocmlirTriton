@@ -4988,7 +4988,7 @@ static Operation *traceToMatmulLikeProducer(Value value, unsigned depth = 0) {
   return nullptr;
 }
 
-// Return the narrowest float element type appearing on any 
+// Return the narrowest float element type appearing on any
 // RockGemmWrapperInterface and RockGemmGemmWrapperInterface ops in
 // `module`, or std::nullopt if none are present. Used as a precision floor
 // when the kernel's *output* dtype is wider than the dtype in which the
@@ -5025,9 +5025,9 @@ static std::optional<Type> scanModuleForNarrowestFloat(ModuleOp module) {
   return best;
 }
 
-// Scan an MLIR module for RockGemmWrapperInterface and RockGemmGemmWrapperInterface ops and return the largest
-// effective reduction length found, or std::nullopt if no rock reduction
-// op is present.
+// Scan an MLIR module for RockGemmWrapperInterface and
+// RockGemmGemmWrapperInterface ops and return the largest effective reduction
+// length found, or std::nullopt if no rock reduction op is present.
 //
 // Used as a fallback when the kernel comes from a pre-lowered IR (e.g.
 // --clone-harness / --verifier=clone) and so the command-line -operation
