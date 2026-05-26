@@ -122,7 +122,7 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
         ignore = pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, [])
     cpu_count = multiprocessing.cpu_count()
     p = subprocess.Popen([
-        './external/triton/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py',
+        './external/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py',
         '-p0', '-quiet', '-j',
         str(cpu_count), '-extra-arg=-std=c++17'
     ],

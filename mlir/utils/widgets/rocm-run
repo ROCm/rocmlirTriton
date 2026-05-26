@@ -10,7 +10,7 @@
 #   2. A few well-known source-tree fallbacks.
 #
 # The matching LLVM build directory is then located by:
-#   1. The standalone layout (<repo>/external/llvm-project/build).
+#   1. The standalone layout (<rocmlir_build>/external/llvm-project/llvm).
 #   2. The LLVM_DIR entry in the rocMLIR build's CMakeCache.txt.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,10 +40,11 @@ find_rocmlir_build() {
 find_llvm_build() {
     local rocmlir_build="$1"
 
-    # Triton-based layout: <repo>/external/triton/llvm-project/build, where
-    # <repo> is the parent of the rocMLIR build directory.
+    # Standalone monolithic CMake build: LLVM is built as part of the
+    # rocmlirTriton configure, inside the same build tree at
+    # <rocmlir_build>/external/llvm-project/llvm/.
     local triton_llvm
-    triton_llvm="$(cd "$rocmlir_build/.." 2>/dev/null && pwd)/external/triton/llvm-project/build"
+    triton_llvm="$rocmlir_build/external/llvm-project/llvm"
     if [[ -x "$triton_llvm/bin/mlir-runner" ]]; then
         ( cd "$triton_llvm" && pwd )
         return 0
