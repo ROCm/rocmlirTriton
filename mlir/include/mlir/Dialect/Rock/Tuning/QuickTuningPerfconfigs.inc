@@ -1841,10 +1841,6 @@ static const StringRef initParametersI8AttentionGfx950[nInitParametersI8Attentio
 
 {"gfx1200_gemm_i8", {PopulateParamsGemm::initParametersI8GemmGfx1200, PopulateParamsGemm::nInitParametersI8GemmGfx1200}},
 
-{"gfx1200_gemm_f16", {PopulateParamsGemm::initParametersF16GemmGfx1200, PopulateParamsGemm::nInitParametersF16GemmGfx1200}},
-
-{"gfx1200_gemm_i8", {PopulateParamsGemm::initParametersI8GemmGfx1200, PopulateParamsGemm::nInitParametersI8GemmGfx1200}},
-
 {"gfx1200_gemm_f32", {PopulateParamsGemm::initParametersF32GemmGfx1200, PopulateParamsGemm::nInitParametersF32GemmGfx1200}},
 
 #endif // Gemm_LOOKUP_TABLE_GEN
