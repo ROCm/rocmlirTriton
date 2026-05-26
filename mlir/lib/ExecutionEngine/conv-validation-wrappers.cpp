@@ -530,6 +530,9 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
       // Find the ratio histogram bucket: 1..NUM_RATIO_BOUNDARIES cover the
       // boundaries, 0 is exact-match (already handled by early-out),
       // NUM_RATIO_BUCKETS - 1 is ratio == inf.
+      // We start at 1 because bucket 0 is reserved for ratio == 0, which
+      // cannot reach this loop: the (valNum == gpuNum) and f32 subnormal
+      // cases above are the only path into bucket 0.
       size_t bucket = 1;
       while (bucket < NUM_RATIO_BOUNDARIES &&
              ratio > RATIO_BOUNDARIES[bucket - 1])
