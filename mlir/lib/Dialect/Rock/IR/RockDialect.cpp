@@ -2224,7 +2224,7 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
     if (!isValidKnobBoolean(value)) {
       llvm::errs() << "invalid perfConfig '" << perfConfigStr << "': field `"
                    << name << "` = " << value
-                   << "; expected -1 (arch default), 0 (off), or 1 (on)\n";
+                   << "; expected " << kKnobDefault  << " (arch default), 0 (off), or 1 (on)\n";
       return failure();
     }
   }
