@@ -1814,8 +1814,7 @@ void RockConvToGemmPass::runOnOperation() {
 
   for (auto &[parentFunc, extraReturns] : extrasByFunc) {
     if (failed(expandKernelReturns(parentFunc, module, extraReturns))) {
-      signalPassFailure();
-      return;
+      return signalPassFailure();
     }
   }
 }
