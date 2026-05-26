@@ -20,11 +20,11 @@ It targets AMD CDNA and RDNA GPUs (gfx9xx / gfx10xx / gfx11xx / gfx12xx), and is
 - `clang` / `clang++` 20 (defaults to `clang-20` / `clang++-20`; override via the `C_COMPILER` / `CXX_COMPILER` environment variables).
 - `lld`, `ninja`, and CMake >= 3.20.
 - Python 3 (only needed for in-tree development scripts and the LIT test runner; not required for production builds or MIGraphX integration).
-- Git (for submodule initialization and patch application).
+- Git (for submodule initialization).
 
 ## Installation
 
-The build is driven by `cmake.sh`, which initializes the Triton submodule, applies `triton-patches/` and `llvm-patches/`, builds Triton's LLVM/MLIR, and then configures and builds rocmlirTriton (including the fat `librockCompiler` static library):
+The build is driven by `cmake.sh`, which initializes the Triton (`external/triton`) and LLVM (`external/llvm-project`) submodules and runs the cmake configure that builds LLVM/MLIR (via `add_subdirectory`), Triton, and rocmlirTriton (including the fat `librockCompiler` static library) into one build tree:
 
 ```sh
 git clone https://github.com/ROCm/rocmlirTriton.git
@@ -38,11 +38,11 @@ To install `librockCompiler` so MIGraphX can find it:
 cmake --install build --prefix /path/to/MIGraphX/deps
 ```
 
-Additional developer documentation lives under [`docs/`](docs/).
+For consuming rocmlirTriton as a `cget` package inside the MIGraphX build (where Triton and LLVM are fetched as separate dependencies via `requirements.txt`), see [`docs/migraphx_build.md`](docs/migraphx_build.md). Additional developer documentation lives under [`docs/`](docs/).
 
 ## Usage
 
-A typical standalone pipeline generates a kernel with `rocmlir-gen`, lowers it with `rocmlir-driver -c`, and runs it via `rocm-run` -- a wrapper around `mlir-runner` that auto-locates the rocMLIR build and the (Triton-bundled) LLVM build directory, and links the right runtime libraries (`libmlir_rocm_runtime`, `libconv-validation-wrappers`, runner utils, etc.):
+A typical standalone pipeline generates a kernel with `rocmlir-gen`, lowers it with `rocmlir-driver -c`, and runs it via `rocm-run` -- a wrapper around `mlir-runner` that auto-locates the rocMLIR build and the matching LLVM build directory, and links the right runtime libraries (`libmlir_rocm_runtime`, `libconv-validation-wrappers`, runner utils, etc.):
 
 ```sh
 ARCH=$(rocminfo | grep -o 'gfx[0-9a-z]*' | head -1)
