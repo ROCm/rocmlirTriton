@@ -218,48 +218,39 @@ runKernelPipeline(StringRef archName, ModuleOp m,
   }
   backendOpts.optLevel = optLevel;
 
-  // TODO(roctriton): add common params to RockTuningParamAttrInterface
+  // Populate Triton/backend options from the perf-config of any gemm or
+  // gemm+gemm op in the module. Both `PopulateParams::obtainTuningParameters`
+  // and `PopulateParamsGemmGemm::obtainTuningParameters` return attributes
+  // that implement `RockTuningParamAttrInterface`, so `fillCompilationConfigs`
+  // can consume either via that interface.
   OpBuilder builder(m.getContext());
-  auto fillCompilationRes =
-      m.walk([&](mlir::rock::RockGemmWrapperInterface op) -> WalkResult {
-        auto populateParamsPtr = std::make_unique<rock::PopulateParams>();
-        auto maybeGemmParams =
-            populateParamsPtr->obtainTuningParameters(builder, op);
-        if (failed(maybeGemmParams)) {
-          llvm::errs() << "Failed to obtain perfConfig\n";
-          return WalkResult::interrupt();
-        }
+  auto applyPerfConfig = [&](auto &&maybeParams) -> WalkResult {
+    if (failed(maybeParams)) {
+      llvm::errs() << "Failed to obtain perfConfig\n";
+      return WalkResult::interrupt();
+    }
+    if (failed(fillCompilationConfigs(maybeParams.value(), tritonOpts,
+                                      backendOpts))) {
+      llvm::errs() << "Failed to process perfConfig: " << maybeParams.value()
+                   << "\n";
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  };
 
-        if (failed(fillCompilationConfigs(maybeGemmParams.value(), tritonOpts,
-                                          backendOpts))) {
-          llvm::errs() << "Failed to process perfConfig: "
-                       << maybeGemmParams.value() << "\n";
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-  if (fillCompilationRes.wasInterrupted()) {
+  auto gemmWalk = m.walk([&](rock::RockGemmWrapperInterface op) {
+    return applyPerfConfig(
+        rock::PopulateParams().obtainTuningParameters(builder, op));
+  });
+  if (gemmWalk.wasInterrupted())
     return failure();
-  }
-  auto fillCompilationResGemmGemm =
-      m.walk([&](mlir::rock::RockGemmGemmWrapperInterface op) -> WalkResult {
-        auto maybeGemmGemmParams =
-            rock::PopulateParamsGemmGemm::obtainTuningParameters(builder, op);
-        if (failed(maybeGemmGemmParams)) {
-          llvm::errs() << "Failed to obtain perfConfig\n";
-          return WalkResult::interrupt();
-        }
-        if (failed(fillCompilationConfigs(maybeGemmGemmParams.value(),
-                                          tritonOpts, backendOpts))) {
-          llvm::errs() << "Failed to process perfConfig: "
-                       << maybeGemmGemmParams.value() << "\n";
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-  if (fillCompilationResGemmGemm.wasInterrupted()) {
+
+  auto gemmGemmWalk = m.walk([&](rock::RockGemmGemmWrapperInterface op) {
+    return applyPerfConfig(
+        rock::PopulateParamsGemmGemm::obtainTuningParameters(builder, op));
+  });
+  if (gemmGemmWalk.wasInterrupted())
     return failure();
-  }
 
   // Set up lowering pipeline.
   if (kernelPipelineSet.contains("gpu")) {
