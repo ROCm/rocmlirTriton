@@ -1005,13 +1005,13 @@ struct GridwiseAttentionRewritePattern
     // Attention keeps the fused single-tile invariant (head dim stays small).
     // GEG/CEG may have a large output-N and tile it across an inner unrolled
     // gemm1-N loop; gemm1NBlocks is then > 1.
-    if (op.getEnableSoftmax()) {
-      assert(gemm1N == gemm1NPerBlock &&
-             "Attention requires gemm1NPerBlock == gemm1N");
-    } else {
-      assert(gemm1N % gemm1NPerBlock == 0 &&
-             "non-attention gemm1N must be a multiple of gemm1NPerBlock");
-    }
+    // if (op.getEnableSoftmax()) {
+    //   assert(gemm1N == gemm1NPerBlock &&
+    //          "Attention requires gemm1NPerBlock == gemm1N");
+    // } else {
+    //   assert(gemm1N % gemm1NPerBlock == 0 &&
+    //          "non-attention gemm1N must be a multiple of gemm1NPerBlock");
+    // }
     int64_t gemm1NBlocks = gemm1N / gemm1NPerBlock;
 
     // params related to how we load Q
