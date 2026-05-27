@@ -93,7 +93,7 @@ config = "-num_heads_q 4 -num_heads_kv 2 -seq_len_q 384 -seq_len_k 384 -head_dim
 # accumulation orders on CPU vs GPU, which can still flip the softmax argmax
 # in the most masked configurations - hence the slightly relaxed thresholds
 # on the batch=3 cases. The LSE variants need extra absDiff headroom because
-# LSE values themselves are large (one bf16 ULP at LSE magnitude ~500 is ~4).
+# LSE values themselves are large.
 [[suite.test]]
 config = "-rand 1 -current_seq_len=17 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 0.3 -absDiff_threshold 0.3 -RMS_threshold 0.15"
 
