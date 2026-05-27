@@ -356,13 +356,14 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
   if (failingElements == 0) {
     printf("  all elements within tolerance (atol=%.3e, rtol=%.3e)\n", atol,
            rtol);
+  } else if (nanCount > 0) {
+    // NaN takes precedence: no finite tolerance can mask a NaN, so the user
+    // has to see it first and any calibration hint would be misleading.
+    printf("  worst element: valNum=%g gpuNum=%g (NaN-mismatch)\n", nanValNum,
+           nanGpuNum);
+    printf("  no tolerance can mask a NaN-mismatch; fix the kernel\n");
   } else {
-    // NaN takes precedence over the worst finite ratio: no finite tolerance can
-    // mask a NaN, so the user has to see it first.
-    if (nanCount > 0) {
-      printf("  worst element: valNum=%g gpuNum=%g (NaN-mismatch)\n", nanValNum,
-             nanGpuNum);
-    } else if (maxRatioIsInf) {
+    if (maxRatioIsInf) {
       printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=0 "
              "(ratio=inf)\n",
              maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff);
@@ -372,23 +373,17 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
              maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff, maxRatioTolerance,
              maxRatio);
     }
-    if (nanCount > 0) {
-      // Calibration hints are meaningless when any NaN is present; replace
-      // them with an explicit directive to fix the kernel.
-      printf("  no tolerance can mask a NaN-mismatch; fix the kernel\n");
+    // Calibration hints: smallest atol/rtol that would make everything pass
+    // (holding the other fixed).
+    printf("  to pass with current rtol=%.3e: atol >= %.3e\n", rtol,
+           minAtolForCurrentRtol);
+    if (minRtolWellDefined) {
+      printf("  to pass with current atol=%.3e: rtol >= %.3e\n", atol,
+             minRtolForCurrentAtol);
     } else {
-      // Calibration hints: smallest atol/rtol that would make everything pass
-      // (holding the other fixed).
-      printf("  to pass with current rtol=%.3e: atol >= %.3e\n", rtol,
-             minAtolForCurrentRtol);
-      if (minRtolWellDefined) {
-        printf("  to pass with current atol=%.3e: rtol >= %.3e\n", atol,
-               minRtolForCurrentAtol);
-      } else {
-        printf("  to pass with current atol=%.3e: rtol >= n/a "
-               "(failures only at valNum == 0; increase atol)\n",
-               atol);
-      }
+      printf("  to pass with current atol=%.3e: rtol >= n/a "
+             "(failures only at valNum == 0; increase atol)\n",
+             atol);
     }
   }
   printf("  histogram of absDiff/tolerance:\n");
