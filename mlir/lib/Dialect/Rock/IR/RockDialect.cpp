@@ -2161,7 +2161,7 @@ GemmGemmSize AttentionOp::getGemmGemmSize() {
           offsetB = dimsB.size() == 2 ? 0 : 1,
           offsetC = dimsC.size() == 2 ? 0 : 1;
   int64_t g = offsetA ? dimsA[0] : 1,
-          m = dimsA[offsetA + (getQTransposed() ? 0 : 1)],
+          m = dimsA[offsetA + (getQTransposed() ? 1 : 0)],
           k = dimsA[offsetA + (getQTransposed() ? 0 : 1)],
           n = dimsB[offsetB + (getKTransposed() ? 0 : 1)],
           o = dimsC[offsetC + (getVTransposed() ? 1 : 0)];

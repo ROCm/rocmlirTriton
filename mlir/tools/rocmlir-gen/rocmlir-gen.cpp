@@ -5028,10 +5028,9 @@ static std::optional<Type> scanModuleForNarrowestFloat(ModuleOp module) {
 // testing for chained reductions.
 //
 // Conventions follow rock dialect:
-//   rock.gemm / rock.conv*: getGemmSize().k via RockGemmWrapperInterface
-//   rock.attention: head_dim_qk + seq_len_k (additive model, matches the
-//     command-line path in computeReductionK below)
-//   rock.gemm_elementwise_gemm / conv_elementwise_gemm: K + N (additive)
+//   RockGemmWrapperInterface ops: getGemmSize().k via RockGemmWrapperInterface
+//   RockGemmGemmWrapperInterface ops: GemmGemmSize.k + GemmGemmSize.n via
+//     RockGemmGemmWrapperInterface.
 static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
   // Pass 1: base K_eff per matmul-like op.
   llvm::DenseMap<Operation *, int64_t> baseK;
@@ -5040,32 +5039,10 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
       baseK[op] = gemmLike.getGemmSize().k;
       return;
     }
-    // rock.attention -- checked before the generic GemmGemm fallback because
-    // AttentionOp implements RockGemmGemmWrapperInterface but its operand
-    // shapes encode K differently (head_dim_qk + seq_len_k via the
-    // q/kTransposed attributes), not GemmGemmSize.k + GemmGemmSize.n.
-    if (auto attn = dyn_cast<rock::AttentionOp>(op)) {
-      // queries: [G x] seq_q x head_qk (or transposed)
-      // keys:    [G x] head_qk x seq_k (or transposed)
-      auto qTy = dyn_cast<ShapedType>(attn.getQueries().getType());
-      auto kTy = dyn_cast<ShapedType>(attn.getKeys().getType());
-      if (!qTy || !kTy || qTy.getRank() < 2 || kTy.getRank() < 2)
-        return;
-      ArrayRef<int64_t> qShape = qTy.getShape();
-      ArrayRef<int64_t> kShape = kTy.getShape();
-      int64_t qLast = qShape[qShape.size() - 1];
-      int64_t qPenult = qShape[qShape.size() - 2];
-      int64_t kLast = kShape[kShape.size() - 1];
-      int64_t kPenult = kShape[kShape.size() - 2];
-      int64_t headDimQK = attn.getQTransposed() ? qPenult : qLast;
-      int64_t seqLenK = attn.getKTransposed() ? kPenult : kLast;
-      if (headDimQK > 0 && seqLenK > 0)
-        baseK[op] = headDimQK + seqLenK;
-      return;
-    }
     if (auto gemmGemm = dyn_cast<rock::RockGemmGemmWrapperInterface>(op)) {
       auto sz = gemmGemm.getGemmGemmSize();
-      baseK[op] = sz.k + sz.n;
+      if (sz.k > 0 && sz.n > 0)
+        baseK[op] = sz.k + sz.n;
       return;
     }
   });
