@@ -25,6 +25,7 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
@@ -71,20 +72,14 @@ struct ResolveKernelLaunchParamsPass
       return signalPassFailure();
     }
 
-    // Find the target architecture from rock.arch — try the kernel function
-    // first, then fall back to the module attribute.
+    // Find the target architecture from rock.arch on any kernel function
+    // (`rock::getArchOnFunc` walks up to the module attribute if needed).
     StringRef archStr;
     for (auto funcOp : moduleOp.getOps<LLVM::LLVMFuncOp>()) {
-      if (auto attr = funcOp->getAttrOfType<StringAttr>(
-              rock::ArchAttr::getMnemonic())) {
-        archStr = attr.getValue();
+      if (auto arch = rock::getArchOnFunc(funcOp); succeeded(arch)) {
+        archStr = *arch;
         break;
       }
-    }
-    if (archStr.empty()) {
-      if (auto attr = moduleOp->getAttrOfType<StringAttr>(
-              rock::ArchAttr::getMnemonic()))
-        archStr = attr.getValue();
     }
     if (archStr.empty()) {
       moduleOp.emitError("rock.arch not found on kernel function or module");
