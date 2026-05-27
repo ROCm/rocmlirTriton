@@ -33,9 +33,9 @@ func.func private @gemm_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128x
 
 // ============================================================================
 // (2) Chained `rock.reduce` on `rock.gemm`. The scanner walks the reduce input
-// back to the matmul and multiplies K_gemm by the reduce axis extent. For
-// K_gemm=64 reduced along axis of extent 128, K_eff=64*128=8192 and
-// atol = 1e-5 + 8192*1e-6 ~= 8.202e-3.
+// back to the matmul and adds the reduce axis extent to K_gemm (one extra
+// reduction phase). For K_gemm=64 and reduce axis extent 128,
+// K_eff = 64 + 128 = 192 and atol = 1e-5 + 192*1e-6 = 2.02e-4.
 // ============================================================================
 
 // RUN: rocmlir-gen -fut gemm_reduce_fut --arch %arch --clone-harness %s \
@@ -54,9 +54,9 @@ func.func private @gemm_reduce_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x
 // Both ops must reach the IR the scanner walks.
 // GEMM_REDUCE:        rock.gemm
 // GEMM_REDUCE:        rock.reduce
-// Multiplicative K_eff = 64*128 = 8192; atol = 1e-5 + 8192*1e-6 ~= 8.202e-3.
-// Magnitude >= 1e-3 -> MLIR fp32 printer uses decimal notation.
-// GEMM_REDUCE:        arith.constant 0.0082{{[0-9]+}} : f32
+// Additive K_eff = 64 + 128 = 192; atol = 1e-5 + 192*1e-6 = 2.02e-4.
+// Magnitude < 1e-3 -> MLIR fp32 printer uses scientific notation.
+// GEMM_REDUCE:        arith.constant 2.{{[0-9]+}}{{[eE]}}-{{0?}}4 : f32
 // GEMM_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
 // GEMM_REDUCE:        call @mcpuVerifyFloatAllclose
 
@@ -129,9 +129,9 @@ func.func private @mx_dot_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384x64x1>,
 
 // ============================================================================
 // (6) MIGraphX `migraphx.dot` followed by `migraphx.reduce_sum`. Same shape as
-// case (2); confirms the multiplicative K_eff = K_gemm * reduce_axis_extent
-// rule fires for the MIGraphX -> rock lowering too (rock.reduce reaches the
-// scanner with `axis = 2 : index` and extent 128). Expected atol ~= 8.202e-3.
+// case (2); confirms the additive K_eff = K_gemm + reduce_axis_extent rule
+// fires for the MIGraphX -> rock lowering too (rock.reduce reaches the
+// scanner with `axis = 2 : index` and extent 128). Expected atol = 2.02e-4.
 // ============================================================================
 
 // RUN: rocmlir-gen -fut mx_dot_reduce_fut --arch %arch --clone-harness %s \
@@ -147,9 +147,9 @@ func.func private @mx_dot_reduce_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384
 
 // MX_DOT_REDUCE:        rock.gemm
 // MX_DOT_REDUCE:        rock.reduce
-// atol = 1e-5 + 8192*1e-6 ~= 8.202e-3.
-// Magnitude >= 1e-3 -> MLIR fp32 printer uses decimal notation.
-// MX_DOT_REDUCE:        arith.constant 0.0082{{[0-9]+}} : f32
+// Additive K_eff = 64 + 128 = 192; atol = 1e-5 + 192*1e-6 = 2.02e-4.
+// Magnitude < 1e-3 -> MLIR fp32 printer uses scientific notation.
+// MX_DOT_REDUCE:        arith.constant 2.{{[0-9]+}}{{[eE]}}-{{0?}}4 : f32
 // MX_DOT_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
 // MX_DOT_REDUCE:        call @mcpuVerifyFloatAllclose
 

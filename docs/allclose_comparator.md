@@ -144,7 +144,7 @@ So for fp32 GEMM with `K=4096`, rocBLAS's effective absolute tolerance is
 
 There is also a separate `gfx11`-specific table with **looser** values
 (e.g., fp16 -> `1/10` instead of `1/100`) because gfx11 GPUs use
-lower-precision wmma intrinsics. This shows AMD already encodes
+lower-precision wmma intrinsics. This shows rocBLAS already encodes
 per-architecture tolerance differences.
 
 The `arg.initialization` field controls when to use this path:
@@ -329,18 +329,14 @@ accumulation error growth:
 | Operation | K_eff |
 |---|---|
 | GEMM | `K` |
-| Attention | `head_dim_qk + seq_len_k` (additive: two cascaded reductions) |
+| Attention | `head_dim_qk + seq_len_k` |
 | Conv (any direction) | `Cin * product(filter_spatial_dims)`, i.e. the im2col K |
-| GEMM -> elementwise -> GEMM | `K_gemm1 + K_gemm2` (additive; same rationale as attention) |
-| Conv -> elementwise -> GEMM | `K_conv + K_gemm2` (same: conv im2col K plus the GEMM's K) |
+| GEMM -> elementwise -> GEMM | `K_gemm1 + K_gemm2` |
+| Conv -> elementwise -> GEMM | `K_conv + K_gemm2` |
 | Element-wise / other | `1` |
 
-The attention model is the conservative choice: errors from the QK^T
-reduction (over `head_dim_qk`) and the softmax-weighted-V reduction (over
-`seq_len_k`) are treated as independent and additive. A multiplicative
-model would be tighter but would also overpredict error for short
-sequences; the additive model is what mirrors the actual numerical
-behavior we see in tests.
+Same rule for every operation: each reduction phase along the data
+path adds its own length.
 
 Conv excludes the K (output channel) and G (group) dimensions because they
 do not participate in the per-output-element reduction.
@@ -364,9 +360,9 @@ largest `K_eff` across all matmul-like ops. For chained reductions
 (e.g. `tosa.reduce_sum(tosa.matmul(A, B))`), the scanner walks
 `rock.reduce` ops backward through `rock.transform` and shape-preserving
 elementwise ops (`arith.addf`, `arith.mulf`, `arith.extf` ...) to find
-the matmul that feeds them. The matmul's K is then *multiplied* by the
-reduce axis extent, since each output element of the reduce accumulates
-`K_gemm * N_reduce` products into a single scalar. 
+the matmul that feeds them. The reduce axis extent is then *added* to
+the matmul's `K_gemm` (one extra reduction phase, same rule as
+Section 2.4).
 
 For a kernel with multiple outputs, rocmlir-gen emits one verifier
 helper per output. With `--comparator=allclose`, each helper carries its own

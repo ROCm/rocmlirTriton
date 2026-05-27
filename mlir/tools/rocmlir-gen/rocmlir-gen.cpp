@@ -5020,17 +5020,15 @@ static std::optional<Type> scanModuleForNarrowestFloat(ModuleOp module) {
 // K-scaled atol bound, but for clone-harness flows it is only available by
 // inspecting the IR.
 //
-// Each matmul-like op's K is *multiplied* by every downstream rock.reduce
-// whose input traces back (through rock.transform) to that op. This
-// captures patterns like `reduce_sum(matmul(A, B))` where each output
-// element accumulates K_gemm * N_reduce products. The multiplicative model
-// matches the worst-case fp16/bf16 behaviour observed in rocBLAS-style
-// testing for chained reductions.
+// Each reduction phase contributes its own K-worth of accumulation
+// slack; per-phase slacks add. Same rule as the command-line path in
+// `computeReductionK`. See docs/allclose_comparator.md Section 2.4.
 //
 // Conventions follow rock dialect:
-//   RockGemmWrapperInterface ops: getGemmSize().k via RockGemmWrapperInterface
-//   RockGemmGemmWrapperInterface ops: GemmGemmSize.k + GemmGemmSize.n via
-//     RockGemmGemmWrapperInterface.
+//   RockGemmWrapperInterface ops: getGemmSize().k
+//   RockGemmGemmWrapperInterface ops: GemmGemmSize.k + GemmGemmSize.n
+//   rock.reduce on a matmul-like producer: producer K_eff + reduce axis
+//     extent (one extra phase added).
 static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
   // Pass 1: base K_eff per matmul-like op.
   llvm::DenseMap<Operation *, int64_t> baseK;
@@ -5047,8 +5045,8 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
     }
   });
 
-  // Pass 2: multiply each matmul-like op's K by the extents of any
-  // downstream rock.reduce ops feeding off it.
+  // Pass 2: add the extent of any downstream rock.reduce to its
+  // matmul-like producer's K_eff (one extra reduction phase).
   llvm::DenseMap<Operation *, int64_t> kEff(baseK.begin(), baseK.end());
   module.walk([&](rock::ReduceOp reduceOp) {
     Operation *producer = traceToMatmulLikeProducer(reduceOp.getIn());
@@ -5063,7 +5061,7 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
     int64_t axis = reduceOp.getAxis().getSExtValue();
     int64_t axisExtent = inTy.getShape()[axis];
     if (axisExtent > 0)
-      it->second *= axisExtent;
+      it->second += axisExtent;
   });
 
   int64_t best = 0;
@@ -5115,22 +5113,20 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
   case rock::KernelType::Gemm:
     return gemmK;
   case rock::KernelType::Attention:
-    // Conservative additive model: errors from the QK^T reduction (over
-    // head_dim_qk) and the softmax-weighted-V reduction (over seq_len_k)
-    // are roughly independent and accumulate.
+    // Two cascaded reductions: head_dim_qk for QK^T, seq_len_k for
+    // attn-weighted V.
     return headDimQK + sequenceLengthK;
   case rock::KernelType::Conv:
   case rock::KernelType::ConvBwdData:
   case rock::KernelType::ConvBwdWeight:
     return convK();
   case rock::KernelType::GemmElementwiseGemm:
-    // Fused (A.B).C: two cascaded reductions of length K and N. Additive
-    // model, same as attention.
+    // Fused (A.B).C: two cascaded reductions of length K and N.
     return gemmK + gemmN;
   case rock::KernelType::ConvElementwiseGemm:
-    // Fused (Conv(A,B)).C: first reduction is the conv im2col K, second
-    // is gemmN (the output channels of the conv become the K of the
-    // second GEMM).
+    // Fused (Conv(A,B)).C: two cascaded reductions, the conv im2col K
+    // and gemmN (the conv's output channels become the K of the second
+    // GEMM).
     return convK() + gemmN;
   default:
     return 1;
