@@ -29,37 +29,48 @@
 // STRICT-PLAIN:       tosa.cast {{.*}} : (tensor<{{.*}}xf32>) -> tensor<{{.*}}xbf16>
 // STRICT-PLAIN:       return
 
-// (2) With scale and/or bias, narrow-float type. The GPU genuinely computes
-// scale*QK / qk+bias in the narrow type (the truncf/extf round-trip cannot
-// fold because narrow arithmetic sits between). The strict CPU verifier keeps
-// the first GEMM output narrow so it rounds between operations the same way:
+// (2) With scale and/or bias, narrow-float type. The GPU stores the first
+// GEMM result as narrow-float (so QK rounds once), then loads + extends back
+// to f32 for the scale*QK + bias chain. The fused chain runs entirely in
+// f32: the bf16/f16 scale and bias are extended on load, the multiply-add
+// is done in f32 (via patterns selected as `v_pk_fma_bf16` /
+// `v_dot2_bf16_bf16` on RDNA, with a single rounding to bf16 at the end).
+//
+// The strict CPU verifier matches by keeping the first GEMM output narrow
+// (so QK truncates once, matching the GPU's narrow store) and then casting
+// QK to f32 right before the elementwise chain so scale*QK and qk+bias run
+// at f32, just like on the GPU:
 //   * `tosa.matmul` produces bf16, matching the rounded GPU behaviour.
-//   * scale*QK and/or qk+bias run on bf16 tensors.
-//   * The pre-softmax `tosa.cast` widens bf16 -> f32 once before softmax.
+//   * A `tosa.cast` widens QK from bf16 to f32 before the fused chain.
+//   * scale*QK and qk+bias run on f32 tensors (scale/bias are cast up).
+//   * The pre-softmax `tosa.cast` is now f32 -> f32 (identity).
 
 // RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-bias -t bf16 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-BIAS
 
 // STRICT-BIAS-LABEL: func.func @host_naive_attention
 // STRICT-BIAS:       tosa.matmul {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>) -> tensor<{{.*}}xbf16>
-// STRICT-BIAS:       tosa.add {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>) -> tensor<{{.*}}xbf16>
 // STRICT-BIAS:       tosa.cast {{.*}} : (tensor<{{.*}}xbf16>) -> tensor<{{.*}}xf32>
+// STRICT-BIAS:       tosa.add {{.*}} : (tensor<{{.*}}xf32>, tensor<{{.*}}xf32>) -> tensor<{{.*}}xf32>
+// STRICT-BIAS:       tosa.cast {{.*}} : (tensor<{{.*}}xf32>) -> tensor<{{.*}}xf32>
 // STRICT-BIAS:       return
 
 // RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-scale -t bf16 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-SCALE
 
 // STRICT-SCALE-LABEL: func.func @host_naive_attention
 // STRICT-SCALE:       tosa.matmul {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>) -> tensor<{{.*}}xbf16>
-// STRICT-SCALE:       tosa.mul {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<1xi8>) -> tensor<{{.*}}xbf16>
 // STRICT-SCALE:       tosa.cast {{.*}} : (tensor<{{.*}}xbf16>) -> tensor<{{.*}}xf32>
+// STRICT-SCALE:       tosa.mul {{.*}} : (tensor<{{.*}}xf32>, tensor<{{.*}}xf32>, tensor<1xi8>) -> tensor<{{.*}}xf32>
+// STRICT-SCALE:       tosa.cast {{.*}} : (tensor<{{.*}}xf32>) -> tensor<{{.*}}xf32>
 // STRICT-SCALE:       return
 
 // RUN: rocmlir-gen --arch %arch --operation attention -seq_len_q 16 -seq_len_k 16 -head_dim_qk 16 -head_dim_v 16 --with-attn-scale --with-attn-bias -t bf16 -pv-strict | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefix=STRICT-BOTH
 
 // STRICT-BOTH-LABEL: func.func @host_naive_attention
 // STRICT-BOTH:       tosa.matmul {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>) -> tensor<{{.*}}xbf16>
-// STRICT-BOTH:       tosa.mul {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>, tensor<1xi8>) -> tensor<{{.*}}xbf16>
-// STRICT-BOTH:       tosa.add {{.*}} : (tensor<{{.*}}xbf16>, tensor<{{.*}}xbf16>) -> tensor<{{.*}}xbf16>
 // STRICT-BOTH:       tosa.cast {{.*}} : (tensor<{{.*}}xbf16>) -> tensor<{{.*}}xf32>
+// STRICT-BOTH:       tosa.mul {{.*}} : (tensor<{{.*}}xf32>, tensor<{{.*}}xf32>, tensor<1xi8>) -> tensor<{{.*}}xf32>
+// STRICT-BOTH:       tosa.add {{.*}} : (tensor<{{.*}}xf32>, tensor<{{.*}}xf32>) -> tensor<{{.*}}xf32>
+// STRICT-BOTH:       tosa.cast {{.*}} : (tensor<{{.*}}xf32>) -> tensor<{{.*}}xf32>
 // STRICT-BOTH:       return
 
 // (3) `f16` narrow-float type behaves the same as bf16: with no scale/bias

@@ -4673,6 +4673,38 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
                                     Float16Type::get(ctx));
   }
 
+  // Match GPU semantics for the fused pre-softmax chain (scale*QK + bias).
+  // The GPU stores the first-GEMM result as narrow-float (bf16/f16), then
+  // loads + extends back to f32 for the scale*QK + bias chain, and only
+  // rounds to narrow precision once at the final store (these patterns get
+  // selected as `v_pk_fma_bf16` / `v_dot2_bf16_bf16` on RDNA, which compute
+  // the multiply-add at higher precision and round once at the end).
+  //
+  // The CPU host code, however, would otherwise do bf16 mul, truncate, then
+  // bf16 add, truncate - two extra roundings versus the GPU's one. With
+  // integer inputs and KV-cache masking, this can flip the softmax argmax
+  // and produce a wildly different final output (~8.6x abs-diff). To match
+  // the GPU, promote the qkTensor (and scale/bias inputs) to f32 around the
+  // elementwise chain when in strict mode with narrow floats. We keep the
+  // first-GEMM result at narrow precision so the QK -> bf16 rounding still
+  // happens, matching the GPU's truncf-store-load-extf round trip.
+  Type qkElemType = cast<ShapedType>(qkTensor.getType()).getElementType();
+  if (params.strictMode && (hasAttnScale || hasAttnBias)) {
+    if (auto floatTy = dyn_cast<FloatType>(qkElemType);
+        floatTy && floatTy.getWidth() < 32) {
+      qkTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(
+          builder, loc, builder.getF32Type(), qkTensor);
+      qkElemType = builder.getF32Type();
+    }
+  }
+  auto promoteToQkElemType = [&](Value tensor) -> Value {
+    Type elemType = cast<ShapedType>(tensor.getType()).getElementType();
+    if (elemType == qkElemType)
+      return tensor;
+    return rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc, qkElemType,
+                                                      tensor);
+  };
+
   if (hasAttnScale) {
     auto scaleTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
     if (!currentSeqLen.empty())
@@ -4686,9 +4718,9 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     else if (causalMasking)
       scaleTensor = causalMaskingTosa(builder, loc, scaleTensor, 1.0f);
 
-    qkTensor = rock::tosa::getMulOp(
-        builder, loc, qkTensor, scaleTensor,
-        cast<ShapedType>(scaleTensor.getType()).getElementType());
+    scaleTensor = promoteToQkElemType(scaleTensor);
+    qkTensor =
+        rock::tosa::getMulOp(builder, loc, qkTensor, scaleTensor, qkElemType);
   }
 
   if (hasAttnBias) {
@@ -4704,9 +4736,9 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     else if (causalMasking)
       biasTensor = causalMaskingTosa(builder, loc, biasTensor, 0.0f);
 
+    biasTensor = promoteToQkElemType(biasTensor);
     qkTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
-        builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
-        qkTensor, biasTensor);
+        builder, loc, qkElemType, qkTensor, biasTensor);
   }
   // cast to softmaxType (overridden to f64 when promoting the host reference)
   auto softmaxType = wideF(typeFromString(softmaxDataType.getValue(), ctx));

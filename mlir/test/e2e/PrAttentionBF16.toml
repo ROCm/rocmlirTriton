@@ -85,28 +85,33 @@ config = "-seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -causal -
 config = "-num_heads_q 4 -num_heads_kv 2 -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 0.3 -absDiff_threshold 0.3 -RMS_threshold 0.15"
 
 # GQA + KV Cache
-# Relaxed thresholds: the CPU reference accidentally computes scale*QK+bias in
-# f32, while the GPU correctly rounds to bf16 between multiply and add 
-# (via v_dot2_bf16_bf16 on RDNA). With current_seq_len limiting valid softmax 
-# positions this causes up to ~8.7x relDiff.
+# With `-pv-strict`, the CPU reference now matches the GPU's effective
+# precision for the fused scale*QK + bias chain (both run at f32 internally,
+# with a single bf16 store at the end - see rocmlir-gen.cpp and the
+# attention_bf16_precision.mlir / attention-verify-strict.mlir tests for the
+# details). What remains is the small bf16 noise floor from independent
+# accumulation orders on CPU vs GPU, which can still flip the softmax argmax
+# in the most masked configurations - hence the slightly relaxed thresholds
+# on the batch=3 cases. The LSE variants need extra absDiff headroom because
+# LSE values themselves are large (one bf16 ULP at LSE magnitude ~500 is ~4).
 [[suite.test]]
 config = "-rand 1 -current_seq_len=17 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 0.3 -absDiff_threshold 0.3 -RMS_threshold 0.15"
 
 # GQA + KV Cache batch=3
 [[suite.test]]
-config = "-rand 1 -current_seq_len=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 10.0 -absDiff_threshold 7.0 -RMS_threshold 0.15"
+config = "-rand 1 -current_seq_len=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 1.0 -absDiff_threshold 1.0 -RMS_threshold 0.15"
 
 # GQA + KV Cache batch=3 + return LSE
 [[suite.test]]
-config = "-rand 1 -return_lse -current_seq_len=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 10.0 -absDiff_threshold 7.0 -RMS_threshold 0.15"
+config = "-rand 1 -return_lse -current_seq_len=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 1.0 -absDiff_threshold 5.0 -RMS_threshold 0.15"
 
 # GQA + KV Cache batch=3 + return LSE + split-kv
 [[suite.test]]
-config = "-rand 1 -return_lse -split_kv 4 -current_seq_len=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 10.0 -absDiff_threshold 7.0 -RMS_threshold 0.15"
+config = "-rand 1 -return_lse -split_kv 4 -current_seq_len=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 1.0 -absDiff_threshold 5.0 -RMS_threshold 0.15"
 
 # GQA + KV Cache batch=3 + return LSE + split-kv (padding)
 [[suite.test]]
-config = "-rand 1 -return_lse -split_kv 8 -current_seq_len=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 10.0 -absDiff_threshold 7.0 -RMS_threshold 0.15"
+config = "-rand 1 -return_lse -split_kv 8 -current_seq_len=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -relDiff_threshold 1.0 -absDiff_threshold 5.0 -RMS_threshold 0.15"
 
 # GQA + causal + KV Cache batch=3
 [[suite.test]]
