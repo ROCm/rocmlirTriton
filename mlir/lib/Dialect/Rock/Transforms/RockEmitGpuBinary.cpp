@@ -195,12 +195,19 @@ bool RockEmitGpuBinaryPass::restoreHostFunctions(ModuleOp moduleOp) {
       continue;
     }
 
-    // Move each operation from the parsed module to our module
+    // Move each operation from the parsed module to our module. The parser
+    // assigns each op a `FileLineColLoc` pointing into the synthetic in-memory
+    // buffer above (filename `-`), which is meaningless to anyone reading a
+    // post-restoration diagnostic. Replace those with the owning module's
+    // location so diagnostics on restored ops point back to the source that
+    // actually owned the `rock.host_functions` attribute.
+    Location restoredLoc = moduleOp.getLoc();
     for (Operation &op :
          llvm::make_early_inc_range(parsedModule->getBody()->getOperations())) {
       if (op.hasTrait<OpTrait::IsTerminator>())
         continue;
       op.moveBefore(&moduleOp.getBody()->back());
+      op.walk([&](Operation *child) { child->setLoc(restoredLoc); });
     }
   }
 
@@ -368,8 +375,12 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
         return dict && dict.contains(keepaliveMnemonic);
       };
       for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-        if (isKeepaliveResult(resultIdx) || result.use_empty())
+        if (result.use_empty())
           continue;
+
+        if (isKeepaliveResult(resultIdx))
+          return callOp.emitOpError("keepalive result is not empty");
+
         if (resultIdx >= outputOperandsInReverseOrder.size())
           return callOp.emitOpError(
               "live kernel call result has no trailing tensor/memref operand "
