@@ -167,9 +167,8 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
   SmallVector<Type> newResultTypes(kernel.getResultTypes());
   for (Value v : extraReturns)
     newResultTypes.push_back(v.getType());
-  kernel.setFunctionType(
-      FunctionType::get(ctx, kernel.getFunctionType().getInputs(),
-                        newResultTypes));
+  kernel.setFunctionType(FunctionType::get(
+      ctx, kernel.getFunctionType().getInputs(), newResultTypes));
 
   // Tag the appended results with `rock.bwd_data_store` so downstream
   // consumers (notably `RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs`)
