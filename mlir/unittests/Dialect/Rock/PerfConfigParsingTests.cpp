@@ -100,8 +100,7 @@ TEST(PerfConfigParsingTest, GemmParamsV2ScheduleHintCombination) {
   // memory-bound-attention, mirroring upstream's
   // `schedule_hint="attention,memory-bound-attention"`. The round-trip
   // must preserve the combined value as-is.
-  StringRef original =
-      "gemm:v2:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,3";
+  StringRef original = "gemm:v2:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,3";
   auto attr = GemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getScheduleHint(), 3);

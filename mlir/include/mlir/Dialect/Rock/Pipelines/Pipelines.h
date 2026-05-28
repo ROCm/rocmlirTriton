@@ -102,7 +102,9 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       init(kKnobDefault)};
   // Debug-only, intentionally not part of the perfConfig
   // It can still bet via:
-  // `rocmlir-opt --pass-pipeline='builtin.module(rock-triton-pipeline{bufferOpsAnalyzeSmallTensorRange=1 ...})'`.
+  // `rocmlir-opt
+  // --pass-pipeline='builtin.module(rock-triton-pipeline{bufferOpsAnalyzeSmallTensorRange=1
+  // ...})'`.
   PassOptions::Option<int64_t> bufferOpsAnalyzeSmallTensorRange{
       *this, "bufferOpsAnalyzeSmallTensorRange",
       desc("Override small-tensor range analysis in convert-to-buffer-ops "
