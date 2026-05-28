@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/IR/Attributes.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
@@ -87,7 +88,13 @@ getConservativeDefaultGemmGemmParams(MLIRContext *ctx) {
                                  /*kPerBlock=*/32, /*kpack=*/1, /*numCTAs=*/1,
                                  /*numWaves=*/4, /*matrixInstrNonkdim=*/0,
                                  /*splitKFactor=*/1, /*numStages=*/1,
-                                 /*wavesPerEU=*/0, /*gridGroupSize=*/0);
+                                 /*wavesPerEU=*/0, /*gridGroupSize=*/0,
+                                 /*useAsyncCopy=*/kKnobDefault,
+                                 /*useBlockPingpong=*/kKnobDefault,
+                                 /*useInThreadTranspose=*/kKnobDefault,
+                                 /*useBufferOps=*/kKnobDefault,
+                                 /*useBufferAtomics=*/kKnobDefault,
+                                 /*scheduleHint=*/kKnobDefault);
 }
 
 } // namespace rock

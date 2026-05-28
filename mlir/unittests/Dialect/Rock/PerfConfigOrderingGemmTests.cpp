@@ -45,7 +45,13 @@ struct GemmOrderingTestEnv {
                       int64_t gridGroupSize) {
     return GemmParamsAttr::get(
         &ctx, mPerBlock, nPerBlock, kPerBlock, kpack, numCTAs, numWaves,
-        matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize);
+        matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize,
+        /*useAsyncCopy=*/kKnobDefault,
+        /*useBlockPingpong=*/kKnobDefault,
+        /*useInThreadTranspose=*/kKnobDefault,
+        /*useBufferOps=*/kKnobDefault,
+        /*useBufferAtomics=*/kKnobDefault,
+        /*scheduleHint=*/kKnobDefault);
   }
 };
 } // namespace

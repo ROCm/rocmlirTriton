@@ -90,7 +90,13 @@ struct GemmGemmOrderingTestEnv {
                             int64_t wavesPerEU, int64_t gridGroupSize) {
     return GemmGemmParamsAttr::get(
         &ctx, mPerBlockG0, nPerBlockG0, kPerBlock, kpack, numCTAs, numWaves,
-        matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize);
+        matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize,
+        /*useAsyncCopy=*/kKnobDefault,
+        /*useBlockPingpong=*/kKnobDefault,
+        /*useInThreadTranspose=*/kKnobDefault,
+        /*useBufferOps=*/kKnobDefault,
+        /*useBufferAtomics=*/kKnobDefault,
+        /*scheduleHint=*/kKnobDefault);
   }
 };
 } // namespace

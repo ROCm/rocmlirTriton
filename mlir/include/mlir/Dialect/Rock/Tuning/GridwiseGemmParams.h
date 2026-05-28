@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/STLExtras.h"
@@ -165,7 +166,13 @@ inline GemmParamsAttr getConservativeDefaultGemmParams(
                              /*numCTAs=*/1, /*numWaves=*/4,
                              /*matrixInstrNonkdim=*/0,
                              /*splitKFactor=*/1, /*numStages=*/1,
-                             /*wavesPerEU=*/0, /*gridGroupSize=*/0);
+                             /*wavesPerEU=*/0, /*gridGroupSize=*/0,
+                             /*useAsyncCopy=*/kKnobDefault,
+                             /*useBlockPingpong=*/kKnobDefault,
+                             /*useInThreadTranspose=*/kKnobDefault,
+                             /*useBufferOps=*/kKnobDefault,
+                             /*useBufferAtomics=*/kKnobDefault,
+                             /*scheduleHint=*/kKnobDefault);
 }
 
 /// Bump the first param matching `isApplicable` to the front, preserving the
