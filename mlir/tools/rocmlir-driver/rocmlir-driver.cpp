@@ -113,6 +113,12 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
                                  cl::init(""));
 
+static cl::opt<bool> disableFastMath(
+    "disable-fast-math", cl::init(false),
+    cl::desc("Skip rock-allow-fast-math-flags after split-k regularization "
+             "(by default the pass tags float ops with fastmath flags like "
+             "arcp/contract/nsz/afn)"));
+
 namespace test {
 void registerTestDialect(DialectRegistry &);
 } // namespace test
@@ -260,6 +266,8 @@ runKernelPipeline(StringRef archName, ModuleOp m,
     // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
     opts.arch = archName.str();
+    opts.disableFastMath = disableFastMath.getValue();
+
     rock::buildKernelPipeline(pm, opts);
   }
   if (kernelPipelineSet.contains("triton")) {

@@ -4,6 +4,14 @@
 
 // RUN: rocmlir-opt -rock-fusion-splitk-regularization -mlir-print-local-scope %s | FileCheck %s
 
+// Split-K introduces `arith.divf` to scale the fused bias/other term. When
+// `rock-allow-fast-math-flags` runs after (same order as the kernel
+// pipeline), those divisions pick up `fastmath<nsz,arcp,afn>`; in
+// particular, `arcp` allows lowering to treat them as
+// multiply-by-reciprocal.
+
+// RUN: rocmlir-opt -rock-fusion-splitk-regularization -rock-allow-fast-math-flags -mlir-print-local-scope %s | FileCheck %s --check-prefix=RECIP
+
 module {
 
   // ============================================================
@@ -348,5 +356,24 @@ module {
     %add2 = arith.addf %add1, %cst2 : tensor<1x4x4xf32>
     %r = rock.store %add2 to %dest by set : tensor<1x4x4xf32> -> tensor<1x4x4xf32> to tensor<1x4x4xf32>
     return %r : tensor<1x4x4xf32>
+  }
+
+  // ============================================================
+  // Multiply-with-reciprocal path (pipeline): split-k inserts divf on the
+  // fused operand; rock-allow-fast-math-flags tags those divfs with arcp.
+  // Checked only by the second RUN line (RECIP prefix) above.
+  // ============================================================
+
+  // RECIP-LABEL: func.func @test_multiply_with_reciprocal_addf
+  // RECIP-DAG: %[[CST:.*]] = arith.constant dense<4.000000e+00> : tensor<1x4x4xf16>
+  // RECIP-DAG: %[[G:.*]] = rock.gemm
+  // RECIP: %[[DIV:.*]] = arith.divf %{{.*}}, %[[CST]] fastmath<nsz,arcp,afn> : tensor<1x4x4xf16>
+  // RECIP: %[[F:.*]] = arith.addf %[[G]], %[[DIV]] fastmath<nsz,contract> : tensor<1x4x4xf16>
+  // RECIP: rock.store %[[F]]
+  func.func @test_multiply_with_reciprocal_addf(%a: tensor<1x4x4xf16>, %b: tensor<1x4x4xf16>, %ext: tensor<1x4x4xf16>, %dest: tensor<1x4x4xf16>) -> tensor<1x4x4xf16> attributes {rock.kernel} {
+    %gemm = rock.gemm %a * %b {params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 16, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 2, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>} : tensor<1x4x4xf16> * tensor<1x4x4xf16> -> tensor<1x4x4xf16>
+    %fused = arith.addf %gemm, %ext : tensor<1x4x4xf16>
+    %r = rock.store %fused to %dest by set : tensor<1x4x4xf16> -> tensor<1x4x4xf16> to tensor<1x4x4xf16>
+    return %r : tensor<1x4x4xf16>
   }
 }

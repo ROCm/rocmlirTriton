@@ -166,6 +166,14 @@ def RockFusionSplitkRegularizationPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockAllowFastMathFlagsPass
+    : Pass<"rock-allow-fast-math-flags", "::mlir::func::FuncOp"> {
+  let summary = "Tag applicable floating-point arith and math ops with "
+                "fast-math flags such as arcp, nsz, contract, and afn";
+  let dependentDialects = ["arith::ArithDialect", "func::FuncDialect",
+                           "math::MathDialect"];
+}
+
 def RockLegalizeFloatTypesPass
     : Pass<"rock-legalize-float-types", "::mlir::func::FuncOp"> {
   let summary = "Legalize float types not in Triton's TT_Float to integers";
