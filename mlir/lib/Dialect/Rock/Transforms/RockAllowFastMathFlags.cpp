@@ -190,11 +190,8 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
                AddFastMathFlagsPattern<math::AbsFOp>,
                AddFastMathFlagsPattern<math::CopySignOp>>(ctx, nszOnly);
   patterns.add<AddFastMathFlagsPattern<math::FmaOp>>(ctx, fmaFlags);
+  patterns.add<AnnotateExtTruncRoundTripPattern>(ctx);
 
-  func::FuncOp funcOp = getOperation();
-  if (funcOp->hasAttr(rock::KernelAttr::getMnemonic()))
-    patterns.add<AnnotateExtTruncRoundTripPattern>(ctx);
-
-  if (failed(applyPatternsGreedily(funcOp, std::move(patterns))))
+  if (failed(applyPatternsGreedily(func, std::move(patterns))))
     signalPassFailure();
 }
