@@ -56,14 +56,16 @@
 namespace mlir {
 namespace rock {
 
-/// Tri-state sentinel for all seven Triton knob fields in the perfConfig
+/// Tri-state sentinel for the six Triton knob fields in the perfConfig
 /// (`useAsyncCopy`, `useBlockPingpong`, `useInThreadTranspose`,
-/// `useBufferOps`, `useBufferAtomics`, `bufferOpsAnalyzeSmallTensorRange`,
-/// `scheduleHint`). A field set to `kKnobDefault` means "use the per-arch
-/// default"; `0` and `1` mean explicit off/on for the boolean knobs, and
-/// `scheduleHint` uses the bit encoding declared below. Lives here (rather
-/// than in `Pipelines.h`) so the IR / Tuning libraries can consume it
-/// without pulling in `mlir/Pass/PassOptions.h`.
+/// `useBufferOps`, `useBufferAtomics`, `scheduleHint`) plus the debug-only
+/// `TritonOptions::bufferOpsAnalyzeSmallTensorRange` override (which lives
+/// outside the perfConfig). A field set to
+/// `kKnobDefault` means "use the per-arch default"; `0` and `1` mean
+/// explicit off/on for the boolean knobs, and `scheduleHint` uses the bit
+/// encoding declared below. Lives here (rather than in `Pipelines.h`) so
+/// the IR / Tuning libraries can consume it without pulling in
+/// `mlir/Pass/PassOptions.h`.
 inline constexpr int kKnobDefault = -1;
 
 /// The literal LLIR-only schedule-hint variant. Upstream Triton recognises

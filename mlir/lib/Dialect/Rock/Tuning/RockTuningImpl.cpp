@@ -259,7 +259,6 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
 // - `useInThreadTranspose`             (set to kKnobDefault)
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
-// - `bufferOpsAnalyzeSmallTensorRange` (set to kKnobDefault)
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
@@ -291,7 +290,6 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useInThreadTranspose=*/kKnobDefault,
                             /*useBufferOps=*/kKnobDefault,
                             /*useBufferAtomics=*/kKnobDefault,
-                            /*bufferOpsAnalyzeSmallTensorRange=*/kKnobDefault,
                             /*scheduleHint=*/kKnobDefault);
                         newSpace->tuningRange.push_back(
                             cast<RockTuningParamAttrInterface>(gemmGemmParams));
@@ -408,7 +406,6 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
 // - `useInThreadTranspose`             (set to kKnobDefault)
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
-// - `bufferOpsAnalyzeSmallTensorRange` (set to kKnobDefault)
 static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     RockGemmWrapperInterface gemmOp,
                                     TuningParamSetKind kind) {
@@ -445,7 +442,6 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useInThreadTranspose=*/kKnobDefault,
                             /*useBufferOps=*/kKnobDefault,
                             /*useBufferAtomics=*/kKnobDefault,
-                            /*bufferOpsAnalyzeSmallTensorRange=*/kKnobDefault,
                             /*scheduleHint=*/kKnobDefault);
                         if (kind != TuningParamSetKind::Full ||
                             succeeded(tuningInfo->couldBePerformant(

@@ -100,10 +100,14 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       desc("Override use-buffer-atomics (kKnobDefault=on, 0=off, 1=on; "
            "requires useBufferOps to be on)"),
       init(kKnobDefault)};
+  // Debug-only, intentionally not part of the perfConfig
+  // It can still bet via:
+  // `rocmlir-opt --pass-pipeline='builtin.module(rock-triton-pipeline{bufferOpsAnalyzeSmallTensorRange=1 ...})'`.
   PassOptions::Option<int64_t> bufferOpsAnalyzeSmallTensorRange{
       *this, "bufferOpsAnalyzeSmallTensorRange",
       desc("Override small-tensor range analysis in convert-to-buffer-ops "
-           "(kKnobDefault=off, 0=off, 1=on; requires useBufferOps to be on)"),
+           "(kKnobDefault=off, 0=off, 1=on; requires useBufferOps to be on). "
+           "Debug-only override; not a perfConfig knob."),
       init(kKnobDefault)};
   PassOptions::Option<int64_t> scheduleHint{
       *this, "scheduleHint",

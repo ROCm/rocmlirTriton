@@ -240,8 +240,6 @@ def Rock_GemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - bufferOpsAnalyzeSmallTensorRange: Overrides small-tensor range analysis in
-      convert-to-buffer-ops (requires useBufferOps to be enabled).
     - scheduleHint: Bitfield selector mirroring upstream Triton's
       `HIPOptions.schedule_hint`, which is a comma-separated multi-select
       string ("attention,memory-bound-attention"). Encoded as a bitfield so
@@ -262,7 +260,6 @@ def Rock_GemmParamsAttr
     - `useInThreadTranspose`             (set to -1)
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
-    - `bufferOpsAnalyzeSmallTensorRange` (set to -1)
   }];
 
   let parameters = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
@@ -275,7 +272,6 @@ def Rock_GemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$bufferOpsAnalyzeSmallTensorRange,
       DefaultValuedParameter<"int64_t", "-1">:$scheduleHint);
 
   let extraClassDeclaration = [{
@@ -297,7 +293,6 @@ def Rock_GemmParamsAttr
         + Twine(getUseInThreadTranspose()) + ","
         + Twine(getUseBufferOps()) + ","
         + Twine(getUseBufferAtomics()) + ","
-        + Twine(getBufferOpsAnalyzeSmallTensorRange()) + ","
         + Twine(getScheduleHint()))
         .toVector(perfStr);
     }
@@ -345,8 +340,6 @@ def Rock_GemmGemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - bufferOpsAnalyzeSmallTensorRange: Overrides small-tensor range analysis in
-      convert-to-buffer-ops (requires useBufferOps to be enabled).
     - scheduleHint: Bitfield selector mirroring upstream Triton's
       `HIPOptions.schedule_hint`, which is a comma-separated multi-select
       string ("attention,memory-bound-attention"). Encoded as a bitfield so
@@ -367,7 +360,6 @@ def Rock_GemmGemmParamsAttr
     - `useInThreadTranspose`             (set to -1)
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
-    - `bufferOpsAnalyzeSmallTensorRange` (set to -1)
   }];
 
   let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
@@ -380,7 +372,6 @@ def Rock_GemmGemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$bufferOpsAnalyzeSmallTensorRange,
       DefaultValuedParameter<"int64_t", "-1">:$scheduleHint);
 
   let extraClassDeclaration = [{
@@ -402,7 +393,6 @@ def Rock_GemmGemmParamsAttr
       + Twine(getUseInThreadTranspose()) + ","
       + Twine(getUseBufferOps()) + ","
       + Twine(getUseBufferAtomics()) + ","
-      + Twine(getBufferOpsAnalyzeSmallTensorRange()) + ","
       + Twine(getScheduleHint()))
       .toVector(perfStr);
     }

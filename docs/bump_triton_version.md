@@ -231,15 +231,20 @@ On a bump, review the upstream diff and propagate any default/semantic changes:
 | `knobs.amd.use_in_thread_transpose`               | `useInThreadTranspose`                | `TritonOptions::useInThreadTranspose`                          |
 | `knobs.amd.use_buffer_ops`                        | `useBufferOps`                        | `TritonOptions::useBufferOps`                                  |
 | `knobs.amd.use_buffer_atomics`                    | `useBufferAtomics`                    | `TritonOptions::useBufferAtomics`                              |
-| `knobs.amd.buffer_ops_analyze_small_tensor_range` | `bufferOpsAnalyzeSmallTensorRange`    | `TritonOptions::bufferOpsAnalyzeSmallTensorRange`              |
+| `knobs.amd.buffer_ops_analyze_small_tensor_range` | (not in perfConfig -- debug-only)     | `TritonOptions::bufferOpsAnalyzeSmallTensorRange`              |
 | `HIPOptions.schedule_hint`                        | `scheduleHint`                        | `TritonOptions::scheduleHint` / `BackendOptions::scheduleHint` |
 
 If upstream adds a new `knobs.amd.*` switch around an existing pass we
-already replicate, add the corresponding `Option<int>` to `TritonOptions`
-(use the `kKnobDefault = -1` tri-state sentinel), append a matching
-`int64_t` field to `Rock_GemmParamsAttr` / `Rock_GemmGemmParamsAttr` in
-`RockAttrDefs.td`, extend the `v2` parser in `RockDialect.cpp` (and its
-range validator), and propagate the value through `compileUtils.cpp`.
+already replicate, decide whether it's a *tuner* knob (per-arch defaults
+vary, plausibly affects perf-tunable shapes) or a *debug* knob (universal
+default, no tuning value). For a tuner knob: add a corresponding
+`Option<int>` to `TritonOptions` (use the `kKnobDefault = -1` tri-state
+sentinel), append a matching `int64_t` field to `Rock_GemmParamsAttr` /
+`Rock_GemmGemmParamsAttr` in `RockAttrDefs.td`, extend the `v2` parser in
+`RockDialect.cpp` (and its range validator), and propagate the value
+through `compileUtils.cpp`. For a debug knob: only add the
+`TritonOptions` field (and document it like
+`bufferOpsAnalyzeSmallTensorRange`); skip the perfConfig schema entirely.
 
 If upstream adds a new `SchedHint` enum entry, claim a new bit in
 `kScheduleHintBitTable` in `KnobUtils.cpp` and document it in

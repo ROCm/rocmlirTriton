@@ -193,8 +193,6 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
     tritonOpts.useInThreadTranspose = gemmParams.getUseInThreadTranspose();
     tritonOpts.useBufferOps = gemmParams.getUseBufferOps();
     tritonOpts.useBufferAtomics = gemmParams.getUseBufferAtomics();
-    tritonOpts.bufferOpsAnalyzeSmallTensorRange =
-        gemmParams.getBufferOpsAnalyzeSmallTensorRange();
     tritonOpts.scheduleHint = gemmParams.getScheduleHint();
 
     backendOpts.numWarps = gemmParams.getNumWaves();
@@ -214,8 +212,6 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
     tritonOpts.useInThreadTranspose = gemmGemmParams.getUseInThreadTranspose();
     tritonOpts.useBufferOps = gemmGemmParams.getUseBufferOps();
     tritonOpts.useBufferAtomics = gemmGemmParams.getUseBufferAtomics();
-    tritonOpts.bufferOpsAnalyzeSmallTensorRange =
-        gemmGemmParams.getBufferOpsAnalyzeSmallTensorRange();
     tritonOpts.scheduleHint = gemmGemmParams.getScheduleHint();
 
     backendOpts.numWarps = gemmGemmParams.getNumWaves();
