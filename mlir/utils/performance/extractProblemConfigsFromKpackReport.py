@@ -9,9 +9,10 @@ Input line format (tab-separated):
   L<line>\t<arch>\t<numCUs>\t<testVector>\t<perfConfig>
 
 Usage:
+  python3 extractProblemConfigsFromKpackReport.py --arch 942
+  python3 extractProblemConfigsFromKpackReport.py --arch 90a --kpack 4 -o 90a-gemm-kpack-4
   python3 extractProblemConfigsFromKpackReport.py -i gemm-kpack-90a.txt
-  python3 extractProblemConfigsFromKpackReport.py -i gemm-kpack-90a.txt -o out.txt
-  python3 extractProblemConfigsFromKpackReport.py -i gemm-kpack-90a.txt --kpack 1 4
+  python3 extractProblemConfigsFromKpackReport.py --arch 942 --split-by-kpack
 """
 
 from __future__ import annotations
@@ -19,9 +20,21 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Set
+from typing import DefaultDict, Iterable, List, Optional, Set
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from kpackProblemConfigUtils import (
+    DEFAULT_KPACK_GROUPS,
+    kpack_group_path,
+    kpack_report_path,
+    normalize_arch_token,
+)
 
 PERFCONFIG_RE = re.compile(r"(v[34]:[\d,]+)")
 SECTION_RE = re.compile(r"^=== kpack=(\d+)")
@@ -107,21 +120,59 @@ def dedupe_preserve_order(configs: Iterable[ProblemConfig]) -> List[ProblemConfi
     return unique
 
 
+def resolve_input_path(args: argparse.Namespace) -> Path:
+    if args.input:
+        return Path(args.input).expanduser().resolve()
+    return kpack_report_path(args.arch)
+
+
+def resolve_single_output_path(args: argparse.Namespace, arch_token: str) -> Path | str:
+    if args.output:
+        return args.output
+    if args.stdout:
+        return "-"
+    if args.kpack and len(args.kpack) == 1:
+        return kpack_group_path(arch_token, args.kpack[0])
+    return "-"
+
+
+def write_config_lines(path: Path | str, configs: Sequence[str]) -> None:
+    output_text = "\n".join(configs) + ("\n" if configs else "")
+    if path == "-":
+        sys.stdout.write(output_text)
+        return
+
+    output_path = Path(path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(output_text, encoding="utf-8")
+    print(f"Wrote {output_path} ({len(configs)} configs)")
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Extract tier1-style GEMM problem configs from a kpack report.",
     )
     parser.add_argument(
+        "--arch",
+        default="942",
+        help="Arch token for default input/output names (e.g. 942, 90a, 1101)",
+    )
+    parser.add_argument(
         "-i",
         "--input",
-        required=True,
-        help="Input kpack report (e.g. gemm-kpack-90a.txt)",
+        default=None,
+        help="Input kpack report (default: gemm-kpack-<arch>.txt in repo root)",
     )
     parser.add_argument(
         "-o",
         "--output",
-        default="-",
-        help='Output file (default: stdout). Use "-" for stdout.',
+        default=None,
+        help='Output file (default: stdout, or "<arch>-gemm-kpack-<kpack>" when --kpack has one value)',
+    )
+    parser.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Write extracted configs to stdout",
     )
     parser.add_argument(
         "--kpack",
@@ -129,6 +180,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=None,
         help="Only include configs from these kpack groups",
+    )
+    parser.add_argument(
+        "--split-by-kpack",
+        action="store_true",
+        help=(
+            "Write one '<arch>-gemm-kpack-<N>' file per kpack group found "
+            f"(default groups when filtering: {' '.join(map(str, DEFAULT_KPACK_GROUPS))})"
+        ),
     )
     parser.add_argument(
         "--keep-duplicates",
@@ -141,7 +200,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
 
-    input_path = Path(args.input).expanduser().resolve()
+    try:
+        arch_token = normalize_arch_token(args.arch)
+        input_path = resolve_input_path(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
     if not input_path.is_file():
         print(f"error: input file not found: {input_path}", file=sys.stderr)
         return 1
@@ -155,16 +220,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.keep_duplicates:
         configs = dedupe_preserve_order(configs)
 
-    output_lines = [config.test_vector for config in configs]
-    output_text = "\n".join(output_lines) + "\n"
+    if args.split_by_kpack:
+        grouped: DefaultDict[int, List[str]] = defaultdict(list)
+        for config in configs:
+            if config.kpack is None:
+                continue
+            grouped[config.kpack].append(config.test_vector)
 
-    if args.output == "-":
-        sys.stdout.write(output_text)
-    else:
-        output_path = Path(args.output).expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(output_text, encoding="utf-8")
-        print(f"Wrote {output_path} ({len(output_lines)} configs, {len(warnings)} warnings)")
+        target_kpacks = sorted(grouped)
+        if not target_kpacks:
+            print("error: no kpack sections found to split", file=sys.stderr)
+            return 1
+
+        for kpack in target_kpacks:
+            output_path = kpack_group_path(arch_token, kpack)
+            write_config_lines(output_path, grouped[kpack])
+        return 0
+
+    output_lines = [config.test_vector for config in configs]
+    output_target = resolve_single_output_path(args, arch_token)
+    write_config_lines(output_target, output_lines)
 
     if warnings:
         for msg in warnings:

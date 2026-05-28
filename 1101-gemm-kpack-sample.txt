@@ -1,0 +1,50 @@
+# Sampled GEMM problem configs
+# arch: 1101
+# draw count per file: 15
+# seed: 42
+
+-t f32 -out_datatype f32 -transA false -transB false -g 1 -m 4096 -n 6144 -k 4096
+-t f32 -out_datatype f32 -transA false -transB false -g 1 -m 256 -n 12288 -k 4096
+-t f32 -out_datatype f32 -transA false -transB false -g 1 -m 7 -n 256 -k 256
+-t f32 -out_datatype f32 -transA false -transB true -g 1 -m 1 -n 256 -k 512
+-t f32 -out_datatype f32 -transA false -transB true -g 1 -m 1 -n 512 -k 512
+-t f32 -out_datatype f32 -transA false -transB false -g 1 -m 4096 -n 4096 -k 14336
+-t f32 -out_datatype f32 -transA false -transB false -g 1 -m 77 -n 4096 -k 10240
+-t f16 -out_datatype f16 -transA false -transB false -g 12 -m 77 -n 64 -k 77
+-t f32 -out_datatype f32 -transA true -transB false -g 1 -m 2304 -n 1920 -k 640
+-t f32 -out_datatype f32 -transA false -transB false -g 1 -m 256 -n 22016 -k 4096
+-t f32 -out_datatype f32 -transA false -transB true -g 32 -m 256 -n 256 -k 128
+-t f32 -out_datatype f32 -transA false -transB false -g 1 -m 256 -n 32000 -k 4096
+-t f32 -out_datatype f32 -transA true -transB false -g 1 -m 225 -n 3840 -k 1280
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 1 -n 64 -k 1
+-t f32 -out_datatype f32 -transA true -transB false -g 1 -m 4096 -n 384 -k 256
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 14400 -n 320 -k 320
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 384 -n 1024 -k 1024
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 144 -n 1280 -k 1280
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 256 -n 4096 -k 11008
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 2 -n 128 -k 2
+-t f16 -out_datatype f16 -transA true -transB false -g 1 -m 144 -n 3840 -k 1280
+-t f16 -out_datatype f16 -transA true -transB false -g 1 -m 9792 -n 200 -k 100
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 256 -n 16384 -k 3072
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 7 -n 384 -k 256
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 900 -n 1280 -k 1280
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 216 -n 5120 -k 1280
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 384 -n 768 -k 768
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 1 -n 4096 -k 1024
+-t f16 -out_datatype f16 -transA false -transB true -g 1 -m 100 -n 19200 -k 100
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 77 -n 4096 -k 10240
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 4096 -n 32000 -k 4096
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 256 -n 4096 -k 4096
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 77 -n 768 -k 768
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 225 -n 10240 -k 1280
+-t i8 -out_datatype i32 -transA true -transB false -g 1 -m 576 -n 3840 -k 1280
+-t f16 -out_datatype f16 -transA false -transB true -g 1 -m 1 -n 64 -k 512
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 1 -n 3072 -k 768
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 1 -n 768 -k 768
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 7 -n 256 -k 256
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 1 -n 768 -k 3072
+-t f16 -out_datatype f16 -transA false -transB true -g 1 -m 1 -n 256 -k 512
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 9216 -n 320 -k 1280
+-t f16 -out_datatype f16 -transA false -transB true -g 1 -m 1 -n 1024 -k 512
+-t i8 -out_datatype i32 -transA false -transB false -g 1 -m 7 -n 2048 -k 256
+-t i8 -out_datatype i32 -transA false -transB true -g 2 -m 64 -n 400 -k 400

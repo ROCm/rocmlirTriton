@@ -157,7 +157,7 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       dPerBlock,         // M/block
       dPerBlock,         // N/block
       kPerBlockMFMA,     // K/block
-      {1},               // kPackList
+      {2},               // kPackList
       numWavesRange,     // numWaves
       {16, 32},          // matrixInstrNonkdim
       {1, 2, 3},         // numStages
@@ -172,7 +172,7 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       dPerBlock,         // M/block
       dPerBlock,         // N/block
       kPerBlockWMMA,     // K/block
-      {1},               // kPackList
+      {2},               // kPackList
       {4, 8},            // numWaves
       {0},               // matrixInstrNonkdim
       {1, 2, 3},         // numStages
