@@ -4949,8 +4949,8 @@ static float sumErrorTolerance(Type t) {
 // matmul's K_eff for patterns like `reduce_sum(matmul(A, B) + bias)`.
 static Operation *traceToMatmulLikeProducer(Value value, unsigned depth = 0) {
   // Realistic gemm -> elementwise -> reduce chains are at most 6 hops;
-  // 8 gives a small safety margin.
-  constexpr unsigned kMaxDepth = 8;
+  // 16 gives a good margin.
+  constexpr unsigned kMaxDepth = 16;
   if (depth > kMaxDepth)
     return nullptr;
   Operation *defOp = value.getDefiningOp();
@@ -5059,6 +5059,8 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
     if (!inTy)
       return;
     int64_t axis = reduceOp.getAxis().getSExtValue();
+    assert(axis >= 0 && axis < inTy.getRank() &&
+           "rock.reduce verifier guarantees axis is in [0, rank)");
     int64_t axisExtent = inTy.getShape()[axis];
     if (axisExtent > 0)
       it->second += axisExtent;
