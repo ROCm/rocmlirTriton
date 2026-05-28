@@ -23,10 +23,11 @@
 // RUN: not rocmlir-gen --operation gemm -t f32 -g 1 -m 64 -k 64 -n 64 2>&1 | FileCheck %s --check-prefix=ERR_NO_ARCH
 // ERR_NO_ARCH: --arch is not set
 
-// GEMM requires -g, -m, -k, -n; the missing-arg detector should name the first
-// one it sees missing.
+// GEMM requires -g, -m, -k, -n. The detector walks {groupsize, m, k, n} in
+// order; groupsize defaults to 1 so it passes the <=0 check, leaving `m` as
+// the first missing arg the diagnostic reports.
 // RUN: not rocmlir-gen --arch %arch --operation gemm -t f32 2>&1 | FileCheck %s --check-prefix=ERR_GEMM_MISSING
-// ERR_GEMM_MISSING: Value for: {{(m|n|k|groupsize)}} not specified
+// ERR_GEMM_MISSING: Value for: m not specified
 
 // Mixed input/filter dtypes require an explicit output dtype.
 // RUN: not rocmlir-gen --arch %arch -p -fil_dtype f16 -in_dtype f32 2>&1 | FileCheck %s --check-prefix=ERR_MIXED_DTYPE

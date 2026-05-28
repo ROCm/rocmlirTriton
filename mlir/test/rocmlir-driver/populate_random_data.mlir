@@ -59,11 +59,14 @@
 // RAND_FLOAT-NEXT: memref.store %[[val1]]
 
 // `-rand_min_int` / `-rand_max_int` override the [-5, 5) default range for
-// integer randomness. All three GEMM args should pick up the new bounds.
+// integer randomness. All three GEMM args (A, B, C) should pick up the new
+// bounds: exactly three randomIntegerValue calls, all using the overridden
+// constants, and no float randomization helper anywhere.
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -t i8 -out_datatype i32 -g 1 -m 32 -n 32 -k 32 -ph -rand 1 -rand_type int -rand_min_int -3 -rand_max_int 7 | rocmlir-opt -canonicalize | FileCheck %s --check-prefix=RAND_INT_BOUNDS
 // RAND_INT_BOUNDS-DAG: %[[min:.*]] = arith.constant -3 : i16
 // RAND_INT_BOUNDS-DAG: %[[max:.*]] = arith.constant 7 : i16
-// RAND_INT_BOUNDS: func.call @randomIntegerValue(%[[min]], %[[max]])
+// RAND_INT_BOUNDS-COUNT-3: func.call @randomIntegerValue(%[[min]], %[[max]])
+// RAND_INT_BOUNDS-NOT:     func.call @randomIntegerValue
 // RAND_INT_BOUNDS-NOT: func.func private @randomFloatValue
 
 // `-rand_type_int_for_inputs` selectively forces integer randomness on

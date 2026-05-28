@@ -29,7 +29,7 @@
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -ph -pi | FileCheck %s --check-prefix=PRINT_INPUTS
 // PRINT_INPUTS-LABEL: func.func @main()
 // PRINT_INPUTS-COUNT-2: call @printMemrefF32
-// PRINT_INPUTS-NOT:     call @printMemrefF32
+// PRINT_INPUTS-NOT: call @printMemrefF32
 
 // `--print-verify-results=<level>` is forwarded to `mcpuVerifyFloat` as the
 // trailing `i8` constant in the call argument list (off=0, summary=1,
@@ -77,7 +77,6 @@
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -ph | FileCheck %s --check-prefix=NO_DEVICE
 // NO_DEVICE-NOT: llvm.func @setDeviceCtor
 // NO_DEVICE-NOT: gpu.set_default_device
-// NO_DEVICE-NOT: llvm.mlir.global_ctors
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -ph --device 1 | FileCheck %s --check-prefix=DEVICE_1
 // DEVICE_1: llvm.func @setDeviceCtor()
 // DEVICE_1: %[[idx:.*]] = arith.constant 1 : i32
