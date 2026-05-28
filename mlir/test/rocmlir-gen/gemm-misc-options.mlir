@@ -22,27 +22,14 @@
 // RUN: rocmlir-gen --arch gfx942 --operation conv_bwd_weight -p -t f32 --emit-tuning-key | FileCheck %s --check-prefix=BWD_WRW_KEY
 // BWD_WRW_KEY: amdgcn-amd-amdhsa:gfx942   {{.*}}     conv -F 4 -f GNC01 -I NGC01 -O NGC01 -n 128 -c 8 -H 32 -W 32 -k 128 -y 3 -x 3 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 
-// Print toggles for the host harness: `-pi` prints all input tensors (so for
-// a 3-arg GEMM, A and B but not C), `-pr` prints only the output, and `-pvr`
-// prints the CPU validation buffer. With no toggle, no `printMemrefF32` calls
-// are emitted.
+// `-pi` (`--print-inputs`) prints every input tensor of the host harness
+// (all kernel args except the output). For a 3-arg GEMM that is A and B,
+// emitted as two `printMemrefF32` calls. `-pr` and `-pvr` are already
+// covered by populate_host_print*.mlir and the fusion E2E tests.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -ph -pi | FileCheck %s --check-prefix=PRINT_INPUTS
 // PRINT_INPUTS-LABEL: func.func @main()
 // PRINT_INPUTS-COUNT-2: call @printMemrefF32
 // PRINT_INPUTS-NOT:     call @printMemrefF32
-
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -ph -pr | FileCheck %s --check-prefix=PRINT_RESULTS
-// PRINT_RESULTS-LABEL: func.func @main()
-// PRINT_RESULTS-COUNT-1: call @printMemrefF32
-// PRINT_RESULTS-NOT:     call @printMemrefF32
-
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -ph | FileCheck %s --check-prefix=PRINT_NONE
-// PRINT_NONE-NOT: call @printMemrefF32
-
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -pv -pvr | FileCheck %s --check-prefix=PRINT_VALIDATION
-// PRINT_VALIDATION-LABEL: func.func @main()
-// PRINT_VALIDATION-COUNT-1: call @printMemrefF32
-// PRINT_VALIDATION-NOT:     call @printMemrefF32
 
 // `--print-verify-results=<level>` is forwarded to `mcpuVerifyFloat` as the
 // trailing `i8` constant in the call argument list (off=0, summary=1,
