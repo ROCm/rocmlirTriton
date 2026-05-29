@@ -188,10 +188,17 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
     tritonOpts.numStages = gemmParams.getNumStages();
     tritonOpts.matrixInstrNonkdim = gemmParams.getMatrixInstrNonkdim();
     tritonOpts.kpack = gemmParams.getKpack();
+    tritonOpts.useAsyncCopy = gemmParams.getUseAsyncCopy();
+    tritonOpts.useBlockPingpong = gemmParams.getUseBlockPingpong();
+    tritonOpts.useInThreadTranspose = gemmParams.getUseInThreadTranspose();
+    tritonOpts.useBufferOps = gemmParams.getUseBufferOps();
+    tritonOpts.useBufferAtomics = gemmParams.getUseBufferAtomics();
+    tritonOpts.scheduleHint = gemmParams.getScheduleHint();
 
     backendOpts.numWarps = gemmParams.getNumWaves();
     backendOpts.numCTAs = gemmParams.getNumCTAs();
     backendOpts.wavesPerEU = gemmParams.getWavesPerEU();
+    backendOpts.scheduleHint = gemmParams.getScheduleHint();
     return success();
   }
   if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(perfConfig)) {
@@ -200,9 +207,16 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
     tritonOpts.numStages = gemmGemmParams.getNumStages();
     tritonOpts.matrixInstrNonkdim = gemmGemmParams.getMatrixInstrNonkdim();
     tritonOpts.kpack = gemmGemmParams.getKpack();
+    tritonOpts.useAsyncCopy = gemmGemmParams.getUseAsyncCopy();
+    tritonOpts.useBlockPingpong = gemmGemmParams.getUseBlockPingpong();
+    tritonOpts.useInThreadTranspose = gemmGemmParams.getUseInThreadTranspose();
+    tritonOpts.useBufferOps = gemmGemmParams.getUseBufferOps();
+    tritonOpts.useBufferAtomics = gemmGemmParams.getUseBufferAtomics();
+    tritonOpts.scheduleHint = gemmGemmParams.getScheduleHint();
 
     backendOpts.numWarps = gemmGemmParams.getNumWaves();
     backendOpts.wavesPerEU = gemmGemmParams.getWavesPerEU();
+    backendOpts.scheduleHint = gemmGemmParams.getScheduleHint();
     return success();
   }
   return failure();

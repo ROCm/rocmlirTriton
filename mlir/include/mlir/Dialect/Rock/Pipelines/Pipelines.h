@@ -13,7 +13,7 @@
 #ifndef MLIR_DIALECT_ROCK_PIPELINES_H_
 #define MLIR_DIALECT_ROCK_PIPELINES_H_
 
-#include "llvm/ADT/StringRef.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassOptions.h"
 
@@ -74,6 +74,49 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       *this, "matrixInstrNonkdim", desc("Matrix instruction non-k dimension"),
       init(16)};
   PassOptions::Option<int> kpack{*this, "kpack", desc("kpack"), init(1)};
+
+  // Triton knobs.
+  PassOptions::Option<int64_t> useAsyncCopy{
+      *this, "useAsyncCopy",
+      desc("Override async-copy schedule (kKnobDefault=arch default, "
+           "0=off, 1=on)"),
+      init(kKnobDefault)};
+  PassOptions::Option<int64_t> useBlockPingpong{
+      *this, "useBlockPingpong",
+      desc("Override block-pingpong schedule (kKnobDefault=arch default, "
+           "0=off, 1=on)"),
+      init(kKnobDefault)};
+  PassOptions::Option<int64_t> useInThreadTranspose{
+      *this, "useInThreadTranspose",
+      desc("Override in-thread-transpose pass (kKnobDefault=arch default, "
+           "0=off, 1=on)"),
+      init(kKnobDefault)};
+  PassOptions::Option<int64_t> useBufferOps{
+      *this, "useBufferOps",
+      desc("Override use-buffer-ops (kKnobDefault=on, 0=off, 1=on)"),
+      init(kKnobDefault)};
+  PassOptions::Option<int64_t> useBufferAtomics{
+      *this, "useBufferAtomics",
+      desc("Override use-buffer-atomics (kKnobDefault=on, 0=off, 1=on; "
+           "requires useBufferOps to be on)"),
+      init(kKnobDefault)};
+  // Debug-only, intentionally not part of the perfConfig
+  // It can still bet via:
+  // `rocmlir-opt
+  // --pass-pipeline='builtin.module(rock-triton-pipeline{bufferOpsAnalyzeSmallTensorRange=1
+  // ...})'`.
+  PassOptions::Option<int64_t> bufferOpsAnalyzeSmallTensorRange{
+      *this, "bufferOpsAnalyzeSmallTensorRange",
+      desc("Override small-tensor range analysis in convert-to-buffer-ops "
+           "(kKnobDefault=off, 0=off, 1=on; requires useBufferOps to be on). "
+           "Debug-only override; not a perfConfig knob."),
+      init(kKnobDefault)};
+  PassOptions::Option<int64_t> scheduleHint{
+      *this, "scheduleHint",
+      desc("Per-kernel scheduling hint ordinal (kKnobDefault=arch default, "
+           "0=none, 1=attention, 2=memory-bound-attention). See "
+           "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding."),
+      init(kKnobDefault)};
 };
 
 /// Adds the `triton` pipeline to the `OpPassManager`.
@@ -111,6 +154,11 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> suppressDiagnostic{
       *this, "suppress-diagnostic",
       desc("should we suppress diagnostic messages"), init(false)};
+  PassOptions::Option<int64_t> scheduleHint{
+      *this, "scheduleHint",
+      desc("Per-kernel scheduling hint ordinal forwarded to TritonToHsaco "
+           "(see mlir/Dialect/Rock/utility/KnobUtils.h)"),
+      init(kKnobDefault)};
 };
 
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.
