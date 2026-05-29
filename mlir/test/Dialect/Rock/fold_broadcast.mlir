@@ -84,7 +84,7 @@ func.func @mlir_dot_add_2(%arg0: tensor<8x32x1xf16>, %arg1: tensor<4x8x16xf16>, 
  %3 = rock.transform %2 by #transform_map5 : tensor<16x1x32xf16> to tensor<16x4x32xf16>
  %p = rock.transform %3 by #transform_map6 : tensor<16x4x32xf16> to tensor<4x16x32xf16>
 
- %5 = rock.gemm %arg1 * %p {perf_config = "v3:16,32,4,16,16,4,4,1,2,1,1"} : tensor<4x8x16xf16> * tensor<4x16x32xf16> -> tensor<4x8x32xf16>
+ %5 = rock.gemm %arg1 * %p {perf_config = "gemm:v1:16,32,16,1,1,2,16,4,2,0,0"} : tensor<4x8x16xf16> * tensor<4x16x32xf16> -> tensor<4x8x32xf16>
  %6 = tensor.empty() : tensor<4x8x32xf16>
  %7 = linalg.generic {indexing_maps = [#map3, #map3, #map3], iterator_types = ["parallel", "parallel", "parallel"]} ins(%5, %1 : tensor<4x8x32xf16>, tensor<4x8x32xf16>) outs(%6 : tensor<4x8x32xf16>) {
  ^bb0(%in: f16, %in_0: f16, %out: f16):
