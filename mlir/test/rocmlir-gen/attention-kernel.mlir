@@ -71,3 +71,36 @@
 // CHECK_NO_SCALE-DAG: %[[softmaxTensorCast:.*]] = tosa.cast %[[softmaxTensor]] : ([[squareShape]]) -> [[squareShape]]
 // CHECK_NO_SCALE-DAG: %[[resultTensor:.*]] = tosa.matmul %[[softmaxTensorCast]], %[[valuesTensor:.*]], %{{.*}}, %{{.*}} : ([[squareShape]], [[valuesShape:tensor<.*>]], tensor<1xf32>, tensor<1xf32>) -> [[valuesShape]]
 // CHECK_NO_SCALE: return
+
+// ----
+
+// Per-tensor transpose flags. The baseline (no flag) layout is:
+//   Q in [seq_q, head_qk], K in [head_qk, seq_k],
+//   V in [seq_k, head_v],  O in [seq_q, head_v].
+// `-transQ` / `-transV` flip the trailing two dims of the corresponding
+// operand and surface a `tr` modifier on the matmul; `-transO` flips the
+// output and sets the `oTransposed` attribute on `rock.attention`.
+
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 128 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 64 -t f16 -transQ | FileCheck %s --enable-var-scope --check-prefix=TRANS_Q
+// TRANS_Q-LABEL: func.func @rock_attention
+// Q (flat 4096) becomes head_qk x seq_q instead of seq_q x head_qk.
+// TRANS_Q: rock.transform %{{.*}} : tensor<4096xf16> to tensor<1x32x128xf16>
+// TRANS_Q: rock.transform %{{.*}} : tensor<8192xf16> to tensor<1x32x256xf16>
+// TRANS_Q: rock.transform %{{.*}} : tensor<16384xf16> to tensor<1x256x64xf16>
+// TRANS_Q: rock.attention
+// TRANS_Q: qk = tr %{{.*}} * %{{.*}} : tensor<1x32x128xf16>, tensor<1x32x256xf16>
+
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 128 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 64 -t f16 -transV | FileCheck %s --enable-var-scope --check-prefix=TRANS_V
+// TRANS_V-LABEL: func.func @rock_attention
+// V (flat 16384) becomes head_v x seq_k instead of seq_k x head_v.
+// TRANS_V: rock.transform %{{.*}} : tensor<4096xf16> to tensor<1x128x32xf16>
+// TRANS_V: rock.transform %{{.*}} : tensor<8192xf16> to tensor<1x32x256xf16>
+// TRANS_V: rock.transform %{{.*}} : tensor<16384xf16> to tensor<1x64x256xf16>
+// TRANS_V: rock.attention
+// TRANS_V: softmax(qk) * tr %{{.*}} : tensor<1x64x256xf16>
+
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -seq_len_q 128 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 64 -t f16 -transO | FileCheck %s --enable-var-scope --check-prefix=TRANS_O
+// TRANS_O-LABEL: func.func @rock_attention
+// TRANS_O: rock.attention
+// TRANS_O: oTransposed
+// TRANS_O: -> tensor<1x64x128xf16>
