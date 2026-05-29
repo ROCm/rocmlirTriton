@@ -135,7 +135,8 @@ static bool isInThreadTransposeEnabled(StringRef arch,
                                        int64_t useInThreadTransposeOverride) {
   if (useInThreadTransposeOverride != rock::kKnobDefault)
     return useInThreadTransposeOverride;
-  return arch.starts_with("gfx942");
+  return arch.starts_with("gfx942") || arch.starts_with("gfx110") ||
+         arch.starts_with("gfx115") || arch.starts_with("gfx120");
 }
 
 static bool isAsyncCopyEnabled(StringRef arch, int64_t useAsyncCopyOverride) {
