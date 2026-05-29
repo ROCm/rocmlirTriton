@@ -255,9 +255,9 @@ func.func @rock_conv_7x7_tuning(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256
     output_layout = ["no", "go", "ko", "0o", "1o"],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
     // Restore this once the kPack + padding support works
-    // perf_config = "v3:64,256,8,64,64,4,1,1,2,1,1",
+    // perf_config = "gemm:v1:64,256,32,1,1,4,64,1,2,0,0",
     // rocMLIR perf_config:
-    // perf_config = "v3:64,256,8,64,64,1,1,1,2,1,2",
+    // perf_config = "gemm:v1:64,256,8,1,1,4,64,1,2,0,0",
     perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0",
     strides = [2 : index, 2 : index]
   } : tensor<1x64x3x7x7xf32>, tensor<256x1x3x230x230xf32> -> tensor<256x1x64x112x112xf32>
