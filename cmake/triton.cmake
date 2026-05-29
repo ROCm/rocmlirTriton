@@ -5,7 +5,26 @@ message(STATUS "Adding Triton src dependency")
 # NOTE: Triton requires a pre-built LLVM/MLIR. Set MLIR_DIR before configuring.
 #===----------------------------------------------------------------------===//
 
-set(TRITON_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/triton")
+# Allow pointing Triton at a tree outside the repo (e.g. a pre-cloned
+# alternative Triton checkout maintained elsewhere on disk) by setting
+# TRITON_EXTERNAL_SRC_DIR on the cmake command line or in the environment.
+# Default: use the in-tree submodule at external/triton.
+if(NOT DEFINED TRITON_EXTERNAL_SRC_DIR AND DEFINED ENV{TRITON_EXTERNAL_SRC_DIR})
+  set(TRITON_EXTERNAL_SRC_DIR "$ENV{TRITON_EXTERNAL_SRC_DIR}")
+endif()
+if(TRITON_EXTERNAL_SRC_DIR)
+  file(TO_CMAKE_PATH "${TRITON_EXTERNAL_SRC_DIR}" TRITON_EXTERNAL_SRC_DIR)
+  if(NOT EXISTS "${TRITON_EXTERNAL_SRC_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+      "TRITON_EXTERNAL_SRC_DIR is set but no CMakeLists.txt found at\n"
+      "  ${TRITON_EXTERNAL_SRC_DIR}\n"
+      "Point this at the root of a Triton source tree.")
+  endif()
+  set(TRITON_PROJECT_DIR "${TRITON_EXTERNAL_SRC_DIR}")
+  message(STATUS "Using external Triton tree: ${TRITON_PROJECT_DIR}")
+else()
+  set(TRITON_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/triton")
+endif()
 set(TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
 
 #===----------------------------------------------------------------------===//

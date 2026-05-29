@@ -189,7 +189,10 @@ message(BUILD_SHARED_LIBS="${BUILD_SHARED_LIBS}")
 #===----------------------------------------------------------------------===//
 
 set(TRITON_EXTERNAL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
-set(TRITON_EXTERNAL_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/triton")
+# Allow caller to override the Triton source location.
+if(NOT TRITON_EXTERNAL_SRC_DIR)
+  set(TRITON_EXTERNAL_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/triton")
+endif()
 set(TRITON_EXTERNAL_BIN_DIR "${TRITON_EXTERNAL_BUILD_DIR}/bin")
 set(TRITON_EXTERNAL_LIB_DIR "${TRITON_EXTERNAL_BUILD_DIR}/lib")
 

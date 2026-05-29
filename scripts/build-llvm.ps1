@@ -26,11 +26,6 @@
     Path to the HIP SDK install. Defaults to $env:HIP_PATH, then $env:ROCM_PATH,
     then C:\opt\rocm.
 
-.PARAMETER Chipset
-    AMDGPU chipset used to gate MLIR_ENABLE_ROCM_RUNNER's integration-test
-    lookup (there is no rocm_agent_enumerator.exe in the Windows HIP SDK).
-    Defaults to gfx1201.
-
 .PARAMETER Clean
     If set, wipe external/triton/llvm-project before cloning.
 
@@ -48,22 +43,64 @@ param(
 
     [string]$HipPath,
 
-    [string]$Chipset = 'gfx1201',
-
     [switch]$Clean,
 
-    # Windows-only override of the Triton submodule.
-    # rocmlirTriton's .gitmodules points at upstream triton-lang/triton so
-    # Linux is unaffected. On Windows we redirect the *local* clone to the
-    # windows-enablement fork; .gitmodules and the recorded gitlink are not
-    # modified.
-    [string]$TritonRemote = 'https://github.com/triton-lang/triton-windows.git',
-    # Empty -> read pinned SHA from triton-windows-hash.txt (see below).
-    # Pass -TritonRef <sha> or -TritonRef main-windows to override.
-    [string]$TritonRef    = ''
+    # --- Triton source ----------------------------------------------------
+    # If -TritonRemote is provided, the script switches to "alternative
+    # Triton" mode: it clones $TritonRemote@$TritonRef into external/triton
+    # and $LlvmRemote@$LlvmRef into external/triton/llvm-project. No
+    # triton-patches/* or llvm-patches/* are applied -- alternative Triton
+    # forks are expected to carry the equivalent changes in their source
+    # directly.
+    #
+    # If -TritonRemote is empty (default), the script keeps the historical
+    # windows-enablement behaviour: clones triton-lang/triton-windows at
+    # the SHA pinned in triton-windows-hash.txt, applies triton-patches/*
+    # (patch1, patch6) and llvm-patches/*.
+    [string]$TritonRemote = '',
+    [string]$TritonRef    = '',
+
+    # --- LLVM source (only consulted in "alternative Triton" mode) --------
+    # In default (windows-enablement) mode LLVM URL is hard-coded to
+    # github.com/llvm/llvm-project and the commit is read from the Triton
+    # tree's cmake/llvm-hash.txt, exactly as before.
+    [string]$LlvmRemote = '',
+    [string]$LlvmRef    = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ---------------------------------------------------------------------------
+# Helper: invoke a native command (git, cmake, ninja) without letting
+# PowerShell turn its stderr progress chatter (e.g. "Cloning into ...",
+# "Updating files: 17% (...)") into a terminating NativeCommandError.
+#
+# Without this wrapper, $ErrorActionPreference='Stop' on Windows PowerShell 5.1
+# aborts the script on the very first git stderr line, even though the
+# command itself succeeds. PowerShell 7 has
+# $PSNativeCommandUseErrorActionPreference for this; PS 5 does not.
+#
+# The caller is still responsible for checking $LASTEXITCODE -- this wrapper
+# only fixes the stderr-as-error misclassification.
+# ---------------------------------------------------------------------------
+function Invoke-Native {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Exe,
+          [Parameter(ValueFromRemainingArguments)] [object[]]$Args)
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Exe @Args 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                Write-Host $_.Exception.Message
+            } else {
+                Write-Host $_
+            }
+        }
+    } finally {
+        $ErrorActionPreference = $saved
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Resolve repo root
@@ -79,16 +116,41 @@ $RepoRoot = $RepoRoot -replace '\\', '/'
 Write-Host "=== rocmlirTriton LLVM build wrapper (Windows) ===" -ForegroundColor Cyan
 Write-Host "Repo root: $RepoRoot"
 
-# Pinned triton-windows commit (analogous to external/triton/cmake/llvm-hash.txt).
-# Bump by editing triton-windows-hash.txt and verifying the build.
-if (-not $TritonRef) {
-    $TritonHashFile = "$RepoRoot/triton-windows-hash.txt"
-    if (-not (Test-Path $TritonHashFile)) {
-        throw "Pinned triton-windows hash not found: $TritonHashFile"
+# ---------------------------------------------------------------------------
+# Decide between "default windows-enablement" and "alternative Triton" modes.
+# Sentinel: a non-empty $TritonRemote selects the alternative path.
+# ---------------------------------------------------------------------------
+$IsAlternativeStack = [bool]$TritonRemote
+
+if ($IsAlternativeStack) {
+    Write-Host "Mode: alternative Triton stack" -ForegroundColor Yellow
+    if (-not $TritonRef) {
+        throw '-TritonRef is required when -TritonRemote is set.'
     }
-    $TritonRef = (Get-Content $TritonHashFile -TotalCount 1).Trim()
+    if (-not $LlvmRemote) {
+        throw '-LlvmRemote is required when -TritonRemote is set (the ' +
+              'alternative Triton tree comes with its own matching LLVM).'
+    }
+    if (-not $LlvmRef) {
+        throw '-LlvmRef is required when -TritonRemote is set (pin the ' +
+              'exact LLVM commit so the build is reproducible).'
+    }
+    Write-Host "  Triton: $TritonRemote @ $TritonRef"
+    Write-Host "  LLVM:   $LlvmRemote @ $LlvmRef"
+} else {
+    Write-Host "Mode: default windows-enablement" -ForegroundColor Cyan
+    $TritonRemote = 'https://github.com/triton-lang/triton-windows.git'
+    if (-not $TritonRef) {
+        $TritonHashFile = "$RepoRoot/triton-windows-hash.txt"
+        if (-not (Test-Path $TritonHashFile)) {
+            throw "Pinned triton-windows hash not found: $TritonHashFile"
+        }
+        $TritonRef = (Get-Content $TritonHashFile -TotalCount 1).Trim()
+    }
+    # LlvmRemote / LlvmRef are derived later from the Triton tree's
+    # cmake/llvm-hash.txt in Step 3.
+    Write-Host "  Triton: $TritonRemote @ $TritonRef"
 }
-Write-Host "Triton ref: $TritonRef"
 
 # ---------------------------------------------------------------------------
 # Resolve HIP SDK
@@ -139,24 +201,27 @@ if (-not (Test-Path "$TritonDir/.git")) {
     Write-Host "  external/triton/.git absent -- direct-cloning fork" `
         -ForegroundColor Yellow
     if (Test-Path $TritonDir) { Remove-Item -Recurse -Force $TritonDir }
-    git clone --filter=blob:none $TritonRemote $TritonDir
+    Invoke-Native git clone --filter=blob:none $TritonRemote $TritonDir
     if ($LASTEXITCODE -ne 0) { throw "git clone fork failed ($LASTEXITCODE)" }
 } else {
-    git -C $TritonDir remote set-url origin $TritonRemote
+    Invoke-Native git -C $TritonDir remote set-url origin $TritonRemote
     if ($LASTEXITCODE -ne 0) { throw "remote set-url failed ($LASTEXITCODE)" }
 }
-git -C $TritonDir fetch --depth 1 origin $TritonRef
+Invoke-Native git -C $TritonDir fetch --depth 1 origin $TritonRef
 if ($LASTEXITCODE -ne 0) { throw "git fetch $TritonRef failed ($LASTEXITCODE)" }
-git -C $TritonDir reset --hard $TritonRef
-if ($LASTEXITCODE -ne 0) { throw "git reset $TritonRef failed ($LASTEXITCODE)" }
+# Reset to FETCH_HEAD rather than $TritonRef: with --depth 1 fetch, a
+# branch-name ref is reachable only as FETCH_HEAD, not as the local
+# refs/heads/... entry. Using FETCH_HEAD handles both SHA and branch refs.
+Invoke-Native git -C $TritonDir reset --hard FETCH_HEAD
+if ($LASTEXITCODE -ne 0) { throw "git reset FETCH_HEAD failed ($LASTEXITCODE)" }
 
 # Drop any orphan files left over from a half-applied patch / failed previous
 # build. Without this, `git apply --check` against a clean tree can still see
 # stale junk and we silently fall through to the "assuming present" branch.
-git -C $TritonDir clean -fd
+Invoke-Native git -C $TritonDir clean -fd
 if ($LASTEXITCODE -ne 0) { throw "git clean failed for Triton ($LASTEXITCODE)" }
 
-git -C $TritonDir submodule update --init --recursive
+Invoke-Native git -C $TritonDir submodule update --init --recursive
 if ($LASTEXITCODE -ne 0) { throw "nested submodule update failed ($LASTEXITCODE)" }
 
 # ---------------------------------------------------------------------------
@@ -181,6 +246,11 @@ if ($LASTEXITCODE -ne 0) { throw "nested submodule update failed ($LASTEXITCODE)
 # ---------------------------------------------------------------------------
 
 $TritonPatchNames = @('patch1.patch', 'patch6.patch')
+# In alternative-Triton mode, the patches are still attempted (they are
+# generic Windows clang-cl fixes that the alternative tree may or may not
+# already carry), but a "neither forward nor reverse apply" is downgraded
+# from fatal to warning -- the alternative tree may have an equivalent fix
+# that doesn't structurally match the upstream patch context.
 $AnyPatchOnDisk = $TritonPatchNames | Where-Object { Test-Path (Join-Path $PatchesDir $_) }
 if ($AnyPatchOnDisk) {
     Write-Host "--- Applying triton patches ---" -ForegroundColor Cyan
@@ -219,6 +289,16 @@ if ($AnyPatchOnDisk) {
             & git -C $TritonDir apply --check --reverse $lfPath 2>$null | Out-Null
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "Skipping:  $patchName (already applied)"
+            } elseif ($IsAlternativeStack) {
+                # Alternative tree may carry an equivalent fix in a form that
+                # doesn't match the upstream patch context. Warn loudly so the
+                # developer can spot it but don't fail the build.
+                Write-Warning ("$patchName does not apply cleanly to " +
+                    "$TritonDir (neither forward nor reverse). The " +
+                    "alternative Triton tree is presumed to carry an " +
+                    "equivalent change. If you see build/test failures " +
+                    "downstream that look like missing patch1 / patch6 " +
+                    "fixes, re-check this tree.")
             } else {
                 # Do NOT silently assume the patch is "absorbed". On Windows we
                 # have repeatedly seen reset --hard leave garbage that makes both
@@ -238,15 +318,27 @@ if ($AnyPatchOnDisk) {
 }
 
 # ---------------------------------------------------------------------------
-# Step 3: Fetch LLVM at the pinned commit
+# Step 3: Fetch LLVM at the pinned commit.
+#
+# Default mode:        URL = github.com/llvm/llvm-project, ref read from
+#                      $TritonDir/cmake/llvm-hash.txt.
+# Alternative mode:    URL = $LlvmRemote, ref = $LlvmRef (both supplied by
+#                      caller, validated at the top of this script).
 # ---------------------------------------------------------------------------
 $LlvmSrc    = "$TritonDir/llvm-project"
 $LlvmBuild  = "$LlvmSrc/build"
-$LlvmHashFile = "$TritonDir/cmake/llvm-hash.txt"
-if (-not (Test-Path $LlvmHashFile)) {
-    throw "$LlvmHashFile not found (did the Triton submodule init?)."
+
+if ($IsAlternativeStack) {
+    $LlvmRemoteEffective = $LlvmRemote
+    $LlvmHash            = $LlvmRef
+} else {
+    $LlvmRemoteEffective = 'https://github.com/llvm/llvm-project'
+    $LlvmHashFile = "$TritonDir/cmake/llvm-hash.txt"
+    if (-not (Test-Path $LlvmHashFile)) {
+        throw "$LlvmHashFile not found (did the Triton submodule init?)."
+    }
+    $LlvmHash = (Get-Content $LlvmHashFile -Raw).Trim()
 }
-$LlvmHash = (Get-Content $LlvmHashFile -Raw).Trim()
 
 if ($Clean -and (Test-Path $LlvmSrc)) {
     Write-Host "Removing $LlvmSrc (--Clean)" -ForegroundColor Yellow
@@ -254,25 +346,33 @@ if ($Clean -and (Test-Path $LlvmSrc)) {
 }
 
 if (-not (Test-Path $LlvmSrc)) {
-    Write-Host "--- Cloning llvm-project ---" -ForegroundColor Cyan
-    git clone --filter=blob:none https://github.com/llvm/llvm-project $LlvmSrc
+    Write-Host "--- Cloning $LlvmRemoteEffective ---" -ForegroundColor Cyan
+    Invoke-Native git clone --filter=blob:none $LlvmRemoteEffective $LlvmSrc
     if ($LASTEXITCODE -ne 0) { throw "git clone failed ($LASTEXITCODE)" }
+} else {
+    Invoke-Native git -C $LlvmSrc remote set-url origin $LlvmRemoteEffective
+    if ($LASTEXITCODE -ne 0) { throw "remote set-url failed ($LASTEXITCODE)" }
 }
 
 Write-Host "--- Resetting llvm-project to $LlvmHash ---" -ForegroundColor Cyan
-git -C $LlvmSrc fetch --depth 1 origin $LlvmHash
+Invoke-Native git -C $LlvmSrc fetch --depth 1 origin $LlvmHash
 if ($LASTEXITCODE -ne 0) { throw "git fetch failed ($LASTEXITCODE)" }
-git -C $LlvmSrc reset --hard $LlvmHash
+# See triton step: FETCH_HEAD works for both SHA and branch refs.
+Invoke-Native git -C $LlvmSrc reset --hard FETCH_HEAD
 if ($LASTEXITCODE -ne 0) { throw "git reset failed ($LASTEXITCODE)" }
 
 # As above: scrub any orphan files so `git apply --check` sees a pristine tree.
-git -C $LlvmSrc clean -fd
+Invoke-Native git -C $LlvmSrc clean -fd
 if ($LASTEXITCODE -ne 0) { throw "git clean failed for LLVM ($LASTEXITCODE)" }
 
 # Apply llvm-patches/*.patch in sorted order, mirroring the Linux build-llvm.sh
 # hook (which splices the same loop into Triton's build script). Each patch is
 # CRLF-normalized so `git apply` accepts it under Windows core.autocrlf=true,
 # and we check forward then reverse so re-runs are idempotent.
+#
+# In alternative-Triton mode the patches are still attempted (the alternative
+# LLVM tree may or may not already carry them) but a "neither forward nor
+# reverse apply" is downgraded from fatal to warning.
 $LlvmPatchesDir = "$RepoRoot/llvm-patches"
 if (Test-Path $LlvmPatchesDir) {
     $llvmPatches = Get-ChildItem -Path $LlvmPatchesDir -Filter '*.patch' -File |
@@ -302,6 +402,11 @@ if (Test-Path $LlvmPatchesDir) {
                     & git -C $LlvmSrc apply --check --reverse $lfPath 2>$null | Out-Null
                     if ($LASTEXITCODE -eq 0) {
                         Write-Host "Skipping:  $($patch.Name) (already applied)"
+                    } elseif ($IsAlternativeStack) {
+                        Write-Warning ("$($patch.Name) does not apply " +
+                            "cleanly to $LlvmSrc (neither forward nor " +
+                            "reverse). The alternative LLVM tree is " +
+                            "presumed to carry an equivalent change.")
                     } else {
                         # See the matching note in the triton-patches block:
                         # silently assuming presence has burned us before
@@ -351,22 +456,38 @@ $cmakeArgs = @(
     '-DBUILD_SHARED_LIBS=OFF',
     '-DLLVM_OPTIMIZED_TABLEGEN=ON',
     '-DMLIR_ENABLE_BINDINGS_PYTHON=OFF',
+    # MAX_PATH workaround: the upstream `mlir-minimal-opt-canonicalize` example
+    # lives at tools\mlir\examples\minimal-opt\CMakeFiles\<dir>\<hash>\... which
+    # easily exceeds Windows' 260-char rc.exe path limit when LLVM is built
+    # under external\triton\llvm-project\build\. Examples are not used by
+    # rocmlirTriton, so disable them outright.
+    '-DLLVM_INCLUDE_EXAMPLES=OFF',
+    '-DMLIR_INCLUDE_INTEGRATION_TESTS=OFF',
     '-DLLVM_ENABLE_ZSTD=OFF',
     '-DLLVM_TARGETS_TO_BUILD=Native;NVPTX;AMDGPU',
     '-DLLVM_ENABLE_PROJECTS=mlir;lld',
     '-DMLIR_ENABLE_ROCM_RUNNER=ON',
     "-DROCM_PATH=$HipPath",
-    "-DROCM_TEST_CHIPSET=$Chipset",
+    # ROCM_TEST_CHIPSET must be set whenever MLIR_ENABLE_ROCM_RUNNER=ON,
+    # otherwise upstream MLIR's ExecutionEngine/CMakeLists.txt tries to
+    # invoke rocm_agent_enumerator (a Linux-only ROCm helper missing from
+    # the Windows HIP SDK) and aborts cmake configure. The value chosen
+    # here doesn't affect the LLVM build artifacts: MLIR integration tests
+    # are off and the LLVM AMDGPU backend itself is chipset-agnostic at
+    # build time (the target is selected at llc invocation time with
+    # -mcpu=...). rocmlirTriton's own Phase 3 configure picks the actual
+    # test chipset via its own ROCK_TEST_CHIPSET / AMDGPU_TARGETS knobs.
+    '-DROCM_TEST_CHIPSET=gfx1201',
     '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON'
 )
-& cmake @cmakeArgs
+Invoke-Native cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }
 
 # ---------------------------------------------------------------------------
 # Step 5: Build
 # ---------------------------------------------------------------------------
 Write-Host "--- ninja -C $LlvmBuild ---" -ForegroundColor Cyan
-& ninja -C $LlvmBuild
+Invoke-Native ninja -C $LlvmBuild
 if ($LASTEXITCODE -ne 0) { throw "ninja build failed ($LASTEXITCODE)" }
 
 # Record the hash this build dir is configured for, so a future Triton bump
