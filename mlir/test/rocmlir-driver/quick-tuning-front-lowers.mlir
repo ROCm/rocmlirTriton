@@ -26,9 +26,9 @@
 // RUN: rocmlir-gen --arch %arch --operation conv -t f16 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=4 --in_channels=16 --out_channels=16 -in_h=16 -in_w=16 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=1 --padding_w=1 --groupsize=1 --emit-tuning-space=quick | FileCheck %s --check-prefix=CHECK-CONV
 // RUN: rocmlir-gen --arch %arch --operation conv -t f16 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=4 --in_channels=16 --out_channels=16 -in_h=16 -in_w=16 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=1 --padding_w=1 --groupsize=1 --perf_config="$(rocmlir-gen --arch %arch --operation conv -t f16 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=4 --in_channels=16 --out_channels=16 -in_h=16 -in_w=16 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=1 --padding_w=1 --groupsize=1 --emit-tuning-space=quick | sed -n '1p')" | rocmlir-driver -c -o /dev/null
 //
-// CHECK-GEMM-NT: gemm:v1:
-// CHECK-GEMM-TA: gemm:v1:
-// CHECK-ATTN: attn:v1:
-// CHECK-GEMM-GEMM: attn:v1:
-// CHECK-CONV-GEMM: attn:v1:
-// CHECK-CONV: gemm:v1:
+// CHECK-GEMM-NT: gemm:v2:
+// CHECK-GEMM-TA: gemm:v2:
+// CHECK-ATTN: attn:v2:
+// CHECK-GEMM-GEMM: attn:v2:
+// CHECK-CONV-GEMM: attn:v2:
+// CHECK-CONV: gemm:v2:

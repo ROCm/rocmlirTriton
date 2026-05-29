@@ -5310,27 +5310,23 @@ static LogicalResult populateHostHarnessLogic(
   bool hasCloneValidation = hasValidation && (validationType == "clone");
   // `--verifier clone` builds a host harness that allocates one buffer per
   // kernel argument and feeds the kernel's tensor results back through the
-  // trailing args. That contract is only well-defined once MIGraphX/TOSA
-  // ops have been lowered away (to Rock or below), so reject kernels that
-  // still contain ops from those higher-level dialects.
+  // trailing args. That contract is only well-defined if the kernel is
+  // at the rock IR level, so make sure we at least have one rock op in the IR.
   if (hasCloneValidation) {
     for (KernelIF kernel : kernels) {
-      Operation *highLevelOp = nullptr;
+      bool hasRockOp = false;
       kernel.func.walk([&](Operation *op) {
-        Dialect *dialect = op->getDialect();
-        if (isa_and_nonnull<migraphx::MIGraphXDialect, tosa::TosaDialect>(
-                dialect)) {
-          highLevelOp = op;
+        if (isa_and_nonnull<rock::RockDialect>(op->getDialect())) {
+          hasRockOp = true;
           return WalkResult::interrupt();
         }
         return WalkResult::advance();
       });
-      if (highLevelOp) {
+      if (!hasRockOp) {
         kernel.func.emitError()
             << "--verifier=clone cannot build a host harness around a "
-               "kernel that still contains "
-            << highLevelOp->getDialect()->getNamespace()
-            << " ops; run the kernel pipeline first (e.g. `rocmlir-driver "
+               "kernel that is not at the rock level; run the "
+               "kernel pipeline first (e.g. `rocmlir-driver "
                "-kernel-pipeline=highlevel`)";
         return failure();
       }
