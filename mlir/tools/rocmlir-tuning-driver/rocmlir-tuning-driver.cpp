@@ -57,6 +57,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 // Utilities to allocate buffers
@@ -292,6 +293,7 @@ struct CompilationResult {
   std::string hsacoBinary; // Single HSACO binary containing all kernels
   SmallVector<rock::KernelInfo>
       kernels; // Info for each kernel (name, block/grid sizes)
+  std::string failureMessage;
 };
 
 // Create a fresh MLIRContext with all rocMLIR dialects registered.
@@ -416,15 +418,165 @@ static LogicalResult measureLargeKernel(
   return success();
 }
 
-// In order to match rocprof, returns time in nanoseconds
-static FailureOr<double> benchmarkKernels(const CompilationResult &result,
-                                          ArrayRef<void *> hostBuffers,
-                                          MutableArrayRef<void *> gpuBuffers,
-                                          ArrayRef<size_t> bufferSizes,
-                                          const BenchmarkParams &params) {
-  const auto &hsacoBinary = result.hsacoBinary;
-  const auto &kernels = result.kernels;
+// A kernel whose estimated single-iteration runtime is below this threshold (in
+// milliseconds) is measured with the CPU-timer "small kernel" method; otherwise
+// it is measured with per-iteration GPU events ("large kernel"). The choice is
+// locked once per problemConfig so all perf configs are measured the same way.
+static constexpr float kSmallKernelThresholdMs = 1.0f;
 
+// Copy host input buffers to the device on `stream`.
+static LogicalResult copyBuffersToDevice(hipStream_t stream,
+                                         ArrayRef<void *> hostBuffers,
+                                         MutableArrayRef<void *> gpuBuffers,
+                                         ArrayRef<size_t> bufferSizes) {
+  for (size_t i = 0; i < bufferSizes.size(); i++) {
+    HIPCHECK(hipMemcpyAsync(gpuBuffers[i], hostBuffers[i], bufferSizes[i],
+                            hipMemcpyHostToDevice, stream));
+  }
+  return success();
+}
+
+// Load the single HSACO binary as a HIP module and resolve each kernel function
+// plus its launch dimensions. The caller owns `module` and must unload it.
+static LogicalResult
+loadModuleAndKernels(const CompilationResult &result, hipModule_t &module,
+                     std::vector<hipFunction_t> &functions,
+                     SmallVectorImpl<uint32_t> &blockSizes,
+                     SmallVectorImpl<uint32_t> &gridSizes,
+                     SmallVectorImpl<uint32_t> &numCTAsList) {
+  // Load the single HSACO binary as a HIP module
+  HIPCHECK(hipModuleLoadData(&module, result.hsacoBinary.data()));
+
+  // Get each kernel function from the module by name
+  for (const rock::KernelInfo &kernel : result.kernels) {
+    hipFunction_t func;
+    HIPCHECK(hipModuleGetFunction(&func, module, kernel.name.c_str()));
+    functions.push_back(func);
+  }
+
+  // Extract block, grid sizes and numCTAs from kernel info.
+  // Shared memory is statically baked into the binary by
+  // ResolveKernelLaunchParams.
+  for (const rock::KernelInfo &kernel : result.kernels) {
+    blockSizes.push_back(static_cast<uint32_t>(kernel.blockSize));
+    gridSizes.push_back(static_cast<uint32_t>(kernel.gridSize));
+    numCTAsList.push_back(static_cast<uint32_t>(kernel.clusterSize));
+  }
+  return success();
+}
+
+// Run `warmupIterations` launches timed with per-iteration HIP events and return
+// the average milliseconds per warmup iteration. This estimate is used both to
+// size the measurement loop (`iterations`) and to classify the kernel as small
+// or large.
+static FailureOr<double>
+runWarmupAvgMs(unsigned numWarmupIterations, hipStream_t stream,
+               const std::vector<hipFunction_t> &functions,
+               ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
+               ArrayRef<uint32_t> numCTAsList,
+               std::vector<void *> &argPointers) {
+  double totalMillisecondsWarmup = 0.0;
+  for (unsigned iter = 0; iter < numWarmupIterations; ++iter) {
+    for (auto [func, blockSize, gridSize, numCTAs] :
+         llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
+      hipEvent_t startEvent, stopEvent;
+      HIPCHECK(hipEventCreate(&startEvent));
+      HIPCHECK(hipEventCreate(&stopEvent));
+
+      HIPCHECK(hipEventRecord(startEvent, stream));
+      if (failed(rock::launchKernel(func, gridSize, blockSize,
+                                    /*shared_memory=*/0, numCTAs, stream,
+                                    argPointers.data())))
+        return failure();
+      HIPCHECK(hipEventRecord(stopEvent, stream));
+
+      HIPCHECK(hipStreamSynchronize(stream));
+
+      float currentMilliseconds = 0.0;
+      HIPCHECK(hipEventElapsedTime(&currentMilliseconds, startEvent, stopEvent));
+
+      HIPCHECK(hipEventDestroy(stopEvent));
+      HIPCHECK(hipEventDestroy(startEvent));
+
+      // hipEventElapsedTime seemingly can return negative values for fast
+      // kernels due to GPU clock precision issues. This is extremely relevant
+      // when we have a small number of warmup iterations (e.g., 1) for small
+      // kernels. Clamp to the documented resolution of ~1 microsecond
+      // (0.001 ms) if this is the case.
+      if (currentMilliseconds < 0.0f) {
+        constexpr float minMeasurableMs = 0.001f;
+        currentMilliseconds = minMeasurableMs;
+      }
+
+      totalMillisecondsWarmup += static_cast<double>(currentMilliseconds);
+    }
+  }
+  return totalMillisecondsWarmup / numWarmupIterations;
+}
+
+// Probe the default/heuristic perf config once for a problemConfig: load it, run
+// a warmup, and classify it as a small (true) or large (false) kernel. The
+// result is then applied to every perf config in the sweep so they all use the
+// same measurement method. This performs no measurement and prints nothing, so
+// it cannot leak a result line into the tuning output. The only cost is one
+// warmup-only run (warmupIterations launches) plus the module load.
+static FailureOr<bool>
+classifyKernelSize(const CompilationResult &defaultResult,
+                   ArrayRef<void *> hostBuffers,
+                   MutableArrayRef<void *> gpuBuffers,
+                   ArrayRef<size_t> bufferSizes, const BenchmarkParams &params) {
+  hipStream_t stream;
+  HIPCHECK(hipStreamCreate(&stream));
+  llvm::scope_exit streamCleanup([&]() {
+    hipError_t destroyStatus = hipStreamDestroy(stream);
+    if (destroyStatus != hipSuccess) {
+      llvm::errs() << "HIP error in hipStreamDestroy: "
+                   << hipGetErrorString(destroyStatus) << "\n";
+    }
+  });
+
+  if (failed(copyBuffersToDevice(stream, hostBuffers, gpuBuffers, bufferSizes)))
+    return failure();
+
+  std::vector<void *> argPointers;
+  for (void *&item : gpuBuffers)
+    argPointers.push_back(reinterpret_cast<void *>(&item));
+
+  hipModule_t module = nullptr;
+  std::vector<hipFunction_t> functions;
+  SmallVector<uint32_t> blockSizes, gridSizes, numCTAsList;
+  llvm::scope_exit moduleCleanup([&]() {
+    if (module) {
+      hipError_t status = hipModuleUnload(module);
+      if (status != hipSuccess) {
+        llvm::errs() << "HIP error in hipModuleUnload: "
+                     << hipGetErrorString(status) << "\n";
+      }
+    }
+  });
+  if (failed(loadModuleAndKernels(defaultResult, module, functions, blockSizes,
+                                  gridSizes, numCTAsList)))
+    return failure();
+
+  FailureOr<double> avgWarmupMs =
+      runWarmupAvgMs(params.warmupIterations, stream, functions, blockSizes,
+                     gridSizes, numCTAsList, argPointers);
+  if (failed(avgWarmupMs))
+    return failure();
+
+  return *avgWarmupMs < kSmallKernelThresholdMs;
+}
+
+// In order to match rocprof, returns time in nanoseconds.
+// `lockedIsSmallKernel`, when set, forces the small/large measurement method so
+// all perf configs for a problemConfig are measured the same way (see
+// classifyKernelSize). When empty, the method falls back to this config's own
+// warmup, preserving the legacy per-config behavior.
+static FailureOr<double>
+benchmarkKernels(const CompilationResult &result, ArrayRef<void *> hostBuffers,
+                 MutableArrayRef<void *> gpuBuffers,
+                 ArrayRef<size_t> bufferSizes, const BenchmarkParams &params,
+                 std::optional<bool> lockedIsSmallKernel) {
   bool benchmarkMode = !params.benchmarkConfig.empty();
   hipStream_t stream;
   HIPCHECK(hipStreamCreate(&stream));
@@ -436,11 +588,8 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     }
   });
 
-  // Initialize device buffers
-  for (size_t i = 0; i < bufferSizes.size(); i++) {
-    HIPCHECK(hipMemcpyAsync(gpuBuffers[i], hostBuffers[i], bufferSizes[i],
-                            hipMemcpyHostToDevice, stream));
-  }
+  if (failed(copyBuffersToDevice(stream, hostBuffers, gpuBuffers, bufferSizes)))
+    return failure();
 
   // HIP wants an array of pointers to each argument.
   // ResolveKernelLaunchParams has already stripped unused workspace args from
@@ -463,25 +612,10 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     }
   });
 
-  // Load the single HSACO binary as a HIP module
-  HIPCHECK(hipModuleLoadData(&module, hsacoBinary.data()));
-
-  // Get each kernel function from the module by name
-  for (const rock::KernelInfo &kernel : kernels) {
-    hipFunction_t func;
-    HIPCHECK(hipModuleGetFunction(&func, module, kernel.name.c_str()));
-    functions.push_back(func);
-  }
-
-  // Extract block, grid sizes and numCTAs from kernel info.
-  // Shared memory is statically baked into the binary by
-  // ResolveKernelLaunchParams.
   SmallVector<uint32_t> blockSizes, gridSizes, numCTAsList;
-  for (const rock::KernelInfo &kernel : kernels) {
-    blockSizes.push_back(static_cast<uint32_t>(kernel.blockSize));
-    gridSizes.push_back(static_cast<uint32_t>(kernel.gridSize));
-    numCTAsList.push_back(static_cast<uint32_t>(kernel.clusterSize));
-  }
+  if (failed(loadModuleAndKernels(result, module, functions, blockSizes,
+                                  gridSizes, numCTAsList)))
+    return failure();
 
   // Sleep guard to avoid GPU throttling
   llvm::scope_exit sleepGuard([&params] {
@@ -490,51 +624,25 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     }
   });
 
-  bool isSmallKernel = false;
+  // The small/large measurement method is normally decided once per
+  // problemConfig (via classifyKernelSize on the default config) and passed in
+  // as `lockedIsSmallKernel`, so every perf config is measured the same way.
+  // The per-config warmup below still runs to size the measurement loop
+  // (`iterations`); it only influences the small/large choice as a fallback
+  // when no locked decision was supplied (e.g. probe skipped/failed).
+  bool isSmallKernel = lockedIsSmallKernel.value_or(false);
   unsigned iterations = params.numIterations;
 
   if (params.warmupIterations > 0) {
     // Warmup run. We measure the warmup to get an estimate of the kernel
-    // runtime. We will use this estimate to determine if the kernel is small or
-    // not.
-    double totalMillisecondsWarmup = 0.0;
-    for (unsigned iter = 0; iter < params.warmupIterations; ++iter) {
-      for (auto [func, blockSize, gridSize, numCTAs] :
-           llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-        hipEvent_t startEvent, stopEvent;
-        HIPCHECK(hipEventCreate(&startEvent));
-        HIPCHECK(hipEventCreate(&stopEvent));
-
-        HIPCHECK(hipEventRecord(startEvent, stream));
-        if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                      /*shared_memory=*/0, numCTAs, stream,
-                                      argPointers.data())))
-          return failure();
-        HIPCHECK(hipEventRecord(stopEvent, stream));
-
-        HIPCHECK(hipStreamSynchronize(stream));
-
-        float currentMilliseconds = 0.0;
-        HIPCHECK(
-            hipEventElapsedTime(&currentMilliseconds, startEvent, stopEvent));
-
-        HIPCHECK(hipEventDestroy(stopEvent));
-        HIPCHECK(hipEventDestroy(startEvent));
-
-        // hipEventElapsedTime seemingly can return negative values for fast
-        // kernels due to GPU clock precision issues. This is extremely relevant
-        // when we have a small number of warmup iterations (e.g., 1) for small
-        // kernels. Clamp to the documented resolution of ~1 microsecond
-        // (0.001 ms) if this is the case.
-        if (currentMilliseconds < 0.0f) {
-          constexpr float minMeasurableMs = 0.001f;
-          currentMilliseconds = minMeasurableMs;
-        }
-
-        totalMillisecondsWarmup += static_cast<double>(currentMilliseconds);
-      }
-    }
-    totalMillisecondsWarmup /= params.warmupIterations;
+    // runtime. We will use this estimate to determine the iteration count and,
+    // as a fallback, whether the kernel is small or not.
+    FailureOr<double> avgWarmupMs =
+        runWarmupAvgMs(params.warmupIterations, stream, functions, blockSizes,
+                       gridSizes, numCTAsList, argPointers);
+    if (failed(avgWarmupMs))
+      return failure();
+    double totalMillisecondsWarmup = *avgWarmupMs;
     assert(totalMillisecondsWarmup >= 0.0f &&
            "totalMillisecondsWarmup must be greater than 0");
 
@@ -546,12 +654,11 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
         iterations, static_cast<unsigned>(std::ceil(minTotalMilliseconds /
                                                     totalMillisecondsWarmup)));
 
-    // Depending on the runtime of the kernel,
-    // we will use a different approach to measure the runs.
-    // We consider a kernel to be small if a single iteration takes less than
-    // 1ms to run.
-    constexpr float smallKernelThreshold = 1.0f;
-    isSmallKernel = totalMillisecondsWarmup < smallKernelThreshold;
+    // Fallback only: if no locked decision was supplied, classify from this
+    // config's own warmup as before. We consider a kernel to be small if a
+    // single iteration takes less than 1ms to run.
+    if (!lockedIsSmallKernel.has_value())
+      isSmallKernel = totalMillisecondsWarmup < kSmallKernelThresholdMs;
   }
 
   // Measure runs
@@ -655,6 +762,137 @@ static bool doesModuleHaveFusions(ModuleOp module) {
   return result.wasInterrupted();
 }
 
+// Compile a single perf config into an HSACO binary using a fresh MLIRContext
+// (destroyed when this function returns, freeing all accumulated MLIR data and
+// preventing unbounded memory growth from MLIR's BumpPtrAllocator).
+//
+// On a real failure, `result.status` is set to CompilationFailed and
+// `result.failureMessage` describes the specific failure point; error
+// diagnostics are buffered into `bufferedDiags` for the caller to surface. The
+// caller is responsible for reporting (printing/locking/early-termination)
+// since that policy differs between the parallel sweep and the size probe.
+// `bufferedDiags` must outlive the context created here.
+static CompilationResult
+compileSingleConfig(StringRef perfConfig, const std::string &sourceModuleStr,
+                    const RocmDeviceName &deviceName,
+                    const rock::KernelOptions &kernelOpts,
+                    SmallVector<std::string> &bufferedDiags) {
+  CompilationResult result;
+  result.perfConfig = perfConfig;
+
+  auto ctx = createCompilationContext(bufferedDiags);
+
+  OwningOpRef<ModuleOp> sourceModule =
+      parseSourceString<ModuleOp>(sourceModuleStr, ctx.get());
+  if (!sourceModule || !*sourceModule) {
+    result.status = CompilationStatus::CompilationFailed;
+    result.failureMessage =
+        ("Failed to parse source module for config: " + result.perfConfig)
+            .str();
+    return result;
+  }
+
+  // Helper to copy IR with perf config set
+  auto copyIR = [&](ModuleOp src, StringAttr attr) -> OwningOpRef<ModuleOp> {
+    OwningOpRef<ModuleOp> copy = cast<ModuleOp>(src->clone());
+    copy->walk([&attr](rock::RockGemmWrapperInterface op) {
+      op->setAttr("perf_config", attr);
+    });
+    copy->walk([&attr](rock::RockGemmGemmWrapperInterface op) {
+      op->setAttr("perf_config", attr);
+    });
+    return copy;
+  };
+
+  if (doesModuleHaveFusions(sourceModule.get()) &&
+      !rock::isModuleFusible(sourceModule.get(), result.perfConfig)) {
+    result.status = CompilationStatus::NotApplicable;
+    return result;
+  }
+
+  // Pipeline: a single PassManager runs the full kernel + Triton + backend
+  // lowering. Failures are classified post-hoc by checking whether any
+  // rock pass set the `rock.not_applicable` marker on the module.
+  PassManager pm(sourceModule.get()->getName(), PassManager::Nesting::Implicit);
+
+  rock::BackendOptions backendOpts;
+  backendOpts.triple = deviceName.getTriple().str();
+  backendOpts.chip = deviceName.getChip().str();
+  std::string backendFeatures = deviceName.getFeaturesForBackend();
+  backendOpts.features = backendFeatures;
+  backendOpts.optLevel = 3;
+  backendOpts.suppressDiagnostic = true;
+
+  rock::TritonOptions tritonOpts;
+  tritonOpts.arch = backendOpts.chip;
+
+  StringAttr perfConfigStrAttr = StringAttr::get(ctx.get(), result.perfConfig);
+  Attribute perfConfigAttr = rock::GemmParamsAttr::get(perfConfigStrAttr);
+  if (!perfConfigAttr)
+    perfConfigAttr = rock::GemmGemmParamsAttr::get(perfConfigStrAttr);
+  // Parse perfConfig
+  if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts, backendOpts))) {
+    result.status = CompilationStatus::CompilationFailed;
+    result.failureMessage =
+        ("Failed to parse perfConfig for config: " + result.perfConfig).str();
+    return result;
+  }
+
+  rock::buildKernelPipeline(pm, kernelOpts);
+  rock::buildTritonPipeline(pm, tritonOpts);
+  rock::buildBackendPipeline(pm, backendOpts);
+
+  OwningOpRef<ModuleOp> sourceCopy =
+      copyIR(sourceModule.get(), perfConfigStrAttr);
+  if (failed(pm.run(sourceCopy.get()))) {
+    if (sourceCopy.get()->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
+      result.status = CompilationStatus::NotApplicable;
+    } else {
+      result.status = CompilationStatus::CompilationFailed;
+      result.failureMessage =
+          ("Compilation pipeline failed for config: " + result.perfConfig)
+              .str();
+    }
+    return result;
+  }
+
+  // Collect kernel info from the compiled module (block/grid sizes,
+  // argument types).
+  SmallVector<rock::KernelInfo> localKernels;
+  if (failed(rock::collectKernelInfo(sourceCopy.get(), localKernels))) {
+    result.status = CompilationStatus::CompilationFailed;
+    result.failureMessage =
+        ("Failed to collect kernel info for config: " + result.perfConfig)
+            .str();
+    return result;
+  }
+
+  if (localKernels.empty()) {
+    result.status = CompilationStatus::CompilationFailed;
+    result.failureMessage =
+        ("No kernels found for config: " + result.perfConfig).str();
+    return result;
+  }
+
+  // Get the HSACO binary from the compiled module
+  auto hsacoAttr = sourceCopy.get()->getAttrOfType<StringAttr>("triton.hsaco");
+  if (!hsacoAttr) {
+    result.status = CompilationStatus::CompilationFailed;
+    result.failureMessage =
+        ("No triton.hsaco found for config: " + result.perfConfig).str();
+    return result;
+  }
+
+  // Store the HSACO binary and kernel info in the result.
+  // This copies the data out of the context before it's destroyed.
+  result.hsacoBinary = hsacoAttr.getValue().str();
+  result.kernels = std::move(localKernels);
+
+  result.status = CompilationStatus::Success;
+  return result;
+  // ctx and all MLIR data destroyed here, freeing accumulated memory.
+}
+
 static LogicalResult runTuningLoop(ModuleOp source) {
   // Verify prerequisites
   SmallVector<func::FuncOp> funcs;
@@ -743,6 +981,67 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     return failure();
   }
 
+  // Serialize source module once (shared across iterations and threads for
+  // parsing; the source does not change between iterations).
+  std::string sourceModuleStr;
+  {
+    llvm::raw_string_ostream sourceOs(sourceModuleStr);
+    source->print(sourceOs);
+  }
+
+  // Decide the small/large measurement method ONCE for this problemConfig and
+  // lock it for every perf config in the sweep, so they are all measured the
+  // same way. We probe the compiler's default/heuristic perf config (the front
+  // of the Quick tuning space, which is guaranteed conservatively applicable).
+  // The per-config warmup in benchmarkKernels still runs to size each config's
+  // iteration count; only the small/large branch is locked here.
+  //
+  // Skipped in benchmark mode (a single config needs no consistency) and when
+  // warmup is disabled (no basis to classify); in both cases benchmarkKernels
+  // falls back to its legacy per-config behavior.
+  std::optional<bool> lockedIsSmallKernel;
+  if (benchmarkParams.benchmarkConfig.empty() &&
+      benchmarkParams.warmupIterations > 0) {
+    rock::TuningParamSpaceSettings probeSettings{/*iteration=*/0,
+                                                 /*winningConfig=*/""};
+    std::unique_ptr<rock::TuningParamSet> quickSpace(
+        rock::createTunableParamSpace(source, rock::TuningParamSetKind::Quick,
+                                      probeSettings));
+    if (quickSpace && !quickSpace->tuningRange.empty()) {
+      SmallString<64> defaultConfig;
+      quickSpace->tuningRange.front().getPerfConfigStr(defaultConfig);
+
+      SmallVector<std::string> bufferedDiags;
+      CompilationResult probeResult = compileSingleConfig(
+          defaultConfig, sourceModuleStr, deviceName, kernelOpts, bufferedDiags);
+      if (probeResult.status == CompilationStatus::Success) {
+        FailureOr<bool> classified =
+            classifyKernelSize(probeResult, hostBuffers, gpuBuffers,
+                               bufferLengths, benchmarkParams);
+        if (succeeded(classified)) {
+          lockedIsSmallKernel = *classified;
+          llvm::errs() << "Locked measurement method for problemConfig using "
+                          "default config '"
+                       << defaultConfig << "': "
+                       << (*lockedIsSmallKernel ? "small-kernel (CPU timer)"
+                                                : "large-kernel (GPU events)")
+                       << "\n";
+        } else {
+          llvm::errs() << "Warning: kernel-size probe failed; falling back to "
+                          "per-config classification\n";
+        }
+      } else {
+        llvm::errs() << "Warning: could not compile default config '"
+                     << defaultConfig
+                     << "' for kernel-size probe (status "
+                     << static_cast<int>(probeResult.status)
+                     << "); falling back to per-config classification\n";
+        for (auto &msg : bufferedDiags)
+          llvm::errs() << msg;
+      }
+    }
+  }
+
   // Main iteration loop - wraps config generation, compilation, AND
   // benchmarking
   for (unsigned iterIdx = 0; iterIdx < numTuningIterations; ++iterIdx) {
@@ -783,13 +1082,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     // Don't create more threads than configs to compile
     numThreads = std::min(numThreads, static_cast<unsigned>(configs.size()));
 
-    // Serialize source module once (shared by all threads for parsing)
-    std::string sourceModuleStr;
-    {
-      llvm::raw_string_ostream sourceOs(sourceModuleStr);
-      source->print(sourceOs);
-    }
-
     // PHASE 2: Parallel compilation phase.
     // Each compilation creates a fresh MLIRContext that is destroyed when the
     // compilation finishes. This prevents unbounded memory growth from MLIR's
@@ -802,132 +1094,23 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     std::atomic<bool> compilationFailed{
         false}; // Flag to signal early termination
 
-    // Compile a single config with a fresh MLIRContext
+    // Compile a single config with a fresh MLIRContext, then report a real
+    // failure: print the failure message followed by any buffered diagnostics
+    // atomically under outputMutex, and signal early termination to peers.
     auto compileConfig = [&](size_t idx) -> CompilationResult {
-      CompilationResult result;
-      result.perfConfig = configs[idx];
-
-      // Create a fresh context for this compilation. It will be destroyed
-      // when this lambda returns, freeing all accumulated MLIR data.
-      // `bufferedDiags` collects error diagnostics so we can suppress them
-      // for expected "not applicable" failures and surface them otherwise.
       SmallVector<std::string> bufferedDiags;
-      auto ctx = createCompilationContext(bufferedDiags);
-      // Report a real failure: print the per-path header followed by any
-      // buffered diagnostics atomically under outputMutex, mark the result
-      // as failed, and signal early termination to peer workers.
-      auto reportFailure = [&](const llvm::Twine &header) {
+      CompilationResult result = compileSingleConfig(
+          configs[idx], sourceModuleStr, deviceName, kernelOpts, bufferedDiags);
+      if (result.status == CompilationStatus::CompilationFailed) {
         {
           std::lock_guard<std::mutex> lock(outputMutex);
-          llvm::errs() << header << "\n";
+          llvm::errs() << result.failureMessage << "\n";
           for (auto &msg : bufferedDiags)
             llvm::errs() << msg;
         }
-        result.status = CompilationStatus::CompilationFailed;
         compilationFailed.store(true, std::memory_order_relaxed);
-      };
-      OwningOpRef<ModuleOp> sourceModule =
-          parseSourceString<ModuleOp>(sourceModuleStr, ctx.get());
-      if (!sourceModule || !*sourceModule) {
-        reportFailure("Failed to parse source module for config: " +
-                      llvm::Twine(result.perfConfig));
-        return result;
       }
-
-      // Helper to copy IR with perf config set
-      auto copyIR = [&](ModuleOp src,
-                        StringAttr attr) -> OwningOpRef<ModuleOp> {
-        OwningOpRef<ModuleOp> copy = cast<ModuleOp>(src->clone());
-        copy->walk([&attr](rock::RockGemmWrapperInterface op) {
-          op->setAttr("perf_config", attr);
-        });
-        copy->walk([&attr](rock::RockGemmGemmWrapperInterface op) {
-          op->setAttr("perf_config", attr);
-        });
-        return copy;
-      };
-
-      if (doesModuleHaveFusions(sourceModule.get()) &&
-          !rock::isModuleFusible(sourceModule.get(), result.perfConfig)) {
-        result.status = CompilationStatus::NotApplicable;
-        return result;
-      }
-
-      // Pipeline: a single PassManager runs the full kernel + Triton + backend
-      // lowering. Failures are classified post-hoc by checking whether any
-      // rock pass set the `rock.not_applicable` marker on the module.
-      PassManager pm(sourceModule.get()->getName(),
-                     PassManager::Nesting::Implicit);
-
-      rock::BackendOptions backendOpts;
-      backendOpts.triple = deviceName.getTriple().str();
-      backendOpts.chip = deviceName.getChip().str();
-      std::string backendFeatures = deviceName.getFeaturesForBackend();
-      backendOpts.features = backendFeatures;
-      backendOpts.optLevel = 3;
-      backendOpts.suppressDiagnostic = true;
-
-      rock::TritonOptions tritonOpts;
-      tritonOpts.arch = backendOpts.chip;
-
-      StringAttr perfConfigStrAttr =
-          StringAttr::get(ctx.get(), result.perfConfig);
-      // Parse perfConfig (handles both GemmParamsAttr and GemmGemmParamsAttr)
-      if (failed(fillCompilationConfigs(ctx.get(), result.perfConfig,
-                                        tritonOpts, backendOpts))) {
-        reportFailure("Failed to parse perfConfig for config: " +
-                      llvm::Twine(result.perfConfig));
-        return result;
-      }
-
-      rock::buildKernelPipeline(pm, kernelOpts);
-      rock::buildTritonPipeline(pm, tritonOpts);
-      rock::buildBackendPipeline(pm, backendOpts);
-
-      OwningOpRef<ModuleOp> sourceCopy =
-          copyIR(sourceModule.get(), perfConfigStrAttr);
-      if (failed(pm.run(sourceCopy.get()))) {
-        if (sourceCopy.get()->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
-          result.status = CompilationStatus::NotApplicable;
-        } else {
-          reportFailure("Compilation pipeline failed for config: " +
-                        llvm::Twine(result.perfConfig));
-        }
-        return result;
-      }
-
-      // Collect kernel info from the compiled module (block/grid sizes,
-      // argument types).
-      SmallVector<rock::KernelInfo> localKernels;
-      if (failed(rock::collectKernelInfo(sourceCopy.get(), localKernels))) {
-        reportFailure("Failed to collect kernel info for config: " +
-                      llvm::Twine(result.perfConfig));
-        return result;
-      }
-
-      if (localKernels.empty()) {
-        reportFailure("No kernels found for config: " +
-                      llvm::Twine(result.perfConfig));
-        return result;
-      }
-
-      // Get the HSACO binary from the compiled module
-      auto hsacoAttr =
-          sourceCopy.get()->getAttrOfType<StringAttr>("triton.hsaco");
-      if (!hsacoAttr) {
-        reportFailure("No triton.hsaco found for config: " +
-                      llvm::Twine(result.perfConfig));
-        return result;
-      }
-
-      // Store the HSACO binary and kernel info in the result.
-      // This copies the data out of the context before it's destroyed.
-      result.hsacoBinary = hsacoAttr.getValue().str();
-      result.kernels = std::move(localKernels);
-
-      result.status = CompilationStatus::Success;
       return result;
-      // ctx and all MLIR data destroyed here, freeing accumulated memory.
     };
 
     // Launch parallel compilation tasks with dynamic work stealing.
@@ -984,8 +1167,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       assert(result.status == CompilationStatus::Success &&
              "Unexpected compilation status in benchmarking phase");
 
-      FailureOr<double> timing = benchmarkKernels(result, hostBuffers, gpuBuffers,
-                                                   bufferLengths, benchmarkParams);
+      FailureOr<double> timing =
+          benchmarkKernels(result, hostBuffers, gpuBuffers, bufferLengths,
+                           benchmarkParams, lockedIsSmallKernel);
 
       if (failed(timing)) {
         llvm::errs() << "Kernel execution failed\n";
