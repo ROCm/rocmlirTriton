@@ -189,8 +189,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   // Follows rocMLIR's tuning space:
   //
   // rocMLIR:
-  //   // blockSize    M/block         N/block         K/block      M/thread N/thread
-  //   {{64,128,256}, {32,64,128},    {32,64,128},    {4,8,16},    {2,4},   {2,4}}
+  //   // blockSize    M/block         N/block         K/block      M/thread
+  //   N/thread
+  //   {{64,128,256}, {32,64,128},    {32,64,128},    {4,8,16},    {2,4}, {2,4}}
   //
   // here:
   //   blockSize  in {64, 128, 256}   -> numWaves = blockSize / waveSize
@@ -207,16 +208,16 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   }
   assert(!numWavesNonAccel.empty() && "numWavesNonAccel must be non-empty");
   std::vector<std::vector<uint32_t>> validRangeNonAccelParams = {
-      dPerBlockNonAccel,  // M/block
-      dPerBlockNonAccel,  // N/block
-      kPerBlockNonAccel,  // K/block
-      {1},                // kPackList (no kpack on non-accel FMA path)
-      numWavesNonAccel,   // numWaves (= blockSize / waveSize)
-      {0},                // matrixInstrNonkdim (no matrix-accel instr)
-      {1, 2, 3},          // numStages
-      wavesPerEUList,     // wavesPerEU
-      gridGroupSizeList,  // gridGroupSize
-      numCTAsList         // numCTAs
+      dPerBlockNonAccel, // M/block
+      dPerBlockNonAccel, // N/block
+      kPerBlockNonAccel, // K/block
+      {1},               // kPackList (no kpack on non-accel FMA path)
+      numWavesNonAccel,  // numWaves (= blockSize / waveSize)
+      {0},               // matrixInstrNonkdim (no matrix-accel instr)
+      {1, 2, 3},         // numStages
+      wavesPerEUList,    // wavesPerEU
+      gridGroupSizeList, // gridGroupSize
+      numCTAsList        // numCTAs
   };
 
   if (isMfma)
