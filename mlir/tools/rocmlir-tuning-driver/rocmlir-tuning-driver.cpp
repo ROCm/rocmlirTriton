@@ -989,12 +989,18 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     source->print(sourceOs);
   }
 
-  // Decide the small/large measurement method ONCE for this problemConfig and
+  // Decide the small/large measurement method once for this problemConfig and
   // lock it for every perf config in the sweep, so they are all measured the
   // same way. We probe the compiler's default/heuristic perf config (the front
   // of the Quick tuning space, which is guaranteed conservatively applicable).
   // The per-config warmup in benchmarkKernels still runs to size each config's
   // iteration count; only the small/large branch is locked here.
+  //
+  // Using the Quick-space default config as the representative is a deliberate
+  // trade-off: it is the compiler's heuristic pick, so it is already a very
+  // performant config (though not necessarily the most performant one the sweep
+  // will find). Its runtime is therefore a good proxy for the eventual winner's
+  // size class, which is what matters for choosing a measurement method.
   //
   // Skipped in benchmark mode (a single config needs no consistency) and when
   // warmup is disabled (no basis to classify); in both cases benchmarkKernels
