@@ -73,7 +73,7 @@ func.func @mlir_dot_add_1(%arg0: tensor<8x32x1xf16>, %arg1: tensor<4x8x16xf16>, 
 // CHECK-LABEL: func.func @mlir_dot_add_2
 // CHECK: %[[foldA2:.*]] = rock.transform %arg1 by {{.*}} : tensor<4x8x16xf16> to tensor<32x16xf16>
 // CHECK: %[[unbroadcastB2:.*]] = rock.transform {{.*}} by {{.*}} : tensor<4x16x32xf16> to tensor<16x32xf16>
-// CHECK: %[[gemmOut2:.*]] = rock.gemm %[[foldA2]] * %[[unbroadcastB2]] {{.*}} : tensor<32x16xf16> * tensor<16x32xf16> -> tensor<32x32xf16>
+// CHECK: %[[gemmOut2:.*]] = rock.gemm %[[foldA2]] * %[[unbroadcastB2]] {perf_config = "gemm:v1:16,32,16,1,1,2,16,4,2,0,0"} : tensor<32x16xf16> * tensor<16x32xf16> -> tensor<32x32xf16>
 // CHECK: %[[reshape2:.*]] = rock.transform %[[gemmOut2]] by {{.*}} : tensor<32x32xf16> to tensor<4x8x32xf16>
 // CHECK: linalg.generic {{.*}} ins(%[[reshape2]], {{.*}}, {{.*}})
 func.func @mlir_dot_add_2(%arg0: tensor<8x32x1xf16>, %arg1: tensor<4x8x16xf16>, %arg2: tensor<16x32xf16>) -> tensor<4x8x32xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
