@@ -223,7 +223,7 @@ void setABIVersion(llvm::Module &module, int version) {
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
                          int numCTAs, bool allowFlushDenorm, bool enableAsan,
-                         int64_t scheduleHint) {
+                         int64_t scheduleHint, StringRef llvmFnAttrs) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
@@ -279,13 +279,37 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   // something to override with (e.g. `+xnack` for asan). Stamping an empty
   // override causes LLVM's per-function subtarget lookup to key off a bare
   // `"target-features"=""` attribute and silently *ignore* the TM-level
-  // `-mattr` we later set on `tmAsm` in `make_amdgcn` (which is where
-  // `-real-true16` is added for gfx11 to work around the `copyPhysReg`
-  // assertion). Upstream Triton only touches `target-features` in the asan
-  // path (see `add_fn_target_feature("+xnack")` in compiler.py); mirror that.
+  // `-mattr` we later set on `tmAsm` in `make_amdgcn`. Upstream Triton only
+  // touches `target-features` in the asan path (see
+  // `add_fn_target_feature("+xnack")` in compiler.py).
   if (enableAsan) {
     kernelFn->addFnAttr("target-features", features);
     kernelFn->addFnAttr(llvm::Attribute::SanitizeAddress);
+  }
+
+  // Debug-only developer overrides, applied last so they win over the
+  // attributes stamped above. Mirrors the experimental `llvm_fn_attrs` loop in
+  // compiler.py make_llir():
+  //   for name, value in options.llvm_fn_attrs:
+  //       kernel_fn.remove_fn_attr(name)
+  //       kernel_fn.add_fn_attr(name, value)
+  // A bare `name` produces a valueless attribute; `name=value` sets a value
+  // (an empty value, e.g. `name=`, is also treated as valueless).
+  if (!llvmFnAttrs.empty()) {
+    llvm::SmallVector<StringRef> attrs;
+    llvmFnAttrs.split(attrs, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+    for (StringRef attr : attrs) {
+      std::pair<StringRef, StringRef> kv = attr.split('=');
+      StringRef name = kv.first.trim();
+      if (name.empty())
+        continue;
+      StringRef value = kv.second.trim();
+      kernelFn->removeFnAttr(name);
+      if (value.empty())
+        kernelFn->addFnAttr(name);
+      else
+        kernelFn->addFnAttr(name, value);
+    }
   }
 
   // set_all_fn_arg_inreg in compiler.py
@@ -649,12 +673,6 @@ std::optional<SmallVector<char, 0>> makeHSACO(StringRef amdgcnAsm,
 namespace mlir {
 namespace rock {
 
-static void appendFeature(std::string &features, llvm::StringRef feature) {
-  if (!features.empty())
-    features += ",";
-  features += feature;
-}
-
 FailureOr<llvm::SmallVector<char, 0>>
 translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   initializeLLVMTargets();
@@ -723,7 +741,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
   setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
                       numCTAs, options.allowFlushDenorm, enableAsan,
-                      options.scheduleHint);
+                      options.scheduleHint, options.llvmFnAttrs);
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
   // compiler.py lines 412-423
@@ -805,10 +823,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // disable_print_inline in compiler.py
   disablePrintInline(*llvmModule);
 
-  // make_amdgcn (compiler.py lines 509-537)
+  // make_amdgcn (compiler.py)
   std::string asmFeatures;
-  if (arch.contains("gfx11"))
-    asmFeatures = "-real-true16";
   auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
                                    options.enableFpFusion);
   if (!tmAsm) {
@@ -840,12 +856,10 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     }
   }
 
-  // make_hsaco (compiler.py lines 540-554)
+  // make_hsaco (compiler.py)
   std::string hsacoFeatures;
   if (enableAsan)
     hsacoFeatures = "+xnack";
-  if (arch.contains("gfx11"))
-    appendFeature(hsacoFeatures, "-real-true16");
   auto hsaco = makeHSACO(amdgcnAsm, triple, arch, hsacoFeatures);
   if (!hsaco) {
     return failure();
@@ -913,6 +927,7 @@ public:
     options.allowFlushDenorm = allowFlushDenorm.getValue();
     options.scalarizePackedFops = scalarizePackedFops.getValue();
     options.scheduleHint = scheduleHint.getValue();
+    options.llvmFnAttrs = llvmFnAttrs.getValue();
 
     // Call the translation
     auto hsacoOrErr = translateTritonToHsaco(module, options);

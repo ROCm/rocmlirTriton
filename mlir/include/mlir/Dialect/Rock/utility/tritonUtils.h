@@ -38,9 +38,9 @@ namespace rock {
 /// Mirrors the internal getMfmaVersion() in AccelerateAMDMatmul.cpp.
 int getMfmaVersion(triton::amdgpu::ISAFamily isaFamily);
 
-/// Get WMMA version from architecture chip string (e.g. "gfx1100").
+/// Get WMMA version from ISA family.
 /// Mirrors the internal getWmmaVersion() in AccelerateAMDMatmul.cpp.
-int getWmmaVersion(StringRef arch);
+int getWmmaVersion(triton::amdgpu::ISAFamily isaFamily);
 
 /// Return true if `t` is one of the types in Triton's TT_Float set.
 /// Mirrors the TT_Float type constraint from TritonTypes.td:

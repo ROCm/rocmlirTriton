@@ -401,7 +401,12 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
        Option<"scheduleHint", "schedule-hint", "int64_t", "-1",
               "Scheduling hint ordinal (-1=arch default, 0=none, "
               "1=attention, 2=memory-bound-attention). See "
-              "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding.">];
+              "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding.">,
+       Option<"llvmFnAttrs", "llvm-fn-attrs", "std::string", "\"\"",
+              "Debug-only: comma-separated LLVM function attributes (name or "
+              "name=value) applied to the kernel after Triton's attributes. "
+              "Mirrors the experimental llvm_fn_attrs HIPOption in "
+              "compiler.py.">];
 }
 
 def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
