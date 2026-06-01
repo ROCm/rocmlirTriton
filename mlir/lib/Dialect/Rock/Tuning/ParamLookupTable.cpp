@@ -21,15 +21,27 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
 
   static const auto &table = getTable();
   auto it = table.find(key);
-  if (it != table.end())
+
+  // A healthy exact match (more than one real config) wins outright.
+  if (it != table.end() && 
+      llvm::count_if(it->second, [](StringRef c){ return !c.empty(); }) > 1)
     return it->second;
 
+  // Either the key is missing or its list is degenerate (<= 1 real config).
+  // Look for a "close" relative that actually has a useful list; relatives with
+  // <= 1 entry are dropped in getRelatives().
   auto fallbackKey = findFallback(key);
   if (!fallbackKey.empty()) {
     LLVM_DEBUG(llvm::dbgs() << "Falling back to tuning parameters with key "
                             << fallbackKey << "\n");
     return table.at(fallbackKey);
   }
+
+  // No richer relative exists. Prefer returning the degenerate exact entry
+  // (single config) over aborting.
+  if (it != table.end() && 
+      llvm::count_if(it->second, [](StringRef c){ return !c.empty(); }) <= 1)
+    return it->second;
 
   llvm::report_fatal_error(Twine("Tuning parameters not found for key ") + key);
 }
@@ -74,10 +86,12 @@ ParamLookupTable<ParamsType>::getRelatives(StringRef target) {
     // If suffix and prefix match, then they are relatives
     if (target.ends_with(candidate.substr(candidate.size() - suffixLen)) &&
         target.starts_with(candidate.substr(0, fallbackArchPrefixLen))) {
+      // Drop relatives whose own list is invalid (only 1 real config); 
+      if (llvm::count_if(entry.second, [](StringRef c){ return !c.empty(); }) <= 1)
+        continue;
       relatives.push_back(candidate);
     }
   }
-
   return relatives;
 }
 
