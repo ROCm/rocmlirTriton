@@ -133,6 +133,12 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
   bool isMfma = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;
+  // Non-accel (FMA) path: applies when the (arch, dtype) combination has no
+  // matrix-accel instruction (e.g. f32 on gfx10/11/12 RDNA, where WMMA has no
+  // f32 mode). Conflating this with WMMA in the tuning space would miss the
+  // small kPerBlock / large tile configurations that the upstream rocMLIR
+  // general-gemm path needs to be performant.
+  bool isNonAccel = accelKind == MatrixAccelKind::None;
   Type inTypeA = gemmOp.getAType();
   bool is8b = inTypeA.isInteger(8) ||
               (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
@@ -182,7 +188,46 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  return isMfma ? validRangeMfmaParams : validRangeWmmaParams;
+  // Non-accel (FMA) parameters. Mirrors upstream rocMLIR's
+  // `validRangeGeneralGemmParams` so that the rocmlirTriton tuner explores
+  // the same (mPerBlock, nPerBlock, kPerBlock, blockSize) space as rocMLIR
+  // for kernels that lower to plain vector FMAs:
+  //   blockSize  in {64, 128, 256}   -> numWaves = blockSize / waveSize
+  //   mPerBlock  in {32, 64, 128}
+  //   nPerBlock  in {32, 64, 128}
+  //   kPerBlock  in {4, 8, 16}
+  // The set is already small (3 * 3 * 3 = 27 (m,n,k) tuples), so we keep
+  // the same ranges for Full and Exhaustive instead of trimming for Full.
+  // The Triton-side perf-config schema (`gemm_params`) does not carry
+  // mPerThread / nPerThread, so those are still derived later from
+  // (mPerBlock, nPerBlock, blockSize) by AffixTuningParameters.
+  std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
+  std::vector<uint32_t> kPerBlockNonAccel = {4, 8, 16};
+  std::vector<uint32_t> numWavesNonAccel;
+  for (uint32_t blockSize : {64u, 128u, 256u}) {
+    if (blockSize % waveSize == 0)
+      numWavesNonAccel.push_back(blockSize / waveSize);
+  }
+  if (numWavesNonAccel.empty())
+    numWavesNonAccel = numWavesRange;
+  std::vector<std::vector<uint32_t>> validRangeNonAccelParams = {
+      dPerBlockNonAccel,  // M/block
+      dPerBlockNonAccel,  // N/block
+      kPerBlockNonAccel,  // K/block
+      {1},                // kPackList (no kpack on non-accel FMA path)
+      numWavesNonAccel,   // numWaves (= blockSize / waveSize)
+      {0},                // matrixInstrNonkdim (no matrix-accel instr)
+      {1, 2, 3},          // numStages
+      wavesPerEUList,     // wavesPerEU
+      gridGroupSizeList,  // gridGroupSize
+      numCTAsList         // numCTAs
+  };
+
+  if (isMfma)
+    return validRangeMfmaParams;
+  if (isNonAccel)
+    return validRangeNonAccelParams;
+  return validRangeWmmaParams;
 }
 
 static std::vector<std::vector<uint32_t>>
