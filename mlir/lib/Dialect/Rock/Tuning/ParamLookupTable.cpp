@@ -24,12 +24,12 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
 
   // A healthy exact match (more than one real config) wins outright.
   if (it != table.end() && 
-      llvm::count_if(it->second, [](StringRef c){ return !c.empty(); }) > 1)
+      llvm::count_if(it->second, [](StringRef cfg) { return !cfg.empty(); }) > 1)
     return it->second;
 
   // Either the key is missing or its list is degenerate (<= 1 real config).
-  // Look for a "close" relative that actually has a useful list; relatives with
-  // <= 1 entry are dropped in getRelatives().
+  // Look for a "close" relative; findFallback() prefers relatives with a useful
+  // (>1 config) list so a single-config arch borrows a richer neighbour's list.
   auto fallbackKey = findFallback(key);
   if (!fallbackKey.empty()) {
     LLVM_DEBUG(llvm::dbgs() << "Falling back to tuning parameters with key "
@@ -37,10 +37,9 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
     return table.at(fallbackKey);
   }
 
-  // No richer relative exists. Prefer returning the degenerate exact entry
-  // (single config) over aborting.
-  if (it != table.end() && 
-      llvm::count_if(it->second, [](StringRef c){ return !c.empty(); }) <= 1)
+  // No relative at all (e.g. an op/dtype family with a lone degenerate entry).
+  // Prefer returning the degenerate exact entry over aborting.
+  if (it != table.end())
     return it->second;
 
   llvm::report_fatal_error(Twine("Tuning parameters not found for key ") + key);
@@ -48,9 +47,26 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
 
 template <typename ParamsType>
 StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
-  const auto relatives = getRelatives(target);
+  auto relatives = getRelatives(target);
   if (relatives.empty())
     return StringRef();
+
+  // Keep relatives whose own a valid list (> 1 real config); Only if every
+  // relative is degenerate do we keep the full set (eg. fp8 on gfx900/gfx1000).
+  static const auto &table = getTable();
+  SmallVector<StringRef, 12> validRelatives;
+  for (StringRef relative : relatives)
+    if (llvm::count_if(table.at(relative), [](StringRef cfg) { return !cfg.empty(); }) > 1)
+      validRelatives.push_back(relative);
+
+  // Narrow to the useful relatives, then pick the closest among them below. If
+  // every relative is degenerate we keep the full set so we still return one.
+  if (!validRelatives.empty())
+    relatives = std::move(validRelatives);
+
+  for (const auto &relative : relatives) {
+    llvm::errs() << "Relative: " << relative << "\n";
+  }
 
   auto it = std::lower_bound(relatives.begin(), relatives.end(), target);
   if (it == relatives.end())
@@ -86,9 +102,6 @@ ParamLookupTable<ParamsType>::getRelatives(StringRef target) {
     // If suffix and prefix match, then they are relatives
     if (target.ends_with(candidate.substr(candidate.size() - suffixLen)) &&
         target.starts_with(candidate.substr(0, fallbackArchPrefixLen))) {
-      // Drop relatives whose own list is invalid (only 1 real config); 
-      if (llvm::count_if(entry.second, [](StringRef c){ return !c.empty(); }) <= 1)
-        continue;
       relatives.push_back(candidate);
     }
   }
