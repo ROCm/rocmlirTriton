@@ -11,12 +11,17 @@ change relative to the reference is reported.
 
 Use --match to relax the key when the two files were tuned on different GPU
 partitions (e.g. benchmark on numCUs=152/numChiplets=1 vs reference on
-numCUs=304/numChiplets=8): --match arch-vector or --match vector ignore the
-numCUs/numChiplets columns.
+numCUs=304/numChiplets=8): --match arch-vector or --match vector.
+
+When arch strings differ (e.g. gfx1201 vs gfx1200), add --ignore-arch or use
+--match vector. When both arch and numCUs/numChiplets differ, use
+--match vector or --ignore-arch --ignore-partition.
 
 Usage:
   python3 compareTuningTFlops.py -b bench.tsv -r ref.tsv
   python3 compareTuningTFlops.py -b bench.tsv -r ref.tsv --match arch-vector
+  python3 compareTuningTFlops.py -b bench.tsv -r ref.tsv --match vector
+  python3 compareTuningTFlops.py -b bench.tsv -r ref.tsv --ignore-arch --ignore-partition
   python3 compareTuningTFlops.py -b bench.tsv -r ref.tsv -o diff.tsv
   python3 compareTuningTFlops.py -b bench.tsv -r ref.tsv --sort pct
 """
@@ -67,6 +72,23 @@ class Row:
             TEST_VECTOR_IDX: self.test_vector,
         }
         return tuple(field_by_idx[idx] for idx in columns)
+
+
+def resolve_match_columns(
+    match: str,
+    ignore_arch: bool,
+    ignore_partition: bool,
+) -> Tuple[int, ...]:
+    columns = MATCH_COLUMNS[match]
+    if ignore_arch:
+        columns = tuple(c for c in columns if c != ARCH_IDX)
+    if ignore_partition:
+        columns = tuple(
+            c for c in columns if c not in (NUM_CUS_IDX, NUM_CHIPLETS_IDX)
+        )
+    if not columns:
+        columns = (TEST_VECTOR_IDX,)
+    return columns
 
 
 def parse_row(line_no: int, line: str) -> Optional[Row]:
@@ -329,6 +351,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ignore-arch",
+        action="store_true",
+        help="Drop arch from the match key (e.g. gfx1201 bench vs gfx1200 ref)",
+    )
+    parser.add_argument(
+        "--ignore-partition",
+        action="store_true",
+        help="Drop numCUs and numChiplets from the match key",
+    )
+    parser.add_argument(
         "--unchanged-threshold",
         type=float,
         default=5.0,
@@ -357,7 +389,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"error: no data rows parsed from {bench_path}", file=sys.stderr)
         return 1
 
-    match_columns = MATCH_COLUMNS[args.match]
+    match_columns = resolve_match_columns(
+        args.match, args.ignore_arch, args.ignore_partition
+    )
     ref_index, dup_warnings = build_reference_index(ref_rows, match_columns)
     comparisons, missing = compare(bench_rows, ref_index, match_columns)
     comparisons = sort_comparisons(comparisons, args.sort)
