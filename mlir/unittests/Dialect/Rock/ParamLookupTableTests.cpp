@@ -66,6 +66,8 @@ TEST(FindFallbackTest, SingleConfigFallsBackToRicherRelative) {
   // Fall back for single-config lists
   EXPECT_EQ("gfx1200_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f16"));
+  EXPECT_EQ("gfx1201_conv_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1200_conv_f16"));
   EXPECT_EQ("gfx1100_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1150_gemm_f16"));
   EXPECT_EQ("gfx90a_gemm_f16",
