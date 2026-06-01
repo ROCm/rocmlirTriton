@@ -475,6 +475,8 @@ runWarmupAvgMs(unsigned numWarmupIterations, hipStream_t stream,
                ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
                ArrayRef<uint32_t> numCTAsList,
                std::vector<void *> &argPointers) {
+  assert(numWarmupIterations > 0 &&
+         "runWarmupAvgMs requires at least one warmup iteration");
   double totalMillisecondsWarmup = 0.0;
   for (unsigned iter = 0; iter < numWarmupIterations; ++iter) {
     for (auto [func, blockSize, gridSize, numCTAs] :
@@ -642,23 +644,22 @@ benchmarkKernels(const CompilationResult &result, ArrayRef<void *> hostBuffers,
                        gridSizes, numCTAsList, argPointers);
     if (failed(avgWarmupMs))
       return failure();
-    double totalMillisecondsWarmup = *avgWarmupMs;
-    assert(totalMillisecondsWarmup >= 0.0f &&
-           "totalMillisecondsWarmup must be greater than 0");
+    double avgIterationMs = *avgWarmupMs;
+    assert(avgIterationMs >= 0.0 && "avgIterationMs must be non-negative");
 
     // We want to get at least 1ms of kernel execution time
     // (counting all iterations), so increase the number of iterations
     // if necessary.
     constexpr float minTotalMilliseconds = 1.0f;
     iterations = std::max<unsigned>(
-        iterations, static_cast<unsigned>(std::ceil(minTotalMilliseconds /
-                                                    totalMillisecondsWarmup)));
+        iterations,
+        static_cast<unsigned>(std::ceil(minTotalMilliseconds / avgIterationMs)));
 
     // Fallback only: if no locked decision was supplied, classify from this
     // config's own warmup as before. We consider a kernel to be small if a
     // single iteration takes less than 1ms to run.
     if (!lockedIsSmallKernel.has_value())
-      isSmallKernel = totalMillisecondsWarmup < kSmallKernelThresholdMs;
+      isSmallKernel = avgIterationMs < kSmallKernelThresholdMs;
   }
 
   // Measure runs
@@ -692,7 +693,7 @@ benchmarkKernels(const CompilationResult &result, ArrayRef<void *> hostBuffers,
     }
   }
 
-  std::sort(measurements.begin(), measurements.end());
+  llvm::sort(measurements);
 
   if (params.showStats) {
     // We cannot show the rest of the stats because the small kernel case uses
@@ -739,14 +740,11 @@ static LogicalResult extractFuncOps(ModuleOp op,
     kernels.push_back(f);
   });
 
-  std::sort(kernels.begin(), kernels.end(),
-            [](const func::FuncOp &a, const func::FuncOp &b) {
-              int kernelA =
-                  toKernelOrder(a->getAttr(rock::KernelAttr::getMnemonic()));
-              int kernelB =
-                  toKernelOrder(b->getAttr(rock::KernelAttr::getMnemonic()));
-              return kernelA < kernelB;
-            });
+  llvm::sort(kernels, [](const func::FuncOp &a, const func::FuncOp &b) {
+    int kernelA = toKernelOrder(a->getAttr(rock::KernelAttr::getMnemonic()));
+    int kernelB = toKernelOrder(b->getAttr(rock::KernelAttr::getMnemonic()));
+    return kernelA < kernelB;
+  });
   return success();
 }
 
