@@ -91,7 +91,7 @@ func.func @rock_conv_i8(%filter : tensor<1x128x8x3x3xi8>, %input : tensor<128x1x
 func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tensor<128x1x1024x14x14xf32>, %output: tensor<128x1x1024x14x14xf32>) -> tensor<128x1x1024x14x14xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
   // CHECK: rock.conv_bwd_data
   // CHECK-SAME: params = #rock.gemm_params<
-  // GRID-SAME: rock.grid_size = 12544
+  // GRID-SAME: rock.grid_size = 6272
   // GRID: rock.gridwise_gemm
   %result = rock.conv_bwd_data(%filter, %output) {
     dilations = [1 : index, 1 : index],
@@ -99,7 +99,8 @@ func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tens
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
     output_layout = ["no", "go", "ko", "0o", "1o"],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    strides = [1 : index, 1 : index]
+    strides = [1 : index, 1 : index],
+    perf_config = "gemm:v1:64,64,64,1,1,4,0,1,2,0,0"
   } : tensor<1x1024x1024x1x1xf32>, tensor<128x1x1024x14x14xf32> -> tensor<128x1x1024x14x14xf32>
   %out = rock.store %result to %input by set : tensor<128x1x1024x14x14xf32> -> tensor<128x1x1024x14x14xf32> to tensor<128x1x1024x14x14xf32>
   return %out : tensor<128x1x1024x14x14xf32>
@@ -110,7 +111,7 @@ func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tens
 func.func @rock_conv_bwd_data_f16(%filter: tensor<1x1024x1024x1x1xf16>, %input: tensor<128x1x1024x14x14xf16>, %output: tensor<128x1x1024x14x14xf16>) -> tensor<128x1x1024x14x14xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
   // CHECK: rock.conv_bwd_data
   // CHECK-SAME: params = #rock.gemm_params<
-  // GRID-SAME: rock.grid_size = 12544
+  // GRID-SAME: rock.grid_size = 6272
   // GRID: rock.gridwise_gemm
   %result = rock.conv_bwd_data(%filter, %output) {
     dilations = [1 : index, 1 : index],
@@ -118,7 +119,8 @@ func.func @rock_conv_bwd_data_f16(%filter: tensor<1x1024x1024x1x1xf16>, %input: 
     input_layout = ["ni", "gi", "ci", "0i", "1i"],
     output_layout = ["no", "go", "ko", "0o", "1o"],
     padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    strides = [1 : index, 1 : index]
+    strides = [1 : index, 1 : index],
+    perf_config = "gemm:v1:64,64,64,1,1,4,0,1,2,0,0"
   } : tensor<1x1024x1024x1x1xf16>, tensor<128x1x1024x14x14xf16> -> tensor<128x1x1024x14x14xf16>
   %out = rock.store %result to %output by set : tensor<128x1x1024x14x14xf16> -> tensor<128x1x1024x14x14xf16> to tensor<128x1x1024x14x14xf16>
   return %out : tensor<128x1x1024x14x14xf16>
@@ -129,7 +131,7 @@ func.func @rock_conv_bwd_data_f16(%filter: tensor<1x1024x1024x1x1xf16>, %input: 
 func.func @rock_conv_bwd_data_padMN(%filter : tensor<1x64x3x1x1xf32>, %input : tensor<11x1x3x15x15xf32>, %output : tensor<11x1x64x15x15xf32>) -> tensor<11x1x3x15x15xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
   // CHECK: rock.conv_bwd_data
   // CHECK-SAME: params = #rock.gemm_params<
-  // GRID-SAME: rock.grid_size = 78
+  // GRID-SAME: rock.grid_size = 39
   // GRID: rock.gridwise_gemm
   %result = rock.conv_bwd_data(%filter, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -137,7 +139,8 @@ func.func @rock_conv_bwd_data_padMN(%filter : tensor<1x64x3x1x1xf32>, %input : t
     output_layout = ["no", "go", "ko", "0o", "1o"],
     dilations = [1 : index, 1 : index],
     strides = [1 : index, 1 : index],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index]
+    padding = [0 : index, 0 : index, 0 : index, 0 : index],
+    perf_config = "gemm:v1:64,64,64,1,1,4,0,1,2,0,0"
   } : tensor<1x64x3x1x1xf32>, tensor<11x1x64x15x15xf32> -> tensor<11x1x3x15x15xf32>
   %out = rock.store %result to %input by set : tensor<11x1x3x15x15xf32> -> tensor<11x1x3x15x15xf32> to tensor<11x1x3x15x15xf32>
   return %out : tensor<11x1x3x15x15xf32>
@@ -148,7 +151,7 @@ func.func @rock_conv_bwd_data_padMN(%filter : tensor<1x64x3x1x1xf32>, %input : t
 func.func @rock_conv_bwd_data_padMK(%filter : tensor<1x11x3x1x1xf32>, %input : tensor<128x1x3x15x15xf32>, %output : tensor<128x1x11x15x15xf32>) -> tensor<128x1x3x15x15xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
   // CHECK: rock.conv_bwd_data
   // CHECK-SAME: params = #rock.gemm_params<
-  // GRID-SAME: rock.grid_size = 900
+  // GRID-SAME: rock.grid_size = 450
   // GRID: rock.gridwise_gemm
   %result = rock.conv_bwd_data(%filter, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -156,7 +159,8 @@ func.func @rock_conv_bwd_data_padMK(%filter : tensor<1x11x3x1x1xf32>, %input : t
     output_layout = ["no", "go", "ko", "0o", "1o"],
     dilations = [1 : index, 1 : index],
     strides = [1 : index, 1 : index],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index]
+    padding = [0 : index, 0 : index, 0 : index, 0 : index],
+    perf_config = "gemm:v1:64,64,64,1,1,4,0,1,2,0,0"
   } : tensor<1x11x3x1x1xf32>, tensor<128x1x11x15x15xf32> -> tensor<128x1x3x15x15xf32>
   %out = rock.store %result to %input by set : tensor<128x1x3x15x15xf32> -> tensor<128x1x3x15x15xf32> to tensor<128x1x3x15x15xf32>
   return %out : tensor<128x1x3x15x15xf32>
