@@ -135,13 +135,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
                 accelKind == MatrixAccelKind::ScaledMFMA;
   bool isWmma = accelKind == MatrixAccelKind::WMMA ||
                 accelKind == MatrixAccelKind::ScaledWMMA;
-  // Anything that isn't a recognized accel path lowers to plain vector FMAs
-  // -- both the explicit `MatrixAccelKind::None` case (e.g. f32 on gfx10/11/12
-  // RDNA, where WMMA has no f32 mode) and any future enum value we haven't
-  // taught this switch about yet. The non-accel space is the conservative
-  // default; the lowering matches it because `chooseMfmaInstruction` /
-  // `chooseWmmaInstruction` themselves fall back to scalar FMA when no
-  // matching intrinsic exists.
   Type inTypeA = gemmOp.getAType();
   bool is8b = inTypeA.isInteger(8) ||
               (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
@@ -212,8 +205,7 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
     if (blockSize % waveSize == 0)
       numWavesNonAccel.push_back(blockSize / waveSize);
   }
-  if (numWavesNonAccel.empty())
-    numWavesNonAccel = numWavesRange;
+  assert(!numWavesNonAccel.empty() && "numWavesNonAccel must be non-empty");
   std::vector<std::vector<uint32_t>> validRangeNonAccelParams = {
       dPerBlockNonAccel,  // M/block
       dPerBlockNonAccel,  // N/block
@@ -294,8 +286,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
     if (blockSize % waveSize == 0)
       numWavesNonAccel.push_back(blockSize / waveSize);
   }
-  if (numWavesNonAccel.empty())
-    numWavesNonAccel = numWavesRange;
+  assert(!numWavesNonAccel.empty() && "numWavesNonAccel must be non-empty");
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsNonAccel = {
       /*gemm0MPerBlock=*/dPerBlockNonAccel,
       /*gemm0NPerBlock=*/dPerBlockNonAccel,
