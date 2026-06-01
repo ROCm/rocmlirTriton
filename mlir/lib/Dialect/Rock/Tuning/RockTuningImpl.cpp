@@ -286,15 +286,42 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       wavesPerEUList,
       gridGroupSizeList,
       numCTAsList};
+
+  // Non-accel path.
+  std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
+  std::vector<uint32_t> numWavesNonAccel;
+  for (uint32_t blockSize : {64u, 128u, 256u}) {
+    if (blockSize % waveSize == 0)
+      numWavesNonAccel.push_back(blockSize / waveSize);
+  }
+  if (numWavesNonAccel.empty())
+    numWavesNonAccel = numWavesRange;
+  const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsNonAccel = {
+      /*gemm0MPerBlock=*/dPerBlockNonAccel,
+      /*gemm0NPerBlock=*/dPerBlockNonAccel,
+      kPerBlock,
+      /*kPackList=*/{1},
+      numWavesNonAccel,
+      /*matrixInstrNonkdim=*/{0},
+      {1, 2},
+      wavesPerEUList,
+      gridGroupSizeList,
+      numCTAsList};
+
   auto [firstGemmKind, secondGemmKind] =
       rock::getMatrixAccelKind(rock::getArchValue(gemmGemmOp), gemmGemmOp);
 
-  std::vector<std::vector<uint32_t>> validRangeGemmGemmParams;
-
-  // checking first gemm only is ok
+  // Checking the first gemm is sufficient: the two gemms in attention always
+  // share the same accel kind on every currently supported arch.
   bool isMfma = firstGemmKind == MatrixAccelKind::MFMA ||
                 firstGemmKind == MatrixAccelKind::ScaledMFMA;
-  return isMfma ? validRangeGemmGemmParamsMFMA : validRangeGemmGemmParamsWMMA;
+  bool isWmma = firstGemmKind == MatrixAccelKind::WMMA ||
+                firstGemmKind == MatrixAccelKind::ScaledWMMA;
+  if (isMfma)
+    return validRangeGemmGemmParamsMFMA;
+  if (isWmma)
+    return validRangeGemmGemmParamsWMMA;
+  return validRangeGemmGemmParamsNonAccel;
 }
 
 // Keep in sync with attentionSweeps.py
