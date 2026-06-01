@@ -18,8 +18,9 @@ Use [GitHub Issues](../../issues) to report bugs or request features. Include a 
 2. Make your change. Add tests under `mlir/test/` and update docs if behavior changes.
 3. Format your C/C++ changes with `clang-format` (uses the repo's `.clang-format`):
    ```bash
-   git clang-format .
+   git clang-format origin/develop
    ```
+   The premerge `clang-format` CI job runs `git clang-format --diff origin/develop` and fails on any non-empty diff, so matching it locally is the fastest way to avoid CI bounces.
 4. Build and run the test suite locally:
    ```bash
    bash cmake.sh
@@ -42,8 +43,9 @@ In short: MLIR's naming convention deviates from LLVM in one place --
 variables, parameters, and class members use `camelBack` (lowerCamelCase),
 not the traditional `Capitalized` form. Functions remain `camelBack`;
 classes, enums, and unions are `PascalCase`. Style is enforced via
-`.clang-format` (LLVM base style) and `.clang-tidy`; Step 3 of the
-workflow above (`git clang-format .`) is the minimum expectation before
+`.clang-format` (LLVM base style) and `.clang-tidy`; matching the CI
+`clang-format` job locally with `git clang-format --diff origin/develop`
+(see Step 3 of the workflow above) is the minimum expectation before
 opening a PR.
 
 Python helpers (under `scripts/` and `mlir/utils/performance/`) follow
