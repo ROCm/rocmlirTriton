@@ -23,7 +23,9 @@
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
@@ -279,7 +281,8 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   // something to override with (e.g. `+xnack` for asan). Stamping an empty
   // override causes LLVM's per-function subtarget lookup to key off a bare
   // `"target-features"=""` attribute and silently *ignore* the TM-level
-  // `-mattr` we later set on `tmAsm` in `make_amdgcn`. Upstream Triton only
+  // `-mattr` we later set on `tmAsm` in `make_amdgcn` (which is where
+  // `-real-true16` is added for gfx11 fp8 kernels). Upstream Triton only
   // touches `target-features` in the asan path (see
   // `add_fn_target_feature("+xnack")` in compiler.py).
   if (enableAsan) {
@@ -664,6 +667,46 @@ std::optional<SmallVector<char, 0>> makeHSACO(StringRef amdgcnAsm,
   return linkHSACO(*objectCode);
 }
 
+// Detect whether any kernel argument points to an fp8 (8-bit float) element
+// type. Mirrors the `'f8E' in str(mod)` guard in Triton's compiler.py
+// make_llir() (triton-lang/triton PR #10400), but evaluated here at the LLVM
+// dialect stage: fp8 element types no longer appear in the lowered function
+// bodies, yet they survive on the kernel-argument `tt.pointee_type` attributes
+// stamped during TritonGPU -> LLVM conversion.
+//
+// We deliberately do not check for fp4 (`f4E2M1FN`): there is no fp4 type left
+// to detect at this stage. Regardless of how fp4 is used (scaled `quant_dot`,
+// a plain `dot`, or even elementwise ops) Rock's narrow-type legalization
+// rewrites `f4E2M1FN -> i4 -> packed i8` during the kernel pipeline (the arith
+// emulate/expand passes plus LegalizeFloatTypes / ConvertNarrowTypeSignatures;
+// see buildKernelPipeline in Pipelines.cpp), well before the Triton lowering.
+// By the time we get here `tt.pointee_type` reads `i8` (indistinguishable from
+// a real i8 kernel) and the fp4 arithmetic has become integer/bitwise ops, so
+// the narrow-float type that motivates the gfx11 true16 workaround is no longer
+// present.
+//
+// If a future fp4 path ever kept the native type into the Triton/LLVM stage and
+// targeted gfx11, detection would have to move earlier in the pipeline to the
+// TTGIR / makeLLIR stage, because the type information does
+// not survive to this translation.
+static bool usesFp8KernelArg(ModuleOp module) {
+  bool found = false;
+  module.walk([&](LLVM::LLVMFuncOp funcOp) {
+    for (unsigned i = 0, e = funcOp.getNumArguments(); i < e; ++i) {
+      auto pointeeTy = funcOp.getArgAttrOfType<TypeAttr>(i, "tt.pointee_type");
+      if (!pointeeTy)
+        continue;
+      Type elemTy = pointeeTy.getValue();
+      if (isa<FloatType>(elemTy) && elemTy.getIntOrFloatBitWidth() == 8) {
+        found = true;
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -695,6 +738,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   StringRef arch = options.arch;
   std::string features = options.features;
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
+
+  bool disableTrue16 = arch.starts_with("gfx11") && usesFp8KernelArg(module);
 
   auto triple = llvm::Triple(options.triple);
   // Set target triple and data layout (attach_target_triple in compiler.py)
@@ -825,6 +870,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   // make_amdgcn (compiler.py)
   std::string asmFeatures;
+  if (disableTrue16)
+    asmFeatures = "-real-true16";
   auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
                                    options.enableFpFusion);
   if (!tmAsm) {
@@ -861,6 +908,11 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   std::string hsacoFeatures;
   if (enableAsan)
     hsacoFeatures = "+xnack";
+  if (disableTrue16) {
+    if (!hsacoFeatures.empty())
+      hsacoFeatures += ",";
+    hsacoFeatures += "-real-true16";
+  }
   auto hsaco = makeHSACO(amdgcnAsm, triple, arch, hsacoFeatures);
   if (!hsaco) {
     return failure();
