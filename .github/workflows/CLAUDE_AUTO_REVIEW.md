@@ -1123,10 +1123,12 @@ env vars can't reference a single source. When you change one, update all:
 > diffs from the upstream rocMLIR copy:
 >
 > - The review skill is `.claude/skills/review-rocmlir-triton-pr/SKILL.md`
->   (not `review-rocmlir-pr`) and includes additional Steps for Triton-
->   submodule-bump audit, `rock::*` hardware-feature-detection rule, and
->   the **rocMLIR back-port check** (Step 5 of that skill). The five
->   skill-name references inside `claude_auto_review.yml`'s prompt
+>   (not `review-rocmlir-pr`) and includes an additional Step 4 that
+>   applies the rocmlirTriton-specific sections of
+>   `docs/CODING_STANDARDS.md` -- Triton-submodule-bump audit, `rock::*`
+>   hardware-feature-detection rule, bridge passes, fat-library +
+>   MIGraphX coordination, and the **rocMLIR back-port check**. The
+>   five skill-name references inside `claude_auto_review.yml`'s prompt
 >   heredoc are updated to match (see §15 for the exact locations).
 > - The `review` job's `runs-on:` label is `build-only-rocmlir-triton`
 >   (rocMLIR uses `build-only-rocmlir`). Both labels resolve to internal

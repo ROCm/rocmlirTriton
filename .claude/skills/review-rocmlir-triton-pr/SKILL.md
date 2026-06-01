@@ -179,150 +179,39 @@ Each finding must:
   "Critical: `using namespace std` at file scope" or "Major:
   `std::vector` for small local collections").
 
-Step 4 below adds the rocmlirTriton-specific checks (Triton-submodule
-bumps, `triton-patches/*.patch`, `rock::*` hardware-feature detection,
-bridge passes, fat-library + MIGraphX) that don't fit the generic
-LLVM/MLIR tiers; apply both.
+Step 4 below applies the rocmlirTriton-specific sections of the same
+file (Triton-submodule bumps, `triton-patches/*.patch`, `rock::*`
+hardware-feature detection, bridge passes, fat-library + MIGraphX, and
+the rocMLIR back-port check).
 
 ---
 
-## Step 4 -- Triton-integration-specific checks
+## Step 4 -- Apply the rocmlirTriton-specific review rules
 
-rocmlirTriton lowers Rock dialect kernels through OpenAI Triton's TTIR/TTGIR/LLIR
-pipeline to AMD GPU code. Several files and conventions exist specifically to keep
-that integration safe and reproducible across Triton submodule bumps. Apply these
-checks **in addition to** the generic LLVM/MLIR checklist in Step 3:
+`docs/CODING_STANDARDS.md` (inlined into the prompt above and overlaid
+into the workspace; see Step 3) also documents two rocmlirTriton-
+specific sections that don't fit the generic LLVM/MLIR tiers:
 
-### Triton submodule (`external/triton`) bumps
+- **`## rocmlirTriton-specific checks`** -- Triton submodule
+  (`external/triton`) bumps, local `triton-patches/*.patch`, `rock::*`
+  hardware-feature detection (vs. `triton::AMD::TargetInfo`), bridge
+  passes between Rock and Triton, and fat-library + downstream
+  MIGraphX coordination. Each sub-rule documents its severity inline
+  (Major / Minor).
+- **`## rocMLIR back-port check`** -- the path list of files shared
+  with `ROCm/rocMLIR`, the rocmlirTriton-only path list, and the
+  verdict logic for missing back-port notes (Major when none of
+  options a/b/c is in the PR description). Compute the intersection
+  of `meta.files[].path` against the path list there.
 
-If `diff.patch` shows a change to the `external/triton` submodule pointer (the line in
-the `external/triton` gitlink), the PR description MUST acknowledge the bump checklist
-documented in `docs/bump_triton_version.md` / the `triton-bump` skill. Specifically:
-
-- Replication points (`Pipelines.cpp`, `TritonToHsaco.cpp`, `tritonUtils.cpp`,
-  `AmdArchDb.cpp`) must be re-audited and updated if upstream changed the originals
-  they replicate. Raise a **Major** finding when a Triton bump lands without a
-  corresponding diff to these files unless the PR description explicitly states the
-  upstream files are unchanged for this bump.
-- `librockcompiler_deps.cmake` must be regenerated -- the fat-library dep list can
-  change between Triton SHAs and MIGraphX's `librockCompiler` link line depends on
-  it. Flag **Major** if the bump diff doesn't touch `librockcompiler_deps.cmake`.
-- `triton-patches/*.patch` must be re-evaluated; patches that have been upstreamed
-  or no longer apply cleanly should be removed in the same PR.
-- Commit subject should be `[TRITON-BUMP] ...` (or `[TRITON-PATCH] ...` for a
-  patch-only refresh) per the project's commit-message conventions.
-
-### Local Triton patches (`triton-patches/*.patch`)
-
-- New `triton-patches/*.patch` files must include a justification in the PR
-  description: either a link to the upstream issue/PR that will eventually
-  upstream the change, or a one-line note explaining why this is a permanent
-  fork. Raise a **Major** finding when a new patch lands without that
-  justification.
-- If a patch touches an upstream file that has a CODEOWNER in
-  `external/triton/.github/CODEOWNERS`, the PR description should name the
-  upstream owner so the reviewer knows whose code we're diverging from. Raise
-  a **Minor** finding when this is missing.
-
-### Hardware-feature detection
-
-Hardware feature checks (whether the target supports a given MFMA shape, dtype,
-LDS size, etc.) MUST go through `rock::*` helpers, NOT through
-`triton::AMD::TargetInfo`. The `rock::*` helpers cover the union of
-GPU architectures rocmlirTriton must support; using `triton::AMD::TargetInfo`
-directly only sees what upstream Triton tracks for its own backends and will
-silently miss arches Triton hasn't taught about yet. Raise a **Major** finding
-on any new direct use of `triton::AMD::TargetInfo` for a feature-detection
-check that has an existing `rock::*` equivalent.
-
-### Bridge passes between Rock and Triton
-
-The Rock<->Triton bridge passes (`RockToTTIRPass`, `RockFuncToTritonFuncPass`,
-`RockSerializeHostFuncsPass`, `TritonToHsacoPass`, the Triton-related code in
-`rock::buildTritonPipeline` / `buildBackendPipeline` in `Pipelines.cpp`, and
-`tritonUtils.cpp`) are rocmlirTriton-specific. Changes there should NOT be
-back-ported to rocMLIR (see Step 5) but DO need lit + E2E coverage like any
-other pass change.
-
-### Fat library + downstream MIGraphX
-
-The Triton submodule is wired into the `librockCompiler` fat library that
-MIGraphX consumes. Any change that alters its public C-API surface, IR
-ingest/emit shape, or default Triton pipeline behavior is a downstream
-coordination point with MIGraphX -- the PR description should call this out,
-otherwise raise a **Major** finding.
+Apply both alongside Step 3. Cite the matching section heading in the
+finding body (for example: "rocmlirTriton-specific -- Triton
+submodule bumps: `librockcompiler_deps.cmake` not regenerated") so
+the author can look up the rationale.
 
 ---
 
-## Step 5 -- rocMLIR back-port check
-
-`rocmlirTriton` was forked from `rocMLIR` (private fork) and most of `mlir/`
-remains shared between the two trees. For every change in this PR that is
-NOT exclusively in the Triton-only paths listed below, ask **"does this fix
-or feature also need to land in `ROCm/rocMLIR`?"** A missing back-port silently
-causes drift between the two trees and is one of the most common review
-escapes; flag it explicitly.
-
-### Likely needs a back-port (shared with rocMLIR)
-
-Compute the intersection of `meta.files[].path` with these paths:
-
-- `mlir/lib/Dialect/Rock/` -- EXCEPT the rocmlirTriton-only bridge-pass
-  source files in `mlir/lib/Dialect/Rock/Transforms/`: `RockToTTIR.cpp`,
-  `FuncToTritonFunc.cpp`, `SerializeHostFuncs.cpp` (and any future
-  Triton-only restore/serialize pass added beside them)
-- `mlir/lib/Dialect/MIGraphX/`
-- `mlir/lib/Conversion/MIGraphXTo*/`
-- `mlir/tools/{rocmlir-gen,rocmlir-driver,rocmlir-opt,rocmlir-tuning-driver,rocmlir-lsp-server}/`
-  -- excluding any Triton-pipeline registrations inside those tools
-- `mlir/utils/performance/`, `mlir/utils/jenkins/static-checks/`
-- Generic `cmake/` helpers and root-CMake options that aren't Triton-specific
-
-Note: `mlir/lib/Analysis/` exists in `rocMLIR` (e.g.
-`BufferDependencyAnalysis.cpp`) but has been refactored away in
-`rocmlirTriton`. If a PR re-introduces that path locally, treat it as
-shared and apply the back-port check; otherwise it cannot appear in a
-rocmlirTriton diff.
-
-### rocmlirTriton-only (no back-port needed)
-
-- `external/triton/`, `triton-patches/`, `cmake/triton.cmake`,
-  `scripts/build-llvm.sh`, `cmake.sh`
-- The bridge-pass source files in `mlir/lib/Dialect/Rock/Transforms/`:
-  `RockToTTIR.cpp` (pass `RockToTTIRPass`), `FuncToTritonFunc.cpp`
-  (pass `RockFuncToTritonFuncPass`), `SerializeHostFuncs.cpp`
-  (pass `RockSerializeHostFuncsPass`); plus the Triton portion of
-  `rock::buildTritonPipeline` / `buildBackendPipeline` in
-  `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` and
-  `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp`
-- `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp`
-  (pass `TritonToHsacoPass`)
-- `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake`,
-  `docs/bump_triton_version.md`, `mlir/utils/jenkins/Jenkinsfile.downstream`
-
-### Verdict
-
-If the PR touches any of the "shared with rocMLIR" paths above, the PR
-description must EITHER:
-
-(a) Link to a parallel `ROCm/rocMLIR` PR, OR
-(b) Include a one-line note explaining why the divergence is intentional
-    (for example: "this fix depends on Triton-only changes and is not
-    applicable upstream"), OR
-(c) Confirm the file no longer exists / has been refactored on the rocMLIR
-    side (provide a short justification).
-
-If NONE of (a)/(b)/(c) is in the PR description, raise a **Major** finding
-in `inline_comments[]` anchored to one of the touched shared files. The
-body of the finding should list each shared path the PR modifies and ask
-the author to add the back-port note or open the parallel rocMLIR PR.
-
-If the PR is exclusively in rocmlirTriton-only paths, no back-port note
-is needed -- skip this step's finding.
-
----
-
-## Step 6 -- Output
+## Step 5 -- Output
 
 Return a single JSON object with this exact shape AS YOUR FINAL RESPONSE. Do not write
 it to a file -- the workflow uses claude-code-action's `--json-schema` flag to validate
@@ -374,7 +263,8 @@ Field rules:
                          confirming line, e.g. "No blocking issues found."
       ## Notes        -- (optional) spot-checks, out-of-scope observations,
                          follow-up suggestions for a separate PR, rocMLIR
-                         back-port reminder if Step 5 applies
+                         back-port reminder if Step 4's back-port
+                         section applies
       ## CI status    -- (optional) non-self checks in `/tmp/pr/checks.json`
                          with `bucket == "fail"` or `"cancel"`; the
                          auto-review pipeline's own check is expected to be
