@@ -465,10 +465,10 @@ loadModuleAndKernels(const CompilationResult &result, hipModule_t &module,
   return success();
 }
 
-// Run `warmupIterations` launches timed with per-iteration HIP events and return
-// the average milliseconds per warmup iteration. This estimate is used both to
-// size the measurement loop (`iterations`) and to classify the kernel as small
-// or large.
+// Run `warmupIterations` launches timed with per-iteration HIP events and
+// return the average milliseconds per warmup iteration. This estimate is used
+// both to size the measurement loop (`iterations`) and to classify the kernel
+// as small or large.
 static FailureOr<double>
 runWarmupAvgMs(unsigned numWarmupIterations, hipStream_t stream,
                const std::vector<hipFunction_t> &functions,
@@ -493,7 +493,8 @@ runWarmupAvgMs(unsigned numWarmupIterations, hipStream_t stream,
       HIPCHECK(hipStreamSynchronize(stream));
 
       float currentMilliseconds = 0.0;
-      HIPCHECK(hipEventElapsedTime(&currentMilliseconds, startEvent, stopEvent));
+      HIPCHECK(
+          hipEventElapsedTime(&currentMilliseconds, startEvent, stopEvent));
 
       HIPCHECK(hipEventDestroy(stopEvent));
       HIPCHECK(hipEventDestroy(startEvent));
@@ -514,17 +515,16 @@ runWarmupAvgMs(unsigned numWarmupIterations, hipStream_t stream,
   return totalMillisecondsWarmup / numWarmupIterations;
 }
 
-// Probe the default/heuristic perf config once for a problemConfig: load it, run
-// a warmup, and classify it as a small (true) or large (false) kernel. The
+// Probe the default/heuristic perf config once for a problemConfig: load it,
+// run a warmup, and classify it as a small (true) or large (false) kernel. The
 // result is then applied to every perf config in the sweep so they all use the
 // same measurement method. This performs no measurement and prints nothing, so
 // it cannot leak a result line into the tuning output. The only cost is one
 // warmup-only run (warmupIterations launches) plus the module load.
-static FailureOr<bool>
-classifyKernelSize(const CompilationResult &defaultResult,
-                   ArrayRef<void *> hostBuffers,
-                   MutableArrayRef<void *> gpuBuffers,
-                   ArrayRef<size_t> bufferSizes, const BenchmarkParams &params) {
+static FailureOr<bool> classifyKernelSize(
+    const CompilationResult &defaultResult, ArrayRef<void *> hostBuffers,
+    MutableArrayRef<void *> gpuBuffers, ArrayRef<size_t> bufferSizes,
+    const BenchmarkParams &params) {
   hipStream_t stream;
   HIPCHECK(hipStreamCreate(&stream));
   llvm::scope_exit streamCleanup([&]() {
@@ -1012,8 +1012,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       quickSpace->tuningRange.front().getPerfConfigStr(defaultConfig);
 
       SmallVector<std::string> bufferedDiags;
-      CompilationResult probeResult = compileSingleConfig(
-          defaultConfig, sourceModuleStr, deviceName, kernelOpts, bufferedDiags);
+      CompilationResult probeResult =
+          compileSingleConfig(defaultConfig, sourceModuleStr, deviceName,
+                              kernelOpts, bufferedDiags);
       if (probeResult.status == CompilationStatus::Success) {
         FailureOr<bool> classified =
             classifyKernelSize(probeResult, hostBuffers, gpuBuffers,
@@ -1032,8 +1033,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         }
       } else {
         llvm::errs() << "Warning: could not compile default config '"
-                     << defaultConfig
-                     << "' for kernel-size probe (status "
+                     << defaultConfig << "' for kernel-size probe (status "
                      << static_cast<int>(probeResult.status)
                      << "); falling back to per-config classification\n";
         for (auto &msg : bufferedDiags)
