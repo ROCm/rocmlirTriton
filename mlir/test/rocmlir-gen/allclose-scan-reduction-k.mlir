@@ -1,0 +1,228 @@
+// Tests for `scanModuleForReductionK` in rocmlir-gen.cpp. The scanner is the
+// fallback path for selecting the K-scaled allclose `atol` when the user does
+// not pass `-operation` (e.g. `--clone-harness` / `--verifier=clone`). The
+// observable is the `atol` constant emitted right before the
+// `mcpuVerifyFloatAllclose` call, which is built as:
+//
+//   atol_eff = baseAtol + K_eff * sumErrTol(elemType)
+//
+
+// ============================================================================
+// (1) Plain `rock.gemm`. K=64 -> atol = 1e-5 + 64*1e-6 = 7.4e-5.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut gemm_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=highlevel -host-pipeline=highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut gemm_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=GEMM --enable-var-scope
+
+func.func private @gemm_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128xf32>) -> tensor<1x256x128xf32> {
+  %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %0 = tosa.matmul %arg0, %arg1, %a_zp, %b_zp {acc_type = f32} : (tensor<1x256x64xf32>, tensor<1x64x128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x256x128xf32>
+  return %0 : tensor<1x256x128xf32>
+}
+
+// The pipeline must produce a `rock.gemm` for the scanner to see.
+// GEMM:        rock.gemm
+// The K-scaled atol (matching K=64): 1e-5 + 64*1e-6 = 7.4e-5.
+// GEMM:        arith.constant 7.{{[0-9]+}}{{[eE]}}-{{0?}}5 : f32
+// The PyTorch f32 rtol is unchanged.
+// GEMM-NEXT:   arith.constant 1.300000e-06 : f32
+// GEMM:        call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (2) Chained `rock.reduce` on `rock.gemm`. The scanner walks the reduce input
+// back to the matmul and adds the reduce axis extent to K_gemm (one extra
+// reduction phase). For K_gemm=64 and reduce axis extent 128,
+// K_eff = 64 + 128 = 192 and atol = 1e-5 + 192*1e-6 = 2.02e-4.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut gemm_reduce_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=highlevel -host-pipeline=highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut gemm_reduce_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=GEMM_REDUCE --enable-var-scope
+
+func.func private @gemm_reduce_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128xf32>) -> tensor<1x256x1xf32> {
+  %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %0 = tosa.matmul %arg0, %arg1, %a_zp, %b_zp {acc_type = f32} : (tensor<1x256x64xf32>, tensor<1x64x128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x256x128xf32>
+  %1 = tosa.reduce_sum %0 {axis = 2 : i32} : (tensor<1x256x128xf32>) -> tensor<1x256x1xf32>
+  return %1 : tensor<1x256x1xf32>
+}
+
+// Both ops must reach the IR the scanner walks.
+// GEMM_REDUCE:        rock.gemm
+// GEMM_REDUCE:        rock.reduce
+// Additive K_eff = 64 + 128 = 192; atol = 1e-5 + 192*1e-6 = 2.02e-4.
+// Magnitude < 1e-3 -> MLIR fp32 printer uses scientific notation.
+// GEMM_REDUCE:        arith.constant 2.{{[0-9]+}}{{[eE]}}-{{0?}}4 : f32
+// GEMM_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
+// GEMM_REDUCE:        call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (3) Convolution from a MIGraphX kernel. K_eff = Cin * product(filter_spatial).
+// Cin=1, filter=3x3 gives K=9 and atol = 1e-5 + 9*1e-6 = 1.9e-5.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut conv_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut conv_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=CONV --enable-var-scope
+
+func.func private @conv_fut(%arg0: !migraphx.shaped<1x1x32x32xf32, 1024x1024x32x1>, %arg1: !migraphx.shaped<1x1x3x3xf32, 9x9x3x1>) -> (!migraphx.shaped<1x1x32x32xf32, 1024x1024x32x1>) {
+  %0 = migraphx.convolution %arg0, %arg1 {dilation = [1, 1], group = 1 : i64, padding = [1, 1, 1, 1], padding_mode = 0 : i64, stride = [1, 1]} : <1x1x32x32xf32, 1024x1024x32x1>, <1x1x3x3xf32, 9x9x3x1> -> <1x1x32x32xf32, 1024x1024x32x1>
+  return %0 : !migraphx.shaped<1x1x32x32xf32, 1024x1024x32x1>
+}
+
+// The migraphx pipeline lowers the convolution to a `rock.conv` op.
+// CONV:        rock.conv
+// atol = 1e-5 + 9*1e-6 = 1.9e-5.
+// CONV:        arith.constant 1.{{8|9}}{{[0-9]*}}{{[eE]}}-{{0?}}5 : f32
+// CONV-NEXT:   arith.constant 1.300000e-06 : f32
+// CONV:        call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (4) No reduction op in the module. The scanner returns nullopt, K_eff
+// defaults to 1, and atol = 1e-5 + 1*1e-6 = 1.1e-5 -- the PyTorch element-wise
+// default plus one unit of accumulation slack.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut elemwise_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=highlevel -host-pipeline=highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut elemwise_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=ELEMWISE --enable-var-scope
+
+func.func private @elemwise_fut(%arg0: tensor<256xf32>, %arg1: tensor<256xf32>) -> tensor<256xf32> {
+  %0 = tosa.add %arg0, %arg1 : (tensor<256xf32>, tensor<256xf32>) -> tensor<256xf32>
+  return %0 : tensor<256xf32>
+}
+
+// ELEMWISE-NOT:  rock.gemm
+// ELEMWISE-NOT:  rock.conv
+// atol = 1e-5 + 1*1e-6 = 1.1e-5.
+// ELEMWISE:      arith.constant 1.{{0|1}}{{[0-9]*}}{{[eE]}}-{{0?}}5 : f32
+// ELEMWISE-NEXT: arith.constant 1.300000e-06 : f32
+// ELEMWISE:      call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (5) MIGraphX `migraphx.dot`. Same shape as case (1); confirms the MIGraphX
+// pipeline lowers `migraphx.dot` to `rock.gemm` with the same K=64 that the
+// scanner picks up. Expected atol matches case (1): 7.4e-5.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut mx_dot_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut mx_dot_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=MX_DOT --enable-var-scope
+
+func.func private @mx_dot_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384x64x1>, %arg1: !migraphx.shaped<1x64x128xf32, 8192x128x1>) -> !migraphx.shaped<1x256x128xf32, 32768x128x1> {
+  %0 = migraphx.dot %arg0, %arg1 : <1x256x64xf32, 16384x64x1>, <1x64x128xf32, 8192x128x1> -> <1x256x128xf32, 32768x128x1>
+  return %0 : !migraphx.shaped<1x256x128xf32, 32768x128x1>
+}
+
+// MX_DOT:        rock.gemm
+// atol = 1e-5 + 64*1e-6 = 7.4e-5.
+// MX_DOT:        arith.constant 7.{{[0-9]+}}{{[eE]}}-{{0?}}5 : f32
+// MX_DOT-NEXT:   arith.constant 1.300000e-06 : f32
+// MX_DOT:        call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (6) MIGraphX `migraphx.dot` followed by `migraphx.reduce_sum`. Same shape as
+// case (2); confirms the additive K_eff = K_gemm + reduce_axis_extent rule
+// fires for the MIGraphX -> rock lowering too (rock.reduce reaches the
+// scanner with `axis = 2 : index` and extent 128). Expected atol = 2.02e-4.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut mx_dot_reduce_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut mx_dot_reduce_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=MX_DOT_REDUCE --enable-var-scope
+
+func.func private @mx_dot_reduce_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384x64x1>, %arg1: !migraphx.shaped<1x64x128xf32, 8192x128x1>) -> !migraphx.shaped<1x256x1xf32, 256x1x1> {
+  %0 = migraphx.dot %arg0, %arg1 : <1x256x64xf32, 16384x64x1>, <1x64x128xf32, 8192x128x1> -> <1x256x128xf32, 32768x128x1>
+  %1 = migraphx.reduce_sum %0 {axes = [2]} : <1x256x128xf32, 32768x128x1> -> <1x256x1xf32, 256x1x1>
+  return %1 : !migraphx.shaped<1x256x1xf32, 256x1x1>
+}
+
+// MX_DOT_REDUCE:        rock.gemm
+// MX_DOT_REDUCE:        rock.reduce
+// Additive K_eff = 64 + 128 = 192; atol = 1e-5 + 192*1e-6 = 2.02e-4.
+// Magnitude < 1e-3 -> MLIR fp32 printer uses scientific notation.
+// MX_DOT_REDUCE:        arith.constant 2.{{[0-9]+}}{{[eE]}}-{{0?}}4 : f32
+// MX_DOT_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
+// MX_DOT_REDUCE:        call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (7) Multi-output element-wise kernel. The kernel returns two tensors of the
+// same dtype; the harness must emit one `_verify` function per output (here
+// `_verify0` and `_verify1`) with its own `(atol, rtol)` constants. Because
+// both outputs are f32, the tolerances are the same.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut multi_out_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=highlevel -host-pipeline=highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut multi_out_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=MULTI_OUT --enable-var-scope
+
+func.func private @multi_out_fut(%arg0: tensor<1x64x64xf32>, %arg1: tensor<1x64x64xf32>) -> (tensor<1x64x64xf32>, tensor<1x64x64xf32>) {
+  %0 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %1 = tosa.matmul %arg0, %arg1, %0, %0 {acc_type = f32} : (tensor<1x64x64xf32>, tensor<1x64x64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x64x64xf32>
+  %2 = tosa.add %arg0, %arg1 : (tensor<1x64x64xf32>, tensor<1x64x64xf32>) -> tensor<1x64x64xf32>
+  %3 = tosa.sub %arg0, %arg1 : (tensor<1x64x64xf32>, tensor<1x64x64xf32>) -> tensor<1x64x64xf32>
+  %4 = tosa.add %1, %2 : (tensor<1x64x64xf32>, tensor<1x64x64xf32>) -> tensor<1x64x64xf32>
+  %5 = tosa.sub %1, %3 : (tensor<1x64x64xf32>, tensor<1x64x64xf32>) -> tensor<1x64x64xf32>
+  return %4, %5 : tensor<1x64x64xf32>, tensor<1x64x64xf32>
+}
+
+// Two separate verifier functions are emitted, one per output. Both share the
+// K=64 matmul, so each gets atol = 1e-5 + 64*1e-6 = 7.4e-5.
+// MULTI_OUT:      func.func @multi_out_fut_verify
+// MULTI_OUT:      arith.constant 7.{{[0-9]+}}{{[eE]}}-{{0?}}5 : f32
+// MULTI_OUT-NEXT: arith.constant 1.300000e-06 : f32
+// MULTI_OUT:      call @mcpuVerifyFloatAllclose
+// MULTI_OUT:      func.func @multi_out_fut_verify
+// MULTI_OUT:      arith.constant 7.{{[0-9]+}}{{[eE]}}-{{0?}}5 : f32
+// MULTI_OUT-NEXT: arith.constant 1.300000e-06 : f32
+// MULTI_OUT:      call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (8) Multi-output kernel with a shared matmul feeding both outputs, with the
+// second output cast to f16. The harness emits one `_verify` function per
+// output, each with its own per-output-dtype `(atol, rtol)` baseline
+// (Section 2.6 of docs/allclose_comparator.md). The K_eff multiplier is
+// module-wide, so both verifiers share K=64 from the matmul:
+//   - f32 output: atol = 1e-5 + 64 * 1e-6        = 7.4e-5   ; rtol = 1.3e-6
+//   - f16 output: atol = 1e-5 + 64 * (1/900)     ~ 7.11e-2  ; rtol = 1e-3
+// ============================================================================
+
+// RUN: rocmlir-gen -fut multi_out_mixed_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=highlevel -host-pipeline=highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut multi_out_mixed_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=MULTI_OUT_MIXED --enable-var-scope
+
+func.func private @multi_out_mixed_fut(%arg0: tensor<1x64x64xf32>, %arg1: tensor<1x64x64xf32>) -> (tensor<1x64x64xf32>, tensor<1x64x64xf16>) {
+  %0 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %1 = tosa.matmul %arg0, %arg1, %0, %0 {acc_type = f32} : (tensor<1x64x64xf32>, tensor<1x64x64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x64x64xf32>
+  %2 = tosa.add %arg0, %arg1 : (tensor<1x64x64xf32>, tensor<1x64x64xf32>) -> tensor<1x64x64xf32>
+  %3 = tosa.sub %arg0, %arg1 : (tensor<1x64x64xf32>, tensor<1x64x64xf32>) -> tensor<1x64x64xf32>
+  %4 = tosa.add %1, %2 : (tensor<1x64x64xf32>, tensor<1x64x64xf32>) -> tensor<1x64x64xf32>
+  %5 = tosa.sub %1, %3 : (tensor<1x64x64xf32>, tensor<1x64x64xf32>) -> tensor<1x64x64xf32>
+  %6 = tosa.cast %5 : (tensor<1x64x64xf32>) -> tensor<1x64x64xf16>
+  return %4, %6 : tensor<1x64x64xf32>, tensor<1x64x64xf16>
+}
+
+// Two separate verifier functions are emitted, one per output. The f32 output
+// keeps the fp32 baseline + K_eff*sumErrTol(f32) = 7.4e-5; the f16 output uses
+// the fp16 baseline + K_eff*sumErrTol(f16) ~ 7.11e-2. The argument-memref
+// element type distinguishes the two verifiers.
+// MULTI_OUT_MIXED:      func.func @multi_out_mixed_fut_verify{{[0-9]+}}({{.*}}memref<{{.*}}xf32>{{.*}}memref<{{.*}}xf32>
+// MULTI_OUT_MIXED:      arith.constant 7.{{[0-9]+}}{{[eE]}}-{{0?}}5 : f32
+// MULTI_OUT_MIXED-NEXT: arith.constant 1.300000e-06 : f32
+// MULTI_OUT_MIXED:      call @mcpuVerifyFloatAllclose
+// Magnitude of the f16 atol is > 1e-3, so the MLIR fp32 printer uses plain
+// (non-scientific) notation: `0.07...`.
+// MULTI_OUT_MIXED:      func.func @multi_out_mixed_fut_verify{{[0-9]+}}({{.*}}memref<{{.*}}xf16>{{.*}}memref<{{.*}}xf16>
+// MULTI_OUT_MIXED:      arith.constant 0.0711{{[0-9]*}} : f32
+// MULTI_OUT_MIXED-NEXT: arith.constant 1.000000e-03 : f32
+// MULTI_OUT_MIXED:      call @mcpuVerifyFloatAllclose
