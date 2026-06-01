@@ -190,9 +190,10 @@ the rocMLIR back-port check).
 
 ## Step 4 -- Apply the rocmlirTriton-specific review rules
 
-`docs/CODING_STANDARDS.md` (inlined into the prompt above and overlaid
-into the workspace; see Step 3) also documents two rocmlirTriton-
-specific sections that don't fit the generic LLVM/MLIR tiers:
+`docs/CODING_STANDARDS.md` (injected into the prompt above by the
+snapshot step and overlaid into the workspace; see Step 3) also
+documents two rocmlirTriton-specific sections that don't fit the
+generic LLVM/MLIR tiers:
 
 - **`## rocmlirTriton-specific checks`** -- Triton submodule
   (`external/triton`) bumps, local `triton-patches/*.patch`, `rock::*`
