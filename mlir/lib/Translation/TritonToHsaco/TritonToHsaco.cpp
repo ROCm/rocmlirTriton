@@ -831,8 +831,9 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     return failure();
   }
 
-  // Dump LLVM IR if AMDGCN_ENABLE_LLVM_DUMP is set
-  if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_LLVM_DUMP")) {
+  // Dump LLVM IR if LLVM_IR_ENABLE_DUMP is set (matches upstream Triton's
+  // env var name; see external/triton/include/triton/Tools/Sys/GetEnv.h).
+  if (const char *dumpEnv = std::getenv("LLVM_IR_ENABLE_DUMP")) {
     std::string envVal(dumpEnv);
     if (envVal == "1") {
       llvm::errs() << "// -----// LLVM IR Dump //----- //\n";
