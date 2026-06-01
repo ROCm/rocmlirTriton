@@ -133,12 +133,15 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
   bool isMfma = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;
-  // Non-accel (FMA) path: applies when the (arch, dtype) combination has no
-  // matrix-accel instruction (e.g. f32 on gfx10/11/12 RDNA, where WMMA has no
-  // f32 mode). Conflating this with WMMA in the tuning space would miss the
-  // small kPerBlock / large tile configurations that the upstream rocMLIR
-  // general-gemm path needs to be performant.
-  bool isNonAccel = accelKind == MatrixAccelKind::None;
+  bool isWmma = accelKind == MatrixAccelKind::WMMA ||
+                accelKind == MatrixAccelKind::ScaledWMMA;
+  // Anything that isn't a recognized accel path lowers to plain vector FMAs
+  // -- both the explicit `MatrixAccelKind::None` case (e.g. f32 on gfx10/11/12
+  // RDNA, where WMMA has no f32 mode) and any future enum value we haven't
+  // taught this switch about yet. The non-accel space is the conservative
+  // default; the lowering matches it because `chooseMfmaInstruction` /
+  // `chooseWmmaInstruction` themselves fall back to scalar FMA when no
+  // matching intrinsic exists.
   Type inTypeA = gemmOp.getAType();
   bool is8b = inTypeA.isInteger(8) ||
               (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
@@ -188,19 +191,20 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  // Non-accel (FMA) parameters. Mirrors upstream rocMLIR's
-  // `validRangeGeneralGemmParams` so that the rocmlirTriton tuner explores
-  // the same (mPerBlock, nPerBlock, kPerBlock, blockSize) space as rocMLIR
-  // for kernels that lower to plain vector FMAs:
+  // Non-accel (FMA) parameters.
+  //
+  // Follows rocMLIR's tuning space:
+  //
+  // rocMLIR:
+  //   // blockSize    M/block         N/block         K/block      M/thread N/thread
+  //   {{64,128,256}, {32,64,128},    {32,64,128},    {4,8,16},    {2,4},   {2,4}}
+  //
+  // here:
   //   blockSize  in {64, 128, 256}   -> numWaves = blockSize / waveSize
   //   mPerBlock  in {32, 64, 128}
   //   nPerBlock  in {32, 64, 128}
   //   kPerBlock  in {4, 8, 16}
-  // The set is already small (3 * 3 * 3 = 27 (m,n,k) tuples), so we keep
-  // the same ranges for Full and Exhaustive instead of trimming for Full.
-  // The Triton-side perf-config schema (`gemm_params`) does not carry
-  // mPerThread / nPerThread, so those are still derived later from
-  // (mPerBlock, nPerBlock, blockSize) by AffixTuningParameters.
+  //
   std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
   std::vector<uint32_t> kPerBlockNonAccel = {4, 8, 16};
   std::vector<uint32_t> numWavesNonAccel;
@@ -225,9 +229,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
 
   if (isMfma)
     return validRangeMfmaParams;
-  if (isNonAccel)
-    return validRangeNonAccelParams;
-  return validRangeWmmaParams;
+  if (isWmma)
+    return validRangeWmmaParams;
+  return validRangeNonAccelParams;
 }
 
 static std::vector<std::vector<uint32_t>>
