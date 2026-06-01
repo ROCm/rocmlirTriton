@@ -108,10 +108,11 @@ the author can look up the rationale.
   change (especially after Triton bumps -- this file is regenerated as
   part of the `triton-bump` workflow and is the contract the downstream
   MIGraphX `librockCompiler` fat library depends on).
-- License header missing or wrong year on a new `.cpp`/`.h`/`.py` file
-  (SPDX `Apache-2.0 WITH LLVM-exception` -- "we'll fix headers before
-  going public" is not an acceptable plan; the headers must already be
-  in place).
+- License header missing on a new `.cpp`/`.h`/`.py` file (SPDX
+  `Apache-2.0 WITH LLVM-exception`; LLVM Project convention is no
+  per-file copyright -- see the License-header reference below for the
+  exact template). "We'll fix headers before going public" is not an
+  acceptable plan; the headers must already be in place.
 - `TODO` without an issue reference (`TODO(#issue-number)`).
 - Architecture coverage: a new op/pass that should work on multiple GPU
   arch families (CDNA `gfx9xx` -- e.g. gfx908, gfx942, gfx950 -- and RDNA
