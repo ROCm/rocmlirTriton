@@ -26,9 +26,11 @@
 #include <unordered_map>
 
 // Get program load time using function-local static (initialized on first call)
-// This measures time from first access, which happens at library load via constructor
-static std::chrono::steady_clock::time_point& getProgramLoadTime() {
-  static std::chrono::steady_clock::time_point loadTime = std::chrono::steady_clock::now();
+// This measures time from first access, which happens at library load via
+// constructor
+static std::chrono::steady_clock::time_point &getProgramLoadTime() {
+  static std::chrono::steady_clock::time_point loadTime =
+      std::chrono::steady_clock::now();
   return loadTime;
 }
 
@@ -44,7 +46,9 @@ static struct ProgramLoadTimeInitializer {
 // Called at the start of main() to measure JIT compilation time
 extern "C" void programStart() {
   auto now = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration<double, std::milli>(now - getProgramLoadTime()).count();
+  auto elapsed =
+      std::chrono::duration<double, std::milli>(now - getProgramLoadTime())
+          .count();
   printf("JIT compilation time: %.3f ms\n", elapsed);
 }
 
@@ -57,7 +61,9 @@ extern "C" void cpuTimerStart() {
 
 extern "C" void cpuTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - cpuTimerStartPoint).count();
+  auto elapsed =
+      std::chrono::duration<double, std::milli>(endPoint - cpuTimerStartPoint)
+          .count();
   printf("CPU validation time: %.3f ms\n", elapsed);
 }
 
@@ -70,7 +76,9 @@ extern "C" void gpuTimerStart() {
 
 extern "C" void gpuTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - gpuTimerStartPoint).count();
+  auto elapsed =
+      std::chrono::duration<double, std::milli>(endPoint - gpuTimerStartPoint)
+          .count();
   printf("GPU kernel time: %.3f ms\n", elapsed);
 }
 
@@ -83,7 +91,9 @@ extern "C" void initTimerStart() {
 
 extern "C" void initTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration<double, std::milli>(endPoint - initTimerStartPoint).count();
+  auto elapsed =
+      std::chrono::duration<double, std::milli>(endPoint - initTimerStartPoint)
+          .count();
   printf("Memory init time: %.3f ms\n", elapsed);
 }
 
@@ -299,6 +309,296 @@ mcpuVerifyFloat(float *gpuAllocated, float *gpuAligned, int64_t gpuOffset,
   assert(gpuSize == valSize);
   mcpuVerify<float>(gpuAligned, valAligned, valSize, thr_RMS, thr_absDiff,
                     thr_relDiff, printDebug, isFP32);
+}
+
+// Allclose-style verification, matching numpy.allclose /
+// torch.testing.assert_close:
+//   |gpuNum - valNum| <= atol + rtol * |valNum|
+//
+// To preserve the "[%d %d %d]" output format that existing FileCheck tests
+// check, the allclose result is repeated three times.
+//
+// On failure we print allclose-specific diagnostics:
+// - The worst-offender element (the one with the largest absDiff/tolerance
+// ratio),
+// - The histogram of absDiff/tolerance ratios
+// - The "smallest atol/rtol that would pass everything else, holding the other
+// one fixed" hints. We intentionally do *not* print the legacy
+// RMS/maxAbsDiff/maxRelDiff/relDiff stats here: they tell you nothing about why
+// allclose failed or what tolerance would make it pass, and they confuse the
+// diagnostic by suggesting thresholds that are no longer being checked. Use
+// --comparator=legacy if you need those numbers.
+//
+// "ratio" buckets follow a 0/passing/failing structure:
+//   [0]: ratio == 0                          (exact match or subnormal-equal)
+//   [1..3]: 0 < ratio <= {0.1, 0.5, 1.0}     (PASSING -- with headroom)
+//   [4..7]: 1.0 < ratio <= {2.0, 10.0, 100.0, +inf}   (FAILING)
+//   [8]: ratio == +inf                       (tolerance == 0 and absDiff > 0)
+//
+// The 7 boundaries split the open interval (0, +inf) into the 7 buckets that
+// sit between the "ratio == 0" prefix bucket and the "ratio == inf" suffix
+// bucket, so NUM_RATIO_BUCKETS == NUM_RATIO_BOUNDARIES + 2.
+static constexpr size_t NUM_RATIO_BOUNDARIES = 7;
+static const double RATIO_BOUNDARIES[NUM_RATIO_BOUNDARIES] = {
+    0.1, 0.5, 1.0, 2.0, 10.0, 100.0, INFINITY};
+static constexpr size_t NUM_RATIO_BUCKETS = NUM_RATIO_BOUNDARIES + 2;
+
+static void printAllcloseStats(long long dataSize, long long failingElements,
+                               float atol, float rtol, float maxRatio,
+                               float maxRatioValNum, float maxRatioGpuNum,
+                               double maxRatioAbsDiff, double maxRatioTolerance,
+                               bool maxRatioIsInf, long long ratioInfCount,
+                               long long nanCount, float nanValNum,
+                               float nanGpuNum, double minAtolForCurrentRtol,
+                               double minRtolForCurrentAtol,
+                               bool minRtolWellDefined, const int *hist_ratio) {
+  printf("allclose statistics:\n");
+  if (failingElements == 0) {
+    printf("  all elements within tolerance (atol=%.3e, rtol=%.3e)\n", atol,
+           rtol);
+  } else if (nanCount > 0) {
+    // NaN takes precedence: no finite tolerance can mask a NaN, so the user
+    // has to see it first and any calibration hint would be misleading.
+    printf("  worst element: valNum=%g gpuNum=%g (NaN-mismatch)\n", nanValNum,
+           nanGpuNum);
+    printf("  no tolerance can mask a NaN-mismatch; fix the kernel\n");
+  } else {
+    if (maxRatioIsInf) {
+      printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=0 "
+             "(ratio=inf)\n",
+             maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff);
+    } else {
+      printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=%.3e "
+             "(ratio=%.2fx)\n",
+             maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff, maxRatioTolerance,
+             maxRatio);
+    }
+    // Calibration hints: smallest atol/rtol that would make everything pass
+    // (holding the other fixed).
+    printf("  to pass with current rtol=%.3e: atol >= %.3e\n", rtol,
+           minAtolForCurrentRtol);
+    if (minRtolWellDefined) {
+      printf("  to pass with current atol=%.3e: rtol >= %.3e\n", atol,
+             minRtolForCurrentAtol);
+    } else {
+      printf("  to pass with current atol=%.3e: rtol >= n/a "
+             "(failures only at valNum == 0; increase atol)\n",
+             atol);
+    }
+  }
+  printf("  histogram of absDiff/tolerance:\n");
+  for (size_t i = 0; i < NUM_RATIO_BUCKETS; ++i) {
+    if (i == 0)
+      printf("           ratio == 0     ");
+    else if (i == 1)
+      printf("       0 < ratio <= %5.1f ", RATIO_BOUNDARIES[0]);
+    else if (i == NUM_RATIO_BUCKETS - 2)
+      printf("   %5.1f < ratio <  inf  ", RATIO_BOUNDARIES[i - 2]);
+    else if (i == NUM_RATIO_BUCKETS - 1)
+      printf("           ratio == inf   ");
+    else
+      printf("   %5.1f < ratio <= %5.1f ", RATIO_BOUNDARIES[i - 2],
+             RATIO_BOUNDARIES[i - 1]);
+    printf(": %d/%lld (%.4f%%)%s\n", hist_ratio[i], dataSize,
+           100.0 * static_cast<double>(hist_ratio[i]) /
+               static_cast<double>(dataSize),
+           (i >= 4 && hist_ratio[i] > 0) ? "  <-- failing" : "");
+  }
+  // NaN gets its own dedicated histogram row; it is not bucketed by ratio
+  // because NaN is unordered with respect to every finite boundary and would
+  // otherwise be silently counted as a passing low ratio.
+  if (nanCount > 0)
+    printf("           ratio == nan   : %lld/%lld (%.4f%%)  <-- failing\n",
+           nanCount, dataSize,
+           100.0 * static_cast<double>(nanCount) /
+               static_cast<double>(dataSize));
+  if (ratioInfCount > 0)
+    printf("  note: %lld element(s) had tolerance == 0 with absDiff > 0 "
+           "(only possible when -atol=0 and valNum==0)\n",
+           ratioInfCount);
+  if (nanCount > 0)
+    printf("  note: %lld element(s) had NaN on either side\n", nanCount);
+}
+
+template <typename T>
+void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
+                        float atol, float rtol, char printDebug, bool isFP32) {
+  float valNum, gpuNum;
+  PrintOption print_option = static_cast<PrintOption>(printDebug);
+
+  // Ratio histogram. RATIO_BOUNDARIES, NUM_RATIO_BOUNDARIES and
+  // NUM_RATIO_BUCKETS are file-scope (defined just above printAllcloseStats)
+  // so both functions stay in sync by construction.
+  int hist_ratio[NUM_RATIO_BUCKETS] = {0};
+  // Worst offender by ratio = absDiff / tolerance. We track it separately
+  // from maxAbsDiff because the legacy "worst by absDiff" element is often
+  // *not* the element that drives the allclose verdict (e.g. an element with
+  // large absolute value can have a large absDiff but still pass thanks to
+  // the rtol*|valNum| component).
+  float maxRatio = 0.0f;
+  float maxRatioValNum = 0.0f;
+  float maxRatioGpuNum = 0.0f;
+  double maxRatioAbsDiff = 0.0;
+  double maxRatioTolerance = 0.0;
+  bool maxRatioIsInf = false;
+  long long ratioInfCount = 0;
+  // NaN bookkeeping. We can't fold NaN into the ratio histogram because
+  // NaN-vs-finite comparisons are always false (NaN > x is false), so a NaN
+  // element would silently end up in the (0, 0.1] passing bucket and never
+  // update the worst-element ratio. Track them separately and surface them in
+  // the diagnostic as a dedicated row.
+  long long nanCount = 0;
+  float nanValNum = 0.0f;
+  float nanGpuNum = 0.0f;
+  // Calibration hints: smallest atol/rtol that would make every failing
+  // element pass, holding the other tolerance fixed.
+  //   minAtolForCurrentRtol = max over elements of (absDiff - rtol*|valNum|)
+  //   minRtolForCurrentAtol = max over elements of (absDiff - atol)/|valNum|
+  // Both clamped at 0 (a "negative" tolerance is meaningless). The rtol hint
+  // skips elements with valNum == 0, since rtol can't fix those.
+  double minAtolForCurrentRtol = 0.0;
+  double minRtolForCurrentAtol = 0.0;
+  bool minRtolWellDefined = false;
+
+  long long failingElements = 0;
+  for (long long i = 0; i < dataSize; ++i) {
+    valNum = static_cast<float>(validationResults[i]);
+    gpuNum = static_cast<float>(gpuResults[i]);
+
+    if (valNum == gpuNum) {
+      hist_ratio[0]++;
+      continue;
+    }
+    // NaN handling has to come *before* the subnormal/infinity normalization
+    // and the absDiff/tolerance arithmetic, because every comparison and
+    // arithmetic op with NaN produces NaN-or-false, which would otherwise
+    // mis-bucket the element and skip the worst-element update.
+    if (std::isnan(valNum) || std::isnan(gpuNum)) {
+      failingElements++;
+      if (nanCount == 0) {
+        nanValNum = valNum;
+        nanGpuNum = gpuNum;
+      }
+      nanCount++;
+      if (print_option == PrintOption::Always ||
+          print_option == PrintOption::Failure)
+        printf("%lld: valNum=%f gpuNum=%f (NaN-mismatch)\n", i, valNum, gpuNum);
+      continue;
+    }
+    if ((std::fpclassify(valNum) == FP_SUBNORMAL) && isFP32) {
+      // Treat FP32 subnormals on the CPU side as exact matches; fusion can
+      // legitimately reorder ops to produce a different signed subnormal on
+      // the GPU side without the result being wrong. Same affordance as the
+      // legacy mcpuVerify path.
+      hist_ratio[0]++;
+      continue;
+    }
+    // Clamp +/-inf on the validation side to fp16 max so that the subsequent
+    // arithmetic is well-defined (otherwise inf - finite = inf, |inf| = inf,
+    // and the allclose tolerance becomes inf which would mask true failures).
+    constexpr float fp16MaxVal = 65504;
+    if (std::isinf(valNum))
+      valNum = (valNum > 0 ? fp16MaxVal : -fp16MaxVal);
+    float absDiff = fabs(valNum - gpuNum);
+
+    // The allclose predicate (asymmetric, matches PyTorch/NumPy convention).
+    double tolerance =
+        static_cast<double>(atol) +
+        static_cast<double>(rtol) * static_cast<double>(fabs(valNum));
+    bool elemPass = static_cast<double>(absDiff) <= tolerance;
+
+    // allclose-specific bookkeeping: ratio, worst-offender, calibration.
+    if (tolerance == 0.0) {
+      // absDiff > 0 (we are past the valNum == gpuNum early-out) and
+      // tolerance == 0 can only happen with atol == 0 && (rtol == 0 ||
+      // valNum == 0). Record as ratio == inf.
+      ratioInfCount++;
+      hist_ratio[NUM_RATIO_BUCKETS - 1]++;
+      if (!maxRatioIsInf) {
+        maxRatioIsInf = true;
+        maxRatio = std::numeric_limits<float>::infinity();
+        maxRatioValNum = valNum;
+        maxRatioGpuNum = gpuNum;
+        maxRatioAbsDiff = absDiff;
+        maxRatioTolerance = 0.0;
+      }
+    } else {
+      double ratio = static_cast<double>(absDiff) / tolerance;
+      // Find the ratio histogram bucket: 1..NUM_RATIO_BOUNDARIES cover the
+      // boundaries, 0 is exact-match (already handled by early-out),
+      // NUM_RATIO_BUCKETS - 1 is ratio == inf.
+      // We start at 1 because bucket 0 is reserved for ratio == 0, which
+      // cannot reach this loop: the (valNum == gpuNum) and f32 subnormal
+      // cases above are the only path into bucket 0.
+      size_t bucket = 1;
+      while (bucket < NUM_RATIO_BOUNDARIES &&
+             ratio > RATIO_BOUNDARIES[bucket - 1])
+        bucket++;
+      hist_ratio[bucket]++;
+      if (!maxRatioIsInf && ratio > maxRatio) {
+        maxRatio = static_cast<float>(ratio);
+        maxRatioValNum = valNum;
+        maxRatioGpuNum = gpuNum;
+        maxRatioAbsDiff = absDiff;
+        maxRatioTolerance = tolerance;
+      }
+    }
+    if (!elemPass) {
+      failingElements++;
+      // Update calibration hints (clamped at 0 implicitly: we only consider
+      // failing elements, and for those absDiff > tolerance >= atol).
+      double atolNeeded =
+          static_cast<double>(absDiff) -
+          static_cast<double>(rtol) * static_cast<double>(fabs(valNum));
+      if (atolNeeded > minAtolForCurrentRtol)
+        minAtolForCurrentRtol = atolNeeded;
+      if (valNum != 0.0f) {
+        double rtolNeeded =
+            (static_cast<double>(absDiff) - static_cast<double>(atol)) /
+            static_cast<double>(fabs(valNum));
+        if (rtolNeeded > minRtolForCurrentAtol) {
+          minRtolForCurrentAtol = rtolNeeded;
+          minRtolWellDefined = true;
+        }
+      }
+      if (print_option == PrintOption::Always ||
+          print_option == PrintOption::Failure) {
+        double ratio = (tolerance == 0.0)
+                           ? std::numeric_limits<double>::infinity()
+                           : static_cast<double>(absDiff) / tolerance;
+        printf("%lld: valNum=%f gpuNum=%f absDiff=%f tol=%.3e ratio=%.2fx\n", i,
+               valNum, gpuNum, absDiff, tolerance, ratio);
+      }
+    }
+  }
+  int all_pass = (failingElements == 0) ? 1 : 0;
+  if (print_option == PrintOption::Always ||
+      ((print_option == PrintOption::Failure ||
+        print_option == PrintOption::Summary) &&
+       all_pass == 0)) {
+    printf("allclose(atol=%.3e, rtol=%.3e): %lld/%lld failing element(s)\n",
+           atol, rtol, failingElements, dataSize);
+    printAllcloseStats(dataSize, failingElements, atol, rtol, maxRatio,
+                       maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff,
+                       maxRatioTolerance, maxRatioIsInf, ratioInfCount,
+                       nanCount, nanValNum, nanGpuNum, minAtolForCurrentRtol,
+                       minRtolForCurrentAtol, minRtolWellDefined, hist_ratio);
+  }
+  // Repeat the allclose result three times to preserve the legacy output
+  // format that existing FileCheck tests match against.
+  printf("[%d %d %d]\n", all_pass, all_pass, all_pass);
+}
+
+extern "C" void mcpuVerifyFloatAllclose(float *gpuAllocated, float *gpuAligned,
+                                        int64_t gpuOffset, int64_t gpuSize,
+                                        int64_t gpuStride, float *valAllocated,
+                                        float *valAligned, int64_t valOffset,
+                                        int64_t valSize, int64_t valStride,
+                                        float atol, float rtol, char printDebug,
+                                        bool isFP32) {
+  assert(gpuSize == valSize);
+  mcpuVerifyAllclose<float>(gpuAligned, valAligned, valSize, atol, rtol,
+                            printDebug, isFP32);
 }
 
 // Compare the results in int32
