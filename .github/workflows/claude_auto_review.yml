@@ -395,6 +395,38 @@ jobs:
           mv /tmp/pr/meta.tmp /tmp/pr/meta.json
           ls -la /tmp/pr/
 
+      # Snapshot the trusted (post-overlay) coding-standards content into a
+      # step output so the prompt heredoc can reference it via
+      # ${{ steps.snapshot_standards.outputs.content }} at workflow runtime.
+      # Single source of truth -- docs/CODING_STANDARDS.md is the file the
+      # contributor edits, AND the bytes the LLM sees come straight from the
+      # same default-branch ref the overlay step already restored. No second
+      # static copy of the content exists anywhere, so drift between "the
+      # file" and "what the model reads" is impossible by construction (and
+      # the dedicated sync-gate workflow that previously enforced it is no
+      # longer necessary). See doc §8 / §15.
+      - name: Snapshot trusted coding standards into a step output
+        id: snapshot_standards
+        run: |
+          set -euo pipefail
+          if [ ! -s docs/CODING_STANDARDS.md ]; then
+            echo "::error file=docs/CODING_STANDARDS.md::Trusted coding-standards file is missing or empty after the overlay step."
+            exit 1
+          fi
+          # Randomised heredoc terminator -- defends against the (theoretical)
+          # case of the standards file ever containing the literal delimiter.
+          DELIM="EOF_CS_$(openssl rand -hex 8)"
+          {
+            printf '%s\n' "content<<${DELIM}"
+            # Skip the H1 + the following blank line; the prompt's
+            # "## Coding standards (canonical reference)" heading
+            # already introduces this block.
+            tail -n +3 docs/CODING_STANDARDS.md
+            printf '%s\n' "${DELIM}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Snapshotted $(wc -l < docs/CODING_STANDARDS.md) lines from docs/CODING_STANDARDS.md"
+          sha256sum docs/CODING_STANDARDS.md
+
       # The Claude run. LLM gateway secrets are in env (below); the action also
       # puts the read-only default GITHUB_TOKEN in the model's env. Acceptable
       # because: the token is contents:read (no write), --allowedTools is
@@ -602,361 +634,26 @@ jobs:
 
             ## Coding standards (canonical reference)
 
-            The content below is inlined verbatim from
-            `docs/CODING_STANDARDS.md` on the default branch, so the model
-            always has the standards in context regardless of what is in the
-            PR's working tree. The same file is also overlaid from the
-            default branch into the workspace (see the earlier overlay
-            step), so `Read('docs/CODING_STANDARDS.md')` returns the same
-            bytes. If you spot any drift between this section and that file,
-            prefer this section -- it is the version the workflow ran with.
+            The content below is injected at workflow runtime from
+            `docs/CODING_STANDARDS.md` on the default branch by the
+            preceding `snapshot_standards` step, so the model always has
+            the standards in context regardless of what is in the PR's
+            working tree. The same file is also overlaid into the
+            workspace by the earlier overlay step, so
+            `Read('docs/CODING_STANDARDS.md')` returns the same bytes.
+            By construction there is no second static copy of this
+            content anywhere in the repo, so drift between "the file"
+            and "what the model reads" is impossible. See doc §8 / §15.
 
-            Reference URLs in the "References" subsection below (`llvm.org`,
-            `mlir.llvm.org`) are context for YOU; they are NOT URLs you may
-            include in YOUR OUTPUT. The Hard constraints section's
-            allow-list (github.com only) governs every URL you emit.
-
-            See doc §15 sync table for the maintenance contract: editing
-            `docs/CODING_STANDARDS.md` REQUIRES pasting the same content
-            here.
+            Reference URLs in the "References" subsection below
+            (`llvm.org`, `mlir.llvm.org`) are context for YOU; they are
+            NOT URLs you may include in YOUR OUTPUT. The Hard
+            constraints section's allow-list (github.com only) governs
+            every URL you emit.
 
             <BEGIN docs/CODING_STANDARDS.md>
 
-            This is the authoritative coding-standards checklist for rocmlirTriton.
-            Reviewers -- human and automated -- categorize findings against the
-            **Critical / Major / Minor** tiers below; a Critical finding here is one
-            of the bullets in the "Critical" section, a Major finding is one of the
-            bullets in "Major", etc.
-
-            When you contribute, run `git clang-format --diff origin/develop` and
-            self-review your diff against this checklist. When you review, cite the
-            specific bullet so the author can look up the rationale.
-
-            ## References
-
-            - [LLVM Coding Standards](https://llvm.org/docs/CodingStandards.html) -- the
-              authoritative style guide; everything below derives from or extends it.
-            - [MLIR Developer Guide](https://mlir.llvm.org/getting_started/DeveloperGuide/)
-              -- the one naming-convention deviation (`camelBack` for variables,
-              parameters, and class members instead of LLVM's traditional `Capitalized`)
-              lives there.
-            - `.clang-format` (LLVM base style) and `.clang-tidy` at the repo root --
-              machine-enforced subset; the premerge `clang-format` job runs
-              `git clang-format --diff origin/develop` and fails on any non-empty diff.
-            - Python helpers follow [`yapf`](../.style.yapf) and
-              [`flake8`](../.flake8); format with `yapf -i <files>` and lint with
-              `flake8 <files>` before committing.
-            - rocmlirTriton-specific review rules that don't fit the generic
-              LLVM/MLIR tiers (Triton-submodule bumps, `triton-patches/*.patch`,
-              `rock::*` hardware-feature detection, bridge passes, fat-library +
-              MIGraphX coordination, and the **rocMLIR back-port check** that flags
-              shared-with-rocMLIR diffs) live in dedicated sections at the end of
-              this document; apply them alongside the generic Critical / Major /
-              Minor tiers.
-
-            ## Critical (blocks merge)
-
-            - Unreleased hardware codenames, unannounced chip IDs, or NDA features in
-              code, comments, commits, or docs. (rocmlirTriton is currently a private
-              repo but treat it as if it could be open-sourced at any time; see the
-              project's confidentiality policy.) It IS fine to reference unreleased
-              `gfx*` IDs only when they are already mentioned upstream (in the pinned
-              Triton submodule, the LLVM AMDGPU backend, or upstream rocMLIR).
-            - C++ exceptions (`throw`, `try`/`catch`); use `LogicalResult` /
-              `emitOpError` / `signalPassFailure` instead. (Triton-side code
-              additionally compiles with `-fno-exceptions -fno-rtti -Werror`; respect
-              those flags.)
-            - RTTI (`dynamic_cast`, `typeid`); use LLVM's `isa`/`cast`/`dyn_cast`.
-            - Magic sentinel values (`-1`, `nullptr`) to signal failure; use
-              `FailureOr<>` instead.
-            - `#include <iostream>`; use LLVM's `raw_ostream`.
-            - `using namespace std` at file scope or in headers.
-            - Static constructors/destructors (global objects with non-trivial
-              ctors/dtors).
-            - Committed temp/generated files: build artifacts, `*.pyc`, editor swap
-              files, secrets, profiler output (`.rocprofv3/`, `att_dump/`,
-              `*.pftrace`), plan / scratch files, tuning DBs that don't belong in the
-              repo.
-            - **Direct edits to `external/triton/`**. The Triton submodule is consumed
-              as a pinned upstream tree; local changes must be captured as
-              `triton-patches/*.patch` applied on top by `scripts/build-llvm.sh`. A PR
-              that modifies files under `external/triton/` directly (without a
-              corresponding bump of the submodule SHA) is wrong by construction.
-            - Breaking IR or C-API changes without documentation or a coordinated
-              MIGraphX update.
-
-            ## Major
-
-            - DRY/YAGNI/KISS violations: redundant code, dead code, unnecessarily
-              complex algorithms, opportunities to use existing upstream
-              LLVM/MLIR/Triton utilities instead of custom code.
-            - Raw `new`/`delete`; use MLIR allocation utilities, `std::unique_ptr`, or
-              arena ownership.
-            - Inheritance where composition would do; CRTP only where MLIR/LLVM
-              requires it.
-            - `std::string`/`std::vector` for non-owning parameters where
-              `StringRef`/`ArrayRef`/`MutableArrayRef` would suffice.
-            - `std::vector` for small local collections where `SmallVector` is
-              preferred.
-            - `std::map`/`std::unordered_map` where `llvm::DenseMap` is preferred.
-            - Missing `assert` with descriptive message on non-trivial preconditions;
-              use `llvm_unreachable` for impossible paths (not `assert(false)`).
-            - C-style casts; use `static_cast`/`const_cast`.
-            - Visibility leaks: file-local helpers without `static` or anonymous
-              namespace.
-            - `default:` label in a switch over an enum that already covers every case
-              (defeats `-Wswitch`). Important when consuming Triton's `ISAFamily`
-              enum -- a `default:` there silently hides new ISA families added in a
-              Triton bump.
-            - `std::sort` instead of `llvm::sort` -- LLVM coding standard. `llvm::sort`
-              wraps `std::sort` and, under `EXPENSIVE_CHECKS` builds, deterministically
-              shuffles the input first to surface order-dependent bugs that would
-              otherwise hide behind a libc++/libstdc++ implementation that happens to
-              preserve input order. (Note: neither call is *stable*; if equal elements
-              must keep their relative order, the fix is `llvm::stable_sort`, not
-              `llvm::sort`. Don't suggest `llvm::sort` as a "stability" fix.)
-            - Naming: classes not `CamelCase`, functions/vars not `camelBack`.
-            - New op without `hasVerifier = 1` and a `verify()` implementation.
-            - New pass or op without positive E2E coverage and both positive and
-              negative Lit tests with FileCheck.
-            - New optimization without a FileCheck test asserting the expected IR is
-              produced.
-            - `LogicalResult` returned but ignored (not checked with `failed(...)`).
-            - `librockcompiler_deps.cmake` not updated when fat-library dependencies
-              change (especially after Triton bumps -- this file is regenerated as
-              part of the `triton-bump` workflow and is the contract the downstream
-              MIGraphX `librockCompiler` fat library depends on).
-            - License header missing or wrong year on a new `.cpp`/`.h`/`.py` file
-              (SPDX `Apache-2.0 WITH LLVM-exception` -- "we'll fix headers before
-              going public" is not an acceptable plan; the headers must already be
-              in place).
-            - `TODO` without an issue reference (`TODO(#issue-number)`).
-            - Architecture coverage: a new op/pass that should work on multiple GPU
-              arch families (CDNA `gfx9xx` -- e.g. gfx908, gfx942, gfx950 -- and RDNA
-              `gfx10xx`/`gfx11xx`/`gfx12xx`) is implemented for only one. Use the
-              `mlir/test/e2e/` `.toml`/`.cfg` corpus as the reference for which arches
-              are exercised in CI before approving "this is single-arch on purpose".
-            - Data type coverage: an op that should support multiple dtypes (f16/bf16/
-              f32, fp8 variants `f8E4M3*`/`f8E5M2`, i8/i4) silently falls through for
-              unhandled dtypes instead of returning `emitOpError`.
-            - Fusion-related changes that lack tests in `mlir/test/fusion/`,
-              `mlir/test/fusion/pr-e2e/`, or (for end-to-end fixtures)
-              `mlir/test/e2e/`. The legacy root-level `tests.sh` driver and the
-              `fusion_*_with_host.mlir` top-level fixtures it ran are GONE -- they
-              were migrated into LIT under `mlir/test/e2e/` (commit AIROCMLIR-760,
-              PR #220) and `tests.sh` itself was removed in PR #243. A PR that adds a
-              new top-level `fusion_*_with_host.mlir` at the repo root, or invokes
-              `bash tests.sh`, is using a stale convention.
-            - Custom CMake targets that bypass `add_rocmlir_dialect_library` /
-              `add_rocmlir_conversion_library` / `add_rocmlir_tool` /
-              `add_rocmlir_unittest` (the CMake `project()` name is still `rocMLIR` so
-              these helpers retain the `rocmlir-*` / `add_rocmlir_*` names).
-            - Downstream MIGraphX impact: changes to public IR, C API, or
-              `librockcompiler` that need coordinated updates and aren't called out in
-              the PR description.
-
-            ## Minor
-
-            - Include order wrong: should be main module header, then local/private,
-              then MLIR/LLVM, then stdlib (each group sorted lexicographically).
-            - Header lacks self-contained guards.
-            - Comments not English prose with proper capitalization; missing `///`
-              Doxygen on public APIs.
-            - Missing early returns; `else` after `return`.
-            - Postincrement (`i++`) where preincrement (`++i`) would do.
-            - `for (auto it = c.begin(); it != c.end(); ++it)` re-evaluating `end()`;
-              prefer range-based for.
-            - Braces around single-statement bodies (omit them); missing braces around
-              multi-statement bodies.
-            - `auto` where the type isn't obvious; missing `auto &` / `auto *` causing
-              copies.
-            - `inline` on a function defined inside the class body (already implicit).
-            - Spaces before parentheses in function calls (allowed only in control
-              flow).
-            - File missing trailing newline; trailing whitespace.
-            - `LLVM_DEBUG` block missing `#define DEBUG_TYPE "rock-..."` at the top of
-              the file.
-            - Lit test missing `// RUN:` line, `-verify-diagnostics`, or `FileCheck`
-              prefix coverage.
-            - New `.toml` E2E config not registered in `mlir/test/e2e/CMakeLists.txt`.
-
-            ## rocmlirTriton-specific checks
-
-            rocmlirTriton lowers Rock dialect kernels through OpenAI Triton's
-            TTIR/TTGIR/LLIR pipeline to AMD GPU code. Several files and conventions
-            exist specifically to keep that integration safe and reproducible across
-            Triton submodule bumps. Apply these checks **in addition to** the
-            generic Critical / Major / Minor tiers above; the severity of each rule
-            is documented inline below.
-
-            ### Triton submodule (`external/triton`) bumps
-
-            When a PR changes the `external/triton` submodule pointer:
-
-            - The PR description must acknowledge the bump checklist documented in
-              [`bump_triton_version.md`](bump_triton_version.md).
-            - The replication points -- `Pipelines.cpp`, `TritonToHsaco.cpp`,
-              `tritonUtils.cpp`, `AmdArchDb.cpp` -- must be re-audited and updated
-              if upstream changed the originals they replicate. **Major** when a
-              bump lands without a corresponding diff to these files, unless the
-              PR description explicitly states the upstream files are unchanged
-              for this bump.
-            - `librockcompiler_deps.cmake` must be regenerated; the fat-library
-              dep list can change between Triton SHAs and MIGraphX's
-              `librockCompiler` link line depends on it. **Major** when the bump
-              diff doesn't touch `librockcompiler_deps.cmake`. (This rule is also
-              called out separately under Major above; it applies on every
-              fat-library dependency change, not just Triton bumps.)
-            - `triton-patches/*.patch` must be re-evaluated; patches that have
-              been upstreamed or no longer apply cleanly should be removed in the
-              same PR.
-            - Commit subject must be `[TRITON-BUMP] ...` (or `[TRITON-PATCH] ...`
-              for a patch-only refresh) per the project's commit-message
-              conventions.
-
-            ### Local Triton patches (`triton-patches/*.patch`)
-
-            - **Major** -- a new `triton-patches/*.patch` lands without a
-              justification in the PR description: either a link to the upstream
-              issue/PR that will eventually upstream the change, or a one-line
-              note explaining why this is a permanent fork.
-            - **Minor** -- a patch touches an upstream file that has a CODEOWNER
-              in `external/triton/.github/CODEOWNERS` and the PR description
-              doesn't name the upstream owner. Naming the owner makes the
-              divergence visible and the eventual upstream-pull easier.
-
-            ### Hardware-feature detection (`rock::*` vs `triton::AMD::TargetInfo`)
-
-            Hardware-feature checks (whether the target supports a given MFMA
-            shape, dtype, LDS size, etc.) **must** go through `rock::*` helpers,
-            **not** through `triton::AMD::TargetInfo`. The `rock::*` helpers cover
-            the union of GPU architectures rocmlirTriton must support; using
-            `triton::AMD::TargetInfo` directly only sees what upstream Triton
-            tracks for its own backends and will silently miss arches Triton
-            hasn't taught about yet. **Major** finding on any new direct use of
-            `triton::AMD::TargetInfo` for a feature-detection check that has an
-            existing `rock::*` equivalent.
-
-            ### Bridge passes between Rock and Triton
-
-            The Rock<->Triton bridge passes -- `RockToTTIRPass`,
-            `RockFuncToTritonFuncPass`, `RockSerializeHostFuncsPass`,
-            `TritonToHsacoPass`, the Triton-related code in
-            `rock::buildTritonPipeline` / `buildBackendPipeline` in
-            `Pipelines.cpp`, and `tritonUtils.cpp` -- are rocmlirTriton-specific.
-            Changes there must **not** be back-ported to rocMLIR (they appear in
-            the rocmlirTriton-only path list in the "rocMLIR back-port check"
-            section below) but they **do** need lit + E2E coverage like any other
-            pass change (already covered by the "New pass or op without positive
-            E2E coverage..." Major bullet above).
-
-            ### Fat library + downstream MIGraphX
-
-            The Triton submodule is wired into the `librockCompiler` fat library
-            that MIGraphX consumes. Any change that alters the public C-API
-            surface, IR ingest/emit shape, or default Triton-pipeline behavior is
-            a downstream coordination point with MIGraphX -- the PR description
-            must call this out; **Major** otherwise. (This is the rocmlirTriton-
-            specific application of the generic "Downstream MIGraphX impact"
-            Major bullet above; the Triton-pipeline angle is the addition.)
-
-            ## rocMLIR back-port check
-
-            rocmlirTriton was forked from rocMLIR (private fork) and most of
-            `mlir/` is still shared between the two trees. For every change that
-            is **not** exclusively in the Triton-only paths listed below, ask:
-            *"does this fix or feature also need to land in `ROCm/rocMLIR`?"* A
-            missing back-port silently causes drift between the two trees and is
-            one of the most common review escapes.
-
-            ### Likely needs a back-port (shared with rocMLIR)
-
-            A diff is "shared" if its file path matches any of:
-
-            - `mlir/lib/Dialect/Rock/` -- **except** the rocmlirTriton-only
-              bridge-pass source files in `mlir/lib/Dialect/Rock/Transforms/`:
-              `RockToTTIR.cpp`, `FuncToTritonFunc.cpp`, `SerializeHostFuncs.cpp`
-              (and any future Triton-only restore/serialize pass added beside
-              them).
-            - `mlir/lib/Dialect/MIGraphX/`.
-            - `mlir/lib/Conversion/MIGraphXTo*/`.
-            - `mlir/tools/{rocmlir-gen,rocmlir-driver,rocmlir-opt,rocmlir-tuning-driver,rocmlir-lsp-server}/`
-              -- excluding any Triton-pipeline registrations inside those tools.
-            - `mlir/utils/performance/`, `mlir/utils/jenkins/static-checks/`.
-            - Generic `cmake/` helpers and root-CMake options that aren't
-              Triton-specific.
-
-            Note: `mlir/lib/Analysis/` exists in rocMLIR (e.g.
-            `BufferDependencyAnalysis.cpp`) but has been refactored away in
-            rocmlirTriton. If a PR re-introduces that path locally, treat it as
-            shared and apply the back-port check; otherwise it cannot appear in a
-            rocmlirTriton diff.
-
-            ### rocmlirTriton-only (no back-port needed)
-
-            - `external/triton/`, `triton-patches/`, `cmake/triton.cmake`,
-              `scripts/build-llvm.sh`, `cmake.sh`.
-            - The bridge-pass source files in `mlir/lib/Dialect/Rock/Transforms/`:
-              `RockToTTIR.cpp` (pass `RockToTTIRPass`), `FuncToTritonFunc.cpp`
-              (pass `RockFuncToTritonFuncPass`), `SerializeHostFuncs.cpp` (pass
-              `RockSerializeHostFuncsPass`); plus the Triton portion of
-              `rock::buildTritonPipeline` / `buildBackendPipeline` in
-              `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` and
-              `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp`.
-            - `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` (pass
-              `TritonToHsacoPass`).
-            - `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake`,
-              [`docs/bump_triton_version.md`](bump_triton_version.md),
-              `mlir/utils/jenkins/Jenkinsfile.downstream`.
-
-            ### Verdict
-
-            If the PR touches any of the "shared with rocMLIR" paths above, the
-            PR description must EITHER:
-
-            (a) link to a parallel `ROCm/rocMLIR` PR, OR
-            (b) include a one-line note explaining why the divergence is
-                intentional (for example: "this fix depends on Triton-only
-                changes and is not applicable upstream"), OR
-            (c) confirm the file no longer exists / has been refactored on the
-                rocMLIR side (with a short justification).
-
-            If **none** of (a)/(b)/(c) is in the PR description, a reviewer
-            should raise a **Major** finding anchored to one of the touched
-            shared files. The body should list each shared path the PR modifies
-            and ask the author to add the back-port note or open the parallel
-            rocMLIR PR.
-
-            If the PR is exclusively in rocmlirTriton-only paths, no back-port
-            note is needed.
-
-            ## License-header reference (verify on every new file)
-
-            C++/header files (`.cpp`, `.h`):
-
-            ```
-            //===- FileName.cpp - Brief description ----------------------------------===//
-            //
-            // Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
-            // See https://llvm.org/LICENSE.txt for license information.
-            // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-            //
-            //===----------------------------------------------------------------------===//
-            ```
-
-            Python files (`.py`):
-
-            ```
-            # Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
-            # See https://llvm.org/LICENSE.txt for license information.
-            # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-            ```
-
-            Checklist on every new file:
-
-            - Header is present.
-            - Copyright year matches the current year (not copied from older files).
-            - SPDX identifier is exactly `Apache-2.0 WITH LLVM-exception`.
+            ${{ steps.snapshot_standards.outputs.content }}
 
             <END docs/CODING_STANDARDS.md>
 
