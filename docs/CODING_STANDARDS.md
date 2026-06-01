@@ -1,10 +1,10 @@
 # rocmlirTriton Coding Standards
 
 This is the authoritative coding-standards checklist for rocmlirTriton.
-Both human reviewers and the `/review-rocmlir-triton-pr` auto-review skill
-categorize findings against the **Critical / Major / Minor** tiers below;
-a Critical finding here is one of the bullets in the "Critical" section,
-a Major finding is one of the bullets in "Major", etc.
+Reviewers -- human and automated -- categorize findings against the
+**Critical / Major / Minor** tiers below; a Critical finding here is one
+of the bullets in the "Critical" section, a Major finding is one of the
+bullets in "Major", etc.
 
 When you contribute, run `git clang-format --diff origin/develop` and
 self-review your diff against this checklist. When you review, cite the
@@ -21,14 +21,18 @@ specific bullet so the author can look up the rationale.
 - `.clang-format` (LLVM base style) and `.clang-tidy` at the repo root --
   machine-enforced subset; the premerge `clang-format` job runs
   `git clang-format --diff origin/develop` and fails on any non-empty diff.
-- Python helpers follow [`yapf`](.style.yapf) and [`flake8`](.flake8); format
-  with `yapf -i <files>` and lint with `flake8 <files>` before committing.
-- For rocmlirTriton-specific addenda that go beyond generic LLVM/MLIR
-  standards (the `external/triton/` direct-edit ban + Triton-submodule-bump
-  audit, the `rock::*` hardware-feature-detection rule, the bridge-pass
-  conventions, and the **rocMLIR back-port check**) see Steps 4 and 5 of
-  `.claude/skills/review-rocmlir-triton-pr/SKILL.md`. Those rules are
-  enforced by the same review process as the tiers below.
+- Python helpers follow [`yapf`](../.style.yapf) and
+  [`flake8`](../.flake8); format with `yapf -i <files>` and lint with
+  `flake8 <files>` before committing.
+- rocmlirTriton-specific review rules complement the generic LLVM/MLIR
+  tiers below and are enforced by the same review process: the
+  `external/triton/` direct-edit ban (also called out as Critical below),
+  the Triton-submodule-bump audit documented in
+  [`bump_triton_version.md`](bump_triton_version.md), the `rock::*`
+  hardware-feature-detection rule, the bridge-pass conventions
+  (`RockToTTIRPass`, `RockFuncToTritonFuncPass`,
+  `RockSerializeHostFuncsPass`, `TritonToHsacoPass`), and the **rocMLIR
+  back-port check** that flags shared-with-rocMLIR diffs.
 
 ## Critical (blocks merge)
 
