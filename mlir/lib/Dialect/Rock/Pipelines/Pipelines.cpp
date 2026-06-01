@@ -288,7 +288,7 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // pm->addPass(gluon::createGluonInline());
   pm->addPass(mlir::createConvertIndexToLLVMPass());
 
-  pm->addPass(mlir::triton::createAllocateAMDGPUSharedMemory());
+  pm->addPass(mlir::triton::createAllocateAMDGPUSharedMemoryPass(arch));
   pm->addPass(mlir::triton::gpu::createTritonGPUGlobalScratchAllocationPass());
   // Upstream calls this pass twice, between
   // HIPBackend.instrumentation.patch("ttgpuir_to_llvmir", ...).

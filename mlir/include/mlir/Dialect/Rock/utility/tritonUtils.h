@@ -27,16 +27,16 @@ namespace mlir {
 
 namespace triton {
 enum class ScaleDotElemType : uint32_t;
-namespace AMD {
+namespace amdgpu {
 enum class ISAFamily;
-} // namespace AMD
+} // namespace amdgpu
 } // namespace triton
 
 namespace rock {
 
 /// Get MFMA version from ISA family.
 /// Mirrors the internal getMfmaVersion() in AccelerateAMDMatmul.cpp.
-int getMfmaVersion(triton::AMD::ISAFamily isaFamily);
+int getMfmaVersion(triton::amdgpu::ISAFamily isaFamily);
 
 /// Get WMMA version from architecture chip string (e.g. "gfx1100").
 /// Mirrors the internal getWmmaVersion() in AccelerateAMDMatmul.cpp.

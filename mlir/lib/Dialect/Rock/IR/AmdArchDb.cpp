@@ -20,7 +20,7 @@
 #include "llvm/Support/ErrorHandling.h"
 
 // Include Triton AMD APIs for intrinsic selection
-#include "TritonAMDGPUToLLVM/TargetUtils.h"
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "TritonAMDGPUTransforms/MfmaGroup.h"
 #include "TritonAMDGPUTransforms/WmmaGroup.h"
 
@@ -31,7 +31,7 @@
 
 using namespace mlir;
 using namespace mlir::rock;
-using namespace mlir::triton::AMD;
+using namespace mlir::triton::amdgpu;
 
 static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
   std::tuple<StringRef, unsigned> ret("", 0);
@@ -51,7 +51,7 @@ static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
 
 static std::tuple<ISAFamily, StringRef> getArch(StringRef arch) {
   auto [chip, _] = parseArchString(arch);
-  ISAFamily isaFamily = triton::AMD::deduceISAFamily(chip);
+  ISAFamily isaFamily = triton::AMD::TargetInfo(chip.str()).getISAFamily();
   if (isaFamily == ISAFamily::Unknown) {
     llvm_unreachable("Unknown chip");
   }
