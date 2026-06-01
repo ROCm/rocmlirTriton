@@ -23,8 +23,9 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
   auto it = table.find(key);
 
   // A healthy exact match (more than one real config) wins outright.
-  if (it != table.end() && 
-      llvm::count_if(it->second, [](StringRef cfg) { return !cfg.empty(); }) > 1)
+  if (it != table.end() && llvm::count_if(it->second, [](StringRef cfg) {
+                             return !cfg.empty();
+                           }) > 1)
     return it->second;
 
   // Either the key is missing or its list is degenerate (<= 1 real config).
@@ -56,7 +57,8 @@ StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
   static const auto &table = getTable();
   SmallVector<StringRef, 12> validRelatives;
   for (StringRef relative : relatives)
-    if (llvm::count_if(table.at(relative), [](StringRef cfg) { return !cfg.empty(); }) > 1)
+    if (llvm::count_if(table.at(relative),
+                       [](StringRef cfg) { return !cfg.empty(); }) > 1)
       validRelatives.push_back(relative);
 
   // Narrow to the useful relatives, then pick the closest among them below. If
