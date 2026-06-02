@@ -1,6 +1,6 @@
-# rocmlirTriton Coding Standards
+# rocmlirTriton PR Review Checklist
 
-This is the authoritative coding-standards checklist for rocmlirTriton.
+This is the authoritative PR review checklist for rocmlirTriton.
 Reviewers -- human and automated -- categorize findings against the
 **Critical / Major / Minor** tiers below; a Critical finding here is one
 of the bullets in the "Critical" section, a Major finding is one of the
