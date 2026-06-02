@@ -101,8 +101,7 @@ TEST(GetRockInfoTest, GetNumCURejectsLegacyUnprefixedName) {
 
   // Sanity check: replacing with the canonical mnemonic succeeds.
   moduleOp->removeAttr("num_cu");
-  moduleOp->setAttr(rock::NumCUAttr::getMnemonic(),
-                    e.b.getI64IntegerAttr(256));
+  moduleOp->setAttr(rock::NumCUAttr::getMnemonic(), e.b.getI64IntegerAttr(256));
   auto maybeNumCU = rock::getNumCU(op);
   ASSERT_TRUE(succeeded(maybeNumCU));
   EXPECT_EQ(*maybeNumCU, 256);
@@ -116,8 +115,7 @@ TEST(GetRockInfoTest, GetArchReturnsFailureForOpWithoutEnclosingFunc) {
   (*e.module)->setAttr(rock::ArchAttr::getMnemonic(),
                        e.b.getStringAttr("amdgcn-amd-amdhsa:gfx950"));
   e.b.setInsertionPointToEnd(e.module->getBody());
-  auto op =
-      arith::ConstantOp::create(e.b, e.loc, e.b.getI32IntegerAttr(0));
+  auto op = arith::ConstantOp::create(e.b, e.loc, e.b.getI32IntegerAttr(0));
 
   EXPECT_TRUE(failed(rock::getArch(op)));
 }
