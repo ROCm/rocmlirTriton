@@ -16,14 +16,18 @@ Use [GitHub Issues](../../issues) to report bugs or request features. Include a 
    git checkout -b feature/short-description
    ```
 2. Make your change. Add tests under `mlir/test/` and update docs if behavior changes.
-3. Format your C/C++ changes with `clang-format` (uses the repo's `.clang-format`):
+3. Check your C/C++ formatting the same way CI does:
    ```bash
    # Replace `origin/develop` with `upstream/develop` if you've forked
    # and named the `ROCm/rocmlirTriton` remote `upstream` -- the
    # baseline must be the latest upstream `develop`, not your fork's.
-   git clang-format origin/develop
+   git clang-format --diff origin/develop
    ```
-   The premerge `clang-format` CI job runs `git clang-format --diff origin/develop` (CI's checkout always names the `ROCm/rocmlirTriton` remote `origin`) and fails on any non-empty diff, so matching it locally is the fastest way to avoid CI bounces.
+   The premerge `clang-format` CI job runs this same command (CI's checkout
+   always names the `ROCm/rocmlirTriton` remote `origin`) and fails on any
+   non-empty diff, so matching it locally is the fastest way to avoid CI
+   bounces. If the diff is non-empty, run `git clang-format origin/develop` to
+   apply the changes or fix the formatting manually.
 4. Build and run the test suite locally:
    ```bash
    bash cmake.sh

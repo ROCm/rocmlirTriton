@@ -14,7 +14,9 @@ on:
     paths:
       - '.github/scripts/sanitize_claude_actions.sh'
       - '.github/scripts/secret_patterns.sh'
+      - '.github/scripts/post_claude_review.sh'
       - '.github/scripts/tests/test_sanitize.sh'
+      - '.github/workflows/claude_auto_review.yml'
       - '.github/workflows/claude_auto_review_sanitizer_tests.yml'
 
 # Minimum scope: contents:read (what checkout needs); every other scope stays
