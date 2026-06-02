@@ -623,13 +623,15 @@ def _kpack_choices(arch: str) -> List[int]:
 # TODO: Use python bindings when available.
 def _wave_size(arch: str) -> int:
     """Wave size used by the perf-config tuner for ``arch``.
-    32 for RDNA, 64 for GCN/CDNA and gfx1250."""
+    32 for RDNA1-4 (gfx10xx-gfx12xx, including gfx1250); 64 for GCN/CDNA
+    (gfx9xx). Mirrors ``rock::getWaveSize`` (see
+    ``mlir/unittests/Dialect/Rock/AmdArchDbTests.cpp`` ``WaveSize``).
+    Conservative default 64 for unknown archs (wider wave -> smaller
+    per-thread state -> less likely to filter)."""
     n = _arch_id(arch)
     if n is None:
-        # Unknown arch: conservative (wider wave -> smaller per-thread
-        # state -> less likely to filter).
         return 64
-    if 0x1000 <= n < 0x1250:  # gfx10xx, gfx11xx, gfx12 < 1250
+    if 0x1000 <= n < 0x1300:  # gfx10xx, gfx11xx, gfx12xx
         return 32
     return 64
 

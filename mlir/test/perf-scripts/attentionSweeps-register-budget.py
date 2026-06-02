@@ -3,11 +3,9 @@
 
   (wave_size, vgprs_per_eu)   archs                                 budget/thr at wpe=8
   ---------------------------------------------------------------------------
-  (64, 512)                   gfx9xx pre-1100 (CDNA1-4)             64
+  (64, 512)                   gfx9xx (CDNA1-4); also unknown arch   64
   (32, 512)                   gfx10xx (RDNA1/2)                     64
-  (32, 1024)                  gfx11xx, gfx12 < 1250 (RDNA3/4)       128
-  (64, 1024)                  gfx1250+ and (presumed) gfx13+        128
-  (64, 512) fallback          unknown / unparseable archs           64
+  (32, 1024)                  gfx11xx-gfx12xx (RDNA3/4 + gfx1250)   128
 
 Each regime gets a just-fits ACCEPT and a just-overflows REJECT pair so a
 future calibration tweak fails fast. ``wavesPerEU == 0`` (treated as
@@ -74,10 +72,12 @@ CASES = [
     ("gfx1201 fits", "gfx1201", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx1201 overflow", "gfx1201", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 
-    # gfx1250 (wave=64, vgprs=1024): same wave as gfx950 but doubled file.
-    # (128*64)/64 = 128 -> ACCEPT; (128*128)/64 = 256 -> REJECT.
-    ("gfx1250 fits", "gfx1250", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
-    ("gfx1250 overflow", "gfx1250", (128, 128, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
+    # gfx1250 (wave=32, vgprs=1024): same regime as gfx1100/gfx1201; pinned
+    # separately so a future _arch_id / _wave_size tweak that mis-classifies
+    # gfx1250 as wave=64 (its older mistake -- see AmdArchDbTests.WaveSize)
+    # fails this test.
+    ("gfx1250 fits", "gfx1250", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
+    ("gfx1250 overflow", "gfx1250", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 
     # Unknown arch falls through to (wave=64, vgprs=512); locks the
     # conservative default so a future _arch_id refactor can't silently

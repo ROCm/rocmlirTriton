@@ -46,9 +46,10 @@ from parameterSweeps import (
 # Per-thread VGPR-budget guard for the attention / gemm-gemm sweep.
 # Complements ``parameterSweeps._compile_cost_score`` (which models post-RA
 # *scheduler* cost from basic-block instruction count) by modelling
-# *register-allocator* cost. Triton stamps ``amdgpu-waves-per-eu="N,N"``
-# unconditionally (see ``external/triton/third_party/amd/backend/compiler.py``,
-# the ``add_fn_attr("amdgpu-waves-per-eu", ...)`` site), so the AMDGPU
+# *register-allocator* cost. The rocmlir-driver path stamps
+# ``amdgpu-waves-per-eu="N,N"`` on the kernel function for every
+# ``wavesPerEU > 0`` (see ``setKernelAttributes`` in
+# ``mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp``), so the AMDGPU
 # backend caps each thread's VGPRs at ``vgprs_per_eu / N``. When the
 # C-tile accumulator
 #     accum_vgprs_per_thread = (mPerBlock * nPerBlock) / threads
@@ -56,20 +57,21 @@ from parameterSweeps import (
 # f32 / i32) overruns that cap, the allocator can't avoid spilling and
 # spends multi-minute time searching the live-range graph -- so we reject.
 #
-# ``wavesPerEU == 0`` is stamped as ``"0, 0"``, which the LLVM AMDGPU
-# backend interprets as "no occupancy limit" (per the comment block
-# adjacent to the same ``add_fn_attr`` site in ``compiler.py``). The
-# resulting upper bound is set by the hardware: at most one wave per EU,
-# with the full SIMD VGPR file going to that wave. Tiles wider than
-# ``vgprs_per_eu`` still trigger a ~10s-to-multi-minute ISel / post-RA
-# scheduling blow-up even without spills, so we treat ``wpe == 0`` as
-# ``wpe == 1`` for the budget check.
+# ``wavesPerEU == 0`` is the "let the backend pick" case: no
+# ``amdgpu-waves-per-eu`` attribute is emitted, so the LLVM AMDGPU backend
+# has no occupancy limit and the upper bound comes from the hardware --
+# at most one wave per EU getting the full SIMD VGPR file. Tiles wider
+# than ``vgprs_per_eu`` still trigger a ~10s-to-multi-minute ISel /
+# post-RA scheduling blow-up even without spills, so we treat ``wpe == 0``
+# as ``wpe == 1`` for the budget check.
 
 
 def _vgprs_per_eu(arch: str) -> int:
     """SIMD VGPR-file size: 512 on gfx9xx/gfx10xx (CDNA1-4, RDNA1/2),
-    1024 on gfx11xx+ (RDNA3, RDNA4, gfx1250+). Defaults to 512 for
-    unknown archs (conservative -- more likely to flag than to leak)."""
+    1024 from gfx11xx onward (RDNA3, RDNA4, gfx1250). Wave-size
+    differences between gfx12xx and gfx9xx are handled separately by
+    :func:`parameterSweeps._wave_size`. Defaults to 512 for unknown archs
+    (conservative -- more likely to flag than to leak)."""
     n = _arch_id(arch)
     if n is not None and n >= 0x1100:
         return 1024
@@ -91,19 +93,26 @@ def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> b
     return accum_vgprs_per_thread <= vgpr_budget_per_thread
 
 
-def _sampled_attn_perf_within_budget(rng: random.Random, arch: str,
+def _sampled_perf_within_vgpr_budget(rng: random.Random, arch: str,
                                      split_k_choices: Sequence[int]) -> Tuple[int, ...]:
-    """Resamples ``sample_perf_config`` until the result fits the VGPR
-    budget (see :func:`_waves_per_eu_register_budget_ok`). We do NOT also
-    apply ``parameterSweeps._perf_within_budget``: its basic-block
-    instruction-count cap is calibrated for conv / gemm and doesn't catch
-    the regalloc thrash this predicate guards against."""
+    """Like :func:`sample_perf_config` but rejects perf-configs whose
+    C-tile accumulator overruns the VGPR budget implied by ``wavesPerEU``
+    (see :func:`_waves_per_eu_register_budget_ok`). We loop with a
+    generous retry cap rather than enumerating the in-budget subspace
+    because the rejection rate is small (<10% on the archs we care about)
+    and we don't want to silently bias the sample distribution by
+    filtering an enumerated list -- mirrors the rationale in
+    :func:`parameterSweeps._sampled_perf_within_budget`.
+
+    We deliberately do NOT also apply ``parameterSweeps._perf_within_budget``:
+    its basic-block instruction-count cap is calibrated for conv / gemm
+    and doesn't catch the regalloc thrash this predicate guards against."""
     for _ in range(_MAX_PERF_CONFIG_RETRIES):
         perf_config = sample_perf_config(rng, arch, split_k_choices)
         if _waves_per_eu_register_budget_ok(perf_config, arch):
             return perf_config
     raise RuntimeError(
-        f"_sampled_attn_perf_within_budget exceeded {_MAX_PERF_CONFIG_RETRIES} retries "
+        f"_sampled_perf_within_vgpr_budget exceeded {_MAX_PERF_CONFIG_RETRIES} retries "
         f"for arch={arch!r}; PERF_CONFIG_OPTIONS may have no config inside the "
         "VGPR budget implied by the sampled wavesPerEU values.")
 
@@ -228,12 +237,12 @@ def random_attn_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     ``_sample_attn_shape``), not via the perf-config splitK.
 
     Perf-config is sampled first (and filtered through
-    :func:`_sampled_attn_perf_within_budget`) so we can feed ``nPerBlock``
+    :func:`_sampled_perf_within_vgpr_budget`) so we can feed ``nPerBlock``
     -- field 1 in the 11-tuple -- into ``_sample_attn_shape`` to enforce
     the rocmlir-gen ``causal + split_kv`` limitation on ``seq_len_q``."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
-        perf = _sampled_attn_perf_within_budget(rng, arch, [1])
+        perf = _sampled_perf_within_vgpr_budget(rng, arch, [1])
         n_per_block = perf[1]
         yield (_sample_attn_shape(rng, n_per_block=n_per_block), perf)
 
@@ -269,13 +278,13 @@ def random_gemm_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = No
     Unlike attention, ``splitKFactor`` is left free: for gemm+gemm the
     second gemm's K-dim split is a real degree of freedom rather than a
     duplicate of a separate kernel arg. Perf-configs are filtered through
-    :func:`_sampled_attn_perf_within_budget`."""
+    :func:`_sampled_perf_within_vgpr_budget`."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
         shape = _sample_gemm_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, o, trans_a, ...).
         dtype = shape[0]
-        yield (shape, _sampled_attn_perf_within_budget(rng, arch, _split_k_choices(dtype)))
+        yield (shape, _sampled_perf_within_vgpr_budget(rng, arch, _split_k_choices(dtype)))
 
 
 def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfiguration:
