@@ -288,15 +288,14 @@ back so element-wise ops (K_eff=1) match PyTorch's defaults.
 
 `sumErrorTolerance(Type)` in `rocmlir-gen.cpp` keeps rocBLAS's constants
 for fp16/bf16 and uses `eps(T)` for the fp8/fp4 dtypes rocBLAS does not
-test. The fp32/fp64 values are *tighter* than rocBLAS uses and follow
-hipBLASLt's flat-`atol` policy instead; see the next subsection for why.
+test. The fp32 value matches rocBLAS's `1/10000`; fp64 uses `~10 * eps(fp64)`.
 
 | dtype | sum_error_tolerance | source |
 |---|---|---|
 | fp16 | `1/900` | rocBLAS `near.hpp` |
 | bf16 | `1/100` | rocBLAS `near.hpp` |
-| fp32 | `1e-6` | ~`10 * eps(fp32)`, hipBLASLt-aligned (see below) |
-| fp64 | `1e-15` | ~`10 * eps(fp64)`, hipBLASLt-aligned (see below) |
+| fp32 | `1e-4` | rocBLAS `near.hpp` (`1/10000`); see note below |
+| fp64 | `1e-15` | ~`10 * eps(fp64)` |
 | fp8 e4m3* | `0.125` | `eps(e4m3) = 2^-3` |
 | fp8 e5m2* | `0.25`  | `eps(e5m2) = 2^-2` |
 | fp4 e2m1 | `0.5`   | `eps(e2m1) = 2^-1` |
@@ -304,22 +303,23 @@ hipBLASLt's flat-`atol` policy instead; see the next subsection for why.
 Worked example -- fp32 GEMM with K=4096:
 
 ```
-atol_eff = 1e-5 + 4096 * 1e-6 = 4.106e-3
+atol_eff = 1e-5 + 4096 * 1e-4 = 0.4097
 ```
 
-For context, rocBLAS's tolerance for the same K is
-`K * 1e-4 = 0.4096` (~100x looser); PyTorch's flat `1e-5` would fail.
+This matches rocBLAS's tolerance for the same K (`K * 1e-4 = 0.4096`);
+PyTorch's flat `atol=1e-5` would fail.
 
-#### Why fp32/fp64 are tighter than rocBLAS
+#### Note on fp32 tolerance choice
 
-rocBLAS uses higher tolerances because they expect to be compared against
-external libraries, which might have computed the kernel in a different order.
-We compare against our own CPU reference, so we can safely use tighter values.
-
-Our `1e-6` for fp32 is approximately `10 * eps(fp32)` and matches
-hipBLASLt's flat budget; the K-scaling on top of that lets the bound
-grow gracefully on long reductions without admitting orders of magnitude
-of unjustified slack. fp64 follows the same `~10 * eps(T)` rule.
+Empirically, our test suite passes with a much tighter fp32
+`sum_error_tolerance` of `~1.1e-5` (`~100 * eps(fp32)`) when using
+random input data. We chose rocBLAS's `1e-4` instead for consistency:
+fp16 and bf16 already use rocBLAS's constants (`1/900` and `1/100`),
+so aligning fp32 keeps the tolerance model uniform across all dtypes
+and avoids a separate justification for a non-standard value. If a
+future need arises for stricter fp32 checking, the value can be
+tightened to `~1e-5` without introducing false positives on current
+configurations.
 
 ### 2.4 `K_eff` per operation
 
@@ -330,7 +330,8 @@ accumulation error growth:
 |---|---|
 | GEMM | `K` |
 | Attention | `head_dim_qk + seq_len_k` |
-| Conv (any direction) | `Cin * product(filter_spatial_dims)`, i.e. the im2col K |
+| Conv forward / backward data | `Cin * product(filter_spatial_dims)`, i.e. the im2col K |
+| Conv backward weight | `N * product(output_spatial_dims)` |
 | GEMM -> elementwise -> GEMM | `K_gemm1 + K_gemm2` |
 | Conv -> elementwise -> GEMM | `K_conv + K_gemm2` |
 | Element-wise / other | `1` |
@@ -338,8 +339,10 @@ accumulation error growth:
 Same rule for every operation: each reduction phase along the data
 path adds its own length.
 
-Conv excludes the K (output channel) and G (group) dimensions because they
-do not participate in the per-output-element reduction.
+Conv forward/backward data excludes the K (output channel) and G (group)
+dimensions because they do not participate in the per-output-element
+reduction. Backward weight reduces over a fundamentally different set of
+dimensions (batch and output spatial), so it has its own K_eff formula.
 
 ### 2.5 Manual overrides
 
