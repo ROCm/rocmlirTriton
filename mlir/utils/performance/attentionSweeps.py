@@ -87,10 +87,10 @@ def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> b
     num_waves = perf_config[5]
     waves_per_eu = perf_config[9]
     threads = max(1, num_waves * _wave_size(arch))
-    accum_vgprs_per_thread = (mpb * npb) / threads
     effective_waves_per_eu = waves_per_eu if waves_per_eu > 0 else 1
-    vgpr_budget_per_thread = _vgprs_per_eu(arch) / effective_waves_per_eu
-    return accum_vgprs_per_thread <= vgpr_budget_per_thread
+    # Integer cross-multiplication is exact; avoids any FP rounding at the
+    # boundary. Equivalent to ``(mpb * npb) / threads <= vgprs_per_eu / wpe``.
+    return (mpb * npb) * effective_waves_per_eu <= _vgprs_per_eu(arch) * threads
 
 
 def _sampled_perf_within_vgpr_budget(rng: random.Random, arch: str,
