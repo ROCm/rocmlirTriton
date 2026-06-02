@@ -9,5 +9,6 @@ patch10290.patch
 patch1.patch
 patch2.patch
 patch3.patch
+patch4.patch
 ----------------------------------------------------------------------
 TODO: Add missing patch descriptions
