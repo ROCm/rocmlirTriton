@@ -149,6 +149,68 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
                      /*args=*/(ins),
                      /*methodBody=*/"",
                      /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Overrides the per-arch default application for the async-copy
+          schedule. -1 means "use the arch default".
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getUseAsyncCopy",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Overrides the per-arch default application for the block-pingpong
+          schedule. -1 means "use the arch default".
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getUseBlockPingpong",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Overrides the per-arch default application for the
+          in-thread-transpose pass. -1 means "use the arch default".
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getUseInThreadTranspose",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Overrides the convert-to-buffer-ops / canonicalize-pointers /
+          optimize-buffer-op-ptr pass cluster. -1 means "use the arch
+          default".
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getUseBufferOps",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Overrides buffer atomics in convert-to-buffer-ops (requires
+          buffer ops to be enabled). -1 means "use the arch default".
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getUseBufferAtomics",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Bitfield selector mirroring upstream Triton's
+          `HIPOptions.schedule_hint`. -1 means "use the arch default", 0
+          means "none".
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getScheduleHint",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
   ];
 }
 
