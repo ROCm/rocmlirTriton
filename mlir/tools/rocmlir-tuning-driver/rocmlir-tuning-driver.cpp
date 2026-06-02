@@ -47,6 +47,7 @@
 
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/SourceMgr.h"
@@ -91,6 +92,8 @@ void pArgs(const std::tuple<Ts...> &formals, void **_vargs) {
 
 using namespace mlir;
 using namespace rocmlir::tuningdriver;
+
+#define DEBUG_TYPE "rocmlir-tuning-driver"
 
 static llvm::cl::opt<std::string> inputFilename{
     llvm::cl::Positional, llvm::cl::desc("<input file>"), llvm::cl::init("-")};
@@ -523,7 +526,7 @@ runWarmupAvgMs(unsigned numWarmupIterations, hipStream_t stream,
 // same measurement method. This performs no measurement and prints nothing, so
 // it cannot leak a result line into the tuning output. The only cost is one
 // warmup-only run (warmupIterations launches) plus the module load.
-static FailureOr<bool> classifyKernelSize(
+static FailureOr<bool> classifyKernelSmall(
     const CompilationResult &defaultResult, ArrayRef<void *> hostBuffers,
     MutableArrayRef<void *> gpuBuffers, ArrayRef<size_t> bufferSizes,
     const BenchmarkParams &params) {
@@ -572,7 +575,7 @@ static FailureOr<bool> classifyKernelSize(
 // In order to match rocprof, returns time in nanoseconds.
 // `lockedIsSmallKernel`, when set, forces the small/large measurement method so
 // all perf configs for a problemConfig are measured the same way (see
-// classifyKernelSize). When empty, the method falls back to this config's own
+// classifyKernelSmall). When empty, the method falls back to this config's own
 // warmup, preserving the legacy per-config behavior.
 static FailureOr<double>
 benchmarkKernels(const CompilationResult &result, ArrayRef<void *> hostBuffers,
@@ -627,7 +630,7 @@ benchmarkKernels(const CompilationResult &result, ArrayRef<void *> hostBuffers,
   });
 
   // The small/large measurement method is normally decided once per
-  // problemConfig (via classifyKernelSize on the default config) and passed in
+  // problemConfig (via classifyKernelSmall on the default config) and passed in
   // as `lockedIsSmallKernel`, so every perf config is measured the same way.
   // The per-config warmup below still runs to size the measurement loop
   // (`iterations`); it only influences the small/large choice as a fallback
@@ -722,12 +725,6 @@ benchmarkKernels(const CompilationResult &result, ArrayRef<void *> hostBuffers,
     return msToNs(computeMean(trimValues(measurements, params.trimPercent)));
 }
 
-static int toKernelOrder(Attribute attr) {
-  if (auto intAttr = dyn_cast<IntegerAttr>(attr); intAttr)
-    return intAttr.getInt();
-  return -1;
-}
-
 static LogicalResult extractFuncOps(ModuleOp op,
                                     SmallVectorImpl<func::FuncOp> &kernels) {
   if (!op->hasAttr(rock::ArchAttr::getMnemonic())) {
@@ -740,11 +737,9 @@ static LogicalResult extractFuncOps(ModuleOp op,
     kernels.push_back(f);
   });
 
-  llvm::sort(kernels, [](const func::FuncOp &a, const func::FuncOp &b) {
-    int kernelA = toKernelOrder(a->getAttr(rock::KernelAttr::getMnemonic()));
-    int kernelB = toKernelOrder(b->getAttr(rock::KernelAttr::getMnemonic()));
-    return kernelA < kernelB;
-  });
+  if (kernels.size() > 1)
+    return op->emitOpError("expected exactly one kernel function in module, got ")
+           << kernels.size();
   return success();
 }
 
@@ -1021,8 +1016,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                               kernelOpts, bufferedDiags);
       if (probeResult.status == CompilationStatus::Success) {
         FailureOr<bool> classified =
-            classifyKernelSize(probeResult, hostBuffers, gpuBuffers,
-                               bufferLengths, benchmarkParams);
+            classifyKernelSmall(probeResult, hostBuffers, gpuBuffers,
+                                bufferLengths, benchmarkParams);
         if (succeeded(classified)) {
           lockedIsSmallKernel = *classified;
           llvm::errs() << "Locked measurement method for problemConfig using "
@@ -1032,16 +1027,19 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                                 : "large-kernel (GPU events)")
                        << "\n";
         } else {
-          llvm::errs() << "Warning: kernel-size probe failed; falling back to "
-                          "per-config classification\n";
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Warning: kernel-size probe failed; falling back to "
+                        "per-config classification\n");
         }
       } else {
-        llvm::errs() << "Warning: could not compile default config '"
-                     << defaultConfig << "' for kernel-size probe (status "
-                     << static_cast<int>(probeResult.status)
-                     << "); falling back to per-config classification\n";
-        for (auto &msg : bufferedDiags)
-          llvm::errs() << msg;
+        LLVM_DEBUG({
+          llvm::dbgs() << "Warning: could not compile default config '"
+                       << defaultConfig << "' for kernel-size probe (status "
+                       << static_cast<int>(probeResult.status)
+                       << "); falling back to per-config classification\n";
+          for (auto &msg : bufferedDiags)
+            llvm::dbgs() << msg;
+        });
       }
     }
   }
