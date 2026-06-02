@@ -1074,11 +1074,29 @@ pipeline {
                                                         }
                                                     }
 
-                                                    stage('Run tests') {
+                                                    stage('Run fixed E2E tests') {
                                                         timeout(time: 30, activity: true, unit: 'MINUTES') {
                                                             dir('build') {
                                                                 int limit_lit_workers = setLitWorkerCount()
                                                                 sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
+                                                            }
+                                                        }
+                                                    }
+
+                                                    if (params.nightly) {
+                                                        stage('Run random E2E tests') {
+                                                            timeout(time: 60, activity: true, unit: 'MINUTES') {
+                                                                dir('build') {
+                                                                    int limit_lit_workers = setLitWorkerCount()
+                                                                    sh """
+                                                                        cmake . \\
+                                                                            -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0 \\
+                                                                            -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1 \\
+                                                                            -DROCK_E2E_TEST_ENABLED=1 \\
+                                                                            -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1
+                                                                        LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir
+                                                                    """
+                                                                }
                                                             }
                                                         }
                                                     }
