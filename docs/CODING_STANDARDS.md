@@ -203,10 +203,6 @@ When a PR changes the `external/triton` submodule pointer:
   justification in the PR description: either a link to the upstream
   issue/PR that will eventually upstream the change, or a one-line
   note explaining why this is a permanent fork.
-- **Minor** -- a patch touches an upstream file that has a CODEOWNER
-  in `external/triton/.github/CODEOWNERS` and the PR description
-  doesn't name the upstream owner. Naming the owner makes the
-  divergence visible and the eventual upstream-pull easier.
 
 ### Hardware-feature detection (`rock::*` vs `triton::AMD::TargetInfo`)
 
