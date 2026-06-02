@@ -14,6 +14,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -26,25 +27,36 @@ class Type;
 
 namespace rock {
 
-// This function returns the func or gpu.func of a given op
-Operation *getParentFuncOp(Operation *op);
+// Return the enclosing function-like op (`func.func`, `gpu.func`, or
+// `llvm.func`) of `op`.  If `op` is itself a function-like op, returns it.
+// Returns a null `FunctionOpInterface` if no enclosing function exists.
+FunctionOpInterface getParentFuncOp(Operation *op);
 
-// Get the arch from the op
+// Get the arch attribute from the function, falling back to its enclosing
+// symbol-table parent (e.g. ModuleOp or gpu::GPUModuleOp).
+FailureOr<StringAttr> getArchOnFunc(FunctionOpInterface func);
+// Get the arch attribute, asserting if it cannot be found.
+StringAttr getArchValueOnFunc(FunctionOpInterface func);
+
+// Get the num_cu attribute, looking on the function and then its enclosing
+// symbol-table parent.
+FailureOr<int64_t> getNumCUOnFunc(FunctionOpInterface func);
+// Get the num_cu attribute, falling back to the per-arch minimum if missing.
+int64_t getNumCUValueOnFunc(FunctionOpInterface func);
+
+// Get the num_chiplets attribute, looking on the function and then its
+// enclosing symbol-table parent.
+FailureOr<int64_t> getNumChipletsOnFunc(FunctionOpInterface func);
+// Get the num_chiplets attribute, falling back to the per-arch maximum if
+// missing.
+int64_t getNumChipletsValueOnFunc(FunctionOpInterface func);
+
+// Convenience overloads that look up the attribute on `op`'s parent function.
 FailureOr<StringAttr> getArch(Operation *op);
-
-// Get the arch from the op and error out if it cannot be found
 StringAttr getArchValue(Operation *op);
-
-// Get the num_cu from the op
 FailureOr<int64_t> getNumCU(Operation *op);
-
-// Get the num_cu from the op, and error out if it cannot be found
 int64_t getNumCUValue(Operation *op);
-
-// Get the num_chiplets from the op
 FailureOr<int64_t> getNumChiplets(Operation *op);
-
-// Get the num_chiplets from the op, and error out if it cannot be found
 int64_t getNumChipletsValue(Operation *op);
 
 } // End namespace rock

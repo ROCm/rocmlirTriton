@@ -134,24 +134,13 @@ static bool parseBackendOptions(MlirPassManager pm,
   backendOpts.features = devName.getFeaturesForBackend();
   backendOpts.optLevel = opts.optLevel;
 
-  mlir::MLIRContext *ctx = unwrap(pm)->getContext();
   llvm::StringRef configStr(opts.perfConfig);
   if (configStr.empty()) {
     llvm::errs() << "perfConfig must not be empty\n";
     return false;
   }
-  auto strAttr = mlir::StringAttr::get(ctx, configStr);
-  mlir::Attribute configAttr;
-  if (auto gemm = mlir::rock::GemmParamsAttr::get(strAttr)) {
-    configAttr = gemm;
-  } else if (auto attn = mlir::rock::GemmGemmParamsAttr::get(strAttr)) {
-    configAttr = attn;
-  } else {
-    llvm::errs() << "Invalid perfConfig: " << configStr << "\n";
-    return false;
-  }
-  if (mlir::failed(mlir::rock::fillCompilationConfigs(configAttr, tritonOpts,
-                                                      backendOpts))) {
+  if (mlir::failed(mlir::rock::fillCompilationConfigs(
+          unwrap(pm)->getContext(), configStr, tritonOpts, backendOpts))) {
     llvm::errs() << "Failed to apply perfConfig: " << configStr << "\n";
     return false;
   }
