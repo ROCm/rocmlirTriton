@@ -219,7 +219,7 @@ jobs:
               cp -r "$p" "/tmp/pr-source/$p"
             fi
           done
-          if [ -d /tmp/pr-source ]; then
+          if [ -n "$(find /tmp/pr-source -type f -print -quit)" ]; then
             echo "Captured PR-side perimeter snapshot:"
             find /tmp/pr-source -type f | sort | sed 's/^/  /'
           fi
@@ -783,7 +783,10 @@ jobs:
               (`[text](#section)`) are fine -- they have no scheme and no `//`
               prefix, so the sanitizer leaves them alone.
             - Do NOT include the literal substring `<!-- claude-pr-review-` in ANY
-              field. The pipeline reserves `<!-- claude-pr-review-marker:v1 -->` and
+              field. This prompt intentionally spells out the reserved markers as
+              documentation for you; the sanitizer scans your structured output, not
+              this prompt text. The pipeline reserves
+              `<!-- claude-pr-review-marker:v1 -->` and
               `<!-- claude-pr-review-action:resolve -->` / `:clarify -->` as private
               attribution / kind markers that the post script appends; the
               update-pr-review skill uses them on the next run to recognize OUR own

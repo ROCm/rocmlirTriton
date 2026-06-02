@@ -69,13 +69,13 @@ the author can look up the rationale.
 
 ## Major
 
-- DRY/YAGNI/KISS violations: redundant code, dead code, unnecessarily
-  complex algorithms, opportunities to use existing upstream
+- Redundant code, dead code, speculative abstractions, unnecessarily
+  complex algorithms, or missed opportunities to use existing upstream
   LLVM/MLIR/Triton utilities instead of custom code.
 - Raw `new`/`delete`; use MLIR allocation utilities, `std::unique_ptr`, or
   arena ownership.
-- Inheritance where composition would do; CRTP only where MLIR/LLVM
-  requires it.
+- Inheritance where composition would do; curiously recurring template
+  pattern (CRTP) only where MLIR/LLVM requires it.
 - `std::string`/`std::vector` for non-owning parameters where
   `StringRef`/`ArrayRef`/`MutableArrayRef` would suffice.
 - `std::vector` for small local collections where `SmallVector` is
