@@ -92,7 +92,7 @@ thing you need to do is `Read` them. Concretely:
 - `Read('/tmp/pr/prev_comments.json')` to discover previous Claude comments
   for the re-review path; see the Output section for the filter rule.
 
-### Special case: changes under `.claude/`, `.github/scripts/`, or `docs/PR_REVIEW_CHECKLIST.md`
+### Special case: changes under `.claude/`, `.github/scripts/`, `docs/PR_REVIEW_CHECKLIST.md`, or `docs/bump_triton_version.md`
 
 These three paths are the workflow's "trust perimeter": their workspace
 contents have been **replaced** with the trusted default-branch versions by
@@ -102,7 +102,8 @@ flag as findings (`.claude/skills/` is what *you* are reading right now;
 `.github/scripts/sanitize_claude_actions.sh` is what gates your output
 before it leaves the runner; `docs/PR_REVIEW_CHECKLIST.md` is the
 **single source of truth** for the Critical / Major / Minor review tiers
-categorization you apply in Step 3).
+categorization you apply in Step 3; `docs/bump_triton_version.md` is
+the detailed Triton-bump guide you apply in Step 4).
 
 If `diff.patch` shows changes under any of these paths, **the workspace
 copies are NOT the PR's proposed versions**. The PR-side versions are at:
@@ -113,6 +114,7 @@ copies are NOT the PR's proposed versions**. The PR-side versions are at:
 | `.github/scripts/post_claude_review.sh` | `/tmp/pr-source/.github/scripts/post_claude_review.sh` |
 | `.github/scripts/sanitize_claude_actions.sh` | `/tmp/pr-source/.github/scripts/sanitize_claude_actions.sh` |
 | `docs/PR_REVIEW_CHECKLIST.md` | `/tmp/pr-source/docs/PR_REVIEW_CHECKLIST.md` |
+| `docs/bump_triton_version.md` | `/tmp/pr-source/docs/bump_triton_version.md` |
 
 If `/tmp/pr-source/<path>` does not exist while `diff.patch` shows changes
 to `<path>`, the PR has deleted that file. Use `Read` on the snapshot path
@@ -124,10 +126,11 @@ the workspace as usual.
 This special case only applies on the workflow_dispatch path; PRs that touch
 `.claude/` or `.github/scripts/` under the label-trigger path are blocked by
 Layer 3 of the workflow and never reach this skill. `docs/PR_REVIEW_CHECKLIST.md`
-is NOT in Layer 3's perimeter regex (it's a docs file, not security-sensitive),
-so a label-trigger PR may legitimately diff it -- still review the PR-side
-version at `/tmp/pr-source/docs/PR_REVIEW_CHECKLIST.md`; the workspace copy is
-the trusted version your tier categorization actually used.
+and `docs/bump_triton_version.md` are NOT in Layer 3's perimeter regex
+(they are docs files, not security-sensitive), so a label-trigger PR may
+legitimately diff them -- still review the PR-side versions under
+`/tmp/pr-source/docs/`; the workspace copies are the trusted versions your
+review criteria actually used.
 
 Identify the changed `.cpp`, `.h`, `.td`, `.mlir`, `.py`, `CMakeLists.txt`, and `.cmake`
 files from `meta.json`. `Read` the ones with non-trivial diffs in full.
@@ -153,23 +156,25 @@ finding against this PR.
 ## Step 3 -- Apply the PR review checklist
 
 The PR review checklist reaches you through `docs/PR_REVIEW_CHECKLIST.md` --
-the **single source of truth**. The workflow loads it for you in two
-ways, both sourced from the same default-branch ref:
+the **single source of truth** for review tiers. The Triton bump guide reaches
+you through `docs/bump_triton_version.md`. The workflow loads both for you in
+two ways, sourced from the same default-branch ref:
 
-1. The `snapshot_review_checklist` workflow step reads the (overlaid, trusted)
-   file at runtime and substitutes its content into the prompt heredoc
-   between the `<BEGIN/END docs/PR_REVIEW_CHECKLIST.md>` markers (the
-   "## PR review checklist (canonical reference)" section above this skill
-   in your conversation). You already have it in context -- no Read
-   needed.
-2. The same file is overlaid into the workspace (see the Special case
-   section above), so `Read('docs/PR_REVIEW_CHECKLIST.md')` returns the
-   same bytes if you want to confirm.
+1. The `snapshot_review_checklist` workflow step reads the overlaid,
+   trusted files at runtime and substitutes their content into the prompt
+   heredoc between the `<BEGIN/END docs/PR_REVIEW_CHECKLIST.md>` and
+   `<BEGIN/END docs/bump_triton_version.md>` markers (the canonical
+   reference sections above this skill in your conversation). You already
+   have them in context -- no Read needed.
+2. The same files are overlaid into the workspace (see the Special case
+   section above), so `Read('docs/PR_REVIEW_CHECKLIST.md')` and
+   `Read('docs/bump_triton_version.md')` return the same bytes if you want
+   to confirm.
 
-Both come from the same file at the same workflow run, so they are
+Both channels come from the same files at the same workflow run, so they are
 byte-identical by construction. Categorize each finding against the
-**Critical / Major / Minor** tiers and the license-header template
-defined there.
+**Critical / Major / Minor** tiers and the license-header template defined in
+the PR review checklist.
 
 Each finding must:
 
@@ -191,16 +196,18 @@ the rocMLIR back-port check).
 ## Step 4 -- Apply the rocmlirTriton-specific review rules
 
 `docs/PR_REVIEW_CHECKLIST.md` (injected into the prompt above by the
-snapshot step and overlaid into the workspace; see Step 3) also
-documents two rocmlirTriton-specific sections that don't fit the
-generic LLVM/MLIR tiers:
+snapshot step and overlaid into the workspace; see Step 3) documents two
+rocmlirTriton-specific sections that don't fit the generic LLVM/MLIR tiers.
+`docs/bump_triton_version.md` is also injected and overlaid; apply it as the
+detailed source of truth when a PR changes `external/triton` or
+`triton-patches/*.patch`:
 
 - **`## rocmlirTriton-specific checks`** -- Triton submodule
-  (`external/triton`) bumps, local `triton-patches/*.patch`, `rock::*`
-  hardware-feature detection (vs. `triton::AMD::TargetInfo`), bridge
-  passes between Rock and Triton, and fat-library + downstream
-  MIGraphX coordination. Each sub-rule documents its severity inline
-  (Major / Minor).
+  (`external/triton`) bumps (delegating detailed steps to
+  `docs/bump_triton_version.md`), local `triton-patches/*.patch`, `rock::*`
+  hardware-feature detection (vs. `triton::AMD::TargetInfo`), bridge passes
+  between Rock and Triton, and fat-library + downstream MIGraphX coordination.
+  Each sub-rule documents its severity inline (Major / Minor).
 - **`## rocMLIR back-port check`** -- the path list of files shared
   with `ROCm/rocMLIR`, the rocmlirTriton-only path list, and the
   verdict logic for missing back-port notes (Major when none of

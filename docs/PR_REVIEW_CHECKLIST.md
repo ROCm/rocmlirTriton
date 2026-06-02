@@ -174,28 +174,14 @@ is documented inline below.
 
 ### Triton submodule (`external/triton`) bumps
 
-When a PR changes the `external/triton` submodule pointer:
-
-- The PR description must acknowledge the bump checklist documented in
-  [`bump_triton_version.md`](bump_triton_version.md).
-- The replication points -- `Pipelines.cpp`, `TritonToHsaco.cpp`,
-  `tritonUtils.cpp`, `AmdArchDb.cpp` -- must be re-audited and updated
-  if upstream changed the originals they replicate. **Major** when a
-  bump lands without a corresponding diff to these files, unless the
-  PR description explicitly states the upstream files are unchanged
-  for this bump.
-- `librockcompiler_deps.cmake` must be regenerated; the fat-library
-  dep list can change between Triton SHAs and MIGraphX's
-  `librockCompiler` link line depends on it. **Major** when the bump
-  diff doesn't touch `librockcompiler_deps.cmake`. (This rule is also
-  called out separately under Major above; it applies on every
-  fat-library dependency change, not just Triton bumps.)
-- `triton-patches/*.patch` must be re-evaluated; patches that have
-  been upstreamed or no longer apply cleanly should be removed in the
-  same PR.
-- Commit subject must be `[TRITON-BUMP] ...` (or `[TRITON-PATCH] ...`
-  for a patch-only refresh) per the project's commit-message
-  conventions.
+When a PR changes the `external/triton` submodule pointer, apply the
+review checks from [`bump_triton_version.md`](bump_triton_version.md).
+The auto-review workflow injects the trusted default-branch copy of
+that guide into the review prompt alongside this checklist. Missing
+required bump artifacts, such as replication-point audit notes,
+`librockcompiler_deps.cmake` regeneration, or `triton-patches/*.patch`
+re-evaluation, should be reviewed as **Major** unless the PR
+description explains why they do not apply.
 
 ### Local Triton patches (`triton-patches/*.patch`)
 

@@ -201,9 +201,10 @@ jobs:
           fi
 
       # Snapshot the PR's versions of .claude/ + .github/scripts/ +
-      # docs/PR_REVIEW_CHECKLIST.md to /tmp/pr-source/ BEFORE the overlay
+      # docs/PR_REVIEW_CHECKLIST.md + docs/bump_triton_version.md to
+      # /tmp/pr-source/ BEFORE the overlay
       # restores trusted versions, so a dispatch-path review can Read (review)
-      # the PR's proposed perimeter / checklist changes while the workspace
+      # the PR's proposed perimeter / review-doc changes while the workspace
       # still RUNS on trusted versions. On the label path Layer 3 has already
       # blocked perimeter PRs, so this captures only unchanged files. See
       # doc §6, §8.
@@ -212,7 +213,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/pr-source
-          for p in .claude .github/scripts docs/PR_REVIEW_CHECKLIST.md; do
+          for p in .claude .github/scripts docs/PR_REVIEW_CHECKLIST.md docs/bump_triton_version.md; do
             if [ -e "$p" ]; then
               mkdir -p "/tmp/pr-source/$(dirname "$p")"
               cp -r "$p" "/tmp/pr-source/$p"
@@ -224,19 +225,20 @@ jobs:
           fi
 
       # Overlay the trusted default-branch versions of .claude/ (the review
-      # logic), .github/scripts/ (incl. the sanitizer), and the review-checklist
-      # reference (docs/PR_REVIEW_CHECKLIST.md) into the workspace, so the skills,
-      # sanitizer, and checklist that actually drive the review are the trusted
-      # ones, not the PR's. Defense-in-depth (a PR could remove this step, but
-      # that's visible in the diff Layer 2 audits). --allowedTools has no Write,
-      # so the overlaid copies are immutable for the rest of the job.
+      # logic), .github/scripts/ (incl. the sanitizer), and the review docs into
+      # the workspace, so the skills, sanitizer, checklist, and bump guide that
+      # actually drive the review are the trusted ones, not the PR's. Defense-in-
+      # depth (a PR could remove this step, but that's visible in the diff Layer
+      # 2 audits). --allowedTools has no Write, so the overlaid copies are
+      # immutable for the rest of the job.
       #
-      # The overlay of docs/PR_REVIEW_CHECKLIST.md serves two consumers downstream:
-      # (1) the model's Read('docs/PR_REVIEW_CHECKLIST.md') returns the trusted
-      # version, and (2) the snapshot_review_checklist step below reads this same
-      # overlaid file and substitutes its content into the prompt heredoc, so
-      # both channels are driven from one trusted source. See doc §8 / §15.
-      - name: Overlay .claude/ skills, .github/scripts/, and PR review checklist from default branch
+      # The overlay of docs/PR_REVIEW_CHECKLIST.md and docs/bump_triton_version.md
+      # serves two consumers downstream: (1) the model's Read(...) returns the
+      # trusted version, and (2) the snapshot_review_checklist step below reads
+      # these same overlaid files and substitutes their content into the prompt
+      # heredoc, so both channels are driven from one trusted source. See doc
+      # §8 / §15.
+      - name: Overlay .claude/ skills, .github/scripts/, and review docs from default branch
         id: overlay
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -246,9 +248,9 @@ jobs:
           # deepen step and break subsequent merge-base lookups.
           git fetch --no-tags origin "${DEFAULT_BRANCH}"
           git restore --source="origin/${DEFAULT_BRANCH}" --worktree -- \
-            .claude .github/scripts docs/PR_REVIEW_CHECKLIST.md
-          find .claude .github/scripts docs/PR_REVIEW_CHECKLIST.md -type f | sort
-          sha256sum .github/scripts/*.sh docs/PR_REVIEW_CHECKLIST.md
+            .claude .github/scripts docs/PR_REVIEW_CHECKLIST.md docs/bump_triton_version.md
+          find .claude .github/scripts docs/PR_REVIEW_CHECKLIST.md docs/bump_triton_version.md -type f | sort
+          sha256sum .github/scripts/*.sh docs/PR_REVIEW_CHECKLIST.md docs/bump_triton_version.md
 
       # Mint a short-lived (1h) installation token for the bot App, used for all
       # gh/git API calls. Generated in the job that uses it; never written to
@@ -395,16 +397,17 @@ jobs:
           mv /tmp/pr/meta.tmp /tmp/pr/meta.json
           ls -la /tmp/pr/
 
-      # Snapshot the trusted (post-overlay) PR review checklist content into a
-      # step output so the prompt heredoc can reference it via
-      # ${{ steps.snapshot_review_checklist.outputs.content }} at workflow runtime.
-      # Single source of truth -- docs/PR_REVIEW_CHECKLIST.md is the file the
-      # contributor edits, AND the bytes the LLM sees come straight from the
-      # same default-branch ref the overlay step already restored. There is
-      # no second static copy of the content anywhere, so drift between
-      # "the file" and "what the model reads" is impossible by construction
-      # and no CI sync gate is required. See doc §8 / §15.
-      - name: Snapshot trusted PR review checklist into a step output
+      # Snapshot the trusted (post-overlay) review-doc content into step outputs
+      # so the prompt heredoc can reference it via
+      # ${{ steps.snapshot_review_checklist.outputs.content }} and
+      # ${{ steps.snapshot_review_checklist.outputs.triton_bump_content }} at
+      # workflow runtime. Single source of truth -- the docs files the
+      # contributor edits are the bytes the LLM sees, straight from the same
+      # default-branch ref the overlay step already restored. There is no second
+      # static copy of the content anywhere, so drift between "the file" and
+      # "what the model reads" is impossible by construction and no CI sync gate
+      # is required. See doc §8 / §15.
+      - name: Snapshot trusted review docs into step outputs
         id: snapshot_review_checklist
         run: |
           set -euo pipefail
@@ -412,8 +415,12 @@ jobs:
             echo "::error file=docs/PR_REVIEW_CHECKLIST.md::Trusted PR review checklist file is missing or empty after the overlay step."
             exit 1
           fi
+          if [ ! -s docs/bump_triton_version.md ]; then
+            echo "::error file=docs/bump_triton_version.md::Trusted Triton bump guide is missing or empty after the overlay step."
+            exit 1
+          fi
           # Randomised heredoc terminator -- defends against the (theoretical)
-          # case of the checklist file ever containing the literal delimiter.
+          # case of a review doc ever containing the literal delimiter.
           # With `set -e`, a non-zero exit from openssl (rc!=0 OR command-not-
           # found / rc=127) inside the assignment's command substitution DOES
           # propagate -- this script exits before the length check below.
@@ -428,21 +435,28 @@ jobs:
           # (e.g., a self-hosted runner wraps openssl in a shim that swallows
           # stderr and exits 0). Without the guard, DELIM would be the
           # predictable string `EOF_RC_` (length 7).
-          DELIM="EOF_RC_$(openssl rand -hex 8)"
-          if [ "${#DELIM}" -lt 20 ]; then
-            echo "::error::Random heredoc delimiter not generated (got '${DELIM}', need >=20 chars). Is openssl installed on the runner?"
+          DELIM_CHECKLIST="EOF_RC_$(openssl rand -hex 8)"
+          DELIM_BUMP="EOF_TB_$(openssl rand -hex 8)"
+          if [ "${#DELIM_CHECKLIST}" -lt 20 ] || [ "${#DELIM_BUMP}" -lt 20 ]; then
+            echo "::error::Random heredoc delimiter not generated. Is openssl installed on the runner?"
             exit 1
           fi
           {
-            printf '%s\n' "content<<${DELIM}"
+            printf '%s\n' "content<<${DELIM_CHECKLIST}"
             # Skip the H1 + the following blank line; the prompt's
             # "## PR review checklist (canonical reference)" heading
             # already introduces this block.
             tail -n +3 docs/PR_REVIEW_CHECKLIST.md
-            printf '%s\n' "${DELIM}"
+            printf '%s\n' "${DELIM_CHECKLIST}"
+            printf '%s\n' "triton_bump_content<<${DELIM_BUMP}"
+            # Keep the H1 here; the prompt introduces this as the full guide.
+            cat docs/bump_triton_version.md
+            printf '%s\n' "${DELIM_BUMP}"
           } >> "$GITHUB_OUTPUT"
           echo "Snapshotted $(wc -l < docs/PR_REVIEW_CHECKLIST.md) lines from docs/PR_REVIEW_CHECKLIST.md"
+          echo "Snapshotted $(wc -l < docs/bump_triton_version.md) lines from docs/bump_triton_version.md"
           sha256sum docs/PR_REVIEW_CHECKLIST.md
+          sha256sum docs/bump_triton_version.md
 
       # The Claude run. LLM gateway secrets are in env (below); the action also
       # puts the read-only default GITHUB_TOKEN in the model's env. Acceptable
@@ -660,7 +674,8 @@ jobs:
             `Read('docs/PR_REVIEW_CHECKLIST.md')` returns the same bytes
             you see between the BEGIN/END markers below -- both
             channels read from the same trusted source at the same
-            workflow run. See doc §8 / §15.
+            workflow run. The Triton bump guide is injected the same way
+            after the checklist. See doc §8 / §15.
 
             Reference URLs in the "References" subsection below
             (`llvm.org`, `mlir.llvm.org`) are context for YOU; they are
@@ -673,6 +688,20 @@ jobs:
             ${{ steps.snapshot_review_checklist.outputs.content }}
 
             <END docs/PR_REVIEW_CHECKLIST.md>
+
+            ## Triton bump guide (canonical reference)
+
+            Apply this guide when the PR changes the `external/triton`
+            submodule pointer or updates `triton-patches/*.patch`. The content
+            is injected at workflow runtime from the trusted
+            `docs/bump_triton_version.md` on the default branch by the same
+            snapshot step that injected the PR review checklist.
+
+            <BEGIN docs/bump_triton_version.md>
+
+            ${{ steps.snapshot_review_checklist.outputs.triton_bump_content }}
+
+            <END docs/bump_triton_version.md>
 
             ## Hard constraints
 
@@ -868,7 +897,7 @@ jobs:
                [ "${OUTCOME_OVERLAY:-}"     = "failure" ]; then MODE="workspace-prep"; ADVICE="Transient runner-side filesystem issue -- re-run."
           elif [ "${OUTCOME_APP_TOKEN:-}"   = "failure" ]; then MODE="app-token"     ; ADVICE="Re-run. If persistent, check \`vars.ROCMLIR_PR_REVIEWER_APP_ID\`, \`secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY\`, and the App installation in repo Settings -> GitHub Apps."
           elif [ "${OUTCOME_PREFETCH:-}"    = "failure" ]; then MODE="prefetch"      ; ADVICE="Transient \`gh\` API / network issue -- re-run."
-          elif [ "${OUTCOME_SNAPSHOT_REVIEW_CHECKLIST:-}" = "failure" ]; then MODE="snapshot-review-checklist"; ADVICE="\`docs/PR_REVIEW_CHECKLIST.md\` missing/empty after overlay, or random-delimiter generation failed (verify \`openssl\` is installed on the runner). Re-run; if persistent, inspect the step log."
+          elif [ "${OUTCOME_SNAPSHOT_REVIEW_CHECKLIST:-}" = "failure" ]; then MODE="snapshot-review-checklist"; ADVICE="\`docs/PR_REVIEW_CHECKLIST.md\` or \`docs/bump_triton_version.md\` missing/empty after overlay, or random-delimiter generation failed (verify \`openssl\` is installed on the runner). Re-run; if persistent, inspect the step log."
           elif [ "${OUTCOME_CLAUDE:-}"      = "failure" ]; then MODE="claude-run"    ; ADVICE="Usually a transient LLM-gateway error (\`API Error: Unable to connect\`, 429, 5xx) -- re-run. If \`error_max_turns\`, re-dispatch with \`debug=true\` to inspect the tool-call trace."
           elif [ "${OUTCOME_MATERIALIZE:-}" = "failure" ]; then MODE="materialize"   ; ADVICE="Claude returned empty / non-JSON output -- re-run. If repeated, re-dispatch with \`debug=true\`."
           elif [ "${OUTCOME_SANITIZE:-}"    = "failure" ]; then MODE="sanitize"      ; ADVICE="**NOT retryable** -- deterministic security gate. No artifact uploaded (fail-closed). Inspect the \`Sanitize actions.json\` step's \`::error::\` line above for the specific gate that fired."
