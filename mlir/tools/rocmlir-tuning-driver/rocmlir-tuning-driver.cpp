@@ -655,8 +655,8 @@ benchmarkKernels(const CompilationResult &result, ArrayRef<void *> hostBuffers,
     // if necessary.
     constexpr float minTotalMilliseconds = 1.0f;
     iterations = std::max<unsigned>(
-        iterations,
-        static_cast<unsigned>(std::ceil(minTotalMilliseconds / avgIterationMs)));
+        iterations, static_cast<unsigned>(
+                        std::ceil(minTotalMilliseconds / avgIterationMs)));
 
     // Fallback only: if no locked decision was supplied, classify from this
     // config's own warmup as before. We consider a kernel to be small if a
@@ -738,7 +738,8 @@ static LogicalResult extractFuncOps(ModuleOp op,
   });
 
   if (kernels.size() > 1)
-    return op->emitOpError("expected exactly one kernel function in module, got ")
+    return op->emitOpError(
+               "expected exactly one kernel function in module, got ")
            << kernels.size();
   return success();
 }
