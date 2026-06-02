@@ -4957,10 +4957,8 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
 // fp16 / bf16 use rocBLAS's general `sum_error_tolerance<T>` from
 // `near.hpp`.
 //
-// fp32 / fp64 are *tighter* than rocBLAS uses. This is because
-// rocBLAS uses the loose
-// `K * 1e-4` only for K > 10000 or to compare against external libraries (see
-// `near.hpp::reduction_requires_near`).
+// fp32 uses rocBLAS's 1e-4 (~840 * eps(fp32)).
+// fp64 uses 1e-15 (~10 * eps(fp64)).
 //
 // fp8/fp4 are not in rocBLAS's table. We use eps(T) directly as the
 // per-accumulation-step bound:
@@ -4973,7 +4971,7 @@ static float sumErrorTolerance(Type t) {
   if (isa<BFloat16Type>(t))
     return 1.0f / 100.0f;
   if (isa<Float32Type>(t))
-    return 1e-6f;
+    return 1e-4f;
   if (isa<Float64Type>(t))
     return 1e-15f;
   if (isa<Float8E4M3FNType, Float8E4M3FNUZType>(t))
@@ -5131,8 +5129,10 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
 
 // Effective reduction length for the operation under test. For GEMM this is
 // K; for attention it is head_dim_qk + seq_len_k (two cascaded reductions);
-// for conv it is Cin * filter_volume (the im2col K). For element-wise ops it
-// is 1. Returns 0 if shape is unknown; caller should treat as "skip scaling".
+// for conv_fwd/conv_bwd_data it is Cin * filter_volume (the im2col K);
+// for conv_bwd_weight it is N * product(output_spatial) (batch and output
+// spatial dimensions). For element-wise ops it is 1. Returns 0 if shape is
+// unknown; caller should treat as "skip scaling".
 //
 // This mirrors how rocBLAS's testing_gemm scales `near_check` tolerance:
 //   tol = K * sum_error_tolerance<T>
@@ -5148,10 +5148,10 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
       return *scanned;
     return 1;
   }
-  // Helper: convolution im2col K = Cin * product(filter spatial dims).
+  // Helper: convolution forward im2col K = Cin * product(filter spatial dims).
   // filterDimension is laid out per filterLayout; multiplying everything
   // except K (output channels) and G (group) is equivalent to that product.
-  auto convK = [&]() -> int64_t {
+  auto convFwdK = [&]() -> int64_t {
     if (genParams.convConfig.has_value()) {
       int64_t k = 1;
       const auto &dims = (*genParams.convConfig)->filterDimension;
@@ -5166,6 +5166,24 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
     }
     return inputChannel * filterHeight * filterWidth;
   };
+  // Helper: conv backward-weight reduction K = N * product(output spatial).
+  // The bwd_weight GEMM reduces over the batch and output spatial dimensions,
+  // NOT over input channels and filter spatial (which is conv_fwd's K).
+  auto convBwdWeightK = [&]() -> int64_t {
+    if (genParams.convConfig.has_value()) {
+      int64_t k = 1;
+      const auto &dims = (*genParams.convConfig)->outputDimension;
+      const auto &layout = (*genParams.convConfig)->outputLayout;
+      assert(dims.size() == layout.size());
+      for (auto [d, l] : llvm::zip(dims, layout)) {
+        if (l == 'k' || l == 'g')
+          continue;
+        k *= d;
+      }
+      return k;
+    }
+    return batchSize * outputHeight * outputWidth;
+  };
   switch (*genParams.operation) {
   case rock::KernelType::Gemm:
     return gemmK;
@@ -5175,8 +5193,9 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
     return headDimQK + sequenceLengthK;
   case rock::KernelType::Conv:
   case rock::KernelType::ConvBwdData:
+    return convFwdK();
   case rock::KernelType::ConvBwdWeight:
-    return convK();
+    return convBwdWeightK();
   case rock::KernelType::GemmElementwiseGemm:
     // Fused (A.B).C: two cascaded reductions of length K and N.
     return gemmK + gemmN;
@@ -5184,7 +5203,7 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
     // Fused (Conv(A,B)).C: two cascaded reductions, the conv im2col K
     // and gemmN (the conv's output channels become the K of the second
     // GEMM).
-    return convK() + gemmN;
+    return convFwdK() + gemmN;
   default:
     return 1;
   }

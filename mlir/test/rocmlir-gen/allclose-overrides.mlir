@@ -22,8 +22,8 @@ func.func private @gemm_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128x
 
 // `-atol` must imply allclose; the legacy three-threshold call must not appear.
 // ATOL_OVERRIDE-NOT: call @mcpuVerifyFloat(
-// The K-scaled default `7.4e-5` (= 1e-5 + 64*1e-6) must NOT appear -- override replaces it.
-// ATOL_OVERRIDE-NOT: arith.constant 7.{{[0-9]+}}{{[eE]}}-{{0?}}5
+// The K-scaled default `6.41e-3` (= 1e-5 + 64*1e-4) must NOT appear -- override replaces it.
+// ATOL_OVERRIDE-NOT: arith.constant 6.41{{[0-9]*}}e-03
 // The user's atol is emitted verbatim (= 1.5625e-2, exactly representable).
 // ATOL_OVERRIDE:     arith.constant 1.562500e-02 : f32
 // rtol falls back to the fp32 PyTorch baseline.
@@ -32,7 +32,7 @@ func.func private @gemm_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128x
 
 // ============================================================================
 // (2) `-rtol=0.0625` overrides the rtol baseline. atol falls back to the
-// K-scaled default (`7.4e-5` = 1e-5 + 64*1e-6 for K=64 fp32) since `-atol`
+// K-scaled default (6.41e-3 = 1e-5 + 64*1e-4 for K=64 fp32) since `-atol`
 // was not set.
 // ============================================================================
 
@@ -46,7 +46,7 @@ func.func private @gemm_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128x
 // The fp32 rtol baseline `1.3e-6` must NOT appear -- override replaces it.
 // RTOL_OVERRIDE-NOT: arith.constant 1.300000e-06
 // atol stays at the K-scaled default for K=64 fp32.
-// RTOL_OVERRIDE:     arith.constant 7.{{[0-9]+}}E-5 : f32
+// RTOL_OVERRIDE:     arith.constant 6.41{{[0-9]*}}e-03 : f32
 // RTOL_OVERRIDE-NEXT: arith.constant 6.250000e-02 : f32
 // RTOL_OVERRIDE:     call @mcpuVerifyFloatAllclose
 
@@ -61,8 +61,8 @@ func.func private @gemm_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x64x128x
 // RUN:   | FileCheck %s --check-prefix=BOTH_OVERRIDE --enable-var-scope
 
 // BOTH_OVERRIDE-NOT: call @mcpuVerifyFloat(
-// Neither the K-scaled default (7.4e-5) nor the rtol baseline (1.3e-6) appears.
-// BOTH_OVERRIDE-NOT: arith.constant 7.{{[0-9]+}}E-5
+// Neither the K-scaled default (6.41e-3) nor the rtol baseline (1.3e-6) appears.
+// BOTH_OVERRIDE-NOT: arith.constant 6.41{{[0-9]*}}e-03
 // BOTH_OVERRIDE-NOT: arith.constant 1.300000e-06
 // BOTH_OVERRIDE:     arith.constant 1.562500e-02 : f32
 // BOTH_OVERRIDE-NEXT: arith.constant 6.250000e-02 : f32
