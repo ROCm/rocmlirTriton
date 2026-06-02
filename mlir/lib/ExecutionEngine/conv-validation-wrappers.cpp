@@ -233,12 +233,15 @@ void mcpuVerify(T *gpuResults, T *validationResults, long long dataSize,
       // f32 subnormals as always being correct
       hist_relDiff[0]++;
     } else {
-      // We know valNum != gpuNum. If valNum is inf, this branch will simply
-      // return nan. Let's instead represent infinite with max<fp16> and let's
-      // test for it
+      // Clamp +/-inf on both sides to fp16 max so that the subsequent
+      // arithmetic is well-defined and both overflow directions are treated
+      // symmetrically (non-deterministic accumulation order can cause either
+      // CPU or GPU to overflow first).
       constexpr float fp16MaxVal = 65504;
       if (std::isinf(valNum))
         valNum = (valNum > 0 ? fp16MaxVal : -fp16MaxVal);
+      if (std::isinf(gpuNum))
+        gpuNum = (gpuNum > 0 ? fp16MaxVal : -fp16MaxVal);
       float absDiff = fabs(valNum - gpuNum);
       // Update maxAbsDiff and its corresponding pair of values
       if (absDiff > maxAbsDiff) {
@@ -493,12 +496,17 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
       hist_ratio[0]++;
       continue;
     }
-    // Clamp +/-inf on the validation side to fp16 max so that the subsequent
+    // Clamp +/-inf on both sides to fp16 max so that the subsequent
     // arithmetic is well-defined (otherwise inf - finite = inf, |inf| = inf,
     // and the allclose tolerance becomes inf which would mask true failures).
+    // Both CPU and GPU can produce inf when the true result is near the fp16
+    // boundary; non-deterministic accumulation order decides which side
+    // overflows first, so we treat both symmetrically.
     constexpr float fp16MaxVal = 65504;
     if (std::isinf(valNum))
       valNum = (valNum > 0 ? fp16MaxVal : -fp16MaxVal);
+    if (std::isinf(gpuNum))
+      gpuNum = (gpuNum > 0 ? fp16MaxVal : -fp16MaxVal);
     float absDiff = fabs(valNum - gpuNum);
 
     // The allclose predicate (asymmetric, matches PyTorch/NumPy convention).
