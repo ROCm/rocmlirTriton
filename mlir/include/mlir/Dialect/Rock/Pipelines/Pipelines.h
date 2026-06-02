@@ -163,7 +163,7 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
       *this, "llvmFnAttrs",
       desc("Debug-only override: comma-separated LLVM function attributes "
            "(name or name=value) applied to the kernel after Triton's "
-           "attributes. Not a perfConfig knob."),
+           "attributes."),
       init("")};
 };
 

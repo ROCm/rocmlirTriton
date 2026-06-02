@@ -669,26 +669,12 @@ std::optional<SmallVector<char, 0>> makeHSACO(StringRef amdgcnAsm,
 
 // Detect whether any kernel argument points to an fp8 (8-bit float) element
 // type. Mirrors the `'f8E' in str(mod)` guard in Triton's compiler.py
-// make_llir() (triton-lang/triton PR #10400), but evaluated here at the LLVM
-// dialect stage: fp8 element types no longer appear in the lowered function
-// bodies, yet they survive on the kernel-argument `tt.pointee_type` attributes
-// stamped during TritonGPU -> LLVM conversion.
-//
-// We deliberately do not check for fp4 (`f4E2M1FN`): there is no fp4 type left
-// to detect at this stage. Regardless of how fp4 is used (scaled `quant_dot`,
-// a plain `dot`, or even elementwise ops) Rock's narrow-type legalization
-// rewrites `f4E2M1FN -> i4 -> packed i8` during the kernel pipeline (the arith
-// emulate/expand passes plus LegalizeFloatTypes / ConvertNarrowTypeSignatures;
-// see buildKernelPipeline in Pipelines.cpp), well before the Triton lowering.
-// By the time we get here `tt.pointee_type` reads `i8` (indistinguishable from
-// a real i8 kernel) and the fp4 arithmetic has become integer/bitwise ops, so
-// the narrow-float type that motivates the gfx11 true16 workaround is no longer
-// present.
-//
-// If a future fp4 path ever kept the native type into the Triton/LLVM stage and
-// targeted gfx11, detection would have to move earlier in the pipeline to the
-// TTGIR / makeLLIR stage, because the type information does
-// not survive to this translation.
+// make_llir() (triton-lang/triton PR #10400). We deliberately do not check for
+// fp4 (`f4E2M1FN`) as there is no fp4 type left to detect at this stage.
+// Regardless of how fp4 is used (scaled `quant_dot`, a plain `dot`, or even
+// elementwise ops) Rock's narrow-type legalization rewrites
+// `f4E2M1FN -> i4 -> packed i8` during the kernel pipeline well before the
+// Triton lowering.
 static bool usesFp8KernelArg(ModuleOp module) {
   bool found = false;
   module.walk([&](LLVM::LLVMFuncOp funcOp) {
@@ -715,6 +701,12 @@ static bool usesFp8KernelArg(ModuleOp module) {
 
 namespace mlir {
 namespace rock {
+
+static void appendFeature(std::string &features, llvm::StringRef feature) {
+  if (!features.empty())
+    features += ",";
+  features += feature;
+}
 
 FailureOr<llvm::SmallVector<char, 0>>
 translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
@@ -908,11 +900,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   std::string hsacoFeatures;
   if (enableAsan)
     hsacoFeatures = "+xnack";
-  if (disableTrue16) {
-    if (!hsacoFeatures.empty())
-      hsacoFeatures += ",";
-    hsacoFeatures += "-real-true16";
-  }
+  if (disableTrue16)
+    appendFeature(hsacoFeatures, "-real-true16");
   auto hsaco = makeHSACO(amdgcnAsm, triple, arch, hsacoFeatures);
   if (!hsaco) {
     return failure();
