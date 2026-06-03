@@ -81,8 +81,8 @@ jobs:
     # The post/cleanup jobs stay on ubuntu-latest (they only talk to GitHub).
     runs-on: build-only-rocmlir-triton
     timeout-minutes: 30
-    # Read-only default token: `contents: read` for actions/checkout and
-    # command-scoped git fetch auth before Claude. All GitHub writes use the
+    # Read-only default token: `contents: read` for checkout and git fetches
+    # before Claude. All GitHub API writes use the
     # App token instead (minted per job), which never enters the model's env.
     # We deliberately do NOT grant
     # pull-requests:write or id-token:write here. See doc §8, §11.
@@ -150,10 +150,8 @@ jobs:
           GH_FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Keep this authenticated-fetch helper in sync with the other
-          # GH_FETCH_TOKEN blocks below. Token-bearing Git config is scoped to
-          # each git-fetch child process only; it is not exported for the rest
-          # of the step and is never written to .git/config.
+          # Keep this fetch helper in sync with the GH_FETCH_TOKEN blocks below.
+          # The Basic auth header is passed only to git fetch; never .git/config.
           if ! auth_header=$(printf 'x-access-token:%s' "$GH_FETCH_TOKEN" | base64 | tr -d '\n'); then
             echo "::error::Failed to encode git fetch auth header"
             exit 1
@@ -194,7 +192,7 @@ jobs:
           GH_FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Keep in sync with the GH_FETCH_TOKEN block above.
+          # Same authenticated-fetch helper as above.
           if ! auth_header=$(printf 'x-access-token:%s' "$GH_FETCH_TOKEN" | base64 | tr -d '\n'); then
             echo "::error::Failed to encode git fetch auth header"
             exit 1
@@ -283,7 +281,7 @@ jobs:
           GH_FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Keep in sync with the GH_FETCH_TOKEN block above.
+          # Same authenticated-fetch helper as above.
           if ! auth_header=$(printf 'x-access-token:%s' "$GH_FETCH_TOKEN" | base64 | tr -d '\n'); then
             echo "::error::Failed to encode git fetch auth header"
             exit 1
@@ -332,7 +330,7 @@ jobs:
           GH_FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Keep in sync with the GH_FETCH_TOKEN block above.
+          # Same authenticated-fetch helper as above.
           if ! auth_header=$(printf 'x-access-token:%s' "$GH_FETCH_TOKEN" | base64 | tr -d '\n'); then
             echo "::error::Failed to encode git fetch auth header"
             exit 1

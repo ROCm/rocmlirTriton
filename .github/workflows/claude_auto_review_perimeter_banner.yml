@@ -104,10 +104,8 @@ jobs:
           # Layer 3 regardless of the PR's base branch. See doc §9, §15.
           tmp=$(mktemp -d)
           git -C "$tmp" init --quiet
-          # Auth header via Git environment config instead of token-in-URL or
-          # .git/config, so the token never appears in fetch output or on disk.
-          # Mirrors actions/checkout's Basic auth scheme. The token-bearing Git
-          # config is scoped to each git-fetch child process only.
+          # Match actions/checkout's Basic auth scheme, but scope the header to
+          # each git fetch so it never lands in the URL or .git/config.
           if ! auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n'); then
             echo "::error::Failed to encode git fetch auth header"
             exit 1
@@ -116,9 +114,8 @@ jobs:
             echo "::error::Encoded git fetch auth header is empty"
             exit 1
           fi
-          # Keep GH_TOKEN available for the gh CLI calls below; unlike the
-          # review workflow's git-only fetch steps, this step also posts labels
-          # and comments after computing the diff.
+          # Keep GH_TOKEN available for the gh CLI calls below; this step also
+          # posts labels and comments after computing the diff.
           git_fetch_with_auth() {
             GIT_CONFIG_COUNT=1 \
             GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
