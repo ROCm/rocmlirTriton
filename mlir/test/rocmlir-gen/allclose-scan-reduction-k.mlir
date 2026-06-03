@@ -56,7 +56,8 @@ func.func private @gemm_reduce_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x
 // GEMM_REDUCE:        rock.reduce
 // Additive K_eff = 64 + 128 = 192; atol = 1e-5 + 192*1e-4 = 1.921e-2.
 // GEMM_REDUCE:        arith.constant 1.92{{[0-9]*}}e-02 : f32
-// GEMM_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
+// rtol is boosted by the atomic-add heuristic: base 1.3e-6 + sqrt(128)*eps(f32) ~ 2.65e-6.
+// GEMM_REDUCE-NEXT:   arith.constant 2.{{[0-9]+}}{{[eE]}}-{{0?}}6 : f32
 // GEMM_REDUCE:        call @mcpuVerifyFloatAllclose
 
 // ============================================================================
@@ -148,7 +149,8 @@ func.func private @mx_dot_reduce_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384
 // MX_DOT_REDUCE:        rock.reduce
 // Additive K_eff = 64 + 128 = 192; atol = 1e-5 + 192*1e-4 = 1.921e-2.
 // MX_DOT_REDUCE:        arith.constant 1.92{{[0-9]*}}e-02 : f32
-// MX_DOT_REDUCE-NEXT:   arith.constant 1.300000e-06 : f32
+// rtol is boosted by the atomic-add heuristic: base 1.3e-6 + sqrt(128)*eps(f32) ~ 2.65e-6.
+// MX_DOT_REDUCE-NEXT:   arith.constant 2.{{[0-9]+}}{{[eE]}}-{{0?}}6 : f32
 // MX_DOT_REDUCE:        call @mcpuVerifyFloatAllclose
 
 // ============================================================================
@@ -222,3 +224,57 @@ func.func private @multi_out_mixed_fut(%arg0: tensor<1x64x64xf32>, %arg1: tensor
 // MULTI_OUT_MIXED:      arith.constant 0.0711{{[0-9]*}} : f32
 // MULTI_OUT_MIXED-NEXT: arith.constant 1.000000e-03 : f32
 // MULTI_OUT_MIXED:      call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (9) Atomic-add rtol boost for f16 reduce(sum). The reduce axis extent (128)
+// triggers the heuristic: rtol += sqrt(128) * eps(f16). For f16:
+//   base rtol  = 1e-3
+//   boost      = sqrt(128) * 9.765625e-4 ~ 1.104e-2
+//   boosted    ~ 1.204e-2
+// This is a much larger boost than f32 (case 2), demonstrating the heuristic
+// is significant for low-precision types.
+// ============================================================================
+
+// RUN: rocmlir-gen -fut mx_dot_reduce_f16_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut mx_dot_reduce_f16_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=MX_DOT_REDUCE_F16 --enable-var-scope
+
+func.func private @mx_dot_reduce_f16_fut(%arg0: !migraphx.shaped<1x256x64xf16, 16384x64x1>, %arg1: !migraphx.shaped<1x64x128xf16, 8192x128x1>) -> !migraphx.shaped<1x256x1xf16, 256x1x1> {
+  %0 = migraphx.dot %arg0, %arg1 : <1x256x64xf16, 16384x64x1>, <1x64x128xf16, 8192x128x1> -> <1x256x128xf16, 32768x128x1>
+  %1 = migraphx.reduce_sum %0 {axes = [2]} : <1x256x128xf16, 32768x128x1> -> <1x256x1xf16, 256x1x1>
+  return %1 : !migraphx.shaped<1x256x1xf16, 256x1x1>
+}
+
+// MX_DOT_REDUCE_F16:        rock.gemm
+// MX_DOT_REDUCE_F16:        rock.reduce
+// K_eff = 64 + 128 = 192; f16 atol = 1e-5 + 192*(1/900) ~ 0.2133.
+// MX_DOT_REDUCE_F16:        arith.constant 0.213{{[0-9]*}} : f32
+// rtol boosted: 1e-3 + sqrt(128)*eps(f16) ~ 1.2e-2 (NOT the base 1e-3).
+// MX_DOT_REDUCE_F16-NEXT:   arith.constant 0.012{{[0-9]*}} : f32
+// MX_DOT_REDUCE_F16:        call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (10) reduce(max) does NOT trigger atomic-add rtol boost. atomic_max is
+// idempotent (picks the larger value), so there is no cumulative rounding
+// error. rtol must stay at the base f32 value (1.3e-6).
+// ============================================================================
+
+// RUN: rocmlir-gen -fut mx_dot_reduce_max_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut mx_dot_reduce_max_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=MX_DOT_REDUCE_MAX --enable-var-scope
+
+func.func private @mx_dot_reduce_max_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384x64x1>, %arg1: !migraphx.shaped<1x64x128xf32, 8192x128x1>) -> !migraphx.shaped<1x256x1xf32, 256x1x1> {
+  %0 = migraphx.dot %arg0, %arg1 : <1x256x64xf32, 16384x64x1>, <1x64x128xf32, 8192x128x1> -> <1x256x128xf32, 32768x128x1>
+  %1 = migraphx.reduce_max %0 {axes = [2]} : <1x256x128xf32, 32768x128x1> -> <1x256x1xf32, 256x1x1>
+  return %1 : !migraphx.shaped<1x256x1xf32, 256x1x1>
+}
+
+// MX_DOT_REDUCE_MAX:        rock.gemm
+// MX_DOT_REDUCE_MAX:        rock.reduce
+// K_eff = 64 + 128 = 192; atol = 1e-5 + 192*1e-4 = 1.921e-2 (same as sum).
+// MX_DOT_REDUCE_MAX:        arith.constant 1.92{{[0-9]*}}e-02 : f32
+// rtol is NOT boosted (reduce_max -> atomic_max is exact): stays at 1.3e-6.
+// MX_DOT_REDUCE_MAX-NEXT:   arith.constant 1.300000e-06 : f32
+// MX_DOT_REDUCE_MAX:        call @mcpuVerifyFloatAllclose
