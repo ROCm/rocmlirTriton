@@ -2638,6 +2638,39 @@ createCPUConvWithMLIR(ModuleOp module,
     inputType = paddedType;
   }
 
+  // Trim any trailing spatial slack off the (possibly padded) input so its
+  // extent matches exactly what the convolution iteration space reads.
+  if (genConfig.operation.value() == rock::ConvOpType::Fwd ||
+      genConfig.operation.value() == rock::ConvOpType::BwdWeight) {
+    ArrayRef<int64_t> curShape = inputType.getShape();
+    SmallVector<int64_t> trimmedShape(curShape);
+    bool needsTrim = false;
+    for (size_t i = 0; i < nSpatialDims; ++i) {
+      unsigned pos = inputInfo.imageDims[i];
+      int64_t footprint =
+          genConfig.strideDims[i] * (outputInfo.imageLens[i] - 1) +
+          genConfig.dilationDims[i] * (filterInfo.imageLens[i] - 1) + 1;
+      if (footprint < curShape[pos]) {
+        trimmedShape[pos] = footprint;
+        needsTrim = true;
+      }
+    }
+
+    if (needsTrim) {
+      SmallVector<OpFoldResult> offsets(curShape.size(), b.getIndexAttr(0));
+      SmallVector<OpFoldResult> strides(curShape.size(), b.getIndexAttr(1));
+      SmallVector<OpFoldResult> sizes;
+      for (int64_t len : trimmedShape)
+        sizes.push_back(b.getIndexAttr(len));
+      auto trimmedType =
+          RankedTensorType::get(trimmedShape, inputType.getElementType());
+      input = tensor::ExtractSliceOp::create(b, loc, trimmedType, input,
+                                             offsets, sizes, strides)
+                  .getResult();
+      inputType = trimmedType;
+    }
+  }
+
   // Determine result shape in original layout and create zero tensor
   ArrayRef<int64_t> resultShape;
   switch (genConfig.operation.value()) {
