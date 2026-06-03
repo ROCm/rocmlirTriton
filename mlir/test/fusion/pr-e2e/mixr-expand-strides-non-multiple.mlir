@@ -4,7 +4,7 @@
 // in this example is the result of concatenating 4x5x24 and 4x7x24
 //(i.e., 4x12x24). This kernel is specifically dealing with making sure that the
 // 4x5x24 elements are all in the correct place in the larger tensor.
-// CHECK: exact: {{4[6-9][0-9]}}/1152
+// CHECK: zero_diff: {{4[6-9][0-9]}}/1152
 
 module {
   func.func @mlir_dot_sigmoid(%arg0: !migraphx.shaped<4x5x16xf16, 80x16x1>, %arg1: !migraphx.shaped<4x16x24xf16, 384x24x1>) -> !migraphx.shaped<4x5x24xf16, 288x24x1> attributes {rock.kernel} {
