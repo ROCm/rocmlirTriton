@@ -806,11 +806,11 @@ static llvm::cl::opt<float>
                      llvm::cl::value_desc("error"), llvm::cl::init(0.000001f));
 
 // Comparator selection.
+// `allclose` is the |a - b| <= atol + rtol*|b| verifier emitted by
+// mcpuVerifyFloatAllclose, with per-dtype K-scaled defaults.
 // `legacy` is the three-gate RMS/absDiff/relDiff verifier emitted by
-// mcpuVerifyFloat. `allclose` is the |a - b| <= atol + rtol*|b| verifier
-// emitted by mcpuVerifyFloatAllclose, with per-dtype K-scaled defaults. Default
-// stays `legacy` until the ~100 existing tests get migrated in the follow-up PR
-// setting -atol or -rtol on the command line implies `allclose`.
+// mcpuVerifyFloat (kept for backwards compatibility).
+// Setting -atol or -rtol on the command line implies `allclose`.
 enum class ComparatorMode { Legacy, Allclose };
 static llvm::cl::opt<ComparatorMode> comparatorMode(
     "comparator",
@@ -818,10 +818,10 @@ static llvm::cl::opt<ComparatorMode> comparatorMode(
         "Comparator used by the verifier (orthogonal to --verifier)"),
     llvm::cl::values(
         clEnumValN(ComparatorMode::Legacy, "legacy",
-                   "Three-gate RMS/absDiff/relDiff (default)"),
+                   "Three-gate RMS/absDiff/relDiff"),
         clEnumValN(ComparatorMode::Allclose, "allclose",
-                   "|a - b| <= (atol + rtol*|b|) with per-dtype defaults")),
-    llvm::cl::init(ComparatorMode::Legacy));
+                   "|a - b| <= (atol + rtol*|b|) with per-dtype defaults (default)")),
+    llvm::cl::init(ComparatorMode::Allclose));
 
 // Allclose tolerance overrides. Setting either implies --comparator=allclose.
 static llvm::cl::opt<float> atolThreshold(
@@ -5127,6 +5127,48 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
   return best;
 }
 
+// Scan the module for rock.reduce ops and return the largest axis extent.
+// Every rock.reduce(sum) eventually becomes an atomic_add in the kernel
+// pipeline, but rock.store ops are no longer visible at the -ph stage
+// (the GPU function is already fully lowered). The host-side copy still
+// retains the rock.reduce ops, so we scan those instead.
+//
+// The axis extent equals the number of low-precision atomic additions per
+// output element. The caller uses this to boost rtol accordingly.
+static int64_t scanModuleForAtomicReduceExtent(ModuleOp module) {
+  int64_t maxExtent = 0;
+  module.walk([&](rock::ReduceOp reduceOp) {
+    if (reduceOp.getReduceMethod() != rock::ReduceMethod::Sum)
+      return;
+    auto inTy = dyn_cast<ShapedType>(reduceOp.getIn().getType());
+    if (!inTy || !inTy.hasStaticShape())
+      return;
+    int64_t axis = reduceOp.getAxis().getSExtValue();
+    if (axis >= 0 && axis < inTy.getRank()) {
+      int64_t extent = inTy.getShape()[axis];
+      maxExtent = std::max(maxExtent, extent);
+    }
+  });
+  return maxExtent;
+}
+
+// Machine epsilon for common float types: 2^(-mantissa_bits).
+static float machineEpsilon(Type t) {
+  if (isa<Float16Type>(t))
+    return 9.765625e-4f; // 2^-10
+  if (isa<BFloat16Type>(t))
+    return 7.8125e-3f; // 2^-7
+  if (isa<Float32Type>(t))
+    return 1.1920929e-7f; // 2^-23
+  if (isa<Float64Type>(t))
+    return 2.220446e-16f; // 2^-52
+  if (isa<Float8E4M3FNType, Float8E4M3FNUZType>(t))
+    return 0.125f; // 2^-3
+  if (isa<Float8E5M2Type, Float8E5M2FNUZType>(t))
+    return 0.25f; // 2^-2
+  return 1e-4f;
+}
+
 // Effective reduction length for the operation under test. For GEMM this is
 // K; for attention it is head_dim_qk + seq_len_k (two cascaded reductions);
 // for conv_fwd/conv_bwd_data it is Cin * filter_volume (the im2col K);
@@ -5270,9 +5312,9 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
   auto printDebugVal =
       arith::ConstantIntOp::create(b, loc, charType, printDebug);
 
-  // Comparator selection. The default stays `legacy` to preserve behavior of
-  // the ~100 existing test files until the follow-up migration PR. Setting
-  // -atol or -rtol on the command line implies allclose.
+  // Comparator selection. The default is `allclose`; passing
+  // --comparator=legacy reverts to the old three-gate verifier.
+  // Setting -atol or -rtol on the command line also implies allclose.
   bool useAllclose = (comparatorMode == ComparatorMode::Allclose) ||
                      atolThreshold.getNumOccurrences() ||
                      rtolThreshold.getNumOccurrences();
@@ -5450,6 +5492,23 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
       float rtolValue = rtolThreshold.getNumOccurrences()
                             ? rtolThreshold.getValue()
                             : baseRtol;
+
+      // Atomic-add rtol boost. When a rock.store uses atomic_add, the
+      // reduction is performed via fp16/bf16-precision atomic adds rather
+      // than the f32 accumulator assumed by the K_eff atol model. Each
+      // atomic add introduces ~eps(dtype) relative error. With W workgroups
+      // contributing to each output element, the accumulated rtol error is
+      // O(W * eps). Since we don't know W exactly at this IR level, we use
+      // sqrt(reduceExtent) as a conservative estimate of the effective
+      // number of rounding steps (similar to CK/hipBLASLt approaches).
+      if (!rtolThreshold.getNumOccurrences()) {
+        int64_t atomicExtent = scanModuleForAtomicReduceExtent(module);
+        if (atomicExtent > 1) {
+          float eps = machineEpsilon(baselineType);
+          rtolValue += std::sqrt(static_cast<float>(atomicExtent)) * eps;
+        }
+      }
+
       Value atolVal = getF32Val(atolValue);
       Value rtolVal = getF32Val(rtolValue);
 
