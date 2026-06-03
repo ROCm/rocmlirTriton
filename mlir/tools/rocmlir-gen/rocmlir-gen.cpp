@@ -5111,6 +5111,8 @@ static float machineEpsilon(Type t) {
     return 0.125f; // 2^-3
   if (isa<Float8E5M2Type, Float8E5M2FNUZType>(t))
     return 0.25f; // 2^-2
+  if (isa<Float4E2M1FNType>(t))
+    return 0.5f; // 2^-1
   return 1e-4f;
 }
 
