@@ -26,8 +26,8 @@ Use [GitHub Issues](../../issues) to report bugs or request features. Include a 
    The premerge `clang-format` CI job runs this same command (CI's checkout
    always names the `ROCm/rocmlirTriton` remote `origin`) and fails on any
    non-empty diff, so matching it locally is the fastest way to avoid CI
-   bounces. If the diff is non-empty, run `git clang-format origin/develop` to
-   apply the changes or fix the formatting manually.
+bounces. If the diff is non-empty, run `git clang-format origin/develop` (or `git clang-format upstream/develop` if you're using an `upstream` remote) to
+apply the changes, or fix the formatting manually.
 4. Build and run the test suite locally:
    ```bash
    bash cmake.sh
