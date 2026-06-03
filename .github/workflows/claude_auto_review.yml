@@ -81,9 +81,10 @@ jobs:
     # The post/cleanup jobs stay on ubuntu-latest (they only talk to GitHub).
     runs-on: build-only-rocmlir-triton
     timeout-minutes: 30
-    # Read-only default token: only `contents: read` for actions/checkout. All
-    # gh/git PR operations use the App token instead (minted per job), which
-    # never enters the model's env. We deliberately do NOT grant
+    # Read-only default token: `contents: read` for actions/checkout and
+    # command-scoped git fetch auth before Claude. All GitHub writes use the
+    # App token instead (minted per job), which never enters the model's env.
+    # We deliberately do NOT grant
     # pull-requests:write or id-token:write here. See doc §8, §11.
     permissions:
       contents: read           # actions/checkout
@@ -146,15 +147,35 @@ jobs:
         id: deepen
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Keep this authenticated-fetch helper in sync with the other
+          # GH_FETCH_TOKEN blocks below. Token-bearing Git config is scoped to
+          # each git-fetch child process only; it is not exported for the rest
+          # of the step and is never written to .git/config.
+          if ! auth_header=$(printf 'x-access-token:%s' "$GH_FETCH_TOKEN" | base64 | tr -d '\n'); then
+            echo "::error::Failed to encode git fetch auth header"
+            exit 1
+          fi
+          if [ -z "$auth_header" ]; then
+            echo "::error::Encoded git fetch auth header is empty"
+            exit 1
+          fi
+          unset GH_FETCH_TOKEN
+          git_fetch_with_auth() {
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth_header}" \
+              git fetch "$@"
+          }
           HEAD_SHA=$(git rev-parse HEAD)
-          git fetch --no-tags --depth=50 origin "$DEFAULT_BRANCH" "$HEAD_SHA"
+          git_fetch_with_auth --no-tags --depth=50 origin "$DEFAULT_BRANCH" "$HEAD_SHA"
           for _ in 1 2 3 4 5 6 7 8 9 10; do
             if git merge-base "origin/$DEFAULT_BRANCH" HEAD >/dev/null 2>&1; then
               break
             fi
-            git fetch --no-tags --deepen=500 origin "$DEFAULT_BRANCH" "$HEAD_SHA"
+            git_fetch_with_auth --no-tags --deepen=500 origin "$DEFAULT_BRANCH" "$HEAD_SHA"
           done
           git merge-base "origin/$DEFAULT_BRANCH" HEAD >/dev/null
 
@@ -170,15 +191,32 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Keep in sync with the GH_FETCH_TOKEN block above.
+          if ! auth_header=$(printf 'x-access-token:%s' "$GH_FETCH_TOKEN" | base64 | tr -d '\n'); then
+            echo "::error::Failed to encode git fetch auth header"
+            exit 1
+          fi
+          if [ -z "$auth_header" ]; then
+            echo "::error::Encoded git fetch auth header is empty"
+            exit 1
+          fi
+          unset GH_FETCH_TOKEN
+          git_fetch_with_auth() {
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth_header}" \
+              git fetch "$@"
+          }
           # Keep diff and grep as separate statements so set -e can't fail-open:
           # a single `git diff ... | grep ... || true` pipeline would mask a
           # git-diff failure and silently pass the gate. The `|| true` belongs
           # only on grep (exit 1 = "no perimeter file matched" = the safe case).
           # Fast-forward DEFAULT_BRANCH to latest tip (deepen step above
           # already covers merge-base reachability).
-          git fetch --no-tags origin "${DEFAULT_BRANCH}"
+          git_fetch_with_auth --no-tags origin "${DEFAULT_BRANCH}"
           diff_output=$(git diff --name-only "origin/${DEFAULT_BRANCH}...HEAD")
           perimeter_changes=$(printf '%s\n' "$diff_output" \
               | grep -E '^(\.github/workflows/|\.github/scripts/|\.claude/)' \
@@ -242,20 +280,37 @@ jobs:
         id: overlay
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Keep in sync with the GH_FETCH_TOKEN block above.
+          if ! auth_header=$(printf 'x-access-token:%s' "$GH_FETCH_TOKEN" | base64 | tr -d '\n'); then
+            echo "::error::Failed to encode git fetch auth header"
+            exit 1
+          fi
+          if [ -z "$auth_header" ]; then
+            echo "::error::Encoded git fetch auth header is empty"
+            exit 1
+          fi
+          unset GH_FETCH_TOKEN
+          git_fetch_with_auth() {
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth_header}" \
+              git fetch "$@"
+          }
           # No --depth here -- a shallow fetch would undo the earlier
           # deepen step and break subsequent merge-base lookups.
-          git fetch --no-tags origin "${DEFAULT_BRANCH}"
+          git_fetch_with_auth --no-tags origin "${DEFAULT_BRANCH}"
           git restore --source="origin/${DEFAULT_BRANCH}" --worktree -- \
             .claude .github/scripts docs/PR_REVIEW_CHECKLIST.md docs/bump_triton_version.md
           find .claude .github/scripts docs/PR_REVIEW_CHECKLIST.md docs/bump_triton_version.md -type f | sort
           sha256sum .github/scripts/*.sh docs/PR_REVIEW_CHECKLIST.md docs/bump_triton_version.md
 
-      # Mint a short-lived (1h) installation token for the bot App, used for all
-      # gh/git API calls. Generated in the job that uses it; never written to
-      # disk; never passed to the model's env. Lets the default GITHUB_TOKEN
-      # stay contents:read. See doc §11.
+      # Mint a short-lived (1h) installation token for the bot App, used for
+      # GitHub API calls and all PR writes. Generated in the job that uses it;
+      # never written to disk; never passed to the model's env. Lets the default
+      # GITHUB_TOKEN stay contents:read. See doc §11.
       - name: Generate App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
@@ -274,8 +329,25 @@ jobs:
         id: prefetch
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Keep in sync with the GH_FETCH_TOKEN block above.
+          if ! auth_header=$(printf 'x-access-token:%s' "$GH_FETCH_TOKEN" | base64 | tr -d '\n'); then
+            echo "::error::Failed to encode git fetch auth header"
+            exit 1
+          fi
+          if [ -z "$auth_header" ]; then
+            echo "::error::Encoded git fetch auth header is empty"
+            exit 1
+          fi
+          unset GH_FETCH_TOKEN
+          git_fetch_with_auth() {
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth_header}" \
+              git fetch "$@"
+          }
           mkdir -p /tmp/pr
           # headRefOid and files are derived locally from the pinned checkout
           # (not requested from gh pr view), so the diff, file list, and inline-
@@ -297,12 +369,12 @@ jobs:
           # never resolve (see same fix in the `deepen` step above).
           base_ref=$(jq -r .baseRefName /tmp/pr/meta.json)
           HEAD_SHA=$(git rev-parse HEAD)
-          git fetch --no-tags --depth=50 origin "$base_ref" "$HEAD_SHA"
+          git_fetch_with_auth --no-tags --depth=50 origin "$base_ref" "$HEAD_SHA"
           for _ in 1 2 3 4 5 6 7 8 9 10; do
             if git merge-base "origin/$base_ref" HEAD >/dev/null 2>&1; then
               break
             fi
-            git fetch --no-tags --deepen=500 origin "$base_ref" "$HEAD_SHA"
+            git_fetch_with_auth --no-tags --deepen=500 origin "$base_ref" "$HEAD_SHA"
           done
           git merge-base "origin/$base_ref" HEAD >/dev/null
           git diff "origin/${base_ref}...HEAD" > /tmp/pr/diff.patch
