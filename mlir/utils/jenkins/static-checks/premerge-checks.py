@@ -125,7 +125,9 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
     # header it interpolates a command from a "nearby" .cpp. This can give
     # errors unless we add the Triton include paths to the compile command.
     repo_root = git.Repo('.', search_parent_directories=True).working_tree_dir
-    triton_include_roots = [os.path.join('external', 'triton', d) for d in ('include', 'third_party')]
+    triton_include_roots = [
+        os.path.join('external', 'triton', d) for d in ('include', 'third_party')
+    ]
     triton_includes = []
     for root in triton_include_roots:
         triton_includes.append(os.path.join(repo_root, root))
