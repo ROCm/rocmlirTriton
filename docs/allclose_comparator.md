@@ -426,27 +426,29 @@ noted.
   `(atol, rtol)` can mask a NaN), and a dedicated `ratio == nan` row
   is appended to the histogram.
 
-### 2.9 Atomic-add rtol boost for fused reductions
+### 2.9 Atomic-add rtol boost
 
-When a `rock.reduce(sum)` is present, the kernel pipeline
-(`rock-lower-reduce`) converts it to a `rock.store by atomic_add`.
-Each low-precision atomic addition introduces approximately `eps(dtype)`
-relative rounding error. With many workgroups contributing to each
-output element, these errors accumulate beyond what the K_eff atol
-model (Section 2.3) captures -- that model assumes a single f32
-accumulator chain, whereas atomic_add operates at the output dtype
-precision (e.g. fp16).
+When a kernel accumulates output via `atomic_add` at the narrow dtype
+precision (rather than the f32 accumulator assumed by the K_eff atol
+model in Section 2.3), each atomic addition introduces approximately
+`eps(dtype)` relative rounding error. The allclose verifier detects
+two sources of atomic-add accumulation and boosts `rtol` accordingly:
 
-The allclose verifier automatically boosts `rtol` when it detects a
-`rock.reduce(sum)` in the module:
+1. **Fused reductions** (`rock.reduce(sum)`): the kernel pipeline
+   converts these to `rock.store by atomic_add`. The extent is the
+   reduce axis size.
+2. **SplitK accumulation**: when the `perf_config` encodes
+   `splitKFactor > 1`, partial results from multiple workgroups are
+   merged via `atomic_add`. The extent is the splitK factor.
+
+The boost formula uses the larger of the two extents:
 
 ```
-rtol_boosted = base_rtol + sqrt(reduceExtent) * eps(dtype)
+atomicExtent = max(reduce_axis_extent, splitKFactor)
+rtol_boosted = base_rtol + sqrt(atomicExtent) * eps(dtype)
 ```
 
 where:
-- `reduceExtent` is the reduce axis size (number of atomic additions
-  per output element)
 - `eps(dtype)` is the machine epsilon for the output element type
   (e.g. `2^-10` for fp16, `2^-7` for bf16, `2^-23` for fp32)
 - `sqrt()` is a conservative estimate of the effective number of
@@ -460,14 +462,16 @@ for reduceExtent=128) and negligible for fp32 (boost ~ `1.35e-6`).
 `atomic_max` which is idempotent (picks the larger of two values)
 and introduces no rounding error.
 
-The scan targets `rock::ReduceOp` (still present in the host-side
-clone at the `-ph` stage) rather than `rock::StoreOp` (already lowered
-away in the GPU function). Passing `-rtol=<value>` explicitly
-suppresses the automatic boost.
+The fused-reduction scan targets `rock::ReduceOp` (still present in
+the host-side clone at the `-ph` stage) rather than `rock::StoreOp`
+(already lowered away in the GPU function). The splitK factor is
+extracted from `GemmGemmParamsAttr` or `GemmParamsAttr` via the
+`perf_config` string. Passing `-rtol=<value>` explicitly suppresses
+both boost sources.
 
-### 2.10 Exact-match count output
+### 2.10 Zero-diff count output
 
-The allclose verifier prints an `exact: X/Y` line after the diagnostic
+The allclose verifier prints a `zero_diff: X/Y` line after the diagnostic
 histogram, where `X` is the number of elements with absDiff exactly
 zero (histogram bucket 0) and `Y` is the total element count.
 
@@ -476,7 +480,7 @@ fraction of the output buffer holds valid kernel-written data and the
 rest is uninitialized -- to verify partial correctness via FileCheck:
 
 ```
-// CHECK: exact: 2304/4608
+// CHECK: zero_diff: 2304/4608
 // CHECK: [1 1 1]
 ```
 

@@ -5493,16 +5493,29 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
                             ? rtolThreshold.getValue()
                             : baseRtol;
 
-      // Atomic-add rtol boost. When a rock.store uses atomic_add, the
-      // reduction is performed via fp16/bf16-precision atomic adds rather
-      // than the f32 accumulator assumed by the K_eff atol model. Each
-      // atomic add introduces ~eps(dtype) relative error. With W workgroups
-      // contributing to each output element, the accumulated rtol error is
-      // O(W * eps). Since we don't know W exactly at this IR level, we use
-      // sqrt(reduceExtent) as a conservative estimate of the effective
-      // number of rounding steps (similar to CK/hipBLASLt approaches).
+      // Atomic-add rtol boost. When a kernel uses atomic_add for output
+      // accumulation (fused reductions via rock.reduce(sum) or splitK
+      // partial-result merging), the additions happen at the narrow dtype
+      // precision rather than the f32 accumulator assumed by the K_eff atol
+      // model. Each atomic add introduces ~eps(dtype) relative error.
+      // We use sqrt(extent) * eps as the boost (random-walk model, same as
+      // CK/hipBLASLt). The extent is the larger of:
+      //   - rock.reduce(sum) axis extent (fused reductions), and
+      //   - splitK factor from the perf_config (partial-result accumulation).
       if (!rtolThreshold.getNumOccurrences()) {
         int64_t atomicExtent = scanModuleForAtomicReduceExtent(module);
+
+        if (!genParams.perfConfig.empty()) {
+          MLIRContext *ctx = module->getContext();
+          auto pc = StringAttr::get(ctx, genParams.perfConfig);
+          int64_t splitK = 1;
+          if (auto ggp = rock::GemmGemmParamsAttr::get(pc))
+            splitK = ggp.getSplitKFactor();
+          else if (auto gp = rock::GemmParamsAttr::get(pc))
+            splitK = gp.getSplitKFactor();
+          atomicExtent = std::max(atomicExtent, splitK);
+        }
+
         if (atomicExtent > 1) {
           float eps = machineEpsilon(baselineType);
           rtolValue += std::sqrt(static_cast<float>(atomicExtent)) * eps;

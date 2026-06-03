@@ -278,3 +278,43 @@ func.func private @mx_dot_reduce_max_fut(%arg0: !migraphx.shaped<1x256x64xf32, 1
 // rtol is NOT boosted (reduce_max -> atomic_max is exact): stays at 1.3e-6.
 // MX_DOT_REDUCE_MAX-NEXT:   arith.constant 1.300000e-06 : f32
 // MX_DOT_REDUCE_MAX:        call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (11) SplitK rtol boost from perf_config. When perf_config encodes
+// splitKFactor > 1, the rtol is boosted by sqrt(splitK) * eps(dtype).
+// perf_config attn:v1:32,64,64,1,1,4,0,3,1,0,0 has splitKFactor=3.
+// For f16 gemm_gemm with K=128, gemmO=128:
+//   K_eff = 128 + 64 = 192; atol = 1e-5 + 192*(1/900) ~ 0.2133
+//   rtol  = 1e-3 + sqrt(3) * 9.765625e-4 ~ 2.691e-3
+// This uses the `-pv` flow (not clone-harness) because splitK is encoded
+// in the perf_config and processed by `createVerifierFunc` directly.
+// ============================================================================
+
+// RUN: rocmlir-gen --arch gfx942 --operation gemm_gemm -t f16 \
+// RUN:   -m 64 -n 64 -k 128 -gemmO 128 \
+// RUN:   -perf_config=attn:v1:32,64,64,1,1,4,0,3,1,0,0 \
+// RUN:   -pv --comparator=allclose \
+// RUN:   | FileCheck %s --check-prefix=SPLITK_F16
+
+// atol ~ 0.2133 (K_eff=192, f16 sumErrorTol).
+// SPLITK_F16:      arith.constant 0.213{{[0-9]*}} : f32
+// rtol boosted: 1e-3 + sqrt(3)*eps(f16) ~ 2.69e-3 (NOT the base 1e-3).
+// SPLITK_F16-NEXT: arith.constant 0.00269{{[0-9]*}} : f32
+// SPLITK_F16:      call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (12) Explicit `-rtol` suppresses the splitK boost. Same gemm_gemm as (11)
+// but with `-rtol=0.005`; the user override takes precedence.
+// ============================================================================
+
+// RUN: rocmlir-gen --arch gfx942 --operation gemm_gemm -t f16 \
+// RUN:   -m 64 -n 64 -k 128 -gemmO 128 \
+// RUN:   -perf_config=attn:v1:32,64,64,1,1,4,0,3,1,0,0 \
+// RUN:   -pv -rtol=0.005 \
+// RUN:   | FileCheck %s --check-prefix=SPLITK_RTOL_OVERRIDE
+
+// atol stays K-scaled (no -atol override).
+// SPLITK_RTOL_OVERRIDE:      arith.constant 0.213{{[0-9]*}} : f32
+// rtol is the user-supplied value, NOT boosted.
+// SPLITK_RTOL_OVERRIDE-NEXT: arith.constant 5.000000e-03 : f32
+// SPLITK_RTOL_OVERRIDE:      call @mcpuVerifyFloatAllclose
