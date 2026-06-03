@@ -29,6 +29,7 @@ set(GEN_MODE "-s")
 if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
   list(APPEND CONFIGS
     PrGemm
+    PrGemmNonPowerOfTwoTileSize
     PrGemmScaled
     PrGemmScaledSplitK
     PrResnet50
@@ -58,6 +59,7 @@ if (ROCK_E2E_TEST_ENABLED)
   GemmScaledF8
   GemmScaledF32
   MixedConvLayouts
+  GemmVariantsNonPowerOfTwoTileSize
   )
   list(APPEND CONFIGS
   Resnet50Config

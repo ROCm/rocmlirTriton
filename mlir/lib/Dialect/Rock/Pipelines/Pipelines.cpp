@@ -471,6 +471,9 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   if (!options.disableFastMath)
     addWithDCE(rock::createRockAllowFastMathFlagsPass());
 
+  // Must run after LowerStores and before the Triton layouts are produced.
+  addWithDCE(rock::createRockDecomposeNonPow2TilesPass());
+
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
   addWithDCE(rock::createRockLegalizeFloatTypesPass());

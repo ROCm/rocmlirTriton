@@ -54,6 +54,13 @@ static LogicalResult validatePositivePowerOfTwo(Operation *op, StringRef name,
   return success();
 }
 
+static LogicalResult validatePositiveValue(Operation *op, StringRef name,
+                                           int64_t value) {
+  if (value <= 0)
+    return op->emitError() << name << "=" << value << " must be positive";
+  return success();
+}
+
 static LogicalResult validateNumCTAs(Operation *op, int64_t numCTAs) {
   if (numCTAs < 1)
     return op->emitError() << "numCTAs=" << numCTAs << " must be >= 1";
@@ -153,14 +160,17 @@ static LogicalResult validateGridGroupSize(Operation *op,
 
 // Single entry point: run all per-field checks via
 // `RockTuningParamAttrInterface` (implemented by both `GemmParamsAttr` and
-// `GemmGemmParamsAttr`).
+// `GemmGemmParamsAttr`). `requirePow2MN` controls whether mPerBlock/nPerBlock
+// must be powers of two: gemm+gemm requires it, plain gemm only requires them
+// to be positive since rock-decompose-nonpow2-tiles handles non-pow2 M/N.
 static LogicalResult validatePerfConfig(Operation *op,
-                                        RockTuningParamAttrInterface params) {
-  if (failed(
-          validatePositivePowerOfTwo(op, "mPerBlock", params.getMPerBlock())))
+                                        RockTuningParamAttrInterface params,
+                                        bool requirePow2MN) {
+  auto validateMN =
+      requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
+  if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
     return failure();
-  if (failed(
-          validatePositivePowerOfTwo(op, "nPerBlock", params.getNPerBlock())))
+  if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
     return failure();
   if (failed(
           validatePositivePowerOfTwo(op, "kPerBlock", params.getKPerBlock())))
@@ -295,7 +305,11 @@ void AffixTuningParameters::affixTuningParametersImpl(
   LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
                           << perfConfigAttr << "\n");
 
-  if (failed(validatePerfConfig(op, gemmParams)))
+  // Scaled GEMMs are not yet handled by rock-decompose-nonpow2-tiles, so keep
+  // the power-of-two M/N requirement for them; plain GEMMs allow non-pow2 M/N.
+  bool isScaledGemm = op.getScaleA() || op.getScaleB();
+  if (failed(
+          validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm)))
     return signalPassFailure();
 
   auto origGemmSize = op.getGemmSize();
@@ -371,7 +385,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
-  if (failed(validatePerfConfig(op, attnPerfConfig)))
+  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true)))
     return signalPassFailure();
 
   auto params =
