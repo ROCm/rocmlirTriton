@@ -5209,7 +5209,7 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
       }
       return k;
     }
-    return inputChannel * filterHeight * filterWidth;
+    return inputChannel * filterDepth * filterHeight * filterWidth;
   };
   // Helper: conv backward-weight reduction K = N * product(output spatial).
   // The bwd_weight GEMM reduces over the batch and output spatial dimensions,
@@ -5227,7 +5227,7 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
       }
       return k;
     }
-    return batchSize * outputHeight * outputWidth;
+    return batchSize * outputDepth * outputHeight * outputWidth;
   };
   switch (*genParams.operation) {
   case rock::KernelType::Gemm:
