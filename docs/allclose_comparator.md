@@ -346,6 +346,10 @@ dimensions (batch and output spatial), so it has its own K_eff formula.
 
 ### 2.5 Manual overrides
 
+Since allclose is now the default comparator, the K-scaled tolerances
+apply out of the box. The legacy comparator remains available via
+`--comparator=legacy` for backwards compatibility.
+
 `-atol=<value>` and `-rtol=<value>` override the computed defaults
 component-wise. Either flag implies `--comparator=allclose`. Use these for
 per-test calibration when the dtype default is wrong for a specific
@@ -421,6 +425,64 @@ noted.
   as `(NaN-mismatch)`, the calibration hints are suppressed (no finite
   `(atol, rtol)` can mask a NaN), and a dedicated `ratio == nan` row
   is appended to the histogram.
+
+### 2.9 Atomic-add rtol boost for fused reductions
+
+When a `rock.reduce(sum)` is present, the kernel pipeline
+(`rock-lower-reduce`) converts it to a `rock.store by atomic_add`.
+Each low-precision atomic addition introduces approximately `eps(dtype)`
+relative rounding error. With many workgroups contributing to each
+output element, these errors accumulate beyond what the K_eff atol
+model (Section 2.3) captures -- that model assumes a single f32
+accumulator chain, whereas atomic_add operates at the output dtype
+precision (e.g. fp16).
+
+The allclose verifier automatically boosts `rtol` when it detects a
+`rock.reduce(sum)` in the module:
+
+```
+rtol_boosted = base_rtol + sqrt(reduceExtent) * eps(dtype)
+```
+
+where:
+- `reduceExtent` is the reduce axis size (number of atomic additions
+  per output element)
+- `eps(dtype)` is the machine epsilon for the output element type
+  (e.g. `2^-10` for fp16, `2^-7` for bf16, `2^-23` for fp32)
+- `sqrt()` is a conservative estimate of the effective number of
+  rounding steps, following the statistical error model used by
+  CK and hipBLASLt (random walk: expected error grows as `sqrt(N)`)
+
+The boost is significant for low-precision types (fp16 boost ~ `1.1e-2`
+for reduceExtent=128) and negligible for fp32 (boost ~ `1.35e-6`).
+
+**Only `reduce(sum)` triggers the boost.** `reduce(max)` maps to
+`atomic_max` which is idempotent (picks the larger of two values)
+and introduces no rounding error.
+
+The scan targets `rock::ReduceOp` (still present in the host-side
+clone at the `-ph` stage) rather than `rock::StoreOp` (already lowered
+away in the GPU function). Passing `-rtol=<value>` explicitly
+suppresses the automatic boost.
+
+### 2.10 Exact-match count output
+
+The allclose verifier prints an `exact: X/Y` line after the diagnostic
+histogram, where `X` is the number of elements with absDiff exactly
+zero (histogram bucket 0) and `Y` is the total element count.
+
+This enables tests with non-contiguous output strides -- where only a
+fraction of the output buffer holds valid kernel-written data and the
+rest is uninitialized -- to verify partial correctness via FileCheck:
+
+```
+// CHECK: exact: 2304/4608
+// CHECK: [1 1 1]
+```
+
+This replaces the legacy comparator's `relDiff = 0 : X/Y (percent%)`
+output, which served the same purpose but was tied to the legacy
+verification pipeline.
 
 ## 3. References
 
