@@ -819,8 +819,9 @@ static llvm::cl::opt<ComparatorMode> comparatorMode(
     llvm::cl::values(
         clEnumValN(ComparatorMode::Legacy, "legacy",
                    "Three-gate RMS/absDiff/relDiff"),
-        clEnumValN(ComparatorMode::Allclose, "allclose",
-                   "|a - b| <= (atol + rtol*|b|) with per-dtype defaults (default)")),
+        clEnumValN(
+            ComparatorMode::Allclose, "allclose",
+            "|a - b| <= (atol + rtol*|b|) with per-dtype defaults (default)")),
     llvm::cl::init(ComparatorMode::Allclose));
 
 // Allclose tolerance overrides. Setting either implies --comparator=allclose.
