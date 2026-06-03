@@ -2,7 +2,7 @@
 
 // Only half of the results will be correct since the non-contiguous strides
 // in this example means that half of the memory is uninitialized.
-// CHECK: relDiff = 0     : 2304/4608 (50.000000%)
+// CHECK: exact: 2304/4608
 
 module {
   func.func @mlir_dot_sigmoid(%arg0: !migraphx.shaped<4x24x16xf16, 384x16x1>, %arg1: !migraphx.shaped<4x16x24xf16, 384x24x1>) -> !migraphx.shaped<4x24x24xf16, 1152x24x1> attributes {rock.kernel = "mixr"} {
