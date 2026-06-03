@@ -1,24 +1,29 @@
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-index def4f5ad7..837a2efeb 100644
+index def4f5ad7..2f3cfe574 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-@@ -1527,6 +1527,126 @@ public:
+@@ -1527,6 +1527,133 @@ public:
    }
  };
  
-+// Rebalance the per-thread tile of an FMA (blocked) dot.
++// Non-WMMA/Non-MFMA fallback: rebalance the per-thread tile of an FMA (blocked) dot.
 +//
-+// The default blocked encoding for an FMA dot result gives each thread a
-+// lopsided strip (e.g. 32x4 M-by-N for a 128x128 tile with 4 warps), which
-+// forces M_pt + N_pt = 36 LDS reads per k-step. The throughput of this kernel
-+// is bound by LDS read *volume*, and reads/k is minimized by a square-ish tile:
-+// for a 128-FMA tile the minimum is 24 (8x16 / 16x8). This pattern recomputes
-+// threadsPerWarp/warpsPerCTA so the per-thread tile is as square as possible
-+// (tie-breaking toward N_pt <= M_pt, which the empirical sweep found best for
-+// output-store coalescing), while keeping sizePerThread (i.e. the b128 read
-+// width) untouched. The MFMA/WMMA patterns own the non-FMA paths, so this only
-+// fires on dots whose result is still a BlockedEncodingAttr.
-+class BalanceBlockedFMA : public OpRewritePattern<tt::DotOp> {
++// This heuristic tries to find the blocked encoding such that the LDS reads
++// are minimized.
++// 
++// The idea is to compute the "perimeter" which is M_pt + N_pt (where M_pt
++// and N_pt are the number of elements per thread in the M and N dimensions
++// respectively), and find the minimum perimeter (which esentially minimizes
++// the LDS reads). Let aM/aN be the number of threads along M/N, so that
++// M_pt = M/aM and N_pt = N/aN. The search respects the constraints:
++// - aM and aN are powers of two with aM * aN == warpSize * numWarps (every
++//   thread is used)
++// - M_pt and N_pt must be divisible by the size per thread (the tile divides
++//   the output exactly)
++// - aM factors into threadsPerWarp_M * warpsPerCTA_M, and aN likewise, such
++//   that threadsPerWarp_M * threadsPerWarp_N == warpSize and
++//   warpsPerCTA_M * warpsPerCTA_N == numWarps
++class RebalanceBlockedFMA : public OpRewritePattern<tt::DotOp> {
 +public:
 +  using OpRewritePattern<tt::DotOp>::OpRewritePattern;
 +
@@ -49,6 +54,7 @@ index def4f5ad7..837a2efeb 100644
 +    if (!isPow2(warpSize) || !isPow2(numWarps))
 +      return rewriter.notifyMatchFailure(dotOp, "non-pow2 warp/lane counts");
 +
++    // The actual layout decision.
 +    // Pick threads-along-M (aM) and threads-along-N (aN=T/aM) that make the
 +    // per-thread tile (M/aM x N/aN) as square as possible.
 +    bool found = false;
@@ -93,6 +99,7 @@ index def4f5ad7..837a2efeb 100644
 +    if (newTPW == curTPW && newWPC == curWPC)
 +      return rewriter.notifyMatchFailure(dotOp, "already balanced");
 +
++    // Now rewrite the dot op to use the new blocked encoding.
 +    auto newBlocked = ttg::BlockedEncodingAttr::get(
 +        ctx, sizePerThread, newTPW, newWPC, blocked.getOrder(),
 +        blocked.getCGALayout());
@@ -129,14 +136,11 @@ index def4f5ad7..837a2efeb 100644
  class AccelerateBlocked : public OpRewritePattern<DotOp> {
    StringRef arch;
  
-@@ -1756,6 +1876,10 @@ struct TritonAMDGPUAccelerateMatmulPass
+@@ -1756,6 +1883,7 @@ struct TritonAMDGPUAccelerateMatmulPass
        mfmaPatterns.add<::BlockedToWMMA>(
            context, getWmmaVersion(archGenerationName), matrixInstructionSize,
            /*benefit=*/2);
-+      // FMA fallback (e.g. f32): rebalance the blocked per-thread tile to cut
-+      // LDS read volume. Lower benefit than WMMA so it only fires when the dot
-+      // stays blocked (i.e. not mapped to WMMA).
-+      mfmaPatterns.add<::BalanceBlockedFMA>(context, /*benefit=*/1);
++      mfmaPatterns.add<::RebalanceBlockedFMA>(context, /*benefit=*/1);
        break;
      default:
        break;
