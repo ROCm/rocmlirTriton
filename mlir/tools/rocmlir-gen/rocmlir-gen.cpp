@@ -2665,8 +2665,7 @@ createCPUConvWithMLIR(ModuleOp module,
       auto trimmedType =
           RankedTensorType::get(trimmedShape, inputType.getElementType());
       input = tensor::ExtractSliceOp::create(b, loc, trimmedType, input,
-                                             offsets, sizes, strides)
-                  .getResult();
+                                             offsets, sizes, strides);
       inputType = trimmedType;
     }
   }
