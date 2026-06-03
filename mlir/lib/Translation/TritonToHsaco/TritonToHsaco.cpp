@@ -831,6 +831,24 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     return failure();
   }
 
+  // Experimental hijack: if ROCK_HIJACK_AMDGCN_ASM points at a file, use its
+  // contents as the AMDGCN assembly instead of the freshly generated text.
+  // This lets us hand-edit the final assembly (e.g. delete inner-loop
+  // s_barrier instructions) and feed it straight into the MC assembler + LLD,
+  // bypassing the kernel-pipeline staging / hasKernel guard entirely. The
+  // resulting kernel may be numerically wrong; it is meant for timing probes.
+  if (const char *hijackPath = std::getenv("ROCK_HIJACK_AMDGCN_ASM")) {
+    auto fileOrErr = llvm::MemoryBuffer::getFile(hijackPath);
+    if (!fileOrErr) {
+      llvm::errs() << "ROCK_HIJACK_AMDGCN_ASM: failed to read '" << hijackPath
+                   << "': " << fileOrErr.getError().message() << "\n";
+      return failure();
+    }
+    amdgcnAsm = (*fileOrErr)->getBuffer().str();
+    llvm::errs() << "// -----// AMDGCN HIJACK: using " << hijackPath << " ("
+                 << amdgcnAsm.size() << " bytes) //----- //\n";
+  }
+
   // make_amdgcn (compiler.py)
   if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_DUMP")) {
     std::string envVal(dumpEnv);
