@@ -51,7 +51,7 @@ static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
 
 static std::tuple<ISAFamily, StringRef> getArch(StringRef arch) {
   auto [chip, _] = parseArchString(arch);
-  ISAFamily isaFamily = triton::AMD::TargetInfo(chip.str()).getISAFamily();
+  ISAFamily isaFamily = TargetFeatures(chip).getISAFamily();
   if (isaFamily == ISAFamily::Unknown) {
     llvm_unreachable("Unknown chip");
   }
