@@ -1,0 +1,24 @@
+# f16 GEMM shapes from rocMLIR vs rocmlirTriton gap table (G=1, transA/B=false).
+# Pinned upstream rocMLIR v4 perf config per row (matches perfConfig_rocMLIR column).
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 225 -n 1280 -k 1280 -perf_config v4:16,32,8,16,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 900 -n 1280 -k 1280 -perf_config v4:32,64,8,16,32,16,8,1,1,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 128 -n 3840 -k 1280 -perf_config v4:32,64,8,16,32,16,8,1,1,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 216 -n 5120 -k 1280 -perf_config v4:32,64,8,16,32,16,8,1,1,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 77 -n 5120 -k 1280 -perf_config v4:32,64,8,16,32,16,8,1,1,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 384 -n 3072 -k 768 -perf_config v4:32,64,8,16,32,16,8,1,1,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 384 -n 3072 -k 1024 -perf_config v4:32,64,8,16,32,16,8,1,1,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 216 -n 3840 -k 1280 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 384 -n 1024 -k 1024 -perf_config v4:16,32,8,16,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 384 -n 1024 -k 4096 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 225 -n 1280 -k 5120 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 216 -n 1280 -k 5120 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 77 -n 3840 -k 1280 -perf_config v4:16,32,8,16,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 512 -n 1280 -k 1280 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 1000 -n 1024 -k 1024 -perf_config v4:32,64,8,16,32,16,8,1,1,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 77 -n 3072 -k 768 -perf_config v4:16,32,8,16,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 576 -n 1280 -k 1280 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 77 -n 4096 -k 10240 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 384 -n 2304 -k 768 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 256 -n 3072 -k 3072 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 77 -n 4096 -k 4096 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
+-t f16 -out_datatype f16 -transA false -transB false -g 1 -m 512 -n 1280 -k 5120 -perf_config v4:32,32,8,32,16,16,8,1,2,2,0,0,1,1
