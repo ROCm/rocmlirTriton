@@ -303,11 +303,13 @@ test. The fp32 value matches rocBLAS's `1/10000`; fp64 uses `~10 * eps(fp64)`.
 Worked example -- fp32 GEMM with K=4096:
 
 ```
-atol_eff = 1e-5 + 4096 * 1e-4 = 0.4097
+atol_eff = 1e-5 + 4096 * 1e-4 = 1e-5 + 0.4096 = 0.40961
 ```
 
 This matches rocBLAS's tolerance for the same K (`K * 1e-4 = 0.4096`);
-PyTorch's flat `atol=1e-5` would fail.
+the `1e-5` baseline (PyTorch's fp32 `atol` default from section1.3) is
+negligible for large K but ensures element-wise ops (K_eff=1) still
+get a meaningful absolute tolerance.
 
 #### Note on fp32 tolerance choice
 

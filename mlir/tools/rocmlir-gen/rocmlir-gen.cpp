@@ -5087,33 +5087,22 @@ static int64_t scanModuleForAtomicReduceExtent(ModuleOp module) {
     if (reduceOp.getReduceMethod() != rock::ReduceMethod::Sum)
       return;
     auto inTy = dyn_cast<ShapedType>(reduceOp.getIn().getType());
-    if (!inTy || !inTy.hasStaticShape())
+    if (!inTy)
       return;
     int64_t axis = reduceOp.getAxis().getSExtValue();
-    if (axis >= 0 && axis < inTy.getRank()) {
-      int64_t extent = inTy.getShape()[axis];
+    if (!inTy.isDynamicDim(axis)) {
+      int64_t extent = inTy.getDimSize(axis);
       maxExtent = std::max(maxExtent, extent);
     }
   });
   return maxExtent;
 }
 
-// Machine epsilon for common float types: 2^(-mantissa_bits).
+// Machine epsilon for float types: eps = 2^(1 - mantissaWidth), where
+// getFPMantissaWidth() includes the implicit leading bit for IEEE types.
 static float machineEpsilon(Type t) {
-  if (isa<Float16Type>(t))
-    return 9.765625e-4f; // 2^-10
-  if (isa<BFloat16Type>(t))
-    return 7.8125e-3f; // 2^-7
-  if (isa<Float32Type>(t))
-    return 1.1920929e-7f; // 2^-23
-  if (isa<Float64Type>(t))
-    return 2.220446e-16f; // 2^-52
-  if (isa<Float8E4M3FNType, Float8E4M3FNUZType>(t))
-    return 0.125f; // 2^-3
-  if (isa<Float8E5M2Type, Float8E5M2FNUZType>(t))
-    return 0.25f; // 2^-2
-  if (isa<Float4E2M1FNType>(t))
-    return 0.5f; // 2^-1
+  if (auto floatTy = dyn_cast<FloatType>(t))
+    return std::pow(2.0f, 1 - static_cast<int>(floatTy.getFPMantissaWidth()));
   return 1e-4f;
 }
 
@@ -5154,7 +5143,8 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
       }
       return k;
     }
-    return inputChannel * filterDepth * filterHeight * filterWidth;
+    return inputChannel * std::max<int64_t>(filterDepth, 1) * filterHeight *
+           filterWidth;
   };
   // Helper: conv backward-weight reduction K = N * product(output spatial).
   // The bwd_weight GEMM reduces over the batch and output spatial dimensions,
@@ -5172,7 +5162,8 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
       }
       return k;
     }
-    return batchSize * outputDepth * outputHeight * outputWidth;
+    return batchSize * std::max<int64_t>(outputDepth, 1) * outputHeight *
+           outputWidth;
   };
   switch (*genParams.operation) {
   case rock::KernelType::Gemm:
@@ -5454,14 +5445,8 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
         int64_t atomicExtent = scanModuleForAtomicReduceExtent(module);
 
         if (!genParams.perfConfig.empty()) {
-          MLIRContext *ctx = module->getContext();
-          auto pc = StringAttr::get(ctx, genParams.perfConfig);
-          int64_t splitK = 1;
-          if (auto ggp = rock::GemmGemmParamsAttr::get(pc))
-            splitK = ggp.getSplitKFactor();
-          else if (auto gp = rock::GemmParamsAttr::get(pc))
-            splitK = gp.getSplitKFactor();
-          atomicExtent = std::max(atomicExtent, splitK);
+          auto pc = StringAttr::get(module->getContext(), genParams.perfConfig);
+          atomicExtent = std::max(atomicExtent, rock::retrieveSplitKValue(pc));
         }
 
         if (atomicExtent > 1) {

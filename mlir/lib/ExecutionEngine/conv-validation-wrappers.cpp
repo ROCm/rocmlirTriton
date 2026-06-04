@@ -233,10 +233,9 @@ void mcpuVerify(T *gpuResults, T *validationResults, long long dataSize,
       // f32 subnormals as always being correct
       hist_relDiff[0]++;
     } else {
-      // Clamp +/-inf on both sides to fp16 max so that the subsequent
-      // arithmetic is well-defined and both overflow directions are treated
-      // symmetrically (non-deterministic accumulation order can cause either
-      // CPU or GPU to overflow first).
+      // AIROCMLIR-911: Replace this hard-coded fp16 clamp with a
+      // dtype-aware clamp (or remove it once the comparator handles inf
+      // natively). Currently it masks real mismatches for non-fp16 types.
       constexpr float fp16MaxVal = 65504;
       if (std::isinf(valNum))
         valNum = (valNum > 0 ? fp16MaxVal : -fp16MaxVal);
