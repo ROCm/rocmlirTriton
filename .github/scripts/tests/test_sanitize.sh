@@ -183,8 +183,10 @@ echo
 echo "--- Layer 1: bare URL host allow-list ---"
 run_reject "bare evil URL"                  "See http://evil.com/x"                                "URLs to disallowed hosts"
 run_reject "userinfo strip"                 "https://github.com@evil.com/x"                        "URLs to disallowed hosts"
+run_reject "llvm userinfo strip"            "https://llvm.org@evil.com/x"                          "URLs to disallowed hosts"
 run_reject "uppercase scheme evil"          "See HTTPS://EVIL.COM/x"                               "URLs to disallowed hosts"
 run_reject "port + userinfo + evil"         "See https://gh.com:80@evil.example/x"                 "URLs to disallowed hosts"
+run_reject "port + userinfo + llvm"         "See https://llvm.org:80@evil.example/x"               "URLs to disallowed hosts"
 
 echo
 echo "--- Layer 2: Markdown destinations ---"
@@ -244,10 +246,16 @@ run_reject "cr-split https host in href"    $'<a href="https://github.com\r.evil
 run_reject "tab-split https host in href"   $'<a href="https://github.com\t.evil.com/x">x</a>'    "disallowed hosts"
 run_reject "ent &#10; https host in href"   '<a href="https://github.com&#10;.evil.com/x">x</a>'  "disallowed hosts"
 run_reject "ent &#13; https host in href"   '<a href="https://github.com&#13;.evil.com/x">x</a>'  "disallowed hosts"
+run_reject "lf-split llvm host in href"     $'<a href="https://llvm.org\n.evil.com/x">x</a>'      "disallowed hosts"
+run_reject "tab-split llvm host in href"    $'<a href="https://llvm.org\t.evil.com/x">x</a>'      "disallowed hosts"
+run_reject "ent &#10; llvm host in href"    '<a href="https://llvm.org&#10;.evil.com/x">x</a>'    "disallowed hosts"
 run_reject "md lf-split https host"         $'[c](https://github.com\n.evil.com/x)'               "disallowed hosts"
+run_reject "md lf-split llvm host"          $'[c](https://llvm.org\n.evil.com/x)'                 "disallowed hosts"
 run_reject "md cr-split https host"         $'[c](https://github.com\r.evil.com/x)'               "disallowed hosts"
 run_reject "md tab-split https host"        $'[c](https://github.com\t.evil.com/x)'               "disallowed hosts"
+run_reject "md tab-split llvm host"         $'[c](https://llvm.org\t.evil.com/x)'                 "disallowed hosts"
 run_reject "md ent &#10; https host"        '[c](https://github.com&#10;.evil.com/x)'             "disallowed hosts"
+run_reject "md ent &#10; llvm host"         '[c](https://llvm.org&#10;.evil.com/x)'               "disallowed hosts"
 # Reference-style destinations carrying entity-encoded LF/CR/TAB.
 # CommonMark forbids literal LF/CR/TAB in destinations, so the
 # entity-encoded form is the only renderable bypass shape: entities
@@ -278,6 +286,7 @@ echo
 echo "--- Layer 5: percent-encoded authorities (categorical reject) ---"
 run_reject "pct host bare"                  "See https://%65vil.example/x"                         "percent-encoded authorities"
 run_reject "pct subdomain trick"            "See https://github.com%2eevil.example/x"              "percent-encoded authorities"
+run_reject "pct llvm subdomain trick"       "See https://llvm.org%2eevil.example/x"                "percent-encoded authorities"
 run_reject "pct prefix-sub trick"           "See https://%67ithub.com/foo"                         "percent-encoded authorities"
 run_reject "pct in md inline"               '[c](https://%65vil.example/x)'                        "percent-encoded authorities"
 run_reject "pct in md ref"                  $'[c][1]\n\n[1]: https://%65vil.example/x'             "percent-encoded authorities"
@@ -661,12 +670,17 @@ echo
 echo "--- Negative cases: legitimate content must be accepted ---"
 run_accept "plain prose"                    "Refactor foo() to return early"
 run_accept "github bare URL"                "See https://github.com/foo/bar/issues/1"
+run_accept "github org URL"                 "See https://github.com/ROCm"
 run_accept "github md inline link"          '[issue](https://github.com/foo/bar/issues/1)'
 run_accept "github md ref-style link"       $'See [issue][1].\n\n[1]: https://github.com/foo/bar/issues/1'
 run_accept "github HTML href"               '<a href="https://github.com/foo">go</a>'
 run_accept "raw.githubusercontent.com"      'See https://raw.githubusercontent.com/foo/bar/main/x'
 run_accept "gist.github.com"                'See https://gist.github.com/foo/abcd'
 run_accept "subdomain.github.com"           'See https://docs.github.com/en/rest'
+run_accept "llvm license URL"               'See https://llvm.org/LICENSE.txt for license information.'
+run_accept "mlir llvm subdomain"            'See https://mlir.llvm.org/getting_started/DeveloperGuide/'
+run_accept "llvm md inline link"            '[LLVM Coding Standards](https://llvm.org/docs/CodingStandards.html)'
+run_accept "llvm HTML href"                 '<a href="https://llvm.org/docs/CodingStandards.html">LLVM</a>'
 run_accept "code fence cpp"                 $'```cpp\n#include <iostream>\nint main(){return 0;}\n```'
 run_accept "code fence bash"                $'```bash\necho "hello"\n```'
 run_accept "no URLs"                        "I think this should use a different lookup table for clarity"

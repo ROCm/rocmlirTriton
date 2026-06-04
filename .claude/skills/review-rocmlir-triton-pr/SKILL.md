@@ -385,12 +385,13 @@ pipeline upstream of this fork).
 - Only flag actual issues. Do not flag correct behavior; do not flag style preferences
   not codified above; do not generate findings to hit a quota.
 - Do NOT include any environment variable name or value, secret, or HTTP header in
-  any output field. URLs are allowed ONLY to `github.com` / `*.github.com` /
-  `*.githubusercontent.com` (the sanitizer's host allow-list); reference any other
-  source by name and let the human follow up. The workflow's sanitizer fails the
-  build if it sees patterns matching common secret formats, LLM-Gateway env-var
-  names, the literal `<!-- claude-pr-review-` marker prefix, URLs to disallowed
-  hosts (including userinfo-bypass forms like `https://github.com@evil/x`),
+  any output field. URLs are allowed ONLY to `github.com` / `llvm.org` /
+  `*.github.com` / `*.githubusercontent.com` / `*.llvm.org` (the sanitizer's host
+  allow-list); reference any other source by name and let the human follow up.
+  The workflow's sanitizer fails the build if it sees patterns matching common
+  secret formats, LLM-Gateway env-var names, the literal
+  `<!-- claude-pr-review-` marker prefix, URLs to disallowed hosts (including
+  userinfo-bypass forms like `https://github.com@evil/x`),
   Markdown link destinations using non-http(s) schemes (`mailto:`, `ftp:`,
   `javascript:`, `data:`, `file:`, `vbscript:`), protocol-relative destinations
   (`//evil/x`) to disallowed hosts, **OR** the same shapes inside raw HTML
@@ -402,8 +403,8 @@ pipeline upstream of this fork).
   `[click](&#x2F;&#x2F;evil/x)`, and `<a href="&#x2F;&#x2F;evil/x">` are all
   caught). Bracketed-IP-literal hosts (RFC 3986 IP-literal: `[` IPv6 or
   IPvFuture `]`) are categorically rejected in every URL form -- bare URL,
-  Markdown destination, or HTML href/src -- because github.com is never reached
-  via a raw IP literal and the host allow-list cannot classify an IP.
+  Markdown destination, or HTML href/src -- because allowed hosts are never
+  reached via a raw IP literal and the host allow-list cannot classify an IP.
   Percent-encoded host components are likewise categorically rejected: per the
   WHATWG URL spec the host is percent-decoded before resolution, so
   `https://%65vil.example/x` renders as `evil.example/x` and
