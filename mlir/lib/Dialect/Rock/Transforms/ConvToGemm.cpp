@@ -232,9 +232,9 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
     // is visible to consumers that only see the call op (i.e. host code
     // restored by `RockEmitGpuBinary` after `RockSerializeHostFuncs`).
     newCall.setResAttrsAttr(ArrayAttr::get(
-        ctx, buildKeepaliveResAttrs(ctx, callOp.getResAttrsAttr(),
-                                    oldNumResults, extraReturns.size(),
-                                    keepaliveDict)));
+        ctx,
+        buildKeepaliveResAttrs(ctx, callOp.getResAttrsAttr(), oldNumResults,
+                               extraReturns.size(), keepaliveDict)));
 
     callOp.erase();
   }
