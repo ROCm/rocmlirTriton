@@ -1,0 +1,179 @@
+diff --git a/python/test/unit/language/test_core.py b/python/test/unit/language/test_core.py
+index 56c79d8ac6fc..2bc4e712cd1c 100644
+--- a/python/test/unit/language/test_core.py
++++ b/python/test/unit/language/test_core.py
+@@ -3341,6 +3341,21 @@ def get_test_dot_small_mn_mfma_cases():
+             for in_dtype, out_dtype in [('float16', 'float16'), ('float32', 'float32')]]
+ 
+ 
++# M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype,
++# out_dtype, kpack, mma_nonk_size
++def get_test_dot_kpack_kwidth_mfma_cases():
++    if not is_hip_cdna():
++        return []
++    return [
++        # Small K with kpack=2 forces the kPack guard for symmetric MFMA shapes.
++        (64, 64, 16, 4, False, False, 'None', 'ieee', 'float16', 'float32', 2, 16),
++        (64, 64, 16, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 2, 16),
++        # Asymmetric 64x4 / 4x64 MFMA shapes with kpack=2.
++        (64, 4, 32, 1, False, False, 'None', 'ieee', 'float32', 'float32', 2, None),
++        (4, 64, 32, 1, False, False, 'None', 'ieee', 'float32', 'float32', 2, None),
++    ]
++
++
+ def get_test_dot_double_rate_cases():
+     if not (is_hip_cdna() or is_hip_gfx1250()):
+         return []
+@@ -3395,6 +3410,7 @@ def get_test_small_dots_cases():
+     get_test_dot_fp8_output_cases() + \
+     get_test_dot_small_k_mfma_cases() + \
+     get_test_dot_small_mn_mfma_cases() + \
++    get_test_dot_kpack_kwidth_mfma_cases() + \
+     get_test_dot_small_mn_wmma_cases() + \
+     get_test_dot_small_k_wmma_cases() + \
+     get_test_dot_softmax() + \
+diff --git a/test/TritonGPU/amd/accelerate-amd-matmul-mfma-kpack.mlir b/test/TritonGPU/amd/accelerate-amd-matmul-mfma-kpack.mlir
+new file mode 100644
+index 000000000000..9c12cd3613b5
+--- /dev/null
++++ b/test/TritonGPU/amd/accelerate-amd-matmul-mfma-kpack.mlir
+@@ -0,0 +1,79 @@
++// RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx942 kPack=2" | FileCheck %s
++
++#blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [16, 4], warpsPerCTA = [4, 1], order = [1, 0]}>
++#dotOp0 = #ttg.dot_op<{opIdx = 0, parent = #blocked}>
++#dotOp1 = #ttg.dot_op<{opIdx = 1, parent = #blocked}>
++// CHECK{LITERAL}: #mma = #ttg.amd_mfma<{version = 3, warpsPerCTA = [1, 4], instrShape = [16, 16, 16], isTransposed = true}>
++// CHECK-LABEL: kpack_kwidth_small_k_f16
++// CHECK: tt.dot {{.*}} : tensor<16x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>> * tensor<16x256xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>> -> tensor<16x256xf32, #mma>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx942", "ttg.threads-per-warp" = 64 : i32} {
++  tt.func public @kpack_kwidth_small_k_f16(
++      %a: tensor<16x16xf16, #dotOp0>,
++      %b: tensor<16x256xf16, #dotOp1>,
++      %o_ptr: tensor<16x256x!tt.ptr<f32>, #blocked>) {
++    %cst = arith.constant dense<0.000000e+00> : tensor<16x256xf32, #blocked>
++    %ab = tt.dot %a, %b, %cst : tensor<16x16xf16, #dotOp0> * tensor<16x256xf16, #dotOp1> -> tensor<16x256xf32, #blocked>
++    tt.store %o_ptr, %ab : tensor<16x256x!tt.ptr<f32>, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [16, 4], warpsPerCTA = [4, 1], order = [1, 0]}>
++#dotOp0 = #ttg.dot_op<{opIdx = 0, parent = #blocked}>
++#dotOp1 = #ttg.dot_op<{opIdx = 1, parent = #blocked}>
++// CHECK{LITERAL}: #mma = #ttg.amd_mfma<{version = 3, warpsPerCTA = [1, 4], instrShape = [16, 16, 16], isTransposed = true}>
++// CHECK-LABEL: kpack_kwidth_large_k_f16
++// CHECK: tt.dot {{.*}} : tensor<16x32xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>> * tensor<32x256xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>> -> tensor<16x256xf32, #mma>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx942", "ttg.threads-per-warp" = 64 : i32} {
++  tt.func public @kpack_kwidth_large_k_f16(
++      %a: tensor<16x32xf16, #dotOp0>,
++      %b: tensor<32x256xf16, #dotOp1>,
++      %o_ptr: tensor<16x256x!tt.ptr<f32>, #blocked>) {
++    %cst = arith.constant dense<0.000000e+00> : tensor<16x256xf32, #blocked>
++    %ab = tt.dot %a, %b, %cst : tensor<16x32xf16, #dotOp0> * tensor<32x256xf16, #dotOp1> -> tensor<16x256xf32, #blocked>
++    tt.store %o_ptr, %ab : tensor<16x256x!tt.ptr<f32>, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [16, 4], warpsPerCTA = [4, 1], order = [1, 0]}>
++#dotOp0 = #ttg.dot_op<{opIdx = 0, parent = #blocked}>
++#dotOp1 = #ttg.dot_op<{opIdx = 1, parent = #blocked}>
++// CHECK{LITERAL}: #mma = #ttg.amd_mfma<{version = 3, warpsPerCTA = [4, 1], instrShape = [64, 4, 16], isTransposed = true}>
++// CHECK-LABEL: asymmetric_mfma_64x4_f32
++// CHECK: tt.dot {{.*}} : tensor<64x32xf32, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 1}>> * tensor<32x4xf32, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 1}>> -> tensor<64x4xf32, #mma>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx942", "ttg.threads-per-warp" = 64 : i32} {
++  tt.func public @asymmetric_mfma_64x4_f32(
++      %a: tensor<64x32xf32, #dotOp0>,
++      %b: tensor<32x4xf32, #dotOp1>,
++      %o_ptr: tensor<64x4x!tt.ptr<f32>, #blocked>) {
++    %cst = arith.constant dense<0.000000e+00> : tensor<64x4xf32, #blocked>
++    %ab = tt.dot %a, %b, %cst : tensor<64x32xf32, #dotOp0> * tensor<32x4xf32, #dotOp1> -> tensor<64x4xf32, #blocked>
++    tt.store %o_ptr, %ab : tensor<64x4x!tt.ptr<f32>, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [4, 16], warpsPerCTA = [1, 4], order = [0, 1]}>
++#dotOp0 = #ttg.dot_op<{opIdx = 0, parent = #blocked}>
++#dotOp1 = #ttg.dot_op<{opIdx = 1, parent = #blocked}>
++// CHECK{LITERAL}: #mma = #ttg.amd_mfma<{version = 3, warpsPerCTA = [4, 1], instrShape = [4, 64, 16], isTransposed = false}>
++// CHECK-LABEL: asymmetric_mfma_4x64_f32
++// CHECK: tt.dot {{.*}} : tensor<4x32xf32, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 1}>> * tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 1}>> -> tensor<4x64xf32, #mma>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx942", "ttg.threads-per-warp" = 64 : i32} {
++  tt.func public @asymmetric_mfma_4x64_f32(
++      %a: tensor<4x32xf32, #dotOp0>,
++      %b: tensor<32x64xf32, #dotOp1>,
++      %o_ptr: tensor<4x64x!tt.ptr<f32>, #blocked>) {
++    %cst = arith.constant dense<0.000000e+00> : tensor<4x64xf32, #blocked>
++    %ab = tt.dot %a, %b, %cst : tensor<4x32xf32, #dotOp0> * tensor<32x64xf32, #dotOp1> -> tensor<4x64xf32, #blocked>
++    tt.store %o_ptr, %ab : tensor<4x64x!tt.ptr<f32>, #blocked>
++    tt.return
++  }
++}
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
+index 5ec93813a7a6..f9e674fbcd3d 100644
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
+@@ -64,6 +64,13 @@ int getWmmaVersion(ISAFamily isaFamily) {
+   return 0;
+ }
+ 
++static bool hasAsymmetricMfmaBroadcastOperand(unsigned mDim, unsigned nDim) {
++  // The MFMA lowering handles these asymmetric instruction shapes by
++  // broadcasting the narrow operand with the cbsz/abid intrinsic operands.
++  // Keep this predicate in sync with DotOpToLLVM/MFMA.cpp.
++  return (mDim == 64 && nDim == 4) || (mDim == 4 && nDim == 64);
++}
++
+ FailureOr<ScaleDotElemType> mlirTypeToScaledElemType(Type type) {
+   return llvm::TypeSwitch<Type, FailureOr<ScaleDotElemType>>(type)
+       .Case<Float8E4M3FNType>([](Type) { return ScaleDotElemType::E4M3; })
+@@ -580,6 +587,7 @@ class BlockedToMFMA : public OpRewritePattern<tt::DotOp> {
+     Value b = dotOp.getB();
+     auto oldAType = cast<RankedTensorType>(a.getType());
+     auto oldBType = cast<RankedTensorType>(b.getType());
++    int64_t inputKSize = oldAType.getShape().back();
+     auto ctx = oldAType.getContext();
+ 
+     Type aElemType = oldAType.getElementType();
+@@ -716,13 +724,28 @@ class BlockedToMFMA : public OpRewritePattern<tt::DotOp> {
+     //    ds_read_b128, which is the largest vector size for shared memory load.
+     auto kWidth = kBase;
+ 
+-    // We want to extend kWidth by kPack (kPack=1 means no extension)
+-    // to increase ds_read vector size
++    // The scaled-MFMA rewrite below requires kWidth == 32, so kPack must be 1
++    // to keep the packing guard from widening kWidth past kBase. Scaled MFMA
++    // only runs on gfx950, where the compiler always clamps kPack to 1.
++    assert((!withScale || kPack == 1) &&
++           "scaled MFMA requires kPack == 1 (clamped on gfx950)");
++
++    // We want to extend kWidth by kPack (kPack=1 means no extension) to
++    // increase ds_read vector size. Only apply packing when the resulting dot
++    // operand layout still fits within the input dot's K dimension; some MFMA
++    // shapes cover multiple K groups per warp, so kWidth * kPack is not the
++    // complete K coverage.
+     // However, in FA, the second dot can only use kWidth = kBase since it's
+-    // limited by the result of the first dot, which is of mfmaLayout.
++    // limited by the result of the first dot, which is of mfmaLayout. Also keep
++    // kWidth at kBase for 64x4 and 4x64 MFMA instructions: lowering reuses one
++    // operand through hardware broadcast before advancing to the next kBase
++    // group, but DotOperandEncodingAttr stores one kWidth for both operands.
+     auto isDotChainTail = isChainDotTail(dotOp);
+-    if (!isDotChainTail)
+-      kWidth *= kPack;
++    unsigned packedKWidth = kWidth * kPack;
++    auto packedOperandShape = mfmaEnc.getInstrShapeForOperand(packedKWidth, 0);
++    if (!hasAsymmetricMfmaBroadcastOperand(mDim, nDim) && !isDotChainTail &&
++        inputKSize >= packedOperandShape[1])
++      kWidth = packedKWidth;
+ 
+     // For FA fwd kernel with f16 elementTy, we limit the 2nd dot to have
+     // kWidth = 4 so that the coversion from #mma (result of 1st dot)
