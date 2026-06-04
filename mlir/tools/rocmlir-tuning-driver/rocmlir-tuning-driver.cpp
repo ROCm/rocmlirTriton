@@ -737,7 +737,7 @@ static LogicalResult extractFuncOps(ModuleOp op,
     kernels.push_back(f);
   });
 
-  if (kernels.size() > 1)
+  if (kernels.size() != 1)
     return op->emitOpError(
                "expected exactly one kernel function in module, got ")
            << kernels.size();
