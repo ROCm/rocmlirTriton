@@ -1021,12 +1021,13 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                 bufferLengths, benchmarkParams);
         if (succeeded(classified)) {
           lockedIsSmallKernel = *classified;
-          LLVM_DEBUG(llvm::dbgs() << "Locked measurement method for problemConfig using "
-                          "default config '"
-                       << defaultConfig << "': "
-                       << (*lockedIsSmallKernel ? "small-kernel (CPU timer)"
-                                                : "large-kernel (GPU events)")
-                       << "\n");
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Locked measurement method for problemConfig using "
+                        "default config '"
+                     << defaultConfig << "': "
+                     << (*lockedIsSmallKernel ? "small-kernel (CPU timer)"
+                                              : "large-kernel (GPU events)")
+                     << "\n");
         } else {
           LLVM_DEBUG(llvm::dbgs()
                      << "Warning: kernel-size probe failed; falling back to "
