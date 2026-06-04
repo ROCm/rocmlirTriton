@@ -2644,19 +2644,16 @@ createCPUConvWithMLIR(ModuleOp module,
       genConfig.operation.value() == rock::ConvOpType::BwdWeight) {
     ArrayRef<int64_t> curShape = inputType.getShape();
     SmallVector<int64_t> trimmedShape(curShape);
-    bool needsTrim = false;
     for (size_t i = 0; i < nSpatialDims; ++i) {
       unsigned pos = inputInfo.imageDims[i];
       int64_t footprint =
           genConfig.strideDims[i] * (outputInfo.imageLens[i] - 1) +
           genConfig.dilationDims[i] * (filterInfo.imageLens[i] - 1) + 1;
-      if (footprint < curShape[pos]) {
+      if (footprint < curShape[pos])
         trimmedShape[pos] = footprint;
-        needsTrim = true;
-      }
     }
 
-    if (needsTrim) {
+    if (curShape != ArrayRef<int64_t>(trimmedShape)) {
       SmallVector<OpFoldResult> offsets(curShape.size(), b.getIndexAttr(0));
       SmallVector<OpFoldResult> strides(curShape.size(), b.getIndexAttr(1));
       SmallVector<OpFoldResult> sizes;
