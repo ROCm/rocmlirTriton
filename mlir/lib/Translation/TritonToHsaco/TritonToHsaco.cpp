@@ -733,8 +733,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
 
   auto [isaFamily, _] = rock::getArch(arch);
-  bool disableTrue16 = isaFamily == triton::amdgpu::ISAFamily::RDNA3 &&
-                       usesFp8KernelArg(module);
+  bool disableTrue16 =
+      isaFamily == triton::amdgpu::ISAFamily::RDNA3 && usesFp8KernelArg(module);
 
   auto triple = llvm::Triple(options.triple);
   // Set target triple and data layout (attach_target_triple in compiler.py)
