@@ -33,6 +33,7 @@
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "mlir/Pass/Pass.h"
@@ -731,7 +732,9 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   std::string features = options.features;
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
 
-  bool disableTrue16 = arch.starts_with("gfx11") && usesFp8KernelArg(module);
+  auto [isaFamily, _] = rock::getArch(arch);
+  bool disableTrue16 = isaFamily == triton::amdgpu::ISAFamily::RDNA3 &&
+                       usesFp8KernelArg(module);
 
   auto triple = llvm::Triple(options.triple);
   // Set target triple and data layout (attach_target_triple in compiler.py)

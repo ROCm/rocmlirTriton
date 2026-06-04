@@ -49,7 +49,7 @@ static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
   return ret;
 }
 
-static std::tuple<ISAFamily, StringRef> getArch(StringRef arch) {
+std::tuple<ISAFamily, StringRef> mlir::rock::getArch(StringRef arch) {
   auto [chip, _] = parseArchString(arch);
   ISAFamily isaFamily = TargetFeatures(chip).getISAFamily();
   if (isaFamily == ISAFamily::Unknown) {
