@@ -10,10 +10,11 @@
     no hard dependency on Git Bash or GNU sed.
 
     Steps performed, in order:
-      1. Download external/triton via the GitHub CLI.
-      2. Apply any triton-patches/*.patch, normalizing CRLF -> LF first.
-      3. Download llvm/llvm-project into external/triton/llvm-project at the
-         commit in external/triton/cmake/llvm-hash.txt.
+      1. git submodule update --init --recursive  (brings in external/triton)
+      2. Apply any triton-patches/*.patch, normalizing CRLF -> LF first
+         (Windows git core.autocrlf=true otherwise breaks `git apply`)
+      3. Clone llvm/llvm-project into external/triton/llvm-project and reset
+         to the commit in external/triton/cmake/llvm-hash.txt
       4. CMake-configure LLVM/MLIR/LLD with clang-cl + LLD
       5. ninja the LLVM build
 
@@ -70,12 +71,12 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# Helper: invoke a native command (gh, cmake, ninja) without letting
+# Helper: invoke a native command (git, cmake, ninja) without letting
 # PowerShell turn its stderr progress chatter (e.g. "Cloning into ...",
 # "Updating files: 17% (...)") into a terminating NativeCommandError.
 #
 # Without this wrapper, $ErrorActionPreference='Stop' on Windows PowerShell 5.1
-# aborts the script on the very first native stderr line, even though the
+# aborts the script on the very first git stderr line, even though the
 # command itself succeeds. PowerShell 7 has
 # $PSNativeCommandUseErrorActionPreference for this; PS 5 does not.
 #
@@ -101,198 +102,16 @@ function Invoke-Native {
     }
 }
 
-function Invoke-GhText {
-    [CmdletBinding()]
-    param([Parameter(ValueFromRemainingArguments)] [object[]]$Args)
-
-    $saved = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $output = & gh @Args 2>&1
-        $exitCode = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $saved
-    }
-
-    if ($exitCode -ne 0) {
-        $message = ($output | Out-String).Trim()
-        throw "gh $($Args -join ' ') failed ($exitCode): $message"
-    }
-    return @($output)
-}
-
-function ConvertTo-GithubRepoSlug {
-    param([Parameter(Mandatory)] [string]$Remote)
-
-    $trimmed = $Remote.Trim()
-    if ($trimmed -match '^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$') {
-        return "$($Matches[1])/$($Matches[2])"
-    }
-    if ($trimmed -match '^git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$') {
-        return "$($Matches[1])/$($Matches[2])"
-    }
-    if ($trimmed -match '^[^/\s]+/[^/\s]+$') {
-        return ($trimmed -replace '\.git$', '')
-    }
-
-    throw "Only GitHub repositories are supported by the gh-based fetch path: $Remote"
-}
-
-function Get-GhAuthHeaders {
-    $headers = @{}
-    $saved = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $tokenOutput = & gh auth token 2>$null
-        $exitCode = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $saved
-    }
-
-    if ($exitCode -eq 0) {
-        $token = ($tokenOutput | Select-Object -First 1).Trim()
-        if ($token) {
-            $headers['Authorization'] = "Bearer $token"
-        }
-    }
-    return $headers
-}
-
-function Clear-DirectoryExcept {
-    param([Parameter(Mandatory)] [string]$Path,
-          [string[]]$PreserveNames = @())
-
-    if (-not (Test-Path $Path)) {
-        New-Item -ItemType Directory -Force -Path $Path | Out-Null
-        return
-    }
-
-    $preserve = @{}
-    foreach ($name in $PreserveNames) {
-        if ($name) {
-            $preserve[$name.ToLowerInvariant()] = $true
-        }
-    }
-
-    Get-ChildItem -LiteralPath $Path -Force | ForEach-Object {
-        if (-not $preserve.ContainsKey($_.Name.ToLowerInvariant())) {
-            Remove-Item -LiteralPath $_.FullName -Recurse -Force
-        }
-    }
-}
-
-function Copy-DirectoryContents {
-    param([Parameter(Mandatory)] [string]$Source,
-          [Parameter(Mandatory)] [string]$Destination)
-
-    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName `
-            -Destination (Join-Path $Destination $_.Name) `
-            -Recurse -Force
-    }
-}
-
-function Read-GitModules {
-    param([Parameter(Mandatory)] [string]$Path)
-
-    if (-not (Test-Path $Path)) { return @() }
-
-    $entries = @()
-    $current = $null
-    foreach ($line in Get-Content -LiteralPath $Path) {
-        if ($line -match '^\s*\[submodule\s+"(.+)"\]\s*$') {
-            if ($current) { $entries += [pscustomobject]$current }
-            $current = @{ Name = $Matches[1]; Path = $null; Url = $null }
-        } elseif ($current -and $line -match '^\s*path\s*=\s*(.+?)\s*$') {
-            $current.Path = $Matches[1]
-        } elseif ($current -and $line -match '^\s*url\s*=\s*(.+?)\s*$') {
-            $current.Url = $Matches[1]
-        }
-    }
-    if ($current) { $entries += [pscustomobject]$current }
-    return @($entries | Where-Object { $_.Path -and $_.Url })
-}
-
-function Install-GhRepositoryArchive {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)] [string]$Remote,
-          [Parameter(Mandatory)] [string]$Ref,
-          [Parameter(Mandatory)] [string]$Destination,
-          [string[]]$PreserveNames = @())
-
-    $repoSlug = ConvertTo-GithubRepoSlug $Remote
-    Write-Host "  gh repo: $repoSlug"
-    Invoke-Native gh repo view $repoSlug --json nameWithOwner --jq .nameWithOwner
-    if ($LASTEXITCODE -ne 0) { throw "gh repo view failed for $repoSlug ($LASTEXITCODE)" }
-
-    # Download a GitHub archive instead of cloning so SHA pins do not require a
-    # follow-up git fetch/checkout on machines where native git remotes fail.
-    $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "rocmlir-gh-archive-$PID-$([guid]::NewGuid())"
-    $zipPath = Join-Path $tmpRoot 'repo.zip'
-    $extractRoot = Join-Path $tmpRoot 'extract'
-    New-Item -ItemType Directory -Force -Path $tmpRoot, $extractRoot | Out-Null
-
-    try {
-        $encodedRef = [System.Uri]::EscapeDataString($Ref)
-        $archiveUri = "https://codeload.github.com/$repoSlug/zip/$encodedRef"
-        Write-Host "  ref:     $Ref"
-        Invoke-WebRequest -Uri $archiveUri -OutFile $zipPath `
-            -Headers (Get-GhAuthHeaders) -UseBasicParsing
-        Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
-        $archiveRoot = Get-ChildItem -LiteralPath $extractRoot -Directory |
-            Select-Object -First 1
-        if (-not $archiveRoot) {
-            throw "GitHub archive for $repoSlug@$Ref did not contain a root directory."
-        }
-
-        Clear-DirectoryExcept -Path $Destination -PreserveNames $PreserveNames
-        Copy-DirectoryContents -Source $archiveRoot.FullName -Destination $Destination
-        Install-GhSubmodules -RepoSlug $repoSlug -Ref $Ref -Destination $Destination
-    } finally {
-        Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Install-GhSubmodules {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)] [string]$RepoSlug,
-          [Parameter(Mandatory)] [string]$Ref,
-          [Parameter(Mandatory)] [string]$Destination)
-
-    $gitmodulesPath = Join-Path $Destination '.gitmodules'
-    $submodules = Read-GitModules $gitmodulesPath
-    if ($submodules.Count -eq 0) { return }
-
-    $encodedRef = [System.Uri]::EscapeDataString($Ref)
-    $treeLines = Invoke-GhText api "repos/$RepoSlug/git/trees/$encodedRef" `
-        --method GET -f recursive=1 `
-        --jq '.tree[] | select(.type == \"commit\") | [.path, .sha] | @tsv'
-    $shaByPath = @{}
-    foreach ($line in $treeLines) {
-        $parts = "$line" -split "`t"
-        if ($parts.Count -eq 2) {
-            $shaByPath[$parts[0]] = $parts[1]
-        }
-    }
-
-    foreach ($submodule in $submodules) {
-        if (-not $shaByPath.ContainsKey($submodule.Path)) {
-            throw "Could not resolve submodule SHA for $($submodule.Path) in $RepoSlug@$Ref"
-        }
-        $submoduleDest = Join-Path $Destination $submodule.Path
-        Write-Host "  submodule: $($submodule.Path) @ $($shaByPath[$submodule.Path])"
-        Install-GhRepositoryArchive -Remote $submodule.Url `
-            -Ref $shaByPath[$submodule.Path] `
-            -Destination $submoduleDest
-    }
-}
-
 # ---------------------------------------------------------------------------
 # Resolve repo root
 # ---------------------------------------------------------------------------
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = (Resolve-Path (Join-Path $ScriptDir '..')).Path
+try {
+    $RepoRoot = (git -C $ScriptDir rev-parse --show-toplevel 2>$null).Trim()
+    if ([string]::IsNullOrEmpty($RepoRoot)) { throw 'git rev-parse failed' }
+} catch {
+    $RepoRoot = (Resolve-Path (Join-Path $ScriptDir '..')).Path
+}
 $RepoRoot = $RepoRoot -replace '\\', '/'
 Write-Host "=== rocmlirTriton LLVM build wrapper (Windows) ===" -ForegroundColor Cyan
 Write-Host "Repo root: $RepoRoot"
@@ -364,26 +183,51 @@ $PatchesDir = "$RepoRoot/triton-patches"
 #
 # rocmlirTriton's .gitmodules pins upstream triton-lang/triton, which is the
 # Linux baseline. On Windows the upstream tree does not currently build
-# cleanly, so we install the windows-enablement fork into external/triton.
+# cleanly, so we redirect the *local* clone of external/triton to the
+# windows-enablement fork triton-lang/triton-windows at branch main-windows.
 #
-# This override is purely local to the checkout -- it does NOT modify
-# .gitmodules, so Linux clones using build-llvm.sh continue to get upstream
-# triton.
+# This override is purely local to the clone -- it does NOT modify
+# .gitmodules and does NOT modify the parent repo's recorded gitlink, so
+# Linux clones using build-llvm.sh continue to get upstream triton.
+# `git submodule status` on Windows will report external/triton as "+<sha>"
+# (modified) by design.
 # ---------------------------------------------------------------------------
 Write-Host "--- Bringing in external/triton ($TritonRef from fork) ---" `
     -ForegroundColor Cyan
 Write-Host "  remote: $TritonRemote"
 Write-Host "  ref:    $TritonRef"
 
-Install-GhRepositoryArchive -Remote $TritonRemote `
-    -Ref $TritonRef `
-    -Destination $TritonDir `
-    -PreserveNames @('llvm-project')
+if (-not (Test-Path "$TritonDir/.git")) {
+    Write-Host "  external/triton/.git absent -- direct-cloning fork" `
+        -ForegroundColor Yellow
+    if (Test-Path $TritonDir) { Remove-Item -Recurse -Force $TritonDir }
+    Invoke-Native git clone --filter=blob:none $TritonRemote $TritonDir
+    if ($LASTEXITCODE -ne 0) { throw "git clone fork failed ($LASTEXITCODE)" }
+} else {
+    Invoke-Native git -C $TritonDir remote set-url origin $TritonRemote
+    if ($LASTEXITCODE -ne 0) { throw "remote set-url failed ($LASTEXITCODE)" }
+}
+Invoke-Native git -C $TritonDir fetch --depth 1 origin $TritonRef
+if ($LASTEXITCODE -ne 0) { throw "git fetch $TritonRef failed ($LASTEXITCODE)" }
+# Reset to FETCH_HEAD rather than $TritonRef: with --depth 1 fetch, a
+# branch-name ref is reachable only as FETCH_HEAD, not as the local
+# refs/heads/... entry. Using FETCH_HEAD handles both SHA and branch refs.
+Invoke-Native git -C $TritonDir reset --hard FETCH_HEAD
+if ($LASTEXITCODE -ne 0) { throw "git reset FETCH_HEAD failed ($LASTEXITCODE)" }
+
+# Drop any orphan files left over from a half-applied patch / failed previous
+# build. Without this, `git apply --check` against a clean tree can still see
+# stale junk and we silently fall through to the "assuming present" branch.
+Invoke-Native git -C $TritonDir clean -fd
+if ($LASTEXITCODE -ne 0) { throw "git clean failed for Triton ($LASTEXITCODE)" }
+
+Invoke-Native git -C $TritonDir submodule update --init --recursive
+if ($LASTEXITCODE -ne 0) { throw "nested submodule update failed ($LASTEXITCODE)" }
 
 # ---------------------------------------------------------------------------
 # Step 2: Apply triton patches.
 #
-# Originally we applied every triton-patches/*.patch on top of the pinned
+# Originally we applied every triton-patches/*.patch on top of the gitlinked
 # Triton tree. An audit against triton-windows@main-windows showed that on
 # the Windows path:
 #   - patch1:         AtomicRMW fmax/smax disambiguation. Logically NOT
@@ -417,12 +261,7 @@ if ($AnyPatchOnDisk) {
     # *at invocation time* -- the `2>$null` / `2>&1` redirections happen
     # too late to suppress it. We manage failures ourselves via $LASTEXITCODE.
     $savedPref = $ErrorActionPreference
-    $savedGitCeiling = $env:GIT_CEILING_DIRECTORIES
     $ErrorActionPreference = 'Continue'
-    # Archives downloaded via gh do not have their own .git directory. Prevent
-    # `git apply` from walking up to the parent rocmlirTriton repository and
-    # treating Triton-relative patch paths as out-of-repo paths to skip.
-    $env:GIT_CEILING_DIRECTORIES = $RepoRoot
     try {
         foreach ($patchName in $TritonPatchNames) {
             $patchPath = Join-Path $PatchesDir $patchName
@@ -474,7 +313,6 @@ if ($AnyPatchOnDisk) {
         }
     } finally {
         $ErrorActionPreference = $savedPref
-        $env:GIT_CEILING_DIRECTORIES = $savedGitCeiling
         Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
     }
 }
@@ -497,7 +335,7 @@ if ($IsAlternativeStack) {
     $LlvmRemoteEffective = 'https://github.com/llvm/llvm-project'
     $LlvmHashFile = "$TritonDir/cmake/llvm-hash.txt"
     if (-not (Test-Path $LlvmHashFile)) {
-        throw "$LlvmHashFile not found (did the Triton source fetch finish?)."
+        throw "$LlvmHashFile not found (did the Triton submodule init?)."
     }
     $LlvmHash = (Get-Content $LlvmHashFile -Raw).Trim()
 }
@@ -507,11 +345,25 @@ if ($Clean -and (Test-Path $LlvmSrc)) {
     Remove-Item -Recurse -Force $LlvmSrc
 }
 
-Write-Host "--- Fetching llvm-project at $LlvmHash ---" -ForegroundColor Cyan
-Install-GhRepositoryArchive -Remote $LlvmRemoteEffective `
-    -Ref $LlvmHash `
-    -Destination $LlvmSrc `
-    -PreserveNames @('build')
+if (-not (Test-Path $LlvmSrc)) {
+    Write-Host "--- Cloning $LlvmRemoteEffective ---" -ForegroundColor Cyan
+    Invoke-Native git clone --filter=blob:none $LlvmRemoteEffective $LlvmSrc
+    if ($LASTEXITCODE -ne 0) { throw "git clone failed ($LASTEXITCODE)" }
+} else {
+    Invoke-Native git -C $LlvmSrc remote set-url origin $LlvmRemoteEffective
+    if ($LASTEXITCODE -ne 0) { throw "remote set-url failed ($LASTEXITCODE)" }
+}
+
+Write-Host "--- Resetting llvm-project to $LlvmHash ---" -ForegroundColor Cyan
+Invoke-Native git -C $LlvmSrc fetch --depth 1 origin $LlvmHash
+if ($LASTEXITCODE -ne 0) { throw "git fetch failed ($LASTEXITCODE)" }
+# See triton step: FETCH_HEAD works for both SHA and branch refs.
+Invoke-Native git -C $LlvmSrc reset --hard FETCH_HEAD
+if ($LASTEXITCODE -ne 0) { throw "git reset failed ($LASTEXITCODE)" }
+
+# As above: scrub any orphan files so `git apply --check` sees a pristine tree.
+Invoke-Native git -C $LlvmSrc clean -fd
+if ($LASTEXITCODE -ne 0) { throw "git clean failed for LLVM ($LASTEXITCODE)" }
 
 # Apply llvm-patches/*.patch in sorted order, mirroring the Linux build-llvm.sh
 # hook (which splices the same loop into Triton's build script). Each patch is
@@ -530,11 +382,7 @@ if (Test-Path $LlvmPatchesDir) {
         $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "rocmlir-llvm-patches-$PID"
         New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
         $savedPref = $ErrorActionPreference
-        $savedGitCeiling = $env:GIT_CEILING_DIRECTORIES
         $ErrorActionPreference = 'Continue'
-        # Keep `git apply` rooted at llvm-project when it was populated from a
-        # GitHub archive rather than a native git clone.
-        $env:GIT_CEILING_DIRECTORIES = $TritonDir
         try {
             foreach ($patch in $llvmPatches) {
                 $bytes  = [System.IO.File]::ReadAllBytes($patch.FullName)
@@ -573,7 +421,6 @@ if (Test-Path $LlvmPatchesDir) {
             }
         } finally {
             $ErrorActionPreference = $savedPref
-            $env:GIT_CEILING_DIRECTORIES = $savedGitCeiling
             Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
         }
     }
