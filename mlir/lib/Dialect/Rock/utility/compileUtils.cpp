@@ -181,31 +181,41 @@ FailureOr<ArrayAttr> getPrefillArrayFromBinary(ModuleOp moduleOp) {
 LogicalResult fillCompilationConfigs(Attribute perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts) {
-  // TODO(roctriton): add common params to RockTuningParamAttrInterface
-  if (auto gemmParams = dyn_cast<GemmParamsAttr>(perfConfig)) {
-    tritonOpts.numWarps = gemmParams.getNumWaves();
-    tritonOpts.numCTAs = gemmParams.getNumCTAs();
-    tritonOpts.numStages = gemmParams.getNumStages();
-    tritonOpts.matrixInstrNonkdim = gemmParams.getMatrixInstrNonkdim();
-    tritonOpts.kpack = gemmParams.getKpack();
+  auto params = dyn_cast<RockTuningParamAttrInterface>(perfConfig);
+  if (!params)
+    return failure();
 
-    backendOpts.numWarps = gemmParams.getNumWaves();
-    backendOpts.numCTAs = gemmParams.getNumCTAs();
-    backendOpts.wavesPerEU = gemmParams.getWavesPerEU();
-    return success();
-  }
-  if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(perfConfig)) {
-    tritonOpts.numWarps = gemmGemmParams.getNumWaves();
-    tritonOpts.numCTAs = gemmGemmParams.getNumCTAs();
-    tritonOpts.numStages = gemmGemmParams.getNumStages();
-    tritonOpts.matrixInstrNonkdim = gemmGemmParams.getMatrixInstrNonkdim();
-    tritonOpts.kpack = gemmGemmParams.getKpack();
+  tritonOpts.numWarps = params.getNumWaves();
+  tritonOpts.numCTAs = params.getNumCTAs();
+  tritonOpts.numStages = params.getNumStages();
+  tritonOpts.matrixInstrNonkdim = params.getMatrixInstrNonkdim();
+  tritonOpts.kpack = params.getKpack();
+  tritonOpts.useAsyncCopy = params.getUseAsyncCopy();
+  tritonOpts.useBlockPingpong = params.getUseBlockPingpong();
+  tritonOpts.useInThreadTranspose = params.getUseInThreadTranspose();
+  tritonOpts.useBufferOps = params.getUseBufferOps();
+  tritonOpts.useBufferAtomics = params.getUseBufferAtomics();
+  tritonOpts.scheduleHint = params.getScheduleHint();
 
-    backendOpts.numWarps = gemmGemmParams.getNumWaves();
-    backendOpts.wavesPerEU = gemmGemmParams.getWavesPerEU();
-    return success();
-  }
-  return failure();
+  backendOpts.numWarps = params.getNumWaves();
+  backendOpts.numCTAs = params.getNumCTAs();
+  backendOpts.wavesPerEU = params.getWavesPerEU();
+  backendOpts.scheduleHint = params.getScheduleHint();
+  return success();
+}
+
+LogicalResult fillCompilationConfigs(MLIRContext *ctx, StringRef perfConfig,
+                                     rock::TritonOptions &tritonOpts,
+                                     rock::BackendOptions &backendOpts) {
+  if (perfConfig.empty())
+    return failure();
+  auto strAttr = StringAttr::get(ctx, perfConfig);
+  Attribute params = GemmParamsAttr::get(strAttr);
+  if (!params)
+    params = GemmGemmParamsAttr::get(strAttr);
+  if (!params)
+    return failure();
+  return fillCompilationConfigs(params, tritonOpts, backendOpts);
 }
 
 } // namespace rock

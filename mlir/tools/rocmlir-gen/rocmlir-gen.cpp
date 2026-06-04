@@ -162,12 +162,6 @@ static llvm::cl::alias groupSizeShort("g",
                                       llvm::cl::desc("alias for -groupsize"),
                                       llvm::cl::aliasopt(groupSize));
 
-static llvm::cl::opt<int> convKernelId(
-    "kernel_id",
-    llvm::cl::desc("When set, emit only the sub-kernel with this index "
-                   "(0-based)"),
-    llvm::cl::value_desc("index"), llvm::cl::init(-1));
-
 // N
 static llvm::cl::opt<int64_t> batchSize("batchsize",
                                         llvm::cl::desc("Batch size"),
@@ -810,6 +804,43 @@ static llvm::cl::opt<float>
     relDiffThreshold("relDiff_threshold",
                      llvm::cl::desc("Threshold for relDiff metric"),
                      llvm::cl::value_desc("error"), llvm::cl::init(0.000001f));
+
+// Comparator selection.
+// `legacy` is the three-gate RMS/absDiff/relDiff verifier emitted by
+// mcpuVerifyFloat. `allclose` is the |a - b| <= atol + rtol*|b| verifier
+// emitted by mcpuVerifyFloatAllclose, with per-dtype K-scaled defaults. Default
+// stays `legacy` until the ~100 existing tests get migrated in the follow-up PR
+// setting -atol or -rtol on the command line implies `allclose`.
+enum class ComparatorMode { Legacy, Allclose };
+static llvm::cl::opt<ComparatorMode> comparatorMode(
+    "comparator",
+    llvm::cl::desc(
+        "Comparator used by the verifier (orthogonal to --verifier)"),
+    llvm::cl::values(
+        clEnumValN(ComparatorMode::Legacy, "legacy",
+                   "Three-gate RMS/absDiff/relDiff (default)"),
+        clEnumValN(ComparatorMode::Allclose, "allclose",
+                   "|a - b| <= (atol + rtol*|b|) with per-dtype defaults")),
+    llvm::cl::init(ComparatorMode::Legacy));
+
+// Allclose tolerance overrides. Setting either implies --comparator=allclose.
+static llvm::cl::opt<float> atolThreshold(
+    "atol",
+    llvm::cl::desc(
+        "Absolute tolerance for allclose comparator "
+        "(|a - b| <= atol + rtol*|b|). Setting this flag forces "
+        "--comparator=allclose, overriding any other --comparator value, "
+        "and replaces the K-scaled atol default."),
+    llvm::cl::value_desc("error"));
+
+static llvm::cl::opt<float> rtolThreshold(
+    "rtol",
+    llvm::cl::desc(
+        "Relative tolerance for allclose comparator "
+        "(|a - b| <= atol + rtol*|b|). Setting this flag forces "
+        "--comparator=allclose, overriding any other --comparator value, "
+        "and replaces the per-dtype rtol default."),
+    llvm::cl::value_desc("error"));
 
 // A toggle to control what to print in the verification function
 enum class VerificationPrintToggle : char {
@@ -2052,9 +2083,9 @@ static void convBodyBuilderF32(OpBuilder &b, Location loc,
 static void convBodyBuilderI32(OpBuilder &b, Location loc,
                                ValueRange blockArgs) {
   assert(blockArgs.size() == 3 && "convBodyBuilder expects 3 arguments");
-  Value inputVal = blockArgs[0];   // i8
-  Value filterVal = blockArgs[1];  // i8
-  Value outputVal = blockArgs[2];  // i32
+  Value inputVal = blockArgs[0];  // i8
+  Value filterVal = blockArgs[1]; // i8
+  Value outputVal = blockArgs[2]; // i32
   Type i32Type = b.getIntegerType(32);
   Value inputExt = arith::ExtSIOp::create(b, loc, i32Type, inputVal);
   Value filterExt = arith::ExtSIOp::create(b, loc, i32Type, filterVal);
@@ -2476,19 +2507,10 @@ createCPUConvWithMLIR(ModuleOp module,
   auto inputFlatType = RankedTensorType::get({inputElems}, inputElemType);
   auto outputFlatType = RankedTensorType::get({outputElems}, outputElemType);
 
-  rock::ConvGenerator convGenerator(genConfig);
-  bool hasWorkspace = false;
-  if (failed(convGenerator.hasWorkspace(b, hasWorkspace))) {
-    assert(genConfig.operation.value() == rock::ConvOpType::Fwd);
-  }
-
-  // Build argument types in standard [filter, input, output, workspace?] order,
-  // then reorder so the store destination (result) is last.
-  SmallVector<Type, 4> funcArgTypes = {filterFlatType, inputFlatType,
+  // Build argument types in standard [filter, input, output] order, then
+  // reorder so the store destination (result) is last.
+  SmallVector<Type, 3> funcArgTypes = {filterFlatType, inputFlatType,
                                        outputFlatType};
-  if (hasWorkspace)
-    funcArgTypes.push_back(
-        RankedTensorType::get({filterElems}, b.getF32Type()));
   rock::reorderConvArgsForKernel(genConfig.operation.value(), funcArgTypes);
   Type resultFlatType = funcArgTypes.back();
 
@@ -2527,7 +2549,7 @@ createCPUConvWithMLIR(ModuleOp module,
   case rock::ConvOpType::BwdWeight:
     inputFlat = block->getArgument(0);
     outputFlat = block->getArgument(1);
-    filterFlat = block->getArgument(hasWorkspace ? 3 : 2);
+    filterFlat = block->getArgument(2);
     break;
   }
 
@@ -4873,7 +4895,248 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
   }
 }
 
-static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
+// Per-dtype "expected rounding error per accumulation step" constants for
+// the reduction-aware atol bound:
+//   atol_eff = atol + K_eff * sum_error_tolerance<T>
+//
+// fp16 / bf16 use rocBLAS's general `sum_error_tolerance<T>` from
+// `near.hpp`.
+//
+// fp32 / fp64 are *tighter* than rocBLAS uses. This is because
+// rocBLAS uses the loose
+// `K * 1e-4` only for K > 10000 or to compare against external libraries (see
+// `near.hpp::reduction_requires_near`).
+//
+// fp8/fp4 are not in rocBLAS's table. We use eps(T) directly as the
+// per-accumulation-step bound:
+//   - fp8 e4m3: eps = 2^-3 = 0.125
+//   - fp8 e5m2: eps = 2^-2 = 0.25
+//   - fp4 e2m1: eps = 2^-1 = 0.5
+static float sumErrorTolerance(Type t) {
+  if (isa<Float16Type>(t))
+    return 1.0f / 900.0f;
+  if (isa<BFloat16Type>(t))
+    return 1.0f / 100.0f;
+  if (isa<Float32Type>(t))
+    return 1e-6f;
+  if (isa<Float64Type>(t))
+    return 1e-15f;
+  if (isa<Float8E4M3FNType, Float8E4M3FNUZType>(t))
+    return 0.125f;
+  if (isa<Float8E5M2Type, Float8E5M2FNUZType>(t))
+    return 0.25f;
+  if (isa<Float4E2M1FNType>(t))
+    return 0.5f;
+  return 1.0f / 100.0f; // conservative
+}
+
+// Trace `value` backward through value-preserving / shape-only ops to find
+// a matmul-like op feeding `value`. Returns the matmul op
+// (RockGemmWrapperInterface / RockGemmGemmWrapperInterface; the latter
+// covers AttentionOp, GemmElementwiseGemmOp and ConvElementwiseGemmOp)
+// or nullptr if no such producer exists within a bounded search.
+//
+// "Value-preserving" here is conservative: rock.transform (pure layout
+// change) and any single-result op whose result shape matches the operand
+// shape (elementwise add/mul, arith.extf/truncf etc.). For multi-operand
+// elementwise ops the trace follows each operand that has the same shape
+// as the result, recursing until it finds a matmul or runs out of
+// candidates.
+//
+// This lets us match `rock.gemm -> arith.addf -> rock.reduce` dataflow
+// chains (arrow = "feeds into"). Walking backward from the reduce, we
+// recover the matmul so the reduce can contribute its axis length to the
+// matmul's K_eff for patterns like `reduce_sum(matmul(A, B) + bias)`.
+static Operation *traceToMatmulLikeProducer(Value value, unsigned depth = 0) {
+  // Realistic gemm -> elementwise -> reduce chains are at most 6 hops;
+  // 16 gives a good margin.
+  constexpr unsigned kMaxDepth = 16;
+  if (depth > kMaxDepth)
+    return nullptr;
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp)
+    return nullptr;
+  if (isa<rock::RockGemmWrapperInterface, rock::RockGemmGemmWrapperInterface>(
+          defOp))
+    return defOp;
+  // Step through pure layout changes (rock.transform and any other
+  // ViewLikeOpInterface) and arith/math elementwise ops. These are the same
+  // op categories the rest of the Rock dialect treats as part of a fusion
+  // chain (see rock::isFusionOp and collectFusionInfo in loweringUtils.h).
+  if (auto view = dyn_cast<ViewLikeOpInterface>(defOp))
+    return traceToMatmulLikeProducer(view.getViewSource(), depth + 1);
+  if (!rock::isFusionOp(defOp))
+    return nullptr;
+  for (Value operand : defOp->getOperands())
+    if (Operation *found = traceToMatmulLikeProducer(operand, depth + 1))
+      return found;
+  return nullptr;
+}
+
+// Return the narrowest float element type appearing on any
+// RockGemmWrapperInterface and RockGemmGemmWrapperInterface ops in
+// `module`, or std::nullopt if none are present. Used as a precision floor
+// when the kernel's *output* dtype is wider than the dtype in which the
+// computation actually happens (e.g. `arith.extf f16 -> f32` /
+// `migraphx.convert` right before the function return). In that case the
+// verifier should use the narrower dtype's allclose baseline, since the
+// values being compared cannot be more accurate than the narrowest float
+// in the dataflow.
+static std::optional<Type> scanModuleForNarrowestFloat(ModuleOp module) {
+  std::optional<Type> best;
+  auto consider = [&](Type t) {
+    auto ft = dyn_cast_or_null<FloatType>(t);
+    if (!ft)
+      return;
+    auto bestFt = best.has_value() ? dyn_cast<FloatType>(*best) : FloatType();
+    if (!bestFt || ft.getWidth() < bestFt.getWidth())
+      best = t;
+  };
+  module.walk([&](Operation *op) {
+    if (auto gemmLike = dyn_cast<rock::RockGemmWrapperInterface>(op)) {
+      consider(gemmLike.getAType());
+      consider(gemmLike.getBType());
+      consider(gemmLike.getCType());
+      return;
+    }
+    if (auto gemmGemm = dyn_cast<rock::RockGemmGemmWrapperInterface>(op)) {
+      consider(gemmGemm.getAType());
+      consider(gemmGemm.getBType());
+      consider(gemmGemm.getCType());
+      consider(gemmGemm.getOutType());
+      return;
+    }
+  });
+  return best;
+}
+
+// Scan an MLIR module for RockGemmWrapperInterface and
+// RockGemmGemmWrapperInterface ops and return the largest effective reduction
+// length found, or std::nullopt if no rock reduction op is present.
+//
+// Used as a fallback when the kernel comes from a pre-lowered IR (e.g.
+// --clone-harness / --verifier=clone) and so the command-line -operation
+// flag is unset. The reduction axis is the source of truth for the
+// K-scaled atol bound, but for clone-harness flows it is only available by
+// inspecting the IR.
+//
+// Each reduction phase contributes its own K-worth of accumulation
+// slack; per-phase slacks add. Same rule as the command-line path in
+// `computeReductionK`. See docs/allclose_comparator.md Section 2.4.
+//
+// Conventions follow rock dialect:
+//   RockGemmWrapperInterface ops: getGemmSize().k
+//   RockGemmGemmWrapperInterface ops: GemmGemmSize.k + GemmGemmSize.n
+//   rock.reduce on a matmul-like producer: producer K_eff + reduce axis
+//     extent (one extra phase added).
+static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
+  // Pass 1: base K_eff per matmul-like op.
+  llvm::DenseMap<Operation *, int64_t> baseK;
+  module.walk([&](Operation *op) {
+    if (auto gemmLike = dyn_cast<rock::RockGemmWrapperInterface>(op)) {
+      baseK[op] = gemmLike.getGemmSize().k;
+      return;
+    }
+    if (auto gemmGemm = dyn_cast<rock::RockGemmGemmWrapperInterface>(op)) {
+      auto sz = gemmGemm.getGemmGemmSize();
+      if (sz.k > 0 && sz.n > 0)
+        baseK[op] = sz.k + sz.n;
+      return;
+    }
+  });
+
+  // Pass 2: add the extent of any downstream rock.reduce to its
+  // matmul-like producer's K_eff (one extra reduction phase).
+  llvm::DenseMap<Operation *, int64_t> kEff(baseK.begin(), baseK.end());
+  module.walk([&](rock::ReduceOp reduceOp) {
+    Operation *producer = traceToMatmulLikeProducer(reduceOp.getIn());
+    if (!producer)
+      return;
+    auto it = kEff.find(producer);
+    if (it == kEff.end())
+      return;
+    auto inTy = dyn_cast<ShapedType>(reduceOp.getIn().getType());
+    if (!inTy)
+      return;
+    int64_t axis = reduceOp.getAxis().getSExtValue();
+    assert(axis >= 0 && axis < inTy.getRank() &&
+           "rock.reduce verifier guarantees axis is in [0, rank)");
+    int64_t axisExtent = inTy.getShape()[axis];
+    if (axisExtent > 0)
+      it->second += axisExtent;
+  });
+
+  int64_t best = 0;
+  for (auto &kv : kEff)
+    best = std::max(best, kv.second);
+  if (best == 0)
+    return std::nullopt;
+  return best;
+}
+
+// Effective reduction length for the operation under test. For GEMM this is
+// K; for attention it is head_dim_qk + seq_len_k (two cascaded reductions);
+// for conv it is Cin * filter_volume (the im2col K). For element-wise ops it
+// is 1. Returns 0 if shape is unknown; caller should treat as "skip scaling".
+//
+// This mirrors how rocBLAS's testing_gemm scales `near_check` tolerance:
+//   tol = K * sum_error_tolerance<T>
+//   https://github.com/ROCm/rocBLAS/blob/develop/clients/include/blas3/testing_gemm.hpp
+//
+// When the command-line `-operation` flag is set, K is read from the gen
+// params (covers `rocmlir-gen -operation gemm/conv/attention ...`). When it
+// is not (clone-harness / pre-lowered IR flows), `module` is scanned for
+// rock reduction ops and the largest reduction length found is used.
+static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
+  if (!genParams.operation.has_value()) {
+    if (auto scanned = scanModuleForReductionK(module))
+      return *scanned;
+    return 1;
+  }
+  // Helper: convolution im2col K = Cin * product(filter spatial dims).
+  // filterDimension is laid out per filterLayout; multiplying everything
+  // except K (output channels) and G (group) is equivalent to that product.
+  auto convK = [&]() -> int64_t {
+    if (genParams.convConfig.has_value()) {
+      int64_t k = 1;
+      const auto &dims = (*genParams.convConfig)->filterDimension;
+      const auto &layout = (*genParams.convConfig)->filterLayout;
+      assert(dims.size() == layout.size());
+      for (auto [d, l] : llvm::zip(dims, layout)) {
+        if (l == 'k' || l == 'g')
+          continue;
+        k *= d;
+      }
+      return k;
+    }
+    return inputChannel * filterHeight * filterWidth;
+  };
+  switch (*genParams.operation) {
+  case rock::KernelType::Gemm:
+    return gemmK;
+  case rock::KernelType::Attention:
+    // Two cascaded reductions: head_dim_qk for QK^T, seq_len_k for
+    // attn-weighted V.
+    return headDimQK + sequenceLengthK;
+  case rock::KernelType::Conv:
+  case rock::KernelType::ConvBwdData:
+  case rock::KernelType::ConvBwdWeight:
+    return convK();
+  case rock::KernelType::GemmElementwiseGemm:
+    // Fused (A.B).C: two cascaded reductions of length K and N.
+    return gemmK + gemmN;
+  case rock::KernelType::ConvElementwiseGemm:
+    // Fused (Conv(A,B)).C: two cascaded reductions, the conv im2col K
+    // and gemmN (the conv's output channels become the K of the second
+    // GEMM).
+    return convK() + gemmN;
+  default:
+    return 1;
+  }
+}
+
+static func::FuncOp createVerifierFunc(const GenParams &genParams,
+                                       ModuleOp module, const KernelIF &kernel,
                                        MemRefType testType, MemRefType valType,
                                        std::string funcName) {
   func::FuncOp func = module.lookupSymbol<func::FuncOp>(funcName);
@@ -4933,11 +5196,20 @@ static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
   auto printDebugVal =
       arith::ConstantIntOp::create(b, loc, charType, printDebug);
 
+  // Comparator selection. The default stays `legacy` to preserve behavior of
+  // the ~100 existing test files until the follow-up migration PR. Setting
+  // -atol or -rtol on the command line implies allclose.
+  bool useAllclose = (comparatorMode == ComparatorMode::Allclose) ||
+                     atolThreshold.getNumOccurrences() ||
+                     rtolThreshold.getNumOccurrences();
+
   // obtain function name of the verifier wrapper
   std::string verifyFuncName = "mcpuVerify";
   if (isa<FloatType>(valElemType)) {
     // f16, bf16, fp8, bf8 will be converted to f32 by wrapper.
     verifyFuncName += "Float";
+    if (useAllclose)
+      verifyFuncName += "Allclose";
   } else if (valElemType.isInteger(8) || valElemType.isInteger(32) ||
              valElemType.isInteger(64)) {
     verifyFuncName +=
@@ -5027,28 +5299,114 @@ static func::FuncOp createVerifierFunc(ModuleOp module, const KernelIF &kernel,
   func::FuncOp verifyFuncDecl;
 
   if (isa<FloatType>(testElemType)) {
-    constexpr float defaultRMSThreshold(0.00003f);
-    constexpr float defaultRMSThresholdFP16(0.001f);
-    float RMSThresholdValue = isa<Float16Type, BFloat16Type>(testElemType)
-                                  ? defaultRMSThresholdFP16
-                                  : defaultRMSThreshold;
-    if (RMSThreshold)
-      RMSThresholdValue = RMSThreshold.getValue();
-    Value thr_RMS = getF32Val(RMSThresholdValue);
-    Value thr_absDiff = getF32Val(absDiffThreshold.getValue());
-    Value thr_relDiff = getF32Val(relDiffThreshold.getValue());
-    if (isa<Float16Type, BFloat16Type>(testElemType))
-      thr_relDiff = getF32Val(100.0f);
     Type boolType = b.getIntegerType(1);
     bool isFP32 = isa<Float32Type>(testElemType);
     auto isFP32Val = arith::ConstantIntOp::create(b, loc, boolType, isFP32);
 
-    verifyFuncDecl = makeFuncDecl(module, verifyFuncName,
-                                  {mr1DUnkTestType, mr1DUnkValType, floatType,
-                                   floatType, floatType, charType, boolType});
-    func::CallOp::create(b, loc, verifyFuncDecl,
-                         ValueRange{testResult, valResult, thr_RMS, thr_absDiff,
-                                    thr_relDiff, printDebugVal, isFP32Val});
+    if (useAllclose) {
+      // Per-dtype (atol, rtol) baselines for K=1 (element-wise) kernels.
+      //
+      // fp16/bf16/fp32/fp64 mirror PyTorch's _DTYPE_PRECISIONS:
+      //   https://github.com/pytorch/pytorch/blob/main/torch/testing/_comparison.py
+      //
+      // fp8/fp4 are not in PyTorch's table, so we use the per-dtype eps from
+      // the IEEE/OCP/AMD format definitions as rtol, and JAX's
+      // jax._src.public_test_util._default_tolerance value as atol:
+      //   - fp8 e4m3 eps = 2^-3 = 0.125; matches hipBLASLt's "F8 tolerance =
+      //     0.125" (ROCm/hipBLASLt PR #674) and NVIDIA TransformerEngine's
+      //     PR #501 table.
+      //   - fp8 e5m2 eps = 2^-2 = 0.25;  matches hipBLASLt's "B8 tolerance =
+      //     0.25" (same PR #674).
+      //   - fp4 e2m1 eps = 2^-1 = 0.5;   single mantissa bit, no upstream
+      //     citation, but consistent with the per-dtype-eps rule.
+      //   - atol = 1e-1 for fp8, 1e0 for fp4: from JAX's default_tolerance
+      //     table at jax-ml/jax:jax/_src/public_test_util.py. JAX uses one
+      //     scalar per dtype, applied as both atol and rtol; we use it as
+      //     atol only since rtol is already covered by the eps row.
+      auto allcloseBaseline = [&](Type t) -> std::pair<float, float> {
+        if (isa<Float16Type>(t))
+          return {1e-5f, 1e-3f};
+        if (isa<BFloat16Type>(t))
+          return {1e-5f, 1.6e-2f};
+        if (isa<Float32Type>(t))
+          return {1e-5f, 1.3e-6f};
+        if (isa<Float64Type>(t))
+          return {1e-7f, 1e-7f};
+        // e4m3 variants: 3-bit mantissa, eps = 2^-3 = 0.125.
+        if (isa<Float8E4M3FNType, Float8E4M3FNUZType>(t))
+          return {1e-1f, 0.125f};
+        // e5m2 variants: 2-bit mantissa, eps = 2^-2 = 0.25.
+        if (isa<Float8E5M2Type, Float8E5M2FNUZType>(t))
+          return {1e-1f, 0.25f};
+        // fp4 e2m1: 1-bit mantissa, eps = 2^-1 = 0.5.
+        if (isa<Float4E2M1FNType>(t))
+          return {1e0f, 0.5f};
+        return {1e-2f, 1e-2f};
+      };
+      // If a matmul-like op in the module uses a narrower float dtype than
+      // the kernel's output (e.g. f16 GEMM up-cast to f32 via arith.extf or
+      // migraphx.convert right before return), the values being compared
+      // cannot be more accurate than that narrower dtype. Take the
+      // narrower of {output dtype, narrowest matmul dtype} as the baseline
+      // -- this is what hipBLASLt's `unit_check` vs `norm_check` selection
+      // is implicitly tracking via the "F8/B8 output" rule.
+      Type baselineType = testElemType;
+      if (auto narrowest = scanModuleForNarrowestFloat(module)) {
+        auto outFt = dyn_cast<FloatType>(testElemType);
+        auto narrowFt = cast<FloatType>(*narrowest);
+        if (outFt && narrowFt.getWidth() < outFt.getWidth())
+          baselineType = *narrowest;
+      }
+      auto [baseAtol, baseRtol] = allcloseBaseline(baselineType);
+
+      // Reduction-aware atol bound: atol_eff = baseAtol + K * sumErrTol.
+      // Matches rocBLAS's `tol = K * sum_error_tolerance<T>` in
+      //   clients/include/blas3/testing_gemm.hpp
+      // K_eff per op is computed by computeReductionK (see above). For
+      // clone-harness / pre-lowered IR flows where -operation is unset, K
+      // is scanned from rock.gemm / rock.conv* / rock.attention in the
+      // module.
+      int64_t kEff = computeReductionK(genParams, module);
+      float defaultAtol =
+          baseAtol + static_cast<float>(kEff) * sumErrorTolerance(baselineType);
+
+      float atolValue = atolThreshold.getNumOccurrences()
+                            ? atolThreshold.getValue()
+                            : defaultAtol;
+      float rtolValue = rtolThreshold.getNumOccurrences()
+                            ? rtolThreshold.getValue()
+                            : baseRtol;
+      Value atolVal = getF32Val(atolValue);
+      Value rtolVal = getF32Val(rtolValue);
+
+      verifyFuncDecl = makeFuncDecl(module, verifyFuncName,
+                                    {mr1DUnkTestType, mr1DUnkValType, floatType,
+                                     floatType, charType, boolType});
+      func::CallOp::create(b, loc, verifyFuncDecl,
+                           ValueRange{testResult, valResult, atolVal, rtolVal,
+                                      printDebugVal, isFP32Val});
+    } else {
+      constexpr float defaultRMSThreshold(0.00003f);
+      constexpr float defaultRMSThresholdFP16(0.001f);
+      float RMSThresholdValue = isa<Float16Type, BFloat16Type>(testElemType)
+                                    ? defaultRMSThresholdFP16
+                                    : defaultRMSThreshold;
+      if (RMSThreshold)
+        RMSThresholdValue = RMSThreshold.getValue();
+      Value thr_RMS = getF32Val(RMSThresholdValue);
+      Value thr_absDiff = getF32Val(absDiffThreshold.getValue());
+      Value thr_relDiff = getF32Val(relDiffThreshold.getValue());
+      if (isa<Float16Type, BFloat16Type>(testElemType))
+        thr_relDiff = getF32Val(100.0f);
+
+      verifyFuncDecl = makeFuncDecl(module, verifyFuncName,
+                                    {mr1DUnkTestType, mr1DUnkValType, floatType,
+                                     floatType, floatType, charType, boolType});
+      func::CallOp::create(b, loc, verifyFuncDecl,
+                           ValueRange{testResult, valResult, thr_RMS,
+                                      thr_absDiff, thr_relDiff, printDebugVal,
+                                      isFP32Val});
+    }
   } else {
     verifyFuncDecl = makeFuncDecl(module, verifyFuncName,
                                   {mr1DUnkTestType, mr1DUnkValType, charType});
@@ -5215,8 +5573,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
     auto valType = dyn_cast<MemRefType>(valResult.getType());
     std::string funcName =
         root0.func.getName().str() + "_verify" + std::to_string(outIdx);
-    auto verifierFunc =
-        createVerifierFunc(module, root0, testType, valType, funcName);
+    auto verifierFunc = createVerifierFunc(genParams, module, root0, testType,
+                                           valType, funcName);
 
     func::CallOp::create(b, loc, verifierFunc,
                          ValueRange{testResult, valResult});
@@ -5323,6 +5681,34 @@ static LogicalResult populateHostHarnessLogic(
   bool isCPUKernel = !root0.func->hasAttr(rock::KernelAttr::getMnemonic());
   bool hasValidation = !validationType.empty() && !genCPUKernel.getValue();
   bool hasCloneValidation = hasValidation && (validationType == "clone");
+  // `--verifier clone` builds a host harness that allocates one buffer per
+  // kernel argument and feeds the kernel's tensor results back through the
+  // trailing args. That contract is only well-defined once MIGraphX/TOSA
+  // ops have been lowered away (to Rock or below), so reject kernels that
+  // still contain ops from those higher-level dialects.
+  if (hasCloneValidation) {
+    for (KernelIF kernel : kernels) {
+      Operation *highLevelOp = nullptr;
+      kernel.func.walk([&](Operation *op) {
+        Dialect *dialect = op->getDialect();
+        if (isa_and_nonnull<migraphx::MIGraphXDialect, tosa::TosaDialect>(
+                dialect)) {
+          highLevelOp = op;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (highLevelOp) {
+        kernel.func.emitError()
+            << "--verifier=clone cannot build a host harness around a "
+               "kernel that still contains "
+            << highLevelOp->getDialect()->getNamespace()
+            << " ops; run the kernel pipeline first (e.g. `rocmlir-driver "
+               "-kernel-pipeline=highlevel`)";
+        return failure();
+      }
+    }
+  }
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
   bool isSplitK = (genParams.perfConfig.empty())
                       ? false
@@ -5894,9 +6280,6 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
       exit(1);
     }
 
-    if (convKernelId.getNumOccurrences() > 0)
-      convGenerator.setKernelId(convKernelId.getValue());
-
     if (!isConvElntwiseGemm) {
       genParams.types.push_back(convGenerator.getFilterDataType(builder));
       genParams.types.push_back(convGenerator.getInputDataType(builder));
@@ -5937,28 +6320,10 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     } else if (genCPUKernel.getValue()) {
       (void)createCPUConvFunc(module, genConfig);
     } else {
-      // Populate the module.
-      int kernelStart = genConfig.kernelId;
-      int kernelCount = 0;
-      if (failed(convGenerator.getKernelCount(builder, kernelCount))) {
-        llvm::errs() << "Getting kernel count failed.\n";
+      if (failed(convGenerator.genConvModule(module))) {
+        llvm::errs() << "Module population failed.\n";
         exit(1);
       }
-      if (kernelStart < 0) {
-        kernelStart = 0;
-      } else {
-        kernelCount = kernelStart + 1;
-      }
-      // generate all sub-kernels, and get corresponding gemmId
-      std::string kernelBaseName = genConfig.kernelBaseName;
-      for (int i = kernelStart; i < kernelCount; ++i) {
-        convGenerator.setKernelName(kernelBaseName + "_" + std::to_string(i));
-        if (failed(convGenerator.genConvModule(module, i))) {
-          llvm::errs() << "Module population failed.\n";
-          exit(1);
-        }
-      }
-      convGenerator.setKernelName(kernelBaseName);
     }
   }
 }

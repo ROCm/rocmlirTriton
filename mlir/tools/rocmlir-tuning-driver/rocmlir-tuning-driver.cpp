@@ -872,12 +872,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       StringAttr perfConfigStrAttr =
           StringAttr::get(ctx.get(), result.perfConfig);
-      Attribute perfConfigAttr = rock::GemmParamsAttr::get(perfConfigStrAttr);
-      if (!perfConfigAttr)
-        perfConfigAttr = rock::GemmGemmParamsAttr::get(perfConfigStrAttr);
-      // Parse perfConfig
-      if (failed(fillCompilationConfigs(perfConfigAttr, tritonOpts,
-                                        backendOpts))) {
+      // Parse perfConfig (handles both GemmParamsAttr and GemmGemmParamsAttr)
+      if (failed(fillCompilationConfigs(ctx.get(), result.perfConfig,
+                                        tritonOpts, backendOpts))) {
         reportFailure("Failed to parse perfConfig for config: " +
                       llvm::Twine(result.perfConfig));
         return result;

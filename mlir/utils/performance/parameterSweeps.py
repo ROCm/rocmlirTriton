@@ -549,9 +549,8 @@ PERF_CONFIG_OPTIONS = {
 
 # Conv problem-shape sweep. Sizes are a mix of common CNN shapes (e.g. 224, 56,
 # 28) and small/odd ones to hit padding/edge paths.
-# TODO(rocmlirTriton): enable 'wrw' when it's fully supported.
 CONV_SHAPE_OPTIONS = {
-    'op': ['fwd', 'bwd'],
+    'op': ['fwd', 'bwd', 'wrw'],
     'layout': ['NCHW', 'NHWC'],
     'dtype': ['f32', 'f16', 'bf16', 'i8', 'fp8'],
     'n': [1, 2, 4, 8, 16],
@@ -619,6 +618,139 @@ def _kpack_choices(arch: str) -> List[int]:
     if 0x1000 <= n < 0x1250:  # all of gfx10/gfx11, gfx12 before gfx1250
         return [1, 2]
     return [1]  # gfx950+, gfx1250+, gfx13+, ...
+
+
+# TODO: Use python bindings when available.
+def _wave_size(arch: str) -> int:
+    """Wave size used by the perf-config tuner for ``arch``.
+    32 for RDNA, 64 for GCN/CDNA and gfx1250."""
+    n = _arch_id(arch)
+    if n is None:
+        # Unknown arch: conservative (wider wave -> smaller per-thread
+        # state -> less likely to filter).
+        return 64
+    if 0x1000 <= n < 0x1250:  # gfx10xx, gfx11xx, gfx12 < 1250
+        return 32
+    return 64
+
+
+# Dtypes whose Triton fp_to_fp lowering expands into many LLVM ops on AMD
+# targets that lack a packed hardware conversion.
+_AMPLIFIED_DTYPES = frozenset({'fp8', 'fp8_fp8', 'bf8'})
+
+
+# Returns the amplifier value for the given data type and arch.
+# - Amplifier=10 if fp8 and RDNA3 or RDNA4
+# - Amplifier=0 otherwise
+def _dtype_amplifier(dtype: str, arch: str) -> int:
+    """Multiplier on the number of elements held per thread for dtypes whose
+    Triton fp_to_fp lowering expands into many LLVM ops.
+
+    On RDNA3 (gfx11xx) and RDNA4 (gfx12xx) the fp8->f16 path lowers to ~25
+    scalar LLVM ops per element because there is no packed hardware
+    conversion intrinsic available. CDNA3 keeps the conversion packed via
+    v_cvt_pk_f32_fp8, and CDNA4 (gfx950) doesn't need it at all because
+    tt.dot_scaled accepts fp8 operands natively, so they aren't amplified.
+    Any other AMD target (gfx9 pre-940, gfx10, gfx13+, future families)
+    defaults to alpha=1 until measured."""
+    if dtype not in _AMPLIFIED_DTYPES:
+        return 1
+    n = _arch_id(arch)
+    if n is None:
+        return 1
+    is_rdna3_or_4 = 0x1100 <= n < 0x1250  # gfx11xx, gfx12xx
+    return 10 if is_rdna3_or_4 else 1
+
+
+# Needed because IR explosion issue in Triton
+# https://github.com/ROCm/triton/issues/940
+# Remove this compile cost cap heuristic if the issue is fixed.
+#
+# AMDGPU codegen, in particular the PostRA machine instruction scheduler,
+# scales with the instruction count *per basic block*, not in the total
+# across the kernel. A GEMM kernel has two basic blocks that matter for cost,
+# each measured in number of elements held per thread:
+#
+#   1. The K-loop body. Each iteration loads a tile slice of A and B into
+#      registers, contributing
+#          num_elements_kloop_body = (MPB + NPB) * KPB / (threads * kpack)
+#      elements per thread, where ``threads = numWaves * waveSize``.
+#
+#   2. The C-tile epilogue. The accumulator is held per-thread at
+#          num_elements_c_epilogue = (MPB * NPB) / threads
+#      elements per thread, and is stored back in one shot.
+#
+# The scheduler's cost is roughly the *larger* of these, not their sum:
+# halving KPB shortens the K-loop body but leaves the C-epilogue unchanged,
+# and vice versa. So we cap on
+#     max(num_elements_kloop_body, num_elements_c_epilogue) * alpha
+# where ``alpha`` is a dtype amplifier: fp8 on RDNA lowers tt.fp_to_fp into
+# ~25 scalar LLVM ops per element (no packed hw conversion), inflating the
+# K-loop body specifically; on CDNA3/4 the conversion is packed/native and
+# alpha == 1.
+
+
+def _compile_cost_score(perf: Sequence[int], dtype: str, arch: str) -> float:
+    """Estimate AMDGPU codegen cost for this (perf-config, dtype, arch).
+
+    Returns a unit-less score; higher means the LLVM backend is expected
+    to take longer to compile the kernel. The score is
+        max(num_elements_kloop_body, num_elements_c_epilogue) * alpha
+    where each term counts elements held per thread in the larger of the
+    two cost-dominating basic blocks (the K-loop body and the C-epilogue).
+    The PostRA scheduler bottlenecks on whichever basic block is larger,
+    so the per-block max is a better proxy than their sum."""
+    mpb, npb, kpb, kpack, _, num_waves, *_ = perf
+    threads = max(1, num_waves * _wave_size(arch))
+    num_elements_kloop_body = (mpb + npb) * kpb / (threads * max(1, kpack))
+    num_elements_c_epilogue = (mpb * npb) / threads
+    largest_num_elements = max(num_elements_kloop_body, num_elements_c_epilogue)
+    return largest_num_elements * _dtype_amplifier(dtype, arch)
+
+
+def _compile_cost_budget(arch: str) -> int:
+    """Per-arch cap on the compile cost score (see :func:`_compile_cost_score`).
+
+    RDNA build times start to go wild above 8000.
+    CDNA archs process the same workload faster (wider waves, native fp8 paths)
+    we give them a bit more budget."""
+    n = _arch_id(arch)
+    if n is None:
+        return 8000
+    # RDNA3 / RDNA4: more expensive LLVM processing (post-RA scheduler).
+    if 0x1000 <= n < 0x1250:
+        return 8000
+    # Everything else (gfx9, gfx1030, gfx1250, gfx13+, future): looser cap
+    # until measured.
+    return 12000
+
+
+def _perf_within_budget(perf: Sequence[int], dtype: str, arch: str) -> bool:
+    """Whether this (perf-config, dtype, arch) tuple's compile cost score
+    is within the per-arch budget."""
+    return _compile_cost_score(perf, dtype, arch) <= _compile_cost_budget(arch)
+
+
+# Hard cap on resampling in the random-cases generators; defensive in case
+# the budget is misconfigured for an arch and rejects nearly everything.
+_MAX_PERF_CONFIG_RETRIES = 256
+
+
+def _sampled_perf_within_budget(rng: random.Random, arch: str, dtype: str,
+                                split_k_choices: Sequence[int]) -> Tuple[int, ...]:
+    """Like :func:`sample_perf_config` but rejects perf-configs whose
+    effective per-thread state exceeds the arch budget. We loop with a
+    generous retry cap rather than enumerating the valid subspace because the
+    rejection rate is small (~few %) under PERF_CONFIG_OPTIONS for the archs
+    we care about, and we don't want to silently bias the sample distribution
+    by filtering an enumerated list."""
+    for _ in range(_MAX_PERF_CONFIG_RETRIES):
+        perf = sample_perf_config(rng, arch, split_k_choices)
+        if _perf_within_budget(perf, dtype, arch):
+            return perf
+    raise RuntimeError(f"sample_perf_config exceeded {_MAX_PERF_CONFIG_RETRIES} retries for "
+                       f"arch={arch!r} dtype={dtype!r}; PERF_CONFIG_OPTIONS may have no "
+                       "config inside the effective-state budget.")
 
 
 def sample_perf_config(rng: random.Random, arch: str,
@@ -769,21 +901,31 @@ def _split_k_choices(input_dtype: str) -> List[int]:
 
 
 def random_conv_cases(num_samples: int, arch: str, seed: Optional[int] = None):
-    """Yields ``num_samples`` random ``(conv_shape, perf_config)`` tuples."""
+    """Yields ``num_samples`` random ``(conv_shape, perf_config)`` tuples.
+
+    Perf-configs are filtered through :func:`_sampled_perf_within_budget` so
+    we never feed the pipeline a (tile, dtype, arch) combination known to
+    drive TritonToHsacoPass into the multi-minute regime."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
         shape = _sample_conv_shape(rng)
         # shape[2] is the input dtype (op, layout, dtype, n, c, k, ...).
-        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[2])))
+        dtype = shape[2]
+        yield (shape, _sampled_perf_within_budget(rng, arch, dtype, _split_k_choices(dtype)))
 
 
 def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
-    """Yields ``num_samples`` random ``(gemm_shape, perf_config)`` tuples."""
+    """Yields ``num_samples`` random ``(gemm_shape, perf_config)`` tuples.
+
+    Perf-configs are filtered through :func:`_sampled_perf_within_budget` so
+    we never feed the pipeline a (tile, dtype, arch) combination known to
+    drive TritonToHsacoPass into the multi-minute regime."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
         shape = _sample_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, trans_a, trans_b).
-        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[0])))
+        dtype = shape[0]
+        yield (shape, _sampled_perf_within_budget(rng, arch, dtype, _split_k_choices(dtype)))
 
 
 def to_conv_test(params, options: Options) -> ConvConfiguration:
@@ -910,6 +1052,14 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="The build directory of MLIR based kernel generator",
     )
+    # Offline cap-validation flag. --dry-run prints sampled (shape, perf)
+    # pairs and whether the per-thread state cap (see _perf_within_budget)
+    # would ACCEPT or REJECT each one, without running rocmlir-gen,
+    # rocmlir-driver, or mlir-runner.
+    parser.add_argument('--dry-run',
+                        action='store_true',
+                        help='Sample configs and print whether the cap would '
+                        'accept or reject each. No subprocesses are spawned.')
 
 
 def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
@@ -932,6 +1082,43 @@ def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
     return options, paths
 
 
+def _dry_run(kind: str, num_samples: int, arch: str, seed: Optional[int]) -> bool:
+    """Print sampled (shape, perf) pairs together with the cap's verdict.
+
+    Does NOT spawn rocmlir-gen / rocmlir-driver / mlir-runner. The point is to
+    verify the per-thread state cap (_perf_within_budget) cheaply.
+
+    The RNG sequence here matches a *real* run only until the first rejection
+    (in a real run, _sampled_perf_within_budget resamples on reject and so
+    consumes extra RNG state). That's fine for the purpose of finding a seed
+    whose first N draws contain a rejection."""
+    rng = random.Random(seed if seed is not None else default_seed())
+    accept = 0
+    reject = 0
+    print(f"# dry-run: arch={arch}, kind={kind}, samples={num_samples}, "
+          f"seed={seed if seed is not None else default_seed()}")
+    print(f"# budget = {_compile_cost_budget(arch)} on "
+          f"max(num_elements_kloop_body, num_elements_c_epilogue) * alpha")
+    for i in range(num_samples):
+        if kind == 'gemm':
+            shape = _sample_gemm_shape(rng)
+            dtype = shape[0]
+        else:  # 'conv'
+            shape = _sample_conv_shape(rng)
+            dtype = shape[2]
+        perf = sample_perf_config(rng, arch, _split_k_choices(dtype))
+        score = _compile_cost_score(perf, dtype, arch)
+        verdict = "ACCEPT" if _perf_within_budget(perf, dtype, arch) else "REJECT"
+        if verdict == "ACCEPT":
+            accept += 1
+        else:
+            reject += 1
+        print(f"[{i:4d}] {verdict} score={score:8.1f} dtype={dtype!s:5} "
+              f"perf={perf} shape={shape}")
+    print(f"# total: accept={accept} reject={reject}")
+    return reject > 0
+
+
 def main() -> bool:
     parser = argparse.ArgumentParser(
         description='Sweep parameter values to check correctness of MLIR')
@@ -942,6 +1129,13 @@ def main() -> bool:
                         "on every iteration.")
     add_common_args(parser)
     args = parser.parse_args()
+
+    if args.dry_run:
+        arch = get_arch()
+        # Returns True iff at least one config was rejected by the cap; that
+        # makes `--dry-run` a usable success indicator for "found a seed that
+        # exercises the filter".
+        return _dry_run(args.config, args.samples, arch, args.seed)
 
     options, paths = build_options_and_paths(args)
 

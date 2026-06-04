@@ -166,6 +166,14 @@ def RockFusionSplitkRegularizationPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockAllowFastMathFlagsPass
+    : Pass<"rock-allow-fast-math-flags", "::mlir::func::FuncOp"> {
+  let summary = "Tag applicable floating-point arith and math ops with "
+                "fast-math flags such as arcp, nsz, contract, and afn";
+  let dependentDialects = ["arith::ArithDialect", "func::FuncDialect",
+                           "math::MathDialect"];
+}
+
 def RockLegalizeFloatTypesPass
     : Pass<"rock-legalize-float-types", "::mlir::func::FuncOp"> {
   let summary = "Legalize float types not in Triton's TT_Float to integers";
@@ -390,9 +398,10 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
               "Allow flushing denormal numbers">,
        Option<"scalarizePackedFops", "scalarize-packed-fops", "bool", "false",
               "Scalarize packed float operations">,
-       Option<"scheduleHint", "schedule-hint", "std::string", "\"none\"",
-              "Scheduling hint (e.g., 'memory-bound-attention' for "
-              "iterative-ilp scheduler)">];
+       Option<"scheduleHint", "schedule-hint", "int64_t", "-1",
+              "Scheduling hint ordinal (-1=arch default, 0=none, "
+              "1=attention, 2=memory-bound-attention). See "
+              "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding.">];
 }
 
 def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {

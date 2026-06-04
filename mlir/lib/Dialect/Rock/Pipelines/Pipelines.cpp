@@ -43,6 +43,7 @@
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Tosa/IR/TargetEnv.h"
 #include "mlir/Dialect/Tosa/Transforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
@@ -56,12 +57,14 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
+#include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "amd/include/TritonAMDGPUToLLVM/Passes.h"
 #include "amd/include/TritonAMDGPUTransforms/Passes.h"
 
 // Triton includes (for backend pipeline)
 #include "mlir/Transforms/Passes.h"
 
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/TargetSelect.h"
 #include <optional>
 
@@ -85,17 +88,80 @@ static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::triton::createTritonLoopUnroll());
 }
 
-static bool isPingpongScheduleEnabled(StringRef arch, bool useAsyncCopy) {
+// Reject malformed `TritonOptions` knob values before the pipeline is
+// constructed.
+static void validateTritonOptionsKnobs(const rock::TritonOptions &options) {
+  auto reject = [](StringRef field, int64_t value) {
+    llvm::report_fatal_error(Twine("invalid `--pass-pipeline=triton{") + field +
+                                 "=" + Twine(value) + "}`; expected " +
+                                 Twine(rock::kKnobDefault) +
+                                 " (arch default), 0 (off), or 1 (on)",
+                             /*GenCrashDiag=*/false);
+  };
+  const std::pair<StringRef, int64_t> boolKnobs[] = {
+      {"useAsyncCopy", options.useAsyncCopy},
+      {"useBlockPingpong", options.useBlockPingpong},
+      {"useInThreadTranspose", options.useInThreadTranspose},
+      {"useBufferOps", options.useBufferOps},
+      {"useBufferAtomics", options.useBufferAtomics},
+      {"bufferOpsAnalyzeSmallTensorRange",
+       options.bufferOpsAnalyzeSmallTensorRange},
+  };
+  for (auto [name, value] : boolKnobs) {
+    if (!rock::isValidKnobBoolean(value))
+      reject(name, value);
+  }
+  if (!rock::isValidScheduleHintBitfield(options.scheduleHint)) {
+    llvm::report_fatal_error(
+        Twine("invalid `--pass-pipeline=triton{scheduleHint=") +
+            Twine(options.scheduleHint) + "}`; expected " +
+            Twine(rock::kKnobDefault) +
+            " (arch default) or a subset of bitmask " +
+            Twine(rock::kAllScheduleHintBits) +
+            " (bit 0 = attention, bit 1 = memory-bound-attention)",
+        /*GenCrashDiag=*/false);
+  }
+}
+
+static bool isPingpongScheduleEnabled(StringRef arch, bool useAsyncCopy,
+                                      int64_t useBlockPingpongOverride) {
+  if (useBlockPingpongOverride != rock::kKnobDefault)
+    return useBlockPingpongOverride;
   return arch.starts_with("gfx942") ||
          (arch.starts_with("gfx950") && useAsyncCopy);
 }
 
-static bool isInThreadTransposeEnabled(StringRef arch) {
-  return arch.starts_with("gfx942");
+static bool isInThreadTransposeEnabled(StringRef arch,
+                                       int64_t useInThreadTransposeOverride) {
+  if (useInThreadTransposeOverride != rock::kKnobDefault)
+    return useInThreadTransposeOverride;
+  return arch.starts_with("gfx942") || arch.starts_with("gfx110") ||
+         arch.starts_with("gfx115") || arch.starts_with("gfx120");
 }
 
-static bool isAsyncCopyEnabled(StringRef arch) {
+static bool isAsyncCopyEnabled(StringRef arch, int64_t useAsyncCopyOverride) {
+  if (useAsyncCopyOverride != rock::kKnobDefault)
+    return useAsyncCopyOverride;
   return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
+}
+
+static bool isBufferOpsEnabled(int64_t useBufferOpsOverride) {
+  if (useBufferOpsOverride != rock::kKnobDefault)
+    return useBufferOpsOverride;
+  return true;
+}
+
+static bool isBufferAtomicsEnabled(int64_t useBufferAtomicsOverride) {
+  if (useBufferAtomicsOverride != rock::kKnobDefault)
+    return useBufferAtomicsOverride;
+  return true;
+}
+
+static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(
+    int64_t analyzeSmallTensorRangeOverride) {
+  if (analyzeSmallTensorRangeOverride != rock::kKnobDefault)
+    return analyzeSmallTensorRangeOverride;
+  return false;
 }
 
 // Based on make_ttgir() in
@@ -126,11 +192,9 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::createLoopInvariantCodeMotionPass());
   pm->addPass(mlir::createCanonicalizerPass());
 
-  // TODO(ROCm) Modify when corresponding run time flags are introduced.
-  std::string scheduleHint = "none";
-
-  bool useAsyncCopy = isAsyncCopyEnabled(options.arch);
-  bool useBlockPingpong = isPingpongScheduleEnabled(options.arch, useAsyncCopy);
+  bool useAsyncCopy = isAsyncCopyEnabled(options.arch, options.useAsyncCopy);
+  bool useBlockPingpong = isPingpongScheduleEnabled(options.arch, useAsyncCopy,
+                                                    options.useBlockPingpong);
 
   pm->addPass(mlir::createTritonAMDGPUOptimizeDescriptorEncoding());
   pm->addPass(mlir::createTritonAMDGPUScheduleLoops({options.numStages}));
@@ -141,13 +205,38 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   }
   pm->addPass(mlir::createTritonAMDGPUConvertToTensorOps());
   pm->addPass(mlir::createCanonicalizerPass());
-  if (scheduleHint != "none") {
-    pm->addPass(mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
-        {scheduleHint}));
+
+  // Mirror upstream Triton's compiler.py make_ttgir():
+  //   if options.schedule_hint.lower() != "none":
+  //       for hint in options.schedule_hint.split(","):
+  //           amd.passes.ttgpuir.insert_instruction_sched_hints(pm, hint)
+  // We carry `scheduleHint` as a bitfield (see KnobUtils.h); the
+  // expansion helper iterates set bits in stable order and yields the
+  // variant names in the same order upstream's `split(",")` does.
+  // LLIR-only variants (e.g. memory-bound-attention) are emitted by
+  // this pass too; they're harmless until lowered in makeLLIR /
+  // TritonToHsaco.
+  if (!rock::isValidScheduleHintBitfield(options.scheduleHint)) {
+    llvm::errs() << "ignoring invalid scheduleHint bitfield "
+                 << options.scheduleHint << " in TTGIR pipeline.\n";
+  } else if (options.scheduleHint != rock::kKnobDefault &&
+             options.scheduleHint != rock::kScheduleHintNone) {
+    llvm::SmallVector<std::string, 2> hints;
+
+    assert(succeeded(
+               rock::expandScheduleHintBitfield(options.scheduleHint, hints)) &&
+           "isValidScheduleHintBitfield accepted a value that "
+           "expandScheduleHintBitfield rejected; the two helpers must agree");
+
+    for (const std::string &hint : hints) {
+      pm->addPass(
+          mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
+              {hint}));
+    }
   }
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   pm->addPass(mlir::triton::gpu::createTritonGPUReduceDataDuplication());
-  if (isInThreadTransposeEnabled(options.arch)) {
+  if (isInThreadTransposeEnabled(options.arch, options.useInThreadTranspose)) {
     pm->addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonAMDGPUInThreadTranspose());
     pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
@@ -158,15 +247,17 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
 
-  // TODO(rocmlirTriton): if knobs.amd.use_buffer_ops
-  pm->addNestedPass<mlir::triton::FuncOp>(
-      mlir::createTritonAMDGPUCanonicalizePointers());
-  pm->addPass(mlir::createCanonicalizerPass());
-  pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
-      {options.arch, /*allowBufferAtomics*/ true,
-       /*analyzeSmallTensorOfst*/ false}));
-  pm->addNestedPass<mlir::triton::FuncOp>(
-      mlir::createTritonAMDGPUOptimizeBufferOpPtr());
+  if (isBufferOpsEnabled(options.useBufferOps)) {
+    pm->addNestedPass<mlir::triton::FuncOp>(
+        mlir::createTritonAMDGPUCanonicalizePointers());
+    pm->addPass(mlir::createCanonicalizerPass());
+    pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
+        {options.arch, isBufferAtomicsEnabled(options.useBufferAtomics),
+         isBufferOpsAnalyzeSmallTensorRangeEnabled(
+             options.bufferOpsAnalyzeSmallTensorRange)}));
+    pm->addNestedPass<mlir::triton::FuncOp>(
+        mlir::createTritonAMDGPUOptimizeBufferOpPtr());
+  }
 
   pm->addPass(mlir::createTritonAMDFoldTrueCmpI());
   pm->addNestedPass<mlir::triton::FuncOp>(
@@ -188,7 +279,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int numStages) {
+                     int numStages, int64_t scheduleHint) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   pm->addPass(mlir::createSCFToControlFlowPass());
@@ -226,8 +317,15 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createSymbolDCEPass());
-  if (/*(instruction_sched_variant=="none") == */ /* DISABLES CODE */
-      (false)) {
+
+  // Mirror upstream Triton's compiler.py make_llir():
+  //   if options.schedule_hint.lower() != "none":
+  //       amd.passes.ttgpuir.lower_instruction_sched_hints(...)
+  // Upstream emits a single lowering pass that walks all hint ops left
+  // by make_ttgir, so we follow suit. `kKnobDefault` resolves to "no
+  // hint" today, same as `kScheduleHintNone`.
+  if (scheduleHint != rock::kKnobDefault &&
+      scheduleHint != rock::kScheduleHintNone) {
     pm->addPass(mlir::triton::createTritonAMDGPULowerInstructionSchedHintsPass(
         arch, numStages));
   }
@@ -359,6 +457,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockAttnToGridwisePass());
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
+  if (!options.disableFastMath)
+    addWithDCE(rock::createRockAllowFastMathFlagsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
@@ -419,6 +519,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
 
 void rock::buildTritonPipeline(OpPassManager &pm,
                                const rock::TritonOptions &options) {
+  validateTritonOptionsKnobs(options);
+
   std::string arch = options.arch;
   int threadPerWarp = rock::getWaveSize(arch);
 
@@ -426,7 +528,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.numStages);
+  makeLLIR(&pm, arch, options.numStages, options.scheduleHint);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
@@ -550,6 +652,17 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
 // Build GPU lowering pipeline
 void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
+  if (!rock::isValidScheduleHintBitfield(options.scheduleHint)) {
+    llvm::report_fatal_error(
+        Twine("invalid `--pass-pipeline=backend{scheduleHint=") +
+            Twine(options.scheduleHint) + "}`; expected " +
+            Twine(rock::kKnobDefault) +
+            " (arch default) or a subset of bitmask " +
+            Twine(rock::kAllScheduleHintBits) +
+            " (bit 0 = attention, bit 1 = memory-bound-attention)",
+        /*GenCrashDiag=*/false);
+  }
+
   std::string arch = options.chip;
 
   // Validate LDS usage against the hardware limit, convert dynamic shared
@@ -577,6 +690,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.wavesPerEU = options.wavesPerEU;
     hsacoOpts.enableFpFusion = options.enableFpFusion;
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;
+    hsacoOpts.scheduleHint = options.scheduleHint;
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
   }
 

@@ -1,12 +1,16 @@
 set(ROCK_UNITTEST_SOURCES
   AmdArchDbTests.cpp
   BuilderUtilsTests.cpp
+  GetRockInfoTests.cpp
+  PerfConfigOrderingGemmTests.cpp
+  PerfConfigOrderingGemmGemmTests.cpp
   PerfConfigParsingTests.cpp
   RocmDeviceNameTests.cpp
   TransformMapBuilderTests.cpp
   TosaUtilsTests.cpp
   transformMapUtilsTests.cpp
   ParamLookupTableTests.cpp
+  KnobUtilsTests.cpp
 )
 
 add_rocmlir_unittest(MLIRRockUnitTests

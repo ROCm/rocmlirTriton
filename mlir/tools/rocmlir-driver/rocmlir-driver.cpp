@@ -113,6 +113,12 @@ static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
                                  cl::init(""));
 
+static cl::opt<bool> disableFastMath(
+    "disable-fast-math", cl::init(false),
+    cl::desc("Skip rock-allow-fast-math-flags after split-k regularization "
+             "(by default the pass tags float ops with fastmath flags like "
+             "arcp/contract/nsz/afn)"));
+
 namespace test {
 void registerTestDialect(DialectRegistry &);
 } // namespace test
@@ -212,54 +218,47 @@ runKernelPipeline(StringRef archName, ModuleOp m,
   }
   backendOpts.optLevel = optLevel;
 
-  // TODO(roctriton): add common params to RockTuningParamAttrInterface
+  // Populate Triton/backend options from the perf-config of any gemm or
+  // gemm+gemm op in the module. Both `PopulateParams::obtainTuningParameters`
+  // and `PopulateParamsGemmGemm::obtainTuningParameters` return attributes
+  // that implement `RockTuningParamAttrInterface`, so `fillCompilationConfigs`
+  // can consume either via that interface.
   OpBuilder builder(m.getContext());
-  auto fillCompilationRes =
-      m.walk([&](mlir::rock::RockGemmWrapperInterface op) -> WalkResult {
-        auto populateParamsPtr = std::make_unique<rock::PopulateParams>();
-        auto maybeGemmParams =
-            populateParamsPtr->obtainTuningParameters(builder, op);
-        if (failed(maybeGemmParams)) {
-          llvm::errs() << "Failed to obtain perfConfig\n";
-          return WalkResult::interrupt();
-        }
+  auto applyPerfConfig = [&](auto &&maybeParams) -> WalkResult {
+    if (failed(maybeParams)) {
+      llvm::errs() << "Failed to obtain perfConfig\n";
+      return WalkResult::interrupt();
+    }
+    if (failed(fillCompilationConfigs(maybeParams.value(), tritonOpts,
+                                      backendOpts))) {
+      llvm::errs() << "Failed to process perfConfig: " << maybeParams.value()
+                   << "\n";
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  };
 
-        if (failed(fillCompilationConfigs(maybeGemmParams.value(), tritonOpts,
-                                          backendOpts))) {
-          llvm::errs() << "Failed to process perfConfig: "
-                       << maybeGemmParams.value() << "\n";
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-  if (fillCompilationRes.wasInterrupted()) {
+  auto gemmWalk = m.walk([&](rock::RockGemmWrapperInterface op) {
+    return applyPerfConfig(
+        rock::PopulateParams().obtainTuningParameters(builder, op));
+  });
+  if (gemmWalk.wasInterrupted())
     return failure();
-  }
-  auto fillCompilationResGemmGemm =
-      m.walk([&](mlir::rock::RockGemmGemmWrapperInterface op) -> WalkResult {
-        auto maybeGemmGemmParams =
-            rock::PopulateParamsGemmGemm::obtainTuningParameters(builder, op);
-        if (failed(maybeGemmGemmParams)) {
-          llvm::errs() << "Failed to obtain perfConfig\n";
-          return WalkResult::interrupt();
-        }
-        if (failed(fillCompilationConfigs(maybeGemmGemmParams.value(),
-                                          tritonOpts, backendOpts))) {
-          llvm::errs() << "Failed to process perfConfig: "
-                       << maybeGemmGemmParams.value() << "\n";
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-  if (fillCompilationResGemmGemm.wasInterrupted()) {
+
+  auto gemmGemmWalk = m.walk([&](rock::RockGemmGemmWrapperInterface op) {
+    return applyPerfConfig(
+        rock::PopulateParamsGemmGemm::obtainTuningParameters(builder, op));
+  });
+  if (gemmGemmWalk.wasInterrupted())
     return failure();
-  }
 
   // Set up lowering pipeline.
   if (kernelPipelineSet.contains("gpu")) {
     // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
     opts.arch = archName.str();
+    opts.disableFastMath = disableFastMath.getValue();
+
     rock::buildKernelPipeline(pm, opts);
   }
   if (kernelPipelineSet.contains("triton")) {

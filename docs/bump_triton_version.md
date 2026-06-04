@@ -83,6 +83,12 @@ The following tables map Python functions to their C++ equivalents. Each must be
 | `make_llir()` Part 1 | `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` |
 | `make_llir()` Part 2 + `make_amdgcn()` + `make_hsaco()` | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
 
+The `TRITON` CHECK prefix in `mlir/test/rocmlir-driver/pipelines.mlir` pins the exact ordering of every pass added by `rock::buildTritonPipeline` (i.e. the three functions above).
+
+A Triton bump that drops, renames, reorders, or changes the options on any pass in `makeTTIR` / `makeTTGIR` / `makeLLIR` will fail it. That is the desired behaviour: it forces an explicit review of the new pass ordering against upstream Triton's `compiler.py`. If the new behaviour is correct, regenerate the expected output and update the CHECK lines:
+
+If a Triton bump introduces a new arch-conditional branch in `Pipelines.cpp` that gfx942 doesn't exercise, prefer adding a second prefix (e.g. `TRITON_GFX1250`) for the relevant arch over weakening the existing one.
+
 ##### Understanding Pass Bindings (from `triton_amd.cc`)
 
 The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Python bindings for Triton passes. When `compiler.py` adds a new pass call, check `triton_amd.cc` to find the actual C++ pass creation function.
@@ -205,16 +211,46 @@ The following Python features are **intentionally omitted** from the C++ impleme
 | Feature | Python Location | Reason |
 |---------|-----------------|--------|
 | `HIPBackend.instrumentation.patch()` | `compiler.py` make_llir, make_ttgir | Not needed for our use case |
-| `knobs.*` configuration | Throughout `compiler.py` | Hardcoded values are sufficient |
 | `passes.llvmir.add_di_scope()` | `compiler.py` make_llir | TODO, not critical |
 | `llvm.translate_to_mir()` | `compiler.py` make_amdgcn | Simplified implementation |
 | `llvm.dump_sched_dag()` | `compiler.py` make_amdgcn | Debugging feature not needed |
 | `knobs.amd.swap_mir` | `compiler.py` make_amdgcn | Debugging feature not needed |
 | `knobs.compilation.dump_ir_*` | `compiler.py` make_llir | Debugging feature not needed |
 | FPSan instrumentation mode | `compiler.py` make_ttgir | Not implemented |
-| `schedule_hint` loop processing | `compiler.py` make_ttgir | Partially hardcoded |
 
 When reviewing diffs, **skip changes** related to these features.
+
+### Knobs that we mirror
+
+On a bump, review the upstream diff and propagate any default/semantic changes:
+
+| Upstream (`compiler.py`)                          | perfConfig field (v2 trailing block)  | Pipeline option                                                |
+|---------------------------------------------------|---------------------------------------|----------------------------------------------------------------|
+| `knobs.amd.use_async_copy`                        | `useAsyncCopy`                        | `TritonOptions::useAsyncCopy`                                  |
+| `knobs.amd.use_block_pingpong`                    | `useBlockPingpong`                    | `TritonOptions::useBlockPingpong`                              |
+| `knobs.amd.use_in_thread_transpose`               | `useInThreadTranspose`                | `TritonOptions::useInThreadTranspose`                          |
+| `knobs.amd.use_buffer_ops`                        | `useBufferOps`                        | `TritonOptions::useBufferOps`                                  |
+| `knobs.amd.use_buffer_atomics`                    | `useBufferAtomics`                    | `TritonOptions::useBufferAtomics`                              |
+| `knobs.amd.buffer_ops_analyze_small_tensor_range` | (not in perfConfig -- debug-only)     | `TritonOptions::bufferOpsAnalyzeSmallTensorRange`              |
+| `HIPOptions.schedule_hint`                        | `scheduleHint`                        | `TritonOptions::scheduleHint` / `BackendOptions::scheduleHint` |
+
+If upstream adds a new `knobs.amd.*` switch around an existing pass we
+already replicate, decide whether it's a *tuner* knob (per-arch defaults
+vary, plausibly affects perf-tunable shapes) or a *debug* knob (universal
+default, no tuning value). For a tuner knob: add a corresponding
+`Option<int>` to `TritonOptions` (use the `kKnobDefault = -1` tri-state
+sentinel), append a matching `int64_t` field to `Rock_GemmParamsAttr` /
+`Rock_GemmGemmParamsAttr` in `RockAttrDefs.td`, extend the `v2` parser in
+`RockDialect.cpp` (and its range validator), and propagate the value
+through `compileUtils.cpp`. For a debug knob: only add the
+`TritonOptions` field (and document it like
+`bufferOpsAnalyzeSmallTensorRange`); skip the perfConfig schema entirely.
+
+If upstream adds a new `SchedHint` enum entry, claim a new bit in
+`kScheduleHintBitTable` in `KnobUtils.cpp` and document it in
+the `RockAttrDefs.td` docstring; `expandScheduleHintBitfield` will then
+pick it up automatically. The LLIR-only `memory-bound-attention`
+literal already has its own bit and lives next to the table.
 
 ## Step 9: Handling Pass Interface Changes
 
@@ -272,6 +308,7 @@ Use this checklist to track progress:
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
+- [ ] Refresh the `TRITON` prefix in `mlir/test/rocmlir-driver/pipelines.mlir` if any of `makeTTIR` / `makeTTGIR` / `makeLLIR` changed (see section 5.1)
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
 - [ ] Update `TritonToHsaco.cpp` for LLVM function changes (`initializeLLVMTargets`, `createTargetMachine`, `optimizeModule`)
 - [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed
@@ -331,6 +368,7 @@ If new Triton headers are needed:
 | HSACO translation | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
 | Architecture database | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
 | Triton utility replicas | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
+| `schedule_hint` parser | `mlir/lib/Dialect/Rock/utility/KnobUtils.cpp` |
 | Triton compiler.py | `external/triton/third_party/amd/backend/compiler.py` |
 | Triton llvm.cc | `external/triton/python/src/llvm.cc` |
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |

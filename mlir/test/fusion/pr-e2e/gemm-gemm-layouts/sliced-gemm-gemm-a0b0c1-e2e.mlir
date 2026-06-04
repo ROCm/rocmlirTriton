@@ -7,7 +7,7 @@
 // EMITKEY: -t f32 -transA false -transB false -transC true -transO false -g 1 -m 32 -n 64 -k 16 -gemmO 8
 
 // VECTORIZATION-DAG: #[[COALESCED:.*]] = #ttg.blocked<{sizePerThread = [1, 4]
-// VECTORIZATION: tt.load {{.*}} : tensor<32x32x!tt.ptr<f32>, #[[COALESCED]]>
+// VECTORIZATION: tt.load {{.*}} : tensor<{{.*}}x!tt.ptr<f32>, #[[COALESCED]]>
 
 module {
   func.func @test(%arg0: !migraphx.shaped<1x32x32xf32, 1024x1x32>, %arg1: !migraphx.shaped<1x64x16xf32, 1024x1x64>, %arg2: !migraphx.shaped<1x64x8xf32, 512x1x64>) -> !migraphx.shaped<1x32x8xf32, 256x8x1> attributes {rock.kernel} {

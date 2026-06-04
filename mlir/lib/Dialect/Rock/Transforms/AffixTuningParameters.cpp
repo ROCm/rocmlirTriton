@@ -5,6 +5,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
+#include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
@@ -38,19 +39,36 @@ namespace rock {
 using namespace mlir;
 using namespace mlir::rock;
 
+// Per-field perf-config validators. A violation is treated as a hard
+// diagnostic; `markAsNotApplicable` is reserved for arch-feature mismatches.
+
+static bool isPositivePowerOfTwo(int64_t v) {
+  return v > 0 && llvm::isPowerOf2_64(static_cast<uint64_t>(v));
+}
+
+static LogicalResult validatePositivePowerOfTwo(Operation *op, StringRef name,
+                                                int64_t value) {
+  if (!isPositivePowerOfTwo(value))
+    return op->emitError() << name << "=" << value
+                           << " must be a positive power of two";
+  return success();
+}
+
 static LogicalResult validateNumCTAs(Operation *op, int64_t numCTAs) {
+  if (numCTAs < 1)
+    return op->emitError() << "numCTAs=" << numCTAs << " must be >= 1";
+  if (!isPositivePowerOfTwo(numCTAs))
+    return op->emitError() << "numCTAs=" << numCTAs
+                           << " must be a positive power of two";
   StringRef arch = rock::getArchValue(op);
   int64_t maxNumCTAs = rock::getMaxNumCTAs(arch);
-  if (numCTAs > maxNumCTAs) {
-    op->emitError("numCTAs=")
-        << numCTAs << " exceeds max (" << maxNumCTAs << ") for " << arch;
-    return failure();
-  }
-  if (numCTAs != 1 && !rock::supportsMultiCTALaunch(arch)) {
-    op->emitError("numCTAs=")
-        << numCTAs << " but multi-CTA launch is not supported on " << arch;
-    return failure();
-  }
+  if (numCTAs > maxNumCTAs)
+    return op->emitError() << "numCTAs=" << numCTAs << " exceeds max ("
+                           << maxNumCTAs << ") for " << arch;
+  if (numCTAs != 1 && !rock::supportsMultiCTALaunch(arch))
+    return op->emitError() << "numCTAs=" << numCTAs
+                           << " but multi-CTA launch is not supported on "
+                           << arch;
   return success();
 }
 
@@ -58,18 +76,111 @@ static LogicalResult validateNumCTAs(Operation *op, int64_t numCTAs) {
 // Reject configs that violate this regardless of where they came from.
 static LogicalResult validateKpack(Operation *op, int64_t kpack) {
   StringRef arch = rock::getArchValue(op);
-  if (kpack < 1) {
-    rock::markAsNotApplicable(op);
-    op->emitError("kpack=") << kpack << " must be positive";
-    return failure();
-  }
+  if (kpack < 1)
+    return op->emitError() << "kpack=" << kpack << " must be positive";
   int64_t maxKpack = rock::getMaxKpack(arch);
-  if (kpack > maxKpack) {
-    rock::markAsNotApplicable(op);
-    op->emitError("kpack=")
-        << kpack << " exceeds max (" << maxKpack << ") for " << arch;
+  if (kpack > maxKpack)
+    return op->emitError() << "kpack=" << kpack << " exceeds max (" << maxKpack
+                           << ") for " << arch;
+  return success();
+}
+
+// blockSize = waveSize * numWaves, capped by `maxHardwareWorkgroupSize`.
+static LogicalResult validateNumWaves(Operation *op, int64_t numWaves) {
+  if (!isPositivePowerOfTwo(numWaves))
+    return op->emitError() << "numWaves=" << numWaves
+                           << " must be a positive power of two";
+  int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
+  int64_t maxNumWaves = rock::maxHardwareWorkgroupSize / waveSize;
+  if (numWaves > maxNumWaves)
+    return op->emitError() << "numWaves=" << numWaves
+                           << " * waveSize=" << waveSize
+                           << " exceeds max workgroup size ("
+                           << rock::maxHardwareWorkgroupSize << ")";
+  return success();
+}
+
+// 0 means "let Triton's heuristic pick"; per-arch instruction availability
+// is checked by Triton itself.
+static LogicalResult validateMatrixInstrNonkdim(Operation *op,
+                                                int64_t matrixInstrNonkdim) {
+  if (matrixInstrNonkdim != 0 && !isPositivePowerOfTwo(matrixInstrNonkdim))
+    return op->emitError()
+           << "matrixInstrNonkdim=" << matrixInstrNonkdim
+           << " must be 0 (heuristic) or a positive power of two";
+  return success();
+}
+
+// Attention's inner gemms don't support split-K (K/V split is handled via
+// the `splitKV` op attribute), so require splitKFactor == 1 for AttentionOp.
+static LogicalResult validateSplitKFactor(Operation *op, int64_t splitKFactor) {
+  if (splitKFactor < 1)
+    return op->emitError() << "splitKFactor=" << splitKFactor
+                           << " must be >= 1";
+  if (isa<AttentionOp>(op) && splitKFactor != 1)
+    return op->emitError() << "splitKFactor=" << splitKFactor
+                           << " must be 1 for attention";
+  return success();
+}
+
+static LogicalResult validateNumStages(Operation *op, int64_t numStages) {
+  if (numStages < 1)
+    return op->emitError() << "numStages=" << numStages << " must be >= 1";
+  return success();
+}
+
+// 0 means "let the backend pick"; otherwise must fit the per-arch cap.
+static LogicalResult validateWavesPerEU(Operation *op, int64_t wavesPerEU) {
+  if (wavesPerEU < 0)
+    return op->emitError() << "wavesPerEU=" << wavesPerEU << " must be >= 0";
+  StringRef arch = rock::getArchValue(op);
+  int64_t maxWavesPerEU = rock::getMaxWavesPerEU(arch);
+  if (wavesPerEU > maxWavesPerEU)
+    return op->emitError() << "wavesPerEU=" << wavesPerEU << " exceeds max ("
+                           << maxWavesPerEU << ") for " << arch;
+  return success();
+}
+
+// 0 means "let `makeGroupedGridLayout` pick"; the upper bound depends on
+// the runtime `mBlocks` count, so only reject negative values here.
+static LogicalResult validateGridGroupSize(Operation *op,
+                                           int64_t gridGroupSize) {
+  if (gridGroupSize < 0)
+    return op->emitError() << "gridGroupSize=" << gridGroupSize
+                           << " must be >= 0";
+  return success();
+}
+
+// Single entry point: run all per-field checks via
+// `RockTuningParamAttrInterface` (implemented by both `GemmParamsAttr` and
+// `GemmGemmParamsAttr`).
+static LogicalResult validatePerfConfig(Operation *op,
+                                        RockTuningParamAttrInterface params) {
+  if (failed(
+          validatePositivePowerOfTwo(op, "mPerBlock", params.getMPerBlock())))
     return failure();
-  }
+  if (failed(
+          validatePositivePowerOfTwo(op, "nPerBlock", params.getNPerBlock())))
+    return failure();
+  if (failed(
+          validatePositivePowerOfTwo(op, "kPerBlock", params.getKPerBlock())))
+    return failure();
+  if (failed(validateKpack(op, params.getKpack())))
+    return failure();
+  if (failed(validateNumCTAs(op, params.getNumCTAs())))
+    return failure();
+  if (failed(validateNumWaves(op, params.getNumWaves())))
+    return failure();
+  if (failed(validateMatrixInstrNonkdim(op, params.getMatrixInstrNonkdim())))
+    return failure();
+  if (failed(validateSplitKFactor(op, params.getSplitKFactor())))
+    return failure();
+  if (failed(validateNumStages(op, params.getNumStages())))
+    return failure();
+  if (failed(validateWavesPerEU(op, params.getWavesPerEU())))
+    return failure();
+  if (failed(validateGridGroupSize(op, params.getGridGroupSize())))
+    return failure();
   return success();
 }
 
@@ -109,8 +220,8 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
   for (auto &namedAttr : func->getDiscardableAttrs()) {
     StringRef name = namedAttr.getName().getValue();
     if (!knownFuncRockAttrs.contains(name)) {
-      return func.emitError("unknown attribute '")
-             << name << "' on function '" << func.getSymName() << "'";
+      return func.emitError() << "unknown attribute '" << name
+                              << "' on function '" << func.getSymName() << "'";
     }
   }
   for (unsigned i = 0, e = func.getNumArguments(); i < e; ++i) {
@@ -118,9 +229,9 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       for (auto &namedAttr : argAttrs) {
         StringRef name = namedAttr.getName().getValue();
         if (!knownArgRockAttrs.contains(name)) {
-          return func.emitError("unknown attribute '")
-                 << name << "' on argument " << i << " of function '"
-                 << func.getSymName() << "'";
+          return func.emitError()
+                 << "unknown attribute '" << name << "' on argument " << i
+                 << " of function '" << func.getSymName() << "'";
         }
       }
     }
@@ -145,8 +256,8 @@ void AffixTuningParameters::runOnOperation() {
     }
   });
   if (fusionRootCnt > 1) {
-    func.emitError("Multiple Fusion Roots detected in a single "
-                   "function. This is not supported.");
+    func.emitError() << "Multiple Fusion Roots detected in a single "
+                        "function. This is not supported.";
     signalPassFailure();
     return;
   }
@@ -184,7 +295,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
                           << perfConfigAttr << "\n");
 
-  if (failed(validateKpack(op, gemmParams.getKpack())))
+  if (failed(validatePerfConfig(op, gemmParams)))
     return signalPassFailure();
 
   auto origGemmSize = op.getGemmSize();
@@ -214,9 +325,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
   if (auto bwdOp = dyn_cast<ConvBwdWeightOp>(op.getOperation()))
     bwdOp->setAttr(bwdOp.getKBlocksAttrName(), b.getIndexAttr(gemmKBlocks));
 
-  if (failed(validateNumCTAs(op, gemmParams.getNumCTAs())))
-    return signalPassFailure();
-
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
   int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
   assert(blockSize > 0);
@@ -231,18 +339,18 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
   if (!fusionInfo.fusionOps.empty()) {
     if (failed(testFusionLegalityReduce(funcParent))) {
-      op->emitError("Fusion with reduce ops is not legal on this target");
+      op->emitError() << "Fusion with reduce ops is not legal on this target";
       return signalPassFailure();
     }
     if (failed(testFusionLegalityBwdDataConv(funcParent))) {
-      op->emitError("Fusion with backward data convolution is not legal");
+      op->emitError() << "Fusion with backward data convolution is not legal";
       return signalPassFailure();
     }
   }
   if (rock::isSplitKRequested(perfConfigAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
       rock::markAsNotApplicable(op);
-      op->emitError("Fusion with SplitK perfConfig is not legal");
+      op->emitError() << "Fusion with SplitK perfConfig is not legal";
       return signalPassFailure();
     }
   }
@@ -257,40 +365,37 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto maybeAttnPerfConfig =
       PopulateParamsGemmGemm::obtainTuningParameters(builder, op);
   if (failed(maybeAttnPerfConfig)) {
-    op.emitError("perf config string has an incorrect format.");
+    op.emitError() << "perf config string has an incorrect format.";
     return signalPassFailure();
   }
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
-  if (failed(validateNumCTAs(op, attnPerfConfig.getNumCTAs())))
-    return signalPassFailure();
-
-  if (failed(validateKpack(op, attnPerfConfig.getKpack())))
+  if (failed(validatePerfConfig(op, attnPerfConfig)))
     return signalPassFailure();
 
   auto params =
       PopulateParamsGemmGemm::getGemmParams(builder, op, attnPerfConfig);
   if (failed(params)) {
-    op.emitError("The provided perf config is not valid");
+    op.emitError() << "The provided perf config is not valid";
     return signalPassFailure();
   }
   // Check fusion legality.
   auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
   if (!fusionInfo.fusionOps.empty()) {
     if (failed(testFusionLegalityReduce(funcParent))) {
-      op->emitError("Fusion with reduce ops is not legal on this target");
+      op->emitError() << "Fusion with reduce ops is not legal on this target";
       return signalPassFailure();
     }
     if (failed(testFusionLegalityBwdDataConv(funcParent))) {
-      op->emitError("Fusion with backward data convolution is not legal");
+      op->emitError() << "Fusion with backward data convolution is not legal";
       return signalPassFailure();
     }
   }
   if (rock::isSplitKRequested(perfConfigAttr)) {
     if (failed(testFusionLegalitySplitK(funcParent))) {
       rock::markAsNotApplicable(op);
-      op->emitError("Fusion with SplitK perfConfig is not legal");
+      op->emitError() << "Fusion with SplitK perfConfig is not legal";
       return signalPassFailure();
     }
   }

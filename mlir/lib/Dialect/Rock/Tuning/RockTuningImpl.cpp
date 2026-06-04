@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
@@ -249,6 +250,15 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
 
 // Keep in sync with attentionSweeps.py
 // The full space is a brute-force search for attention kernels
+//
+// NOTE: We intentionally don't tune the following parameters:
+// - `wavesPerEU`                       (set to 0)
+// - `gridGroupSize`                    (set to 0)
+// - `useAsyncCopy`                     (set to kKnobDefault)
+// - `useBlockPingpong`                 (set to kKnobDefault)
+// - `useInThreadTranspose`             (set to kKnobDefault)
+// - `useBufferOps`                     (set to kKnobDefault)
+// - `useBufferAtomics`                 (set to kKnobDefault)
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
@@ -274,7 +284,13 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                             gemmGemmOp.getContext(), gemm0MPerBlock,
                             gemm0NPerBlock, gemmKPerBlock, gemmKPack, numCTAs,
                             numWaves, matrixInstrNonkdim, splitKFactor,
-                            numStages, wavesPerEU, gridGroupSize);
+                            numStages, wavesPerEU, gridGroupSize,
+                            /*useAsyncCopy=*/kKnobDefault,
+                            /*useBlockPingpong=*/kKnobDefault,
+                            /*useInThreadTranspose=*/kKnobDefault,
+                            /*useBufferOps=*/kKnobDefault,
+                            /*useBufferAtomics=*/kKnobDefault,
+                            /*scheduleHint=*/kKnobDefault);
                         newSpace->tuningRange.push_back(
                             cast<RockTuningParamAttrInterface>(gemmGemmParams));
                       }
@@ -381,6 +397,15 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
 // the smallest parameters. This filters out perf configs that are
 // known to be impossible during tthe AffixTuningParams check.
 // If `kind` is Full, also filters out unlikely-to-be-good configurations.
+//
+// NOTE: We intentionally don't tune the following parameters:
+// - `wavesPerEU`                       (set to 0)
+// - `gridGroupSize`                    (set to 0)
+// - `useAsyncCopy`                     (set to kKnobDefault)
+// - `useBlockPingpong`                 (set to kKnobDefault)
+// - `useInThreadTranspose`             (set to kKnobDefault)
+// - `useBufferOps`                     (set to kKnobDefault)
+// - `useBufferAtomics`                 (set to kKnobDefault)
 static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     RockGemmWrapperInterface gemmOp,
                                     TuningParamSetKind kind) {
@@ -411,7 +436,13 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             b.getContext(), gemmMPerBlock, gemmNPerBlock,
                             gemmKPerBlock, gemmKPack, numCTAs, numWaves,
                             matrixInstrNonkdim, splitKFactor, numStages,
-                            wavesPerEU, gridGroupSize);
+                            wavesPerEU, gridGroupSize,
+                            /*useAsyncCopy=*/kKnobDefault,
+                            /*useBlockPingpong=*/kKnobDefault,
+                            /*useInThreadTranspose=*/kKnobDefault,
+                            /*useBufferOps=*/kKnobDefault,
+                            /*useBufferAtomics=*/kKnobDefault,
+                            /*scheduleHint=*/kKnobDefault);
                         if (kind != TuningParamSetKind::Full ||
                             succeeded(tuningInfo->couldBePerformant(
                                 info, gemmParams)))
@@ -436,10 +467,11 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   OpBuilder b(gemmOp.getContext());
   PopulateParams tuningInfo;
 
-  for (GemmParamsAttr param : tuningInfo.orderParams(
-           tuningInfo.getTuningParameters(b, info.kernelType, info.gemmAType,
-                                          info.gemmBType, info.arch),
-           info.gemmSize)) {
+  // `getTuningParameters` already bumps the first conservatively-applicable
+  // config to the front of the list.
+  for (GemmParamsAttr param : tuningInfo.getTuningParameters(
+           b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
+           info.quantBlockSize, info.aScaleType, info.bScaleType)) {
     if (succeeded(tuningInfo.couldBePerformant(info, param)))
       newSpace->tuningRange.push_back(
           cast<RockTuningParamAttrInterface>(param));
@@ -450,6 +482,8 @@ static void
 createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
                                RockGemmGemmWrapperInterface gemmGemmOp) {
   OpBuilder b(gemmGemmOp.getContext());
+  // `getTuningParameters` already bumps the first conservatively-applicable
+  // config to the front of the list.
   for (GemmGemmParamsAttr params :
        PopulateParamsGemmGemm::getTuningParameters(b, gemmGemmOp)) {
     newSpace->tuningRange.push_back(cast<RockTuningParamAttrInterface>(params));
