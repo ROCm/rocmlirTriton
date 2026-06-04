@@ -105,7 +105,7 @@
 // TRITON-NEXT:tritonamdgpu-block-pingpong{num-stages=2},
 // TRITON-NEXT:tt.func(tritonamdgpu-canonicalize-pointers{enable-large-tensor-ptr-canon=false}),
 // TRITON-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// TRITON-NEXT:tritonamdgpu-convert-buffer-ops{allow-buffer-atomics=true analyze-small-tensor-ofst=false arch-generation-name=gfx942 assume-no-fine-grained-memory=false},
+// TRITON-NEXT:tritonamdgpu-convert-buffer-ops{allow-buffer-atomics=true analyze-small-tensor-ofst=false arch-generation-name=gfx942},
 // TRITON-NEXT:tt.func(tritonamdgpu-optimize-buffer-op-ptr),
 // TRITON-NEXT:tritonamdgpu-fold-true-cmpi,
 // TRITON-NEXT:tt.func(tritonamdgpu-prepare-if-combining),
