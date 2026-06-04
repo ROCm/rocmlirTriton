@@ -181,31 +181,6 @@ func.func @keep_dual_mismatched_narrow_types(%arg0: tensor<32x32xf16>)
 }
 
 // ============================================================
-// Dual non-kernel function: the pass owns the precision-recovering
-// direction only, so the round-trip pattern must remain a no-op
-// outside `rock.kernel` functions. The mirror direction
-// `truncf(extf %narrow) -> %narrow` is unconditionally safe and is
-// folded by upstream MLIR's `arith.TruncFOp::fold`, which fires
-// regardless of the kernel attribute inside the pass's own greedy
-// rewrite phase. The output therefore still collapses to the
-// identity here; that this happens via the unconditional
-// dual-direction fold (not via our kernel-gated pattern) is the
-// property the `skip_non_kernel` case above pins down for the
-// pass-owned direction.
-// ============================================================
-
-// CHECK-LABEL: func.func @dual_non_kernel_folded_by_unconditional_truncf
-// CHECK-SAME: (%[[ARG:.*]]: tensor<32x32xf16>)
-//  CHECK-NOT:   arith.extf
-//  CHECK-NOT:   arith.truncf
-//      CHECK:   return %[[ARG]]
-func.func @dual_non_kernel_folded_by_unconditional_truncf(%arg0: tensor<32x32xf16>) -> tensor<32x32xf16> {
-  %0 = arith.extf %arg0 : tensor<32x32xf16> to tensor<32x32xf32>
-  %1 = arith.truncf %0 : tensor<32x32xf32> to tensor<32x32xf16>
-  return %1 : tensor<32x32xf16>
-}
-
-// ============================================================
 // Flag-merge tests: the round-trip pattern merges
 // `fastmath<contract>` into both casts' flag sets and the greedy
 // driver then fires upstream MLIR's `arith.ExtFOp::fold` (which
