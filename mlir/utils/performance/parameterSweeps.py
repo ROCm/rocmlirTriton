@@ -623,7 +623,7 @@ def _kpack_choices(arch: str) -> List[int]:
 # TODO: Use python bindings when available.
 def _wave_size(arch: str) -> int:
     """Wave size used by the perf-config tuner for ``arch``. Returns 32
-    for gfx10xx-gfx12xx (``0x1000 <= gfx_id < 0x1300``, covering the
+    for gfx10xx-gfx12xx (``0x1000 <= gfx_id <= 0x1250``, covering the
     RDNA1-4 chips and gfx1250 -- which the Rock arch DB tracks as a
     separate category) and 64 for gfx9xx (GCN / CDNA). Mirrors
     ``rock::getWaveSize`` (see ``AmdArchDbTests.WaveSize`` in
@@ -633,7 +633,7 @@ def _wave_size(arch: str) -> int:
     n = _arch_id(arch)
     if n is None:
         return 64
-    if 0x1000 <= n < 0x1300:  # gfx10xx, gfx11xx, gfx12xx
+    if 0x1000 <= n <= 0x1250:  # gfx10xx, gfx11xx, gfx12xx
         return 32
     return 64
 

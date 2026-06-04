@@ -65,7 +65,7 @@ from parameterSweeps import (
 # post-RA scheduling blow-up even without spills, so we treat ``wpe == 0``
 # as ``wpe == 1`` for the budget check.
 
-
+# TODO: add this in python bindings when available.
 def _vgprs_per_eu(arch: str) -> int:
     """SIMD VGPR-file size: 512 on gfx9xx/gfx10xx (CDNA1-4, RDNA1/2),
     1024 from gfx11xx onward (RDNA3, RDNA4, gfx1250). Wave-size
