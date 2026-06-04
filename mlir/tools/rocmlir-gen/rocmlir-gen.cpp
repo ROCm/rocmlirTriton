@@ -4904,7 +4904,7 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
 // `near.hpp`.
 //
 // fp32 uses rocBLAS's 1e-4 (~840 * eps(fp32)).
-// fp64 uses 1e-15 (~10 * eps(fp64)).
+// fp64 uses 1e-15 (~4.5 * eps(fp64)).
 //
 // fp8/fp4 are not in rocBLAS's table. We use eps(T) directly as the
 // per-accumulation-step bound:

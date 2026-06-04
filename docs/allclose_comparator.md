@@ -288,14 +288,14 @@ back so element-wise ops (K_eff=1) match PyTorch's defaults.
 
 `sumErrorTolerance(Type)` in `rocmlir-gen.cpp` keeps rocBLAS's constants
 for fp16/bf16 and uses `eps(T)` for the fp8/fp4 dtypes rocBLAS does not
-test. The fp32 value matches rocBLAS's `1/10000`; fp64 uses `~10 * eps(fp64)`.
+test. The fp32 value matches rocBLAS's `1/10000`; fp64 uses `~4.5 * eps(fp64)`.
 
 | dtype | sum_error_tolerance | source |
 |---|---|---|
 | fp16 | `1/900` | rocBLAS `near.hpp` |
 | bf16 | `1/100` | rocBLAS `near.hpp` |
 | fp32 | `1e-4` | rocBLAS `near.hpp` (`1/10000`); see note below |
-| fp64 | `1e-15` | ~`10 * eps(fp64)` |
+| fp64 | `1e-15` | ~`4.5 * eps(fp64)` |
 | fp8 e4m3* | `0.125` | `eps(e4m3) = 2^-3` |
 | fp8 e5m2* | `0.25`  | `eps(e5m2) = 2^-2` |
 | fp4 e2m1 | `0.5`   | `eps(e2m1) = 2^-1` |
