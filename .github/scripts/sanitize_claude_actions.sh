@@ -39,8 +39,8 @@
 #     percent-encoded authorities; final host re-check on the union of
 #     Markdown + HTML destinations to catch LF/CR/TAB-split-host
 #     bypasses). The only hosts allowed in any model-emitted URL are
-#     bare `github.com` and any subdomain of `github.com` /
-#     `githubusercontent.com`; everything else fails closed
+#     bare `github.com` / `llvm.org` and any subdomain of `github.com` /
+#     `githubusercontent.com` / `llvm.org`; everything else fails closed
 #   - anti-spoofing scan for the literal substring `<!-- claude-pr-review-`
 #     in any model-supplied string. `post_claude_review.sh` reserves the
 #     `<!-- claude-pr-review-* -->` marker space (master marker + per-
@@ -682,7 +682,8 @@ done
 
 # =====================================================================
 # Generic URL allow-list. The prompt instructs the model to avoid URLs
-# entirely except permalinks back to github.com (this PR / repo / docs);
+# entirely except permalinks back to github.com (this PR / repo / docs)
+# and llvm.org references for LLVM/MLIR project documentation;
 # this block is the enforcement side of that contract. Without it, the
 # only url-shaped check above is the ANTHROPIC_BASE_URL fixed-string
 # match, which leaves a wide range of attacks open if the model is
@@ -727,23 +728,24 @@ done
 #     pattern check. The decode pre-pass below ($strings_decoded_tmp)
 #     normalizes these before the URL layers run.
 #
-# The allow-list of HOSTS is intentionally tiny: github.com only (and
-# its subdomains: gist.github.com, raw.githubusercontent.com,
-# objects.githubusercontent.com, etc.). Code review bodies can always
-# reference in-repo files by path/line without a URL; the few cases
-# that genuinely need a link (cross-repo PR refs, GitHub-hosted gists)
-# are all on github.com. If a future legitimate use case needs another
-# host, add it here AND in the prompt's "Hard constraints" block in
-# claude_auto_review.yml -- keep the two in sync so the contract the
-# model is told about matches what the sanitizer actually enforces.
+# The allow-list of HOSTS is intentionally tiny: github.com / llvm.org
+# only (and their subdomains, plus githubusercontent.com for raw GitHub
+# content). Code review bodies can always reference in-repo files by
+# path/line without a URL; the few cases that genuinely need a link are
+# GitHub resources or LLVM project references. If a future legitimate
+# use case needs another host, add it here AND in the prompt's "Hard
+# constraints" block in claude_auto_review.yml -- keep the two in sync
+# so the contract the model is told about matches what the sanitizer
+# actually enforces.
 
 # Re-used host-allow-list regex. A host is allowed iff it is exactly
-# `github.com` OR ends in `.github.com` / `.githubusercontent.com`.
+# `github.com` / `llvm.org` OR ends in `.github.com` /
+# `.githubusercontent.com` / `.llvm.org`.
 # Used by Layer 1 (bare URL host check), Layer 2b (protocol-relative
 # Markdown destination host check), Layer 3b (protocol-relative HTML
 # href / src destination host check), and Layer 6 (explicit http(s)://
 # Markdown / HTML destination host check, post-Layer-5).
-ALLOWED_HOST_RE='^(github\.com|[A-Za-z0-9._-]+\.(github\.com|githubusercontent\.com))$'
+ALLOWED_HOST_RE='^(github\.com|llvm\.org|[A-Za-z0-9._-]+\.(github\.com|githubusercontent\.com|llvm\.org))$'
 
 # $strings_tmp / $strings_decoded_tmp / $strings_decoded_oneline_tmp
 # are constructed near the top of the file (right after the marker-
@@ -858,7 +860,7 @@ if [[ -n "$disallowed_hosts" ]]; then
   # uploaded actions.json artifact for deeper inspection.
   echo "::error::actions.json contains URLs to disallowed hosts (redacted):"
   printf '%s\n' "$disallowed_hosts" | awk 'NR<=10' | sed 's/^/  - /' | sed -E 's/[A-Za-z0-9_-]/x/g'
-  echo "::error::Only github.com (and *.github.com / *.githubusercontent.com) URLs are allowed in review bodies. See the URL allow-list in sanitize_claude_actions.sh and the matching contract in the prompt's Hard constraints block in .github/workflows/claude_auto_review.yml."
+  echo "::error::Only github.com / llvm.org (and *.github.com / *.githubusercontent.com / *.llvm.org) URLs are allowed in review bodies. See the URL allow-list in sanitize_claude_actions.sh and the matching contract in the prompt's Hard constraints block in .github/workflows/claude_auto_review.yml."
   exit 2
 fi
 
@@ -967,7 +969,7 @@ bad_scheme=$(printf '%s\n' "$md_dests" \
 if [[ -n "$bad_scheme" ]]; then
   echo "::error::actions.json contains Markdown link destinations with non-http(s) schemes (redacted):"
   printf '%s\n' "$bad_scheme" | awk 'NR<=10' | sed 's/^/  - /' | sed -E 's/[A-Za-z0-9_-]/x/g'
-  echo "::error::Only http(s)://github.com URLs (allow-listed by Layer 1), in-repo paths, and fragment anchors are valid link destinations. mailto:, ftp:, javascript:, data:, file:, vbscript: etc. are rejected."
+  echo "::error::Only http(s)://github.com / http(s)://llvm.org URLs and allowed subdomains (allow-listed by Layer 1), in-repo paths, and fragment anchors are valid link destinations. mailto:, ftp:, javascript:, data:, file:, vbscript: etc. are rejected."
   exit 2
 fi
 
@@ -985,7 +987,7 @@ bad_proto_rel=$(printf '%s\n' "$md_dests" \
 if [[ -n "$bad_proto_rel" ]]; then
   echo "::error::actions.json contains protocol-relative Markdown link destinations to disallowed hosts (redacted):"
   printf '%s\n' "$bad_proto_rel" | awk 'NR<=10' | sed 's/^/  - /' | sed -E 's/[A-Za-z0-9_-]/x/g'
-  echo "::error::Protocol-relative destinations (//host/...) resolve to the page's protocol; on a github.com page, //evil.example/x becomes https://evil.example/x. Only //github.com/... (and *.github.com / *.githubusercontent.com) is allowed."
+  echo "::error::Protocol-relative destinations (//host/...) resolve to the page's protocol; on a github.com page, //evil.example/x becomes https://evil.example/x. Only //github.com/... / //llvm.org/... (and *.github.com / *.githubusercontent.com / *.llvm.org) is allowed."
   exit 2
 fi
 
@@ -1054,7 +1056,7 @@ attr_bad_scheme=$(printf '%s\n' "$attr_dests" \
 if [[ -n "$attr_bad_scheme" ]]; then
   echo "::error::actions.json contains href= or src= attributes with non-http(s) schemes (redacted):"
   printf '%s\n' "$attr_bad_scheme" | awk 'NR<=10' | sed 's/^/  - /' | sed -E 's/[A-Za-z0-9_-]/x/g'
-  echo "::error::Only http(s)://github.com (and *.github.com / *.githubusercontent.com) URLs are valid href/src destinations. mailto:, ftp:, javascript:, data:, file:, vbscript: etc. are rejected."
+  echo "::error::Only http(s)://github.com / http(s)://llvm.org (and *.github.com / *.githubusercontent.com / *.llvm.org) URLs are valid href/src destinations. mailto:, ftp:, javascript:, data:, file:, vbscript: etc. are rejected."
   exit 2
 fi
 
@@ -1071,7 +1073,7 @@ attr_bad_proto_rel=$(printf '%s\n' "$attr_dests" \
 if [[ -n "$attr_bad_proto_rel" ]]; then
   echo "::error::actions.json contains protocol-relative href= or src= attributes to disallowed hosts (redacted):"
   printf '%s\n' "$attr_bad_proto_rel" | awk 'NR<=10' | sed 's/^/  - /' | sed -E 's/[A-Za-z0-9_-]/x/g'
-  echo "::error::Protocol-relative href/src (//host/...) resolves to the page's protocol; on a github.com page, //evil.example/x becomes https://evil.example/x. Only //github.com/... (and *.github.com / *.githubusercontent.com) is allowed."
+  echo "::error::Protocol-relative href/src (//host/...) resolves to the page's protocol; on a github.com page, //evil.example/x becomes https://evil.example/x. Only //github.com/... / //llvm.org/... (and *.github.com / *.githubusercontent.com / *.llvm.org) is allowed."
   exit 2
 fi
 
@@ -1100,10 +1102,10 @@ fi
 #     form to bypass.
 #
 # Bracketed authorities are categorically rejected here. There is no
-# legitimate review-body use case: github.com / gist.github.com / etc.
-# are never reached via a raw IP literal, and the host allow-list logic
-# ("`github.com` is OK; everything else isn't") cannot be applied to an
-# IP literal in the first place -- you cannot tell from
+# legitimate review-body use case: github.com / llvm.org / their allowed
+# subdomains are never reached via a raw IP literal, and the host
+# allow-list logic ("named hosts are OK; everything else isn't") cannot
+# be applied to an IP literal in the first place -- you cannot tell from
 # `[2606:50c0:8000::153]` whether it points at GitHub Pages or at an
 # attacker's host that happens to have pinned the same address. Any
 # legitimate cross-link can use the hostname instead.
@@ -1135,7 +1137,7 @@ bracketed_hosts=$(grep -oiE '(https?:)?//\[[^]]+\]' "$strings_decoded_oneline_tm
 if [[ -n "$bracketed_hosts" ]]; then
   echo "::error::actions.json contains URLs with bracketed-IP-literal hosts (redacted):"
   printf '%s\n' "$bracketed_hosts" | awk 'NR<=10' | sed 's/^/  - /' | sed -E 's/[A-Za-z0-9_-]/x/g'
-  echo "::error::IPv6 / IPvFuture URL authorities (https://[2606:...]/x, //[2606:...]/x, etc.) are categorically rejected. github.com is never reached via a raw IP literal; reference resources by hostname so the host allow-list can apply."
+  echo "::error::IPv6 / IPvFuture URL authorities (https://[2606:...]/x, //[2606:...]/x, etc.) are categorically rejected. Allowed hosts are never reached via a raw IP literal; reference resources by hostname so the host allow-list can apply."
   exit 2
 fi
 
@@ -1179,9 +1181,9 @@ fi
 #     percent-encoded variant `https://%5B::1%5D/x` has no literal `[`,
 #     so Layer 4 doesn't fire either; this layer catches it instead.
 #
-# Same reasoning as Layer 4: github.com / *.github.com /
-# *.githubusercontent.com hostnames are pure ASCII alphanumeric + `.-`
-# and never legitimately require percent-encoding in the authority.
+# Same reasoning as Layer 4: github.com / llvm.org and their allowed
+# subdomains are pure ASCII alphanumeric + `.-` and never legitimately
+# require percent-encoding in the authority.
 # Anything with `%XX` in the authority position is categorically
 # rejected, so we don't have to reason about percent-decode
 # normalization, overlong / double-percent-encoded sequences, or IDNA
@@ -1279,7 +1281,7 @@ pct_authorities=$( { printf '%s\n' "$bare_pct_auths" "$md_pct_auths" "$attr_pct_
 if [[ -n "$pct_authorities" ]]; then
   echo "::error::actions.json contains URLs with percent-encoded authorities (redacted):"
   printf '%s\n' "$pct_authorities" | awk 'NR<=10' | sed 's/^/  - /' | sed -E 's/[A-Za-z0-9_-]/x/g'
-  echo "::error::Per the WHATWG URL spec the host component is percent-decoded before resolution, so https://%65vil.example/x renders as https://evil.example/x and https://github.com%2eevil.example/x renders as a subdomain of evil.example. github.com / *.github.com / *.githubusercontent.com hostnames are pure ASCII and never legitimately need percent-encoding in the authority; all percent-encoded authorities are categorically rejected. Reference resources by literal hostname instead. (Percent-encoding in the URL path / query / fragment is unaffected -- only the authority is checked.)"
+  echo "::error::Per the WHATWG URL spec the host component is percent-decoded before resolution, so https://%65vil.example/x renders as https://evil.example/x and https://github.com%2eevil.example/x renders as a subdomain of evil.example. Allowed hostnames are pure ASCII and never legitimately need percent-encoding in the authority; all percent-encoded authorities are categorically rejected. Reference resources by literal hostname instead. (Percent-encoding in the URL path / query / fragment is unaffected -- only the authority is checked.)"
   exit 2
 fi
 
@@ -1347,7 +1349,7 @@ abs_disallowed=$( { printf '%s\n' "$md_dests" "$attr_dests"; } \
 if [[ -n "$abs_disallowed" ]]; then
   echo "::error::actions.json contains http(s):// Markdown link destinations or HTML href= / src= attributes to disallowed hosts (redacted):"
   printf '%s\n' "$abs_disallowed" | awk 'NR<=10' | sed 's/^/  - /' | sed -E 's/[A-Za-z0-9_-]/x/g'
-  echo "::error::Only http(s)://github.com (and *.github.com / *.githubusercontent.com) URLs are allowed as Markdown link destinations or HTML href / src attribute values. Layer 1 catches the same shape in bare-URL prose; this layer makes the rejection destination-aware and closes the LF/CR/TAB-split bypass that Layer 1's per-line view cannot detect when the truncated host is a github.com prefix of a longer disallowed host (see WHATWG URL §4.4)."
+  echo "::error::Only http(s)://github.com / http(s)://llvm.org (and *.github.com / *.githubusercontent.com / *.llvm.org) URLs are allowed as Markdown link destinations or HTML href / src attribute values. Layer 1 catches the same shape in bare-URL prose; this layer makes the rejection destination-aware and closes the LF/CR/TAB-split bypass that Layer 1's per-line view cannot detect when the truncated host is an allowed-host prefix of a longer disallowed host (see WHATWG URL §4.4)."
   exit 2
 fi
 
