@@ -134,6 +134,26 @@ static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
   }
 }
 
+/// Build a result-attribute list of length `oldNumResults + numKeepalive` by
+/// reusing `existing` (or empty dicts for the first `oldNumResults` entries
+/// when absent) and tagging the trailing `numKeepalive` entries with
+/// `keepaliveDict`.
+static SmallVector<Attribute>
+buildKeepaliveResAttrs(MLIRContext *ctx, ArrayAttr existing,
+                       unsigned oldNumResults, unsigned numKeepalive,
+                       DictionaryAttr keepaliveDict) {
+  SmallVector<Attribute> resAttrs;
+  resAttrs.reserve(oldNumResults + numKeepalive);
+  if (existing) {
+    for (Attribute a : existing)
+      resAttrs.push_back(a);
+  } else {
+    resAttrs.append(oldNumResults, DictionaryAttr::get(ctx));
+  }
+  resAttrs.append(numKeepalive, keepaliveDict);
+  return resAttrs;
+}
+
 /// Append `extraReturns` to kernel's `func.return`, widen its function
 /// type to match, and rewrite every `func.call @kernel` in `module` so its
 /// result matches the new signature.
@@ -182,16 +202,9 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
                StringAttr::get(ctx, rock::BwdDataStoreAttr::getMnemonic()),
                UnitAttr::get(ctx))});
 
-  SmallVector<DictionaryAttr> newKernelResAttrs;
-  newKernelResAttrs.reserve(newResultTypes.size());
-  if (ArrayAttr existingResAttrs = kernel.getAllResultAttrs()) {
-    for (Attribute a : existingResAttrs)
-      newKernelResAttrs.push_back(cast<DictionaryAttr>(a));
-  } else {
-    newKernelResAttrs.append(oldNumResults, DictionaryAttr::get(ctx));
-  }
-  newKernelResAttrs.append(extraReturns.size(), keepaliveDict);
-  kernel.setAllResultAttrs(newKernelResAttrs);
+  kernel.setAllResultAttrs(
+      buildKeepaliveResAttrs(ctx, kernel.getAllResultAttrs(), oldNumResults,
+                             extraReturns.size(), keepaliveDict));
 
   StringRef kernelName = kernel.getName();
   TypeRange newResults = kernel.getFunctionType().getResults();
@@ -218,16 +231,10 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
     // Mirror the kernel's `res_attrs` onto the call so the keepalive marker
     // is visible to consumers that only see the call op (i.e. host code
     // restored by `RockEmitGpuBinary` after `RockSerializeHostFuncs`).
-    SmallVector<Attribute> newCallResAttrs;
-    newCallResAttrs.reserve(newResultTypes.size());
-    if (ArrayAttr existingCallResAttrs = callOp.getResAttrsAttr()) {
-      for (Attribute a : existingCallResAttrs)
-        newCallResAttrs.push_back(a);
-    } else {
-      newCallResAttrs.append(oldNumResults, DictionaryAttr::get(ctx));
-    }
-    newCallResAttrs.append(extraReturns.size(), keepaliveDict);
-    newCall.setResAttrsAttr(ArrayAttr::get(ctx, newCallResAttrs));
+    newCall.setResAttrsAttr(ArrayAttr::get(
+        ctx, buildKeepaliveResAttrs(ctx, callOp.getResAttrsAttr(),
+                                    oldNumResults, extraReturns.size(),
+                                    keepaliveDict)));
 
     callOp.erase();
   }
