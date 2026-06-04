@@ -5,7 +5,7 @@
 // CHECK: elemTypeKLoad: i4
 // CHECK: elemTypeVLoad: f16
 // VECTORIZATION-DAG: #[[Q_LAYOUT:.*]] = #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [16, 4]
-// VECTORIZATION-DAG: #[[V_LAYOUT:.*]] = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [1, 64]
+// VECTORIZATION-DAG: #[[V_LAYOUT:.*]] = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 8]
 // VECTORIZATION: tt.load {{.*}}#[[Q_LAYOUT]]>
 // VECTORIZATION: tt.load {{.*}}#[[V_LAYOUT]]>
 module {
@@ -18,7 +18,7 @@ module {
     %5 = migraphx.dequantizelinear %0, %3, %4 : <4096x4096xi8, 4096x1>, <4096x4096xf16, 16536x2>, !migraphx.shaped<4096x4096xf16, 16536x2> -> <4096x4096xf16, 4096x1>
     %6 = migraphx.dot %2, %5 : <4096x4096xf16, 0x1>, <4096x4096xf16, 4096x1> -> <4096x4096xf16, 4096x1>
     %7 = migraphx.softmax %6 {axis = 1 : i64} : <4096x4096xf16, 4096x1> -> <4096x4096xf16, 4096x1>
-    %8 = migraphx.dot %7, %arg4 {perf_config = "attn:v1:128,64,128,1,1,32,0,1,1,0,0"} : <4096x4096xf16, 4096x1>, <4096x4096xf16, 4096x1> -> <4096x4096xf16, 4096x1>
+    %8 = migraphx.dot %7, %arg4 {perf_config = "attn:v1:128,64,128,1,1,16,0,1,1,0,0"} : <4096x4096xf16, 4096x1>, <4096x4096xf16, 4096x1> -> <4096x4096xf16, 4096x1>
     return %8 : !migraphx.shaped<4096x4096xf16, 4096x1>
   }
 }

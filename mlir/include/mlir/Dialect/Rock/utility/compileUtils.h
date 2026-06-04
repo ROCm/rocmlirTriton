@@ -53,14 +53,18 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
 /// binary does not contain exactly one kernel.
 FailureOr<ArrayAttr> getPrefillArrayFromBinary(ModuleOp moduleOp);
 
-/// Parse a performance-config string into Triton and backend compilation
-/// options. Attempts to interpret `perfConfig` as a GemmParamsAttr or
-/// GemmGemmParamsAttr and populates `tritonOpts` (numWarps, numCTAs,
-/// numStages, matrixInstrNonkdim, kpack) and `backendOpts` (numWarps,
-/// numCTAs, wavesPerEU) accordingly.
-/// Returns failure if `perfConfig` does not match any known parameter format
-/// or if numCTAs exceeds the maximum for the target architecture.
+/// Populate `tritonOpts` (numWarps, numCTAs, numStages, matrixInstrNonkdim,
+/// kpack) and `backendOpts` (numWarps, numCTAs, wavesPerEU) from a perf-config
+/// attribute. `perfConfig` must implement `RockTuningParamAttrInterface` (i.e.
+/// be a `GemmParamsAttr` or `GemmGemmParamsAttr`); otherwise this fails.
 LogicalResult fillCompilationConfigs(Attribute perfConfig,
+                                     rock::TritonOptions &tritonOpts,
+                                     rock::BackendOptions &backendOpts);
+
+/// Same as above but parses a perf-config string. Tries `GemmParamsAttr` and
+/// then `GemmGemmParamsAttr`; returns failure if neither parses or if the
+/// resulting attribute can't be applied.
+LogicalResult fillCompilationConfigs(MLIRContext *ctx, StringRef perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts);
 

@@ -231,8 +231,10 @@ def Rock_GemmParamsAttr
     - splitKFactor: Split-k factor for the Split-k GEMM algorithm
     - numStages: Number of stages
     - wavesPerEU: Hint to backend compiler for wavefronts per execution unit
-    - gridGroupSize: Number of chiplets to group together to perform a spatially
-      local tile
+    - gridGroupSize: Number of M tile blocks grouped together when mapping
+      workgroups onto the grid (see `makeGroupedGridLayout`); larger groups
+      improve L2 locality across the grouped M-blocks at the cost of
+      scheduling flexibility
     - useAsyncCopy: Overrides the per-arch default application for the async-copy schedule.
     - useBlockPingpong: Overrides the per-arch default application for the block-pingpong schedule.
     - useInThreadTranspose: Overrides the per-arch default application for the in-thread-transpose pass.
@@ -331,8 +333,10 @@ def Rock_GemmGemmParamsAttr
     - splitKFactor: Split-k factor for the Split-k GEMM algorithm
     - numStages: Number of stages
     - wavesPerEU: Hint to backend compiler for wavefronts per execution unit
-    - gridGroupSize: Number of chiplets to group together to perform a spatially
-      local tile
+    - gridGroupSize: Number of M tile blocks grouped together when mapping
+      workgroups onto the grid (see `makeGroupedGridLayout`); larger groups
+      improve L2 locality across the grouped M-blocks at the cost of
+      scheduling flexibility
     - useAsyncCopy: Overrides the per-arch default application for the async-copy schedule.
     - useBlockPingpong: Overrides the per-arch default application for the block-pingpong schedule.
     - useInThreadTranspose: Overrides the per-arch default application for the in-thread-transpose pass.
@@ -402,6 +406,11 @@ def Rock_GemmGemmParamsAttr
         getPerfConfigStr(buf);
         return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
     }
+
+    // Bridge accessors for the RockTuningParamAttrInterface so generic code
+    // (e.g. perf-config validation) can treat gemm and gemm+gemm uniformly.
+    int64_t getMPerBlock() const { return getMPerBlockG0(); }
+    int64_t getNPerBlock() const { return getNPerBlockG0(); }
   }];
 
   let builders = [AttrBuilderWithInferredContext<(

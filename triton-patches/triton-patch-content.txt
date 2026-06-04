@@ -5,6 +5,7 @@ This directory holds patches against the Triton submodule
 (external/triton/).
 
 ----------------------------------------------------------------------
+patch10290.patch
 patch1.patch
 patch2.patch
 patch3.patch
