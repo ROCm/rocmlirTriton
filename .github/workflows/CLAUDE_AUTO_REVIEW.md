@@ -701,13 +701,14 @@ output misses attacks that only "appear" after rendering:
 
 ### The URL allow-list layers
 
-Only `github.com` / `*.github.com` / `*.githubusercontent.com` are allowed in
-the URL-bearing forms the sanitizer explicitly extracts: bare `http(s)://`
-URLs, Markdown link destinations, and raw HTML `href=` / `src=` attributes. The
-sanitizer is deliberately regex-based rather than a complete Markdown parser;
-the model prompt still forbids all non-GitHub URLs, and the sanitizer enforces
-the high-risk renderable forms used by the bot's review output. Each layer
-closes a distinct bypass class:
+Only `github.com` / `llvm.org` / `*.github.com` /
+`*.githubusercontent.com` / `*.llvm.org` are allowed in the URL-bearing forms
+the sanitizer explicitly extracts: bare `http(s)://` URLs, Markdown link
+destinations, and raw HTML `href=` / `src=` attributes. The sanitizer is
+deliberately regex-based rather than a complete Markdown parser; the model
+prompt still forbids all other URLs, and the sanitizer enforces the high-risk
+renderable forms used by the bot's review output. Each layer closes a distinct
+bypass class:
 
 | Layer | Catches |
 |---|---|
@@ -769,8 +770,9 @@ The corpus covers, by category:
 - **Marker anti-spoof** — a PR author cannot inject `<!-- claude-pr-review-… -->`
   attribution/dedup markers into the model's output.
 - **Diagnostic redaction** — two cases asserting the rejected host never leaks.
-- **Negative (accept) cases** — valid `github.com`/`*.githubusercontent.com`
-  links, code fences, multi-line prose, legitimate `%XX` in path/query/fragment
+- **Negative (accept) cases** — valid `github.com`/`*.githubusercontent.com`/
+  `llvm.org`/`*.llvm.org` links, code fences, multi-line prose, legitimate
+  `%XX` in path/query/fragment
   (must *not* trip the authority check), and the **intentional** bare-prose /
   autolink LF-split accepts (where GitHub stops autolinking at the LF, so the
   disallowed continuation is never a single clickable link — blocking these
@@ -853,9 +855,10 @@ untrusted PR data with its own directives:
    `## Scope` / `## Findings` / `## Notes` / `## CI status` Markdown sections
    that become the review body.
 6. **Hard constraints** — the model-facing mirror of the sanitizer: no
-   secrets/env-var names/values/headers; only `github.com`/`*.github.com`/
-   `*.githubusercontent.com` URLs (with the full enumeration of rejected URL
-   forms, kept in sync with the allow-list — see [§15](#15-maintenance--sync-points));
+   secrets/env-var names/values/headers; only `github.com`/`llvm.org`/
+   `*.github.com`/`*.githubusercontent.com`/`*.llvm.org` URLs (with the full
+   enumeration of rejected URL forms, kept in sync with the allow-list — see
+   [§15](#15-maintenance--sync-points));
    never emit the reserved `<!-- claude-pr-review-` marker prefix; never attempt
    to post; never print env var contents.
 
@@ -1187,9 +1190,9 @@ adjust to your repo layout.
 **Without Layer 1 + the Layer-2 maintainer procedure, the in-workflow checks
 alone do not protect the secrets** (see [§5](#5-trigger-model-pull_request-vs-pull_request_target)).
 
-**7. URL allow-list.** If your review bodies legitimately link to a non-GitHub
-host, add it to `ALLOWED_HOST_RE` in the sanitizer **and** the prompt's "Hard
-constraints" block — keep the two in sync.
+**7. URL allow-list.** If your review bodies legitimately link to a host outside
+GitHub or LLVM, add it to `ALLOWED_HOST_RE` in the sanitizer **and** the prompt's
+"Hard constraints" block — keep the two in sync.
 
 **8. COMMENT-only submission.** Every verdict is submitted as `--comment`;
 there is no runtime opt-in (see [§13](#13-security-measures-summary)). Keep
