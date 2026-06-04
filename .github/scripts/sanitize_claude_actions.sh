@@ -728,9 +728,9 @@ done
 #     pattern check. The decode pre-pass below ($strings_decoded_tmp)
 #     normalizes these before the URL layers run.
 #
-# The allow-list of HOSTS is intentionally tiny: github.com / llvm.org
-# only (and their subdomains, plus githubusercontent.com for raw GitHub
-# content). Code review bodies can always reference in-repo files by
+# The allow-list of HOSTS is intentionally tiny: github.com / llvm.org,
+# their subdomains, and githubusercontent.com subdomains for raw GitHub
+# content. Code review bodies can always reference in-repo files by
 # path/line without a URL; the few cases that genuinely need a link are
 # GitHub resources or LLVM project references. If a future legitimate
 # use case needs another host, add it here AND in the prompt's "Hard
@@ -1181,9 +1181,8 @@ fi
 #     percent-encoded variant `https://%5B::1%5D/x` has no literal `[`,
 #     so Layer 4 doesn't fire either; this layer catches it instead.
 #
-# Same reasoning as Layer 4: github.com / llvm.org and their allowed
-# subdomains are pure ASCII alphanumeric + `.-` and never legitimately
-# require percent-encoding in the authority.
+# Same reasoning as Layer 4: allowed hosts are written as literal ASCII
+# hostnames and never legitimately require percent-encoding in the authority.
 # Anything with `%XX` in the authority position is categorically
 # rejected, so we don't have to reason about percent-decode
 # normalization, overlong / double-percent-encoded sequences, or IDNA

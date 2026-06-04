@@ -750,8 +750,8 @@ jobs:
             Reference URLs in the "References" subsection below
             (`llvm.org`, `mlir.llvm.org`) are context for YOU. If you cite
             them in YOUR OUTPUT, they must still satisfy the Hard constraints
-            section's allow-list (`github.com` / `llvm.org` and allowed
-            subdomains).
+            section's allow-list (`github.com`, `llvm.org`, `*.github.com`,
+            `*.githubusercontent.com`, and `*.llvm.org`).
 
             <BEGIN docs/PR_REVIEW_CHECKLIST.md>
 
@@ -780,14 +780,14 @@ jobs:
               workflow if it sees patterns matching common secret formats or LLM-Gateway
               env-var names.
             - Do NOT include any URL OTHER THAN bare http(s)://github.com or
-              http(s)://llvm.org URLs (and their subdomains:
-              `*.github.com`, `*.githubusercontent.com`, `*.llvm.org`). This covers
-              everything a code review legitimately needs to link to: this PR, any
-              file/line/blob/commit in this repo, related PRs/issues, gists, raw
-              GitHub content, and LLVM project references. Anything else is rejected
-              by the sanitizer's URL allow-list and fails the run -- in particular
-              do NOT link to docs/RFCs/tutorials on other domains; reference them by
-              name and let the human follow up.
+              http(s)://llvm.org URLs, plus URLs to explicitly allowed
+              subdomains (`*.github.com`, `*.githubusercontent.com`, `*.llvm.org`).
+              This covers everything a code review legitimately needs to link to:
+              this PR, any file/line/blob/commit in this repo, related PRs/issues,
+              gists, raw GitHub content, and LLVM project references. Anything else
+              is rejected by the sanitizer's URL allow-list and fails the run -- in
+              particular do NOT link to docs/RFCs/tutorials on other domains;
+              reference them by name and let the human follow up.
               The following link forms are ALSO rejected, because they
               bypass the bare-URL allow-list:
                 - Userinfo-bearing URLs: `[text](https://github.com@evil.example/x)`
@@ -820,7 +820,7 @@ jobs:
                   `<a href="https://[fe80::1]/x">`, and
                   `<img src="//[v1.fe80::a+en1]/x">` are all rejected,
                   whether the scheme is explicit or protocol-relative.
-                  allowed hosts are never reached via a raw IP literal, and
+                  Allowed hosts are never reached via a raw IP literal, and
                   the host allow-list cannot meaningfully classify an IP
                   address; reference any resource by hostname instead.
                 - Percent-encoded host components. Per the WHATWG URL
