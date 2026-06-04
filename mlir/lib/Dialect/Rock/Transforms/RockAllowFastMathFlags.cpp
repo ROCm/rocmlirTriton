@@ -19,13 +19,13 @@
 // exploit, choosing per-op what's actually beneficial:
 //   * `arcp`     on `arith.divf`  -> hardware reciprocal (v_rcp_f32).
 //   * `contract` on `arith.{add,sub,mul}f` -> mul+add fused to v_fma_f32.
+//                Also on round-tripping `arith.extf(arith.truncf %wide) ->
+//                %wide` pairs.
 //   * `nsz`      on `arith.{add,sub,mul,div,neg}f` -> permits ignoring the
 //                sign of zero (enables a handful of LLVM peepholes such as
 //                `x + 0 -> x`, `0 - x -> -x` via sign-bit XOR).
 //   * `afn`      on `math.*` transcendentals -> hardware approximations
 //                (v_exp_f32, v_log_f32, v_sqrt_f32, ...).
-//   * `contract` on round-tripping `arith.extf(arith.truncf %wide) -> %wide`
-//                pairs.
 
 //===-----------------------------------------------------===//
 
@@ -129,9 +129,6 @@ struct AnnotateExtTruncRoundTripPattern
 
 void RockAllowFastMathFlagsPass::runOnOperation() {
   auto func = getOperation();
-  if (!func->hasAttr("rock.kernel"))
-    return;
-
   MLIRContext *ctx = &getContext();
 
   // x / y -> x * rcp(y) via hardware reciprocal.

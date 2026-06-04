@@ -102,24 +102,6 @@ func.func @keep_lone_extf(%arg0: tensor<32x32xf16>) -> tensor<32x32xf32>
 }
 
 // ============================================================
-// Non-kernel function: pass must be a no-op even when the pattern
-// would otherwise match, since rocmlirTriton uses the rock.kernel
-// attribute to gate kernel-only rewrites. Both casts must remain
-// and neither may pick up `fastmath<contract>` from this pass.
-// ============================================================
-
-// CHECK-LABEL: func.func @skip_non_kernel
-//  CHECK-NOT:   fastmath
-//      CHECK:   arith.truncf
-//      CHECK:   arith.extf
-//      CHECK:   return
-func.func @skip_non_kernel(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32> {
-  %0 = arith.truncf %arg0 : tensor<32x32xf32> to tensor<32x32xf16>
-  %1 = arith.extf %0 : tensor<32x32xf16> to tensor<32x32xf32>
-  return %1 : tensor<32x32xf32>
-}
-
-// ============================================================
 // Round-trip mirroring the attention Pattern A born by
 // RockGridwiseAttnToBlockwisePass: an f32 accumulator is trunc'd
 // to f16 only to be extf'd back so a downstream scale-and-softmax
