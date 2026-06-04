@@ -198,16 +198,19 @@ bool RockEmitGpuBinaryPass::restoreHostFunctions(ModuleOp moduleOp) {
     // Move each operation from the parsed module to our module. The parser
     // assigns each op a `FileLineColLoc` pointing into the synthetic in-memory
     // buffer above (filename `-`), which is meaningless to anyone reading a
-    // post-restoration diagnostic. Replace those with the owning module's
-    // location so diagnostics on restored ops point back to the source that
-    // actually owned the `rock.host_functions` attribute.
-    Location restoredLoc = moduleOp.getLoc();
+    // post-restoration diagnostic. Fuse those with the owning module's location
+    // so diagnostics on restored ops point back to the source that actually
+    // owned the `rock.host_functions` attribute, while still preserving the
+    // parser-assigned line/column within the serialized snippet.
+    Location moduleLoc = moduleOp.getLoc();
     for (Operation &op :
          llvm::make_early_inc_range(parsedModule->getBody()->getOperations())) {
       if (op.hasTrait<OpTrait::IsTerminator>())
         continue;
       op.moveBefore(&moduleOp.getBody()->back());
-      op.walk([&](Operation *child) { child->setLoc(restoredLoc); });
+      op.walk([&](Operation *child) {
+        child->setLoc(FusedLoc::get(ctx, {moduleLoc, child->getLoc()}));
+      });
     }
   }
 

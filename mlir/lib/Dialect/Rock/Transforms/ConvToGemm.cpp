@@ -162,6 +162,10 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
   if (extraReturns.empty())
     return success();
 
+  if (!kernel.hasAttr(rock::Rock_KernelAttr::getMnemonic()))
+    return kernel.emitOpError("expandKernelReturns requires "
+                              "the kernel to be marked with 'rock.kernel'");
+
   if (!kernel.isPublic())
     return kernel.emitOpError(
         "bwd_data multi-kernel keepalive requires public visibility; "
@@ -1273,9 +1277,9 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // it will be DCE'd. We preserve the original store's use chain (the
     // parent `func.return` operand) by replacing `originalStoreOp` with
     // the first new store result. Stores 1..N-1 are intentionally left
-    // with `use_empty()`here as the post-conversion step in
+    // with `use_empty()` here as the post-conversion step in
     // `RockConvToGemmPass::runOnOperation` is the single place that wires
-    // them into the parent function's `func.return`
+    // them into the parent function's `func.return`.
     b.replaceOp(originalStoreOp, storeResults.front());
     b.eraseOp(bwdDataOp);
 
