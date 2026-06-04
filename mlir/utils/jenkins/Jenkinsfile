@@ -826,34 +826,15 @@ Map<String,String> classifyBuildFailure(String logText) {
     if (scmAnchor < 0) scmAnchor = logText.lastIndexOf("ERROR: Error cloning remote repo")
     if (scmAnchor < 0) scmAnchor = logText.lastIndexOf('ERROR: Checkout failed')
 
-    if (scmAnchor >= 0) {
-        failureAnchor = scmAnchor
-    } else {
-        def hipNoDeviceAnchor = logText.lastIndexOf('hipErrorNoDevice')
-        if (hipNoDeviceAnchor >= 0) {
-            failureAnchor = hipNoDeviceAnchor
-        } else {
-            def testsFailedAnchor = logText.lastIndexOf('Failed Tests (')
-            if (testsFailedAnchor >= 0) {
-                failureAnchor = testsFailedAnchor
-            } else {
-                def migraphxAnchor = logText.lastIndexOf('Configuring incomplete, errors occurred!')
-                if (migraphxAnchor >= 0) {
-                    failureAnchor = migraphxAnchor
-                } else {
-                    def ninjaAnchor = logText.lastIndexOf('ninja: build stopped')
-                    if (ninjaAnchor >= 0) {
-                        failureAnchor = ninjaAnchor
-                    } else {
-                        def agentFlappingAnchor = logText.lastIndexOf('seems to be removed or offline')
-                        if (agentFlappingAnchor >= 0) {
-                            failureAnchor = agentFlappingAnchor
-                        }
-                    }
-                }
-            }
-        }
-    }
+    def anchorCandidates = [
+        scmAnchor,
+        logText.lastIndexOf('hipErrorNoDevice'),
+        logText.lastIndexOf('Failed Tests ('),
+        logText.lastIndexOf('Configuring incomplete, errors occurred!'),
+        logText.lastIndexOf('ninja: build stopped'),
+        logText.lastIndexOf('seems to be removed or offline'),
+    ]
+    failureAnchor = anchorCandidates.find { it >= 0 } ?: -1
 
     def searchStart = (failureAnchor >= 0) ? Math.max(0, failureAnchor - 8000) : 0
     def searchEnd = (failureAnchor >= 0) ? Math.min(logText.length(), failureAnchor + 500) : logText.length()
