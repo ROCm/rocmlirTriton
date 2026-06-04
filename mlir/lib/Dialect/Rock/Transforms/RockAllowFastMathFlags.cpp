@@ -129,6 +129,9 @@ struct AnnotateExtTruncRoundTripPattern
 
 void RockAllowFastMathFlagsPass::runOnOperation() {
   auto func = getOperation();
+  if (!func->hasAttr("rock.kernel"))
+    return;
+
   MLIRContext *ctx = &getContext();
 
   // x / y -> x * rcp(y) via hardware reciprocal.
