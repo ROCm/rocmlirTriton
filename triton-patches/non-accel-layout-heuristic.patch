@@ -1,8 +1,17 @@
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-index def4f5ad7..2f3cfe574 100644
+index def4f5ad70..3b87f3aedf 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-@@ -1527,6 +1527,133 @@ public:
+@@ -15,6 +15,8 @@
+ #include "triton/Tools/LayoutUtils.h"
+ #include "triton/Tools/LinearLayout.h"
+ #include "llvm/ADT/TypeSwitch.h"
++#include "llvm/Support/MathExtras.h"
++#include <numeric>
+ 
+ namespace tt = mlir::triton;
+ namespace ttg = mlir::triton::gpu;
+@@ -1527,6 +1529,144 @@ public:
    }
  };
  
@@ -50,16 +59,23 @@ index def4f5ad7..2f3cfe574 100644
 +    unsigned numWarps = curWPC[0] * curWPC[1];
 +    unsigned T = warpSize * numWarps;
 +
-+    auto isPow2 = [](unsigned x) { return x && !(x & (x - 1)); };
-+    if (!isPow2(warpSize) || !isPow2(numWarps))
++    if (!llvm::isPowerOf2_32(warpSize) || !llvm::isPowerOf2_32(numWarps))
 +      return rewriter.notifyMatchFailure(dotOp, "non-pow2 warp/lane counts");
 +
 +    // The actual layout decision.
 +    // Pick threads-along-M (aM) and threads-along-N (aN=T/aM) that make the
-+    // per-thread tile (M/aM x N/aN) as square as possible.
-+    bool found = false;
-+    long bestImb = 0;
-+    unsigned bestAM = 0;
++    // per-thread tile (M/aM x N/aN) as square as possible. Seed with the
++    // current split so we only switch to a strictly more balanced one.
++    // 
++    // Lambda to compute the imbalance metric; how imbalanced the per-thread tile is.
++    // The lower the imbalance, the better.
++    auto imbalance = [&](unsigned aM) -> long {
++      unsigned aN = T / aM;
++      long mpt = M / aM, npt = N / aN;
++      return std::abs(mpt - npt) * 2 + (npt > mpt ? 1 : 0);
++    };
++    unsigned bestAM = curTPW[0] * curWPC[0];
++    long bestImb = imbalance(bestAM);
 +    for (unsigned aM = 1; aM <= T; aM <<= 1) {
 +      unsigned aN = T / aM;
 +      unsigned tileM = sizePerThread[0] * aM;
@@ -68,25 +84,27 @@ index def4f5ad7..2f3cfe574 100644
 +        continue;
 +      if (M % tileM != 0 || N % tileN != 0)
 +        continue; // require exact tiling
-+      long mpt = M / aM, npt = N / aN;
-+      // Imbalance metric; +1 penalty when N_pt > M_pt to bias toward N_pt<=M_pt.
-+      long imb = std::abs(mpt - npt) * 2 + (npt > mpt ? 1 : 0);
-+      if (!found || imb < bestImb) {
-+        found = true;
++      long imb = imbalance(aM);
++      if (imb < bestImb) {
 +        bestImb = imb;
 +        bestAM = aM;
 +      }
 +    }
-+    if (!found)
-+      return rewriter.notifyMatchFailure(dotOp, "no valid balanced split");
 +
++    // We have found the aM/aN that minimizes the imbalance metric. Now split
++    // it into warpsPerCTA_M * threadsPerWarp_M, preferring warps on M. This
++    // maximizes the number of lanes on N which, being the contiguous (fastest)
++    // dimension per order=[1,0], improves read coalescing. Empirically this
++    // matches the best-performing layout for FMA-based dot operations.
 +    unsigned aM = bestAM, aN = T / bestAM;
-+    // Factor aM into warpsPerCTA_M * threadsPerWarp_M, preferring warps on M.
-+    unsigned wpcM = std::min<unsigned>(numWarps, aM);
-+    while (wpcM > 0 && (numWarps % wpcM != 0 || aM % wpcM != 0))
-+      --wpcM;
-+    if (wpcM == 0)
-+      return rewriter.notifyMatchFailure(dotOp, "factorization failed");
++    
++    // We want as many warps on M as possible: the largest wpcM that divides
++    // both numWarps (so wpcN = numWarps / wpcM is whole) and aM (so
++    // tpwM = aM / wpcM is whole). That largest common divisor is the gcd.
++    //
++    // wpc = warpsPerCTA
++    // tpw = threadsPerWarp
++    unsigned wpcM = std::gcd(numWarps, aM);
 +    unsigned wpcN = numWarps / wpcM;
 +    unsigned tpwM = aM / wpcM;
 +    unsigned tpwN = warpSize / tpwM;
@@ -99,7 +117,9 @@ index def4f5ad7..2f3cfe574 100644
 +    if (newTPW == curTPW && newWPC == curWPC)
 +      return rewriter.notifyMatchFailure(dotOp, "already balanced");
 +
-+    // Now rewrite the dot op to use the new blocked encoding.
++    // We have computed the threads per warp (newTPW) and warps per CTA (newWPC)
++    // that we want to use, now rewrite the dot op to use the new
++    // blocked encoding.
 +    auto newBlocked = ttg::BlockedEncodingAttr::get(
 +        ctx, sizePerThread, newTPW, newWPC, blocked.getOrder(),
 +        blocked.getCGALayout());
@@ -136,7 +156,7 @@ index def4f5ad7..2f3cfe574 100644
  class AccelerateBlocked : public OpRewritePattern<DotOp> {
    StringRef arch;
  
-@@ -1756,6 +1883,7 @@ struct TritonAMDGPUAccelerateMatmulPass
+@@ -1756,6 +1896,7 @@ struct TritonAMDGPUAccelerateMatmulPass
        mfmaPatterns.add<::BlockedToWMMA>(
            context, getWmmaVersion(archGenerationName), matrixInstructionSize,
            /*benefit=*/2);
@@ -146,7 +166,7 @@ index def4f5ad7..2f3cfe574 100644
        break;
 diff --git a/test/TritonGPU/amd/accelerate-amd-matmul-fma-rdna.mlir b/test/TritonGPU/amd/accelerate-amd-matmul-fma-rdna.mlir
 new file mode 100644
-index 000000000..24af43ba9
+index 0000000000..24af43ba90
 --- /dev/null
 +++ b/test/TritonGPU/amd/accelerate-amd-matmul-fma-rdna.mlir
 @@ -0,0 +1,97 @@
