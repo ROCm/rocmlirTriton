@@ -90,6 +90,7 @@ LogicalResult tuningTableLookupByKey(TuningTable *perfTable,
 
 bool isSplitKRequested(ModuleOp mod, StringRef perfConfig);
 bool isSplitKRequested(StringAttr perfConfig);
+int64_t retrieveSplitKValue(StringAttr perfConfig);
 
 // This method checks a given fused module is actually fusible
 // for the given perfConfig
