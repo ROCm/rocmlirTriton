@@ -340,9 +340,33 @@ if ($IsAlternativeStack) {
     $LlvmHash = (Get-Content $LlvmHashFile -Raw).Trim()
 }
 
+$LlvmHashSentinel = "$LlvmBuild/.rocmlir-llvm-hash"
+$MlirConfig = "$LlvmBuild/lib/cmake/mlir/MLIRConfig.cmake"
+
 if ($Clean -and (Test-Path $LlvmSrc)) {
     Write-Host "Removing $LlvmSrc (--Clean)" -ForegroundColor Yellow
     Remove-Item -Recurse -Force $LlvmSrc
+}
+
+if (-not $Clean -and
+    (Test-Path $LlvmHashSentinel) -and
+    ((Get-Content -Raw $LlvmHashSentinel).Trim() -eq $LlvmHash) -and
+    (Test-Path $MlirConfig)) {
+    Write-Host ("LLVM already built for $LlvmHash; skipping fetch, " +
+                "configure, and build.") -ForegroundColor Green
+    Write-Host "MLIR CMake config: $MlirConfig"
+    return
+}
+
+# If previous build was configured against a different LLVM commit, wipe
+# its build dir to avoid stale-artifact and incremental-rebuild bugs
+if ((Test-Path $LlvmBuild) -and (Test-Path $LlvmHashSentinel)) {
+    $previousHash = (Get-Content -Raw $LlvmHashSentinel).Trim()
+    if ($previousHash -ne $LlvmHash) {
+        Write-Host ("LLVM hash changed ($previousHash -> $LlvmHash); " +
+                    "wiping $LlvmBuild") -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $LlvmBuild
+    }
 }
 
 if (-not (Test-Path $LlvmSrc)) {
@@ -423,19 +447,6 @@ if (Test-Path $LlvmPatchesDir) {
             $ErrorActionPreference = $savedPref
             Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
         }
-    }
-}
-
-# If a previous build was configured against a different LLVM commit, wipe
-# its build dir to avoid stale-artifact / incremental-rebuild bugs (object
-# files compiled against the old MLIR headers, leftover lit configs, etc.).
-$LlvmHashSentinel = "$LlvmBuild/.rocmlir-llvm-hash"
-if ((Test-Path $LlvmBuild) -and (Test-Path $LlvmHashSentinel)) {
-    $previousHash = (Get-Content -Raw $LlvmHashSentinel).Trim()
-    if ($previousHash -ne $LlvmHash) {
-        Write-Host ("LLVM hash changed ($previousHash -> $LlvmHash); " +
-                    "wiping $LlvmBuild") -ForegroundColor Yellow
-        Remove-Item -Recurse -Force $LlvmBuild
     }
 }
 
