@@ -62,7 +62,7 @@ TEST(FindFallbackTest, NoRelativesBySuffix) {
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_op_type"));
 }
 
-TEST(FindFallbackTest, SingleConfigFallsBackToRicherRelative) {
+TEST(FindFallbackTest, UnavailableTuningList) {
   // Fall back for single-config lists
   EXPECT_EQ("gfx1200_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f16"));
@@ -76,15 +76,14 @@ TEST(FindFallbackTest, SingleConfigFallsBackToRicherRelative) {
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1000_gemm_f16"));
 }
 
-TEST(FindFallbackTest, AllDegenerateFamilyKeepsClosest) {
-  // fp8 only exists single-config on gfx900/gfx1000, so there is no other
-  // relative; the search must keep the closest degenerate entry rather than
-  // rather than dropping everything and aborting.
-  EXPECT_EQ("gfx900_gemm_fp8",
-            ParamLookupTable<GemmParamsAttr>::findFallback("gfx900_gemm_fp8"));
-  EXPECT_EQ("gfx1000_gemm_fp8",
-            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1000_gemm_fp8"));
-  // A missing fp8 key in the all-degenerate gfx9 family still resolves.
-  EXPECT_EQ("gfx900_gemm_fp8",
+TEST(FindFallbackTest, Fp8FallsBackToI8) {
+  // fp8 has no tuning entries; fall back to the closest datatype, i8.
+  EXPECT_EQ("gfx942_gemm_i8",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_gemm_fp8"));
+}
+
+TEST(FindFallbackTest, F4FallsBackToI8) {
+  // f4 has no 4-bit neighbour, so it also falls back to i8.
+  EXPECT_EQ("gfx942_gemm_i8",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_gemm_f4"));
 }

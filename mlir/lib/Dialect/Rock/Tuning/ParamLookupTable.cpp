@@ -3,6 +3,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "rock-tuning-parameter"
@@ -21,16 +22,9 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
 
   static const auto &table = getTable();
   auto it = table.find(key);
-
-  // A healthy exact match (more than one real config) wins outright.
-  if (it != table.end() && llvm::count_if(it->second, [](StringRef cfg) {
-                             return !cfg.empty();
-                           }) > 1)
+  if (it != table.end())
     return it->second;
 
-  // Either the key is missing or its list is degenerate (<= 1 real config).
-  // Look for a "close" relative; findFallback() prefers relatives with a useful
-  // (>1 config) list so a single-config arch borrows a richer neighbour's list.
   auto fallbackKey = findFallback(key);
   if (!fallbackKey.empty()) {
     LLVM_DEBUG(llvm::dbgs() << "Falling back to tuning parameters with key "
@@ -38,36 +32,45 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
     return table.at(fallbackKey);
   }
 
-  // No relative at all (e.g. an op/dtype family with a lone degenerate entry).
-  // Prefer returning the degenerate exact entry over aborting.
-  if (it != table.end())
-    return it->second;
-
   llvm::report_fatal_error(Twine("Tuning parameters not found for key ") + key);
 }
 
 template <typename ParamsType>
+StringRef
+ParamLookupTable<ParamsType>::getFallbackDataType(StringRef dataType) {
+  // Map datatypes without their own tuning entries to the closest datatype that
+  // has them in a single hop. fp8 and i8 share the 8-bit MFMA/tile space; f4 has
+  // no 4-bit neighbour so it also borrows i8.
+  return llvm::StringSwitch<StringRef>(dataType)
+      .Case("fp8", "i8")
+      .Case("f4", "i8")
+      .Default(StringRef());
+}
+
+template <typename ParamsType>
 StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
-  auto relatives = getRelatives(target);
-  if (relatives.empty())
-    return StringRef();
+  // `fallbackKey` owns the storage for the substituted-datatype key (if any).
+  std::string fallbackKey;
+  SmallVector<StringRef, 12> relatives = getRelatives(target);
 
-  // Keep relatives whose own a valid list (> 1 real config); Only if every
-  // relative is degenerate do we keep the full set (eg. fp8 on gfx900/gfx1000).
-  static const auto &table = getTable();
-  SmallVector<StringRef, 12> validRelatives;
-  for (StringRef relative : relatives)
-    if (llvm::count_if(table.at(relative),
-                       [](StringRef cfg) { return !cfg.empty(); }) > 1)
-      validRelatives.push_back(relative);
-
-  // Narrow to the useful relatives, then pick the closest among them below. If
-  // every relative is degenerate we keep the full set so we still return one.
-  if (!validRelatives.empty())
-    relatives = std::move(validRelatives);
-
-  for (const auto &relative : relatives) {
-    llvm::errs() << "Relative: " << relative << "\n";
+  // When there is no same-datatype relative across architectures, borrow the
+  // closest datatype that has tuning entries (e.g. gfx942_gemm_fp8 ->
+  // gfx942_gemm_i8) and search once more. If that datatype has no relatives
+  // either, give up.
+  if (relatives.empty()) {
+    auto dataTypePos = target.rfind(separator);
+    if (dataTypePos == StringRef::npos)
+      return StringRef();
+    StringRef fallbackDataType =
+        getFallbackDataType(target.substr(dataTypePos + 1));
+    if (fallbackDataType.empty())
+      return StringRef();
+    fallbackKey =
+        (Twine(target.substr(0, dataTypePos + 1)) + fallbackDataType).str();
+    target = fallbackKey;
+    relatives = getRelatives(target);
+    if (relatives.empty())
+      return StringRef();
   }
 
   auto it = std::lower_bound(relatives.begin(), relatives.end(), target);
@@ -107,6 +110,7 @@ ParamLookupTable<ParamsType>::getRelatives(StringRef target) {
       relatives.push_back(candidate);
     }
   }
+
   return relatives;
 }
 
