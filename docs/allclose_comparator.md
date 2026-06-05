@@ -286,42 +286,52 @@ This mirrors rocBLAS's `tol = K * sum_error_tolerance<T>` in
 `clients/include/blas3/testing_gemm.hpp`, with the PyTorch baseline added
 back so element-wise ops (K_eff=1) match PyTorch's defaults.
 
-`sumErrorTolerance(Type)` in `rocmlir-gen.cpp` keeps rocBLAS's constants
-for fp16/bf16 and uses `eps(T)` for the fp8/fp4 dtypes rocBLAS does not
-test. The fp32 value matches rocBLAS's `1/10000`; fp64 uses `~4.5 * eps(fp64)`.
+`sumErrorTolerance(Type, isRandom)` in `rocmlir-gen.cpp` keeps rocBLAS's
+constants for fp16/bf16 and uses `eps(T)` for the fp8/fp4 dtypes rocBLAS
+does not test. fp32 is tighter than rocBLAS's `1/10000`: `1e-5` for
+random data and `1e-6` for fixed seeds (see note below).
+fp64 uses `~4.5 * eps(fp64)`.
 
 | dtype | sum_error_tolerance | source |
 |---|---|---|
 | fp16 | `1/900` | rocBLAS `near.hpp` |
 | bf16 | `1/100` | rocBLAS `near.hpp` |
-| fp32 | `1e-4` | rocBLAS `near.hpp` (`1/10000`); see note below |
+| fp32 (random) | `1e-5` | ~`84 * eps(fp32)`; see note below |
+| fp32 (fixed) | `1e-6` | ~`8.4 * eps(fp32)`; see note below |
 | fp64 | `1e-15` | ~`4.5 * eps(fp64)` |
 | fp8 e4m3* | `0.125` | `eps(e4m3) = 2^-3` |
 | fp8 e5m2* | `0.25`  | `eps(e5m2) = 2^-2` |
 | fp4 e2m1 | `0.5`   | `eps(e2m1) = 2^-1` |
 
-Worked example -- fp32 GEMM with K=4096:
+Worked example -- fp32 GEMM with K=4096 (random data):
 
 ```
-atol_eff = 1e-5 + 4096 * 1e-4 = 1e-5 + 0.4096 = 0.40961
+atol_eff = 1e-5 + 4096 * 1e-5 = 1e-5 + 0.04096 = 0.04097
 ```
 
-This matches rocBLAS's tolerance for the same K (`K * 1e-4 = 0.4096`);
-the `1e-5` baseline (PyTorch's fp32 `atol` default from section1.3) is
+For fixed seeds the tolerance is 10× tighter:
+
+```
+atol_eff = 1e-5 + 4096 * 1e-6 = 1e-5 + 0.004096 = 0.004106
+```
+
+The `1e-5` baseline (PyTorch's fp32 `atol` default from section 1.3) is
 negligible for large K but ensures element-wise ops (K_eff=1) still
 get a meaningful absolute tolerance.
 
 #### Note on fp32 tolerance choice
 
-Empirically, our test suite passes with a much tighter fp32
-`sum_error_tolerance` of `~1.1e-5` (`~100 * eps(fp32)`) when using
-random input data. We chose rocBLAS's `1e-4` instead for consistency:
-fp16 and bf16 already use rocBLAS's constants (`1/900` and `1/100`),
-so aligning fp32 keeps the tolerance model uniform across all dtypes
-and avoids a separate justification for a non-standard value. If a
-future need arises for stricter fp32 checking, the value can be
-tightened to `~1e-5` without introducing false positives on current
-configurations.
+rocBLAS uses `1e-4` (`1/10000`) for fp32. We tighten this to `1e-5`
+for random data and `1e-6` for fixed seeds because:
+
+- Fixed seeds produce well-conditioned inputs where accumulation error
+  is lower; `1e-6` (~`8.4 * eps(fp32)`) passes all current configs.
+- Random data empirically passes at `1e-5` (~`84 * eps(fp32)`), which
+  is still 10× tighter than rocBLAS.
+- One outlier config (`conv_regression_bwd/config_16_7`, K_eff=200704)
+  needs a manual `--atol 2.5` override at `1e-5`; at rocBLAS's `1e-4`
+  it would pass without override but at the cost of 10× looser
+  tolerance for all other fp32 tests.
 
 ### 2.4 `K_eff` per operation
 
