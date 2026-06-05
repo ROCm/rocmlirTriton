@@ -4966,13 +4966,13 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
 //   - fp8 e4m3: eps = 2^-3 = 0.125
 //   - fp8 e5m2: eps = 2^-2 = 0.25
 //   - fp4 e2m1: eps = 2^-1 = 0.5
-static float sumErrorTolerance(Type t) {
+static float sumErrorTolerance(Type t, bool isRandom = false) {
   if (isa<Float16Type>(t))
     return 1.0f / 900.0f;
   if (isa<BFloat16Type>(t))
     return 1.0f / 100.0f;
   if (isa<Float32Type>(t))
-    return 1e-4f;
+    return isRandom ? 1e-5f : 1e-6f;
   if (isa<Float64Type>(t))
     return 1e-15f;
   if (isa<Float8E4M3FNType, Float8E4M3FNUZType>(t))
@@ -5248,7 +5248,8 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
 static func::FuncOp createVerifierFunc(const GenParams &genParams,
                                        ModuleOp module, const KernelIF &kernel,
                                        MemRefType testType, MemRefType valType,
-                                       std::string funcName) {
+                                       std::string funcName,
+                                       bool isLSEOutput = false) {
   func::FuncOp func = module.lookupSymbol<func::FuncOp>(funcName);
   if (func) // already exists
     return func;
@@ -5476,9 +5477,11 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
       // clone-harness / pre-lowered IR flows where -operation is unset, K
       // is scanned from rock.gemm / rock.conv* / rock.attention in the
       // module.
+      bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
       int64_t kEff = computeReductionK(genParams, module);
       float defaultAtol =
-          baseAtol + static_cast<float>(kEff) * sumErrorTolerance(baselineType);
+          baseAtol +
+          static_cast<float>(kEff) * sumErrorTolerance(baselineType, isRandom);
 
       float atolValue = atolThreshold.getNumOccurrences()
                             ? atolThreshold.getValue()
@@ -5486,6 +5489,18 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
       float rtolValue = rtolThreshold.getNumOccurrences()
                             ? rtolThreshold.getValue()
                             : baseRtol;
+
+      // LSE (log-sum-exp) output of attention kernels requires relaxed
+      // tolerance. Online softmax accumulates exp/log block-by-block, so
+      // error doesn't follow the linear K-scaling model used for GEMM/conv.
+      // Values aligned with FlashInfer (atol=1e-3, rtol=1e-3) and
+      // ROCm flash-attention (atol=0.02 for LSE-related gradients).
+      if (isLSEOutput) {
+        if (!atolThreshold.getNumOccurrences())
+          atolValue = 1.5e-2f;
+        if (!rtolThreshold.getNumOccurrences())
+          rtolValue = 5e-4f;
+      }
 
       // Atomic-add rtol boost. When a kernel uses atomic_add for output
       // accumulation (fused reductions via rock.reduce(sum) or splitK
@@ -5699,16 +5714,25 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
     callCpuHostWithMemrefs(b, loc, cpuHostFunc, valVars, outIndices);
   }
 
+  // Detect whether the module contains an attention op (for LSE tolerance).
+  bool hasAttention = false;
+  module->walk([&](rock::AttentionOp) { hasAttention = true; });
+
   // Emit call to verifier
+  bool isFirstOutput = true;
   for (int32_t outIdx : outIndices) {
     Value testResult = localVars[outIdx];
     Value valResult = valVars[outIdx];
     auto testType = dyn_cast<MemRefType>(testResult.getType());
     auto valType = dyn_cast<MemRefType>(valResult.getType());
+    // LSE is the non-first f32 output of an attention kernel.
+    bool isLSE = hasAttention && !isFirstOutput &&
+                 isa<Float32Type>(testType.getElementType());
     std::string funcName =
         root0.func.getName().str() + "_verify" + std::to_string(outIdx);
     auto verifierFunc = createVerifierFunc(genParams, module, root0, testType,
-                                           valType, funcName);
+                                           valType, funcName, isLSE);
+    isFirstOutput = false;
 
     func::CallOp::create(b, loc, verifierFunc,
                          ValueRange{testResult, valResult});
