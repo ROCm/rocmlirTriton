@@ -1,8 +1,7 @@
-// RUN: rocmlir-opt -split-input-file -rock-gridwise-gemm-to-blockwise -verify-diagnostics %s
-// RUN: rocmlir-opt -split-input-file -rock-gridwise-gemm-to-blockwise -verify-diagnostics %s \
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-gemm-to-blockwise -verify-diagnostics
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-gemm-to-blockwise -verify-diagnostics \
 // RUN:   --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=NA --implicit-check-not=rock.not_applicable
-
 
 // Verifies that a scaled gemm whose `kPerBlock` is not a multiple of
 // `quantBlockSize` is classified as not-applicable (rather than a real
@@ -21,7 +20,7 @@
 func.func @gridwise_gemm_kperblock_not_multiple_of_quantblock(
     %A: tensor<1x8x64xf4E2M1FN>, %B: tensor<1x64x16xf4E2M1FN>,
     %scaleA: tensor<1x8x8xf8E8M0FNU>, %scaleB: tensor<1x16x8xf8E8M0FNU>,
-    %C: tensor<1x8x16xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950",
+    %C: tensor<1x8x16xf32>) attributes {rock.arch = "##TOKEN_ARCH##",
                                         rock.block_size = 64 : i32,
                                         rock.grid_size = 1 : i32,
                                         rock.kernel} {

@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -rock-gridwise-attn-to-blockwise -split-input-file -verify-diagnostics %s | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-gridwise-attn-to-blockwise -verify-diagnostics | FileCheck %s
 
 module {
   // CHECK-LABEL: func @mlir_attention
@@ -33,7 +33,7 @@ module {
         rock.block_size = 256 : i32,
         rock.grid_size = 2 : i32,
         rock.kernel,
-        rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+        rock.arch = "##TOKEN_ARCH##"
       } {
     %result = rock.gridwise_attention(%q, %k, %v, %prefixOffset) preSoftmaxOps = {
     ^bb0(%arg_qk: tensor<1x32x32xf16>):
