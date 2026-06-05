@@ -4903,7 +4903,10 @@ static void emitPrintTensor(OpBuilder &b, Value var) {
 // fp16 / bf16 use rocBLAS's general `sum_error_tolerance<T>` from
 // `near.hpp`.
 //
-// fp32 uses rocBLAS's 1e-4 (~840 * eps(fp32)).
+// fp32 uses 1e-5 for random data (~84 * eps(fp32)) and 1e-6 for fixed
+// seeds (~8.4 * eps(fp32)).  rocBLAS uses 1e-4 but we tighten it: fixed
+// seeds produce well-conditioned inputs, and random data empirically
+// passes at 1e-5 across all current configs.
 // fp64 uses 1e-15 (~4.5 * eps(fp64)).
 //
 // fp8/fp4 are not in rocBLAS's table. We use eps(T) directly as the
