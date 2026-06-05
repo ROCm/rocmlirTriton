@@ -21,11 +21,11 @@ func.func @quant_dot_with_both_scales_f8e8m0fnu(
   // CHECK-DAG: %[[CVT_SCALE_B:.*]] = migraphx.convert %[[ARG3]] : <1x512x16xf8E8M0FNU, 8192x16x1> to <1x512x16xf32, 8192x16x1>
   // CHECK-DAG: %[[MUL_A:.*]] = migraphx.mul %[[CVT_A]], %[[CVT_SCALE_A]] : <1x16x512xf32, 8192x512x1>, <1x16x512xf32, 8192x512x1> -> <1x16x512xf32, 8192x512x1>
   // CHECK-DAG: %[[MUL_B:.*]] = migraphx.mul %[[CVT_B]], %[[CVT_SCALE_B]] : <1x512x16xf32, 8192x16x1>, <1x512x16xf32, 8192x16x1> -> <1x512x16xf32, 8192x16x1>
-  // CHECK: %[[DOT:.*]] = migraphx.dot %[[MUL_A]], %[[MUL_B]] {perf_config = "v3:64,64,16,32,32,32,4,1,2,1,1"} : <1x16x512xf32, 8192x512x1>, <1x512x16xf32, 8192x16x1> -> <1x16x16xf32, 256x16x1>
+  // CHECK: %[[DOT:.*]] = migraphx.dot %[[MUL_A]], %[[MUL_B]] {perf_config = "sentinel-propagation-only"} : <1x16x512xf32, 8192x512x1>, <1x512x16xf32, 8192x16x1> -> <1x16x16xf32, 256x16x1>
   // CHECK: return %[[DOT]]
   %0 = migraphx.quant_dot
        %arg0 scaled by %arg2,
-       %arg1 scaled by %arg3 {perf_config = "v3:64,64,16,32,32,32,4,1,2,1,1"}
+       %arg1 scaled by %arg3 {perf_config = "sentinel-propagation-only"}
      : !migraphx.shaped<1x16x512xf4E2M1FN, 8192x512x1> scaled by
        !migraphx.shaped<1x16x512xf8E8M0FNU, 8192x512x1>,
        !migraphx.shaped<1x512x16xf4E2M1FN, 8192x16x1> scaled by
@@ -164,7 +164,7 @@ func.func @quant_dot_with_both_scales_f8e8m0fnu_kernel(
 ) -> !migraphx.shaped<1x16x16xf32, 256x16x1> attributes {rock.kernel} {
   %0 = migraphx.quant_dot
        %arg0 scaled by %arg2,
-       %arg1 scaled by %arg3 {perf_config = "v3:64,64,16,32,32,32,4,1,2,1,1"}
+       %arg1 scaled by %arg3 {perf_config = "sentinel-propagation-only"}
      : !migraphx.shaped<1x16x512xf4E2M1FN, 8192x512x1> scaled by
        !migraphx.shaped<1x16x512xf8E8M0FNU, 8192x512x1>,
        !migraphx.shaped<1x512x16xf4E2M1FN, 8192x16x1> scaled by
