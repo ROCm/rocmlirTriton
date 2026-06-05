@@ -17,7 +17,7 @@
 // RUN: rocmlir-gen -fut rock_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut rock_attention --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 
 // CHECK: [1 1 1]
-// CHECK: [1 1 1]
+// CHECK-NEXT: [1 1 1]
 module {
   func.func @rock_attention(%q: !migraphx.shaped<1x4x70x70xf32, 19600x4900x70x1>,
                             %qFusion: !migraphx.shaped<1x4x70x70xf32, 19600x4900x70x1>,

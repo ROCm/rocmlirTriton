@@ -590,13 +590,8 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
                        maxRatioTolerance, maxRatioIsInf, ratioInfCount,
                        nanCount, nanValNum, nanGpuNum, minAtolForCurrentRtol,
                        minRtolForCurrentAtol, minRtolWellDefined, hist_ratio);
+    printf("zero_diff: %lld/%lld\n", (long long)hist_ratio[0], dataSize);
   }
-  // Always print the zero-diff count so tests that verify partial output
-  // correctness (e.g. non-contiguous strides where only a fraction of the
-  // buffer holds valid data) can match against it.
-  printf("zero_diff: %lld/%lld\n", (long long)hist_ratio[0], dataSize);
-  // Repeat the allclose result three times to preserve the legacy output
-  // format that existing FileCheck tests match against.
   printf("[%d %d %d]\n", all_pass, all_pass, all_pass);
 }
 
