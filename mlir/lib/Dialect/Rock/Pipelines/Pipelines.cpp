@@ -457,12 +457,14 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockAttnToGridwisePass());
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
-  if (!options.disableFastMath)
-    addWithDCE(rock::createRockAllowFastMathFlagsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
+  // We run this pass after lower-stores to catch redundant casts that cannot be
+  // flagged earlier due to loads/stores that sit between truncf/extf pairs.
+  if (!options.disableFastMath)
+    addWithDCE(rock::createRockAllowFastMathFlagsPass());
 
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
