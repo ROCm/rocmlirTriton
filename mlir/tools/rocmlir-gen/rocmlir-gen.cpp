@@ -5674,6 +5674,10 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
     auto testType = dyn_cast<MemRefType>(testResult.getType());
     auto valType = dyn_cast<MemRefType>(valResult.getType());
     // LSE is the non-first f32 output of an attention kernel.
+    // Positional contract: rock::AttentionOp defines outputs as
+    // [attention_result, lse_tensor?], so slot >0 with f32 element type
+    // identifies the LSE.  If AttentionOp ever adds a third output,
+    // revisit this heuristic.
     bool isLSE = hasAttention && !isFirstOutput &&
                  isa<Float32Type>(testType.getElementType());
     std::string funcName =
