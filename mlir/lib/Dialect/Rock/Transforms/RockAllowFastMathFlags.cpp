@@ -20,7 +20,8 @@
 //   * `arcp`     on `arith.divf`  -> hardware reciprocal (v_rcp_f32).
 //   * `contract` on `arith.{add,sub,mul}f` -> mul+add fused to v_fma_f32.
 //                Also on round-tripping `arith.extf(arith.truncf %wide) ->
-//                %wide` pairs.
+//                %wide` pairs whose intermediate is f16/bf16, so the redundant
+//                materialization folds away.
 //   * `nsz`      on `arith.{add,sub,mul,div,neg}f` -> permits ignoring the
 //                sign of zero (enables a handful of LLVM peepholes such as
 //                `x + 0 -> x`, `0 - x -> -x` via sign-bit XOR).
@@ -33,6 +34,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -105,6 +107,12 @@ struct AnnotateExtTruncRoundTripPattern
     if (extOp.getOut().getType() != truncOp.getIn().getType())
       return failure();
 
+    // Only collapse round-trips whose intermediate is a compute-precision
+    // float the surrounding GEMM/elementwise ops already run in (f16/bf16).
+    Type narrowTy = getElementTypeOrSelf(truncOp.getType());
+    if (!isa<Float16Type, BFloat16Type>(narrowTy))
+      return failure();
+
     arith::FastMathFlags extFlags =
         extOp.getFastmath().value_or(arith::FastMathFlags::none);
     arith::FastMathFlags truncFlags =
@@ -129,9 +137,6 @@ struct AnnotateExtTruncRoundTripPattern
 
 void RockAllowFastMathFlagsPass::runOnOperation() {
   auto func = getOperation();
-  if (!func->hasAttr("rock.kernel"))
-    return;
-
   MLIRContext *ctx = &getContext();
 
   // x / y -> x * rcp(y) via hardware reciprocal.
