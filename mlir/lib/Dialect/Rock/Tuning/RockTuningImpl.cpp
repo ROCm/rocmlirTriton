@@ -185,20 +185,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   };
 
   // Non-accel (FMA) parameters.
-  //
-  // Follows rocMLIR's tuning space:
-  //
-  // rocMLIR:
-  //   // blockSize    M/block         N/block         K/block      M/thread
-  //   N/thread
-  //   {{64,128,256}, {32,64,128},    {32,64,128},    {4,8,16},    {2,4}, {2,4}}
-  //
-  // here:
-  //   blockSize  in {64, 128, 256}   -> numWaves = blockSize / waveSize
-  //   mPerBlock  in {32, 64, 128}
-  //   nPerBlock  in {32, 64, 128}
-  //   kPerBlock  in {4, 8, 16}
-  //
   std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
   std::vector<uint32_t> kPerBlockNonAccel = {4, 8, 16};
   std::vector<uint32_t> numWavesNonAccel;
@@ -283,7 +269,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   // Non-accel path.
   std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
   std::vector<uint32_t> numWavesNonAccel;
-  for (uint32_t blockSize : {64u, 128u, 256u}) {
+  for (uint32_t blockSize : {64, 128, 256}) {
     if (blockSize % waveSize == 0)
       numWavesNonAccel.push_back(blockSize / waveSize);
   }
