@@ -7,17 +7,17 @@
 //   batchsize=2, Cin=8, Cout=4, in=6x6, fil=3x3, stride=1, pad=0
 //   => outH = (6-3)/1+1 = 4, outW = 4
 //
-// Expected K_eff per direction (f32, sumErrorTolerance = 1e-4, matching rocBLAS):
-//   conv (forward):     K = Cin*filH*filW  = 8*3*3 = 72  => atol = 1e-5 + 72*1e-4  = 7.21e-3
-//   conv_bwd_data:      K = Cin*filH*filW  = 72           => atol = 7.21e-3 (same as fwd)
-//   conv_bwd_weight:    K = N*outH*outW    = 2*4*4 = 32   => atol = 1e-5 + 32*1e-4  = 3.21e-3
+// Expected K_eff per direction (f32, sumErrorTolerance = 1e-5 for random data):
+//   conv (forward):     K = Cin*filH*filW  = 8*3*3 = 72  => atol = 1e-5 + 72*1e-5  = 7.3e-4
+//   conv_bwd_data:      K = Cin*filH*filW  = 72           => atol = 7.3e-4 (same as fwd)
+//   conv_bwd_weight:    K = N*outH*outW    = 2*4*4 = 32   => atol = 1e-5 + 32*1e-5  = 3.3e-4
 //
 // 3D tests (4-5) verify that the depth dimension is included in K_eff:
 //   batchsize=2, Cin=4, Cout=4, in=4x4x4, fil=3x3x3, stride=1, pad=0
 //   => outD = (4-3)/1+1 = 2, outH = 2, outW = 2
 //
-//   conv (forward):     K = Cin*filD*filH*filW     = 4*3*3*3 = 108  => atol = 1.081e-2
-//   conv_bwd_weight:    K = N*outD*outH*outW       = 2*2*2*2 = 16   => atol = 1.61e-3
+//   conv (forward):     K = Cin*filD*filH*filW     = 4*3*3*3 = 108  => atol = 1.09e-3
+//   conv_bwd_weight:    K = N*outD*outH*outW       = 2*2*2*2 = 16   => atol = 1.7e-4
 
 // ============================================================================
 // (1) Forward convolution. K_eff = Cin * filH * filW = 72.
@@ -31,8 +31,8 @@
 // RUN:   -t f32 --arch %arch -pv -rand 1 --comparator=allclose \
 // RUN:   | FileCheck %s --check-prefix=CONV_FWD --enable-var-scope
 
-// atol = 1e-5 + 72*1e-4 = 7.21e-3.
-// CONV_FWD:      arith.constant 7.21{{[0-9]*}}e-03 : f32
+// atol = 1e-5 + 72*1e-5 = 7.3e-4.
+// CONV_FWD:      arith.constant 7.3{{[0-9]*}}e-04 : f32
 // CONV_FWD-NEXT: arith.constant 1.300000e-06 : f32
 // CONV_FWD:      call @mcpuVerifyFloatAllclose
 
@@ -48,16 +48,16 @@
 // RUN:   -t f32 --arch %arch -pv -rand 1 --comparator=allclose \
 // RUN:   | FileCheck %s --check-prefix=CONV_BWD_DATA --enable-var-scope
 
-// atol = 1e-5 + 72*1e-4 = 7.21e-3 (same as forward).
-// CONV_BWD_DATA:      arith.constant 7.21{{[0-9]*}}e-03 : f32
+// atol = 1e-5 + 72*1e-5 = 7.3e-4 (same as forward).
+// CONV_BWD_DATA:      arith.constant 7.3{{[0-9]*}}e-04 : f32
 // CONV_BWD_DATA-NEXT: arith.constant 1.300000e-06 : f32
 // CONV_BWD_DATA:      call @mcpuVerifyFloatAllclose
 
 // ============================================================================
 // (3) Backward weight. K_eff = batchsize * outH * outW = 2*4*4 = 32.
 // This is the critical test: before the fix, this would have used the forward
-// K = 72 (giving atol = 7.21e-3). After the fix it correctly uses K = 32
-// (giving atol = 3.21e-3).
+// K = 72 (giving atol = 7.3e-4). After the fix it correctly uses K = 32
+// (giving atol = 3.3e-4).
 // ============================================================================
 
 // RUN: rocmlir-gen -operation conv_bwd_weight \
@@ -68,10 +68,10 @@
 // RUN:   -t f32 --arch %arch -pv -rand 1 --comparator=allclose \
 // RUN:   | FileCheck %s --check-prefix=CONV_BWD_WEIGHT --enable-var-scope
 
-// The forward K atol (7.21e-3) must NOT appear — proves we don't use forward K.
-// CONV_BWD_WEIGHT-NOT: arith.constant 7.21{{[0-9]*}}e-03 : f32
-// atol = 1e-5 + 32*1e-4 = 3.21e-3.
-// CONV_BWD_WEIGHT:      arith.constant 3.21{{[0-9]*}}e-03 : f32
+// The forward K atol (7.3e-4) must NOT appear — proves we don't use forward K.
+// CONV_BWD_WEIGHT-NOT: arith.constant 7.3{{[0-9]*}}e-04 : f32
+// atol = 1e-5 + 32*1e-5 = 3.3e-4 (full-precision: 3.29999981E-4).
+// CONV_BWD_WEIGHT:      arith.constant 3.{{[0-9]+}}E-4 : f32
 // CONV_BWD_WEIGHT-NEXT: arith.constant 1.300000e-06 : f32
 // CONV_BWD_WEIGHT:      call @mcpuVerifyFloatAllclose
 
@@ -90,10 +90,10 @@
 // RUN:   -t f32 --arch %arch -pv -rand 1 --comparator=allclose \
 // RUN:   | FileCheck %s --check-prefix=CONV3D_FWD --enable-var-scope
 
-// The 2D forward atol (7.21e-3) must NOT appear — proves depth is included.
-// CONV3D_FWD-NOT: arith.constant 7.21{{[0-9]*}}e-03 : f32
-// atol = 1e-5 + 108*1e-4 = 1.081e-2 (decimal format for values >= 0.01).
-// CONV3D_FWD:      arith.constant 0.0108{{[0-9]*}} : f32
+// The 2D forward atol (7.3e-4) must NOT appear — proves depth is included.
+// CONV3D_FWD-NOT: arith.constant 7.3{{[0-9]*}}e-04 : f32
+// atol = 1e-5 + 108*1e-5 = 1.09e-3 (decimal: 0.00108999992).
+// CONV3D_FWD:      arith.constant 0.00108{{[0-9]*}} : f32
 // CONV3D_FWD-NEXT: arith.constant 1.300000e-06 : f32
 // CONV3D_FWD:      call @mcpuVerifyFloatAllclose
 
@@ -112,9 +112,9 @@
 // RUN:   -t f32 --arch %arch -pv -rand 1 --comparator=allclose \
 // RUN:   | FileCheck %s --check-prefix=CONV3D_BWD_WEIGHT --enable-var-scope
 
-// The 3D forward K atol (0.0108...) must NOT appear.
-// CONV3D_BWD_WEIGHT-NOT: arith.constant 0.0108{{[0-9]*}} : f32
-// atol = 1e-5 + 16*1e-4 = 1.61e-3 (decimal format).
-// CONV3D_BWD_WEIGHT:      arith.constant 0.00160{{[0-9]*}} : f32
+// The 3D forward K atol (0.00108...) must NOT appear.
+// CONV3D_BWD_WEIGHT-NOT: arith.constant 0.00108{{[0-9]*}} : f32
+// atol = 1e-5 + 16*1e-5 = 1.7e-4.
+// CONV3D_BWD_WEIGHT:      arith.constant 1.700000e-04 : f32
 // CONV3D_BWD_WEIGHT-NEXT: arith.constant 1.300000e-06 : f32
 // CONV3D_BWD_WEIGHT:      call @mcpuVerifyFloatAllclose
