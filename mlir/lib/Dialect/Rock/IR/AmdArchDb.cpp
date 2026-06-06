@@ -20,7 +20,7 @@
 #include "llvm/Support/ErrorHandling.h"
 
 // Include Triton AMD APIs for intrinsic selection
-#include "TritonAMDGPUToLLVM/TargetUtils.h"
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "TritonAMDGPUTransforms/MfmaGroup.h"
 #include "TritonAMDGPUTransforms/WmmaGroup.h"
 
@@ -31,7 +31,7 @@
 
 using namespace mlir;
 using namespace mlir::rock;
-using namespace mlir::triton::AMD;
+using namespace mlir::triton::amdgpu;
 
 static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
   std::tuple<StringRef, unsigned> ret("", 0);
@@ -49,9 +49,9 @@ static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
   return ret;
 }
 
-static std::tuple<ISAFamily, StringRef> getArch(StringRef arch) {
+std::tuple<ISAFamily, StringRef> mlir::rock::getArch(StringRef arch) {
   auto [chip, _] = parseArchString(arch);
-  ISAFamily isaFamily = triton::AMD::deduceISAFamily(chip);
+  ISAFamily isaFamily = TargetFeatures(chip).getISAFamily();
   if (isaFamily == ISAFamily::Unknown) {
     llvm_unreachable("Unknown chip");
   }
@@ -148,7 +148,7 @@ static bool isScaledWmmaType(Type type) {
 MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
                                                Type inputTypeB, Type scaleAType,
                                                Type scaleBType) {
-  auto [isaFamily, chip] = getArch(arch);
+  auto [isaFamily, _] = getArch(arch);
 
   // Get element types if these are shaped types
   Type elemA = getElementTypeOrSelf(inputTypeA);
@@ -183,7 +183,7 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   }
 
   // Check WMMA support (RDNA architectures)
-  int wmmaVersion = rock::getWmmaVersion(chip);
+  int wmmaVersion = rock::getWmmaVersion(isaFamily);
   if (wmmaVersion > 0) {
     // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2, E2M1)
     // Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops.

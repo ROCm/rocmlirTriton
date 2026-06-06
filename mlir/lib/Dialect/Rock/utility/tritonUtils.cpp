@@ -10,11 +10,11 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/TypeSwitch.h"
 
-#include "TritonAMDGPUToLLVM/TargetUtils.h"
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 using namespace mlir;
-using namespace mlir::triton::AMD;
+using namespace mlir::triton::amdgpu;
 
 namespace mlir {
 namespace rock {
@@ -36,13 +36,17 @@ int getMfmaVersion(ISAFamily isaFamily) {
 }
 
 // Keep in sync with AccelerateAMDMatmul.cpp::getWmmaVersion()
-int getWmmaVersion(StringRef arch) {
-  if (arch.starts_with("gfx11"))
-    return 1; // RDNA3
-  if (arch.starts_with("gfx12") && !arch.ends_with("50"))
-    return 2; // RDNA4
-  if (arch == "gfx1250")
-    return 3; // GFX1250
+int getWmmaVersion(ISAFamily isaFamily) {
+  switch (isaFamily) {
+  case ISAFamily::RDNA3:
+    return 1;
+  case ISAFamily::RDNA4:
+    return 2;
+  case ISAFamily::GFX1250:
+    return 3;
+  default:
+    break;
+  }
   return 0;
 }
 
