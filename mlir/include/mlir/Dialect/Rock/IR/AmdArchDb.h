@@ -13,7 +13,16 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 
+#include <tuple>
+
 namespace mlir {
+
+namespace triton {
+namespace amdgpu {
+enum class ISAFamily;
+} // namespace amdgpu
+} // namespace triton
+
 namespace rock {
 
 /// Result of checking matrix acceleration support
@@ -49,6 +58,11 @@ MatrixAccelKind getMatrixAccelKind(StringRef arch, Type inputTypeA,
 /// with explicit scale types for scaled operations.
 MatrixAccelKind getMatrixAccelKind(StringRef arch,
                                    RockGemmWrapperInterface gemmOp);
+
+/// Extract the ISAFamily and chip name from an architecture string. The chip
+/// name is the bare gfx token (e.g. "gfx1100"), with any target-triple prefix
+/// and `:feature` suffixes stripped.
+std::tuple<triton::amdgpu::ISAFamily, StringRef> getArch(StringRef arch);
 
 /// Check if hardware matrix acceleration is available for the given GEMM op.
 /// Returns true if any acceleration (MFMA, WMMA, ScaledMFMA, ScaledWMMA)
