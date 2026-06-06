@@ -159,6 +159,12 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
       desc("Per-kernel scheduling hint ordinal forwarded to TritonToHsaco "
            "(see mlir/Dialect/Rock/utility/KnobUtils.h)"),
       init(kKnobDefault)};
+  PassOptions::Option<std::string> llvmFnAttrs{
+      *this, "llvmFnAttrs",
+      desc("Debug-only override: comma-separated LLVM function attributes "
+           "(name or name=value) applied to the kernel after Triton's "
+           "attributes."),
+      init("")};
 };
 
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.

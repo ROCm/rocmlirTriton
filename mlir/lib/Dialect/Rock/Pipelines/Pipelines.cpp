@@ -264,6 +264,11 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
       mlir::createTritonAMDGPUPrepareIfCombining());
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
+  if (isBufferOpsEnabled(options.useBufferOps)) {
+    // Run after CSE so matching assume and loop-bound expressions share SSA,
+    // letting range analysis prove both non-negative.
+    pm->addPass(mlir::createTritonAMDGPUAnnotateBufferOpSplitSafety());
+  }
   pm->addPass(mlir::createSymbolDCEPass());
   // TODO(roctriton): Implement options like this.
   // if (options.instrumentationMode == "fpsan") {
@@ -288,7 +293,7 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // pm->addPass(gluon::createGluonInline());
   pm->addPass(mlir::createConvertIndexToLLVMPass());
 
-  pm->addPass(mlir::triton::createAllocateAMDGPUSharedMemory());
+  pm->addPass(mlir::triton::createAllocateAMDGPUSharedMemoryPass(arch));
   pm->addPass(mlir::triton::gpu::createTritonGPUGlobalScratchAllocationPass());
   // Upstream calls this pass twice, between
   // HIPBackend.instrumentation.patch("ttgpuir_to_llvmir", ...).
@@ -693,6 +698,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.enableFpFusion = options.enableFpFusion;
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;
     hsacoOpts.scheduleHint = options.scheduleHint;
+    hsacoOpts.llvmFnAttrs = options.llvmFnAttrs;
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
   }
 
