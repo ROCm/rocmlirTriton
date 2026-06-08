@@ -2555,9 +2555,11 @@ createCPUConvWithMLIR(ModuleOp module,
 
   // Mirror the GPU accumulator precision via rock::getAccType: integer
   // convolutions accumulate in i32 (matching the i8 MFMA accumulator), while
-  // floating-point convolutions accumulate in f32.
-  bool isI8Conv = genConfig.inputDataTypeStr == "i8";
+  // floating-point convolutions accumulate in f32. Both the operand promotion
+  // below and the MAC body selection are driven off this single accumulator
+  // type so they can never disagree.
   Type computeType = rock::getAccType(inputElemType, filterElemType);
+  bool useIntAcc = isa<IntegerType>(computeType);
   size_t nSpatialDims = genConfig.strideDims.size();
 
   // Helper to expand flat tensor to logical shape
@@ -2579,9 +2581,11 @@ createCPUConvWithMLIR(ModuleOp module,
   };
 
   // Expand tensors to logical shapes
-  // For i8, keep original element types; for others, convert to f32
+  // For integer accumulation keep the native operand types (the MAC body
+  // sign-extends them into the i32 accumulator); for float accumulation
+  // promote to f32.
   Value filter, input, output;
-  if (isI8Conv) {
+  if (useIntAcc) {
     filter = expandToLogicalShape(filterFlat, genConfig.filterDimension);
     input = expandToLogicalShape(inputFlat, genConfig.inputDimension);
     output = expandToLogicalShape(outputFlat, genConfig.outputDimension);
@@ -2667,7 +2671,7 @@ createCPUConvWithMLIR(ModuleOp module,
   // sign-extension) for an i32 accumulator, float MAC otherwise.
   Value result;
   ConvBodyBuilder bodyBuilder =
-      isa<IntegerType>(computeType) ? convBodyBuilderI32 : convBodyBuilderF32;
+      useIntAcc ? convBodyBuilderI32 : convBodyBuilderF32;
   switch (genConfig.operation.value()) {
   case rock::ConvOpType::Fwd:
     result = emitConvGeneric(
