@@ -9,4 +9,4 @@
 # RUN:     --test-timeout-sec 20 > %t 2>&1 || true
 # RUN: FileCheck %s < %t
 #
-# CHECK: Passed: {{[0-9]+}}, Not applicable: {{[0-9]+}}, Failed: {{[0-9]+}}
+# CHECK: Passed: {{[0-9]+}}, Not applicable: {{[0-9]+}}, Timed out: {{[0-9]+}}, Failed: {{[0-9]+}}
