@@ -635,7 +635,7 @@ def _wave_size(arch: str) -> int:
         return 64
     if amd_arch_db is not None:
         return amd_arch_db.get_wave_size(arch)
-    if 0x1000 <= n < 0x1250:  # gfx10xx, gfx11xx, gfx12 < 1250
+    if 0x1000 <= n <= 0x1250:  # gfx10xx, gfx11xx, gfx12xx incl. gfx1250
         return 32
     return 64
 

@@ -479,10 +479,10 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
     return 1536;
-  default:
+  case ISAFamily::Unknown:
     return 512;
   }
-  return 512;
+  llvm_unreachable("unhandled ISAFamily in getVGPRsPerEU");
 }
 
 bool mlir::rock::supportsMultiCTALaunch(StringRef arch) {
