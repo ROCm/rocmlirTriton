@@ -69,9 +69,13 @@ from perfRunner import (
 # rocmlir-gen wraps the GPU kernel in a loop when --kernel-repeats > 1. Split-K
 # GEMM uses atomic_add on the output buffer; each repeat accumulates another
 # full result (e.g. 10 repeats → ~10× vs reference). Verification must use 1.
-TUNE_REPEATS = 10
 VERIFY_REPEATS = 1
-WARMUP_ITERATIONS = 1
+
+# Time budgets (ms) for the tuning-driver benchmark. The number of warmup and
+# measured iterations is derived from these budgets and the estimated per-launch
+# runtime (Triton do_bench style). These mirror Triton's do_bench defaults.
+TUNE_WARMUP_MS = 25
+TUNE_REP_MS = 100
 SLEEP_US = 100  # 0.1 ms
 
 OUTPUT_HEADER_COLUMNS = [
@@ -1296,8 +1300,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
 
     tuning_driver_args = [
         f"--tuning-space={options.tuning_space_kind}",
-        f"--num-iterations={TUNE_REPEATS}",
-        f"--warmup-iterations={WARMUP_ITERATIONS}",
+        f"--rep={TUNE_REP_MS}",
+        f"--warmup={TUNE_WARMUP_MS}",
         "--use-median",
         f"--sleep-us={SLEEP_US}",
         f"--show-all-measurements={options.debug}",
