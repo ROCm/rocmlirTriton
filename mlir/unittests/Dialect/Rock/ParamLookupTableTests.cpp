@@ -19,9 +19,9 @@ TEST(FindFallbackTest, ExactMatch) {
 }
 
 TEST(FindFallbackTest, OldestRelative) {
-  // gfx906 is supported but has no tuning entries. The oldest gfx9* relative
-  // is gfx908, but its conv_f16 list has only one config, so the fallback
-  // search drops it and picks gfx90a.
+  // gfx906 is supported but has no tuning entries. gfx908 has no conv_f16 entry
+  // in the table after the cleanup, so the oldest available gfx9* relative is
+  // gfx90a.
   EXPECT_EQ("gfx90a_conv_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx906_conv_f16"));
 }
