@@ -1,4 +1,6 @@
-// PR CI and nightly MIGraphX stage are enabled. Other nightly/weekly stages are commented out.
+// PR CI, nightly MIGraphX, and weekly stages (Parameter sweeps, Tune MLIR kernels,
+// Archive weekly tuning perfDB) are enabled. The nightly "Benchmark and Report
+// Performance" and "Code coverage" stages remain commented out.
 // used for private CI
 import groovy.transform.Field
 import java.util.concurrent.ConcurrentHashMap
@@ -12,7 +14,7 @@ ConcurrentHashMap<String,String> DOCKER_ARGS_BY_NODE = new ConcurrentHashMap<>()
 @Field
 String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
 
-/* //
+/* 
 void buildProject(String target, String cmakeOpts) {
     timeout(time: 60, activity: true, unit: 'MINUTES') {
         cmakeBuild generator: 'Ninja',\
@@ -462,7 +464,6 @@ String getLabelFromCodepath(String codepath) {
     return label
 }
 
-/*
 String getLabelFromChip(String chip) {
     switch (chip) {
         case "gfx906":
@@ -493,7 +494,6 @@ String getLabelFromChip(String chip) {
             return "mlir && gfx1201"
     }
 }
-*/
 
 int setLitWorkerCount() {
     int limit_lit_workers = 8
@@ -532,6 +532,7 @@ void check_randomE2ETests(String codepath) {
               -DCMAKE_EXPORT_COMPILE_COMMANDS=1
              """)
 }
+*/
 
 // Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
 // one of its operation kinds. parameterSweeps.py exposes ``conv`` and ``gemm``;
@@ -546,7 +547,6 @@ void runSweep(String script, String kind, int samples, String codepath) {
         }
     }
 }
-*/
 
 boolean shouldRunFromCodepath(String codepath) {
     // Run vanilla on public CI
@@ -576,7 +576,6 @@ boolean shouldRunFromCodepath(String codepath) {
     return false
 }
 
-/*
 boolean shouldRunFromChip(String chip) {
     switch (chip) {
         default:
@@ -617,7 +616,6 @@ void archivePerfDB() {
     archiveArtifacts artifacts: 'build/perfDB/**',\
     onlyIfSuccessful: true
 }
-*/
 
 boolean shouldRunBuildAndTest(String codepath) {
     // When default codepath is selected, we test mfma, navi21, navi3x and navi4x on
@@ -760,10 +758,10 @@ pipeline {
 
         // // Each below control whether to run a individual stage from parallel run
         // // They default to true or empty but developer can toggle them for debugging purpose
-        // booleanParam(name: 'sharedLib', defaultValue: true,
-        //              description: 'Run the shared library stage')
-        // booleanParam(name: 'staticLib', defaultValue: true,
-        //              description: 'Run the static library stage')
+        booleanParam(name: 'sharedLib', defaultValue: true,
+                     description: 'Run the shared library stage')
+        booleanParam(name: 'staticLib', defaultValue: true,
+                     description: 'Run the static library stage')
         booleanParam(name: 'checkMIGraphX', defaultValue: false,
                      description: 'Run the MIGraphX integration tests')
         // booleanParam(name: 'checkCK', defaultValue: true,
@@ -796,10 +794,10 @@ pipeline {
         booleanParam(name: 'ignoreExternalLinting', defaultValue: false,
                      description: 'Ignore linting on files in external')
 
-        // // choose the task to run in weekly
-        // choice(name: 'weeklyTasks',
-        //        choices: ['default', 'parameterSweeps', 'Tuning'],
-        //        description: 'Choose the weekly tasks')
+        // choose the task to run in weekly
+        choice(name: 'weeklyTasks',
+               choices: ['default', 'parameterSweeps', 'Tuning'],
+               description: 'Choose the weekly tasks')
     }
     stages {
         stage("Set System Property") {
@@ -817,11 +815,11 @@ pipeline {
             }
         }
         stage('Build and Test') {
-            // when {
-            //     beforeAgent true
-            //     // Skip this part of testing as early as possible
-            //     equals expected: false, actual: params.weekly;
-            // }
+            when {
+                beforeAgent true
+                // Skip this part of testing as early as possible
+                equals expected: false, actual: params.weekly;
+            }
             matrix {
                 axes {
                     axis {
@@ -984,7 +982,7 @@ pipeline {
                 }
             }
         }
-        /* // --- NIGHTLY/WEEKLY STAGES (commented out) ---
+        // --- WEEKLY STAGES (enabled) ---
         stage ("Parameter sweeps") {
             when {
                 beforeAgent true;
@@ -1048,7 +1046,13 @@ pipeline {
                                                         echo "Container environment:"
                                                         showEnv()
                                                         setHeartbeat()
-                                                        buildProject('check-rocmlir-build-only ci-performance-scripts', '')
+                                                        timeout(time: 120, activity: true, unit: 'MINUTES') {
+                                                            sh '''
+                                                                export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+                                                                export C_COMPILER=/opt/rocm/llvm/bin/clang
+                                                                bash cmake.sh
+                                                            '''
+                                                        }
                                                     }
 
                                                     stage("Parameter Sweep") {
@@ -1142,7 +1146,13 @@ pipeline {
                                                     }
 
                                                     stage("Tune rocMLIR") {
-                                                        buildProject('check-rocmlir-build-only ci-performance-scripts', '')
+                                                        timeout(time: 120, activity: true, unit: 'MINUTES') {
+                                                            sh '''
+                                                                export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+                                                                export C_COMPILER=/opt/rocm/llvm/bin/clang
+                                                                bash cmake.sh
+                                                            '''
+                                                        }
                                                         dir('MITuna') {
                                                             git branch: "pf-tuna-rocmlir-3", poll: false, url: 'https://github.com/ROCm/MITuna.git'
                                                         }
@@ -1284,6 +1294,7 @@ PY
                 }
             }
         }
+        /* // --- NIGHTLY STAGE (commented out) ---
         stage("Benchmark and Report Performance") {
             when {
                 beforeAgent true;
