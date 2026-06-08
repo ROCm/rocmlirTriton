@@ -15,8 +15,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 //
-// Ported from rocMLIR's RockPrepareLLVM pass. Annotates LLVM dialect IR
-// for more efficient AMDGPU codegen:
+// Annotates LLVM dialect IR for more efficient AMDGPU codegen:
 //   1. GEP inbounds flags
 //   2. Invariant loads + alias scope metadata (AMDGPU backend workaround)
 //   3. Atomic RMW metadata for native hardware atomics
@@ -90,30 +89,26 @@ static BlockArgument traceToArg(Value pointer, LLVM::LLVMFuncOp func,
   return res;
 }
 
-void RockPrepareLLVMPass::runOnOperation() {
-  LLVM::LLVMFuncOp func = getOperation();
-  if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
-    LLVM_DEBUG(llvm::dbgs() << "RockPrepareLLVM: skipping non-kernel function "
-                            << func.getSymName() << "\n");
-    return;
-  }
-
-  // 1. Mark GEPs as inbounds (except buffer fat pointers in addrspace 7).
+// 1. Mark GEPs as inbounds (except buffer fat pointers in addrspace 7).
+static void markGEPsInbounds(LLVM::LLVMFuncOp func) {
   func.walk([](LLVM::GEPOp gepOp) {
     if (cast<LLVM::LLVMPointerType>(gepOp.getType()).getAddressSpace() != 7)
       gepOp.setNoWrapFlags(gepOp.getNoWrapFlags() |
                            LLVM::GEPNoWrapFlags::inbounds);
   });
-  OpBuilder b(&getContext());
+}
 
-  // We'd like to reinforce that the loads we're doing from readonly
-  // arguments are invariant - concurrent modification of any input we read is
-  // undefined behavior.
-  //
-  // The second set of annotations has to do with a deficiency in the AMDGPU
-  // backend. Specifically, the `noalias` attributes on kernel arguments
-  // get discarded in the backend as the function is rewritten to include the
-  // actual kernel argument loads being performed.
+// 2. Annotate memory accesses with invariant-load and alias-scope metadata.
+//
+// We'd like to reinforce that the loads we're doing from readonly
+// arguments are invariant - concurrent modification of any input we read is
+// undefined behavior.
+//
+// The second set of annotations has to do with a deficiency in the AMDGPU
+// backend. Specifically, the `noalias` attributes on kernel arguments
+// get discarded in the backend as the function is rewritten to include the
+// actual kernel argument loads being performed.
+static void annotateMemoryAccesses(LLVM::LLVMFuncOp func, OpBuilder &b) {
   size_t n = func.getNumArguments();
   llvm::SmallBitVector isReadonly(n);
   auto domain =
@@ -194,23 +189,26 @@ void RockPrepareLLVMPass::runOnOperation() {
             aliasIface.getNoAliasScopesOrNull(), noaliasScopes[argNo]))
       aliasIface.setNoAliasScopes(mergedNoAliasScopes);
   });
+}
 
-  // 3. Relax atomics. We set the atomic order on read-modify-write
-  // operations to `monotonic`, which is the extent of the guarantees
-  // we need about them, and we set the syncscope to "agent-one-as":
-  // per the memory model, this sync scope means we get our atomic guarantees
-  // (the monotonicity / lack of data races) above with other atomics executing
-  // on the GPU, but not with those executing on, say, the host (which is
-  // a situation we won't be in). We also guarantee that a pointer won't be
-  // accessed through multiple address spaces.
-  //
-  // We also set the metadata for indicating that the arguments to atomics won't
-  // be host memory or fine-grained memory, and that we don't care about
-  // the denormal mode. These are needed to ensure that efficient instructions
-  // (which are unsafe in the absence of this metadata) are selected,
-  // especially once the old function-level attributes for controlling this go
-  // away.
-  auto *dialect = getContext().getLoadedDialect<ROCDL::ROCDLDialect>();
+// 3. Relax atomics. We set the atomic order on read-modify-write
+// operations to `monotonic`, which is the extent of the guarantees
+// we need about them, and we set the syncscope to "agent-one-as":
+// per the memory model, this sync scope means we get our atomic guarantees
+// (the monotonicity / lack of data races) above with other atomics executing
+// on the GPU, but not with those executing on, say, the host (which is
+// a situation we won't be in). We also guarantee that a pointer won't be
+// accessed through multiple address spaces.
+//
+// We also set the metadata for indicating that the arguments to atomics won't
+// be host memory or fine-grained memory, and that we don't care about
+// the denormal mode. These are needed to ensure that efficient instructions
+// (which are unsafe in the absence of this metadata) are selected,
+// especially once the old function-level attributes for controlling this go
+// away.
+static void relaxAtomics(LLVM::LLVMFuncOp func, OpBuilder &b,
+                         bool allowFlushDenorm) {
+  auto *dialect = func.getContext()->getLoadedDialect<ROCDL::ROCDLDialect>();
   auto noRemoteMemHelper = dialect->getNoRemoteMemoryAttrHelper();
   auto noFineMemHelper = dialect->getNoFineGrainedMemoryAttrHelper();
   auto ignoreDenormalModeHelper = dialect->getIgnoreDenormalModeAttrHelper();
@@ -230,4 +228,18 @@ void RockPrepareLLVMPass::runOnOperation() {
     noRemoteMemHelper.setAttr(op, unitAttr);
     noFineMemHelper.setAttr(op, unitAttr);
   });
+}
+
+void RockPrepareLLVMPass::runOnOperation() {
+  LLVM::LLVMFuncOp func = getOperation();
+  if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
+    LLVM_DEBUG(llvm::dbgs() << "RockPrepareLLVM: skipping non-kernel function "
+                            << func.getSymName() << "\n");
+    return;
+  }
+
+  OpBuilder b(&getContext());
+  markGEPsInbounds(func);
+  annotateMemoryAccesses(func, b);
+  relaxAtomics(func, b, allowFlushDenorm);
 }

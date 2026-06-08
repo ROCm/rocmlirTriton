@@ -15,9 +15,9 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 //
-// Ported from rocMLIR's AnalyzeMemoryUse pass. Walks kernel function
-// arguments to determine their memory access patterns (readonly, writeonly,
-// readwrite) and sets LLVM attributes + Triton metadata accordingly.
+// Walks kernel function arguments to determine their memory access patterns
+// (readonly, writeonly, readwrite) and sets LLVM attributes + Triton metadata
+// accordingly.
 //
 // IMPORTANT: the set of attributes/metadata produced here is part of the
 // rocmlirTriton kernel ABI documented in `docs/kernel_memory_assumptions.md`.
