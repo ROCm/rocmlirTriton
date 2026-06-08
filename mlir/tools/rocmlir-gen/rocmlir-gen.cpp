@@ -2553,10 +2553,11 @@ createCPUConvWithMLIR(ModuleOp module,
     break;
   }
 
-  // i8 convolutions use i32 / f32 accumulation.
+  // Mirror the GPU accumulator precision via rock::getAccType: integer
+  // convolutions accumulate in i32 (matching the i8 MFMA accumulator), while
+  // floating-point convolutions accumulate in f32.
   bool isI8Conv = genConfig.inputDataTypeStr == "i8";
-  Type computeType =
-      isI8Conv ? Type(b.getIntegerType(32)) : Type(b.getF32Type());
+  Type computeType = rock::getAccType(inputElemType, filterElemType);
   size_t nSpatialDims = genConfig.strideDims.size();
 
   // Helper to expand flat tensor to logical shape
@@ -2662,10 +2663,12 @@ createCPUConvWithMLIR(ModuleOp module,
 
   // Emit the convolution using linalg.generic with layout-aware indexing
   // No transposes needed - the indexing maps use actual dimension positions!
-  // Use i32 body builder for i8 inputs, f32 otherwise.
+  // Pick the MAC body that matches the accumulator type: integer MAC (with
+  // sign-extension) for an i32 accumulator, float MAC otherwise.
   Value result;
-  ConvBodyBuilder bodyBuilder =
-      isI8Conv ? convBodyBuilderI32 : convBodyBuilderF32;
+  ConvBodyBuilder bodyBuilder = isa<IntegerType>(computeType)
+                                    ? convBodyBuilderI32
+                                    : convBodyBuilderF32;
   switch (genConfig.operation.value()) {
   case rock::ConvOpType::Fwd:
     result = emitConvGeneric(
@@ -2689,7 +2692,8 @@ createCPUConvWithMLIR(ModuleOp module,
   // Result is already in original layout (no transpose needed)
   Value resultOrigLayout = result;
 
-  // Convert back to original element type if needed
+  // Convert the accumulator back to the kernel's output element type, mirroring
+  // the GPU's store-time precision.
   auto resultFlatTensorType = cast<RankedTensorType>(resultFlatType);
   ArrayRef<int64_t> finalResultShape =
       cast<RankedTensorType>(resultOrigLayout.getType()).getShape();
@@ -2707,16 +2711,8 @@ createCPUConvWithMLIR(ModuleOp module,
         ValueRange{emptyConvert}, ArrayRef<AffineMap>{identityMap, identityMap},
         iteratorTypes,
         [](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
-          Value src = args[0];
-          Type dstType = args[1].getType();
-          Value converted;
-          if (isa<IntegerType>(dstType)) {
-            converted =
-                arith::FPToSIOp::create(nestedB, nestedLoc, dstType, src);
-          } else {
-            converted =
-                arith::TruncFOp::create(nestedB, nestedLoc, dstType, src);
-          }
+          Value converted = rock::createTypeConversionOp(
+              nestedB, nestedLoc, args[0], args[1].getType());
           linalg::YieldOp::create(nestedB, nestedLoc, converted);
         });
     resultOrigLayout = convertOp.getResult(0);
