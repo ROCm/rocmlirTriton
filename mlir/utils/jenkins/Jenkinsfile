@@ -1089,7 +1089,7 @@ pipeline {
                                                                 dir('build') {
                                                                     int limit_lit_workers = setLitWorkerCount()
                                                                     sh """
-                                                                        cmake . \\
+                                                                        cmake .. \\
                                                                             -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0 \\
                                                                             -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1 \\
                                                                             -DROCK_E2E_TEST_ENABLED=1 \\
