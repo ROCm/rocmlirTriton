@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/TypeUtilities.h"
 
 #include "llvm/ADT/StringSwitch.h"
@@ -303,6 +304,74 @@ bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
     default:
       return false;
     }
+  }
+  return false;
+}
+
+// Enum-dtype adapters: build a real MLIR Type and dispatch to the existing
+// Type-based overload. The Type-based versions remain the single source of
+// truth for the family-vs-dtype matrix; this is just a thin convenience for
+// out-of-MLIR callers (e.g. the Python test binding) that prefer to pass a
+// dtype as an enum rather than constructing an MLIR Type themselves.
+static FailureOr<Type> dtypeToType(MLIRContext &ctx, Dtype dtype) {
+  Builder b(&ctx);
+  switch (dtype) {
+  case Dtype::F32:
+    return b.getF32Type();
+  case Dtype::F16:
+    return b.getF16Type();
+  case Dtype::BF16:
+    return b.getBF16Type();
+  }
+  return failure();
+}
+
+bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Dtype dtype) {
+  MLIRContext ctx;
+  FailureOr<Type> t = dtypeToType(ctx, dtype);
+  if (failed(t))
+    return false;
+  return isFastAtomicAddSupported(arch, *t);
+}
+
+bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Dtype dtype) {
+  MLIRContext ctx;
+  FailureOr<Type> t = dtypeToType(ctx, dtype);
+  if (failed(t))
+    return false;
+  return isFastAtomicMaxSupported(arch, *t);
+}
+
+bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
+  // Hardware-capability check via the underlying MFMA / WMMA version tables.
+  // We deliberately do NOT probe through getMatrixAccelKind here, because
+  // Triton's composeMfmaKeyFor silently rewrites OCP FP8 (E4M3FN / E5M2)
+  // inputs to f16 on any MFMA v<=3 (see MfmaGroup.cpp), which would make
+  // such a probe report MFMA success on CDNA1 / CDNA2 / CDNA3 even though
+  // those archs have no native FP8 intrinsics. The version cut-offs below
+  // mirror the Triton MFMA / WMMA databases:
+  //   - MFMA v3 (CDNA3 / gfx942) : FNUZ FP8 native.
+  //   - MFMA v4 (CDNA4 / gfx950) : FNUZ + OCP FP8 native.
+  //   - WMMA v2 (RDNA4 / gfx12*) : OCP FP8 native.
+  //   - WMMA v3 (gfx1250)        : OCP FP8 native.
+  auto [isaFamily, _] = getArch(arch);
+  return rock::getMfmaVersion(isaFamily) >= 3 ||
+         rock::getWmmaVersion(isaFamily) >= 2;
+}
+
+bool mlir::rock::archSupportsScaledGemm(StringRef arch) {
+  // Probe both FP8 variants via getMatrixAccelKind with a non-null scale type
+  // so this stays in sync with the actual ScaledMFMA / ScaledWMMA dispatch:
+  // CDNA4 (gfx950) handles scaled MFMA over F8/F6/F4; GFX1250 handles scaled
+  // WMMA over F8E4M3 / F8E5M2 / F4E2M1.
+  MLIRContext ctx;
+  Builder b(&ctx);
+  Type scale = b.getF8E5M2Type();
+  for (Type fp8 : {Type(Float8E4M3FNUZType::get(&ctx)),
+                   Type(Float8E4M3FNType::get(&ctx))}) {
+    MatrixAccelKind k = getMatrixAccelKind(arch, fp8, fp8, scale, scale);
+    if (k == MatrixAccelKind::ScaledMFMA || k == MatrixAccelKind::ScaledWMMA)
+      return true;
   }
   return false;
 }
