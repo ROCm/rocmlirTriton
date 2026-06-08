@@ -1,50 +1,6 @@
+import subprocess
+
 from hip import hip
-
-
-# Helper function to decode arch to its features
-def get_arch_features(arch: str):
-    chip_name = arch.split(':')[0]
-    if len(chip_name) < 5:
-        return
-
-    arch_features = None
-    support_mfma = False
-    support_wmma = False
-    support_accel_fp8 = False
-    major = chip_name[:-2]
-    minor = chip_name[-2:]
-    if major == 'gfx9':
-        if minor in ['08', '0a']:
-            arch_features = 'mfma|dot|atomic_add|atomic_add_f16'
-        elif minor == '42':
-            arch_features = 'mfma|dot|atomic_add|atomic_add_f16|direct_to_lds_32b'
-            support_accel_fp8 = True
-        elif minor == '50':
-            arch_features = 'mfma|dot|atomic_add|atomic_add_f16|atomic_add_bf16|direct_to_lds_32b|direct_to_lds_128b|lds_transpose_load'
-            support_accel_fp8 = True
-        elif minor == '06':
-            arch_features = 'dot'
-        else:
-            arch_features = 'none'
-    elif major == 'gfx10':
-        if minor in ['11', '13']:
-            arch_features = 'atomic_fmax_f32'
-        elif minor in ['10', '12'] or minor[0] == '3':
-            arch_features = 'dot|atomic_fmax_f32'
-        else:
-            arch_features = 'atomic_fmax_f32'
-    elif major == 'gfx11':
-        arch_features = 'dot|atomic_add|atomic_fmax_f32|wmma'
-    elif major == 'gfx12':
-        arch_features = 'dot|atomic_add|atomic_add_f16|atomic_add_bf16|atomic_fmax_f32|wmma'
-        support_accel_fp8 = True
-    if arch_features and 'mfma' in arch_features:
-        support_mfma = True
-        pass
-    elif arch_features and 'wmma' in arch_features:
-        support_wmma = True
-        pass
-    return arch_features, support_mfma, support_wmma, support_accel_fp8
 
 
 def hip_check(call_result):
@@ -69,6 +25,59 @@ def get_agents():
     return agents
 
 
-def is_xdlops_present() -> bool:
-    """This function checks whether a GPU with xdlops support is present"""
-    return any([agent.startswith("gfx9") for agent in get_agents()])
+def apply_arch_features(config, lit_config):
+    """Populate `config.arch`, `config.no_AMD_GPU`, and the `arch_support_*`
+    booleans from the `amd_arch_db` pybind11 binding. Shared by all
+    lit.site.cfg.py.in files so per-arch gating stays in one place.
+
+    Fatals out if the binding isn't importable; the hasattr probe rejects the
+    empty namespace-package shadow when the .so is missing but the sibling
+    build subdir of the same name is on sys.path.
+    """
+    try:
+        import amd_arch_db
+        if not hasattr(amd_arch_db, 'is_fast_atomic_add_supported'):
+            raise ImportError("amd_arch_db loaded without expected symbols")
+    except ImportError as e:
+        lit_config.fatal("amd_arch_db pybind11 module not importable (%s); rebuild "
+                         "`rocmlir-common-python-test-utils`." % e)
+
+    config.no_AMD_GPU = False
+    config.arch = ""
+    config.arch_support_atomic_add_f32 = False
+    config.arch_support_atomic_add_f16 = False
+    config.arch_support_atomic_add_bf16 = False
+    config.arch_support_atomic_max_f32 = False
+    config.arch_support_accel_fp8 = False
+    config.arch_support_scaled_gemm = False
+    config.arch_support_kpack = False
+
+    if not config.rocm_path:
+        return
+
+    try:
+        agents = get_agents()
+    except subprocess.CalledProcessError:
+        config.no_AMD_GPU = True
+        return
+
+    config.arch = ','.join(agents)
+    if not config.arch:
+        config.no_AMD_GPU = True
+        return
+
+    # Take the first agent for feature gating. Multi-arch CI runners are
+    # expected to be homogeneous; if that ever changes, switch this to an
+    # all()/any() reduction over agents.
+    chip = next(iter(agents)).split(':')[0]
+    config.arch_support_atomic_add_f32 = amd_arch_db.is_fast_atomic_add_supported(
+        chip, amd_arch_db.Dtype.F32)
+    config.arch_support_atomic_add_f16 = amd_arch_db.is_fast_atomic_add_supported(
+        chip, amd_arch_db.Dtype.F16)
+    config.arch_support_atomic_add_bf16 = amd_arch_db.is_fast_atomic_add_supported(
+        chip, amd_arch_db.Dtype.BF16)
+    config.arch_support_atomic_max_f32 = amd_arch_db.is_fast_atomic_max_supported(
+        chip, amd_arch_db.Dtype.F32)
+    config.arch_support_accel_fp8 = amd_arch_db.arch_supports_accel_fp8(chip)
+    config.arch_support_scaled_gemm = amd_arch_db.arch_supports_scaled_gemm(chip)
+    config.arch_support_kpack = amd_arch_db.get_max_kpack(chip) > 1
