@@ -27,6 +27,11 @@ from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 import perfRunner
 from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_chiplets, get_num_cu)
 
+try:
+    import amd_arch_db
+except ImportError:
+    amd_arch_db = None
+
 
 @dataclass(frozen=True)
 class Options:
@@ -602,14 +607,13 @@ def _arch_id(arch: str) -> Optional[int]:
 def _kpack_choices(arch: str) -> List[int]:
     """Valid ``kpack`` values for the perf-config sweep, by arch.
 
-    ``kpack != 1`` is deprecated on gfx950 and gfx1250 (and any newer arch);
-    older archs (gfx9 < gfx950, all of gfx10/gfx11, gfx12 < gfx1250) still
-    accept ``kpack in {1, 2}``.
+    Uses ``rock::getMaxKpack`` via the AmdArchDB pybind module when the
+    performance scripts are run from the build ``bin/`` directory. The fallback
+    mirrors that C++ helper for source-tree/manual runs before the helper has
+    been built."""
+    if amd_arch_db is not None:
+        return list(range(1, amd_arch_db.get_max_kpack(arch) + 1))
 
-    Cutoffs are expressed on the gfx target id (parsed as hex) so any new
-    arch in the same family (gfx951, gfx1260, ...) and any new family
-    (gfx13xx, gfx14xx, ...) automatically falls into the ``[1]`` bucket
-    without requiring a code change here."""
     n = _arch_id(arch)
     if n is None:
         return [1]  # unknown target -> safest
@@ -620,15 +624,17 @@ def _kpack_choices(arch: str) -> List[int]:
     return [1]  # gfx950+, gfx1250+, gfx13+, ...
 
 
-# TODO: Use python bindings when available.
 def _wave_size(arch: str) -> int:
     """Wave size used by the perf-config tuner for ``arch``.
-    32 for RDNA, 64 for GCN/CDNA and gfx1250."""
+
+    Uses ``rock::getWaveSize`` via the AmdArchDB pybind module when available.
+    Defaults to 64 on unknown archs (wider wave -> smaller per-thread state ->
+    less likely to filter)."""
     n = _arch_id(arch)
     if n is None:
-        # Unknown arch: conservative (wider wave -> smaller per-thread
-        # state -> less likely to filter).
         return 64
+    if amd_arch_db is not None:
+        return amd_arch_db.get_wave_size(arch)
     if 0x1000 <= n < 0x1250:  # gfx10xx, gfx11xx, gfx12 < 1250
         return 32
     return 64

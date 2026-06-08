@@ -454,6 +454,37 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   return 1;
 }
 
+int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
+  auto [isaFamily, chip] = getArch(arch);
+
+  switch (isaFamily) {
+  case ISAFamily::GCN5_1:
+  case ISAFamily::CDNA1:
+    return 256;
+  case ISAFamily::CDNA2:
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+    return 512;
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+    return 1024;
+  case ISAFamily::RDNA3:
+    // Match LLVM's getTotalNumVGPRs() and Feature1536VGPRs coverage:
+    // https://github.com/llvm/llvm-project/blob/87717bf9f81f7b29466c5d9a30a3453bdfc93941/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp#L1421-L1429
+    // https://github.com/llvm/llvm-project/blob/87717bf9f81f7b29466c5d9a30a3453bdfc93941/llvm/lib/Target/AMDGPU/AMDGPU.td#L1923-L1930
+    // https://github.com/llvm/llvm-project/blob/87717bf9f81f7b29466c5d9a30a3453bdfc93941/llvm/lib/Target/AMDGPU/AMDGPU.td#L1953-L1956
+    if (chip == "gfx1100" || chip == "gfx1101" || chip == "gfx1151")
+      return 1536;
+    return 1024;
+  case ISAFamily::RDNA4:
+  case ISAFamily::GFX1250:
+    return 1536;
+  default:
+    return 512;
+  }
+  return 512;
+}
+
 bool mlir::rock::supportsMultiCTALaunch(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());
