@@ -469,10 +469,10 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
   case ISAFamily::RDNA2:
     return 1024;
   case ISAFamily::RDNA3:
-    // Match LLVM's getTotalNumVGPRs() and Feature1536VGPRs coverage:
-    // https://github.com/llvm/llvm-project/blob/87717bf9f81f7b29466c5d9a30a3453bdfc93941/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp#L1421-L1429
-    // https://github.com/llvm/llvm-project/blob/87717bf9f81f7b29466c5d9a30a3453bdfc93941/llvm/lib/Target/AMDGPU/AMDGPU.td#L1923-L1930
-    // https://github.com/llvm/llvm-project/blob/87717bf9f81f7b29466c5d9a30a3453bdfc93941/llvm/lib/Target/AMDGPU/AMDGPU.td#L1953-L1956
+    // Match LLVM's coverage: getTotalNumVGPRs() in
+    // llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp and the
+    // Feature1536VGPRs definition / FeatureISAVersion11_* lists in
+    // llvm/lib/Target/AMDGPU/AMDGPU.td.
     if (chip == "gfx1100" || chip == "gfx1101" || chip == "gfx1151")
       return 1536;
     return 1024;
