@@ -326,6 +326,101 @@ TEST(AmdArchDbTest, SupportsTDM) {
   EXPECT_TRUE(supportsTDM("gfx1250"));  // GFX1250
 }
 
+// --- Dtype overloads of isFastAtomicAddSupported / isFastAtomicMaxSupported
+// ---
+//
+// These are thin adapters over the Type-based overloads; the tests below mirror
+// a subset of the Type-overload cases above and serve to catch regressions in
+// the internal Dtype -> mlir::Type mapping.
+
+TEST(AmdArchDbTest, FastAtomicAddDtypeF32) {
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx906", Dtype::F32));  // GCN5_1
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", Dtype::F32));  // CDNA1
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx90a", Dtype::F32));  // CDNA2
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", Dtype::F32));  // CDNA3
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", Dtype::F32));  // CDNA4
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx1100", Dtype::F32)); // RDNA3
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", Dtype::F32)); // GFX1250
+}
+
+TEST(AmdArchDbTest, FastAtomicAddDtypeF16) {
+  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", Dtype::F16));  // GCN5_1
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", Dtype::F16));   // CDNA1
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", Dtype::F16));   // CDNA3
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", Dtype::F16));   // CDNA4
+  EXPECT_FALSE(isFastAtomicAddSupported("gfx1100", Dtype::F16)); // RDNA3
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", Dtype::F16));  // RDNA4
+}
+
+TEST(AmdArchDbTest, FastAtomicAddDtypeBf16) {
+  EXPECT_FALSE(isFastAtomicAddSupported("gfx942", Dtype::BF16)); // CDNA3
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", Dtype::BF16));  // CDNA4
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", Dtype::BF16)); // RDNA4
+  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", Dtype::BF16)); // GFX1250
+}
+
+TEST(AmdArchDbTest, FastAtomicMaxDtypeF32) {
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx906", Dtype::F32)); // GCN5_1
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", Dtype::F32)); // CDNA4
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1100", Dtype::F32)); // RDNA3
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1250", Dtype::F32)); // GFX1250
+}
+
+TEST(AmdArchDbTest, FastAtomicMaxDtypeNonF32Unsupported) {
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", Dtype::F16));  // RDNA3
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", Dtype::F16));  // GFX1250
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", Dtype::BF16)); // RDNA3
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", Dtype::BF16)); // GFX1250
+}
+
+// --- archSupportsAccelFp8 ---
+//
+// Implemented via getMatrixAccelKind, so this reflects what selectFor reports
+// for FP8 (FNUZ or OCP) input pairs without scales: any MFMA or WMMA result is
+// taken to mean the arch has fp8 matrix-acceleration intrinsics.
+
+TEST(AmdArchDbTest, ArchSupportsAccelFp8) {
+  EXPECT_FALSE(archSupportsAccelFp8("gfx906"));  // GCN5_1: no matrix accel
+  EXPECT_FALSE(archSupportsAccelFp8("gfx908"));  // CDNA1: MFMA but no FP8 MFMA
+  EXPECT_FALSE(archSupportsAccelFp8("gfx90a"));  // CDNA2: MFMA but no FP8 MFMA
+  EXPECT_TRUE(archSupportsAccelFp8("gfx942"));   // CDNA3 (native fp8 MFMA)
+  EXPECT_TRUE(archSupportsAccelFp8("gfx950"));   // CDNA4 (native fp8 MFMA)
+  EXPECT_FALSE(archSupportsAccelFp8("gfx1010")); // RDNA1: no WMMA at all
+  EXPECT_FALSE(archSupportsAccelFp8("gfx1030")); // RDNA2: no WMMA at all
+  EXPECT_FALSE(archSupportsAccelFp8("gfx1100")); // RDNA3: no fp8 WMMA
+  EXPECT_TRUE(archSupportsAccelFp8("gfx1200"));  // RDNA4 (native fp8 WMMA)
+  EXPECT_TRUE(archSupportsAccelFp8("gfx1250"));  // GFX1250 (native fp8 WMMA)
+}
+
+TEST(AmdArchDbTest, ArchSupportsAccelFp8WithTriple) {
+  EXPECT_TRUE(archSupportsAccelFp8("amdgcn-amd-amdhsa:gfx942"));
+  EXPECT_FALSE(archSupportsAccelFp8("amdgcn-amd-amdhsa:gfx906"));
+}
+
+// --- archSupportsScaledGemm ---
+//
+// Scaled matrix acceleration: ScaledMFMA on CDNA4 (gfx950), ScaledWMMA on
+// gfx1250. Implemented via getMatrixAccelKind by probing fp8 input
+// pairs together with a non-null scale type.
+
+TEST(AmdArchDbTest, ArchSupportsScaledGemm) {
+  EXPECT_FALSE(archSupportsScaledGemm("gfx906"));  // GCN5_1
+  EXPECT_FALSE(archSupportsScaledGemm("gfx908"));  // CDNA1
+  EXPECT_FALSE(archSupportsScaledGemm("gfx90a"));  // CDNA2
+  EXPECT_FALSE(archSupportsScaledGemm("gfx942"));  // CDNA3 (no ScaledMFMA)
+  EXPECT_TRUE(archSupportsScaledGemm("gfx950"));   // CDNA4 (ScaledMFMA)
+  EXPECT_FALSE(archSupportsScaledGemm("gfx1010")); // RDNA1
+  EXPECT_FALSE(archSupportsScaledGemm("gfx1030")); // RDNA2
+  EXPECT_FALSE(archSupportsScaledGemm("gfx1100")); // RDNA3
+  EXPECT_FALSE(archSupportsScaledGemm("gfx1200")); // RDNA4 (no ScaledWMMA)
+  EXPECT_TRUE(archSupportsScaledGemm("gfx1250"));  // GFX1250 (ScaledWMMA)
+}
+
+TEST(AmdArchDbTest, ArchSupportsScaledGemmWithTriple) {
+  EXPECT_TRUE(archSupportsScaledGemm("amdgcn-amd-amdhsa:gfx950"));
+  EXPECT_FALSE(archSupportsScaledGemm("amdgcn-amd-amdhsa:gfx942"));
+}
+
 // --- gfx906-specific arch-string forms ---
 
 // Verify that triple- and feature-suffixed forms of the gfx906 arch string

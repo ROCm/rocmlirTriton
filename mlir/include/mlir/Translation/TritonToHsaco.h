@@ -40,6 +40,7 @@ struct TritonToHsacoOptions {
   // Scheduling hint ordinal (-1=arch default, 0=none, 1=attention,
   // 2=memory-bound-attention). See KnobUtils.h for the encoding.
   int64_t scheduleHint = -1;
+  std::string llvmFnAttrs;
   std::vector<std::string> externLibPaths; // Paths to external device libraries
                                            // (ocml.bc, ockl.bc, etc.)
 };
