@@ -27,10 +27,7 @@ from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 import perfRunner
 from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_chiplets, get_num_cu)
 
-# Required: ci-performance-scripts copies this pybind module next to the scripts
-# (see mlir/utils/performance/CMakeLists.txt). The arch heuristics below are
-# sourced from the Rock AmdArchDB, so the binding is a hard dependency rather
-# than an optional accelerator.
+# Hard dependency, copied next to the scripts by ci-performance-scripts.
 import amd_arch_db
 
 
