@@ -354,9 +354,9 @@ bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
   //   - MFMA v4 (CDNA4 / gfx950) : FNUZ + OCP FP8 native.
   //   - WMMA v2 (RDNA4 / gfx12*) : OCP FP8 native.
   //   - WMMA v3 (gfx1250)        : OCP FP8 native.
-  auto [isaFamily, chip] = getArch(arch);
+  auto [isaFamily, _] = getArch(arch);
   return rock::getMfmaVersion(isaFamily) >= 3 ||
-         rock::getWmmaVersion(chip) >= 2;
+         rock::getWmmaVersion(isaFamily) >= 2;
 }
 
 bool mlir::rock::archSupportsScaledGemm(StringRef arch) {
