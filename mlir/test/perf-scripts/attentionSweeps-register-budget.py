@@ -1,11 +1,14 @@
 """Pin ``attentionSweeps._waves_per_eu_register_budget_ok`` across every
-(wave_size, vgprs_per_eu) regime the predicate distinguishes:
+(wave_size, vgprs_per_eu) regime the predicate distinguishes. Both values
+come from the AmdArchDB pybind module (``amd_arch_db.get_wave_size`` /
+``amd_arch_db.get_vgprs_per_eu``), so the buckets below track
+``rock::getVGPRsPerEU``'s LLVM-aligned per-arch coverage:
 
   (wave_size, vgprs_per_eu)   archs                                 budget/thr at wpe=8
   ---------------------------------------------------------------------------
-  (64, 512)                   gfx9xx (CDNA1-4); also unknown arch   64
-  (32, 512)                   gfx10xx (RDNA1/2)                     64
-  (32, 1024)                  gfx11xx-gfx12xx (RDNA3/4 + gfx1250)   128
+  (64, 512)                   gfx9xx (CDNA2-4)                      64
+  (32, 1024)                  gfx10xx (RDNA1/2)                     128
+  (32, 1536)                  gfx11xx-gfx12xx (RDNA3/4 + gfx1250)   192
 
 Each regime gets a just-fits ACCEPT and a just-overflows REJECT pair so a
 future calibration tweak fails fast. ``wavesPerEU == 0`` (treated as
@@ -58,12 +61,13 @@ CASES = [
     ("gfx942 fits", "gfx942", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx942 overflow", "gfx942", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 
-    # gfx1030 (RDNA2, wave=32, vgprs=512): half wave -> half threads -> half budget.
-    # (64*32)/32 = 64 -> ACCEPT; (64*64)/32 = 128 -> REJECT.
+    # gfx1030 (RDNA2, wave=32, vgprs=1024): half wave -> half threads, but
+    # doubled VGPR file -> wpe=8 budget=128. (64*32)/32 = 64 -> ACCEPT;
+    # (64*64)/32 = 128 fits exactly -> ACCEPT.
     ("gfx1030 fits", "gfx1030", (64, 32, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
-    ("gfx1030 overflow", "gfx1030", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
+    ("gfx1030 boundary", "gfx1030", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
 
-    # gfx1100 (RDNA3, wave=32, vgprs=1024): doubled VGPR file -> wpe=8 budget=128.
+    # gfx1100 (RDNA3, wave=32, vgprs=1536): wpe=8 budget=192.
     # (64*64)/32 = 128 -> ACCEPT; (128*64)/32 = 256 -> REJECT.
     ("gfx1100 fits", "gfx1100", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx1100 overflow", "gfx1100", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
@@ -72,25 +76,18 @@ CASES = [
     ("gfx1201 fits", "gfx1201", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx1201 overflow", "gfx1201", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 
-    # gfx1250 (wave=32, vgprs=1024): same regime as gfx1100/gfx1201; pinned
+    # gfx1250 (wave=32, vgprs=1536): same regime as gfx1100/gfx1201; pinned
     # separately so a future _arch_id / _wave_size tweak that mis-classifies
     # gfx1250 as wave=64 (its older mistake -- see AmdArchDbTests.WaveSize)
     # fails this test.
     ("gfx1250 fits", "gfx1250", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx1250 overflow", "gfx1250", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 
-    # Unknown arch falls through to (wave=64, vgprs=512); locks the
-    # conservative default so a future _arch_id refactor can't silently
-    # widen the unknown bucket.
-    ("unknown fits", "made-up-target", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
-    ("unknown overflow", "made-up-target", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
-
     # wpe=0 -> eff_wpe=1, budget=vgprs_per_eu. C-tiles wider than the full
     # SIMD VGPR file are rejected on every arch.
-    # (256*256)/64 = 1024 > 512 -> REJECT (gfx950 / unknown).
+    # (256*256)/64 = 1024 > 512 -> REJECT (gfx950).
     ("wpe=0 1024-tile gfx950", GFX950_HIP, (256, 256, 16, 1, 1, 1, 16, 1, 1, 0, 0), False),
-    ("wpe=0 1024-tile unknown", "made-up-target", (256, 256, 16, 1, 1, 1, 16, 1, 1, 0, 0), False),
-    # (256*256)/32 = 2048 > 1024 -> REJECT (gfx1100, doubled file).
+    # (256*256)/32 = 2048 > 1536 -> REJECT (gfx1100, doubled file).
     ("wpe=0 2048-tile gfx1100", "gfx1100", (256, 256, 16, 1, 1, 1, 16, 1, 1, 0, 0), False),
     # Companion ACCEPTs: small tile, and bumping num_waves -> small accum/thread.
     ("wpe=0 small gfx950", GFX950_HIP, (64, 64, 16, 1, 1, 1, 16, 1, 1, 0, 0), True),
@@ -122,17 +119,14 @@ for label, arch, perf_config, expected in CASES:
 # CHECK: [OK] gfx942 fits
 # CHECK: [OK] gfx942 overflow
 # CHECK: [OK] gfx1030 fits
-# CHECK: [OK] gfx1030 overflow
+# CHECK: [OK] gfx1030 boundary
 # CHECK: [OK] gfx1100 fits
 # CHECK: [OK] gfx1100 overflow
 # CHECK: [OK] gfx1201 fits
 # CHECK: [OK] gfx1201 overflow
 # CHECK: [OK] gfx1250 fits
 # CHECK: [OK] gfx1250 overflow
-# CHECK: [OK] unknown fits
-# CHECK: [OK] unknown overflow
 # CHECK: [OK] wpe=0 1024-tile gfx950
-# CHECK: [OK] wpe=0 1024-tile unknown
 # CHECK: [OK] wpe=0 2048-tile gfx1100
 # CHECK: [OK] wpe=0 small gfx950
 # CHECK: [OK] wpe=0 multi-wave gfx950

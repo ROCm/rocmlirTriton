@@ -33,7 +33,6 @@ from parameterSweeps import (
     Options,
     PerfConfig,
     _MAX_PERF_CONFIG_RETRIES,
-    _arch_id,
     _split_k_choices,
     _wave_size,
     add_common_args,
@@ -42,6 +41,9 @@ from parameterSweeps import (
     run_config,
     sample_perf_config,
 )
+
+# Hard dependency, copied next to the scripts by ci-performance-scripts.
+import amd_arch_db
 
 # Per-thread VGPR-budget guard for the attention / gemm-gemm sweep.
 # Complements ``parameterSweeps._compile_cost_score`` (which models post-RA
@@ -64,20 +66,10 @@ from parameterSweeps import (
 # than ``vgprs_per_eu`` still trigger a ~10s-to-multi-minute ISel /
 # post-RA scheduling blow-up even without spills, so we treat ``wpe == 0``
 # as ``wpe == 1`` for the budget check.
-
-# TODO: add this in python bindings when available.
-
-
-def _vgprs_per_eu(arch: str) -> int:
-    """SIMD VGPR-file size: 512 on gfx9xx/gfx10xx (CDNA1-4, RDNA1/2),
-    1024 from gfx11xx onward (RDNA3, RDNA4, gfx1250). Wave-size
-    differences between gfx12xx and gfx9xx are handled separately by
-    :func:`parameterSweeps._wave_size`. Defaults to 512 for unknown archs
-    (conservative -- more likely to flag than to leak)."""
-    n = _arch_id(arch)
-    if n is not None and n >= 0x1100:
-        return 1024
-    return 512
+#
+# The per-EU VGPR-file size comes from ``rock::getVGPRsPerEU`` via the
+# AmdArchDB pybind module (``amd_arch_db.get_vgprs_per_eu``), so the budget
+# tracks LLVM's per-arch VGPR coverage instead of a hand-coded heuristic.
 
 
 def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> bool:
@@ -92,7 +84,7 @@ def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> b
     effective_waves_per_eu = waves_per_eu if waves_per_eu > 0 else 1
     # Integer cross-multiplication is exact; avoids any FP rounding at the
     # boundary. Equivalent to ``(mpb * npb) / threads <= vgprs_per_eu / wpe``.
-    return (mpb * npb) * effective_waves_per_eu <= _vgprs_per_eu(arch) * threads
+    return (mpb * npb) * effective_waves_per_eu <= amd_arch_db.get_vgprs_per_eu(arch) * threads
 
 
 def _sampled_perf_within_vgpr_budget(rng: random.Random, arch: str,
