@@ -2666,9 +2666,8 @@ createCPUConvWithMLIR(ModuleOp module,
   // Pick the MAC body that matches the accumulator type: integer MAC (with
   // sign-extension) for an i32 accumulator, float MAC otherwise.
   Value result;
-  ConvBodyBuilder bodyBuilder = isa<IntegerType>(computeType)
-                                    ? convBodyBuilderI32
-                                    : convBodyBuilderF32;
+  ConvBodyBuilder bodyBuilder =
+      isa<IntegerType>(computeType) ? convBodyBuilderI32 : convBodyBuilderF32;
   switch (genConfig.operation.value()) {
   case rock::ConvOpType::Fwd:
     result = emitConvGeneric(
