@@ -778,10 +778,22 @@ def _timeout_budget(arch: str, kind: str) -> int:
     # please update this table.
     # kind          cdna  rdna
     budgets = {
-        'conv': {'cdna': 10, 'rdna': 12},
-        'gemm': {'cdna': 4, 'rdna': 6},
-        'gemm_gemm': {'cdna': 4, 'rdna': 5},
-        'attention': {'cdna': 30, 'rdna': 30},
+        'conv': {
+            'cdna': 10,
+            'rdna': 12
+        },
+        'gemm': {
+            'cdna': 4,
+            'rdna': 6
+        },
+        'gemm_gemm': {
+            'cdna': 4,
+            'rdna': 5
+        },
+        'attention': {
+            'cdna': 30,
+            'rdna': 30
+        },
     }
     return budgets[kind][_arch_family(arch)]
 
@@ -1070,8 +1082,8 @@ async def run_config(param_iter: Iterable[IterType],
     n_timeouts = len(timeouts)
     timeouts_over_budget = False
     if n_timeouts != 0:
-        budget = (options.max_timeouts if options.max_timeouts is not None else
-                  _timeout_budget(options.arch, _config_kind(timeouts[0])))
+        budget = (options.max_timeouts if options.max_timeouts is not None else _timeout_budget(
+            options.arch, _config_kind(timeouts[0])))
         timeouts_over_budget = budget >= 0 and n_timeouts > budget
         budget_str = "unlimited" if budget < 0 else str(budget)
         verdict = "OVER BUDGET" if timeouts_over_budget else "within budget"
