@@ -42,7 +42,7 @@
 // RUN:   | FileCheck %s --check-prefix=ASYNC_GFX942_ON
 
 // ASYNC_GFX950_DEFAULT: tritonamdgpu-pipeline{use_async_copy=true
-// ASYNC_GFX950_DEFAULT: tritonamdgpu-coalesce-async-copy{arch-generation-name=gfx950}
+// ASYNC_GFX950_DEFAULT: tritonamdgpu-coalesce-async-copy{gfx-arch=gfx950}
 
 // ASYNC_GFX950_OFF: tritonamdgpu-pipeline{use_async_copy=false
 // ASYNC_GFX950_OFF-NOT: tritonamdgpu-coalesce-async-copy
@@ -51,7 +51,7 @@
 // ASYNC_GFX942_DEFAULT-NOT: tritonamdgpu-coalesce-async-copy
 
 // ASYNC_GFX942_ON: tritonamdgpu-pipeline{use_async_copy=true
-// ASYNC_GFX942_ON: tritonamdgpu-coalesce-async-copy{arch-generation-name=gfx942}
+// ASYNC_GFX942_ON: tritonamdgpu-coalesce-async-copy{gfx-arch=gfx942}
 
 //===----------------------------------------------------------------------===//
 // useBlockPingpong
