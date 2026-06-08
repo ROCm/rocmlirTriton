@@ -27,10 +27,11 @@ from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 import perfRunner
 from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_chiplets, get_num_cu)
 
-try:
-    import amd_arch_db
-except ImportError:
-    amd_arch_db = None
+# Required: ci-performance-scripts copies this pybind module next to the scripts
+# (see mlir/utils/performance/CMakeLists.txt). The arch heuristics below are
+# sourced from the Rock AmdArchDB, so the binding is a hard dependency rather
+# than an optional accelerator.
+import amd_arch_db
 
 
 @dataclass(frozen=True)
@@ -607,37 +608,15 @@ def _arch_id(arch: str) -> Optional[int]:
 def _kpack_choices(arch: str) -> List[int]:
     """Valid ``kpack`` values for the perf-config sweep, by arch.
 
-    Uses ``rock::getMaxKpack`` via the AmdArchDB pybind module when the
-    performance scripts are run from the build ``bin/`` directory. The fallback
-    mirrors that C++ helper for source-tree/manual runs before the helper has
-    been built."""
-    if amd_arch_db is not None:
-        return list(range(1, amd_arch_db.get_max_kpack(arch) + 1))
-
-    n = _arch_id(arch)
-    if n is None:
-        return [1]  # unknown target -> safest
-    if n < 0x950:  # gfx9 pre-CDNA4
-        return [1, 2]
-    if 0x1000 <= n < 0x1250:  # all of gfx10/gfx11, gfx12 before gfx1250
-        return [1, 2]
-    return [1]  # gfx950+, gfx1250+, gfx13+, ...
+    Sourced from ``rock::getMaxKpack`` via the AmdArchDB pybind module."""
+    return list(range(1, amd_arch_db.get_max_kpack(arch) + 1))
 
 
 def _wave_size(arch: str) -> int:
     """Wave size used by the perf-config tuner for ``arch``.
 
-    Uses ``rock::getWaveSize`` via the AmdArchDB pybind module when available.
-    Defaults to 64 on unknown archs (wider wave -> smaller per-thread state ->
-    less likely to filter)."""
-    n = _arch_id(arch)
-    if n is None:
-        return 64
-    if amd_arch_db is not None:
-        return amd_arch_db.get_wave_size(arch)
-    if 0x1000 <= n <= 0x1250:  # gfx10xx, gfx11xx, gfx12xx incl. gfx1250
-        return 32
-    return 64
+    Sourced from ``rock::getWaveSize`` via the AmdArchDB pybind module."""
+    return amd_arch_db.get_wave_size(arch)
 
 
 # Dtypes whose Triton fp_to_fp lowering expands into many LLVM ops on AMD
