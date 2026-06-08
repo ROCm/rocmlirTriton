@@ -496,23 +496,28 @@ def grouper(iterable: Iterable[IterType], n: int):
 
 async def drop_good_config(config: perfRunner.PerfConfiguration, options: Options,
                            paths: Paths) -> Tuple[TestResult, perfRunner.PerfConfiguration]:
-    """Run the given config and return ``(result, config)``. On FAIL, also
-    appends to the per-kind failure log if ``--log-failures`` is set."""
+    """Run the given config and return ``(result, config)``. When
+    ``--log-failures`` is set, FAILs are appended to the per-kind failure log
+    and TIMEOUTs to the (separate) per-kind timeout log."""
     result = await test_config(config, options, paths)
     if not options.quiet:
         # Single print() so concurrent jobs don't interleave the separator
         # and the result line.
         print("-" * 100 + f"\n{result.name}: {multiline_repr(config)}")
-    if result == TestResult.FAIL and options.log_failures:
+    if options.log_failures and result in (TestResult.FAIL, TestResult.TIMEOUT):
         # Push blocking I/O off the asyncio loop. Concurrent writes to the
         # same path are still safe because POSIX `O_APPEND` makes each
-        # `write()` atomic up to PIPE_BUF.
-        await asyncio.to_thread(_append_failure, _failure_log_path(config), config)
+        # `write()` atomic up to PIPE_BUF. Timeouts go to their own log so
+        # tolerated compile-time blowups never pollute the failing-configs
+        # files that downstream tooling treats as bugs.
+        log_path = (_failure_log_path(config)
+                    if result == TestResult.FAIL else _timeout_log_path(config))
+        await asyncio.to_thread(_append_failure, log_path, config)
     return (result, config)
 
 
 def _append_failure(log_path: str, config) -> None:
-    """Append one failing config to ``log_path``.
+    """Append one config (failing or timed-out) to ``log_path``.
 
     Each entry is a ``# ``-prefixed multiline config repr followed by the
     rocmlir-gen argv (no binary prefix). Strip the comment lines and prepend
@@ -1087,14 +1092,16 @@ async def run_config(param_iter: Iterable[IterType],
         )
         return False
 
-    # Fail the run if we intended to validate kernels but nothing passed and
-    # nothing failed — e.g. every sample was NOT_APPLICABLE (or timed out) for
-    # this arch.
+    # Fail the run if we intended to validate kernels but recorded no PASS and
+    # no FAIL. This happens when every sample
+    # was NOT_APPLICABLE and/or timed out (within budget) for this arch.
     if samples > 0 and n_passes == 0 and len(failures) == 0:
+        reason = ("every sample was NOT_APPLICABLE or timed out"
+                  if n_timeouts else "the sample space is entirely NOT_APPLICABLE")
         print(
-            "Sweep did not record any PASS results (samples > 0, failures == 0). "
-            "Check arch, build, or whether the sample space is entirely "
-            "NOT_APPLICABLE for this target.",
+            f"Sweep did not record any PASS results (samples > 0, failures == 0, "
+            f"timeouts == {n_timeouts}). Check arch, build, or whether {reason} "
+            "for this target.",
             file=sys.stderr,
         )
         return False
