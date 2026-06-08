@@ -351,7 +351,8 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
                                double maxRatioAbsDiff, double maxRatioTolerance,
                                bool maxRatioIsInf, long long ratioInfCount,
                                long long nanCount, float nanValNum,
-                               float nanGpuNum, double minAtolForCurrentRtol,
+                               float nanGpuNum, long long infMismatchCount,
+                               double minAtolForCurrentRtol,
                                double minRtolForCurrentAtol,
                                bool minRtolWellDefined, const int *hist_ratio) {
   printf("allclose statistics:\n");
@@ -364,6 +365,9 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
     printf("  worst element: valNum=%g gpuNum=%g (NaN-mismatch)\n", nanValNum,
            nanGpuNum);
     printf("  no tolerance can mask a NaN-mismatch; fix the kernel\n");
+  } else if (infMismatchCount > 0 && infMismatchCount == failingElements) {
+    printf("  all %lld failure(s) are inf-mismatches; no tolerance can help\n",
+           infMismatchCount);
   } else {
     if (maxRatioIsInf) {
       printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=0 "
@@ -414,12 +418,20 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
            nanCount, dataSize,
            100.0 * static_cast<double>(nanCount) /
                static_cast<double>(dataSize));
+  if (infMismatchCount > 0)
+    printf("           inf mismatch   : %lld/%lld (%.4f%%)  <-- failing\n",
+           infMismatchCount, dataSize,
+           100.0 * static_cast<double>(infMismatchCount) /
+               static_cast<double>(dataSize));
   if (ratioInfCount > 0)
     printf("  note: %lld element(s) had tolerance == 0 with absDiff > 0 "
            "(only possible when -atol=0 and valNum==0)\n",
            ratioInfCount);
   if (nanCount > 0)
     printf("  note: %lld element(s) had NaN on either side\n", nanCount);
+  if (infMismatchCount > 0)
+    printf("  note: %lld element(s) had inf on one or both sides\n",
+           infMismatchCount);
 }
 
 template <typename T>
@@ -452,6 +464,7 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
   long long nanCount = 0;
   float nanValNum = 0.0f;
   float nanGpuNum = 0.0f;
+  long long infMismatchCount = 0;
   // Calibration hints: smallest atol/rtol that would make every failing
   // element pass, holding the other tolerance fixed.
   //   minAtolForCurrentRtol = max over elements of (absDiff - rtol*|valNum|)
@@ -495,17 +508,17 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
       hist_ratio[0]++;
       continue;
     }
-    // Clamp +/-inf on both sides to fp16 max so that the subsequent
-    // arithmetic is well-defined (otherwise inf - finite = inf, |inf| = inf,
-    // and the allclose tolerance becomes inf which would mask true failures).
-    // Both CPU and GPU can produce inf when the true result is near the fp16
-    // boundary; non-deterministic accumulation order decides which side
-    // overflows first, so we treat both symmetrically.
-    constexpr float fp16MaxVal = 65504;
-    if (std::isinf(valNum))
-      valNum = (valNum > 0 ? fp16MaxVal : -fp16MaxVal);
-    if (std::isinf(gpuNum))
-      gpuNum = (gpuNum > 0 ? fp16MaxVal : -fp16MaxVal);
+    // Inf handling (AIROCMLIR-911): treat inf as a hard failure unless both
+    // sides agree. The old approach clamped +/-inf to fp16_max (65504) which
+    // masked real mismatches for f32/bf16 types and hid overflow bugs.
+    if (std::isinf(valNum) || std::isinf(gpuNum)) {
+      failingElements++;
+      infMismatchCount++;
+      if (print_option == PrintOption::Always ||
+          print_option == PrintOption::Failure)
+        printf("%lld: valNum=%f gpuNum=%f (inf-mismatch)\n", i, valNum, gpuNum);
+      continue;
+    }
     float absDiff = fabs(valNum - gpuNum);
 
     // The allclose predicate (asymmetric, matches PyTorch/NumPy convention).
@@ -588,8 +601,9 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
     printAllcloseStats(dataSize, failingElements, atol, rtol, maxRatio,
                        maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff,
                        maxRatioTolerance, maxRatioIsInf, ratioInfCount,
-                       nanCount, nanValNum, nanGpuNum, minAtolForCurrentRtol,
-                       minRtolForCurrentAtol, minRtolWellDefined, hist_ratio);
+                       nanCount, nanValNum, nanGpuNum, infMismatchCount,
+                       minAtolForCurrentRtol, minRtolForCurrentAtol,
+                       minRtolWellDefined, hist_ratio);
     printf("zero_diff: %lld/%lld\n", (long long)hist_ratio[0], dataSize);
   }
   printf("[%d %d %d]\n", all_pass, all_pass, all_pass);
