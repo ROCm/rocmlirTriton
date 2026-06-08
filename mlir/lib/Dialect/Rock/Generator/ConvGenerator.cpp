@@ -724,11 +724,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
                                                    outputLayoutSpec.end()))),
   };
 
-  // features
-  // GemmFeaturesAttr features =
-  //     builder.getAttr<GemmFeaturesAttr>(config.features);
-  // attributes.push_back(builder.getNamedAttr("features", features));
-
   SmallVector<int64_t, 8> paddingArray;
   for (const auto &[left, right] :
        zip(config.paddingLeftDims, config.paddingRightDims)) {
