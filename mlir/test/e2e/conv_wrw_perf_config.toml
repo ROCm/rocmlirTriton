@@ -15,22 +15,22 @@ values = ["-fil_layout=kcyx -in_layout=nchw -out_layout=nkhw"]
 name = "config"
 
 ## Restore once kPack + padding work
-## --perf_config gemm:v1:256,128,64,1,1,4,16,1,1,0,0
+## --perf_config gemm:v1:256,128,64,1,1,4,32,1,2,0,0
 [[suite.test]]
-config = "--perf_config gemm:v1:256,128,64,1,1,4,16,1,1,0,0 -t f16 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 256 --in_channels 64 --in_h 56 --in_w 56 --out_channels 64 --fil_h 3 --fil_w 3 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1"
+config = "--perf_config gemm:v1:256,128,8,1,1,4,32,1,2,0,0 -t f16 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 256 --in_channels 64 --in_h 56 --in_w 56 --out_channels 64 --fil_h 3 --fil_w 3 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1"
 
 [[suite.test]]
-config = "--perf_config gemm:v1:64,64,64,1,1,4,16,1,1,0,0 -t f32 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 512 --in_channels 512 --in_h 1 --in_w 1 --out_channels 512 --fil_h 1 --fil_w 1 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 0 --padding_w 0"
-
-## tests with gemm schedule v2
-[[suite.test]]
-config = "--perf_config gemm:v1:256,128,64,1,1,4,16,1,2,0,0 -t f16 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 256 --in_channels 64 --in_h 56 --in_w 56 --out_channels 64 --fil_h 3 --fil_w 3 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1"
+config = "--perf_config gemm:v1:64,64,4,1,1,1,64,1,2,0,0 -t f32 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 512 --in_channels 512 --in_h 1 --in_w 1 --out_channels 512 --fil_h 1 --fil_w 1 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 0 --padding_w 0"
 
 ## tests with gemm schedule v2
 [[suite.test]]
-config = "--perf_config gemm:v1:64,64,64,1,1,4,16,1,2,0,0 -t f32 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 512 --in_channels 512 --in_h 1 --in_w 1 --out_channels 512 --fil_h 1 --fil_w 1 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 0 --padding_w 0"
+config = "--perf_config gemm:v1:256,128,8,1,1,4,32,1,2,0,0 -t f16 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 256 --in_channels 64 --in_h 56 --in_w 56 --out_channels 64 --fil_h 3 --fil_w 3 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1"
+
+## tests with gemm schedule v2
+[[suite.test]]
+config = "--perf_config gemm:v1:64,64,4,1,1,1,64,1,2,0,0 -t f32 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 512 --in_channels 512 --in_h 1 --in_w 1 --out_channels 512 --fil_h 1 --fil_w 1 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 0 --padding_w 0"
 
 ## test with split-k enabled
 [[suite.test]]
-config = "--perf_config gemm:v1:128,128,64,1,1,4,16,4,1,0,0 -t f32 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 512 --in_channels 512 --in_h 1 --in_w 1 --out_channels 512 --fil_h 1 --fil_w 1 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 0 --padding_w 0"
+config = "--perf_config gemm:v1:128,128,8,1,1,4,16,4,2,0,0 -t f32 --fil_layout kcyx --in_layout nchw --out_layout nkhw --batchsize 512 --in_channels 512 --in_h 1 --in_w 1 --out_channels 512 --fil_h 1 --fil_w 1 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 0 --padding_w 0"
 
