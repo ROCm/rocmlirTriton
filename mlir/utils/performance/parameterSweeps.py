@@ -762,14 +762,10 @@ def _compile_cost_budget(arch: str) -> int:
     RDNA build times start to go wild above 8000.
     CDNA archs process the same workload faster (wider waves, native fp8 paths)
     we give them a bit more budget."""
-    n = _arch_id(arch)
-    if n is None:
+    if _arch_family(arch) == 'rdna':
+        # RDNA1-4: more expensive LLVM processing (post-RA scheduler).
         return 8000
-    # RDNA3 / RDNA4: more expensive LLVM processing (post-RA scheduler).
-    if 0x1000 <= n < 0x1250:
-        return 8000
-    # Everything else (gfx9, gfx1030, gfx1250, gfx13+, future): looser cap
-    # until measured.
+    # Everything else (gfx9, gfx1250, gfx13+, future): looser cap until measured.
     return 12000
 
 
@@ -795,8 +791,8 @@ def _timeout_budget(arch: str, kind: str) -> int:
     """Count of tolerated per-stage timeouts for ``(arch, kind)``.
     """
     # Values were empirically found. If in the future things change,
-    # please update this table.
-    # kind          cdna  rdna
+    # please update this table. Each entry maps a sweep kind to its tolerated
+    # timeout count per arch family ('cdna' / 'rdna', see _arch_family).
     budgets = {
         'conv': {
             'cdna': 10,
@@ -1084,6 +1080,9 @@ async def run_config(param_iter: Iterable[IterType],
     n_timeouts = len(timeouts)
     timeouts_over_budget = False
     if n_timeouts != 0:
+        # All configs in a single run_config call come from one to_config, so
+        # they share a kind; timeouts[0] is a safe representative for the
+        # per-operation budget lookup.
         budget = (options.max_timeouts if options.max_timeouts is not None else _timeout_budget(
             options.arch, _config_kind(timeouts[0])))
         timeouts_over_budget = budget >= 0 and n_timeouts > budget
