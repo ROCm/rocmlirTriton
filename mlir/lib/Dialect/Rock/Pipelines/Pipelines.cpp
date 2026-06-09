@@ -264,6 +264,11 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
       mlir::createTritonAMDGPUPrepareIfCombining());
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
+  if (isBufferOpsEnabled(options.useBufferOps)) {
+    // Run after CSE so matching assume and loop-bound expressions share SSA,
+    // letting range analysis prove both non-negative.
+    pm->addPass(mlir::createTritonAMDGPUAnnotateBufferOpSplitSafety());
+  }
   pm->addPass(mlir::createSymbolDCEPass());
   // TODO(roctriton): Implement options like this.
   // if (options.instrumentationMode == "fpsan") {
@@ -288,7 +293,7 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // pm->addPass(gluon::createGluonInline());
   pm->addPass(mlir::createConvertIndexToLLVMPass());
 
-  pm->addPass(mlir::triton::createAllocateAMDGPUSharedMemory());
+  pm->addPass(mlir::triton::createAllocateAMDGPUSharedMemoryPass(arch));
   pm->addPass(mlir::triton::gpu::createTritonGPUGlobalScratchAllocationPass());
   // Upstream calls this pass twice, between
   // HIPBackend.instrumentation.patch("ttgpuir_to_llvmir", ...).
@@ -457,12 +462,14 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockAttnToGridwisePass());
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
-  if (!options.disableFastMath)
-    addWithDCE(rock::createRockAllowFastMathFlagsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
+  // We run this pass after lower-stores to catch redundant casts that cannot be
+  // flagged earlier due to loads/stores that sit between truncf/extf pairs.
+  if (!options.disableFastMath)
+    addWithDCE(rock::createRockAllowFastMathFlagsPass());
 
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
@@ -501,6 +508,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   }
 
   auto &funcPm2 = pm.nest<func::FuncOp>();
+  funcPm2.addPass(rock::createRockAnalyzeMemoryUsePass());
   funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
@@ -673,6 +681,13 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   // in the host lowering pipeline) sees the trimmed signature.
   pm.addPass(rock::createResolveKernelLaunchParamsPass());
 
+  // Annotate LLVM IR for efficient AMDGPU codegen (GEP inbounds, alias
+  // scopes, invariant loads, atomic metadata).
+  RockPrepareLLVMPassOptions prepareLLVMOpts;
+  prepareLLVMOpts.allowFlushDenorm = options.allowFlushDenorm;
+  pm.addNestedPass<LLVM::LLVMFuncOp>(
+      rock::createRockPrepareLLVMPass(prepareLLVMOpts));
+
   // Optionally generate the HSACO binary
   if (options.compile) {
     // Add the TritonToHsaco pass to convert LLVM dialect to HSACO binary
@@ -691,6 +706,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.enableFpFusion = options.enableFpFusion;
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;
     hsacoOpts.scheduleHint = options.scheduleHint;
+    hsacoOpts.llvmFnAttrs = options.llvmFnAttrs;
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
   }
 

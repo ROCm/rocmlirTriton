@@ -150,7 +150,7 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
       *this, "enableFpFusion", desc("Whether to enable FP fusion"), init(true)};
   PassOptions::Option<bool> allowFlushDenorm{
       *this, "allowFlushDenorm", desc("Whether to allow flush denorm"),
-      init(false)};
+      init(true)};
   PassOptions::Option<bool> suppressDiagnostic{
       *this, "suppress-diagnostic",
       desc("should we suppress diagnostic messages"), init(false)};
@@ -159,6 +159,12 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
       desc("Per-kernel scheduling hint ordinal forwarded to TritonToHsaco "
            "(see mlir/Dialect/Rock/utility/KnobUtils.h)"),
       init(kKnobDefault)};
+  PassOptions::Option<std::string> llvmFnAttrs{
+      *this, "llvmFnAttrs",
+      desc("Debug-only override: comma-separated LLVM function attributes "
+           "(name or name=value) applied to the kernel after Triton's "
+           "attributes."),
+      init("")};
 };
 
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.
