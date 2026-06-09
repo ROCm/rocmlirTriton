@@ -735,8 +735,8 @@ def _arch_family(arch: str) -> str:
       (MI100 gfx908, MI200/MI250 gfx90a, MI300 gfx942, gfx950) plus gfx1250,
       gfx13+, GCN5_1, and unknown targets until they're measured.
     """
-    rdna = (amd_arch_db.ISAFamily.RDNA1, amd_arch_db.ISAFamily.RDNA2,
-            amd_arch_db.ISAFamily.RDNA3, amd_arch_db.ISAFamily.RDNA4)
+    rdna = (amd_arch_db.ISAFamily.RDNA1, amd_arch_db.ISAFamily.RDNA2, amd_arch_db.ISAFamily.RDNA3,
+            amd_arch_db.ISAFamily.RDNA4)
     return 'rdna' if amd_arch_db.get_isa_family(arch) in rdna else 'cdna'
 
 
@@ -1059,8 +1059,8 @@ async def run_config(param_iter: Iterable[IterType],
         # All configs in a single run_config call come from one to_config, so
         # they share a kind; timeouts[0] is a safe representative for the
         # per-operation rate lookup.
-        rate = (options.max_timeout_rate if options.max_timeout_rate is not None else
-                _timeout_rate(options.arch, timeouts[0].SWEEP_KIND))
+        rate = (options.max_timeout_rate if options.max_timeout_rate is not None else _timeout_rate(
+            options.arch, timeouts[0].SWEEP_KIND))
         if rate < 0:
             # Negative rate disables the check entirely.
             budget_str = "unlimited"
