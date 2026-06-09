@@ -150,7 +150,7 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
       *this, "enableFpFusion", desc("Whether to enable FP fusion"), init(true)};
   PassOptions::Option<bool> allowFlushDenorm{
       *this, "allowFlushDenorm", desc("Whether to allow flush denorm"),
-      init(false)};
+      init(true)};
   PassOptions::Option<bool> suppressDiagnostic{
       *this, "suppress-diagnostic",
       desc("should we suppress diagnostic messages"), init(false)};
