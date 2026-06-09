@@ -11,7 +11,7 @@
 // CHECK-SAME: -> tensor<1x128x115200xf32>
 func.func @fp8_bf8_xdlops(%arg0: tensor<1x128x128xf8E4M3FNUZ>, %arg1: tensor<1x128x115200xf8E5M2FNUZ>, %arg2: tensor<1x128x115200xf32>) -> tensor<1x128x115200xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 900 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 228 : i32} {
   // Zero-initialized accumulator (mPerBlock x nPerBlock = 128 x 128) and
-  // Triton-style program id replace the old workgroup/workitem id chain.
+  // Triton-style program id replaces the old workgroup/workitem id chain.
   // CHECK-DAG: %[[ACC0:.+]] = arith.constant dense<0.000000e+00> : tensor<128x128xf32>
   // CHECK-DAG: tt.get_program_id x : i32
 
