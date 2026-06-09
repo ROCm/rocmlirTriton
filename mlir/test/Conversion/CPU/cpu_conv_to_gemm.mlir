@@ -174,7 +174,7 @@
 
 // FWD-1X1-S2-NEG-LABEL: func.func @conv_cpu(
 // FWD-1X1-S2-NEG:         iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
-// FWD-1X1-S2-NEG-SAME:    ins({{.*}} : tensor<64x14x14x1x1024xf32>, tensor<1x2048x1x1x1024xf32>)
+// FWD-1X1-S2-NEG-SAME:    ins({{.*}} : tensor<64x13x13x1x1024xf32>, tensor<1x2048x1x1x1024xf32>)
 // FWD-1X1-S2-NEG-SAME:    outs({{.*}} : tensor<64x7x7x1x2048xf32>)
 // FWD-1X1-S2-NEG-NOT:     rock.cpu_fused_conv
 
@@ -225,7 +225,7 @@
 
 // FWD-3X3-S2-NEG-LABEL: func.func @conv_cpu(
 // FWD-3X3-S2-NEG:         iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
-// FWD-3X3-S2-NEG-SAME:    ins({{.*}} : tensor<4x14x14x1x8xf32>, tensor<1x8x3x3x8xf32>)
+// FWD-3X3-S2-NEG-SAME:    ins({{.*}} : tensor<4x13x13x1x8xf32>, tensor<1x8x3x3x8xf32>)
 // FWD-3X3-S2-NEG-SAME:    outs({{.*}} : tensor<4x6x6x1x8xf32>)
 // FWD-3X3-S2-NEG-NOT:     rock.cpu_fused_conv
 

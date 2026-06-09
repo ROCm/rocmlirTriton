@@ -35,7 +35,7 @@ struct TritonToHsacoOptions {
   int numCTAs;
   int wavesPerEU;
   bool enableFpFusion = true;
-  bool allowFlushDenorm = false;
+  bool allowFlushDenorm = true;
   bool scalarizePackedFops = false; // Scalarize packed float ops
   // Scheduling hint ordinal (-1=arch default, 0=none, 1=attention,
   // 2=memory-bound-attention). See KnobUtils.h for the encoding.
