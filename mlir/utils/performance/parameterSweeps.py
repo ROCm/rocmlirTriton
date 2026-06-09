@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 
+import amd_arch_db
 import perfRunner
 from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_chiplets, get_num_cu)
 
@@ -42,7 +43,7 @@ class Options:
     num_chiplets: int
     log_failures: bool
     test_timeout_sec: int
-    max_timeouts: Optional[int]
+    max_timeout_rate: Optional[float]
 
 
 async def _kill_process(proc: asyncio.subprocess.Process):
@@ -160,40 +161,15 @@ class TestResult(enum.Enum):
     TIMEOUT = 4
 
 
-def _failure_log_path(config) -> str:
-    """Per-kind log file used by ``--log-failures``."""
-    if isinstance(config, perfRunner.AttentionConfiguration):
-        return "failing_attn_configs.txt"
-    if isinstance(config, perfRunner.GemmGemmConfiguration):
-        return "failing_gemm_gemm_configs.txt"
-    if isinstance(config, perfRunner.GemmConfiguration):
-        return "failing_gemm_configs.txt"
-    if isinstance(config, ConvConfiguration):
-        return "failing_conv_configs.txt"
-    raise ValueError(f"Unknown config type {type(config).__name__!r}")
+def _log_path(config, prefix: str) -> str:
+    """Per-kind log file used by ``--log-failures``, named
+    ``{prefix}_{config.SWEEP_KIND}_configs.txt``.
 
-
-def _timeout_log_path(config) -> str:
-    """Per-kind log file for timed-out configs, used by ``--log-failures``.
-
-    Kept separate from ``_failure_log_path`` so tolerated timeouts never land
-    in the failing-configs logs that downstream tooling treats as bugs."""
-    return "timed_out_" + _failure_log_path(config)[len("failing_"):]
-
-
-def _config_kind(config) -> str:
-    """Sweep-kind string for ``config`` (matches the positional ``config`` arg
-    and the :func:`_timeout_budget` keys). Mirrors the type dispatch in
-    :func:`_failure_log_path`; used to pick the per-operation timeout budget."""
-    if isinstance(config, perfRunner.AttentionConfiguration):
-        return 'attention'
-    if isinstance(config, perfRunner.GemmGemmConfiguration):
-        return 'gemm_gemm'
-    if isinstance(config, perfRunner.GemmConfiguration):
-        return 'gemm'
-    if isinstance(config, ConvConfiguration):
-        return 'conv'
-    raise ValueError(f"Unknown config type {type(config).__name__!r}")
+    Callers pass ``prefix="failing"`` for FAILs and ``prefix="timed_out"`` for
+    TIMEOUTs; keeping the two streams in separate files means tolerated
+    timeouts never land in the failing-configs logs that downstream tooling
+    treats as bugs."""
+    return f"{prefix}_{config.SWEEP_KIND}_configs.txt"
 
 
 def _needs_host_highlevel(config) -> bool:
@@ -286,11 +262,11 @@ def _print_failure(config,
     print("\n".join(msg), file=sys.stderr)
 
 
-def _print_timeout(config, cmd: Sequence[str], reason: str) -> None:
-    """Single-source-of-truth TIMEOUT printer (always to stderr).
+def _print_timeout(config, cmd: Sequence[str], reason: str, debug: bool) -> None:
+    """Single-source-of-truth TIMEOUT printer (to stderr, only when ``debug``).
 
     Distinct from ``_print_failure`` so timeouts, which are tolerated up to
-    ``Options.max_timeouts``, are never mistaken for FAILs in logs or by
+    ``Options.max_timeout_rate``, are never mistaken for FAILs in logs or by
     downstream log scrapers grepping for ``^FAIL``."""
     print("\n".join([
         f"TIMEOUT: {reason}",
@@ -348,7 +324,8 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
             lowering_in, gen_errs = await _communicate_with_timeout(generator, timeout)
         except asyncio.TimeoutError:
             await _kill_process(generator)
-            _print_timeout(config, rocmlir_gen_opts, f"Timeout in rocmlir-gen stage ({timeout}s)")
+            _print_timeout(config, rocmlir_gen_opts, f"Timeout in rocmlir-gen stage ({timeout}s)",
+                           options.debug)
             return TestResult.TIMEOUT
 
         if generator.returncode != 0:
@@ -377,7 +354,8 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
             except asyncio.TimeoutError:
                 await _kill_process(host_lowering)
                 _print_timeout(config, rocmlir_gen_opts,
-                               f"Timeout in --host-pipeline=highlevel stage ({timeout}s)")
+                               f"Timeout in --host-pipeline=highlevel stage ({timeout}s)",
+                               options.debug)
                 return TestResult.TIMEOUT
             if host_lowering.returncode == 2:
                 if options.debug:
@@ -421,13 +399,14 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
             await _kill_process(lowering)
             await _kill_process(runner)
             _print_timeout(config, rocmlir_gen_opts,
-                           f"Timeout in rocmlir-driver stage ({timeout}s)")
+                           f"Timeout in rocmlir-driver stage ({timeout}s)", options.debug)
             return TestResult.TIMEOUT
         try:
             runner_out, runner_errs = await _communicate_with_timeout(runner, timeout)
         except asyncio.TimeoutError:
             await _kill_process(runner)
-            _print_timeout(config, rocmlir_gen_opts, f"Timeout in mlir-runner stage ({timeout}s)")
+            _print_timeout(config, rocmlir_gen_opts, f"Timeout in mlir-runner stage ({timeout}s)",
+                           options.debug)
             return TestResult.TIMEOUT
         runner_out = _decode_cmd_output(runner_out)
 
@@ -510,9 +489,8 @@ async def drop_good_config(config: perfRunner.PerfConfiguration, options: Option
         # `write()` atomic up to PIPE_BUF. Timeouts go to their own log so
         # tolerated compile-time blowups never pollute the failing-configs
         # files that downstream tooling treats as bugs.
-        log_path = (_failure_log_path(config)
-                    if result == TestResult.FAIL else _timeout_log_path(config))
-        await asyncio.to_thread(_append_failure, log_path, config)
+        prefix = "failing" if result == TestResult.FAIL else "timed_out"
+        await asyncio.to_thread(_append_failure, _log_path(config, prefix), config)
     return (result, config)
 
 
@@ -750,48 +728,46 @@ def _compile_cost_budget(arch: str) -> int:
 
 
 def _arch_family(arch: str) -> str:
-    """'rdna' for gfx10xx/gfx11xx/gfx12xx < gfx1250, else 'cdna'.
-
-    Mirrors the family split used by :func:`_compile_cost_budget`, keyed off
-    the gfx target id (parsed as hex) so new archs in an existing family fall
-    into the right bucket without a code change.
-
+    """
     - ``'rdna'`` spans the whole RDNA line: RDNA1 (gfx101x), RDNA2 (gfx103x),
       RDNA3 (gfx11xx), and RDNA4 (gfx12xx < gfx1250).
     - ``'cdna'`` is the catch-all non-RDNA bucket: the whole CDNA line
       (MI100 gfx908, MI200/MI250 gfx90a, MI300 gfx942, gfx950) plus gfx1250,
-      gfx13+, and unknown targets until they're measured."""
-    n = _arch_id(arch)
-    if n is not None and 0x1000 <= n < 0x1250:
-        return 'rdna'
-    return 'cdna'
-
-
-def _timeout_budget(arch: str, kind: str) -> int:
-    """Count of tolerated per-stage timeouts for ``(arch, kind)``.
+      gfx13+, GCN5_1, and unknown targets until they're measured.
     """
-    # Values were empirically found. If in the future things change,
-    # please update this table. Each entry maps a sweep kind to its tolerated
-    # timeout count per arch family ('cdna' / 'rdna', see _arch_family).
-    budgets = {
+    rdna = (amd_arch_db.ISAFamily.RDNA1, amd_arch_db.ISAFamily.RDNA2,
+            amd_arch_db.ISAFamily.RDNA3, amd_arch_db.ISAFamily.RDNA4)
+    return 'rdna' if amd_arch_db.get_isa_family(arch) in rdna else 'cdna'
+
+
+def _timeout_rate(arch: str, kind: str) -> float:
+    """Tolerated timeout rate for ``(arch, kind)``: the fraction of applicable
+    configs (PASS + FAIL + TIMEOUT, i.e. every config the pipeline actually
+    committed to compiling, excluding the ones rejected upstream as
+    NOT_APPLICABLE) that may time out before the sweep is failed.
+    """
+    # Each rate is the smallest 0.5%-granularity value that still covers the
+    # worst timeout rate observed in weekly 1000-sample sweeps for that
+    # (op, family)
+    rates = {
         'conv': {
-            'cdna': 10,
-            'rdna': 12
+            'cdna': 0.015,
+            'rdna': 0.020
         },
         'gemm': {
-            'cdna': 4,
-            'rdna': 6
+            'cdna': 0.005,
+            'rdna': 0.010
         },
         'gemm_gemm': {
-            'cdna': 4,
-            'rdna': 5
+            'cdna': 0.005,
+            'rdna': 0.010
         },
-        'attention': {
-            'cdna': 30,
-            'rdna': 30
+        'attn': {
+            'cdna': 0.035,
+            'rdna': 0.045
         },
     }
-    return budgets[kind][_arch_family(arch)]
+    return rates[kind][_arch_family(arch)]
 
 
 def _perf_within_budget(perf: Sequence[int], dtype: str, arch: str) -> bool:
@@ -1076,29 +1052,39 @@ async def run_config(param_iter: Iterable[IterType],
             print(_repro_command(c))
 
     n_timeouts = len(timeouts)
+    n_failures = len(failures)
     timeouts_over_budget = False
+    budget = 0
     if n_timeouts != 0:
         # All configs in a single run_config call come from one to_config, so
         # they share a kind; timeouts[0] is a safe representative for the
-        # per-operation budget lookup.
-        budget = (options.max_timeouts if options.max_timeouts is not None else _timeout_budget(
-            options.arch, _config_kind(timeouts[0])))
-        timeouts_over_budget = budget >= 0 and n_timeouts > budget
-        budget_str = "unlimited" if budget < 0 else str(budget)
+        # per-operation rate lookup.
+        rate = (options.max_timeout_rate if options.max_timeout_rate is not None else
+                _timeout_rate(options.arch, timeouts[0].SWEEP_KIND))
+        if rate < 0:
+            # Negative rate disables the check entirely.
+            budget_str = "unlimited"
+        else:
+            # Denominator is the configs the pipeline actually committed to
+            # compiling (everything except NOT_APPLICABLE).
+            n_applicable = n_passes + n_failures + n_timeouts
+            budget = round(rate * n_applicable)
+            timeouts_over_budget = n_timeouts > budget
+            budget_str = f"{budget} = {rate:.1%} of {n_applicable} applicable"
         verdict = "OVER BUDGET" if timeouts_over_budget else "within budget"
         print(f"*** Summary of timeouts ({n_timeouts}, budget {budget_str}: {verdict}) ***")
         for c in timeouts:
             print(_repro_command(c))
 
     print(f"Passed: {n_passes}, Not applicable: {n_not_applicable}, "
-          f"Timed out: {n_timeouts}, Failed: {len(failures)}")
+          f"Timed out: {n_timeouts}, Failed: {n_failures}")
 
     if timeouts_over_budget:
         print(
             f"Sweep recorded {n_timeouts} timeouts, exceeding the budget of "
-            f"{budget} for arch {options.arch!r}. Raise --max-timeouts (or use "
-            "-1 to disable the check) if this is expected, or investigate the "
-            "configs above for a compile-time regression.",
+            f"{budget} for arch {options.arch!r}. Raise --max-timeout-rate (or "
+            "pass a negative value to disable the check) if this is expected, "
+            "or investigate the configs above for a compile-time regression.",
             file=sys.stderr,
         )
         return False
@@ -1106,7 +1092,7 @@ async def run_config(param_iter: Iterable[IterType],
     # Fail the run if we intended to validate kernels but recorded no PASS and
     # no FAIL. This happens when every sample
     # was NOT_APPLICABLE and/or timed out (within budget) for this arch.
-    if samples > 0 and n_passes == 0 and len(failures) == 0:
+    if samples > 0 and n_passes == 0 and n_failures == 0:
         reason = ("every sample was NOT_APPLICABLE or timed out"
                   if n_timeouts else "the sample space is entirely NOT_APPLICABLE")
         print(
@@ -1116,7 +1102,7 @@ async def run_config(param_iter: Iterable[IterType],
             file=sys.stderr,
         )
         return False
-    return len(failures) == 0
+    return n_failures == 0
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -1126,12 +1112,16 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     flag names and defaults across all sweep front-ends. Add a flag here only
     if every sweep script needs it; per-sweep options stay local."""
     # Failures (FAIL) are always printed in full; --debug additionally prints
-    # the (much noisier) details of NOT_APPLICABLE configs.
+    # the (much noisier) details of NOT_APPLICABLE configs and the per-stage
+    # detail of (tolerated) TIMEOUTs as they happen. Timeouts are always
+    # recorded by the end-of-run summary regardless of --debug.
     parser.add_argument('--debug',
                         '-d',
                         action='store_true',
-                        help='Also print details for NOT_APPLICABLE configs '
-                        '(failures are always printed)')
+                        help='Also print details for NOT_APPLICABLE configs and '
+                        'inline per-stage detail for TIMEOUTs as they happen '
+                        '(failures are always printed; the timeout summary is '
+                        'printed regardless)')
     parser.add_argument('--quiet',
                         '-q',
                         action='store_true',
@@ -1153,16 +1143,16 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
                         help='Per-stage timeout in seconds, applied independently '
                         'to rocmlir-gen, rocmlir-driver, and mlir-runner '
                         '(0 disables the timeout). Default %(default)s.')
-    parser.add_argument('--max-timeouts',
-                        type=int,
+    parser.add_argument('--max-timeout-rate',
+                        type=float,
                         default=None,
-                        help='Number of per-stage timeouts to tolerate before the '
-                        'sweep is failed. Timeouts up to this count are reported '
+                        help='Fraction of applicable configs (PASS + FAIL + '
+                        'TIMEOUT) that may time out before the sweep is failed. '
+                        'Timeouts up to this rate are reported '
                         'but not counted as failures (they are compile-time '
                         'blowups, not correctness bugs). Default: a per-arch, '
-                        'per-operation value (see _timeout_budget). Use -1 to '
-                        'tolerate any number of timeouts; 0 to fail on the first '
-                        'timeout.')
+                        'per-operation rate (see _timeout_rate). Pass a negative '
+                        'value to tolerate any number of timeouts.')
     parser.add_argument('--samples',
                         type=_positive_int,
                         default=1000,
@@ -1205,7 +1195,7 @@ def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
                       num_cu=num_cu,
                       num_chiplets=get_num_chiplets(chip, num_cu),
                       test_timeout_sec=args.test_timeout_sec,
-                      max_timeouts=args.max_timeouts)
+                      max_timeout_rate=args.max_timeout_rate)
     paths = perfRunner.create_paths(None, mlir_build_dir)
     return options, paths
 
