@@ -508,6 +508,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   }
 
   auto &funcPm2 = pm.nest<func::FuncOp>();
+  funcPm2.addPass(rock::createRockAnalyzeMemoryUsePass());
   funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
@@ -679,6 +680,13 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   // downstream consumer of the kernel argument list (e.g. RockEmitGpuBinaryPass
   // in the host lowering pipeline) sees the trimmed signature.
   pm.addPass(rock::createResolveKernelLaunchParamsPass());
+
+  // Annotate LLVM IR for efficient AMDGPU codegen (GEP inbounds, alias
+  // scopes, invariant loads, atomic metadata).
+  RockPrepareLLVMPassOptions prepareLLVMOpts;
+  prepareLLVMOpts.allowFlushDenorm = options.allowFlushDenorm;
+  pm.addNestedPass<LLVM::LLVMFuncOp>(
+      rock::createRockPrepareLLVMPass(prepareLLVMOpts));
 
   // Optionally generate the HSACO binary
   if (options.compile) {
