@@ -268,6 +268,9 @@ def _print_timeout(config, cmd: Sequence[str], reason: str, debug: bool) -> None
     Distinct from ``_print_failure`` so timeouts, which are tolerated up to
     ``Options.max_timeout_rate``, are never mistaken for FAILs in logs or by
     downstream log scrapers grepping for ``^FAIL``."""
+    if not debug:
+        return
+
     print("\n".join([
         f"TIMEOUT: {reason}",
         f"Config = {config!r}",
