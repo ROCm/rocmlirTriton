@@ -3,7 +3,7 @@
 // Verifies func.func with rock.kernel is converted to tt.func with pointer arguments
 // CHECK: module attributes {{{.*}}rock.grid_size.test_basic_conversion = 2 : i32
 // CHECK-LABEL: tt.func @test_basic_conversion
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) attributes {noinline = true, rock.arch = "{{.*}}"
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>) attributes {noinline = true, rock.arch = "{{.*}}"
 //      CHECK:   tt.splat %[[ARG0]] : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
 //      CHECK:   tt.load
 //      CHECK:   tt.return
@@ -23,7 +23,7 @@ func.func @test_basic_conversion(%arg0: tensor<4096xf16>) attributes {rock.arch 
 
 // Verifies arith.addi on pointer tensor is converted to tt.addptr
 // CHECK-LABEL: tt.func @test_addi_to_addptr
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>)
 //      CHECK:   %[[SPLAT:.*]] = tt.splat %[[ARG0]] : !tt.ptr<f16> -> tensor<64x!tt.ptr<f16>>
 //      CHECK:   %[[OFFSET:.*]] = tt.make_range
 //      CHECK:   %[[ADDPTR:.*]] = tt.addptr %[[SPLAT]], %[[OFFSET]] : tensor<64x!tt.ptr<f16>>, tensor<64xi32>
@@ -44,7 +44,7 @@ func.func @test_addi_to_addptr(%arg0: tensor<4096xf16>) attributes {rock.arch = 
 
 // Verifies multiple pointer arguments are all converted
 // CHECK-LABEL: tt.func @test_multiple_args
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG1:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG2:.*]]: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>, %[[ARG1:.*]]: !tt.ptr<f16>, %[[ARG2:.*]]: !tt.ptr<f32>)
 //      CHECK:   tt.splat %[[ARG0]]
 //      CHECK:   tt.splat %[[ARG1]]
 //      CHECK:   tt.splat %[[ARG2]]
@@ -86,7 +86,7 @@ func.func @test_return_conversion(%arg0: tensor<64xf16>) attributes {rock.arch =
 
 // Verifies chained arith.addi operations are all converted to tt.addptr
 // CHECK-LABEL: tt.func @test_chained_addptr
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>)
 //      CHECK:   %[[SPLAT:.*]] = tt.splat %[[ARG0]] : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
 //      CHECK:   tt.addptr %[[SPLAT]]
 //      CHECK:   tt.addptr
@@ -114,7 +114,7 @@ func.func @test_chained_addptr(%arg0: tensor<8192xf16>) attributes {rock.arch = 
 
 // Verifies tt.store with pointer tensor works correctly
 // CHECK-LABEL: tt.func @test_store_with_addptr
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f32>)
 //      CHECK:   %[[SPLAT:.*]] = tt.splat %[[ARG0]] : !tt.ptr<f32> -> tensor<64x64x!tt.ptr<f32>>
 //      CHECK:   %[[PTRS:.*]] = tt.addptr %[[SPLAT]]
 //      CHECK:   tt.store %[[PTRS]]
@@ -137,7 +137,7 @@ func.func @test_store_with_addptr(%arg0: tensor<4096xf32>) attributes {rock.arch
 
 // Verifies bf16 element type
 // CHECK-LABEL: tt.func @test_bf16_type
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<bf16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<bf16>)
 //      CHECK:   tt.splat %[[ARG0]] : !tt.ptr<bf16> -> tensor<64x!tt.ptr<bf16>>
 func.func @test_bf16_type(%arg0: tensor<64xbf16>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
   %cst_mask = arith.constant dense<true> : tensor<64xi1>
@@ -152,7 +152,7 @@ func.func @test_bf16_type(%arg0: tensor<64xbf16>) attributes {rock.arch = "##TOK
 
 // Verifies operations inside scf.for with iter_args are converted
 // CHECK-LABEL: tt.func @test_inside_scf_for
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>)
 //      CHECK:   %[[INIT:.*]] = arith.constant dense<0.000000e+00> : tensor<64xf32>
 //      CHECK:   scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[INIT]]) -> (tensor<64xf32>)
 //      CHECK:     tt.splat %[[ARG0]] : !tt.ptr<f16>
@@ -192,7 +192,7 @@ func.func @test_inside_scf_for(%arg0: tensor<4096xf16>) attributes {rock.arch = 
 // Verifies a real GEMM test case with scf.for loop, loads, dot, and store
 // CHECK: module attributes {{{.*}}rock.grid_size.rock_gemm = 1 : i32
 // CHECK-LABEL: tt.func @rock_gemm
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG1:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG2:.*]]: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>, %[[ARG1:.*]]: !tt.ptr<f16>, %[[ARG2:.*]]: !tt.ptr<f32>)
 //      CHECK:   %[[INIT:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
 //      CHECK:   scf.for {{.*}} iter_args({{.*}} = %[[INIT]]) -> (tensor<64x64xf32>)
 //      CHECK:     tt.splat %[[ARG1]] : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
@@ -285,7 +285,7 @@ func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: te
 // Verifies a single prefill arg is serialized as a module attribute
 // CHECK: module attributes {{{.*}}rock.prefill_args.test_single_prefill = [{index = 2 : i64, value = 0.000000e+00 : f32}]
 // CHECK-LABEL: tt.func @test_single_prefill
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG1:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[ARG2:.*]]: !tt.ptr<f32> {rock.prefill = 0.000000e+00 : f32, tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>, %[[ARG1:.*]]: !tt.ptr<f16>, %[[ARG2:.*]]: !tt.ptr<f32> {rock.prefill = 0.000000e+00 : f32})
 func.func @test_single_prefill(%arg0: tensor<4096xf16>, %arg1: tensor<4096xf16>, %arg2: tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32}) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 256 : i32} {
   %cst_mask = arith.constant dense<true> : tensor<64x64xi1>
   %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32
@@ -309,7 +309,7 @@ func.func @test_single_prefill(%arg0: tensor<4096xf16>, %arg1: tensor<4096xf16>,
 // Verifies multiple prefill args of the same type are both serialized
 // CHECK: module attributes {{{.*}}rock.prefill_args.test_multi_prefill_same_type = [{index = 2 : i64, value = 0.000000e+00 : f32}, {index = 3 : i64, value = 0.000000e+00 : f32}]
 // CHECK-LABEL: tt.func @test_multi_prefill_same_type
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f32> {{.*}}, %[[ARG1:.*]]: !tt.ptr<f32> {{.*}}, %[[ARG2:.*]]: !tt.ptr<f32> {{.*}}, %[[ARG3:.*]]: !tt.ptr<f32> {{.*}})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f32>, %[[ARG1:.*]]: !tt.ptr<f32>, %[[ARG2:.*]]: !tt.ptr<f32> {rock.prefill = 0.000000e+00 : f32}, %[[ARG3:.*]]: !tt.ptr<f32> {rock.prefill = 0.000000e+00 : f32})
 func.func @test_multi_prefill_same_type(
     %arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>,
     %arg2: tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32},
@@ -341,7 +341,7 @@ func.func @test_multi_prefill_same_type(
 // Verifies multiple prefill args with different element types (f16 and f32)
 // CHECK: module attributes {{{.*}}rock.prefill_args.test_multi_prefill_mixed_types = [{index = 2 : i64, value = 0.000000e+00 : f32}, {index = 3 : i64, value = 0.000000e+00 : f16}]
 // CHECK-LABEL: tt.func @test_multi_prefill_mixed_types
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {{.*}}, %[[ARG1:.*]]: !tt.ptr<f16> {{.*}}, %[[ARG2:.*]]: !tt.ptr<f32> {{.*}}, %[[ARG3:.*]]: !tt.ptr<f16> {{.*}})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>, %[[ARG1:.*]]: !tt.ptr<f16>, %[[ARG2:.*]]: !tt.ptr<f32> {rock.prefill = 0.000000e+00 : f32}, %[[ARG3:.*]]: !tt.ptr<f16> {rock.prefill = 0.000000e+00 : f16})
 func.func @test_multi_prefill_mixed_types(
     %arg0: tensor<4096xf16>, %arg1: tensor<4096xf16>,
     %arg2: tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32},
@@ -376,7 +376,7 @@ func.func @test_multi_prefill_mixed_types(
 // Verifies non-kernel func.func is preserved alongside a converted kernel
 // CHECK: func.func @helper_function
 // CHECK-LABEL: tt.func @test_non_kernel_preserved
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>)
 //  CHECK-NOT:   rock.extract_ptr
 func.func @helper_function(%x: f32, %y: f32) -> f32 {
   %r = arith.addf %x, %y : f32
@@ -395,7 +395,7 @@ func.func @test_non_kernel_preserved(%arg0: tensor<64xf16>) attributes {rock.arc
 
 // Verifies scalar (non-tensor) arguments pass through unchanged
 // CHECK-LABEL: tt.func @test_mixed_tensor_scalar
-// CHECK-SAME: (%[[PTR:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[SCALAR:.*]]: i32)
+// CHECK-SAME: (%[[PTR:.*]]: !tt.ptr<f16>, %[[SCALAR:.*]]: i32)
 //      CHECK:   tt.splat %[[PTR]] : !tt.ptr<f16> -> tensor<64x!tt.ptr<f16>>
 //      CHECK:   tt.splat %[[SCALAR]] : i32 -> tensor<64xi32>
 //      CHECK:   tt.addptr
@@ -419,7 +419,7 @@ func.func @test_mixed_tensor_scalar(%arg0: tensor<4096xf16>, %arg1: i32) attribu
 // and a prefill arg on another argument is preserved
 // CHECK: module attributes {{{.*}}rock.prefill_args.test_dead_input_with_prefill = [{index = 2 : i64, value = 0.000000e+00 : f32}]
 // CHECK-LABEL: tt.func @test_dead_input_with_prefill
-// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[DEAD:.*]]: !tt.ptr<f16>, %[[ARG2:.*]]: !tt.ptr<f32> {rock.prefill = 0.000000e+00 : f32, tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32})
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>, %[[DEAD:.*]]: !tt.ptr<f16>, %[[ARG2:.*]]: !tt.ptr<f32> {rock.prefill = 0.000000e+00 : f32})
 func.func @test_dead_input_with_prefill(
     %arg0: tensor<4096xf16>,
     %arg1: tensor<4096xf16>,
@@ -435,5 +435,71 @@ func.func @test_dead_input_with_prefill(
   %a = tt.load %p0, %cst_mask : tensor<64x64x!tt.ptr<f16>>
   %a_f32 = arith.extf %a : tensor<64x64xf16> to tensor<64x64xf32>
   tt.store %p2, %a_f32, %cst_mask : tensor<64x64x!tt.ptr<f32>>
+  return
+}
+
+// -----
+
+// Verifies that pre-existing arg attributes set by RockAnalyzeMemoryUse
+// (LLVM kernel-arg attrs and Triton metadata) survive the conversion from
+// `func.func` to `tt.func`. If `setAllArgAttrs` were ever dropped, this
+// would catch it.
+// CHECK-LABEL: tt.func @test_arg_attrs_preserved
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>
+// CHECK-SAME: llvm.align = 16 : i64
+// CHECK-SAME: llvm.dereferenceable = 8192 : i64
+// CHECK-SAME: llvm.noalias
+// CHECK-SAME: llvm.nocapture
+// CHECK-SAME: llvm.nofree
+// CHECK-SAME: llvm.nonnull
+// CHECK-SAME: llvm.noundef
+// CHECK-SAME: llvm.readonly
+// CHECK-SAME: tt.divisibility = 16 : i32
+// CHECK-SAME: tt.pointer_range = 32 : i32
+// CHECK-SAME: %[[ARG1:.*]]: !tt.ptr<f32>
+// CHECK-SAME: llvm.align = 16 : i64
+// CHECK-SAME: llvm.dereferenceable = 16384 : i64
+// CHECK-SAME: llvm.noalias
+// CHECK-SAME: llvm.nocapture
+// CHECK-SAME: llvm.nofree
+// CHECK-SAME: llvm.nonnull
+// CHECK-SAME: llvm.noundef
+// CHECK-SAME: llvm.writeonly
+// CHECK-SAME: tt.divisibility = 16 : i32
+// CHECK-SAME: tt.pointer_range = 32 : i32
+// CHECK-SAME: %[[ARG2:.*]]: i32 {tt.divisibility = 16 : i32})
+func.func @test_arg_attrs_preserved(
+    %arg0: tensor<4096xf16> {llvm.align = 16 : i64,
+                              llvm.dereferenceable = 8192 : i64,
+                              llvm.noalias,
+                              llvm.nocapture,
+                              llvm.nofree,
+                              llvm.nonnull,
+                              llvm.noundef,
+                              llvm.readonly,
+                              tt.divisibility = 16 : i32,
+                              tt.pointer_range = 32 : i32},
+    %arg1: tensor<4096xf32> {llvm.align = 16 : i64,
+                              llvm.dereferenceable = 16384 : i64,
+                              llvm.noalias,
+                              llvm.nocapture,
+                              llvm.nofree,
+                              llvm.nonnull,
+                              llvm.noundef,
+                              llvm.writeonly,
+                              tt.divisibility = 16 : i32,
+                              tt.pointer_range = 32 : i32},
+    %arg2: i32 {tt.divisibility = 16 : i32})
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 256 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64x64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32
+  %1 = rock.extract_ptr %arg1 : tensor<4096xf32> -> i32
+  %s0 = tt.splat %0 : i32 -> tensor<64x64xi32>
+  %s1 = tt.splat %1 : i32 -> tensor<64x64xi32>
+  %p0 = rock.cast_to_ptr %s0 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %p1 = rock.cast_to_ptr %s1 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>
+  %a = tt.load %p0, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  %a_f32 = arith.extf %a : tensor<64x64xf16> to tensor<64x64xf32>
+  tt.store %p1, %a_f32, %cst_mask : tensor<64x64x!tt.ptr<f32>>
   return
 }
