@@ -77,9 +77,8 @@ CASES = [
     ("gfx1201 overflow", "gfx1201", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 
     # gfx1250 (wave=32, vgprs=1536): same regime as gfx1100/gfx1201; pinned
-    # separately so a future _arch_id / _wave_size tweak that mis-classifies
-    # gfx1250 as wave=64 (its older mistake -- see AmdArchDbTests.WaveSize)
-    # fails this test.
+    # separately so a future getWaveSize tweak that mis-classifies gfx1250 as
+    # wave=64 (its older mistake -- see AmdArchDbTests.WaveSize) fails this test.
     ("gfx1250 fits", "gfx1250", (64, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx1250 overflow", "gfx1250", (128, 64, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 

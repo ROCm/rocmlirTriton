@@ -609,13 +609,6 @@ def _kpack_choices(arch: str) -> List[int]:
     return list(range(1, amd_arch_db.get_max_kpack(arch) + 1))
 
 
-def _wave_size(arch: str) -> int:
-    """Wave size used by the perf-config tuner for ``arch``.
-
-    Sourced from ``rock::getWaveSize`` via the AmdArchDB pybind module."""
-    return amd_arch_db.get_wave_size(arch)
-
-
 # Dtypes whose Triton fp_to_fp lowering expands into many LLVM ops on AMD
 # targets that lack a packed hardware conversion.
 _AMPLIFIED_DTYPES = frozenset({'fp8', 'fp8_fp8', 'bf8'})
@@ -683,7 +676,7 @@ def _compile_cost_score(perf: Sequence[int], dtype: str, arch: str) -> float:
     The PostRA scheduler bottlenecks on whichever basic block is larger,
     so the per-block max is a better proxy than their sum."""
     mpb, npb, kpb, kpack, _, num_waves, *_ = perf
-    threads = max(1, num_waves * _wave_size(arch))
+    threads = max(1, num_waves * amd_arch_db.get_wave_size(arch))
     num_elements_kloop_body = (mpb + npb) * kpb / (threads * max(1, kpack))
     num_elements_c_epilogue = (mpb * npb) / threads
     largest_num_elements = max(num_elements_kloop_body, num_elements_c_epilogue)

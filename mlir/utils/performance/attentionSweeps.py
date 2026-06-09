@@ -34,7 +34,6 @@ from parameterSweeps import (
     PerfConfig,
     _MAX_PERF_CONFIG_RETRIES,
     _split_k_choices,
-    _wave_size,
     add_common_args,
     build_options_and_paths,
     default_seed,
@@ -80,7 +79,7 @@ def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> b
     mpb, npb = perf_config[0], perf_config[1]
     num_waves = perf_config[5]
     waves_per_eu = perf_config[9]
-    threads = max(1, num_waves * _wave_size(arch))
+    threads = max(1, num_waves * amd_arch_db.get_wave_size(arch))
     effective_waves_per_eu = waves_per_eu if waves_per_eu > 0 else 1
     # Integer cross-multiplication is exact; avoids any FP rounding at the
     # boundary. Equivalent to ``(mpb * npb) / threads <= vgprs_per_eu / wpe``.
