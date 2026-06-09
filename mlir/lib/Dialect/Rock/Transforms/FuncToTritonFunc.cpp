@@ -157,15 +157,6 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
 
   auto newFuncType = FunctionType::get(ctx, newInputTypes, funcType.getResults());
 
-  // Collect attributes to copy
-  SmallVector<NamedAttribute> attrsToKeep;
-  for (NamedAttribute attr : funcOp->getAttrs()) {
-    StringRef name = attr.getName();
-    if (name == "function_type" || name == "sym_name" || name == "sym_visibility")
-      continue;
-    attrsToKeep.push_back(attr);
-  }
-
   // Step 3: For each extract_ptr result, replace its users with the block argument
   // We do this BEFORE changing types so the old ops become dead
   Block &entryBlock = funcOp.front();
@@ -225,37 +216,15 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
 
   // Step 4: Create tt.func and move body
   builder.setInsertionPoint(funcOp);
+  SmallVector<NamedAttribute> attrsToKeep(funcOp->getDiscardableAttrs());
   auto ttFuncOp = triton::FuncOp::create(
       builder, funcOp.getLoc(), funcOp.getName(), newFuncType, attrsToKeep);
   ttFuncOp->setAttr("noinline", builder.getBoolAttr(true));
 
-  // Set tt.divisibility = 16 on pointer arguments to enable better vectorization
-  // Set tt.pointer_range = 32 if tensor is statically known to be < 2GB
-  constexpr int64_t k2GBLimit = (1LL << 31); // 2GB
-  for (const auto &info : argsToConvert) {
-    // as we use gpu malloc, this is always the case
-    // we use 16 because 128-bit is the maximum vector load/store width on
-    // modern GPUs
-    ttFuncOp.setArgAttr(info.argIndex, "tt.divisibility",
-                        builder.getI32IntegerAttr(16));
-
-    // Check if tensor size is statically known and < 2GB
-    if (info.tensorType.hasStaticShape()) {
-      int64_t numElements = info.tensorType.getNumElements();
-      assert(info.elementType.isIntOrFloat());
-      unsigned elementBitWidth = info.elementType.getIntOrFloatBitWidth();
-      assert(elementBitWidth > 0);
-        int64_t tensorSizeBytes = llvm::divideCeil(numElements * elementBitWidth, 8);
-      if (tensorSizeBytes < k2GBLimit) {
-        // Tensor fits in 32-bit address range, enable buffer ops optimization
-        ttFuncOp.setArgAttr(info.argIndex, "tt.pointer_range",
-                            builder.getI32IntegerAttr(32));
-      } else {
-        LLVM_DEBUG(llvm::dbgs() << "Tensor (idx=" << info.argIndex
-                                << ") is too big to add tt.pointer_range=32\n");
-      }
-    }
-  }
+  // Propagate arg attributes (tt.divisibility, tt.pointer_range, LLVM attrs)
+  // set by RockAnalyzeMemoryUsePass from func.func to tt.func.
+  if (auto allArgAttrs = funcOp.getAllArgAttrs())
+    ttFuncOp.setAllArgAttrs(allArgAttrs);
 
   Region &oldRegion = funcOp.getBody();
   Region &newRegion = ttFuncOp.getBody();
