@@ -10,7 +10,7 @@ module {
   // CHECK: %[[OFFSET:.*]] = tt.unsplat %{{.*}} : tensor<1xi32>
   // effectiveSeqLen = maxRowOfBlock + prefixOffset
   // CHECK: %[[EFFECTIVE_SEQ_UNBOUND:.*]] = arith.addi %[[MAX_ROW]], %[[OFFSET]] : i32
-  // Bound by gemm0M - 1 (key sequence length - 1) to prevent out-of-bounds access
+  // Bound by gemm0N - 1 (key sequence length - 1) to prevent out-of-bounds access
   // CHECK: %[[EFFECTIVE_SEQ:.*]] = arith.minui %[[EFFECTIVE_SEQ_UNBOUND]], %c{{.*}} : i32
   // Ceiling division: (effectiveSeqLen + blockSize) / blockSize
   // CHECK: arith.addi %[[EFFECTIVE_SEQ]], %c32{{.*}} : i32
