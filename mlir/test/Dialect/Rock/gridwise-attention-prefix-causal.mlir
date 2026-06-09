@@ -2,8 +2,8 @@
 
 module {
   // CHECK-LABEL: func @mlir_attention
-  // Verify prefix causal loop bound calculation: effectiveSeqLen = min(maxRowOfBlock + prefixOffset, gemm0M - 1)
-  // The muli computes n_block * blockSize, then subi computes maxRowOfBlock = nextBlockStart - 1
+  // Verify prefix causal loop bound calculation: effectiveSeqLen = min(maxRowOfBlock + prefixOffset, gemm0N - 1)
+  // The muli computes m_block * blockSize, then subi computes maxRowOfBlock = nextBlockStart - 1
   // CHECK: arith.muli %{{.*}}, %c32{{.*}} : i32
   // CHECK: %[[MAX_ROW:.*]] = arith.subi %{{.*}}, %c1{{.*}} : i32
   // The prefixOffset is loaded from tensor as a scalar i32
