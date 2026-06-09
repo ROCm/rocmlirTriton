@@ -12,20 +12,19 @@ ConcurrentHashMap<String,String> DOCKER_ARGS_BY_NODE = new ConcurrentHashMap<>()
 @Field
 String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
 
-/* //
 void buildProject(String target, String cmakeOpts) {
     timeout(time: 60, activity: true, unit: 'MINUTES') {
-        cmakeBuild generator: 'Ninja',\
-            buildDir: 'build',\
-            buildType: 'RelWithDebInfo',\
-            installation: 'InSearchPath',\
-            steps: [[args: target]],\
-            cmakeArgs: """-DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-              -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
-              ${cmakeOpts}"""
+        sh """
+            export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+            export C_COMPILER=/opt/rocm/llvm/bin/clang
+            bash cmake.sh ${cmakeOpts.replaceAll('\\s+', ' ').trim()}
+        """
+        dir('build') {
+            int limit_lit_workers = setLitWorkerCount()
+            sh "LIT_OPTS='-j ${limit_lit_workers}' ninja ${target}"
+        }
     }
 }
-*/
 
 // Lightweight Git probe: verifies auth + network + ref exists
 void gitHealthCheck() {
@@ -506,11 +505,10 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
-/*
 void build_fixedE2ETests(String codepath) {
     // Limit the number of lit workers for gfx908, gfx90a to (8, 30) on CI as a workaround for issue #1845 and #1841
     int limit_lit_workers = setLitWorkerCount()
-    buildProject("check-mlir-build-only check-rocmlir-build-only${params.nightly ? ' hipblaslt-benchmark-driver' : ''}", """
+    buildProject("check-rocmlir-build-only", """
               -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'}
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
@@ -521,19 +519,22 @@ void build_fixedE2ETests(String codepath) {
 }
 
 void check_randomE2ETests(String codepath) {
-    // Limit the number of lit workers for gfx908, gfx90a to (8, 30) on CI as a workaround for issue #1845 and #1841
     int limit_lit_workers = setLitWorkerCount()
-    buildProject('check-rocmlir', """
-              -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0
-              -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1
-              -DROCK_E2E_TEST_ENABLED=1
-              -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1
-              -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=1
-             """)
+    timeout(time: 60, activity: true, unit: 'MINUTES') {
+        dir('build') {
+            sh """cmake .. \
+                -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0 \
+                -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1 \
+                -DROCK_E2E_TEST_ENABLED=1 \
+                -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1 \
+                -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}' \
+                -DCMAKE_EXPORT_COMPILE_COMMANDS=1"""
+            sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
+        }
+    }
 }
 
-// Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
+/* // Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
 // one of its operation kinds. parameterSweeps.py exposes ``conv`` and ``gemm``;
 // attentionSweeps.py exposes ``attention`` and ``gemm_gemm``. Both share the
 // same ``-j``/``--samples``/``--log-failures`` interface and ship in
@@ -1057,34 +1058,25 @@ pipeline {
                                                 ]) {
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            sh """
-                                                                export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-                                                                export C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                                bash cmake.sh \\
-                                                                    -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'} \\
-                                                                    -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'} \\
-                                                                    -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
-                                                            """
+                                                            build_fixedE2ETests("${CODEPATH}")
                                                         }
                                                     }
 
                                                     stage('Static checks (clang-format & clang-tidy)') {
                                                         timeout(time: 10, activity: true, unit: 'MINUTES') {
-                                                            preMergeCheck(CODEPATH)
+                                                            preMergeCheck("${CODEPATH}")
                                                         }
                                                     }
 
-                                                    stage('Run fixed E2E tests') {
+                                                    stage('Shared Library: fixed E2E') {
+                                                        int limit_lit_workers = setLitWorkerCount()
                                                         timeout(time: 30, activity: true, unit: 'MINUTES') {
-                                                            dir('build') {
-                                                                int limit_lit_workers = setLitWorkerCount()
-                                                                sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
-                                                            }
+                                                            sh "cd build; LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
                                                         }
                                                     }
 
                                                     if (params.nightly) {
-                                                        stage('Run random E2E tests') {
+                                                        stage('Shared Library: random E2E') {
                                                             check_randomE2ETests("${CODEPATH}")
                                                         }
                                                     }
@@ -1099,7 +1091,7 @@ pipeline {
                                                             build_fixedE2ETests("${CODEPATH}")
                                                             preMergeCheck("${CODEPATH}")
                                                             timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                                sh 'cd build; ninja check-mlir check-rocmlir'
+                                                                sh 'cd build; ninja check-rocmlir'
                                                             }
                                                         }
                                                     }
