@@ -50,6 +50,9 @@ config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=256 -in_h=14
 [[suite.test]]
 config = "-groupsize=1 -batchsize=64 -in_channels=64 -out_channels=64 -in_h=4 -in_w=4 -fil_h=2 -fil_w=2 -dilation_h=1 -dilation_w=1 -conv_stride_h=2 -conv_stride_w=2 -padding_h_l=2 -padding_h_r=1 -padding_w_l=2 -padding_w_r=0"
 
+[[suite.test]]
+config = "-groupsize=1 -batchsize=64 -in_channels=8 -out_channels=64 -in_h=4 -in_w=5 -fil_h=2 -fil_w=2 -dilation_h=1 -dilation_w=1 -conv_stride_h=3 -conv_stride_w=1 -padding_h_l=0 -padding_h_r=0 -padding_w_l=0 -padding_w_r=0"
+
 ## The following configs are reported from various tickets
 
 ############################################################################################
@@ -102,4 +105,3 @@ config = "-groupsize=1 -batchsize=64 -in_channels=32 -out_channels=32 -in_h=7 -i
 #############################################################################################
 [[suite.test]]
 config = "-groupsize=1 -batchsize=256 -in_channels=32 -out_channels=32 -in_h=28 -in_w=28 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=2 -conv_stride_w=2 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
-
