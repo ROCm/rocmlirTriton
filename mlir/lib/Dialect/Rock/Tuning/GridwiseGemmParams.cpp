@@ -287,6 +287,8 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
   return ordered;
 }
 
+// TODO(rocmlirTriton): Check and re-design the heuristics after performance
+// work.
 LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
                                                         Type dataTypeA,
                                                         Type dataTypeB,
