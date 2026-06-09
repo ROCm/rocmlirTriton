@@ -39,8 +39,8 @@ template <typename ParamsType>
 StringRef
 ParamLookupTable<ParamsType>::getFallbackDataType(StringRef dataType) {
   // Map datatypes without their own tuning entries to the closest datatype that
-  // has them in a single hop. fp8 and i8 share the 8-bit MFMA/tile space; f4 has
-  // no 4-bit neighbour so it also borrows i8.
+  // has them in a single hop. fp8 and i8 share the 8-bit MFMA/tile space; f4
+  // has no 4-bit neighbour so it also borrows i8.
   return llvm::StringSwitch<StringRef>(dataType)
       .Case("fp8", "i8")
       .Case("f4", "i8")
