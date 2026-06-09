@@ -162,7 +162,7 @@ static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
   if (extraReturns.empty())
     return success();
 
-  if (!kernel.hasAttr(rock::Rock_KernelAttr::getMnemonic()))
+  if (!kernel->hasAttr(rock::KernelAttr::getMnemonic()))
     return kernel.emitOpError("expandKernelReturns requires "
                               "the kernel to be marked with 'rock.kernel'");
 
