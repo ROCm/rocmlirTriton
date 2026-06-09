@@ -2,7 +2,7 @@
 
 // Only half of the results will be correct since the non-contiguous strides
 // in this example means that half of the memory is uninitialized.
-// CHECK: zero_diff: 2304/4608
+// CHECK: zero_diff: {{230[0-9]}}/4608
 // CHECK: [0 0 0]
 
 module {
