@@ -213,7 +213,7 @@ jobs:
                   "/repos/${REPO}/issues/${PR_NUMBER}/labels/modifies-ci-paths" \
                   2>&1); then
               echo "Removed stale modifies-ci-paths label from PR #${PR_NUMBER}."
-            elif printf '%s' "$output" | grep -qE 'HTTP 404|Not Found'; then
+            elif grep -qE 'HTTP 404|Not Found' <<<"$output"; then
               echo "PR #${PR_NUMBER} does not touch the CI security perimeter and the modifies-ci-paths label is already absent; nothing to do."
             else
               echo "::error::Failed to remove stale modifies-ci-paths label from PR #${PR_NUMBER}"
