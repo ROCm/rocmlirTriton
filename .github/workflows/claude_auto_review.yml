@@ -318,6 +318,13 @@ jobs:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
 
+      # Absorb the brief post-mint propagation delay before the first App-token
+      # API call (private-repo installs can transiently 404). See doc §11, §15.
+      - name: Wait for App token to be live
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash .github/scripts/wait_for_app_token.sh
+
       # Pre-fetch PR context in a plain shell step (no model). Runs before Claude
       # and consumes no user-controlled data, so it can't be prompt-injected; the
       # App token here is not propagated to the Claude step. set -euo pipefail is
@@ -1023,6 +1030,13 @@ jobs:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
 
+      # Absorb the brief post-mint propagation delay before the first App-token
+      # API call (private-repo installs can transiently 404). See doc §11, §15.
+      - name: Wait for App token to be live
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash .github/scripts/wait_for_app_token.sh
+
       - name: Post inline comments, thread updates, and submit review
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -1057,6 +1071,13 @@ jobs:
         with:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
+
+      # Absorb the brief post-mint propagation delay before the first App-token
+      # API call (private-repo installs can transiently 404). See doc §11, §15.
+      - name: Wait for App token to be live
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash .github/scripts/wait_for_app_token.sh
 
       - name: Remove claude-review label
         id: remove-label
