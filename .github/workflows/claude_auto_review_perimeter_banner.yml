@@ -72,7 +72,8 @@ jobs:
           permission-contents: read
           permission-issues: write
 
-      # Inline probe after mint (doc §15).
+      # Inline probe: absorb the brief post-mint token-propagation 404 race
+      # before the first App-token call; fail closed. See doc §9, §15.
       - name: Wait for App token to be live
         if: steps.app-config.outputs.configured == 'true'
         env:
