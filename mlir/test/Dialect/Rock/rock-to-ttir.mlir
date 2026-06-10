@@ -535,3 +535,44 @@ func.func @test_extf_f16_to_f32_unchanged(%arg0: tensor<64xf16>) -> tensor<64xf3
   return %0 : tensor<64xf32>
 }
 
+// -----
+
+// Test: discardable rock metadata (rock.o_transposed) set on rock.blockwise_gemm
+// is carried onto the lowered tt.dot so it survives into the Triton pipeline.
+
+// CHECK-LABEL: @test_gemm_carries_otransposed
+//      CHECK:   tt.dot
+// CHECK-SAME:   rock.o_transposed = #rock.o_transposed<true>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_carries_otransposed(
+    %a: tensor<64x64xf16>, %b: tensor<64x64xf16>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    {rock.o_transposed = #rock.o_transposed<true>}
+    : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: discardable rock metadata is also carried onto the lowered
+// tt.dot_scaled (scaled GEMM path).
+
+// CHECK-LABEL: @test_scaled_gemm_carries_otransposed
+//      CHECK:   tt.dot_scaled
+// CHECK-SAME:   rock.o_transposed = #rock.o_transposed<false>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_scaled_gemm_carries_otransposed(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %c: tensor<64x64xf32>,
+    %scaleA: tensor<64x2xi8>, %scaleB: tensor<64x2xi8>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 32 : i64, rock.o_transposed = #rock.o_transposed<false>}
+    : tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+

@@ -514,6 +514,38 @@ def Rock_NotApplicable : Rock_Attr<"NotApplicable"> {
   }];
 }
 
+def Rock_OTransposed : Rock_Attr<"OTransposed"> {
+  let mnemonic = "o_transposed";
+
+  let description = [{
+    Discardable metadata describing the in-memory layout of a GEMM output
+    tile.  It is attached (as a discardable attribute named `rock.o_transposed`)
+    to `rock.blockwise_gemm` by the `rock-add-triton-metadata` pass and is
+    carried onto the lowered `tt.dot` / `tt.dot_scaled` (and survives the
+    Triton `tritonamdgpu-accelerate-matmul` rewrite).
+
+    - `value = true`  -> the output is "transposed" (column-major: the M
+                         dimension is the fast/contiguous dimension of the
+                         output in global memory).
+    - `value = false` -> the output is row-major (the N dimension is fast).
+
+    `rock-set-matmul-output-transpose` later consumes this to pick the
+    accelerator result layout (e.g. the WMMA `isTransposed` flag) so the
+    epilogue store coalesces/vectorizes.
+  }];
+
+  let parameters = (ins "bool":$value);
+  let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    /// Name of the discardable attribute used to carry this metadata on ops
+    /// (e.g. `rock.blockwise_gemm`, `tt.dot`, `tt.dot_scaled`).
+    static constexpr ::llvm::StringLiteral getNameStr() {
+      return ::llvm::StringLiteral("rock.o_transposed");
+    }
+  }];
+}
+
 def Rock_PrefillAttr : Rock_Attr<"Prefill"> {
   let mnemonic = "rock.prefill";
 
