@@ -472,9 +472,7 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
            info.quantBlockSize, info.aScaleType, info.bScaleType)) {
-    if (succeeded(tuningInfo.couldBePerformant(info, param)))
-      newSpace->tuningRange.push_back(
-          cast<RockTuningParamAttrInterface>(param));
+    newSpace->tuningRange.push_back(cast<RockTuningParamAttrInterface>(param));
   }
 }
 
@@ -1148,7 +1146,7 @@ LogicalResult tuningTableLookup(TuningTable *perfTable, ModuleOp &mod,
   return failure();
 }
 
-static int64_t retrieveSplitKValue(StringAttr perfConfig) {
+int64_t retrieveSplitKValue(StringAttr perfConfig) {
   auto gemmGemmPerfConfig = GemmGemmParamsAttr::get(perfConfig);
   if (gemmGemmPerfConfig)
     return gemmGemmPerfConfig.getSplitKFactor();

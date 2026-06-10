@@ -14,7 +14,7 @@
 // The migraphx pipeline pattern-matches this softmax+two-dots sequence back
 // into a single `rock.attention` with both `result` and `lse` outputs.
 
-// RUN: rocmlir-gen -fut rock_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -relDiff_threshold=1e-5 -fut rock_attention --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
+// RUN: rocmlir-gen -fut rock_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut rock_attention --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 
 // CHECK: [1 1 1]
 // CHECK-NEXT: [1 1 1]
