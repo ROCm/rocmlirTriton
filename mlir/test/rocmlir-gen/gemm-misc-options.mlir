@@ -31,18 +31,26 @@
 // PRINT_INPUTS-COUNT-2: call @printMemrefF32
 // PRINT_INPUTS-NOT: call @printMemrefF32
 
-// `--print-verify-results=<level>` is forwarded to `mcpuVerifyFloat` as the
-// trailing `i8` constant in the call argument list (off=0, summary=1,
-// failure=2, always=3). Summary is the default.
+// `--print-verify-results=<level>` controls the verbosity of the verification
+// output (off=0, summary=1, failure=2, always=3). Summary is the default.
+// The level is forwarded as the trailing `i8` constant in the call.
+//
+// Default comparator (allclose): emits `mcpuVerifyFloatAllclose` with
+// signature (memref<?xf32>, memref<?xf32>, f32, f32, i8, i1).
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -pv | FileCheck %s --check-prefix=VERIFY_SUMMARY
 // VERIFY_SUMMARY: %[[lvl:.*]] = arith.constant 1 : i8
-// VERIFY_SUMMARY: call @mcpuVerifyFloat({{.*}}, %[[lvl]], %{{.*}}) : (memref<?xf32>, memref<?xf32>, f32, f32, f32, i8, i1) -> ()
+// VERIFY_SUMMARY: call @mcpuVerifyFloatAllclose({{.*}}, %[[lvl]], %{{.*}}) : (memref<?xf32>, memref<?xf32>, f32, f32, i8, i1) -> ()
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -pv --print-verify-results=always | FileCheck %s --check-prefix=VERIFY_ALWAYS
 // VERIFY_ALWAYS: %[[lvl:.*]] = arith.constant 3 : i8
-// VERIFY_ALWAYS: call @mcpuVerifyFloat({{.*}}, %[[lvl]], %{{.*}}) : (memref<?xf32>, memref<?xf32>, f32, f32, f32, i8, i1) -> ()
+// VERIFY_ALWAYS: call @mcpuVerifyFloatAllclose({{.*}}, %[[lvl]], %{{.*}}) : (memref<?xf32>, memref<?xf32>, f32, f32, i8, i1) -> ()
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -pv --print-verify-results=off | FileCheck %s --check-prefix=VERIFY_OFF
 // VERIFY_OFF: %[[lvl:.*]] = arith.constant 0 : i8
-// VERIFY_OFF: call @mcpuVerifyFloat({{.*}}, %[[lvl]], %{{.*}}) : (memref<?xf32>, memref<?xf32>, f32, f32, f32, i8, i1) -> ()
+// VERIFY_OFF: call @mcpuVerifyFloatAllclose({{.*}}, %[[lvl]], %{{.*}}) : (memref<?xf32>, memref<?xf32>, f32, f32, i8, i1) -> ()
+//
+// Legacy comparator: emits `mcpuVerifyFloat` with
+// signature (memref<?xf32>, memref<?xf32>, f32, f32, f32, i8, i1).
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -g 1 -m 32 -n 32 -k 32 -pv --comparator=legacy | FileCheck %s --check-prefix=VERIFY_LEGACY
+// VERIFY_LEGACY: call @mcpuVerifyFloat({{.*}}) : (memref<?xf32>, memref<?xf32>, f32, f32, f32, i8, i1) -> ()
 // Same flag for integer kernels through `mcpuVerifyInt32Int32`.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t i8 -out_datatype i32 -g 1 -m 32 -n 32 -k 32 -pv --print-verify-results=failure | FileCheck %s --check-prefix=VERIFY_INT
 // VERIFY_INT: %[[lvl:.*]] = arith.constant 2 : i8
