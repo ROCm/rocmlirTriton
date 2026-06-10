@@ -270,6 +270,12 @@ struct RockBlockwiseGemmOpRewritePattern
                                 /*inputPrecision=*/triton::InputPrecision::IEEE,
                                 /*maxNumImpreciseAcc=*/0);
     }
+
+    // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it
+    // survives into the Triton pipeline.
+    if (Operation *dotOp = result.getDefiningOp())
+      dotOp->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+
     rewriter.replaceOp(op, result);
     return success();
   }

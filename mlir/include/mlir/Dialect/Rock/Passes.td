@@ -640,6 +640,62 @@ def RockLowerStoresPass : Pass<"rock-lower-stores", "::mlir::func::FuncOp"> {
                            "arith::ArithDialect", "math::MathDialect"];
 }
 
+def RockAddTritonMetadataPass
+    : Pass<"rock-add-triton-metadata", "::mlir::func::FuncOp"> {
+  let summary = "Attach Triton-bound metadata to rock ops before RockToTTIR";
+  let description = [{
+    Central place to attach metadata that needs to be computed at the rock
+    level but consumed later in the Triton pipeline. The pass runs after
+    `rock-lower-stores`, while rock ops still carry the structural information
+    (transformed views, store destinations, etc.) that gets lost once the IR is
+    lowered to TTIR. Each piece of metadata is recorded as a discardable
+    attribute so that `RockToTTIR` can forward it onto the corresponding Triton
+    op and downstream passes can query it.
+
+    Metadata currently produced:
+
+    - `rock.o_transposed` (output orientation): for every
+      `rock.blockwise_gemm` consumed by a store, the pass inspects the store
+      destination's vectorization (via `getMaxVectorization` on the fast M and
+      N output dimensions) to determine whether the output is row-major (N
+      fast) or "transposed"/column-major (M fast), and records the result on
+      the `rock.blockwise_gemm`. `RockToTTIR` copies it onto the resulting
+      `tt.dot` / `tt.dot_scaled`, and `rock-set-matmul-output-transpose` later
+      uses it to select the accelerator result layout so the epilogue store
+      coalesces. GEMMs with no reachable store (e.g. a chained-dot head) are
+      left untouched so the downstream default layout is kept.
+
+    Additional kinds of Triton-bound metadata can be added here as the pipeline
+    grows.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
+def RockSetMatmulOutputTransposePass
+    : Pass<"rock-set-matmul-output-transpose", "::mlir::ModuleOp"> {
+  let summary = "Select the matmul accelerator result layout from "
+                "rock.o_transposed";
+  let description = [{
+    Runs immediately after Triton's `tritonamdgpu-accelerate-matmul`, which
+    rewrites `tt.dot` into an accelerator-encoded dot (e.g. WMMA) using a fixed
+    default result transposition.
+
+    For each accelerator dot that carries the `rock.o_transposed` metadata (set
+    by `rock-add-triton-metadata` and preserved across the accelerate-matmul
+    rewrite), this pass overrides the result layout's transposition so the
+    consuming epilogue store can be vectorized/coalesced.  The orientation is
+    chosen from the `rock.o_transposed` attribute computed at the rock level,
+    instead of walking forward to the store.
+
+    Currently only the WMMA (`ttg.amd_wmma`) result layout is adjusted; other
+    accelerator layouts keep their default. The version-dependent mapping is:
+      row-major output (oTransposed = false): isTransposed = (version > 1)
+      col-major output (oTransposed = true):  isTransposed = (version == 1)
+  }];
+  let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",
+                           "triton::gpu::TritonGPUDialect"];
+}
+
 def RockAnalyzeMemoryUsePass
     : Pass<"rock-analyze-memory-use", "::mlir::func::FuncOp"> {
   let summary = "Analyze kernel argument memory usage and set attributes";
