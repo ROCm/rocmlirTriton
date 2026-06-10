@@ -27,8 +27,12 @@ while true; do
   if output=$(gh api "repos/${GITHUB_REPOSITORY}" --silent 2>&1); then
     echo "App token live for ${GITHUB_REPOSITORY} (attempt ${attempt})."
     exit 0
+  else
+    # Capture gh's exit status here: `$?` after `fi` would be the if-statement's
+    # own status (0 when the condition is false and there is no else), which
+    # would make the failure paths below exit 0 and fail OPEN.
+    status=$?
   fi
-  status=$?
   printf '%s\n' "$output" >&2
 
   if [ "$attempt" -ge "$max_attempts" ]; then
