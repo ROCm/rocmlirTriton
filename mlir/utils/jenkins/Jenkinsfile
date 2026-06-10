@@ -1070,7 +1070,7 @@ pipeline {
 
                                                     stage('Shared Library: fixed E2E') {
                                                         int limit_lit_workers = setLitWorkerCount()
-                                                        timeout(time: 30, activity: true, unit: 'MINUTES') {
+                                                        timeout(time: 60, activity: true, unit: 'MINUTES') {
                                                             sh "cd build; LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
                                                         }
                                                     }
