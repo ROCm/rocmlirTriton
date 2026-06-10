@@ -286,40 +286,52 @@ This mirrors rocBLAS's `tol = K * sum_error_tolerance<T>` in
 `clients/include/blas3/testing_gemm.hpp`, with the PyTorch baseline added
 back so element-wise ops (K_eff=1) match PyTorch's defaults.
 
-`sumErrorTolerance(Type)` in `rocmlir-gen.cpp` keeps rocBLAS's constants
-for fp16/bf16 and uses `eps(T)` for the fp8/fp4 dtypes rocBLAS does not
-test. The fp32/fp64 values are *tighter* than rocBLAS uses and follow
-hipBLASLt's flat-`atol` policy instead; see the next subsection for why.
+`sumErrorTolerance(Type, isRandom)` in `rocmlir-gen.cpp` keeps rocBLAS's
+constants for fp16/bf16 and uses `eps(T)` for the fp8/fp4 dtypes rocBLAS
+does not test. fp32 is tighter than rocBLAS's `1/10000`: `1e-5` for
+random data and `1e-6` for fixed seeds (see note below).
+fp64 uses `~4.5 * eps(fp64)`.
 
 | dtype | sum_error_tolerance | source |
 |---|---|---|
 | fp16 | `1/900` | rocBLAS `near.hpp` |
 | bf16 | `1/100` | rocBLAS `near.hpp` |
-| fp32 | `1e-6` | ~`10 * eps(fp32)`, hipBLASLt-aligned (see below) |
-| fp64 | `1e-15` | ~`10 * eps(fp64)`, hipBLASLt-aligned (see below) |
+| fp32 (random) | `1e-5` | ~`84 * eps(fp32)`; see note below |
+| fp32 (fixed) | `1e-6` | ~`8.4 * eps(fp32)`; see note below |
+| fp64 | `1e-15` | ~`4.5 * eps(fp64)` |
 | fp8 e4m3* | `0.125` | `eps(e4m3) = 2^-3` |
 | fp8 e5m2* | `0.25`  | `eps(e5m2) = 2^-2` |
 | fp4 e2m1 | `0.5`   | `eps(e2m1) = 2^-1` |
 
-Worked example -- fp32 GEMM with K=4096:
+Worked example -- fp32 GEMM with K=4096 (random data):
 
 ```
-atol_eff = 1e-5 + 4096 * 1e-6 = 4.106e-3
+atol_eff = 1e-5 + 4096 * 1e-5 = 1e-5 + 0.04096 = 0.04097
 ```
 
-For context, rocBLAS's tolerance for the same K is
-`K * 1e-4 = 0.4096` (~100x looser); PyTorch's flat `1e-5` would fail.
+For fixed seeds the tolerance is 10× tighter:
 
-#### Why fp32/fp64 are tighter than rocBLAS
+```
+atol_eff = 1e-5 + 4096 * 1e-6 = 1e-5 + 0.004096 = 0.004106
+```
 
-rocBLAS uses higher tolerances because they expect to be compared against
-external libraries, which might have computed the kernel in a different order.
-We compare against our own CPU reference, so we can safely use tighter values.
+The `1e-5` baseline (PyTorch's fp32 `atol` default from section 1.3) is
+negligible for large K but ensures element-wise ops (K_eff=1) still
+get a meaningful absolute tolerance.
 
-Our `1e-6` for fp32 is approximately `10 * eps(fp32)` and matches
-hipBLASLt's flat budget; the K-scaling on top of that lets the bound
-grow gracefully on long reductions without admitting orders of magnitude
-of unjustified slack. fp64 follows the same `~10 * eps(T)` rule.
+#### Note on fp32 tolerance choice
+
+rocBLAS uses `1e-4` (`1/10000`) for fp32. We tighten this to `1e-5`
+for random data and `1e-6` for fixed seeds because:
+
+- Fixed seeds produce well-conditioned inputs where accumulation error
+  is lower; `1e-6` (~`8.4 * eps(fp32)`) passes all current configs.
+- Random data empirically passes at `1e-5` (~`84 * eps(fp32)`), which
+  is still 10× tighter than rocBLAS.
+- One outlier config (`conv_regression_bwd/config_16_7`, K_eff=200704)
+  needs a manual `--atol 2.5` override at `1e-5`; at rocBLAS's `1e-4`
+  it would pass without override but at the cost of 10× looser
+  tolerance for all other fp32 tests.
 
 ### 2.4 `K_eff` per operation
 
@@ -330,7 +342,8 @@ accumulation error growth:
 |---|---|
 | GEMM | `K` |
 | Attention | `head_dim_qk + seq_len_k` |
-| Conv (any direction) | `Cin * product(filter_spatial_dims)`, i.e. the im2col K |
+| Conv forward / backward data | `Cin * product(filter_spatial_dims)`, i.e. the im2col K |
+| Conv backward weight | `N * product(output_spatial_dims)` |
 | GEMM -> elementwise -> GEMM | `K_gemm1 + K_gemm2` |
 | Conv -> elementwise -> GEMM | `K_conv + K_gemm2` |
 | Element-wise / other | `1` |
@@ -338,10 +351,16 @@ accumulation error growth:
 Same rule for every operation: each reduction phase along the data
 path adds its own length.
 
-Conv excludes the K (output channel) and G (group) dimensions because they
-do not participate in the per-output-element reduction.
+Conv forward/backward data excludes the K (output channel) and G (group)
+dimensions because they do not participate in the per-output-element
+reduction. Backward weight reduces over a fundamentally different set of
+dimensions (batch and output spatial), so it has its own K_eff formula.
 
 ### 2.5 Manual overrides
+
+Since allclose is now the default comparator, the K-scaled tolerances
+apply out of the box. The legacy comparator remains available via
+`--comparator=legacy` for backwards compatibility.
 
 `-atol=<value>` and `-rtol=<value>` override the computed defaults
 component-wise. Either flag implies `--comparator=allclose`. Use these for
@@ -418,6 +437,68 @@ noted.
   as `(NaN-mismatch)`, the calibration hints are suppressed (no finite
   `(atol, rtol)` can mask a NaN), and a dedicated `ratio == nan` row
   is appended to the histogram.
+
+### 2.9 Atomic-add rtol boost
+
+When a kernel accumulates output via `atomic_add` at the narrow dtype
+precision (rather than the f32 accumulator assumed by the K_eff atol
+model in Section 2.3), each atomic addition introduces approximately
+`eps(dtype)` relative rounding error. The allclose verifier detects
+two sources of atomic-add accumulation and boosts `rtol` accordingly:
+
+1. **Fused reductions** (`rock.reduce(sum)`): the kernel pipeline
+   converts these to `rock.store by atomic_add`. The extent is the
+   reduce axis size.
+2. **SplitK accumulation**: when the `perf_config` encodes
+   `splitKFactor > 1`, partial results from multiple workgroups are
+   merged via `atomic_add`. The extent is the splitK factor.
+
+The boost formula uses the larger of the two extents:
+
+```
+atomicExtent = max(reduce_axis_extent, splitKFactor)
+rtol_boosted = base_rtol + sqrt(atomicExtent) * eps(dtype)
+```
+
+where:
+- `eps(dtype)` is the machine epsilon for the output element type
+  (e.g. `2^-10` for fp16, `2^-7` for bf16, `2^-23` for fp32)
+- `sqrt()` is a conservative estimate of the effective number of
+  rounding steps, following the statistical error model used by
+  CK and hipBLASLt (random walk: expected error grows as `sqrt(N)`)
+
+The boost is significant for low-precision types (fp16 boost ~ `1.1e-2`
+for reduceExtent=128) and negligible for fp32 (boost ~ `1.35e-6`).
+
+**Only `reduce(sum)` triggers the boost.** `reduce(max)` maps to
+`atomic_max` which is idempotent (picks the larger of two values)
+and introduces no rounding error.
+
+The fused-reduction scan targets `rock::ReduceOp` (still present in
+the host-side clone at the `-ph` stage) rather than `rock::StoreOp`
+(already lowered away in the GPU function). The splitK factor is
+extracted from `GemmGemmParamsAttr` or `GemmParamsAttr` via the
+`perf_config` string. Passing `-rtol=<value>` explicitly suppresses
+both boost sources.
+
+### 2.10 Zero-diff count output
+
+The allclose verifier prints a `zero_diff: X/Y` line after the diagnostic
+histogram, where `X` is the number of elements with absDiff exactly
+zero (histogram bucket 0) and `Y` is the total element count.
+
+This enables tests with non-contiguous output strides -- where only a
+fraction of the output buffer holds valid kernel-written data and the
+rest is uninitialized -- to verify partial correctness via FileCheck:
+
+```
+// CHECK: zero_diff: 2304/4608
+// CHECK: [1 1 1]
+```
+
+This replaces the legacy comparator's `relDiff = 0 : X/Y (percent%)`
+output, which served the same purpose but was tied to the legacy
+verification pipeline.
 
 ## 3. References
 
