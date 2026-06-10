@@ -315,7 +315,7 @@ func.func @bwd_data_conv1d(%arg0: !migraphx.shaped<1x64x224xf32, 0x1x0>, %arg1: 
 // CHECK-LABEL: @dot_f16
 func.func @dot_f16(%arg0: !migraphx.shaped<8x64x64x320xf16, 1310720x20480x320x1>, %arg1: !migraphx.shaped<8x64x320x320xf16, 6553600x102400x320x1>) -> !migraphx.shaped<8x64x64x320xf16, 1310720x20480x320x1>  attributes {rock.kernel = "mixr"} {
  // CHECK: tosa.matmul
- // CHECK-SAME: {acc_type = f32, perf_config = "v2:16,16,8,16,16,4,1,1,1"} : (tensor<512x64x320xf16>, tensor<512x320x320xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<512x64x320xf16>
-  %4 = migraphx.dot %arg0, %arg1 {perf_config = "v2:16,16,8,16,16,4,1,1,1"} : <8x64x64x320xf16, 1310720x20480x320x1>, <8x64x320x320xf16, 6553600x102400x320x1> -> <8x64x64x320xf16, 1310720x20480x320x1>
+ // CHECK-SAME: {acc_type = f32, perf_config = "sentinel-propagation-only"} : (tensor<512x64x320xf16>, tensor<512x320x320xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<512x64x320xf16>
+  %4 = migraphx.dot %arg0, %arg1 {perf_config = "sentinel-propagation-only"} : <8x64x64x320xf16, 1310720x20480x320x1>, <8x64x320x320xf16, 6553600x102400x320x1> -> <8x64x64x320xf16, 1310720x20480x320x1>
   return %4 : !migraphx.shaped<8x64x64x320xf16, 1310720x20480x320x1>
 }

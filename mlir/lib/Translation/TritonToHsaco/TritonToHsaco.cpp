@@ -23,7 +23,9 @@
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
@@ -31,6 +33,7 @@
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "mlir/Pass/Pass.h"
@@ -223,7 +226,7 @@ void setABIVersion(llvm::Module &module, int version) {
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
                          int numCTAs, bool allowFlushDenorm, bool enableAsan,
-                         int64_t scheduleHint) {
+                         int64_t scheduleHint, StringRef llvmFnAttrs) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
@@ -280,12 +283,37 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   // override causes LLVM's per-function subtarget lookup to key off a bare
   // `"target-features"=""` attribute and silently *ignore* the TM-level
   // `-mattr` we later set on `tmAsm` in `make_amdgcn` (which is where
-  // `-real-true16` is added for gfx11 to work around the `copyPhysReg`
-  // assertion). Upstream Triton only touches `target-features` in the asan
-  // path (see `add_fn_target_feature("+xnack")` in compiler.py); mirror that.
+  // `-real-true16` is added for gfx11 fp8 kernels). Upstream Triton only
+  // touches `target-features` in the asan path (see
+  // `add_fn_target_feature("+xnack")` in compiler.py).
   if (enableAsan) {
     kernelFn->addFnAttr("target-features", features);
     kernelFn->addFnAttr(llvm::Attribute::SanitizeAddress);
+  }
+
+  // Debug-only developer overrides, applied last so they win over the
+  // attributes stamped above. Mirrors the experimental `llvm_fn_attrs` loop in
+  // compiler.py make_llir():
+  //   for name, value in options.llvm_fn_attrs:
+  //       kernel_fn.remove_fn_attr(name)
+  //       kernel_fn.add_fn_attr(name, value)
+  // A bare `name` produces a valueless attribute; `name=value` sets a value
+  // (an empty value, e.g. `name=`, is also treated as valueless).
+  if (!llvmFnAttrs.empty()) {
+    llvm::SmallVector<StringRef> attrs;
+    llvmFnAttrs.split(attrs, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+    for (StringRef attr : attrs) {
+      std::pair<StringRef, StringRef> kv = attr.split('=');
+      StringRef name = kv.first.trim();
+      if (name.empty())
+        continue;
+      StringRef value = kv.second.trim();
+      kernelFn->removeFnAttr(name);
+      if (value.empty())
+        kernelFn->addFnAttr(name);
+      else
+        kernelFn->addFnAttr(name, value);
+    }
   }
 
   // set_all_fn_arg_inreg in compiler.py
@@ -640,6 +668,32 @@ std::optional<SmallVector<char, 0>> makeHSACO(StringRef amdgcnAsm,
   return linkHSACO(*objectCode);
 }
 
+// Detect whether any kernel argument points to an fp8 (8-bit float) element
+// type. Mirrors the `'f8E' in str(mod)` guard in Triton's compiler.py
+// make_llir() (triton-lang/triton PR #10400). We deliberately do not check for
+// fp4 (`f4E2M1FN`) as there is no fp4 type left to detect at this stage.
+// Regardless of how fp4 is used (scaled `quant_dot`, a plain `dot`, or even
+// elementwise ops) Rock's narrow-type legalization rewrites
+// `f4E2M1FN -> i4 -> packed i8` during the kernel pipeline well before the
+// Triton lowering.
+static bool usesFp8KernelArg(ModuleOp module) {
+  bool found = false;
+  module.walk([&](LLVM::LLVMFuncOp funcOp) {
+    for (unsigned i = 0, e = funcOp.getNumArguments(); i < e; ++i) {
+      auto pointeeTy = funcOp.getArgAttrOfType<TypeAttr>(i, "tt.pointee_type");
+      if (!pointeeTy)
+        continue;
+      Type elemTy = pointeeTy.getValue();
+      if (isa<FloatType>(elemTy) && elemTy.getIntOrFloatBitWidth() == 8) {
+        found = true;
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -677,6 +731,10 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   StringRef arch = options.arch;
   std::string features = options.features;
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
+
+  auto [isaFamily, _] = rock::getArch(arch);
+  bool disableTrue16 =
+      isaFamily == triton::amdgpu::ISAFamily::RDNA3 && usesFp8KernelArg(module);
 
   auto triple = llvm::Triple(options.triple);
   // Set target triple and data layout (attach_target_triple in compiler.py)
@@ -723,7 +781,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Set kernel attributes (including schedule_hint for memory-bound-attention)
   setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
                       numCTAs, options.allowFlushDenorm, enableAsan,
-                      options.scheduleHint);
+                      options.scheduleHint, options.llvmFnAttrs);
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
   // compiler.py lines 412-423
@@ -805,9 +863,9 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // disable_print_inline in compiler.py
   disablePrintInline(*llvmModule);
 
-  // make_amdgcn (compiler.py lines 509-537)
+  // make_amdgcn (compiler.py)
   std::string asmFeatures;
-  if (arch.contains("gfx11"))
+  if (disableTrue16)
     asmFeatures = "-real-true16";
   auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
                                    options.enableFpFusion);
@@ -815,8 +873,9 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     return failure();
   }
 
-  // Dump LLVM IR if AMDGCN_ENABLE_LLVM_DUMP is set
-  if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_LLVM_DUMP")) {
+  // Dump LLVM IR if LLVM_IR_ENABLE_DUMP is set (matches upstream Triton's
+  // env var name; see external/triton/include/triton/Tools/Sys/GetEnv.h).
+  if (const char *dumpEnv = std::getenv("LLVM_IR_ENABLE_DUMP")) {
     std::string envVal(dumpEnv);
     if (envVal == "1") {
       llvm::errs() << "// -----// LLVM IR Dump //----- //\n";
@@ -840,11 +899,11 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     }
   }
 
-  // make_hsaco (compiler.py lines 540-554)
+  // make_hsaco (compiler.py)
   std::string hsacoFeatures;
   if (enableAsan)
     hsacoFeatures = "+xnack";
-  if (arch.contains("gfx11"))
+  if (disableTrue16)
     appendFeature(hsacoFeatures, "-real-true16");
   auto hsaco = makeHSACO(amdgcnAsm, triple, arch, hsacoFeatures);
   if (!hsaco) {
@@ -913,6 +972,7 @@ public:
     options.allowFlushDenorm = allowFlushDenorm.getValue();
     options.scalarizePackedFops = scalarizePackedFops.getValue();
     options.scheduleHint = scheduleHint.getValue();
+    options.llvmFnAttrs = llvmFnAttrs.getValue();
 
     // Call the translation
     auto hsacoOrErr = translateTritonToHsaco(module, options);

@@ -96,22 +96,29 @@ get_filename_component(PARENT_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR} DIRECTORY)
 # Add a command to copy lit.local.cfg
 add_custom_command(OUTPUT ${LOCAL_CONFIG_FILE_BIN}
   COMMAND ${CMAKE_COMMAND} -E copy ${LOCAL_CONFIG_FILE_SRC} ${LOCAL_CONFIG_FILE_BIN}
+  DEPENDS ${LOCAL_CONFIG_FILE_SRC}
   COMMENT "Copying lit.local.cfg"
 )
 
 # Add a command to generate E2E tests for each config file
 # We use a xxx.cfg file associated with xxx.toml file to apply additional guards on the tests.
-# Check conv_wrw_perf_config as an example to guard the tests on mfma supported GPUs only.
+# Check gemm_split_k_f32 as an example to guard the tests on the `atomic_add` feature only.
 # The assumption is that the directory name in xxx.toml is the same as xxx.
 foreach(config ${CONFIGS})
   set(config_file ${CONFIG_DIR}/${config}.toml)
   set(lit_cfg_file ${CONFIG_DIR}/${config}.cfg)
   set(config_file_copy ${E2E_DIR}/${config}.copy)
+  # Re-run when either the .toml inputs or the lit gate .cfg change so the
+  # generated build-dir lit.local.cfg stays in sync with the source.
+  set(config_deps ${config_file})
+  if(EXISTS ${lit_cfg_file})
+    list(APPEND config_deps ${lit_cfg_file})
+  endif()
   add_custom_command(OUTPUT ${config_file_copy}
     COMMAND ${CMAKE_COMMAND} -E copy ${config_file} ${config_file_copy}
     COMMAND ${Python3_EXECUTABLE} ${E2E_GEN_SCRIPT} -d ${E2E_DIR} -i ${config_file} ${GEN_MODE}
     COMMAND if [ -f "${lit_cfg_file}" ]\; then cp "${lit_cfg_file}" ${E2E_DIR}/${config}/lit.local.cfg\; fi
-    DEPENDS ${config_file}
+    DEPENDS ${config_deps}
     COMMENT "Generating rock E2E tests for ${config}"
   )
 endforeach()

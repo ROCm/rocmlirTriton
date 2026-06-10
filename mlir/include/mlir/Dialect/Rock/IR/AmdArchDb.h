@@ -13,7 +13,16 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 
+#include <tuple>
+
 namespace mlir {
+
+namespace triton {
+namespace amdgpu {
+enum class ISAFamily;
+} // namespace amdgpu
+} // namespace triton
+
 namespace rock {
 
 /// Result of checking matrix acceleration support
@@ -50,6 +59,11 @@ MatrixAccelKind getMatrixAccelKind(StringRef arch, Type inputTypeA,
 MatrixAccelKind getMatrixAccelKind(StringRef arch,
                                    RockGemmWrapperInterface gemmOp);
 
+/// Extract the ISAFamily and chip name from an architecture string. The chip
+/// name is the bare gfx token (e.g. "gfx1100"), with any target-triple prefix
+/// and `:feature` suffixes stripped.
+std::tuple<triton::amdgpu::ISAFamily, StringRef> getArch(StringRef arch);
+
 /// Check if hardware matrix acceleration is available for the given GEMM op.
 /// Returns true if any acceleration (MFMA, WMMA, ScaledMFMA, ScaledWMMA)
 /// is available for the operation's types on the specified architecture.
@@ -71,11 +85,34 @@ int64_t getMaxNumChiplets(StringRef arch);
 /// Get maximum number of waves per EU per arch
 int64_t getMaxWavesPerEU(StringRef arch);
 
+/// Element type used by the out-of-MLIR (e.g. Python test binding) overloads
+/// of the per-arch dtype-dispatched queries below. Mirrors the small set of
+/// MLIR `Type`s those helpers actually switch on.
+enum class Dtype { F32, F16, BF16 };
+
 /// Whether there's fast atomic add support
 bool isFastAtomicAddSupported(StringRef arch, Type type);
 
+/// Enum-dtype overload of \ref isFastAtomicAddSupported, intended for
+/// out-of-MLIR callers (e.g. the Python test binding).
+bool isFastAtomicAddSupported(StringRef arch, Dtype dtype);
+
 /// Whether there's fast atomic max support
 bool isFastAtomicMaxSupported(StringRef arch, Type type);
+
+/// Enum-dtype overload of \ref isFastAtomicMaxSupported (currently only
+/// `Dtype::F32` is recognized as supportable on any arch).
+bool isFastAtomicMaxSupported(StringRef arch, Dtype dtype);
+
+/// Whether this architecture has any FP8 matrix-acceleration intrinsics
+/// (MFMA on CDNA3+, WMMA on RDNA4+ / GFX1250). Independent of any specific
+/// operation; useful for gating test suites that require an FP8 hardware
+/// reference (e.g. hipBLASLt validation).
+bool archSupportsAccelFp8(StringRef arch);
+
+/// Whether this architecture has scaled-GEMM matrix acceleration (scaled
+/// MFMA on CDNA4 / gfx950, scaled WMMA on GFX1250).
+bool archSupportsScaledGemm(StringRef arch);
 
 /// Get wave size
 int64_t getWaveSize(StringRef arch);

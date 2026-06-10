@@ -1,7 +1,6 @@
 @LIT_SITE_CFG_IN_HEADER@
 
 import sys
-import subprocess
 
 config.llvm_obj_root = "@LLVM_BINARY_DIR@"
 config.llvm_tools_dir = "@LLVM_TOOLS_DIR@"
@@ -33,9 +32,8 @@ config.populate_validation = "@MLIR_POPULATE_VALIDATION@"
 config.rocm_path = "@ROCM_PATH@"
 config.rocmlir_common_python_tests_utils = "@ROCMLIR_COMMON_PYTHON_TESTS_UTILS@"
 
-# Add common python test utils
 sys.path.append(config.rocmlir_common_python_tests_utils)
-from common import get_agents
+from common import apply_arch_features
 
 # Support substitution of the tools_dir with user parameters. This is
 # used when we can't determine the tool dir at configuration time.
@@ -47,26 +45,8 @@ except KeyError:
     key, = e.args
     lit_config.fatal("unable to find %r parameter, use '--param=%s=VALUE'" % (key,key))
 
-# If rocm_agent_enumerator shows no viable GPUs, skip tests that need one,
-# because the default target will lead to compilation failures.
-config.no_AMD_GPU = False
-config.arch = ""
-config.arch_support_mfma = False
-config.arch_support_wmma = False
-if config.rocm_path:
-    try:
-        agents = get_agents()
-        config.arch = ','.join(agents)
-        for x in agents:
-            if any([arch in x for arch in ["gfx908", "gfx90a", "gfx942", "gfx950"]]):
-                config.arch_support_mfma = True
-            elif "gfx11" in x or "gfx12" in x:
-                config.arch_support_wmma = True
-            # Check other features here
-        if not config.arch:
-            config.no_AMD_GPU = True
-    except subprocess.CalledProcessError:
-        config.no_AMD_GPU = True
+# Populate config.arch and config.arch_support_* from the amd_arch_db binding.
+apply_arch_features(config, lit_config)
 
 import lit.llvm
 lit.llvm.initialize(lit_config, config)

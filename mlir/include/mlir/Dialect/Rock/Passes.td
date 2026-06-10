@@ -394,14 +394,19 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
               "Waves per execution unit hint (0 for default)">,
        Option<"enableFpFusion", "enable-fp-fusion", "bool", "true",
               "Enable FP fusion optimizations">,
-       Option<"allowFlushDenorm", "allow-flush-denorm", "bool", "false",
+       Option<"allowFlushDenorm", "allow-flush-denorm", "bool", "true",
               "Allow flushing denormal numbers">,
        Option<"scalarizePackedFops", "scalarize-packed-fops", "bool", "false",
               "Scalarize packed float operations">,
        Option<"scheduleHint", "schedule-hint", "int64_t", "-1",
               "Scheduling hint ordinal (-1=arch default, 0=none, "
               "1=attention, 2=memory-bound-attention). See "
-              "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding.">];
+              "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding.">,
+       Option<"llvmFnAttrs", "llvm-fn-attrs", "std::string", "\"\"",
+              "Debug-only: comma-separated LLVM function attributes (name or "
+              "name=value) applied to the kernel after Triton's attributes. "
+              "Mirrors the experimental llvm_fn_attrs HIPOption in "
+              "compiler.py.">];
 }
 
 def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
@@ -602,6 +607,72 @@ def RockLowerStoresPass : Pass<"rock-lower-stores", "::mlir::func::FuncOp"> {
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect", "math::MathDialect"];
+}
+
+def RockAnalyzeMemoryUsePass
+    : Pass<"rock-analyze-memory-use", "::mlir::func::FuncOp"> {
+  let summary = "Analyze kernel argument memory usage and set attributes";
+  let description = [{
+    Walks kernel function arguments (those of `RankedTensorType`) to determine
+    their memory access patterns and attaches LLVM attributes plus Triton
+    metadata accordingly. Runs on functions marked with `rock.kernel`; other
+    functions are left untouched.
+
+    Memory-access classification (mutually exclusive):
+
+    - `llvm.readonly`: argument is only loaded from
+      (no `rock.blockwise_store` writes to it).
+    - `llvm.writeonly`: argument is only stored to via `StoreMethod::Set`
+      (pure overwrite, never read).
+    - `llvm.readnone`: argument is never accessed.
+    - *(none of the above)*: argument is read and written via atomic store
+      (`atomic_add`/`atomic_max`); the implicit read-modify-write makes
+      classifying it as readonly/writeonly unsound.
+
+    Always-on attributes (set on every tensor argument):
+
+    - `llvm.noalias`, `llvm.nocapture`, `llvm.nofree`, `llvm.nonnull`,
+      `llvm.noundef`
+    - `llvm.align = 16` (kernel pointers are assumed 16-byte aligned)
+    - `tt.divisibility = 16` (Triton vectorization hint matching the
+      alignment)
+
+    Static-shape-only attributes:
+
+    - `llvm.dereferenceable = ceil(numElements * bitWidth / 8)`
+    - `tt.pointer_range = 32` when the tensor fits in a 32-bit offset range
+      (< 2 GiB), enabling Triton's buffer-ops conversion.
+
+    Note: `llvm.inreg` (for SGPR argument preloading) is *not* set here; it
+    is added later by `TritonToHsaco` for both tensor and scalar arguments.
+
+    Also emits an error if an argument is both read and written in a
+    non-atomic context, which violates our kernel argument aliasing
+    assumptions.
+  }];
+  let dependentDialects = ["rock::RockDialect", "LLVM::LLVMDialect"];
+}
+
+def RockPrepareLLVMPass
+    : Pass<"rock-prepare-llvm", "::mlir::LLVM::LLVMFuncOp"> {
+  let summary = "Annotate LLVM IR for efficient AMDGPU codegen";
+  let description = [{
+    This pass annotates LLVM dialect IR produced by the Triton lowering
+    pipeline with metadata that enables more efficient code generation
+    by the AMDGPU backend:
+
+    1. Marks GEP operations as `inbounds` (excluding buffer fat pointers).
+    2. Marks loads from readonly arguments as invariant and attaches alias
+       scope metadata to work around an AMDGPU backend issue where noalias
+       attributes on kernel arguments are discarded.
+    3. Annotates atomic RMW operations with `no_fine_grained_memory`,
+       `no_remote_memory`, and `ignore_denormal_mode` metadata to enable
+       native hardware atomic instructions instead of CAS fallbacks.
+  }];
+  let options = [Option<"allowFlushDenorm", "allow-flush-denorm", "bool",
+                        /*default=*/"true",
+                        "Set ignore_denormal_mode on atomic RMW ops">];
+  let dependentDialects = ["LLVM::LLVMDialect", "ROCDL::ROCDLDialect"];
 }
 
 #endif // MLIR_DIALECT_ROCK_PASSES

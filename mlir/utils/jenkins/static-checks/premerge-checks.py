@@ -121,10 +121,23 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
     else:
         ignore = pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, [])
     cpu_count = multiprocessing.cpu_count()
+    # clang-tidy has no compile command for header files, so for any changed
+    # header it interpolates a command from a "nearby" .cpp. This can give
+    # errors unless we add the Triton include paths to the compile command.
+    repo_root = git.Repo('.', search_parent_directories=True).working_tree_dir
+    triton_include_roots = [
+        os.path.join('external', 'triton', d) for d in ('include', 'third_party')
+    ]
+    triton_includes = []
+    for root in triton_include_roots:
+        triton_includes.append(os.path.join(repo_root, root))
+        triton_includes.append(os.path.join(repo_root, 'build', root))
+    extra_args = ['-extra-arg=-std=c++17']
+    extra_args += [f'-extra-arg=-I{inc}' for inc in triton_includes]
     p = subprocess.Popen([
         './external/triton/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py',
         '-p0', '-quiet', '-j',
-        str(cpu_count), '-extra-arg=-std=c++17'
+        str(cpu_count), *extra_args
     ],
                          stdout=subprocess.PIPE,
                          stdin=subprocess.PIPE,
