@@ -560,10 +560,12 @@ emit retry advice`.
 temp dir via `git fetch`, then computes the changed-file list locally with
 `git diff --name-only` vs the **default branch** — the same baseline + diff
 algorithm Layer 3 uses, so the two stay in lockstep regardless of the PR's
-base branch and there is no API file-count limit. The authenticated fetch has
-a small bounded retry around transient-looking GitHub App / private-repo git
-auth failures (for example an initial "Repository not found" immediately after
-token minting), but still fails closed if the refs cannot be fetched. If a
+base branch and there is no API file-count limit. After minting the App token,
+the same inline `Wait for App token to be live` probe as the other companions
+(see [§15](#15-maintenance--sync-points)) avoids the transient private-repo
+`404` / "Repository not found" race before the first `git fetch`; each fetch is
+then a single attempt and the job still **fails closed** if refs cannot be
+resolved (including after the bounded deepen loop). If a
 perimeter path changed: ensures the `modifies-ci-paths` label exists, applies
 it, and posts a one-time banner comment (deduped by a hidden marker **and**
 author filter, so a PR author can't suppress it by pasting the marker). Removes
@@ -1119,8 +1121,8 @@ env vars can't reference a single source. When you change one, update all:
 | Bot login (`rocmlir-pr-reviewer[bot]`) | `BOT_LOGIN` in `claude_auto_review.yml`; the prompt heredoc; `EXPECTED_AUTHOR` in the perimeter banner; both `.claude/skills/*` files. (Note: the bot login is shared with rocMLIR -- same App; see §11. Do NOT rename it for rocmlirTriton.) |
 | Review skill name (`review-rocmlir-triton-pr`) | Five sites in the prompt heredoc inside `claude_auto_review.yml`: the `## Tool budget` paragraph that warns about shell snippets in the skill file; `## Step 2 -- Run the review skill`; the `verdict` decision-rule back-reference; the `summary` layout back-reference; the `suggestion`-contract back-reference. Also: the `name:` and self-references in `.claude/skills/review-rocmlir-triton-pr/SKILL.md`; the upstream-skill references in `.claude/skills/update-pr-review/SKILL.md`. |
 | Perimeter regex | Layer-3 block in `claude_auto_review.yml`; `PERIMETER_REGEX` in the perimeter banner. |
-| Default-branch diff baseline | Layer-3 block in `claude_auto_review.yml` and the perimeter banner both use `git diff --name-only` against `origin/<default-branch>...HEAD` (the banner fetches refs into a temp dir; neither uses the Compare API, which caps `.files` at 300 entries). Keep the deepen loop + the `...` form identical in both. The banner's bounded `git fetch` retry is intentionally local to its App-token/private-repo fetch path; it must never skip the diff if fetching still fails. |
-| App-token post-mint propagation | A freshly minted App installation token can transiently 404 on a private repo before its auth propagates. Every job whose **first** App-token call could hit this runs an inline `Wait for App token to be live` step right after `create-github-app-token` (the `review`, `post`, and `cleanup` jobs in `claude_auto_review.yml`, plus `fork_notify`). The step is **inlined**, not a shared script, so the no-checkout jobs (`cleanup`, `fork_notify`) need no working copy. It probes a cheap `gh api repos/{repo}` read with bounded backoff and **fails closed** -- a token that never goes live aborts the job. Keep the four copies in sync. The **perimeter banner** does not run the probe: its first App-token call is the `git fetch`, which already carries its own bounded retry. |
+| Default-branch diff baseline | Layer-3 block in `claude_auto_review.yml` and the perimeter banner both use `git diff --name-only` against `origin/<default-branch>...HEAD` (the banner fetches refs into a temp dir; neither uses the Compare API, which caps `.files` at 300 entries). Keep the deepen loop + the `...` form identical in both. If fetching still fails, the banner job must hard-fail so the perimeter check never falls back to a wrong baseline. |
+| App-token post-mint propagation | A freshly minted App installation token can transiently 404 on a private repo before its auth propagates. Every workflow that mints this App token runs an inline `Wait for App token to be live` step immediately after `create-github-app-token` (`review`, `post`, and `cleanup` in `claude_auto_review.yml`; `fork_notify`; `perimeter_banner`). The step is **inlined**, not a shared script, so no-checkout jobs need no working copy. It probes `gh api repos/{repo}` with bounded backoff and **fails closed**. There are **five identical `run:` blocks** (the three jobs above plus `fork_notify` and `perimeter_banner`); keep all five byte-for-byte in sync. |
 | URL allow-list hosts | `ALLOWED_HOST_RE` in the sanitizer; prompt "Hard constraints"; skill "Rules". |
 | `bucket` CI-status values | Pre-fetch jq in `claude_auto_review.yml`; the review skill's filter. |
 | `is_re_review` filter (BOT_LOGIN + marker + root-comment) | Pre-fetch jq that writes `meta.json#.is_re_review` in `claude_auto_review.yml`; the prompt's Step 1 N-count. Both filters must stay byte-for-byte identical so the post job's `Findings:` vs `New findings:` header label can't drift from the model's initial-vs-re-review-mode decision. |

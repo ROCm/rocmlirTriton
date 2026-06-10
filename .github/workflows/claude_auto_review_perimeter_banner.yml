@@ -72,6 +72,26 @@ jobs:
           permission-contents: read
           permission-issues: write
 
+      # Inline probe after mint (doc §15).
+      - name: Wait for App token to be live
+        if: steps.app-config.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if gh api "repos/${GITHUB_REPOSITORY}" --silent; then
+              live=1
+              break
+            fi
+            echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
+            if [ "$attempt" -lt 4 ]; then sleep $((attempt * 5)); fi
+          done
+          if [ "${live:-}" != 1 ]; then
+            echo "::error::App token never became live for ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
       - name: Detect perimeter modifications, label, banner-comment
         if: steps.app-config.outputs.configured == 'true'
         env:
@@ -123,60 +143,13 @@ jobs:
             echo "::error::Encoded git fetch auth header is empty"
             exit 1
           fi
-          # Keep GH_TOKEN available for the gh CLI calls below; this step also
-          # posts labels and comments after computing the diff.
-          git_fetch_once_with_auth() {
+          # GH_TOKEN also powers `gh` below. Fetches are single-attempt (probe
+          # step already gated token propagation; fail closed on error).
+          git_fetch_with_auth() {
             GIT_CONFIG_COUNT=1 \
             GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth_header}" \
               git -C "$tmp" fetch "$@"
-          }
-          git_fetch_with_auth() {
-            local attempt=1
-            local max_attempts=4
-            local delay=5
-            local output
-            local status
-
-            while true; do
-              if output=$(git_fetch_once_with_auth "$@" 2>&1); then
-                if [ -n "$output" ]; then
-                  printf '%s\n' "$output"
-                fi
-                return 0
-              else
-                # Capture git's exit status here: `$?` after `fi` would be the
-                # if-statement's own status (0 when the condition is false and
-                # there is no else), masking the real failure code.
-                status=$?
-              fi
-              printf '%s\n' "$output" >&2
-
-              if [ "$attempt" -ge "$max_attempts" ]; then
-                echo "::error::git fetch failed after ${attempt} attempts"
-                return "$status"
-              fi
-
-              # A freshly minted App token can briefly 404 on a private repo
-              # before git auth sees the installation. Retry only
-              # transient-looking git/auth/network errors; anything else fails
-              # immediately so the perimeter check never falls back to a wrong
-              # baseline. Match with a here-string, not `printf | grep -q`:
-              # grep -q exits on first match and would SIGPIPE printf under
-              # pipefail, misclassifying a matching (transient) error as
-              # non-retryable on large output.
-              if ! grep -qiE \
-                  'Repository not found|HTTP [45][0-9][0-9]|The requested URL returned error: (403|404|429|5[0-9][0-9])|rate limit|timed? out|TLS|connection reset|Could not resolve|Failed to connect|network|temporarily unavailable|remote end hung up' \
-                  <<<"$output"; then
-                echo "::error::git fetch failed with a non-retryable error"
-                return "$status"
-              fi
-
-              echo "::warning::git fetch failed with a transient-looking error (attempt ${attempt}/${max_attempts}); retrying in ${delay}s"
-              sleep "$delay"
-              attempt=$((attempt + 1))
-              delay=$((delay * 2))
-            done
           }
           git -C "$tmp" remote add origin "https://github.com/${REPO}.git"
           # Shallow fetch + bounded deepen loop until the merge-base is
