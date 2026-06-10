@@ -330,8 +330,12 @@ jobs:
               live=1
               break
             fi
-            echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
-            if [ "$attempt" -lt 4 ]; then sleep $((attempt * 5)); fi
+            if [ "$attempt" -lt 4 ]; then
+              echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
+              sleep $((attempt * 5))
+            else
+              echo "::warning::App token not live yet (attempt ${attempt}/4); giving up"
+            fi
           done
           if [ "${live:-}" != 1 ]; then
             echo "::error::App token never became live for ${GITHUB_REPOSITORY}"
@@ -1055,8 +1059,12 @@ jobs:
               live=1
               break
             fi
-            echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
-            if [ "$attempt" -lt 4 ]; then sleep $((attempt * 5)); fi
+            if [ "$attempt" -lt 4 ]; then
+              echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
+              sleep $((attempt * 5))
+            else
+              echo "::warning::App token not live yet (attempt ${attempt}/4); giving up"
+            fi
           done
           if [ "${live:-}" != 1 ]; then
             echo "::error::App token never became live for ${GITHUB_REPOSITORY}"
@@ -1110,8 +1118,12 @@ jobs:
               live=1
               break
             fi
-            echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
-            if [ "$attempt" -lt 4 ]; then sleep $((attempt * 5)); fi
+            if [ "$attempt" -lt 4 ]; then
+              echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
+              sleep $((attempt * 5))
+            else
+              echo "::warning::App token not live yet (attempt ${attempt}/4); giving up"
+            fi
           done
           if [ "${live:-}" != 1 ]; then
             echo "::error::App token never became live for ${GITHUB_REPOSITORY}"
