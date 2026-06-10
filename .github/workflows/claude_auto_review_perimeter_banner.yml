@@ -144,35 +144,35 @@ jobs:
                   printf '%s\n' "$output"
                 fi
                 return 0
+              else
+                # Capture git's exit status here: `$?` after `fi` would be the
+                # if-statement's own status (0 when the condition is false and
+                # there is no else), masking the real failure code.
+                status=$?
               fi
-              status=$?
+              printf '%s\n' "$output" >&2
 
               if [ "$attempt" -ge "$max_attempts" ]; then
                 echo "::error::git fetch failed after ${attempt} attempts"
-                printf '%s\n' "$output" >&2
                 return "$status"
               fi
 
-              # GitHub App installation tokens can occasionally be minted before
-              # private-repo git auth observes the installation/permission state.
-              # Retry only bounded, transient-looking git/auth/network failures;
-              # other errors fail immediately so the perimeter check never
-              # silently falls back to a wrong baseline. Match via a here-string
-              # (not `printf | grep -q`): `grep -q` exits on first match and
-              # would SIGPIPE the upstream `printf` under `pipefail`, flipping a
-              # genuinely-transient (matching) error to "non-retryable" on large
-              # fetch output -- same SIGPIPE-under-pipefail hazard the comment on
-              # the comment-dedup/perimeter loops below calls out.
+              # A freshly minted App token can briefly 404 on a private repo
+              # before git auth sees the installation. Retry only
+              # transient-looking git/auth/network errors; anything else fails
+              # immediately so the perimeter check never falls back to a wrong
+              # baseline. Match with a here-string, not `printf | grep -q`:
+              # grep -q exits on first match and would SIGPIPE printf under
+              # pipefail, misclassifying a matching (transient) error as
+              # non-retryable on large output.
               if ! grep -qiE \
                   'Repository not found|HTTP [45][0-9][0-9]|The requested URL returned error: (403|404|429|5[0-9][0-9])|rate limit|timed? out|TLS|connection reset|Could not resolve|Failed to connect|network|temporarily unavailable|remote end hung up' \
                   <<<"$output"; then
                 echo "::error::git fetch failed with a non-retryable error"
-                printf '%s\n' "$output" >&2
                 return "$status"
               fi
 
               echo "::warning::git fetch failed with a transient-looking error (attempt ${attempt}/${max_attempts}); retrying in ${delay}s"
-              printf '%s\n' "$output" >&2
               sleep "$delay"
               attempt=$((attempt + 1))
               delay=$((delay * 2))
