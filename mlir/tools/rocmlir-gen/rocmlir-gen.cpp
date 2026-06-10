@@ -4537,16 +4537,19 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   // accurate validation answer when running attention with a large seq len.
   const bool promoteHost = pvF64.getValue() && !isQuantized;
   Type f64Type = Float64Type::get(ctx);
-  auto upcastF = [&](Value v) -> Value {
-    if (!promoteHost)
-      return v;
-    Type elem = cast<ShapedType>(v.getType()).getElementType();
-    if (!isa<FloatType>(elem) || elem == f64Type)
-      return v;
-    return rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc, f64Type, v);
-  };
   auto wideF = [&](Type t) -> Type {
     return (promoteHost && isa<FloatType>(t)) ? f64Type : t;
+  };
+  auto castTensor = [&](Value v, Type elemType) -> Value {
+    return rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc, elemType,
+                                                      v);
+  };
+  auto upcastF = [&](Value v) -> Value {
+    Type elem = cast<ShapedType>(v.getType()).getElementType();
+    Type widenedElem = wideF(elem);
+    if (elem == widenedElem)
+      return v;
+    return castTensor(v, widenedElem);
   };
 
   SmallVector<Type, 5> argTypes;
@@ -4682,60 +4685,83 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   if (!prefixOffset.empty()) {
     prefixOffsetTensor = loadMaskingTensor(optionalArgIndex++);
   }
+  auto applyPreSoftmaxInputMask = [&](Value tensor, float neutralValue) {
+    // Scale and bias are masked before being applied to qk. Use their neutral
+    // elements so later multiplication/addition leaves masked positions
+    // unchanged.
+    if (currentSeqLenTensor)
+      tensor = maskKVCacheTosa(builder, loc, tensor, currentSeqLenTensor,
+                               neutralValue);
+    if (prefixOffsetTensor)
+      return prefixOffsetMaskingTosa(builder, loc, tensor, prefixOffsetTensor,
+                                     neutralValue);
+    if (causalMasking)
+      return causalMaskingTosa(builder, loc, tensor, neutralValue);
+    return tensor;
+  };
 
   unsigned optionalArgsCounter = 3;
   if (isQuantized) {
+    // Quantized attention starts from i32 qk accumulators. Apply the quantized
+    // zero-point/bias in i32, then round to f16 before the quant scale multiply
+    // to mirror the GPU pre-softmax arithmetic.
     auto quantBiasI8 = getTensorForBlockArg(optionalArgsCounter++);
     Value quantBiasI32 = rock::tosa::createOpAndInfer<tosa::CastOp>(
         builder, loc, IntegerType::get(ctx, 32), quantBiasI8);
     qkTensor = rock::tosa::createOpAndInfer<tosa::SubOp>(
         builder, loc, IntegerType::get(ctx, 32), qkTensor, quantBiasI32);
-    qkTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(
-        builder, loc, Float16Type::get(ctx), qkTensor);
+    qkTensor = castTensor(qkTensor, Float16Type::get(ctx));
     auto quantScaleF16 = getTensorForBlockArg(optionalArgsCounter++);
     qkTensor = rock::tosa::getMulOp(builder, loc, qkTensor, quantScaleF16,
                                     Float16Type::get(ctx));
   }
 
+  bool fuseQuantizedScaleBias = isQuantized && hasAttnScale && hasAttnBias;
+  Value pendingScaleForFma;
   if (hasAttnScale) {
     auto scaleTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
-    if (!currentSeqLen.empty())
-      scaleTensor =
-          maskKVCacheTosa(builder, loc, scaleTensor, currentSeqLenTensor, 1.0f);
+    scaleTensor = applyPreSoftmaxInputMask(scaleTensor, 1.0f);
 
-    // Use prefix offset masking if provided, otherwise standard causal
-    if (prefixOffsetTensor)
-      scaleTensor = prefixOffsetMaskingTosa(builder, loc, scaleTensor,
-                                            prefixOffsetTensor, 1.0f);
-    else if (causalMasking)
-      scaleTensor = causalMaskingTosa(builder, loc, scaleTensor, 1.0f);
-
-    qkTensor = rock::tosa::getMulOp(
-        builder, loc, qkTensor, scaleTensor,
-        cast<ShapedType>(scaleTensor.getType()).getElementType());
+    if (fuseQuantizedScaleBias) {
+      // Defer the multiply so the bias branch can model qk * scale + bias
+      // with the same single-rounding f16 FMA used by the GPU i8 path.
+      pendingScaleForFma = scaleTensor;
+    } else {
+      qkTensor = rock::tosa::getMulOp(
+          builder, loc, qkTensor, scaleTensor,
+          cast<ShapedType>(scaleTensor.getType()).getElementType());
+    }
   }
 
   if (hasAttnBias) {
     auto biasTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
-    if (!currentSeqLen.empty())
-      biasTensor =
-          maskKVCacheTosa(builder, loc, biasTensor, currentSeqLenTensor, 0.0f);
+    biasTensor = applyPreSoftmaxInputMask(biasTensor, 0.0f);
 
-    // Use prefix offset masking if provided, otherwise standard causal
-    if (prefixOffsetTensor)
-      biasTensor = prefixOffsetMaskingTosa(builder, loc, biasTensor,
-                                           prefixOffsetTensor, 0.0f);
-    else if (causalMasking)
-      biasTensor = causalMaskingTosa(builder, loc, biasTensor, 0.0f);
-
-    qkTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
-        builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
-        qkTensor, biasTensor);
+    if (fuseQuantizedScaleBias) {
+      Type f32Type = builder.getF32Type();
+      // The generated GPU IR spells this as f16 mul + f16 add, but GPU lowering
+      // can fuse qk * scale + bias. Model the fused operation here with f32
+      // arithmetic followed by one f16 rounding so allclose validation stays
+      // fair on values that would round differently if the multiply rounded to
+      // f16 before adding bias.
+      assert(pendingScaleForFma && "scale tensor must be deferred for FMA");
+      qkTensor = castTensor(qkTensor, f32Type);
+      pendingScaleForFma = castTensor(pendingScaleForFma, f32Type);
+      biasTensor = castTensor(biasTensor, f32Type);
+      qkTensor = rock::tosa::getMulOp(builder, loc, qkTensor,
+                                      pendingScaleForFma, f32Type);
+      qkTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
+          builder, loc, f32Type, qkTensor, biasTensor);
+      qkTensor = castTensor(qkTensor, Float16Type::get(ctx));
+    } else {
+      qkTensor = rock::tosa::createOpAndInfer<tosa::AddOp>(
+          builder, loc, cast<ShapedType>(biasTensor.getType()).getElementType(),
+          qkTensor, biasTensor);
+    }
   }
   // cast to softmaxType (overridden to f64 when promoting the host reference)
   auto softmaxType = wideF(typeFromString(softmaxDataType.getValue(), ctx));
-  qkTensor = rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc,
-                                                        softmaxType, qkTensor);
+  qkTensor = castTensor(qkTensor, softmaxType);
 
   // Apply KV-cache masking if currentSeqLen is provided
   if (currentSeqLenTensor) {
