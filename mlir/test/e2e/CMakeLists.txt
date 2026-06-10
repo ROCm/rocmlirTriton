@@ -30,6 +30,7 @@ if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
   list(APPEND CONFIGS
     PrGemm
     PrGemmNonPowerOfTwoTileSize
+    PrConvNonPowerOfTwoTileSize
     PrGemmScaled
     PrGemmScaledSplitK
     PrResnet50
@@ -60,6 +61,7 @@ if (ROCK_E2E_TEST_ENABLED)
   GemmScaledF32
   MixedConvLayouts
   GemmVariantsNonPowerOfTwoTileSize
+  ConvVariantsNonPowerOfTwoTileSize
   )
   list(APPEND CONFIGS
   Resnet50Config

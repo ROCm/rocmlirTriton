@@ -1,0 +1,17 @@
+directory = "PrConvNonPowerOfTwoTileSize"
+prefix = "rocmlir-gen"
+suffix = "--operation conv -t f16 --arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+
+# PR version: forward conv only, a single data type and perf_config so exactly
+# one test is generated to keep CI fast.
+[[axis]]
+name = "perf_config"
+values = ["gemm:v1:80,80,16,1,1,4,16,1,1,1,1"]
+prefix = "--perf_config "
+
+## Conv variant (shape adapted from PaddedConvConfig: non-power-of-two channels.)
+[[suite]]
+name = "pr_conv_non_power_of_two_tile_size"
+
+[[suite.test]]
+config = "-batchsize=5 -groupsize=1 -in_channels=13 -out_channels=11 -in_h=7 -in_w=7 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --padding_h=0 --padding_w=0 --conv_stride_h=1 --conv_stride_w=1"

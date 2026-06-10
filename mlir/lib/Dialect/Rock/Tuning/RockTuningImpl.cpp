@@ -44,6 +44,10 @@ namespace rock {
 // `MorN`, this distinguishes the two so a tile list can be tailored per axis.
 enum class GemmMNDim { M, N };
 
+// Largest per-block M/N tile size we tune for. Also acts as the threshold below
+// which a small dimension is covered by a single tightly-fitting tile.
+#define MAX_MN_PER_BLOCK 256
+
 // Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
 // tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
 // round the remainder up to the next pow2. e.g. 77 = 64 + 13 -> 64 + 16 = 80.
@@ -68,16 +72,16 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
 
   std::vector<uint32_t> dPerBlockList;
   if (hasAcceleration) {
-    for (uint32_t dPerBlock = 16; dPerBlock <= 256; dPerBlock *= 2)
+    for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
       dPerBlockList.push_back(dPerBlock);
   } else {
     // non-accel
     return {4, 8, 16, 32, 64};
   }
 
-  // For a plain GEMM with a small (< 256) M/N, cap the list with a tile that
-  // covers the dimension tightly and drop the now-oversized larger tiles
-  // (e.g. tile=80 -> {16, 32, 64, 80}). gemm+gemm isn't lowered through
+  // For a plain GEMM with a small (< MAX_MN_PER_BLOCK) M/N, cap the list with a
+  // tile that covers the dimension tightly and drop the now-oversized larger
+  // tiles (e.g. tile=80 -> {16, 32, 64, 80}). gemm+gemm isn't lowered through
   // rock-decompose-nonpow2-tiles, so it's skipped. Scaled GEMMs are also
   // skipped since the decomposition pass doesn't support them yet, so they must
   // keep power-of-two M/N tiles.
@@ -85,7 +89,7 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
     bool isScaledGemm = gemmOp.getScaleA() || gemmOp.getScaleB();
     GemmSize size = gemmOp.getGemmSize();
     int64_t d = dim == GemmMNDim::M ? size.m : size.n;
-    if (!isScaledGemm && d > 0 && d < 256) {
+    if (!isScaledGemm && d > 0 && d < MAX_MN_PER_BLOCK) {
       uint32_t tile = tileReducingPartitions(static_cast<uint32_t>(d));
       llvm::erase_if(dPerBlockList, [&](uint32_t v) { return v >= tile; });
       dPerBlockList.push_back(tile);
