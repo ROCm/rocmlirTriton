@@ -576,11 +576,12 @@ boundary; the label-triggered path's Layer-3 `git diff` check in
 
 Safe under `pull_request_target` because: no `actions/checkout` and no
 execution of fetched content (only `git diff --name-only`); the in-step App
-token requests only `contents: read`, `issues: write`, and
-`pull-requests: write`; fixed label names; perimeter file names rendered as
-inline-code with backticks stripped and a 50-entry cap (so a hostile path can't
-inject markdown or bloat the comment); default `GITHUB_TOKEN` is
-`permissions: {}`.
+token requests only `contents: read` and `issues: write`; label and banner
+operations use the Issues REST API with the server-provided PR number, so this
+companion does not need pull-request scope; fixed label names; perimeter file
+names rendered as inline-code with backticks stripped and a 50-entry cap (so a
+hostile path can't inject markdown or bloat the comment); default
+`GITHUB_TOKEN` is `permissions: {}`.
 
 ### `fork_notify` (UX compensator)
 

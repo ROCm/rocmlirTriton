@@ -57,15 +57,10 @@ jobs:
       # impersonate. Request only the scopes the steps below exercise:
       #   - contents:read       git fetch of the default branch + PR head.
       #   - issues:write        create/apply/remove the label and post the
-      #                         banner comment. Labels and issue comments are
-      #                         the issues subsystem, so `gh pr edit --add-label`
-      #                         adds via the addLabelsToLabelable mutation (which
-      #                         needs issues:write, NOT pull-requests:write).
-      #   - pull-requests:write `gh pr edit` / `gh pr comment` must first resolve
-      #                         the PR node, which needs pull-requests:read; kept
-      #                         at write for robustness in case a future gh CLI
-      #                         routes label edits through updatePullRequest
-      #                         (which would need pull-requests:write).
+      #                         banner comment through the Issues REST API.
+      #                         PRs are issues for labels/comments, and the
+      #                         server-provided PR number lets us avoid
+      #                         pull-requests scope in this companion.
       # See doc §9, §11, §14.2.
       - name: Generate App token
         if: steps.app-config.outputs.configured == 'true'
@@ -76,7 +71,6 @@ jobs:
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
           permission-contents: read
           permission-issues: write
-          permission-pull-requests: write
 
       - name: Detect perimeter modifications, label, banner-comment
         if: steps.app-config.outputs.configured == 'true'
@@ -241,9 +235,10 @@ jobs:
             exit 1
           fi
 
-          # ---- 4. Apply the label to the PR (idempotent) ----
-          gh pr edit "${PR_NUMBER}" --repo "${REPO}" \
-            --add-label modifies-ci-paths >/dev/null
+          # ---- 4. Apply the label to the PR issue (idempotent) ----
+          gh api --method POST \
+            "/repos/${REPO}/issues/${PR_NUMBER}/labels" \
+            -f labels[]=modifies-ci-paths >/dev/null
           echo "Applied modifies-ci-paths label to PR #${PR_NUMBER}."
 
           # ---- 5. Check if banner comment already exists ----
@@ -285,7 +280,13 @@ jobs:
           if [ "$perimeter_total" -gt 50 ]; then
             perimeter_overflow=$'\n\n_...and '"$((perimeter_total - 50))"' more perimeter file(s) not shown._'
           fi
-          gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "$(cat <<EOF
+          # --raw-field (NOT --field): the body is always a string, and
+          # --raw-field disables gh's magic value interpretation (leading `@`
+          # would read a file, bare true/false/null/ints would be type-coerced)
+          # -- defensive since the body embeds PR-controlled perimeter paths.
+          gh api --method POST \
+            "/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --raw-field body="$(cat <<EOF
           ${BANNER_MARKER}
           ### :warning: This PR modifies the Claude-review CI security perimeter
 
@@ -317,5 +318,5 @@ jobs:
           on this PR if the label is applied while perimeter changes
           are present.)
           EOF
-          )"
+          )" >/dev/null
           echo "Posted perimeter banner comment on PR #${PR_NUMBER}."
