@@ -62,12 +62,28 @@ jobs:
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
 
       # Absorb the brief post-mint propagation delay before the first App-token
-      # API call (private-repo installs can transiently 404). See doc §9, §15.
+      # API call: a freshly minted installation token can transiently 404 on a
+      # private repo until its auth propagates. Probe a cheap read until it
+      # works; fail closed if it never does. Inlined (not a script) because this
+      # job runs no checkout, so there is no working copy. See doc §9, §15.
       - name: Wait for App token to be live
         if: steps.app-config.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash .github/scripts/wait_for_app_token.sh
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if gh api "repos/${GITHUB_REPOSITORY}" --silent; then
+              live=1
+              break
+            fi
+            echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
+            if [ "$attempt" -lt 4 ]; then sleep $((attempt * 5)); fi
+          done
+          if [ "${live:-}" != 1 ]; then
+            echo "::error::App token never became live for ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
 
       - name: Post fork-PR explanation comment and remove the label
         if: steps.app-config.outputs.configured == 'true'
