@@ -165,7 +165,9 @@ def random_attn_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     limitation on ``seq_len_q``."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
-        perf = sample_perf_config(rng, arch, [1])
+        # Attention uses GemmGemmParamsAttr and isn't lowered through
+        # rock-decompose-nonpow2-tiles, so keep the m/n tile on the pow2 grid.
+        perf = sample_perf_config(rng, arch, [1], pow2_only=True)
         n_per_block = perf[1]
         yield (_sample_attn_shape(rng, n_per_block=n_per_block), perf)
 
@@ -206,7 +208,9 @@ def random_gemm_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = No
     for _ in range(num_samples):
         shape = _sample_gemm_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, o, trans_a, ...).
-        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[0])))
+        # gemm+gemm also uses GemmGemmParamsAttr (no non-pow2 tile decompose),
+        # so keep the m/n tile on the pow2 grid.
+        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[0]), pow2_only=True))
 
 
 def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfiguration:
