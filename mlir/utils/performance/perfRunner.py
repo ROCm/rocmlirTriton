@@ -1721,7 +1721,6 @@ class AttentionConfiguration(PerfConfiguration):
             f"-with-attn-bias {str(self.with_attn_bias).lower()}")
 
 
-
 def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
     """Return precision-aware rocmlir-gen flags for verification.
 

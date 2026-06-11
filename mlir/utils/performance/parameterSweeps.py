@@ -178,7 +178,6 @@ def _needs_host_highlevel(config) -> bool:
     return isinstance(config, (perfRunner.AttentionConfiguration, perfRunner.GemmGemmConfiguration))
 
 
-
 def _build_rocmlir_gen_opts(config) -> List[str]:
     """Full rocmlir-gen argv for ``config``, including ``-pv`` and any
     per-kind flag tweaks. Used by both ``test_config`` (to actually run) and
