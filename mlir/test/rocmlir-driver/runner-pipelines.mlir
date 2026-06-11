@@ -22,4 +22,4 @@
 // RUNNER-SAME: finalize-memref-to-llvm{index-bitwidth=0 use-aligned-alloc=false use-generic-functions=false},
 // RUNNER-SAME: gpu-to-llvm{intersperse-sizes-for-kernels=false use-bare-pointers-for-host=false use-bare-pointers-for-kernels=true},
 // RUNNER-SAME: convert-func-to-llvm{index-bitwidth=0 use-bare-ptr-memref-call-conv=false},
-// RUNNER-SAME: canonicalize{{\{ *}}max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},cse,reconcile-unrealized-casts){{ ?$}}
+// RUNNER-SAME: canonicalize{cse-between-iterations=false{{ *}}max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},cse,reconcile-unrealized-casts){{ ?$}}

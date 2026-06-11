@@ -119,9 +119,11 @@ namespace {
 ///
 /// The default `llvm::DiagnosticHandler` (installed by `LLVMContextImpl`)
 /// is a no-op stub whose `handleDiagnostics` returns `false`, causing
-/// `LLVMContext::diagnose` to fall through to its built-in stderr printer
-/// (and `exit(1)` for `DS_Error`). Returning `false` here preserves that
-/// exact behaviour for every diagnostic that doesn't match the predicate
+/// `LLVMContext::diagnose` to fall through to its built-in stderr printer.
+/// For a `DS_Error` diagnostic, `diagnose` records `HasErrors` on the
+/// handler (it no longer aborts the process); the caller is responsible for
+/// inspecting that flag and failing. Returning `false` here preserves that
+/// built-in behaviour for every diagnostic that doesn't match the predicate
 /// below, so non-matching errors, remarks, and warnings are unaffected.
 class SuppressWarningHandler : public llvm::DiagnosticHandler {
 public:
@@ -886,6 +888,16 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
   if (amdgcnAsm.empty()) {
     llvm::errs() << "Failed to generate AMDGCN assembly\n";
+    return failure();
+  }
+
+  // LLVMContext::diagnose no longer aborts on a DS_Error diagnostic; it only
+  // records DiagnosticHandler::HasErrors and prints the message. Backend
+  // errors such as the AMDGPU LDS-overflow resource-limit error surface this
+  // way during code generation, so propagate them as a failure instead of
+  // emitting a binary for a kernel that the backend rejected.
+  if (llvmContext.getDiagHandlerPtr()->HasErrors) {
+    llvm::errs() << "LLVM backend reported errors during code generation\n";
     return failure();
   }
 
