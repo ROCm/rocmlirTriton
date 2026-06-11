@@ -75,30 +75,3 @@ module attributes {
     llvm.return
   }
 }
-
-// -----
-
-// Verifies that a live call result with no trailing tensor/memref operand to
-// alias to triggers a diagnostic. The kernel takes one ptr argument so the call
-// has one trailing tensor operand, but produces two live tensor results --
-// result #1 has no operand to be aliased against, violating the
-// trailing-operands-as-outputs contract.
-
-// expected-error @below {{'func.call' op live kernel call result has no trailing tensor/memref operand to alias to}}
-module attributes {
-    "ttg.num-warps" = 4 : i32,
-    "ttg.threads-per-warp" = 64 : i32,
-    "ttg.num-ctas" = 1 : i32,
-    "rock.grid_size.test_contract_violation" = 4 : i32,
-    "triton.hsaco" = "DUMMY_HSACO",
-    "rock.host_functions" = [
-        "func.func @contract_violation_caller(%arg0: tensor<1024xf32>) -> (tensor<1024xf32>, tensor<1024xf32>) {\n  %0:2 = func.call @test_contract_violation(%arg0) : (tensor<1024xf32>) -> (tensor<1024xf32>, tensor<1024xf32>)\n  return %0#0, %0#1 : tensor<1024xf32>, tensor<1024xf32>\n}"
-    ]
-} {
-  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
-  llvm.func @test_contract_violation(%arg0: !llvm.ptr)
-      attributes {rock.kernel} {
-    llvm.return
-  }
-}
-

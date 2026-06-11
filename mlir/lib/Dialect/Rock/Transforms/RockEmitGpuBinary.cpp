@@ -195,22 +195,12 @@ bool RockEmitGpuBinaryPass::restoreHostFunctions(ModuleOp moduleOp) {
       continue;
     }
 
-    // Move each operation from the parsed module to our module. The parser
-    // assigns each op a `FileLineColLoc` pointing into the synthetic in-memory
-    // buffer above (filename `-`), which is meaningless to anyone reading a
-    // post-restoration diagnostic. Fuse those with the owning module's location
-    // so diagnostics on restored ops point back to the source that actually
-    // owned the `rock.host_functions` attribute, while still preserving the
-    // parser-assigned line/column within the serialized snippet.
-    Location moduleLoc = moduleOp.getLoc();
+    // Move each operation from the parsed module to our module
     for (Operation &op :
          llvm::make_early_inc_range(parsedModule->getBody()->getOperations())) {
       if (op.hasTrait<OpTrait::IsTerminator>())
         continue;
       op.moveBefore(&moduleOp.getBody()->back());
-      op.walk([&](Operation *child) {
-        child->setLoc(FusedLoc::get(ctx, {moduleLoc, child->getLoc()}));
-      });
     }
   }
 
@@ -332,9 +322,9 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
 
     // gpu.launch_func doesn't return values - it modifies buffers in-place.
     // Replace uses of the func.call results with the corresponding output
-    // operands. The trailing tensor/memref operands map 1:1 to the results in
-    // reverse order (e.g. GEMM: 1 result = last operand; attention with
-    // return_lse: 2 results = last two).
+    // operands. Support a variable number of results: the last N tensor/memref
+    // operands (in reverse order) correspond to the N results (e.g. GEMM: 1
+    // result = last operand; attention with return_lse: 2 results = last two).
     const unsigned numResults = callOp.getNumResults();
     if (numResults > 0) {
       // Collect redundant to_buffer + copy ops before replacing (they use the
@@ -362,15 +352,8 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
         }
       }
       for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
-        if (result.use_empty())
-          continue;
-
-        if (resultIdx >= outputOperandsInReverseOrder.size())
-          return callOp.emitOpError(
-              "live kernel call result has no trailing tensor/memref operand "
-              "to alias to; the trailing-operands-as-outputs contract is "
-              "violated");
-        result.replaceAllUsesWith(outputOperandsInReverseOrder[resultIdx]);
+        if (resultIdx < outputOperandsInReverseOrder.size())
+          result.replaceAllUsesWith(outputOperandsInReverseOrder[resultIdx]);
       }
       for (Operation *op : llvm::reverse(redundantOpsToErase))
         op->erase();

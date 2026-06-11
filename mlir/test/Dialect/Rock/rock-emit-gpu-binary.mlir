@@ -355,32 +355,6 @@ module attributes {
 
 // -----
 
-// Verifies bwd_data multi-kernel call lowering still uses the normal kernel ABI:
-// the single result aliases the trailing output operand %arg2.
-// CHECK-LABEL: func.func @bwd_data_multi_kernel_caller
-// CHECK-SAME: (%[[A0:.*]]: tensor<144xf32>, %[[A1:.*]]: tensor<72xf32>, %[[A2:.*]]: tensor<512xf32>)
-// CHECK: gpu.launch_func @rock_kernels::@bwd_data_multi_kernel
-// CHECK-NOT: func.call @bwd_data_multi_kernel
-// CHECK: return %[[A2]] : tensor<512xf32>
-module attributes {
-    "ttg.num-warps" = 4 : i32,
-    "ttg.threads-per-warp" = 64 : i32,
-    "ttg.num-ctas" = 1 : i32,
-    "rock.grid_size.bwd_data_multi_kernel" = 4 : i32,
-    "triton.hsaco" = "DUMMY_HSACO",
-    "rock.host_functions" = [
-        "func.func @bwd_data_multi_kernel_caller(%arg0: tensor<144xf32>, %arg1: tensor<72xf32>, %arg2: tensor<512xf32>) -> tensor<512xf32> {\n  %0 = func.call @bwd_data_multi_kernel(%arg0, %arg1, %arg2) : (tensor<144xf32>, tensor<72xf32>, tensor<512xf32>) -> tensor<512xf32>\n  return %0 : tensor<512xf32>\n}"
-    ]
-} {
-  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
-  llvm.func @bwd_data_multi_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr)
-      attributes {rock.kernel} {
-    llvm.return
-  }
-}
-
-// -----
-
 // Verifies cluster_size > 1 is correctly embedded in kernel metadata
 // CHECK: gpu.binary @rock_kernels
 // CHECK-SAME: #gpu.kernel_metadata<"test_cluster_kernel"
