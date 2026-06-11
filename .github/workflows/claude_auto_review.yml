@@ -318,6 +318,30 @@ jobs:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
 
+      # Inline probe: absorb the brief post-mint token-propagation 404 race
+      # before the first App-token call; fail closed. See doc §11, §15.
+      - name: Wait for App token to be live
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if gh api "repos/${GITHUB_REPOSITORY}" --silent; then
+              live=1
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
+              sleep $((attempt * 5))
+            else
+              echo "::warning::App token not live yet (attempt ${attempt}/4); giving up"
+            fi
+          done
+          if [ "${live:-}" != 1 ]; then
+            echo "::error::App token never became live for ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
       # Pre-fetch PR context in a plain shell step (no model). Runs before Claude
       # and consumes no user-controlled data, so it can't be prompt-injected; the
       # App token here is not propagated to the Claude step. set -euo pipefail is
@@ -1023,6 +1047,30 @@ jobs:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
 
+      # Inline probe: absorb the brief post-mint token-propagation 404 race
+      # before the first App-token call; fail closed. See doc §11, §15.
+      - name: Wait for App token to be live
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if gh api "repos/${GITHUB_REPOSITORY}" --silent; then
+              live=1
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
+              sleep $((attempt * 5))
+            else
+              echo "::warning::App token not live yet (attempt ${attempt}/4); giving up"
+            fi
+          done
+          if [ "${live:-}" != 1 ]; then
+            echo "::error::App token never became live for ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
       - name: Post inline comments, thread updates, and submit review
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -1058,6 +1106,30 @@ jobs:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
 
+      # Inline probe: absorb the brief post-mint token-propagation 404 race
+      # before the first App-token call; fail closed. See doc §11, §15.
+      - name: Wait for App token to be live
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if gh api "repos/${GITHUB_REPOSITORY}" --silent; then
+              live=1
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
+              sleep $((attempt * 5))
+            else
+              echo "::warning::App token not live yet (attempt ${attempt}/4); giving up"
+            fi
+          done
+          if [ "${live:-}" != 1 ]; then
+            echo "::error::App token never became live for ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
       - name: Remove claude-review label
         id: remove-label
         env:
@@ -1076,7 +1148,7 @@ jobs:
                 "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels/claude-review" \
                 2>&1); then
             echo "Removed claude-review label from PR #${PR_NUMBER}."
-          elif printf '%s' "$output" | grep -qE 'HTTP 404|Not Found'; then
+          elif grep -qE 'HTTP 404|Not Found' <<<"$output"; then
             echo "claude-review label already absent on PR #${PR_NUMBER}; nothing to do."
           else
             echo "::error::Failed to remove claude-review label from PR #${PR_NUMBER}"
