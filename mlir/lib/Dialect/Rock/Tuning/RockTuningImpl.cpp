@@ -1200,7 +1200,7 @@ LogicalResult tuningTableLookup(TuningTable *perfTable, ModuleOp &mod,
   return failure();
 }
 
-static int64_t retrieveSplitKValue(StringAttr perfConfig) {
+int64_t retrieveSplitKValue(StringAttr perfConfig) {
   auto gemmGemmPerfConfig = GemmGemmParamsAttr::get(perfConfig);
   if (gemmGemmPerfConfig)
     return gemmGemmPerfConfig.getSplitKFactor();
