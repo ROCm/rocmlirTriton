@@ -501,6 +501,8 @@ int setLitWorkerCount() {
         limit_lit_workers = 20
     } else if (gpu_arch.contains('gfx942') || gpu_arch.contains('gfx950')) {
         limit_lit_workers = 64
+    } else if (gpu_arch.contains('gfx1200') || gpu_arch.contains('gfx1201')) {
+        limit_lit_workers = 16
     }
     return limit_lit_workers
 }
