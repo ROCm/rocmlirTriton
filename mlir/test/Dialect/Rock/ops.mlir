@@ -124,6 +124,26 @@ func.func @rock_gemm(%a : tensor<32x64xf16>, %b : tensor<1x32x128xf16>, %out : t
 // CHECK-NEXT: rock.gemm
 // CHECK-NEXT: rock.store
 
+func.func @rock_store_result_view_fanout(%source : tensor<4x4xf32>, %dest : tensor<4x4xf32>) -> (tensor<4x4xf32>, tensor<4x4xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %view0 = rock.transform %result by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [4, 4] -> [4, 4]> : tensor<4x4xf32> to tensor<4x4xf32>
+  %view1 = rock.transform %result by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [4, 4] -> [4, 4]> : tensor<4x4xf32> to tensor<4x4xf32>
+  func.return %view0, %view1 : tensor<4x4xf32>, tensor<4x4xf32>
+}
+// CHECK-LABEL: func.func @rock_store_result_view_fanout
+// CHECK: rock.store
+// CHECK: rock.transform
+// CHECK: rock.transform
+
+func.func @rock_store_result_store_chain(%source : tensor<4x4xf32>, %dest : tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %result0 = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %result1 = rock.store %source to %result0 by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  func.return %result1 : tensor<4x4xf32>
+}
+// CHECK-LABEL: func.func @rock_store_result_store_chain
+// CHECK: rock.store
+// CHECK: rock.store
+
 // A is K x M (tr), so aScaleTransposed=true means scaleA layout is K/qbs x M.
 // B is G x K x N, so scaleB layout is G x N x K/qbs (per GemmOp::verify).
 // With K=32 and quantBlockSize=32, K/qbs = 1.

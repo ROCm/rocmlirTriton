@@ -112,32 +112,26 @@ func.func @bwd_data_dilated(%arg0: tensor<144xf32>, %arg1: tensor<128xf32>, %arg
 // in the count for a "fully populated" stride>1 case.
 //
 // `rock.store` is `Pure`, so each per-phase store result must be kept alive
-// in the SSA chain. The BwdData branch in `RockConvToGemmPass` routes the
-// first store through the original `func.return` operand and appends the
-// remaining three as additional return operands, expanding the kernel's
-// result list from 1 to 4 (all aliasing the same `%arg2` output buffer).
-//
-// The appended results and their keepalive `rock.store` producers are
-// tagged with `rock.bwd_data_store` (see `BwdDataStoreAttr`) so downstream
-// consumers can identify them explicitly instead of relying on the
-// structural `use_empty()` invariant. The first store is *not* marked --
-// it threads through the original `func.return` operand and so behaves like
-// any ordinary kernel output. See `expandKernelReturns` in `ConvToGemm.cpp`.
+// in the SSA chain. The BwdData branch in `RockConvToGemmPass` threads the
+// destination through the stores and returns only the final store result.
 // ============================================================================
 // CHECK-LABEL: @bwd_data_strided_multi_kernel
-// CHECK-SAME: -> (tensor<512xf32>, tensor<512xf32> {rock.bwd_data_store}, tensor<512xf32> {rock.bwd_data_store}, tensor<512xf32> {rock.bwd_data_store})
+// CHECK-SAME: -> tensor<512xf32>
 // CHECK-NOT: rock.conv_bwd_data
 // CHECK: rock.gemm tr
 // CHECK: %[[STORE0:.*]] = rock.store {{.*}} by set :
+// CHECK: rock.transform %[[STORE0]]
 // CHECK: rock.gemm tr
-// CHECK: %[[STORE1:.*]] = rock.store {{.*}} by set {rock.bwd_data_store}
+// CHECK: %[[STORE1:.*]] = rock.store {{.*}} by set :
+// CHECK: rock.transform %[[STORE1]]
 // CHECK: rock.gemm tr
-// CHECK: %[[STORE2:.*]] = rock.store {{.*}} by set {rock.bwd_data_store}
+// CHECK: %[[STORE2:.*]] = rock.store {{.*}} by set :
+// CHECK: rock.transform %[[STORE2]]
 // CHECK: rock.gemm tr
-// CHECK: %[[STORE3:.*]] = rock.store {{.*}} by set {rock.bwd_data_store}
+// CHECK: %[[STORE3:.*]] = rock.store {{.*}} by set :
 // CHECK-NOT: rock.gemm
 // CHECK-NOT: rock.store
-// CHECK: return %[[STORE0]], %[[STORE1]], %[[STORE2]], %[[STORE3]]
+// CHECK: return %[[STORE3]]
 func.func @bwd_data_strided_multi_kernel(%arg0: tensor<144xf32>, %arg1: tensor<72xf32>, %arg2: tensor<512xf32>) -> tensor<512xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.block_size = 128 : i32, rock.kernel} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 4 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{4, 4, 3, 3} ["k", "c", "0", "1"] at [1, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4, 4, 3, 3] -> [144]> : tensor<144xf32> to tensor<1x4x4x3x3xf32>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 4 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{2, 4, 3, 3} ["no", "ko", "0o", "1o"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["go"] at [1] -> [] at []>] bounds = [2, 1, 4, 3, 3] -> [72]> : tensor<72xf32> to tensor<2x1x4x3x3xf32>
@@ -153,20 +147,18 @@ func.func @bwd_data_strided_multi_kernel(%arg0: tensor<144xf32>, %arg1: tensor<7
 // @bwd_data_multi_kernel_with_caller
 // Same multi-kernel BwdData shape as @bwd_data_strided_multi_kernel (stride
 // 2, 3x3 filter, 2x1x4x8x8 input grad, 4 phases), but the kernel is paired
-// with a non-kernel host `func.call` site. This pins the call-site half of
-// `expandKernelReturns`
+// with a non-kernel host `func.call` site. The kernel ABI stays unchanged.
 // ============================================================================
 // CHECK-LABEL: @bwd_data_kernel_with_caller
-// CHECK-SAME: -> (tensor<512xf32>, tensor<512xf32> {rock.bwd_data_store}, tensor<512xf32> {rock.bwd_data_store}, tensor<512xf32> {rock.bwd_data_store})
+// CHECK-SAME: -> tensor<512xf32>
 // CHECK-NOT: rock.conv_bwd_data
 //
 // CHECK-LABEL: @bwd_data_host_caller
 // CHECK-SAME: (%[[A0:.*]]: tensor<144xf32>, %[[A1:.*]]: tensor<72xf32>, %[[A2:.*]]: tensor<512xf32>)
 // CHECK-SAME: -> tensor<512xf32>
-// CHECK: %[[CALL:.*]]:4 = call @bwd_data_kernel_with_caller(%[[A0]], %[[A1]], %[[A2]])
-// CHECK-SAME: {res_attrs = [{}, {rock.bwd_data_store}, {rock.bwd_data_store}, {rock.bwd_data_store}]}
-// CHECK-SAME: : (tensor<144xf32>, tensor<72xf32>, tensor<512xf32>) -> (tensor<512xf32>, tensor<512xf32>, tensor<512xf32>, tensor<512xf32>)
-// CHECK: return %[[CALL]]#0 : tensor<512xf32>
+// CHECK: %[[CALL:.*]] = call @bwd_data_kernel_with_caller(%[[A0]], %[[A1]], %[[A2]])
+// CHECK-SAME: : (tensor<144xf32>, tensor<72xf32>, tensor<512xf32>) -> tensor<512xf32>
+// CHECK: return %[[CALL]] : tensor<512xf32>
 func.func @bwd_data_kernel_with_caller(%arg0: tensor<144xf32>, %arg1: tensor<72xf32>, %arg2: tensor<512xf32>) -> tensor<512xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.block_size = 128 : i32, rock.kernel} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 4 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{4, 4, 3, 3} ["k", "c", "0", "1"] at [1, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4, 4, 3, 3] -> [144]> : tensor<144xf32> to tensor<1x4x4x3x3xf32>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 4 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{2, 4, 3, 3} ["no", "ko", "0o", "1o"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["go"] at [1] -> [] at []>] bounds = [2, 1, 4, 3, 3] -> [72]> : tensor<72xf32> to tensor<2x1x4x3x3xf32>

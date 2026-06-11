@@ -24,6 +24,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Transforms/DialectConversion.h"
 
 namespace mlir {
@@ -48,6 +49,15 @@ struct RockLowerBlockwiseToPtrPass
 } // end anonymous namespace
 
 namespace {
+
+static Value peelStoreResultRoot(Value root) {
+  while (auto storeOp = root.getDefiningOp<BlockwiseStoreOp>()) {
+    SmallVector<TransformMapAttr> transforms;
+    std::tie(root, std::ignore) =
+        rock::untransform(storeOp.getDest(), transforms);
+  }
+  return root;
+}
 
 //===----------------------------------------------------------------------===//
 // BlockwiseLoadOp lowering.
@@ -90,6 +100,13 @@ struct BlockwiseStoreRewritePattern
     Value dest = op.getDest();
     auto extraIndices = op.getExtraIndices();
     auto storeMethod = op.getStoreMethod();
+
+    auto [destRoot, destMaps, _] = rock::untransform(b, dest);
+    Value normalizedDestRoot = peelStoreResultRoot(destRoot);
+    if (normalizedDestRoot != destRoot) {
+      dest = rock::transform(b, normalizedDestRoot, destMaps);
+    }
+    op.getResult().replaceAllUsesWith(normalizedDestRoot);
 
     auto transformsToPtrOp =
         TransformsToPtrOp::create(b, loc, dest, extraIndices);

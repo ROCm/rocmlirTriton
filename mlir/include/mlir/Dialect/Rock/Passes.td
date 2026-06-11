@@ -32,7 +32,7 @@ def RockDetectFlashDecodingPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
-def RockConvToGemmPass : Pass<"rock-conv-to-gemm", "::mlir::ModuleOp"> {
+def RockConvToGemmPass : Pass<"rock-conv-to-gemm", "::mlir::func::FuncOp"> {
   let summary = "expand convolution into coordinate transformations and gemm. "
                 "Additionally, it also convert rock.conv_elementwise_gemm into "
                 "rock.gemm_elementwise_gemm";

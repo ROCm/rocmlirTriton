@@ -45,7 +45,6 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
@@ -132,117 +131,6 @@ static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
     if (defOp->getBlock() == op->getBlock() && op->isBeforeInBlock(defOp))
       b.setInsertionPointAfter(defOp);
   }
-}
-
-/// Build a result-attribute list of length `oldNumResults + numKeepalive` by
-/// reusing `existing` (or empty dicts for the first `oldNumResults` entries
-/// when absent) and tagging the trailing `numKeepalive` entries with
-/// `keepaliveDict`.
-static SmallVector<Attribute>
-buildKeepaliveResAttrs(MLIRContext *ctx, ArrayAttr existing,
-                       unsigned oldNumResults, unsigned numKeepalive,
-                       DictionaryAttr keepaliveDict) {
-  SmallVector<Attribute> resAttrs;
-  resAttrs.reserve(oldNumResults + numKeepalive);
-  if (existing) {
-    for (Attribute a : existing)
-      resAttrs.push_back(a);
-  } else {
-    resAttrs.append(oldNumResults, DictionaryAttr::get(ctx));
-  }
-  resAttrs.append(numKeepalive, keepaliveDict);
-  return resAttrs;
-}
-
-/// Append `extraReturns` to kernel's `func.return`, widen its function
-/// type to match, and rewrite every `func.call @kernel` in `module` so its
-/// result matches the new signature.
-static LogicalResult expandKernelReturns(func::FuncOp kernel, ModuleOp module,
-                                         ValueRange extraReturns) {
-  if (extraReturns.empty())
-    return success();
-
-  if (!kernel->hasAttr(rock::KernelAttr::getMnemonic()))
-    return kernel.emitOpError("expandKernelReturns requires "
-                              "the kernel to be marked with 'rock.kernel'");
-
-  if (!kernel.isPublic())
-    return kernel.emitOpError(
-        "bwd_data multi-kernel keepalive requires public visibility; "
-        "RemoveDeadValuesPass would otherwise strip the extended return "
-        "signature and silently drop per-phase rock.store ops");
-
-  SmallVector<func::ReturnOp> returnOps;
-  kernel.walk([&](func::ReturnOp op) { returnOps.push_back(op); });
-  if (returnOps.size() != 1)
-    return kernel.emitOpError("bwd_data multi-kernel keepalive requires "
-                              "exactly one func.return, found ")
-           << returnOps.size();
-
-  func::ReturnOp returnOp = returnOps.front();
-  unsigned oldNumResults = kernel.getNumResults();
-  MLIRContext *ctx = kernel.getContext();
-
-  // Append-only: existing return operands and their corresponding kernel
-  // result types stay at the same indices, so old callers' result uses
-  // need no remapping.
-  returnOp->insertOperands(returnOp.getNumOperands(), extraReturns);
-
-  SmallVector<Type> newResultTypes(kernel.getResultTypes());
-  for (Value v : extraReturns)
-    newResultTypes.push_back(v.getType());
-  kernel.setFunctionType(FunctionType::get(
-      ctx, kernel.getFunctionType().getInputs(), newResultTypes));
-
-  // Tag the appended results with `rock.bwd_data_store` so downstream
-  // consumers (notably `RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs`)
-  // can identify the keepalive results explicitly instead of relying on the
-  // structural `use_empty()` invariant. The same marker is propagated to the
-  // rewritten `func.call` below; `func.func` result attrs are wiped when
-  // `RockLowerBlockwiseToPtrPass` voids the kernel signature, but the call
-  // op's attrs survive serialization in `rock.host_functions`.
-  auto keepaliveDict = DictionaryAttr::get(
-      ctx, {NamedAttribute(
-               StringAttr::get(ctx, rock::BwdDataStoreAttr::getMnemonic()),
-               UnitAttr::get(ctx))});
-
-  kernel.setAllResultAttrs(
-      buildKeepaliveResAttrs(ctx, kernel.getAllResultAttrs(), oldNumResults,
-                             extraReturns.size(), keepaliveDict));
-
-  StringRef kernelName = kernel.getName();
-  TypeRange newResults = kernel.getFunctionType().getResults();
-  SmallVector<func::CallOp> callsToRewrite;
-  module.walk([&](func::CallOp callOp) {
-    if (callOp.getCallee() == kernelName)
-      callsToRewrite.push_back(callOp);
-  });
-
-  for (func::CallOp callOp : callsToRewrite) {
-    if (callOp.getNumResults() != oldNumResults)
-      return callOp.emitOpError("call site result count (")
-             << callOp.getNumResults() << ") must match the kernel '"
-             << kernelName << "' pre-expansion arity (" << oldNumResults << ")";
-    OpBuilder builder(callOp);
-    auto newCall = func::CallOp::create(builder, callOp.getLoc(), kernelName,
-                                        newResults, callOp.getOperands());
-
-    // Don't use any of the new results, these are alias keepalives for the
-    // kernel's output buffer.
-    for (unsigned i = 0; i < oldNumResults; ++i)
-      callOp.getResult(i).replaceAllUsesWith(newCall.getResult(i));
-
-    // Mirror the kernel's `res_attrs` onto the call so the keepalive marker
-    // is visible to consumers that only see the call op (i.e. host code
-    // restored by `RockEmitGpuBinary` after `RockSerializeHostFuncs`).
-    newCall.setResAttrsAttr(ArrayAttr::get(
-        ctx,
-        buildKeepaliveResAttrs(ctx, callOp.getResAttrsAttr(), oldNumResults,
-                               extraReturns.size(), keepaliveDict)));
-
-    callOp.erase();
-  }
-  return success();
 }
 
 /// Update any StoreOp that uses the conv result to use the gemm result instead.
@@ -1254,33 +1142,35 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     Value destBuffer = originalStoreOp.getDest();
     ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
 
-    SmallVector<Value> storeResults;
-    storeResults.reserve(kernelIds.size());
-    for (int64_t kid : kernelIds) {
-      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
+    ArrayAttr destMaps;
+    std::tie(std::ignore, destMaps, std::ignore) =
+        rock::untransform(b, destBuffer);
+
+    // Thread the destination through each per-kernel store so the single
+    // returned tensor represents all disjoint bwd_data phase writes. Each store
+    // returns the root tensor, so rebuild the original destination view before
+    // feeding the next phase.
+    Value currentDest = destBuffer;
+    Value finalStoreResult;
+    for (auto [idx, kid] : llvm::enumerate(kernelIds)) {
+      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, currentDest);
       if (failed(maybe))
         return failure();
 
       auto [gemmResult, gemmDest] = maybe.value();
       auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
                                         gemmDest, storeMethod);
-
-      if (!storeResults.empty())
-        newStoreOp->setAttr(rock::BwdDataStoreAttr::getMnemonic(),
-                            b.getUnitAttr());
-      storeResults.push_back(newStoreOp.getResult());
+      finalStoreResult = newStoreOp.getResult();
+      if (idx + 1 < kernelIds.size())
+        currentDest = rock::transform(b, finalStoreResult, destMaps);
     }
 
     // BwdData with multiple kernel IDs emits N independent gemm + store pairs,
-    // each writing a disjoint slice of the same output buffer. Under the
-    // `Pure` trait, every `rock.store` SSA result must have a live use or
-    // it will be DCE'd. We preserve the original store's use chain (the
-    // parent `func.return` operand) by replacing `originalStoreOp` with
-    // the first new store result. Stores 1..N-1 are intentionally left
-    // with `use_empty()` here as the post-conversion step in
-    // `RockConvToGemmPass::runOnOperation` is the single place that wires
-    // them into the parent function's `func.return`.
-    b.replaceOp(originalStoreOp, storeResults.front());
+    // each writing a disjoint slice of the same output buffer. Since
+    // `rock.store` is Pure, each store result must be live; threading the
+    // destination through the stores makes the final result represent the full
+    // logical output without exposing per-phase stores in the function ABI.
+    b.replaceOp(originalStoreOp, finalStoreResult);
     b.eraseOp(bwdDataOp);
 
     return std::make_tuple(Value(), Value(), Value());
@@ -1834,26 +1724,6 @@ void RockConvToGemmPass::runOnOperation() {
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
     return signalPassFailure();
-  }
-
-  // Post-conversion: extend every parent `func.func` whose body contains
-  // `rock.store` ops the BwdData expansion left use_empty().
-  ModuleOp module = getOperation();
-  llvm::MapVector<func::FuncOp, SmallVector<Value, 4>> extrasByFunc;
-  module.walk([&](StoreOp storeOp) {
-    if (!storeOp->hasAttr(rock::BwdDataStoreAttr::getMnemonic()))
-      return;
-
-    assert(storeOp.getResult().use_empty() &&
-           "bwd_data keepalive store should be use_empty before fix-up");
-    if (auto parentFunc = storeOp->getParentOfType<func::FuncOp>())
-      extrasByFunc[parentFunc].push_back(storeOp.getResult());
-  });
-
-  for (auto &[parentFunc, extraReturns] : extrasByFunc) {
-    if (failed(expandKernelReturns(parentFunc, module, extraReturns))) {
-      return signalPassFailure();
-    }
   }
 }
 } // end anonymous namespace

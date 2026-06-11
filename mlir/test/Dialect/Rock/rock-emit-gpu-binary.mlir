@@ -355,31 +355,25 @@ module attributes {
 
 // -----
 
-// Verifies bwd_data multi-kernel call lowering: the call has 4 results
-// (1 real + 3 keepalive tagged `rock.bwd_data_store`), all four conceptually
-// alias the same trailing output operand %arg2. `expandKernelReturns` in
-// ConvToGemm.cpp guarantees the appended keepalive results are use_empty at
-// the call, so lowering must:
-//   1) erase the func.call (creating gpu.launch_func),
-//   2) replace the live use of result #0 with the trailing tensor operand,
-//   3) leave the keepalive results alone (they vanish with the call).
+// Verifies bwd_data multi-kernel call lowering still uses the normal kernel ABI:
+// the single result aliases the trailing output operand %arg2.
 // CHECK-LABEL: func.func @bwd_data_multi_kernel_caller
 // CHECK-SAME: (%[[A0:.*]]: tensor<144xf32>, %[[A1:.*]]: tensor<72xf32>, %[[A2:.*]]: tensor<512xf32>)
-// CHECK: gpu.launch_func @rock_kernels::@bwd_data_keepalive_kernel
-// CHECK-NOT: func.call @bwd_data_keepalive_kernel
+// CHECK: gpu.launch_func @rock_kernels::@bwd_data_multi_kernel
+// CHECK-NOT: func.call @bwd_data_multi_kernel
 // CHECK: return %[[A2]] : tensor<512xf32>
 module attributes {
     "ttg.num-warps" = 4 : i32,
     "ttg.threads-per-warp" = 64 : i32,
     "ttg.num-ctas" = 1 : i32,
-    "rock.grid_size.bwd_data_keepalive_kernel" = 4 : i32,
+    "rock.grid_size.bwd_data_multi_kernel" = 4 : i32,
     "triton.hsaco" = "DUMMY_HSACO",
     "rock.host_functions" = [
-        "func.func @bwd_data_multi_kernel_caller(%arg0: tensor<144xf32>, %arg1: tensor<72xf32>, %arg2: tensor<512xf32>) -> tensor<512xf32> {\n  %0:4 = func.call @bwd_data_keepalive_kernel(%arg0, %arg1, %arg2) {res_attrs = [{}, {rock.bwd_data_store}, {rock.bwd_data_store}, {rock.bwd_data_store}]} : (tensor<144xf32>, tensor<72xf32>, tensor<512xf32>) -> (tensor<512xf32>, tensor<512xf32>, tensor<512xf32>, tensor<512xf32>)\n  return %0#0 : tensor<512xf32>\n}"
+        "func.func @bwd_data_multi_kernel_caller(%arg0: tensor<144xf32>, %arg1: tensor<72xf32>, %arg2: tensor<512xf32>) -> tensor<512xf32> {\n  %0 = func.call @bwd_data_multi_kernel(%arg0, %arg1, %arg2) : (tensor<144xf32>, tensor<72xf32>, tensor<512xf32>) -> tensor<512xf32>\n  return %0 : tensor<512xf32>\n}"
     ]
 } {
   llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
-  llvm.func @bwd_data_keepalive_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr)
+  llvm.func @bwd_data_multi_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr)
       attributes {rock.kernel} {
     llvm.return
   }

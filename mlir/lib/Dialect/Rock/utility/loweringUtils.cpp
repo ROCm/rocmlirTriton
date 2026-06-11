@@ -317,6 +317,16 @@ FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {
     if (auto viewOp =
             dyn_cast_or_null<ViewLikeOpInterface>(value.getDefiningOp())) {
       value = viewOp.getViewSource();
+    } else if (auto store =
+                   dyn_cast_or_null<StoreOp>(value.getDefiningOp())) {
+      SmallVector<TransformMapAttr> transforms;
+      std::tie(value, std::ignore) =
+          rock::untransform(store.getDest(), transforms);
+    } else if (auto blockwiseStore =
+                   dyn_cast_or_null<BlockwiseStoreOp>(value.getDefiningOp())) {
+      SmallVector<TransformMapAttr> transforms;
+      std::tie(value, std::ignore) =
+          rock::untransform(blockwiseStore.getDest(), transforms);
     } else {
       return failure();
     }

@@ -499,27 +499,32 @@ static LogicalResult processGemm(BlockwiseGemmOp gemm) {
 
   // Output side: bind accResult's grid to the per-cell results, then split each
   // store's source and emit one sub-store per cell into the sliced destination.
-  // New ops go before the block terminator so they dominate the originals.
-  Operation *outputInsertPt =
-      (loop ? loop->getBlock() : gemm->getBlock())->getTerminator();
-  b.setInsertionPoint(outputInsertPt);
+  // New ops go at each original store, not at the terminator: in chained-store
+  // cases the store result feeds later views, so the replacement must dominate
+  // those existing uses.
   splitter.seed(accResult, resultGrid);
 
-  for (Operation *storeOp : stores) {
+  SmallVector<Operation *> orderedStores(stores.begin(), stores.end());
+  llvm::sort(orderedStores, [](Operation *lhs, Operation *rhs) {
+    return lhs->getBlock() == rhs->getBlock() && lhs->isBeforeInBlock(rhs);
+  });
+
+  for (Operation *storeOp : orderedStores) {
+    b.setInsertionPoint(storeOp);
     auto store = cast<BlockwiseStoreOp>(storeOp);
     FailureOr<SmallVector<Value>> srcGrid = splitter.split(store.getSource());
     if (failed(srcGrid))
       return gemm.emitError(
           "rock-decompose-nonpow2-tiles: failed to split store source");
 
-    // Defensive invariant: every store-source sub-tile must dominate the
-    // post-loop insertion point. This guards against a value shared between the
+    // Defensive invariant: every store-source sub-tile must dominate this
+    // store's replacement point. This guards against a value shared between the
     // in-loop GEMM-input split and the post-loop output-fusion split, whose
     // cached in-loop sub-tiles would not dominate here. Recomputed per store
     // since each split() may have inserted new ops.
     DominanceInfo domInfo(gemm->getParentOfType<func::FuncOp>());
     for (Value sub : *srcGrid)
-      if (!domInfo.dominates(sub, outputInsertPt))
+      if (!domInfo.dominates(sub, storeOp))
         return gemm.emitError(
             "rock-decompose-nonpow2-tiles: store-source sub-tile does not "
             "dominate the store insertion point (a value is shared between "
@@ -531,10 +536,12 @@ static LogicalResult processGemm(BlockwiseGemmOp gemm) {
                                 store.getExtraIndices().end());
     StoreMethod method = store.getStoreMethod();
 
-    Value lastStoreResult;
+    // Thread the destination through each sub-store so the final tensor value
+    // represents all disjoint tile writes, and every pure store result is live.
+    Value currentDestRoot = destRoot;
     for (auto [i, mSeg] : llvm::enumerate(mSegs)) {
       for (auto [j, nSeg] : llvm::enumerate(nSegs)) {
-        Value view = rock::transform(b, destRoot, destMaps);
+        Value view = rock::transform(b, currentDestRoot, destMaps);
         unsigned viewRank = cast<RankedTensorType>(view.getType()).getRank();
         Value destSeg = sliceViewDims(
             b, loc, view, {viewRank - 2, viewRank - 1},
@@ -542,10 +549,10 @@ static LogicalResult processGemm(BlockwiseGemmOp gemm) {
         auto st = BlockwiseStoreOp::create(b, loc, storeResultType,
                                            (*srcGrid)[i * nCol + j], destSeg,
                                            extraIdx, method);
-        lastStoreResult = st.getResult();
+        currentDestRoot = st.getResult();
       }
     }
-    store.getResult().replaceAllUsesWith(lastStoreResult);
+    store.getResult().replaceAllUsesWith(currentDestRoot);
   }
 
   // Erase the original stores (writers, so DCE won't). Everything else now dead
