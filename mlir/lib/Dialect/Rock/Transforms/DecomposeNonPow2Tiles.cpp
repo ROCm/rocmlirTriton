@@ -504,10 +504,17 @@ static LogicalResult processGemm(BlockwiseGemmOp gemm) {
   // those existing uses.
   splitter.seed(accResult, resultGrid);
 
+  func::FuncOp func = gemm->getParentOfType<func::FuncOp>();
   SmallVector<Operation *> orderedStores(stores.begin(), stores.end());
-  llvm::sort(orderedStores, [](Operation *lhs, Operation *rhs) {
-    return lhs->getBlock() == rhs->getBlock() && lhs->isBeforeInBlock(rhs);
+  DenseMap<Operation *, unsigned> opOrder;
+  unsigned nextOpOrder = 0;
+  func.walk([&](Operation *op) { opOrder.try_emplace(op, nextOpOrder++); });
+  llvm::sort(orderedStores, [&](Operation *lhs, Operation *rhs) {
+    if (lhs->getBlock() == rhs->getBlock())
+      return lhs->isBeforeInBlock(rhs);
+    return opOrder.lookup(lhs) < opOrder.lookup(rhs);
   });
+  DominanceInfo domInfo(func);
 
   for (Operation *storeOp : orderedStores) {
     b.setInsertionPoint(storeOp);
@@ -522,7 +529,6 @@ static LogicalResult processGemm(BlockwiseGemmOp gemm) {
     // in-loop GEMM-input split and the post-loop output-fusion split, whose
     // cached in-loop sub-tiles would not dominate here. Recomputed per store
     // since each split() may have inserted new ops.
-    DominanceInfo domInfo(gemm->getParentOfType<func::FuncOp>());
     for (Value sub : *srcGrid)
       if (!domInfo.dominates(sub, storeOp))
         return gemm.emitError(
