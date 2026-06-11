@@ -1,0 +1,39 @@
+directory = "ConvVariantsNonPowerOfTwoTileSize"
+prefix = "rocmlir-gen"
+suffix = "--arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+
+# Axis order matters: generateE2ETest.py keys its built-in filters off fixed
+# positions (operation is opt[0], data type is opt[2]) to skip i8 for the
+# backward convolutions, so keep operation first and data type third.
+[[axis]]
+name = "operation"
+values = ["conv", "conv_bwd_data", "conv_bwd_weight"]
+prefix = "--operation "
+
+[[axis]]
+name = "layout"
+values = ["-fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw", "-fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk"]
+
+[[axis]]
+name = "data type"
+values = ["f32", "f16", "bf16", "i8"]
+prefix = "-t "
+
+[[axis]]
+name = "perf_config"
+values = ["gemm:v1:80,80,16,1,1,4,16,1,1,1,1", "gemm:v1:96,96,16,1,1,4,16,1,1,1,1", "gemm:v1:192,96,16,1,1,4,16,1,1,1,1", "gemm:v1:112,112,16,1,1,4,16,1,1,1,1"]
+prefix = "--perf_config "
+
+## Conv variants (shapes adapted from PaddedConvConfig: deliberately
+## non-power-of-two channel/spatial sizes so the implicit GEMM is padded.)
+[[suite]]
+name = "conv_variants_non_power_of_two_tile_size"
+
+[[suite.test]]
+config = "-batchsize=64 -groupsize=1 -in_channels=7 -out_channels=64 -in_h=11 -in_w=11 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --padding_h=1 --padding_w=1 --conv_stride_h=2 --conv_stride_w=2"
+
+[[suite.test]]
+config = "-batchsize=5 -groupsize=1 -in_channels=13 -out_channels=11 -in_h=7 -in_w=7 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --padding_h=0 --padding_w=0 --conv_stride_h=1 --conv_stride_w=1"
+
+[[suite.test]]
+config = "-batchsize=15 -groupsize=1 -in_channels=13 -out_channels=11 -in_h=7 -in_w=7 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --padding_h=1 --padding_w=1 --conv_stride_h=1 --conv_stride_w=1"

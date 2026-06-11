@@ -49,6 +49,8 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-allow-fast-math-flags),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:func.func(rock-decompose-nonpow2-tiles),
+// GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-legalize-float-types),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-serialize-host-funcs,
