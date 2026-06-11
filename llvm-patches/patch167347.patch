@@ -1,5 +1,5 @@
 diff --git a/llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.cpp b/llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.cpp
-index 931a2854c54f..88320b8c2468 100644
+index 1d39b4f1bc52..2c255f861b79 100644
 --- a/llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.cpp
 +++ b/llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.cpp
 @@ -22,6 +22,7 @@
@@ -18,9 +18,9 @@ index 931a2854c54f..88320b8c2468 100644
  #include "llvm/CodeGen/MachineFrameInfo.h"
  #include "llvm/CodeGen/MachineFunctionPass.h"
  #include "llvm/CodeGen/SlotIndexes.h"
-@@ -40,6 +42,72 @@ using namespace llvm;
- 
- #define DEBUG_TYPE "amdgpu-rewrite-agpr-copy-mfma"
+@@ -44,6 +46,72 @@ using namespace llvm;
+ DEBUG_COUNTER(RewriteAGPRCopyMFMACounter, DEBUG_TYPE,
+               "Controls which MFMA chains are rewritten to AGPR form");
  
 +namespace llvm {
 +namespace AMDGPU {
@@ -91,7 +91,7 @@ index 931a2854c54f..88320b8c2468 100644
  namespace {
  
  STATISTIC(NumMFMAsRewrittenToAGPR,
-@@ -59,6 +127,7 @@ class AMDGPURewriteAGPRCopyMFMAImpl {
+@@ -63,6 +131,7 @@ class AMDGPURewriteAGPRCopyMFMAImpl {
    LiveIntervals &LIS;
    LiveStacks &LSS;
    const RegisterClassInfo &RegClassInfo;
@@ -99,7 +99,7 @@ index 931a2854c54f..88320b8c2468 100644
  
    bool attemptReassignmentsToAGPR(SmallSetVector<Register, 4> &InterferingRegs,
                                    MCPhysReg PrefPhysReg) const;
-@@ -67,10 +136,11 @@ public:
+@@ -71,10 +140,11 @@ public:
    AMDGPURewriteAGPRCopyMFMAImpl(MachineFunction &MF, VirtRegMap &VRM,
                                  LiveRegMatrix &LRM, LiveIntervals &LIS,
                                  LiveStacks &LSS,
@@ -113,7 +113,7 @@ index 931a2854c54f..88320b8c2468 100644
  
    bool isRewriteCandidate(const MachineInstr &MI) const {
      return TII.isMAI(MI) && AMDGPU::getMFMASrcCVDstAGPROp(MI.getOpcode()) != -1;
-@@ -524,6 +594,37 @@ void AMDGPURewriteAGPRCopyMFMAImpl::eliminateSpillsOfReassignedVGPRs() const {
+@@ -529,6 +599,37 @@ void AMDGPURewriteAGPRCopyMFMAImpl::eliminateSpillsOfReassignedVGPRs() const {
      if (SpillReferences == SpillSlotReferences.end())
        continue;
  
@@ -151,7 +151,7 @@ index 931a2854c54f..88320b8c2468 100644
      const TargetRegisterClass *RC = LSS.getIntervalRegClass(Slot);
  
      LLVM_DEBUG(dbgs() << "Trying to eliminate " << printReg(Slot, &TRI)
-@@ -609,11 +710,13 @@ public:
+@@ -633,11 +734,13 @@ public:
      AU.addRequired<VirtRegMapWrapperLegacy>();
      AU.addRequired<LiveRegMatrixWrapperLegacy>();
      AU.addRequired<LiveStacksWrapperLegacy>();
@@ -165,7 +165,7 @@ index 931a2854c54f..88320b8c2468 100644
  
      AU.setPreservesAll();
      MachineFunctionPass::getAnalysisUsage(AU);
-@@ -628,6 +731,7 @@ INITIALIZE_PASS_DEPENDENCY(LiveIntervalsWrapperPass)
+@@ -652,6 +755,7 @@ INITIALIZE_PASS_DEPENDENCY(LiveIntervalsWrapperPass)
  INITIALIZE_PASS_DEPENDENCY(VirtRegMapWrapperLegacy)
  INITIALIZE_PASS_DEPENDENCY(LiveRegMatrixWrapperLegacy)
  INITIALIZE_PASS_DEPENDENCY(LiveStacksWrapperLegacy)
@@ -173,7 +173,7 @@ index 931a2854c54f..88320b8c2468 100644
  INITIALIZE_PASS_END(AMDGPURewriteAGPRCopyMFMALegacy, DEBUG_TYPE,
                      "AMDGPU Rewrite AGPR-Copy-MFMA", false, false)
  
-@@ -647,7 +751,8 @@ bool AMDGPURewriteAGPRCopyMFMALegacy::runOnMachineFunction(
+@@ -671,7 +775,8 @@ bool AMDGPURewriteAGPRCopyMFMALegacy::runOnMachineFunction(
    auto &LRM = getAnalysis<LiveRegMatrixWrapperLegacy>().getLRM();
    auto &LIS = getAnalysis<LiveIntervalsWrapperPass>().getLIS();
    auto &LSS = getAnalysis<LiveStacksWrapperLegacy>().getLS();
@@ -183,7 +183,7 @@ index 931a2854c54f..88320b8c2468 100644
    return Impl.run(MF);
  }
  
-@@ -658,10 +763,11 @@ AMDGPURewriteAGPRCopyMFMAPass::run(MachineFunction &MF,
+@@ -682,10 +787,11 @@ AMDGPURewriteAGPRCopyMFMAPass::run(MachineFunction &MF,
    LiveRegMatrix &LRM = MFAM.getResult<LiveRegMatrixAnalysis>(MF);
    LiveIntervals &LIS = MFAM.getResult<LiveIntervalsAnalysis>(MF);
    LiveStacks &LSS = MFAM.getResult<LiveStacksAnalysis>(MF);

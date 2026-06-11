@@ -72,12 +72,23 @@ diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/AtomicRMWOpsEmitter.cpp b/th
 diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp
 --- a/third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp
-@@ -2088,7 +2088,7 @@ struct AtomicRMWOpConversion
+@@ -2088,6 +2088,6 @@ struct AtomicRMWOpConversion
      auto loc = op.getLoc();
      auto b = TritonLLVMOpBuilder(loc, rewriter);
  
 -    auto binOp = matchAtomicOp(op.getAtomicRmwOp());
 +    auto binOp = matchAtomicOp(op.getAtomicRmwOp(), op.getVal().getType());
+     if (!binOp)
+       return rewriter.notifyMatchFailure(op, "Unsupported RMW operation");
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/MemoryOpToLLVM.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/MemoryOpToLLVM.cpp
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/MemoryOpToLLVM.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/MemoryOpToLLVM.cpp
+@@ -645,6 +645,6 @@ struct LocalAtomicScatterRMWOpConversion
+       return failure();
+     LocalAtomicScatterRMWInfo &info = *lowering;
+ 
+-    auto binOp = matchAtomicOp(op.getAtomicRmwOp());
++    auto binOp = matchAtomicOp(op.getAtomicRmwOp(), op.getValues().getType());
      if (!binOp)
        return rewriter.notifyMatchFailure(op, "Unsupported RMW operation");
 

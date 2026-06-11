@@ -75,7 +75,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/TargetParser/TargetParser.h"
+#include "llvm/TargetParser/AMDGPUTargetParser.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
@@ -533,8 +533,7 @@ std::optional<SmallVector<char, 0>> assembleAMDGCN(StringRef assembly,
   std::unique_ptr<llvm::MCSubtargetInfo> sti(
       target->createMCSubtargetInfo(triple, archStr, features));
 
-  llvm::MCContext ctx(triple, mai.get(), mri.get(), sti.get(), &srcMgr,
-                      &mcOptions);
+  llvm::MCContext ctx(triple, *mai, *mri, *sti, &srcMgr);
   std::unique_ptr<llvm::MCObjectFileInfo> mofi(
       target->createMCObjectFileInfo(ctx, /*PIC=*/false,
                                      /*LargeCodeModel=*/false));
@@ -559,7 +558,7 @@ std::optional<SmallVector<char, 0>> assembleAMDGCN(StringRef assembly,
   std::unique_ptr<llvm::MCAsmParser> parser(
       createMCAsmParser(srcMgr, ctx, *mcStreamer, *mai));
   std::unique_ptr<llvm::MCTargetAsmParser> tap(
-      target->createMCAsmParser(*sti, *parser, *mcii, mcOptions));
+      target->createMCAsmParser(*sti, *parser, *mcii));
   if (!tap) {
     llvm::errs() << "Assembler initialization error\n";
     return std::nullopt;

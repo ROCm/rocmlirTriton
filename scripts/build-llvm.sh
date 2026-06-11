@@ -67,6 +67,18 @@ else
     sed -i '/DCMAKE_CXX_COMPILER/a\              -DMLIR_ENABLE_ROCM_RUNNER=ON' "$TRITON_BUILD_SCRIPT"
 fi
 
+# Step 3b: Ensure LLVM_INSTALL_UTILS=ON (in-place, idempotent).
+#
+# Upstream Triton lists the FileCheck/not/split-file utilities in
+# LLVM_DISTRIBUTION_COMPONENTS, but they are created via add_llvm_utility,
+# which only emits install targets when LLVM_INSTALL_UTILS is ON (default OFF).
+if grep -q 'DLLVM_INSTALL_UTILS=ON' "$TRITON_BUILD_SCRIPT"; then
+    echo "--- LLVM_INSTALL_UTILS already ON, no patch needed ---"
+else
+    echo "--- Patching Triton's build-llvm-project.sh: enabling LLVM_INSTALL_UTILS ---"
+    sed -i '/DLLVM_ENABLE_PROJECTS/a\              -DLLVM_INSTALL_UTILS=ON' "$TRITON_BUILD_SCRIPT"
+fi
+
 # Step 4: Inject llvm-patches application into Triton's build script
 #
 # Triton's script does `git reset --hard $LLVM_COMMIT_HASH` on the LLVM
