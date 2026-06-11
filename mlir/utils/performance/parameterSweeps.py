@@ -524,9 +524,14 @@ async def sweep_parameters(param_iter: Iterable[IterType],
 # LDS, etc.) — those are reported as NOT_APPLICABLE, not FAIL. A 0 in
 # matrixInstrNonkdim / waves_per_eu / grid_group_size means "let the
 # heuristic pick".
+# The non-power-of-two m/n_per_block entries (48, 80, 96, 160, 192) are
+# deliberately included to exercise the rock-decompose-nonpow2-tiles pass,
+# which splits a blockwise GEMM tile with non-pow2 M and/or N into a grid of
+# power-of-two sub-tiles (e.g. 80 -> 64 + 16, 96 -> 64 + 32). k_per_block is
+# kept power-of-two: the contraction dim is not decomposed by that pass.
 PERF_CONFIG_OPTIONS = {
-    'm_per_block': [16, 32, 64, 128, 256],
-    'n_per_block': [16, 32, 64, 128, 256],
+    'm_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
+    'n_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
     'k_per_block': [16, 32, 64, 128],
     # `kpack` is sampled via _kpack_choices(arch); see below. `kpack != 1` is
     # deprecated on gfx950 and gfx1250 (and newer); older archs still take
@@ -728,19 +733,37 @@ def _sampled_perf_within_budget(rng: random.Random, arch: str, dtype: str,
                        "config inside the effective-state budget.")
 
 
-def sample_perf_config(rng: random.Random, arch: str,
-                       split_k_choices: Sequence[int]) -> Tuple[int, ...]:
+def _is_pow2(n: int) -> bool:
+    """True iff ``n`` is a positive power of two."""
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def sample_perf_config(rng: random.Random,
+                       arch: str,
+                       split_k_choices: Sequence[int],
+                       pow2_only: bool = False) -> Tuple[int, ...]:
     """Returns one random 11-field perf-config tuple (gemm:v1 / attn:v1).
 
     ``arch`` selects the valid ``kpack`` set (see :func:`_kpack_choices`).
     ``split_k_choices`` is the list of permissible ``splitKFactor`` values
     for this caller — typically :func:`_split_k_choices(dtype)` for conv/gemm
     and ``[1]`` for attention (whose K-split is exposed via the separate
-    ``-split_kv`` kernel arg, not via the perf-config splitK)."""
+    ``-split_kv`` kernel arg, not via the perf-config splitK).
+
+    ``pow2_only`` restricts ``mPerBlock``/``nPerBlock`` to powers of two.
+    PERF_CONFIG_OPTIONS now includes non-pow2 m/n tiles to exercise the
+    rock-decompose-nonpow2-tiles pass (gemm/conv only); callers whose
+    pipeline doesn't run that pass (attention / gemm+gemm, which use
+    GemmGemmParamsAttr) pass ``pow2_only=True`` to stay on the pow2 grid."""
     opts = PERF_CONFIG_OPTIONS
+    m_choices = opts['m_per_block']
+    n_choices = opts['n_per_block']
+    if pow2_only:
+        m_choices = [v for v in m_choices if _is_pow2(v)]
+        n_choices = [v for v in n_choices if _is_pow2(v)]
     return (
-        rng.choice(opts['m_per_block']),
-        rng.choice(opts['n_per_block']),
+        rng.choice(m_choices),
+        rng.choice(n_choices),
         rng.choice(opts['k_per_block']),
         rng.choice(_kpack_choices(arch)),
         rng.choice(opts['num_ctas']),

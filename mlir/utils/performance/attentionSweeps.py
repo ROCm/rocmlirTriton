@@ -86,11 +86,15 @@ def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> b
     return (mpb * npb) * effective_waves_per_eu <= amd_arch_db.get_vgprs_per_eu(arch) * threads
 
 
-def _sampled_perf_within_vgpr_budget(rng: random.Random, arch: str,
-                                     split_k_choices: Sequence[int]) -> Tuple[int, ...]:
+def _sampled_perf_within_vgpr_budget(rng: random.Random,
+                                     arch: str,
+                                     split_k_choices: Sequence[int],
+                                     pow2_only: bool = False) -> Tuple[int, ...]:
     """Like :func:`sample_perf_config` but rejects perf-configs whose
     C-tile accumulator overruns the VGPR budget implied by ``wavesPerEU``
-    (see :func:`_waves_per_eu_register_budget_ok`). We loop with a
+    (see :func:`_waves_per_eu_register_budget_ok`). ``pow2_only`` is forwarded
+    to ``sample_perf_config`` for callers whose pipeline does not decompose
+    non-pow2 tiles. We loop with a
     generous retry cap rather than enumerating the in-budget subspace
     because the rejection rate is small (<10% on the archs we care about)
     and we don't want to silently bias the sample distribution by
@@ -101,7 +105,7 @@ def _sampled_perf_within_vgpr_budget(rng: random.Random, arch: str,
     its basic-block instruction-count cap is calibrated for conv / gemm
     and doesn't catch the regalloc thrash this predicate guards against."""
     for _ in range(_MAX_PERF_CONFIG_RETRIES):
-        perf_config = sample_perf_config(rng, arch, split_k_choices)
+        perf_config = sample_perf_config(rng, arch, split_k_choices, pow2_only=pow2_only)
         if _waves_per_eu_register_budget_ok(perf_config, arch):
             return perf_config
     raise RuntimeError(
@@ -235,7 +239,9 @@ def random_attn_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     the rocmlir-gen ``causal + split_kv`` limitation on ``seq_len_q``."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
-        perf = _sampled_perf_within_vgpr_budget(rng, arch, [1])
+        # Attention uses GemmGemmParamsAttr and isn't lowered through
+        # rock-decompose-nonpow2-tiles, so keep the m/n tile on the pow2 grid.
+        perf = _sampled_perf_within_vgpr_budget(rng, arch, [1], pow2_only=True)
         n_per_block = perf[1]
         yield (_sample_attn_shape(rng, n_per_block=n_per_block), perf)
 
@@ -276,8 +282,11 @@ def random_gemm_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = No
     for _ in range(num_samples):
         shape = _sample_gemm_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, o, trans_a, ...).
+        # gemm+gemm also uses GemmGemmParamsAttr (no non-pow2 tile decompose),
+        # so keep the m/n tile on the pow2 grid.
         dtype = shape[0]
-        yield (shape, _sampled_perf_within_vgpr_budget(rng, arch, _split_k_choices(dtype)))
+        yield (shape,
+               _sampled_perf_within_vgpr_budget(rng, arch, _split_k_choices(dtype), pow2_only=True))
 
 
 def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfiguration:

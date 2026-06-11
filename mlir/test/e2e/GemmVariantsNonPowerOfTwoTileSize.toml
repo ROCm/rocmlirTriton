@@ -1,0 +1,45 @@
+directory = "GemmVariantsNonPowerOfTwoTileSize"
+prefix = "rocmlir-gen"
+suffix = "--operation gemm --arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+
+[[axis]]
+name = "transA"
+values = ["true", "false"]
+prefix = "--transA="
+
+[[axis]]
+name = "transB"
+values = ["true", "false"]
+prefix = "--transB="
+
+[[axis]]
+name = "transC"
+values = ["true", "false"]
+prefix = "--transC="
+
+[[axis]]
+name = "data type"
+values = ["f32", "f16", "bf16", "i8", "fp8_fp8"]
+prefix = "-t "
+
+[[axis]]
+name = "perf_config"
+values = ["gemm:v1:80,80,16,1,1,4,16,1,1,1,1", "gemm:v1:96,96,16,1,1,4,16,1,1,1,1", "gemm:v1:192,96,16,1,1,4,16,1,1,1,1", "gemm:v1:112,112,16,1,1,4,16,1,1,1,1"]
+prefix = "--perf_config "
+
+## Gemm variants
+[[suite]]
+name = "gemm_variants_non_power_of_two_tile_size"
+
+[[suite.test]]
+config = "-g 3 -m 1024 -k 769 -n 1024"
+
+[[suite.test]]
+config = "-g 1 -m 1024 -k 769 -n 1024"
+
+[[suite.test]]
+config = "-g 1 -m 77 -k 77 -n 77"
+
+# Let's make sure the very silly thing works
+[[suite.test]]
+config = "-g 1 -m 1 -k 1 -n 1"
