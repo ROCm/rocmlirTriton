@@ -1,4 +1,4 @@
 [submodule "external/triton"]
 	path = external/triton
-	url = https://github.com/triton-lang/triton.git
+	url = https://github.com/triton-lang/triton-windows.git
 	ignore = dirty
