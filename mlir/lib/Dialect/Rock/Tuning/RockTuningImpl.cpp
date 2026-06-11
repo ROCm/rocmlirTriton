@@ -133,6 +133,8 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
   bool isMfma = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;
+  bool isWmma = accelKind == MatrixAccelKind::WMMA ||
+                accelKind == MatrixAccelKind::ScaledWMMA;
   Type inTypeA = gemmOp.getAType();
   bool is8b = inTypeA.isInteger(8) ||
               (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
@@ -182,7 +184,33 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  return isMfma ? validRangeMfmaParams : validRangeWmmaParams;
+  // Non-accel (FMA) parameters.
+  std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
+  std::vector<uint32_t> kPerBlockNonAccel = {4, 8, 16};
+  std::vector<uint32_t> numWavesNonAccel;
+  for (uint32_t blockSize : {64u, 128u, 256u}) {
+    if (blockSize % waveSize == 0)
+      numWavesNonAccel.push_back(blockSize / waveSize);
+  }
+  assert(!numWavesNonAccel.empty() && "numWavesNonAccel must be non-empty");
+  std::vector<std::vector<uint32_t>> validRangeNonAccelParams = {
+      dPerBlockNonAccel, // M/block
+      dPerBlockNonAccel, // N/block
+      kPerBlockNonAccel, // K/block
+      {1},               // kPackList (no kpack on non-accel FMA path)
+      numWavesNonAccel,  // numWaves (= blockSize / waveSize)
+      {0},               // matrixInstrNonkdim (no matrix-accel instr)
+      {1, 2, 3},         // numStages
+      wavesPerEUList,    // wavesPerEU
+      gridGroupSizeList, // gridGroupSize
+      numCTAsList        // numCTAs
+  };
+
+  if (isMfma)
+    return validRangeMfmaParams;
+  if (isWmma)
+    return validRangeWmmaParams;
+  return validRangeNonAccelParams;
 }
 
 static std::vector<std::vector<uint32_t>>
@@ -237,15 +265,41 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       wavesPerEUList,
       gridGroupSizeList,
       numCTAsList};
+
+  // Non-accel path.
+  std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
+  std::vector<uint32_t> numWavesNonAccel;
+  for (uint32_t blockSize : {64, 128, 256}) {
+    if (blockSize % waveSize == 0)
+      numWavesNonAccel.push_back(blockSize / waveSize);
+  }
+  assert(!numWavesNonAccel.empty() && "numWavesNonAccel must be non-empty");
+  const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsNonAccel = {
+      /*gemm0MPerBlock=*/dPerBlockNonAccel,
+      /*gemm0NPerBlock=*/dPerBlockNonAccel,
+      kPerBlock,
+      /*kPackList=*/{1},
+      numWavesNonAccel,
+      /*matrixInstrNonkdim=*/{0},
+      {1, 2},
+      wavesPerEUList,
+      gridGroupSizeList,
+      numCTAsList};
+
   auto [firstGemmKind, secondGemmKind] =
       rock::getMatrixAccelKind(rock::getArchValue(gemmGemmOp), gemmGemmOp);
 
-  std::vector<std::vector<uint32_t>> validRangeGemmGemmParams;
-
-  // checking first gemm only is ok
+  // Checking the first gemm is sufficient: the two gemms in attention always
+  // share the same accel kind on every currently supported arch.
   bool isMfma = firstGemmKind == MatrixAccelKind::MFMA ||
                 firstGemmKind == MatrixAccelKind::ScaledMFMA;
-  return isMfma ? validRangeGemmGemmParamsMFMA : validRangeGemmGemmParamsWMMA;
+  bool isWmma = firstGemmKind == MatrixAccelKind::WMMA ||
+                firstGemmKind == MatrixAccelKind::ScaledWMMA;
+  if (isMfma)
+    return validRangeGemmGemmParamsMFMA;
+  if (isWmma)
+    return validRangeGemmGemmParamsWMMA;
+  return validRangeGemmGemmParamsNonAccel;
 }
 
 // Keep in sync with attentionSweeps.py
