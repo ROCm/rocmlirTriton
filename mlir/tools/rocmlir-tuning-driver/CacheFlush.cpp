@@ -172,9 +172,9 @@ public:
     }
   }
 
-  LogicalResult flushCache(hipStream_t stream) {
+  LogicalResult flushCache(hipStream_t stream, bool useLastLevelCacheSize) {
     std::lock_guard<std::mutex> lock(stateMutex);
-    if (failed(allocCacheFlushBuffer()))
+    if (failed(allocCacheFlushBuffer(useLastLevelCacheSize)))
       return failure();
     CHECK_HIP(hipMemsetAsync(flushBuffer.get(), 0, flushSize, stream));
     return success();
@@ -213,17 +213,24 @@ public:
   }
 
 private:
-  LogicalResult allocCacheFlushBuffer() {
+  LogicalResult allocCacheFlushBuffer(bool useLastLevelCacheSize) {
     if (flushBuffer)
       return success();
-    // Size the flush buffer to the architecture's last-level cache. We cannot
-    // use hipDeviceProp_t::l2CacheSize because it only reports the small
-    // per-XCD L2 (~4 MiB on CDNA3/CDNA4), not the last-level AMD Infinity Cache
-    // that actually needs to be evicted between timed runs (256 MiB on
-    // MI300X/MI325X/MI350X). rock::getLastLevelCacheSize returns the right
-    // last-level size per arch (Infinity Cache where present, else L2).
-    flushSize = static_cast<size_t>(
-        rock::getLastLevelCacheSize(deviceProps.gcnArchName));
+    if (useLastLevelCacheSize) {
+      // Size the flush buffer to the architecture's last-level cache. We cannot
+      // use hipDeviceProp_t::l2CacheSize because it only reports the small
+      // per-XCD L2 (~4 MiB on CDNA3/CDNA4), not the last-level AMD Infinity
+      // Cache that actually needs to be evicted between timed runs (256 MiB on
+      // MI300X/MI325X/MI350X). rock::getLastLevelCacheSize returns the right
+      // last-level size per arch (Infinity Cache where present, else L2).
+      flushSize = static_cast<size_t>(
+          rock::getLastLevelCacheSize(deviceProps.gcnArchName));
+    } else {
+      // Default: size the flush buffer to the L2 cache reported by the HIP
+      // runtime, plus a 20% margin.
+      size_t l2Size = static_cast<size_t>(deviceProps.l2CacheSize);
+      flushSize = l2Size + (l2Size / 5); // 20% margin
+    }
     void *rawBuffer = nullptr;
     CHECK_HIP(hipMalloc(&rawBuffer, flushSize));
     flushBuffer.reset(rawBuffer);
@@ -303,8 +310,8 @@ CacheFlushState &getState() {
 
 } // namespace
 
-LogicalResult flushCache(hipStream_t stream) {
-  return getState().flushCache(stream);
+LogicalResult flushCache(hipStream_t stream, bool useLastLevelCacheSize) {
+  return getState().flushCache(stream, useLastLevelCacheSize);
 }
 
 LogicalResult flushInstructionCache(hipStream_t stream) {

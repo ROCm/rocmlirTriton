@@ -158,6 +158,14 @@ static llvm::cl::opt<unsigned> numCompileThreads(
     llvm::cl::desc("Number of parallel compilation threads (0 = auto)"),
     llvm::cl::value_desc("thread count"), llvm::cl::init(0));
 
+static llvm::cl::opt<bool> flushLastLevelCache(
+    "flush-last-level-cache",
+    llvm::cl::desc(
+        "Size the cache-flush buffer to the architecture's last-level cache "
+        "(e.g. AMD Infinity Cache) instead of the per-XCD L2 cache size "
+        "reported by the HIP runtime. Defaults to the L2 cache size."),
+    llvm::cl::init(false));
+
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef filename,
                                             MLIRContext *context) {
@@ -279,6 +287,7 @@ struct BenchmarkParams {
   rock::TuningParamSetKind tuningSpaceKind;
   const unsigned numCompileThreads;
   std::string benchmarkConfig;
+  bool flushLastLevelCache;
 };
 
 enum class CompilationStatus {
@@ -334,13 +343,12 @@ createCompilationContext(SmallVector<std::string> &bufferedDiags) {
   return ctx;
 }
 
-static LogicalResult measureKernel(unsigned iterations, hipStream_t stream,
-                                   const std::vector<hipFunction_t> &functions,
-                                   ArrayRef<uint32_t> blockSizes,
-                                   ArrayRef<uint32_t> gridSizes,
-                                   ArrayRef<uint32_t> numCTAsList,
-                                   std::vector<void *> &argPointers,
-                                   std::vector<double> &measurements) {
+static LogicalResult
+measureKernel(unsigned iterations, hipStream_t stream,
+              const std::vector<hipFunction_t> &functions,
+              ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
+              ArrayRef<uint32_t> numCTAsList, std::vector<void *> &argPointers,
+              std::vector<double> &measurements, bool useLastLevelCacheSize) {
   // Pre-allocate one event pair per iteration so we can record them all in a
   // tight loop and synchronize only once at the end. This matches Triton's
   // do_bench, which minimizes host-side overhead between launches (no
@@ -369,7 +377,7 @@ static LogicalResult measureKernel(unsigned iterations, hipStream_t stream,
     if (failed(flushInstructionCache(stream))) {
       return failure();
     }
-    if (failed(flushCache(stream))) {
+    if (failed(flushCache(stream, useLastLevelCacheSize))) {
       return failure();
     }
 
@@ -489,7 +497,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
       // includes the cache clear.
       if (failed(flushInstructionCache(stream)))
         return failure();
-      if (failed(flushCache(stream)))
+      if (failed(flushCache(stream, params.flushLastLevelCache)))
         return failure();
       for (auto [func, blockSize, gridSize, numCTAs] :
            llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
@@ -538,7 +546,8 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   std::vector<double> measurements;
 
   if (failed(measureKernel(iterations, stream, functions, blockSizes, gridSizes,
-                           numCTAsList, argPointers, measurements)))
+                           numCTAsList, argPointers, measurements,
+                           params.flushLastLevelCache)))
     return failure();
 
   if (params.showAllMeasurements) {
@@ -700,7 +709,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            showAllMeasurements,
                                            tuningSpaceKind,
                                            numCompileThreads,
-                                           benchmarkConfig};
+                                           benchmarkConfig,
+                                           flushLastLevelCache};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);
