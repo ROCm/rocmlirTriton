@@ -64,6 +64,11 @@ add_mlir_library(RocMLIROptMain
   )
 set_target_properties(RocMLIROptMain PROPERTIES EXCLUDE_FROM_ALL ${BUILD_FAT_LIBROCKCOMPILER})
 
+# RocMLIROptMain compiles rocmlir-opt.cpp, which includes Triton AMD backend
+# headers via "amd/include/...". Without the Triton third_party include roots the
+# compile fails with "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h not found".
+rocmlir_add_triton_includes(RocMLIROptMain)
+
 add_rocmlir_tool(rocmlir-opt
   rocmlir-opt.cpp
 
