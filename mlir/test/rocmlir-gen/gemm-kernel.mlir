@@ -49,9 +49,6 @@
 // CHECK-NEXT: %[[b:.*]] = tensor.expand_shape %[[bRaw]] [{{\s*}}[0, 1, 2]]
 // NOTRB-SAME: into tensor<3x769x512xf32>
 // TRB-SAME:   into tensor<3x512x769xf32>
-// CHECK-NEXT: %[[cExp:.*]] = tensor.expand_shape %[[cRaw]] [{{\s*}}[0, 1, 2]]
-// NOTRC-SAME: into tensor<3x1024x512xf32>
-// TRC-SAME:   into tensor<3x512x1024xf32>
 // CHECK-NEXT: %[[cst:.*]] = arith.constant 0.0{{.*}} : f32
 // CHECK-NEXT: %[[empty:.*]] = tensor.empty()
 // CHECK-NEXT: %[[zero:.*]] = linalg.fill ins(%[[cst]] : f32) outs(%[[empty]] : {{.*}}) -> {{.*}}
