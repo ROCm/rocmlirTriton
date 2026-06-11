@@ -1,0 +1,23 @@
+triton-patches/ -- downstream Triton cherry-picks
+=================================================
+
+This directory holds patches against the Triton submodule
+(external/triton/).
+
+----------------------------------------------------------------------
+patch10290.patch
+patch10450.patch
+patch10498.patch
+patch1.patch
+patch2.patch
+patch3.patch
+----------------------------------------------------------------------
+TODO: Add missing patch descriptions
+
+patch10498.patch
+  Extends patch10450's soffset-split safety check to peel sign-preserving
+  transparent wrappers (splat/broadcast/expand_dims/reshape/convert_layout)
+  before trusting the integer-range lattice, so an offset of the form
+  convert_layout(add(base, <negative>)) is no longer wrongly annotated
+  split-safe. Applies on top of patch10450. Mirrors upstream Triton PR
+  https://github.com/triton-lang/triton/pull/10498 exactly.

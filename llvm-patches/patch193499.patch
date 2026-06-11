@@ -1,0 +1,18 @@
+diff --git a/llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp b/llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp
+index b218508c104c..0ecbce3cc15b 100644
+--- a/llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp
++++ b/llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp
+@@ -3036,6 +3036,13 @@ bool WaitcntBrackets::mergeAsyncMarks(ArrayRef<MergeInfo> MergeInfos,
+   unsigned OtherSize = OtherMarks.size();
+   unsigned OurSize = AsyncMarks.size();
+   unsigned MergeCount = std::min(OtherSize, OurSize);
++  // OtherMarks is empty -> OtherSize == 0 -> MergeCount == 0. Our existing
++  // marks are the conservative result; return early to avoid passing
++  // MergeCount == 0 to seq_inclusive which asserts Begin <= End.
++  // Cherry-pick of upstream LLVM commit 81d618b6bc1e (PR #193499); drop this
++  // patch on the next Triton bump that pulls that fix into the pinned LLVM.
++  if (MergeCount == 0)
++    return StrictDom;
+   for (auto Idx : seq_inclusive<unsigned>(1, MergeCount)) {
+     for (auto T : inst_counter_types(Context->MaxCounter)) {
+       StrictDom |= mergeScore(MergeInfos[T], AsyncMarks[OurSize - Idx][T],
