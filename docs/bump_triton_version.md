@@ -32,7 +32,7 @@ git add external/triton
 
 ## Step 2: Rebuild LLVM
 
-The LLVM version is tied to the Triton version (specified in `external/triton/cmake/llvm-hash.txt`). After bumping Triton, LLVM must be rebuilt.
+The LLVM version is tied to the Triton version (specified in `external/triton/cmake/llvm-info.json`, under the `llvm_hash` key). After bumping Triton, LLVM must be rebuilt.
 
 ```bash
 bash scripts/build-llvm.sh
