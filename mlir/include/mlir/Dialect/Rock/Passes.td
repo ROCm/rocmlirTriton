@@ -196,6 +196,37 @@ def RockLowerBlockwiseToPtrPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockDecomposeNonPow2TilesPass
+    : Pass<"rock-decompose-nonpow2-tiles", "::mlir::func::FuncOp"> {
+  let summary = "Split non-power-of-two blockwise tiles into power-of-two "
+                "sub-tiles (M/N peeling)";
+  let description = [{
+    Rock tensors may legally carry non-power-of-two dimensions (e.g. an
+    mPerBlock/nPerBlock of 80), but the Triton layouts produced by RockToTTIR
+    require power-of-two shapes. Running after LowerStores and before
+    LowerBlockwiseToPtr, this pass splits every blockwise_gemm whose result tile
+    has a non-power-of-two M or N into a grid of power-of-two sub-tile GEMMs:
+
+    1. M and N are decomposed into minimal power-of-two segments (80 -> {64, 16}),
+       giving an (m-segment, n-segment) grid of cells.
+    2. A (M x K) is sliced into M-segments and B (K x N) into N-segments; cell
+       (i, j) multiplies A-segment i by B-segment j, so each A-segment is reused
+       across a row of cells and each B-segment down a column. One blockwise_gemm
+       and one accumulator init are emitted per cell. The split recurses through
+       the input/output fusion DAGs (loads, splat constants, elementwise ops,
+       stores), slicing destinations per cell.
+
+    The K-loop form (accumulator carried as the scf.for iter_arg) is rebuilt with
+    one iter_arg per cell; the loopless single-K-step form emits the per-cell
+    GEMMs directly.
+
+    The segments exactly cover the original extent (64 + 16 = 80), so every
+    element computed and stored is live; no padding is introduced.
+  }];
+  let dependentDialects = ["rock::RockDialect", "scf::SCFDialect",
+                           "arith::ArithDialect"];
+}
+
 def RockConvertNarrowTypeSignaturesPass
     : Pass<"rock-convert-narrow-type-signatures", "::mlir::func::FuncOp"> {
   let summary = "Convert sub-byte types in function signatures to packed i8";

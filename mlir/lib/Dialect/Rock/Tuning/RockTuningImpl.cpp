@@ -39,8 +39,28 @@
 namespace mlir {
 namespace rock {
 
-static std::vector<uint32_t> computeDPerBlock(Operation *op,
-                                              TuningParamSetKind tuningKind) {
+// Which GEMM output dimension a per-block tile list is being built for. Unlike
+// `GemmDimension` (GridwiseGemmParams.h), which collapses M and N into a single
+// `MorN`, this distinguishes the two so a tile list can be tailored per axis.
+enum class GemmMNDim { M, N };
+
+// Largest per-block M/N tile size we tune for. Also acts as the threshold below
+// which a small dimension is covered by a single tightly-fitting tile.
+#define MAX_MN_PER_BLOCK 256
+
+// Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
+// tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
+// round the remainder up to the next pow2. e.g. 77 = 64 + 13 -> 64 + 16 = 80.
+static uint32_t tileReducingPartitions(uint32_t d) {
+  if (d == 0 || llvm::isPowerOf2_64(d))
+    return d;
+  uint32_t top = llvm::PowerOf2Ceil(d) / 2; // largest power of two < d
+  uint32_t rem = d - top;
+  return top + llvm::PowerOf2Ceil(rem);
+}
+
+static std::vector<uint32_t>
+computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
   auto arch = rock::getArchValue(op);
   bool hasAcceleration = false;
   if (auto gemmOp = dyn_cast<RockGemmWrapperInterface>(op))
@@ -50,15 +70,33 @@ static std::vector<uint32_t> computeDPerBlock(Operation *op,
   else
     llvm_unreachable("Unexpected op");
 
+  std::vector<uint32_t> dPerBlockList;
   if (hasAcceleration) {
-    std::vector<uint32_t> dPerBlockList;
-    for (uint32_t dPerBlock = 16; dPerBlock <= 256; dPerBlock *= 2) {
+    for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
       dPerBlockList.push_back(dPerBlock);
-    }
-    return dPerBlockList;
+  } else {
+    // non-accel
+    return {4, 8, 16, 32, 64};
   }
-  // non-accel
-  return {4, 8, 16, 32, 64};
+
+  // For a plain GEMM with a small (< MAX_MN_PER_BLOCK) M/N, cap the list with a
+  // tile that covers the dimension tightly and drop the now-oversized larger
+  // tiles (e.g. tile=80 -> {16, 32, 64, 80}). gemm+gemm isn't lowered through
+  // rock-decompose-nonpow2-tiles, so it's skipped. Scaled GEMMs are also
+  // skipped since the decomposition pass doesn't support them yet, so they must
+  // keep power-of-two M/N tiles.
+  if (auto gemmOp = dyn_cast<RockGemmWrapperInterface>(op)) {
+    bool isScaledGemm = gemmOp.getScaleA() || gemmOp.getScaleB();
+    GemmSize size = gemmOp.getGemmSize();
+    int64_t d = dim == GemmMNDim::M ? size.m : size.n;
+    if (!isScaledGemm && d > 0 && d < MAX_MN_PER_BLOCK) {
+      uint32_t tile = tileReducingPartitions(static_cast<uint32_t>(d));
+      llvm::erase_if(dPerBlockList, [&](uint32_t v) { return v >= tile; });
+      dPerBlockList.push_back(tile);
+    }
+  }
+
+  return dPerBlockList;
 }
 
 static std::vector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
@@ -117,7 +155,8 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 static std::vector<std::vector<uint32_t>>
 getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
              int64_t maxWavesPerEU, TuningParamSetKind kind) {
-  auto dPerBlock = computeDPerBlock(gemmOp, kind);
+  auto mPerBlock = computeDPerBlock(gemmOp, kind, GemmMNDim::M);
+  auto nPerBlock = computeDPerBlock(gemmOp, kind, GemmMNDim::N);
   std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
 
   std::vector<uint32_t> wavesPerEUList = {0};
@@ -157,8 +196,8 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
     numCTAsList.push_back(n);
 
   std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
-      dPerBlock,         // M/block
-      dPerBlock,         // N/block
+      mPerBlock,         // M/block
+      nPerBlock,         // N/block
       kPerBlockMFMA,     // K/block
       {1},               // kPackList
       numWavesRange,     // numWaves
@@ -172,8 +211,8 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   // WMMA (RDNA) parameters
   // kPack is always one for WMMA
   std::vector<std::vector<uint32_t>> validRangeWmmaParams = {
-      dPerBlock,         // M/block
-      dPerBlock,         // N/block
+      mPerBlock,         // M/block
+      nPerBlock,         // N/block
       kPerBlockWMMA,     // K/block
       {1},               // kPackList
       {4, 8},            // numWaves
@@ -217,7 +256,8 @@ static std::vector<std::vector<uint32_t>>
 getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
                  TuningParamSetKind kind) {
   std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
-  auto dPerBlock = computeDPerBlock(gemmGemmOp, kind);
+  auto mPerBlock = computeDPerBlock(gemmGemmOp, kind, GemmMNDim::M);
+  auto nPerBlock = computeDPerBlock(gemmGemmOp, kind, GemmMNDim::N);
   std::vector<uint32_t> wavesPerEUList = {0};
   std::vector<uint32_t> gridGroupSizeList = {0};
 
@@ -244,8 +284,8 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
     kPackList.push_back(kp);
 
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsMFMA = {
-      /*gemm0MPerBlock=*/dPerBlock,
-      /*gemm0NPerBlock=*/dPerBlock,
+      /*gemm0MPerBlock=*/mPerBlock,
+      /*gemm0NPerBlock=*/nPerBlock,
       kPerBlock,
       kPackList,
       numWavesRange,
@@ -255,8 +295,8 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       gridGroupSizeList,
       numCTAsList};
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsWMMA = {
-      /*gemm0MPerBlock=*/dPerBlock,
-      /*gemm0NPerBlock=*/dPerBlock,
+      /*gemm0MPerBlock=*/mPerBlock,
+      /*gemm0NPerBlock=*/nPerBlock,
       kPerBlock,
       /*kPackList=*/{1},
       numWavesRange,
