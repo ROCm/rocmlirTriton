@@ -317,8 +317,7 @@ FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {
     if (auto viewOp =
             dyn_cast_or_null<ViewLikeOpInterface>(value.getDefiningOp())) {
       value = viewOp.getViewSource();
-    } else if (auto store =
-                   dyn_cast_or_null<StoreOp>(value.getDefiningOp())) {
+    } else if (auto store = dyn_cast_or_null<StoreOp>(value.getDefiningOp())) {
       SmallVector<TransformMapAttr> transforms;
       std::tie(value, std::ignore) =
           rock::untransform(store.getDest(), transforms);
