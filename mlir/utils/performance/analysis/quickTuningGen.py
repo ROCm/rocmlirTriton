@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from perfRunner import SPLITK_IDX  # noqa: E402
 
 # Column definitions for grouping problems
-GEMM_COLUMNS = ['TransA', 'TransB', 'G', 'M', 'K', 'N']
+GEMM_COLUMNS = ['TransA', 'TransB', 'TransO', 'G', 'M', 'K', 'N']
 CONV_COLUMNS = [
     'Direction', 'FilterLayout', 'InputLayout', 'OutputLayout', 'N', 'C', 'H', 'W', 'K', 'Y', 'X',
     'DilationH', 'DilationW', 'StrideH', 'StrideW', 'PaddingH', 'PaddingW'

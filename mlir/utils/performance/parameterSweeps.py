@@ -578,6 +578,7 @@ GEMM_SHAPE_OPTIONS = {
     'g': [1, 2],
     'trans_a': [False, True],
     'trans_b': [False, True],
+    'trans_o': [False, True],
 }
 
 
@@ -891,6 +892,7 @@ def _sample_gemm_shape(rng: random.Random):
         rng.randint(1, MAX_GEMM_DIM),  # n
         rng.choice(opts['trans_a']),
         rng.choice(opts['trans_b']),
+        rng.choice(opts['trans_o']),
     )
 
 
@@ -946,7 +948,7 @@ def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
         shape = _sample_gemm_shape(rng)
-        # shape[0] is the input dtype (dtype, g, m, k, n, trans_a, trans_b).
+        # shape[0] is the input dtype (dtype, g, m, k, n, trans_a, trans_b, trans_o).
         dtype = shape[0]
         yield (shape, _sampled_perf_within_budget(rng, arch, dtype, _split_k_choices(dtype)))
 
@@ -985,7 +987,7 @@ def to_conv_test(params, options: Options) -> ConvConfiguration:
 
 def to_gemm_test(params, options: Options) -> perfRunner.GemmConfiguration:
     shape, perf = params
-    dtype, g, m, k, n, trans_a, trans_b = shape
+    dtype, g, m, k, n, trans_a, trans_b, trans_o = shape
     out_dtype = perfRunner.OUTPUT_DATA_TYPES_MAP.get(dtype, dtype)
     return perfRunner.GemmConfiguration(dtype=dtype,
                                         out_dtype=out_dtype,
@@ -995,6 +997,7 @@ def to_gemm_test(params, options: Options) -> perfRunner.GemmConfiguration:
                                         n=n,
                                         trans_a=trans_a,
                                         trans_b=trans_b,
+                                        trans_o=trans_o,
                                         arch=options.arch,
                                         num_cu=options.num_cu,
                                         num_chiplets=options.num_chiplets,

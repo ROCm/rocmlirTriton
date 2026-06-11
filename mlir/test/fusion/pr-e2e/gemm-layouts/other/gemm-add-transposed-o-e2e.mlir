@@ -3,14 +3,16 @@
 
 // CLONE: [1 1 1]
 
-// EMITKEY: -t f16 -out_datatype f16 -transA true -transB false -transO false -g 2 -m 1 -n 640 -k 320
+// The dot output is transposed on its last two dims before being consumed by
+// the elementwise add, so the migraphx -> rock lowering must fold the transpose
+// into the GEMM as oTransposed (-transO true).
+// EMITKEY: -t f16 -out_datatype f16 -transA false -transB false -transO true -g 2 -m 64 -n 32 -k 16
 
 module {
-  func.func @test(%arg0: !migraphx.shaped<2x1x320xf16, 320x1x1>, %arg1: !migraphx.shaped<2x640x320xf16, 204800x1x640>, %arg2: !migraphx.shaped<2x64x10xf16, 0x10x1>) -> !migraphx.shaped<2x64x10xf16, 640x10x1> attributes {rock.kernel} {
-    %trans1 = migraphx.transpose %arg1 {permutation = [0, 2, 1]} : <2x640x320xf16, 204800x1x640> -> <2x320x640xf16, 204800x640x1>
-    %2 = migraphx.dot %arg0, %trans1 : <2x1x320xf16, 320x1x1>, <2x320x640xf16, 204800x640x1> -> <2x1x640xf16, 640x640x1>
-    %3 = migraphx.reshape %2 {dims = [2, 64, 10]} : <2x1x640xf16, 640x640x1> -> <2x64x10xf16, 640x10x1>
-    %4 = migraphx.add %3, %arg2 : <2x64x10xf16, 640x10x1>, <2x64x10xf16, 0x10x1> -> <2x64x10xf16, 640x10x1>
-    return %4 : !migraphx.shaped<2x64x10xf16, 640x10x1>
+  func.func @test(%arg0: !migraphx.shaped<2x64x16xf16, 1024x16x1>, %arg1: !migraphx.shaped<2x16x32xf16, 512x32x1>, %arg2: !migraphx.shaped<2x32x64xf16, 2048x64x1>) -> !migraphx.shaped<2x32x64xf16, 2048x64x1> attributes {rock.kernel} {
+    %0 = migraphx.dot %arg0, %arg1 : <2x64x16xf16, 1024x16x1>, <2x16x32xf16, 512x32x1> -> <2x64x32xf16, 2048x32x1>
+    %1 = migraphx.transpose %0 {permutation = [0, 2, 1]} : <2x64x32xf16, 2048x32x1> -> <2x32x64xf16, 2048x1x32>
+    %2 = migraphx.add %1, %arg2 : <2x32x64xf16, 2048x1x32>, <2x32x64xf16, 2048x64x1> -> <2x32x64xf16, 2048x64x1>
+    return %2 : !migraphx.shaped<2x32x64xf16, 2048x64x1>
   }
 }
