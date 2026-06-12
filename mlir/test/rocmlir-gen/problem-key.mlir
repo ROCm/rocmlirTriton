@@ -39,6 +39,15 @@
 // RUN: rocmlir-gen --arch gfx942 --operation gemm --transO -g 1 -m 1024 -n 512 -k 769 -t f32 | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_GEMM_TRANSO
 // CHECK_GEMM_TRANSO: -t f32 -out_datatype f32 -transA false -transB false -transO true -g 1 -m 1024 -n 512 -k 769
 
+// RUN: rocmlir-gen --arch gfx942 --operation gemm --transA --transO -g 1 -m 1024 -n 512 -k 769 -t f32 | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_GEMM_TRANSA_TRANSO
+// CHECK_GEMM_TRANSA_TRANSO: -t f32 -out_datatype f32 -transA true -transB false -transO true -g 1 -m 1024 -n 512 -k 769
+
+// RUN: rocmlir-gen --arch gfx942 --operation gemm --transB --transO -g 1 -m 1024 -n 512 -k 769 -t f32 | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_GEMM_TRANSB_TRANSO
+// CHECK_GEMM_TRANSB_TRANSO: -t f32 -out_datatype f32 -transA false -transB true -transO true -g 1 -m 1024 -n 512 -k 769
+
+// RUN: rocmlir-gen --arch gfx942 --operation gemm --transA --transB --transO -g 1 -m 1024 -n 512 -k 769 -t f32 | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_GEMM_TRANSA_TRANSB_TRANSO
+// CHECK_GEMM_TRANSA_TRANSB_TRANSO: -t f32 -out_datatype f32 -transA true -transB true -transO true -g 1 -m 1024 -n 512 -k 769
+
 // Checking numCU and numChiplets
 
 // RUN: rocmlir-gen --arch gfx942 --num_cu 80 --num_chiplets 4 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 4 | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=CHECK_NUMCHIPLETS
