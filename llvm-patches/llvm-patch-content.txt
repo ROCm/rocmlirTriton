@@ -38,6 +38,51 @@ mlir/test/fusion/nightly-misc-e2e/attention-i8-SIInsertWantcnts.mlir
   FileCheck's stdin is empty.
 
 ----------------------------------------------------------------------
+patch198508.patch
+----------------------------------------------------------------------
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/198508
+- Upstream commit : ace44dc5a2a48e5d024bc5c015f69a67cd9be909
+- Upstream title  : [AMDGPU] Gate `S_LSHL[1-4]_ADD_U32` patterns on uniform
+                    results
+- File Fixed      : llvm/lib/Target/AMDGPU/SOPInstructions.td
+- Contents        : SOPInstructions.td fix plus the 13
+                    llvm/test/CodeGen/AMDGPU/*.ll LIT test updates
+                    (CHECK-line-only; no logic). All hunks verified to apply
+                    cleanly against the pinned LLVM (87717bf9).
+
+Symptom without the patch
+-------------------------
+On gfx1201 (RDNA4, wave32), grouped convolution with split-K > 1 (packed
+f16 atomics) produces incorrect output: ~6 of every 8 consecutive output
+channels are zeroed. The miscompile only appears at LLVM middle-end
+opt level >= 2 (rocmlir-driver --gO>=2, i.e. the default); --gO=1 was the
+prior workaround.
+
+Root cause
+----------
+The s_lshlN_add_u32 selection patterns added by upstream PR#167032
+("Generate s_lshl?_add_u32", commit 125b6b591741, present in the pinned
+LLVM) are not gated on uniformity. At -O2, GVN + InstCombine reassociate
+the per-lane output-channel offset into a `(workitem.id-derived << 2) +
+base` shape that matches the scalar S_LSHL2_ADD_U32 pattern even though
+the value is divergent (IR UniformityAnalysis correctly marks the whole
+chain divergent). SIFixSGPRCopies then satisfies the SALU operand by
+inserting `v_readfirstlane_b32` on the divergent channel, collapsing every
+lane to lane 0's channel index -> the per-lane packed-f16 atomic stores
+all target the same channel, dropping the rest.
+
+The companion SDAG divergence-tracking fix (PR#147560, commit
+9293b65a616b) that would have caught this was reverted in the pinned LLVM
+by PR#152548 (commit c7c022948031), so the missing UniformBinFrag gate is
+the actionable fix.
+
+The fix wraps each pattern in `UniformBinFrag<shlN_add>` (matching the
+other SOP2 scalar patterns in the file) so divergent shl/add chains select
+the vector `V_LSHL_ADD_U32` instead. Drop this patch on the next Triton
+bump that pulls commit ace44dc5a2a4 into the pinned LLVM (it lands after
+the current pin 87717bf9, dated 2026-04-08; the fix merged 2026-05-19).
+
+----------------------------------------------------------------------
 patch1.patch
 patch2.patch
 patch3.patch

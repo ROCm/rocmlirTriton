@@ -27,6 +27,9 @@ from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 import perfRunner
 from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_chiplets, get_num_cu)
 
+# Hard dependency, copied next to the scripts by ci-performance-scripts.
+import amd_arch_db
+
 
 @dataclass(frozen=True)
 class Options:
@@ -521,9 +524,14 @@ async def sweep_parameters(param_iter: Iterable[IterType],
 # LDS, etc.) — those are reported as NOT_APPLICABLE, not FAIL. A 0 in
 # matrixInstrNonkdim / waves_per_eu / grid_group_size means "let the
 # heuristic pick".
+# The non-power-of-two m/n_per_block entries (48, 80, 96, 160, 192) are
+# deliberately included to exercise the rock-decompose-nonpow2-tiles pass,
+# which splits a blockwise GEMM tile with non-pow2 M and/or N into a grid of
+# power-of-two sub-tiles (e.g. 80 -> 64 + 16, 96 -> 64 + 32). k_per_block is
+# kept power-of-two: the contraction dim is not decomposed by that pass.
 PERF_CONFIG_OPTIONS = {
-    'm_per_block': [16, 32, 64, 128, 256],
-    'n_per_block': [16, 32, 64, 128, 256],
+    'm_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
+    'n_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
     'k_per_block': [16, 32, 64, 128],
     # `kpack` is sampled via _kpack_choices(arch); see below. `kpack != 1` is
     # deprecated on gfx950 and gfx1250 (and newer); older archs still take
@@ -602,36 +610,8 @@ def _arch_id(arch: str) -> Optional[int]:
 def _kpack_choices(arch: str) -> List[int]:
     """Valid ``kpack`` values for the perf-config sweep, by arch.
 
-    ``kpack != 1`` is deprecated on gfx950 and gfx1250 (and any newer arch);
-    older archs (gfx9 < gfx950, all of gfx10/gfx11, gfx12 < gfx1250) still
-    accept ``kpack in {1, 2}``.
-
-    Cutoffs are expressed on the gfx target id (parsed as hex) so any new
-    arch in the same family (gfx951, gfx1260, ...) and any new family
-    (gfx13xx, gfx14xx, ...) automatically falls into the ``[1]`` bucket
-    without requiring a code change here."""
-    n = _arch_id(arch)
-    if n is None:
-        return [1]  # unknown target -> safest
-    if n < 0x950:  # gfx9 pre-CDNA4
-        return [1, 2]
-    if 0x1000 <= n < 0x1250:  # all of gfx10/gfx11, gfx12 before gfx1250
-        return [1, 2]
-    return [1]  # gfx950+, gfx1250+, gfx13+, ...
-
-
-# TODO: Use python bindings when available.
-def _wave_size(arch: str) -> int:
-    """Wave size used by the perf-config tuner for ``arch``.
-    32 for RDNA, 64 for GCN/CDNA and gfx1250."""
-    n = _arch_id(arch)
-    if n is None:
-        # Unknown arch: conservative (wider wave -> smaller per-thread
-        # state -> less likely to filter).
-        return 64
-    if 0x1000 <= n < 0x1250:  # gfx10xx, gfx11xx, gfx12 < 1250
-        return 32
-    return 64
+    Sourced from ``rock::getMaxKpack`` via the AmdArchDB pybind module."""
+    return list(range(1, amd_arch_db.get_max_kpack(arch) + 1))
 
 
 # Dtypes whose Triton fp_to_fp lowering expands into many LLVM ops on AMD
@@ -701,7 +681,7 @@ def _compile_cost_score(perf: Sequence[int], dtype: str, arch: str) -> float:
     The PostRA scheduler bottlenecks on whichever basic block is larger,
     so the per-block max is a better proxy than their sum."""
     mpb, npb, kpb, kpack, _, num_waves, *_ = perf
-    threads = max(1, num_waves * _wave_size(arch))
+    threads = max(1, num_waves * amd_arch_db.get_wave_size(arch))
     num_elements_kloop_body = (mpb + npb) * kpb / (threads * max(1, kpack))
     num_elements_c_epilogue = (mpb * npb) / threads
     largest_num_elements = max(num_elements_kloop_body, num_elements_c_epilogue)
@@ -753,19 +733,37 @@ def _sampled_perf_within_budget(rng: random.Random, arch: str, dtype: str,
                        "config inside the effective-state budget.")
 
 
-def sample_perf_config(rng: random.Random, arch: str,
-                       split_k_choices: Sequence[int]) -> Tuple[int, ...]:
+def _is_pow2(n: int) -> bool:
+    """True iff ``n`` is a positive power of two."""
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def sample_perf_config(rng: random.Random,
+                       arch: str,
+                       split_k_choices: Sequence[int],
+                       pow2_only: bool = False) -> Tuple[int, ...]:
     """Returns one random 11-field perf-config tuple (gemm:v1 / attn:v1).
 
     ``arch`` selects the valid ``kpack`` set (see :func:`_kpack_choices`).
     ``split_k_choices`` is the list of permissible ``splitKFactor`` values
     for this caller — typically :func:`_split_k_choices(dtype)` for conv/gemm
     and ``[1]`` for attention (whose K-split is exposed via the separate
-    ``-split_kv`` kernel arg, not via the perf-config splitK)."""
+    ``-split_kv`` kernel arg, not via the perf-config splitK).
+
+    ``pow2_only`` restricts ``mPerBlock``/``nPerBlock`` to powers of two.
+    PERF_CONFIG_OPTIONS now includes non-pow2 m/n tiles to exercise the
+    rock-decompose-nonpow2-tiles pass (gemm/conv only); callers whose
+    pipeline doesn't run that pass (attention / gemm+gemm, which use
+    GemmGemmParamsAttr) pass ``pow2_only=True`` to stay on the pow2 grid."""
     opts = PERF_CONFIG_OPTIONS
+    m_choices = opts['m_per_block']
+    n_choices = opts['n_per_block']
+    if pow2_only:
+        m_choices = [v for v in m_choices if _is_pow2(v)]
+        n_choices = [v for v in n_choices if _is_pow2(v)]
     return (
-        rng.choice(opts['m_per_block']),
-        rng.choice(opts['n_per_block']),
+        rng.choice(m_choices),
+        rng.choice(n_choices),
         rng.choice(opts['k_per_block']),
         rng.choice(_kpack_choices(arch)),
         rng.choice(opts['num_ctas']),

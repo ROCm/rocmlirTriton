@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/STLExtras.h"
@@ -102,6 +103,20 @@ struct PopulateParamsInfo {
   static PopulateParamsInfo fromOp(RockGemmWrapperInterface op);
 };
 
+/// FP4 (4-bit float) operands are upcast in the AMD Triton backend's
+/// `Fp4ToFpOp` lowering, which consumes packed values 8 at a time. A
+/// `kPerBlock` that is not a multiple of `kFp4KPerBlockMultiple` leaves a
+/// partial group and crashes that lowering. The curated FP4 quick-tuning
+/// entries always used `kPerBlock >= 64`; this makes the constraint explicit
+/// now that FP4 borrows the i8 tuning space (see `ParamLookupTable` fallback).
+static constexpr int64_t kFp4KPerBlockMultiple = 64;
+
+/// True when `type` (or its element type) is a 4-bit float, i.e. FP4/MXFP4.
+inline bool isFp4ElementType(Type type) {
+  Type elem = getElementTypeOrSelf(type);
+  return isa<FloatType>(elem) && elem.getIntOrFloatBitWidth() == 4;
+}
+
 /// Conservative GEMM applicability: covers the perfconfig-driven
 /// `markAsNotApplicable` sites (kpack/splitK/numCTAs constraints + LDS
 /// budget over A+B tiles, `numStages`-buffered).
@@ -128,6 +143,12 @@ inline bool isGemmParamsConservativelyApplicable(
   // hand back shaped types; normalize so `getIntOrFloatBitWidth()` is safe.
   Type aElem = getElementTypeOrSelf(aElemType);
   Type bElem = getElementTypeOrSelf(bElemType);
+  // FP4 operands are upcast 8-at-a-time by the AMD Triton `Fp4ToFpOp`
+  // lowering; a `kPerBlock` that is not a multiple of `kFp4KPerBlockMultiple`
+  // leaves a partial group and crashes that pass.
+  if ((isFp4ElementType(aElem) || isFp4ElementType(bElem)) &&
+      p.getKPerBlock() % kFp4KPerBlockMultiple != 0)
+    return false;
   int64_t totalBits =
       (p.getMPerBlock() * p.getKPerBlock() * aElem.getIntOrFloatBitWidth()) +
       (p.getNPerBlock() * p.getKPerBlock() * bElem.getIntOrFloatBitWidth());
@@ -156,10 +177,16 @@ inline bool isGemmParamsConservativelyApplicable(
 /// of it so the default also satisfies the divisibility constraint enforced
 /// in `GridwiseGemmToBlockwise`.
 inline GemmParamsAttr getConservativeDefaultGemmParams(
-    MLIRContext *ctx, std::optional<int64_t> quantBlockSize = std::nullopt) {
+    MLIRContext *ctx, std::optional<int64_t> quantBlockSize = std::nullopt,
+    Type aElemType = nullptr, Type bElemType = nullptr) {
   int64_t kPerBlock = 32;
   if (quantBlockSize.has_value() && *quantBlockSize > 0)
     kPerBlock = llvm::alignTo(kPerBlock, *quantBlockSize);
+  // Keep the guaranteed-applicable fallback valid for FP4 (see
+  // `isGemmParamsConservativelyApplicable` and `kFp4KPerBlockMultiple`).
+  if ((aElemType && isFp4ElementType(aElemType)) ||
+      (bElemType && isFp4ElementType(bElemType)))
+    kPerBlock = llvm::alignTo(kPerBlock, kFp4KPerBlockMultiple);
   return GemmParamsAttr::get(ctx,
                              /*mPerBlock=*/32, /*nPerBlock=*/32,
                              /*kPerBlock=*/kPerBlock, /*kpack=*/1,

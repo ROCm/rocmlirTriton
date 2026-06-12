@@ -282,8 +282,9 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
   if (ordered.empty() || !isGemmParamsConservativelyApplicable(
                              ordered.front(), dataTypeA, dataTypeB, arch,
                              quantBlockSize, aScaleType, bScaleType))
-    ordered.insert(ordered.begin(), getConservativeDefaultGemmParams(
-                                        b.getContext(), quantBlockSize));
+    ordered.insert(ordered.begin(),
+                   getConservativeDefaultGemmParams(
+                       b.getContext(), quantBlockSize, dataTypeA, dataTypeB));
   return ordered;
 }
 

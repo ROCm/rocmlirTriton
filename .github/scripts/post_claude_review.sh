@@ -8,11 +8,11 @@
 # Required env:
 #   GH_TOKEN                  -- rocMLIR-PR-Reviewer App installation token
 #                                (minted in the workflow via
-#                                actions/create-github-app-token; carries
-#                                the App's installation permissions for
-#                                pull-request comments + reactions +
-#                                replies). Posts authored under this token
-#                                appear as `rocmlir-pr-reviewer[bot]`.
+#                                actions/create-github-app-token; explicitly
+#                                scoped to pull_requests:write for comments,
+#                                reactions, replies, and the advisory formal
+#                                review). Posts authored under this token appear
+#                                as `rocmlir-pr-reviewer[bot]`.
 #   GITHUB_REPOSITORY         -- owner/repo (auto-set by GitHub Actions)
 #   PR_NUMBER                 -- PR number to comment on
 #

@@ -85,6 +85,9 @@ int64_t getMaxNumChiplets(StringRef arch);
 /// Get maximum number of waves per EU per arch
 int64_t getMaxWavesPerEU(StringRef arch);
 
+/// Get the SIMD VGPR file size per execution unit for this arch.
+int64_t getVGPRsPerEU(StringRef arch);
+
 /// Element type used by the out-of-MLIR (e.g. Python test binding) overloads
 /// of the per-arch dtype-dispatched queries below. Mirrors the small set of
 /// MLIR `Type`s those helpers actually switch on.
@@ -119,6 +122,11 @@ int64_t getWaveSize(StringRef arch);
 
 /// Get LDS size
 int64_t getLDSSize(StringRef arch);
+
+/// Get the size in bytes of the last-level cache for this architecture (the
+/// AMD Infinity Cache where present, otherwise the L2), taking the maximum
+/// across the variants within an ISA family.
+int64_t getLastLevelCacheSize(StringRef arch);
 
 /// Whether the architecture supports multi-CTA
 bool supportsMultiCTALaunch(StringRef arch);

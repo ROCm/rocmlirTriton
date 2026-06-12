@@ -2554,10 +2554,13 @@ createCPUConvWithMLIR(ModuleOp module,
     break;
   }
 
-  // i8 convolutions use i32 / f32 accumulation.
-  bool isI8Conv = genConfig.inputDataTypeStr == "i8";
-  Type computeType =
-      isI8Conv ? Type(b.getIntegerType(32)) : Type(b.getF32Type());
+  // Mirror the GPU accumulator precision via rock::getAccType: integer
+  // convolutions accumulate in i32 (matching the i8 MFMA accumulator), while
+  // floating-point convolutions accumulate in f32. Both the operand promotion
+  // below and the MAC body selection are driven off this single accumulator
+  // type so they can never disagree.
+  Type computeType = rock::getAccType(inputElemType, filterElemType);
+  bool useIntAcc = isa<IntegerType>(computeType);
   size_t nSpatialDims = genConfig.strideDims.size();
 
   // Helper to expand flat tensor to logical shape
@@ -2579,9 +2582,11 @@ createCPUConvWithMLIR(ModuleOp module,
   };
 
   // Expand tensors to logical shapes
-  // For i8, keep original element types; for others, convert to f32
+  // For integer accumulation keep the native operand types (the MAC body
+  // sign-extends them into the i32 accumulator); for float accumulation
+  // promote to f32.
   Value filter, input, output;
-  if (isI8Conv) {
+  if (useIntAcc) {
     filter = expandToLogicalShape(filterFlat, genConfig.filterDimension);
     input = expandToLogicalShape(inputFlat, genConfig.inputDimension);
     output = expandToLogicalShape(outputFlat, genConfig.outputDimension);
@@ -2692,10 +2697,11 @@ createCPUConvWithMLIR(ModuleOp module,
 
   // Emit the convolution using linalg.generic with layout-aware indexing
   // No transposes needed - the indexing maps use actual dimension positions!
-  // Use i32 body builder for i8 inputs, f32 otherwise.
+  // Pick the MAC body that matches the accumulator type: integer MAC (with
+  // sign-extension) for an i32 accumulator, float MAC otherwise.
   Value result;
   ConvBodyBuilder bodyBuilder =
-      isI8Conv ? convBodyBuilderI32 : convBodyBuilderF32;
+      useIntAcc ? convBodyBuilderI32 : convBodyBuilderF32;
   switch (genConfig.operation.value()) {
   case rock::ConvOpType::Fwd:
     result = emitConvGeneric(
@@ -2719,7 +2725,8 @@ createCPUConvWithMLIR(ModuleOp module,
   // Result is already in original layout (no transpose needed)
   Value resultOrigLayout = result;
 
-  // Convert back to original element type if needed
+  // Convert the accumulator back to the kernel's output element type, mirroring
+  // the GPU's store-time precision.
   auto resultFlatTensorType = cast<RankedTensorType>(resultFlatType);
   ArrayRef<int64_t> finalResultShape =
       cast<RankedTensorType>(resultOrigLayout.getType()).getShape();
@@ -2737,16 +2744,8 @@ createCPUConvWithMLIR(ModuleOp module,
         ValueRange{emptyConvert}, ArrayRef<AffineMap>{identityMap, identityMap},
         iteratorTypes,
         [](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
-          Value src = args[0];
-          Type dstType = args[1].getType();
-          Value converted;
-          if (isa<IntegerType>(dstType)) {
-            converted =
-                arith::FPToSIOp::create(nestedB, nestedLoc, dstType, src);
-          } else {
-            converted =
-                arith::TruncFOp::create(nestedB, nestedLoc, dstType, src);
-          }
+          Value converted = rock::createTypeConversionOp(
+              nestedB, nestedLoc, args[0], args[1].getType());
           linalg::YieldOp::create(nestedB, nestedLoc, converted);
         });
     resultOrigLayout = convertOp.getResult(0);
@@ -2775,10 +2774,9 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
                          SmallVectorImpl<Type> &result, bool isCpuVerifier) {
   Type cElemType = elemTypes[2];
   OpBuilder b(elemTypes[0].getContext());
-  // i8 GEMM accumulates in i32 on the GPU (e.g. the i8 MFMA instructions
-  // accumulate into i32). Mirror that in the CPU verifier so the reference
-  // matches the GPU compute precision.
-  if (elemTypes[0].isInteger(8) && isCpuVerifier)
+  // The CPU verifier's result type must match the validation buffer that holds
+  // it. For an integer output that buffer is always materialized as i32.
+  if (isCpuVerifier && isa<IntegerType>(cElemType))
     cElemType = IntegerType::get(cElemType.getContext(), 32);
 
   int64_t quantK = llvm::divideCeil(gemmK, quantBlockSize);
@@ -4023,22 +4021,26 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
 
   auto floatType = b.getF32Type();
 
-  // Convert to f32 if needed
-  aVal = ensureFloatIsF32(b, loc, aVal, floatType);
-  bVal = ensureFloatIsF32(b, loc, bVal, floatType);
+  // Mirror the GPU accumulator precision: integer GEMMs accumulate in i32,
+  // floating-point GEMMs accumulate in f32.
+  Type accElemType = rock::getAccType(cpuTypes[0], cpuTypes[1]);
+
+  // Promote inputs to f32 only for float accumulation. For integer accumulation
+  // the inputs stay in their native integer type; the matmul body sign-extends
+  // them into the i32 accumulator, matching the GPU's tt.dot / MFMA i32
+  // accumulator.
+  if (isa<FloatType>(accElemType)) {
+    aVal = ensureFloatIsF32(b, loc, aVal, floatType);
+    bVal = ensureFloatIsF32(b, loc, bVal, floatType);
+  }
 
   Value aScaleVal = nullptr, bScaleVal = nullptr;
-  Value cVal;
   if (scaledGemm) {
     aScaleVal = block->getArgument(2);
     bScaleVal = block->getArgument(3);
     aScaleVal = ensureFloatIsF32(b, loc, aScaleVal, floatType);
     bScaleVal = ensureFloatIsF32(b, loc, bScaleVal, floatType);
-    cVal = block->getArgument(4);
-  } else {
-    cVal = block->getArgument(2);
   }
-  cVal = ensureFloatIsF32(b, loc, cVal, floatType);
 
   // Expand flat tensors to logical 3D shapes
   auto expandTensorArg = [&loc, &b](Value arg, Type rawLogicalType) -> Value {
@@ -4064,14 +4066,17 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
             cMap = AffineMap::get(
                 4, 0, {g, transposeC ? n : m, transposeC ? m : n}, ctx);
   Value aExpVal = expandTensorArg(aVal, argTypes[0]),
-        bExpVal = expandTensorArg(bVal, argTypes[1]),
-        cExpVal = expandTensorArg(cVal, argTypes[cArgIdx]);
+        bExpVal = expandTensorArg(bVal, argTypes[1]);
 
   Value aExpValScaled = nullptr, bExpValScaled = nullptr;
 
-  // Initialize output with zeros using linalg.fill
-  auto cExpType = cast<RankedTensorType>(cExpVal.getType());
-  Value zeroVal = rock::createZeroConstantOp(b, loc, cExpType.getElementType());
+  // The accumulator tensor carries the GPU accumulator element type (i32 for
+  // integer GEMM, f32 otherwise), not the requested output type. The matmul
+  // body's integer branch sign-extends the operands into this i32 accumulator;
+  // the result is converted to the output type below.
+  auto cLogicalShape = cast<ShapedType>(argTypes[cArgIdx]).getShape();
+  auto cExpType = RankedTensorType::get(cLogicalShape, accElemType);
+  Value zeroVal = rock::createZeroConstantOp(b, loc, accElemType);
   Value emptyC = tensor::EmptyOp::create(b, loc, cExpType, ValueRange{});
   Value zeroC = linalg::FillOp::create(b, loc, zeroVal, emptyC).getResult(0);
 
@@ -4154,35 +4159,40 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
 
   // Collapse back to flat shape for return
   auto resultFlatType = cast<RankedTensorType>(resultType);
-  // If element types differ (f32 vs original), we need to convert back
-  if (resultFlatType.getElementType() != cExpType.getElementType()) {
-    // Convert f32 result back to original type (keep 3D shape, collapse later)
-    auto resultExpType = cExpType.cloneWith(cExpType.getShape(),
-                                            resultFlatType.getElementType());
-    Value emptyResult =
-        tensor::EmptyOp::create(b, loc, resultExpType, ValueRange{});
+
+  // Emit an elementwise type conversion via rock::createTypeConversionOp
+  // (i32->f32 = sitofp, f32->f16 = truncf, i32->i8 = trunci, etc.). Returns
+  // `src` unchanged when no conversion is needed.
+  auto convertElemType = [&](Value src, Type dstElemType) -> Value {
+    auto srcType = cast<RankedTensorType>(src.getType());
+    if (srcType.getElementType() == dstElemType)
+      return src;
+    auto dstType = srcType.cloneWith(srcType.getShape(), dstElemType);
+    Value emptyResult = tensor::EmptyOp::create(b, loc, dstType, ValueRange{});
     AffineMap identityMap =
-        AffineMap::getMultiDimIdentityMap(cExpType.getRank(), b.getContext());
+        AffineMap::getMultiDimIdentityMap(srcType.getRank(), b.getContext());
     SmallVector<utils::IteratorType> iteratorTypes(
-        cExpType.getRank(), utils::IteratorType::parallel);
+        srcType.getRank(), utils::IteratorType::parallel);
     auto convertOp = linalg::GenericOp::create(
-        b, loc, resultExpType, ValueRange{result}, ValueRange{emptyResult},
+        b, loc, dstType, ValueRange{src}, ValueRange{emptyResult},
         ArrayRef<AffineMap>{identityMap, identityMap}, iteratorTypes,
         [](OpBuilder &nestedB, Location nestedLoc, ValueRange args) {
-          Value src = args[0];
-          Type dstType = args[1].getType();
-          Value converted;
-          if (isa<IntegerType>(dstType)) {
-            converted =
-                arith::FPToSIOp::create(nestedB, nestedLoc, dstType, src);
-          } else {
-            converted =
-                arith::TruncFOp::create(nestedB, nestedLoc, dstType, src);
-          }
+          Value converted = rock::createTypeConversionOp(
+              nestedB, nestedLoc, args[0], args[1].getType());
           linalg::YieldOp::create(nestedB, nestedLoc, converted);
         });
-    result = convertOp.getResult(0);
-  }
+    return convertOp.getResult(0);
+  };
+
+  // Match the GPU's store-time precision. First convert the accumulator to the
+  // kernel's actual output type (e.g. i32->i8 truncation for an i8 output,
+  // i32->f32 sitofp for an f32 output), reproducing the GPU's narrowing at
+  // store. Then convert to the reference's return type, which for an integer
+  // output is the i32 validation buffer (so an i8 output is truncated to i8 and
+  // sign-extended back into the i32 buffer, preserving the GPU's i8 value).
+  Type trueOutElemType = cpuTypes[2];
+  result = convertElemType(result, trueOutElemType);
+  result = convertElemType(result, resultFlatType.getElementType());
 
   // Collapse to flat 1D tensor
   ArrayRef<int64_t> resultShape =
@@ -5974,8 +5984,10 @@ static LogicalResult populateHostHarnessLogic(
       if (genParams.operation.has_value()) {
         if (idx < genParams.types.size())
           elemType = genParams.types[idx];
-        // The CPU verifier for i8 GEMM/conv accumulates in i32 to match the
-        // GPU's MFMA semantics; allocate the output buffer as i32 as well.
+        // An integer GEMM/conv output is compared exactly against an i32
+        // validation buffer (the reference accumulates in i32, per
+        // rock::getAccType, and rounds to the output type at store), so
+        // allocate the output buffer as i32 as well.
         if (isa<IntegerType>(elemType) && llvm::is_contained(outIndices, idx))
           elemType = b.getIntegerType(32);
         paramMRType = MemRefType::get(paramShapedType.getShape(), elemType);

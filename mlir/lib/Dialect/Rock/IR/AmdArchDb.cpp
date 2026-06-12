@@ -430,6 +430,35 @@ int64_t mlir::rock::getLDSSize(StringRef arch) {
   return targetInfo.getSharedMemorySize();
 }
 
+int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+
+  constexpr int64_t kMiB = 1024 * 1024;
+
+  switch (isaFamily) {
+  // No Infinity Cache: L2 is the last level (largest L2 in the family).
+  case ISAFamily::GCN5_1:
+  case ISAFamily::RDNA1:
+    return 4 * kMiB;
+  case ISAFamily::CDNA1:
+  case ISAFamily::CDNA2: // per-GCD
+    return 8 * kMiB;
+  // Infinity Cache. TODO(gfx1250): confirm once AMD publishes a number.
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+  case ISAFamily::GFX1250: // assumed
+    return 256 * kMiB;
+  case ISAFamily::RDNA2:
+    return 128 * kMiB;
+  case ISAFamily::RDNA3:
+    return 96 * kMiB;
+  case ISAFamily::RDNA4:
+    return 64 * kMiB;
+  case ISAFamily::Unknown: // Unknown arch: assume Infinity-Cache-class LLC.
+    return 256 * kMiB;
+  }
+}
+
 int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
@@ -452,6 +481,37 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
     return 1;
   }
   return 1;
+}
+
+int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
+  auto [isaFamily, chip] = getArch(arch);
+
+  switch (isaFamily) {
+  case ISAFamily::GCN5_1:
+  case ISAFamily::CDNA1:
+    return 256;
+  case ISAFamily::CDNA2:
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+    return 512;
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+    return 1024;
+  case ISAFamily::RDNA3:
+    // Match LLVM's coverage: getTotalNumVGPRs() in
+    // llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp and the
+    // Feature1536VGPRs definition / FeatureISAVersion11_* lists in
+    // llvm/lib/Target/AMDGPU/AMDGPU.td.
+    if (chip == "gfx1100" || chip == "gfx1101" || chip == "gfx1151")
+      return 1536;
+    return 1024;
+  case ISAFamily::RDNA4:
+  case ISAFamily::GFX1250:
+    return 1536;
+  case ISAFamily::Unknown:
+    return 512;
+  }
+  llvm_unreachable("unhandled ISAFamily in getVGPRsPerEU");
 }
 
 bool mlir::rock::supportsMultiCTALaunch(StringRef arch) {

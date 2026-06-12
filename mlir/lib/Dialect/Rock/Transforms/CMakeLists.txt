@@ -8,6 +8,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   AttnToGridwise.cpp
   GridwiseGemmToBlockwise.cpp
   GridwiseAttnToBlockwise.cpp
+  DecomposeNonPow2Tiles.cpp
   GridLayoutEmitter.cpp
   ViewToTransform.cpp
   FusionSplitkRegularizationPass.cpp

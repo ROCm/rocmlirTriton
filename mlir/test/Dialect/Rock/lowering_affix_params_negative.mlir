@@ -15,22 +15,47 @@
 // branch; the field order also matches the order in which the validators run
 // inside `validatePerfConfig`, so each error is unambiguously attributable.
 
-// ---- validatePositivePowerOfTwo on mPerBlock / nPerBlock / kPerBlock -------
+// ---- mPerBlock / nPerBlock: positive (gemm) vs power-of-two (gemm+gemm) ----
+// rock-decompose-nonpow2-tiles lets a plain gemm use non-power-of-two M/N, so
+// gemm only requires them to be positive. gemm+gemm (attention) is not lowered
+// through that pass, so it still requires powers of two.
 
 // RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
-// RUN:   --perf_config "gemm:v1:3,128,128,1,1,4,16,1,2,0,0" \
+// RUN:   --perf_config "gemm:v1:0,128,128,1,1,4,16,1,2,0,0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=MPERBLOCK-NON-POSITIVE
+
+// RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
+// RUN:   --perf_config "gemm:v1:128,0,128,1,1,4,16,1,2,0,0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=NPERBLOCK-NON-POSITIVE
+
+// RUN: rocmlir-gen --operation attention --arch gfx90a -t f16 \
+// RUN:   -seq_len_q 256 -seq_len_k 256 -head_dim_qk 64 -head_dim_v 64 -p \
+// RUN:   --perf_config "attn:v1:3,64,32,1,1,1,0,1,2,0,0" \
 // RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
 // RUN: | FileCheck %s --check-prefix=MPERBLOCK-NOT-POW2
 
-// RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
-// RUN:   --perf_config "gemm:v1:128,3,128,1,1,4,16,1,2,0,0" \
+// RUN: rocmlir-gen --operation attention --arch gfx90a -t f16 \
+// RUN:   -seq_len_q 256 -seq_len_k 256 -head_dim_qk 64 -head_dim_v 64 -p \
+// RUN:   --perf_config "attn:v1:64,3,32,1,1,1,0,1,2,0,0" \
 // RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
 // RUN: | FileCheck %s --check-prefix=NPERBLOCK-NOT-POW2
 
-// RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
-// RUN:   --perf_config "gemm:v1:128,128,3,1,1,4,16,1,2,0,0" \
+// Scaled GEMMs are not lowered through rock-decompose-nonpow2-tiles either, so
+// they keep the power-of-two M/N requirement.
+
+// RUN: rocmlir-gen -t f4E2M1FN -m 80 -n 80 -k 256 -out_dtype f32 --scaledGemm \
+// RUN:   --arch gfx950 --operation gemm -p \
+// RUN:   --perf_config "gemm:v1:80,128,128,1,1,4,16,1,2,0,0" \
 // RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
-// RUN: | FileCheck %s --check-prefix=KPERBLOCK-NOT-POW2
+// RUN: | FileCheck %s --check-prefix=SCALED-MPERBLOCK-NOT-POW2
+
+// RUN: rocmlir-gen -t f4E2M1FN -m 80 -n 80 -k 256 -out_dtype f32 --scaledGemm \
+// RUN:   --arch gfx950 --operation gemm -p \
+// RUN:   --perf_config "gemm:v1:128,80,128,1,1,4,16,1,2,0,0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=SCALED-NPERBLOCK-NOT-POW2
 
 // ---- validateKpack: both branches (non-positive, exceeds max) -------------
 
@@ -124,8 +149,12 @@
 // RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
 // RUN: | FileCheck %s --check-prefix=GRIDGROUP-NEGATIVE
 
+// MPERBLOCK-NON-POSITIVE: error: mPerBlock=0 must be positive
+// NPERBLOCK-NON-POSITIVE: error: nPerBlock=0 must be positive
 // MPERBLOCK-NOT-POW2:    error: mPerBlock=3 must be a positive power of two
 // NPERBLOCK-NOT-POW2:    error: nPerBlock=3 must be a positive power of two
+// SCALED-MPERBLOCK-NOT-POW2: error: mPerBlock=80 must be a positive power of two
+// SCALED-NPERBLOCK-NOT-POW2: error: nPerBlock=80 must be a positive power of two
 // KPERBLOCK-NOT-POW2:    error: kPerBlock=3 must be a positive power of two
 // KPACK-NON-POSITIVE:    error: kpack=0 must be positive
 // KPACK-TOO-LARGE:       error: kpack=16 exceeds max (2) for amdgcn-amd-amdhsa:gfx90a

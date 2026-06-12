@@ -47,6 +47,11 @@ private:
         .str();
   }
 
+  // Returns the closest datatype to borrow tuning configs from when `dataType`
+  // has no entries of its own (e.g. fp8 -> i8, f4 -> i8). Returns an empty
+  // StringRef when there is no fallback datatype.
+  static StringRef getFallbackDataType(StringRef dataType);
+
   static const std::map<StringRef, ArrayRef<StringRef>> &getTable() {
     static const std::map<StringRef, ArrayRef<StringRef>> table = buildTable();
     return table;
