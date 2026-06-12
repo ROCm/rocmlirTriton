@@ -120,6 +120,10 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   SetVector<StoreOp> &stores = views.stores;
   SmallVector<Value> &outputViews = views.outputViews;
   DenseMap<Value, Value> &fusionInputMap = views.fusionInputMap;
+  SmallVector<Type> storeResultTypes;
+  storeResultTypes.reserve(stores.size());
+  for (StoreOp store : stores)
+    storeResultTypes.push_back(store.getResult().getType());
 
   Value scaleA = adaptor.getScaleA(), scaleB = adaptor.getScaleB();
 
@@ -255,9 +259,8 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
       source = result;
     }
     rw.setInsertionPoint(storeOp);
-    auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
-                                            storeOp.getResult().getType(),
-                                            source, view, storeMethod);
+    auto newStoreOp = rock::StoreOp::create(
+        rw, storeOp.getLoc(), storeResultTypes[i], source, view, storeMethod);
     rw.replaceOp(storeOp, newStoreOp.getResult());
   }
 

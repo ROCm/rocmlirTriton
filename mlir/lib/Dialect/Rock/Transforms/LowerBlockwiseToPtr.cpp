@@ -50,13 +50,25 @@ struct RockLowerBlockwiseToPtrPass
 
 namespace {
 
-static Value peelStoreResultRoot(Value root) {
-  while (auto storeOp = root.getDefiningOp<BlockwiseStoreOp>()) {
-    SmallVector<TransformMapAttr> transforms;
-    std::tie(root, std::ignore) =
-        rock::untransform(storeOp.getDest(), transforms);
+static Value findStoreResultReplacement(Value value, Type resultType) {
+  Value current = value;
+  while (current) {
+    if (current.getType() == resultType)
+      return current;
+
+    if (auto transformOp = current.getDefiningOp<TransformOp>()) {
+      current = transformOp.getInput();
+      continue;
+    }
+
+    if (auto storeOp = current.getDefiningOp<BlockwiseStoreOp>()) {
+      current = storeOp.getDest();
+      continue;
+    }
+
+    return {};
   }
-  return root;
+  return {};
 }
 
 //===----------------------------------------------------------------------===//
@@ -101,12 +113,14 @@ struct BlockwiseStoreRewritePattern
     auto extraIndices = op.getExtraIndices();
     auto storeMethod = op.getStoreMethod();
 
-    auto [destRoot, destMaps, _] = rock::untransform(b, dest);
-    Value normalizedDestRoot = peelStoreResultRoot(destRoot);
-    if (normalizedDestRoot != destRoot) {
-      dest = rock::transform(b, normalizedDestRoot, destMaps);
+    Value resultReplacement =
+        findStoreResultReplacement(dest, op.getResult().getType());
+    if (resultReplacement) {
+      op.getResult().replaceAllUsesWith(resultReplacement);
+    } else if (!op.getResult().use_empty()) {
+      return op.emitOpError(
+          "cannot find same-typed destination view for store result uses");
     }
-    op.getResult().replaceAllUsesWith(normalizedDestRoot);
 
     auto transformsToPtrOp =
         TransformsToPtrOp::create(b, loc, dest, extraIndices);

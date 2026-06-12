@@ -1142,14 +1142,16 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     Value destBuffer = originalStoreOp.getDest();
     ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
 
+    Value destRoot;
     ArrayAttr destMaps;
-    std::tie(std::ignore, destMaps, std::ignore) =
+    std::tie(destRoot, destMaps, std::ignore) =
         rock::untransform(b, destBuffer);
 
     // Thread the destination through each per-kernel store so the single
-    // returned tensor represents all disjoint bwd_data phase writes. Each store
-    // returns the root tensor, so rebuild the original destination view before
-    // feeding the next phase.
+    // returned tensor represents all disjoint bwd_data phase writes. Depending
+    // on the incoming store type, stores may return either the untransformed
+    // root tensor or the logical destination-view type. Rebuild the original
+    // view only when the store result is the root type.
     Value currentDest = destBuffer;
     Value finalStoreResult;
     for (auto [idx, kid] : llvm::enumerate(kernelIds)) {
@@ -1161,8 +1163,16 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
                                         gemmDest, storeMethod);
       finalStoreResult = newStoreOp.getResult();
-      if (idx + 1 < kernelIds.size())
-        currentDest = rock::transform(b, finalStoreResult, destMaps);
+      if (idx + 1 < kernelIds.size()) {
+        if (finalStoreResult.getType() == destRoot.getType()) {
+          currentDest = rock::transform(b, finalStoreResult, destMaps);
+        } else {
+          if (finalStoreResult.getType() != destBuffer.getType())
+            return bwdDataOp.emitOpError(
+                "store result type does not match destination root or view");
+          currentDest = finalStoreResult;
+        }
+      }
     }
 
     // BwdData with multiple kernel IDs emits N independent gemm + store pairs,
