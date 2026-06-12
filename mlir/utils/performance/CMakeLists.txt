@@ -29,6 +29,16 @@ list(TRANSFORM PERFORMANCE_SCRIPTS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 # (b) the wrapper can self-locate the rocMLIR build dir from its own location.
 set(ROCM_RUN_WRAPPER "${CMAKE_CURRENT_SOURCE_DIR}/../widgets/rocm-run")
 
+if(NOT TARGET amd_arch_db)
+  message(FATAL_ERROR
+    "ci-performance-scripts requires the amd_arch_db Python binding, which is "
+    "currently defined under mlir/test/common_utils and is only configured "
+    "when MLIR_INCLUDE_TESTS=ON.")
+endif()
+
 add_custom_target(ci-performance-scripts
-	COMMAND ${CMAKE_COMMAND} -E copy ${PERFORMANCE_SCRIPTS} ${ROCMLIR_BIN_DIR}
-	COMMAND ${CMAKE_COMMAND} -E copy ${ROCM_RUN_WRAPPER} ${ROCMLIR_BIN_DIR})
+  COMMAND ${CMAKE_COMMAND} -E copy ${PERFORMANCE_SCRIPTS} ${ROCMLIR_BIN_DIR}
+  COMMAND ${CMAKE_COMMAND} -E copy ${ROCM_RUN_WRAPPER} ${ROCMLIR_BIN_DIR}
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:amd_arch_db> ${ROCMLIR_BIN_DIR})
+add_dependencies(ci-performance-scripts amd_arch_db)

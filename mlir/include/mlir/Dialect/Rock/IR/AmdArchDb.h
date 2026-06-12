@@ -85,6 +85,9 @@ int64_t getMaxNumChiplets(StringRef arch);
 /// Get maximum number of waves per EU per arch
 int64_t getMaxWavesPerEU(StringRef arch);
 
+/// Get the SIMD VGPR file size per execution unit for this arch.
+int64_t getVGPRsPerEU(StringRef arch);
+
 /// Element type used by the out-of-MLIR (e.g. Python test binding) overloads
 /// of the per-arch dtype-dispatched queries below. Mirrors the small set of
 /// MLIR `Type`s those helpers actually switch on.
