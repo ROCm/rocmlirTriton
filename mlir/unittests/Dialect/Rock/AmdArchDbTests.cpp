@@ -169,6 +169,22 @@ TEST(AmdArchDbTest, MaxWavesPerEU) {
   EXPECT_EQ(getMaxWavesPerEU("gfx1250"), 16); // GFX1250
 }
 
+// --- getVGPRsPerEU ---
+
+TEST(AmdArchDbTest, VGPRsPerEU) {
+  EXPECT_EQ(getVGPRsPerEU("gfx906"), 256);   // GCN5_1
+  EXPECT_EQ(getVGPRsPerEU("gfx908"), 256);   // CDNA1
+  EXPECT_EQ(getVGPRsPerEU("gfx90a"), 512);   // CDNA2
+  EXPECT_EQ(getVGPRsPerEU("gfx942"), 512);   // CDNA3
+  EXPECT_EQ(getVGPRsPerEU("gfx950"), 512);   // CDNA4
+  EXPECT_EQ(getVGPRsPerEU("gfx1010"), 1024); // RDNA1
+  EXPECT_EQ(getVGPRsPerEU("gfx1030"), 1024); // RDNA2
+  EXPECT_EQ(getVGPRsPerEU("gfx1100"), 1536); // RDNA3, 1536 physical VGPRs
+  EXPECT_EQ(getVGPRsPerEU("gfx1102"), 1024); // RDNA3, cut-down VGPR file
+  EXPECT_EQ(getVGPRsPerEU("gfx1200"), 1536); // RDNA4
+  EXPECT_EQ(getVGPRsPerEU("gfx1250"), 1536); // GFX1250
+}
+
 // --- getWaveSize ---
 
 TEST(AmdArchDbTest, WaveSize) {

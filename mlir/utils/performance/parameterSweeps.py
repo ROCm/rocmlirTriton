@@ -27,6 +27,9 @@ from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 import perfRunner
 from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_chiplets, get_num_cu)
 
+# Hard dependency, copied next to the scripts by ci-performance-scripts.
+import amd_arch_db
+
 
 @dataclass(frozen=True)
 class Options:
@@ -607,36 +610,8 @@ def _arch_id(arch: str) -> Optional[int]:
 def _kpack_choices(arch: str) -> List[int]:
     """Valid ``kpack`` values for the perf-config sweep, by arch.
 
-    ``kpack != 1`` is deprecated on gfx950 and gfx1250 (and any newer arch);
-    older archs (gfx9 < gfx950, all of gfx10/gfx11, gfx12 < gfx1250) still
-    accept ``kpack in {1, 2}``.
-
-    Cutoffs are expressed on the gfx target id (parsed as hex) so any new
-    arch in the same family (gfx951, gfx1260, ...) and any new family
-    (gfx13xx, gfx14xx, ...) automatically falls into the ``[1]`` bucket
-    without requiring a code change here."""
-    n = _arch_id(arch)
-    if n is None:
-        return [1]  # unknown target -> safest
-    if n < 0x950:  # gfx9 pre-CDNA4
-        return [1, 2]
-    if 0x1000 <= n < 0x1250:  # all of gfx10/gfx11, gfx12 before gfx1250
-        return [1, 2]
-    return [1]  # gfx950+, gfx1250+, gfx13+, ...
-
-
-# TODO: Use python bindings when available.
-def _wave_size(arch: str) -> int:
-    """Wave size used by the perf-config tuner for ``arch``.
-    32 for RDNA, 64 for GCN/CDNA and gfx1250."""
-    n = _arch_id(arch)
-    if n is None:
-        # Unknown arch: conservative (wider wave -> smaller per-thread
-        # state -> less likely to filter).
-        return 64
-    if 0x1000 <= n < 0x1250:  # gfx10xx, gfx11xx, gfx12 < 1250
-        return 32
-    return 64
+    Sourced from ``rock::getMaxKpack`` via the AmdArchDB pybind module."""
+    return list(range(1, amd_arch_db.get_max_kpack(arch) + 1))
 
 
 # Dtypes whose Triton fp_to_fp lowering expands into many LLVM ops on AMD
@@ -706,7 +681,7 @@ def _compile_cost_score(perf: Sequence[int], dtype: str, arch: str) -> float:
     The PostRA scheduler bottlenecks on whichever basic block is larger,
     so the per-block max is a better proxy than their sum."""
     mpb, npb, kpb, kpack, _, num_waves, *_ = perf
-    threads = max(1, num_waves * _wave_size(arch))
+    threads = max(1, num_waves * amd_arch_db.get_wave_size(arch))
     num_elements_kloop_body = (mpb + npb) * kpb / (threads * max(1, kpack))
     num_elements_c_epilogue = (mpb * npb) / threads
     largest_num_elements = max(num_elements_kloop_body, num_elements_c_epilogue)

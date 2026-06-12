@@ -57,6 +57,16 @@ PYBIND11_MODULE(amd_arch_db, m) {
       py::arg("arch"));
 
   m.def(
+      "get_wave_size",
+      [](const std::string &arch) { return mlir::rock::getWaveSize(arch); },
+      py::arg("arch"));
+
+  m.def(
+      "get_vgprs_per_eu",
+      [](const std::string &arch) { return mlir::rock::getVGPRsPerEU(arch); },
+      py::arg("arch"));
+
+  m.def(
       "get_max_kpack",
       [](const std::string &arch) { return mlir::rock::getMaxKpack(arch); },
       py::arg("arch"));
