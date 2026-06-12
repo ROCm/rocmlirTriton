@@ -1,4 +1,5 @@
 include(cmake/submodules.cmake)
+include(cmake/patches.cmake)
 
 message(STATUS "Adding Triton src dependency")
 
@@ -12,7 +13,10 @@ set(ROCMLIRTRITON_LLVM_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-pr
 
 option(ROCMLIRTRITON_SKIP_SUBMODULE_UPDATE "Skip 'git submodule update'" OFF)
 
+# Ensure submodules are available and up-to-date.
 rocmlir_ensure_submodules()
+# Apply the downstream patches.
+rocmlir_apply_patches()
 
 #===----------------------------------------------------------------------===//
 # LLVM/MLIR discovery
