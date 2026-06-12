@@ -120,6 +120,11 @@ int64_t getWaveSize(StringRef arch);
 /// Get LDS size
 int64_t getLDSSize(StringRef arch);
 
+/// Get the size in bytes of the last-level cache for this architecture (the
+/// AMD Infinity Cache where present, otherwise the L2), taking the maximum
+/// across the variants within an ISA family.
+int64_t getLastLevelCacheSize(StringRef arch);
+
 /// Whether the architecture supports multi-CTA
 bool supportsMultiCTALaunch(StringRef arch);
 
