@@ -58,9 +58,9 @@ jobs:
       #   - contents:read       git fetch of the default branch + PR head.
       #   - issues:write        create/apply/remove the label and post the
       #                         banner comment through the Issues REST API.
-      #                         PRs are issues for labels/comments, and the
-      #                         server-provided PR number lets us avoid
-      #                         pull-requests scope in this companion.
+      #   - pull-requests:write allow those label/comment operations on a
+      #                         PR-backed issue (GitHub enforces this on some
+      #                         endpoints even when the URL is under /issues).
       # See doc §9, §11, §14.2.
       - name: Generate App token
         if: steps.app-config.outputs.configured == 'true'
@@ -71,6 +71,7 @@ jobs:
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
           permission-contents: read
           permission-issues: write
+          permission-pull-requests: write
 
       # Inline probe: absorb the brief post-mint token-propagation 404 race
       # before the first App-token call; fail closed. See doc §9, §15.
