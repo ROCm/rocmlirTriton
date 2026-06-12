@@ -154,6 +154,12 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
     numCTAsList.push_back(n);
 
+  std::vector<uint32_t> useBufferOpsList =
+      (kind == TuningParamSetKind::Exhaustive &&
+       gemmOp.getKernelType() == KernelType::Gemm)
+          ? std::vector<uint32_t>{0, 1}
+          : std::vector<uint32_t>{static_cast<uint32_t>(kKnobDefault)};
+
   std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
       dPerBlock,         // M/block
       dPerBlock,         // N/block
@@ -164,7 +170,8 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       {1, 2, 3},         // numStages
       wavesPerEUList,    // wavesPerEU
       gridGroupSizeList, // gridGroupSize
-      numCTAsList        // numCTAs
+      numCTAsList,       // numCTAs
+      useBufferOpsList   // useBufferOps
   };
 
   // WMMA (RDNA) parameters
@@ -179,7 +186,8 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       {1, 2, 3},         // numStages
       wavesPerEUList,    // wavesPerEU
       gridGroupSizeList, // gridGroupSize
-      numCTAsList        // numCTAs
+      numCTAsList,       // numCTAs
+      useBufferOpsList   // useBufferOps
   };
 
   return isMfma ? validRangeMfmaParams : validRangeWmmaParams;
@@ -404,8 +412,10 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
 // - `useAsyncCopy`                     (set to kKnobDefault)
 // - `useBlockPingpong`                 (set to kKnobDefault)
 // - `useInThreadTranspose`             (set to kKnobDefault)
-// - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
+//
+// Exception: in Exhaustive mode `useBufferOps` is swept for plain GEMM
+// kernels only; in Quick/Full (and for conv) it stays at kKnobDefault.
 static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     RockGemmWrapperInterface gemmOp,
                                     TuningParamSetKind kind) {
@@ -432,22 +442,28 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                   for (int64_t wavesPerEU : params[7]) {
                     for (int64_t gridGroupSize : params[8]) {
                       for (uint32_t numCTAs : params[9]) {
-                        auto gemmParams = GemmParamsAttr::get(
-                            b.getContext(), gemmMPerBlock, gemmNPerBlock,
-                            gemmKPerBlock, gemmKPack, numCTAs, numWaves,
-                            matrixInstrNonkdim, splitKFactor, numStages,
-                            wavesPerEU, gridGroupSize,
-                            /*useAsyncCopy=*/kKnobDefault,
-                            /*useBlockPingpong=*/kKnobDefault,
-                            /*useInThreadTranspose=*/kKnobDefault,
-                            /*useBufferOps=*/kKnobDefault,
-                            /*useBufferAtomics=*/kKnobDefault,
-                            /*scheduleHint=*/kKnobDefault);
-                        if (kind != TuningParamSetKind::Full ||
-                            succeeded(tuningInfo->couldBePerformant(
-                                info, gemmParams)))
-                          newSpace->tuningRange.push_back(
-                              cast<RockTuningParamAttrInterface>(gemmParams));
+                        // kKnobDefault (-1) is stored as a uint32_t in the
+                        // range; recover the sign with an int32_t cast.
+                        for (uint32_t useBufferOpsRaw : params[10]) {
+                          int64_t useBufferOps =
+                              static_cast<int32_t>(useBufferOpsRaw);
+                          auto gemmParams = GemmParamsAttr::get(
+                              b.getContext(), gemmMPerBlock, gemmNPerBlock,
+                              gemmKPerBlock, gemmKPack, numCTAs, numWaves,
+                              matrixInstrNonkdim, splitKFactor, numStages,
+                              wavesPerEU, gridGroupSize,
+                              /*useAsyncCopy=*/kKnobDefault,
+                              /*useBlockPingpong=*/kKnobDefault,
+                              /*useInThreadTranspose=*/kKnobDefault,
+                              /*useBufferOps=*/useBufferOps,
+                              /*useBufferAtomics=*/kKnobDefault,
+                              /*scheduleHint=*/kKnobDefault);
+                          if (kind != TuningParamSetKind::Full ||
+                              succeeded(tuningInfo->couldBePerformant(
+                                  info, gemmParams)))
+                            newSpace->tuningRange.push_back(
+                                cast<RockTuningParamAttrInterface>(gemmParams));
+                        }
                       }
                     }
                   }
