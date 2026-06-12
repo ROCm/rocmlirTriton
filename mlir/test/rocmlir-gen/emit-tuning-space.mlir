@@ -5,18 +5,24 @@
 // CHECK-MI: gemm:v2:64,64,128,1,1,4,16,4,1,0,0,-1,-1,-1,-1,-1,-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM
-// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:v2:16,16,16,1,1,1,32,1,1,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,0,-1,-1
+// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:v2:16,16,16,1,1,1,32,1,1,0,0,-1,-1,-1,0,-1,-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-SPLITKFACTOR
-// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v2:16,16,16,1,1,1,16,3,1,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v2:16,16,16,1,1,1,16,4,1,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,0,-1,-1
+// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v2:16,16,16,1,1,1,16,3,1,0,0,-1,-1,-1,0,-1,-1
+// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v2:16,16,16,1,1,1,16,4,1,0,0,-1,-1,-1,0,-1,-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-NUMSTAGES
-// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v2:16,16,16,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v2:16,16,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,0,-1,-1
+// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v2:16,16,16,1,1,1,16,1,2,0,0,-1,-1,-1,0,-1,-1
+// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v2:16,16,16,1,1,1,16,1,3,0,0,-1,-1,-1,0,-1,-1
+
+// Exhaustive tuning sweeps the use-buffer-ops knob (off=0 then on=1) for plain
+// GEMM kernels only; the two variants are emitted back-to-back per config.
+// RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-BUFFEROPS
+// CHECK-EXHAUSTIVE-BUFFEROPS: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,0,-1,-1
+// CHECK-EXHAUSTIVE-BUFFEROPS-NEXT: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,1,-1,-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-ATTN
 // CHECK-EXHAUSTIVE-ATTN: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
