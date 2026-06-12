@@ -14,6 +14,7 @@ String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
 
 void buildProject(String target, String cmakeOpts) {
     timeout(time: 60, activity: true, unit: 'MINUTES') {
+        // Collapse multi-line Groovy strings into a single line for cmake.sh
         sh """
             export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
             export C_COMPILER=/opt/rocm/llvm/bin/clang
@@ -1060,26 +1061,26 @@ pipeline {
                                                 ]) {
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            build_fixedE2ETests("${CODEPATH}")
+                                                            build_fixedE2ETests(CODEPATH)
                                                         }
                                                     }
 
                                                     stage('Static checks (clang-format & clang-tidy)') {
                                                         timeout(time: 10, activity: true, unit: 'MINUTES') {
-                                                            preMergeCheck("${CODEPATH}")
+                                                            preMergeCheck(CODEPATH)
                                                         }
                                                     }
 
                                                     stage('Shared Library: fixed E2E') {
                                                         int limit_lit_workers = setLitWorkerCount()
-                                                        timeout(time: 60, activity: true, unit: 'MINUTES') {
+                                                        timeout(time: 30, activity: true, unit: 'MINUTES') {
                                                             sh "cd build; LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
                                                         }
                                                     }
 
                                                     if (params.nightly) {
                                                         stage('Shared Library: random E2E') {
-                                                            check_randomE2ETests("${CODEPATH}")
+                                                            check_randomE2ETests(CODEPATH)
                                                         }
                                                     }
 
