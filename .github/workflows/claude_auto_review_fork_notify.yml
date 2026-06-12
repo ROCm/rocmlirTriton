@@ -52,7 +52,11 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # App token so the comment posts under the consistent bot identity. §11.
+      # App token so the comment posts under the consistent bot identity. The
+      # workflow removes a PR label through the Issues API and posts a PR
+      # comment; GitHub can enforce either Issues or Pull requests permission
+      # for PR-backed resources, so request both API families explicitly. See
+      # doc §9, §11, §14.2.
       - name: Generate App token
         if: steps.app-config.outputs.configured == 'true'
         id: app-token
@@ -60,6 +64,8 @@ jobs:
         with:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
+          permission-issues: write
+          permission-pull-requests: write
 
       # Inline probe: absorb the brief post-mint token-propagation 404 race
       # before the first App-token call; fail closed. See doc §9, §15.

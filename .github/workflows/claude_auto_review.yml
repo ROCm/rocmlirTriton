@@ -306,9 +306,10 @@ jobs:
           sha256sum .github/scripts/*.sh docs/PR_REVIEW_CHECKLIST.md docs/bump_triton_version.md
 
       # Mint a short-lived (1h) installation token for the bot App, used for
-      # GitHub API calls and all PR writes. Generated in the job that uses it;
-      # never written to disk; never passed to the model's env. Lets the default
-      # GITHUB_TOKEN stay contents:read. See doc §11.
+      # GitHub API calls. This review-side token only pre-fetches PR metadata,
+      # prior review comments, and CI status; it is never passed to the model's
+      # env and has no write permissions. Lets the default GITHUB_TOKEN stay
+      # contents:read. See doc §11, §14.2.
       - name: Generate App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
@@ -317,6 +318,9 @@ jobs:
           # private key as a secret. The variable NAME is historical.
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
+          permission-checks: read
+          permission-pull-requests: read
+          permission-statuses: read
 
       # Inline probe: absorb the brief post-mint token-propagation 404 race
       # before the first App-token call; fail closed. See doc §11, §15.
@@ -1046,6 +1050,7 @@ jobs:
         with:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
+          permission-pull-requests: write
 
       # Inline probe: absorb the brief post-mint token-propagation 404 race
       # before the first App-token call; fail closed. See doc §11, §15.
@@ -1096,7 +1101,9 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Default-deny: only the App token is used (for the label DELETE).
+    # Default-deny: only the App token is used. The label DELETE targets a
+    # PR-backed issue, so the token requests both Issues and Pull requests
+    # write permissions below.
     permissions: {}
     steps:
       - name: Generate App token
@@ -1105,6 +1112,8 @@ jobs:
         with:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
+          permission-issues: write
+          permission-pull-requests: write
 
       # Inline probe: absorb the brief post-mint token-propagation 404 race
       # before the first App-token call; fail closed. See doc §11, §15.
