@@ -496,14 +496,12 @@ String getLabelFromChip(String chip) {
 */
 
 int setLitWorkerCount() {
-    int limit_lit_workers = 32
+    int limit_lit_workers = 8
     def gpu_arch = get_gpu_architecture()
-    if (gpu_arch.contains('gfx908') || gpu_arch.contains('gfx90a')) {
+    if (gpu_arch.contains('gfx908') || gpu_arch.contains('gfx90a') || gpu_arch.contains('gfx950')) {
         limit_lit_workers = 20
-    } else if (gpu_arch.contains('gfx942') || gpu_arch.contains('gfx950')) {
+    } else if (gpu_arch.contains('gfx942')) {
         limit_lit_workers = 64
-    } else if (gpu_arch.contains('gfx1200') || gpu_arch.contains('gfx1201')) {
-        limit_lit_workers = 16
     }
     return limit_lit_workers
 }
