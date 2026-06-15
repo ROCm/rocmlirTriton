@@ -174,9 +174,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
                 accelKind == MatrixAccelKind::ScaledMFMA;
   bool isWmma = accelKind == MatrixAccelKind::WMMA ||
                 accelKind == MatrixAccelKind::ScaledWMMA;
-  Type inTypeA = gemmOp.getAType();
-  bool is8b = inTypeA.isInteger(8) ||
-              (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
 
   std::vector<uint32_t> kPerBlockMFMA =
       kind == TuningParamSetKind::Exhaustive
@@ -187,9 +184,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       kind == TuningParamSetKind::Exhaustive
           ? std::vector<uint32_t>{32, 64, 128, 256}
           : std::vector<uint32_t>{32, 64};
-
-  if (is8b && isMfma)
-    kPerBlockMFMA = {32, 64, 128};
 
   std::vector<uint32_t> numCTAsList;
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
