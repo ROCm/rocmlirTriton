@@ -13,7 +13,7 @@ patch-buffer-atomics.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
-=======
+patch10635.patch
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
@@ -101,3 +101,17 @@ patch10832.patch
 
   Drop this patch on the next Triton bump that pulls PR #10832 (upstream main at
   cf8bb65 or later) into external/triton.
+
+patch10635.patch
+  Fixes AMD software pipelining for undersized direct-to-LDS tiles. The
+  pipeliner's async-copy eligibility check now first applies Triton's standard
+  `triton::canBeConvertedToAsyncLoad` contiguity/alignment check, then rejects
+  scatter-less direct-to-LDS targets when the CTA tile does not contain enough
+  data for each warp lane to write at least 32 bits into LDS
+  (`hasEnoughCTABytesForDirectToLds`, `ctaTileBits >= 32 * warpSize`). This
+  keeps undersized tiles on the register path instead of creating async copies
+  that later fail direct-to-LDS lowering. Mirrors upstream Triton PR
+  https://github.com/triton-lang/triton/pull/10635 exactly.
+
+  Drop this patch on the next Triton bump that pulls PR #10635 (upstream main at
+  f12e94d or later) into external/triton.
