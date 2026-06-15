@@ -532,7 +532,7 @@ async def sweep_parameters(param_iter: Iterable[IterType],
 PERF_CONFIG_OPTIONS = {
     'm_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
     'n_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
-    'k_per_block': [16, 32, 64, 128],
+    'k_per_block': [16, 32, 64, 128, 256, 512],
     # `kpack` is sampled via _kpack_choices(arch); see below. `kpack != 1` is
     # deprecated on gfx950 and gfx1250 (and newer); older archs still take
     # {1, 2}.
