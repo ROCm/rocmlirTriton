@@ -462,6 +462,7 @@ def get_conv_configurations(filename):
 class ConvConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.CONV_TEST_PARAMETERS + ['LDSBankConflict'] + ['TFlops']
     EXTERNAL_NAME = "MIOpen"
+    SWEEP_KIND = "conv"
 
     def compute_tflops(self, ns):
         # NaN will propagate as expected
@@ -970,6 +971,7 @@ def get_attn_configurations(filename):
 
 class GemmConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.GEMM_TEST_PARAMETERS + ['LDSBankConflict'] + ['TFlops']
+    SWEEP_KIND = "gemm"
 
     def compute_tflops(self, ns):
         # NaN will propagate as expected
@@ -1372,6 +1374,7 @@ class ConvGemmConfiguration(PerfConfiguration):
 
 class GemmGemmConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.GEMM_GEMM_TEST_PARAMETERS + ['TFlops']
+    SWEEP_KIND = "gemm_gemm"
 
     def __init__(self,
                  dtype: str,
@@ -1510,6 +1513,7 @@ class GemmGemmConfiguration(PerfConfiguration):
 
 class AttentionConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.ATTN_TEST_PARAMETERS + ['TFlops']
+    SWEEP_KIND = "attn"
 
     def __init__(self,
                  dtype: str,

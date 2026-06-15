@@ -14,4 +14,5 @@
 # CHECK-DAG: --samples
 # CHECK-DAG: --seed
 # CHECK-DAG: --test-timeout-sec
+# CHECK-DAG: --max-timeout-rate
 # CHECK-DAG: --mlir-build-dir
