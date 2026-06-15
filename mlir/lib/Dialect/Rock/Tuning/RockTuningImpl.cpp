@@ -295,7 +295,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       /*kPackList=*/{1},
       numWavesRange,
       /*matrixInstrNonkdim=*/{0},
-      {1, 2, 3},
+      {1, 2},
       wavesPerEUList,
       gridGroupSizeList,
       numCTAsList};
