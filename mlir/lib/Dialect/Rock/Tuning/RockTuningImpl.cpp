@@ -196,7 +196,7 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       {1},               // kPackList
       numWavesRange,     // numWaves
       {16, 32},          // matrixInstrNonkdim
-      {1, 2, 3, 4},      // numStages
+      {1, 2, 3},      // numStages
       wavesPerEUList,    // wavesPerEU
       gridGroupSizeList, // gridGroupSize
       numCTAsList        // numCTAs
@@ -211,7 +211,7 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       {1},               // kPackList
       {4, 8},            // numWaves
       {0},               // matrixInstrNonkdim
-      {1, 2, 3, 4},      // numStages
+      {1, 2, 3},      // numStages
       wavesPerEUList,    // wavesPerEU
       gridGroupSizeList, // gridGroupSize
       numCTAsList        // numCTAs
@@ -284,7 +284,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       kPackList,
       numWavesRange,
       /*matrixInstrNonkdim=*/{16, 32},
-      {1, 2, 3, 4},
+      {1, 2, 3},
       wavesPerEUList,
       gridGroupSizeList,
       numCTAsList};
@@ -295,7 +295,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       /*kPackList=*/{1},
       numWavesRange,
       /*matrixInstrNonkdim=*/{0},
-      {1, 2, 3, 4},
+      {1, 2, 3},
       wavesPerEUList,
       gridGroupSizeList,
       numCTAsList};
