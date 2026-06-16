@@ -25,7 +25,7 @@ func.func @test_transforms_to_ptr_load(%arg0: tensor<32768xf16>) -> tensor<64x64
 
   // transforms_to_ptr should be expanded to pointer arithmetic
   %pointers, %mask = rock.transforms_to_ptr %1[%c0_i32, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-  %2 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %2 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
   return %2 : tensor<64x64xf16>
 }
@@ -83,13 +83,13 @@ func.func @test_extract_ptr_hoisting(%arg0: tensor<8192xf16>, %arg1: tensor<8192
   %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 128 + d1)> by [<Unmerge{64, 128} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 128] -> [8192]> : tensor<8192xf16> to tensor<64x128xf16>
   %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3) -> (d0 * 64 + d2, d1 * 64 + d3)> by [<Unmerge{1, 64} ["m_block", "m_iter"] at [0, 2] -> ["m"] at [0]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [1, 3] -> ["n"] at [1]>] bounds = [1, 2, 64, 64] -> [64, 128]> : tensor<64x128xf16> to tensor<1x2x64x64xf16>
   %pointers0, %mask0 = rock.transforms_to_ptr %1[%c0_i32, %c0_i32] : tensor<1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-  %2 = rock.blockwise_load_ptr %pointers0[%mask0] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %2 = rock.blockwise_load_ptr %pointers0[%mask0] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
   // Second buffer transforms
   %3 = rock.transform %arg1 by <affine_map<(d0, d1) -> (d0 * 128 + d1)> by [<Unmerge{64, 128} ["k", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 128] -> [8192]> : tensor<8192xf16> to tensor<64x128xf16>
   %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3) -> (d0 * 64 + d2, d1 * 64 + d3)> by [<Unmerge{1, 64} ["k_block", "k_iter"] at [0, 2] -> ["k"] at [0]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [1, 3] -> ["n"] at [1]>] bounds = [1, 2, 64, 64] -> [64, 128]> : tensor<64x128xf16> to tensor<1x2x64x64xf16>
   %pointers1, %mask1 = rock.transforms_to_ptr %4[%c0_i32, %c0_i32] : tensor<1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-  %5 = rock.blockwise_load_ptr %pointers1[%mask1] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %5 = rock.blockwise_load_ptr %pointers1[%mask1] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
   // Return first load result
   return %2 : tensor<64x64xf16>
@@ -120,7 +120,7 @@ func.func @test_pad_mask(%arg0: tensor<4032xf16>) -> tensor<64x64xf16> attribute
   %1 = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1)> by [<Pad{0, 1} ["m_padded"] at [0] -> ["m"] at [0]>, <PassThrough ["n"] at [1] -> ["n"] at [1]>] bounds = [64, 64] -> [63, 64]> : tensor<63x64xf16> to tensor<64x64xf16>
 
   %pointers, %mask = rock.transforms_to_ptr %1 : tensor<64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-  %2 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %2 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
   return %2 : tensor<64x64xf16>
 }
@@ -168,7 +168,7 @@ func.func @test_no_extra_indices(%arg0: tensor<4096xf16>) -> tensor<64x64xf16> a
   %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf16> to tensor<64x64xf16>
 
   %pointers, %mask = rock.transforms_to_ptr %0 : tensor<64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-  %1 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %1 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
   return %1 : tensor<64x64xf16>
 }
@@ -193,7 +193,7 @@ func.func @test_nonsquare_tile(%arg0: tensor<4096xf16>) -> tensor<32x128xf16> at
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3) -> (d2 * 128 + d3)> by [<Unmerge{32, 128} ["m_iter", "n_iter"] at [2, 3] -> ["raw"] at [0]>, <AddDim{1} ["m_block"] at [0] -> [] at []>, <AddDim{1} ["n_block"] at [1] -> [] at []>] bounds = [1, 1, 32, 128] -> [4096]> : tensor<4096xf16> to tensor<1x1x32x128xf16>
 
   %pointers, %mask = rock.transforms_to_ptr %0[%c0_i32, %c0_i32] : tensor<1x1x32x128xf16> -> tensor<32x128xi32>, tensor<32x128xi1>
-  %1 = rock.blockwise_load_ptr %pointers[%mask] : tensor<32x128xi32>, tensor<32x128xi1> -> tensor<32x128xf16>
+  %1 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x128xi32>, tensor<32x128xi1> -> tensor<32x128xf16>
 
   return %1 : tensor<32x128xf16>
 }
@@ -234,7 +234,7 @@ func.func @test_embed_conv_style(%arg0: tensor<1048576xf32>) -> tensor<8x64xf32>
   %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 8 + d3, d2 * 64 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{9, 8} ["k_block", "k_iter"] at [1, 3] -> ["gemmK"] at [1]>, <Unmerge{2048, 64} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 9, 2048, 8, 64] -> [1, 72, 131072]> : tensor<1x72x131072xf32> to tensor<1x9x2048x8x64xf32>
 
   %pointers, %mask = rock.transforms_to_ptr %4[%c0_i32, %c0_i32, %c0_i32] : tensor<1x9x2048x8x64xf32> -> tensor<8x64xi32>, tensor<8x64xi1>
-  %5 = rock.blockwise_load_ptr %pointers[%mask] : tensor<8x64xi32>, tensor<8x64xi1> -> tensor<8x64xf32>
+  %5 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<8x64xi32>, tensor<8x64xi1> -> tensor<8x64xf32>
 
   return %5 : tensor<8x64xf32>
 }

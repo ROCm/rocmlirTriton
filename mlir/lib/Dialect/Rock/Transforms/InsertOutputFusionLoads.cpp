@@ -164,8 +164,13 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
                                             sourceType.getElementType());
 
       // Create LoadMarkerOp with the GEMM's grid coordinates.
-      auto markerOp = LoadMarkerOp::create(builder, loc, tileType, originalVal,
-                                           outputViews, gridCoords);
+      // Epilogue output-fusion inputs (bias, residual, scale, etc.) are read
+      // once per output tile with no temporal reuse across the kernel, so hint
+      // the hardware to stream them (evict-first) and avoid polluting the cache
+      // for the reused GEMM operands.
+      auto markerOp =
+          LoadMarkerOp::create(builder, loc, tileType, originalVal, outputViews,
+                               gridCoords, rock::CacheModifier::CS);
 
       // Create UntileOp to map tile back to the original full tensor type.
       // LowerStores will strip these when converting back to tile operations.

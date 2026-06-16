@@ -800,7 +800,7 @@ func.func @blockwise_store_shape_mismatch(
 func.func @blockwise_load_elem_type_mismatch(
     %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
-  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf32>
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] {cacheModifier = #rock<CacheModifier none>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf32>
   return %0 : tensor<64x64xf32>
 }
 
@@ -808,7 +808,7 @@ func.func @blockwise_load_elem_type_mismatch(
 func.func @blockwise_load_rank_mismatch(
     %src: tensor<4x1x1x2x64x64xf16>, %i0: i32) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{sourceIndices.size() + result rank must equal source rank}}
-  %0 = rock.blockwise_load %src[%i0] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load %src[%i0] {cacheModifier = #rock<CacheModifier none>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -816,8 +816,24 @@ func.func @blockwise_load_rank_mismatch(
 func.func @blockwise_load_shape_mismatch(
     %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x32xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{Input last dimensions must match with result shape}}
-  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] : tensor<4x1x1x2x64x64xf16> -> tensor<64x32xf16>
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] {cacheModifier = #rock<CacheModifier none>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x32xf16>
   return %0 : tensor<64x32xf16>
+}
+
+// Store-only cache modifier 'wb' is not allowed on a load
+func.func @blockwise_load_cache_modifier_wb(
+    %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wb' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] {cacheModifier = #rock<CacheModifier wb>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Store-only cache modifier 'wt' is not allowed on a load
+func.func @blockwise_load_cache_modifier_wt(
+    %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wt' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] {cacheModifier = #rock<CacheModifier wt>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
 }
 
 // =============================================================================
@@ -828,7 +844,7 @@ func.func @blockwise_load_shape_mismatch(
 func.func @blockwise_load_ptr_ptr_not_i32(
     %ptrs: tensor<64x64xf32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
-  %0 = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xf32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -836,7 +852,7 @@ func.func @blockwise_load_ptr_ptr_not_i32(
 func.func @blockwise_load_ptr_mask_not_i1(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi32>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{operand #1 must be ranked tensor of 1-bit signless integer values}}
-  %0 = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi32> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi32> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -844,7 +860,23 @@ func.func @blockwise_load_ptr_mask_not_i1(
 func.func @blockwise_load_ptr_shape_mismatch(
     %ptrs: tensor<32x32xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{failed to verify that all of {pointerTensor, maskTensor, result} have same shape}}
-  %0 = rock.blockwise_load_ptr %ptrs[%mask] : tensor<32x32xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Store-only cache modifier 'wb' is not allowed on a load
+func.func @blockwise_load_ptr_cache_modifier_wb(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wb' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier wb>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Store-only cache modifier 'wt' is not allowed on a load
+func.func @blockwise_load_ptr_cache_modifier_wt(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wt' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier wt>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -888,14 +920,14 @@ func.func @blockwise_store_ptr_shape_mismatch(
 // Element type mismatch between source and result
 func.func @load_marker_elem_type_mismatch(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
-  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] : tensor<256x128xf16> -> tensor<64x128xf32>
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>} : tensor<256x128xf16> -> tensor<64x128xf32>
   return %0 : tensor<64x128xf32>
 }
 
 // Upper dims != result rank + extraIndices count
 func.func @load_marker_rank_mismatch(%src: tensor<256x128xf16>, %i0: i32, %i1: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{upper bounds must equal tensor rank + extraIndices count}}
-  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0, %i1] : tensor<256x128xf16> -> tensor<64x128xf16>
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0, %i1] {cacheModifier = #rock<CacheModifier none>} : tensor<256x128xf16> -> tensor<64x128xf16>
   return %0 : tensor<64x128xf16>
 }
 
@@ -903,7 +935,7 @@ func.func @load_marker_rank_mismatch(%src: tensor<256x128xf16>, %i0: i32, %i1: i
 // #load_marker_tmap upper bounds = [4, 64, 128], result rank 2 → take_back(2) = [64, 128]
 func.func @load_marker_upper_shape_mismatch(%src: tensor<256x128xf16>, %i0: i32) -> tensor<32x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{Upper bounds last dimensions must match with result shape}}
-  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] : tensor<256x128xf16> -> tensor<32x128xf16>
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>} : tensor<256x128xf16> -> tensor<32x128xf16>
   return %0 : tensor<32x128xf16>
 }
 
@@ -911,7 +943,21 @@ func.func @load_marker_upper_shape_mismatch(%src: tensor<256x128xf16>, %i0: i32)
 // #load_marker_tmap lower bounds = [256, 128], source is [128, 128]
 func.func @load_marker_lower_shape_mismatch(%src: tensor<128x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{Lower bounds must match with input shape}}
-  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] : tensor<128x128xf16> -> tensor<64x128xf16>
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>} : tensor<128x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
+// Store-only cache modifier 'wb' is not allowed on a load
+func.func @load_marker_cache_modifier_wb(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wb' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier wb>} : tensor<256x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
+// Store-only cache modifier 'wt' is not allowed on a load
+func.func @load_marker_cache_modifier_wt(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wt' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier wt>} : tensor<256x128xf16> -> tensor<64x128xf16>
   return %0 : tensor<64x128xf16>
 }
 

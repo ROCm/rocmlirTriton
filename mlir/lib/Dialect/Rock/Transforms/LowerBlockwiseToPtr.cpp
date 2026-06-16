@@ -68,7 +68,8 @@ struct BlockwiseLoadRewritePattern : public OpRewritePattern<BlockwiseLoadOp> {
     Value maskTensor = transformsToPtrOp.getMask();
 
     auto loadOp = BlockwiseLoadPtrOp::create(b, loc, op.getResult().getType(),
-                                             pointerTensor, maskTensor);
+                                             pointerTensor, maskTensor,
+                                             op.getCacheModifier());
 
     b.replaceOp(op, loadOp.getResult());
     return success();

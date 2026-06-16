@@ -10,7 +10,7 @@ func.func @test_error_bad_buffer_root(%arg0: tensor<4096xf16>) -> tensor<64x64xf
   // expected-error @+2 {{'rock.transforms_to_ptr' op expected transform chain root to be a block argument or arith.constant, but got:}}
   // expected-error @+1 {{failed to legalize operation 'rock.transforms_to_ptr' that was explicitly marked illegal}}
   %pointers, %mask = rock.transforms_to_ptr %0 : tensor<64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-  %1 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %1 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
   return %1 : tensor<64x64xf16>
 }
@@ -25,7 +25,7 @@ func.func @test_error_multiple_results(%arg0: tensor<64x64xf16>) -> tensor<64x64
   // expected-error @+2 {{'rock.transforms_to_ptr' op expected transform chain to produce a single linearized index, but got 2 results}}
   // expected-error @+1 {{failed to legalize operation 'rock.transforms_to_ptr' that was explicitly marked illegal}}
   %pointers, %mask = rock.transforms_to_ptr %0 : tensor<64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-  %1 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %1 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
   return %1 : tensor<64x64xf16>
 }

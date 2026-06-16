@@ -42,7 +42,7 @@ func.func @dce_untile(%tile: tensor<64x64xf32>, %sink: tensor<1x256x128xf32>)
 // CHECK:         return %arg2
 func.func @dce_load_marker(%src: tensor<256x128xf16>, %idx: i32,
                            %sink: tensor<64x128xf16>) -> tensor<64x128xf16> {
-  %unused = rock.load_marker %src views [#load_marker_tmap] [%idx]
+  %unused = rock.load_marker %src views [#load_marker_tmap] [%idx] {cacheModifier = #rock<CacheModifier none>}
       : tensor<256x128xf16> -> tensor<64x128xf16>
   return %sink : tensor<64x128xf16>
 }
@@ -210,7 +210,7 @@ func.func @dce_blockwise_gemm(%a: tensor<64x64xf16>, %b: tensor<64x64xf16>,
 // CHECK:         return %arg1
 func.func @dce_blockwise_load(%src: tensor<64x64xf32>, %sink: tensor<64x64xf32>)
     -> tensor<64x64xf32> {
-  %unused = rock.blockwise_load %src : tensor<64x64xf32> -> tensor<64x64xf32>
+  %unused = rock.blockwise_load %src {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32> -> tensor<64x64xf32>
   return %sink : tensor<64x64xf32>
 }
 

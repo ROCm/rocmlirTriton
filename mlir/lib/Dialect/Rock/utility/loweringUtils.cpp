@@ -510,7 +510,8 @@ Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
                            Value kIter, StringRef dName,
                            rock::layout::GridCoordinates gridCoords,
                            int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
-                           SmallVector<int64_t, 3> &bidGridLengths) {
+                           SmallVector<int64_t, 3> &bidGridLengths,
+                           rock::CacheModifier cache) {
   FailureOr<ArrayAttr> maybeBufferViews = getLoadRegsAsTileViews(
       rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock, isKFirst);
   assert(succeeded(maybeBufferViews));
@@ -531,7 +532,8 @@ Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
   auto markerOp =
       LoadMarkerOp::create(rewriter, loc, resultType, in, bufferViews,
                            ValueRange{kIter, gridCoords.g_block,
-                                      gridCoords.m_block, gridCoords.n_block});
+                                      gridCoords.m_block, gridCoords.n_block},
+                           cache);
   return markerOp.getResult();
 }
 

@@ -54,6 +54,28 @@ struct RockToTTIRPass : public rock::impl::RockToTTIRPassBase<RockToTTIRPass> {
   void runOnOperation() override;
 };
 
+// Map a rock cache modifier onto its triton counterpart. The two enums mirror
+// each other one-to-one (see RockAttrDefs.td / TritonAttrDefs.td).
+static triton::CacheModifier toTritonCacheModifier(rock::CacheModifier cache) {
+  switch (cache) {
+  case rock::CacheModifier::NONE:
+    return triton::CacheModifier::NONE;
+  case rock::CacheModifier::CA:
+    return triton::CacheModifier::CA;
+  case rock::CacheModifier::CG:
+    return triton::CacheModifier::CG;
+  case rock::CacheModifier::WB:
+    return triton::CacheModifier::WB;
+  case rock::CacheModifier::CS:
+    return triton::CacheModifier::CS;
+  case rock::CacheModifier::WT:
+    return triton::CacheModifier::WT;
+  case rock::CacheModifier::CV:
+    return triton::CacheModifier::CV;
+  }
+  llvm_unreachable("unknown rock::CacheModifier");
+}
+
 //===----------------------------------------------------------------------===//
 // RockBlockwiseReduceOpRewritePattern - Convert rock.blockwise_reduce to tt.reduce
 //===----------------------------------------------------------------------===//
@@ -167,7 +189,7 @@ struct RockLoadPtrOpRewritePattern
     // LoadOp takes: ptr, mask (optional), other (optional), cache, evict,
     // isVolatile.
     auto cacheAttr = triton::CacheModifierAttr::get(
-        rewriter.getContext(), triton::CacheModifier::NONE);
+        rewriter.getContext(), toTritonCacheModifier(op.getCacheModifier()));
     auto evictAttr = triton::EvictionPolicyAttr::get(
         rewriter.getContext(), triton::EvictionPolicy::NORMAL);
     auto isVolatileAttr = rewriter.getBoolAttr(false);
