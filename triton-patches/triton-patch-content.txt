@@ -8,6 +8,7 @@ This directory holds patches against the Triton submodule
 patch10290.patch
 patch10450.patch
 patch10498.patch
+patch10585.patch
 patch1.patch
 patch2.patch
 patch3.patch
@@ -21,3 +22,7 @@ patch10498.patch
   convert_layout(add(base, <negative>)) is no longer wrongly annotated
   split-safe. Applies on top of patch10450. Mirrors upstream Triton PR
   https://github.com/triton-lang/triton/pull/10498 exactly.
+
+patch10585.patch
+  Fixes a case where the block ping pong schedule was wrongly being applied
+  in situations where it was not safe to do so because of non-uniform masks.
