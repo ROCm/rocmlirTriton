@@ -756,9 +756,9 @@ def get_gemm_configurations(filename,
         with open(filename, 'r') as config_file:
             lines = config_file.readlines()
 
-            # All combinations of types and transposition (A and B)
-            for datatype, trans_a, trans_b, line in \
-                    itertools.product(DATA_TYPES_GEMM, ['false', 'true'], ['false', 'true'], lines):
+            # All combinations of types and transposition (A, B and O)
+            for datatype, trans_a, trans_b, trans_o, line in \
+                    itertools.product(DATA_TYPES_GEMM, ['false', 'true'], ['false', 'true'], ['false', 'true'], lines):
                 line = line.strip()
 
                 # Skip empty lines
@@ -795,6 +795,11 @@ def get_gemm_configurations(filename,
                 if "-transB " not in line:
                     trans_b_string = f"-transB {trans_b} "
 
+                # Skip trans_o if already in
+                trans_o_string = ""
+                if "-transO " not in line:
+                    trans_o_string = f"-transO {trans_o} "
+
                 # Skip out_datatype if already in
                 out_dtype_string = ""
                 if "-out_datatype" not in line:
@@ -815,13 +820,13 @@ def get_gemm_configurations(filename,
                             scale_b_string = f"-scale_b_dtype {scale_b_dtype} "
 
                         # Strip to avoid spurious spaces
-                        one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{scale_a_string}{scale_b_string}{line}".strip(
+                        one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{trans_o_string}{scale_a_string}{scale_b_string}{line}".strip(
                         )
                         if one_config not in configs:
                             configs.append(one_config)
                 else:
                     # Strip to avoid spurious spaces
-                    one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{line}".strip(
+                    one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{trans_o_string}{line}".strip(
                     )
                     if one_config not in configs:
                         configs.append(one_config)
@@ -985,9 +990,9 @@ class GemmConfiguration(PerfConfiguration):
         result = OrderedDict()
         values = [
             self.datatype, self.out_dtype, self.chip, self.num_cu, self.num_chiplets, self.trans_a,
-            self.trans_b, self.g, self.m, self.k, self.n, self.scaled_gemm, self.scale_a_dtype,
-            self.scale_b_dtype, self.trans_scale_a, self.trans_scale_b, self.perfconfig,
-            bank_conflict,
+            self.trans_b, self.trans_o, self.g, self.m, self.k, self.n, self.scaled_gemm,
+            self.scale_a_dtype, self.scale_b_dtype, self.trans_scale_a, self.trans_scale_b,
+            self.perfconfig, bank_conflict,
             self.compute_tflops(nanoseconds)
         ]
         assert (len(self.TABLE_COLUMNS) == len(values))
@@ -1009,6 +1014,7 @@ class GemmConfiguration(PerfConfiguration):
             str(self.m), '-k',
             str(self.k), '-n',
             str(self.n), f"-transA={self.trans_a}", f"-transB={self.trans_b}",
+            f"-transO={self.trans_o}",
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
@@ -1039,6 +1045,7 @@ class GemmConfiguration(PerfConfiguration):
         n = None
         trans_a = None
         trans_b = None
+        trans_o = False
         out_dtype = None
         perf_config = ''
         scaled_gemm = False
@@ -1072,6 +1079,8 @@ class GemmConfiguration(PerfConfiguration):
                 trans_a = (val.lower() in ["1", "true"])
             elif opt.endswith("-transB"):
                 trans_b = (val.lower() in ["1", "true"])
+            elif opt.endswith("-transO"):
+                trans_o = (val.lower() in ["1", "true"])
             elif opt.endswith("-out_datatype"):
                 out_dtype = val.lower()
             elif opt.endswith("-perf_config"):
@@ -1091,13 +1100,14 @@ class GemmConfiguration(PerfConfiguration):
             if v is None:
                 raise ValueError("Incomplete GEMM configuration")
 
-        return cls(dtype, out_dtype, g, m, k, n, trans_a, trans_b, scaled_gemm, scale_a_dtype,
-                   scale_b_dtype, trans_scale_a, trans_scale_b, arch, num_cu, num_chiplets,
-                   perf_config)
+        return cls(dtype, out_dtype, g, m, k, n, trans_a, trans_b, trans_o, scaled_gemm,
+                   scale_a_dtype, scale_b_dtype, trans_scale_a, trans_scale_b, arch, num_cu,
+                   num_chiplets, perf_config)
 
     def to_command_line(self):
         result = (f"-t {self.datatype} -out_datatype {self.out_dtype} " +
                   f"-transA {str(self.trans_a).lower()} -transB {str(self.trans_b).lower()} " +
+                  f"-transO {str(self.trans_o).lower()} " +
                   f"-g {self.g} -m {self.m} -n {self.n} -k {self.k}")
         if self.scaled_gemm:
             result += " -scaledGemm"
@@ -1120,6 +1130,7 @@ class GemmConfiguration(PerfConfiguration):
                  n: int,
                  trans_a: bool,
                  trans_b: bool,
+                 trans_o: bool = False,
                  scaled_gemm: bool = False,
                  scale_a_dtype: str = None,
                  scale_b_dtype: str = None,
@@ -1148,6 +1159,7 @@ class GemmConfiguration(PerfConfiguration):
         self.n = n
         self.trans_a = trans_a
         self.trans_b = trans_b
+        self.trans_o = trans_o
         self.perfconfig = perf_config
         self.scaled_gemm = scaled_gemm
         self.scale_a_dtype = scale_a_dtype

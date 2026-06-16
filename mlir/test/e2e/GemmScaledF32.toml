@@ -15,9 +15,9 @@ values = ["true", "false"]
 prefix = "--transB="
 
 [[axis]]
-name = "transC"
+name = "transO"
 values = ["true", "false"]
-prefix = "--transC="
+prefix = "--transO="
 
 [[axis]]
 name = "data type"

@@ -1118,6 +1118,13 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
     else
       problemOS << "false ";
 
+    // TransO
+    problemOS << "-transO ";
+    if (rGemmOp.getOTransposed())
+      problemOS << "true ";
+    else
+      problemOS << "false ";
+
     if (isScaledGemm) {
       problemOS << "-scaledGemm" << sep;
       auto scaleA = rGemmOp.getScaleA();

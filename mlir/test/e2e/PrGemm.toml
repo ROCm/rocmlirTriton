@@ -14,9 +14,9 @@ prefix = "--transA="
 #prefix = "--transB="
 
 #[[axis]]
-#name = "transC"
+#name = "transO"
 #values = ["true", "false"]
-#prefix = "--transC="
+#prefix = "--transO="
 
 # Note: only one fp8 variant is tested as that's enough for a sanity check
 [[axis]]

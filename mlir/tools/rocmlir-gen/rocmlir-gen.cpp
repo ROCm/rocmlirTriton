@@ -356,7 +356,9 @@ static llvm::cl::opt<bool> transposeScaleB(
 
 static llvm::cl::opt<bool>
     transposeC("transC",
-               llvm::cl::desc("whether matrix C is GxMxN (default) or GxNxM"),
+               llvm::cl::desc("whether the C input matrix of a conv+gemm or "
+                              "gemm+gemm fusion is non-transposed (default) or "
+                              "transposed"),
                llvm::cl::init(false));
 
 static llvm::cl::opt<int>
@@ -557,8 +559,10 @@ static llvm::cl::opt<bool> transposeV(
 
 static llvm::cl::opt<bool> transposeO(
     "transO",
-    llvm::cl::desc("whether matrix O of attention op is "
-                   "Gxseq_len_qxhead_v (default) or Gxhead_vxseq_len_q"),
+    llvm::cl::desc("whether the output O matrix is non-transposed (default) or "
+                   "transposed; for gemm O is GxMxN (default) or GxNxM, for "
+                   "attention O is Gxseq_len_qxhead_v (default) or "
+                   "Gxhead_vxseq_len_q"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool>
@@ -2784,8 +2788,8 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
                                 transposeA ? gemmM : gemmK},
                        bDims = {groupSize, transposeB ? gemmN : gemmK,
                                 transposeB ? gemmK : gemmN},
-                       cDims = {groupSize, transposeC ? gemmN : gemmM,
-                                transposeC ? gemmM : gemmN},
+                       cDims = {groupSize, transposeO ? gemmN : gemmM,
+                                transposeO ? gemmM : gemmN},
                        aScale = {groupSize, transposeScaleA ? quantK : gemmM,
                                  transposeScaleA ? gemmM : quantK},
                        bScale = {groupSize, transposeScaleB ? quantK : gemmN,
@@ -2898,8 +2902,8 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
     funcArgLogicalTypes.push_back(argTypes[3]);
   }
 
-  SmallVector<StringRef> cDimNames = {gName, transposeC ? nName : mName,
-                                      transposeC ? mName : nName};
+  SmallVector<StringRef> cDimNames = {gName, transposeO ? nName : mName,
+                                      transposeO ? mName : nName};
   funcArgTypes.push_back(cFlatType);
 
   auto func = func::FuncOp::create(b, loc, kernelName,
@@ -2938,7 +2942,7 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   // GEMM produces result in logical shape (e.g., tensor<1x64x64xf32>)
   auto gemm = rock::GemmOp::create(
       b, loc, cType, aVal, bVal, aScale, bScale, transposeA, transposeB,
-      transposeC, transposeScaleA, transposeScaleB,
+      transposeO, transposeScaleA, transposeScaleB,
       scaledGemm ? b.getI64IntegerAttr(quantBlockSize) : nullptr,
       /*params=*/nullptr);
 
@@ -4064,7 +4068,7 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
             bMap = AffineMap::get(
                 4, 0, {g, transposeB ? n : k, transposeB ? k : n}, ctx),
             cMap = AffineMap::get(
-                4, 0, {g, transposeC ? n : m, transposeC ? m : n}, ctx);
+                4, 0, {g, transposeO ? n : m, transposeO ? m : n}, ctx);
   Value aExpVal = expandTensorArg(aVal, argTypes[0]),
         bExpVal = expandTensorArg(bVal, argTypes[1]);
 
