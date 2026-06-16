@@ -169,6 +169,22 @@ TEST(AmdArchDbTest, MaxWavesPerEU) {
   EXPECT_EQ(getMaxWavesPerEU("gfx1250"), 16); // GFX1250
 }
 
+// --- getVGPRsPerEU ---
+
+TEST(AmdArchDbTest, VGPRsPerEU) {
+  EXPECT_EQ(getVGPRsPerEU("gfx906"), 256);   // GCN5_1
+  EXPECT_EQ(getVGPRsPerEU("gfx908"), 256);   // CDNA1
+  EXPECT_EQ(getVGPRsPerEU("gfx90a"), 512);   // CDNA2
+  EXPECT_EQ(getVGPRsPerEU("gfx942"), 512);   // CDNA3
+  EXPECT_EQ(getVGPRsPerEU("gfx950"), 512);   // CDNA4
+  EXPECT_EQ(getVGPRsPerEU("gfx1010"), 1024); // RDNA1
+  EXPECT_EQ(getVGPRsPerEU("gfx1030"), 1024); // RDNA2
+  EXPECT_EQ(getVGPRsPerEU("gfx1100"), 1536); // RDNA3, 1536 physical VGPRs
+  EXPECT_EQ(getVGPRsPerEU("gfx1102"), 1024); // RDNA3, cut-down VGPR file
+  EXPECT_EQ(getVGPRsPerEU("gfx1200"), 1536); // RDNA4
+  EXPECT_EQ(getVGPRsPerEU("gfx1250"), 1536); // GFX1250
+}
+
 // --- getWaveSize ---
 
 TEST(AmdArchDbTest, WaveSize) {
@@ -194,6 +210,28 @@ TEST(AmdArchDbTest, LDSSize) {
   EXPECT_EQ(getLDSSize("gfx1100"), 65536);  // RDNA3: 64 KB
   EXPECT_EQ(getLDSSize("gfx1200"), 65536);  // RDNA4: 64 KB
   EXPECT_EQ(getLDSSize("gfx1250"), 327680); // GFX1250: 320 KB
+}
+
+// --- getLastLevelCacheSize ---
+
+TEST(AmdArchDbTest, LastLevelCacheSize) {
+  constexpr int64_t kMiB = 1024 * 1024;
+  EXPECT_EQ(getLastLevelCacheSize("gfx906"), 4 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx908"), 8 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx90a"), 8 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx942"), 256 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx950"), 256 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1010"), 4 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1030"), 128 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1100"), 96 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1200"), 64 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1250"), 256 * kMiB);
+}
+
+TEST(AmdArchDbTest, LastLevelCacheSizeWithTriple) {
+  constexpr int64_t kMiB = 1024 * 1024;
+  EXPECT_EQ(getLastLevelCacheSize("amdgcn-amd-amdhsa:gfx942"), 256 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("amdgcn-amd-amdhsa:gfx906:xnack-"), 4 * kMiB);
 }
 
 // --- getMatrixAccelKind ---

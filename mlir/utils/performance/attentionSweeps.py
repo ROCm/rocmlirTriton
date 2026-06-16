@@ -25,13 +25,14 @@ import asyncio
 import random
 import sys
 
-from typing import Optional
+from typing import Sequence, Optional, Tuple
 
 import perfRunner
 from perfRunner import auto_precision_flags_att
 from parameterSweeps import (
     Options,
     PerfConfig,
+    _MAX_PERF_CONFIG_RETRIES,
     _split_k_choices,
     add_common_args,
     build_options_and_paths,
@@ -39,6 +40,79 @@ from parameterSweeps import (
     run_config,
     sample_perf_config,
 )
+
+# Hard dependency, copied next to the scripts by ci-performance-scripts.
+import amd_arch_db
+
+# Per-thread VGPR-budget guard for the attention / gemm-gemm sweep.
+# Complements ``parameterSweeps._compile_cost_score`` (which models post-RA
+# *scheduler* cost from basic-block instruction count) by modelling
+# *register-allocator* cost. The rocmlir-driver path stamps
+# ``amdgpu-waves-per-eu="N,N"`` on the kernel function for every
+# ``wavesPerEU > 0`` (see ``setKernelAttributes`` in
+# ``mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp``), so the AMDGPU
+# backend caps each thread's VGPRs at ``vgprs_per_eu / N``. When the
+# C-tile accumulator
+#     accum_vgprs_per_thread = (mPerBlock * nPerBlock) / threads
+# (one VGPR per element since every supported dtype accumulates into
+# f32 / i32) overruns that cap, the allocator can't avoid spilling and
+# spends multi-minute time searching the live-range graph -- so we reject.
+#
+# ``wavesPerEU == 0`` is the "let the backend pick" case: no
+# ``amdgpu-waves-per-eu`` attribute is emitted, so the LLVM AMDGPU backend
+# has no occupancy limit and the upper bound comes from the hardware --
+# at most one wave per EU getting the full SIMD VGPR file. Tiles wider
+# than ``vgprs_per_eu`` still trigger a ~10s-to-multi-minute ISel /
+# post-RA scheduling blow-up even without spills, so we treat ``wpe == 0``
+# as ``wpe == 1`` for the budget check.
+#
+# The per-EU VGPR-file size comes from ``rock::getVGPRsPerEU`` via the
+# AmdArchDB pybind module (``amd_arch_db.get_vgprs_per_eu``), so the budget
+# tracks LLVM's per-arch VGPR coverage instead of a hand-coded heuristic.
+
+
+def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> bool:
+    """``True`` iff the C-tile accumulator fits the wpe-implied VGPR budget:
+    ``(mPerBlock * nPerBlock) / threads <= vgprs_per_eu / effective_wpe``,
+    where ``threads = numWaves * waveSize`` and ``effective_wpe`` is
+    ``wavesPerEU`` itself, or ``1`` when ``wavesPerEU == 0``."""
+    mpb, npb = perf_config[0], perf_config[1]
+    num_waves = perf_config[5]
+    waves_per_eu = perf_config[9]
+    threads = max(1, num_waves * amd_arch_db.get_wave_size(arch))
+    effective_waves_per_eu = waves_per_eu if waves_per_eu > 0 else 1
+    # Integer cross-multiplication is exact; avoids any FP rounding at the
+    # boundary. Equivalent to ``(mpb * npb) / threads <= vgprs_per_eu / wpe``.
+    return (mpb * npb) * effective_waves_per_eu <= amd_arch_db.get_vgprs_per_eu(arch) * threads
+
+
+def _sampled_perf_within_vgpr_budget(rng: random.Random,
+                                     arch: str,
+                                     split_k_choices: Sequence[int],
+                                     pow2_only: bool = False) -> Tuple[int, ...]:
+    """Like :func:`sample_perf_config` but rejects perf-configs whose
+    C-tile accumulator overruns the VGPR budget implied by ``wavesPerEU``
+    (see :func:`_waves_per_eu_register_budget_ok`). ``pow2_only`` is forwarded
+    to ``sample_perf_config`` for callers whose pipeline does not decompose
+    non-pow2 tiles. We loop with a
+    generous retry cap rather than enumerating the in-budget subspace
+    because the rejection rate is small (<10% on the archs we care about)
+    and we don't want to silently bias the sample distribution by
+    filtering an enumerated list -- mirrors the rationale in
+    :func:`parameterSweeps._sampled_perf_within_budget`.
+
+    We deliberately do NOT also apply ``parameterSweeps._perf_within_budget``:
+    its basic-block instruction-count cap is calibrated for conv / gemm
+    and doesn't catch the regalloc thrash this predicate guards against."""
+    for _ in range(_MAX_PERF_CONFIG_RETRIES):
+        perf_config = sample_perf_config(rng, arch, split_k_choices, pow2_only=pow2_only)
+        if _waves_per_eu_register_budget_ok(perf_config, arch):
+            return perf_config
+    raise RuntimeError(
+        f"_sampled_perf_within_vgpr_budget exceeded {_MAX_PERF_CONFIG_RETRIES} retries "
+        f"for arch={arch!r}; PERF_CONFIG_OPTIONS may have no config inside the "
+        "VGPR budget implied by the sampled wavesPerEU values.")
+
 
 # Cap on the per-config CPU validation cost: max(seq_len_q, seq_len_k) * g.
 # Every shape produced by ``_sample_attn_shape`` already respects this bound
@@ -159,13 +233,15 @@ def random_attn_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     K-dim split via the dedicated ``-split_kv`` kernel arg (sampled inside
     ``_sample_attn_shape``), not via the perf-config splitK.
 
-    Perf-config is sampled first so we can feed ``nPerBlock`` (field 1 in the
-    11-tuple, see ``sample_perf_config``) into ``_sample_attn_shape``; the
-    shape sampler uses it to enforce the rocmlir-gen ``causal + split_kv``
-    limitation on ``seq_len_q``."""
+    Perf-config is sampled first (and filtered through
+    :func:`_sampled_perf_within_vgpr_budget`) so we can feed ``nPerBlock``
+    -- field 1 in the 11-tuple -- into ``_sample_attn_shape`` to enforce
+    the rocmlir-gen ``causal + split_kv`` limitation on ``seq_len_q``."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
-        perf = sample_perf_config(rng, arch, [1])
+        # Attention uses GemmGemmParamsAttr and isn't lowered through
+        # rock-decompose-nonpow2-tiles, so keep the m/n tile on the pow2 grid.
+        perf = _sampled_perf_within_vgpr_budget(rng, arch, [1], pow2_only=True)
         n_per_block = perf[1]
         yield (_sample_attn_shape(rng, n_per_block=n_per_block), perf)
 
@@ -198,15 +274,19 @@ def _sample_gemm_gemm_shape(rng: random.Random):
 def random_gemm_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     """Yields ``num_samples`` random ``(gemm_gemm_shape, perf_config)`` tuples.
 
-    Unlike attention, ``splitKFactor`` is left free (any of the values in
-    ``PERF_CONFIG_OPTIONS['split_k_factor']``): for gemm+gemm the second
-    gemm's K-dim split is a real degree of freedom, not a duplicate of a
-    separate kernel arg."""
+    Unlike attention, ``splitKFactor`` is left free: for gemm+gemm the
+    second gemm's K-dim split is a real degree of freedom rather than a
+    duplicate of a separate kernel arg. Perf-configs are filtered through
+    :func:`_sampled_perf_within_vgpr_budget`."""
     rng = random.Random(seed if seed is not None else default_seed())
     for _ in range(num_samples):
         shape = _sample_gemm_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, o, trans_a, ...).
-        yield (shape, sample_perf_config(rng, arch, _split_k_choices(shape[0])))
+        # gemm+gemm also uses GemmGemmParamsAttr (no non-pow2 tile decompose),
+        # so keep the m/n tile on the pow2 grid.
+        dtype = shape[0]
+        yield (shape,
+               _sampled_perf_within_vgpr_budget(rng, arch, _split_k_choices(dtype), pow2_only=True))
 
 
 def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfiguration:

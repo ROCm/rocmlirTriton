@@ -560,11 +560,20 @@ emit retry advice`.
 temp dir via `git fetch`, then computes the changed-file list locally with
 `git diff --name-only` vs the **default branch** — the same baseline + diff
 algorithm Layer 3 uses, so the two stay in lockstep regardless of the PR's
-base branch and there is no API file-count limit. If a perimeter path changed:
-ensures the `modifies-ci-paths` label exists, applies it, and posts a one-time
-banner comment (deduped by a hidden marker **and** author filter, so a PR
-author can't suppress it by pasting the marker). Removes the label if a later
-push drops the perimeter changes.
+base branch and there is no API file-count limit. The companion requests an
+explicit App-token subset: `contents: read`, `issues: write`, and
+`pull_requests: write`. The last two are both intentional: labels and comments
+are exposed through Issues-flavored endpoints, but GitHub can still enforce PR
+write access for operations on PR-backed issues. After minting the App token,
+the same inline `Wait for App token to be live` probe as the other companions
+(see [§15](#15-maintenance--sync-points)) avoids the transient private-repo
+`404` / "Repository not found" race before the first `git fetch`; each fetch is
+then a single attempt and the job still **fails closed** if refs cannot be
+resolved (including after the bounded deepen loop). If a
+perimeter path changed: ensures the `modifies-ci-paths` label exists, applies
+it, and posts a one-time banner comment (deduped by a hidden marker **and**
+author filter, so a PR author can't suppress it by pasting the marker). Removes
+the label if a later push drops the perimeter changes.
 
 The banner is Layer-2 automation for the common case, not a cryptographic
 boundary; the label-triggered path's Layer-3 `git diff` check in
@@ -572,11 +581,11 @@ boundary; the label-triggered path's Layer-3 `git diff` check in
 `claude-review` run actually starts.
 
 Safe under `pull_request_target` because: no `actions/checkout` and no
-execution of fetched content (only `git diff --name-only`); read-only API
-queries / comment writes via the in-step App token; fixed label names;
-perimeter file names rendered as inline-code with backticks stripped and a
-50-entry cap (so a hostile path can't inject markdown or bloat the comment);
-default `GITHUB_TOKEN` is `permissions: {}`.
+execution of fetched content (only `git diff --name-only`); the in-step App
+token requests only the subset needed by the fetch + label/comment operations;
+fixed label names; perimeter file names rendered as inline-code with backticks
+stripped and a 50-entry cap (so a hostile path can't inject markdown or bloat
+the comment); default `GITHUB_TOKEN` is `permissions: {}`.
 
 ### `fork_notify` (UX compensator)
 
@@ -1024,13 +1033,30 @@ The pipeline posts under a dedicated App identity (§11) rather than
    GitHub App** (org-level if the repo is in an org). Set repository
    **permissions**:
    - **Pull requests: Read & write** — post inline comments, replies, reactions, **and submit formal pull-request reviews** (`POST /pulls/{n}/reviews`, the endpoint behind `gh pr review --comment`). The same `pull_requests: write` scope covers all four; no separate "reviews" toggle exists. (The pipeline submits only `COMMENT` events; see [§13](#13-security-measures-summary).)
-   - **Issues: Read & write** — add/remove labels (labels live on the issues API).
-   - **Contents: Read-only** — read repo content via the token (also used by the perimeter-banner companion's `git fetch`).
+   - **Issues: Read & write** — manage repository labels and issue-label endpoints. PR label operations are PR-backed issues, so jobs that touch PR labels request this alongside Pull requests write.
+   - **Contents: Read-only** — read repo content via the token (also used by the perimeter-banner companion's `git fetch`; the workflow requests this explicitly with `permission-contents: read`).
    - **Metadata: Read-only** — mandatory baseline.
    - **Checks: Read-only** — read CI check-run results (`GET /commits/{sha}/check-runs`) during the prefetch step. **Required on private repos** -- on public repos this endpoint is reachable without permission, but a private-repo install will 404 the prefetch and fail the review before any comment posts. Cheap to grant unconditionally so the same App template works on either visibility.
    - **Commit statuses: Read-only** — read legacy commit statuses (`GET /commits/{sha}/status`) during the prefetch step. Same private-repo caveat as Checks above; both endpoints are queried because they're disjoint sources of CI signal (`gh api`'s `--paginate` won't paper over a missing one).
    No webhook/event subscriptions are needed (the App is used via minted tokens,
    not webhooks).
+
+   These App permissions are the installation maximum. Every workflow that
+   mints this App token requests an explicit subset with
+   `actions/create-github-app-token`:
+
+   | Workflow/job | Requested App-token permissions | Why |
+   |---|---|---|
+   | `claude_auto_review.yml` / `review` | `checks: read`, `pull_requests: read`, `statuses: read` | Pre-fetch PR metadata, prior review comments, check runs, and commit statuses before the model runs. No write permission in the model-side job. |
+   | `claude_auto_review.yml` / `post` | `pull_requests: write` | Post inline comments, thread replies/reactions, and the advisory formal review. |
+   | `claude_auto_review.yml` / `cleanup` | `issues: write`, `pull_requests: write` | Remove the trigger label from the PR-backed issue; `pull_requests: write` is required for PR resources, while `issues: write` covers the Issues-label endpoint shape. |
+   | `claude_auto_review_fork_notify.yml` | `issues: write`, `pull_requests: write` | Remove the trigger label and post the fork-PR notice; both scopes are requested because GitHub exposes PR labels/comments through mixed Issues and Pull requests APIs. |
+   | `claude_auto_review_perimeter_banner.yml` | `contents: read`, `issues: write`, `pull_requests: write` | Fetch trusted refs, create/update the repository label, manage the PR label, and post the perimeter banner. |
+
+   Keep the explicit requests in sync with the API calls in each job. Omitting
+   `permission-*` inputs would fall back to the App installation's broader
+   default token and increase blast radius if a future workflow step is
+   compromised.
 2. **Generate a private key** (PEM) and store it as the
    `ROCMLIR_PR_REVIEWER_PRIVATE_KEY` secret.
 3. **Copy the Client ID** and store it as the `ROCMLIR_PR_REVIEWER_APP_ID`
@@ -1114,7 +1140,9 @@ env vars can't reference a single source. When you change one, update all:
 | Bot login (`rocmlir-pr-reviewer[bot]`) | `BOT_LOGIN` in `claude_auto_review.yml`; the prompt heredoc; `EXPECTED_AUTHOR` in the perimeter banner; both `.claude/skills/*` files. (Note: the bot login is shared with rocMLIR -- same App; see §11. Do NOT rename it for rocmlirTriton.) |
 | Review skill name (`review-rocmlir-triton-pr`) | Five sites in the prompt heredoc inside `claude_auto_review.yml`: the `## Tool budget` paragraph that warns about shell snippets in the skill file; `## Step 2 -- Run the review skill`; the `verdict` decision-rule back-reference; the `summary` layout back-reference; the `suggestion`-contract back-reference. Also: the `name:` and self-references in `.claude/skills/review-rocmlir-triton-pr/SKILL.md`; the upstream-skill references in `.claude/skills/update-pr-review/SKILL.md`. |
 | Perimeter regex | Layer-3 block in `claude_auto_review.yml`; `PERIMETER_REGEX` in the perimeter banner. |
-| Default-branch diff baseline | Layer-3 block in `claude_auto_review.yml` and the perimeter banner both use `git diff --name-only` against `origin/<default-branch>...HEAD` (the banner fetches refs into a temp dir; neither uses the Compare API, which caps `.files` at 300 entries). Keep the deepen loop + the `...` form identical in both. |
+| Default-branch diff baseline | Layer-3 block in `claude_auto_review.yml` and the perimeter banner both use `git diff --name-only` against `origin/<default-branch>...HEAD` (the banner fetches refs into a temp dir; neither uses the Compare API, which caps `.files` at 300 entries). Keep the deepen loop + the `...` form identical in both. If fetching still fails, the banner job must hard-fail so the perimeter check never falls back to a wrong baseline. |
+| App-token post-mint propagation | A freshly minted App installation token can transiently 404 on a private repo before its auth propagates. Every workflow that mints this App token runs an inline `Wait for App token to be live` step immediately after `create-github-app-token` (`review`, `post`, and `cleanup` in `claude_auto_review.yml`; `fork_notify`; `perimeter_banner`). The step is **inlined**, not a shared script, so no-checkout jobs need no working copy. It probes `gh api repos/{repo}` with bounded backoff and **fails closed**. There are **five identical `run:` blocks** (the three jobs above plus `fork_notify` and `perimeter_banner`); keep all five byte-for-byte in sync. |
+| App-token requested permissions | The `permission-*` inputs on each `create-github-app-token` step (`review` / `post` / `cleanup` in `claude_auto_review.yml`; `fork_notify`; `perimeter_banner`) ↔ the per-job permission matrix in [§14.2](#142-create-and-install-the-bot-github-app). When a job's API calls change, update both the `permission-*` inputs and the matrix row; omitting the inputs falls back to the App's broader default token. |
 | URL allow-list hosts | `ALLOWED_HOST_RE` in the sanitizer; prompt "Hard constraints"; skill "Rules". |
 | `bucket` CI-status values | Pre-fetch jq in `claude_auto_review.yml`; the review skill's filter. |
 | `is_re_review` filter (BOT_LOGIN + marker + root-comment) | Pre-fetch jq that writes `meta.json#.is_re_review` in `claude_auto_review.yml`; the prompt's Step 1 N-count. Both filters must stay byte-for-byte identical so the post job's `Findings:` vs `New findings:` header label can't drift from the model's initial-vs-re-review-mode decision. |
