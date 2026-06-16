@@ -342,6 +342,27 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   return validRangeGemmGemmParamsNonAccel;
 }
 
+// Returns the `scheduleHint` knob value to pin for `gemmGemmOp`.
+//
+// `scheduleHint` is a backend-scheduling policy bit, not a hardware-legality
+// axis, so it lives here rather than in `getRangeGemmGemm`. The
+// `kScheduleHintAttention` bit is attention-specific and benchmarked only on
+// attention kernels, so it is restricted to `rock.attention` (the interface
+// also covers `gemm_elementwise_gemm` / `conv_elementwise_gemm`). We force it
+// on gfx950 for non-i8 element types, where it has been measured to help;
+// everything else keeps `kKnobDefault` ("use the arch default"). i8 is excluded
+// (empirically a regression) and `kScheduleHintMemoryBoundAttention` is never
+// emitted (it triggers an AMDGPU backend crash).
+static int64_t getScheduleHint(RockGemmGemmWrapperInterface gemmGemmOp) {
+  if (!isa<AttentionOp>(gemmGemmOp))
+    return kKnobDefault;
+  StringRef chip = std::get<1>(rock::getArch(rock::getArchValue(gemmGemmOp)));
+  Type elemType = cast<ShapedType>(gemmGemmOp.getAType()).getElementType();
+  if (chip.starts_with("gfx950") && !elemType.isInteger(8))
+    return kScheduleHintAttention;
+  return kKnobDefault;
+}
+
 // Keep in sync with attentionSweeps.py
 // The full space is a brute-force search for attention kernels
 //
@@ -359,6 +380,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
   auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getRangeGemmGemm(gemmGemmOp, waveSize, kind);
+  const int64_t scheduleHint = getScheduleHint(gemmGemmOp);
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
     for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
@@ -383,8 +405,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useBlockPingpong=*/kKnobDefault,
                             /*useInThreadTranspose=*/kKnobDefault,
                             /*useBufferOps=*/kKnobDefault,
-                            /*useBufferAtomics=*/kKnobDefault,
-                            /*scheduleHint=*/kKnobDefault);
+                            /*useBufferAtomics=*/ scheduleHint);
                         newSpace->tuningRange.push_back(
                             cast<RockTuningParamAttrInterface>(gemmGemmParams));
                       }
