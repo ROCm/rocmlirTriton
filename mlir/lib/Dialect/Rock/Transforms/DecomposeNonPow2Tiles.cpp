@@ -278,7 +278,8 @@ private:
       Value sliced = sliceDims.empty()
                          ? src
                          : sliceViewDims(b, loc, src, sliceDims, offs, lens);
-      grid.push_back(BlockwiseLoadOp::create(b, loc, sliced, idx));
+      grid.push_back(BlockwiseLoadOp::create(b, loc, sliced, idx,
+                                             load.getCacheModifier()));
     }
     return success();
   }

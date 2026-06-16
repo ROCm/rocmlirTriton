@@ -35,7 +35,7 @@ module {
   // CHECK: rock.store %[[FUSED]]
   func.func @test_direct_blockarg(%tile: tensor<16x16xf32>, %bias: tensor<1x16x16xf32>, %dest: tensor<1x16x16xf32>, %g: i32, %m: i32, %n: i32) -> tensor<1x16x16xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
-    %lm = rock.load_marker %bias views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %bias views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %add = arith.addf %sm, %ut : tensor<1x16x16xf32>
     %r = rock.store %add to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
@@ -63,7 +63,7 @@ module {
   func.func @test_fusion_addf(%tile: tensor<16x16xf16>, %t1: tensor<1x16x16xf16>, %t2: tensor<1x16x16xf16>, %dest: tensor<1x16x16xf16>, %g: i32, %m: i32, %n: i32) -> tensor<1x16x16xf16> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf16> -> tensor<1x16x16xf16>
     %sum = arith.addf %t1, %t2 : tensor<1x16x16xf16>
-    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
     %ut = rock.untile %lm : tensor<16x16xf16> -> tensor<1x16x16xf16>
     %add = arith.addf %sm, %ut : tensor<1x16x16xf16>
     %r = rock.store %add to %dest by set : tensor<1x16x16xf16> -> tensor<1x16x16xf16> to tensor<1x16x16xf16>
@@ -84,7 +84,7 @@ module {
   func.func @test_splat_constant(%tile: tensor<16x16xf32>, %dest: tensor<1x16x16xf32>, %g: i32, %m: i32, %n: i32) -> tensor<1x16x16xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %cst = arith.constant dense<1.000000e+00> : tensor<1x16x16xf32>
-    %lm = rock.load_marker %cst views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %cst views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %sub = arith.subf %sm, %ut : tensor<1x16x16xf32>
     %r = rock.store %sub to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
@@ -108,7 +108,7 @@ module {
   func.func @test_transform_chain(%tile: tensor<16x16xf32>, %bias_raw: tensor<16xf32>, %dest: tensor<1x16x16xf32>, %g: i32, %m: i32, %n: i32) -> tensor<1x16x16xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %bias_3d = rock.transform %bias_raw by <affine_map<(d0, d1, d2) -> (d2)> by [<AddDim{1} ["g"] at [0] -> [] at []>, <AddDim{16} ["m"] at [1] -> [] at []>, <PassThrough ["n"] at [2] -> ["n"] at [0]>] bounds = [1, 16, 16] -> [16]> : tensor<16xf32> to tensor<1x16x16xf32>
-    %lm = rock.load_marker %bias_3d views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %bias_3d views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %add = arith.addf %sm, %ut : tensor<1x16x16xf32>
     %r = rock.store %add to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
@@ -134,7 +134,7 @@ module {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %cst = arith.constant dense<2.000000e+00> : tensor<1x16x16xf32>
     %sum = arith.addf %bias, %cst : tensor<1x16x16xf32>
-    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %add = arith.addf %sm, %ut : tensor<1x16x16xf32>
     %r = rock.store %add to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
@@ -164,7 +164,7 @@ module {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %add = arith.addf %a, %b : tensor<1x16x16xf32>
     %mul = arith.mulf %add, %c : tensor<1x16x16xf32>
-    %lm = rock.load_marker %mul views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %mul views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %fused = arith.addf %sm, %ut : tensor<1x16x16xf32>
     %r = rock.store %fused to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
@@ -222,7 +222,7 @@ module {
     %t3 = rock.transform %arg3 by #tmap_2d_to_4d : tensor<16x16xf32> to tensor<1x1x16x16xf32>
     %prod_4d = arith.mulf %sum_4d, %t3 : tensor<1x1x16x16xf32>
     %result_3d = rock.transform %prod_4d by #tmap_4d_to_3d : tensor<1x1x16x16xf32> to tensor<1x16x16xf32>
-    %lm = rock.load_marker %result_3d views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %result_3d views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %add = arith.addf %sm, %ut : tensor<1x16x16xf32>
     %r = rock.store %add to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
@@ -255,7 +255,7 @@ module {
     %broadcast = rock.transform %cst by #tmap_broadcast_1d : tensor<16xf32> to tensor<1x16x16xf32>
     %transposed = rock.transform %broadcast by #tmap_transpose_3d : tensor<1x16x16xf32> to tensor<1x16x16xf32>
     %sum = arith.addf %transposed, %bias : tensor<1x16x16xf32>
-    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %add = arith.addf %sm, %ut : tensor<1x16x16xf32>
     %r = rock.store %add to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
@@ -279,7 +279,7 @@ module {
       %A: tensor<1x16x16xf16>, %B: tensor<1x16x16xf16>,
       %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16> attributes {rock.kernel} {
     %fused = arith.addf %A, %B : tensor<1x16x16xf16>
-    %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n] : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
     return %lm : tensor<16x16xf16>
   }
 
@@ -334,7 +334,7 @@ module {
     %C = rock.transform %C_raw by #tmap_broadcast_1d : tensor<16xf16> to tensor<1x16x16xf16>
     %prod = arith.mulf %transposed1, %C : tensor<1x16x16xf16>
     %transposed2 = rock.transform %prod by #tmap_transpose_3d : tensor<1x16x16xf16> to tensor<1x16x16xf16>
-    %lm = rock.load_marker %transposed2 views [#tmap] [%g, %m, %n] : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    %lm = rock.load_marker %transposed2 views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
     return %lm : tensor<16x16xf16>
   }
 
@@ -362,7 +362,7 @@ module {
   // CHECK-NOT: rock.untile
   func.func @test_non_kernel(%bias: tensor<1x16x16xf32>, %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32> {
     %sum = arith.addf %bias, %bias : tensor<1x16x16xf32>
-    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     return %lm : tensor<16x16xf32>
   }
 
@@ -382,10 +382,32 @@ module {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %bias_t = rock.transform %bias by #tmap_transpose_3d : tensor<1x16x16xf32> to tensor<1x16x16xf32>
     %sum = arith.addf %bias, %bias_t : tensor<1x16x16xf32>
-    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %add = arith.addf %sm, %ut : tensor<1x16x16xf32>
     %r = rock.store %add to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
     return %r : tensor<1x16x16xf32>
+  }
+
+  // ============================================================
+  // Cache modifier propagation: a load_marker with a non-default cache
+  // modifier (cs) whose source is a fusion (addf) must distribute the cache
+  // modifier to every leaf load_marker created for the fusion operands.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_cache_modifier_propagation
+  // CHECK: %[[LM1:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: {cacheModifier = #rock<CacheModifier cs>}
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // CHECK: %[[LM2:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: {cacheModifier = #rock<CacheModifier cs>}
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // CHECK: arith.addf %[[LM1]], %[[LM2]] : tensor<16x16xf16>
+  func.func @test_cache_modifier_propagation(
+      %A: tensor<1x16x16xf16>, %B: tensor<1x16x16xf16>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16> attributes {rock.kernel} {
+    %fused = arith.addf %A, %B : tensor<1x16x16xf16>
+    %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier cs>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
   }
 }

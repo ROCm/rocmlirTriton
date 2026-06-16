@@ -75,7 +75,7 @@ static Value applyTransforms(OpBuilder &builder, Value source,
 static FailureOr<Value> distributeLoadMarker(
     OpBuilder &builder, Location loc, Value originalVal,
     ArrayRef<TransformMapAttr> postTransforms, ArrayAttr extraViews,
-    ValueRange extraIndices, Type tileType,
+    ValueRange extraIndices, Type tileType, CacheModifier cache,
     llvm::DenseMap<std::pair<Value, ArrayAttr>, Value> &valueMapping,
     func::FuncOp funcOp) {
   ArrayAttr postTransformsAttr = builder.getArrayAttr(
@@ -95,7 +95,7 @@ static FailureOr<Value> distributeLoadMarker(
 
     Value source = applyTransforms(builder, originalVal, postTransforms);
     auto newMarker = LoadMarkerOp::create(builder, loc, tileType, source,
-                                          extraViews, extraIndices);
+                                          extraViews, extraIndices, cache);
     valueMapping.insert({cacheKey, newMarker.getResult()});
     return newMarker.getResult();
   }
@@ -108,7 +108,7 @@ static FailureOr<Value> distributeLoadMarker(
 
     FailureOr<Value> result = distributeLoadMarker(
         builder, loc, transformOp.getInput(), newPostTransforms, extraViews,
-        extraIndices, tileType, valueMapping, funcOp);
+        extraIndices, tileType, cache, valueMapping, funcOp);
     if (succeeded(result))
       valueMapping.insert({cacheKey, result.value()});
     return result;
@@ -124,7 +124,7 @@ static FailureOr<Value> distributeLoadMarker(
       auto operandTileType = RankedTensorType::get(tileShape, operandElemType);
       FailureOr<Value> resolved = distributeLoadMarker(
           builder, loc, operand, postTransforms, extraViews, extraIndices,
-          operandTileType, valueMapping, funcOp);
+          operandTileType, cache, valueMapping, funcOp);
       if (failed(resolved))
         return failure();
       fusionMapping.map(operand, resolved.value());
@@ -187,7 +187,7 @@ void RockRegularizeInputPass::runOnOperation() {
     FailureOr<Value> replacement = distributeLoadMarker(
         builder, loc, markerOp.getSource(), /*postTransforms=*/{},
         markerOp.getExtraViews(), markerOp.getExtraIndices(), tileType,
-        valueMapping, funcOp);
+        markerOp.getCacheModifier(), valueMapping, funcOp);
 
     if (failed(replacement)) {
       markerOp->emitError("Failed to distribute load_marker past fusions");

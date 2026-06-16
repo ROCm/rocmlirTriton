@@ -12,7 +12,7 @@
 func.func @must_reapply_padding(%arg0: tensor<4xf16>, %dst: tensor<16xf16>) -> tensor<16xf16> attributes {rock.kernel} {
   %cst = arith.constant dense<4.0> : tensor<16xf16>
   %padded = rock.transform %arg0 by #transform_map : tensor<4xf16> to tensor<16xf16>
-  %loaded = rock.blockwise_load %padded : tensor<16xf16> -> tensor<16xf16>
+  %loaded = rock.blockwise_load %padded {cacheModifier = #rock<CacheModifier none>} : tensor<16xf16> -> tensor<16xf16>
   %biased = arith.addf %loaded, %cst : tensor<16xf16>
   %stored = rock.blockwise_store %biased -> %dst by set : tensor<16xf16> -> tensor<16xf16> -> tensor<16xf16>
   return %stored : tensor<16xf16>
@@ -27,7 +27,7 @@ func.func @must_reapply_padding(%arg0: tensor<4xf16>, %dst: tensor<16xf16>) -> t
 func.func @doesnt_reapply_padding(%arg0: tensor<4xf16>, %dst: tensor<16xf16>) -> tensor<16xf16> attributes {rock.kernel} {
   %cst = arith.constant dense<4.0> : tensor<16xf16>
   %padded = rock.transform %arg0 by #transform_map : tensor<4xf16> to tensor<16xf16>
-  %loaded = rock.blockwise_load %padded : tensor<16xf16> -> tensor<16xf16>
+  %loaded = rock.blockwise_load %padded {cacheModifier = #rock<CacheModifier none>} : tensor<16xf16> -> tensor<16xf16>
   %scaled = arith.mulf %loaded, %cst : tensor<16xf16>
   %stored = rock.blockwise_store %scaled -> %dst by set : tensor<16xf16> -> tensor<16xf16> -> tensor<16xf16>
   return %stored : tensor<16xf16>

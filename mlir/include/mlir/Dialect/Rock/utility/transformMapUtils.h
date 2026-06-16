@@ -272,6 +272,15 @@ getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
 // type of the block argument, otherwise it returns failure.
 FailureOr<Type> getInputFusionElementType(Value value);
 
+// Given a kernel operand `value`, walks the same def chain as
+// getInputFusionElementType (through rock.transform views and input-fusion ops
+// back to the kernel block arguments) and reports whether any transform in the
+// chain is non-injective ("reloads" data): Embed (e.g. overlapping conv
+// im2col), Broadcast or AddDim. Such operands rely on caching for their
+// repeated reads, so callers (e.g. cache-modifier heuristics) should not stream
+// them. Returns failure if the chain cannot be resolved.
+FailureOr<bool> isInputNonInjective(Value value);
+
 // Same as above but for output fusions
 FailureOr<Type> getOutputFusionElementType(Value value);
 

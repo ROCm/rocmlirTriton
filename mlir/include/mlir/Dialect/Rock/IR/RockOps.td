@@ -425,7 +425,7 @@ def Rock_LoadMarkerOp
     : Rock_Op<"load_marker", [Pure,
                               AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
-          Variadic<I32>:$extraIndices)>,
+          Variadic<I32>:$extraIndices, CacheModifierAttr:$cacheModifier)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Mark a tensor with tiling transforms for later load lowering";
   let description = [{
@@ -665,12 +665,15 @@ def Rock_BlockwiseLoadOp
                              DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>,
                          "source global memory">:$source,
-          Variadic<I32>:$sourceIndices)>,
+          Variadic<I32>:$sourceIndices, CacheModifierAttr:$cacheModifier)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Blockwise load from global memory";
   let description = [{
     The `rock.blockwise_load` op loads at workgroup (block) level.
     We will load data from global memory.
+
+    The `cacheModifier` attribute is a cache modifier hint (mirroring
+    triton::CacheModifier) forwarded to the lowered tt.load.
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{
@@ -685,11 +688,15 @@ def Rock_BlockwiseLoadPtrOp
                                                      "maskTensor", "result"]>]>,
       Arguments<(ins Arg<RankedTensorOf<[I32]>,
                          "Pointer tensor", [MemRead]>:$pointerTensor,
-          Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor)>,
+          Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
+          CacheModifierAttr:$cacheModifier)>,
       Results<(outs TensorOf<NativeMemoryOpTypes>:$result)> {
   let summary = "Blockwise load from global memory";
   let description = [{
+    The `cacheModifier` attribute is a cache modifier hint (mirroring
+    triton::CacheModifier) forwarded to the lowered tt.load.
   }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     $pointerTensor `[` $maskTensor `]` attr-dict
     `:` type($pointerTensor) `,` type($maskTensor) `->` type($result)

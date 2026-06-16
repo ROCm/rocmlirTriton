@@ -14,10 +14,13 @@ module {
   // The bias is an extra input → gets load_marker + untile.
   // ============================================================
 
+  // The pass streams epilogue output-fusion inputs (cs), since they are read
+  // once per output tile with no reuse.
   // CHECK-LABEL: func.func @test_addf_bias
   // CHECK: %[[SM:.*]] = rock.store_marker
   // CHECK: rock.transform %{{.*}} by
   // CHECK: %[[LM:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: {cacheModifier = #rock<CacheModifier cs>}
   // CHECK-SAME: tensor<1x16x16xf32> -> tensor<16x16xf32>
   // CHECK: %[[UT:.*]] = rock.untile %[[LM]] : tensor<16x16xf32> -> tensor<1x16x16xf32>
   // CHECK: %[[ADD:.*]] = arith.addf %[[SM]], %[[UT]] : tensor<1x16x16xf32>

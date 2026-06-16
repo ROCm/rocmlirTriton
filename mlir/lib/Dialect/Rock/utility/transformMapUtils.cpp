@@ -2267,12 +2267,60 @@ getElementTypeOfBiggestTensor(ArrayRef<BlockArgument> kernelArgs,
   return cast<ShapedType>(biggestTensor.getType()).getElementType();
 }
 
-FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
-  SmallVector<BlockArgument> kernelArgs;
+// Returns true if `map` contains a non-injective ("reload") transform, i.e. one
+// where distinct upper (iteration) coordinates can map to the same lower
+// (memory) element, so that element is read more than once:
+//   - Embed: treated conservatively as a reload (e.g. overlapping conv im2col);
+//     proving a particular Embed injective would require analyzing
+//     coefficients, and over-reporting only costs a missed optimization whereas
+//     under- reporting risks streaming cache-reliant data.
+//   - AddDim: adds an upper dim with no lower correspondent, so iterating it
+//     re-reads the same element -- but only when that dim has size > 1 (a
+//     size-1 AddDim is just a unit axis, e.g. <4096> -> <1x1x4096>).
+//   - Broadcast{modulus}: lower = upper % modulus, a reload only when the upper
+//     dim is larger than the modulus (size-1 lower replicated to many).
+static bool hasReloadTransform(TransformMapAttr map) {
+  ArrayRef<int64_t> upperBounds = map.getUpperBounds();
+  for (TransformAttr transform : map.getOps()) {
+    ArrayRef<uint32_t> upperDims = transform.getUpperDims();
+    ArrayRef<int64_t> params = transform.getParams();
+    switch (transform.getType()) {
+    case TransformType::Embed:
+      return true;
+    case TransformType::AddDim:
+      for (uint32_t d : upperDims) {
+        assert(d < upperBounds.size() && "upper dim out of bounds");
+        if (upperBounds[d] > 1)
+          return true;
+      }
+      break;
+    case TransformType::Broadcast:
+      for (auto [d, modulus] : llvm::zip(upperDims, params)) {
+        assert(d < upperBounds.size() && "upper dim out of bounds");
+        if (upperBounds[d] > modulus)
+          return true;
+      }
+      break;
+    default:
+      break;
+    }
+  }
+  return false;
+}
+
+// Walks the def chain of `value` (a kernel operand) back to the kernel block
+// arguments, traversing view (rock.transform) ops and input-fusion ops.
+// Collects the reached block arguments in `kernelArgs` and sets
+// `hasNonInjective` if any rock.transform in the chain reloads data (see
+// hasReloadTransform). Returns failure if the chain hits an unexpected op.
+static LogicalResult
+walkInputFusionChain(Value value, SmallVectorImpl<BlockArgument> &kernelArgs,
+                     bool &hasNonInjective) {
   SmallVector<Value> worklist;
   DenseSet<Value> visited;
   worklist.push_back(value);
   visited.insert(value);
+  hasNonInjective = false;
 
   while (!worklist.empty()) {
     Value currValue = worklist.pop_back_val();
@@ -2280,6 +2328,8 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
       kernelArgs.push_back(maybeBlockArg);
     } else if (auto viewOp =
                    dyn_cast<ViewLikeOpInterface>(currValue.getDefiningOp())) {
+      if (auto transformOp = dyn_cast<TransformOp>(currValue.getDefiningOp()))
+        hasNonInjective |= hasReloadTransform(transformOp.getTransform());
       Value src = viewOp.getViewSource();
       if (visited.insert(src).second)
         worklist.push_back(src);
@@ -2292,12 +2342,19 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
       // nothing to do with constants, just skip them
       continue;
     } else {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "getInputFusionElementType: Found unexpected op = "
-                 << currValue.getDefiningOp() << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "walkInputFusionChain: Found unexpected op = "
+                              << currValue.getDefiningOp() << "\n");
       return failure();
     }
   }
+  return success();
+}
+
+FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
+  SmallVector<BlockArgument> kernelArgs;
+  bool hasNonInjective = false;
+  if (failed(walkInputFusionChain(value, kernelArgs, hasNonInjective)))
+    return failure();
 
   FailureOr<Type> maybeElemType =
       getElementTypeOfBiggestTensor(kernelArgs, /*isInput=*/true);
@@ -2305,6 +2362,15 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
     return failure();
 
   return maybeElemType.value();
+}
+
+FailureOr<bool> mlir::rock::isInputNonInjective(Value value) {
+  SmallVector<BlockArgument> kernelArgs;
+  bool hasNonInjective = false;
+  if (failed(walkInputFusionChain(value, kernelArgs, hasNonInjective)))
+    return failure();
+
+  return hasNonInjective;
 }
 
 FailureOr<Type> mlir::rock::getOutputFusionElementType(Value value) {

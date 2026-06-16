@@ -1280,7 +1280,29 @@ static LogicalResult verifyMarkerOp(Operation *op, ArrayAttr views,
   return success();
 }
 
+// Validate that a cache modifier is meaningful for a load. WB (write-back) and
+// WT (write-through) are store-only modifiers and must not appear on a load.
+static LogicalResult verifyLoadCacheModifier(Operation *op,
+                                             rock::CacheModifier cache) {
+  switch (cache) {
+  case rock::CacheModifier::NONE:
+  case rock::CacheModifier::CA:
+  case rock::CacheModifier::CG:
+  case rock::CacheModifier::CS:
+  case rock::CacheModifier::CV:
+    return success();
+  case rock::CacheModifier::WB:
+  case rock::CacheModifier::WT:
+    return op->emitOpError("cache modifier '")
+           << rock::getNameForCacheModifier(cache)
+           << "' is a store-only modifier and cannot be used on a load";
+  }
+  llvm_unreachable("unknown rock::CacheModifier");
+}
+
 LogicalResult LoadMarkerOp::verify() {
+  if (failed(verifyLoadCacheModifier(*this, getCacheModifier())))
+    return failure();
   return verifyMarkerOp(
       *this, getExtraViews(),
       cast<RankedTensorType>(getSource().getType()).getShape(),
@@ -1526,7 +1548,7 @@ LogicalResult BlockwiseLoadOp::verify() {
            << " != " << resultType.getShape() << ")";
   }
 
-  return success();
+  return verifyLoadCacheModifier(*this, getCacheModifier());
 }
 
 LogicalResult BlockwiseLoadOp::inferReturnTypes(
@@ -1546,6 +1568,14 @@ LogicalResult BlockwiseLoadOp::inferReturnTypes(
   inferredReturnTypes.push_back(
       RankedTensorType::get(shape, sourceType.getElementType()));
   return success();
+}
+
+//===-----------------------------------------------------===//
+// BlockwiseLoadPtrOp
+//===-----------------------------------------------------===//
+
+LogicalResult BlockwiseLoadPtrOp::verify() {
+  return verifyLoadCacheModifier(*this, getCacheModifier());
 }
 
 //===-----------------------------------------------------===//
