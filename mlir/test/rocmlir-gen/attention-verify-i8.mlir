@@ -24,3 +24,16 @@
 // CHECK_I8_SIMPLE: call @rock_attention_gpu(%[[alloc0:.+]], %[[alloc1:.+]], %[[alloc2:.+]], %[[alloc3:.+]], %[[alloc4:.+]], %[[gpu_out:.+]]) : (memref<24576xi8>, memref<24576xi8>, memref<24576xf16>, memref<1xi8>, memref<1xf16>, memref<24576xf16>) -> ()
 // CHECK_I8_SIMPLE: call @host_naive_attention(%[[alloc7:.+]], %[[alloc8:.+]], %[[alloc9:.+]], %[[alloc10:.+]], %[[alloc11:.+]], %[[cpu_out:.+]]) : (memref<24576xi8>, memref<24576xi8>, memref<24576xf16>, memref<1xi8>, memref<1xf16>, memref<24576xf16>) -> ()
 // CHECK_I8_SIMPLE: call @rock_attention_verify5(%[[gpu_out]], %[[cpu_out]]) : (memref<24576xf16>, memref<24576xf16>) -> ()
+
+// CHECK_I8_CPU_FMA_REF-LABEL: func.func @rock_attention
+// CHECK_I8_CPU_FMA_REF:      %[[QSCALE:.*]] = arith.mulf {{.*}} : tensor<1x16x16xf16>
+// CHECK_I8_CPU_FMA_REF-NEXT: %[[ATTN_SCALE:.*]] = arith.mulf %[[QSCALE]], {{.*}} : tensor<1x16x16xf16>
+// CHECK_I8_CPU_FMA_REF-NEXT: %[[BIASED:.*]] = arith.addf %[[ATTN_SCALE]], {{.*}} : tensor<1x16x16xf16>
+// CHECK_I8_CPU_FMA_REF-NEXT: rock.yield %[[BIASED]] : tensor<1x16x16xf16>
+// CHECK_I8_CPU_FMA_REF-LABEL: func.func @host_naive_attention
+// CHECK_I8_CPU_FMA_REF:      %[[SCORE_F32:.*]] = tosa.cast {{.*}} : (tensor<1x16x16xf16>) -> tensor<1x16x16xf32>
+// CHECK_I8_CPU_FMA_REF-NEXT: %[[SCALE_F32:.*]] = tosa.cast {{.*}} : (tensor<1x16x16xf16>) -> tensor<1x16x16xf32>
+// CHECK_I8_CPU_FMA_REF-NEXT: %[[BIAS_F32:.*]] = tosa.cast {{.*}} : (tensor<1x16x16xf16>) -> tensor<1x16x16xf32>
+// CHECK_I8_CPU_FMA_REF:      %[[SCALED_F32:.*]] = tosa.mul %[[SCORE_F32]], %[[SCALE_F32]]
+// CHECK_I8_CPU_FMA_REF-NEXT: %[[BIASED_F32:.*]] = tosa.add %[[SCALED_F32]], %[[BIAS_F32]] : (tensor<1x16x16xf32>, tensor<1x16x16xf32>) -> tensor<1x16x16xf32>
+// CHECK_I8_CPU_FMA_REF-NEXT: tosa.cast %[[BIASED_F32]] : (tensor<1x16x16xf32>) -> tensor<1x16x16xf16>
