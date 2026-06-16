@@ -743,29 +743,7 @@ createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
   }
 }
 
-bool needToUpdateBest(rock::TuningParamSetKind kind) {
-  switch (kind) {
-  case TuningParamSetKind::Quick:
-  case TuningParamSetKind::Full:
-  case TuningParamSetKind::Exhaustive:
-    return false;
-  }
-  llvm_unreachable("invalid tuning kind");
-}
-
-unsigned getNumberOfIterations(TuningParamSetKind kind) {
-  switch (kind) {
-  case TuningParamSetKind::Quick:
-  case TuningParamSetKind::Full:
-  case TuningParamSetKind::Exhaustive:
-    return 1;
-  }
-  llvm_unreachable("invalid tuning kind");
-}
-
-TuningParamSet *
-createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind,
-                        rock::TuningParamSpaceSettings &settings) {
+TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
   struct TuningParamSet *newSpace;
   newSpace = new TuningParamSet();
 

@@ -49,20 +49,7 @@ struct TuningParamSet {
   KernelType primaryOpType;
 };
 
-struct TuningParamSpaceSettings {
-  unsigned iteration = 0;
-  StringRef winningConfig = "";
-};
-
-// Get the number of iterations needed for a given tuning kind
-unsigned getNumberOfIterations(TuningParamSetKind kind);
-
-// Whether the tuning kind needs to have the best of previous iteration
-bool needToUpdateBest(TuningParamSetKind kind);
-
-// Modified function signature to support multiple iterations
-TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind,
-                                        TuningParamSpaceSettings &settings);
+TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind);
 // Get a parameters from the set of tunable parameters.
 bool tuningGetParam(TuningParamSet *tuningSpace, unsigned pos,
                     ParamEntry *paramEntry);

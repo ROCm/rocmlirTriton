@@ -44,8 +44,7 @@ mlirRockTuningSpaceCreate(MlirModule module, RocmlirTuningParamSetKind kind) {
     break;
   }
   auto mod = unwrap(module);
-  rock::TuningParamSpaceSettings settings;
-  newParams = rock::createTunableParamSpace(mod, ourKind, settings);
+  newParams = rock::createTunableParamSpace(mod, ourKind);
   return wrap(newParams);
 }
 

@@ -1,6 +1,9 @@
 import enum
 import re
 
+# Split-K parameter index in serialized GEMM perf configs.
+SPLITK_IDX = 7
+
 
 class Operation(enum.IntEnum):
     CONV = 1
