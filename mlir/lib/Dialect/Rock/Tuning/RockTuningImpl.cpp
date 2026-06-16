@@ -339,7 +339,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
 // Returns the `scheduleHint` knob to pin for `gemmGemmOp`, restricted to
 // `rock.attention` (where it was benchmarked). i8 is excluded everywhere.
 // The heuristics below are based on empirical experiments:
-// gfx950: force `kScheduleHintAttention` for non-i8. 
+// gfx950: force `kScheduleHintAttention` for non-i8.
 // gfx942: enable it for non-i8 except on shapes measured to regress,
 // using `getGemmGemmSize` dims (m=seq_len_q, n=seq_len_k, k=head_dim_qk):
 //   A. square (m == n): k == 64, or k >= 160 && m >= 900.
@@ -348,7 +348,7 @@ static int64_t getScheduleHint(RockGemmGemmWrapperInterface gemmGemmOp) {
   if (!isa<AttentionOp>(gemmGemmOp))
     return kKnobDefault;
 
-  // gfx942 and gfx950 are the only chips show significant performance 
+  // gfx942 and gfx950 are the only chips show significant performance
   // improvement with schedule hint.
   StringRef chip = std::get<1>(rock::getArch(rock::getArchValue(gemmGemmOp)));
   if (!chip.starts_with("gfx942") && !chip.starts_with("gfx950"))
