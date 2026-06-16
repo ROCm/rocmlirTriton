@@ -19,8 +19,15 @@
 // CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v2:16,16,16,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1
 // CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v2:16,16,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1
 
+// The trailing scheduleHint is forced to 1 (kScheduleHintAttention) for
+// non-i8 attention on gfx950; see getScheduleHint in RockTuningImpl.cpp.
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-ATTN
-// CHECK-EXHAUSTIVE-ATTN: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-ATTN: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,1
+
+// i8 attention is excluded from the schedule-hint heuristic (empirical
+// regression), so scheduleHint stays -1 even on gfx950.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t i8 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-ATTN-I8
+// CHECK-EXHAUSTIVE-ATTN-I8: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-GFX950-KPACK \
