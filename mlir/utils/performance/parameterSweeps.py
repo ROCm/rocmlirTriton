@@ -178,44 +178,6 @@ def _needs_host_highlevel(config) -> bool:
     return isinstance(config, (perfRunner.AttentionConfiguration, perfRunner.GemmGemmConfiguration))
 
 
-def _verifier_thresholds(config) -> List[str]:
-    """Per-dtype overrides for the rocmlir-gen ``-pv`` host verifier.
-
-    The defaults (``RMS_threshold=3e-5``, ``relDiff_threshold=1e-6``) are
-    tuned for clean single-tile f32 GEMM. Sweeping wider configs (split-K,
-    large reductions, low-precision inputs accumulating into f32) inflates
-    per-element rounding noise and the verifier reports
-    ``[RMS_pass absDiff_pass relDiff_pass] = [1 1 0]`` even when the result
-    is numerically excellent (RMS often << default). Mirror the bumps used
-    by the upstream e2e tests (``conv_regression_fwd*``, ``PrResnet50``,
-    ``PrAttentionBF16``, etc.) so good kernels don't get classified as FAIL.
-    """
-    dtype = getattr(config, 'datatype', '')
-    args: List[str] = []
-    # Values below are empirical: picked from the worst-case spurious
-    # failures observed in 100-sample sweeps, plus a small margin. Dtypes
-    # not listed keep the rocmlir-gen default because the sweeps showed no
-    # threshold-driven failures for them.
-    if _needs_host_highlevel(config):
-        if dtype == 'bf16':
-            args += ['-RMS_threshold', '1e-2']
-        elif dtype == 'f32':
-            # f32 attention/gemm_gemm reduces over very large K (e.g.
-            # head_dim_qk * seq_len_k > 1e5), so a single-element maxRelDiff
-            # picks up sqrt(K) * ulp ~= 1e-4 of expected rounding noise.
-            # The tighter 1e-5 default fired on otherwise-clean kernels.
-            args += ['-relDiff_threshold', '1e-4']
-    else:
-        if dtype == 'bf16':
-            # bf16 conv/gemm hit the same ~1e-3 RMS noise floor as bf16
-            # attention; mirror the host-highlevel bump so good kernels
-            # don't get flagged as FAIL on the per-element rounding alone.
-            args += ['-RMS_threshold', '1e-2']
-        elif dtype in ('fp8', 'fp8_fp8'):
-            args += ['-relDiff_threshold', '1e-5']
-    return args
-
-
 def _build_rocmlir_gen_opts(config) -> List[str]:
     """Full rocmlir-gen argv for ``config``, including ``-pv`` and any
     per-kind flag tweaks. Used by both ``test_config`` (to actually run) and
@@ -229,10 +191,9 @@ def _build_rocmlir_gen_opts(config) -> List[str]:
             getattr(config, "current_seqlen", None) is not None):
         opts.append(f"--current_seq_len={','.join(map(str, config.current_seqlen))}")
     opts.append('-pv')
-    opts.extend(_verifier_thresholds(config))
-    # Per-config precision-aware rocmlir-gen flags (e.g. --pv-f64,
-    # -relDiff_threshold) attached by callers such as attentionSweeps.to_attn_test
-    # to combat CPU reference drift at long seq_len for f32/bf16 attention.
+    # Per-config precision-aware rocmlir-gen flags (e.g. --pv-f64)
+    # attached by callers such as attentionSweeps.to_attn_test to combat
+    # CPU reference drift at long seq_len for f32/bf16 attention.
     extra_flags = getattr(config, "extra_rocmlir_gen_flags", None)
     if extra_flags:
         opts.extend(extra_flags)

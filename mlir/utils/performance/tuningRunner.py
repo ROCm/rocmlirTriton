@@ -1130,7 +1130,7 @@ def format_error(context: str,
 
 # `auto_precision_flags_att` lives in perfRunner so the parameter sweeps
 # (attentionSweeps.py) can share the same per-config heuristic. See the
-# helper's docstring for the rationale behind --pv-f64 / -relDiff_threshold.
+# helper's docstring for the rationale behind --pv-f64.
 
 
 def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, options: Options,

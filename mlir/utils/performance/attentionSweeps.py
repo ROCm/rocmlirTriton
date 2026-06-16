@@ -341,9 +341,9 @@ def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
         perf_config=str(PerfConfig(perf, kind='attn')),
         current_seqlen=current_seqlen,
     )
-    # Precision-aware rocmlir-gen flags (e.g. --pv-f64, -relDiff_threshold)
-    # picked up per-config in parameterSweeps._build_rocmlir_gen_opts to combat
-    # CPU reference drift at long seq_len for f32/bf16 attention.
+    # Precision-aware rocmlir-gen flags (e.g. --pv-f64) picked up per-config
+    # in parameterSweeps._build_rocmlir_gen_opts to combat CPU reference drift
+    # at long seq_len for f32/bf16 attention.
     attn_config.extra_rocmlir_gen_flags = auto_precision_flags_att(attn_config)
     return attn_config
 

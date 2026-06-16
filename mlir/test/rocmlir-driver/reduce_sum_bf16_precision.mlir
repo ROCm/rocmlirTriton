@@ -10,8 +10,8 @@
 // accumulator is bf16 but the reduce_sum is explicitly promoted to f32
 // (`arith.extf bf16 to f32` + `arith.addf : f32` + `arith.truncf f32 to
 // bf16`), so the reduction accumulates in f32.  This precision asymmetry is
-// why the e2e test needs a relaxed `-absDiff_threshold` (600 instead of
-// 400) to be reliably non-flaky.
+// why the e2e test needs the allclose atomic-add rtol boost (sqrt(N)*eps)
+// to be reliably non-flaky.
 //
 // gfx942 is intentionally excluded: it does not have hardware support for
 // bf16 atomic add, so the GPU lowering does not use
