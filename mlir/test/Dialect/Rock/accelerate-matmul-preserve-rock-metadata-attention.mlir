@@ -43,50 +43,54 @@
 // ACCEL12: #[[$WMMA:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = true,
 // ACCEL12: tt.dot
 // ACCEL12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL12-SAME: -> tensor<128x32xf32, #[[$WMMA]]>
+// ACCEL12-SAME: -> tensor<64x64xf32, #[[$WMMA]]>
 // ACCEL12: tt.dot
 // ACCEL12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL12-SAME: -> tensor<128x64xf32, #[[$WMMA]]>
+// ACCEL12-SAME: -> tensor<64x64xf32, #[[$WMMA]]>
 
 // The metadata is discardable and left in place once consumed.
 // SETT12: #[[$WMMAT:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = false,
 // SETT12: tt.dot
 // SETT12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT12-SAME: -> tensor<128x32xf32, #[[$WMMAT]]>
+// SETT12-SAME: -> tensor<64x64xf32, #[[$WMMAT]]>
 // SETT12: tt.dot
 // SETT12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT12-SAME: -> tensor<128x64xf32, #[[$WMMAT]]>
+// SETT12-SAME: -> tensor<64x64xf32, #[[$WMMAT]]>
 
 // ACCEL1250: #[[$WMMA1250:.+]] = #ttg.amd_wmma<{version = 3, isTranspose = true,
 // ACCEL1250: tt.dot
 // ACCEL1250-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL1250-SAME: -> tensor<128x32xf32, #[[$WMMA1250]]>
+// ACCEL1250-SAME: -> tensor<64x64xf32, #[[$WMMA1250]]>
 // ACCEL1250: tt.dot
 // ACCEL1250-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL1250-SAME: -> tensor<128x64xf32, #[[$WMMA1250]]>
+// ACCEL1250-SAME: -> tensor<64x64xf32, #[[$WMMA1250]]>
 
 // The metadata is discardable and left in place once consumed.
 // SETT1250: #[[$WMMA1250T:.+]] = #ttg.amd_wmma<{version = 3, isTranspose = false,
 // SETT1250: tt.dot
 // SETT1250-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT1250-SAME: -> tensor<128x32xf32, #[[$WMMA1250T]]>
+// SETT1250-SAME: -> tensor<64x64xf32, #[[$WMMA1250T]]>
 // SETT1250: tt.dot
 // SETT1250-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT1250-SAME: -> tensor<128x64xf32, #[[$WMMA1250T]]>
+// SETT1250-SAME: -> tensor<64x64xf32, #[[$WMMA1250T]]>
 
-// ACCEL11: #ttg.amd_wmma<{version = 1, isTranspose = true,
+// ACCEL11: #[[$WMMA11:.+]] = #ttg.amd_wmma<{version = 1, isTranspose = true,
 // ACCEL11: tt.dot
 // ACCEL11-SAME: rock.o_transposed = #rock.o_transposed<true>
+// ACCEL11-SAME: -> tensor<64x64xf32, #[[$WMMA11]]>
 // ACCEL11: tt.dot
 // ACCEL11-SAME: rock.o_transposed = #rock.o_transposed<true>
+// ACCEL11-SAME: -> tensor<64x64xf32, #[[$WMMA11]]>
 
 // For WMMA v1 a column-major output already wants isTranspose = true, so both
 // dots are left untouched (no flip).
-// SETT11: #ttg.amd_wmma<{version = 1, isTranspose = true,
+// SETT11: #[[$WMMA11T:.+]] = #ttg.amd_wmma<{version = 1, isTranspose = true,
 // SETT11: tt.dot
 // SETT11-SAME: rock.o_transposed = #rock.o_transposed<true>
+// SETT11-SAME: -> tensor<64x64xf32, #[[$WMMA11T]]>
 // SETT11: tt.dot
 // SETT11-SAME: rock.o_transposed = #rock.o_transposed<true>
+// SETT11-SAME: -> tensor<64x64xf32, #[[$WMMA11T]]>
 // SETT11-NOT: isTranspose = false
 
 #map = affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
@@ -110,7 +114,10 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:##ARCH##"} {
       rock.yield %arg4 : tensor<1x256x256xf16>
     }
      softmax(qk) * %2 : tensor<1x256x64xf16>
-    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, oTransposed, softmaxType = f32, splitKV = 1 : i32} -> tensor<1x64x256xf16>
+    // Pin the tuning params so both accelerator dot tiles are a fixed 64x64 for
+    // every arch (otherwise the default perf_config -- and thus the dot tile
+    // shapes checked below -- can vary by arch / toolchain version).
+    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, oTransposed, perf_config = "attn:v1:64,64,64,1,1,4,16,1,1,0,0", softmaxType = f32, splitKV = 1 : i32} -> tensor<1x64x256xf16>
     %biasT = rock.transform %bias by #transform_map_bias : tensor<16384xf16> to tensor<1x64x256xf16>
     %add = arith.addf %result, %biasT : tensor<1x64x256xf16>
     %3 = rock.transform %add by #transform_map3 : tensor<1x64x256xf16> to tensor<16384xf16>

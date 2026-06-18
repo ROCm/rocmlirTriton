@@ -41,13 +41,13 @@
 // ACCEL12: #[[$WMMA:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = true,
 // ACCEL12: tt.dot
 // ACCEL12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL12-SAME: -> tensor<128x128xf32, #[[$WMMA]]>
+// ACCEL12-SAME: -> tensor<64x64xf32, #[[$WMMA]]>
 
 // The metadata is discardable and left in place once consumed.
 // SETT12: #[[$WMMAT:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = false,
 // SETT12: tt.dot
 // SETT12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT12-SAME: -> tensor<128x128xf32, #[[$WMMAT]]>
+// SETT12-SAME: -> tensor<64x64xf32, #[[$WMMAT]]>
 
 // ACCEL1250: #[[$WMMA1250:.+]] = #ttg.amd_wmma<{version = 3, isTranspose = true,
 // ACCEL1250: tt.dot
@@ -63,14 +63,14 @@
 // ACCEL11: #[[$WMMA11:.+]] = #ttg.amd_wmma<{version = 1, isTranspose = true,
 // ACCEL11: tt.dot
 // ACCEL11-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL11-SAME: -> tensor<16x64xf32, #[[$WMMA11]]>
+// ACCEL11-SAME: -> tensor<64x64xf32, #[[$WMMA11]]>
 
 // For WMMA v1 a column-major output already wants isTranspose = true, so the dot
 // is left untouched (no flip, no new layout).
 // SETT11: #[[$WMMA11T:.+]] = #ttg.amd_wmma<{version = 1, isTranspose = true,
 // SETT11: tt.dot
 // SETT11-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT11-SAME: -> tensor<16x64xf32, #[[$WMMA11T]]>
+// SETT11-SAME: -> tensor<64x64xf32, #[[$WMMA11T]]>
 // SETT11-NOT: isTranspose = false
 
 #map = affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
@@ -85,7 +85,10 @@ module attributes {rock.arch = "amdgcn-amd-amdhsa:##ARCH##"} {
   func.func @rock_gemm(%arg0: tensor<8192xf16>, %arg1: tensor<16384xf16>, %bias: tensor<32768xf16>, %arg2: tensor<32768xf16>) -> tensor<32768xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:##ARCH##", rock.kernel, rock.num_chiplets = 1 : i64, rock.num_cu = 12 : i64} {
     %0 = rock.transform %arg0 by #transform_map : tensor<8192xf16> to tensor<1x128x64xf16>
     %1 = rock.transform %arg1 by #transform_map1 : tensor<16384xf16> to tensor<1x64x256xf16>
-    %2 = rock.gemm %0 * %1 {oTransposed} : tensor<1x128x64xf16> * tensor<1x64x256xf16> -> tensor<1x256x128xf16>
+    // Pin the tuning params so the accelerator output tile is a fixed 64x64 for
+    // every arch (otherwise the default perf_config -- and thus the dot tile
+    // shape checked below -- can vary by arch / toolchain version).
+    %2 = rock.gemm %0 * %1 {oTransposed, perf_config = "gemm:v1:64,64,64,1,1,4,0,1,2,0,0"} : tensor<1x128x64xf16> * tensor<1x64x256xf16> -> tensor<1x256x128xf16>
     %biasT = rock.transform %bias by #transform_map_bias : tensor<32768xf16> to tensor<1x256x128xf16>
     %add = arith.addf %2, %biasT : tensor<1x256x128xf16>
     %3 = rock.transform %add by #transform_map2 : tensor<1x256x128xf16> to tensor<32768xf16>

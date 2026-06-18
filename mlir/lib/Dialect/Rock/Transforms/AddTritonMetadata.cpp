@@ -114,23 +114,22 @@ static int64_t storeDestNumElements(rock::BlockwiseStoreOp storeOp) {
 
 // Decide whether the output written by `storeOp` is transposed (column-major:
 // M is the fast/contiguous output dimension) by comparing the achievable
-// vectorization along the N vs. M output dimension of the (transformed)
-// destination view. Returns failure when the shapes do not match the expected
-// layout.
+// vectorization along the fast N dimension (last) vs. the fast M dimension
+// (second to last) of the (transformed) destination view. Returns failure when
+// the destination has too few dims to reason about.
 static FailureOr<bool> computeOTransposed(rock::BlockwiseStoreOp storeOp) {
-  // A rock.blockwise_gemm result is, by construction, a 2-D M x N tile with
-  // M as dim 0 and N as dim 1 (the blockwise_gemm verifier guarantees the 2-D
-  // shape). The store writes that tile (possibly through shape-preserving
-  // fusion/views) into `dest`, so `dest` carries the same two logical dims in
-  // the same order. We therefore know M is dim 0 and N is dim 1 directly from
-  // the gemm contract -- no need to infer them from the dest rank.
+  // The blockwise_gemm output is an M x N tile, written into `dest` (possibly
+  // through shape-preserving fusion/views) as its two fastest-varying logical
+  // dimensions. In the lowered IR `dest` is a higher-rank view of the kernel
+  // output (e.g. carrying group / block-tiling dims), with M as the second-to-
+  // last and N as the last dimension, so we read them relative to the rank.
   Value dest = storeOp.getDest();
   auto destType = dyn_cast<ShapedType>(dest.getType());
-  if (!destType || destType.getRank() != 2)
+  if (!destType || destType.getRank() < 2)
     return failure();
 
-  constexpr uint32_t mDim = 0;
-  constexpr uint32_t nDim = 1;
+  uint32_t nDim = destType.getRank() - 1;
+  uint32_t mDim = destType.getRank() - 2;
 
   VectorizationResult nVec = getMaxVectorization(dest, nDim);
   VectorizationResult mVec = getMaxVectorization(dest, mDim);
