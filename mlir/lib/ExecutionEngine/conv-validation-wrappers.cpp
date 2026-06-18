@@ -233,9 +233,9 @@ void mcpuVerify(T *gpuResults, T *validationResults, long long dataSize,
       // f32 subnormals as always being correct
       hist_relDiff[0]++;
     } else {
-      // AIROCMLIR-911: Replace this hard-coded fp16 clamp with a
-      // dtype-aware clamp (or remove it once the comparator handles inf
-      // natively). Currently it masks real mismatches for non-fp16 types.
+      // Replace this hard-coded fp16 clamp with a dtype-aware clamp
+      // (or remove it once the comparator handles inf natively).
+      // Currently it masks real mismatches for non-fp16 types.
       constexpr float fp16MaxVal = 65504;
       if (std::isinf(valNum))
         valNum = (valNum > 0 ? fp16MaxVal : -fp16MaxVal);
@@ -365,31 +365,32 @@ static void printAllcloseStats(long long dataSize, long long failingElements,
     printf("  worst element: valNum=%g gpuNum=%g (NaN-mismatch)\n", nanValNum,
            nanGpuNum);
     printf("  no tolerance can mask a NaN-mismatch; fix the kernel\n");
-  } else if (infMismatchCount > 0 && infMismatchCount == failingElements) {
-    printf("  all %lld failure(s) are inf-mismatches; no tolerance can help\n",
-           infMismatchCount);
   } else {
-    if (maxRatioIsInf) {
-      printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=0 "
-             "(ratio=inf)\n",
-             maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff);
-    } else {
-      printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=%.3e "
-             "(ratio=%.2fx)\n",
-             maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff, maxRatioTolerance,
-             maxRatio);
+    if (infMismatchCount > 0) {
+      printf("  %lld inf-mismatch(es); no tolerance can fix these\n",
+             infMismatchCount);
     }
-    // Calibration hints: smallest atol/rtol that would make everything pass
-    // (holding the other fixed).
-    printf("  to pass with current rtol=%.3e: atol >= %.3e\n", rtol,
-           minAtolForCurrentRtol);
-    if (minRtolWellDefined) {
-      printf("  to pass with current atol=%.3e: rtol >= %.3e\n", atol,
-             minRtolForCurrentAtol);
-    } else {
-      printf("  to pass with current atol=%.3e: rtol >= n/a "
-             "(failures only at valNum == 0; increase atol)\n",
-             atol);
+    if (infMismatchCount < failingElements) {
+      if (maxRatioIsInf) {
+        printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=0 "
+               "(ratio=inf)\n",
+               maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff);
+      } else {
+        printf("  worst element: valNum=%g gpuNum=%g absDiff=%.3e tolerance=%.3e "
+               "(ratio=%.2fx)\n",
+               maxRatioValNum, maxRatioGpuNum, maxRatioAbsDiff, maxRatioTolerance,
+               maxRatio);
+      }
+      printf("  to pass with current rtol=%.3e: atol >= %.3e\n", rtol,
+             minAtolForCurrentRtol);
+      if (minRtolWellDefined) {
+        printf("  to pass with current atol=%.3e: rtol >= %.3e\n", atol,
+               minRtolForCurrentAtol);
+      } else {
+        printf("  to pass with current atol=%.3e: rtol >= n/a "
+               "(failures only at valNum == 0; increase atol)\n",
+               atol);
+      }
     }
   }
   printf("  histogram of absDiff/tolerance:\n");
@@ -508,10 +509,14 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
       hist_ratio[0]++;
       continue;
     }
-    // Inf handling (AIROCMLIR-911): treat inf as a hard failure unless both
-    // sides agree. The old approach clamped +/-inf to fp16_max (65504) which
+    // Inf handling: treat inf as a hard failure unless both sides agree
+    // (same sign). The old approach clamped +/-inf to fp16_max (65504) which
     // masked real mismatches for f32/bf16 types and hid overflow bugs.
     if (std::isinf(valNum) || std::isinf(gpuNum)) {
+      if (valNum == gpuNum) {
+        hist_ratio[0]++;
+        continue;
+      }
       failingElements++;
       infMismatchCount++;
       if (print_option == PrintOption::Always ||

@@ -426,10 +426,15 @@ noted.
   by both comparators; see `mcpuVerify`
   (legacy) and `mcpuVerifyAllclose` in `conv-validation-wrappers.cpp`
   for details
-- Infinite values: Handled identically
-  by both comparators; see `mcpuVerify`
-  (legacy) and `mcpuVerifyAllclose` in `conv-validation-wrappers.cpp`
-  for details.
+- Infinite values (**allclose**): if both sides are the same infinity
+  (`+inf`/`+inf` or `-inf`/`-inf`), the element passes (exact match).
+  Any other inf combination — `+inf` vs `-inf`, inf vs finite, or
+  finite vs inf — is an unconditional failure ("inf-mismatch"),
+  counted separately from tolerance-based failures and reported in the
+  diagnostics. No tolerance `(atol, rtol)` can mask an inf-mismatch.
+  The **legacy** comparator still clamps `+/-inf` to `fp16_max` (65504)
+  before computing differences, which can hide overflow bugs for
+  non-fp16 types.
 - NaNs (on CPU or GPU side): **allclose only**. NaNs is always a failure. The
   element is excluded from the ratio histogram (NaN is unordered with
   every finite bucket boundary, so it would otherwise silently land in
