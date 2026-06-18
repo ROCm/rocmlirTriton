@@ -561,10 +561,6 @@ static LogicalResult processGemm(BlockwiseGemmOp gemm) {
     store.getResult().replaceAllUsesWith(currentDestRoot);
   }
 
-  // Erase the original stores (writers, so DCE won't). Everything else now dead
-  // is Pure and reclaimed by the post-pass DCE.
-  for (Operation *storeOp : stores)
-    storeOp->erase();
   return success();
 }
 
