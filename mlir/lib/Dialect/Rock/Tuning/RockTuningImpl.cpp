@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -339,8 +340,8 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
 // Returns the `scheduleHint` knob to pin for `gemmGemmOp`, restricted to
 // `rock.attention` (where it was benchmarked). i8 is excluded everywhere.
 // The heuristics below are based on empirical experiments:
-// gfx950: force `kScheduleHintAttention` for non-i8.
-// gfx942: enable it for non-i8 except on shapes measured to regress,
+// CDNA4 (gfx950): force `kScheduleHintAttention` for non-i8.
+// CDNA3 (gfx942): enable it for non-i8 except on shapes measured to regress,
 // using `getGemmGemmSize` dims (m=seq_len_q, n=seq_len_k, k=head_dim_qk):
 //   A. square (m == n): k == 64, or k >= 160 && m >= 900.
 //   B. unaligned K (n % 64 != 0), f16 only: k >= 80 && m >= 900.
@@ -348,17 +349,22 @@ static int64_t getScheduleHint(RockGemmGemmWrapperInterface gemmGemmOp) {
   if (!isa<AttentionOp>(gemmGemmOp))
     return kKnobDefault;
 
-  // gfx942 and gfx950 are the only chips show significant performance
-  // improvement with schedule hint.
-  StringRef chip = std::get<1>(rock::getArch(rock::getArchValue(gemmGemmOp)));
-  if (!chip.starts_with("gfx942") && !chip.starts_with("gfx950"))
+  // CDNA3 (gfx942) and CDNA4 (gfx950) are the only families that show
+  // significant performance improvement with the schedule hint.
+  triton::amdgpu::ISAFamily isaFamily =
+      std::get<0>(rock::getArch(rock::getArchValue(gemmGemmOp)));
+  if (isaFamily != triton::amdgpu::ISAFamily::CDNA3 &&
+      isaFamily != triton::amdgpu::ISAFamily::CDNA4)
     return kKnobDefault;
 
   Type elemType = cast<ShapedType>(gemmGemmOp.getAType()).getElementType();
-  if (chip.starts_with("gfx950") && !elemType.isInteger(8))
+  if (elemType.isInteger(8))
+    return kKnobDefault;
+
+  if (isaFamily == triton::amdgpu::ISAFamily::CDNA4)
     return kScheduleHintAttention;
 
-  if (chip.starts_with("gfx942")) {
+  if (isaFamily == triton::amdgpu::ISAFamily::CDNA3) {
     GemmGemmSize sz = gemmGemmOp.getGemmGemmSize();
     int64_t seqLenQ = sz.m, seqLenK = sz.n, headDimQK = sz.k;
 
