@@ -1862,6 +1862,9 @@ def run_config_with_mlir(config: PerfConfiguration,
     else:
         if debug:
             print("Using rocprof for benchmarking")
+        if flush_last_level_cache:
+            print(
+                "Warning: --flush-last-level-cache is ignored when using rocprof for benchmarking")
         rocmlir_driver_cmd = [paths.mlir_paths.rocmlir_driver_path, '-c']
         profiler_cmd = [ROCPROF] + get_metric_args_for_rocprof(arch) + [
             '--kernel-trace', '--stats', '-f', 'csv', '-o', BENCHMARKING_RESULT_FILE_NAME, '--',
