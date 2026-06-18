@@ -157,6 +157,8 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 
 Also check that `tritonUtils.cpp::getMfmaVersion()` and
 `tritonUtils.cpp::getWmmaVersion()` handle the new `ISAFamily` / chip string.
+Additionally, `mlir/test/common_utils/amd_arch_db/binding.cpp` will need to have
+it's `py::enum_<ISAFamily>(...).value(...)` enum updated as well.
 
 **How to detect needed changes:** Triton uses exhaustive `switch` statements over
 `ISAFamily`. If a new variant is added, our switches (which use `default:`) will

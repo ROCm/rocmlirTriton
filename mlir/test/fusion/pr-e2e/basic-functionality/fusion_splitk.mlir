@@ -6,7 +6,7 @@
 // tuner; the migraphx pipeline auto-tunes the lowered rock kernel, so we do
 // not need to (and cannot) pin a perf_config from migraphx IR.
 
-// RUN: rocmlir-gen -fut rock_gemm --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -print-results -rand 1 -rand_type float -relDiff_threshold=1e-3 -fut rock_gemm --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
+// RUN: rocmlir-gen -fut rock_gemm --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -print-results -rand 1 -rand_type float -fut rock_gemm --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 
 // CHECK: [1 1 1]
 module {

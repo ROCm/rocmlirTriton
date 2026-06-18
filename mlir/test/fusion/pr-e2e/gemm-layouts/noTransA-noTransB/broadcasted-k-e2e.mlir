@@ -3,7 +3,7 @@
 
 // CLONE: [1 1 1]
 
-// EMITKEY: -t f16 -out_datatype f16 -transA false -transB false -g 2 -m 4096 -n 640 -k 320
+// EMITKEY: -t f16 -out_datatype f16 -transA false -transB false -transO false -g 2 -m 4096 -n 640 -k 320
 
 module {
   func.func @test(%arg0: !migraphx.shaped<2x4096x1xf16, 4096x1x1>, %arg1: !migraphx.shaped<2x640x320xf16, 204800x1x640>, %arg2: !migraphx.shaped<2x64x10x64x64xf16, 0x10x1x40960x640>) -> !migraphx.shaped<2x64x10x64x64xf16, 2621440x10x1x40960x640> attributes {rock.kernel} {

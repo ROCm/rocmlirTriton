@@ -28,4 +28,4 @@ cmake .. -G Ninja \
   -DCMAKE_MODULE_LINKER_FLAGS="-fuse-ld=lld" \
   "$@"
 
-ninja libconv-validation-wrappers.so; ninja check-rocmlir-build-only ci-performance-scripts
+ninja check-rocmlir-build-only

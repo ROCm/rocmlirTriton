@@ -191,6 +191,7 @@ class Options:
     wait_for_compiles: bool
     flush_last_level_cache: bool
     timeout: Optional[int]
+    perf_config_timeout: int
 
 
 @dataclass
@@ -1130,7 +1131,7 @@ def format_error(context: str,
 
 # `auto_precision_flags_att` lives in perfRunner so the parameter sweeps
 # (attentionSweeps.py) can share the same per-config heuristic. See the
-# helper's docstring for the rationale behind --pv-f64 / -relDiff_threshold.
+# helper's docstring for the rationale behind --pv-f64.
 
 
 def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, options: Options,
@@ -1307,6 +1308,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         f"--sleep-us={SLEEP_US}",
         f"--show-all-measurements={options.debug}",
         f"--num-compile-threads={num_compile_threads}",
+        f"--perf-config-timeout={options.perf_config_timeout}",
     ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
@@ -1920,6 +1922,16 @@ def parse_arguments(gpu_topology: GpuTopology,
         "Size the cache-flush buffer to the architecture's last-level cache (e.g. AMD Infinity Cache) instead of the per-XCD L2 cache size reported by the HIP runtime. Defaults to the L2 cache size."
     )
 
+    parser.add_argument(
+        "--perf-config-timeout",
+        type=int,
+        default=0,
+        metavar='SECONDS',
+        help="Per-perf-config compilation timeout in seconds (default: 0 = no timeout, "
+        "compile in-process). When > 0, each config is compiled in a separate "
+        "rocmlir-driver process that is killed if it exceeds this budget; the "
+        "timed-out config is skipped (reported as N/A) and tuning continues.")
+
     parser.add_argument("-s",
                         "--status",
                         action='store_true',
@@ -2001,7 +2013,8 @@ def main(args=None):
                       num_cpus=parsed_args.num_cpus,
                       wait_for_compiles=parsed_args.wait_for_compiles,
                       flush_last_level_cache=parsed_args.flush_last_level_cache,
-                      timeout=parsed_args.timeout)
+                      timeout=parsed_args.timeout,
+                      perf_config_timeout=parsed_args.perf_config_timeout)
 
     ctx = TuningContext(configs=configs,
                         conf_class=get_config_class(op_type),

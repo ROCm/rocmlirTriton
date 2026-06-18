@@ -174,9 +174,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
                 accelKind == MatrixAccelKind::ScaledMFMA;
   bool isWmma = accelKind == MatrixAccelKind::WMMA ||
                 accelKind == MatrixAccelKind::ScaledWMMA;
-  Type inTypeA = gemmOp.getAType();
-  bool is8b = inTypeA.isInteger(8) ||
-              (inTypeA.getIntOrFloatBitWidth() == 8 && isa<FloatType>(inTypeA));
 
   std::vector<uint32_t> kPerBlockMFMA =
       kind == TuningParamSetKind::Exhaustive
@@ -187,9 +184,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       kind == TuningParamSetKind::Exhaustive
           ? std::vector<uint32_t>{32, 64, 128, 256}
           : std::vector<uint32_t>{32, 64};
-
-  if (is8b && isMfma)
-    kPerBlockMFMA = {32, 64, 128};
 
   std::vector<uint32_t> numCTAsList;
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
@@ -690,21 +684,27 @@ bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry) {
 }
 
 bool tuningSetStr(ModuleOp &mod, StringRef perfConfig) {
-  WalkResult setPrimary =
-      mod->walk([&](rock::RockGemmWrapperInterface op) -> WalkResult {
-        auto *ctx = op.getContext();
-        StringAttr attr = StringAttr::get(ctx, perfConfig);
-        op->setAttr("perf_config", attr);
-        return WalkResult::interrupt();
-      });
-  WalkResult setGemmGemm =
-      mod->walk([&](rock::RockGemmGemmWrapperInterface op) -> WalkResult {
-        auto *ctx = op.getContext();
-        StringAttr attr = StringAttr::get(ctx, perfConfig);
-        op->setAttr("perf_config", attr);
-        return WalkResult::interrupt();
-      });
-  return setPrimary.wasInterrupted() || setGemmGemm.wasInterrupted();
+  // This stamps a single perf config onto a single tunable op, so we expect at
+  // most one gemm or gemm+gemm op in the module. Walk fully (rather than
+  // interrupting on the first match) so the asserts below can catch a module
+  // that violates that assumption instead of silently stamping just one op.
+  unsigned numGemm = 0;
+  mod->walk([&](rock::RockGemmWrapperInterface op) {
+    auto *ctx = op.getContext();
+    op->setAttr("perf_config", StringAttr::get(ctx, perfConfig));
+    ++numGemm;
+  });
+  unsigned numGemmGemm = 0;
+  mod->walk([&](rock::RockGemmGemmWrapperInterface op) {
+    auto *ctx = op.getContext();
+    op->setAttr("perf_config", StringAttr::get(ctx, perfConfig));
+    ++numGemmGemm;
+  });
+  assert(numGemm <= 1 && "expected at most one gemm op to stamp");
+  assert(numGemmGemm <= 1 && "expected at most one gemm+gemm op to stamp");
+  assert(!(numGemm && numGemmGemm) &&
+         "expected either a gemm or a gemm+gemm op, not both");
+  return numGemm || numGemmGemm;
 }
 
 TuningTable *tuningTableCreate() {
@@ -1136,6 +1136,13 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
     // TransB
     problemOS << "-transB ";
     if (rGemmOp.getBTransposed())
+      problemOS << "true ";
+    else
+      problemOS << "false ";
+
+    // TransO
+    problemOS << "-transO ";
+    if (rGemmOp.getOTransposed())
       problemOS << "true ";
     else
       problemOS << "false ";
