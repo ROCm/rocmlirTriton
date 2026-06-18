@@ -151,9 +151,6 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> allowFlushDenorm{
       *this, "allowFlushDenorm", desc("Whether to allow flush denorm"),
       init(true)};
-  PassOptions::Option<bool> suppressDiagnostic{
-      *this, "suppress-diagnostic",
-      desc("should we suppress diagnostic messages"), init(false)};
   PassOptions::Option<int64_t> scheduleHint{
       *this, "scheduleHint",
       desc("Per-kernel scheduling hint ordinal forwarded to TritonToHsaco "

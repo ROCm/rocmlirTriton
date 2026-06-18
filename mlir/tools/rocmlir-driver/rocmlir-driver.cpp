@@ -16,10 +16,13 @@
 #include "mlir/Dialect/MIGraphX/Pipeline/Pipeline.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
+#include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/IR/AsmState.h"
@@ -45,14 +48,15 @@ using namespace llvm;
 using namespace mlir;
 
 // Exit codes: 0 = success, EXIT_FAILURE (from <cstdlib>) = real failure,
-// EXIT_NOT_APPLICABLE = rock.not_applicable marker set (config refused, not a
-// bug). parameterSweeps.py keys on this contract: it treats 0 as PASS, 2 as
-// NOT_APPLICABLE, and anything else as FAIL — so EXIT_FAILURE just needs to
-// be non-zero and distinct from EXIT_NOT_APPLICABLE.
-#define EXIT_NOT_APPLICABLE 2
-static_assert(EXIT_FAILURE != 0 && EXIT_FAILURE != EXIT_NOT_APPLICABLE,
+// rock::kExitNotApplicable = rock.not_applicable marker set (config refused,
+// not a bug). parameterSweeps.py keys on this contract: it treats 0 as PASS, 2
+// as NOT_APPLICABLE, and anything else as FAIL — so EXIT_FAILURE just needs to
+// be non-zero and distinct from rock::kExitNotApplicable. The shared value
+// lives in compileUtils.h so consumers (e.g. rocmlir-tuning-driver) agree on
+// it.
+static_assert(EXIT_FAILURE != 0 && EXIT_FAILURE != rock::kExitNotApplicable,
               "rocmlir-driver exit-code contract: EXIT_FAILURE must be "
-              "non-zero and distinct from EXIT_NOT_APPLICABLE "
+              "non-zero and distinct from rock::kExitNotApplicable "
               "(parameterSweeps.py keys on this)");
 
 static cl::opt<std::string> inputFilename(llvm::cl::Positional,
@@ -112,6 +116,13 @@ static cl::opt<bool> barePointers(
 static cl::opt<std::string> arch("arch", cl::desc("target architecture"),
                                  cl::value_desc("Target GPU architecture"),
                                  cl::init(""));
+
+static cl::opt<std::string> perfConfig(
+    "perf-config",
+    cl::desc("Perf config to stamp on gemm/attention ops before lowering "
+             "(overrides any perf_config already present). Used by "
+             "rocmlir-tuning-driver to compile one specific configuration."),
+    cl::value_desc("perf config string"), cl::init(""));
 
 static cl::opt<bool> disableFastMath(
     "disable-fast-math", cl::init(false),
@@ -441,7 +452,6 @@ int main(int argc, char **argv) {
                       affine::AffineDialect, memref::MemRefDialect,
                       math::MathDialect, arith::ArithDialect, gpu::GPUDialect,
                       bufferization::BufferizationDialect>();
-  OpBuilder builder(&context);
   ModuleOp module;
 
   std::string errorMessage;
@@ -464,6 +474,22 @@ int main(int argc, char **argv) {
   }
   module = moduleRef.get();
 
+  // Stamp an explicit perf config onto the tunable ops if requested.
+  // tuningSetStr returns false if it found no gemm/gemm+gemm op to stamp; error
+  // out instead of silently compiling the wrong (default) configuration.
+  if (!perfConfig.empty() && !rock::tuningSetStr(module, perfConfig)) {
+    llvm::errs() << "Failed to apply --perf-config \"" << perfConfig
+                 << "\": no gemm or gemm+gemm op found to stamp.\n";
+    exit(EXIT_FAILURE);
+  }
+
+  // Snapshot -o before running the pipeline: the binary stage links with
+  // in-process LLD, which calls cl::ResetAllOptionOccurrences() and resets
+  // every cl::opt (including outputFilename) back to its default. Read the
+  // value now so the output still lands in the requested file rather than
+  // stdout.
+  std::string outputFilenameValue = outputFilename;
+
   // Run MLIR passes with passed in tuning parameters. If a rock pass
   // determined the (kernel x perf-config x hw) combination is structurally
   // inapplicable it will have signalled pass failure AND set the
@@ -475,14 +501,14 @@ int main(int argc, char **argv) {
   if (failed(runMLIRPasses(module, passPipeline))) {
     if (module->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
       llvm::errs() << "Lowering not applicable.\n";
-      exit(EXIT_NOT_APPLICABLE);
+      exit(rock::kExitNotApplicable);
     }
     llvm::errs() << "Lowering failed.\n";
     exit(EXIT_FAILURE);
   }
 
   // Set up the output file.
-  auto output = openOutputFile(outputFilename, &errorMessage);
+  auto output = openOutputFile(outputFilenameValue, &errorMessage);
   if (!output) {
     llvm::errs() << errorMessage << "\n";
     exit(EXIT_FAILURE);
