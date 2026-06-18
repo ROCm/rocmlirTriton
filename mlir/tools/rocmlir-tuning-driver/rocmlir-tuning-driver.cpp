@@ -48,7 +48,11 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/SourceMgr.h"
 
 #include <atomic>
@@ -57,6 +61,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 // Utilities to allocate buffers
@@ -165,6 +170,16 @@ static llvm::cl::opt<bool> flushLastLevelCache(
         "(e.g. AMD Infinity Cache) instead of the per-XCD L2 cache size "
         "reported by the HIP runtime. Defaults to the L2 cache size."),
     llvm::cl::init(false));
+
+static llvm::cl::opt<unsigned> perfConfigTimeout(
+    "perf-config-timeout",
+    llvm::cl::desc(
+        "Per-perf-config compilation timeout in seconds. 0 (default) compiles "
+        "in-process using worker threads. When > 0, each config is compiled in "
+        "a separate rocmlir-driver process that is killed if it exceeds this "
+        "budget; the timed-out config is skipped and reported as N/A (tuning "
+        "continues with the remaining configs for the problem)."),
+    llvm::cl::value_desc("seconds"), llvm::cl::init(0));
 
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef filename,
@@ -288,11 +303,13 @@ struct BenchmarkParams {
   const unsigned numCompileThreads;
   std::string benchmarkConfig;
   bool flushLastLevelCache;
+  unsigned perfConfigTimeoutSec;
 };
 
 enum class CompilationStatus {
   NotApplicable,     // Config not applicable for this kernel
   CompilationFailed, // Config applicable but compilation failed
+  TimedOut,          // Compilation exceeded the per-config timeout
   Success            // Successfully compiled
 };
 
@@ -341,6 +358,128 @@ createCompilationContext(SmallVector<std::string> &bufferedDiags) {
     return success();
   });
   return ctx;
+}
+
+// Path to the rocmlir-driver binary, which sits next to this executable.
+static std::string getRocmlirDriverPath() {
+  std::string exePath = llvm::sys::fs::getMainExecutable(
+      nullptr, reinterpret_cast<void *>(&getRocmlirDriverPath));
+  SmallString<128> driverPath(llvm::sys::path::parent_path(exePath));
+  llvm::sys::path::append(driverPath, "rocmlir-driver");
+  return std::string(driverPath);
+}
+
+// Compile a single perf config by invoking rocmlir-driver as a subprocess with
+// a wall-clock timeout (used when --perf-config-timeout > 0). A config whose
+// compilation exceeds `timeoutSec` is killed and reported as TimedOut, which is
+// non-fatal: the sweep skips it and keeps tuning the rest. Process isolation is
+// what makes the timeout robust: the compile (LLVM backend + in-process LLD)
+// cannot be safely interrupted on a worker thread, but a child process can be
+// killed cleanly.
+static CompilationResult
+compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
+                           StringRef inputPath, StringRef archName,
+                           unsigned timeoutSec, std::mutex &outputMutex,
+                           std::atomic<bool> &compilationFailed) {
+  CompilationResult result;
+  result.perfConfig = perfConfig;
+
+  auto fail = [&](const llvm::Twine &header) {
+    std::lock_guard<std::mutex> lock(outputMutex);
+    llvm::errs() << header << "\n";
+    result.status = CompilationStatus::CompilationFailed;
+    compilationFailed.store(true, std::memory_order_relaxed);
+  };
+
+  // Per-config output file holding the compiled module.
+  SmallString<128> outputPath;
+  if (llvm::sys::fs::createTemporaryFile("rocmlir-tuning-out", "mlir",
+                                         outputPath)) {
+    fail("Failed to create temp output file for config: " + perfConfig);
+    return result;
+  }
+  llvm::FileRemover outputRemover(outputPath);
+
+  std::string archArg = ("--arch=" + archName).str();
+  std::string perfConfigArg = ("--perf-config=" + perfConfig).str();
+  SmallVector<StringRef, 8> args = {
+      driverPath, inputPath,     "--kernel-pipeline=gpu,triton,binary",
+      archArg,    perfConfigArg, "-o",
+      outputPath};
+
+  // Discard the child's stdout and stderr (empty path => /dev/null): stdout
+  // would corrupt the results stream, stderr would spam per-config diagnostics.
+  // The exit code already tells us what happened.
+  std::optional<StringRef> redirects[3] = {std::nullopt, StringRef(""),
+                                           StringRef("")};
+
+  std::string execErr;
+  bool execFailed = false;
+  auto start = std::chrono::steady_clock::now();
+  int rc = llvm::sys::ExecuteAndWait(driverPath, args, /*Env=*/std::nullopt,
+                                     redirects, /*SecondsToWait=*/timeoutSec,
+                                     /*MemoryLimit=*/0, &execErr, &execFailed);
+  double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+          .count();
+
+  if (execFailed || rc == -1) {
+    fail("Failed to launch rocmlir-driver for config: " + perfConfig + " (" +
+         execErr + ")");
+    return result;
+  }
+
+  // ExecuteAndWait returns -2 for both a timeout-kill and a crash. Disambiguate
+  // using the measured wall time: at/over budget => timeout. A timeout is a
+  // non-fatal skip reported as N/A, so stay silent here (tuningRunner.py parses
+  // stdout/stderr and must not see extra noise).
+  if (rc == -2) {
+    if (elapsed >= static_cast<double>(timeoutSec))
+      result.status = CompilationStatus::TimedOut;
+    else
+      fail("rocmlir-driver crashed for config: " + perfConfig);
+    return result;
+  }
+
+  if (rc == rock::kExitNotApplicable) {
+    result.status = CompilationStatus::NotApplicable;
+    return result;
+  }
+
+  if (rc != 0) {
+    fail("rocmlir-driver failed (exit " + llvm::Twine(rc) +
+         ") for config: " + perfConfig);
+    return result;
+  }
+
+  // Success: parse the compiled module and pull out the HSACO + kernel info,
+  // mirroring the in-process path.
+  SmallVector<std::string> bufferedDiags;
+  auto ctx = createCompilationContext(bufferedDiags);
+  OwningOpRef<ModuleOp> compiled =
+      parseSourceFile<ModuleOp>(StringRef(outputPath), ctx.get());
+  if (!compiled || !*compiled) {
+    fail("Failed to parse compiled module for config: " + perfConfig);
+    return result;
+  }
+
+  SmallVector<rock::KernelInfo> localKernels;
+  if (failed(rock::collectKernelInfo(compiled.get(), localKernels)) ||
+      localKernels.empty()) {
+    fail("Failed to collect kernel info for config: " + perfConfig);
+    return result;
+  }
+
+  auto hsacoAttr = compiled.get()->getAttrOfType<StringAttr>("triton.hsaco");
+  if (!hsacoAttr) {
+    fail("No triton.hsaco found for config: " + perfConfig);
+    return result;
+  }
+
+  result.hsacoBinary = hsacoAttr.getValue().str();
+  result.kernels = std::move(localKernels);
+  result.status = CompilationStatus::Success;
+  return result;
 }
 
 static LogicalResult
@@ -710,7 +849,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            tuningSpaceKind,
                                            numCompileThreads,
                                            benchmarkConfig,
-                                           flushLastLevelCache};
+                                           flushLastLevelCache,
+                                           perfConfigTimeout};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);
@@ -764,6 +904,25 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     {
       llvm::raw_string_ostream sourceOs(sourceModuleStr);
       source->print(sourceOs);
+    }
+
+    // In subprocess mode (--perf-config-timeout > 0), materialize the shared
+    // source module to a temp file once; each rocmlir-driver invocation reads
+    // it and injects its own perf config via --perf-config.
+    SmallString<128> sharedInputPath;
+    std::optional<llvm::FileRemover> sharedInputRemover;
+    std::string driverPath;
+    if (benchmarkParams.perfConfigTimeoutSec > 0) {
+      driverPath = getRocmlirDriverPath();
+      int inputFd = -1;
+      if (llvm::sys::fs::createTemporaryFile("rocmlir-tuning-in", "mlir",
+                                             inputFd, sharedInputPath)) {
+        llvm::errs() << "Failed to create temp input file for tuning\n";
+        return failure();
+      }
+      sharedInputRemover.emplace(sharedInputPath);
+      llvm::raw_fd_ostream inputOs(inputFd, /*shouldClose=*/true);
+      inputOs << sourceModuleStr;
     }
 
     // PHASE 2: Parallel compilation phase.
@@ -841,7 +1000,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       std::string backendFeatures = deviceName.getFeaturesForBackend();
       backendOpts.features = backendFeatures;
       backendOpts.optLevel = 3;
-      backendOpts.suppressDiagnostic = true;
 
       rock::TritonOptions tritonOpts;
       tritonOpts.arch = backendOpts.chip;
@@ -923,7 +1081,13 @@ static LogicalResult runTuningLoop(ModuleOp source) {
           if (idx >= configs.size())
             break;
 
-          compilationResults[idx] = compileConfig(idx);
+          if (benchmarkParams.perfConfigTimeoutSec > 0)
+            compilationResults[idx] = compileConfigViaSubprocess(
+                configs[idx], driverPath, sharedInputPath, archName,
+                benchmarkParams.perfConfigTimeoutSec, outputMutex,
+                compilationFailed);
+          else
+            compilationResults[idx] = compileConfig(idx);
         }
       };
 
@@ -947,12 +1111,14 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
     int64_t validResults = 0;
     // Sequential benchmarking phase (must be sequential for accurate timing)
-    // Note: Due to early exit on compilation failures, only NotApplicable and
-    // Success statuses are possible here.
+    // Note: Due to early exit on compilation failures, only NotApplicable,
+    // TimedOut, and Success statuses are possible here. Timed-out configs are
+    // reported identically to not-applicable ones (N/A).
     for (const auto &result : compilationResults) {
       llvm::outs() << result.perfConfig << "\t";
 
-      if (result.status == CompilationStatus::NotApplicable) {
+      if (result.status == CompilationStatus::NotApplicable ||
+          result.status == CompilationStatus::TimedOut) {
         llvm::outs() << "N/A\n";
         continue;
       }
