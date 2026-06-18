@@ -238,3 +238,43 @@ func.func @test_embed_conv_style(%arg0: tensor<1048576xf32>) -> tensor<8x64xf32>
 
   return %5 : tensor<8x64xf32>
 }
+
+// -----
+
+// Verifies the 1x1-convolution lowers without any div/mod.
+// simplifyAffineMap must fold the statically-known round trip 
+// ((d floordiv 8) * 8 + d mod 8 == d), so the lowered address
+// arithmetic collapses to a plain linear index with no arith.divsi/arith.remsi.
+// Contrast with @test_embed_conv_style above, where a Pad/Embed validity
+// break splits the chain and div/rem necessarily survive.
+// 
+// CHECK-LABEL: @test_1x1_conv_batched_gemm_no_divrem
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<1024xf16>)
+//      CHECK:   rock.extract_ptr %[[ARG0]]
+//      CHECK:   tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+//      CHECK:   tt.expand_dims {{.*}} {axis = 1 : i32} : tensor<8xi32> -> tensor<8x1xi32>
+//      CHECK:   tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+//      CHECK:   tt.expand_dims {{.*}} {axis = 0 : i32} : tensor<64xi32> -> tensor<1x64xi32>
+//  CHECK-NOT:   arith.divsi
+//  CHECK-NOT:   arith.remsi
+//      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<8x64xi32>, tensor<8x64xi1> -> tensor<8x64xf16>
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @test_1x1_conv_batched_gemm_no_divrem(%arg0: tensor<1024xf16>) -> tensor<8x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %c0_i32 = arith.constant 0 : i32
+
+  // 1. Unmerge raw (NCHW contiguous) into (n, c, ho, wo).
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3) -> (((d0 * 8 + d1) * 8 + d2) * 8 + d3)> by [<Unmerge{2, 8, 8, 8} ["n", "c", "ho", "wo"] at [0, 1, 2, 3] -> ["raw"] at [0]>] bounds = [2, 8, 8, 8] -> [1024]> : tensor<1024xf16> to tensor<2x8x8x8xf16>
+
+  // 2. Batched-GEMM reroute: batch n -> gemmG, channels -> gemmK, and spatial
+  //    (ho, wo) -> gemmN via Merge. The Merge is the exact inverse of the
+  //    spatial part of the linearization in step 1.
+  %1 = rock.transform %0 by <affine_map<(d0, d1, d2) -> (d0, d1, d2 floordiv 8, d2 mod 8)> by [<PassThrough ["gemmG"] at [0] -> ["n"] at [0]>, <PassThrough ["gemmK"] at [1] -> ["c"] at [1]>, <Merge{8, 8} ["gemmN"] at [2] -> ["ho", "wo"] at [2, 3]>] bounds = [2, 8, 64] -> [2, 8, 8, 8]> : tensor<2x8x8x8xf16> to tensor<2x8x64xf16>
+
+  // 3. Tile gemmK and gemmN into blocks.
+  %2 = rock.transform %1 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 8 + d3, d2 * 64 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 8} ["k_block", "k_iter"] at [1, 3] -> ["gemmK"] at [1]>, <Unmerge{1, 64} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [2, 1, 1, 8, 64] -> [2, 8, 64]> : tensor<2x8x64xf16> to tensor<2x1x1x8x64xf16>
+
+  %pointers, %mask = rock.transforms_to_ptr %2[%c0_i32, %c0_i32, %c0_i32] : tensor<2x1x1x8x64xf16> -> tensor<8x64xi32>, tensor<8x64xi1>
+  %3 = rock.blockwise_load_ptr %pointers[%mask] : tensor<8x64xi32>, tensor<8x64xi1> -> tensor<8x64xf16>
+
+  return %3 : tensor<8x64xf16>
+}
