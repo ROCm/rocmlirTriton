@@ -15,6 +15,14 @@
 namespace mlir {
 namespace rock {
 
+/// Process exit code signalling that a (kernel x perf-config x hardware)
+/// combination is structurally inapplicable rather than a real lowering bug.
+/// rocmlir-driver exits with this code (and sets the `rock.not_applicable`
+/// marker); callers such as rocmlir-tuning-driver and parameterSweeps.py key on
+/// it to distinguish "config refused" from "compilation failed". Must be
+/// non-zero and distinct from EXIT_FAILURE.
+constexpr int kExitNotApplicable = 2;
+
 /// A kernel argument that must be pre-initialized before launch.
 struct PrefillInfo {
   unsigned argIndex;
