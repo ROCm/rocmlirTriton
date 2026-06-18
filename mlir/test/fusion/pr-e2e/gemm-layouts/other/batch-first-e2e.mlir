@@ -6,7 +6,7 @@
 
 // EMITKEY: -t f16 -out_datatype f16 -transA false -transB false -g 2 -m 4096 -n 640 -k 320
 
-// VECTORIZATION-DAG: #[[COALESCED:.*]] = #ttg.blocked<{sizePerThread = [1, 1]
+// VECTORIZATION-DAG: #[[COALESCED:.*]] = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1,
 // VECTORIZATION: tt.load {{.*}}#[[COALESCED]]>
 
 module {
