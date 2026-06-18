@@ -506,7 +506,7 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
-void build_fixedE2ETests(String codepath) {
+void build_fixedE2ETests() {
     // Worker count is set per-arch by setLitWorkerCount()
     int limit_lit_workers = setLitWorkerCount()
     buildProject("check-rocmlir-build-only", """
@@ -519,10 +519,13 @@ void build_fixedE2ETests(String codepath) {
              """)
 }
 
-void check_randomE2ETests(String codepath) {
+void check_randomE2ETests() {
     int limit_lit_workers = setLitWorkerCount()
     timeout(time: 60, activity: true, unit: 'MINUTES') {
         dir('build') {
+            // Use cmake directly instead of buildProject/cmake.sh because
+            // cmake.sh wipes the build directory. We only need to reconfigure
+            // flags (add RANDOM_DATA_SEED=1) after build_fixedE2ETests.
             sh """cmake .. \
                 -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0 \
                 -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1 \
@@ -535,20 +538,6 @@ void check_randomE2ETests(String codepath) {
     }
 }
 
-/* // Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
-// one of its operation kinds. parameterSweeps.py exposes ``conv`` and ``gemm``;
-// attentionSweeps.py exposes ``attention`` and ``gemm_gemm``. Both share the
-// same ``-j``/``--samples``/``--log-failures`` interface and ship in
-// <build>/bin/ via the ``ci-performance-scripts`` target.
-void runSweep(String script, String kind, int samples, String codepath) {
-    int limit_lit_workers = setLitWorkerCount()
-    timeout(time: 300, activity: true, unit: 'MINUTES') {
-        dir('build') {
-            sh """python3 ./bin/${script} -j ${limit_lit_workers} --samples ${samples} ${kind} --log-failures"""
-        }
-    }
-}
-*/
 
 boolean shouldRunFromCodepath(String codepath) {
     // Run vanilla on public CI
@@ -1059,7 +1048,7 @@ pipeline {
                                                 ]) {
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            build_fixedE2ETests(CODEPATH)
+                                                            build_fixedE2ETests()
                                                         }
                                                     }
 
@@ -1078,7 +1067,7 @@ pipeline {
 
                                                     if (params.nightly) {
                                                         stage('Shared Library: random E2E') {
-                                                            check_randomE2ETests(CODEPATH)
+                                                            check_randomE2ETests()
                                                         }
                                                     }
 
@@ -1089,7 +1078,7 @@ pipeline {
                                                             echo "Container environment:"
                                                             showEnv()
 
-                                                            build_fixedE2ETests("${CODEPATH}")
+                                                            build_fixedE2ETests()
                                                             preMergeCheck("${CODEPATH}")
                                                             timeout(time: 60, activity: true, unit: 'MINUTES') {
                                                                 sh 'cd build; ninja check-rocmlir'
@@ -1099,7 +1088,7 @@ pipeline {
                                                     
                                                     if (params.sharedLib && params.nightly) {
                                                         stage('Shared Library: random E2E') {
-                                                            check_randomE2ETests("${CODEPATH}")
+                                                            check_randomE2ETests()
                                                         }
                                                     }
 
