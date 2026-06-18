@@ -1,4 +1,4 @@
-// RUN: rocmlir-gen --clone-harness -arch %arch -fut mlir_quant_dot_fp4 %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | AMDGCN_ENABLE_LLVM_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefixes=ASSEMBLY
+// RUN: rocmlir-gen --clone-harness -arch %arch -fut mlir_quant_dot_fp4 %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | LLVM_IR_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefixes=ASSEMBLY
 // ASSEMBLY: llvm.amdgcn.mfma.scale.f32.32x32x64.f8f6f4
 
 // RUN: rocmlir-gen --clone-harness -arch %arch -fut mlir_quant_dot_fp4 %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -host-pipeline migraphx,highlevel -arch %arch 2>&1 | FileCheck %s --check-prefixes=GEMM
@@ -15,7 +15,8 @@ module {
     %3 = migraphx.reshape %2 {dims = [1, 768, 256]} : <1x24x32x256xf32, 6144x256x0x1> -> <1x768x256xf32, 196608x256x1>
     %sE8A = migraphx.convert %1 : !migraphx.shaped<1x128x768xf32, 98304x768x1> to !migraphx.shaped<1x128x768xf8E8M0FNU, 98304x768x1>
     %sE8B = migraphx.convert %3 : !migraphx.shaped<1x768x256xf32, 196608x256x1> to !migraphx.shaped<1x768x256xf8E8M0FNU, 196608x256x1>
-    %4 = migraphx.quant_dot %arg0 scaled by %sE8A, %arg1 scaled by %sE8B : <1x128x768xf4E2M1FN, 98304x768x1> scaled by !migraphx.shaped<1x128x768xf8E8M0FNU, 98304x768x1>, <1x768x256xf4E2M1FN, 196608x256x1> scaled by !migraphx.shaped<1x768x256xf8E8M0FNU, 196608x256x1> -> <1x128x256xf32, 32768x256x1>
+    // Pin the perf_config to be independent of the quick-tuning list change.
+    %4 = migraphx.quant_dot %arg0 scaled by %sE8A, %arg1 scaled by %sE8B {perf_config = "gemm:v1:64,64,64,1,1,4,32,1,2,0,0"} : <1x128x768xf4E2M1FN, 98304x768x1> scaled by !migraphx.shaped<1x128x768xf8E8M0FNU, 98304x768x1>, <1x768x256xf4E2M1FN, 196608x256x1> scaled by !migraphx.shaped<1x768x256xf8E8M0FNU, 196608x256x1> -> <1x128x256xf32, 32768x256x1>
     %5 = migraphx.transpose %4 {permutation = [0, 2, 1]} : <1x128x256xf32, 32768x256x1> -> <1x256x128xf32, 32768x128x1>
     return %5 : !migraphx.shaped<1x256x128xf32, 32768x128x1>
   }

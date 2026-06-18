@@ -34,8 +34,9 @@ CONV_TEST_PARAMETERS = [
     'StrideW', 'PaddingH', 'PaddingW', 'PerfConfig'
 ]
 GEMM_TEST_PARAMETERS = [
-    'DataType', 'OutDataType', 'Chip', 'numCU', 'numChiplets', 'TransA', 'TransB', 'G', 'M', 'K',
-    'N', 'ScaledGemm', 'ScaleADtype', 'ScaleBDtype', 'TransScaleA', 'TransScaleB', 'PerfConfig'
+    'DataType', 'OutDataType', 'Chip', 'numCU', 'numChiplets', 'TransA', 'TransB', 'TransO', 'G',
+    'M', 'K', 'N', 'ScaledGemm', 'ScaleADtype', 'ScaleBDtype', 'TransScaleA', 'TransScaleB',
+    'PerfConfig'
 ]
 ATTN_TEST_PARAMETERS = [
     'DataType', 'Chip', 'numCU', 'numChiplets', 'TransQ', 'TransK', 'TransV', 'TransO', 'Causal',

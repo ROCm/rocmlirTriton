@@ -52,7 +52,11 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # App token so the comment posts under the consistent bot identity. §11.
+      # App token so the comment posts under the consistent bot identity. The
+      # workflow removes a PR label through the Issues API and posts a PR
+      # comment; GitHub can enforce either Issues or Pull requests permission
+      # for PR-backed resources, so request both API families explicitly. See
+      # doc §9, §11, §14.2.
       - name: Generate App token
         if: steps.app-config.outputs.configured == 'true'
         id: app-token
@@ -60,6 +64,33 @@ jobs:
         with:
           client-id: ${{ vars.ROCMLIR_PR_REVIEWER_APP_ID }}
           private-key: ${{ secrets.ROCMLIR_PR_REVIEWER_PRIVATE_KEY }}
+          permission-issues: write
+          permission-pull-requests: write
+
+      # Inline probe: absorb the brief post-mint token-propagation 404 race
+      # before the first App-token call; fail closed. See doc §9, §15.
+      - name: Wait for App token to be live
+        if: steps.app-config.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if gh api "repos/${GITHUB_REPOSITORY}" --silent; then
+              live=1
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              echo "::warning::App token not live yet (attempt ${attempt}/4); retrying"
+              sleep $((attempt * 5))
+            else
+              echo "::warning::App token not live yet (attempt ${attempt}/4); giving up"
+            fi
+          done
+          if [ "${live:-}" != 1 ]; then
+            echo "::error::App token never became live for ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
 
       - name: Post fork-PR explanation comment and remove the label
         if: steps.app-config.outputs.configured == 'true'
@@ -86,7 +117,7 @@ jobs:
                 2>&1); then
             delete_state="removed"
             echo "Removed claude-review label from PR #${PR_NUMBER}."
-          elif printf '%s' "$delete_output" | grep -qE 'HTTP 404|Not Found'; then
+          elif grep -qE 'HTTP 404|Not Found' <<<"$delete_output"; then
             delete_state="absent"
             echo "claude-review label already absent on PR #${PR_NUMBER}."
           else

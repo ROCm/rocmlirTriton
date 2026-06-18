@@ -65,7 +65,7 @@ for f in \
     third_party/amd/python/triton_amd.cc \
     python/src/llvm.cc \
     third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp \
-    third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h; do
+    third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h; do
   git diff ${OLD_COMMIT}..${NEW_COMMIT} --function-context -- "$f" > "$(basename "$f").diff"
 done
 ```
@@ -157,15 +157,18 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 
 Also check that `tritonUtils.cpp::getMfmaVersion()` and
 `tritonUtils.cpp::getWmmaVersion()` handle the new `ISAFamily` / chip string.
+Additionally, `mlir/test/common_utils/amd_arch_db/binding.cpp` will need to have
+it's `py::enum_<ISAFamily>(...).value(...)` enum updated as well.
 
 **How to detect needed changes:** Triton uses exhaustive `switch` statements over
 `ISAFamily`. If a new variant is added, our switches (which use `default:`) will
-silently return a fallback value. Diff `TargetUtils.h` for new `ISAFamily`
-entries:
+silently return a fallback value. The `ISAFamily` enum is defined in
+`TargetFeatures.h` (it moved out of the now-removed
+`TritonAMDGPUToLLVM/TargetUtils.h`); diff it for new entries:
 
 ```bash
 cd external/triton
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h
+git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
 ```
 
 ### 5.6 Hardware feature detection
@@ -304,7 +307,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `python/src/llvm.cc`
 - [ ] Generate diff for `third_party/amd/python/triton_amd.cc`
 - [ ] Generate diff for `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp`
-- [ ] Generate diff for `third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h`
+- [ ] Generate diff for `third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h`
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes

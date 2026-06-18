@@ -69,9 +69,13 @@ from perfRunner import (
 # rocmlir-gen wraps the GPU kernel in a loop when --kernel-repeats > 1. Split-K
 # GEMM uses atomic_add on the output buffer; each repeat accumulates another
 # full result (e.g. 10 repeats → ~10× vs reference). Verification must use 1.
-TUNE_REPEATS = 10
 VERIFY_REPEATS = 1
-WARMUP_ITERATIONS = 1
+
+# Time budgets (ms) for the tuning-driver benchmark. The number of warmup and
+# measured iterations is derived from these budgets and the estimated per-launch
+# runtime (Triton do_bench style). These mirror Triton's do_bench defaults.
+TUNE_WARMUP_MS = 25
+TUNE_REP_MS = 100
 SLEEP_US = 100  # 0.1 ms
 
 OUTPUT_HEADER_COLUMNS = [
@@ -185,6 +189,7 @@ class Options:
     gpu_ids: List[int]
     num_cpus: Optional[int]
     wait_for_compiles: bool
+    flush_last_level_cache: bool
     timeout: Optional[int]
 
 
@@ -1125,7 +1130,7 @@ def format_error(context: str,
 
 # `auto_precision_flags_att` lives in perfRunner so the parameter sweeps
 # (attentionSweeps.py) can share the same per-config heuristic. See the
-# helper's docstring for the rationale behind --pv-f64 / -relDiff_threshold.
+# helper's docstring for the rationale behind --pv-f64.
 
 
 def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, options: Options,
@@ -1296,8 +1301,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
 
     tuning_driver_args = [
         f"--tuning-space={options.tuning_space_kind}",
-        f"--num-iterations={TUNE_REPEATS}",
-        f"--warmup-iterations={WARMUP_ITERATIONS}",
+        f"--rep={TUNE_REP_MS}",
+        f"--warmup={TUNE_WARMUP_MS}",
         "--use-median",
         f"--sleep-us={SLEEP_US}",
         f"--show-all-measurements={options.debug}",
@@ -1305,6 +1310,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
     ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
+    if options.flush_last_level_cache:
+        tuning_driver_args.append("--flush-last-level-cache")
 
     env = make_isolated_gpu_env(gpu_id)
 
@@ -1905,6 +1912,14 @@ def parse_arguments(gpu_topology: GpuTopology,
         "Wait for all compilation tasks to complete before starting tuning. Useful for systems with shared CPU/GPU memory (e.g., APUs)."
     )
 
+    parser.add_argument(
+        "--flush-last-level-cache",
+        action='store_true',
+        default=False,
+        help=
+        "Size the cache-flush buffer to the architecture's last-level cache (e.g. AMD Infinity Cache) instead of the per-XCD L2 cache size reported by the HIP runtime. Defaults to the L2 cache size."
+    )
+
     parser.add_argument("-s",
                         "--status",
                         action='store_true',
@@ -1985,6 +2000,7 @@ def main(args=None):
                       gpu_ids=parsed_args.gpus,
                       num_cpus=parsed_args.num_cpus,
                       wait_for_compiles=parsed_args.wait_for_compiles,
+                      flush_last_level_cache=parsed_args.flush_last_level_cache,
                       timeout=parsed_args.timeout)
 
     ctx = TuningContext(configs=configs,

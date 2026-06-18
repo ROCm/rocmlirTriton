@@ -1,5 +1,6 @@
 add_rocmlir_dialect_library(MLIRRockTransforms
   AffixTuningParameters.cpp
+  AnalyzeMemoryUse.cpp
   ConvToGemm.cpp
   DetectFlashDecoding.cpp
   FoldBroadcast.cpp
@@ -7,6 +8,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   AttnToGridwise.cpp
   GridwiseGemmToBlockwise.cpp
   GridwiseAttnToBlockwise.cpp
+  DecomposeNonPow2Tiles.cpp
   GridLayoutEmitter.cpp
   ViewToTransform.cpp
   FusionSplitkRegularizationPass.cpp
@@ -31,6 +33,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RegularizeInterGemmFusion.cpp
   RegularizeOutput.cpp
   RockFlattenTosaFuncArgs.cpp
+  RockPrepareLLVM.cpp
   RockTosaToElementwise.cpp
   RockAllowFastMathFlags.cpp
 

@@ -65,8 +65,15 @@ OUTPUT_DATA_TYPES_MAP = {
     'bf8_bf8': 'f32',
     'f4E2M1FN': 'f32'
 }
+# rocmlir-gen host-harness kernel repeat count (--kernel-repeats, used with -ph).
 MLIR_N_REPEATS = 100
-WARMUP_ITERATIONS = 10
+
+# Time budgets (ms) for the tuning-driver benchmark. The number of warmup and
+# measured iterations is derived from these budgets and the estimated per-launch
+# runtime (Triton do_bench style). Deliberately stricter than Triton's defaults
+# (25/100) to get more stable performance numbers.
+BENCH_WARMUP_MS = 50
+BENCH_REP_MS = 200
 SLEEP_US = 1000  # 1 ms
 
 FILTER_LAYOUT_MAP = {'N': 'k', 'C': 'c', 'H': 'y', 'W': 'x', 'G': 'g', '0': '0', '1': '1'}
@@ -455,6 +462,7 @@ def get_conv_configurations(filename):
 class ConvConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.CONV_TEST_PARAMETERS + ['LDSBankConflict'] + ['TFlops']
     EXTERNAL_NAME = "MIOpen"
+    SWEEP_KIND = "conv"
 
     def compute_tflops(self, ns):
         # NaN will propagate as expected
@@ -748,9 +756,9 @@ def get_gemm_configurations(filename,
         with open(filename, 'r') as config_file:
             lines = config_file.readlines()
 
-            # All combinations of types and transposition (A and B)
-            for datatype, trans_a, trans_b, line in \
-                    itertools.product(DATA_TYPES_GEMM, ['false', 'true'], ['false', 'true'], lines):
+            # All combinations of types and transposition (A, B and O)
+            for datatype, trans_a, trans_b, trans_o, line in \
+                    itertools.product(DATA_TYPES_GEMM, ['false', 'true'], ['false', 'true'], ['false', 'true'], lines):
                 line = line.strip()
 
                 # Skip empty lines
@@ -787,6 +795,11 @@ def get_gemm_configurations(filename,
                 if "-transB " not in line:
                     trans_b_string = f"-transB {trans_b} "
 
+                # Skip trans_o if already in
+                trans_o_string = ""
+                if "-transO " not in line:
+                    trans_o_string = f"-transO {trans_o} "
+
                 # Skip out_datatype if already in
                 out_dtype_string = ""
                 if "-out_datatype" not in line:
@@ -807,13 +820,13 @@ def get_gemm_configurations(filename,
                             scale_b_string = f"-scale_b_dtype {scale_b_dtype} "
 
                         # Strip to avoid spurious spaces
-                        one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{scale_a_string}{scale_b_string}{line}".strip(
+                        one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{trans_o_string}{scale_a_string}{scale_b_string}{line}".strip(
                         )
                         if one_config not in configs:
                             configs.append(one_config)
                 else:
                     # Strip to avoid spurious spaces
-                    one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{line}".strip(
+                    one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{trans_o_string}{line}".strip(
                     )
                     if one_config not in configs:
                         configs.append(one_config)
@@ -963,6 +976,7 @@ def get_attn_configurations(filename):
 
 class GemmConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.GEMM_TEST_PARAMETERS + ['LDSBankConflict'] + ['TFlops']
+    SWEEP_KIND = "gemm"
 
     def compute_tflops(self, ns):
         # NaN will propagate as expected
@@ -976,9 +990,9 @@ class GemmConfiguration(PerfConfiguration):
         result = OrderedDict()
         values = [
             self.datatype, self.out_dtype, self.chip, self.num_cu, self.num_chiplets, self.trans_a,
-            self.trans_b, self.g, self.m, self.k, self.n, self.scaled_gemm, self.scale_a_dtype,
-            self.scale_b_dtype, self.trans_scale_a, self.trans_scale_b, self.perfconfig,
-            bank_conflict,
+            self.trans_b, self.trans_o, self.g, self.m, self.k, self.n, self.scaled_gemm,
+            self.scale_a_dtype, self.scale_b_dtype, self.trans_scale_a, self.trans_scale_b,
+            self.perfconfig, bank_conflict,
             self.compute_tflops(nanoseconds)
         ]
         assert (len(self.TABLE_COLUMNS) == len(values))
@@ -1000,6 +1014,7 @@ class GemmConfiguration(PerfConfiguration):
             str(self.m), '-k',
             str(self.k), '-n',
             str(self.n), f"-transA={self.trans_a}", f"-transB={self.trans_b}",
+            f"-transO={self.trans_o}",
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
@@ -1030,6 +1045,7 @@ class GemmConfiguration(PerfConfiguration):
         n = None
         trans_a = None
         trans_b = None
+        trans_o = False
         out_dtype = None
         perf_config = ''
         scaled_gemm = False
@@ -1063,6 +1079,8 @@ class GemmConfiguration(PerfConfiguration):
                 trans_a = (val.lower() in ["1", "true"])
             elif opt.endswith("-transB"):
                 trans_b = (val.lower() in ["1", "true"])
+            elif opt.endswith("-transO"):
+                trans_o = (val.lower() in ["1", "true"])
             elif opt.endswith("-out_datatype"):
                 out_dtype = val.lower()
             elif opt.endswith("-perf_config"):
@@ -1082,13 +1100,14 @@ class GemmConfiguration(PerfConfiguration):
             if v is None:
                 raise ValueError("Incomplete GEMM configuration")
 
-        return cls(dtype, out_dtype, g, m, k, n, trans_a, trans_b, scaled_gemm, scale_a_dtype,
-                   scale_b_dtype, trans_scale_a, trans_scale_b, arch, num_cu, num_chiplets,
-                   perf_config)
+        return cls(dtype, out_dtype, g, m, k, n, trans_a, trans_b, trans_o, scaled_gemm,
+                   scale_a_dtype, scale_b_dtype, trans_scale_a, trans_scale_b, arch, num_cu,
+                   num_chiplets, perf_config)
 
     def to_command_line(self):
         result = (f"-t {self.datatype} -out_datatype {self.out_dtype} " +
                   f"-transA {str(self.trans_a).lower()} -transB {str(self.trans_b).lower()} " +
+                  f"-transO {str(self.trans_o).lower()} " +
                   f"-g {self.g} -m {self.m} -n {self.n} -k {self.k}")
         if self.scaled_gemm:
             result += " -scaledGemm"
@@ -1111,6 +1130,7 @@ class GemmConfiguration(PerfConfiguration):
                  n: int,
                  trans_a: bool,
                  trans_b: bool,
+                 trans_o: bool = False,
                  scaled_gemm: bool = False,
                  scale_a_dtype: str = None,
                  scale_b_dtype: str = None,
@@ -1139,6 +1159,7 @@ class GemmConfiguration(PerfConfiguration):
         self.n = n
         self.trans_a = trans_a
         self.trans_b = trans_b
+        self.trans_o = trans_o
         self.perfconfig = perf_config
         self.scaled_gemm = scaled_gemm
         self.scale_a_dtype = scale_a_dtype
@@ -1365,6 +1386,7 @@ class ConvGemmConfiguration(PerfConfiguration):
 
 class GemmGemmConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.GEMM_GEMM_TEST_PARAMETERS + ['TFlops']
+    SWEEP_KIND = "gemm_gemm"
 
     def __init__(self,
                  dtype: str,
@@ -1503,6 +1525,7 @@ class GemmGemmConfiguration(PerfConfiguration):
 
 class AttentionConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.ATTN_TEST_PARAMETERS + ['TFlops']
+    SWEEP_KIND = "attn"
 
     def __init__(self,
                  dtype: str,
@@ -1710,26 +1733,17 @@ class AttentionConfiguration(PerfConfiguration):
             f"-with-attn-bias {str(self.with_attn_bias).lower()}")
 
 
-# f32 machine epsilon: 2^-23 ~= 1.1920929e-7.
-_F32_EPS = 2.0**-23
-
-
 def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
     """Return precision-aware rocmlir-gen flags for verification.
 
     Verification compares the GPU output against the host CPU reference. With
     long ``seq_length`` attention (f32/bf16), kernel error accumulates due to
-    reduction drift, masking the GPU's actual precision. We mitigate this with
-    two flags:
-      * ``--pv-f64`` promotes the host kernel's interior to f64, eliminating
-        the reference-side drift. It implies ``--pv-strict`` and is only valid
-        for non-quantized attention (rocmlir-gen errors out for non-attention
-        or i8 attention), so we only emit it for f32/bf16 attention here.
-      * ``-relDiff_threshold T`` lifts the per-element relative threshold to
-        ride on top of the predicted GPU f32 noise floor:
-        ``delta ~ eps_f32 * log2(D_qk + 2 * K_eff)`` where
-        ``K_eff = seq_len_k // max(1, split_kv)``. Only effective for f32
-        attention; other attention types have enough noise space.
+    reduction drift, masking the GPU's actual precision.
+
+    ``--pv-f64`` promotes the host kernel's interior to f64, eliminating
+    the reference-side drift. It implies ``--pv-strict`` and is only valid
+    for non-quantized attention (rocmlir-gen errors out for non-attention
+    or i8 attention), so we only emit it for f32/bf16 attention here.
 
     Shared between the tuner (``tuningRunner``) and the parameter sweeps
     (``attentionSweeps``); keep the only definition here.
@@ -1744,17 +1758,6 @@ def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
     # CPU drift observed for bf16 attention at long seq_len_k > 70.
     if config.datatype == 'bf16' and config.seq_len_k > 70:
         flags.append('--pv-f64')
-
-    if config.datatype == 'f32' and config.seq_len_k > 256:
-        k_eff = max(1, config.seq_len_k // max(1, config.split_kv))
-        red_len = max(2, config.head_dim_qk + 2 * k_eff)
-        floor = _F32_EPS * math.log2(red_len)
-        # Only override when the predicted floor is at or above the default
-        # 1e-6 -- below that, the existing default already has headroom and
-        # we don't want to mask small-shape regressions.
-        if floor >= 1e-6:
-            threshold = 6.0 * floor
-            flags += ['-relDiff_threshold', f'{threshold:.2e}']
 
     return flags
 
@@ -1839,8 +1842,8 @@ def run_config_with_mlir(config: PerfConfiguration,
             print("Using HIP timing for benchmarking")
         tuning_driver_command = [
             paths.mlir_paths.rocmlir_tuning_driver_path, f'--benchmark-config={config.perfconfig}',
-            f'--num-iterations={MLIR_N_REPEATS}', f'--warmup-iterations={WARMUP_ITERATIONS}',
-            f'--sleep-us={SLEEP_US}', '--use-median', '-'
+            f'--rep={BENCH_REP_MS}', f'--warmup={BENCH_WARMUP_MS}', f'--sleep-us={SLEEP_US}',
+            '--use-median', '-'
         ]
         outs, noerr = run_pipeline([rocmlir_gen_cmd.split(), tuning_driver_command])
         if noerr:

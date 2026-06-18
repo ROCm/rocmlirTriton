@@ -24,6 +24,7 @@ set(LOCAL_CONFIG_FILE_BIN ${CMAKE_CURRENT_BINARY_DIR}/lit.local.cfg)
 # Add a command to copy lit.local.cfg
 add_custom_command(OUTPUT ${LOCAL_CONFIG_FILE_BIN}
   COMMAND ${CMAKE_COMMAND} -E copy ${LOCAL_CONFIG_FILE_SRC} ${LOCAL_CONFIG_FILE_BIN}
+  DEPENDS ${LOCAL_CONFIG_FILE_SRC}
   COMMENT "Copying lit.local.cfg"
 )
 

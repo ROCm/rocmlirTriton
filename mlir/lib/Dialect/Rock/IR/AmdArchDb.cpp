@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/TypeUtilities.h"
 
 #include "llvm/ADT/StringSwitch.h"
@@ -20,7 +21,7 @@
 #include "llvm/Support/ErrorHandling.h"
 
 // Include Triton AMD APIs for intrinsic selection
-#include "TritonAMDGPUToLLVM/TargetUtils.h"
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "TritonAMDGPUTransforms/MfmaGroup.h"
 #include "TritonAMDGPUTransforms/WmmaGroup.h"
 
@@ -31,7 +32,7 @@
 
 using namespace mlir;
 using namespace mlir::rock;
-using namespace mlir::triton::AMD;
+using namespace mlir::triton::amdgpu;
 
 static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
   std::tuple<StringRef, unsigned> ret("", 0);
@@ -49,9 +50,9 @@ static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
   return ret;
 }
 
-static std::tuple<ISAFamily, StringRef> getArch(StringRef arch) {
+std::tuple<ISAFamily, StringRef> mlir::rock::getArch(StringRef arch) {
   auto [chip, _] = parseArchString(arch);
-  ISAFamily isaFamily = triton::AMD::deduceISAFamily(chip);
+  ISAFamily isaFamily = TargetFeatures(chip).getISAFamily();
   if (isaFamily == ISAFamily::Unknown) {
     llvm_unreachable("Unknown chip");
   }
@@ -148,7 +149,7 @@ static bool isScaledWmmaType(Type type) {
 MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
                                                Type inputTypeB, Type scaleAType,
                                                Type scaleBType) {
-  auto [isaFamily, chip] = getArch(arch);
+  auto [isaFamily, _] = getArch(arch);
 
   // Get element types if these are shaped types
   Type elemA = getElementTypeOrSelf(inputTypeA);
@@ -183,7 +184,7 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   }
 
   // Check WMMA support (RDNA architectures)
-  int wmmaVersion = rock::getWmmaVersion(chip);
+  int wmmaVersion = rock::getWmmaVersion(isaFamily);
   if (wmmaVersion > 0) {
     // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2, E2M1)
     // Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops.
@@ -307,6 +308,74 @@ bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
   return false;
 }
 
+// Enum-dtype adapters: build a real MLIR Type and dispatch to the existing
+// Type-based overload. The Type-based versions remain the single source of
+// truth for the family-vs-dtype matrix; this is just a thin convenience for
+// out-of-MLIR callers (e.g. the Python test binding) that prefer to pass a
+// dtype as an enum rather than constructing an MLIR Type themselves.
+static FailureOr<Type> dtypeToType(MLIRContext &ctx, Dtype dtype) {
+  Builder b(&ctx);
+  switch (dtype) {
+  case Dtype::F32:
+    return b.getF32Type();
+  case Dtype::F16:
+    return b.getF16Type();
+  case Dtype::BF16:
+    return b.getBF16Type();
+  }
+  return failure();
+}
+
+bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Dtype dtype) {
+  MLIRContext ctx;
+  FailureOr<Type> t = dtypeToType(ctx, dtype);
+  if (failed(t))
+    return false;
+  return isFastAtomicAddSupported(arch, *t);
+}
+
+bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Dtype dtype) {
+  MLIRContext ctx;
+  FailureOr<Type> t = dtypeToType(ctx, dtype);
+  if (failed(t))
+    return false;
+  return isFastAtomicMaxSupported(arch, *t);
+}
+
+bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
+  // Hardware-capability check via the underlying MFMA / WMMA version tables.
+  // We deliberately do NOT probe through getMatrixAccelKind here, because
+  // Triton's composeMfmaKeyFor silently rewrites OCP FP8 (E4M3FN / E5M2)
+  // inputs to f16 on any MFMA v<=3 (see MfmaGroup.cpp), which would make
+  // such a probe report MFMA success on CDNA1 / CDNA2 / CDNA3 even though
+  // those archs have no native FP8 intrinsics. The version cut-offs below
+  // mirror the Triton MFMA / WMMA databases:
+  //   - MFMA v3 (CDNA3 / gfx942) : FNUZ FP8 native.
+  //   - MFMA v4 (CDNA4 / gfx950) : FNUZ + OCP FP8 native.
+  //   - WMMA v2 (RDNA4 / gfx12*) : OCP FP8 native.
+  //   - WMMA v3 (gfx1250)        : OCP FP8 native.
+  auto [isaFamily, _] = getArch(arch);
+  return rock::getMfmaVersion(isaFamily) >= 3 ||
+         rock::getWmmaVersion(isaFamily) >= 2;
+}
+
+bool mlir::rock::archSupportsScaledGemm(StringRef arch) {
+  // Probe both FP8 variants via getMatrixAccelKind with a non-null scale type
+  // so this stays in sync with the actual ScaledMFMA / ScaledWMMA dispatch:
+  // CDNA4 (gfx950) handles scaled MFMA over F8/F6/F4; GFX1250 handles scaled
+  // WMMA over F8E4M3 / F8E5M2 / F4E2M1.
+  MLIRContext ctx;
+  Builder b(&ctx);
+  Type scale = b.getF8E5M2Type();
+  for (Type fp8 : {Type(Float8E4M3FNUZType::get(&ctx)),
+                   Type(Float8E4M3FNType::get(&ctx))}) {
+    MatrixAccelKind k = getMatrixAccelKind(arch, fp8, fp8, scale, scale);
+    if (k == MatrixAccelKind::ScaledMFMA || k == MatrixAccelKind::ScaledWMMA)
+      return true;
+  }
+  return false;
+}
+
 int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
@@ -361,6 +430,35 @@ int64_t mlir::rock::getLDSSize(StringRef arch) {
   return targetInfo.getSharedMemorySize();
 }
 
+int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+
+  constexpr int64_t kMiB = 1024 * 1024;
+
+  switch (isaFamily) {
+  // No Infinity Cache: L2 is the last level (largest L2 in the family).
+  case ISAFamily::GCN5_1:
+  case ISAFamily::RDNA1:
+    return 4 * kMiB;
+  case ISAFamily::CDNA1:
+  case ISAFamily::CDNA2: // per-GCD
+    return 8 * kMiB;
+  // Infinity Cache. TODO(gfx1250): confirm once AMD publishes a number.
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+  case ISAFamily::GFX1250: // assumed
+    return 256 * kMiB;
+  case ISAFamily::RDNA2:
+    return 128 * kMiB;
+  case ISAFamily::RDNA3:
+    return 96 * kMiB;
+  case ISAFamily::RDNA4:
+    return 64 * kMiB;
+  case ISAFamily::Unknown: // Unknown arch: assume Infinity-Cache-class LLC.
+    return 256 * kMiB;
+  }
+}
+
 int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
@@ -383,6 +481,37 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
     return 1;
   }
   return 1;
+}
+
+int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
+  auto [isaFamily, chip] = getArch(arch);
+
+  switch (isaFamily) {
+  case ISAFamily::GCN5_1:
+  case ISAFamily::CDNA1:
+    return 256;
+  case ISAFamily::CDNA2:
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+    return 512;
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+    return 1024;
+  case ISAFamily::RDNA3:
+    // Match LLVM's coverage: getTotalNumVGPRs() in
+    // llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp and the
+    // Feature1536VGPRs definition / FeatureISAVersion11_* lists in
+    // llvm/lib/Target/AMDGPU/AMDGPU.td.
+    if (chip == "gfx1100" || chip == "gfx1101" || chip == "gfx1151")
+      return 1536;
+    return 1024;
+  case ISAFamily::RDNA4:
+  case ISAFamily::GFX1250:
+    return 1536;
+  case ISAFamily::Unknown:
+    return 512;
+  }
+  llvm_unreachable("unhandled ISAFamily in getVGPRsPerEU");
 }
 
 bool mlir::rock::supportsMultiCTALaunch(StringRef arch) {

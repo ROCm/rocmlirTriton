@@ -1,6 +1,6 @@
 directory = "conv_regression_bwd"
 prefix = "rocmlir-gen"
-suffix = "-rand_type float -relDiff_threshold 0.00004 -arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
+suffix = "-rand_type float -arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
 
 [[axis]]
 name = "operation"
@@ -13,7 +13,7 @@ values = ["-fil_layout=kcyx -in_layout=nchw -out_layout=nkhw", "-fil_layout=kyxc
 
 [[axis]]
 name = "data type"
-values = ["f32", "f16 -RMS_threshold=0.0007"]
+values = ["f32", "f16"]
 prefix = "-t "
 
 [[require]]
@@ -23,7 +23,7 @@ name = "operation"
 values = ["conv_bwd_weight"]
 [[require.match]]
 name = "data type"
-values = ["f16 -RMS_threshold=0.0007"]
+values = ["f16"]
 
 [[suite]]
 name = "config"
@@ -49,6 +49,9 @@ config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=256 -in_h=14
 ## The following config is extracted from conv_f16_wrw_kblocks.mlir
 [[suite.test]]
 config = "-groupsize=1 -batchsize=64 -in_channels=64 -out_channels=64 -in_h=4 -in_w=4 -fil_h=2 -fil_w=2 -dilation_h=1 -dilation_w=1 -conv_stride_h=2 -conv_stride_w=2 -padding_h_l=2 -padding_h_r=1 -padding_w_l=2 -padding_w_r=0"
+
+[[suite.test]]
+config = "-groupsize=1 -batchsize=64 -in_channels=8 -out_channels=64 -in_h=4 -in_w=5 -fil_h=2 -fil_w=2 -dilation_h=1 -dilation_w=1 -conv_stride_h=3 -conv_stride_w=1 -padding_h_l=0 -padding_h_r=0 -padding_w_l=0 -padding_w_r=0"
 
 ## The following configs are reported from various tickets
 
@@ -86,7 +89,14 @@ config = "-groupsize=1 -batchsize=128 -in_channels=256 -out_channels=128 -in_h=2
 config = "-groupsize=1 -batchsize=512 -in_channels=256 -out_channels=512 -in_h=7 -in_w=7 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
 
 [[suite.test]]
-config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=64 -in_h=56 -in_w=56 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
+# Large K_eff (N*outH*outW = 200704) for bwd_weight with random data.
+# Accumulation-order differences at large f16 magnitudes cause arch-dependent
+# worst-case errors (valNum≈48192, gpuNum≈48288, fixed seed):
+#   gfx942: passes with default atol (≤2.5)
+#   gfx950: absDiff≈16, needs atol≥15.9
+#   gfx90a:  absDiff=96, needs atol≥47.81
+# atol=52 covers the observed gfx90a worst case with ~9% headroom.
+config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=64 -in_h=56 -in_w=56 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1 --atol 52"
 
 ############################################################################################
 # Cases reported in https://github.com/ROCm/rocMLIR-internal/issues/71 #
@@ -102,4 +112,3 @@ config = "-groupsize=1 -batchsize=64 -in_channels=32 -out_channels=32 -in_h=7 -i
 #############################################################################################
 [[suite.test]]
 config = "-groupsize=1 -batchsize=256 -in_channels=32 -out_channels=32 -in_h=28 -in_w=28 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=2 -conv_stride_w=2 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
-

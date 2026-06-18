@@ -3,6 +3,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "rock-tuning-parameter"
@@ -35,10 +36,42 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
 }
 
 template <typename ParamsType>
+StringRef
+ParamLookupTable<ParamsType>::getFallbackDataType(StringRef dataType) {
+  // Map datatypes without their own tuning entries to the closest datatype that
+  // has them in a single hop. fp8 and i8 share the 8-bit MFMA/tile space; f4
+  // has no 4-bit neighbour so it also borrows i8.
+  return llvm::StringSwitch<StringRef>(dataType)
+      .Case("fp8", "i8")
+      .Case("f4", "i8")
+      .Default(StringRef());
+}
+
+template <typename ParamsType>
 StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
-  const auto relatives = getRelatives(target);
-  if (relatives.empty())
-    return StringRef();
+  // `fallbackKey` owns the storage for the substituted-datatype key (if any).
+  std::string fallbackKey;
+  SmallVector<StringRef, 12> relatives = getRelatives(target);
+
+  // When there is no same-datatype relative across architectures, borrow the
+  // closest datatype that has tuning entries (e.g. gfx942_gemm_fp8 ->
+  // gfx942_gemm_i8) and search once more. If that datatype has no relatives
+  // either, give up.
+  if (relatives.empty()) {
+    auto dataTypePos = target.rfind(separator);
+    if (dataTypePos == StringRef::npos)
+      return StringRef();
+    StringRef fallbackDataType =
+        getFallbackDataType(target.substr(dataTypePos + 1));
+    if (fallbackDataType.empty())
+      return StringRef();
+    fallbackKey =
+        (Twine(target.substr(0, dataTypePos + 1)) + fallbackDataType).str();
+    target = fallbackKey;
+    relatives = getRelatives(target);
+    if (relatives.empty())
+      return StringRef();
+  }
 
   auto it = std::lower_bound(relatives.begin(), relatives.end(), target);
   if (it == relatives.end())

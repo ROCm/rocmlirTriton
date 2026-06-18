@@ -1,0 +1,21 @@
+directory = "PrGemmNonPowerOfTwoTileSize"
+prefix = "rocmlir-gen"
+suffix = "--operation gemm --arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+
+# PR version: no transA/transB/transC axes to keep CI fast.
+[[axis]]
+name = "data type"
+values = ["f32", "f16", "i8", "fp8_fp8"]
+prefix = "-t "
+
+[[axis]]
+name = "perf_config"
+values = ["gemm:v1:80,80,16,1,1,4,16,1,1,1,1", "gemm:v1:96,96,16,1,1,4,16,1,1,1,1", "gemm:v1:192,96,16,1,1,4,16,1,1,1,1"]
+prefix = "--perf_config "
+
+## Gemm variants
+[[suite]]
+name = "pr_gemm_non_power_of_two_tile_size"
+
+[[suite.test]]
+config = "-g 1 -m 77 -k 77 -n 77"
