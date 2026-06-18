@@ -1927,8 +1927,7 @@ def parse_arguments(gpu_topology: GpuTopology,
         type=int,
         default=0,
         metavar='SECONDS',
-        help=
-        "Per-perf-config compilation timeout in seconds (default: 0 = no timeout, "
+        help="Per-perf-config compilation timeout in seconds (default: 0 = no timeout, "
         "compile in-process). When > 0, each config is compiled in a separate "
         "rocmlir-driver process that is killed if it exceeds this budget; the "
         "timed-out config is skipped (reported as N/A) and tuning continues.")

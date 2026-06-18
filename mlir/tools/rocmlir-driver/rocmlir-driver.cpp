@@ -474,12 +474,14 @@ int main(int argc, char **argv) {
   }
   module = moduleRef.get();
 
-  // Stamp an explicit perf config onto the tunable ops if requested. The kernel
-  // pipeline reads this attribute via `obtainTuningParameters`, so this lets a
-  // caller compile one specific configuration without baking it into the input.
-  // tuningSetStr handles both gemm- and gemm+gemm-wrapping ops.
-  if (!perfConfig.empty())
-    rock::tuningSetStr(module, perfConfig);
+  // Stamp an explicit perf config onto the tunable ops if requested.
+  // tuningSetStr returns false if it found no gemm/gemm+gemm op to stamp; error
+  // out instead of silently compiling the wrong (default) configuration.
+  if (!perfConfig.empty() && !rock::tuningSetStr(module, perfConfig)) {
+    llvm::errs() << "Failed to apply --perf-config \"" << perfConfig
+                 << "\": no gemm or gemm+gemm op found to stamp.\n";
+    exit(EXIT_FAILURE);
+  }
 
   // Snapshot -o before running the pipeline: the binary stage links with
   // in-process LLD, which calls cl::ResetAllOptionOccurrences() and resets
