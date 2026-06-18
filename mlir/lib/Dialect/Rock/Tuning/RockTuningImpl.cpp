@@ -668,21 +668,27 @@ bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry) {
 }
 
 bool tuningSetStr(ModuleOp &mod, StringRef perfConfig) {
-  WalkResult setPrimary =
-      mod->walk([&](rock::RockGemmWrapperInterface op) -> WalkResult {
-        auto *ctx = op.getContext();
-        StringAttr attr = StringAttr::get(ctx, perfConfig);
-        op->setAttr("perf_config", attr);
-        return WalkResult::interrupt();
-      });
-  WalkResult setGemmGemm =
-      mod->walk([&](rock::RockGemmGemmWrapperInterface op) -> WalkResult {
-        auto *ctx = op.getContext();
-        StringAttr attr = StringAttr::get(ctx, perfConfig);
-        op->setAttr("perf_config", attr);
-        return WalkResult::interrupt();
-      });
-  return setPrimary.wasInterrupted() || setGemmGemm.wasInterrupted();
+  // This stamps a single perf config onto a single tunable op, so we expect at
+  // most one gemm or gemm+gemm op in the module. Walk fully (rather than
+  // interrupting on the first match) so the asserts below can catch a module
+  // that violates that assumption instead of silently stamping just one op.
+  unsigned numGemm = 0;
+  mod->walk([&](rock::RockGemmWrapperInterface op) {
+    auto *ctx = op.getContext();
+    op->setAttr("perf_config", StringAttr::get(ctx, perfConfig));
+    ++numGemm;
+  });
+  unsigned numGemmGemm = 0;
+  mod->walk([&](rock::RockGemmGemmWrapperInterface op) {
+    auto *ctx = op.getContext();
+    op->setAttr("perf_config", StringAttr::get(ctx, perfConfig));
+    ++numGemmGemm;
+  });
+  assert(numGemm <= 1 && "expected at most one gemm op to stamp");
+  assert(numGemmGemm <= 1 && "expected at most one gemm+gemm op to stamp");
+  assert(!(numGemm && numGemmGemm) &&
+         "expected either a gemm or a gemm+gemm op, not both");
+  return numGemm || numGemmGemm;
 }
 
 TuningTable *tuningTableCreate() {
