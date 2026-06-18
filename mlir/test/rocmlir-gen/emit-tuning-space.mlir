@@ -39,6 +39,10 @@
 // RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 64 -head_dim_v 64 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=304 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-ATTN-GFX942-SQ64
 // CHECK-ATTN-GFX942-SQ64: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
 
+// Family A: square (m == n) with head_dim_qk >= 160 and seq_len_q >= 900 -> hint off.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 160 -head_dim_v 160 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=304 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-ATTN-GFX942-SQ160
+// CHECK-ATTN-GFX942-SQ160: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
+
 // Family B: f16 with unaligned K (seq_len_k % 64 != 0), head_dim_qk >= 80 and
 // seq_len_q >= 900 -> hint off.
 // RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 80 -head_dim_v 80 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 77 --num_cu=304 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-ATTN-GFX942-SHORTK-F16
