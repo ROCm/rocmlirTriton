@@ -320,7 +320,8 @@ def RockTransformsInvariantCodeMotionPass
     untouched because their chain impacts validity.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "scf::SCFDialect", "arith::ArithDialect"];
+                           "scf::SCFDialect", "arith::ArithDialect",
+                           "triton::TritonDialect"];
 }
 
 def RockTransformsToPointerArithPass
