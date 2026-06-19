@@ -16,7 +16,7 @@
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.arch = "gfx1201"} {
+func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -49,7 +49,7 @@ func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>)
 #transform_map = #rock.transform_map<#map by [<Unmerge{254, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 254, 128] -> [32512]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2} ["kpad"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 256, 128] -> [1, 254, 128]>
 #transform_map2 = #rock.transform_map<#map2 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.arch = "gfx1201"} {
+func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -62,4 +62,59 @@ func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>)
     scf.yield %4 : tensor<64x64xf16>
   }
   return %1 : tensor<64x64xf16>
+}
+
+// -----
+
+// 1x1-convolution-style loop with two operands sharing one loop:
+//   - the filter chain has no validity-impacting maps and a linear offset, so
+//     it IS hoisted (base pointer in the preheader, offset accumulator carried),
+//   - the input chain has a Pad on K, so it is NOT hoisted and its
+//     transforms_to_ptr stays inside the loop, still indexed by the iv.
+//
+// CHECK-LABEL: func @hoist_one_of_two
+//  CHECK-SAME: (%[[FILTER:.*]]: tensor<32768xf16>, %[[INPUT:.*]]: tensor<32512xf16>, %[[INIT:.*]]: tensor<64x64xf16>)
+// Filter operand hoisted (iv replaced by the lower bound %c0_i32):
+//       CHECK:   %[[FPTRS:.*]], %[[FMASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32]
+//       CHECK:   %[[STRIDE:.*]] = arith.muli
+//       CHECK:   %[[STRIDET:.*]] = tt.splat %[[STRIDE]] : i32 -> tensor<64x64xi32>
+//       CHECK:   arith.constant dense<0> : tensor<64x64xi32>
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[ACC:.*]] = %{{.*}}) ->
+// Filter pointer reconstructed from the hoisted base + accumulator:
+//       CHECK:     %[[FPTR:.*]] = arith.addi %[[FPTRS]], %[[ACC]] : tensor<64x64xi32>
+//       CHECK:     rock.blockwise_load_ptr %[[FPTR]][%[[FMASK]]]
+// Input operand NOT hoisted: its transforms_to_ptr stays in the loop, still
+// indexed by the induction variable %[[IV]]:
+//       CHECK:     %[[IPTRS:.*]], %[[IMASK:.*]] = rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c1_i32]
+//       CHECK:     rock.blockwise_load_ptr %[[IPTRS]][%[[IMASK]]]
+// Accumulator advances by the stride and is yielded alongside the result:
+//       CHECK:     %[[INC:.*]] = arith.addi %[[ACC]], %[[STRIDET]] : tensor<64x64xi32>
+//       CHECK:     scf.yield %{{.*}}, %[[INC]]
+func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16>, %init: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c4_i32 = arith.constant 4 : i32
+
+  // Filter root view (reducible: no pad, offset linear in k_loop).
+  %f0 = rock.transform %filter by <affine_map<(d0, d1, d2) -> (d1 * 128 + d2)> by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]> : tensor<32768xf16> to tensor<1x256x128xf16>
+  // Input root view (K is only 254 here, padded to 256 inside the loop).
+  %i0 = rock.transform %input by <affine_map<(d0, d1, d2) -> (d1 * 128 + d2)> by [<Unmerge{254, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 254, 128] -> [32512]> : tensor<32512xf16> to tensor<1x254x128xf16>
+
+  %res = scf.for %k = %c0_i32 to %c4_i32 step %c1_i32 iter_args(%acc = %init) -> (tensor<64x64xf16>) : i32 {
+    // Filter tiling view + load.
+    %f1 = rock.transform %f0 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]> : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
+    %fptr, %fmask = rock.transforms_to_ptr %f1[%k, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
+    %fload = rock.blockwise_load_ptr %fptr[%fmask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+
+    // Input Pad (K 254 -> 256) makes the mask coordinate-dependent: not hoisted.
+    %i1 = rock.transform %i0 by <affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2} ["kpad"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 256, 128] -> [1, 254, 128]> : tensor<1x254x128xf16> to tensor<1x256x128xf16>
+    %i2 = rock.transform %i1 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]> : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
+    %iptr, %imask = rock.transforms_to_ptr %i2[%k, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
+    %iload = rock.blockwise_load_ptr %iptr[%imask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+
+    %sum = arith.addf %fload, %iload : tensor<64x64xf16>
+    scf.yield %sum : tensor<64x64xf16>
+  }
+
+  return %res : tensor<64x64xf16>
 }

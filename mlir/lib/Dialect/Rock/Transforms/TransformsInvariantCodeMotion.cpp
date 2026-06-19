@@ -366,6 +366,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
 
 void RockTransformsInvariantCodeMotionPass::runOnOperation() {
   func::FuncOp func = getOperation();
+  if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
 
   // Re-walk after each rewrite: tryHoistInvariantTransforms replaces the loop op, so
   // collected handles would dangle. A reduced loop has no remaining candidates
