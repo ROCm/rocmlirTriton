@@ -159,22 +159,28 @@ static LogicalResult validateGridGroupSize(Operation *op,
 }
 
 // Single entry point: run all per-field checks via
-// `RockTuningParamAttrInterface` (implemented by both `GemmParamsAttr` and
-// `GemmGemmParamsAttr`). `requirePow2MN` controls whether mPerBlock/nPerBlock
-// must be powers of two: gemm+gemm requires it, plain gemm only requires them
-// to be positive since rock-decompose-nonpow2-tiles handles non-pow2 M/N.
+// `RockTuningParamAttrInterface` (implemented by `GemmParamsAttr`,
+// `GemmGemmParamsAttr` and `ElementwiseParamsAttr`). `requirePow2MN` controls
+// whether mPerBlock/nPerBlock must be powers of two: gemm+gemm requires it,
+// plain gemm only requires them to be positive since
+// rock-decompose-nonpow2-tiles handles non-pow2 M/N. `isElementwiseKernel`
+// skips the mPerBlock/nPerBlock/kPerBlock checks, which are fixed sentinels on
+// `ElementwiseParamsAttr` (no GEMM tile).
 static LogicalResult validatePerfConfig(Operation *op,
                                         RockTuningParamAttrInterface params,
-                                        bool requirePow2MN) {
-  auto validateMN =
-      requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
-  if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
-    return failure();
-  if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
-    return failure();
-  if (failed(
-          validatePositivePowerOfTwo(op, "kPerBlock", params.getKPerBlock())))
-    return failure();
+                                        bool requirePow2MN,
+                                        bool isElementwiseKernel) {
+  if (!isElementwiseKernel) {
+    auto validateMN =
+        requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
+    if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
+      return failure();
+    if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
+      return failure();
+    if (failed(
+            validatePositivePowerOfTwo(op, "kPerBlock", params.getKPerBlock())))
+      return failure();
+  }
   if (failed(validateKpack(op, params.getKpack())))
     return failure();
   if (failed(validateNumCTAs(op, params.getNumCTAs())))
@@ -223,6 +229,9 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       BlockSizeAttr::getMnemonic(),
       GridSizeAttr::getMnemonic(),
       CpuVerifierAttr::getMnemonic(),
+      // Elementwise fusion kernels carry their perf-config on the function
+      // (as a string before this pass, an ElementwiseParamsAttr after).
+      "perf_config",
   };
   static const llvm::StringSet<> knownArgRockAttrs = {
       PrefillAttr::getMnemonic(),
@@ -312,8 +321,8 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Scaled GEMMs are not yet handled by rock-decompose-nonpow2-tiles, so keep
   // the power-of-two M/N requirement for them; plain GEMMs allow non-pow2 M/N.
   bool isScaledGemm = op.getScaleA() || op.getScaleB();
-  if (failed(
-          validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm)))
+  if (failed(validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm,
+                                /*isElementwiseKernel=*/false)))
     return signalPassFailure();
 
   auto origGemmSize = op.getGemmSize();
@@ -389,7 +398,8 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
-  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true)))
+  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true,
+                                /*isElementwiseKernel=*/false)))
     return signalPassFailure();
 
   auto params =
@@ -450,6 +460,10 @@ void AffixTuningParameters::affixTuningParametersElementwiseImpl(
     func.emitError("invalid elementwise perf_config: ") << perfConfigStr;
     return signalPassFailure();
   }
+
+  if (failed(validatePerfConfig(func, elemParams, /*requirePow2MN=*/true,
+                                /*isElementwiseKernel=*/true)))
+    return signalPassFailure();
 
   int64_t blockSize = waveSize * elemParams.getNumWaves();
   assert(blockSize > 0);

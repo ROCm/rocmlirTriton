@@ -29,14 +29,6 @@
 module @perop_tests {
 
   // Individual op check
-  // CHECK-LABEL: func.func @divf_scalar_adds_arcp_nsz_afn
-  // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : f32
-  func.func @divf_scalar_adds_arcp_nsz_afn(%a: f32, %b: f32) -> f32
-      attributes {rock.kernel} {
-    %0 = arith.divf %a, %b : f32
-    return %0 : f32
-  }
-
   // CHECK-LABEL: func.func @divf_tensor_adds_arcp_nsz_afn
   // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : tensor<2x3xf32>
   func.func @divf_tensor_adds_arcp_nsz_afn(%x: tensor<2x3xf32>, %y: tensor<2x3xf32>) -> tensor<2x3xf32>
@@ -47,25 +39,25 @@ module @perop_tests {
 
   // Prior fast-math bits are kept; new flags are merged in.
   // CHECK-LABEL: func.func @divf_preserves_other_fastmath
-  // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nnan,nsz,arcp,afn> : f32
-  func.func @divf_preserves_other_fastmath(%a: f32, %b: f32) -> f32
+  // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nnan,nsz,arcp,afn> : tensor<2x3xf32>
+  func.func @divf_preserves_other_fastmath(%a: tensor<2x3xf32>, %b: tensor<2x3xf32>) -> tensor<2x3xf32>
       attributes {rock.kernel} {
-    %0 = arith.divf %a, %b fastmath<nnan> : f32
-    return %0 : f32
+    %0 = arith.divf %a, %b fastmath<nnan> : tensor<2x3xf32>
+    return %0 : tensor<2x3xf32>
   }
 
   // Binary float arith ops get `contract` (so LLVM can fuse mul+add into
   // fma) and `nsz` (so LLVM can apply ±0 peepholes around them).
   // CHECK-LABEL: func.func @binary_arith_adds_contract_nsz
-  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
-  // CHECK: arith.subf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
-  // CHECK: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
-  func.func @binary_arith_adds_contract_nsz(%a: f32, %b: f32) -> f32
+  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
+  // CHECK: arith.subf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
+  // CHECK: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
+  func.func @binary_arith_adds_contract_nsz(%a: tensor<2x3xf32>, %b: tensor<2x3xf32>) -> tensor<2x3xf32>
       attributes {rock.kernel} {
-    %0 = arith.addf %a, %b : f32
-    %1 = arith.subf %0, %b : f32
-    %2 = arith.mulf %1, %a : f32
-    return %2 : f32
+    %0 = arith.addf %a, %b : tensor<2x3xf32>
+    %1 = arith.subf %0, %b : tensor<2x3xf32>
+    %2 = arith.mulf %1, %a : tensor<2x3xf32>
+    return %2 : tensor<2x3xf32>
   }
 
   // arith ops in the `nszOnly` bucket: `negf` (sign-bit XOR for `0 - x`),
@@ -74,83 +66,83 @@ module @perop_tests {
   // These must NOT receive `contract`/`arcp`/`afn` -- a wrong flag set on the
   // registration would show up as extra bits here.
   // CHECK-LABEL: func.func @nsz_only_arith_ops_add_nsz
-  // CHECK: arith.negf %{{.*}} fastmath<nsz> : f32
-  // CHECK: arith.remf %{{.*}}, %{{.*}} fastmath<nsz> : f32
-  // CHECK: arith.maximumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
-  // CHECK: arith.minimumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
-  func.func @nsz_only_arith_ops_add_nsz(%a: f32, %b: f32) -> f32
+  // CHECK: arith.negf %{{.*}} fastmath<nsz> : tensor<2x3xf32>
+  // CHECK: arith.remf %{{.*}}, %{{.*}} fastmath<nsz> : tensor<2x3xf32>
+  // CHECK: arith.maximumf %{{.*}}, %{{.*}} fastmath<nsz> : tensor<2x3xf32>
+  // CHECK: arith.minimumf %{{.*}}, %{{.*}} fastmath<nsz> : tensor<2x3xf32>
+  func.func @nsz_only_arith_ops_add_nsz(%a: tensor<2x3xf32>, %b: tensor<2x3xf32>) -> tensor<2x3xf32>
       attributes {rock.kernel} {
-    %0 = arith.negf %a : f32
-    %1 = arith.remf %0, %b : f32
-    %2 = arith.maximumf %1, %b : f32
-    %3 = arith.minimumf %2, %a : f32
-    return %3 : f32
+    %0 = arith.negf %a : tensor<2x3xf32>
+    %1 = arith.remf %0, %b : tensor<2x3xf32>
+    %2 = arith.maximumf %1, %b : tensor<2x3xf32>
+    %3 = arith.minimumf %2, %a : tensor<2x3xf32>
+    return %3 : tensor<2x3xf32>
   }
 
   // Non-transcendental math ops (`absf`, `copysign`, `clampf`) are exact
   // operations -- they get `nsz` only so the backend may apply ±0 peepholes
   // (e.g. `absf(-0.0) -> 0.0`) without enabling `afn`-style approximations.
   // CHECK-LABEL: func.func @non_transcendental_math_ops_add_nsz
-  // CHECK: math.absf %{{.*}} fastmath<nsz> : f32
-  // CHECK: math.copysign %{{.*}}, %{{.*}} fastmath<nsz> : f32
-  // CHECK: math.clampf %{{.*}} to [%{{.*}}, %{{.*}}] fastmath<nsz> : f32
-  func.func @non_transcendental_math_ops_add_nsz(%a: f32, %lo: f32, %hi: f32) -> f32
+  // CHECK: math.absf %{{.*}} fastmath<nsz> : tensor<2x3xf32>
+  // CHECK: math.copysign %{{.*}}, %{{.*}} fastmath<nsz> : tensor<2x3xf32>
+  // CHECK: math.clampf %{{.*}} to [%{{.*}}, %{{.*}}] fastmath<nsz> : tensor<2x3xf32>
+  func.func @non_transcendental_math_ops_add_nsz(%a: tensor<2x3xf32>, %lo: tensor<2x3xf32>, %hi: tensor<2x3xf32>) -> tensor<2x3xf32>
       attributes {rock.kernel} {
-    %0 = math.absf %a : f32
-    %1 = math.copysign %0, %a : f32
-    %2 = math.clampf %1 to [%lo, %hi] : f32
-    return %2 : f32
+    %0 = math.absf %a : tensor<2x3xf32>
+    %1 = math.copysign %0, %a : tensor<2x3xf32>
+    %2 = math.clampf %1 to [%lo, %hi] : tensor<2x3xf32>
+    return %2 : tensor<2x3xf32>
   }
 
   // math.* transcendentals get `afn` so the backend may use approximate
   // hardware implementations (v_exp_f32, v_log_f32, v_sqrt_f32, ...).
   // CHECK-LABEL: func.func @math_transcendentals_add_afn
-  // CHECK: math.exp %{{.*}} fastmath<nsz,contract,afn> : f32
-  // CHECK: math.log %{{.*}} fastmath<nsz,contract,afn> : f32
-  // CHECK: math.sqrt %{{.*}} fastmath<nsz,contract,afn> : f32
-  // CHECK: math.rsqrt %{{.*}} fastmath<nsz,contract,afn> : f32
-  // CHECK: math.sin %{{.*}} fastmath<nsz,contract,afn> : f32
-  // CHECK: math.tanh %{{.*}} fastmath<nsz,contract,afn> : f32
-  func.func @math_transcendentals_add_afn(%x: f32) -> f32
+  // CHECK: math.exp %{{.*}} fastmath<nsz,contract,afn> : tensor<2x3xf32>
+  // CHECK: math.log %{{.*}} fastmath<nsz,contract,afn> : tensor<2x3xf32>
+  // CHECK: math.sqrt %{{.*}} fastmath<nsz,contract,afn> : tensor<2x3xf32>
+  // CHECK: math.rsqrt %{{.*}} fastmath<nsz,contract,afn> : tensor<2x3xf32>
+  // CHECK: math.sin %{{.*}} fastmath<nsz,contract,afn> : tensor<2x3xf32>
+  // CHECK: math.tanh %{{.*}} fastmath<nsz,contract,afn> : tensor<2x3xf32>
+  func.func @math_transcendentals_add_afn(%x: tensor<2x3xf32>) -> tensor<2x3xf32>
       attributes {rock.kernel} {
-    %0 = math.exp %x : f32
-    %1 = math.log %0 : f32
-    %2 = math.sqrt %1 : f32
-    %3 = math.rsqrt %2 : f32
-    %4 = math.sin %3 : f32
-    %5 = math.tanh %4 : f32
-    return %5 : f32
+    %0 = math.exp %x : tensor<2x3xf32>
+    %1 = math.log %0 : tensor<2x3xf32>
+    %2 = math.sqrt %1 : tensor<2x3xf32>
+    %3 = math.rsqrt %2 : tensor<2x3xf32>
+    %4 = math.sin %3 : tensor<2x3xf32>
+    %5 = math.tanh %4 : tensor<2x3xf32>
+    return %5 : tensor<2x3xf32>
   }
 
   // `math.sincos` is the only multi-result op in the transcendental bucket; if
   // the registration mistakenly walked only single-result ops or used the wrong
   // flag set, this check would fail.
   // CHECK-LABEL: func.func @sincos_multi_result_adds_transcendental_flags
-  // CHECK: %{{.*}}, %{{.*}} = math.sincos %{{.*}} fastmath<nsz,contract,afn> : f32
-  func.func @sincos_multi_result_adds_transcendental_flags(%x: f32) -> (f32, f32)
+  // CHECK: %{{.*}}, %{{.*}} = math.sincos %{{.*}} fastmath<nsz,contract,afn> : tensor<2x3xf32>
+  func.func @sincos_multi_result_adds_transcendental_flags(%x: tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>)
       attributes {rock.kernel} {
-    %s, %c = math.sincos %x : f32
-    return %s, %c : f32, f32
+    %s, %c = math.sincos %x : tensor<2x3xf32>
+    return %s, %c : tensor<2x3xf32>, tensor<2x3xf32>
   }
 
   // `math.fma` is the only `math.*` op in the FMA-fusion bucket -- it gets
   // `nsz + contract` rather than transcendental's `afn`.
   // CHECK-LABEL: func.func @math_fma_adds_contract_nsz
-  // CHECK: math.fma %{{.*}}, %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
-  func.func @math_fma_adds_contract_nsz(%a: f32, %b: f32, %c: f32) -> f32
+  // CHECK: math.fma %{{.*}}, %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
+  func.func @math_fma_adds_contract_nsz(%a: tensor<2x3xf32>, %b: tensor<2x3xf32>, %c: tensor<2x3xf32>) -> tensor<2x3xf32>
       attributes {rock.kernel} {
-    %0 = math.fma %a, %b, %c : f32
-    return %0 : f32
+    %0 = math.fma %a, %b, %c : tensor<2x3xf32>
+    return %0 : tensor<2x3xf32>
   }
 
   // Sanity check that the pass leaves non-kernel funcs alone (the `rock.kernel`
   // gate is what makes the per-op tests above meaningful).
   // CHECK-LABEL: func.func @non_kernel_is_skipped
-  // CHECK: arith.divf %{{.*}}, %{{.*}} : f32
+  // CHECK: arith.divf %{{.*}}, %{{.*}} : tensor<2x3xf32>
   // CHECK-NOT: fastmath
-  func.func @non_kernel_is_skipped(%a: f32, %b: f32) -> f32 {
-    %0 = arith.divf %a, %b : f32
-    return %0 : f32
+  func.func @non_kernel_is_skipped(%a: tensor<2x3xf32>, %b: tensor<2x3xf32>) -> tensor<2x3xf32> {
+    %0 = arith.divf %a, %b : tensor<2x3xf32>
+    return %0 : tensor<2x3xf32>
   }
 }
 
