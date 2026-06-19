@@ -28,6 +28,7 @@
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
@@ -54,67 +55,202 @@ struct RockTransformsInvariantCodeMotionPass
 
 namespace {
 
-/// Returns true if `e` is affine-linear in dimension `dim`, i.e. `dim` only
-/// appears scaled by constants inside additions and never flows through a
-/// mod/floordiv/ceildiv or a multiplication by a non-constant. Such an
-/// expression has a constant partial "slope" with respect to `dim`, which is
-/// what makes a constant per-iteration stride valid.
-static bool isAffineExprLinearInDim(AffineExpr e, unsigned dim) {
-  switch (e.getKind()) {
-  case AffineExprKind::Constant:
-  case AffineExprKind::DimId:
-  case AffineExprKind::SymbolId:
-    return true;
-  case AffineExprKind::Add: {
-    auto bin = cast<AffineBinaryOpExpr>(e);
-    return isAffineExprLinearInDim(bin.getLHS(), dim) &&
-           isAffineExprLinearInDim(bin.getRHS(), dim);
-  }
-  case AffineExprKind::Mul: {
-    auto bin = cast<AffineBinaryOpExpr>(e);
-    // Affine multiplications always have a constant operand; `dim` may only
-    // appear on the non-constant side, where it stays linearly scaled.
-    if (isa<AffineConstantExpr>(bin.getRHS()))
-      return isAffineExprLinearInDim(bin.getLHS(), dim);
-    if (isa<AffineConstantExpr>(bin.getLHS()))
-      return isAffineExprLinearInDim(bin.getRHS(), dim);
-    return false;
-  }
-  case AffineExprKind::Mod:
-  case AffineExprKind::FloorDiv:
-  case AffineExprKind::CeilDiv: {
-    auto bin = cast<AffineBinaryOpExpr>(e);
-    // `dim` must not flow through a div/mod: those are non-linear in `dim`.
-    return !bin.getLHS().isFunctionOfDim(dim) &&
-           !bin.getRHS().isFunctionOfDim(dim);
-  }
-  }
-  return false;
+/// Row-major strides of a shape (innermost dim has stride 1).
+static SmallVector<int64_t> rowMajorStrides(ArrayRef<int64_t> shape) {
+  SmallVector<int64_t> strides(shape.size(), 1);
+  for (int i = static_cast<int>(shape.size()) - 2; i >= 0; --i)
+    strides[i] = strides[i + 1] * shape[i + 1];
+  return strides;
 }
 
-/// Compute the constant change in `offset` when every dim in `ivPositions` is
-/// incremented by one (all simultaneously, as the loop advances the iv).
-/// Returns failure if the slope is not a compile-time constant (e.g. the offset
-/// is non-linear in the iv after all).
-static FailureOr<int64_t> ivUnitStride(AffineExpr offset,
-                                       ArrayRef<unsigned> ivPositions,
-                                       unsigned numDims, unsigned numSymbols) {
-  MLIRContext *ctx = offset.getContext();
-  SmallVector<AffineExpr> repAtZero, repAtOne;
-  for (unsigned i = 0; i < numDims; ++i) {
-    repAtZero.push_back(getAffineDimExpr(i, ctx));
-    repAtOne.push_back(getAffineDimExpr(i, ctx));
+/// Propagate a constant coordinate *diff* through a transform chain and return
+/// the resulting constant change in the single linearized buffer offset, or
+/// failure if it is not a compile-time constant.
+///
+/// This mirrors rocMLIR's index-diff rules (`IndexDiffUpdateRewritePattern` in
+/// SugarToLoops.cpp): each transform maps an upper-space diff to a lower-space
+/// diff. Because the input diff is a compile-time constant (a unit iv step) and
+/// every rule is constant arithmetic, the whole propagation stays constant -
+/// including through `Merge`/`Unmerge` reconstructions (e.g. the conv `gemmK`
+/// packing) where a flattened affine map would keep opaque floordiv/mod.
+///
+/// `transforms` is ordered from the view (index 0) down to the buffer, as
+/// produced by `untransform`. `diff` is indexed by the upper-space dims of
+/// `transforms[0]`.
+///
+/// Carry-neutrality guard: rocMLIR keeps the running coordinate valid via carry
+/// propagation on `Merge`. We instead want a single loop-invariant stride, which
+/// is only valid when those carries do not change the linearized offset, i.e.
+/// when the merged dim's lower dims are laid out contiguously underneath (their
+/// buffer strides nest as the merge factors). When that does not hold the offset
+/// is only piecewise-linear in the iv, and we bail.
+static FailureOr<int64_t>
+linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
+                     DenseMap<unsigned, int64_t> diff) {
+  if (transforms.empty())
+    return failure();
+
+  for (size_t mapIdx = 0; mapIdx < transforms.size(); ++mapIdx) {
+    TransformMapAttr map = transforms[mapIdx];
+    DenseMap<unsigned, int64_t> lower;
+    auto upper = [&](unsigned d) -> int64_t {
+      auto it = diff.find(d);
+      return it == diff.end() ? 0 : it->second;
+    };
+
+    for (TransformAttr t : map.getOps()) {
+      ArrayRef<uint32_t> p = t.getUpperDims();
+      ArrayRef<uint32_t> q = t.getLowerDims();
+      ArrayRef<int64_t> e = t.getParams();
+      switch (t.getType()) {
+      case TransformType::PassThrough:
+      case TransformType::Pad:
+      case TransformType::Slice:
+        // Offset-preserving: a unit change upstairs is a unit change below.
+        // (Pad only shifts validity, not the stride.)
+        for (auto [pi, qi] : llvm::zip(p, q))
+          lower[qi] = upper(pi);
+        break;
+      case TransformType::Embed: {
+        // lowerDiff = sum_i e_i * upperDiff_i
+        int64_t d = 0;
+        for (auto [coef, pi] : llvm::zip(e, p))
+          d += coef * upper(pi);
+        lower[q[0]] = d;
+        break;
+      }
+      case TransformType::Unmerge: {
+        // lowerDiff = sum_i f_i * upperDiff_i, f_i = product of trailing bounds.
+        int64_t d = 0, f = 1;
+        for (int i = static_cast<int>(e.size()) - 1; i >= 0; --i) {
+          d += f * upper(p[i]);
+          f *= e[i];
+        }
+        lower[q[0]] = d;
+        break;
+      }
+      case TransformType::Merge: {
+        // Decompose the merged-dim diff into its lower components using the
+        // merge's own nested strides (P_j = product of trailing params).
+        int64_t D = upper(p[0]);
+        SmallVector<int64_t> P(e.size(), 1);
+        for (int j = static_cast<int>(e.size()) - 2; j >= 0; --j)
+          P[j] = P[j + 1] * e[j + 1];
+        for (size_t j = 0; j < q.size(); ++j)
+          lower[q[j]] = (D / P[j]) % e[j];
+
+        if (D != 0) {
+          // Carry-neutrality guard: the lower dims must nest contiguously in the
+          // buffer (stride(q_j) == stride(q_{j+1}) * e_{j+1}). Compute each
+          // lower dim's buffer stride by propagating its own unit diff through
+          // the maps below this one.
+          ArrayRef<TransformMapAttr> below = transforms.drop_front(mapIdx + 1);
+          SmallVector<int64_t> s(q.size());
+          for (size_t j = 0; j < q.size(); ++j) {
+            DenseMap<unsigned, int64_t> unit;
+            unit[q[j]] = 1;
+            FailureOr<int64_t> sj = linearizedDiffStride(below, unit);
+            if (failed(sj))
+              return failure();
+            s[j] = *sj;
+          }
+          for (size_t j = 0; j + 1 < q.size(); ++j)
+            if (s[j] != s[j + 1] * e[j + 1])
+              return failure(); // non-contiguous: offset is piecewise-linear
+        }
+        break;
+      }
+      case TransformType::ConstDim:
+        for (unsigned qi : q)
+          lower[qi] = 0;
+        break;
+      case TransformType::AddDim:
+        // The upper dim has no lower counterpart and is dropped.
+        break;
+      case TransformType::Broadcast:
+        // A nonzero diff into a broadcast dim wraps (position-dependent), so it
+        // has no constant stride; a zero diff is harmless.
+        for (auto [pi, qi] : llvm::zip(p, q)) {
+          if (upper(pi) != 0)
+            return failure();
+          lower[qi] = 0;
+        }
+        break;
+      default:
+        return failure();
+      }
+    }
+    diff = std::move(lower);
   }
-  for (unsigned p : ivPositions) {
-    repAtZero[p] = getAffineConstantExpr(0, ctx);
-    repAtOne[p] = getAffineConstantExpr(1, ctx);
+
+  // Combine the bottom-space diff into a single linear buffer offset.
+  SmallVector<int64_t> strides =
+      rowMajorStrides(transforms.back().getLowerBounds());
+  int64_t total = 0;
+  for (auto [d, v] : diff) {
+    if (d >= strides.size())
+      return failure();
+    total += v * strides[d];
   }
-  AffineExpr atZero = offset.replaceDims(repAtZero);
-  AffineExpr atOne = offset.replaceDims(repAtOne);
-  AffineExpr diff = simplifyAffineExpr(atOne - atZero, numDims, numSymbols);
-  if (auto c = dyn_cast<AffineConstantExpr>(diff))
-    return c.getValue();
-  return failure();
+  return total;
+}
+
+/// Collect the upper-space (input) dim indices that a validity-impacting map
+/// actually constrains: the non-trivially padded dims of every `Pad` and the
+/// upper dims of every invalidatable `Embed`. These are the coordinates whose
+/// values the runtime mask is computed from.
+static SmallVector<unsigned> validityImpactingUpperDims(TransformMapAttr map) {
+  SmallVector<unsigned> dims;
+  for (TransformAttr op : map.getOps()) {
+    if (op.getType() == TransformType::Pad) {
+      ArrayRef<int64_t> params = op.getParams();
+      ArrayRef<uint32_t> upper = op.getUpperDims();
+      for (size_t i = 0, e = upper.size(); i < e; ++i)
+        if (params[2 * i] != 0 || params[2 * i + 1] != 0)
+          dims.push_back(upper[i]);
+    } else if (op.getType() == TransformType::Embed) {
+      if (embedCanBeInvalid(map, op))
+        for (uint32_t u : op.getUpperDims())
+          dims.push_back(u);
+    }
+  }
+  return dims;
+}
+
+/// Returns true if the validity mask produced by `transforms` can vary with the
+/// induction variable, i.e. some validity-impacting map (Pad / invalidatable
+/// Embed) constrains a coordinate that is a function of an iv-carrying input
+/// dim. When false, the mask is loop-invariant and may be computed once before
+/// the loop and reused every iteration.
+///
+/// `transforms` is ordered from the view (index 0) down towards the root, as
+/// produced by `untransform`. `ivPositions` are the input dims of the top view
+/// space that carry the induction variable.
+///
+/// For a validity-impacting map at index `i`, its upper coordinates are
+/// expressed as affine functions of the top view dims by composing the
+/// transforms strictly above it (indices `[0, i)`); for the topmost map the
+/// upper space *is* the top view space, so the mapping is the identity. A
+/// padded `gemmM` while the iv lives in `gemmK`, for example, leaves the mask
+/// invariant and is accepted.
+static bool maskDependsOnIv(ArrayRef<TransformMapAttr> transforms,
+                            ArrayRef<unsigned> ivPositions) {
+  for (auto [i, t] : llvm::enumerate(transforms)) {
+    if (!mapImpactsValidity(t))
+      continue;
+    SmallVector<unsigned> upperDims = validityImpactingUpperDims(t);
+    if (upperDims.empty())
+      continue;
+    AffineMap above = composeTransforms(transforms.take_front(i));
+    for (unsigned u : upperDims) {
+      AffineExpr coord =
+          above ? above.getResult(u) : getAffineDimExpr(u, t.getContext());
+      for (unsigned p : ivPositions)
+        if (coord.isFunctionOfDim(p))
+          return true;
+    }
+  }
+  return false;
 }
 
 /// True if `v` is defined inside `loop` (its induction var, an iter_arg, or any
@@ -175,40 +311,35 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
   if (ivPositions.empty())
     return bail("pointer does not depend on the iv (already loop-invariant)");
 
-  // Walk the transform chain. A validity-impacting map (Pad / invalidatable
-  // Embed) means the mask depends on coordinates and is not safe to hoist.
+  // Walk the transform chain down to its root.
   SmallVector<TransformMapAttr> transforms;
   auto [root, isBig] = untransform(op.getSource(), transforms);
   (void)isBig;
   if (!isa<BlockArgument>(root))
     return bail("transform chain root is not a block argument");
 
-  // Our rewrite computes the mask once before the loop and reuses it 
-  // every iteration. This trick is only valid if the mask doesn't change
-  // with the IV. Here we make sure that this is the case.
-  for (TransformMapAttr t : transforms)
-    if (mapImpactsValidity(t))
-      return bail("transform chain has a validity-impacting map "
-                  "(mask is not loop-invariant)");
+  // Our rewrite computes the mask once before the loop and reuses it every
+  // iteration. That is only valid when the mask is loop-invariant, i.e. no
+  // validity-impacting map (Pad / invalidatable Embed) constrains a coordinate
+  // that depends on the iv. A Pad/Embed on a dimension unrelated to the iv
+  // (e.g. a padded gemmM while the iv lives in gemmK) keeps the mask invariant
+  // and is fine to hoist.
+  if (maskDependsOnIv(transforms, ivPositions))
+    return bail("validity mask depends on the iv (not loop-invariant)");
 
-  // Collapse the whole transform chain into one affine map.
-  AffineMap composed = composeTransforms(transforms);
-  if (!composed || composed.getNumResults() != 1)
-    return bail("composed transform map is null or not single-result");
-  AffineExpr offset = composed.getResult(0);
-
-  // The composed map's leading input dims are the extra indices (in order),
-  // followed by the per-output-dim ranges. Require linearity in every dim that
-  // carries the induction variable.
+  // Compute the constant per-iteration (unit-iv) stride of the linearized
+  // pointer offset by propagating a unit induction-variable step through the
+  // transform chain (mirroring rocMLIR's index-diff rules). This is exact
+  // through Merge/Unmerge reconstructions (e.g. the conv gemmK packing) where a
+  // flattened affine map would keep opaque floordiv/mod, and it bails when a
+  // Merge the iv flows through is not contiguous (offset only piecewise-linear).
+  DenseMap<unsigned, int64_t> ivDiff;
   for (unsigned p : ivPositions)
-    if (!isAffineExprLinearInDim(offset, p))
-      return bail("offset is not affine-linear in the iv");
-
-  FailureOr<int64_t> stride = ivUnitStride(offset, ivPositions,
-                                           composed.getNumDims(),
-                                           composed.getNumSymbols());
+    ivDiff[p] = 1;
+  FailureOr<int64_t> stride = linearizedDiffStride(transforms, ivDiff);
   if (failed(stride))
-    return bail("offset has no compile-time-constant per-iteration stride");
+    return bail("offset has no compile-time-constant per-iteration stride "
+                "(non-linear / non-contiguous in the iv)");
 
   if (*stride == 0)
     return bail("iv stride is zero (load is loop-invariant; nothing to "

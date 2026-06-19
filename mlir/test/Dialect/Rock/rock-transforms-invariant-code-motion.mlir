@@ -118,3 +118,93 @@ func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16
 
   return %res : tensor<64x64xf16>
 }
+
+// -----
+
+// Validity-impacting Pad on a dimension the iv does NOT flow through.
+// This mirrors a 3x3-conv filter operand: gemmM is padded (Pad{0, 192}) while
+// the induction variable (k_loop) lives in gemmK. The mask therefore does not
+// vary with the iv, so the op IS hoisted even though the chain contains a Pad.
+//
+// CHECK-LABEL: func @hoist_pad_on_non_iv_dim
+//  CHECK-SAME: (%[[FILTER:.*]]: tensor<36864xi8>, %[[INIT:.*]]: tensor<256x32xi8>)
+// Hoisted to the preheader (iv -> lower bound %c0_i32):
+//       CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
+//       CHECK:   %[[STRIDE:.*]] = arith.muli
+//       CHECK:   %[[STRIDET:.*]] = tt.splat %[[STRIDE]] : i32 -> tensor<256x32xi32>
+//       CHECK:   arith.constant dense<0> : tensor<256x32xi32>
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[ACC:.*]] = %{{.*}}) ->
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[ACC]] : tensor<256x32xi32>
+//       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
+//   CHECK-NOT:     rock.transforms_to_ptr
+//       CHECK:     %[[INC:.*]] = arith.addi %[[ACC]], %[[STRIDET]] : tensor<256x32xi32>
+//       CHECK:     scf.yield %{{.*}}, %[[INC]]
+func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c18_i32 = arith.constant 18 : i32
+
+  // Filter root view: gemmG=1, gemmM=64, gemmK=576.
+  %f0 = rock.transform %filter by <affine_map<(d0, d1, d2) -> (d1 * 576 + d2)> by [<Unmerge{64, 576} ["m", "k"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 576] -> [36864]> : tensor<36864xi8> to tensor<1x64x576xi8>
+
+  %res = scf.for %k = %c0_i32 to %c18_i32 step %c1_i32 iter_args(%acc = %init) -> (tensor<256x32xi8>) : i32 {
+    // Pad gemmM 64 -> 256: validity-impacting, but on a non-iv dimension.
+    %f1 = rock.transform %f0 by <affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 192} ["gemmMPad"] at [1] -> ["m"] at [1]>, <PassThrough ["k"] at [2] -> ["k"] at [2]>] bounds = [1, 256, 576] -> [1, 64, 576]> : tensor<1x64x576xi8> to tensor<1x256x576xi8>
+    // Tiling: k_loop (extra index 0, the iv) feeds gemmK; m feeds gemmM.
+    %f2 = rock.transform %f1 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 256 + d4, d0 * 32 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{18, 32} ["k_loop", "k_iter"] at [0, 5] -> ["k"] at [2]>, <Unmerge{1, 256} ["m_block", "m_iter"] at [2, 4] -> ["m"] at [1]>, <AddDim{3136} ["n_block"] at [3] -> [] at []>] bounds = [18, 1, 1, 3136, 256, 32] -> [1, 256, 576]> : tensor<1x256x576xi8> to tensor<18x1x1x3136x256x32xi8>
+    %fptr, %fmask = rock.transforms_to_ptr %f2[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<18x1x1x3136x256x32xi8> -> tensor<256x32xi32>, tensor<256x32xi1>
+    %fload = rock.blockwise_load_ptr %fptr[%fmask] : tensor<256x32xi32>, tensor<256x32xi1> -> tensor<256x32xi8>
+    scf.yield %fload : tensor<256x32xi8>
+  }
+
+  return %res : tensor<256x32xi8>
+}
+
+// -----
+
+// Faithful 3x3-conv filter chain (matches the real kernel). Here gemmK is
+// produced by a Merge{64, 3, 3} that decomposes it into (c, 0, 1) via
+// floordiv/mod, and the buffer packing below re-linearizes them with matching
+// strides. The net offset is raw = gemmM*576 + gemmK, linear in the iv with
+// stride 32. The iv (k_loop, stride 32 in gemmK) straddles the Merge{64,3,3}
+// factors (9/3/3), so a flattened affine map keeps opaque floordiv/mod; the
+// transform-aware index-diff stride computation handles it (constantFold of the
+// merge gives component diffs 3/1/2, recombined through the contiguous pack
+// strides 9/3/1 = 9*3 + 3*1 + 1*2 = 32) and the op IS hoisted.
+//
+// CHECK-LABEL: func @hoist_conv_filter_merge
+//  CHECK-SAME: (%[[FILTER:.*]]: tensor<36864xi8>, %[[INIT:.*]]: tensor<256x32xi8>)
+//       CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
+//       CHECK:   %[[STRIDE:.*]] = arith.muli
+//       CHECK:   %[[STRIDET:.*]] = tt.splat %[[STRIDE]] : i32 -> tensor<256x32xi32>
+//       CHECK:   arith.constant dense<0> : tensor<256x32xi32>
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[ACC:.*]] = %{{.*}}) ->
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[ACC]] : tensor<256x32xi32>
+//       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
+//   CHECK-NOT:     rock.transforms_to_ptr
+//       CHECK:     %[[INC:.*]] = arith.addi %[[ACC]], %[[STRIDET]] : tensor<256x32xi32>
+//       CHECK:     scf.yield %{{.*}}, %[[INC]]
+func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c18_i32 = arith.constant 18 : i32
+
+  // raw buffer (gkc01): k_out=64, c=64, 0=3, 1=3 -> 36864.
+  %0 = rock.transform %filter by <affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 64 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{64, 64, 3, 3} ["k", "c", "0", "1"] at [1, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 64, 3, 3] -> [36864]> : tensor<36864xi8> to tensor<1x64x64x3x3xi8>
+  // Merge (c, 0, 1) into gemmK (floordiv/mod), gemmM = k_out.
+  %1 = rock.transform %0 by <affine_map<(d0, d1, d2) -> (d0, d2, d1 floordiv 9, (d1 mod 9) floordiv 3, d1 mod 3)> by [<PassThrough ["gemmG"] at [0] -> ["g"] at [0]>, <Merge{64, 3, 3} ["gemmK"] at [1] -> ["c", "0", "1"] at [2, 3, 4]>, <PassThrough ["gemmM"] at [2] -> ["k"] at [1]>] bounds = [1, 576, 64] -> [1, 64, 64, 3, 3]> : tensor<1x64x64x3x3xi8> to tensor<1x576x64xi8>
+  // Transpose gemmM <-> gemmK.
+  %2 = rock.transform %1 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["gemmG"] at [0] -> ["gemmG"] at [0]>, <PassThrough ["gemmM", "gemmK"] at [1, 2] -> ["gemmM", "gemmK"] at [2, 1]>] bounds = [1, 64, 576] -> [1, 576, 64]> : tensor<1x576x64xi8> to tensor<1x64x576xi8>
+
+  %res = scf.for %k = %c0_i32 to %c18_i32 step %c1_i32 iter_args(%acc = %init) -> (tensor<256x32xi8>) : i32 {
+    // Pad gemmM 64 -> 256: validity-impacting on a non-iv dimension.
+    %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["gemmG"] at [0] -> ["gemmG"] at [0]>, <Pad{0, 192} ["gemmMPad"] at [1] -> ["gemmM"] at [1]>, <PassThrough ["gemmK"] at [2] -> ["gemmK"] at [2]>] bounds = [1, 256, 576] -> [1, 64, 576]> : tensor<1x64x576xi8> to tensor<1x256x576xi8>
+    // Tiling: k_loop (extra index 0, the iv) feeds gemmK; m feeds gemmM.
+    %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 256 + d4, d0 * 32 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{18, 32} ["k_loop", "k_iter"] at [0, 5] -> ["k"] at [2]>, <Unmerge{1, 256} ["m_block", "m_iter"] at [2, 4] -> ["m"] at [1]>, <AddDim{3136} ["n_block"] at [3] -> [] at []>] bounds = [18, 1, 1, 3136, 256, 32] -> [1, 256, 576]> : tensor<1x256x576xi8> to tensor<18x1x1x3136x256x32xi8>
+    %fptr, %fmask = rock.transforms_to_ptr %4[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<18x1x1x3136x256x32xi8> -> tensor<256x32xi32>, tensor<256x32xi1>
+    %fload = rock.blockwise_load_ptr %fptr[%fmask] : tensor<256x32xi32>, tensor<256x32xi1> -> tensor<256x32xi8>
+    scf.yield %fload : tensor<256x32xi8>
+  }
+
+  return %res : tensor<256x32xi8>
+}
