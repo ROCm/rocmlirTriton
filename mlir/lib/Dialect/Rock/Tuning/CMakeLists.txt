@@ -19,3 +19,6 @@ target_link_libraries(MLIRRockTuning
   MLIRRockUtility
   MLIRIR
 )
+
+# RockTuningImpl.cpp includes Triton's TargetFeatures.h for the ISAFamily enum
+rocmlir_add_triton_includes(MLIRRockTuning)
