@@ -461,8 +461,8 @@ func.func @test_chained_bwd_data_stores_nonpow2(
     attributes {rock.kernel} {
   %cst = arith.constant dense<0.000000e+00> : tensor<80x64xf32>
 
-  %a0 = rock.blockwise_load %a0Src : tensor<80x16xf16> -> tensor<80x16xf16>
-  %b0 = rock.blockwise_load %b0Src : tensor<16x64xf16> -> tensor<16x64xf16>
+  %a0 = rock.blockwise_load %a0Src {cacheModifier = #rock<CacheModifier none>} : tensor<80x16xf16> -> tensor<80x16xf16>
+  %b0 = rock.blockwise_load %b0Src {cacheModifier = #rock<CacheModifier none>} : tensor<16x64xf16> -> tensor<16x64xf16>
   %g0 = rock.blockwise_gemm(%a0, %b0, %cst)
     : tensor<80x16xf16>, tensor<16x64xf16>, tensor<80x64xf32> -> tensor<80x64xf32>
   %dest0 = rock.transform %dest by
@@ -473,8 +473,8 @@ func.func @test_chained_bwd_data_stores_nonpow2(
   %s0 = rock.blockwise_store %g0 -> %dest0 by set
     : tensor<80x64xf32> -> tensor<80x64xf32> -> tensor<160x64xf32>
 
-  %a1 = rock.blockwise_load %a1Src : tensor<80x16xf16> -> tensor<80x16xf16>
-  %b1 = rock.blockwise_load %b1Src : tensor<16x64xf16> -> tensor<16x64xf16>
+  %a1 = rock.blockwise_load %a1Src {cacheModifier = #rock<CacheModifier none>} : tensor<80x16xf16> -> tensor<80x16xf16>
+  %b1 = rock.blockwise_load %b1Src {cacheModifier = #rock<CacheModifier none>} : tensor<16x64xf16> -> tensor<16x64xf16>
   %g1 = rock.blockwise_gemm(%a1, %b1, %cst)
     : tensor<80x16xf16>, tensor<16x64xf16>, tensor<80x64xf32> -> tensor<80x64xf32>
   %dest1 = rock.transform %s0 by
