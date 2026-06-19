@@ -455,8 +455,21 @@ def Rock_ElementwiseParamsAttr
         return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
     }
 
+    // RockTuningParamAttrInterface bridge accessors (interface order). No GEMM
+    // here: tile dims return 0 ("heuristic"), override knobs -1 ("arch default").
+    int64_t getMPerBlock() { return 0; }
+    int64_t getNPerBlock() { return 0; }
+    int64_t getKPerBlock() { return 0; }
     int64_t getKpack() { return 1; }
+    int64_t getMatrixInstrNonkdim() { return 0; }
     int64_t getSplitKFactor() { return 1; }
+    int64_t getGridGroupSize() { return 0; }
+    int64_t getUseAsyncCopy() { return -1; }
+    int64_t getUseBlockPingpong() { return -1; }
+    int64_t getUseInThreadTranspose() { return -1; }
+    int64_t getUseBufferOps() { return -1; }
+    int64_t getUseBufferAtomics() { return -1; }
+    int64_t getScheduleHint() { return -1; }
   }];
 
   let builders = [AttrBuilderWithInferredContext<(ins
