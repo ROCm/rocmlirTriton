@@ -1,4 +1,4 @@
-// RUN: rocmlir-driver -c -mlir-print-ir-after=rock-conv-to-gemm %s 2>&1 | FileCheck %s
+// RUN: rocmlir-driver -c -mlir-print-ir-after=rock-conv-to-gemm -mlir-print-local-scope %s 2>&1 | FileCheck %s
 
 #map = affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 7 + d2) * 7 + d3) * 32 + d4)>
 #map1 = affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 9 + d2) * 9 + d3) * 32 + d4)>

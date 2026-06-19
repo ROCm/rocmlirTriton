@@ -21,6 +21,7 @@
 //
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
@@ -1141,20 +1142,47 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     Value destBuffer = originalStoreOp.getDest();
     ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
 
-    Value lastStoreResult;
-    for (int64_t kid : kernelIds) {
-      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
+    Value destRoot;
+    ArrayAttr destMaps;
+    std::tie(destRoot, destMaps, std::ignore) =
+        rock::untransform(b, destBuffer);
+
+    // Thread the destination through each per-kernel store so the single
+    // returned tensor represents all disjoint bwd_data phase writes. Depending
+    // on the incoming store type, stores may return either the untransformed
+    // root tensor or the logical destination-view type. Rebuild the original
+    // view only when the store result is the root type.
+    Value currentDest = destBuffer;
+    Value finalStoreResult;
+    for (auto [idx, kid] : llvm::enumerate(kernelIds)) {
+      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, currentDest);
       if (failed(maybe))
         return failure();
+
       auto [gemmResult, gemmDest] = maybe.value();
       auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
                                         gemmDest, storeMethod);
-      lastStoreResult = newStoreOp.getResult();
+      finalStoreResult = newStoreOp.getResult();
+      if (idx + 1 < kernelIds.size()) {
+        if (finalStoreResult.getType() == destRoot.getType()) {
+          currentDest = rock::transform(b, finalStoreResult, destMaps);
+        } else {
+          if (finalStoreResult.getType() != destBuffer.getType())
+            return bwdDataOp.emitOpError(
+                "store result type does not match destination root or view");
+          currentDest = finalStoreResult;
+        }
+      }
     }
 
-    // Replace the original StoreOp with the last store result.
-    b.replaceOp(originalStoreOp, lastStoreResult);
+    // BwdData with multiple kernel IDs emits N independent gemm + store pairs,
+    // each writing a disjoint slice of the same output buffer. Since
+    // `rock.store` is Pure, each store result must be live; threading the
+    // destination through the stores makes the final result represent the full
+    // logical output without exposing per-phase stores in the function ABI.
+    b.replaceOp(originalStoreOp, finalStoreResult);
     b.eraseOp(bwdDataOp);
+
     return std::make_tuple(Value(), Value(), Value());
   }
   Location loc = op.getLoc();
@@ -1705,7 +1733,7 @@ void RockConvToGemmPass::runOnOperation() {
 
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
-    signalPassFailure();
+    return signalPassFailure();
   }
 }
 } // end anonymous namespace

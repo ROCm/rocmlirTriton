@@ -1107,15 +1107,27 @@ LogicalResult ConvBwdWeightOp::verify() {
 // StoreOp
 //===-----------------------------------------------------===//
 
-static LogicalResult verifySingleReturnUse(Operation *op, Value result) {
-  if (result.use_empty())
-    return success();
-  if (!result.hasOneUse())
-    return op->emitOpError(
-        "result must have at most one use (a func.return)");
-  Operation *user = *result.getUsers().begin();
-  if (!isa<func::ReturnOp>(user))
-    return op->emitOpError("result must be used directly by a func.return");
+template <typename StoreOpT>
+static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
+  unsigned returnUseCount = 0;
+  for (OpOperand &use : result.getUses()) {
+    Operation *user = use.getOwner();
+    if (isa<ViewLikeOpInterface>(user))
+      continue;
+    // Store chaining is valid when the previous store result is threaded as
+    // the destination tensor for the next same-kind store. The dest operand is
+    // operand 1.
+    if (isa<StoreOpT>(user) && use.getOperandNumber() == 1)
+      continue;
+    if (isa<func::ReturnOp>(user)) {
+      if (++returnUseCount > 1)
+        return op.emitOpError("result may be returned at most once");
+      continue;
+    }
+    return op.emitOpError(
+        "result must be used directly by a func.return, view-like op, or "
+        "destination operand of another same-kind store");
+  }
   return success();
 }
 
@@ -1127,7 +1139,7 @@ LogicalResult StoreOp::verify() {
     return emitOpError("source and dest shapes must match")
            << " (source: " << sourceType << ", dest: " << destType << ")";
 
-  return verifySingleReturnUse(*this, getResult());
+  return verifyStoreResultUses(*this, getResult());
 }
 
 //===-----------------------------------------------------===//
@@ -1587,7 +1599,7 @@ LogicalResult BlockwiseStoreOp::verify() {
            << " != " << sourceType.getShape() << ")";
   }
 
-  return verifySingleReturnUse(*this, getResult());
+  return verifyStoreResultUses(*this, getResult());
 }
 
 //===----------------------------------------------------------------------===//
