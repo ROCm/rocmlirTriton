@@ -59,6 +59,9 @@ from perfRunner import (
     GemmGemmConfiguration,
     Paths,
     PerfConfiguration,
+    SLEEP_US,
+    TUNE_REP_MS,
+    TUNE_WARMUP_MS,
     auto_precision_flags_att,
 )
 
@@ -70,13 +73,6 @@ from perfRunner import (
 # GEMM uses atomic_add on the output buffer; each repeat accumulates another
 # full result (e.g. 10 repeats → ~10× vs reference). Verification must use 1.
 VERIFY_REPEATS = 1
-
-# Time budgets (ms) for the tuning-driver benchmark. The number of warmup and
-# measured iterations is derived from these budgets and the estimated per-launch
-# runtime (Triton do_bench style). These mirror Triton's do_bench defaults.
-TUNE_WARMUP_MS = 25
-TUNE_REP_MS = 100
-SLEEP_US = 100  # 0.1 ms
 
 OUTPUT_HEADER_COLUMNS = [
     'arch', 'numCUs', 'numChiplets', 'testVector', 'perfConfig', 'TFlops', 'tuningSpace',
