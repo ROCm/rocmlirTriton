@@ -25,8 +25,34 @@
 // CHECK-EXHAUSTIVE-BUFFEROPS: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,0,-1,-1
 // CHECK-EXHAUSTIVE-BUFFEROPS-NEXT: gemm:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,1,-1,-1
 
+// The trailing scheduleHint is forced to 1 (kScheduleHintAttention) for
+// non-i8 attention on gfx950; see getScheduleHint in RockTuningImpl.cpp.
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-ATTN
-// CHECK-EXHAUSTIVE-ATTN: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-ATTN: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,1
+
+// i8 attention is excluded from the schedule-hint heuristic (empirical
+// regression), so scheduleHint stays -1 even on gfx950.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t i8 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-ATTN-I8
+// CHECK-EXHAUSTIVE-ATTN-I8: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
+
+// On gfx942 the schedule hint is enabled (scheduleHint=1) except on shapes
+// measured to regress
+// Non-regressing shape: square with head_dim_qk=32 -> hint on.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=304 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-ATTN-GFX942-ON
+// CHECK-ATTN-GFX942-ON: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,1
+
+// Family A: square (m == n) with head_dim_qk == 64 -> hint off.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 64 -head_dim_v 64 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=304 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-ATTN-GFX942-SQ64
+// CHECK-ATTN-GFX942-SQ64: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
+
+// Family A: square (m == n) with head_dim_qk >= 160 and seq_len_q >= 900 -> hint off.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 160 -head_dim_v 160 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=304 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-ATTN-GFX942-SQ160
+// CHECK-ATTN-GFX942-SQ160: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
+
+// Family B: f16 with unaligned K (seq_len_k % 64 != 0), head_dim_qk >= 80 and
+// seq_len_q >= 900 -> hint off.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 80 -head_dim_v 80 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 77 --num_cu=304 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-ATTN-GFX942-SHORTK-F16
+// CHECK-ATTN-GFX942-SHORTK-F16: attn:v2:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-GFX950-KPACK \

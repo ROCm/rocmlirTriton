@@ -426,3 +426,63 @@ func.func @test_m_three_segments(%arg0: tensor<787456xf16>, %arg1: tensor<393728
   %16 = rock.blockwise_store %12 -> %15[%3, %9, %11] by set : tensor<112x64xf32> -> tensor<1x10x8x112x64xf32> -> tensor<524288xf32>
   return %16 : tensor<524288xf32>
 }
+
+// -----
+
+// ============================================================
+// Backward-data-style store chaining plus non-power-of-two
+// decomposition. Two independent GEMMs write disjoint slices of
+// the same logical output. The second store's destination is a
+// view of the first store's result, matching the multi-kernel
+// bwd_data lowering shape.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_chained_bwd_data_stores_nonpow2
+// Each 80x64 GEMM splits along M into {64,16}; there are two original GEMMs.
+// The first original store sits before the second GEMM, so the decomposed
+// output is intentionally interleaved as:
+//   first GEMM pair, first store pair, second GEMM pair, second store pair.
+// CHECK: rock.blockwise_gemm{{.*}} : tensor<64x16xf16>, tensor<16x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+// CHECK: rock.blockwise_gemm{{.*}} : tensor<16x16xf16>, tensor<16x64xf16>, tensor<16x64xf32> -> tensor<16x64xf32>
+// CHECK: rock.blockwise_store {{.*}} : tensor<64x64xf32>
+// CHECK: rock.blockwise_store {{.*}} : tensor<16x64xf32>
+// CHECK: rock.blockwise_gemm{{.*}} : tensor<64x16xf16>, tensor<16x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+// CHECK: rock.blockwise_gemm{{.*}} : tensor<16x16xf16>, tensor<16x64xf16>, tensor<16x64xf32> -> tensor<16x64xf32>
+// The second original store must still write through a view of the first
+// decomposed store chain, not the original function argument.
+// CHECK: rock.transform %{{.*}} by <affine_map<(d0, d1) -> (d0 + 80, d1)>
+// CHECK: rock.blockwise_store {{.*}} : tensor<64x64xf32>
+// CHECK: rock.blockwise_store {{.*}} : tensor<16x64xf32>
+// CHECK: return %{{.*}} : tensor<160x64xf32>
+func.func @test_chained_bwd_data_stores_nonpow2(
+    %a0Src: tensor<80x16xf16>, %b0Src: tensor<16x64xf16>,
+    %a1Src: tensor<80x16xf16>, %b1Src: tensor<16x64xf16>,
+    %dest: tensor<160x64xf32>) -> tensor<160x64xf32>
+    attributes {rock.kernel} {
+  %cst = arith.constant dense<0.000000e+00> : tensor<80x64xf32>
+
+  %a0 = rock.blockwise_load %a0Src : tensor<80x16xf16> -> tensor<80x16xf16>
+  %b0 = rock.blockwise_load %b0Src : tensor<16x64xf16> -> tensor<16x64xf16>
+  %g0 = rock.blockwise_gemm(%a0, %b0, %cst)
+    : tensor<80x16xf16>, tensor<16x64xf16>, tensor<80x64xf32> -> tensor<80x64xf32>
+  %dest0 = rock.transform %dest by
+    <affine_map<(d0, d1) -> (d0, d1)> by [
+      <Slice{0, 80, 0, 64} ["m0", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>]
+    bounds = [80, 64] -> [160, 64]>
+    : tensor<160x64xf32> to tensor<80x64xf32>
+  %s0 = rock.blockwise_store %g0 -> %dest0 by set
+    : tensor<80x64xf32> -> tensor<80x64xf32> -> tensor<160x64xf32>
+
+  %a1 = rock.blockwise_load %a1Src : tensor<80x16xf16> -> tensor<80x16xf16>
+  %b1 = rock.blockwise_load %b1Src : tensor<16x64xf16> -> tensor<16x64xf16>
+  %g1 = rock.blockwise_gemm(%a1, %b1, %cst)
+    : tensor<80x16xf16>, tensor<16x64xf16>, tensor<80x64xf32> -> tensor<80x64xf32>
+  %dest1 = rock.transform %s0 by
+    <affine_map<(d0, d1) -> (d0 + 80, d1)> by [
+      <Slice{80, 160, 0, 64} ["m1", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>]
+    bounds = [80, 64] -> [160, 64]>
+    : tensor<160x64xf32> to tensor<80x64xf32>
+  %s1 = rock.blockwise_store %g1 -> %dest1 by set
+    : tensor<80x64xf32> -> tensor<80x64xf32> -> tensor<160x64xf32>
+  return %s1 : tensor<160x64xf32>
+}
