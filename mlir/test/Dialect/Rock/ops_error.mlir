@@ -613,16 +613,25 @@ func.func @store_shape_mismatch(
 // Result used by a non-return op
 func.func @store_result_not_returned(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return}}
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
   %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   %neg = arith.negf %out : tensor<4x4xf32>
   return %neg : tensor<4x4xf32>
 }
 
+// Result used as another store's source
+func.func @store_result_used_as_store_source(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %out2 = rock.store %out to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %out2 : tensor<4x4xf32>
+}
+
 // Result has multiple uses
 func.func @store_result_multiple_uses(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> (tensor<4x4xf32>, tensor<4x4xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must have at most one use (a func.return)}}
+  // expected-error @+1 {{result may be returned at most once}}
   %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   return %out, %out : tensor<4x4xf32>, tensor<4x4xf32>
 }
@@ -765,18 +774,30 @@ func.func @blockwise_store_rank_mismatch(
 func.func @blockwise_store_not_returned(
     %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
     %i0: i32) -> tensor<768xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return}}
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
   %0 = rock.blockwise_store %src -> %dest[%i0] by set
     : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
   %neg = arith.negf %0 : tensor<768xf32>
   return %neg : tensor<768xf32>
 }
 
+// Result used as another blockwise_store's source
+func.func @blockwise_store_result_used_as_store_source(
+    %src: tensor<768xf32>, %dest0: tensor<3x768xf32>,
+    %dest1: tensor<3x2304xf32>, %i0: i32) -> tensor<6912xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
+  %0 = rock.blockwise_store %src -> %dest0[%i0] by set
+    : tensor<768xf32> -> tensor<3x768xf32> -> tensor<2304xf32>
+  %1 = rock.blockwise_store %0 -> %dest1[%i0] by set
+    : tensor<2304xf32> -> tensor<3x2304xf32> -> tensor<6912xf32>
+  return %1 : tensor<6912xf32>
+}
+
 // Result has multiple uses
 func.func @blockwise_store_multiple_uses(
     %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
     %i0: i32) -> (tensor<768xf32>, tensor<768xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must have at most one use (a func.return)}}
+  // expected-error @+1 {{result may be returned at most once}}
   %0 = rock.blockwise_store %src -> %dest[%i0] by set
     : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
   return %0, %0 : tensor<768xf32>, tensor<768xf32>

@@ -216,6 +216,30 @@ func.func @dce_blockwise_load(%src: tensor<64x64xf32>, %sink: tensor<64x64xf32>)
 
 // -----
 
+// CHECK-LABEL: func.func @dce_store
+// CHECK-NOT:     rock.store
+// CHECK:         return %arg2
+func.func @dce_store(%src: tensor<64x64xf32>, %dest: tensor<64x64xf32>,
+                     %sink: tensor<64x64xf32>) -> tensor<64x64xf32> {
+  %unused = rock.store %src to %dest by set
+      : tensor<64x64xf32> -> tensor<64x64xf32> to tensor<64x64xf32>
+  return %sink : tensor<64x64xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func.func @dce_blockwise_store
+// CHECK-NOT:     rock.blockwise_store
+// CHECK:         return %arg2
+func.func @dce_blockwise_store(%src: tensor<64x64xf32>, %dest: tensor<64x64xf32>,
+                               %sink: tensor<64x64xf32>) -> tensor<64x64xf32> {
+  %unused = rock.blockwise_store %src -> %dest by set
+      : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<64x64xf32>
+  return %sink : tensor<64x64xf32>
+}
+
+// -----
+
 // Has two results (pointers, mask) — both must be DCE'd along with the op.
 // CHECK-LABEL: func.func @dce_transforms_to_ptr
 // CHECK-NOT:     rock.transforms_to_ptr
