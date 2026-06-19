@@ -314,6 +314,31 @@ def RockCollapseContiguousMergesPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockTransformsInvariantCodeMotionPass
+    : Pass<"rock-transforms-invariant-code-motion", "::mlir::func::FuncOp"> {
+  let summary =
+      "Hoist loop-invariant transforms_to_ptr arithmetic out of scf.for loops";
+  let description = [{
+    Loop-invariant code motion for `rock.transforms_to_ptr` ops nested 
+    inside `scf.for` loops. Runs before TransformsToPointerArith.
+
+    When the pointer offset produced by a `transforms_to_ptr` op is an
+    affine-linear function of the loop induction variable and the transform
+    chain has no validity-impacting maps (so the mask is loop invariant), the
+    per-iteration recomputation of the (potentially flattened) affine map is
+    replaced by a loop-carried pointer tensor: the base pointer and a constant
+    stride are computed once in the preheader, and an `scf.for` iter_arg
+    accumulates the stride each iteration. This avoids the register pressure of
+    re-expanding floordiv/mod terms every iteration and mirrors rocMLIR's
+    index-diff coordinate iteration.
+
+    Padded convolutions (whose mask genuinely varies with the iv) are left
+    untouched because their chain impacts validity.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "scf::SCFDialect", "arith::ArithDialect"];
+}
+
 def RockTransformsToPointerArithPass
     : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
   let summary =
