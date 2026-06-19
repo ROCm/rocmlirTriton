@@ -19,6 +19,8 @@
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Support/LogicalResult.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -57,6 +59,25 @@ private:
   friend class ParamLookupTable<GemmGemmParamsAttr>;
 };
 
+/// Pure-arithmetic core of the gemm+gemm/attention peak-LDS footprint.
+/// Covers the three concurrently-live tiles: gemm0's A (Q) and B (K) tiles
+/// plus gemm1's B (V) tile, the latter sized by `gemm1NPerBlock`; the gemm0
+/// result P stays in registers. `aBits`/`bBits` are the A/B element bit
+/// widths (V is approximated as `bBits`: exact for plain attention,
+/// conservative when V is wider). The footprint is accumulated in bits so
+/// sub-byte element types are not rounded per element, then converted to
+/// bytes once and scaled by the pipeline stage count. This is the single
+/// source of truth shared by `isGemmGemmParamsConservativelyApplicable` and
+/// `estimateGemmGemmLdsBytes`.
+inline int64_t gemmGemmLdsBytes(GemmGemmParamsAttr p, int64_t gemm1NPerBlock,
+                                int64_t aBits, int64_t bBits) {
+  int64_t totalBits = (p.getMPerBlockG0() * p.getKPerBlock() * aBits) +
+                      (p.getNPerBlockG0() * p.getKPerBlock() * bBits) +
+                      (p.getNPerBlockG0() * gemm1NPerBlock * bBits);
+  return llvm::divideCeil(totalBits, static_cast<int64_t>(8)) *
+         p.getNumStages();
+}
+
 /// Gemm+gemm/attention counterpart of isGemmParamsConservativelyApplicable.
 /// LDS bound covers gemm0's A+B tiles (Q, K) plus gemm1's B tile (V); P stays
 /// in registers. V's bitwidth is approximated as `bElemType` (true for plain
@@ -69,13 +90,9 @@ inline bool isGemmGemmParamsConservativelyApplicable(
     return false;
   int64_t gemm1NPerBlock =
       PopulateParamsGemmGemm::getGemm1Params(b, op, p).getNPerBlock();
-  int64_t aBits = aElemType.getIntOrFloatBitWidth();
-  int64_t bBits = bElemType.getIntOrFloatBitWidth();
-  int64_t totalBits = (p.getMPerBlockG0() * p.getKPerBlock() * aBits) +
-                      (p.getNPerBlockG0() * p.getKPerBlock() * bBits) +
-                      (p.getNPerBlockG0() * gemm1NPerBlock * bBits);
   int64_t bytes =
-      llvm::divideCeil(totalBits, static_cast<int64_t>(8)) * p.getNumStages();
+      gemmGemmLdsBytes(p, gemm1NPerBlock, aElemType.getIntOrFloatBitWidth(),
+                       bElemType.getIntOrFloatBitWidth());
   return bytes <= getLDSSize(arch);
 }
 
@@ -95,6 +112,36 @@ getConservativeDefaultGemmGemmParams(MLIRContext *ctx) {
                                  /*useBufferOps=*/kKnobDefault,
                                  /*useBufferAtomics=*/kKnobDefault,
                                  /*useReductionLayout=*/kKnobDefault);
+}
+
+/// Estimate the peak LDS (shared memory) bytes a fused gemm+gemm/attention
+/// kernel would use for a problem whose second-gemm output (gemmO) dimension
+/// is `gemmO`, evaluated against the conservative default perf config. This is
+/// the problem-sizes-only sibling of
+/// `isGemmGemmParamsConservativelyApplicable`: it needs neither an op nor a
+/// module, so callers such as the MIGraphX CAPI can gate on problem sizes
+/// alone. Returns failure for a non-positive `gemmO` or an element type that
+/// the accelerated gemm+gemm path does not support (4/8/16-bit floats).
+inline FailureOr<int64_t> estimateGemmGemmLdsBytes(Type elemType,
+                                                   int64_t gemmO) {
+  if (gemmO <= 0)
+    return failure();
+  // The estimate is only meaningful for the accelerated gemm+gemm input types
+  // (4/8/16-bit floats, e.g. f4/fp8/f16/bf16); reject anything else.
+  if (!isa<FloatType>(elemType))
+    return failure();
+  unsigned bits = elemType.getIntOrFloatBitWidth();
+  if (bits != 4 && bits != 8 && bits != 16)
+    return failure();
+
+  GemmGemmParamsAttr params =
+      getConservativeDefaultGemmGemmParams(elemType.getContext());
+  // The second gemm's N-per-block tile covers the power-of-two-padded gemmO,
+  // matching getGemm1Params().
+  int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(gemmO);
+  return gemmGemmLdsBytes(params, gemm1NPerBlock,
+                          static_cast<int64_t>(bits),
+                          static_cast<int64_t>(bits));
 }
 
 } // namespace rock

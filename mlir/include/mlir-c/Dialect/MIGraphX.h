@@ -30,7 +30,10 @@ extern "C" {
 //   - mlirGetKernelAttrs() returns uint32_t[3] {block_size, grid_size,
 //     cluster_size} instead of uint32_t[2] {block_size, grid_size}.
 //   - Removed: mlirGetKernelInfo(), mlirMIGraphXAddApplicabilityPipeline().
-#define MLIR_MIGRAPHX_DIALECT_API_VERSION 5
+// Version 6: Adds mlirMIGraphXLDSUsageFitsArch() to check whether the
+// estimated LDS usage of a GEMM+GEMM/attention problem fits within the target
+// arch's shared-memory capacity.
+#define MLIR_MIGRAPHX_DIALECT_API_VERSION 6
 
 typedef struct MlirMIGraphXBackendOptions {
   const char *arch;
@@ -60,6 +63,17 @@ MLIR_CAPI_EXPORTED void mlirGetKernelAttrs(MlirModule module, uint32_t *attrs);
 // and return the compiled binary when buffer is provided
 MLIR_CAPI_EXPORTED bool mlirGetBinary(MlirModule module, size_t *size,
                                       char *bin);
+
+// Returns true if the estimated peak LDS (shared memory) usage of the given
+// GEMM+GEMM/Attention problem on `arch` fits within that arch's shared-memory
+// capacity. This is a conservative gate: it returns false both when the
+// estimate exceeds the arch capacity and when no estimate can be produced.
+// Note: A well-formed but unsupported architecture is a caller error and
+// results in undefined behavior, so callers must pass a supported `gfx*` arch.
+MLIR_CAPI_EXPORTED bool mlirMIGraphXLDSUsageFitsArch(int64_t gemmO,
+                                                     const char *arch,
+                                                     MlirType elementType,
+                                                     MlirModule module);
 
 // pipelines
 
