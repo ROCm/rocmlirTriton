@@ -583,7 +583,7 @@ static void createElementwiseTuningRangeBF(TuningParamSet *newSpace,
                                            TuningParamSetKind kind) {
   for (int64_t tileSize : {128, 256, 512, 1024}) {
     for (int64_t numWaves : {1, 2, 4, 8}) {
-      for (int64_t numStages : {1, 2, 3}) {
+      for (int64_t numStages : {1, 2, 3, 4}) {
         auto params = ElementwiseParamsAttr::get(funcOp.getContext(), tileSize,
                                                  /*numCTAs=*/1, numWaves,
                                                  numStages, /*wavesPerEU=*/0);

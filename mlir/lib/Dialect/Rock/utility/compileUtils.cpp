@@ -214,6 +214,8 @@ LogicalResult fillCompilationConfigs(MLIRContext *ctx, StringRef perfConfig,
   if (!params)
     params = GemmGemmParamsAttr::get(strAttr);
   if (!params)
+    params = ElementwiseParamsAttr::get(strAttr);
+  if (!params)
     return failure();
   return fillCompilationConfigs(params, tritonOpts, backendOpts);
 }
