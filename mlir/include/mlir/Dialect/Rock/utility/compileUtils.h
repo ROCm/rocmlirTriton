@@ -69,9 +69,9 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts);
 
-/// Same as above but parses a perf-config string. Tries `GemmParamsAttr` and
-/// then `GemmGemmParamsAttr`; returns failure if neither parses or if the
-/// resulting attribute can't be applied.
+/// Same as above but parses a perf-config string. Tries `GemmParamsAttr`,
+/// then `GemmGemmParamsAttr`, then `ElementwiseParamsAttr`; returns failure if
+/// none parse or if the resulting attribute can't be applied.
 LogicalResult fillCompilationConfigs(MLIRContext *ctx, StringRef perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts);

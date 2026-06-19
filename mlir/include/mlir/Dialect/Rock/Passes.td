@@ -98,6 +98,23 @@ def RockLowerReducePass : Pass<"rock-lower-reduce", "::mlir::func::FuncOp"> {
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }
 
+def RockRegularizeElementwisePass
+    : Pass<"rock-regularize-elementwise", "::mlir::func::FuncOp"> {
+  let summary = "Push inter-fusion transforms to inputs in elementwise kernels";
+  let description = [{
+    For standalone elementwise kernels, rock.transform ops can appear between
+    fusion ops when the original MIGraphX graph had transforms (reshape,
+    transpose, etc.) between fusions.
+
+    This pass pushes those inter-fusion transforms upward through fusion ops
+    so that all transforms end up at the input level. This is valid because
+    for any elementwise op f: transform(f(x, y)) == f(transform(x), transform(y)).
+
+    The pass iterates until no inter-fusion transforms remain.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
 def RockRegularizeOutputPass
     : Pass<"rock-regularize-output", "::mlir::func::FuncOp"> {
   let summary = "Move output fusions to operate directly in gemm output space";
@@ -572,6 +589,20 @@ def RockLowerLoadsPass : Pass<"rock-lower-loads", "::mlir::func::FuncOp"> {
         %tile = rock.blockwise_load %combined[%kIter, %g, %m, %n]
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
+def RockElementwiseToGridwisePass
+    : Pass<"rock-elementwise-to-gridwise", "::mlir::func::FuncOp"> {
+  let summary = "Pad elementwise tensors to tileSize multiple and compute "
+                "grid dimensions for standalone elementwise fusion kernels";
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
+def RockGridwiseElementwiseToBlockwisePass
+    : Pass<"rock-gridwise-elementwise-to-blockwise", "::mlir::func::FuncOp"> {
+  let summary = "Tile elementwise ops with load_marker and store_marker";
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "triton::TritonDialect"];
 }
 
 def RockTosaToElementwisePass

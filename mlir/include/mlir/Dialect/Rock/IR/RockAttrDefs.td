@@ -65,13 +65,14 @@ def KernelTypeGemm : I32EnumAttrCase<"Gemm", 3>;
 def KernelTypeAttention : I32EnumAttrCase<"Attention", 4>;
 def KernelTypeGemmElementwiseGemm : I32EnumAttrCase<"GemmElementwiseGemm", 5>;
 def KernelTypeConvElementwiseGemm : I32EnumAttrCase<"ConvElementwiseGemm", 6>;
+def KernelTypeElementwise : I32EnumAttrCase<"Elementwise", 7>;
 
 def KernelType
     : Rock_I32Enum<"KernelType", "Any of the possible types of a rock kernel",
                    [KernelTypeConv, KernelTypeConvBwdData,
                     KernelTypeConvBwdWeight, KernelTypeGemm,
                     KernelTypeAttention, KernelTypeGemmElementwiseGemm,
-                    KernelTypeConvElementwiseGemm]>;
+                    KernelTypeConvElementwiseGemm, KernelTypeElementwise]>;
 
 /// TransformType
 def PassThrough : I32EnumAttrCase<"PassThrough", 0>;
@@ -415,6 +416,64 @@ def Rock_GemmGemmParamsAttr
 
   let builders = [AttrBuilderWithInferredContext<(
       ins "StringAttr":$perfConfigStr)>];
+
+  let assemblyFormat = [{
+    `<` struct(params) `>`
+  }];
+}
+
+def Rock_ElementwiseParamsAttr
+    : Rock_Attr<"ElementwiseParams", [RockTuningParamAttrInterface]> {
+  let mnemonic = "elementwise_params";
+  let description = [{
+    The tuning parameters for a standalone elementwise fusion kernel (no GEMM).
+
+    - tileSize: 1D tile size (number of elements per workgroup)
+    - numCTAs: The number of CTAs
+    - numWaves: The number of waves per workgroup (blockSize = waveSize * numWaves)
+    - numStages: Number of pipeline stages (for Triton backend)
+    - wavesPerEU: Hint to backend compiler for wavefronts per execution unit
+  }];
+
+  let parameters = (ins "int64_t":$tileSize, "int64_t":$numCTAs,
+      "int64_t":$numWaves, "int64_t":$numStages, "int64_t":$wavesPerEU);
+
+  let extraClassDeclaration = [{
+    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
+        ("elem:v1:"
+        + Twine(getTileSize()) + ","
+        + Twine(getNumCTAs()) + ","
+        + Twine(getNumWaves()) + ","
+        + Twine(getNumStages()) + ","
+        + Twine(getWavesPerEU()))
+        .toVector(perfStr);
+    }
+
+    StringAttr getPerfConfigAttr() {
+        SmallVector<char, 64> buf;
+        getPerfConfigStr(buf);
+        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
+    }
+
+    // RockTuningParamAttrInterface bridge accessors (interface order). No GEMM
+    // here: tile dims return 0 ("heuristic"), override knobs -1 ("arch default").
+    int64_t getMPerBlock() { return 0; }
+    int64_t getNPerBlock() { return 0; }
+    int64_t getKPerBlock() { return 0; }
+    int64_t getKpack() { return 1; }
+    int64_t getMatrixInstrNonkdim() { return 0; }
+    int64_t getSplitKFactor() { return 1; }
+    int64_t getGridGroupSize() { return 0; }
+    int64_t getUseAsyncCopy() { return -1; }
+    int64_t getUseBlockPingpong() { return -1; }
+    int64_t getUseInThreadTranspose() { return -1; }
+    int64_t getUseBufferOps() { return -1; }
+    int64_t getUseBufferAtomics() { return -1; }
+    int64_t getScheduleHint() { return -1; }
+  }];
+
+  let builders = [AttrBuilderWithInferredContext<(ins
+      "StringAttr":$perfConfigStr)>];
 
   let assemblyFormat = [{
     `<` struct(params) `>`

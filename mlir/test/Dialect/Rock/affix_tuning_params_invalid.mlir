@@ -69,6 +69,71 @@ func.func @unknown_arg_attr(%arg0: tensor<1x128x128xf32> {rock.prefil}, %arg1: t
   return %out : tensor<1x128x128xf32>
 }
 
+// expected-error @below {{invalid elementwise perf_config: "garbage"}}
+func.func @elem_invalid_perf_config(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "garbage"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// expected-error @below {{invalid elementwise perf_config: "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"}}
+func.func @elem_wrong_prefix(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// expected-error @below {{invalid elementwise perf_config: "elem:v1:256,1"}}
+func.func @elem_too_few_params(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "elem:v1:256,1"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// The elementwise perf_config parses, but individual fields are validated by
+// validatePerfConfig (numCTAs/numWaves/numStages/wavesPerEU). Format is
+// "elem:v1:tileSize,numCTAs,numWaves,numStages,wavesPerEU".
+
+// expected-error @below {{numWaves=3 must be a positive power of two}}
+func.func @elem_numwaves_not_pow2(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "elem:v1:256,1,3,1,0"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// expected-error @below {{numWaves=64 * waveSize=64 exceeds max workgroup size (1024)}}
+func.func @elem_numwaves_too_large(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "elem:v1:256,1,64,1,0"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// expected-error @below {{numStages=0 must be >= 1}}
+func.func @elem_numstages_zero(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "elem:v1:256,1,4,0,0"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// expected-error @below {{wavesPerEU=100 exceeds max (8) for amdgcn-amd-amdhsa:gfx908}}
+func.func @elem_waves_per_eu_too_large(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "elem:v1:256,1,4,1,100"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// expected-error @below {{numCTAs=3 must be a positive power of two}}
+func.func @elem_numctas_not_pow2(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>) -> tensor<1024xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", perf_config = "elem:v1:256,3,4,1,0"} {
+  %0 = arith.addf %arg0, %arg1 : tensor<1024xf32>
+  %1 = rock.store %0 to %arg2 by set : tensor<1024xf32> -> tensor<1024xf32> to tensor<1024xf32>
+  return %1 : tensor<1024xf32>
+}
+
+// The two SplitK cases come last: they set the module-level
+// `rock.not_applicable`, which then persists in every later
+// `--mlir-print-ir-after-failure` dump. Keeping them at the end ensures the
+// attribute only appears in these two dumps (matching the NA --implicit-check-not).
+
 // Verifies that a SplitK perfConfig that fails fusion legality marks the
 // module with `rock.not_applicable` so the tuning driver classifies it as a
 // non-applicable config rather than a compilation bug.

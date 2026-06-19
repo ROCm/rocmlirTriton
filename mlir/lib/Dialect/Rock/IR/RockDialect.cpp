@@ -794,6 +794,9 @@ ConvOpType mlir::rock::convOpTypeFromKernelType(KernelType kernelType) {
   case KernelType::GemmElementwiseGemm:
     llvm_unreachable(
         "gemm+gemm ops shouldn't be in convolution-specific lowering passes");
+  case KernelType::Elementwise:
+    llvm_unreachable(
+        "elementwise ops shouldn't be in convolution-specific lowering passes");
   }
   llvm_unreachable("Unsuppported KernelType");
 }
@@ -2405,6 +2408,35 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, scheduleHint);
+}
+
+//===-----------------------------------------------------===//
+// ElementwiseParamsAttr
+//===-----------------------------------------------------===//
+
+ElementwiseParamsAttr ElementwiseParamsAttr::get(StringAttr perfConfigStrAttr) {
+  auto parsed = parsePerfConfigStr(perfConfigStrAttr.strref(), "elem");
+  if (!parsed) {
+    return {};
+  }
+
+  int version = parsed->version;
+  auto &params = parsed->params;
+
+  size_t expectedCount = (version == 1) ? 5 : 0;
+  if (expectedCount == 0 || params.size() != expectedCount) {
+    return {};
+  }
+
+  int64_t idx = 0;
+  int64_t tileSize = params[idx++];
+  int64_t numCTAs = params[idx++];
+  int64_t numWaves = params[idx++];
+  int64_t numStages = params[idx++];
+  int64_t wavesPerEU = params[idx++];
+
+  return ElementwiseParamsAttr::get(perfConfigStrAttr.getContext(), tileSize,
+                                    numCTAs, numWaves, numStages, wavesPerEU);
 }
 
 //===----------------------------------------------------------------------===//

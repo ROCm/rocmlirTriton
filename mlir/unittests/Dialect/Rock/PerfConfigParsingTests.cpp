@@ -324,3 +324,58 @@ TEST(PerfConfigParsingTest, GemmGemmParamsNonIntegerParam) {
       GemmGemmParamsAttr::get(e.str("attn:v1:64,64,32,2,1,2,16,x,1,0,1"));
   EXPECT_FALSE(attr);
 }
+
+// --- ElementwiseParamsAttr ---
+
+TEST(PerfConfigParsingTest, ElementwiseParamsValidV1) {
+  PerfConfigTestEnv e;
+  auto attr = ElementwiseParamsAttr::get(e.str("elem:v1:256,1,4,1,0"));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getTileSize(), 256);
+  EXPECT_EQ(attr.getNumCTAs(), 1);
+  EXPECT_EQ(attr.getNumWaves(), 4);
+  EXPECT_EQ(attr.getNumStages(), 1);
+  EXPECT_EQ(attr.getWavesPerEU(), 0);
+}
+
+TEST(PerfConfigParsingTest, ElementwiseParamsWrongPrefix) {
+  PerfConfigTestEnv e;
+  auto attr = ElementwiseParamsAttr::get(e.str("gemm:v1:256,1,4,1,0"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, ElementwiseParamsWrongVersion) {
+  PerfConfigTestEnv e;
+  auto attr = ElementwiseParamsAttr::get(e.str("elem:v2:256,1,4,1,0"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, ElementwiseParamsTooFewParams) {
+  PerfConfigTestEnv e;
+  auto attr = ElementwiseParamsAttr::get(e.str("elem:v1:256,1"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, ElementwiseParamsTooManyParams) {
+  PerfConfigTestEnv e;
+  auto attr = ElementwiseParamsAttr::get(e.str("elem:v1:256,1,4,1,0,99"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, ElementwiseParamsEmptyString) {
+  PerfConfigTestEnv e;
+  auto attr = ElementwiseParamsAttr::get(e.str(""));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, ElementwiseParamsGarbage) {
+  PerfConfigTestEnv e;
+  auto attr = ElementwiseParamsAttr::get(e.str("not_a_perf_config"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, ElementwiseParamsNonIntegerParam) {
+  PerfConfigTestEnv e;
+  auto attr = ElementwiseParamsAttr::get(e.str("elem:v1:256,abc,4,1,0"));
+  EXPECT_FALSE(attr);
+}
