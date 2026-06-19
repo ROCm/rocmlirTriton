@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -336,6 +337,56 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   return validRangeGemmGemmParamsNonAccel;
 }
 
+// Returns the `scheduleHint` knob to pin for `gemmGemmOp`, restricted to
+// `rock.attention` (where it was benchmarked). i8 is excluded everywhere.
+// The heuristics below are based on empirical experiments:
+// CDNA4 (gfx950): force `kScheduleHintAttention` for non-i8.
+// CDNA3 (gfx942): enable it for non-i8 except on shapes measured to regress,
+// using `getGemmGemmSize` dims (m=seq_len_q, n=seq_len_k, k=head_dim_qk):
+//   A. square (m == n): k == 64, or k >= 160 && m >= 900.
+//   B. unaligned K (n % 64 != 0), f16 only: k >= 80 && m >= 900.
+static int64_t getScheduleHint(RockGemmGemmWrapperInterface gemmGemmOp) {
+  if (!isa<AttentionOp>(gemmGemmOp))
+    return kKnobDefault;
+
+  // CDNA3 (gfx942) and CDNA4 (gfx950) are the only families that show
+  // significant performance improvement with the schedule hint.
+  triton::amdgpu::ISAFamily isaFamily =
+      std::get<0>(rock::getArch(rock::getArchValue(gemmGemmOp)));
+  if (isaFamily != triton::amdgpu::ISAFamily::CDNA3 &&
+      isaFamily != triton::amdgpu::ISAFamily::CDNA4)
+    return kKnobDefault;
+
+  Type elemType = cast<ShapedType>(gemmGemmOp.getAType()).getElementType();
+  if (elemType.isInteger(8))
+    return kKnobDefault;
+
+  if (isaFamily == triton::amdgpu::ISAFamily::CDNA4)
+    return kScheduleHintAttention;
+
+  if (isaFamily == triton::amdgpu::ISAFamily::CDNA3) {
+    GemmGemmSize sz = gemmGemmOp.getGemmGemmSize();
+    int64_t seqLenQ = sz.m, seqLenK = sz.n, headDimQK = sz.k;
+
+    // Family A: square self-attention.
+    if (seqLenQ == seqLenK) {
+      if (headDimQK == 64)
+        return kKnobDefault;
+      if (headDimQK >= 160 && seqLenQ >= 900)
+        return kKnobDefault;
+    }
+
+    // Family B: short / unaligned-K, f16 only.
+    if ((seqLenK % 64 != 0) && elemType.isF16() && headDimQK >= 80 &&
+        seqLenQ >= 900)
+      return kKnobDefault;
+
+    return kScheduleHintAttention;
+  }
+
+  return kKnobDefault;
+}
+
 // Keep in sync with attentionSweeps.py
 // The full space is a brute-force search for attention kernels
 //
@@ -353,6 +404,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
   auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getRangeGemmGemm(gemmGemmOp, waveSize, kind);
+  const int64_t scheduleHint = getScheduleHint(gemmGemmOp);
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
     for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
@@ -378,7 +430,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useInThreadTranspose=*/kKnobDefault,
                             /*useBufferOps=*/kKnobDefault,
                             /*useBufferAtomics=*/kKnobDefault,
-                            /*scheduleHint=*/kKnobDefault);
+                            /*scheduleHint=*/scheduleHint);
                         newSpace->tuningRange.push_back(
                             cast<RockTuningParamAttrInterface>(gemmGemmParams));
                       }
