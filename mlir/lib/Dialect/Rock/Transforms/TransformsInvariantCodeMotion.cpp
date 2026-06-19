@@ -319,6 +319,15 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   // Reconstruct each candidate pointer inside the body as basePtr + acc (a
   // single add that RockToTTIR/FuncToTritonFunc lower to tt.addptr), and route
   // the loop-invariant mask.
+  // 
+  // TODO: This is a bit dumb, we could do this without a new AddIOp op. However,
+  // we need to do this because FuncToTritonFunc expects to have
+  // a base pointer plus a loop-carried integer offset pointers in the loop:
+  // - The iter_arg: a pure integer offset.
+  // - The base pointer
+  // The only way to collapse to a single addi (simpler, and might affect performance)
+  // would be to adapt FuncToTritonFunc lowering to recognize a tt.addptr 
+  // recurrence carried through an scf.for iter_arg. 
   llvm::SmallPtrSet<Operation *, 4> candidateOps;
   for (auto [j, r] : llvm::enumerate(reduced)) {
     candidateOps.insert(r.op.getOperation());
