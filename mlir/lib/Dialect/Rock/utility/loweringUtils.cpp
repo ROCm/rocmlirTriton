@@ -186,20 +186,23 @@ static LogicalResult validateNPerBlockG1(Operation *op, int64_t nPerBlockG1) {
 LogicalResult
 mlir::rock::validatePerfConfig(Operation *op,
                                RockTuningParamAttrInterface params,
-                               bool requirePow2MN, bool requirePow2K) {
-  auto validateMN =
-      requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
-  if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
-    return failure();
-  if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
-    return failure();
-  if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
-    if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
+                               bool requirePow2MN, bool requirePow2K,
+                               bool isElementwiseKernel) {
+  if (!isElementwiseKernel) {
+    auto validateMN =
+        requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
+    if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
       return failure();
-  auto validateK =
-      requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
-  if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))
-    return failure();
+    if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
+      return failure();
+    if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
+      if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
+        return failure();
+    auto validateK =
+        requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
+    if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))
+      return failure();
+  }
   if (failed(validateKpack(op, params.getKpack())))
     return failure();
   if (failed(validateNumCTAs(op, params.getNumCTAs())))

@@ -75,6 +75,9 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       UseOptimizeEpilogueAttr::getMnemonic(),
       GridSizeAttr::getMnemonic(),
       CpuVerifierAttr::getMnemonic(),
+      // Elementwise fusion kernels carry their perf-config on the function
+      // (as a string before this pass, an ElementwiseParamsAttr after).
+      "perf_config",
   };
   static const llvm::StringSet<> knownArgRockAttrs = {
       PrefillAttr::getMnemonic(),
@@ -292,6 +295,11 @@ void AffixTuningParameters::affixTuningParametersElementwiseImpl(
     func.emitError("invalid elementwise perf_config: ") << perfConfigStr;
     return signalPassFailure();
   }
+
+  if (failed(validatePerfConfig(func, elemParams, /*requirePow2MN=*/true,
+                                /*requirePow2K=*/true,
+                                /*isElementwiseKernel=*/true)))
+    return signalPassFailure();
 
   int64_t blockSize = waveSize * elemParams.getNumWaves();
   assert(blockSize > 0);
