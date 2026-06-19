@@ -250,9 +250,17 @@ struct RockBlockwiseGemmOpRewritePattern
     }
 
     // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it
-    // survives into the Triton pipeline.
-    if (Operation *dotOp = result.getDefiningOp())
-      dotOp->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+    // survives into the Triton pipeline. Only forward rock.*-prefixed
+    // discardable attrs: copying unrelated attrs that rock does not own could
+    // trip another dialect's verifier downstream.
+    if (Operation *dotOp = result.getDefiningOp()) {
+      std::string rockPrefix =
+          (Twine(rock::RockDialect::getDialectNamespace()) + ".").str();
+      for (NamedAttribute attr : op->getDiscardableAttrs()) {
+        if (attr.getName().getValue().starts_with(rockPrefix))
+          dotOp->setDiscardableAttr(attr.getName(), attr.getValue());
+      }
+    }
 
     rewriter.replaceOp(op, result);
     return success();

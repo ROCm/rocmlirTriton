@@ -75,7 +75,7 @@ func.func @no_store(%a: tensor<64x64xf16>, %b: tensor<64x64xf16>, %c: tensor<64x
 
 // -----
 
-// A single GEMM result can fan out to several stores. The pass measures each
+// A single GEMM result can be written by several stores. The pass measures each
 // store's underlying kernel-output buffer and uses the largest one to decide the
 // layout. Here the large store (4096 elems) is column-major while the small
 // store (2048 elems, a 64x32 slice) is row-major, so the transposed layout of
@@ -106,7 +106,7 @@ func.func @multi_store_big_transposed(%a: tensor<64x64xf16>, %b: tensor<64x64xf1
 
 // -----
 
-// Same fan-out, layouts swapped: the large store (4096 elems) is row-major and
+// Same multi-store case, layouts swapped: the large store (4096 elems) is row-major and
 // the small store (2048 elems) is column-major. The larger store still wins, so
 // the recorded layout is not transposed -- proving the choice is driven by store
 // size rather than which layout appears first.

@@ -54,9 +54,9 @@ struct RockAddTritonMetadataPass
 // Follow `root` forward to every rock.blockwise_store that consumes it as its
 // stored value. The walk crosses fusion ops (arith/math/rock.transform/etc.)
 // and out of scf.for / scf.if regions via their yields. A single gemm result
-// can fan out to multiple stores, so all of them are collected. Returns an
-// empty list when no store is reachable (e.g. a chained-dot head whose result
-// is fed into another gemm or returned).
+// can be stored by more than one blockwise_store, so all of them are collected.
+// Returns an empty list when no store is reachable (e.g. a chained-dot head
+// whose result is fed into another gemm or returned).
 static llvm::SmallSetVector<rock::BlockwiseStoreOp, 4>
 findConsumerStores(Value root) {
   llvm::SmallSetVector<rock::BlockwiseStoreOp, 4> stores;
@@ -99,7 +99,7 @@ findConsumerStores(Value root) {
 }
 
 // Number of statically-known elements written by `storeOp` (0 if dynamic), used
-// to pick the largest store among several a gemm result fans out to.
+// to pick the largest store when a gemm result is written by several of them.
 static int64_t storeDestNumElements(rock::BlockwiseStoreOp storeOp) {
   // The dest is a stack of rock.transform views; trace it back to the kernel
   // argument it writes to and measure that underlying buffer.
@@ -164,7 +164,7 @@ void RockAddTritonMetadataPass::runOnOperation() {
       return;
     }
 
-    // A gemm result can fan out to several stores; use the one writing the
+    // A gemm result can be written by several stores; use the one writing the
     // largest tensor to memory as the representative for the output layout.
     rock::BlockwiseStoreOp storeOp;
     int64_t bestNumElements = -1;
