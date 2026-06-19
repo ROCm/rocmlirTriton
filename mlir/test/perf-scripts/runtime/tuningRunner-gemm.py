@@ -15,3 +15,17 @@
 #
 # CHECK: Tuned and verified
 # CHECK-SAME: gemm:v2:
+#
+# Same tiny GEMM, now with ``--debug-quick-tune-data``. This emits a `.debug`
+# TSV of the per-config table entries (PerfConfig + TFlops) but, unlike the
+# full ``--debug`` flag, omits the heavy per-iteration ``MeasurementsMs``
+# arrays. Verify the debug file is produced and that the measurements column
+# is absent.
+# RUN: rm -f %t2.tsv %t2.tsv.state %t2.tsv.debug
+# RUN: tuningRunner.py --op gemm --tuning-space=quick --debug-quick-tune-data \
+# RUN:     --config='-g 1 -m 64 -n 64 -k 64 -t f32 -out_datatype f32 -transA 0 -transB 0' \
+# RUN:     -q -o %t2.tsv 2>&1 | FileCheck %s
+# RUN: FileCheck %s --check-prefix=DEBUG --implicit-check-not=MeasurementsMs < %t2.tsv.debug
+#
+# DEBUG: PerfConfig{{.*}}TFlops
+# DEBUG: gemm:v2:
