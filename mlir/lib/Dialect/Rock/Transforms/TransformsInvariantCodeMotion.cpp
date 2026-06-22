@@ -263,6 +263,31 @@ static bool isDefinedInLoop(Value v, scf::ForOp loop) {
   return owner == loop.getOperation() || loop->isProperAncestor(owner);
 }
 
+/// True if `v` is `iv`, possibly reached through a chain of integer casts.
+static bool isInductionVar(Value v, Value iv) {
+  while (v != iv) {
+    Operation *def = v.getDefiningOp();
+    if (!def || !isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::TruncIOp,
+                     arith::ExtSIOp, arith::ExtUIOp>(def))
+      return false;
+    v = def->getOperand(0);
+  }
+  return true;
+}
+
+/// Cast integer/index scalar `v` to the integer/index type `toTy`, inserting
+/// the appropriate `arith` cast.
+static Value castScalar(OpBuilder &b, Location loc, Value v, Type toTy) {
+  Type fromTy = v.getType();
+  if (fromTy == toTy)
+    return v;
+  if (isa<IndexType>(fromTy) || isa<IndexType>(toTy))
+    return arith::IndexCastOp::create(b, loc, toTy, v);
+  if (fromTy.getIntOrFloatBitWidth() > toTy.getIntOrFloatBitWidth())
+    return arith::TruncIOp::create(b, loc, toTy, v);
+  return arith::ExtSIOp::create(b, loc, toTy, v);
+}
+
 /// A LICM candidate is pair of:
 ///  - A transforms_to_ptr op inside a loop, which offset is affine-linear in
 ///  the iv.
@@ -284,26 +309,18 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
   if (op->getBlock() != loop.getBody())
     return bail("op is not a direct child of the loop body");
 
-  // Defensive: scf.for has a single induction variable by construction, but
-  // some loop-like ops carry several. getSingleInductionVar() returns the iv
-  // only when there is exactly one, so this also guards a future generalization
-  // of the pass to other loop-like ops.
   std::optional<Value> maybeIv =
       cast<LoopLikeOpInterface>(loop.getOperation()).getSingleInductionVar();
   if (!maybeIv)
     return bail("loop does not have exactly one induction variable");
   Value iv = *maybeIv;
 
-  // Prototype: only handle i32 loops, matching the i32 pointer offsets.
-  if (!loop.getStep().getType().isInteger(32))
-    return bail("loop induction variable is not i32");
-
   // Get the transforms_to_ptr indices and check whether they are the iv of the
   // loop, or loop-invariant.
   ValueRange extra = op.getExtraIndices();
   SmallVector<unsigned> ivPositions;
   for (auto [pos, idx] : llvm::enumerate(extra)) {
-    if (idx == iv) {
+    if (isInductionVar(idx, iv)) {
       ivPositions.push_back(pos);
       continue;
     }
@@ -424,23 +441,33 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   // zero accumulator init per candidate.
   SmallVector<ReducedPtr> reduced;
   for (Candidate &cand : candidates) {
+    // Rebuild the loop-invariant inputs in the preheader with the iv pinned to
+    // the loop's lower bound. Seeding the clone map with iv -> lb means an
+    // index that is the iv (or a cast of it, e.g. index_cast(iv) for an
+    // index-typed loop) is re-expressed at lb, while loop-invariant indices are
+    // referenced directly.
     IRMapping cloneMap;
+    cloneMap.map(iv, lb);
     Value srcPre = cloneSliceBeforeLoop(b, cand.op.getSource(), loop, cloneMap);
 
     SmallVector<Value> baseIdx;
     for (Value idx : cand.op.getExtraIndices())
-      baseIdx.push_back(idx == iv ? lb : idx);
+      baseIdx.push_back(cloneSliceBeforeLoop(b, idx, loop, cloneMap));
 
     auto ptrType = cast<RankedTensorType>(cand.op.getPointers().getType());
     Type maskType = cand.op.getMask().getType();
     auto baseOp =
         TransformsToPtrOp::create(b, loc, ptrType, maskType, srcPre, baseIdx);
 
+    // The per-iteration offset increment is `step * unitStride`, expressed in
+    // the pointer-offset element type. The offsets are integers independent of
+    // the induction-variable type, so cast the
+    // step to that type before multiplying by the constant stride.
+    Type offsetTy = ptrType.getElementType();
     Value strideScalar = arith::MulIOp::create(
-        b, loc, step,
+        b, loc, castScalar(b, loc, step, offsetTy),
         arith::ConstantOp::create(
-            b, loc,
-            b.getI32IntegerAttr(static_cast<int32_t>(cand.unitStride))));
+            b, loc, b.getIntegerAttr(offsetTy, cand.unitStride)));
     Value strideSplat = triton::SplatOp::create(b, loc, ptrType, strideScalar);
     Value accInit = arith::ConstantOp::create(
         b, loc, cast<TypedAttr>(b.getZeroAttr(ptrType)));
