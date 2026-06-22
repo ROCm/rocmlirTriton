@@ -29,6 +29,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
@@ -292,9 +293,12 @@ static Value castScalar(OpBuilder &b, Location loc, Value v, Type toTy) {
 ///  - A transforms_to_ptr op inside a loop, which offset is affine-linear in
 ///  the iv.
 ///  - The resulting pointer stride.
+///  - The root buffer (the block argument the transform chain bottoms out in),
+///  used to detect candidates that alias the same base pointer.
 struct Candidate {
   TransformsToPtrOp op;
   int64_t unitStride;
+  Value rootBase;
 };
 
 /// Decide whether the passed transforms_to_ptr op can be LICM'ed.
@@ -336,6 +340,7 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
   (void)isBig;
   if (!isa<BlockArgument>(root))
     return bail("transform chain root is not a block argument");
+  cand.rootBase = root;
 
   // Our rewrite computes the mask once before the loop and reuses it every
   // iteration. That is only valid when the mask is loop-invariant, i.e. no
@@ -398,27 +403,32 @@ struct ReducedPtr {
   Value accInit;        // zero offset accumulator initializer
 };
 
-/// True if `loop` is part of a loop nest: it either sits inside another
-/// `scf.for` or contains one in its body.
+/// True when FuncToTritonFunc cannot safely lower the recurrences this loop
+/// would produce, so we must not hoist.
 ///
-/// The base-pointer + carried-offset recurrence this pass introduces is only
-/// lowered correctly by FuncToTritonFunc for a single, non-nested loop. When
-/// loops are nested (e.g. attention's two GEMMs produce a 16x16 and a 32x16
-/// recurrence across an outer/inner pair), FuncToTritonFunc corrupts the IR.
-static bool loopParticipatesInNest(scf::ForOp loop) {
+/// Until FuncToTritonFunc lowering is made robust, refuse to hoist.
+static bool funcToTritonFuncCannotLowerRecurrences(scf::ForOp loop,
+                                                   ArrayRef<Candidate> cands) {
+  // (1) Loop nest.
   if (loop->getParentOfType<scf::ForOp>())
     return true;
-  return loop.getBody()
-      ->walk([](scf::ForOp) { return WalkResult::interrupt(); })
-      .wasInterrupted();
+  if (loop.getBody()
+          ->walk([](scf::ForOp) { return WalkResult::interrupt(); })
+          .wasInterrupted())
+    return true;
+
+  // (2) Two candidates sharing the same root buffer.
+  llvm::SmallDenseSet<Value> seenRoots;
+  for (const Candidate &c : cands)
+    if (!seenRoots.insert(c.rootBase).second)
+      return true;
+
+  return false;
 }
 
 /// Try to LICM all eligible transforms_to_ptr ops in `loop`.
 /// Returns true (and rewrites the loop) if at least one was reduced.
 static bool tryHoistInvariantTransforms(scf::ForOp loop) {
-  if (loopParticipatesInNest(loop))
-    return false;
-
   SmallVector<Candidate> candidates;
   for (Operation &o : loop.getBody()->without_terminator()) {
     if (auto tp = dyn_cast<TransformsToPtrOp>(&o)) {
@@ -428,6 +438,9 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     }
   }
   if (candidates.empty())
+    return false;
+
+  if (funcToTritonFuncCannotLowerRecurrences(loop, candidates))
     return false;
 
   Location loc = loop.getLoc();
@@ -466,8 +479,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     Type offsetTy = ptrType.getElementType();
     Value strideScalar = arith::MulIOp::create(
         b, loc, castScalar(b, loc, step, offsetTy),
-        arith::ConstantOp::create(
-            b, loc, b.getIntegerAttr(offsetTy, cand.unitStride)));
+        arith::ConstantOp::create(b, loc,
+                                  b.getIntegerAttr(offsetTy, cand.unitStride)));
     Value strideSplat = triton::SplatOp::create(b, loc, ptrType, strideScalar);
     Value accInit = arith::ConstantOp::create(
         b, loc, cast<TypedAttr>(b.getZeroAttr(ptrType)));
