@@ -278,10 +278,9 @@ using ContiguousMergesMap =
     llvm::DenseMap<std::pair<TransformMapAttr, TransformAttr>,
                    llvm::EquivalenceClasses<uint32_t>>;
 
-void findCountiguousGroupsUnmerge(const ArrayRef<uint32_t> upperDims,
-                                  const ArrayRef<int64_t> params,
-                                  DimToMergeMap &dimToMerge,
-                                  ContiguousMergesMap &contiguousGroups) {
+static void findCountiguousGroupsUnmerge(
+    const ArrayRef<uint32_t> upperDims, const ArrayRef<int64_t> params,
+    DimToMergeMap &dimToMerge, ContiguousMergesMap &contiguousGroups) {
 
   size_t i = 0;
   while (i < upperDims.size()) {
@@ -381,7 +380,7 @@ void findCountiguousGroupsUnmerge(const ArrayRef<uint32_t> upperDims,
 // [[0] [2,3]]. This information will be used by the vectorizer. E.g., the
 // vectorizer can fulfill a vectorization by 4, since 8*3=24 is a multiple of 4.
 // In other words, every group of dimensions is treated as a single group
-ContiguousMergesMap findContiguousGroups(Value transformed) {
+static ContiguousMergesMap findContiguousGroups(Value transformed) {
   // Transform table. Will be overwritten after processing each transform_map
   DimToMergeMap dimToMerge;
   ContiguousMergesMap contiguousGroups;
@@ -1618,7 +1617,7 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &stream,
 }
 
 template <DimType Type>
-SmallVector<uint32_t>
+static SmallVector<uint32_t>
 getPreservedIndices(rock::TransformAttr tr,
                     const SetVector<int64_t> &globalRemoveIndicesSet) {
   SmallVector<uint32_t> preservedIndices;
@@ -1632,7 +1631,7 @@ getPreservedIndices(rock::TransformAttr tr,
   return preservedIndices;
 }
 
-SetVector<uint32_t>
+static SetVector<uint32_t>
 getRemovedIndicesInTr(rock::TransformAttr tr, DimType type,
                       const SetVector<int64_t> &globalRemoveIndicesSet) {
   SetVector<uint32_t> removedDimsInThisTr;
@@ -1647,7 +1646,8 @@ getRemovedIndicesInTr(rock::TransformAttr tr, DimType type,
 }
 
 template <DimType Type>
-void populatePreservedNames(rock::TransformAttr tr, TransformAttrArgs &args) {
+static void populatePreservedNames(rock::TransformAttr tr,
+                                   TransformAttrArgs &args) {
   const auto &preservedDims = std::get<Type>(args.preservedDims);
   auto names = Type == DimType::Upper ? tr.getUpperNames() : tr.getLowerNames();
   auto dims = Type == DimType::Upper ? tr.getUpperDims() : tr.getLowerDims();
@@ -1663,8 +1663,8 @@ void populatePreservedNames(rock::TransformAttr tr, TransformAttrArgs &args) {
 }
 
 template <DimType Type>
-SmallVector<uint32_t> getDifference(rock::TransformAttr tr,
-                                    TransformAttrArgs &args) {
+static SmallVector<uint32_t> getDifference(rock::TransformAttr tr,
+                                           TransformAttrArgs &args) {
   SmallVector<uint32_t> difference;
   auto dims = Type == DimType::Upper ? tr.getUpperDims() : tr.getLowerDims();
   const auto &preserved = std::get<Type>(args.preservedDims);
@@ -1677,9 +1677,9 @@ SmallVector<uint32_t> getDifference(rock::TransformAttr tr,
 }
 
 template <DimType Type>
-void remapDims(std::vector<TransformAttrArgs> &argsVector,
-               const std::pair<SetVector<unsigned int>, SetVector<unsigned int>>
-                   &preservedDims) {
+static void remapDims(std::vector<TransformAttrArgs> &argsVector,
+                      const std::pair<SetVector<unsigned int>,
+                                      SetVector<unsigned int>> &preservedDims) {
   SmallVector<uint32_t> preservedDimsVec =
       to_vector(std::get<Type>(preservedDims));
   llvm::sort(preservedDimsVec);
@@ -2154,7 +2154,7 @@ mlir::rock::removeUpperDims(OpBuilder &b, ArrayAttr transformAttrs,
   return b.getArrayAttr(results);
 }
 
-SetVector<int64_t>
+static SetVector<int64_t>
 convertDimNamesToIndices(const ArrayAttr trAttrs,
                          const StringSet<> &removeDimNamesSet) {
   SetVector<int64_t> indices = {};
