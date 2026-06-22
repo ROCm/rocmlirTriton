@@ -48,21 +48,17 @@ target_link_libraries(MLIRRockOps
   )
 
 # ROCm on Windows does not support HSA.
-# Also HIP is not supported on our CI,
-# so we cannot use either of them.
 if (NOT WIN32)
-  # From: https://github.com/ROCm/rocMLIR/blob/b6c726a324d2807494f770ed915af0e54cc6cb3f/external/llvm-project/mlir/lib/ExecutionEngine/CMakeLists.txt#L414
+  # hip::host is an INTERFACE target: it only supplies the HIP headers and the
+  # -D__HIP_PLATFORM_AMD__ compile definition needed to compile sources that
+  # pull in HIP platform headers. The HIP/HSA *runtime* libraries are
+  # deliberately not linked here: MLIRRockOps derives all architecture
+  # information statically (via triton::AMD::TargetInfo) and references zero HIP
+  # or HSA runtime symbols. Linking hip::amdhip64 / hsa-runtime64 would pull the
+  # ROCm runtime -- and its bundled LLVM/comgr -- into every consumer of this
+  # library (e.g. the test-only amd_arch_db pybind module), causing duplicate-
+  # LLVM symbol clashes at load time.
   find_package(hip REQUIRED PATHS ${ROCM_PATH})
-  # We do need both of these. One is for linking, to get the HIP
-  # functions.  The other is for compiling, to get -D__HIP_PLATFORM_AMD__
-  target_link_libraries(MLIRRockOps PUBLIC
-    hip::host hip::amdhip64
-  )
-  target_link_libraries(obj.MLIRRockOps PUBLIC
-    hip::host hip::amdhip64
-  )
-
-  # From: https://github.com/ROCm/rocm-systems/blob/c53bdb9643afc2ef943fd25113a1c704d39aa6b4/projects/rocminfo/CMakeLists.txt
-  find_package(hsa-runtime64 1.0 REQUIRED)
-  target_link_libraries(MLIRRockOps PUBLIC hsa-runtime64::hsa-runtime64)
+  target_link_libraries(MLIRRockOps PUBLIC hip::host)
+  target_link_libraries(obj.MLIRRockOps PUBLIC hip::host)
 endif()
