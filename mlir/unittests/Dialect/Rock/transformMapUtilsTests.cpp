@@ -384,4 +384,200 @@ TEST(IsIdentityOnShapeTest, EmptyShape) {
   EXPECT_TRUE(isIdentityOnShape(map, {}));
 }
 
+//===----------------------------------------------------------------------===//
+// isInputNonInjective Tests
+//===----------------------------------------------------------------------===//
+
+// Create a zero constant tensor of the given shape/element type.
+static Value makeConstant(OpBuilder &b, Location loc, ArrayRef<int64_t> shape,
+                          Type elemType) {
+  auto tensorType = RankedTensorType::get(shape, elemType);
+  return arith::ConstantOp::create(
+      b, loc, DenseElementsAttr::get(tensorType, b.getZeroAttr(elemType)));
+}
+
+// Wrap `src` (whose type matches `transform`'s lower bounds) in a
+// rock.transform.
+static Value applyTransform(OpBuilder &b, Location loc, Value src,
+                            TransformMapAttr transform) {
+  return TransformOp::create(b, loc, src, transform);
+}
+
+// PassThrough is injective: indexing distinct upper coords reads distinct
+// elements.
+TEST(IsInputNonInjectiveTest, PassThroughIsInjective) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {16}, b.getF16Type());
+  BottomUpTMBuilder tm(b, {"a"}, {16}, loc);
+  tm.passThrough("a");
+  Value v = applyTransform(b, loc, base, tm.get());
+
+  FailureOr<bool> result = isInputNonInjective(v);
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_FALSE(result.value());
+}
+
+// Unmerge (a reshape) is injective.
+TEST(IsInputNonInjectiveTest, UnmergeIsInjective) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {24}, b.getF16Type());
+  BottomUpTMBuilder tm(b, {"a"}, {24}, loc);
+  tm.unmerge({"x", "y"}, {0, 1}, "a", {4, 6});
+  Value v = applyTransform(b, loc, base, tm.get());
+
+  FailureOr<bool> result = isInputNonInjective(v);
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_FALSE(result.value());
+}
+
+// Embed (e.g. overlapping conv im2col) is treated as non-injective.
+TEST(IsInputNonInjectiveTest, EmbedIsNonInjective) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {24}, b.getF16Type());
+  BottomUpTMBuilder tm(b, {"a"}, {24}, loc);
+  tm.embed({"x", "y", "z"}, {0, 1, 2}, {2, 3, 4}, "a", {6, 2, 1});
+  Value v = applyTransform(b, loc, base, tm.get());
+
+  FailureOr<bool> result = isInputNonInjective(v);
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_TRUE(result.value());
+}
+
+// AddDim with size > 1 re-reads the same element across the added axis.
+TEST(IsInputNonInjectiveTest, AddDimNonUnitIsNonInjective) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {16}, b.getF16Type());
+  BottomUpTMBuilder tm(b, {"a"}, {16}, loc);
+  tm.addDim("d", 1, 4);
+  tm.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
+  Value v = applyTransform(b, loc, base, tm.get());
+
+  FailureOr<bool> result = isInputNonInjective(v);
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_TRUE(result.value());
+}
+
+// AddDim of size 1 is just a unit axis and does not cause reloads.
+TEST(IsInputNonInjectiveTest, AddDimUnitIsInjective) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {16}, b.getF16Type());
+  BottomUpTMBuilder tm(b, {"a"}, {16}, loc);
+  tm.addDim("d", 1, 1);
+  tm.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
+  Value v = applyTransform(b, loc, base, tm.get());
+
+  FailureOr<bool> result = isInputNonInjective(v);
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_FALSE(result.value());
+}
+
+// Broadcast that replicates a size-1 dim to many is non-injective.
+TEST(IsInputNonInjectiveTest, BroadcastExpandingIsNonInjective) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {1}, b.getF16Type());
+  BottomUpTMBuilder tm(b, {"a"}, {1}, loc);
+  tm.broadcast({0}, {8});
+  Value v = applyTransform(b, loc, base, tm.get());
+
+  FailureOr<bool> result = isInputNonInjective(v);
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_TRUE(result.value());
+}
+
+// A degenerate broadcast that does not actually expand (upper size == modulus)
+// is injective.
+TEST(IsInputNonInjectiveTest, BroadcastNonExpandingIsInjective) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {1}, b.getF16Type());
+  BottomUpTMBuilder tm(b, {"a"}, {1}, loc);
+  tm.broadcast({0}, {1});
+  Value v = applyTransform(b, loc, base, tm.get());
+
+  FailureOr<bool> result = isInputNonInjective(v);
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_FALSE(result.value());
+}
+
+// A chain of injective transforms stays injective.
+TEST(IsInputNonInjectiveTest, InjectiveChainIsInjective) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {24}, b.getF16Type());
+  BottomUpTMBuilder tm0(b, {"a"}, {24}, loc);
+  tm0.unmerge({"x", "y"}, {0, 1}, "a", {4, 6});
+  TransformMapAttr attr0 = tm0.get();
+  Value v0 = applyTransform(b, loc, base, attr0);
+
+  BottomUpTMBuilder tm1 = BottomUpTMBuilder::above(tm0, attr0);
+  tm1.passThrough({"x", "y"});
+  Value v1 = applyTransform(b, loc, v0, tm1.get());
+
+  FailureOr<bool> result = isInputNonInjective(v1);
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_FALSE(result.value());
+}
+
+// A fusion op (arith.addf) with one reloading operand is non-injective: the
+// walk must follow every operand and OR the results together.
+TEST(IsInputNonInjectiveTest, FusionWithOneReloadingOperand) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  // Injective operand: passthrough over a [2,3,4] tensor.
+  Value baseA = makeConstant(b, loc, {2, 3, 4}, b.getF32Type());
+  BottomUpTMBuilder tmA(b, {"x", "y", "z"}, {2, 3, 4}, loc);
+  tmA.passThrough({"x", "y", "z"});
+  Value a = applyTransform(b, loc, baseA, tmA.get());
+
+  // Reloading operand: embed producing the same [2,3,4] shape.
+  Value baseB = makeConstant(b, loc, {24}, b.getF32Type());
+  BottomUpTMBuilder tmB(b, {"a"}, {24}, loc);
+  tmB.embed({"x", "y", "z"}, {0, 1, 2}, {2, 3, 4}, "a", {6, 2, 1});
+  Value bVal = applyTransform(b, loc, baseB, tmB.get());
+
+  auto fused = arith::AddFOp::create(b, loc, a, bVal);
+
+  FailureOr<bool> result = isInputNonInjective(fused.getResult());
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_TRUE(result.value());
+}
+
+// An unexpected/unsupported op in the chain yields a failure.
+TEST(IsInputNonInjectiveTest, UnexpectedOpFails) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  auto tensorType = RankedTensorType::get({16}, b.getF16Type());
+  auto cast = UnrealizedConversionCastOp::create(b, loc, TypeRange{tensorType},
+                                                 ValueRange{});
+
+  FailureOr<bool> result = isInputNonInjective(cast.getResult(0));
+  EXPECT_TRUE(failed(result));
+}
+
 } // end anonymous namespace

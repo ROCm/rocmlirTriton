@@ -137,6 +137,28 @@ pm->addNestedPass<mlir::triton::FuncOp>(
     mlir::createTritonAMDGPUMoveUpPrologueLoads());
 ```
 
+### 5.4 Mirrored Enums / Attributes (from `TritonAttrDefs.td`)
+
+Some Triton enums are hand-replicated in the Rock dialect so we can carry the
+value through Rock IR (and map it back onto Triton when lowering) without taking
+a TableGen dependency on the Triton dialect. These are **manual copies** and
+will silently drift if upstream changes them, so diff the source on every bump:
+
+| Rock copy | Upstream source | What to check |
+|-----------|-----------------|---------------|
+| `CacheModifier` / `CacheModifierAttr` in `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` | `TT_CacheModifierAttr` in `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` | Names **and** integer values must match one-to-one (currently `none=1, ca=2, cg=3, wb=4, cs=5, wt=6, cv=7`). The Rock->Triton lowering relies on the integer values lining up. |
+
+```bash
+cd external/triton
+git diff ${OLD_COMMIT}..${NEW_COMMIT} -- include/triton/Dialect/Triton/IR/TritonAttrDefs.td
+```
+
+If upstream adds, renames, or renumbers a `CacheModifier` case, update the Rock
+copy to match. If a new case is added, also extend `verifyLoadCacheModifier()`
+in `mlir/lib/Dialect/Rock/IR/RockDialect.cpp` (the `switch` is exhaustive and
+classifies each modifier as load-legal or store-only) and the
+`getNameForCacheModifier()` helper.
+
 ### 5.5 Architecture Database (`AmdArchDb.cpp`)
 
 `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` maps AMD GPU architectures to hardware
@@ -308,6 +330,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `third_party/amd/python/triton_amd.cc`
 - [ ] Generate diff for `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp`
 - [ ] Generate diff for `third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h`
+- [ ] Generate diff for `include/triton/Dialect/Triton/IR/TritonAttrDefs.td` and reconcile the mirrored `CacheModifier` enum (see section 5.4)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
@@ -372,6 +395,8 @@ If new Triton headers are needed:
 | Architecture database | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
 | Triton utility replicas | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
 | `schedule_hint` parser | `mlir/lib/Dialect/Rock/utility/KnobUtils.cpp` |
+| Mirrored `CacheModifier` enum | `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` |
+| Triton `CacheModifier` source | `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` |
 | Triton compiler.py | `external/triton/third_party/amd/backend/compiler.py` |
 | Triton llvm.cc | `external/triton/python/src/llvm.cc` |
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |

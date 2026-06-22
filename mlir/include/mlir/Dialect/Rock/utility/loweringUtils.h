@@ -159,7 +159,8 @@ Type getAccType(Type elemA, Type elemB);
 Value loadTile(PatternRewriter &rewriter, Location loc, Value in, Value kIter,
                StringRef dName, rock::layout::GridCoordinates gridCoords,
                int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
-               SmallVector<int64_t, 3> &bidGridLengths);
+               SmallVector<int64_t, 3> &bidGridLengths,
+               mlir::rock::CacheModifier cache);
 
 Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
                           ArrayRef<int64_t> shape, Type accType);

@@ -45,7 +45,7 @@ func.func @test_i4_sub_byte_extui(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 4, 4] -> [1, 4, 4]>
     : tensor<1x4x4xi4> to tensor<1x1x1x1x4x4xi4>
-  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0]
+  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x4x4xi4> -> tensor<4x4xi4>
   %ext = arith.extui %data_tile : tensor<4x4xi4> to tensor<4x4xi8>
   %ext_f16 = arith.uitofp %ext : tensor<4x4xi8> to tensor<4x4xf16>
@@ -63,7 +63,7 @@ func.func @test_i4_sub_byte_extui(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 4, 4] -> [1, 4, 4]>
     : tensor<1x4x4xf16> to tensor<1x1x1x1x4x4xf16>
-  %scale_tile = rock.blockwise_load %scale_6d[%c0, %c0, %c0, %c0]
+  %scale_tile = rock.blockwise_load %scale_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x4x4xf16> -> tensor<4x4xf16>
 
   // Dequant fusion: scale * data
@@ -82,7 +82,7 @@ func.func @test_i4_sub_byte_extui(
         <AddDim{1} ["n_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 4, 4] -> [1, 4, 4]>
     : tensor<1x4x4xf16> to tensor<1x1x1x1x4x4xf16>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x4x4xf16> -> tensor<4x4xf16>
 
   %cst = arith.constant dense<0.0> : tensor<4x4xf32>
@@ -131,7 +131,7 @@ func.func @test_i4_sub_byte_extsi(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 4, 4] -> [1, 4, 4]>
     : tensor<1x4x4xi4> to tensor<1x1x1x1x4x4xi4>
-  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0]
+  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x4x4xi4> -> tensor<4x4xi4>
   %ext = arith.extsi %data_tile : tensor<4x4xi4> to tensor<4x4xi8>
   %ext_f16 = arith.sitofp %ext : tensor<4x4xi8> to tensor<4x4xf16>
@@ -148,7 +148,7 @@ func.func @test_i4_sub_byte_extsi(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 4, 4] -> [1, 4, 4]>
     : tensor<1x4x4xf16> to tensor<1x1x1x1x4x4xf16>
-  %scale_tile = rock.blockwise_load %scale_6d[%c0, %c0, %c0, %c0]
+  %scale_tile = rock.blockwise_load %scale_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x4x4xf16> -> tensor<4x4xf16>
 
   %dequant = arith.mulf %ext_f16, %scale_tile : tensor<4x4xf16>
@@ -165,7 +165,7 @@ func.func @test_i4_sub_byte_extsi(
         <AddDim{1} ["n_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 4, 4] -> [1, 4, 4]>
     : tensor<1x4x4xf16> to tensor<1x1x1x1x4x4xf16>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x4x4xf16> -> tensor<4x4xf16>
 
   %cst = arith.constant dense<0.0> : tensor<4x4xf32>
@@ -208,7 +208,7 @@ func.func @test_i4_constant_in_fusion_chain(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 4, 4] -> [1, 4, 4]>
     : tensor<1x4x4xi4> to tensor<1x1x1x1x4x4xi4>
-  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0]
+  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x4x4xi4> -> tensor<4x4xi4>
   %ext = arith.extui %data_tile : tensor<4x4xi4> to tensor<4x4xi8>
   %ext_f16 = arith.uitofp %ext : tensor<4x4xi8> to tensor<4x4xf16>
@@ -355,14 +355,14 @@ func.func @test_i4_sub_byte_dynamic_shift(
   // enclosing scf.for and uses its induction variable as the K-loop counter.
   %cst = arith.constant dense<0.0> : tensor<4x4xf32>
   %result = scf.for %iv = %c0 to %c4 step %c1 iter_args(%acc = %cst) -> (tensor<4x4xf32>)  : i32 {
-    %data_tile = rock.blockwise_load %data_6d[%iv, %c0, %c0, %c0]
+    %data_tile = rock.blockwise_load %data_6d[%iv, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
       : tensor<4x1x1x1x4x4xi4> -> tensor<4x4xi4>
     %ext = arith.extui %data_tile : tensor<4x4xi4> to tensor<4x4xi8>
     %ext_f16 = arith.uitofp %ext : tensor<4x4xi8> to tensor<4x4xf16>
-    %scale_tile = rock.blockwise_load %scale_6d[%c0, %c0, %c0, %c0]
+    %scale_tile = rock.blockwise_load %scale_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
       : tensor<1x1x1x1x4x4xf16> -> tensor<4x4xf16>
     %dequant = arith.mulf %ext_f16, %scale_tile : tensor<4x4xf16>
-    %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+    %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
       : tensor<1x1x1x1x4x4xf16> -> tensor<4x4xf16>
     %g = rock.blockwise_gemm(%a_tile, %dequant, %acc)
       : tensor<4x4xf16>, tensor<4x4xf16>, tensor<4x4xf32> -> tensor<4x4xf32>
@@ -457,7 +457,7 @@ func.func @test_i4_sub_byte_static_shift(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 8, 4] -> [1, 8, 4]>
     : tensor<1x8x4xi4> to tensor<1x1x1x1x8x4xi4>
-  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0]
+  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x8x4xi4> -> tensor<8x4xi4>
   %ext = arith.extui %data_tile : tensor<8x4xi4> to tensor<8x4xi8>
   %ext_f16 = arith.uitofp %ext : tensor<8x4xi8> to tensor<8x4xf16>
@@ -476,7 +476,7 @@ func.func @test_i4_sub_byte_static_shift(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 8, 4] -> [1, 8, 4]>
     : tensor<1x8x4xf16> to tensor<1x1x1x1x8x4xf16>
-  %scale_tile = rock.blockwise_load %scale_6d[%c0, %c0, %c0, %c0]
+  %scale_tile = rock.blockwise_load %scale_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x8x4xf16> -> tensor<8x4xf16>
 
   %dequant = arith.mulf %ext_f16, %scale_tile : tensor<8x4xf16>
@@ -494,7 +494,7 @@ func.func @test_i4_sub_byte_static_shift(
         <AddDim{1} ["n_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 4, 8] -> [1, 4, 8]>
     : tensor<1x4x8xf16> to tensor<1x1x1x1x4x8xf16>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x4x8xf16> -> tensor<4x8xf16>
 
   // GEMM: A=[M,K]=[4,8] x B=[K,N]=[8,4] -> C=[M,N]=[4,4].
