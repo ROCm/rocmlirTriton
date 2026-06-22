@@ -201,7 +201,8 @@ func.func @test_nonsquare_tile(%arg0: tensor<4096xf16>) -> tensor<32x128xf16> at
 // -----
 
 // Verifies conv-style input transforms with padding=1 (same-size output).
-// Pad{1,1} produces bounds checks; Embed + Merge produce divsi/remsi.
+// Pad{1,1} produces bounds checks; Embed + Merge produce divui/remui (the
+// affine mod/floordiv lowering is unsigned, see visitModExpr).
 // CHECK-LABEL: @test_embed_conv_style
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<1048576xf32>)
 //      CHECK:   rock.extract_ptr %[[ARG0]]
@@ -209,8 +210,8 @@ func.func @test_nonsquare_tile(%arg0: tensor<4096xf16>) -> tensor<32x128xf16> at
 //      CHECK:   tt.expand_dims
 //      CHECK:   tt.make_range
 //      CHECK:   tt.expand_dims
-//      CHECK:   arith.divsi
-//      CHECK:   arith.remsi
+//      CHECK:   arith.divui
+//      CHECK:   arith.remui
 //      CHECK:   arith.cmpi
 //      CHECK:   arith.andi
 //      CHECK:   rock.blockwise_load_ptr
