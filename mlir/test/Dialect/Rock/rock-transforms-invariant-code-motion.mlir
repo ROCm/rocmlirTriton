@@ -24,7 +24,7 @@ func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>)
   %1 = scf.for %arg2 = %c0_i32 to %c4_i32 step %c1_i32 iter_args(%arg3 = %arg1) -> (tensor<64x64xf16>)  : i32 {
     %2 = rock.transform %0 by #transform_map1 : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
     %pointers, %mask = rock.transforms_to_ptr %2[%arg2, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-    %3 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %3 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
     scf.yield %3 : tensor<64x64xf16>
   }
   return %1 : tensor<64x64xf16>
@@ -62,7 +62,7 @@ func.func @hoist_index_iv(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) ->
     %iv = arith.index_cast %arg2 : index to i32
     %2 = rock.transform %0 by #transform_map1 : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
     %pointers, %mask = rock.transforms_to_ptr %2[%iv, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-    %3 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %3 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
     scf.yield %3 : tensor<64x64xf16>
   }
   return %1 : tensor<64x64xf16>
@@ -96,7 +96,7 @@ func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>)
     %2 = rock.transform %0 by #transform_map1 : tensor<1x254x128xf16> to tensor<1x256x128xf16>
     %3 = rock.transform %2 by #transform_map2 : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
     %pointers, %mask = rock.transforms_to_ptr %3[%arg2, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-    %4 = rock.blockwise_load_ptr %pointers[%mask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %4 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
     scf.yield %4 : tensor<64x64xf16>
   }
   return %1 : tensor<64x64xf16>
@@ -142,13 +142,13 @@ func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16
     // Filter tiling view + load.
     %f1 = rock.transform %f0 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]> : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
     %fptr, %fmask = rock.transforms_to_ptr %f1[%k, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-    %fload = rock.blockwise_load_ptr %fptr[%fmask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %fload = rock.blockwise_load_ptr %fptr[%fmask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
     // Input Pad (K 254 -> 256) makes the mask coordinate-dependent: not hoisted.
     %i1 = rock.transform %i0 by <affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2} ["kpad"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 256, 128] -> [1, 254, 128]> : tensor<1x254x128xf16> to tensor<1x256x128xf16>
     %i2 = rock.transform %i1 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]> : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
     %iptr, %imask = rock.transforms_to_ptr %i2[%k, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-    %iload = rock.blockwise_load_ptr %iptr[%imask] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %iload = rock.blockwise_load_ptr %iptr[%imask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
     %sum = arith.addf %fload, %iload : tensor<64x64xf16>
     scf.yield %sum : tensor<64x64xf16>
@@ -191,7 +191,7 @@ func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x
     // Tiling: k_loop (extra index 0, the iv) feeds gemmK; m feeds gemmM.
     %f2 = rock.transform %f1 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 256 + d4, d0 * 32 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{18, 32} ["k_loop", "k_iter"] at [0, 5] -> ["k"] at [2]>, <Unmerge{1, 256} ["m_block", "m_iter"] at [2, 4] -> ["m"] at [1]>, <AddDim{3136} ["n_block"] at [3] -> [] at []>] bounds = [18, 1, 1, 3136, 256, 32] -> [1, 256, 576]> : tensor<1x256x576xi8> to tensor<18x1x1x3136x256x32xi8>
     %fptr, %fmask = rock.transforms_to_ptr %f2[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<18x1x1x3136x256x32xi8> -> tensor<256x32xi32>, tensor<256x32xi1>
-    %fload = rock.blockwise_load_ptr %fptr[%fmask] : tensor<256x32xi32>, tensor<256x32xi1> -> tensor<256x32xi8>
+    %fload = rock.blockwise_load_ptr %fptr[%fmask] {cacheModifier = #rock<CacheModifier none>} : tensor<256x32xi32>, tensor<256x32xi1> -> tensor<256x32xi8>
     scf.yield %fload : tensor<256x32xi8>
   }
 
@@ -240,7 +240,7 @@ func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x
     // Tiling: k_loop (extra index 0, the iv) feeds gemmK; m feeds gemmM.
     %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 256 + d4, d0 * 32 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{18, 32} ["k_loop", "k_iter"] at [0, 5] -> ["k"] at [2]>, <Unmerge{1, 256} ["m_block", "m_iter"] at [2, 4] -> ["m"] at [1]>, <AddDim{3136} ["n_block"] at [3] -> [] at []>] bounds = [18, 1, 1, 3136, 256, 32] -> [1, 256, 576]> : tensor<1x256x576xi8> to tensor<18x1x1x3136x256x32xi8>
     %fptr, %fmask = rock.transforms_to_ptr %4[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<18x1x1x3136x256x32xi8> -> tensor<256x32xi32>, tensor<256x32xi1>
-    %fload = rock.blockwise_load_ptr %fptr[%fmask] : tensor<256x32xi32>, tensor<256x32xi1> -> tensor<256x32xi8>
+    %fload = rock.blockwise_load_ptr %fptr[%fmask] {cacheModifier = #rock<CacheModifier none>} : tensor<256x32xi32>, tensor<256x32xi1> -> tensor<256x32xi8>
     scf.yield %fload : tensor<256x32xi8>
   }
 

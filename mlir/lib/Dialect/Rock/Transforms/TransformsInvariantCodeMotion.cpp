@@ -336,8 +336,7 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
 
   // Walk the transform chain down to its root.
   SmallVector<TransformMapAttr> transforms;
-  auto [root, isBig] = untransform(op.getSource(), transforms);
-  (void)isBig;
+  auto [root, std::ignore] = untransform(op.getSource(), transforms);
   if (!isa<BlockArgument>(root))
     return bail("transform chain root is not a block argument");
   cand.rootBase = root;
@@ -371,7 +370,7 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
                 "incrementalize)");
 
   cand.op = op;
-  cand.unitStride = *stride;
+  cand.unitStride = stride.value();
   return true;
 }
 
