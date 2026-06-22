@@ -19,14 +19,18 @@
 // convert; every other target truncates one element at a time with the scalar
 // `v_cvt_f16_f32` form.
 
-// GFX90A-NOT:  v_cvt_pk_f16_f32
-// GFX90A:      v_cvt_f16_f32
-// GFX942-NOT:  v_cvt_pk_f16_f32
-// GFX942:      v_cvt_f16_f32
-// GFX1100-NOT: v_cvt_pk_f16_f32
-// GFX1100:     v_cvt_f16_f32
-// GFX1200-NOT: v_cvt_pk_f16_f32
-// GFX1200:     v_cvt_f16_f32
+// GFX90A-NOT:{{.*}}v_cvt_pk_f16_f32
+// GFX90A:{{.*}}v_cvt_f16_f32
+// GFX90A-NOT:{{.*}}v_cvt_pk_f16_f32
+// GFX942-NOT:{{.*}}v_cvt_pk_f16_f32
+// GFX942:{{.*}}v_cvt_f16_f32
+// GFX942-NOT:{{.*}}v_cvt_pk_f16_f32
+// GFX1100-NOT:{{.*}}v_cvt_pk_f16_f32
+// GFX1100:{{.*}}v_cvt_f16_f32
+// GFX1100-NOT:{{.*}}v_cvt_pk_f16_f32
+// GFX1200-NOT:{{.*}}v_cvt_pk_f16_f32
+// GFX1200:{{.*}}v_cvt_f16_f32
+// GFX1200-NOT:{{.*}}v_cvt_pk_f16_f32
 
-// GFX950:  v_cvt_pk_f16_f32
-// GFX1250: v_cvt_pk_f16_f32
+// GFX950:{{.*}}v_cvt_pk_f16_f32
+// GFX1250:{{.*}}v_cvt_pk_f16_f32
