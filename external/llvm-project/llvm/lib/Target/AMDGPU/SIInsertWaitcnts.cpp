@@ -221,6 +221,18 @@ static const unsigned instrsForExtendedCounterTypes[NUM_EXTENDED_INST_CNTS] = {
     AMDGPU::S_WAIT_STORECNT, AMDGPU::S_WAIT_SAMPLECNT, AMDGPU::S_WAIT_BVHCNT,
     AMDGPU::S_WAIT_KMCNT,    AMDGPU::S_WAIT_XCNT,      AMDGPU::S_WAIT_ASYNCCNT};
 
+// ASYNCMARK and WAIT_ASYNCMARK are meta instructions that emit no hardware
+// code but still need to be processed by this pass for async vmcnt tracking.
+static bool isNonWaitcntMetaInst(const MachineInstr &MI) {
+  switch (MI.getOpcode()) {
+  case AMDGPU::ASYNCMARK:
+  case AMDGPU::WAIT_ASYNCMARK:
+    return false;
+  default:
+    return MI.isMetaInstruction();
+  }
+}
+
 static bool updateVMCntOnly(const MachineInstr &Inst) {
   return (SIInstrInfo::isVMEM(Inst) && !SIInstrInfo::isFLAT(Inst)) ||
          SIInstrInfo::isFLATGlobal(Inst) || SIInstrInfo::isFLATScratch(Inst);
@@ -1787,7 +1799,7 @@ bool WaitcntGeneratorPreGFX12::applyPreexistingWaitcnt(
   for (auto &II :
        make_early_inc_range(make_range(OldWaitcntInstr.getIterator(), It))) {
     LLVM_DEBUG(dbgs() << "pre-existing iter: " << II);
-    if (II.isMetaInstruction()) {
+    if (isNonWaitcntMetaInst(II)) {
       LLVM_DEBUG(dbgs() << "skipped meta instruction\n");
       continue;
     }
@@ -2033,7 +2045,7 @@ bool WaitcntGeneratorGFX12Plus::applyPreexistingWaitcnt(
   for (auto &II :
        make_early_inc_range(make_range(OldWaitcntInstr.getIterator(), It))) {
     LLVM_DEBUG(dbgs() << "pre-existing iter: " << II);
-    if (II.isMetaInstruction()) {
+    if (isNonWaitcntMetaInst(II)) {
       LLVM_DEBUG(dbgs() << "skipped meta instruction\n");
       continue;
     }
@@ -2428,7 +2440,7 @@ bool SIInsertWaitcnts::generateWaitcntInstBefore(
   LLVM_DEBUG(dbgs() << "\n*** GenerateWaitcntInstBefore: "; MI.print(dbgs()););
   setForceEmitWaitcnt();
 
-  assert(!MI.isMetaInstruction());
+  assert(!isNonWaitcntMetaInst(MI));
 
   AMDGPU::Waitcnt Wait;
   const unsigned Opc = MI.getOpcode();
@@ -3024,6 +3036,13 @@ bool WaitcntBrackets::mergeAsyncMarks(ArrayRef<MergeInfo> MergeInfos,
   unsigned OtherSize = OtherMarks.size();
   unsigned OurSize = AsyncMarks.size();
   unsigned MergeCount = std::min(OtherSize, OurSize);
+  // OtherMarks is empty -> OtherSize == 0 -> MergeCount == 0. Our existing
+  // marks are the conservative result; return early to avoid passing
+  // MergeCount == 0 to seq_inclusive which asserts Begin <= End.
+  // Cherry-pick of upstream LLVM commit 81d618b6bc1e (PR #193499); drop this
+  // patch on the next Triton bump that pulls that fix into the pinned LLVM.
+  if (MergeCount == 0)
+    return StrictDom;
   for (auto Idx : seq_inclusive<unsigned>(1, MergeCount)) {
     for (auto T : inst_counter_types(Context->MaxCounter)) {
       StrictDom |= mergeScore(MergeInfos[T], AsyncMarks[OurSize - Idx][T],
@@ -3277,7 +3296,7 @@ bool SIInsertWaitcnts::insertWaitcntInBlock(MachineFunction &MF,
                                          E = Block.instr_end();
        Iter != E; ++Iter) {
     MachineInstr &Inst = *Iter;
-    if (Inst.isMetaInstruction())
+    if (isNonWaitcntMetaInst(Inst))
       continue;
     // Track pre-existing waitcnts that were added in earlier iterations or by
     // the memory legalizer.
