@@ -306,18 +306,16 @@ def RockTransformsInvariantCodeMotionPass
     Loop-invariant code motion for `rock.transforms_to_ptr` ops nested 
     inside `scf.for` loops. Runs before TransformsToPointerArith.
 
-    When the pointer offset produced by a `transforms_to_ptr` op is an
-    affine-linear function of the loop induction variable and the transform
-    chain has no validity-impacting maps (so the mask is loop invariant), the
-    per-iteration recomputation of the (potentially flattened) affine map is
-    replaced by a loop-carried pointer tensor: the base pointer and a constant
-    stride are computed once in the preheader, and an `scf.for` iter_arg
-    accumulates the stride each iteration. This avoids the register pressure of
-    re-expanding floordiv/mod terms every iteration and mirrors rocMLIR's
-    index-diff coordinate iteration.
+    The pass hoists only if 2 conditions are met:
+    1. The pointer offset is an affine-linear function of the loop induction variable.
+    2. The transform chain has no validity-impacting maps (so the mask is loop invariant).
 
-    Padded convolutions (whose mask genuinely varies with the iv) are left
-    untouched because their chain impacts validity.
+    It fully supports the offset preserving ops with linear maps:
+    PassThrough, Slice, Pad, Embed, Unmerge, ConstDim, AddDim.
+
+    Merge and Broadcast are supported only conditionally:
+    - A Merge only when its lower sub-dims nest contiguously (carry-neutral)
+    - A Broadcast only when no IV diff flows into the broadcast dim
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "scf::SCFDialect", "arith::ArithDialect",
