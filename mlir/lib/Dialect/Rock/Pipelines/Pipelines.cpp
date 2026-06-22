@@ -177,6 +177,12 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::triton::gpu::createTritonGPUOptimizeThreadLocality());
   pm->addPass(mlir::createTritonAMDGPUAccelerateMatmul(
       {options.arch, options.matrixInstrNonkdim, options.kpack}));
+  // --- rocmlirTriton pass ----
+  // Must run after accelerate-matmul (consumes the accelerator dot) and before
+  // remove-layout-conversions (folds away the convert_layout ops it inserts).
+  pm->addPass(rock::createRockSetMatmulOutputTransposePass());
+  // --- rocmlirTriton pass ----
+
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   // TODO ROCm Check if we want to compare MI100 and greater
   pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
@@ -465,6 +471,11 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithCSE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
+
+  // Must run after lower-stores (needs the rock.blockwise_store) and before
+  // lower-blockwise-to-ptr (which lowers it away).
+  addWithDCE(rock::createRockAddTritonMetadataPass());
+
   // We run this pass after lower-stores to catch redundant casts that cannot be
   // flagged earlier due to loads/stores that sit between truncf/extf pairs.
   if (!options.disableFastMath)

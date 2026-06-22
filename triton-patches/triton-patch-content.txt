@@ -5,6 +5,7 @@ This directory holds patches against the Triton submodule
 (external/triton/).
 
 ----------------------------------------------------------------------
+patch-wmma-preserve-discardable-attrs.patch
 patch10290.patch
 patch10450.patch
 patch10498.patch
@@ -26,3 +27,21 @@ patch10498.patch
 patch10585.patch
   Fixes a case where the block ping pong schedule was wrongly being applied
   in situations where it was not safe to do so because of non-uniform masks.
+  
+patch-wmma-preserve-discardable-attrs.patch
+  Lets rocmlirTriton choose the WMMA result transposition downstream instead
+  of inside Triton.
+
+  rocmlirTriton computes a `rock.o_transposed` discardable attribute at the
+  rock level (rock-add-triton-metadata, run right after rock-lower-stores,
+  using the store destination's getMaxVectorization), carries it onto the
+  lowered tt.dot/tt.dot_scaled (RockToTTIR), and finally consumes it after
+  accelerate-matmul (rock-set-matmul-output-transpose) to set the WMMA
+  isTransposed flag so the epilogue store coalesces.
+
+  This patch is the small piece that has to live inside Triton: it makes
+  AccelerateAMDMatmul copy the discardable attributes from the original dot
+  onto every freshly-created accelerator dot (MFMA / WMMA / scaled / v_dot /
+  FMA paths) so downstream metadata such as `rock.o_transposed` survives the
+  rewrite. It adds no Triton-side decision logic; the orientation is chosen
+  by the downstream rock pass.
