@@ -653,7 +653,7 @@ class ConvConfiguration(PerfConfiguration):
             # script, not benchmarked against MIOpen).
             f"-y {self.y} -x {self.x} -p {self.padding_hl} -q {self.padding_wl} " +
             f"-u {self.conv_stride_h} -v {self.conv_stride_w} -l {self.dilation_h} " +
-            f"-j {self.dilation_w} -m conv -g {self.group} -t 1")
+            f"-j {self.dilation_w} -g {self.group}")
 
     def __init__(self,
                  dtype: str,
