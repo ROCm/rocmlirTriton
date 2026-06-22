@@ -1833,7 +1833,6 @@ def run_config_with_mlir(config: PerfConfiguration,
 
     commandline_options = config.generate_mlir_driver_commandline(rocmlir_gen_flags, kernel_repeats)
     rocmlir_gen_cmd = paths.mlir_paths.rocmlir_gen_path + ' ' + commandline_options
-    print(rocmlir_gen_cmd)
     if debug:
         print("Running MLIR Benchmark: ", repr(config))
 

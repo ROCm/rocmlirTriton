@@ -250,11 +250,20 @@ public:
 
   /// Euclidean modulo operation: negative RHS is not allowed.
   ///
-  /// The affine-expression operands produced by the Rock coordinate-transform
-  /// lowering are non-negative (they are tensor/GEMM coordinates), and the
-  /// divisor is positive, so euclidean `mod` coincides with the unsigned
-  /// remainder. We therefore emit a plain `arith.remui` instead of a signed
-  /// remainder wrapped in a negative-value correction `select`.
+  /// We lower this to a plain `arith.remui` (divisor is verified positive)
+  /// rather than the signed remainder wrapped in a negative-value correction
+  /// `select`. For every lane whose result is actually observed, the dividend
+  /// is non-negative, so euclidean `mod` coincides with the unsigned remainder:
+  ///   - The transforms that emit `mod`/`floordiv` (`Merge`, `Broadcast`) only
+  ///     ever consume iteration coordinates that trace back to `make_range` /
+  ///     block-thread ids, i.e. non-negative values. (`Merge`'s own affine-map
+  ///     construction already assumes this; see assembleMapFor.)
+  ///   - Negative coordinates *can* arise, but only as outputs of `Pad`/`Embed`
+  ///     halo lanes. Those are bounds-checked at the point they are produced,
+  ///     validity is AND-accumulated (monotonic, so a masked lane can never be
+  ///     un-masked), and the eventual `tt.load` uses that mask with `other =
+  ///     0`. So a "wrong" unsigned result on such a lane is never dereferenced
+  ///     nor observed.
   ///
   /// Besides being cheaper, this keeps the result analyzable by Triton's
   /// AxisInfoAnalysis. The previous `srem; cmpi slt 0; select` form collapsed
@@ -279,12 +288,13 @@ public:
 
   /// Floor division operation (rounds towards negative infinity).
   ///
-  /// As with `visitModExpr`, the operands are non-negative and the divisor is
-  /// positive, so floor division coincides with unsigned division. We emit
-  /// `arith.divui` directly rather than the signed quotient guarded by a
-  /// negative-value correction `select`. This is cheaper and, crucially, keeps
-  /// pointer contiguity visible to Triton's AxisInfoAnalysis so that loads can
-  /// be vectorized (see the comment on `visitModExpr`).
+  /// As with `visitModExpr`, the divisor is positive and the dividend is
+  /// non-negative for every observed lane, so floor division coincides with
+  /// unsigned division. We emit `arith.divui` directly rather than the signed
+  /// quotient guarded by a negative-value correction `select`. This is cheaper
+  /// and, crucially, keeps pointer contiguity visible to Triton's
+  /// AxisInfoAnalysis so that loads can be vectorized (see `visitModExpr` for
+  /// why negative-coordinate lanes are masked and therefore irrelevant).
   Value visitFloorDivExpr(AffineBinaryOpExpr expr) {
     if (auto rhsConst = dyn_cast<AffineConstantExpr>(expr.getRHS())) {
       if (rhsConst.getValue() <= 0) {
@@ -302,10 +312,11 @@ public:
 
   /// Ceiling division operation (rounds towards positive infinity).
   ///
-  /// As with `visitModExpr`, the operands are non-negative and the divisor is
-  /// positive, so `ceildiv(a, b) == (a + b - 1) udiv b`. This avoids the signed
-  /// negative-value correction `select`, keeping the result analyzable by
-  /// Triton's AxisInfoAnalysis (see the comment on `visitModExpr`).
+  /// As with `visitModExpr`, the divisor is positive and the dividend is
+  /// non-negative for every observed lane, so `ceildiv(a, b) == (a + b - 1)
+  /// udiv b`. This avoids the signed negative-value correction `select`,
+  /// keeping the result analyzable by Triton's AxisInfoAnalysis (see the
+  /// comment on `visitModExpr`).
   Value visitCeilDivExpr(AffineBinaryOpExpr expr) {
     if (auto rhsConst = dyn_cast<AffineConstantExpr>(expr.getRHS())) {
       if (rhsConst.getValue() <= 0) {
