@@ -30,7 +30,10 @@ import git
 def get_diff(base_commit, ignore_external_files: bool) -> Tuple[bool, str]:
     command = f"git-clang-format --diff {base_commit}"
     if ignore_external_files:
-        command = f"git-clang-format --diff {base_commit} $(git diff --name-only {base_commit} | grep -v '^external/')"
+        # Restrict formatting to changed files outside the vendored external/
+        # tree.
+        command = (f"git-clang-format --diff {base_commit} -- "
+                   f"$(git diff --name-only --diff-filter=d {base_commit} | grep -v '^external/')")
     diff_run = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     is_diff_run_succesful = diff_run.returncode <= 1
     diff = diff_run.stdout.decode()
@@ -109,7 +112,13 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
     """Apply clang-tidy and return if no issues were found.
   Extracted from https://github.com/google/llvm-premerge-checks/blob/master/scripts/clang_tidy_report.py"""
 
-    r = subprocess.run(f'git diff -U0 --no-prefix {base_commit}',
+    # Exclude the vendored upstream trees from the diff entirely so clang-tidy
+    # is never invoked on external/ files. Without this, clang-tidy-diff.py can
+    # timeout on large diffs.
+    diff_command = f'git diff -U0 --no-prefix {base_commit}'
+    if ignore_external_files:
+        diff_command += " -- . ':!external'"
+    r = subprocess.run(diff_command,
                        shell=True,
                        stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE)
@@ -135,8 +144,8 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
     extra_args = ['-extra-arg=-std=c++17']
     extra_args += [f'-extra-arg=-I{inc}' for inc in triton_includes]
     p = subprocess.Popen([
-        './external/triton/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py',
-        '-p0', '-quiet', '-j',
+        './external/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py', '-p0',
+        '-quiet', '-j',
         str(cpu_count), *extra_args
     ],
                          stdout=subprocess.PIPE,
