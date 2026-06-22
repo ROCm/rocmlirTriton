@@ -378,9 +378,27 @@ struct ReducedPtr {
   Value accInit;        // zero offset accumulator initializer
 };
 
+/// True if `loop` is part of a loop nest: it either sits inside another
+/// `scf.for` or contains one in its body.
+///
+/// The base-pointer + carried-offset recurrence this pass introduces is only
+/// lowered correctly by FuncToTritonFunc for a single, non-nested loop. When
+/// loops are nested (e.g. attention's two GEMMs produce a 16x16 and a 32x16
+/// recurrence across an outer/inner pair), FuncToTritonFunc corrupts the IR.
+static bool loopParticipatesInNest(scf::ForOp loop) {
+  if (loop->getParentOfType<scf::ForOp>())
+    return true;
+  return loop.getBody()
+      ->walk([](scf::ForOp) { return WalkResult::interrupt(); })
+      .wasInterrupted();
+}
+
 /// Try to LICM all eligible transforms_to_ptr ops in `loop`.
 /// Returns true (and rewrites the loop) if at least one was reduced.
 static bool tryHoistInvariantTransforms(scf::ForOp loop) {
+  if (loopParticipatesInNest(loop))
+    return false;
+
   SmallVector<Candidate> candidates;
   for (Operation &o : loop.getBody()->without_terminator()) {
     if (auto tp = dyn_cast<TransformsToPtrOp>(&o)) {
