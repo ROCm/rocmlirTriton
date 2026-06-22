@@ -2210,7 +2210,7 @@ struct AtomicRMWOpConversion
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 
-    auto binOp = matchAtomicOp(op.getAtomicRmwOp());
+    auto binOp = matchAtomicOp(op.getAtomicRmwOp(), op.getVal().getType());
     if (!binOp)
       return rewriter.notifyMatchFailure(op, "Unsupported RMW operation");
 
