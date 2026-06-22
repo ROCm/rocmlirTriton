@@ -1,4 +1,4 @@
-ARG ROCM_VERSION=7.0
+ARG ROCM_VERSION=7.2
 FROM rocm/mlir:rocm${ROCM_VERSION}-latest
 ARG ROCM_PATH=/opt/rocm-${ROCM_VERSION}
 
