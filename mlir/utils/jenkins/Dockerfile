@@ -104,6 +104,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # ^ pip install pandas... is needed to output performance tests and regenerate test suites
     # Has a copy of the requirements.txt install bit for the new python version
 
+# hip-python provides the `hip` module that perfRunner.py / tuningRunner.py
+# import to query devices and run tuning on the GPU.
+RUN pip3 install --index-url https://test.pypi.org/simple/ hip-python
+
 # Need "render" group because some CI hosts have /dev/kfd under it.
 RUN groupadd -f render
 
