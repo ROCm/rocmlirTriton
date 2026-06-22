@@ -48,6 +48,7 @@ using namespace mlir::arith;
 using namespace mlir::rock;
 
 namespace {
+
 struct RockTransformsToPointerArithPass
     : public rock::impl::RockTransformsToPointerArithPassBase<
           RockTransformsToPointerArithPass> {
@@ -208,12 +209,6 @@ ensureCompatible(OpBuilder &builder, Location loc, Value lhs, Value rhs) {
   return {results[0], results[1]};
 }
 
-static std::tuple<Value, Value, Value>
-ensureCompatible3(OpBuilder &builder, Location loc, Value a, Value b, Value c) {
-  auto results = ensureCompatibleShapes(builder, loc, {a, b, c});
-  return {results[0], results[1], results[2]};
-}
-
 /// Adapted from mlir/lib/Dialect/Affine/Utils/Utils.cpp (upstream MLIR).
 /// The upstream version operates on scalar Values; this version adds
 /// ensureCompatible() calls to handle tensor operands that may need
@@ -254,14 +249,18 @@ public:
   }
 
   /// Euclidean modulo operation: negative RHS is not allowed.
-  /// Remainder of the euclidean integer division is always non-negative.
   ///
-  /// Implemented as
+  /// The affine-expression operands produced by the Rock coordinate-transform
+  /// lowering are non-negative (they are tensor/GEMM coordinates), and the
+  /// divisor is positive, so euclidean `mod` coincides with the unsigned
+  /// remainder. We therefore emit a plain `arith.remui` instead of a signed
+  /// remainder wrapped in a negative-value correction `select`.
   ///
-  ///     a mod b =
-  ///         let remainder = srem a, b;
-  ///             negative = a < 0 in
-  ///         select negative, remainder + b, remainder.
+  /// Besides being cheaper, this keeps the result analyzable by Triton's
+  /// AxisInfoAnalysis. The previous `srem; cmpi slt 0; select` form collapsed
+  /// pointer contiguity to 1 (defeating global-load vectorization), because the
+  /// `select` takes the gcd with the comparison's constancy, which is unknown
+  /// (AxisInfo cannot prove the operand is non-negative across the tile).
   Value visitModExpr(AffineBinaryOpExpr expr) {
     if (auto rhsConst = dyn_cast<AffineConstantExpr>(expr.getRHS())) {
       if (rhsConst.getValue() <= 0) {
@@ -275,37 +274,17 @@ public:
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
     auto [l, r] = ensureCompatible(builder, loc, lhs, rhs);
-    Value remainder = arith::RemSIOp::create(builder, loc, l, r);
-    Value zeroCst =
-        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(0));
-    auto [rem, z] = ensureCompatible(builder, loc, remainder, zeroCst);
-    Value isRemainderNegative =
-        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::slt, rem, z);
-    auto [rem2, r2] = ensureCompatible(builder, loc, remainder, r);
-    Value correctedRemainder = arith::AddIOp::create(builder, loc, rem2, r2);
-    auto [cond, tv, fv] = ensureCompatible3(builder, loc, isRemainderNegative,
-                                            correctedRemainder, remainder);
-    Value result = arith::SelectOp::create(builder, loc, cond, tv, fv);
-    return result;
+    return arith::RemUIOp::create(builder, loc, l, r);
   }
 
   /// Floor division operation (rounds towards negative infinity).
   ///
-  /// For positive divisors, it can be implemented without branching and with a
-  /// single division operation as
-  ///
-  ///        a floordiv b =
-  ///            let negative = a < 0 in
-  ///            let absolute = negative ? -a - 1 : a in
-  ///            let quotient = absolute / b in
-  ///                negative ? -quotient - 1 : quotient
-  ///
-  /// Note: this lowering does not use arith.floordivsi because the lowering of
-  /// that to arith.divsi (see populateCeilFloorDivExpandOpsPatterns) generates
-  /// not one but two arith.divsi. That could be changed to one divsi, but one
-  /// way or another, going through arith.floordivsi will result in more complex
-  /// IR because arith.floordivsi is more general than affine floordiv in that
-  /// it supports negative RHS.
+  /// As with `visitModExpr`, the operands are non-negative and the divisor is
+  /// positive, so floor division coincides with unsigned division. We emit
+  /// `arith.divui` directly rather than the signed quotient guarded by a
+  /// negative-value correction `select`. This is cheaper and, crucially, keeps
+  /// pointer contiguity visible to Triton's AxisInfoAnalysis so that loads can
+  /// be vectorized (see the comment on `visitModExpr`).
   Value visitFloorDivExpr(AffineBinaryOpExpr expr) {
     if (auto rhsConst = dyn_cast<AffineConstantExpr>(expr.getRHS())) {
       if (rhsConst.getValue() <= 0) {
@@ -317,41 +296,16 @@ public:
     auto rhs = visit(expr.getRHS());
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
-    Value zeroCst =
-        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(0));
-    Value negOneCst =
-        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(-1));
-    auto [l, z] = ensureCompatible(builder, loc, lhs, zeroCst);
-    Value negative =
-        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::slt, l, z);
-    auto [n, l2] = ensureCompatible(builder, loc, negOneCst, lhs);
-    Value negatedDecremented = arith::SubIOp::create(builder, loc, n, l2);
-    auto [cond1, tv1, fv1] =
-        ensureCompatible3(builder, loc, negative, negatedDecremented, lhs);
-    Value dividend = arith::SelectOp::create(builder, loc, cond1, tv1, fv1);
-    auto [div, r] = ensureCompatible(builder, loc, dividend, rhs);
-    Value quotient = arith::DivSIOp::create(builder, loc, div, r);
-    auto [n2, q] = ensureCompatible(builder, loc, negOneCst, quotient);
-    Value correctedQuotient = arith::SubIOp::create(builder, loc, n2, q);
-    auto [cond2, tv2, fv2] =
-        ensureCompatible3(builder, loc, negative, correctedQuotient, quotient);
-    Value result = arith::SelectOp::create(builder, loc, cond2, tv2, fv2);
-    return result;
+    auto [l, r] = ensureCompatible(builder, loc, lhs, rhs);
+    return arith::DivUIOp::create(builder, loc, l, r);
   }
 
   /// Ceiling division operation (rounds towards positive infinity).
   ///
-  /// For positive divisors, it can be implemented without branching and with a
-  /// single division operation as
-  ///
-  ///     a ceildiv b =
-  ///         let negative = a <= 0 in
-  ///         let absolute = negative ? -a : a - 1 in
-  ///         let quotient = absolute / b in
-  ///             negative ? -quotient : quotient + 1
-  ///
-  /// Note: not using arith.ceildivsi for the same reason as explained in the
-  /// visitFloorDivExpr comment.
+  /// As with `visitModExpr`, the operands are non-negative and the divisor is
+  /// positive, so `ceildiv(a, b) == (a + b - 1) udiv b`. This avoids the signed
+  /// negative-value correction `select`, keeping the result analyzable by
+  /// Triton's AxisInfoAnalysis (see the comment on `visitModExpr`).
   Value visitCeilDivExpr(AffineBinaryOpExpr expr) {
     if (auto rhsConst = dyn_cast<AffineConstantExpr>(expr.getRHS())) {
       if (rhsConst.getValue() <= 0) {
@@ -363,30 +317,14 @@ public:
     auto rhs = visit(expr.getRHS());
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
-    Value zeroCst =
-        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(0));
     Value oneCst =
         arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(1));
-    auto [l, z] = ensureCompatible(builder, loc, lhs, zeroCst);
-    Value nonPositive =
-        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sle, l, z);
-    auto [z2, l2] = ensureCompatible(builder, loc, zeroCst, lhs);
-    Value negated = arith::SubIOp::create(builder, loc, z2, l2);
-    auto [l3, o] = ensureCompatible(builder, loc, lhs, oneCst);
-    Value decremented = arith::SubIOp::create(builder, loc, l3, o);
-    auto [cond1, tv1, fv1] =
-        ensureCompatible3(builder, loc, nonPositive, negated, decremented);
-    Value dividend = arith::SelectOp::create(builder, loc, cond1, tv1, fv1);
-    auto [div, r] = ensureCompatible(builder, loc, dividend, rhs);
-    Value quotient = arith::DivSIOp::create(builder, loc, div, r);
-    auto [z3, q] = ensureCompatible(builder, loc, zeroCst, quotient);
-    Value negatedQuotient = arith::SubIOp::create(builder, loc, z3, q);
-    auto [q2, o2] = ensureCompatible(builder, loc, quotient, oneCst);
-    Value incrementedQuotient = arith::AddIOp::create(builder, loc, q2, o2);
-    auto [cond2, tv2, fv2] = ensureCompatible3(
-        builder, loc, nonPositive, negatedQuotient, incrementedQuotient);
-    Value result = arith::SelectOp::create(builder, loc, cond2, tv2, fv2);
-    return result;
+    auto [r, o] = ensureCompatible(builder, loc, rhs, oneCst);
+    Value divisorMinusOne = arith::SubIOp::create(builder, loc, r, o);
+    auto [l, dm1] = ensureCompatible(builder, loc, lhs, divisorMinusOne);
+    Value numerator = arith::AddIOp::create(builder, loc, l, dm1);
+    auto [num, r2] = ensureCompatible(builder, loc, numerator, rhs);
+    return arith::DivUIOp::create(builder, loc, num, r2);
   }
 
   Value visitConstantExpr(AffineConstantExpr expr) {
@@ -552,6 +490,7 @@ struct TransformsToPtrRewritePattern
     for (const auto &[composedMap, transform] : composedMaps) {
       if (!composedMap) // empty transformations
         continue;
+
       FailureOr<AffineResults> transformed =
           expandAffineMap(b, loc, composedMap, computed);
       if (failed(transformed))

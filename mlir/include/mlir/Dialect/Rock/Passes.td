@@ -281,6 +281,23 @@ def RockPreserveMaskedLoadSemanticsPass
                            "arith::ArithDialect"];
 }
 
+def RockCollapseContiguousMergesPass
+    : Pass<"rock-collapse-contiguous-merges", "::mlir::func::FuncOp"> {
+  let summary = "Collapse contiguous merges in rock.transform chains";
+  let description = [{
+    This pass runs BEFORE TransformsToPointerArith. It rewrites the transform
+    chains feeding loads/stores so that lower dimensions of a `Merge` that are
+    provably contiguous in the underlying memory layout are fused into a single
+    wider dimension (see `collapseContiguousMerges`). Keeping the contiguous
+    free dimension intact, instead of letting it be decomposed and recomposed
+    through an im2col-style coordinate transform, yields a composed affine map
+    whose offset along that dimension stays stride-1. That in turn lets Triton's
+    AxisInfoAnalysis recover the real pointer contiguity and vectorize the
+    resulting loads, which the flattened/partial-contiguity form defeats.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
 def RockTransformsToPointerArithPass
     : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
   let summary =

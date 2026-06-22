@@ -861,68 +861,195 @@ mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
   return VectorizationResult{/*max=*/result, /*bufferVectorSize=*/1};
 }
 
+// Outcome of tracing a single (upper) dimension of `op` one step toward memory.
+namespace {
+enum class TraceKind { Abort, Consumed, Continue };
+struct TraceStep {
+  TraceKind kind;
+  uint32_t lowerDim = 0; // valid only when kind == Continue
+};
+} // namespace
+
+// Follow upper dimension `upperDim` of `op` to the matching lower dimension.
+// A contiguous-group member may only travel through size-preserving transforms
+// (PassThrough / zero Pad) and must ultimately be recombined by an Unmerge.
+// Anything else (Embed, Merge, AddDim, Slice, Broadcast, ConstDim, or non-zero
+// padding) means we cannot safely resize the dimension, so we abort.
+static TraceStep traceDownOneDim(TransformOp op, uint32_t upperDim) {
+  TransformMapAttr map = op.getTransform();
+  for (TransformAttr t : map.getOps()) {
+    ArrayRef<uint32_t> upperDims = t.getUpperDims();
+    const auto *it = llvm::find(upperDims, upperDim);
+    if (it == upperDims.end())
+      continue;
+    size_t pos = std::distance(upperDims.begin(), it);
+    switch (t.getType()) {
+    case TransformType::PassThrough:
+      return {TraceKind::Continue, t.getLowerDims()[pos]};
+    case TransformType::Pad: {
+      ArrayRef<int64_t> params = t.getParams();
+      if (params[2 * pos] != 0 || params[2 * pos + 1] != 0)
+        return {TraceKind::Abort};
+      return {TraceKind::Continue, t.getLowerDims()[pos]};
+    }
+    case TransformType::Unmerge:
+      // The group is recombined here; its size now lives in this Unmerge's
+      // upper bounds and the lower (memory) extent is unchanged.
+      return {TraceKind::Consumed};
+    default:
+      return {TraceKind::Abort};
+    }
+  }
+  return {TraceKind::Abort};
+}
+
 void mlir::rock::collapseContiguousMerges(Value transformed) {
   ContiguousMergesMap contiguousMerges = findContiguousGroups(transformed);
   SmallVector<TransformOp> transformOps;
-  std::tie(std::ignore, std::ignore) = untransform(transformed, transformOps);
-  for (TransformOp trOp : llvm::reverse(transformOps)) {
-    assert((trOp->hasOneUse() || trOp->use_empty()) &&
-           "Transform ops whose merges will be collapsed must be isolated to "
-           "ensure other IR doesn't break");
-    bool changed = false;
-    TransformMapAttr map = trOp.getTransform();
-    SmallVector<TransformAttr> ops;
-    ops.reserve(map.getOps().size());
-    for (TransformAttr op : map.getOps()) {
-      if (op.getType() != TransformType::Merge) {
-        ops.push_back(op);
-        continue;
-      }
-      auto mergeData = contiguousMerges.find({map, op});
-      if (mergeData == contiguousMerges.end()) {
-        ops.push_back(op);
-        continue;
-      }
-      const llvm::EquivalenceClasses<uint32_t> &groups = mergeData->getSecond();
-      SmallVector<int64_t> newLengths(op.getParams());
-      ArrayRef<uint32_t> lowerDims = op.getLowerDims();
-      uint32_t currentRep = lowerDims.back();
-      size_t currentRepPos = lowerDims.size() - 1;
-      // Don't process the fastest merge output twice.
-      bool hadConcat = false;
-      for (ssize_t idx = lowerDims.size() - 2; idx >= 0; --idx) {
-        uint32_t dim = lowerDims[idx];
-        if (groups.isEquivalent(dim, currentRep)) {
-          hadConcat = true;
-          newLengths[currentRepPos] *= newLengths[idx];
-          newLengths[idx] = 1;
-        } else {
-          currentRep = dim;
-          currentRepPos = idx;
-        }
-      }
-      if (!hadConcat) { // we went through all this trouble for nothing
-        ops.push_back(op);
-        continue;
-      }
-      LLVM_DEBUG({
-        llvm::dbgs() << "[collapseContiguousMerges] Updating: " << op << " to ";
-        llvm::interleaveComma(newLengths, llvm::dbgs());
-        llvm::dbgs() << "\n";
-      });
-      auto newMerge = TransformAttr::get(
-          op.getContext(), TransformType::Merge, newLengths, op.getUpperNames(),
-          op.getUpperDims(), op.getLowerNames(), op.getLowerDims());
-      ops.push_back(newMerge);
-      changed = true;
-    }
-    TransformMapAttr newMap = map;
-    if (changed) {
-      newMap = TransformMapAttr::get(ops, map.getUpperBounds(),
-                                     map.getLowerBounds());
-      trOp.setTransformAttr(newMap);
+  Value root;
+  std::tie(root, std::ignore) = untransform(transformed, transformOps);
+  if (transformOps.empty())
+    return;
+  size_t n = transformOps.size();
+
+  // shapes[k] is the coordinate-space size vector between transformOps[k-1]
+  // (above) and transformOps[k] (below): shapes[0] is the topmost upper space,
+  // shapes[n] is the underlying memory. transformOps[k] maps shapes[k] (upper)
+  // to shapes[k+1] (lower).
+  SmallVector<SmallVector<int64_t>> shapes(n + 1);
+  {
+    ArrayRef<int64_t> topUpper =
+        transformOps[0].getTransform().getUpperBounds();
+    shapes[0].assign(topUpper.begin(), topUpper.end());
+    for (size_t k = 0; k < n; ++k) {
+      ArrayRef<int64_t> lower = transformOps[k].getTransform().getLowerBounds();
+      shapes[k + 1].assign(lower.begin(), lower.end());
     }
   }
+
+  bool changed = false;
+
+  // For each Merge that births a contiguous group of size > 1, redistribute the
+  // group's lengths to [1, ..., product] (product on the fastest member) and
+  // propagate that resize down the chain to the Unmerge that recombines it.
+  for (size_t mergeLevel = 0; mergeLevel < n; ++mergeLevel) {
+    TransformMapAttr map = transformOps[mergeLevel].getTransform();
+    for (TransformAttr t : map.getOps()) {
+      if (t.getType() != TransformType::Merge)
+        continue;
+      auto groupsIt = contiguousMerges.find({map, t});
+      if (groupsIt == contiguousMerges.end())
+        continue;
+      const llvm::EquivalenceClasses<uint32_t> &groups = groupsIt->getSecond();
+      ArrayRef<uint32_t> lowerDims = t.getLowerDims();
+
+      // Position of each lower dim within the merge (fastest == last).
+      llvm::SmallDenseMap<uint32_t, size_t> posInMerge;
+      for (auto [pos, dim] : llvm::enumerate(lowerDims))
+        posInMerge[dim] = pos;
+
+      for (auto leaderIt = groups.begin(), leaderEnd = groups.end();
+           leaderIt != leaderEnd; ++leaderIt) {
+        if (!(*leaderIt)->isLeader())
+          continue;
+        SmallVector<uint32_t> members;
+        for (auto mi = groups.member_begin(**leaderIt);
+             mi != groups.member_end(); ++mi)
+          if (posInMerge.count(*mi))
+            members.push_back(*mi);
+        if (members.size() < 2)
+          continue;
+
+        // Representative = fastest member (largest position in the merge).
+        uint32_t rep = members[0];
+        for (uint32_t m : members)
+          if (posInMerge[m] > posInMerge[rep])
+            rep = m;
+
+        // Work on a scratch copy so a failed trace leaves `shapes` untouched.
+        SmallVector<SmallVector<int64_t>> scratch = shapes;
+        int64_t product = 1;
+        for (uint32_t m : members)
+          product *= scratch[mergeLevel + 1][m];
+
+        // active maps a dim in the current lower space to its target size.
+        llvm::SmallDenseMap<uint32_t, int64_t> active;
+        for (uint32_t m : members) {
+          int64_t sz = (m == rep) ? product : 1;
+          scratch[mergeLevel + 1][m] = sz;
+          active[m] = sz;
+        }
+
+        bool aborted = false;
+        for (size_t level = mergeLevel + 1; level < n && !active.empty();
+             ++level) {
+          llvm::SmallDenseMap<uint32_t, int64_t> next;
+          for (auto [dim, sz] : active) {
+            TraceStep step = traceDownOneDim(transformOps[level], dim);
+            if (step.kind == TraceKind::Abort) {
+              aborted = true;
+              break;
+            }
+            if (step.kind == TraceKind::Consumed)
+              continue;
+            scratch[level + 1][step.lowerDim] = sz;
+            next[step.lowerDim] = sz;
+          }
+          if (aborted)
+            break;
+          active = std::move(next);
+        }
+        // If any member reached memory without being recombined, resizing it
+        // would change the underlying buffer shape: not allowed.
+        if (aborted || !active.empty())
+          continue;
+
+        shapes = std::move(scratch);
+        changed = true;
+      }
+    }
+  }
+
+  if (!changed)
+    return;
+
+  // Rebuild the chain bottom-up with the resized coordinate spaces. Merge and
+  // Unmerge parameters are re-derived from the (possibly resized) bounds; the
+  // affine map of each TransformMapAttr is recomputed from the new bounds.
+  OpBuilder b(transformOps.front());
+  Value ret = root;
+  for (size_t k = n; k-- > 0;) {
+    TransformOp op = transformOps[k];
+    ArrayRef<int64_t> newUpper = shapes[k];
+    ArrayRef<int64_t> newLower = shapes[k + 1];
+    SmallVector<TransformAttr> newOps;
+    for (TransformAttr t : op.getTransform().getOps()) {
+      SmallVector<int64_t> params(t.getParams());
+      switch (t.getType()) {
+      case TransformType::Merge:
+        params.clear();
+        for (uint32_t d : t.getLowerDims())
+          params.push_back(newLower[d]);
+        break;
+      case TransformType::Unmerge:
+        params.clear();
+        for (uint32_t d : t.getUpperDims())
+          params.push_back(newUpper[d]);
+        break;
+      case TransformType::AddDim:
+        params = {newUpper[t.getUpperDims()[0]]};
+        break;
+      default:
+        break;
+      }
+      newOps.push_back(TransformAttr::get(t.getContext(), t.getType(), params,
+                                          t.getUpperNames(), t.getUpperDims(),
+                                          t.getLowerNames(), t.getLowerDims()));
+    }
+    TransformMapAttr newMap = TransformMapAttr::get(newOps, newUpper, newLower);
+    ret = TransformOp::create(b, op.getLoc(), ret, newMap);
+  }
+  transformed.replaceAllUsesWith(ret);
 }
 
 /// Embed operations can create some scenarios that lead to the need to
