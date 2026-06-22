@@ -79,11 +79,11 @@ static SmallVector<int64_t> rowMajorStrides(ArrayRef<int64_t> shape) {
 /// `transforms[0]`.
 ///
 /// Carry-neutrality guard: rocMLIR keeps the running coordinate valid via carry
-/// propagation on `Merge`. We instead want a single loop-invariant stride, which
-/// is only valid when those carries do not change the linearized offset, i.e.
-/// when the merged dim's lower dims are laid out contiguously underneath (their
-/// buffer strides nest as the merge factors). When that does not hold the offset
-/// is only piecewise-linear in the iv, and we bail.
+/// propagation on `Merge`. We instead want a single loop-invariant stride,
+/// which is only valid when those carries do not change the linearized offset,
+/// i.e. when the merged dim's lower dims are laid out contiguously underneath
+/// (their buffer strides nest as the merge factors). When that does not hold
+/// the offset is only piecewise-linear in the iv, and we bail.
 static FailureOr<int64_t>
 linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
                      DenseMap<unsigned, int64_t> diff) {
@@ -120,7 +120,8 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
         break;
       }
       case TransformType::Unmerge: {
-        // lowerDiff = sum_i f_i * upperDiff_i, f_i = product of trailing bounds.
+        // lowerDiff = sum_i f_i * upperDiff_i, f_i = product of trailing
+        // bounds.
         int64_t d = 0, f = 1;
         for (int i = static_cast<int>(e.size()) - 1; i >= 0; --i) {
           d += f * upper(p[i]);
@@ -140,8 +141,8 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
           lower[q[j]] = (D / P[j]) % e[j];
 
         if (D != 0) {
-          // Carry-neutrality guard: the lower dims must nest contiguously in the
-          // buffer (stride(q_j) == stride(q_{j+1}) * e_{j+1}). Compute each
+          // Carry-neutrality guard: the lower dims must nest contiguously in
+          // the buffer (stride(q_j) == stride(q_{j+1}) * e_{j+1}). Compute each
           // lower dim's buffer stride by propagating its own unit diff through
           // the maps below this one.
           ArrayRef<TransformMapAttr> below = transforms.drop_front(mapIdx + 1);
@@ -263,7 +264,8 @@ static bool isDefinedInLoop(Value v, scf::ForOp loop) {
 }
 
 /// A LICM candidate is pair of:
-///  - A transforms_to_ptr op inside a loop, which offset is affine-linear in the iv.
+///  - A transforms_to_ptr op inside a loop, which offset is affine-linear in
+///  the iv.
 ///  - The resulting pointer stride.
 struct Candidate {
   TransformsToPtrOp op;
@@ -296,8 +298,8 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
   if (!loop.getStep().getType().isInteger(32))
     return bail("loop induction variable is not i32");
 
-  // Get the transforms_to_ptr indices and check whether they are the iv of the loop,
-  // or loop-invariant.
+  // Get the transforms_to_ptr indices and check whether they are the iv of the
+  // loop, or loop-invariant.
   ValueRange extra = op.getExtraIndices();
   SmallVector<unsigned> ivPositions;
   for (auto [pos, idx] : llvm::enumerate(extra)) {
@@ -332,7 +334,8 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
   // transform chain (mirroring rocMLIR's index-diff rules). This is exact
   // through Merge/Unmerge reconstructions (e.g. the conv gemmK packing) where a
   // flattened affine map would keep opaque floordiv/mod, and it bails when a
-  // Merge the iv flows through is not contiguous (offset only piecewise-linear).
+  // Merge the iv flows through is not contiguous (offset only
+  // piecewise-linear).
   DenseMap<unsigned, int64_t> ivDiff;
   for (unsigned p : ivPositions)
     ivDiff[p] = 1;
@@ -417,8 +420,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
 
   OpBuilder b(loop);
 
-  // Build the base pointer/mask before the loop, the constant stride and the zero
-  // accumulator init per candidate.
+  // Build the base pointer/mask before the loop, the constant stride and the
+  // zero accumulator init per candidate.
   SmallVector<ReducedPtr> reduced;
   for (Candidate &cand : candidates) {
     IRMapping cloneMap;
@@ -436,9 +439,9 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     Value strideScalar = arith::MulIOp::create(
         b, loc, step,
         arith::ConstantOp::create(
-            b, loc, b.getI32IntegerAttr(static_cast<int32_t>(cand.unitStride))));
-    Value strideSplat =
-        triton::SplatOp::create(b, loc, ptrType, strideScalar);
+            b, loc,
+            b.getI32IntegerAttr(static_cast<int32_t>(cand.unitStride))));
+    Value strideSplat = triton::SplatOp::create(b, loc, ptrType, strideScalar);
     Value accInit = arith::ConstantOp::create(
         b, loc, cast<TypedAttr>(b.getZeroAttr(ptrType)));
 
@@ -454,8 +457,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   for (const ReducedPtr &r : reduced)
     newInits.push_back(r.accInit);
 
-  auto newLoop = scf::ForOp::create(b, loc, lb, loop.getUpperBound(), step,
-                                    newInits);
+  auto newLoop =
+      scf::ForOp::create(b, loc, lb, loop.getUpperBound(), step, newInits);
 
   // Map old body values into the new body.
   IRMapping bodyMap;
@@ -468,15 +471,15 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   // Reconstruct each candidate pointer inside the body as basePtr + acc (a
   // single add that RockToTTIR/FuncToTritonFunc lower to tt.addptr), and route
   // the loop-invariant mask.
-  // 
-  // TODO: This is a bit dumb, we could do this without a new AddIOp op. However,
-  // we need to do this because FuncToTritonFunc expects to have
-  // a base pointer plus a loop-carried integer offset pointers in the loop:
+  //
+  // TODO: This is a bit dumb, we could do this without a new AddIOp op.
+  // However, we need to do this because FuncToTritonFunc expects to have a base
+  // pointer plus a loop-carried integer offset pointers in the loop:
   // - The iter_arg: a pure integer offset.
   // - The base pointer
-  // The only way to collapse to a single addi (simpler, and might affect performance)
-  // would be to adapt FuncToTritonFunc lowering to recognize a tt.addptr 
-  // recurrence carried through an scf.for iter_arg. 
+  // The only way to collapse to a single addi (simpler, and might affect
+  // performance) would be to adapt FuncToTritonFunc lowering to recognize a
+  // tt.addptr recurrence carried through an scf.for iter_arg.
   llvm::SmallPtrSet<Operation *, 4> candidateOps;
   for (auto [j, r] : llvm::enumerate(reduced)) {
     candidateOps.insert(r.op.getOperation());
@@ -518,9 +521,9 @@ void RockTransformsInvariantCodeMotionPass::runOnOperation() {
   if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
     return;
 
-  // Re-walk after each rewrite: tryHoistInvariantTransforms replaces the loop op, so
-  // collected handles would dangle. A reduced loop has no remaining candidates
-  // (they become preheader ops + iter_args), so this terminates.
+  // Re-walk after each rewrite: tryHoistInvariantTransforms replaces the loop
+  // op, so collected handles would dangle. A reduced loop has no remaining
+  // candidates (they become preheader ops + iter_args), so this terminates.
   bool changed = true;
   while (changed) {
     changed = false;
