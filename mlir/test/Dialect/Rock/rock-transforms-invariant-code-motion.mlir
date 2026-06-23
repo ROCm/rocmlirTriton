@@ -341,3 +341,61 @@ func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x
 
   return %res : tensor<64x32xi8>
 }
+
+// -----
+
+// Coordinate/carry path: faithful (1D) conv-input load where the affine fast
+// path must bail. gemmK is a Merge{2, 3} of (channel, filter-tap) and the iv
+// (k_loop, stride 2 in gemmK) straddles the tap factor, so the offset is
+// non-linear in the iv; the tap also flows through an Embed sliding window into
+// a padded width, so the validity mask depends on the iv too. Rather than leave
+// the op in the loop, the pass carries the decomposed merge coordinates
+// (channel, tap) as extra iter_args and rebuilds the offset + mask each
+// iteration with add/mul/compare/select and a mixed-radix carry -- no
+// floordiv/mod in the loop (cf. rocMLIR's IndexDiffUpdate).
+//
+// CHECK-LABEL: func @hoist_conv_input_carry
+//  CHECK-SAME: (%[[ARG0:.*]]: tensor<8xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
+// Hoisted to the preheader with the iv replaced by the loop lower bound:
+//       CHECK:   %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
+// The loop carries the decomposed merge coordinates (channel + tap) as extra
+// iter_args alongside the result:
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[CI:.*]] = %{{.*}}, %[[TAP:.*]] = %{{.*}}) ->
+// The offset/mask reconstruction uses no division and the op is gone from the
+// loop body:
+//   CHECK-NOT:     floordiv
+//   CHECK-NOT:     arith.divsi
+//   CHECK-NOT:     arith.remsi
+//   CHECK-NOT:     rock.transforms_to_ptr
+// Mask rebuilt from the carried tap coordinate, pointer rebuilt from the
+// hoisted base + reconstructed offset, then loaded:
+//       CHECK:     arith.cmpi ult
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
+//       CHECK:     rock.blockwise_load_ptr %[[PTR]]
+// Mixed-radix carry update (compare + select) advances the coordinates:
+//       CHECK:     arith.cmpi uge
+//       CHECK:     arith.select
+//       CHECK:     scf.yield
+func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c3_i32 = arith.constant 3 : i32
+
+  // raw input buffer (ngc1): ci=2, 1i=4 -> 8.
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3) -> (d2 * 4 + d3)> by [<Unmerge{2, 4} ["ci", "1i"] at [2, 3] -> ["raw"] at [0]>, <AddDim{1} ["ni"] at [0] -> [] at []>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [1, 1, 2, 4] -> [8]> : tensor<8xi8> to tensor<1x1x2x4xi8>
+  // Halo pad on the width: 4 -> 6 (validity-impacting).
+  %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3 - 1)> by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Pad{1, 1} ["1ipad"] at [3] -> ["1i"] at [3]>] bounds = [1, 1, 2, 6] -> [1, 1, 2, 4]> : tensor<1x1x2x4xi8> to tensor<1x1x2x6xi8>
+  // Sliding window: 1ipad = tap("1") + out("1o").
+  %2 = rock.transform %1 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3 + d4)> by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [3]>] bounds = [1, 1, 2, 3, 4] -> [1, 1, 2, 6]> : tensor<1x1x2x6xi8> to tensor<1x1x2x3x4xi8>
+
+  %res = scf.for %k = %c0_i32 to %c3_i32 step %c1_i32 iter_args(%acc = %arg1) -> (tensor<2x4xi8>) : i32 {
+    // Merge channel+tap into gemmK, ni+out into gemmN.
+    %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 3, d1 mod 3, d2)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 3} ["gemmK"] at [1] -> ["ci", "1"] at [2, 3]>, <Merge{1, 4} ["gemmN"] at [2] -> ["ni", "1o"] at [0, 4]>] bounds = [1, 6, 4] -> [1, 1, 2, 3, 4]> : tensor<1x1x2x3x4xi8> to tensor<1x6x4xi8>
+    // Tiling: k_loop (the iv) feeds gemmK with stride 2 (k_iter = 2).
+    %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)> by [<PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{3, 2} ["k_loop", "k_iter"] at [0, 4] -> ["gemmK"] at [1]>, <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["gemmN"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [3, 1, 1, 1, 2, 4] -> [1, 6, 4]> : tensor<1x6x4xi8> to tensor<3x1x1x1x2x4xi8>
+    %ptr, %mask = rock.transforms_to_ptr %4[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<3x1x1x1x2x4xi8> -> tensor<2x4xi32>, tensor<2x4xi1>
+    %load = rock.blockwise_load_ptr %ptr[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<2x4xi32>, tensor<2x4xi1> -> tensor<2x4xi8>
+    scf.yield %load : tensor<2x4xi8>
+  }
+  return %res : tensor<2x4xi8>
+}

@@ -1,0 +1,421 @@
+//===- PointerArithExpand.cpp - shared transform->arith expansion --------===//
+//
+// Copyright 2026 The MLIR Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//===----------------------------------------------------------------------===//
+
+#include "PointerArithExpand.h"
+
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineExprVisitor.h"
+#include "mlir/IR/AffineMap.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+
+#include "llvm/ADT/STLExtras.h"
+
+using namespace mlir;
+using namespace mlir::rock;
+
+//===----------------------------------------------------------------------===//
+// Range / broadcasting helpers.
+//===----------------------------------------------------------------------===//
+
+Value mlir::rock::makeRange(OpBuilder &b, Location loc, int32_t start,
+                            int32_t end, int64_t numDims, int64_t nonUnitDim) {
+  assert(numDims > 0);
+  assert(nonUnitDim >= 0 && nonUnitDim < numDims);
+
+  SmallVector<int64_t> unitDimIndices;
+  for (int64_t i = 0; i < numDims; ++i)
+    if (nonUnitDim != i)
+      unitDimIndices.push_back(i);
+
+  auto tensorType1D = RankedTensorType::get({end - start}, b.getI32Type());
+  Value rangeTensor =
+      triton::MakeRangeOp::create(b, loc, tensorType1D, start, end);
+
+  // Restore the original rank by inserting unit dimensions.
+  Value expandedTensor = rangeTensor;
+  for (int64_t unitDimIdx : unitDimIndices) {
+    auto currentType = cast<RankedTensorType>(expandedTensor.getType());
+    SmallVector<int64_t> newShape(currentType.getShape().begin(),
+                                  currentType.getShape().end());
+    newShape.insert(newShape.begin() + unitDimIdx, 1);
+    auto expandedType = RankedTensorType::get(newShape, b.getI32Type());
+    expandedTensor = triton::ExpandDimsOp::create(b, loc, expandedType,
+                                                  expandedTensor, unitDimIdx);
+  }
+  return expandedTensor;
+}
+
+namespace {
+// Broadcast two tensors to a common shape (unit dims expand to the peer size).
+static std::pair<Value, Value> broadcastTensors(OpBuilder &builder,
+                                                 Location loc, Value lhs,
+                                                 Value rhs) {
+  auto tensorLhsType = cast<RankedTensorType>(lhs.getType());
+  auto tensorRhsType = cast<RankedTensorType>(rhs.getType());
+  auto lhsShape = tensorLhsType.getShape();
+  auto rhsShape = tensorRhsType.getShape();
+  auto rank = lhsShape.size();
+
+  bool needsBroadcast = false;
+  SmallVector<int64_t> resultShape(rank);
+  for (size_t i = 0; i < rank; ++i) {
+    if (lhsShape[i] == 1 && rhsShape[i] != 1) {
+      resultShape[i] = rhsShape[i];
+      needsBroadcast = true;
+    } else if (rhsShape[i] == 1 && lhsShape[i] != 1) {
+      resultShape[i] = lhsShape[i];
+      needsBroadcast = true;
+    } else if (lhsShape[i] == rhsShape[i]) {
+      resultShape[i] = lhsShape[i];
+    } else {
+      resultShape[i] = std::max(lhsShape[i], rhsShape[i]);
+    }
+  }
+
+  if (!needsBroadcast)
+    return {lhs, rhs};
+
+  auto resultType =
+      RankedTensorType::get(resultShape, tensorLhsType.getElementType());
+  Value broadcastedLhs = lhs;
+  if (!llvm::equal(lhsShape, resultShape))
+    broadcastedLhs = triton::BroadcastOp::create(builder, loc, resultType, lhs);
+
+  Value broadcastedRhs = rhs;
+  if (!llvm::equal(rhsShape, resultShape)) {
+    auto rhsResultType =
+        RankedTensorType::get(resultShape, tensorRhsType.getElementType());
+    broadcastedRhs =
+        triton::BroadcastOp::create(builder, loc, rhsResultType, rhs);
+  }
+  return {broadcastedLhs, broadcastedRhs};
+}
+
+static Value broadcastScalarToTensor(OpBuilder &builder, Location loc,
+                                     Value scalar, Value tensor) {
+  auto tensorType = cast<RankedTensorType>(tensor.getType());
+  auto resultType =
+      RankedTensorType::get(tensorType.getShape(), scalar.getType());
+  return triton::SplatOp::create(builder, loc, resultType, scalar);
+}
+
+static SmallVector<Value> ensureCompatibleShapes(OpBuilder &builder,
+                                                 Location loc,
+                                                 ValueRange values) {
+  if (values.size() < 2)
+    return SmallVector<Value>(values);
+
+  SmallVector<Value> results(values);
+  // Two passes to propagate broadcasts across all operands.
+  for (int pass = 0; pass < 2; pass++) {
+    Value lhs = results[0];
+    for (size_t i = 1; i < results.size(); i++) {
+      Value rhs = results[i];
+      auto lhsTensorType = dyn_cast<RankedTensorType>(lhs.getType());
+      auto rhsTensorType = dyn_cast<RankedTensorType>(rhs.getType());
+
+      if (!lhsTensorType && !rhsTensorType) {
+        // both scalars
+      } else if (lhsTensorType && !rhsTensorType) {
+        rhs = broadcastScalarToTensor(builder, loc, rhs, lhs);
+      } else if (!lhsTensorType && rhsTensorType) {
+        lhs = broadcastScalarToTensor(builder, loc, lhs, rhs);
+      } else {
+        std::tie(lhs, rhs) = broadcastTensors(builder, loc, lhs, rhs);
+      }
+      results[i - 1] = lhs;
+      results[i] = rhs;
+      lhs = rhs;
+    }
+  }
+  return results;
+}
+
+} // namespace
+
+std::pair<Value, Value> mlir::rock::ensureCompatible(OpBuilder &builder,
+                                                     Location loc, Value lhs,
+                                                     Value rhs) {
+  auto results = ensureCompatibleShapes(builder, loc, {lhs, rhs});
+  return {results[0], results[1]};
+}
+
+Value mlir::rock::broadcastToShape(OpBuilder &b, Location loc, Value v,
+                                   ArrayRef<int64_t> shape) {
+  auto tt = dyn_cast<RankedTensorType>(v.getType());
+  Type elem = tt ? tt.getElementType() : v.getType();
+  auto target = RankedTensorType::get(shape, elem);
+  if (!tt)
+    return triton::SplatOp::create(b, loc, target, v);
+  if (tt.getShape() == shape)
+    return v;
+  return triton::BroadcastOp::create(b, loc, target, v);
+}
+
+//===----------------------------------------------------------------------===//
+// Affine map expansion.
+//===----------------------------------------------------------------------===//
+
+namespace {
+/// Adapted from mlir/lib/Dialect/Affine/Utils/Utils.cpp (upstream MLIR).
+/// The upstream version operates on scalar Values; this version adds
+/// ensureCompatible() calls to handle tensor operands that may need
+/// broadcasting before each arith operation.
+class AffineApplyExpander
+    : public AffineExprVisitor<AffineApplyExpander, Value> {
+public:
+  AffineApplyExpander(OpBuilder &builder, ValueRange dimValues,
+                      ValueRange symbolValues, Location loc)
+      : builder(builder), dimValues(dimValues), symbolValues(symbolValues),
+        loc(loc) {}
+
+  template <typename OpTy>
+  Value buildBinaryExpr(AffineBinaryOpExpr expr,
+                        arith::IntegerOverflowFlags overflowFlags =
+                            arith::IntegerOverflowFlags::none) {
+    auto lhs = visit(expr.getLHS());
+    auto rhs = visit(expr.getRHS());
+    if (!lhs || !rhs)
+      return nullptr;
+    auto [l, r] = mlir::rock::ensureCompatible(builder, loc, lhs, rhs);
+    return OpTy::create(builder, loc, l, r, overflowFlags);
+  }
+
+  Value visitAddExpr(AffineBinaryOpExpr expr) {
+    return buildBinaryExpr<arith::AddIOp>(expr);
+  }
+
+  Value visitMulExpr(AffineBinaryOpExpr expr) {
+    return buildBinaryExpr<arith::MulIOp>(expr,
+                                          arith::IntegerOverflowFlags::nsw);
+  }
+
+  Value visitModExpr(AffineBinaryOpExpr expr) {
+    if (auto rhsConst = dyn_cast<AffineConstantExpr>(expr.getRHS())) {
+      if (rhsConst.getValue() <= 0) {
+        emitError(loc, "modulo by non-positive value is not supported");
+        return nullptr;
+      }
+    }
+    auto lhs = visit(expr.getLHS());
+    auto rhs = visit(expr.getRHS());
+    assert(lhs && rhs && "unexpected affine expr lowering failure");
+
+    // The coordinate-transform operands are non-negative (tensor/GEMM
+    // coordinates) and the divisor is positive, so euclidean `mod` coincides
+    // with the unsigned remainder. Emitting a plain `arith.remui` (instead of
+    // `srem; cmpi slt 0; select`) is cheaper and, crucially, keeps the result
+    // analyzable by Triton's AxisInfoAnalysis so global loads can be
+    // vectorized. The previous `select` form collapsed pointer contiguity to 1
+    // (AxisInfo cannot prove the operand is non-negative across the tile).
+    auto [l, r] = mlir::rock::ensureCompatible(builder, loc, lhs, rhs);
+    return arith::RemUIOp::create(builder, loc, l, r);
+  }
+
+  Value visitFloorDivExpr(AffineBinaryOpExpr expr) {
+    if (auto rhsConst = dyn_cast<AffineConstantExpr>(expr.getRHS())) {
+      if (rhsConst.getValue() <= 0) {
+        emitError(loc, "division by non-positive value is not supported");
+        return nullptr;
+      }
+    }
+    auto lhs = visit(expr.getLHS());
+    auto rhs = visit(expr.getRHS());
+    assert(lhs && rhs && "unexpected affine expr lowering failure");
+
+    // Operands are non-negative and the divisor positive (see visitModExpr), so
+    // floor division coincides with unsigned division. Emit `arith.divui`
+    // directly rather than a signed quotient guarded by a negative-value
+    // correction `select`; this keeps pointer contiguity visible to Triton's
+    // AxisInfoAnalysis so loads can be vectorized.
+    auto [l, r] = mlir::rock::ensureCompatible(builder, loc, lhs, rhs);
+    return arith::DivUIOp::create(builder, loc, l, r);
+  }
+
+  Value visitCeilDivExpr(AffineBinaryOpExpr expr) {
+    if (auto rhsConst = dyn_cast<AffineConstantExpr>(expr.getRHS())) {
+      if (rhsConst.getValue() <= 0) {
+        emitError(loc, "division by non-positive value is not supported");
+        return nullptr;
+      }
+    }
+    auto lhs = visit(expr.getLHS());
+    auto rhs = visit(expr.getRHS());
+    assert(lhs && rhs && "unexpected affine expr lowering failure");
+
+    // Operands are non-negative and the divisor positive (see visitModExpr), so
+    // ceildiv(a, b) == (a + b - 1) udiv b. This avoids the signed negative-value
+    // correction `select`, keeping the result analyzable by Triton's
+    // AxisInfoAnalysis so loads can be vectorized.
+    Value oneCst =
+        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(1));
+    auto [r, o] = mlir::rock::ensureCompatible(builder, loc, rhs, oneCst);
+    Value divisorMinusOne = arith::SubIOp::create(builder, loc, r, o);
+    auto [l, dm1] =
+        mlir::rock::ensureCompatible(builder, loc, lhs, divisorMinusOne);
+    Value numerator = arith::AddIOp::create(builder, loc, l, dm1);
+    auto [num, r2] = mlir::rock::ensureCompatible(builder, loc, numerator, rhs);
+    return arith::DivUIOp::create(builder, loc, num, r2);
+  }
+
+  Value visitConstantExpr(AffineConstantExpr expr) {
+    return arith::ConstantOp::create(
+        builder, loc,
+        builder.getIntegerAttr(builder.getI32Type(), expr.getValue()));
+  }
+
+  Value visitDimExpr(AffineDimExpr expr) {
+    assert(expr.getPosition() < dimValues.size() &&
+           "affine dim position out of range");
+    return dimValues[expr.getPosition()];
+  }
+
+  Value visitSymbolExpr(AffineSymbolExpr expr) {
+    assert(expr.getPosition() < symbolValues.size() &&
+           "symbol dim position out of range");
+    return symbolValues[expr.getPosition()];
+  }
+
+private:
+  OpBuilder &builder;
+  ValueRange dimValues;
+  ValueRange symbolValues;
+  Location loc;
+};
+
+static Value expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
+                              ValueRange dimValues, ValueRange symbolValues) {
+  return AffineApplyExpander(builder, dimValues, symbolValues, loc).visit(expr);
+}
+} // namespace
+
+FailureOr<SmallVector<Value>>
+mlir::rock::expandAffineMap(OpBuilder &builder, Location loc, AffineMap affineMap,
+                           ValueRange operands) {
+  auto numDims = affineMap.getNumDims();
+  // rocMLIR currently uses static strides/shapes, so symbols are always 0.
+  assert(affineMap.getNumSymbols() == 0 &&
+         "dynamic shapes (affine symbols) not yet supported");
+  if (operands.size() != numDims)
+    return failure();
+
+  auto expanded = llvm::to_vector(llvm::map_range(
+      affineMap.getResults(), [&builder, loc, operands](AffineExpr expr) {
+        return expandAffineExpr(builder, loc, expr, operands, {});
+      }));
+  if (llvm::all_of(expanded, [](Value v) { return v; }))
+    return expanded;
+  return failure();
+}
+
+//===----------------------------------------------------------------------===//
+// Validity.
+//===----------------------------------------------------------------------===//
+
+Value mlir::rock::updateValidityAfter(OpBuilder &b, Location loc,
+                                      TransformMapAttr map, ValueRange outputs) {
+  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
+  ArrayRef<int64_t> lowerBounds = map.getLowerBounds();
+
+  // unsigned < catches both negatives (as all negatives are > the bound)
+  // and being too large on the right.
+  auto addLowerDimUltClamp = [&](uint32_t lowerDim) {
+    int64_t bound = lowerBounds[lowerDim];
+    Value boundConst = arith::ConstantOp::create(
+        b, loc, b.getIntegerAttr(b.getI32Type(), bound));
+    Value output = outputs[lowerDim];
+    auto [o, bc] = ensureCompatible(b, loc, output, boundConst);
+    Value inBounds =
+        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, o, bc);
+    auto [ib, iv] = ensureCompatible(b, loc, inBounds, isValid);
+    isValid = arith::AndIOp::create(b, loc, ib, iv);
+  };
+
+  for (TransformAttr op : map.getOps()) {
+    TransformType type = op.getType();
+    ArrayRef<uint32_t> lowerDims = op.getLowerDims();
+    ArrayRef<int64_t> params = op.getParams();
+    if (type == TransformType::Pad) {
+      for (const auto &pair : llvm::enumerate(lowerDims)) {
+        size_t leftParam = 2 * pair.index();
+        size_t rightParam = leftParam + 1;
+        uint32_t lowerDim = pair.value();
+        if (params[leftParam] == 0 && params[rightParam] == 0)
+          continue;
+        addLowerDimUltClamp(lowerDim);
+      }
+    }
+    if (type == TransformType::Embed) {
+      if (!embedCanBeInvalid(map, op))
+        continue;
+      addLowerDimUltClamp(op.getLowerDims()[0]);
+    }
+  }
+  return isValid;
+}
+
+//===----------------------------------------------------------------------===//
+// Chain expansion core.
+//===----------------------------------------------------------------------===//
+
+FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
+    OpBuilder &b, Location loc, ArrayRef<TransformMapAttr> transforms,
+    ValueRange startCoords, ArrayRef<int64_t> outShape) {
+  using AffineResults = SmallVector<Value>;
+
+  // Break the chain into segments that each end at a validity-impacting map,
+  // composing the intervening maps into a single affine map. A trailing
+  // segment with no validity impact carries the remaining maps.
+  SmallVector<std::pair<AffineMap, TransformMapAttr>> composedMaps;
+  SmallVector<TransformMapAttr> toCompose;
+  for (TransformMapAttr t : transforms) {
+    toCompose.push_back(t);
+    if (mapImpactsValidity(t)) {
+      composedMaps.emplace_back(composeTransforms(toCompose), t);
+      toCompose.clear();
+    }
+  }
+  composedMaps.emplace_back(composeTransforms(toCompose), nullptr);
+
+  AffineResults computed(startCoords);
+  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
+  for (const auto &[composedMap, transform] : composedMaps) {
+    if (!composedMap) // empty trailing segment
+      continue;
+    FailureOr<AffineResults> transformed =
+        expandAffineMap(b, loc, composedMap, computed);
+    if (failed(transformed))
+      return failure();
+    computed.assign(*transformed);
+    if (transform) {
+      Value validityUpdate = updateValidityAfter(b, loc, transform, computed);
+      auto [vu, iv] = ensureCompatible(b, loc, validityUpdate, isValid);
+      isValid = arith::AndIOp::create(b, loc, vu, iv);
+    }
+  }
+
+  if (computed.size() != 1)
+    return failure();
+
+  OffsetAndMask result;
+  result.offset = broadcastToShape(b, loc, computed[0], outShape);
+  result.mask = broadcastToShape(b, loc, isValid, outShape);
+  return result;
+}

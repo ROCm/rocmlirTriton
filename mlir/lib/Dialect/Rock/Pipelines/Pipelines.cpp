@@ -496,6 +496,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // breaks downstream lowering ("rock.arch not found on kernel function").
   funcPm2.addPass(createRemoveDeadValuesPass());
   funcPm2.addPass(rock::createRockTransformsInvariantCodeMotionPass());
+  funcPm2.addPass(createCanonicalizerPass());
+  funcPm2.addPass(createCSEPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
