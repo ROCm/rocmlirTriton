@@ -1,0 +1,25 @@
+diff --git a/mlir/lib/ExecutionEngine/CMakeLists.txt b/mlir/lib/ExecutionEngine/CMakeLists.txt
+index 2176ccaa6031..627eaad2117b 100644
+--- a/mlir/lib/ExecutionEngine/CMakeLists.txt
++++ b/mlir/lib/ExecutionEngine/CMakeLists.txt
+@@ -444,6 +444,20 @@ if(LLVM_ENABLE_PIC)
+       PUBLIC
+       hip::host hip::amdhip64
+     )
++
++    # Hide the statically-linked LLVM symbols so they cannot clash with a second
++    # LLVM present in the same process. When this library is dlopen-ed (e.g. by
++    # mlir-runner via --shared-libs), its DT_NEEDED chain
++    # libamdhip64 -> libamd_comgr -> libLLVM.so drags in ROCm's own LLVM. With
++    # default visibility the two LLVMs share cl::opt / pass-registry singletons
++    # and abort during dynamic init with
++    #   SmallPtrSet.h: Assertion `Bucket < End' failed.
++    # --exclude-libs,ALL localizes the symbols pulled from the static LLVM
++    # archives while leaving this library's own extern "C" mgpu* wrappers
++    # exported. Mirrors the mlir_apfloat_wrappers treatment above.
++    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
++      target_link_options(mlir_rocm_runtime PRIVATE LINKER:--exclude-libs,ALL)
++    endif()
+   endif()
+ 
+   if(MLIR_ENABLE_SYCL_RUNNER OR MLIR_ENABLE_LEVELZERO_RUNNER)

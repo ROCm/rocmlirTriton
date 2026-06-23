@@ -67,6 +67,29 @@ else
     sed -i '/DCMAKE_CXX_COMPILER/a\              -DMLIR_ENABLE_ROCM_RUNNER=ON' "$TRITON_BUILD_SCRIPT"
 fi
 
+# Step 3b: Link LLVM tools/libs with -Bsymbolic (in-place, idempotent)
+#
+# When a statically-embedded LLVM coexists in a process with a second LLVM
+# loaded at runtime -- e.g. ROCm Comgr's libLLVM.so reached via DT_NEEDED
+# through libamd_comgr.so -- the two instances share LLVM's cl::opt /
+# pass-registry singletons and abort during dynamic init with
+#   SmallPtrSet.h: Assertion `Bucket < End' failed.
+# Linking with -Bsymbolic-functions binds each module's own LLVM *function*
+# references internally so the second LLVM can no longer interpose them. See
+# ROCm/TheRock#4981, where the ROCm maintainers declined to make LLVM fully
+# static and asked the LLVM-embedding consumers (us) to link this way instead.
+#
+# NOTE: We must use -Bsymbolic-functions, NOT full -Bsymbolic. MLIR forbids full
+# -Bsymbolic (mlir/CMakeLists.txt FATAL_ERRORs on it) because binding *data*
+# symbols locally breaks TypeID identity (http://llvm.org/pr51420) -- the exact
+# cross-module symbol-identity problem we are trying to fix.
+if ! grep -q 'Bsymbolic' "$TRITON_BUILD_SCRIPT"; then
+    echo "--- Patching Triton's build-llvm-project.sh: adding -Bsymbolic-functions linker flags ---"
+    sed -i '/-DCMAKE_CXX_COMPILER=clang++/a\              -DCMAKE_EXE_LINKER_FLAGS="-Wl,-Bsymbolic-functions"\n              -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-Bsymbolic-functions"\n              -DCMAKE_MODULE_LINKER_FLAGS="-Wl,-Bsymbolic-functions"' "$TRITON_BUILD_SCRIPT"
+else
+    echo "--- -Bsymbolic-functions linker flags already present in Triton's build script ---"
+fi
+
 # Step 4: Inject llvm-patches application into Triton's build script
 #
 # Triton's script does `git reset --hard $LLVM_COMMIT_HASH` on the LLVM

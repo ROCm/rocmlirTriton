@@ -83,6 +83,45 @@ bump that pulls commit ace44dc5a2a4 into the pinned LLVM (it lands after
 the current pin 87717bf9, dated 2026-04-08; the fix merged 2026-05-19).
 
 ----------------------------------------------------------------------
+mlir-rocm-runtime-hide-llvm-symbols.patch
+----------------------------------------------------------------------
+- Upstream PR     : (none -- downstream-only build fix, candidate for upstream)
+- File Fixed      : mlir/lib/ExecutionEngine/CMakeLists.txt
+- Contents        : Adds `target_link_options(mlir_rocm_runtime PRIVATE
+                    LINKER:--exclude-libs,ALL)` on Linux, mirroring the existing
+                    mlir_apfloat_wrappers treatment in the same file.
+
+Symptom without the patch
+-------------------------
+Loading libmlir_rocm_runtime.so in a process that also reaches ROCm's
+libLLVM.so aborts during dynamic initialization with:
+
+  SmallPtrSet.h:301: Assertion `Bucket < End' failed.
+
+This fires whenever the runtime is dlopen-ed (mlir-runner --shared-libs, or
+the Python lit harness) in an environment whose ROCm comes from the
+_rocm_sdk_devel (TheRock) pip package: libmlir_rocm_runtime.so's DT_NEEDED
+chain libamdhip64 -> libamd_comgr -> libLLVM.so loads a second LLVM, and
+comgr's bundled libLLVM happens to share the exact 23.0git soname.
+
+Root cause
+----------
+libmlir_rocm_runtime.so statically links LLVMSupport and was exporting ~1300
+default-visibility llvm::* symbols (llvm::cl::SubCommand, ManagedStatic,
+CommandLine, ...). With both LLVMs in the process the dynamic linker
+interposes these data symbols, so the two instances share LLVM's cl::opt /
+pass-registry singletons and one tears the other's SmallPtrSet apart during
+static init.
+
+NOTE: -Bsymbolic-functions does NOT fix this -- the clashing symbols are
+*data* (the cl registry), and MLIR forbids full -Bsymbolic
+(mlir/CMakeLists.txt FATAL_ERRORs on it) because binding data symbols locally
+breaks TypeID identity (http://llvm.org/pr51420). Hiding the static-archive
+symbols with --exclude-libs,ALL is the correct, scoped fix; it leaves the
+library's own extern "C" mgpu* wrappers exported (verified: 0 exported llvm::*
+symbols, 27 mgpu* symbols retained). See ROCm/TheRock#4981.
+
+----------------------------------------------------------------------
 patch1.patch
 patch2.patch
 patch3.patch
