@@ -50,10 +50,3 @@ add_rocmlir_dialect_library(MLIRCpuTransforms
   MLIRFuncTransformOps
   MLIRMemRefTransformOps
 )
-
-# HIP needed transitively via tritonUtils.h (included by LowerCpuVerifier.cpp)
-if (NOT WIN32)
-  find_package(hip REQUIRED PATHS ${ROCM_PATH})
-  target_link_libraries(MLIRCpuTransforms PUBLIC hip::host)
-  target_link_libraries(obj.MLIRCpuTransforms PUBLIC hip::host)
-endif()

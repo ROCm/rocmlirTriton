@@ -21,8 +21,6 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/LogicalResult.h"
 
-#include "hip/hip_runtime_api.h"
-
 namespace mlir {
 
 namespace triton {
@@ -54,12 +52,6 @@ bool isTTFloat(Type t);
 /// Adapted from mlirTypeToScaledElemType in AccelerateAMDMatmul.cpp with
 /// additional BF16/FP16 coverage.
 FailureOr<triton::ScaleDotElemType> mlirTypeToScaleDotElemType(Type type);
-
-// Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
-LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
-                           uint32_t blockSize, uint32_t shared_memory,
-                           uint32_t num_ctas, hipStream_t stream,
-                           void **params);
 
 } // namespace rock
 } // namespace mlir

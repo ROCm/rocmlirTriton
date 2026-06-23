@@ -46,19 +46,3 @@ target_link_libraries(MLIRRockOps
   TritonIR
   TritonAMDGPUTransforms
   )
-
-# ROCm on Windows does not support HSA.
-if (NOT WIN32)
-  # hip::host is an INTERFACE target: it only supplies the HIP headers and the
-  # -D__HIP_PLATFORM_AMD__ compile definition needed to compile sources that
-  # pull in HIP platform headers. The HIP/HSA *runtime* libraries are
-  # deliberately not linked here: MLIRRockOps derives all architecture
-  # information statically (via triton::AMD::TargetInfo) and references zero HIP
-  # or HSA runtime symbols. Linking hip::amdhip64 / hsa-runtime64 would pull the
-  # ROCm runtime -- and its bundled LLVM/comgr -- into every consumer of this
-  # library (e.g. the test-only amd_arch_db pybind module), causing duplicate-
-  # LLVM symbol clashes at load time.
-  find_package(hip REQUIRED PATHS ${ROCM_PATH})
-  target_link_libraries(MLIRRockOps PUBLIC hip::host)
-  target_link_libraries(obj.MLIRRockOps PUBLIC hip::host)
-endif()

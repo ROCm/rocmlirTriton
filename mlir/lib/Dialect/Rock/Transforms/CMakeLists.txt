@@ -87,16 +87,6 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   TritonAnalysis
 )
 
-# Only the HIP headers / -D__HIP_PLATFORM_AMD__ are needed here (pulled in via
-# tritonUtils.h, included by RockToTTIR.cpp); that is provided by the INTERFACE
-# target hip::host. This library references no HIP runtime symbols, so the
-# runtime library hip::amdhip64 is intentionally not linked.
-if (NOT WIN32)
-  find_package(hip REQUIRED PATHS ${ROCM_PATH})
-  target_link_libraries(MLIRRockTransforms PUBLIC hip::host)
-  target_link_libraries(obj.MLIRRockTransforms PUBLIC hip::host)
-endif()
-
 rocmlir_add_triton_includes(MLIRRockTransforms)
 
 # Fix build order: TritonIR and TritonGPUIR include headers that need generated files
