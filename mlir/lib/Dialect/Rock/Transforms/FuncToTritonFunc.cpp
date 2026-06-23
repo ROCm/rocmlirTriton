@@ -95,11 +95,11 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     // Check if the source is a block argument (tensor)
     auto blockArg = dyn_cast<BlockArgument>(tensorOperand);
     if (!blockArg)
-      return;
+      llvm_unreachable("extract_ptr source must be a block argument");
 
     auto tensorType = dyn_cast<RankedTensorType>(tensorOperand.getType());
     if (!tensorType)
-      return;
+      llvm_unreachable("extract_ptr source must be a tensor");
 
     // The result of extract_ptr is i32, which is what we need to replace
     if (extractPtrOp.getResult().getType().isInteger(32)) {
@@ -122,35 +122,18 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   bool hasTensorArgs = llvm::any_of(
       funcType.getInputs(), [](Type t) { return isa<RankedTensorType>(t); });
 
-  if (argsToConvert.empty() && !hasTensorArgs)
+  if (!hasTensorArgs)
     return;
 
+  // Build the new pointer-based signature. Every tensor argument becomes a
+  // !tt.ptr.
   SmallVector<Type> newInputTypes;
-  DenseMap<unsigned, Type> argElementTypes;
-
-  for (const auto &info : argsToConvert) {
-    argElementTypes[info.argIndex] = info.elementType;
-  }
-
-  DenseSet<unsigned> deadTensorArgs;
-  for (unsigned i = 0; i < funcType.getNumInputs(); ++i) {
-    auto it = argElementTypes.find(i);
-    if (it != argElementTypes.end()) {
-      newInputTypes.push_back(triton::PointerType::get(it->second, 1));
-    } else if (auto tensorType =
-                   dyn_cast<RankedTensorType>(funcType.getInput(i))) {
-      // Tensor arguments without rock.extract_ptr (e.g. dead fusion inputs)
-      // must still become pointers. Triton kernels cannot have bare tensor
-      // arguments.  We convert rather than remove to preserve the positional
-      // ABI: RockSerializeHostFuncsPass has already frozen the host-side
-      // func.call with the original argument list, so dropping an argument
-      // here would cause a host/kernel argument mismatch at launch time.
+  for (Type inputType : funcType.getInputs()) {
+    if (auto tensorType = dyn_cast<RankedTensorType>(inputType))
       newInputTypes.push_back(
           triton::PointerType::get(tensorType.getElementType(), 1));
-      deadTensorArgs.insert(i);
-    } else {
-      newInputTypes.push_back(funcType.getInput(i));
-    }
+    else
+      newInputTypes.push_back(inputType);
   }
 
   auto newFuncType =
@@ -160,9 +143,15 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   // Also rebuild the tt.splat
   // that broadcasts it as a ptr tensor, and drop the dead extract_ptr.
   Block &entryBlock = funcOp.front();
+  for (unsigned i = 0, e = newInputTypes.size(); i < e; ++i)
+    entryBlock.getArgument(i).setType(newInputTypes[i]);
+
+  // For each used tensor argument, rebuild the tt.splat that broadcast
+  // its extract_ptr result so it now broadcasts the (already retyped) !tt.ptr
+  // block argument, then drop the dead extract_ptr.
   for (auto &info : argsToConvert) {
     BlockArgument blockArg = entryBlock.getArgument(info.argIndex);
-    auto ptrType = triton::PointerType::get(info.elementType, 1);
+    auto ptrType = cast<triton::PointerType>(blockArg.getType());
 
     for (Value oldValue : info.valuesToReplace) {
       // Replace every tt.splat of the extract_ptr result with a splat (with ptr
@@ -181,21 +170,9 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
       }
     }
 
-    // Retype the block argument now that its splat users are ptr-typed.
-    blockArg.setType(ptrType);
-
     // The extract_ptr is dead once its splat users have been replaced.
     if (info.extractPtrOp)
       rewriter.eraseOp(info.extractPtrOp);
-  }
-
-  // Update block argument types for dead tensor args (those without
-  // rock.extract_ptr patterns). Triton kernels cannot have bare tensor args, so
-  // these still become pointers even though nothing reads them.
-  for (unsigned i : deadTensorArgs) {
-    BlockArgument blockArg = entryBlock.getArgument(i);
-    auto tensorType = cast<RankedTensorType>(blockArg.getType());
-    blockArg.setType(triton::PointerType::get(tensorType.getElementType(), 1));
   }
 
   // Step 4: Create tt.func and move body
