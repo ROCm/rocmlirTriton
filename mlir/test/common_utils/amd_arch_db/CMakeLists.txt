@@ -45,9 +45,11 @@ rocmlir_add_triton_includes(amd_arch_db)
 # trip an `llvm::cl` SmallPtrSet assertion at import time. Hide all symbols
 # coming from static archives (pybind still exports the PyInit_ entry point)
 # so libclang-cpp resolves against its own libLLVM.so instead.
-if (NOT WIN32)
-  target_link_options(amd_arch_db PRIVATE "LINKER:--exclude-libs,ALL")
-endif()
+# --exclude-libs is a GNU-ld/lld option (invalid on Apple ld), so gate it on
+# Linux to match conv-validation-wrappers, the global -Bsymbolic-functions
+# option, and the mlir-rocm-runtime llvm-patch.
+target_link_options(amd_arch_db PRIVATE
+  $<$<PLATFORM_ID:Linux>:LINKER:--exclude-libs,ALL>)
 
 # Drop the .so next to common.py so `import amd_arch_db` just works.
 set_target_properties(amd_arch_db PROPERTIES

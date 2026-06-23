@@ -102,6 +102,26 @@ endif()
 message(BUILD_SHARED_LIBS="${BUILD_SHARED_LIBS}")
 
 #===----------------------------------------------------------------------===//
+# Dual-LLVM coexistence: -Bsymbolic-functions
+#===----------------------------------------------------------------------===//
+#
+# Bind each module's own LLVM *function* references internally so a second LLVM
+# in the same process (e.g. ROCm Comgr's libLLVM.so, reached via the HIP
+# runtime's DT_NEEDED chain) cannot interpose them. Applied here -- before the
+# Triton and mlir subdirectories are added -- so it covers every target in this
+# build regardless of how CMake is invoked, rather than relying on cmake.sh.
+#
+# Must be -Bsymbolic-functions, NOT full -Bsymbolic: binding *data* symbols
+# locally breaks MLIR TypeID identity (http://llvm.org/pr51420), which is the
+# exact cross-module symbol-identity problem we are trying to avoid. Leaf
+# runtime modules that embed static LLVM archives additionally hide those
+# archives with --exclude-libs,ALL (see the ExecutionEngine CMakeLists and the
+# mlir-rocm-runtime-hide-llvm-symbols llvm-patch).
+if(NOT WIN32)
+  add_link_options($<$<PLATFORM_ID:Linux>:LINKER:-Bsymbolic-functions>)
+endif()
+
+#===----------------------------------------------------------------------===//
 # Triton paths for RPATH
 #===----------------------------------------------------------------------===//
 
