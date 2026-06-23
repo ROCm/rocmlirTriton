@@ -110,9 +110,16 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
   if (num_ctas > 1) {
     // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
     // it loads HIP symbols via dlsym. We link directly, so no check needed.
-    hipLaunchAttribute attributes[2];
-    // Attribute0: Cluster dimensions
-    attributes[0].id = static_cast<hipLaunchAttributeID>(4);
+    // Zero-init so the unused bytes of the 64-byte hipLaunchAttributeValue
+    // union are well-defined rather than indeterminate padding.
+    hipLaunchAttribute attributes[2] = {};
+    // Attribute0: Cluster dimensions. HIP's hipLaunchAttributeID enum does not
+    // expose this attribute by name (it mirrors CUDA's
+    // CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION == 4), so use the raw value, as
+    // upstream driver.c does.
+    constexpr auto kHipLaunchAttributeClusterDimension =
+        static_cast<hipLaunchAttributeID>(4);
+    attributes[0].id = kHipLaunchAttributeClusterDimension;
     int *cluster_dims = reinterpret_cast<int *>(attributes[0].val.pad);
     cluster_dims[0] = num_ctas;
     cluster_dims[1] = 1;
