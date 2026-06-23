@@ -31,3 +31,8 @@ config = "-groupsize=1 -batchsize=64 -in_channels=128 -out_channels=128 -in_h=28
 
 [[suite.test]]
 config = "-groupsize=1 -batchsize=64 -in_channels=128 -out_channels=128 -in_h=28 -in_w=28 -fil_h=3 -fil_w=3 -dilation_h=2 -dilation_w=2 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1 -gemmO=64"
+
+# check nPerBlockG1 > 0 (attn:v6): tiles the gemm1 N / gemmO dim into chunks
+# (gemmO 64 / nPerBlockG1 32 = 2 chunks folded back with tt.join)
+[[suite.test]]
+config = "-groupsize=1 -batchsize=64 -in_channels=128 -out_channels=128 -in_h=28 -in_w=28 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1 -gemmO=64 -perf_config attn:v6:64,32,32,64,1,1,2,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1"

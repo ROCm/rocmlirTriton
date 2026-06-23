@@ -28,7 +28,7 @@
 //
 // CHECK-GEMM-NT: gemm:v5:
 // CHECK-GEMM-TA: gemm:v5:
-// CHECK-ATTN: attn:v5:
-// CHECK-GEMM-GEMM: attn:v5:
-// CHECK-CONV-GEMM: attn:v5:
+// CHECK-ATTN: attn:v6:
+// CHECK-GEMM-GEMM: attn:v6:
+// CHECK-CONV-GEMM: attn:v6:
 // CHECK-CONV: gemm:v5:

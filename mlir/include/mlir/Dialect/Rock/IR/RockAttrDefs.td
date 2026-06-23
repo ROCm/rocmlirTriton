@@ -319,15 +319,11 @@ def Rock_GemmParamsAttr
       to be enabled).
     - useReductionLayout: Tri-state gate for the `rock-set-reduction-layout` pass, which
       redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
-<<<<<<< HEAD
       gather operand to cut SGPR spill. -1 (heuristic default) rewrites only convolution
       kernels; 0 disables the rewrite entirely; 1 forces it on every kernel.
-=======
-      gather operand to cut SGPR spill.
     - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
       selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
       enables it unconditionally.
->>>>>>> eaf059ed9c (Add Triton patch for OptimizeEpilogue changes and bump perfConfig to v5)
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -409,6 +405,11 @@ def Rock_GemmGemmParamsAttr
       the first GEMM
     - nPerBlockG0: The number of values of n to process in each workgroup for
       the first GEMM
+    - nPerBlockG1: The number of values of n to process in each workgroup for
+      the second GEMM (i.e. the head-dim tile of the attention output). `0`
+      means "untiled": the second GEMM processes the full `gemm1N` in one shot
+      (the historical behaviour and what pre-v4 configs, which have no
+      `nPerBlockG1` field, decode to).
     - kPerBlock: The number of values of k to process in each workgroup
     - kpack: The number of matrix instructions we can run with one LDS load (can be 1 or 2, see AccelerateAMDMatmul.cpp)
     - numCTAs: The number CTAs
@@ -453,8 +454,8 @@ def Rock_GemmGemmParamsAttr
   }];
 
   let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
-      "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs,
-      "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
+      "int64_t":$nPerBlockG1, "int64_t":$kPerBlock, "int64_t":$kpack,
+      "int64_t":$numCTAs, "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
       "int64_t":$splitKFactor, "int64_t":$numStages, "int64_t":$wavesPerEU,
       "int64_t":$gridGroupSize,
       DefaultValuedParameter<"int64_t", "-1">:$useAsyncCopy,
@@ -466,13 +467,15 @@ def Rock_GemmGemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useOptimizeEpilogue);
 
   let extraClassDeclaration = [{
-    // v5 is the single canonical output form (18 fields: the v4 fields plus
-    // `useOptimizeEpilogue`). Older versions remain accepted on input by
-    // `get()`; only the serialized form is fixed to v5.
+    // v6 is the single canonical output form (19 fields: the v5 fields plus the
+    // GEMM+GEMM-only `nPerBlockG1` second-GEMM head-dim tile). Older versions
+    // remain accepted on input by `get()`; only the serialized form is fixed to
+    // v6.
     void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("attn:v5:"
+        ("attn:v6:"
         + Twine(getMPerBlockG0()) + ","
         + Twine(getNPerBlockG0()) + ","
+        + Twine(getNPerBlockG1()) + ","
         + Twine(getKPerBlock()) + ","
         + Twine(getKpack()) + ","
         + Twine(getNumCTAs()) + ","

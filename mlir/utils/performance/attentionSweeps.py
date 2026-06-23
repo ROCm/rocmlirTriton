@@ -76,9 +76,11 @@ def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> b
     ``(mPerBlock * nPerBlock) / threads <= vgprs_per_eu / effective_wpe``,
     where ``threads = numWaves * waveSize`` and ``effective_wpe`` is
     ``wavesPerEU`` itself, or ``1`` when ``wavesPerEU == 0``."""
+    # 12-field attn:v4 layout (nPerBlockG1 is field 2), so numWaves/wavesPerEU
+    # sit one slot later than in the 11-field gemm layout.
     mpb, npb = perf_config[0], perf_config[1]
-    num_waves = perf_config[5]
-    waves_per_eu = perf_config[9]
+    num_waves = perf_config[6]
+    waves_per_eu = perf_config[10]
     threads = max(1, num_waves * amd_arch_db.get_wave_size(arch))
     effective_waves_per_eu = waves_per_eu if waves_per_eu > 0 else 1
     # Integer cross-multiplication is exact; avoids any FP rounding at the
@@ -105,7 +107,11 @@ def _sampled_perf_within_vgpr_budget(rng: random.Random,
     its basic-block instruction-count cap is calibrated for conv / gemm
     and doesn't catch the regalloc thrash this predicate guards against."""
     for _ in range(_MAX_PERF_CONFIG_RETRIES):
-        perf_config = sample_perf_config(rng, arch, split_k_choices, pow2_only=pow2_only)
+        perf_config = sample_perf_config(rng,
+                                         arch,
+                                         split_k_choices,
+                                         pow2_only=pow2_only,
+                                         is_attention=True)
         if _waves_per_eu_register_budget_ok(perf_config, arch):
             return perf_config
     raise RuntimeError(
@@ -293,7 +299,7 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
     shape, perf = params
     dtype, g, m, k, n, o, ta, tb, tc, to = shape
     # ``kind='attn'`` is intentional: gemm+gemm and attention share the same
-    # GemmGemmParamsAttr perf-config family (serialized as ``attn:v1:...``);
+    # GemmGemmParamsAttr perf-config family (serialized as ``attn:v6:...``);
     # see the ``PerfConfig`` docstring and RockAttrDefs.td.
     return perfRunner.GemmGemmConfiguration(
         dtype=dtype,
@@ -355,7 +361,7 @@ def main() -> bool:
                         choices=['attention', 'gemm_gemm'],
                         help="Kind of kernel to sweep: 'attention' or 'gemm_gemm'. "
                         "The spelling matches rocmlir-gen --operation. Both share "
-                        "the GemmGemmParamsAttr (attn:v1:) perf-config family but "
+                        "the GemmGemmParamsAttr (attn:v6:) perf-config family but "
                         "have different problem-shape spaces.")
     add_common_args(parser)
     args = parser.parse_args()

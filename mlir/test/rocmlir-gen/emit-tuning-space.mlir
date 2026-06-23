@@ -20,9 +20,40 @@
 // CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v5:16,16,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1,-1
 
 // Attention emits the gemm+gemm (attn) perfConfig with the same seven default
-// knob fields.
+// knob fields. The 3rd field is the second-GEMM N tile nPerBlockG1 (0 ==
+// untiled).
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-ATTN
-// CHECK-EXHAUSTIVE-ATTN: attn:v5:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-ATTN: attn:v6:16,16,0,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1,-1
+
+// The second-GEMM N tile (nPerBlockG1, the 3rd attn:v6 field) is only tuned
+// when the head dim (head_dim_v) is large; for head_dim_v=512 the space spans
+// the untiled case (0) and the power-of-two tiles {64,128,256}. Pin both the
+// untiled and a tiled (nPerBlockG1=64) config to prove the knob is swept.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 512 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-ATTN-G1
+// CHECK-EXHAUSTIVE-ATTN-G1: attn:v6:16,16,0,32,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-ATTN-G1: attn:v6:16,16,64,32,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1,-1
+
+//===----------------------------------------------------------------------===//
+// Attention tuning-space SIZE guards
+//===----------------------------------------------------------------------===//
+// These count the *number* of configs in the full attention tuning space, the
+// gemm+gemm analogue of the `full set = N` GEMM check in
+// test/CAPI/mixr_full.cpp. They make the effect of attention perfConfig knobs
+// on the search space explicit: whenever a knob is added to / removed from the
+// attn perfConfig (or its swept range changes), these totals move and must be
+// updated -- a deliberate, reviewable signal.
+//
+// Baseline: a small head_dim_v keeps the second GEMM untiled (nPerBlockG1 == 0),
+// so the nPerBlockG1 knob contributes only a single value.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>/dev/null | wc -l | FileCheck %s --check-prefix=CHECK-ATTN-SPACE-UNTILED
+// CHECK-ATTN-SPACE-UNTILED: {{^ *900$}}
+//
+// Same shape but a large head_dim_v (512) sweeps the second-GEMM N tile
+// nPerBlockG1 over {0,64,128,256} (the untiled case plus 3 more),
+// growing the space 4x. This is the knob added by the second-GEMM N
+// (nPerBlockG1) head-dim tiling; varying only head_dim_v isolates its effect.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 512 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>/dev/null | wc -l | FileCheck %s --check-prefix=CHECK-ATTN-SPACE-TILED
+// CHECK-ATTN-SPACE-TILED: {{^ *3600$}}
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-GFX950-KPACK \
@@ -46,19 +77,22 @@
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 8192 -head_dim_v 128 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN \
 // RUN:       --implicit-check-not=",8192,"
-// CHECK-TENSOR-CAP-ATTN: attn:v5:{{[0-9]+,[0-9]+,2048,}}
+// CHECK-TENSOR-CAP-ATTN: attn:v6:{{[0-9]+,[0-9]+,[0-9]+,2048,}}
 
 // gemm1's N tile is not tuned: gemm1NPerBlock = PowerOf2Ceil(head_dim_v) and
 // its contraction tile is gemm0NPerBlock, so gemm1 lowers a gemm0NPerBlock x
 // max(gemm0MPerBlock, gemm1NPerBlock) index/mask tensor. A large head_dim_v can
 // therefore blow the same 2^20 cap on a config gemm0's own check would pass.
-// For head_dim_v=8192 (gemm1NPerBlock=8192), gemm0NPerBlock must stay <= 128
-// (128*8192 == 1048576, the exact cap); every gemm0NPerBlock=256 combo drops,
-// regardless of gemm0's K tile (here head_dim_qk=128 keeps gemm0 in-cap).
+// For head_dim_v=8192 the untiled gemm1NPerBlock is 8192, so an untiled
+// (nPerBlockG1=0) gemm0NPerBlock=256 combo needs 256*8192 == 2097152 > cap and
+// drops, regardless of gemm0's K tile (here head_dim_qk=128 keeps gemm0
+// in-cap). A non-zero nPerBlockG1 shrinks the gemm1 N dim, so those tiled
+// gemm0NPerBlock=256 combos can fit and are allowed; only the untiled 256
+// combos (`,256,0,`) must be excluded.
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V \
-// RUN:       --implicit-check-not="attn:v5:{{[0-9]+}},256,"
-// CHECK-TENSOR-CAP-ATTN-V: attn:v5:16,128,
+// RUN:       --implicit-check-not="attn:v6:{{[0-9]+}},256,0,"
+// CHECK-TENSOR-CAP-ATTN-V: attn:v6:16,128,
 
 // Same gemm1 guard with a transposed output (-transO): head_dim_v then lives at
 // a different position in C's shape, so the derivation must follow
@@ -67,8 +101,8 @@
 // head_dim_v=8192.
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 -transO --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V-TRANSO \
-// RUN:       --implicit-check-not="attn:v5:{{[0-9]+}},256,"
-// CHECK-TENSOR-CAP-ATTN-V-TRANSO: attn:v5:16,128,
+// RUN:       --implicit-check-not="attn:v6:{{[0-9]+}},256,0,"
+// CHECK-TENSOR-CAP-ATTN-V-TRANSO: attn:v6:16,128,
 
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
@@ -83,8 +117,8 @@
 // `getAccelRangeGemmGemm`.
 // RUN: rocmlir-gen --arch gfx1100 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-ATTN-KPACK \
-// RUN:       --implicit-check-not="attn:v5:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
-// CHECK-WMMA-ATTN-KPACK: attn:v5:{{[0-9]+,[0-9]+,[0-9]+,1,}}
+// RUN:       --implicit-check-not="attn:v6:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,2,}}"
+// CHECK-WMMA-ATTN-KPACK: attn:v6:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,1,}}
 
 //===----------------------------------------------------------------------===//
 // Non-accel tuning space
@@ -103,11 +137,11 @@
 // so this exercises the non-accel `getRangeGemmGemm` path.
 // RUN: rocmlir-gen --arch gfx1100 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-ATTN \
-// RUN:       --implicit-check-not="attn:v5:{{[0-9]+,[0-9]+,[0-9]+,2,}}" \
-// RUN:       --implicit-check-not="attn:v5:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}" \
-// RUN:       --implicit-check-not="attn:v5:{{(16|256),}}" \
-// RUN:       --implicit-check-not="attn:v5:{{[0-9]+,(16|256),}}"
-// CHECK-NAVI-ATTN: attn:v5:{{(32|64|128),(32|64|128),[0-9]+,1,[0-9]+,[0-9]+,0,(1|2),[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+// RUN:       --implicit-check-not="attn:v6:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,2,}}" \
+// RUN:       --implicit-check-not="attn:v6:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}" \
+// RUN:       --implicit-check-not="attn:v6:{{(16|256),}}" \
+// RUN:       --implicit-check-not="attn:v6:{{[0-9]+,(16|256),}}"
+// CHECK-NAVI-ATTN: attn:v6:{{(32|64|128),(32|64|128),0,[0-9]+,1,[0-9]+,[0-9]+,0,(1|2),[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
 
 //===----------------------------------------------------------------------===//
 // Non-power-of-two kPerBlock candidates that evenly divide K
