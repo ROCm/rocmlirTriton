@@ -1729,6 +1729,33 @@ def load_configs(op_type: Operation, parsed_args: argparse.Namespace, paths: Pat
     return loaders[op_type]()
 
 
+def normalize_configs(configs: List[str], conf_class: type, arch: str, num_cu: int,
+                      num_chiplets: int) -> List[str]:
+    """The tuning DB is keyed by the test-vector string, but ``perfRunner`` looks
+    up tuned perf-configs using ``config.to_command_line()``.
+    Normalizing once here guarantees that the
+    persisted ``testVector`` column and the
+    perfRunner lookup key are all the same canonical string.
+
+    ``.mlir`` test vectors are file paths handled via ``--emit-tuning-key`` and
+    are left untouched. Vectors that fail to parse are kept verbatim so they
+    surface the same error during tuning instead of being silently dropped.
+    """
+    normalized = []
+    for test_vector in configs:
+        if test_vector.endswith(".mlir"):
+            normalized.append(test_vector)
+            continue
+        try:
+            config = conf_class.from_command_line(test_vector.split(sep=' '), arch, num_cu,
+                                                  num_chiplets)
+            normalized.append(config.to_command_line())
+        except Exception as e:
+            logger.warning(f"Could not normalize test vector '{test_vector}': {e}")
+            normalized.append(test_vector)
+    return normalized
+
+
 # =============================================================================
 # Entry Point
 # =============================================================================
@@ -2001,6 +2028,11 @@ def main(args=None):
     num_cu = perfRunner.get_num_cu(chip)
     num_chiplets = perfRunner.get_num_chiplets(chip, num_cu)
 
+    conf_class = get_config_class(op_type)
+    # Canonicalize configs so the DB key, and the perfRunner
+    # ``to_command_line()`` lookup key match.
+    configs = normalize_configs(configs, conf_class, arch, num_cu, num_chiplets)
+
     options = Options(chip=chip,
                       arch=arch,
                       num_cu=num_cu,
@@ -2025,7 +2057,7 @@ def main(args=None):
                       perf_config_timeout=parsed_args.perf_config_timeout)
 
     ctx = TuningContext(configs=configs,
-                        conf_class=get_config_class(op_type),
+                        conf_class=conf_class,
                         paths=paths,
                         options=options,
                         gpu_topology=gpu_topology,
