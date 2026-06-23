@@ -113,7 +113,7 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
     hipLaunchAttribute attributes[2];
     // Attribute0: Cluster dimensions
     attributes[0].id = static_cast<hipLaunchAttributeID>(4);
-    int *cluster_dims = (int *)attributes[0].val.pad;
+    int *cluster_dims = reinterpret_cast<int *>(attributes[0].val.pad);
     cluster_dims[0] = num_ctas;
     cluster_dims[1] = 1;
     cluster_dims[2] = 1;
