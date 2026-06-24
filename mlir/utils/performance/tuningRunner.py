@@ -252,8 +252,11 @@ class GpuTopology:
 
         rocm-smi reports physical device IDs regardless of environment variables (e.g., ROCR_VISIBLE_DEVICES and HIP_VISIBLE_DEVICES).
         """
+        rocm_smi = f"{perfRunner.ROCM_PATH}/bin/rocm-smi"
+        # rocm-smi can take ~20s to enumerate large multi-GPU systems, so allow
+        # a generous timeout to avoid spurious TimeoutExpired failures.
         output = subprocess.check_output(
-            ["rocm-smi", "--showproductname", "--showtoponuma", "--json"], text=True, timeout=10)
+            [rocm_smi, "--showproductname", "--showtoponuma", "--json"], text=True, timeout=60)
         data = json.loads(output)
 
         gpus = {}
