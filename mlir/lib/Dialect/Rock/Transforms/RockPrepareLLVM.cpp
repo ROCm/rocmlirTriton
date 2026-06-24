@@ -19,6 +19,8 @@
 //   1. GEP inbounds flags
 //   2. Invariant loads + alias scope metadata (AMDGPU backend workaround)
 //   3. Atomic RMW metadata for native hardware atomics
+//   4. amdgpu-no-heap-ptr (drops the unused device-heap implicit arg, which
+//      otherwise makes the runtime launch a one-time __amd_rocclr_initHeap)
 //
 // IMPORTANT: the set of attributes/metadata produced here is part of the
 // rocmlirTriton kernel ABI documented in `docs/kernel_memory_assumptions.md`.
@@ -230,6 +232,28 @@ static void relaxAtomics(LLVM::LLVMFuncOp func, OpBuilder &b,
   });
 }
 
+// Mark the kernel `amdgpu-no-heap-ptr` via the LLVM-dialect `passthrough`
+// attribute (translated verbatim to an LLVM function attribute). Rock kernels
+// never use device-side dynamic allocation, so they never touch the rocclr
+// device heap. Dropping the hidden_heap_v1 implicit argument from the kernel
+// ABI stops the HIP runtime from launching the one-time __amd_rocclr_initHeap
+// setup kernel at module load. printf is unaffected: it uses hostcall
+// (amdgpu-no-hostcall-ptr), which we deliberately leave untouched.
+static void dropDeviceHeapArg(LLVM::LLVMFuncOp func) {
+  StringRef attrName = "amdgpu-no-heap-ptr";
+  SmallVector<Attribute> passthrough;
+  if (ArrayAttr existing = func.getPassthroughAttr()) {
+    for (Attribute attr : existing) {
+      if (auto str = dyn_cast<StringAttr>(attr);
+          str && str.getValue() == attrName)
+        return;
+      passthrough.push_back(attr);
+    }
+  }
+  passthrough.push_back(StringAttr::get(func.getContext(), attrName));
+  func.setPassthroughAttr(ArrayAttr::get(func.getContext(), passthrough));
+}
+
 void RockPrepareLLVMPass::runOnOperation() {
   LLVM::LLVMFuncOp func = getOperation();
   if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
@@ -242,4 +266,5 @@ void RockPrepareLLVMPass::runOnOperation() {
   markGEPsInbounds(func);
   annotateMemoryAccesses(func, b);
   relaxAtomics(func, b, allowFlushDenorm);
+  dropDeviceHeapArg(func);
 }
