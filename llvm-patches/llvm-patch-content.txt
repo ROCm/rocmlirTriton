@@ -83,13 +83,17 @@ bump that pulls commit ace44dc5a2a4 into the pinned LLVM (it lands after
 the current pin 87717bf9, dated 2026-04-08; the fix merged 2026-05-19).
 
 ----------------------------------------------------------------------
-mlir-rocm-runtime-hide-llvm-symbols.patch
+mlir-rocm-runtime-standalone.patch
 ----------------------------------------------------------------------
-- Upstream PR     : (none -- downstream-only build fix, candidate for upstream)
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/205651
+- Upstream title  : [MLIR][ROCm] Build mlir_rocm_runtime STANDALONE
 - File Fixed      : mlir/lib/ExecutionEngine/CMakeLists.txt
-- Contents        : Adds `target_link_options(mlir_rocm_runtime PRIVATE
-                    LINKER:--exclude-libs,ALL)` on Linux, mirroring the existing
-                    mlir_apfloat_wrappers treatment in the same file.
+                    mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp
+- Contents        : Marks mlir_rocm_runtime STANDALONE (so it no longer links
+                    LLVMSupport, mirroring mlir_cuda_runtime) and drops the
+                    SmallVector/ArrayRef use in mgpuMemHostRegisterMemRef.
+                    Removes the DISABLE_PCH_REUSE workaround,
+                    which a STANDALONE library no longer needs.
 
 Symptom without the patch
 -------------------------
@@ -106,20 +110,28 @@ comgr's bundled libLLVM happens to share the exact 23.0git soname.
 
 Root cause
 ----------
-libmlir_rocm_runtime.so statically links LLVMSupport and was exporting ~1300
-default-visibility llvm::* symbols (llvm::cl::SubCommand, ManagedStatic,
-CommandLine, ...). With both LLVMs in the process the dynamic linker
-interposes these data symbols, so the two instances share LLVM's cl::opt /
-pass-registry singletons and one tears the other's SmallPtrSet apart during
-static init.
+libmlir_rocm_runtime.so was not built STANDALONE, so add_mlir_library linked
+LLVMSupport into it, exporting ~1300 default-visibility llvm::* symbols
+(llvm::cl::SubCommand, ManagedStatic, CommandLine, ...). With both LLVMs in
+the process the dynamic linker interposes these data symbols, so the two
+instances share LLVM's cl::opt / pass-registry singletons and one tears the
+other's SmallPtrSet apart during static init.
 
-NOTE: -Bsymbolic-functions does NOT fix this -- the clashing symbols are
-*data* (the cl registry), and MLIR forbids full -Bsymbolic
-(mlir/CMakeLists.txt FATAL_ERRORs on it) because binding data symbols locally
-breaks TypeID identity (http://llvm.org/pr51420). Hiding the static-archive
-symbols with --exclude-libs,ALL is the correct, scoped fix; it leaves the
-library's own extern "C" mgpu* wrappers exported (verified: 0 exported llvm::*
-symbols, 27 mgpu* symbols retained). See ROCm/TheRock#4981.
+Why STANDALONE rather than --exclude-libs,ALL
+----------------------------------------------
+RocmRuntimeWrappers.cpp's only LLVM use was SmallVector/ArrayRef in
+mgpuMemHostRegisterMemRef. Replacing it with plain pointer arithmetic lets the
+library drop LLVMSupport entirely (STANDALONE), so there are *no* LLVM symbols
+left to clash -- strictly stronger than --exclude-libs,ALL, which only
+localized the symbols while they remained statically present in the .so. This
+matches the intent of upstream commit 351ae0ca550c ("[MLIR][CMake] Fix runtime
+libraries with PCH"), which made the other dlopen-ed runtimes STANDALONE but
+left mlir_rocm_runtime on a DISABLE_PCH_REUSE workaround because it still used
+LLVM ADTs. Verified: 0 LLVM symbols in the whole symtab, 25 extern "C" mgpu*
+wrappers still exported. See ROCm/TheRock#4981.
+
+Drop this patch on the next Triton bump that pulls the upstream PR into the
+pinned LLVM.
 
 ----------------------------------------------------------------------
 patch1.patch

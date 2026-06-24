@@ -1,0 +1,89 @@
+diff --git a/mlir/lib/ExecutionEngine/CMakeLists.txt b/mlir/lib/ExecutionEngine/CMakeLists.txt
+index 2176ccaa6031..868092104064 100644
+--- a/mlir/lib/ExecutionEngine/CMakeLists.txt
++++ b/mlir/lib/ExecutionEngine/CMakeLists.txt
+@@ -403,12 +403,13 @@ if(LLVM_ENABLE_PIC)
+ 
+       EXCLUDE_FROM_LIBMLIR
+ 
+-      # TODO: this is merely a workaround. If this library depends on LLVMSupport,
+-      # it should suppress symbols, or if it doesn't, it shouldn't link against
+-      # it. This workaround prevents the library from defining the symbol
+-      # llvm::EnableABIBreakingChecks, which would cause ODR-violations when
+-      # dlopen-ed.
+-      DISABLE_PCH_REUSE
++      # This library is dlopen-ed (e.g. by mlir-runner via --shared-libs),
++      # frequently into a process that already hosts another LLVM (ROCm's own
++      # libLLVM.so is reachable through the libamdhip64 -> libamd_comgr
++      # DT_NEEDED chain). Linking LLVMSupport here would duplicate LLVM's
++      # cl::opt / pass-registry / ManagedStatic singletons and abort during
++      # dynamic init. The wrappers don't need LLVMSupport, so build STANDALONE.
++      STANDALONE
+     )
+ 
+     # Supress compiler warnings from HIP headers
+diff --git a/mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp b/mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp
+index e729e4f9fca9..9efe4931305f 100644
+--- a/mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp
++++ b/mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp
+@@ -13,13 +13,17 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include <cassert>
+-#include <numeric>
++#include <cstdint>
++#include <cstdio>
+ 
+ #include "mlir/ExecutionEngine/CRunnerUtils.h"
+-#include "llvm/ADT/ArrayRef.h"
+ 
+ #include "hip/hip_runtime.h"
+ 
++#ifdef _WIN32
++#include <malloc.h>
++#endif // _WIN32
++
+ #define HIP_REPORT_IF_ERROR(expr)                                              \
+   [](hipError_t result) {                                                      \
+     if (!result)                                                               \
+@@ -147,22 +151,25 @@ extern "C" void mgpuMemHostRegister(void *ptr, uint64_t sizeBytes) {
+ extern "C" void
+ mgpuMemHostRegisterMemRef(int64_t rank, StridedMemRefType<char, 1> *descriptor,
+                           int64_t elementSizeBytes) {
+-
+-  llvm::SmallVector<int64_t, 4> denseStrides(rank);
+-  llvm::ArrayRef<int64_t> sizes(descriptor->sizes, rank);
+-  llvm::ArrayRef<int64_t> strides(sizes.end(), rank);
+-
+-  std::partial_sum(sizes.rbegin(), sizes.rend(), denseStrides.rbegin(),
+-                   std::multiplies<int64_t>());
+-  auto sizeBytes = denseStrides.front() * elementSizeBytes;
+-
+   // Only densely packed tensors are currently supported.
+-  std::rotate(denseStrides.begin(), denseStrides.begin() + 1,
+-              denseStrides.end());
+-  denseStrides.back() = 1;
+-  assert(strides == llvm::ArrayRef(denseStrides));
+-
+-  auto ptr = descriptor->data + descriptor->offset * elementSizeBytes;
++#ifdef _WIN32
++  int64_t *denseStrides = (int64_t *)_alloca(rank * sizeof(int64_t));
++#else
++  int64_t *denseStrides = (int64_t *)alloca(rank * sizeof(int64_t));
++#endif // _WIN32
++  int64_t *sizes = descriptor->sizes;
++  for (int64_t i = rank - 1, runningStride = 1; i >= 0; i--) {
++    denseStrides[i] = runningStride;
++    runningStride *= sizes[i];
++  }
++  uint64_t sizeBytes = sizes[0] * denseStrides[0] * elementSizeBytes;
++  int64_t *strides = &sizes[rank];
++  (void)strides;
++  for (unsigned i = 0; i < rank; ++i)
++    assert(strides[i] == denseStrides[i] &&
++           "Mismatch in computed dense strides");
++
++  auto *ptr = descriptor->data + descriptor->offset * elementSizeBytes;
+   mgpuMemHostRegister(ptr, sizeBytes);
+ }
+ 

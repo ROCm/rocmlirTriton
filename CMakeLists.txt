@@ -113,10 +113,7 @@ message(BUILD_SHARED_LIBS="${BUILD_SHARED_LIBS}")
 #
 # Must be -Bsymbolic-functions, NOT full -Bsymbolic: binding *data* symbols
 # locally breaks MLIR TypeID identity (http://llvm.org/pr51420), which is the
-# exact cross-module symbol-identity problem we are trying to avoid. Leaf
-# runtime modules that embed static LLVM archives additionally hide those
-# archives with --exclude-libs,ALL (see the ExecutionEngine CMakeLists and the
-# mlir-rocm-runtime-hide-llvm-symbols llvm-patch).
+# exact cross-module symbol-identity problem we are trying to avoid.
 if(NOT WIN32)
   add_link_options($<$<PLATFORM_ID:Linux>:LINKER:-Bsymbolic-functions>)
 endif()
