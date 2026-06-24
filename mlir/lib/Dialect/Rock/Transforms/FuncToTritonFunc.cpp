@@ -101,17 +101,18 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     if (!tensorType)
       llvm_unreachable("extract_ptr source must be a tensor");
 
-    // The result of extract_ptr is PtrGlueType, which we need to replace with a !tt.ptr.
-    if (extractPtrOp.getResult().getType() == getPtrGlueType(ctx)) {
-      // Found the pattern - record it
-      ArgConversionInfo info;
-      info.argIndex = blockArg.getArgNumber();
-      info.elementType = tensorType.getElementType();
-      info.tensorType = tensorType;
-      info.valuesToReplace.push_back(extractPtrOp.getResult());
-      info.extractPtrOp = extractPtrOp;
-      argsToConvert.push_back(info);
-    }
+    // The result of extract_ptr must be PtrGlueType, which we replace with a
+    // !tt.ptr.
+    if (extractPtrOp.getResult().getType() != getPtrGlueType(ctx))
+      llvm_unreachable("extract_ptr result must be the pointer glue type");
+
+    ArgConversionInfo info;
+    info.argIndex = blockArg.getArgNumber();
+    info.elementType = tensorType.getElementType();
+    info.tensorType = tensorType;
+    info.valuesToReplace.push_back(extractPtrOp.getResult());
+    info.extractPtrOp = extractPtrOp;
+    argsToConvert.push_back(info);
   });
 
   // Step 2: Build new function type with tt.ptr arguments
