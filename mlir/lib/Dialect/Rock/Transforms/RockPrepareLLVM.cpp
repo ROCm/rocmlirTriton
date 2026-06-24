@@ -20,7 +20,9 @@
 //   2. Invariant loads + alias scope metadata (AMDGPU backend workaround)
 //   3. Atomic RMW metadata for native hardware atomics
 //   4. amdgpu-no-heap-ptr (drops the unused device-heap implicit arg, which
-//      otherwise makes the runtime launch a one-time __amd_rocclr_initHeap)
+//      otherwise makes the runtime launch a one-time __amd_rocclr_initHeap).
+//      Only added when the kernel provably never reaches the rocclr heap, i.e.
+//      it calls no device allocator (malloc/free/__ockl_dm_*).
 //
 // IMPORTANT: the set of attributes/metadata produced here is part of the
 // rocmlirTriton kernel ABI documented in `docs/kernel_memory_assumptions.md`.
@@ -232,12 +234,43 @@ static void relaxAtomics(LLVM::LLVMFuncOp func, OpBuilder &b,
   });
 }
 
+// Device-side routines that read the rocclr device-heap implicit argument
+// (hidden_heap_v1): the `malloc`/`free` builtins and the `__ockl_dm_*`
+// allocator family they lower to. A kernel that can reach one of these
+// genuinely needs the heap pointer.
+static bool isDeviceHeapAllocator(StringRef name) {
+  return name == "malloc" || name == "free" || name.starts_with("__ockl_dm_");
+}
+
+// Returns true if `kernel` can reach the rocclr device heap. This mirrors the
+// AMDGPU attributor's `funcRetrievesHeapPtr` check (assume COV >= 5, where the
+// heap implicit arg exists) at MLIR LLVM-dialect scope: the ROCDL dialect does
+// not model `amdgcn.implicitarg.ptr`, so before device-library linking the
+// only way a Rock kernel can touch the heap is a call to one of the device
+// allocators above. The scan stays within the kernel body: this pass runs as a
+// nested pass over `LLVM::LLVMFuncOp` and must not inspect sibling functions,
+// and Rock kernels are self-contained, so a local scan is both sound and
+// sufficient. We conservatively report "uses heap" for indirect calls (no
+// statically known callee) so the heap pointer is preserved whenever we cannot
+// prove it unused.
+static bool kernelUsesDeviceHeap(LLVM::LLVMFuncOp kernel) {
+  WalkResult walk = kernel.walk([&](LLVM::CallOp call) -> WalkResult {
+    FlatSymbolRefAttr callee = call.getCalleeAttr();
+    if (!callee)
+      return WalkResult::interrupt(); // indirect call: cannot prove safety.
+    if (isDeviceHeapAllocator(callee.getValue()))
+      return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+  return walk.wasInterrupted();
+}
+
 // Mark the kernel `amdgpu-no-heap-ptr` via the LLVM-dialect `passthrough`
-// attribute (translated verbatim to an LLVM function attribute). Rock kernels
-// never use device-side dynamic allocation, so they never touch the rocclr
-// device heap. Dropping the hidden_heap_v1 implicit argument from the kernel
-// ABI stops the HIP runtime from launching the one-time __amd_rocclr_initHeap
-// setup kernel at module load. printf is unaffected: it uses hostcall
+// attribute (translated verbatim to an LLVM function attribute). Dropping the
+// hidden_heap_v1 implicit argument from the kernel ABI stops the HIP runtime
+// from launching the one-time __amd_rocclr_initHeap setup kernel at module
+// load. Only applied when `kernelUsesDeviceHeap` proves the kernel never
+// touches the rocclr heap. printf is unaffected: it uses hostcall
 // (amdgpu-no-hostcall-ptr), which we deliberately leave untouched.
 static void dropDeviceHeapArg(LLVM::LLVMFuncOp func) {
   StringRef attrName = "amdgpu-no-heap-ptr";
@@ -266,5 +299,6 @@ void RockPrepareLLVMPass::runOnOperation() {
   markGEPsInbounds(func);
   annotateMemoryAccesses(func, b);
   relaxAtomics(func, b, allowFlushDenorm);
-  dropDeviceHeapArg(func);
+  if (!kernelUsesDeviceHeap(func))
+    dropDeviceHeapArg(func);
 }
