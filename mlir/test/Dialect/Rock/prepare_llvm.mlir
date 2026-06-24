@@ -104,9 +104,54 @@ llvm.func @atomic_metadata(%arg0: !llvm.ptr<1> {llvm.noalias}, %arg1: i32, %arg2
 
 // Non-kernel functions should be skipped entirely
 // CHECK-LABEL: @non_kernel_skipped
+// CHECK-NOT: amdgpu-no-heap-ptr
 llvm.func @non_kernel_skipped(%base: !llvm.ptr, %idx: i64) -> (!llvm.ptr) {
   // CHECK: llvm.getelementptr %{{.*}}[%{{.*}}]
   // CHECK-NOT: inbounds
   %p0 = llvm.getelementptr %base[%idx] : (!llvm.ptr, i64) -> !llvm.ptr, f32
   llvm.return %p0 : !llvm.ptr
+}
+
+// -----
+
+// Kernels are marked amdgpu-no-heap-ptr, which drops the device-heap implicit
+// arg so the runtime never launches the one-time __amd_rocclr_initHeap kernel.
+// CHECK-LABEL: @no_heap_ptr
+// CHECK-SAME: passthrough = ["amdgpu-no-heap-ptr"]
+llvm.func @no_heap_ptr(%arg0: !llvm.ptr {llvm.noalias}) attributes {rock.kernel} {
+  llvm.return
+}
+
+// -----
+
+// An existing passthrough list is preserved and the heap attr appended.
+// CHECK-LABEL: @no_heap_ptr_merge
+// CHECK-SAME: passthrough = ["amdgpu-unsafe-fp-atomics", "amdgpu-no-heap-ptr"]
+llvm.func @no_heap_ptr_merge() attributes {rock.kernel, passthrough = ["amdgpu-unsafe-fp-atomics"]} {
+  llvm.return
+}
+
+// -----
+
+// A kernel that calls the device allocator genuinely needs the heap pointer,
+// so amdgpu-no-heap-ptr must NOT be added.
+llvm.func @malloc(i64) -> !llvm.ptr
+// CHECK-LABEL: @uses_heap_malloc
+// CHECK-NOT: amdgpu-no-heap-ptr
+llvm.func @uses_heap_malloc() attributes {rock.kernel} {
+  %size = llvm.mlir.constant(16 : i64) : i64
+  %p = llvm.call @malloc(%size) : (i64) -> !llvm.ptr
+  llvm.return
+}
+
+// -----
+
+// Same for the __ockl_dm_* allocator family that malloc/free lower to.
+llvm.func @__ockl_dm_alloc(i64) -> !llvm.ptr
+// CHECK-LABEL: @uses_heap_ockl
+// CHECK-NOT: amdgpu-no-heap-ptr
+llvm.func @uses_heap_ockl() attributes {rock.kernel} {
+  %size = llvm.mlir.constant(16 : i64) : i64
+  %p = llvm.call @__ockl_dm_alloc(%size) : (i64) -> !llvm.ptr
+  llvm.return
 }
