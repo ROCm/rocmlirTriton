@@ -101,8 +101,8 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     if (!tensorType)
       llvm_unreachable("extract_ptr source must be a tensor");
 
-    // The result of extract_ptr is i32, which is what we need to replace
-    if (extractPtrOp.getResult().getType().isInteger(32)) {
+    // The result of extract_ptr is PtrGlueType, which we need to replace with a !tt.ptr.
+    if (extractPtrOp.getResult().getType() == getPtrGlueType(ctx)) {
       // Found the pattern - record it
       ArgConversionInfo info;
       info.argIndex = blockArg.getArgNumber();
