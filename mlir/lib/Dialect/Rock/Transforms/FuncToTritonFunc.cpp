@@ -15,10 +15,11 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 //
-// This pass transforms Rock kernel functions from func.func to Triton's tt.func.
-// It converts tensor arguments to Triton pointer types (!tt.ptr), eliminates the
-// pointer extraction chain (rock.extract_ptr), converts arith.addi on pointer
-// tensors to tt.addptr, and sets up pointer attributes for optimization.
+// This pass transforms Rock kernel functions from func.func to Triton's
+// tt.func. It converts tensor arguments to Triton pointer types (!tt.ptr),
+// eliminates the pointer extraction chain (rock.extract_ptr), converts
+// arith.addi on pointer tensors to tt.addptr, and sets up pointer attributes
+// for optimization.
 //
 //===----------------------------------------------------------------------===//
 
@@ -60,7 +61,8 @@ static bool isTensorOfPointers(Type type) {
 }
 
 struct RockFuncToTritonFuncPass
-    : public rock::impl::RockFuncToTritonFuncPassBase<RockFuncToTritonFuncPass> {
+    : public rock::impl::RockFuncToTritonFuncPassBase<
+          RockFuncToTritonFuncPass> {
   void runOnOperation() override;
 
 private:
@@ -81,7 +83,8 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     unsigned argIndex;
     Type elementType;
     RankedTensorType tensorType; // Original tensor type for size calculation
-    SmallVector<Value> valuesToReplace; // extract_ptr results to replace with block arg
+    SmallVector<Value>
+        valuesToReplace; // extract_ptr results to replace with block arg
     rock::ExtractPtrOp extractPtrOp;
   };
   SmallVector<ArgConversionInfo> argsToConvert;
@@ -150,7 +153,8 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     }
   }
 
-  auto newFuncType = FunctionType::get(ctx, newInputTypes, funcType.getResults());
+  auto newFuncType =
+      FunctionType::get(ctx, newInputTypes, funcType.getResults());
 
   // Step 3: Rewrite each pointer block argument to have the type !tt.ptr.
   // Also rebuild the tt.splat
@@ -210,7 +214,8 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   // Convert func.return to tt.return
   ttFuncOp.walk([&](func::ReturnOp returnOp) {
     builder.setInsertionPoint(returnOp);
-    triton::ReturnOp::create(builder, returnOp.getLoc(), returnOp.getOperands());
+    triton::ReturnOp::create(builder, returnOp.getLoc(),
+                             returnOp.getOperands());
     returnOp.erase();
   });
 
@@ -242,7 +247,8 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   }
 
   // Step 6: A rock.cast_to_ptr whose source already became a pointer tensor
-  // (through the addptr chain or a ptr splat) is now an identity and folds away.
+  // (through the addptr chain or a ptr splat) is now an identity and folds
+  // away.
   changed = true;
   while (changed) {
     changed = false;
