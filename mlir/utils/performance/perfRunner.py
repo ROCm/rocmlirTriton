@@ -238,15 +238,8 @@ def get_nanoseconds(filename):
         reader = csv.DictReader(csv_file, delimiter=',')
         result = 0
         for row in reader:
-            # AverageNs is a the per-iteration timing that we want to sum
-            # Any kernel launched a different number of MLIR_N_REPEATS times 
-            # is a one-time runtime helper injected by the runtime, and they 
-            # should not be included in timing of the kernel.
-            calls = row.get('Calls')
-            if calls is not None:
-                if int(float(calls)) != MLIR_N_REPEATS:
-                    continue
             result += int(float(row['AverageNs']))
+        csv_file.close()
         return result
 
 
