@@ -139,17 +139,22 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
           // each lower dim's buffer stride by propagating its own unit diff
           // through the maps below this one.
           ArrayRef<TransformMapAttr> below = transforms.drop_front(mapIdx + 1);
-          SmallVector<int64_t> s(lowerDims.size());
-          for (size_t j = 0; j < lowerDims.size(); ++j) {
+          SmallVector<int64_t> s, ext;
+          for (size_t j = 0; j < q.size(); ++j) {
+            // Size-1 dims are skipped: they contribute nothing to the offset,
+            // making their buffer stride irrelevant.
+            if (e[j] == 1)
+              continue;
             DenseMap<unsigned, int64_t> unit;
             unit[lowerDims[j]] = 1;
             FailureOr<int64_t> sj = linearizedDiffStride(below, unit);
             if (failed(sj))
               return failure();
-            s[j] = *sj;
+            s.push_back(*sj);
+            ext.push_back(e[j]);
           }
-          for (size_t j = 0; j + 1 < lowerDims.size(); ++j)
-            if (s[j] != s[j + 1] * params[j + 1])
+          for (size_t j = 0; j + 1 < s.size(); ++j)
+            if (s[j] != s[j + 1] * ext[j + 1])
               return failure(); // non-contiguous: offset is piecewise-linear
         }
         break;
