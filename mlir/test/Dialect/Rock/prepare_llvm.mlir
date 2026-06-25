@@ -155,3 +155,48 @@ llvm.func @uses_heap_ockl() attributes {rock.kernel} {
   %p = llvm.call @__ockl_dm_alloc(%size) : (i64) -> !llvm.ptr
   llvm.return
 }
+
+// -----
+
+// The allocator can be reached transitively (kernel -> helper -> malloc). The
+// walk follows resolvable in-module callees, so the heap pointer must be kept.
+llvm.func @malloc(i64) -> !llvm.ptr
+llvm.func @heap_helper() {
+  %size = llvm.mlir.constant(16 : i64) : i64
+  %p = llvm.call @malloc(%size) : (i64) -> !llvm.ptr
+  llvm.return
+}
+// CHECK-LABEL: @uses_heap_transitive
+// CHECK-NOT: amdgpu-no-heap-ptr
+llvm.func @uses_heap_transitive() attributes {rock.kernel} {
+  llvm.call @heap_helper() : () -> ()
+  llvm.return
+}
+
+// -----
+
+// Calls to a non-allocating defined helper and to an external device-library
+// leaf (an __ocml_ math function with no body) are looked through, so the
+// kernel is still proven heap-free and gets amdgpu-no-heap-ptr.
+llvm.func @__ocml_exp_f32(f32) -> f32
+llvm.func @safe_helper(%x: f32) -> f32 {
+  %r = llvm.call @__ocml_exp_f32(%x) : (f32) -> f32
+  llvm.return %r : f32
+}
+// CHECK-LABEL: @looks_through_safe_calls
+// CHECK-SAME: passthrough = ["amdgpu-no-heap-ptr"]
+llvm.func @looks_through_safe_calls(%x: f32) attributes {rock.kernel} {
+  %r = llvm.call @safe_helper(%x) : (f32) -> f32
+  llvm.return
+}
+
+// -----
+
+// An indirect call has an unresolvable target, so we cannot prove the kernel
+// never reaches the heap: be conservative and keep the heap pointer.
+// CHECK-LABEL: @indirect_call_conservative
+// CHECK-NOT: amdgpu-no-heap-ptr
+llvm.func @indirect_call_conservative(%fn: !llvm.ptr {llvm.noalias}) attributes {rock.kernel} {
+  llvm.call %fn() : !llvm.ptr, () -> ()
+  llvm.return
+}

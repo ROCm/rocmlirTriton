@@ -40,10 +40,13 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
 namespace mlir {
@@ -234,7 +237,9 @@ static void relaxAtomics(LLVM::LLVMFuncOp func, OpBuilder &b,
   });
 }
 
-// Check if kernel requires a heap allocation
+// Names of the rocclr device-side heap allocators. A call to any of these is
+// what makes a kernel need the hidden heap pointer (and thus the runtime
+// __amd_rocclr_initHeap launch).
 static bool isDeviceHeapAllocator(StringRef name) {
   return name == "malloc" || name == "free" || name.starts_with("__ockl_dm_");
 }
@@ -242,17 +247,36 @@ static bool isDeviceHeapAllocator(StringRef name) {
 // Returns true if `kernel` can reach the rocclr device heap. This mirrors the
 // AMDGPU attributor's `funcRetrievesHeapPtr` check at MLIR LLVM-dialect scope:
 // the ROCDL dialect does not model `amdgcn.implicitarg.ptr`, so before
-// device-library linking we check for one of the device allocators above.
+// device-library linking we look for a call to one of the device allocators
+// above.
+//
+// Like the attributor's check, this is call-graph *transitive*: the walk
+// follows resolvable in-module callees, so a kernel that only reaches an
+// allocator indirectly (kernel -> helper -> malloc) is still detected. 
 static bool kernelUsesDeviceHeap(LLVM::LLVMFuncOp kernel) {
-  WalkResult walk = kernel.walk([&](LLVM::CallOp call) -> WalkResult {
-    FlatSymbolRefAttr callee = call.getCalleeAttr();
-    if (!callee)
-      return WalkResult::interrupt(); // indirect call: cannot prove safety.
-    if (isDeviceHeapAllocator(callee.getValue()))
-      return WalkResult::interrupt();
-    return WalkResult::advance();
-  });
-  return walk.wasInterrupted();
+  SymbolTableCollection symbolTables;
+  SmallVector<LLVM::LLVMFuncOp, 4> worklist{kernel};
+  llvm::SmallPtrSet<Operation *, 8> visited{kernel};
+  while (!worklist.empty()) {
+    LLVM::LLVMFuncOp func = worklist.pop_back_val();
+    WalkResult walk = func.walk([&](LLVM::CallOp call) -> WalkResult {
+      FlatSymbolRefAttr callee = call.getCalleeAttr();
+      if (!callee)
+        return WalkResult::interrupt(); // indirect call: cannot prove safety.
+      if (isDeviceHeapAllocator(callee.getValue()))
+        return WalkResult::interrupt();
+      // Follow resolvable, defined callees transitively. External declarations
+      // have no body and are assumed non-allocating.
+      auto def =
+          symbolTables.lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(call, callee);
+      if (def && !def.isExternal() && visited.insert(def).second)
+        worklist.push_back(def);
+      return WalkResult::advance();
+    });
+    if (walk.wasInterrupted())
+      return true;
+  }
+  return false;
 }
 
 // Mark the kernel `amdgpu-no-heap-ptr` via the LLVM-dialect `passthrough`
