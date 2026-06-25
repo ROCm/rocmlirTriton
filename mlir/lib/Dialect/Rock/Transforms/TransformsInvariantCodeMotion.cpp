@@ -535,10 +535,10 @@ struct Reduced {
   unsigned iterArgCount = 0; // number of new iter_args contributed
 
   // --- Affine ---
-  Value basePtr;     // loop-invariant pointer tensor at iv == lb
-  Value baseMask;    // loop-invariant mask
-  Value strideSplat; // constant per-iteration offset increment
-  Value accInit;     // zero offset accumulator initializer
+  Value basePtr;      // loop-invariant pointer tensor at iv == lb
+  Value baseMask;     // loop-invariant mask
+  Value strideScalar; // constant per-iteration scalar offset increment
+  Value accInit;      // zero scalar offset accumulator initializer
 
   // --- Carry ---
   Value carryBasePtr;                      // pointer tensor at iv == lb
@@ -610,11 +610,17 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
           b, loc, castScalar(b, loc, step, offsetTy),
           arith::ConstantOp::create(
               b, loc, b.getIntegerAttr(offsetTy, cand.unitStride)));
+      // Carry the offset accumulator as a uniform scalar, not a full-tile
+      // tensor. The accumulator is (iv - lb)/step * stride, identical across
+      // every element of the pointer tile, so materializing it at the tile
+      // shape would burn one register per tile element of loop-carried state to
+      // represent a single scalar's worth of information. We splat it onto the
+      // (loop-invariant) base pointer lazily inside the body instead.
       r.basePtr = baseOp.getPointers();
       r.baseMask = baseOp.getMask();
-      r.strideSplat = triton::SplatOp::create(b, loc, ptrType, strideScalar);
+      r.strideScalar = strideScalar;
       r.accInit = arith::ConstantOp::create(
-          b, loc, cast<TypedAttr>(b.getZeroAttr(ptrType)));
+          b, loc, b.getIntegerAttr(offsetTy, 0));
       r.iterArgCount = 1;
       reduced.push_back(std::move(r));
       continue;
@@ -652,9 +658,17 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     r.radices = cand.radices;
     r.digits = cand.digits;
     r.outShape.assign(outShape.begin(), outShape.end());
+    // Carry the decomposed coordinates at their natural (minimal) rank. A
+    // variant coordinate only varies along the iv-traversed gemmK dimension, so
+    // (*iter0)[pos] is a reduced-rank tensor (e.g. tensor<kIter x 1>).
+    // Broadcasting it up to the full kIter x nPerBlock tile here would make both
+    // the persistent iter_arg state and the per-iteration carry update scale
+    // with nPerBlock for no reason - every column would be identical. The
+    // offset/mask rebuild below re-expands from these reduced coordinates and
+    // broadcasts lazily at the combine, so the full-tile shape only ever
+    // materializes as a transient.
     for (unsigned pos : cand.variantPositions)
-      r.carriedInits.push_back(
-          broadcastToShape(b, loc, (*iter0)[pos], outShape));
+      r.carriedInits.push_back((*iter0)[pos]);
     r.iterArgCount = r.carriedInits.size();
     reduced.push_back(std::move(r));
   }
@@ -701,7 +715,11 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     candidateOps.insert(r.op.getOperation());
     if (r.kind == CandKind::Affine) {
       Value acc = newLoop.getRegionIterArg(r.iterArgStart);
-      Value ptr = arith::AddIOp::create(b, loc, r.basePtr, acc);
+      // Broadcast the scalar accumulator onto the base pointer tile transiently;
+      // the splat is uniform so it stays in scalar registers until the addi.
+      Value accSplat = triton::SplatOp::create(
+          b, loc, cast<RankedTensorType>(r.basePtr.getType()), acc);
+      Value ptr = arith::AddIOp::create(b, loc, r.basePtr, accSplat);
       bodyMap.map(r.op.getPointers(), ptr);
       bodyMap.map(r.op.getMask(), r.baseMask);
       continue;
@@ -735,7 +753,7 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   for (Reduced &r : reduced) {
     if (r.kind == CandKind::Affine) {
       Value acc = newLoop.getRegionIterArg(r.iterArgStart);
-      newYields.push_back(arith::AddIOp::create(b, loc, acc, r.strideSplat));
+      newYields.push_back(arith::AddIOp::create(b, loc, acc, r.strideScalar));
       continue;
     }
     SmallVector<Value> carried;
