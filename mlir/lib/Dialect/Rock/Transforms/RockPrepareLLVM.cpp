@@ -241,8 +241,8 @@ static bool isDeviceHeapAllocator(StringRef name) {
 
 // Returns true if `kernel` can reach the rocclr device heap. This mirrors the
 // AMDGPU attributor's `funcRetrievesHeapPtr` check at MLIR LLVM-dialect scope:
-// the ROCDL dialect does not model `amdgcn.implicitarg.ptr`, so before 
-// device-library linking we check for one of the device allocators above. 
+// the ROCDL dialect does not model `amdgcn.implicitarg.ptr`, so before
+// device-library linking we check for one of the device allocators above.
 static bool kernelUsesDeviceHeap(LLVM::LLVMFuncOp kernel) {
   WalkResult walk = kernel.walk([&](LLVM::CallOp call) -> WalkResult {
     FlatSymbolRefAttr callee = call.getCalleeAttr();
@@ -256,9 +256,9 @@ static bool kernelUsesDeviceHeap(LLVM::LLVMFuncOp kernel) {
 }
 
 // Mark the kernel `amdgpu-no-heap-ptr` via the LLVM-dialect `passthrough`
-// attribute. Dropping the hidden_heap_v1 implicit argument from the kernel 
+// attribute. Dropping the hidden_heap_v1 implicit argument from the kernel
 // ABI stops the HIP runtime from launching the  __amd_rocclr_initHeap setup
-// kernel at module load. Only applied when `kernelUsesDeviceHeap` proves 
+// kernel at module load. Only applied when `kernelUsesDeviceHeap` proves
 // the kernel never touches the rocclr heap
 static void dropDeviceHeapArg(LLVM::LLVMFuncOp func) {
   StringRef attrName = "amdgpu-no-heap-ptr";
