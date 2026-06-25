@@ -89,6 +89,19 @@ expandCoordsToOffsetAndMask(OpBuilder &b, Location loc,
                             ArrayRef<TransformMapAttr> transforms,
                             ValueRange startCoords, ArrayRef<int64_t> outShape);
 
+/// Like `expandCoordsToOffsetAndMask`, but computes *only* the validity mask
+/// (broadcast to `outShape`) and skips the final offset linearization. Used by
+/// the carry-based LICM path when the offset is maintained by an incremental
+/// pointer recurrence: the only per-iteration coordinate work left is the
+/// validity check, so re-linearizing the offset would be wasted arithmetic.
+/// Coordinates are still expanded through the validity-impacting maps (the
+/// padding halo moves with the iv), but the trailing offset-only segment is
+/// dropped. Returns an all-true mask when no map impacts validity.
+FailureOr<Value> expandCoordsToMask(OpBuilder &b, Location loc,
+                                    ArrayRef<TransformMapAttr> transforms,
+                                    ValueRange startCoords,
+                                    ArrayRef<int64_t> outShape);
+
 } // namespace rock
 } // namespace mlir
 #endif // ROCK_TRANSFORMS_POINTERARITHEXPAND_H

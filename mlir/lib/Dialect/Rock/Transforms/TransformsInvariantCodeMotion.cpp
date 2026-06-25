@@ -550,6 +550,16 @@ struct Reduced {
   SmallVector<int64_t> radices;
   SmallVector<int64_t> digits;
   SmallVector<int64_t> outShape;
+  // Pointer-recurrence state. When `offsetStrides` is non-empty the offset is
+  // maintained incrementally: a minimal-rank (kIter x 1) relative-offset
+  // accumulator is carried alongside the coordinates and advanced by
+  // `sum_j (delta coord_j) * offsetStrides[j]` each iteration, and the pointer
+  // is `carryBasePtr + broadcast(acc)`. `offsetStrides[j]` is the constant
+  // linearized buffer offset per unit of carried coordinate `j`. When it is
+  // empty (a coordinate does not linearize through the sub-chain) we fall back
+  // to re-expanding offset + mask from the coordinates via `offset0`.
+  SmallVector<int64_t> offsetStrides;
+  Value offsetAccInit; // minimal-rank zero accumulator (recurrence only)
 };
 
 /// Try to LICM all eligible transforms_to_ptr ops in `loop`.
@@ -646,14 +656,10 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     SmallVector<TransformMapAttr> belowMaps(
         ArrayRef<TransformMapAttr>(cand.transforms)
             .drop_front(cand.mergeIdx + 1));
-    FailureOr<OffsetAndMask> om0 =
-        expandCoordsToOffsetAndMask(b, loc, belowMaps, *iter0, outShape);
-    assert(succeeded(om0) && "sub-chain expansion must succeed");
 
     r.carryBasePtr = baseOp.getPointers();
-    r.offset0 = om0->offset;
     r.iter0Coords = *iter0;
-    r.belowMaps = std::move(belowMaps);
+    r.belowMaps = belowMaps;
     r.variantPositions = cand.variantPositions;
     r.radices = cand.radices;
     r.digits = cand.digits;
@@ -663,13 +669,47 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     // (*iter0)[pos] is a reduced-rank tensor (e.g. tensor<kIter x 1>).
     // Broadcasting it up to the full kIter x nPerBlock tile here would make both
     // the persistent iter_arg state and the per-iteration carry update scale
-    // with nPerBlock for no reason - every column would be identical. The
-    // offset/mask rebuild below re-expands from these reduced coordinates and
-    // broadcasts lazily at the combine, so the full-tile shape only ever
-    // materializes as a transient.
+    // with nPerBlock for no reason - every column would be identical.
     for (unsigned pos : cand.variantPositions)
       r.carriedInits.push_back((*iter0)[pos]);
-    r.iterArgCount = r.carriedInits.size();
+
+    // Prefer a pointer recurrence: each carried coordinate contributes a
+    // *constant* per-unit offset stride through the sub-chain below the merge
+    // (which is linear - Embed/Pad/Unmerge/PassThrough - once the iv-traversed
+    // Merge has been decomposed away). If every variant coordinate linearizes,
+    // the per-iteration offset delta is `sum_j (delta coord_j) * stride_j`, a
+    // minimal-rank (kIter x 1) value: the relative offset is uniform along
+    // nPerBlock because only the gemmK coordinates move. We then carry that
+    // reduced-rank accumulator (starting at 0, since carryBasePtr already
+    // encodes offset0) and reconstruct only the mask each iteration.
+    SmallVector<int64_t> strides;
+    bool stridesOk = true;
+    for (unsigned pos : cand.variantPositions) {
+      DenseMap<unsigned, int64_t> unit;
+      unit[pos] = 1;
+      FailureOr<int64_t> s = linearizedDiffStride(belowMaps, unit);
+      if (failed(s)) {
+        stridesOk = false;
+        break;
+      }
+      strides.push_back(*s);
+    }
+
+    if (stridesOk && !r.carriedInits.empty()) {
+      r.offsetStrides = std::move(strides);
+      auto coordTy = cast<RankedTensorType>(r.carriedInits.front().getType());
+      r.offsetAccInit = splatI32(b, loc, coordTy, 0);
+      r.iterArgCount = r.carriedInits.size() + 1;
+    } else {
+      // Fallback: re-expand offset + mask from the coordinates each iteration.
+      // `offset0` is the linearized offset at iv == lb, subtracted to keep the
+      // "base pointer + integer offset" shape downstream expects.
+      FailureOr<OffsetAndMask> om0 =
+          expandCoordsToOffsetAndMask(b, loc, belowMaps, *iter0, outShape);
+      assert(succeeded(om0) && "sub-chain expansion must succeed");
+      r.offset0 = om0->offset;
+      r.iterArgCount = r.carriedInits.size();
+    }
     reduced.push_back(std::move(r));
   }
 
@@ -684,6 +724,9 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     } else {
       for (Value v : r.carriedInits)
         newInits.push_back(v);
+      // Pointer recurrence carries the reduced-rank offset accumulator last.
+      if (!r.offsetStrides.empty())
+        newInits.push_back(r.offsetAccInit);
     }
   }
 
@@ -705,11 +748,12 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   // mask.
   //
   // Carry: rebuild the decomposed coordinate vector from the carried iter_args
-  // (variant entries) and the hoisted iter-0 coordinates (invariant entries),
-  // then re-expand the sub-chain below the merge to get this iteration's offset
-  // and mask. The pointer is basePtr + (offset_k - offset_0), which keeps the
-  // established "base pointer + integer offset" shape the downstream lowering
-  // expects.
+  // (variant entries) and the hoisted iter-0 coordinates (invariant entries).
+  // With a pointer recurrence (the common case) the offset is carried, so only
+  // the mask is rebuilt and the pointer is `carryBasePtr + broadcast(acc)`.
+  // Otherwise we fall back to re-expanding the sub-chain for this iteration's
+  // offset and mask, with the pointer `carryBasePtr + (offset_k - offset_0)`.
+  // Both keep the "base pointer + integer offset" shape downstream expects.
   llvm::SmallPtrSet<Operation *, 4> candidateOps;
   for (Reduced &r : reduced) {
     candidateOps.insert(r.op.getOperation());
@@ -728,6 +772,22 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     SmallVector<Value> coords(r.iter0Coords);
     for (auto [k, pos] : llvm::enumerate(r.variantPositions))
       coords[pos] = newLoop.getRegionIterArg(r.iterArgStart + k);
+
+    if (!r.offsetStrides.empty()) {
+      // Pointer recurrence: the offset is carried, so only the mask is rebuilt
+      // from the coordinates this iteration. The pointer is the loop-invariant
+      // base plus the (lazily broadcast) reduced-rank offset accumulator.
+      FailureOr<Value> mask =
+          expandCoordsToMask(b, loc, r.belowMaps, coords, r.outShape);
+      assert(succeeded(mask) && "sub-chain mask expansion must succeed");
+      Value acc =
+          newLoop.getRegionIterArg(r.iterArgStart + r.variantPositions.size());
+      Value accTile = broadcastToShape(b, loc, acc, r.outShape);
+      Value ptr = arith::AddIOp::create(b, loc, r.carryBasePtr, accTile);
+      bodyMap.map(r.op.getPointers(), ptr);
+      bodyMap.map(r.op.getMask(), *mask);
+      continue;
+    }
 
     FailureOr<OffsetAndMask> om =
         expandCoordsToOffsetAndMask(b, loc, r.belowMaps, coords, r.outShape);
@@ -756,11 +816,32 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
       newYields.push_back(arith::AddIOp::create(b, loc, acc, r.strideScalar));
       continue;
     }
+    unsigned numCoords = r.variantPositions.size();
     SmallVector<Value> carried;
-    for (unsigned k = 0; k < r.iterArgCount; ++k)
+    for (unsigned k = 0; k < numCoords; ++k)
       carried.push_back(newLoop.getRegionIterArg(r.iterArgStart + k));
-    for (Value v : emitCarryUpdate(b, loc, carried, r.radices, r.digits))
+    SmallVector<Value> nextCoords =
+        emitCarryUpdate(b, loc, carried, r.radices, r.digits);
+    for (Value v : nextCoords)
       newYields.push_back(v);
+
+    if (r.offsetStrides.empty())
+      continue;
+
+    // Advance the reduced-rank offset accumulator by this step's offset delta,
+    // `sum_j (nextCoords[j] - carried[j]) * offsetStrides[j]`. Each term is a
+    // minimal-rank (kIter x 1) tensor, so the accumulator never scales with
+    // nPerBlock.
+    auto coordTy = cast<RankedTensorType>(carried.front().getType());
+    Value delta;
+    for (unsigned j = 0; j < numCoords; ++j) {
+      Value dCoord = arith::SubIOp::create(b, loc, nextCoords[j], carried[j]);
+      Value term = arith::MulIOp::create(
+          b, loc, dCoord, splatI32(b, loc, coordTy, r.offsetStrides[j]));
+      delta = delta ? arith::AddIOp::create(b, loc, delta, term) : term;
+    }
+    Value acc = newLoop.getRegionIterArg(r.iterArgStart + numCoords);
+    newYields.push_back(arith::AddIOp::create(b, loc, acc, delta));
   }
   scf::YieldOp::create(b, loc, newYields);
 

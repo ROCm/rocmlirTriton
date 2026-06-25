@@ -463,3 +463,78 @@ func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: 
   }
   return %res : tensor<2x4xi8>
 }
+
+// -----
+
+// Offset pointer-recurrence for the carry path (the optimization this test is
+// written to drive; it is EXPECTED TO FAIL until the recurrence is implemented).
+//
+// Same 2D-conv-input carry IR as @hoist_conv2d_input_carry_rank_redundant, but
+// the CHECK lines pin the *target* incremental shape rather than the current
+// full re-expansion. Today the carry path rebuilds the whole offset tile every
+// iteration by re-running the sub-chain below the merge
+// (expandCoordsToOffsetAndMask -> a mul/embed chain -> arith.addi %PTRS, %off),
+// which is the bulk of the in-loop address arithmetic. rocMLIR instead carries
+// the offset and advances it by a per-step delta. We want the same:
+//
+//   1. carry the full-tile offset accumulator (tensor<2x4xi32>) as an iter_arg
+//      and advance it (offset += delta) -- a pointer recurrence, NOT a per-
+//      iteration re-expansion from the coordinates, and
+//   2. keep the carry coordinates and the delta at minimal rank (tensor<2x1>),
+//      broadcasting only transiently, so neither the persistent loop state nor
+//      the increment scales with nPerBlock.
+//
+// The validity mask must still be (cheaply) recomputed from the carried
+// minimal-rank coordinates each iteration (the padding halo moves with the iv);
+// only the offset half becomes a recurrence.
+//
+// CHECK-LABEL: func @hoist_conv2d_input_carry_offset_recurrence
+//  CHECK-SAME: (%[[ARG0:.*]]: tensor<32xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
+// Seed pointer + offset hoisted to the preheader (iv -> loop lower bound):
+//       CHECK:   %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
+// The full-tile offset accumulator (tensor<2x4xi32>) is carried as an iter_arg
+// alongside the minimal-rank (tensor<2x1xi32>) carry coordinates:
+//       CHECK:   scf.for %{{.*}} iter_args({{.*}}) -> ({{.*}}tensor<2x4xi32>{{.*}}tensor<2x1xi32>{{.*}})
+// The pointer is the carried offset added to the hoisted base -- it is NOT
+// re-expanded from the coordinates through the sub-chain each iteration:
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFF:.*]] : tensor<2x4xi32>
+//       CHECK:     rock.blockwise_load_ptr %[[PTR]]
+//   CHECK-NOT:     rock.transforms_to_ptr
+//   CHECK-NOT:     floordiv
+//   CHECK-NOT:     arith.divsi
+//   CHECK-NOT:     arith.remsi
+// Validity mask still rebuilt from the carried coordinates (the padding halo
+// moves with the iv), broadcast up from minimal rank:
+//       CHECK:     arith.cmpi ult, %{{.*}} : tensor<2x4xi32>
+// The per-step offset delta is computed at minimal rank and broadcast, then the
+// carried accumulator is advanced by it (the pointer recurrence). The same %OFF
+// fed to the load is the value that is incremented and yielded:
+//       CHECK:     %[[DELTA:.*]] = tt.broadcast %{{.*}} : tensor<2x1xi32> -> tensor<2x4xi32>
+//       CHECK:     %[[OFFNEXT:.*]] = arith.addi %[[OFF]], %[[DELTA]] : tensor<2x4xi32>
+// The carry coordinates advance with a minimal-rank odometer (cmp + select):
+//       CHECK:     arith.cmpi uge, %{{.*}} : tensor<2x1xi32>
+//       CHECK:     arith.select %{{.*}} : tensor<2x1xi1>, tensor<2x1xi32>
+//       CHECK:     scf.yield
+func.func @hoist_conv2d_input_carry_offset_recurrence(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c9_i32 = arith.constant 9 : i32
+
+  // raw input buffer (ngc01): ci=2, 0i=4, 1i=4 -> 32.
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d2 * 4 + d3) * 4 + d4)> by [<Unmerge{2, 4, 4} ["ci", "0i", "1i"] at [2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["ni"] at [0] -> [] at []>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [1, 1, 2, 4, 4] -> [32]> : tensor<32xi8> to tensor<1x1x2x4x4xi8>
+  // Halo pad on both spatial dims: 4 -> 6 (validity-impacting).
+  %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3 - 1, d4 - 1)> by [<PassThrough ["ni"] at [0] -> ["ni"] at [0]>, <PassThrough ["gi"] at [1] -> ["gi"] at [1]>, <PassThrough ["ci"] at [2] -> ["ci"] at [2]>, <Pad{1, 1, 1, 1} ["0ipad", "1ipad"] at [3, 4] -> ["0i", "1i"] at [3, 4]>] bounds = [1, 1, 2, 6, 6] -> [1, 1, 2, 4, 4]> : tensor<1x1x2x4x4xi8> to tensor<1x1x2x6x6xi8>
+  // Sliding windows: 0ipad = tap0 + 0o ; 1ipad = tap1 + 1o.
+  %2 = rock.transform %1 by <affine_map<(d0, d1, d2, d3, d4, d5, d6) -> (d0, d1, d2, d3 + d4, d5 + d6)> by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Embed{1, 1} ["0", "0o"] at [3, 4] -> ["0ipad"] at [3]>, <Embed{1, 1} ["1", "1o"] at [5, 6] -> ["1ipad"] at [4]>] bounds = [1, 1, 2, 3, 4, 3, 4] -> [1, 1, 2, 6, 6]> : tensor<1x1x2x6x6xi8> to tensor<1x1x2x3x4x3x4xi8>
+
+  %res = scf.for %k = %c0_i32 to %c9_i32 step %c1_i32 iter_args(%acc = %arg1) -> (tensor<2x4xi8>) : i32 {
+    // Merge (ci, tap0, tap1) into gemmK (radix 2,3,3); (ni, 0o, 1o) into gemmN.
+    %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 9, (d1 mod 9) floordiv 3, d2 floordiv 4, d1 mod 3, d2 mod 4)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 3, 3} ["gemmK"] at [1] -> ["ci", "0", "1"] at [2, 3, 5]>, <Merge{1, 4, 4} ["gemmN"] at [2] -> ["ni", "0o", "1o"] at [0, 4, 6]>] bounds = [1, 18, 16] -> [1, 1, 2, 3, 4, 3, 4]> : tensor<1x1x2x3x4x3x4xi8> to tensor<1x18x16xi8>
+    // Tiling: k_loop (the iv) feeds gemmK with stride 2 (k_iter = 2); n_iter = 4.
+    %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)> by [<PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{9, 2} ["k_loop", "k_iter"] at [0, 4] -> ["gemmK"] at [1]>, <Unmerge{4, 4} ["n_block", "n_iter"] at [3, 5] -> ["gemmN"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [9, 1, 1, 4, 2, 4] -> [1, 18, 16]> : tensor<1x18x16xi8> to tensor<9x1x1x4x2x4xi8>
+    %ptr, %mask = rock.transforms_to_ptr %4[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<9x1x1x4x2x4xi8> -> tensor<2x4xi32>, tensor<2x4xi1>
+    %load = rock.blockwise_load_ptr %ptr[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<2x4xi32>, tensor<2x4xi1> -> tensor<2x4xi8>
+    scf.yield %load : tensor<2x4xi8>
+  }
+  return %res : tensor<2x4xi8>
+}

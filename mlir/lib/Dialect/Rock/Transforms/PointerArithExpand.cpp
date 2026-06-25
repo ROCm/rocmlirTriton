@@ -419,3 +419,37 @@ FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
   result.mask = broadcastToShape(b, loc, isValid, outShape);
   return result;
 }
+
+FailureOr<Value> mlir::rock::expandCoordsToMask(
+    OpBuilder &b, Location loc, ArrayRef<TransformMapAttr> transforms,
+    ValueRange startCoords, ArrayRef<int64_t> outShape) {
+  using AffineResults = SmallVector<Value>;
+
+  // Same segmentation as expandCoordsToOffsetAndMask, but only the segments
+  // that end at a validity-impacting map are needed; the trailing offset-only
+  // segment is intentionally not emitted (the caller keeps the offset via a
+  // recurrence).
+  SmallVector<std::pair<AffineMap, TransformMapAttr>> composedMaps;
+  SmallVector<TransformMapAttr> toCompose;
+  for (TransformMapAttr t : transforms) {
+    toCompose.push_back(t);
+    if (mapImpactsValidity(t)) {
+      composedMaps.emplace_back(composeTransforms(toCompose), t);
+      toCompose.clear();
+    }
+  }
+
+  AffineResults computed(startCoords);
+  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
+  for (const auto &[composedMap, transform] : composedMaps) {
+    FailureOr<AffineResults> transformed =
+        expandAffineMap(b, loc, composedMap, computed);
+    if (failed(transformed))
+      return failure();
+    computed.assign(*transformed);
+    Value validityUpdate = updateValidityAfter(b, loc, transform, computed);
+    auto [vu, iv] = ensureCompatible(b, loc, validityUpdate, isValid);
+    isValid = arith::AndIOp::create(b, loc, vu, iv);
+  }
+  return broadcastToShape(b, loc, isValid, outShape);
+}
