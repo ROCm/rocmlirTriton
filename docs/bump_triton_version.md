@@ -62,6 +62,7 @@ Generate a diff between the old and new commits for the key files that need sync
 cd external/triton
 for f in \
     third_party/amd/backend/compiler.py \
+    third_party/amd/backend/driver.c \
     third_party/amd/python/triton_amd.cc \
     python/src/llvm.cc \
     third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp \
@@ -115,6 +116,20 @@ single module for easy updating:
 Header: `mlir/include/mlir/Dialect/Rock/utility/tritonUtils.h`
 
 If there are any new architecture not handled by our rocmlirTriton functions we should see warnings/errors because the switch would not be handling all cases.
+
+### 5.3.1 Kernel Launch Wrapper (from `driver.c`)
+
+The tuning driver has a local launch helper that mirrors Triton's AMD backend
+launcher:
+
+| Triton Function | C++ Location in rocmlirTriton |
+|----------------|-------------------------------|
+| `_launch()` in `external/triton/third_party/amd/backend/driver.c` | `mlir/tools/rocmlir-tuning-driver/rocmlir-tuning-driver.cpp` (as `launchKernel()`) |
+
+Review this mapping on every Triton bump, especially changes to cluster launch
+attributes, cooperative launch handling, and `hipDrvLaunchKernelEx` usage. The
+helper intentionally lives in the tuning driver, not `tritonUtils.cpp`, so the
+shared Rock libraries do not pick up a HIP runtime dependency.
 
 **Example mapping:**
 

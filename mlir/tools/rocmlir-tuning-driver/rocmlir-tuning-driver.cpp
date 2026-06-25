@@ -29,7 +29,6 @@
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -95,6 +94,58 @@ void pArgs(const std::tuple<Ts...> &formals, void **_vargs) {
 
 using namespace mlir;
 using namespace rocmlir::tuningdriver;
+
+// Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
+// (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
+// launch_cooperative_grid always 0. Returns LogicalResult instead of void.
+// Note: hipEventRecord is handled by callers, not by this function.
+// Do not move this to tritonUtils.cpp: that utility library is linked into the
+// Rock library set, which must stay free of HIP runtime dependencies. Keeping
+// the wrapper in this tool confines HIP linking to the tuning driver.
+static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
+                                  uint32_t blockSize, uint32_t shared_memory,
+                                  uint32_t num_ctas, hipStream_t stream,
+                                  void **params) {
+  if (gridX == 0)
+    return success();
+  if (num_ctas > 1) {
+    // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
+    // it loads HIP symbols via dlsym. We link directly, so no check needed.
+    // Zero-init so the unused bytes of the 64-byte hipLaunchAttributeValue
+    // union are well-defined rather than indeterminate padding.
+    hipLaunchAttribute attributes[2] = {};
+    // Attribute0: Cluster dimensions. HIP's hipLaunchAttributeID enum does not
+    // expose this attribute by name (it mirrors CUDA's
+    // CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION == 4), so use the raw value, as
+    // upstream driver.c does.
+    constexpr auto kHipLaunchAttributeClusterDimension =
+        static_cast<hipLaunchAttributeID>(4);
+    attributes[0].id = kHipLaunchAttributeClusterDimension;
+    int *cluster_dims = reinterpret_cast<int *>(attributes[0].val.pad);
+    cluster_dims[0] = num_ctas;
+    cluster_dims[1] = 1;
+    cluster_dims[2] = 1;
+    // Attribute1: Cooperative launch
+    attributes[1].id = hipLaunchAttributeCooperative;
+    attributes[1].val.cooperative = 0;
+
+    HIP_LAUNCH_CONFIG config = {
+        gridX * num_ctas, 1,      1,            // Grid size
+        blockSize,        1,      1,            // Block size
+        shared_memory,    stream, attributes, 2 // Number of attributes
+    };
+    hipError_t status = hipDrvLaunchKernelEx(&config, function, params, 0);
+    if (status != hipSuccess)
+      return failure();
+  } else {
+    hipError_t status =
+        hipModuleLaunchKernel(function, gridX, 1, 1, blockSize, 1, 1,
+                              shared_memory, stream, params, nullptr);
+    if (status != hipSuccess)
+      return failure();
+  }
+  return success();
+}
 
 static llvm::cl::opt<std::string> inputFilename{
     llvm::cl::Positional, llvm::cl::desc("<input file>"), llvm::cl::init("-")};
@@ -523,9 +574,9 @@ measureKernel(unsigned iterations, hipStream_t stream,
     HIPCHECK(hipEventRecord(startEvents[iter], stream));
     for (auto [func, blockSize, gridSize, numCTAs] :
          llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-      if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                    /*shared_memory=*/0, numCTAs, stream,
-                                    argPointers.data())))
+      if (failed(launchKernel(func, gridSize, blockSize,
+                              /*shared_memory=*/0, numCTAs, stream,
+                              argPointers.data())))
         return failure();
     }
     HIPCHECK(hipEventRecord(stopEvents[iter], stream));
@@ -640,9 +691,9 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
         return failure();
       for (auto [func, blockSize, gridSize, numCTAs] :
            llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-        if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                      /*shared_memory=*/0, numCTAs, stream,
-                                      argPointers.data())))
+        if (failed(launchKernel(func, gridSize, blockSize,
+                                /*shared_memory=*/0, numCTAs, stream,
+                                argPointers.data())))
           return failure();
       }
     }
@@ -673,9 +724,9 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   for (unsigned iter = 0; iter < nWarmup; ++iter) {
     for (auto [func, blockSize, gridSize, numCTAs] :
          llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-      if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                    /*shared_memory=*/0, numCTAs, stream,
-                                    argPointers.data())))
+      if (failed(launchKernel(func, gridSize, blockSize,
+                              /*shared_memory=*/0, numCTAs, stream,
+                              argPointers.data())))
         return failure();
     }
   }

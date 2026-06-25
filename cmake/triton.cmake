@@ -85,14 +85,16 @@ add_subdirectory("${ROCMLIR_LLVM_PROJECT_DIR}/llvm"
 # external/llvm-project/mlir/cmake/modules/CMakeLists.txt (the
 # `mlir_cmake_builddir` variable).
 #
-# We point MLIR_DIR / LLD_DIR at the build tree but intentionally do NOT cache
-# them: add_subdirectory(llvm) re-runs on every configure, so there is nothing
-# to persist and a cached value would only risk going stale.
+# We point the package dirs at the build tree. LLVM_DIR must be cached because
+# MLIRConfig.cmake's find_dependency(LLVM) consults the cache; without this it
+# can discover ROCm SDK LLVM through CMAKE_PREFIX_PATH and mix incompatible LLVM
+# headers with the in-tree MLIR headers.
 set(MLIR_CMAKE_DIR "${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX}/cmake/mlir")
 set(MLIR_DIR "${MLIR_CMAKE_DIR}")
 
 set(LLVM_LIBRARY_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/lib${LLVM_LIBDIR_SUFFIX}")
 set(LLVM_CMAKE_DIR "${LLVM_LIBRARY_DIR}/cmake/llvm")
+set(LLVM_DIR "${LLVM_CMAKE_DIR}" CACHE PATH "Path to in-tree LLVM CMake package" FORCE)
 set(LLD_DIR "${LLVM_LIBRARY_DIR}/cmake/lld")
 
 # find_package(MLIR) normally sets LLVM_TOOLS_BINARY_DIR. In the in-tree
