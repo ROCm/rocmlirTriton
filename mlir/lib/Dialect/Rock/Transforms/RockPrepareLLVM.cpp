@@ -252,7 +252,7 @@ static bool isDeviceHeapAllocator(StringRef name) {
 //
 // Like the attributor's check, this is call-graph *transitive*: the walk
 // follows resolvable in-module callees, so a kernel that only reaches an
-// allocator indirectly (kernel -> helper -> malloc) is still detected. 
+// allocator indirectly (kernel -> helper -> malloc) is still detected.
 static bool kernelUsesDeviceHeap(LLVM::LLVMFuncOp kernel) {
   SymbolTableCollection symbolTables;
   SmallVector<LLVM::LLVMFuncOp, 4> worklist{kernel};
