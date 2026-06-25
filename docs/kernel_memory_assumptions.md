@@ -89,6 +89,21 @@ backend the full extent of valid memory behind the pointer.
 | `tt.divisibility` | 16 | Pointers are 16-byte aligned (128-bit), enabling maximum-width vector loads/stores. |
 | `tt.pointer_range` | 32 | Set when tensor size < 2 GB; tells Triton's `ConvertToBufferOps` pass that the tensor fits in a 32-bit offset range, enabling buffer instructions. |
 
+### 1.10 No device-side dynamic allocation (`amdgpu-no-heap-ptr`)
+
+Rock kernels normally never call device-side `malloc`/`new`, so they never
+touch the rocclr device heap. `RockPrepareLLVM` marks such a kernel
+`amdgpu-no-heap-ptr` (via the LLVM-dialect `passthrough` attribute), which drops
+the `hidden_heap_v1` implicit kernel argument from the ABI. Without that
+argument the HIP runtime skips the one-time `__amd_rocclr_initHeap` setup kernel
+it would otherwise launch at module load.
+
+The attribute is only added after a per-kernel check (mirroring the AMDGPU
+attributor's `funcRetrievesHeapPtr`): if the kernel reaches a device allocator
+(`malloc`, `free`, or the `__ockl_dm_*` family) — or makes an indirect call we
+cannot see through — the heap pointer is kept and the attribute is omitted, so
+the kernel still works correctly.
+
 ---
 
 ## 2. External Assumptions (Requirements on the Caller)
@@ -222,6 +237,7 @@ the softmax result.
 | Relaxed atomics | Internal | `monotonic`, `agent-one-as` |
 | Dereferenceable extent | Internal | `dereferenceable` |
 | Vectorization hints | Internal | `tt.divisibility`, `tt.pointer_range` |
+| No device heap (skips initHeap) | Internal | `amdgpu-no-heap-ptr` |
 | Coarse-grained memory | **External** | `rocdl.no_fine_grained_memory` |
 | Device-local memory | **External** | `rocdl.no_remote_memory` |
 | Denormal flushing allowed | **External** | `rocdl.ignore_denormal_mode` |
