@@ -24,7 +24,7 @@ It targets AMD CDNA and RDNA GPUs (gfx9xx / gfx10xx / gfx11xx / gfx12xx), and is
 
 ## Installation
 
-Triton and LLVM/MLIR are vendored in the repo (under `external/triton` and `external/llvm-project`), imported via `git subtree`. The build is driven by `cmake.sh`: at CMake configure time it applies `llvm-patches/` and `triton-patches/` to those vendored trees, then builds LLVM/MLIR, Triton, and rocmlirTriton.
+Triton and LLVM/MLIR are vendored in the repo (under `external/triton` and `external/llvm-project`), imported via `git subtree`. The build is driven by `cmake.sh`, which configures and builds LLVM/MLIR, Triton, and rocmlirTriton from those vendored trees. Patch files under `llvm-patches/` and `triton-patches/` are kept for provenance and to simplify the next upstream bump; they are not applied during CMake configure.
 
 ```sh
 git clone https://github.com/ROCm/rocmlirTriton.git

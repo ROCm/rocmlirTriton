@@ -37,6 +37,20 @@ target_link_libraries(amd_arch_db PRIVATE
 
 rocmlir_add_triton_includes(amd_arch_db)
 
+# This module statically links LLVM/MLIR (from Triton's llvm-project). Hide
+# those statically-linked symbols (the ~1300 default-visibility llvm::cl::* /
+# pass-registry / ManagedStatic data symbols) instead of re-exporting them from
+# the Python module. If the importing process also has a second LLVM in it (for
+# example ROCm's libLLVM.so / libclang-cpp.so, reached through some other
+# extension's libamd_comgr), two same-soname LLVMs would otherwise share these
+# cl::opt singletons and trip an `llvm::cl` SmallPtrSet assertion at import
+# time. --exclude-libs,ALL localizes the static-archive symbols while pybind
+# still exports the PyInit_ entry point. It is a GNU-ld/lld option (invalid on
+# Apple ld), so gate it on Linux to match conv-validation-wrappers, the global
+# -Bsymbolic-functions option, and the mlir-rocm-runtime llvm-patch.
+target_link_options(amd_arch_db PRIVATE
+  $<$<PLATFORM_ID:Linux>:LINKER:--exclude-libs,ALL>)
+
 # Drop the .so next to common.py so `import amd_arch_db` just works.
 set_target_properties(amd_arch_db PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/..")
