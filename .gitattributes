@@ -1,0 +1,7 @@
+# Patch files are verbatim unified diffs. Their context lines for blank lines
+# are a single space, which `git diff --check` and whitespace pre-commit hooks
+# flag as trailing whitespace. Editing them to satisfy the check would make the
+# stored diff no longer match the real change, so disable whitespace checking
+# for them instead.
+*.patch -whitespace
+*.diff  -whitespace
