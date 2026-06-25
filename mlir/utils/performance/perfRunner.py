@@ -27,8 +27,11 @@ from perfCommonUtils import Operation, GEMMLibrary
 SPLITK_IDX = 7
 
 # global variables.
-ROCPROF = '/opt/rocm/bin/rocprofv3'
-MIOPENDRIVER = '/opt/rocm/bin/MIOpenDriver'
+# Honor ROCM_PATH so the scripts work with relocatable/SDK ROCm installs
+# instead of assuming the system path at /opt/rocm.
+ROCM_PATH = os.environ.get('ROCM_PATH', '/opt/rocm')
+ROCPROF = f'{ROCM_PATH}/bin/rocprofv3'
+MIOPENDRIVER = f'{ROCM_PATH}/bin/MIOpenDriver'
 BENCHMARKING_RESULT_FILE_NAME = 'results'
 BENCHMARKING_STATS_FILE_NAME = 'results_kernel_stats.csv'
 BENCHMARKING_METRICS_FILE_NAME = 'results_counter_collection.csv'
@@ -2323,7 +2326,7 @@ def get_num_chiplets(chip, num_cu):
 
 def get_num_cu(chip):
     try:
-        rocminfo = subprocess.check_output("/opt/rocm/bin/rocminfo", stderr=subprocess.PIPE)
+        rocminfo = subprocess.check_output(f"{ROCM_PATH}/bin/rocminfo", stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         print(e.stderr.decode('utf-8'))
         raise
