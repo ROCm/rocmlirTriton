@@ -8,10 +8,11 @@ use warnings;
 
 # It should be run from the build directory on Linux.
 
-# We query the mlir-mixr-fullc-test executable because LLVM/MLIR libraries are
-# pre-built IMPORTED targets that only appear in the ninja graph for link steps
-# (executables), not for static library archiving. This test binary links all
-# the rocmlir CAPI libraries, giving us the full transitive dependency closure.
+# We query the mlir-mixr-fullc-test executable because the LLVM/MLIR libraries
+# (built in-tree under external/llvm-project) only appear in the ninja graph for
+# link steps (executables), not for static library archiving. This test binary
+# links all the rocmlir CAPI libraries, giving us the full transitive dependency
+# closure.
 
 my @rocmlirLibs;
 my @mlirLibs;
@@ -21,7 +22,7 @@ not $? or die "failed to get target dependencies";
 
 foreach (@deps) {
   last if /outputs:/;
-  if (m#llvm-project/build/lib/lib(\w+)\.a#) {
+  if (m#external/llvm-project/llvm/lib/lib(\w+)\.a#) {
     push @mlirLibs, $1;
   } elsif (m#lib/lib(\w+)\.a#) {
     push @rocmlirLibs, $1;

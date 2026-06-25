@@ -13,6 +13,14 @@ if(BUILD_FAT_LIBROCKCOMPILER)
 
   set(LIBRARY_NAME rockCompiler)
 
+  # The fat-library package must ship rocmlirTriton's own public headers so
+  # downstream consumers (MIGraphX) can resolve rocmlir_INCLUDE_DIR.
+  # This is deliberately independent of LLVM_INSTALL_TOOLCHAIN_ONLY, which is
+  # forced ON in cmake/triton.cmake solely to stop the in-tree LLVM/MLIR from
+  # installing its own toolchain and exporting MLIRTargets.
+  option(ROCMLIR_INSTALL_PACKAGE_HEADERS
+         "Install rocmlirTriton public headers as part of the fat-library package" ON)
+
   include(librockcompiler_deps.cmake)
   set(__rocmlir_targets ${__rocmlir_libs})
 
@@ -165,7 +173,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
 
   endfunction()
 
-  if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
+  if (ROCMLIR_INSTALL_PACKAGE_HEADERS)
     rocm_install(DIRECTORY
       ${PROJECT_SOURCE_DIR}/mlir/include/mlir
       ${PROJECT_SOURCE_DIR}/mlir/include/mlir-c
