@@ -39,7 +39,10 @@ config.substitutions.append(('%rocmlir_gen_flags', config.rocmlir_gen_flags))
 config.substitutions.append(('%arch', config.arch))
 config.substitutions.append(('%pv', config.populate_validation))
 
-llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
+# ROCM_PATH lets the performance scripts (perfRunner.py, ...) locate ROCm tools
+# such as rocminfo when ROCm is installed somewhere other than /opt/rocm (e.g. a
+# relocatable SDK). lit otherwise scrubs it from the test environment.
+llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP', 'ROCM_PATH'])
 
 ##############
 # FIXME: adding a path to the environment isn't appearing to work as
