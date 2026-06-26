@@ -184,21 +184,21 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
 }
 
 /// Returns true if the validity mask produced by `transforms` can vary with the
-/// induction variable, i.e. some validity-impacting map (Pad / invalidatable
-/// Embed) constrains a coordinate that is a function of an iv-carrying input
-/// dim. When false, the mask is loop-invariant and may be computed once before
-/// the loop and reused every iteration.
+/// induction variable, i.e. some validity-impacting map (a Pad, or an Embed
+/// that can go out of bounds) constrains a coordinate that is a function of an
+/// iv-carrying input dim. When false, the mask is loop-invariant and may be
+/// computed once before the loop and reused every iteration.
 ///
-/// `transforms` is ordered from the view (index 0) down towards the root, as
-/// produced by `untransform`. `ivPositions` are the input dims of the top view
-/// space that carry the induction variable.
+/// `transforms` is ordered from the upper view (index 0) down to the lower view
+/// at the root, as produced by `untransform`. `ivPositions` are the upper-view
+/// dims that carry the induction variable.
 ///
 /// For a validity-impacting map at index `i`, its upper coordinates are
-/// expressed as affine functions of the top view dims by composing the
-/// transforms strictly above it (indices `[0, i)`); for the topmost map the
-/// upper space *is* the top view space, so the mapping is the identity. A
-/// padded `gemmM` while the iv lives in `gemmK`, for example, leaves the mask
-/// invariant and is accepted.
+/// expressed as affine functions of the upper-view dims by composing the
+/// transforms strictly above it (indices `[0, i)`); for the topmost map there
+/// are no transforms above it, so its upper coordinates are the upper-view dims
+/// directly (the identity). A padded `gemmM` while the iv lives in `gemmK`, for
+/// example, leaves the mask invariant and is accepted.
 static bool maskDependsOnIv(ArrayRef<TransformMapAttr> transforms,
                             ArrayRef<unsigned> ivPositions) {
   for (auto [i, t] : llvm::enumerate(transforms)) {
@@ -283,8 +283,9 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
     return bail("loop does not have exactly one induction variable");
   Value iv = *maybeIv;
 
-  // Get the transforms_to_ptr indices and check whether they are the iv of the
-  // loop, or loop-invariant.
+  // Classify each transforms_to_ptr index: it must be either the loop iv (which
+  // we will incrementalize) or loop-invariant (ignored). A third possibility is
+  // pointer does not depend on the iv, which we skip.
   ValueRange extra = op.getExtraIndices();
   SmallVector<unsigned> ivPositions;
   for (auto [pos, idx] : llvm::enumerate(extra)) {
@@ -308,10 +309,10 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
 
   // Our rewrite computes the mask once before the loop and reuses it every
   // iteration. That is only valid when the mask is loop-invariant, i.e. no
-  // validity-impacting map (Pad / invalidatable Embed) constrains a coordinate
-  // that depends on the iv. A Pad/Embed on a dimension unrelated to the iv
-  // (e.g. a padded gemmM while the iv lives in gemmK) keeps the mask invariant
-  // and is fine to hoist.
+  // validity-impacting map (a Pad, or an Embed that can go out of bounds)
+  // constrains a coordinate that depends on the iv. A Pad/Embed on a dimension
+  // unrelated to the iv (e.g. a padded gemmM while the iv lives in gemmK) keeps
+  // the mask invariant and is fine to hoist.
   if (maskDependsOnIv(transforms, ivPositions))
     return bail("validity mask depends on the iv (not loop-invariant)");
 
