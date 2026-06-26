@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/IRMapping.h"
@@ -56,14 +57,6 @@ struct RockTransformsInvariantCodeMotionPass
 
 namespace {
 
-/// Row-major strides of a shape (innermost dim has stride 1).
-static SmallVector<int64_t> rowMajorStrides(ArrayRef<int64_t> shape) {
-  SmallVector<int64_t> strides(shape.size(), 1);
-  for (int i = static_cast<int>(shape.size()) - 2; i >= 0; --i)
-    strides[i] = strides[i + 1] * shape[i + 1];
-  return strides;
-}
-
 /// Propagate a constant coordinate *diff* through a transform chain and return
 /// the resulting constant change in the single linearized buffer offset, or
 /// failure if it is not a compile-time constant.
@@ -94,76 +87,75 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
   for (size_t mapIdx = 0; mapIdx < transforms.size(); ++mapIdx) {
     TransformMapAttr map = transforms[mapIdx];
     DenseMap<unsigned, int64_t> lower;
-    auto upper = [&](unsigned d) -> int64_t {
+    auto upperDiff = [&](unsigned d) -> int64_t {
       auto it = diff.find(d);
       return it == diff.end() ? 0 : it->second;
     };
 
     for (TransformAttr t : map.getOps()) {
-      ArrayRef<uint32_t> p = t.getUpperDims();
-      ArrayRef<uint32_t> q = t.getLowerDims();
-      ArrayRef<int64_t> e = t.getParams();
+      ArrayRef<uint32_t> upperDims = t.getUpperDims();
+      ArrayRef<uint32_t> lowerDims = t.getLowerDims();
+      ArrayRef<int64_t> params = t.getParams();
       switch (t.getType()) {
       case TransformType::PassThrough:
       case TransformType::Pad:
       case TransformType::Slice:
         // Offset-preserving: a unit change upstairs is a unit change below.
         // (Pad only shifts validity, not the stride.)
-        for (auto [pi, qi] : llvm::zip(p, q))
-          lower[qi] = upper(pi);
+        for (auto [pi, qi] : llvm::zip(upperDims, lowerDims))
+          lower[qi] = upperDiff(pi);
         break;
       case TransformType::Embed: {
-        // lowerDiff = sum_i e_i * upperDiff_i
+        // lowerDiff = sum_i params_i * upperDiff_i
         int64_t d = 0;
-        for (auto [coef, pi] : llvm::zip(e, p))
-          d += coef * upper(pi);
-        lower[q[0]] = d;
+        for (auto [coef, pi] : llvm::zip(params, upperDims))
+          d += coef * upperDiff(pi);
+        lower[lowerDims[0]] = d;
         break;
       }
       case TransformType::Unmerge: {
-        // lowerDiff = sum_i f_i * upperDiff_i, f_i = product of trailing
-        // bounds.
-        int64_t d = 0, f = 1;
-        for (int i = static_cast<int>(e.size()) - 1; i >= 0; --i) {
-          d += f * upper(p[i]);
-          f *= e[i];
-        }
-        lower[q[0]] = d;
+        // lowerDiff = sum_i stride_i * upperDiff_i, where stride_i is the
+        // product of the trailing bounds (the row-major stride of dim i).
+        SmallVector<int64_t> strides = computeStrides(params);
+        int64_t d = 0;
+        for (size_t i = 0; i < params.size(); ++i)
+          d += strides[i] * upperDiff(upperDims[i]);
+        lower[lowerDims[0]] = d;
         break;
       }
       case TransformType::Merge: {
         // Decompose the merged-dim diff into its lower components using the
         // merge's own nested strides (P_j = product of trailing params).
-        int64_t D = upper(p[0]);
-        SmallVector<int64_t> P(e.size(), 1);
-        for (int j = static_cast<int>(e.size()) - 2; j >= 0; --j)
-          P[j] = P[j + 1] * e[j + 1];
-        for (size_t j = 0; j < q.size(); ++j)
-          lower[q[j]] = (D / P[j]) % e[j];
+        int64_t D = upperDiff(upperDims[0]);
+        SmallVector<int64_t> P(params.size(), 1);
+        for (int j = static_cast<int>(params.size()) - 2; j >= 0; --j)
+          P[j] = P[j + 1] * params[j + 1];
+        for (size_t j = 0; j < lowerDims.size(); ++j)
+          lower[lowerDims[j]] = (D / P[j]) % params[j];
 
         if (D != 0) {
           // Carry-neutrality guard: the lower dims must nest contiguously in
-          // the buffer (stride(q_j) == stride(q_{j+1}) * e_{j+1}). Compute each
-          // lower dim's buffer stride by propagating its own unit diff through
-          // the maps below this one.
+          // the buffer (stride(q_j) == stride(q_{j+1}) * params_{j+1}). Compute
+          // each lower dim's buffer stride by propagating its own unit diff
+          // through the maps below this one.
           ArrayRef<TransformMapAttr> below = transforms.drop_front(mapIdx + 1);
-          SmallVector<int64_t> s(q.size());
-          for (size_t j = 0; j < q.size(); ++j) {
+          SmallVector<int64_t> s(lowerDims.size());
+          for (size_t j = 0; j < lowerDims.size(); ++j) {
             DenseMap<unsigned, int64_t> unit;
-            unit[q[j]] = 1;
+            unit[lowerDims[j]] = 1;
             FailureOr<int64_t> sj = linearizedDiffStride(below, unit);
             if (failed(sj))
               return failure();
             s[j] = *sj;
           }
-          for (size_t j = 0; j + 1 < q.size(); ++j)
-            if (s[j] != s[j + 1] * e[j + 1])
+          for (size_t j = 0; j + 1 < lowerDims.size(); ++j)
+            if (s[j] != s[j + 1] * params[j + 1])
               return failure(); // non-contiguous: offset is piecewise-linear
         }
         break;
       }
       case TransformType::ConstDim:
-        for (unsigned qi : q)
+        for (unsigned qi : lowerDims)
           lower[qi] = 0;
         break;
       case TransformType::AddDim:
@@ -172,8 +164,8 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
       case TransformType::Broadcast:
         // A nonzero diff into a broadcast dim wraps (position-dependent), so it
         // has no constant stride; a zero diff is harmless.
-        for (auto [pi, qi] : llvm::zip(p, q)) {
-          if (upper(pi) != 0)
+        for (auto [pi, qi] : llvm::zip(upperDims, lowerDims)) {
+          if (upperDiff(pi) != 0)
             return failure();
           lower[qi] = 0;
         }
@@ -185,38 +177,10 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
     diff = std::move(lower);
   }
 
-  // Combine the bottom-space diff into a single linear buffer offset.
-  SmallVector<int64_t> strides =
-      rowMajorStrides(transforms.back().getLowerBounds());
-  int64_t total = 0;
-  for (auto [d, v] : diff) {
-    if (d >= strides.size())
-      return failure();
-    total += v * strides[d];
-  }
-  return total;
-}
-
-/// Collect the upper-space (input) dim indices that a validity-impacting map
-/// actually constrains: the non-trivially padded dims of every `Pad` and the
-/// upper dims of every invalidatable `Embed`. These are the coordinates whose
-/// values the runtime mask is computed from.
-static SmallVector<unsigned> validityImpactingUpperDims(TransformMapAttr map) {
-  SmallVector<unsigned> dims;
-  for (TransformAttr op : map.getOps()) {
-    if (op.getType() == TransformType::Pad) {
-      ArrayRef<int64_t> params = op.getParams();
-      ArrayRef<uint32_t> upper = op.getUpperDims();
-      for (size_t i = 0, e = upper.size(); i < e; ++i)
-        if (params[2 * i] != 0 || params[2 * i + 1] != 0)
-          dims.push_back(upper[i]);
-    } else if (op.getType() == TransformType::Embed) {
-      if (embedCanBeInvalid(map, op))
-        for (uint32_t u : op.getUpperDims())
-          dims.push_back(u);
-    }
-  }
-  return dims;
+  if (transforms.back().getLowerBounds().size() != 1)
+    return failure();
+  auto it = diff.find(0);
+  return it == diff.end() ? 0 : it->second;
 }
 
 /// Returns true if the validity mask produced by `transforms` can vary with the

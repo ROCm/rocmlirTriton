@@ -324,14 +324,18 @@ def RockTransformsInvariantCodeMotionPass
 
     The pass hoists only if 2 conditions are met:
     1. The pointer offset is an affine-linear function of the loop induction variable.
-    2. The transform chain has no validity-impacting maps (so the mask is loop invariant).
+    2. The validity mask is loop-invariant
 
-    It fully supports the offset preserving ops with linear maps:
-    PassThrough, Slice, Pad, Embed, Unmerge, ConstDim, AddDim.
-
-    Merge and Broadcast are supported only conditionally:
-    - A Merge only when its lower sub-dims nest contiguously (carry-neutral)
-    - A Broadcast only when no IV diff flows into the broadcast dim
+    The rewrite replaces in loop pointer recomputation with a loop-invariant base + 
+    one constant stride per iteration, and computes the mask once before the loop. 
+    That's only valid when:
+    - The per-iteration offset change is one constant: this breaks for a non-contiguous
+      Merge because the increment is not constant, they vary depending on specific values
+      of the loop counter, not on every step, making the real increment position-dependent.
+    - The mask is identical every iteration: which breaks when a Pad/Embed decides
+      validity by checking a coordinate that moves as the IV increases: the set of valid
+      elements is then different on each iteration, so the mask would have to be recomputed
+      every step and cannot be precomputed once.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "scf::SCFDialect", "arith::ArithDialect",
