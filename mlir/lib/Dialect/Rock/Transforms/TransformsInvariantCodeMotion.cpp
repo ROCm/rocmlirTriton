@@ -232,8 +232,7 @@ static bool isDefinedInLoop(Value v, scf::ForOp loop) {
 static bool isInductionVar(Value v, Value iv) {
   while (v != iv) {
     Operation *def = v.getDefiningOp();
-    if (!def || !isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::TruncIOp,
-                     arith::ExtSIOp, arith::ExtUIOp>(def))
+    if (!def || !isa<arith::IndexCastOp, arith::IndexCastUIOp>(def))
       return false;
     v = def->getOperand(0);
   }
