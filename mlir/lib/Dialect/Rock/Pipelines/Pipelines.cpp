@@ -529,17 +529,15 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(rock::createRockCollapseContiguousMergesPass());
   // CollapseContiguousMerges builds the collapsed chain fresh and rewires onto
   // it, leaving the original chain dead. DCE it so TransformsToPointerArith
-  // only sees the collapsed chain. RemoveDeadValues must run at the module
-  // level (not nested per-func) so it does not incorrectly delete the host
-  // function.
-  pm.addPass(createRemoveDeadValuesPass());
-
-  auto &funcPm3 = pm.nest<func::FuncOp>();
-  funcPm3.addPass(rock::createRockTransformsToPointerArithPass());
+  // only sees the collapsed chain. Keep this nested per-func: a module-level
+  // RemoveDeadValues strips the kernel function / its rock.arch attribute and
+  // breaks downstream lowering ("rock.arch not found on kernel function").
+  funcPm2.addPass(createRemoveDeadValuesPass());
+  funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
-  funcPm3.addPass(createCanonicalizerPass());
+  funcPm2.addPass(createCanonicalizerPass());
 
-  funcPm3.addPass(rock::createRockToTTIRPass());
+  funcPm2.addPass(rock::createRockToTTIRPass());
   // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockFuncToTritonFuncPass());
