@@ -288,6 +288,8 @@ public:
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
     auto [l, r] = ensureCompatible(builder, loc, lhs, rhs);
+    // Unsigned: observed elements are non-negative (== euclidean mod); negative
+    // elements are masked and never loaded, so the result is irrelevant.
     return arith::RemUIOp::create(builder, loc, l, r);
   }
 

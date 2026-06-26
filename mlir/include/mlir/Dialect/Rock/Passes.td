@@ -285,15 +285,23 @@ def RockCollapseContiguousMergesPass
     : Pass<"rock-collapse-contiguous-merges", "::mlir::func::FuncOp"> {
   let summary = "Collapse contiguous merges in rock.transform chains";
   let description = [{
-    This pass runs BEFORE TransformsToPointerArith. It rewrites the transform
-    chains feeding loads/stores so that lower dimensions of a `Merge` that are
-    provably contiguous in the underlying memory layout are fused into a single
-    wider dimension (see `collapseContiguousMerges`). Keeping the contiguous
-    free dimension intact, instead of letting it be decomposed and recomposed
-    through an im2col-style coordinate transform, yields a composed affine map
-    whose offset along that dimension stays stride-1. That in turn lets Triton's
-    AxisInfoAnalysis recover the real pointer contiguity and vectorize the
-    resulting loads, which the flattened/partial-contiguity form defeats.
+    This pass runs BEFORE TransformsToPointerArith.
+
+    When a `Merge` splits a dimension whose lower dimensions are actually
+    contiguous in memory, it fuses them back into a single wider dimension
+    (see `collapseContiguousMerges`).
+
+    Why this matters: if that contiguous dimension is instead decomposed and
+    recomposed (as in an im2col-style transform), the resulting affine map no
+    longer looks stride-1 along it. By keeping the dimension intact, the offset
+    stays stride-1, so Triton's AxisInfoAnalysis can see the real pointer
+    contiguity and vectorize the loads, which the flattened form prevents.
+
+    Example: a buffer viewed as `Unmerge{2, 3, 8}` ["block", "a", "b"] with a
+    `Merge{3, 8}` ["tile"] -> ["a", "b"] tile dimension. Here "a" (stride 8) and
+    "b" (stride 1, size 8) are adjacent in memory, so the {a, b} tile is one
+    contiguous run of 24 elements. The pass collapses it to `Merge{1, 24}` and
+    widens the view to `Unmerge{2, 1, 24}`, exposing the stride-1 run of 24.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }

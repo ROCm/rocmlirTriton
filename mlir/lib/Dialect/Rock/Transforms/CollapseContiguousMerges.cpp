@@ -17,12 +17,18 @@
 //
 // This pass runs BEFORE RockTransformsToPointerArithPass. It simplifies the
 // rock.transform chains feeding TransformsToPtrOp by collapsing contiguous
-// merges: a dimension that is split by a Merge and later recombined (Unmerge /
-// embed-unmerge) with the same factorization is genuinely contiguous in memory,
-// so the decompose/recompose round-trip can be fused into a single wider
-// dimension. Keeping the contiguous extent intact yields a composed affine map
-// whose offset along that dimension stays stride-1, which lets Triton's
-// AxisInfoAnalysis recover the real pointer contiguity and vectorize the loads.
+// merges: a dimension split by a Merge whose members are genuinely contiguous
+// in memory, so the decompose/recompose round-trip can be fused into a single
+// wider dimension. Keeping the contiguous extent intact yields a composed
+// affine map whose offset along that dimension stays stride-1, which lets
+// Triton's AxisInfoAnalysis recover the real pointer contiguity and vectorize
+// the loads.
+//
+// The collapse is propagated from the Merge down to the Unmerge that recombines
+// the group, traveling only through size-preserving transforms (PassThrough and
+// zero Pad). Any other transform along the way (Embed, nested Merge, Slice,
+// Broadcast, non-zero Pad, ...) aborts the collapse for that group, so only
+// Unmerge-recombined groups are handled today.
 //
 //===----------------------------------------------------------------------===//
 
@@ -61,8 +67,10 @@ void RockCollapseContiguousMergesPass::runOnOperation() {
   OpBuilder b(func.getContext());
   func.walk([&](TransformsToPtrOp op) {
     Value source = op.getSource();
-    // collapseContiguousMerges edits transform attributes in place, so the
-    // chain must be isolated first (each rock.transform with a single user).
+    // collapseContiguousMerges rebuilds the transform chain and rewires this
+    // op's source onto it. Isolate the chain first (each rock.transform with a
+    // single user) so the rewrite is local to this op and can't perturb the
+    // coordinate maps of any other op that shares the original chain.
     b.setInsertionPoint(op);
     Value isolated = isolateTransforms(b, source);
     if (isolated != source)
