@@ -29,9 +29,10 @@ the author can look up the rationale.
   [`flake8`](../.flake8); format with `yapf -i <files>` and lint with
   `flake8 <files>` before committing.
 - rocmlirTriton-specific review rules that don't fit the generic
-  LLVM/MLIR tiers (Triton-submodule bumps, `triton-patches/*.patch`,
-  `rock::*` hardware-feature detection, bridge passes, fat-library +
-  MIGraphX coordination, and the **rocMLIR back-port check** that flags
+  LLVM/MLIR tiers (Triton subtree updates, edits to the vendored
+  `external/triton` / `external/llvm-project` trees, `rock::*`
+  hardware-feature detection, bridge passes, fat-library + MIGraphX
+  coordination, and the **rocMLIR back-port check** that flags
   shared-with-rocMLIR diffs) live in dedicated sections at the end of
   this document; apply them alongside the generic Critical / Major /
   Minor tiers.
@@ -42,8 +43,8 @@ the author can look up the rationale.
   code, comments, commits, or docs. (rocmlirTriton is currently a private
   repo but treat it as if it could be open-sourced at any time; see the
   project's confidentiality policy.) It IS fine to reference unreleased
-  `gfx*` IDs only when they are already mentioned upstream (in the pinned
-  Triton submodule, the LLVM AMDGPU backend, or upstream rocMLIR).
+  `gfx*` IDs only when they are already mentioned upstream (in the
+  vendored Triton subtree, the LLVM AMDGPU backend, or upstream rocMLIR).
 - C++ exceptions (`throw`, `try`/`catch`); use `LogicalResult` /
   `emitOpError` / `signalPassFailure` instead. (Triton-side code
   additionally compiles with `-fno-exceptions -fno-rtti -Werror`; respect
@@ -59,11 +60,6 @@ the author can look up the rationale.
   files, secrets, profiler output (`.rocprofv3/`, `att_dump/`,
   `*.pftrace`), plan / scratch files, tuning DBs that don't belong in the
   repo.
-- **Direct edits to `external/triton/`**. The Triton submodule is consumed
-  as a pinned upstream tree; local changes must be captured as
-  `triton-patches/*.patch` applied on top by `scripts/build-llvm.sh`. A PR
-  that modifies files under `external/triton/` directly (without a
-  corresponding bump of the submodule SHA) is wrong by construction.
 - Breaking IR or C-API changes without documentation or a coordinated
   MIGraphX update.
 
@@ -168,27 +164,37 @@ the author can look up the rationale.
 rocmlirTriton lowers Rock dialect kernels through OpenAI Triton's
 TTIR/TTGIR/LLIR pipeline to AMD GPU code. Several files and conventions
 exist specifically to keep that integration safe and reproducible across
-Triton submodule bumps. Apply these checks **in addition to** the
+Triton subtree updates. Apply these checks **in addition to** the
 generic Critical / Major / Minor tiers above; the severity of each rule
 is documented inline below.
 
-### Triton submodule (`external/triton`) bumps
+### Vendored Triton / LLVM subtrees (`external/triton`, `external/llvm-project`)
 
-When a PR changes the `external/triton` submodule pointer, apply the
-review checks from [`bump_triton_version.md`](bump_triton_version.md).
-The auto-review workflow injects the trusted default-branch copy of
-that guide into the review prompt alongside this checklist. Missing
-required bump artifacts, such as replication-point audit notes,
-`librockcompiler_deps.cmake` regeneration, or `triton-patches/*.patch`
-re-evaluation, should be reviewed as **Major** unless the PR
+`external/triton` and `external/llvm-project` are vendored directly in
+this repo via `git subtree`; downstream edits are committed directly on
+top of the imported upstream trees. `triton-patches/*.patch` and
+`llvm-patches/*.patch` are provenance and refresh aids for the next
+upstream merge, not build-time inputs. Consequently:
+
+- Editing files under `external/triton/` or `external/llvm-project/`
+  directly is expected; do NOT flag the direct edit itself as a
+  violation.
+- **Major** -- a downstream change to the vendored trees lands WITHOUT a
+  matching patch under `triton-patches/` or `llvm-patches/` and an entry
+  in `triton-patches/triton-patch-content.txt` or
+  `llvm-patches/llvm-patch-content.txt`. The patch must match the
+  committed edit, and the PR description must either link the upstream
+  issue/PR or explain why the change is a permanent fork.
+
+### Triton / LLVM subtree updates (upstream bumps)
+
+When a PR imports a new upstream Triton or LLVM revision into the
+vendored subtrees, apply the review checks from
+[`bump_triton_version.md`](bump_triton_version.md). Missing required bump
+artifacts, such as replication-point audit notes,
+`librockcompiler_deps.cmake` regeneration, or re-evaluation of the
+downstream patches, should be reviewed as **Major** unless the PR
 description explains why they do not apply.
-
-### Local Triton patches (`triton-patches/*.patch`)
-
-- **Major** -- a new `triton-patches/*.patch` lands without a
-  justification in the PR description: either a link to the upstream
-  issue/PR that will eventually upstream the change, or a one-line
-  note explaining why this is a permanent fork.
 
 ### Hardware-feature detection (`rock::*` vs `triton::AMD::TargetInfo`)
 
@@ -217,7 +223,7 @@ E2E coverage..." Major bullet above).
 
 ### Fat library + downstream MIGraphX
 
-The Triton submodule is wired into the `librockCompiler` fat library
+The vendored Triton subtree is wired into the `librockCompiler` fat library
 that MIGraphX consumes. Any change that alters the public C-API
 surface, IR ingest/emit shape, or default Triton-pipeline behavior is
 a downstream coordination point with MIGraphX -- the PR description
@@ -259,8 +265,8 @@ rocmlirTriton diff.
 
 ### rocmlirTriton-only (no back-port needed)
 
-- `external/triton/`, `triton-patches/`, `cmake/triton.cmake`,
-  `scripts/build-llvm.sh`, `cmake.sh`.
+- `external/triton/`, `external/llvm-project/`, `triton-patches/`,
+  `llvm-patches/`, `cmake/triton.cmake`, `cmake.sh`.
 - The bridge-pass source files in `mlir/lib/Dialect/Rock/Transforms/`:
   `RockToTTIR.cpp` (pass `RockToTTIRPass`), `FuncToTritonFunc.cpp`
   (pass `RockFuncToTritonFuncPass`), `SerializeHostFuncs.cpp` (pass

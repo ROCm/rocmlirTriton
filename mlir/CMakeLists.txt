@@ -71,12 +71,13 @@ if (MLIR_INCLUDE_TESTS)
   add_definitions(-DMLIR_INCLUDE_TESTS)
   add_custom_target(RocMLIRUnitTests)
 
-  # If LLVM_THIRD_PARTY_DIR is not set or doesn't contain gtest, try Triton's LLVM
+  # If LLVM_THIRD_PARTY_DIR is not set or doesn't contain gtest, try the
+  # Triton-pinned LLVM subtree.
   if (NOT EXISTS "${LLVM_THIRD_PARTY_DIR}/unittest/googletest/include/gtest/gtest.h")
     set(TRITON_LLVM_THIRD_PARTY "${PROJECT_SOURCE_DIR}/external/llvm-project/third-party")
     if (EXISTS "${TRITON_LLVM_THIRD_PARTY}/unittest/googletest/include/gtest/gtest.h")
       set(LLVM_THIRD_PARTY_DIR "${TRITON_LLVM_THIRD_PARTY}")
-      message(STATUS "Using gtest from Triton LLVM: ${LLVM_THIRD_PARTY_DIR}")
+      message(STATUS "Using gtest from Triton-pinned LLVM: ${LLVM_THIRD_PARTY_DIR}")
     endif()
   endif()
 

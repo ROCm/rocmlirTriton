@@ -763,17 +763,11 @@ jobs:
 
             ## PR review checklist (canonical reference)
 
-            The content below is injected at workflow runtime from
-            `docs/PR_REVIEW_CHECKLIST.md` on the default branch by the
-            preceding `snapshot_review_checklist` step, so the model always
-            has the checklist in context regardless of what is in the
-            PR's working tree. The same file is also overlaid into
-            the workspace by the earlier overlay step, so
-            `Read('docs/PR_REVIEW_CHECKLIST.md')` returns the same bytes
-            you see between the BEGIN/END markers below -- both
-            channels read from the same trusted source at the same
-            workflow run. The Triton bump guide is injected the same way
-            after the checklist. See doc §8 / §15.
+            The checklist below is injected from the trusted default-branch
+            `docs/PR_REVIEW_CHECKLIST.md`. The overlaid workspace copy is the
+            same trusted content, so `Read('docs/PR_REVIEW_CHECKLIST.md')`
+            returns the same bytes. The Triton bump guide is injected the same
+            way.
 
             Reference URLs in the "References" subsection below
             (`llvm.org`, `mlir.llvm.org`) are context for YOU. If you cite
@@ -789,11 +783,9 @@ jobs:
 
             ## Triton bump guide (canonical reference)
 
-            Apply this guide when the PR changes the `external/triton`
-            submodule pointer or updates `triton-patches/*.patch`. The content
-            is injected at workflow runtime from the trusted
-            `docs/bump_triton_version.md` on the default branch by the same
-            snapshot step that injected the PR review checklist.
+            Apply this guide when the PR imports a new upstream revision into
+            `external/triton` or `external/llvm-project`, or changes the
+            downstream patch records under `triton-patches/` or `llvm-patches/`.
 
             <BEGIN docs/bump_triton_version.md>
 

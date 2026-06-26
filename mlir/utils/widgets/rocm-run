@@ -10,7 +10,7 @@
 #   2. A few well-known source-tree fallbacks.
 #
 # The matching LLVM build directory is then located by:
-#   1. The Triton-based layout (<repo>/external/triton/llvm-project/build).
+#   1. The in-tree LLVM build under <build>/external/llvm-project/llvm.
 #   2. The LLVM_DIR entry in the rocMLIR build's CMakeCache.txt.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,12 +40,12 @@ find_rocmlir_build() {
 find_llvm_build() {
     local rocmlir_build="$1"
 
-    # Triton-based layout: <repo>/external/triton/llvm-project/build, where
-    # <repo> is the parent of the rocMLIR build directory.
-    local triton_llvm
-    triton_llvm="$(cd "$rocmlir_build/.." 2>/dev/null && pwd)/external/triton/llvm-project/build"
-    if [[ -x "$triton_llvm/bin/mlir-runner" ]]; then
-        ( cd "$triton_llvm" && pwd )
+    # Current monolithic layout: LLVM/MLIR tools and runtime libraries are built
+    # under <build>/external/llvm-project/llvm.
+    local in_tree_llvm
+    in_tree_llvm="$rocmlir_build/external/llvm-project/llvm"
+    if [[ -x "$in_tree_llvm/bin/mlir-runner" ]]; then
+        ( cd "$in_tree_llvm" && pwd )
         return 0
     fi
 
