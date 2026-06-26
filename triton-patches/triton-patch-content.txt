@@ -1,7 +1,7 @@
 triton-patches/ -- downstream Triton cherry-picks
 =================================================
 
-This directory holds patches against the Triton submodule
+This directory holds downstream patch records against the vendored Triton tree
 (external/triton/).
 
 ----------------------------------------------------------------------

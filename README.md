@@ -10,7 +10,7 @@
 
 > MLIR-based GEMM, convolution, attention, GEMM+GEMM, and CONV+GEMM kernel generator for AMD GPUs, built on a Triton compilation backend.
 
-rocmlirTriton is a Triton-backed GPU kernel generator **derived from** [rocMLIR](https://github.com/ROCm/rocMLIR). Both share, for the most part, the same high-level lowering: `migraphx` -> `tosa` (or `linalg`) -> `rock`, and diverge only at the codegen step: rocMLIR lowers `rock` to MLIR's AMDGPU and ROCDL dialects to HSACO via the LLVM AMDGPU backend, while rocmlirTriton hands off to Triton's TTIR -> TTGIR -> LLIR pipeline (see `Pipelines.cpp` / `TritonToHsaco.cpp`), with the vendored LLVM/MLIR (under `external/llvm-project`) and the vendored Triton (under `external/triton`) producing the final HSACO.
+rocmlirTriton is a Triton-backed GPU kernel generator **derived from** [rocMLIR](https://github.com/ROCm/rocMLIR). Both share, for the most part, the same high-level lowering: `migraphx` -> `tosa` (or `linalg`) -> `rock`, and diverge only at the codegen step: rocMLIR lowers `rock` to MLIR's AMDGPU and ROCDL dialects to HSACO via the LLVM AMDGPU backend, while rocmlirTriton hands off to Triton's TTIR -> TTGIR -> LLIR pipeline (see `Pipelines.cpp` / `TritonToHsaco.cpp`), with vendored Triton (under `external/triton`) and Triton-pinned LLVM/MLIR (under `external/llvm-project`) producing the final HSACO.
 
 It targets AMD CDNA and RDNA GPUs (gfx9xx / gfx10xx / gfx11xx / gfx12xx), and is primarily consumed as the static `librockCompiler` library by [MIGraphX](https://github.com/ROCm/AMDMIGraphX), though it can also be driven standalone for kernel generation, validation, and performance tuning.
 
@@ -42,7 +42,7 @@ Additional developer documentation lives under [`docs/`](docs/).
 
 ## Usage
 
-A typical standalone pipeline generates a kernel with `rocmlir-gen`, lowers it with `rocmlir-driver -c`, and runs it via `rocm-run` -- a wrapper around `mlir-runner` that auto-locates the rocMLIR build and the (Triton-bundled) LLVM build directory, and links the right runtime libraries (`libmlir_rocm_runtime`, `libconv-validation-wrappers`, runner utils, etc.):
+A typical standalone pipeline generates a kernel with `rocmlir-gen`, lowers it with `rocmlir-driver -c`, and runs it via `rocm-run` -- a wrapper around `mlir-runner` that auto-locates the rocMLIR build and the Triton-pinned LLVM build directory, and links the right runtime libraries (`libmlir_rocm_runtime`, `libconv-validation-wrappers`, runner utils, etc.):
 
 ```sh
 ARCH=$(rocminfo | grep -o 'gfx[0-9a-z]*' | head -1)

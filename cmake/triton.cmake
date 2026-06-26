@@ -35,7 +35,7 @@ if(NOT EXISTS "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/CMakeLists.txt")
     "incomplete.\n")
 endif()
 
-message(STATUS "Adding vendored LLVM/MLIR (external/llvm-project) src dependency")
+message(STATUS "Adding Triton-pinned LLVM/MLIR (external/llvm-project) src dependency")
 
 # LLVM/MLIR build flags. Must be set BEFORE add_subdirectory so they take
 # effect when LLVM processes its own CMakeLists.txt.

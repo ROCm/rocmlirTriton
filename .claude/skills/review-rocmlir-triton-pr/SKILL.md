@@ -1,6 +1,6 @@
 ---
 name: review-rocmlir-triton-pr
-description: Review a rocmlirTriton pull request with deep expertise in MLIR/LLVM coding standards, the Rock dialect, MIGraphX integration, the Triton submodule integration (Rock->TTIR->TTGIR->LLIR pipeline, triton-patches, hardware-feature detection via rock::*), kernel codegen for AMD GPUs, lit/E2E testing, and the rocmlirTriton CMake build. Use when asked to review a rocmlirTriton PR or check a rocmlirTriton change. Read-only; never posts to GitHub.
+description: Review a rocmlirTriton pull request with deep expertise in MLIR/LLVM coding standards, the Rock dialect, MIGraphX integration, the vendored Triton and Triton-pinned LLVM integration (Rock->TTIR->TTGIR->LLIR pipeline, downstream patch records, hardware-feature detection via rock::*), kernel codegen for AMD GPUs, lit/E2E testing, and the rocmlirTriton CMake build. Use when asked to review a rocmlirTriton PR or check a rocmlirTriton change. Read-only; never posts to GitHub.
 argument-hint: [PR-number]
 agent: general-purpose
 allowed-tools: Read, Grep, Glob
@@ -187,9 +187,9 @@ Each finding must:
   `std::vector` for small local collections").
 
 Step 4 below applies the rocmlirTriton-specific sections of the same
-file (Triton-submodule bumps, `triton-patches/*.patch`, `rock::*`
-hardware-feature detection, bridge passes, fat-library + MIGraphX, and
-the rocMLIR back-port check).
+file (vendored Triton and Triton-pinned LLVM subtree updates, downstream patch records,
+`rock::*` hardware-feature detection, bridge passes, fat-library +
+MIGraphX, and the rocMLIR back-port check).
 
 ---
 
@@ -199,15 +199,15 @@ the rocMLIR back-port check).
 snapshot step and overlaid into the workspace; see Step 3) documents two
 rocmlirTriton-specific sections that don't fit the generic LLVM/MLIR tiers.
 `docs/bump_triton_version.md` is also injected and overlaid; apply it as the
-detailed source of truth when a PR changes `external/triton` or
-`triton-patches/*.patch`:
+detailed source of truth when a PR imports new upstream Triton/LLVM
+revisions or changes downstream patch records:
 
-- **`## rocmlirTriton-specific checks`** -- Triton submodule
-  (`external/triton`) bumps (delegating detailed steps to
-  `docs/bump_triton_version.md`), local `triton-patches/*.patch`, `rock::*`
-  hardware-feature detection (vs. `triton::AMD::TargetInfo`), bridge passes
-  between Rock and Triton, and fat-library + downstream MIGraphX coordination.
-  Each sub-rule documents its severity inline (Major / Minor).
+- **`## rocmlirTriton-specific checks`** -- vendored Triton and Triton-pinned LLVM subtree
+  updates (delegating detailed steps to `docs/bump_triton_version.md`),
+  downstream patch records, `rock::*` hardware-feature detection (vs.
+  `triton::AMD::TargetInfo`), bridge passes between Rock and Triton, and
+  fat-library + downstream MIGraphX coordination. Each sub-rule documents
+  its severity inline (Major / Minor).
 - **`## rocMLIR back-port check`** -- the path list of files shared
   with `ROCm/rocMLIR`, the rocmlirTriton-only path list, and the
   verdict logic for missing back-port notes (Major when none of
@@ -216,7 +216,7 @@ detailed source of truth when a PR changes `external/triton` or
 
 Apply both alongside Step 3. Cite the matching section heading in the
 finding body (for example: "rocmlirTriton-specific -- Triton
-submodule bumps: `librockcompiler_deps.cmake` not regenerated") so
+subtree updates: `librockcompiler_deps.cmake` not regenerated") so
 the author can look up the rationale.
 
 ---

@@ -1,8 +1,8 @@
 llvm-patches/ -- downstream LLVM cherry-picks
 =============================================
 
-This directory holds patches against the LLVM checkout that Triton pins
-(external/triton/llvm-project).
+This directory holds downstream patch records against the Triton-pinned LLVM
+tree (external/llvm-project).
 
 ----------------------------------------------------------------------
 patch193499.patch

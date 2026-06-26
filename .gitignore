@@ -52,11 +52,11 @@ autoconf/autom4te.cache
 # Source indexing
 /compile_commands.json
 /tablegen_compile_commands.yml
-# Profile data (re-include LLVM PGO test inputs in external/triton/llvm-project/)
+# Profile data (re-include LLVM PGO test inputs in external/llvm-project/)
 *.profraw
 *.profdata
-!external/triton/llvm-project/**/*.profraw
-!external/triton/llvm-project/**/*.profdata
+!external/llvm-project/**/*.profraw
+!external/llvm-project/**/*.profdata
 # Environment files (may contain secrets)
 .env
 # CMake configuration

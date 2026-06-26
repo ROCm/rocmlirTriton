@@ -2,64 +2,92 @@
 
 ## Overview
 
-The rocmlirTriton project embeds Triton as a git submodule at `external/triton/`. Several Triton Python functions are replicated in C++ within this project. When the Triton version is bumped, these C++ implementations must be synchronized with the upstream changes.
+rocmlirTriton vendors Triton under `external/triton/` and the
+Triton-pinned LLVM/MLIR tree under `external/llvm-project/`, both via
+`git subtree`. Several Triton Python functions are replicated in C++
+within this project, so every upstream Triton/LLVM import must reconcile
+those C++ implementations and the downstream patch records under
+`triton-patches/` and `llvm-patches/`.
 
 Note that we want to use Triton from https://github.com/triton-lang/triton-windows, as that includes Windows support not included in https://github.com/triton-lang/triton
 
-## Step 1: Update the Triton Submodule
+## Step 1: Import new upstream revisions
 
-### 1.1 Record the Current Commit
-
-```bash
-cd external/triton
-export OLD_COMMIT=$(git rev-parse HEAD)
-```
-
-### 1.2 Pull the New Version
+### 1.1 Record the current repository commit
 
 ```bash
-cd external/triton
-git pull
-export NEW_COMMIT=$(git rev-parse HEAD)
+export OLD_REPO=$(git rev-parse HEAD)
 ```
 
-### 1.3 Update Submodule Reference
+### 1.2 Pull the new versions
+
+Import the desired upstream Triton and LLVM revisions into their vendored
+subtrees from the repository root. Replace `<triton-ref>` and `<llvm-ref>`
+with the branch, tag, or commit selected for the bump:
 
 ```bash
-git add external/triton
+git subtree pull --prefix=external/triton \
+  https://github.com/triton-lang/triton-windows.git <triton-ref>
+
+git subtree pull --prefix=external/llvm-project \
+  https://github.com/llvm/llvm-project.git <llvm-ref>
+
+export NEW_REPO=$(git rev-parse HEAD)
 ```
 
-## Step 2: Rebuild LLVM
+`external/triton` and `external/llvm-project` are directories inside this
+repository, not nested Git repositories. Do not use `git -C
+external/triton rev-parse HEAD` to record the upstream revision; it
+returns the main repository's `HEAD`. Use the `OLD_REPO..NEW_REPO`
+bracket below to inspect what the subtree pulls changed under each
+prefix.
 
-The LLVM version is tied to the Triton version (specified in `external/triton/cmake/llvm-hash.txt`). After bumping Triton, LLVM must be rebuilt.
+## Step 2: Rebuild LLVM/MLIR
+
+The LLVM version must remain compatible with the imported Triton tree
+(`external/triton/cmake/llvm-hash.txt` is a useful cross-check). Build
+from the vendored trees:
 
 ```bash
-bash scripts/build-llvm.sh
+bash cmake.sh
 ```
 
-This wrapper script handles submodule init, applying `triton-patches/*.patch`, patching `MLIR_ENABLE_ROCM_RUNNER=ON`, and building LLVM/MLIR.
+Patch files are not applied during configure or build; they are records
+of downstream cherry-picks that must be kept in sync with the committed
+vendored trees.
 
-## Step 3: Check if our local patches are still needed
-We may have local patches (`.patch` files) under `./triton-patches`, which are applied using the `cmake.sh` script.
-These might not be needed if the changes in the patch were merged into upstream.
+## Step 3: Check if downstream patch records are still needed
 
-For each patch, check the files that are modified and do:
+We keep downstream patch records under `triton-patches/` and
+`llvm-patches/` so the next upstream import can re-apply or reconcile
+local divergence. Re-evaluate each one; it may no longer be needed if the
+change was merged upstream.
+
+For each Triton patch, check the files that are modified and do:
 
 ```bash
-cd external/triton
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- FILE
+git diff "$OLD_REPO..$NEW_REPO" -- external/triton/FILE
 ```
 
-And compare the changes with the corresponding `.patch` file.
+For each LLVM patch, use the same pattern in the LLVM subtree:
 
-If the changes are already in `external/triton`, then remove the `.patch` file.
+```bash
+git diff "$OLD_REPO..$NEW_REPO" -- external/llvm-project/FILE
+```
+
+Compare the upstream changes with the corresponding `.patch` file.
+
+If the changes are already in the imported upstream tree, remove the
+patch file and its entry in the matching `*-patch-content.txt` index.
+Otherwise, refresh the patch so it matches the committed vendored-tree
+edit.
 
 ## Step 4: Analyze Upstream Changes
 
-Generate a diff between the old and new commits for the key files that need synchronization. Those are:
+Generate a diff between `OLD_REPO` and `NEW_REPO` for the key files that
+need synchronization. Those are:
 
 ```bash
-cd external/triton
 for f in \
     third_party/amd/backend/compiler.py \
     third_party/amd/backend/driver.c \
@@ -67,7 +95,7 @@ for f in \
     python/src/llvm.cc \
     third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp \
     third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h; do
-  git diff ${OLD_COMMIT}..${NEW_COMMIT} --function-context -- "$f" > "$(basename "$f").diff"
+  git diff "$OLD_REPO..$NEW_REPO" --function-context -- "external/triton/$f" > "$(basename "$f").diff"
 done
 ```
 
@@ -164,8 +192,7 @@ will silently drift if upstream changes them, so diff the source on every bump:
 | `CacheModifier` / `CacheModifierAttr` in `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` | `TT_CacheModifierAttr` in `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` | Names **and** integer values must match one-to-one (currently `none=1, ca=2, cg=3, wb=4, cs=5, wt=6, cv=7`). The Rock->Triton lowering relies on the integer values lining up. |
 
 ```bash
-cd external/triton
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- include/triton/Dialect/Triton/IR/TritonAttrDefs.td
+git diff "$OLD_REPO..$NEW_REPO" -- external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
 ```
 
 If upstream adds, renames, or renumbers a `CacheModifier` case, update the Rock
@@ -204,8 +231,7 @@ silently return a fallback value. The `ISAFamily` enum is defined in
 `TritonAMDGPUToLLVM/TargetUtils.h`); diff it for new entries:
 
 ```bash
-cd external/triton
-git diff ${OLD_COMMIT}..${NEW_COMMIT} -- third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
+git diff "$OLD_REPO..$NEW_REPO" -- external/triton/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
 ```
 
 ### 5.6 Hardware feature detection
@@ -316,8 +342,8 @@ After making all synchronization changes:
 bash cmake.sh
 ```
 
-Which will probably fail due to LLVM being also bumped with Triton version.
-For this, we need to manually resolve the errors due to upstream LLVM changes.
+This may fail after an upstream import. Resolve build errors caused by
+Triton or LLVM API changes, then rebuild.
 
 ### Watch for new Triton build-system requirements
 
@@ -337,9 +363,9 @@ cd build && ninja check-rocmlir
 
 Use this checklist to track progress:
 
-- [ ] Record old Triton commit (OLD_COMMIT)
-- [ ] Update Triton submodule to new commit (NEW_COMMIT)
-- [ ] Rebuild LLVM with `scripts/build-llvm.sh`
+- [ ] Record `OLD_REPO`
+- [ ] Import new Triton / LLVM upstream revisions and record `NEW_REPO`
+- [ ] Build with `cmake.sh`
 - [ ] Generate diff for `third_party/amd/backend/compiler.py`
 - [ ] Generate diff for `python/src/llvm.cc`
 - [ ] Generate diff for `third_party/amd/python/triton_amd.cc`
@@ -356,6 +382,7 @@ Use this checklist to track progress:
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::mlirTypeToScaleDotElemType()` if changed
 - [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
+- [ ] Refresh `triton-patches/` and `llvm-patches/` records and indexes
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
 - [ ] Run tests with `cd build && ninja check-rocmlir`
@@ -417,6 +444,5 @@ If new Triton headers are needed:
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |
 | Triton AccelerateMatmul | `external/triton/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp` |
 | Build script | `cmake.sh` |
-| LLVM build wrapper | `scripts/build-llvm.sh` |
 | Fat library deps generator | `mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl` |
 | Fat library deps list | `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` |
