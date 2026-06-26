@@ -91,18 +91,17 @@ backend the full extent of valid memory behind the pointer.
 
 ### 1.10 No device-side dynamic allocation (`amdgpu-no-heap-ptr`)
 
-Rock kernels normally never call device-side `malloc`/`new`, so they never
-touch the rocclr device heap. `RockPrepareLLVM` marks such a kernel
-`amdgpu-no-heap-ptr` (via the LLVM-dialect `passthrough` attribute), which drops
-the `hidden_heap_v1` implicit kernel argument from the ABI. Without that
-argument the HIP runtime skips the one-time `__amd_rocclr_initHeap` setup kernel
-it would otherwise launch at module load.
+Rock kernels never call device-side `malloc`/`free`/`new` (nor the
+`__ockl_dm_*` allocator family), so they never touch the rocclr device heap.
+`RockPrepareLLVM` therefore marks every kernel `amdgpu-no-heap-ptr` (via the
+LLVM-dialect `passthrough` attribute), which drops the `hidden_heap_v1` implicit
+kernel argument from the ABI. Without that argument the HIP runtime skips the
+one-time `__amd_rocclr_initHeap` setup kernel it would otherwise launch at module
+load.
 
-The attribute is only added after a per-kernel check (mirroring the AMDGPU
-attributor's `funcRetrievesHeapPtr`): if the kernel reaches a device allocator
-(`malloc`, `free`, or the `__ockl_dm_*` family) — or makes an indirect call we
-cannot see through — the heap pointer is kept and the attribute is omitted, so
-the kernel still works correctly.
+This is unconditional: it relies on the invariant that the Rock lowering never
+emits a device-side allocation. If that ever changes (e.g. a future op lowers to
+`malloc`), this assumption — and the unconditional marking — must be revisited.
 
 ---
 

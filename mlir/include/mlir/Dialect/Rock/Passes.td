@@ -755,10 +755,11 @@ def RockPrepareLLVMPass
     3. Annotates atomic RMW operations with `no_fine_grained_memory`,
        `no_remote_memory`, and `ignore_denormal_mode` metadata to enable
        native hardware atomic instructions instead of CAS fallbacks.
-    4. Marks the kernel `amdgpu-no-heap-ptr` when it makes no direct call to a
-       device allocator (`malloc`/`free`/`__ockl_dm_*`) and contains no indirect
-       calls that would prevent proving this property.
-       one-time `__amd_rocclr_initHeap` setup kernel at module load.
+    4. Marks every kernel `amdgpu-no-heap-ptr`. Rock kernels never call a
+       device allocator (`malloc`/`free`/`__ockl_dm_*`), so they can never
+       reach the rocclr device heap; dropping the hidden heap implicit arg
+       stops the runtime from launching the one-time `__amd_rocclr_initHeap`
+       setup kernel at module load.
   }];
   let options = [Option<"allowFlushDenorm", "allow-flush-denorm", "bool",
                         /*default=*/"true",

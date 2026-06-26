@@ -21,8 +21,8 @@
 //   3. Atomic RMW metadata for native hardware atomics
 //   4. amdgpu-no-heap-ptr (drops the unused device-heap implicit arg, which
 //      otherwise makes the runtime launch a one-time __amd_rocclr_initHeap).
-//      Only added when the kernel provably never reaches the rocclr heap, i.e.
-//      it calls no device allocator (malloc/free/__ockl_dm_*).
+//      Always added: Rock kernels never call a device-side allocator
+//      (malloc/free/__ockl_dm_*), so they can never reach the rocclr heap.
 //
 // IMPORTANT: the set of attributes/metadata produced here is part of the
 // rocmlirTriton kernel ABI documented in `docs/kernel_memory_assumptions.md`.
@@ -40,12 +40,10 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
-#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/SmallBitVector.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -237,53 +235,12 @@ static void relaxAtomics(LLVM::LLVMFuncOp func, OpBuilder &b,
   });
 }
 
-// Names of the rocclr device-side heap allocators. A call to any of these is
-// what makes a kernel need the hidden heap pointer (and thus the runtime
-// __amd_rocclr_initHeap launch).
-static bool isDeviceHeapAllocator(StringRef name) {
-  return name == "malloc" || name == "free" || name.starts_with("__ockl_dm_");
-}
-
-// Returns true if `kernel` can reach the rocclr device heap. This mirrors the
-// AMDGPU attributor's `funcRetrievesHeapPtr` check at MLIR LLVM-dialect scope:
-// the ROCDL dialect does not model `amdgcn.implicitarg.ptr`, so before
-// device-library linking we look for a call to one of the device allocators
-// above.
-//
-// Like the attributor's check, this is call-graph *transitive*: the walk
-// follows resolvable in-module callees, so a kernel that only reaches an
-// allocator indirectly (kernel -> helper -> malloc) is still detected.
-static bool kernelUsesDeviceHeap(LLVM::LLVMFuncOp kernel) {
-  SymbolTableCollection symbolTables;
-  SmallVector<LLVM::LLVMFuncOp, 4> worklist{kernel};
-  llvm::SmallPtrSet<Operation *, 8> visited{kernel};
-  while (!worklist.empty()) {
-    LLVM::LLVMFuncOp func = worklist.pop_back_val();
-    WalkResult walk = func.walk([&](LLVM::CallOp call) -> WalkResult {
-      FlatSymbolRefAttr callee = call.getCalleeAttr();
-      if (!callee)
-        return WalkResult::interrupt(); // indirect call: cannot prove safety.
-      if (isDeviceHeapAllocator(callee.getValue()))
-        return WalkResult::interrupt();
-      // Follow resolvable, defined callees transitively. External declarations
-      // have no body and are assumed non-allocating.
-      auto def =
-          symbolTables.lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(call, callee);
-      if (def && !def.isExternal() && visited.insert(def).second)
-        worklist.push_back(def);
-      return WalkResult::advance();
-    });
-    if (walk.wasInterrupted())
-      return true;
-  }
-  return false;
-}
-
 // Mark the kernel `amdgpu-no-heap-ptr` via the LLVM-dialect `passthrough`
 // attribute. Dropping the hidden_heap_v1 implicit argument from the kernel
 // ABI stops the HIP runtime from launching the  __amd_rocclr_initHeap setup
-// kernel at module load. Only applied when `kernelUsesDeviceHeap` proves
-// the kernel never touches the rocclr heap
+// kernel at module load. This is always sound for Rock kernels: they never
+// call a device-side allocator (malloc/free/__ockl_dm_*), so they can never
+// reach the rocclr device heap.
 static void dropDeviceHeapArg(LLVM::LLVMFuncOp func) {
   StringRef attrName = "amdgpu-no-heap-ptr";
   SmallVector<Attribute> passthrough;
@@ -311,6 +268,5 @@ void RockPrepareLLVMPass::runOnOperation() {
   markGEPsInbounds(func);
   annotateMemoryAccesses(func, b);
   relaxAtomics(func, b, allowFlushDenorm);
-  if (!kernelUsesDeviceHeap(func))
-    dropDeviceHeapArg(func);
+  dropDeviceHeapArg(func);
 }
