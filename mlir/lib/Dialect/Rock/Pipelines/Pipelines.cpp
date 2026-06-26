@@ -525,18 +525,21 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
   // Must run BEFORE TransformsToPointerArith: it simplifies the rock.transform
-  // chains feeding TransformsToPtrOp by collapsing contiguous merges, keeping
-  // the composed pointer map stride-1 so Triton can vectorize the loads.
+  // chains feeding TransformsToPtrOp by collapsing contiguous merges.
   funcPm2.addPass(rock::createRockCollapseContiguousMergesPass());
   // CollapseContiguousMerges builds the collapsed chain fresh and rewires onto
   // it, leaving the original chain dead. DCE it so TransformsToPointerArith
-  // only sees the collapsed chain.
-  funcPm2.addPass(createRemoveDeadValuesPass());
-  funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
-  // Clean up dead transform chains left after TransformsToPointerArith
-  funcPm2.addPass(createCanonicalizerPass());
+  // only sees the collapsed chain. RemoveDeadValues must run at the module
+  // level (not nested per-func) so it does not incorrectly delete the host
+  // function.
+  pm.addPass(createRemoveDeadValuesPass());
 
-  funcPm2.addPass(rock::createRockToTTIRPass());
+  auto &funcPm3 = pm.nest<func::FuncOp>();
+  funcPm3.addPass(rock::createRockTransformsToPointerArithPass());
+  // Clean up dead transform chains left after TransformsToPointerArith
+  funcPm3.addPass(createCanonicalizerPass());
+
+  funcPm3.addPass(rock::createRockToTTIRPass());
   // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockFuncToTritonFuncPass());
