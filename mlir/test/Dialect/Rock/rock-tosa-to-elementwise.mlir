@@ -820,3 +820,48 @@ func.func @powf_scalar_preserved(%arg0: f32, %arg1: f32) -> f32 attributes {rock
   %0 = math.powf %arg0, %arg1 : f32
   return %0 : f32
 }
+
+// -----
+
+// On gfx1250 there are dedicated tanh instructions, so tosa.tanh is lowered to
+// math.tanh and kept (not expanded) for the Triton pipeline to lower to v_tanh.
+// CHECK-LABEL: @tanh_bf16_gfx1250_preserved
+// CHECK-NOT:   tosa.tanh
+// CHECK:       math.tanh %arg0 : tensor<64xbf16>
+func.func @tanh_bf16_gfx1250_preserved(%arg0: tensor<64xbf16>) -> tensor<64xbf16>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1250"} {
+  %0 = tosa.tanh %arg0 : (tensor<64xbf16>) -> tensor<64xbf16>
+  return %0 : tensor<64xbf16>
+}
+
+// -----
+
+// math.tanh directly in IR is preserved on gfx1250 for every supported type.
+// CHECK-LABEL: @tanh_direct_gfx1250_preserved
+// CHECK:       math.tanh %arg0 : tensor<32xf32>
+// CHECK:       math.tanh %arg1 : tensor<32xf16>
+// CHECK:       math.tanh %arg2 : tensor<32xbf16>
+func.func @tanh_direct_gfx1250_preserved(%arg0: tensor<32xf32>, %arg1: tensor<32xf16>,
+    %arg2: tensor<32xbf16>) -> (tensor<32xf32>, tensor<32xf16>, tensor<32xbf16>)
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1250"} {
+  %0 = math.tanh %arg0 : tensor<32xf32>
+  %1 = math.tanh %arg1 : tensor<32xf16>
+  %2 = math.tanh %arg2 : tensor<32xbf16>
+  return %0, %1, %2 : tensor<32xf32>, tensor<32xf16>, tensor<32xbf16>
+}
+
+// -----
+
+// Only tanh is exempted on gfx1250: math.powf is still expanded because the
+// Triton pipeline has no dedicated lowering for it.
+// CHECK-LABEL: @powf_gfx1250_still_expanded
+// CHECK-NOT:   math.powf
+// CHECK:       %[[LOG:.*]] = math.log %arg0 : tensor<32xf32>
+// CHECK:       %[[MUL:.*]] = arith.mulf %arg1, %[[LOG]] : tensor<32xf32>
+// CHECK:       math.exp %[[MUL]] : tensor<32xf32>
+func.func @powf_gfx1250_still_expanded(%arg0: tensor<32xf32>, %arg1: tensor<32xf32>)
+    -> tensor<32xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1250"} {
+  %0 = math.powf %arg0, %arg1 : tensor<32xf32>
+  return %0 : tensor<32xf32>
+}

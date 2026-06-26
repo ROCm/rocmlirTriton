@@ -25,6 +25,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Math/Transforms/Passes.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
@@ -582,12 +584,20 @@ struct RockTosaToElementwise
     RewritePatternSet patterns(ctx);
     ConversionTarget target(*ctx);
 
+    // gfx1250 has dedicated tanh instructions (v_tanh_f32/f16/bf16), which the
+    // Triton pipeline emits from `math.tanh` directly. On such targets we keep
+    // `math.tanh` instead of expanding it into elementary ops below.
+    FailureOr<StringAttr> arch = rock::getArchOnFunc(func);
+    bool hasHardwareTanh =
+        succeeded(arch) && rock::archHasHardwareTanh(arch->getValue());
+
     target.addLegalDialect<arith::ArithDialect, math::MathDialect,
                            tensor::TensorDialect>();
     // Mark ops that Triton's TritonToTritonGPU conversion cannot handle as
     // illegal so the workaround patterns below get applied to them.
-    target.addDynamicallyLegalOp<math::TanhOp>(
-        [](math::TanhOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<math::TanhOp>([&](math::TanhOp op) {
+      return hasHardwareTanh || !isa<ShapedType>(op.getType());
+    });
     target.addDynamicallyLegalOp<math::PowFOp>(
         [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<arith::NegFOp>(
@@ -656,10 +666,13 @@ struct RockTosaToElementwise
     // math.tanh and math.powf so we use upstream
     // math::populateExpansionPatterns to expand them into ops Triton supports.
     //
-    // TODO(gfx1250): gfx1250 will have dedicated instructions for tanh,
-    // we need to make sure we emit those instead of using the math.tanh
-    // expansion.
-    math::populateExpansionPatterns(patterns, {"tanh", "powf"});
+    // gfx1250 has dedicated tanh instructions, so there we keep `math.tanh`
+    // and let the Triton pipeline lower it to v_tanh_* (via llvm.amdgcn.tanh)
+    // instead of expanding it here.
+    SmallVector<StringRef> opsToExpand = {"powf"};
+    if (!hasHardwareTanh)
+      opsToExpand.push_back("tanh");
+    math::populateExpansionPatterns(patterns, opsToExpand);
 
     // This is to support migraphx.neg operator, which will be expanded to
     // arith.negf.

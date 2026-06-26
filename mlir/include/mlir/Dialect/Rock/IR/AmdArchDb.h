@@ -141,6 +141,12 @@ int64_t getMaxKpack(StringRef arch);
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 
+/// Whether this architecture lowers `math.tanh` to a dedicated hardware tanh
+/// instruction (v_tanh_f32/f16/bf16 via llvm.amdgcn.tanh) in the Triton
+/// pipeline. When false, `math.tanh` on tensors is expanded into elementary
+/// ops before it reaches Triton.
+bool archHasHardwareTanh(StringRef arch);
+
 } // namespace rock
 } // namespace mlir
 
