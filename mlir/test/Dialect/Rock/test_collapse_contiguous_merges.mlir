@@ -186,6 +186,161 @@ func.func @negative_test_reuse_dim(%arg0: tensor<16384xf32>) {
   return
 }
 
+// CHECK-LABEL: "pre-split-mark-test_slice_between_aborts"
+"pre-split-mark-test_slice_between_aborts"() : () -> ()
+// -----
+
+// A no-op Slice sits between the Unmerge and the Merge. The {b, c, d} group is
+// still contiguous in memory, so the analysis groups it, but the resize trace
+// cannot travel through a Slice and aborts: nothing collapses and the marker
+// keeps the original Merge{4, 3, 2} chain.
+// CHECK: [[MERGE:#.+]] = #rock.transform_map<{{.*}}Merge{4, 3, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]{{.*}}bounds = [24, 5] -> [4, 3, 2, 5]>
+// CHECK: func @test_slice_between_aborts
+// CHECK-SAME: ([[ARG0:%.+]]: tensor<120xf32>)
+// CHECK: [[U:%.+]] = rock.transform [[ARG0]] by #{{.+}} : tensor<120xf32> to tensor<4x3x2x5xf32>
+// CHECK: [[S:%.+]] = rock.transform [[U]] by #{{.+}} : tensor<4x3x2x5xf32> to tensor<4x3x2x5xf32>
+// CHECK: [[M:%.+]] = rock.transform [[S]] by [[MERGE]] : tensor<4x3x2x5xf32> to tensor<24x5xf32>
+// CHECK: "collapse_merges"([[M]])
+#flatten = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3) -> (((d0 * 3 + d1) * 2 + d2) * 5 + d3)>
+  by [<Unmerge{4, 3, 2, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["raw"] at [0]>]
+  bounds = [4, 3, 2, 5] -> [120]>
+#slice = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
+  by [<Slice{0, 4, 0, 3, 0, 2, 0, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["b", "c", "d", "a"] at [0, 1, 2, 3]>]
+  bounds = [4, 3, 2, 5] -> [4, 3, 2, 5]>
+#merge = #rock.transform_map<
+  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 mod 6) floordiv 2, d0 mod 2, d1)>
+  by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
+    <Merge{4, 3, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
+  bounds = [24, 5] -> [4, 3, 2, 5]>
+
+func.func @test_slice_between_aborts(%arg0: tensor<120xf32>) {
+  %0 = rock.transform %arg0 by #flatten : tensor<120xf32> to tensor<4x3x2x5xf32>
+  %1 = rock.transform %0 by #slice : tensor<4x3x2x5xf32> to tensor<4x3x2x5xf32>
+  %2 = rock.transform %1 by #merge : tensor<4x3x2x5xf32> to tensor<24x5xf32>
+  "collapse_merges"(%2) : (tensor<24x5xf32>) -> ()
+  return
+}
+
+// CHECK-LABEL: "pre-split-mark-test_collapse_through_zero_pad"
+"pre-split-mark-test_collapse_through_zero_pad"() : () -> ()
+// -----
+
+// A *zero* Pad is size-preserving, so the resize trace travels through it
+// (unlike the Slice case) and the {b, c, d} group still collapses to
+// Merge{1, 1, 24}. The Pad is rebuilt on the widened spaces.
+// CHECK: [[FLAT:#.+]] = #rock.transform_map<{{.*}}Unmerge{1, 1, 24, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["raw"] at [0]{{.*}}bounds = [1, 1, 24, 5] -> [120]>
+// CHECK: [[PAD:#.+]] = #rock.transform_map<{{.*}}Pad{0, 0, 0, 0, 0, 0, 0, 0} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["b", "c", "d", "a"] at [0, 1, 2, 3]{{.*}}bounds = [1, 1, 24, 5] -> [1, 1, 24, 5]>
+// CHECK: [[MERGE:#.+]] = #rock.transform_map<{{.*}}Merge{1, 1, 24} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]{{.*}}bounds = [24, 5] -> [1, 1, 24, 5]>
+// CHECK: func @test_collapse_through_zero_pad
+// CHECK-SAME: ([[ARG0:%.+]]: tensor<120xf32>)
+// CHECK: [[U:%.+]] = rock.transform [[ARG0]] by [[FLAT]] : tensor<120xf32> to tensor<1x1x24x5xf32>
+// CHECK: [[P:%.+]] = rock.transform [[U]] by [[PAD]] : tensor<1x1x24x5xf32> to tensor<1x1x24x5xf32>
+// CHECK: [[M:%.+]] = rock.transform [[P]] by [[MERGE]] : tensor<1x1x24x5xf32> to tensor<24x5xf32>
+// CHECK: "collapse_merges"([[M]])
+#flatten = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3) -> (((d0 * 3 + d1) * 2 + d2) * 5 + d3)>
+  by [<Unmerge{4, 3, 2, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["raw"] at [0]>]
+  bounds = [4, 3, 2, 5] -> [120]>
+#pad = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
+  by [<Pad{0, 0, 0, 0, 0, 0, 0, 0} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["b", "c", "d", "a"] at [0, 1, 2, 3]>]
+  bounds = [4, 3, 2, 5] -> [4, 3, 2, 5]>
+#merge = #rock.transform_map<
+  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 mod 6) floordiv 2, d0 mod 2, d1)>
+  by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
+    <Merge{4, 3, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
+  bounds = [24, 5] -> [4, 3, 2, 5]>
+
+func.func @test_collapse_through_zero_pad(%arg0: tensor<120xf32>) {
+  %0 = rock.transform %arg0 by #flatten : tensor<120xf32> to tensor<4x3x2x5xf32>
+  %1 = rock.transform %0 by #pad : tensor<4x3x2x5xf32> to tensor<4x3x2x5xf32>
+  %2 = rock.transform %1 by #merge : tensor<4x3x2x5xf32> to tensor<24x5xf32>
+  "collapse_merges"(%2) : (tensor<24x5xf32>) -> ()
+  return
+}
+
+// CHECK-LABEL: "pre-split-mark-test_nonzero_pad_not_contiguous"
+"pre-split-mark-test_nonzero_pad_not_contiguous"() : () -> ()
+// -----
+
+// Non-zero Pad on the *middle* member (c) breaks every adjacency in the merged
+// run, so no contiguous pair survives and nothing collapses: the marker keeps
+// the original Merge{4, 5, 2} chain.
+// CHECK: [[MERGE:#.+]] = #rock.transform_map<{{.*}}Merge{4, 5, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]{{.*}}bounds = [40, 5] -> [4, 5, 2, 5]>
+// CHECK: func @test_nonzero_pad_not_contiguous
+// CHECK-SAME: ([[ARG0:%.+]]: tensor<120xf32>)
+// CHECK: [[U:%.+]] = rock.transform [[ARG0]] by #{{.+}} : tensor<120xf32> to tensor<4x3x2x5xf32>
+// CHECK: [[P:%.+]] = rock.transform [[U]] by #{{.+}} : tensor<4x3x2x5xf32> to tensor<4x5x2x5xf32>
+// CHECK: [[M:%.+]] = rock.transform [[P]] by [[MERGE]] : tensor<4x5x2x5xf32> to tensor<40x5xf32>
+// CHECK: "collapse_merges"([[M]])
+#flatten = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3) -> (((d0 * 3 + d1) * 2 + d2) * 5 + d3)>
+  by [<Unmerge{4, 3, 2, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["raw"] at [0]>]
+  bounds = [4, 3, 2, 5] -> [120]>
+#pad = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3) -> (d0, d1 - 1, d2, d3)>
+  by [<PassThrough ["b"] at [0] -> ["b"] at [0]>,
+      <Pad{1, 1} ["c"] at [1] -> ["c"] at [1]>,
+      <PassThrough ["d"] at [2] -> ["d"] at [2]>,
+      <PassThrough ["a"] at [3] -> ["a"] at [3]>]
+  bounds = [4, 5, 2, 5] -> [4, 3, 2, 5]>
+#merge = #rock.transform_map<
+  affine_map<(d0, d1) -> (d0 floordiv 10, (d0 mod 10) floordiv 2, d0 mod 2, d1)>
+  by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
+    <Merge{4, 5, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
+  bounds = [40, 5] -> [4, 5, 2, 5]>
+
+func.func @test_nonzero_pad_not_contiguous(%arg0: tensor<120xf32>) {
+  %0 = rock.transform %arg0 by #flatten : tensor<120xf32> to tensor<4x3x2x5xf32>
+  %1 = rock.transform %0 by #pad : tensor<4x3x2x5xf32> to tensor<4x5x2x5xf32>
+  %2 = rock.transform %1 by #merge : tensor<4x5x2x5xf32> to tensor<40x5xf32>
+  "collapse_merges"(%2) : (tensor<40x5xf32>) -> ()
+  return
+}
+
+// CHECK-LABEL: "pre-split-mark-test_nonzero_pad_excludes_member"
+"pre-split-mark-test_nonzero_pad_excludes_member"() : () -> ()
+// -----
+
+// Non-zero Pad on the *fastest* member (d) only excludes that member from the
+// contiguous run; the remaining {b, c} prefix is still contiguous and collapses
+// to Merge{1, 12, 4}, leaving the padded d as a standalone dimension.
+// CHECK: [[FLAT:#.+]] = #rock.transform_map<{{.*}}Unmerge{1, 12, 2, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["raw"] at [0]{{.*}}bounds = [1, 12, 2, 5] -> [120]>
+// CHECK: [[PAD:#.+]] = #rock.transform_map<{{.*}}Pad{1, 1} ["d"] at [2] -> ["d"] at [2]{{.*}}bounds = [1, 12, 4, 5] -> [1, 12, 2, 5]>
+// CHECK: [[MERGE:#.+]] = #rock.transform_map<{{.*}}Merge{1, 12, 4} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]{{.*}}bounds = [48, 5] -> [1, 12, 4, 5]>
+// CHECK: func @test_nonzero_pad_excludes_member
+// CHECK-SAME: ([[ARG0:%.+]]: tensor<120xf32>)
+// CHECK: [[U:%.+]] = rock.transform [[ARG0]] by [[FLAT]] : tensor<120xf32> to tensor<1x12x2x5xf32>
+// CHECK: [[P:%.+]] = rock.transform [[U]] by [[PAD]] : tensor<1x12x2x5xf32> to tensor<1x12x4x5xf32>
+// CHECK: [[M:%.+]] = rock.transform [[P]] by [[MERGE]] : tensor<1x12x4x5xf32> to tensor<48x5xf32>
+// CHECK: "collapse_merges"([[M]])
+#flatten = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3) -> (((d0 * 3 + d1) * 2 + d2) * 5 + d3)>
+  by [<Unmerge{4, 3, 2, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["raw"] at [0]>]
+  bounds = [4, 3, 2, 5] -> [120]>
+#pad = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 - 1, d3)>
+  by [<PassThrough ["b"] at [0] -> ["b"] at [0]>,
+      <PassThrough ["c"] at [1] -> ["c"] at [1]>,
+      <Pad{1, 1} ["d"] at [2] -> ["d"] at [2]>,
+      <PassThrough ["a"] at [3] -> ["a"] at [3]>]
+  bounds = [4, 3, 4, 5] -> [4, 3, 2, 5]>
+#merge = #rock.transform_map<
+  affine_map<(d0, d1) -> (d0 floordiv 12, (d0 mod 12) floordiv 4, d0 mod 4, d1)>
+  by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
+    <Merge{4, 3, 4} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
+  bounds = [48, 5] -> [4, 3, 4, 5]>
+
+func.func @test_nonzero_pad_excludes_member(%arg0: tensor<120xf32>) {
+  %0 = rock.transform %arg0 by #flatten : tensor<120xf32> to tensor<4x3x2x5xf32>
+  %1 = rock.transform %0 by #pad : tensor<4x3x2x5xf32> to tensor<4x3x4x5xf32>
+  %2 = rock.transform %1 by #merge : tensor<4x3x4x5xf32> to tensor<48x5xf32>
+  "collapse_merges"(%2) : (tensor<48x5xf32>) -> ()
+  return
+}
+
 // CHECK-LABEL: "pre-split-mark-no_test_yet"
 "pre-split-mark-no_test_yet"() : () -> ()
 // -----

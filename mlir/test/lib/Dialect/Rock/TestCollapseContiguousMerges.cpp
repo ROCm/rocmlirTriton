@@ -26,7 +26,7 @@ struct CollapseContiguousMergesTestPass
                          OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CollapseContiguousMergesTestPass)
 
-  static constexpr auto kTestOpName = "collapse_merges";
+  static constexpr auto kTestOpName = "";
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<RockDialect, func::FuncDialect>();
   }
