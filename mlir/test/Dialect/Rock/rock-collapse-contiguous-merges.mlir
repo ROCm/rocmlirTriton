@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -rock-collapse-contiguous-merges -split-input-file %s | FileCheck %s
+// RUN: sed -e 's/##ARCH##/%arch/g' %s | rocmlir-opt -rock-collapse-contiguous-merges -split-input-file - | FileCheck %s
 
 // End-to-end check of the RockCollapseContiguousMerges pass on the IR shape it
 // sees just before RockTransformsToPointerArith: a rock.kernel function whose
@@ -28,7 +28,7 @@
   bounds = [2, 24] -> [2, 3, 8]>
 
 func.func @collapse_load(%arg0: tensor<48xf16>) -> tensor<24xf16>
-    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+    attributes {rock.kernel, rock.arch = "##ARCH##"} {
   %c0 = arith.constant 0 : i32
   %0 = rock.transform %arg0 by #flatten : tensor<48xf16> to tensor<2x3x8xf16>
   %1 = rock.transform %0 by #merge : tensor<2x3x8xf16> to tensor<2x24xf16>
@@ -59,7 +59,7 @@ func.func @collapse_load(%arg0: tensor<48xf16>) -> tensor<24xf16>
   bounds = [2, 24] -> [2, 3, 8]>
 
 func.func @not_a_kernel(%arg0: tensor<48xf16>) -> tensor<24xf16>
-    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+    attributes {rock.arch = "##ARCH##"} {
   %c0 = arith.constant 0 : i32
   %0 = rock.transform %arg0 by #flatten : tensor<48xf16> to tensor<2x3x8xf16>
   %1 = rock.transform %0 by #merge : tensor<2x3x8xf16> to tensor<2x24xf16>
@@ -91,7 +91,7 @@ func.func @not_a_kernel(%arg0: tensor<48xf16>) -> tensor<24xf16>
   bounds = [2, 24] -> [2, 3, 8]>
 
 func.func @collapse_store(%val: tensor<24xf16>, %dest: tensor<48xf16>)
-    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+    attributes {rock.kernel, rock.arch = "##ARCH##"} {
   %c0 = arith.constant 0 : i32
   %0 = rock.transform %dest by #flatten : tensor<48xf16> to tensor<2x3x8xf16>
   %1 = rock.transform %0 by #merge : tensor<2x3x8xf16> to tensor<2x24xf16>
@@ -122,7 +122,7 @@ func.func @collapse_store(%val: tensor<24xf16>, %dest: tensor<48xf16>)
   bounds = [2, 24] -> [3, 2, 8]>
 
 func.func @no_collapse_non_contiguous(%arg0: tensor<48xf16>) -> tensor<24xf16>
-    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+    attributes {rock.kernel, rock.arch = "##ARCH##"} {
   %c0 = arith.constant 0 : i32
   %0 = rock.transform %arg0 by #flatten : tensor<48xf16> to tensor<3x2x8xf16>
   %1 = rock.transform %0 by #merge : tensor<3x2x8xf16> to tensor<2x24xf16>
@@ -158,7 +158,7 @@ func.func @no_collapse_non_contiguous(%arg0: tensor<48xf16>) -> tensor<24xf16>
 
 func.func @collapse_two_loads(%arg0: tensor<48xf16>, %arg1: tensor<48xf16>)
     -> (tensor<24xf16>, tensor<24xf16>)
-    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+    attributes {rock.kernel, rock.arch = "##ARCH##"} {
   %c0 = arith.constant 0 : i32
   %0 = rock.transform %arg0 by #flatten : tensor<48xf16> to tensor<2x3x8xf16>
   %1 = rock.transform %0 by #merge : tensor<2x3x8xf16> to tensor<2x24xf16>
