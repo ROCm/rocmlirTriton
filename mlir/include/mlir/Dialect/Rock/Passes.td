@@ -291,11 +291,19 @@ def RockCollapseContiguousMergesPass
     contiguous in memory, it fuses them back into a single wider dimension
     (see `collapseContiguousMerges`).
 
-    Why this matters: if that contiguous dimension is instead decomposed and
-    recomposed (as in an im2col-style transform), the resulting affine map no
-    longer looks stride-1 along it. By keeping the dimension intact, the offset
-    stays stride-1, so Triton's AxisInfoAnalysis can see the real pointer
-    contiguity and vectorize the loads, which the flattened form prevents.
+    Why this matters: each element's memory offset is computed from the
+    dimension index. We say the dimension is "stride-1" when stepping the index
+    by 1 moves the offset by exactly 1, i.e. neighboring elements sit at
+    neighboring addresses. Triton looks for this stride-1 pattern to prove the
+    access is contiguous and read many elements in one wide load instead of many
+    small ones.
+
+    If the contiguous dimension is split apart and rebuilt (as in an im2col-style
+    transform), the offset is no longer stride-1: the step is +1 within each
+    piece but jumps when one piece wraps into the next. Triton can no longer
+    recognize the contiguity and falls back to small per-element loads. Keeping
+    the dimension intact preserves the stride-1 offset and the wide loads that
+    the split form prevents.
 
     Example: a buffer viewed as `Unmerge{2, 3, 8}` ["block", "a", "b"] with a
     `Merge{3, 8}` ["tile"] -> ["a", "b"] tile dimension. Here "a" (stride 8) and
