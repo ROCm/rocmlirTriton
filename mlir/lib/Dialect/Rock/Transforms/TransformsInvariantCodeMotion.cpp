@@ -293,6 +293,8 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
       ivPositions.push_back(pos);
       continue;
     }
+    // TODO: We may want to LICM in these cases too:
+    // https://amd-hub.atlassian.net/browse/AIROCMLIR-1029
     if (isDefinedInLoop(idx, loop))
       return bail("an extra index is loop-variant but is not the iv");
   }
@@ -331,6 +333,8 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
     return bail("offset has no compile-time-constant per-iteration stride "
                 "(non-linear / non-contiguous in the iv)");
 
+  // TODO: We may want to LICM in these cases too:
+  // https://amd-hub.atlassian.net/browse/AIROCMLIR-1029
   if (*stride == 0)
     return bail("iv stride is zero (load is loop-invariant; nothing to "
                 "incrementalize)");
@@ -368,6 +372,8 @@ struct ReducedPtr {
   Value accInit;        // zero offset accumulator initializer
 };
 
+/// TODO: https://amd-hub.atlassian.net/browse/AIROCMLIR-1021
+///
 /// True when FuncToTritonFunc cannot safely lower the recurrences this loop
 /// would produce, so we must not hoist.
 ///
