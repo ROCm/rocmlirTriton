@@ -169,9 +169,15 @@ private:
       replacementOp = LLVM::FMulOp::create(rewriter, loc, returnType,
                                            posResult->getResult(0),
                                            sign->getResult(0), defaultFlags);
-    } else if (calleeName == "__ocml_tanh_f32") {
+    } else if (calleeName == "__ocml_tanh_f32" ||
+               calleeName == "__ocml_tanh_f16") {
+      assert(operands.size() == 1);
       if (targetInfo.getISAFamily() == triton::amdgpu::ISAFamily::GFX1250) {
-        const char *intrinsic = "llvm.amdgcn.tanh.f32";
+        const char *intrinsic = nullptr;
+        if (calleeName == "__ocml_tanh_f32")
+          intrinsic = "llvm.amdgcn.tanh.f32";
+        else
+          intrinsic = "llvm.amdgcn.tanh.f16";
         replacementOp = LLVM::createLLVMIntrinsicCallOp(
             rewriter, loc, intrinsic, returnType, operands[0]);
       }
