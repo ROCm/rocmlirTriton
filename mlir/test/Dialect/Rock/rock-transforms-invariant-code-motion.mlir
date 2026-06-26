@@ -401,34 +401,30 @@ func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) ->
 
 // -----
 
-// Minimal-rank carried coordinates: the 2D-conv analogue of the carry case
-// above, faithful to conv1-diff/preLICM.out.mlir (the IR where this used to be
-// the measured bottleneck). gemmK is a Merge{2, 3, 3} of (channel, tap0, tap1)
-// and the iv (k_loop, stride 2 in gemmK) straddles the tap factors, so the
-// affine fast path bails and the pass takes the carry path. Both spatial taps
-// flow through a halo Pad + Embed sliding window, so the validity mask is
-// iv-dependent and the op cannot be hoisted as a plain linear recurrence.
+// Full-tile distributed carry: the 2D-conv-input case. gemmK is a
+// Merge{2, 3, 3} of (channel, tap0, tap1) and the iv (k_loop, stride 2 in
+// gemmK) straddles the tap factors, so the affine fast path bails and the pass
+// takes the carry path. Both spatial taps flow through a halo Pad + Embed
+// sliding window, so the validity mask is iv-dependent and the op cannot be
+// hoisted as a plain linear recurrence.
 //
-// The three decomposed merge coordinates (channel, tap0, tap1) vary ONLY along
-// gemmK (the 2-row k_iter dimension); they are invariant along gemmN (the
-// 4-wide n_iter dimension). The pass therefore carries them at their natural
-// minimal rank -- tensor<2x1> iter_args, not the full kIter x nPerBlock tile --
-// so both the persistent loop state and the odometer-style carry update (each
-// tap rolls over at its own limit) stay independent of nPerBlock. The full
-// tensor<2x4> tile only materializes as a transient: the carried coordinates
-// are broadcast lazily inside the loop where the offset and mask are rebuilt.
+// Of the three decomposed coordinates only the two spatial taps impact validity
+// (they feed the Pad/Embed); the channel only scales the buffer offset. The
+// taps are the validity *suffix* of the decomposition, so the pass carries the
+// two taps and the offset as FULL tensor<2x4> tiles (lane-distributed -> vector
+// registers, no scalar-register spill) and DROPS the channel coordinate
+// entirely, recovering its offset contribution from the taps' carry-out. (The
+// minimal-rank recurrence remains in the pass as a fallback for shapes where the
+// validity coordinates are not a clean suffix.)
 //
 // CHECK-LABEL: func @hoist_conv2d_input_carry_rank_redundant
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
 // Hoisted seed (iv -> loop lower bound):
 //       CHECK:   %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
-// All three coordinates are carried at minimal rank (tensor<2x1>, not the full
-// tensor<2x4> tile): the carried iter_args / result types are reduced rank.
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x1xi32>, tensor<2x1xi32>, tensor<2x1xi32>)
-// Inside the loop the reduced coordinate is broadcast up to the tile lazily,
-// only as a transient feeding the offset/mask combine:
-//       CHECK:     tt.broadcast %{{.*}} : tensor<2x1xi32> -> tensor<2x4xi32>
-// Offset/mask rebuilt with no division and the op is gone from the loop body:
+// Two tap coordinates + offset carried as full tiles (tensor<2x4>, not the
+// minimal tensor<2x1>); the channel is dropped (three iter_args, not four):
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>)
+// Mask rebuilt with no division and the op is gone from the loop body:
 //   CHECK-NOT:     floordiv
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remsi
@@ -436,10 +432,10 @@ func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) ->
 //       CHECK:     arith.cmpi ult, %{{.*}} : tensor<2x4xi32>
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]]
-// The odometer carry advances the coordinates at minimal rank too (tensor<2x1>):
-//       CHECK:     arith.cmpi uge, %{{.*}} : tensor<2x1xi32>
-//       CHECK:     arith.select %{{.*}} : tensor<2x1xi1>, tensor<2x1xi32>
-//       CHECK:     scf.yield %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : tensor<2x4xi8>, tensor<2x1xi32>, tensor<2x1xi32>, tensor<2x1xi32>
+// The odometer carry advances the taps at full tile (tensor<2x4>):
+//       CHECK:     arith.cmpi uge, %{{.*}} : tensor<2x4xi32>
+//       CHECK:     arith.select %{{.*}} : tensor<2x4xi1>, tensor<2x4xi32>
+//       CHECK:     scf.yield %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>
 func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
@@ -466,54 +462,50 @@ func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: 
 
 // -----
 
-// Offset pointer-recurrence for the carry path (the optimization this test is
-// written to drive; it is EXPECTED TO FAIL until the recurrence is implemented).
+// Full-tile distributed offset recurrence for the carry path. Same 2D-conv-
+// input carry IR as @hoist_conv2d_input_carry_rank_redundant, but the CHECK
+// lines pin the full-tile distributed shape that the pass now produces.
 //
-// Same 2D-conv-input carry IR as @hoist_conv2d_input_carry_rank_redundant, but
-// the CHECK lines pin the *target* incremental shape rather than the current
-// full re-expansion. Today the carry path rebuilds the whole offset tile every
-// iteration by re-running the sub-chain below the merge
-// (expandCoordsToOffsetAndMask -> a mul/embed chain -> arith.addi %PTRS, %off),
-// which is the bulk of the in-loop address arithmetic. rocMLIR instead carries
-// the offset and advances it by a per-step delta. We want the same:
+// gemmK = Merge{2, 3, 3} of (channel, tap0, tap1). Only the two spatial taps
+// feed the halo Pad/Embed, so they are the validity-impacting *suffix* of the
+// decomposition; the channel only scales the buffer offset. The pass therefore:
 //
-//   1. carry the full-tile offset accumulator (tensor<2x4xi32>) as an iter_arg
-//      and advance it (offset += delta) -- a pointer recurrence, NOT a per-
-//      iteration re-expansion from the coordinates, and
-//   2. keep the carry coordinates and the delta at minimal rank (tensor<2x1>),
-//      broadcasting only transiently, so neither the persistent loop state nor
-//      the increment scales with nPerBlock.
+//   1. carries the two validity taps AND the offset accumulator as FULL tiles
+//      (tensor<2x4xi32>) -- lane-distributed, so they stay in vector registers
+//      instead of being uniform (scalar-register) minimal-rank tensors, and
+//   2. DROPS the channel coordinate: it is never an iter_arg. Its per-step
+//      offset contribution is recovered from the taps' carry-out
+//      (delta_channel = digit_channel + carry_out_of_tap0), so no third
+//      coordinate tile is carried.
 //
-// The validity mask must still be (cheaply) recomputed from the carried
-// minimal-rank coordinates each iteration (the padding halo moves with the iv);
-// only the offset half becomes a recurrence.
+// The offset is advanced by a per-step delta (a recurrence, NOT a re-expansion
+// from the coordinates); only the validity mask is rebuilt each iteration, from
+// the carried full-tile taps (no cross-lane broadcast).
 //
 // CHECK-LABEL: func @hoist_conv2d_input_carry_offset_recurrence
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
-// Seed pointer + offset hoisted to the preheader (iv -> loop lower bound):
+// Seed pointer hoisted to the preheader (iv -> loop lower bound):
 //       CHECK:   %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
-// The full-tile offset accumulator (tensor<2x4xi32>) is carried as an iter_arg
-// alongside the minimal-rank (tensor<2x1xi32>) carry coordinates:
-//       CHECK:   scf.for %{{.*}} iter_args({{.*}}) -> ({{.*}}tensor<2x4xi32>{{.*}}tensor<2x1xi32>{{.*}})
-// The pointer is the carried offset added to the hoisted base -- it is NOT
-// re-expanded from the coordinates through the sub-chain each iteration:
+// The two validity taps and the offset accumulator are carried as full tiles
+// (tensor<2x4xi32>); the channel coordinate is NOT an iter_arg:
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>)
+// The pointer is the carried offset added to the hoisted base -- NOT re-expanded
+// from the coordinates each iteration:
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFF:.*]] : tensor<2x4xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]]
 //   CHECK-NOT:     rock.transforms_to_ptr
 //   CHECK-NOT:     floordiv
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remsi
-// Validity mask still rebuilt from the carried coordinates (the padding halo
-// moves with the iv), broadcast up from minimal rank:
+// Validity mask rebuilt from the carried full-tile taps (the halo moves with
+// the iv) -- a full-tile compare, no minimal-rank broadcast:
 //       CHECK:     arith.cmpi ult, %{{.*}} : tensor<2x4xi32>
-// The per-step offset delta is computed at minimal rank and broadcast, then the
-// carried accumulator is advanced by it (the pointer recurrence). The same %OFF
-// fed to the load is the value that is incremented and yielded:
-//       CHECK:     %[[DELTA:.*]] = tt.broadcast %{{.*}} : tensor<2x1xi32> -> tensor<2x4xi32>
-//       CHECK:     %[[OFFNEXT:.*]] = arith.addi %[[OFF]], %[[DELTA]] : tensor<2x4xi32>
-// The carry coordinates advance with a minimal-rank odometer (cmp + select):
-//       CHECK:     arith.cmpi uge, %{{.*}} : tensor<2x1xi32>
-//       CHECK:     arith.select %{{.*}} : tensor<2x1xi1>, tensor<2x1xi32>
+// The taps advance with a full-tile odometer (cmp + select on tensor<2x4>), and
+// the carried offset accumulator is advanced by the full-tile per-step delta.
+// The same %OFF fed to the load is the value incremented and yielded:
+//       CHECK:     arith.cmpi uge, %{{.*}} : tensor<2x4xi32>
+//       CHECK:     arith.select %{{.*}} : tensor<2x4xi1>, tensor<2x4xi32>
+//       CHECK:     %[[OFFNEXT:.*]] = arith.addi %[[OFF]], %{{.*}} : tensor<2x4xi32>
 //       CHECK:     scf.yield
 func.func @hoist_conv2d_input_carry_offset_recurrence(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
