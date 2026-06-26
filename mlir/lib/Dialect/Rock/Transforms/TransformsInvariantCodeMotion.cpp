@@ -216,6 +216,46 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
   return it == diff.end() ? 0 : it->second;
 }
 
+/// Returns true if a unit change in the merge-lower coordinate `pos` reaches a
+/// validity-impacting bound check while propagating down `belowMaps` (the
+/// sub-chain below the iv-traversed merge). Coordinates that impact validity
+/// (the spatial taps of a conv: they feed a halo Pad / sliding-window Embed)
+/// must be carried as full distributed tiles so the per-element mask can be
+/// rebuilt without a cross-lane broadcast; coordinates that do not (the conv
+/// channel, which only scales the buffer offset) need not be persisted at all -
+/// their offset contribution is recovered from the carry-out of the coordinate
+/// below them. Mirrors the bound checks emitted by `updateValidityAfter`.
+static bool variantImpactsValidity(ArrayRef<TransformMapAttr> belowMaps,
+                                   unsigned pos) {
+  DenseMap<unsigned, int64_t> diff;
+  diff[pos] = 1;
+  for (TransformMapAttr map : belowMaps) {
+    FailureOr<DenseMap<unsigned, int64_t>> lower = applyDiffOneMap(map, diff);
+    if (failed(lower))
+      return true; // cannot prove independence: conservatively impacting
+    auto nonzero = [&](uint32_t d) {
+      auto it = lower->find(d);
+      return it != lower->end() && it->second != 0;
+    };
+    if (mapImpactsValidity(map)) {
+      for (TransformAttr op : map.getOps()) {
+        if (op.getType() == TransformType::Pad) {
+          ArrayRef<int64_t> params = op.getParams();
+          ArrayRef<uint32_t> ld = op.getLowerDims();
+          for (size_t i = 0; i < ld.size(); ++i)
+            if ((params[2 * i] != 0 || params[2 * i + 1] != 0) && nonzero(ld[i]))
+              return true;
+        } else if (op.getType() == TransformType::Embed) {
+          if (embedCanBeInvalid(map, op) && nonzero(op.getLowerDims()[0]))
+            return true;
+        }
+      }
+    }
+    diff = std::move(*lower);
+  }
+  return false;
+}
+
 /// Returns true if the validity mask produced by `transforms` can vary with the
 /// induction variable, i.e. some validity-impacting map (a Pad, or an Embed
 /// that can go out of bounds) constrains a coordinate that is a function of an
@@ -527,6 +567,70 @@ static SmallVector<Value> emitCarryUpdate(OpBuilder &b, Location loc,
   return out;
 }
 
+/// Result of advancing the full-tile distributed carry by one loop step: the
+/// advanced validity (suffix) coordinates and the per-element offset increment.
+struct FullTileCarry {
+  SmallVector<Value> nextSuffix;
+  Value offsetDelta;
+};
+
+/// Full-tile distributed variant of `emitCarryUpdate`. `suffix` holds the
+/// validity-impacting merge coordinates as full `tensor<kIter x nPerBlock>`
+/// tiles (highest place first); each advances by its constant `digit`, wrapping
+/// at its `radix` with the carry rippling into the next-higher place. Unlike the
+/// minimal-rank update, *every* suffix coordinate wraps when `hasPrefix` is set,
+/// because the dropped high non-validity coordinate sits above them; its own
+/// per-step offset contribution is `(prefixDigit + carryOut) * prefixStride`,
+/// recovered here without ever materializing that coordinate. The returned
+/// `offsetDelta` is `sum_j (delta coord_j) * strides[j]` over the suffix plus
+/// the prefix term - a full tile, so the offset recurrence stays vector-
+/// resident.
+static FullTileCarry
+emitFullTileCarry(OpBuilder &b, Location loc, ArrayRef<Value> suffix,
+                  ArrayRef<int64_t> radices, ArrayRef<int64_t> digits,
+                  ArrayRef<int64_t> strides, bool hasPrefix, int64_t prefixDigit,
+                  int64_t prefixStride) {
+  auto tt = cast<RankedTensorType>(suffix[0].getType());
+  FullTileCarry out;
+  out.nextSuffix.resize(suffix.size());
+  Value carry; // full-tile i32; null == no incoming carry
+  Value delta; // full-tile i32; null == 0
+  for (int j = static_cast<int>(suffix.size()) - 1; j >= 0; --j) {
+    Value v = arith::AddIOp::create(b, loc, suffix[j],
+                                    splatI32(b, loc, tt, digits[j]));
+    if (carry)
+      v = arith::AddIOp::create(b, loc, v, carry);
+    // A suffix coordinate is the global top only when no prefix coordinate was
+    // dropped above it; the loop bound keeps the global top from wrapping.
+    if (j > 0 || hasPrefix) {
+      Value radix = splatI32(b, loc, tt, radices[j]);
+      Value ge =
+          arith::CmpIOp::create(b, loc, arith::CmpIPredicate::uge, v, radix);
+      Value vsub = arith::SubIOp::create(b, loc, v, radix);
+      v = arith::SelectOp::create(b, loc, ge, vsub, v);
+      carry = arith::SelectOp::create(b, loc, ge, splatI32(b, loc, tt, 1),
+                                      splatI32(b, loc, tt, 0));
+    } else {
+      carry = Value();
+    }
+    out.nextSuffix[j] = v;
+    Value dCoord = arith::SubIOp::create(b, loc, v, suffix[j]);
+    Value term =
+        arith::MulIOp::create(b, loc, dCoord, splatI32(b, loc, tt, strides[j]));
+    delta = delta ? arith::AddIOp::create(b, loc, delta, term) : term;
+  }
+  if (hasPrefix) {
+    Value dPrefix = splatI32(b, loc, tt, prefixDigit);
+    if (carry)
+      dPrefix = arith::AddIOp::create(b, loc, dPrefix, carry);
+    Value term = arith::MulIOp::create(b, loc, dPrefix,
+                                       splatI32(b, loc, tt, prefixStride));
+    delta = delta ? arith::AddIOp::create(b, loc, delta, term) : term;
+  }
+  out.offsetDelta = delta;
+  return out;
+}
+
 /// Per-candidate preheader values + iter_arg layout for the rewritten loop.
 struct Reduced {
   CandKind kind;
@@ -559,7 +663,21 @@ struct Reduced {
   // empty (a coordinate does not linearize through the sub-chain) we fall back
   // to re-expanding offset + mask from the coordinates via `offset0`.
   SmallVector<int64_t> offsetStrides;
-  Value offsetAccInit; // minimal-rank zero accumulator (recurrence only)
+  Value offsetAccInit; // zero offset accumulator (recurrence only)
+  // Full-tile distributed carry. Preferred over the minimal-rank recurrence
+  // when the validity-impacting coordinates form a suffix of the merge
+  // decomposition (so the dropped, higher non-validity coordinates do not feed
+  // the mask) and at most one such coordinate is dropped. The suffix
+  // coordinates and the offset accumulator are then carried as full
+  // tensor<kIter x nPerBlock> tiles - distributed across the lanes (vector
+  // registers) rather than uniform (scalar registers) - so neither the mask
+  // rebuild nor the offset recurrence needs a cross-lane broadcast. `carriedInits`
+  // holds the full-tile suffix seeds and `offsetAccInit` a full-tile zero.
+  bool fullTile = false;
+  unsigned suffixCount = 0; // trailing variantPositions carried full-tile
+  bool hasPrefix = false;   // a single high non-validity coord was dropped
+  int64_t prefixDigit = 0;  // its per-step carry digit
+  int64_t prefixStride = 0; // its linearized buffer offset stride
 };
 
 /// Try to LICM all eligible transforms_to_ptr ops in `loop`.
@@ -673,15 +791,12 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     for (unsigned pos : cand.variantPositions)
       r.carriedInits.push_back((*iter0)[pos]);
 
-    // Prefer a pointer recurrence: each carried coordinate contributes a
-    // *constant* per-unit offset stride through the sub-chain below the merge
-    // (which is linear - Embed/Pad/Unmerge/PassThrough - once the iv-traversed
-    // Merge has been decomposed away). If every variant coordinate linearizes,
-    // the per-iteration offset delta is `sum_j (delta coord_j) * stride_j`, a
-    // minimal-rank (kIter x 1) value: the relative offset is uniform along
-    // nPerBlock because only the gemmK coordinates move. We then carry that
-    // reduced-rank accumulator (starting at 0, since carryBasePtr already
-    // encodes offset0) and reconstruct only the mask each iteration.
+    // Each carried coordinate contributes a *constant* per-unit offset stride
+    // through the sub-chain below the merge (which is linear -
+    // Embed/Pad/Unmerge/PassThrough - once the iv-traversed Merge has been
+    // decomposed away). When every variant coordinate linearizes, the
+    // per-iteration offset delta is `sum_j (delta coord_j) * stride_j`, so the
+    // offset can be advanced by a recurrence rather than re-expanded.
     SmallVector<int64_t> strides;
     bool stridesOk = true;
     for (unsigned pos : cand.variantPositions) {
@@ -695,7 +810,67 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
       strides.push_back(*s);
     }
 
-    if (stridesOk && !r.carriedInits.empty()) {
+    // Full-tile distributed carry (preferred). Classify each variant coordinate
+    // as validity-impacting (feeds the mask through a Pad/Embed) or not. When
+    // the validity coordinates form a *suffix* of the merge decomposition - the
+    // conv layout, where the high channel only scales the offset and the low
+    // spatial taps drive the halo mask - we carry the validity suffix and the
+    // offset as full tensor<kIter x nPerBlock> tiles (lane-distributed, so no
+    // scalar-register spill and no cross-lane broadcast) and *drop* the high
+    // non-validity coordinate entirely: its offset contribution is recovered
+    // from the suffix carry-out. We allow at most one such dropped coordinate
+    // (the merge's top place, which the loop bound keeps from wrapping); more
+    // would require tracking its value to detect a carry.
+    bool fullTileOk = false;
+    unsigned suffixCount = 0;
+    unsigned prefixSize = 0;
+    if (stridesOk && !cand.variantPositions.empty()) {
+      SmallVector<bool> impacts(cand.variantPositions.size());
+      for (auto [i, pos] : llvm::enumerate(cand.variantPositions))
+        impacts[i] = variantImpactsValidity(belowMaps, pos);
+      int firstImpact = -1;
+      for (auto [i, v] : llvm::enumerate(impacts))
+        if (v) {
+          firstImpact = static_cast<int>(i);
+          break;
+        }
+      if (firstImpact >= 0) {
+        // Not a suffix if a coord below firstImpact impacts validity, or a
+        // coord at/above it does not: `(i < firstImpact) == impacts[i]` flags
+        // both (true==true on a low impacting coord, false==false on a high
+        // non-impacting one).
+        bool isSuffix = true;
+        for (auto [i, v] : llvm::enumerate(impacts))
+          if ((static_cast<int>(i) < firstImpact) == v)
+            isSuffix = false;
+        prefixSize = static_cast<unsigned>(firstImpact);
+        suffixCount = cand.variantPositions.size() - prefixSize;
+        fullTileOk = isSuffix && prefixSize <= 1;
+      }
+    }
+
+    if (fullTileOk) {
+      r.fullTile = true;
+      r.offsetStrides = strides;
+      r.suffixCount = suffixCount;
+      r.hasPrefix = (prefixSize == 1);
+      if (r.hasPrefix) {
+        r.prefixDigit = cand.digits[0];
+        r.prefixStride = strides[0];
+      }
+      // Carry the validity (suffix) coordinates as full tiles plus a full-tile
+      // zero offset accumulator (carryBasePtr already encodes offset0).
+      r.carriedInits.clear();
+      for (unsigned pos :
+           ArrayRef<unsigned>(cand.variantPositions).take_back(suffixCount))
+        r.carriedInits.push_back(broadcastToShape(b, loc, (*iter0)[pos], outShape));
+      auto offTy = RankedTensorType::get(outShape, b.getI32Type());
+      r.offsetAccInit = splatI32(b, loc, offTy, 0);
+      r.iterArgCount = suffixCount + 1;
+    } else if (stridesOk && !r.carriedInits.empty()) {
+      // Minimal-rank recurrence: carry the decomposed coordinates and a
+      // reduced-rank (kIter x 1) offset accumulator, advanced by the per-step
+      // delta; rebuild only the mask each iteration.
       r.offsetStrides = std::move(strides);
       auto coordTy = cast<RankedTensorType>(r.carriedInits.front().getType());
       r.offsetAccInit = splatI32(b, loc, coordTy, 0);
@@ -769,6 +944,29 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
       continue;
     }
 
+    if (r.fullTile) {
+      // Full-tile distributed carry: the validity (suffix) coordinates are
+      // carried as full tiles; splice them into the (otherwise iv==lb) coord
+      // vector and rebuild the mask. The dropped high coordinate keeps its
+      // iter-0 value - it does not impact validity, so the mask is unaffected.
+      // The pointer is the hoisted base plus the carried full-tile offset (no
+      // re-expansion, no broadcast).
+      SmallVector<Value> coords(r.iter0Coords);
+      ArrayRef<unsigned> suffixPos =
+          ArrayRef<unsigned>(r.variantPositions).take_back(r.suffixCount);
+      for (auto [k, pos] : llvm::enumerate(suffixPos))
+        coords[pos] = newLoop.getRegionIterArg(r.iterArgStart + k);
+      FailureOr<Value> mask =
+          expandCoordsToMask(b, loc, r.belowMaps, coords, r.outShape);
+      assert(succeeded(mask) && "sub-chain mask expansion must succeed");
+      Value offset =
+          newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
+      Value ptr = arith::AddIOp::create(b, loc, r.carryBasePtr, offset);
+      bodyMap.map(r.op.getPointers(), ptr);
+      bodyMap.map(r.op.getMask(), *mask);
+      continue;
+    }
+
     SmallVector<Value> coords(r.iter0Coords);
     for (auto [k, pos] : llvm::enumerate(r.variantPositions))
       coords[pos] = newLoop.getRegionIterArg(r.iterArgStart + k);
@@ -816,6 +1014,26 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
       newYields.push_back(arith::AddIOp::create(b, loc, acc, r.strideScalar));
       continue;
     }
+
+    if (r.fullTile) {
+      // Advance the full-tile validity coordinates (odometer) and the full-tile
+      // offset accumulator by the per-step delta returned by the same odometer.
+      SmallVector<Value> suffix;
+      for (unsigned k = 0; k < r.suffixCount; ++k)
+        suffix.push_back(newLoop.getRegionIterArg(r.iterArgStart + k));
+      FullTileCarry stepCarry = emitFullTileCarry(
+          b, loc, suffix, ArrayRef<int64_t>(r.radices).take_back(r.suffixCount),
+          ArrayRef<int64_t>(r.digits).take_back(r.suffixCount),
+          ArrayRef<int64_t>(r.offsetStrides).take_back(r.suffixCount),
+          r.hasPrefix, r.prefixDigit, r.prefixStride);
+      for (Value v : stepCarry.nextSuffix)
+        newYields.push_back(v);
+      Value offset = newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
+      newYields.push_back(
+          arith::AddIOp::create(b, loc, offset, stepCarry.offsetDelta));
+      continue;
+    }
+
     unsigned numCoords = r.variantPositions.size();
     SmallVector<Value> carried;
     for (unsigned k = 0; k < numCoords; ++k)
