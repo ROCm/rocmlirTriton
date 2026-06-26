@@ -304,7 +304,7 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
   Value root;
   std::tie(root, std::ignore) = untransform(op.getSource(), transforms);
   if (!isa<BlockArgument>(root))
-    return bail("transform chain root is not a block argument");
+    llvm_unreachable("transform chain root is not a block argument");
   cand.rootBase = root;
 
   // Our rewrite computes the mask once before the loop and reuses it every
