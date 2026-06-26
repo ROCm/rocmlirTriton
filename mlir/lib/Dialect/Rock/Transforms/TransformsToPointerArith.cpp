@@ -29,6 +29,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExprVisitor.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -552,8 +553,11 @@ struct TransformsToPtrRewritePattern
     for (const auto &[composedMap, transform] : composedMaps) {
       if (!composedMap) // empty transformations
         continue;
+      // Run simplifyAffineMap over the composed map before lowering to
+      // arith, which may potentially simplify the affine map.
+      AffineMap simplifiedMap = simplifyAffineMap(composedMap);
       FailureOr<AffineResults> transformed =
-          expandAffineMap(b, loc, composedMap, computed);
+          expandAffineMap(b, loc, simplifiedMap, computed);
       if (failed(transformed))
         return op.emitOpError("Transforms are not well formed");
       computed.assign(*transformed);
