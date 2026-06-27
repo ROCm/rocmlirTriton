@@ -66,6 +66,8 @@
 // GPU-NEXT:func.func(rock-analyze-memory-use,
 // GPU-NEXT:rock-lower-blockwise-to-ptr,
 // GPU-NEXT:rock-preserve-masked-load-semantics,
+// GPU-NEXT:rock-collapse-contiguous-merges,
+// GPU-NEXT:remove-dead-values{{.*}},
 // GPU-NEXT:rock-transforms-to-pointer-arith,
 // GPU-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // GPU-NEXT:rock-to-ttir),

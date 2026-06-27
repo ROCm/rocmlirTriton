@@ -281,6 +281,39 @@ def RockPreserveMaskedLoadSemanticsPass
                            "arith::ArithDialect"];
 }
 
+def RockCollapseContiguousMergesPass
+    : Pass<"rock-collapse-contiguous-merges", "::mlir::func::FuncOp"> {
+  let summary = "Collapse contiguous merges in rock.transform chains";
+  let description = [{
+    This pass runs BEFORE TransformsToPointerArith.
+
+    When a `Merge` splits a dimension whose lower dimensions are actually
+    contiguous in memory, it fuses them back into a single wider dimension
+    (see `collapseContiguousMerges`).
+
+    Why this matters: each element's memory offset is computed from the
+    dimension index. We say the dimension is "stride-1" when stepping the index
+    by 1 moves the offset by exactly 1, i.e. neighboring elements sit at
+    neighboring addresses. Triton looks for this stride-1 pattern to prove the
+    access is contiguous and read many elements in one wide load instead of many
+    small ones.
+
+    If the contiguous dimension is split apart and rebuilt (as in an im2col-style
+    transform), the offset is no longer stride-1: the step is +1 within each
+    piece but jumps when one piece wraps into the next. Triton can no longer
+    recognize the contiguity and falls back to small per-element loads. Keeping
+    the dimension intact preserves the stride-1 offset and the wide loads that
+    the split form prevents.
+
+    Example: a buffer viewed as `Unmerge{2, 3, 8}` ["block", "a", "b"] with a
+    `Merge{3, 8}` ["tile"] -> ["a", "b"] tile dimension. Here "a" (stride 8) and
+    "b" (stride 1, size 8) are adjacent in memory, so the {a, b} tile is one
+    contiguous run of 24 elements. The pass collapses it to `Merge{1, 24}` and
+    widens the view to `Unmerge{2, 1, 24}`, exposing the stride-1 run of 24.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
 def RockTransformsToPointerArithPass
     : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
   let summary =

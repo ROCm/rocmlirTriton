@@ -524,6 +524,15 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(rock::createRockAnalyzeMemoryUsePass());
   funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
+  // Must run BEFORE TransformsToPointerArith: it simplifies the rock.transform
+  // chains feeding TransformsToPtrOp by collapsing contiguous merges.
+  funcPm2.addPass(rock::createRockCollapseContiguousMergesPass());
+  // CollapseContiguousMerges builds the collapsed chain fresh and rewires onto
+  // it, leaving the original chain dead. DCE it so TransformsToPointerArith
+  // only sees the collapsed chain. Keep this nested per-func: a module-level
+  // RemoveDeadValues strips the kernel function / its rock.arch attribute and
+  // breaks downstream lowering ("rock.arch not found on kernel function").
+  funcPm2.addPass(createRemoveDeadValuesPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
