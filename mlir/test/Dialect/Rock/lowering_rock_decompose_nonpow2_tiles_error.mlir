@@ -1,101 +1,70 @@
 // Error tests for the rock-decompose-nonpow2-tiles pass.
 //
-// These are minimal, hand-written reductions of the real (pre-pass) IR that
-// exercise each diagnostic the pass emits.
+// The pass runs at the gridwise layer, so each case is a non-power-of-two
+// rock.gridwise_gemm that hits one of the pass's diagnostics.
 
 // RUN: rocmlir-opt -rock-decompose-nonpow2-tiles -verify-diagnostics -split-input-file -mlir-print-local-scope %s
 
+#pk48 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 48, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
 // ============================================================
-// Error: non-power-of-two K. M/N are non-power-of-two (so the
-// GEMM is selected for splitting), but the contraction dim is
-// never split, and a non-power-of-two K cannot be handled.
+// Error: non-power-of-two kPerBlock. M/N are non-power-of-two
+// (so the gemm is selected for splitting), but this pass only
+// peels M/N and cannot split the contraction dimension.
 // ============================================================
 
-func.func @test_nonpow2_k(%a: tensor<80x48xf16>, %b: tensor<48x80xf16>) attributes {rock.kernel} {
-  %cst = arith.constant dense<0.000000e+00> : tensor<80x80xf32>
-  // expected-error @+1 {{non-power-of-two K is not supported}}
-  %0 = rock.blockwise_gemm(%a, %b, %cst) : tensor<80x48xf16>, tensor<48x80xf16>, tensor<80x80xf32> -> tensor<80x80xf32>
+func.func @test_nonpow2_k(%a: tensor<1x160x96xf16>, %b: tensor<1x96x160xf16>, %c: tensor<1x160x160xf32>) -> tensor<1x160x160xf32> attributes {rock.kernel} {
+  // expected-error @+1 {{non-power-of-two kPerBlock is not supported}}
+  %r = rock.gridwise_gemm(%a, %b) {params = #pk48} : tensor<1x160x96xf16>, tensor<1x96x160xf16> -> tensor<1x160x160xf32>
+  %out = rock.store %r to %c by set : tensor<1x160x160xf32> -> tensor<1x160x160xf32> to tensor<1x160x160xf32>
+  return %out : tensor<1x160x160xf32>
+}
+
+// -----
+
+#p80x80 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// ============================================================
+// Error: scaled (block-scaled) gridwise_gemms are not handled
+// yet, because the scales would need slicing along M/N too.
+// ============================================================
+
+func.func @test_scaled_gemm(%a: tensor<1x160x64xf8E4M3FN>, %b: tensor<1x64x160xf8E4M3FN>,
+    %sa: tensor<1x160x4xf8E8M0FNU>, %sb: tensor<1x160x4xf8E8M0FNU>,
+    %c: tensor<1x160x160xf32>) -> tensor<1x160x160xf32> attributes {rock.kernel} {
+  // expected-error @+1 {{scaled gridwise_gemm not supported}}
+  %r = rock.gridwise_gemm(%a, %b, %sa, %sb) {quantBlockSize = 16 : i64, params = #p80x80} : tensor<1x160x64xf8E4M3FN>, tensor<1x64x160xf8E4M3FN>, tensor<1x160x4xf8E8M0FNU>, tensor<1x160x4xf8E8M0FNU> -> tensor<1x160x160xf32>
+  %out = rock.store %r to %c by set : tensor<1x160x160xf32> -> tensor<1x160x160xf32> to tensor<1x160x160xf32>
+  return %out : tensor<1x160x160xf32>
+}
+
+// -----
+
+#p80x80b = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// ============================================================
+// Error: the gridwise_gemm result has no rock.store sink (the
+// result is unused), so the output side cannot be traced.
+// ============================================================
+
+func.func @test_no_store(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf16>) attributes {rock.kernel} {
+  // expected-error @+1 {{cannot trace gridwise_gemm output to rock.store}}
+  %r = rock.gridwise_gemm(%a, %b) {params = #p80x80b} : tensor<1x160x64xf16>, tensor<1x64x160xf16> -> tensor<1x160x160xf32>
   return
 }
 
 // -----
 
-// ============================================================
-// Error: scaled GEMMs are not supported.
-// ============================================================
-
-func.func @test_scaled_gemm(%a: tensor<80x16xf4E2M1FN>, %b: tensor<16x80xf4E2M1FN>,
-    %sa: tensor<80x1xf8E8M0FNU>, %sb: tensor<80x1xf8E8M0FNU>) attributes {rock.kernel} {
-  %cst = arith.constant dense<0.000000e+00> : tensor<80x80xf32>
-  // expected-error @+1 {{scaled blockwise_gemm not supported}}
-  %0 = rock.blockwise_gemm(%a scaled by %sa, %b scaled by %sb, %cst) {quantBlockSize = 16 : i64} : tensor<80x16xf4E2M1FN> scaled by tensor<80x1xf8E8M0FNU>, tensor<16x80xf4E2M1FN> scaled by tensor<80x1xf8E8M0FNU>, tensor<80x80xf32> -> tensor<80x80xf32>
-  return
-}
-
-// -----
+#p80x80c = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 
 // ============================================================
-// Error: the GEMM is inside an scf.for that is not its
-// accumulator K-loop (matrixC is not the loop iter_arg).
+// Error: the gridwise_gemm result reaches an op that is neither
+// a fusion op nor a rock.store (here, func.return), so no store
+// sink is reachable. Shares the trace diagnostic with @test_no_store.
 // ============================================================
 
-func.func @test_loop_not_accumulator(%a: tensor<80x16xf16>, %b: tensor<16x80xf16>) attributes {rock.kernel} {
-  %c0 = arith.constant 0 : i32
-  %c4 = arith.constant 4 : i32
-  %c1 = arith.constant 1 : i32
-  %cst = arith.constant dense<0.000000e+00> : tensor<80x80xf32>
-  %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%acc = %cst) -> (tensor<80x80xf32>) : i32 {
-    // expected-error @+1 {{GEMM is inside a loop that is not its accumulator K-loop}}
-    %0 = rock.blockwise_gemm(%a, %b, %cst) : tensor<80x16xf16>, tensor<16x80xf16>, tensor<80x80xf32> -> tensor<80x80xf32>
-    scf.yield %acc : tensor<80x80xf32>
-  }
-  return
-}
-
-// -----
-
-// ============================================================
-// Error: the GEMM accumulates over the loop iter_arg, but the
-// loop does not yield the GEMM result.
-// ============================================================
-
-func.func @test_loop_bad_yield(%a: tensor<80x16xf16>, %b: tensor<16x80xf16>) attributes {rock.kernel} {
-  %c0 = arith.constant 0 : i32
-  %c4 = arith.constant 4 : i32
-  %c1 = arith.constant 1 : i32
-  %cst = arith.constant dense<0.000000e+00> : tensor<80x80xf32>
-  %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%acc = %cst) -> (tensor<80x80xf32>) : i32 {
-    // expected-error @+1 {{loop does not yield the GEMM result}}
-    %0 = rock.blockwise_gemm(%a, %b, %acc) : tensor<80x16xf16>, tensor<16x80xf16>, tensor<80x80xf32> -> tensor<80x80xf32>
-    scf.yield %acc : tensor<80x80xf32>
-  }
-  return
-}
-
-// -----
-
-// ============================================================
-// Error: the GEMM result has no blockwise_store sink.
-// ============================================================
-
-func.func @test_no_store(%a: tensor<80x16xf16>, %b: tensor<16x80xf16>) attributes {rock.kernel} {
-  %cst = arith.constant dense<0.000000e+00> : tensor<80x80xf32>
-  // The GEMM result is unused: no blockwise_store sink is reachable.
-  // expected-error @+1 {{no blockwise_store for GEMM result}}
-  %0 = rock.blockwise_gemm(%a, %b, %cst) : tensor<80x16xf16>, tensor<16x80xf16>, tensor<80x80xf32> -> tensor<80x80xf32>
-  return
-}
-
-// -----
-
-// ============================================================
-// Error: the GEMM result reaches an op that is neither a fusion
-// op nor a blockwise_store (here, func.return).
-// ============================================================
-
-func.func @test_unsupported_use(%a: tensor<80x16xf16>, %b: tensor<16x80xf16>) -> tensor<80x80xf32> attributes {rock.kernel} {
-  %cst = arith.constant dense<0.000000e+00> : tensor<80x80xf32>
-  // expected-error @+1 {{unsupported use of GEMM result}}
-  %0 = rock.blockwise_gemm(%a, %b, %cst) : tensor<80x16xf16>, tensor<16x80xf16>, tensor<80x80xf32> -> tensor<80x80xf32>
-  return %0 : tensor<80x80xf32>
+func.func @test_unsupported_use(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf16>) -> tensor<1x160x160xf32> attributes {rock.kernel} {
+  // expected-error @+1 {{cannot trace gridwise_gemm output to rock.store}}
+  %r = rock.gridwise_gemm(%a, %b) {params = #p80x80c} : tensor<1x160x64xf16>, tensor<1x64x160xf16> -> tensor<1x160x160xf32>
+  return %r : tensor<1x160x160xf32>
 }
