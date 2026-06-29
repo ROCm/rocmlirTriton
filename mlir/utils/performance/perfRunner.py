@@ -1882,6 +1882,32 @@ def run_config_with_mlir(config: PerfConfiguration,
     return nanoseconds
 
 
+def canonicalize_config(config_str: str, conf_class: type, arch: str, num_cu: int,
+                        num_chiplets: int) -> str:
+    """Canonicalize a config by round-tripping it through
+    ``conf_class.from_command_line`` / ``to_command_line``.
+
+    perfRunner resolves tuned perf-configs from the tuning DB by
+    ``config.to_command_line()`` (see ``benchmark_mlir``), so every producer and
+    consumer of a config string must agree on this canonical form. Running each
+    config string through here makes a raw test vector (e.g. one missing the
+    ``-m conv ... -t 1`` MIOpen suffix, or spelling a layout differently) match
+    the key perfRunner looks up by.
+
+    ``PerfConfiguration`` is the fusion catch-all and dispatches by
+    positional-arg prefix: a ``conv*`` first token routes to
+    ``ConvConfiguration``, otherwise to ``GemmConfiguration``.
+
+    Raises ``ValueError`` if ``conf_class`` cannot parse ``config_str``.
+    """
+    resolved_class = conf_class
+    if resolved_class is PerfConfiguration:
+        resolved_class = (ConvConfiguration
+                          if config_str.lstrip().startswith('conv') else GemmConfiguration)
+    config = resolved_class.from_command_line(config_str.split(), arch, num_cu, num_chiplets)
+    return config.to_command_line()
+
+
 # Benchmarking function.
 def benchmark_mlir(commandline,
                    conf_class,
