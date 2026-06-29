@@ -229,8 +229,14 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     ttFuncOp.walk([&](arith::AddIOp addOp) {
       bool lhsPtr = isTensorOfPointers(addOp.getLhs().getType());
       bool rhsPtr = isTensorOfPointers(addOp.getRhs().getType());
-      // Convert only when exactly one operand is a pointer tensor. Neither: an
-      // ordinary integer add. Both: not valid pointer arithmetic, leave it.
+      // Adding two pointer tensors is not valid pointer arithmetic and should
+      // never be produced upstream (TransformsToPointerArith only ever adds an
+      // integer offset to a base pointer).
+      if (lhsPtr && rhsPtr)
+        llvm_unreachable("arith.addi on two pointer tensors is not valid "
+                         "pointer arithmetic");
+      // Convert only when exactly one operand is a pointer tensor; neither is
+      // an ordinary integer add.
       if (lhsPtr != rhsPtr)
         toConvert.push_back(addOp);
     });
