@@ -584,12 +584,11 @@ struct RockTosaToElementwise
     RewritePatternSet patterns(ctx);
     ConversionTarget target(*ctx);
 
-    // gfx1250 has dedicated tanh instructions (v_tanh_f32/f16/bf16), which the
-    // Triton pipeline emits from `math.tanh` directly. On such targets we keep
+    // check if the target has dedicated tanh instructions, in that case the
+    // Triton pipeline emits those instructions directly from math.tanh. On such targets we keep
     // `math.tanh` instead of expanding it into elementary ops below.
-    FailureOr<StringAttr> arch = rock::getArchOnFunc(func);
-    bool hasHardwareTanh =
-        succeeded(arch) && rock::archHasHardwareTanh(arch->getValue());
+    StringAttr arch = rock::getArchValueOnFunc(func);
+    bool hasHardwareTanh = rock::archHasHardwareTanh(arch);
 
     target.addLegalDialect<arith::ArithDialect, math::MathDialect,
                            tensor::TensorDialect>();
@@ -666,7 +665,7 @@ struct RockTosaToElementwise
     // math.tanh and math.powf so we use upstream
     // math::populateExpansionPatterns to expand them into ops Triton supports.
     //
-    // gfx1250 has dedicated tanh instructions, so there we keep `math.tanh`
+    // if the target has dedicated tanh instructions then we keep `math.tanh`
     // and let the Triton pipeline lower it to v_tanh_* (via llvm.amdgcn.tanh)
     // instead of expanding it here.
     SmallVector<StringRef> opsToExpand = {"powf"};
