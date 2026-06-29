@@ -30,11 +30,12 @@ patch-buffer-atomics.patch
   but it was rejected.
 
 patch-gfx1250-bf16-tanh.patch
-  Preserves math.tanh through TTIR -> TTGIR and lowers both math.tanh and AMD
-  Python libdevice tanh in the AMD LLVM backend. On gfx1250 it maps directly
-  to hardware tanh instructions (v_tanh_f32 / v_tanh_f16 / v_tanh_bf16).
-  Other AMD targets are intentionally left to existing non-hardware tanh paths.
-  Three Triton-side pieces are needed:
+  Preserves math.tanh through TTIR -> TTGIR and adds gfx1250 AMD LLVM
+  lowering for math.tanh to llvm.amdgcn.tanh.{f32,f16,bf16}. It also exposes
+  AMD Python fp16 libdevice tanh and maps __ocml_tanh_f32/f16 to hardware tanh
+  on gfx1250. Non-gfx1250 OCML libdevice calls are left untouched; tensor
+  math.tanh for non-gfx1250 is still expected to be expanded before reaching
+  Triton. Three Triton-side pieces are needed:
 
     1. TritonToTritonGPUPass: add GenericOpPattern<math::TanhOp> to the
        math-op legalization set so math.tanh survives TTIR -> TTGIR with a
