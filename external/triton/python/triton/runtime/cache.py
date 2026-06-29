@@ -10,6 +10,11 @@ import sysconfig
 
 from triton import __version__, knobs
 
+if os.name == "nt":
+    from triton.windows_utils import normalize_path
+else:
+    normalize_path = os.path.abspath
+
 
 class CacheManager(ABC):
 
@@ -41,16 +46,19 @@ class FileCacheManager(CacheManager):
         if dump:
             self.cache_dir = knobs.cache.dump_dir
             self.cache_dir = os.path.join(self.cache_dir, self.key)
+            self.cache_dir = normalize_path(self.cache_dir)
             self.lock_path = os.path.join(self.cache_dir, "lock")
             os.makedirs(self.cache_dir, exist_ok=True)
         elif override:
             self.cache_dir = knobs.cache.override_dir
             self.cache_dir = os.path.join(self.cache_dir, self.key)
+            self.cache_dir = normalize_path(self.cache_dir)
         else:
             # create cache directory if it doesn't exist
             self.cache_dir = knobs.cache.dir
             if self.cache_dir:
                 self.cache_dir = os.path.join(self.cache_dir, self.key)
+                self.cache_dir = normalize_path(self.cache_dir)
                 self.lock_path = os.path.join(self.cache_dir, "lock")
                 os.makedirs(self.cache_dir, exist_ok=True)
             else:
@@ -122,7 +130,15 @@ class FileCacheManager(CacheManager):
             f.write(data)
         # Replace is guaranteed to be atomic on POSIX systems if it succeeds
         # so filepath cannot see a partial write
-        os.replace(temp_path, filepath)
+        try:
+            os.replace(temp_path, filepath)
+        except PermissionError:
+            # Ignore PermissionError on Windows because it happens when another process already
+            # put a file into the cache and locked it by opening it.
+            if os.name == "nt":
+                os.remove(temp_path)
+            else:
+                raise
         os.removedirs(temp_dir)
         return filepath
 

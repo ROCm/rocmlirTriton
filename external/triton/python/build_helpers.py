@@ -28,6 +28,8 @@ def get_base_dir():
 def _get_cmake_dir():
     plat_name = sysconfig.get_platform()
     python_version = sysconfig.get_python_version()
+    if sysconfig.get_config_var("Py_GIL_DISABLED"):
+        python_version += "t"
     dir_name = f"cmake.{plat_name}-{sys.implementation.name}-{python_version}"
     return Path(get_base_dir()) / "build" / dir_name
 
@@ -59,6 +61,11 @@ class BuildHelperArgs:
     @cached_property
     def archives_path(self):
         return os.path.join(self.cache_path, "archives")
+
+
+def _normalize_bool(value: str, default: str = "") -> bool:
+    effective_value = value if value is not None else default
+    return effective_value.upper() in ["ON", "1", "YES", "TRUE", "Y"]
 
 
 def _normalize_optional(value: str) -> Optional[str]:
@@ -254,14 +261,14 @@ def _validate_sha256(archive_path, url, expected_sha256):
     raise RuntimeError(message)
 
 
-def _download_and_extract(url, download_dir, label, archives_path, expected_sha256=None):
+def _download_and_extract(url, remove_dir, extract_dir, label, archives_path, expected_sha256=None):
     archive_path = _get_archive_path(archives_path, url)
     _download_file(url, archive_path, f"downloading {label}")
     _validate_sha256(archive_path, url, expected_sha256)
     with contextlib.suppress(Exception):
-        shutil.rmtree(download_dir)
-    os.makedirs(download_dir, exist_ok=True)
-    _extract_archive(archive_path, download_dir)
+        shutil.rmtree(remove_dir)
+    os.makedirs(extract_dir, exist_ok=True)
+    _extract_archive(archive_path, extract_dir)
     os.remove(archive_path)
 
 
@@ -276,7 +283,10 @@ def update_symlink(link_path, source_path):
 
     print(f"creating symlink: {link_path} -> {source_path}", file=sys.stderr)
     link_path.absolute().parent.mkdir(parents=True, exist_ok=True)  # Ensure link's parent directory exists
-    link_path.symlink_to(source_path.absolute(), target_is_directory=True)
+    try:
+        link_path.symlink_to(source_path.absolute(), target_is_directory=True)
+    except OSError as e:
+        print(f"Warning: Could not create symlink: {e}", file=sys.stderr)
 
 
 # --- third party packages -----
@@ -313,13 +323,15 @@ def is_linux_os(os_id):
 def get_llvm_package_info(helper_args: BuildHelperArgs):
     system = platform.system()
     try:
-        arch = {"x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}[platform.machine()]
+        arch = {"x86_64": "x64", "AMD64": "x64", "arm64": "arm64", "aarch64": "arm64"}[platform.machine()]
     except KeyError:
         arch = platform.machine()
     if helper_args.llvm_system_suffix:
         system_suffix = helper_args.llvm_system_suffix
     elif system == "Darwin":
         system_suffix = f"macos-{arch}"
+    elif system == "Windows":
+        system_suffix = f"windows-{arch}"
     elif system == "Linux":
         if arch == "arm64" and is_linux_os("almalinux"):
             system_suffix = "almalinux-arm64"
@@ -384,16 +396,24 @@ def _get_thirdparty_package_cmake_vars(package: Package, helper_args: BuildHelpe
     syspath_override = _get_syspath_override(package.syspath_var_name, helper_args)
     if syspath_override is not None:
         package_dir = syspath_override
-    version_file_path = os.path.join(package_dir, "version.txt")
+    if package.sym_name is not None:
+        version_file_path = os.path.join(package_root_dir, package.sym_name, "version.txt")
+    else:
+        version_file_path = os.path.join(package_dir, "version.txt")
 
     input_defined = syspath_override is not None
-    input_exists = os.path.exists(version_file_path)
-    input_compatible = input_exists and Path(version_file_path).read_text() == package.url
+    input_compatible = os.path.exists(version_file_path) and Path(version_file_path).read_text() == package.url
+
+    if not input_compatible and package.sym_name is not None:
+        # Try to recreate the symlink with the correct version
+        version_file_path = os.path.join(package_dir, "version.txt")
+        input_compatible = os.path.exists(version_file_path) and Path(version_file_path).read_text() == package.url
 
     if helper_args.offline_build and not input_defined:
         raise RuntimeError(f"Requested an offline build but {package.syspath_var_name} is not set")
     if not helper_args.offline_build and not input_defined and not input_compatible:
-        _download_and_extract(package.url, package_root_dir, package.name, helper_args.archives_path, package.sha256sum)
+        _download_and_extract(package.url, package_dir, package_root_dir, package.name, helper_args.archives_path,
+                              package.sha256sum)
         # write version url to package_dir
         with open(os.path.join(package_dir, "version.txt"), "w") as file:
             file.write(package.url)
@@ -408,6 +428,12 @@ def _get_thirdparty_package_cmake_vars(package: Package, helper_args: BuildHelpe
         cmake_vars[package.lib_flag] = f"{package_dir}/lib"
     if package.syspath_var_name:
         cmake_vars[package.syspath_var_name] = package_dir
+    if package.package == "llvm":
+        cmake_vars.update({
+            "LLVM_DIR": f"{package_dir}/lib/cmake/llvm",
+            "MLIR_DIR": f"{package_dir}/lib/cmake/mlir",
+            "LLD_DIR": f"{package_dir}/lib/cmake/lld",
+        })
     return cmake_vars
 
 
@@ -431,12 +457,26 @@ def _cmake_escape(value: str) -> str:
     return value.replace("\\", "/").replace('"', '\\"')
 
 
+_LLVM_CMAKE_CACHE_VARS = {
+    "LLVM_DIR",
+    "LLVM_INCLUDE_DIRS",
+    "LLVM_LIBRARY_DIR",
+    "LLVM_SYSPATH",
+    "MLIR_DIR",
+    "LLD_DIR",
+}
+
+
 def write_thirdparty_cmake_vars(output: str, packages: list[str], helper_args: BuildHelperArgs):
     cmake_vars = get_thirdparty_cmake_vars(packages, helper_args)
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as output_file:
         for key, value in sorted(cmake_vars.items()):
+            if key in _LLVM_CMAKE_CACHE_VARS:
+                # Switching LLVM revisions must not leave stale CMake package paths behind.
+                output_file.write(f'set({key} "{_cmake_escape(value)}" CACHE PATH "Resolved {key}" FORCE)\n')
+                continue
             output_file.write(f'if(NOT DEFINED {key} OR "${{{key}}}" STREQUAL "")\n')
             output_file.write(f'  set({key} "{_cmake_escape(value)}")\n')
             output_file.write('endif()\n')
@@ -455,12 +495,14 @@ def download_and_copy(name, src_func, dst_path, override_path, version, url_func
     system = platform.system()
     arch = platform.machine()
     # NOTE: This might be wrong for jetson if both grace chips and jetson chips return aarch64
-    arch = {"arm64": "sbsa", "aarch64": "sbsa"}.get(arch, arch)
-    supported = {"Linux": "linux", "Darwin": "linux"}
+    # On Windows ARM64, platform.machine() returns "ARM64". Map it to "x86_64" so we
+    # download Windows x64 NVIDIA headers, which are compatible for compilation on ARM64.
+    arch = {"AMD64": "x86_64", "ARM64": "x86_64", "arm64": "sbsa", "aarch64": "sbsa"}.get(arch, arch)
+    supported = {"Linux": "linux", "Darwin": "linux", "Windows": "windows"}
     url = url_func(supported[system], arch, version)
     src_path = src_func(supported[system], arch, version)
-    tmp_path = os.path.join(cache_path, "nvidia", name)  # path to cache the download
-    dst_path = os.path.join(base_dir, "third_party", "nvidia", "backend", dst_path)  # final binary path
+    tmp_path = os.path.join(cache_path, name)  # path to cache the download
+    dst_path = os.path.join(base_dir, dst_path)  # final binary path
     src_path = os.path.join(tmp_path, src_path)
     download = not os.path.exists(src_path)
     if os.path.exists(dst_path) and system == "Linux" and shutil.which(dst_path) is not None:
@@ -469,7 +511,7 @@ def download_and_copy(name, src_func, dst_path, override_path, version, url_func
         assert curr_version is not None, f"No version information for {dst_path}"
         download = download or curr_version.group(1) != version
     if download:
-        _download_and_extract(url, tmp_path, name, helper_args.archives_path)
+        _download_and_extract(url, tmp_path, tmp_path, name, helper_args.archives_path)
     os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
     print(f"copy {src_path} to {dst_path} ...")
     if os.path.isdir(src_path):
@@ -486,99 +528,103 @@ def download_and_copy_dependencies(helper_args: BuildHelperArgs):
         nvidia_toolchain_version = json.load(nvidia_version_file)
 
     exe_extension = sysconfig.get_config_var("EXE")
+    archive_extension = ".zip" if platform.system() == "Windows" else ".tar.xz"
     download_and_copy(
-        name="nvcc",
+        name="nvidia/nvcc-" + nvidia_toolchain_version["ptxas"],
         src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/bin/ptxas{exe_extension}",
-        dst_path="bin/ptxas",
+        dst_path=f"third_party/nvidia/backend/bin/ptxas{exe_extension}",
         override_path=helper_args.ptxas_path,
         version=nvidia_toolchain_version["ptxas"],
         url_func=lambda system, arch, version:
-        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive{archive_extension}",
         helper_args=helper_args,
     )
+    # In triton-windows, we do not download a separate ptxas for blackwell
 
-    # We download a separate ptxas for blackwell, since there are some bugs when using it for hopper
+    need_copy_all = (_normalize_bool(os.getenv("TRITON_BUILD_PROTON", "ON"))
+                     or _normalize_bool(os.getenv("TRITON_BUILD_GSAN", "OFF")))
+    if need_copy_all:
+        crt = "crt" if int(nvidia_toolchain_version["cudacrt"].split(".")[0]) >= 13 else "nvcc"
+        download_and_copy(
+            name=f"nvidia/{crt}-" + nvidia_toolchain_version["cudacrt"],
+            src_func=lambda system, arch, version: f"cuda_{crt}-{system}-{arch}-{version}-archive/include",
+            dst_path="third_party/nvidia/backend/include",
+            override_path=helper_args.cudacrt_path,
+            version=nvidia_toolchain_version["cudacrt"],
+            url_func=lambda system, arch, version:
+            f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_{crt}/{system}-{arch}/cuda_{crt}-{system}-{arch}-{version}-archive{archive_extension}",
+            helper_args=helper_args,
+        )
+        download_and_copy(
+            name="nvidia/cudart-" + nvidia_toolchain_version["cudart"],
+            src_func=lambda system, arch, version: f"cuda_cudart-{system}-{arch}-{version}-archive/include",
+            dst_path="third_party/nvidia/backend/include",
+            override_path=helper_args.cudart_path,
+            version=nvidia_toolchain_version["cudart"],
+            url_func=lambda system, arch, version:
+            f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/{system}-{arch}/cuda_cudart-{system}-{arch}-{version}-archive{archive_extension}",
+            helper_args=helper_args,
+        )
+        download_and_copy(
+            name="nvidia/cudart-" + nvidia_toolchain_version["cudart"],
+            src_func=lambda system, arch, version: f"cuda_cudart-{system}-{arch}-{version}-archive/lib",
+            dst_path="third_party/nvidia/backend/lib",
+            override_path=helper_args.cudart_path,
+            version=nvidia_toolchain_version["cudart"],
+            url_func=lambda system, arch, version:
+            f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/{system}-{arch}/cuda_cudart-{system}-{arch}-{version}-archive{archive_extension}",
+            helper_args=helper_args,
+        )
+        download_and_copy(
+            name="nvidia/cupti-" + nvidia_toolchain_version["cupti"],
+            src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/include",
+            dst_path="third_party/nvidia/backend/include",
+            override_path=helper_args.cupti_include_path,
+            version=nvidia_toolchain_version["cupti"],
+            url_func=lambda system, arch, version:
+            f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive{archive_extension}",
+            helper_args=helper_args,
+        )
+        download_and_copy(
+            name="nvidia/cupti-" + nvidia_toolchain_version["cupti"],
+            src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/lib",
+            dst_path="third_party/nvidia/backend/lib/cupti",
+            override_path=helper_args.cupti_lib_path,
+            version=nvidia_toolchain_version["cupti"],
+            url_func=lambda system, arch, version:
+            f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive{archive_extension}",
+            helper_args=helper_args,
+        )
+    else:
+        download_and_copy(
+            name="nvidia/cudart-" + nvidia_toolchain_version["cudart"],
+            src_func=lambda system, arch, version: f"cuda_cudart-{system}-{arch}-{version}-archive/include/cuda.h",
+            dst_path="third_party/nvidia/backend/include/cuda.h",
+            override_path=helper_args.cudart_path,
+            version=nvidia_toolchain_version["cudart"],
+            url_func=lambda system, arch, version:
+            f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/{system}-{arch}/cuda_cudart-{system}-{arch}-{version}-archive{archive_extension}",
+            helper_args=helper_args,
+        )
+        download_and_copy(
+            name="nvidia/cudart-" + nvidia_toolchain_version["cudart"],
+            src_func=lambda system, arch, version: f"cuda_cudart-{system}-{arch}-{version}-archive/lib/x64/cuda.lib",
+            dst_path="third_party/nvidia/backend/lib/x64/cuda.lib",
+            override_path=helper_args.cudart_path,
+            version=nvidia_toolchain_version["cudart"],
+            url_func=lambda system, arch, version:
+            f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/{system}-{arch}/cuda_cudart-{system}-{arch}-{version}-archive{archive_extension}",
+            helper_args=helper_args,
+        )
+
     download_and_copy(
-        name="nvcc",
-        src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/bin/ptxas{exe_extension}",
-        dst_path="bin/ptxas-blackwell",
-        override_path=helper_args.ptxas_blackwell_path,
-        version=nvidia_toolchain_version["ptxas-blackwell"],
+        name="tcc",
+        src_func=lambda system, arch, version: ".",
+        dst_path="python/triton/runtime/tcc",
+        override_path=None,
+        version="",
         url_func=lambda system, arch, version:
-        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
-        helper_args=helper_args,
-    )
-    download_and_copy(
-        name="cuobjdump",
-        src_func=lambda system, arch, version:
-        f"cuda_cuobjdump-{system}-{arch}-{version}-archive/bin/cuobjdump{exe_extension}",
-        dst_path="bin/cuobjdump",
-        override_path=helper_args.cuobjdump_path,
-        version=nvidia_toolchain_version["cuobjdump"],
-        url_func=lambda system, arch, version:
-        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cuobjdump/{system}-{arch}/cuda_cuobjdump-{system}-{arch}-{version}-archive.tar.xz",
-        helper_args=helper_args,
-    )
-    download_and_copy(
-        name="nvdisasm",
-        src_func=lambda system, arch, version:
-        f"cuda_nvdisasm-{system}-{arch}-{version}-archive/bin/nvdisasm{exe_extension}",
-        dst_path="bin/nvdisasm",
-        override_path=helper_args.nvdisasm_path,
-        version=nvidia_toolchain_version["nvdisasm"],
-        url_func=lambda system, arch, version:
-        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/{system}-{arch}/cuda_nvdisasm-{system}-{arch}-{version}-archive.tar.xz",
-        helper_args=helper_args,
-    )
-    crt = "crt" if int(nvidia_toolchain_version["cudacrt"].split(".")[0]) >= 13 else "nvcc"
-    download_and_copy(
-        name="nvcc",
-        src_func=lambda system, arch, version: f"cuda_{crt}-{system}-{arch}-{version}-archive/include",
-        dst_path="include",
-        override_path=helper_args.cudacrt_path,
-        version=nvidia_toolchain_version["cudacrt"],
-        url_func=lambda system, arch, version:
-        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_{crt}/{system}-{arch}/cuda_{crt}-{system}-{arch}-{version}-archive.tar.xz",
-        helper_args=helper_args,
-    )
-    download_and_copy(
-        name="cudart",
-        src_func=lambda system, arch, version: f"cuda_cudart-{system}-{arch}-{version}-archive/include",
-        dst_path="include",
-        override_path=helper_args.cudart_path,
-        version=nvidia_toolchain_version["cudart"],
-        url_func=lambda system, arch, version:
-        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/{system}-{arch}/cuda_cudart-{system}-{arch}-{version}-archive.tar.xz",
-        helper_args=helper_args,
-    )
-    download_and_copy(
-        name="cupti",
-        src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/include",
-        dst_path="include",
-        override_path=helper_args.cupti_include_path,
-        version=nvidia_toolchain_version["cupti"],
-        url_func=lambda system, arch, version:
-        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
-        helper_args=helper_args,
-    )
-    download_and_copy(
-        name="cupti",
-        src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/lib",
-        dst_path="lib/cupti",
-        override_path=helper_args.cupti_lib_path,
-        version=nvidia_toolchain_version["cupti"],
-        url_func=lambda system, arch, version:
-        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
-        helper_args=helper_args,
-    )
-    download_and_copy(
-        name="cupti",
-        src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/lib",
-        dst_path="lib/cupti-blackwell",
-        override_path=helper_args.cupti_lib_blackwell_path,
-        version=nvidia_toolchain_version["cupti-blackwell"],
-        url_func=lambda system, arch, version:
-        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
+        "https://github.com/woct0rdho/tinycc/releases/download/v0.9.28rc-05bb793/tcc-0.9.28rc-05bb793.zip",
         helper_args=helper_args,
     )
 

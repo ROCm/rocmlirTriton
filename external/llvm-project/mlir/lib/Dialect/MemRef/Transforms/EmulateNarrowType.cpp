@@ -415,9 +415,8 @@ struct ConvertMemRefReinterpretCast final
 struct ConvertMemrefStore final : OpConversionPattern<memref::StoreOp> {
   using OpConversionPattern::OpConversionPattern;
 
-  ConvertMemrefStore(const TypeConverter &typeConverter, MLIRContext *context,
-                     bool disableAtomicRMW)
-      : OpConversionPattern<memref::StoreOp>(typeConverter, context),
+  ConvertMemrefStore(MLIRContext *context, bool disableAtomicRMW)
+      : OpConversionPattern<memref::StoreOp>(context),
         disableAtomicRMW(disableAtomicRMW) {}
 
   LogicalResult
@@ -640,8 +639,7 @@ void memref::populateMemRefNarrowTypeEmulationPatterns(
                ConvertMemRefAssumeAlignment, ConvertMemRefMemorySpaceCast,
                ConvertMemRefSubview, ConvertMemRefReinterpretCast>(
       typeConverter, patterns.getContext());
-  patterns.insert<ConvertMemrefStore>(typeConverter, patterns.getContext(),
-                                      disableAtomicRMW);
+  patterns.insert<ConvertMemrefStore>(patterns.getContext(), disableAtomicRMW);
   memref::populateResolveExtractStridedMetadataPatterns(patterns);
 }
 

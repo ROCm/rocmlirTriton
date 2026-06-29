@@ -1,5 +1,14 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include "cuda.h"
+
+#ifndef _WIN32
 #include <dlfcn.h>
+#include <malloc.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include <stdalign.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -9,16 +18,16 @@
 #include <Python.h>
 
 typedef struct {
-  PyObject_HEAD;
-  _Alignas(alignof(CUtensorMap)) CUtensorMap tensorMap;
+  PyObject_HEAD // No extra semicolon in typedef struct
+      _Alignas(alignof(CUtensorMap)) CUtensorMap tensorMap;
 } PyCUtensorMapObject;
 
 typedef enum { ARG_CONSTEXPR = 0, ARG_KERNEL = 1, ARG_TUPLE = 2 } ArgType;
 
 // Annotation struct to know how the argument should be handled.
 typedef struct {
-  PyObject_HEAD;
-  PyObject *nested_tuple; // Can be a List of PyKernelArgObjects or None
+  PyObject_HEAD               // No extra semicolon in typedef struct
+      PyObject *nested_tuple; // Can be a List of PyKernelArgObjects or None
   ArgType type;
 } PyKernelArgObject;
 
@@ -337,6 +346,7 @@ typedef CUresult (*cuLaunchKernelEx_t)(const CUlaunchConfig *config,
                                        CUfunction f, void **kernelParams,
                                        void **extra);
 
+#ifndef _WIN32
 #define defineGetFunctionHandle(name, symbolName)                              \
   static symbolName##_t name() {                                               \
     /* Open the shared library */                                              \
@@ -358,6 +368,43 @@ typedef CUresult (*cuLaunchKernelEx_t)(const CUlaunchConfig *config,
     }                                                                          \
     return funcHandle;                                                         \
   }
+#else
+/* Format a Windows error code into a human-readable message. */
+static void win32_format_error(char *buf, size_t bufsize, const char *context,
+                               DWORD err) {
+  char msg[256] = {0};
+  DWORD len =
+      FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                     NULL, err, 0, msg, sizeof(msg), NULL);
+  while (len > 0 && (msg[len - 1] == '\r' || msg[len - 1] == '\n'))
+    msg[--len] = '\0';
+  snprintf(buf, bufsize, "%s: %s (error %lu)", context,
+           len ? msg : "Unknown error", (unsigned long)err);
+}
+#define defineGetFunctionHandle(name, symbolName)                              \
+  static symbolName##_t name() {                                               \
+    /* Open the shared library */                                              \
+    HMODULE handle = LoadLibraryA("nvcuda.dll");                               \
+    if (!handle) {                                                             \
+      char errBuf[512];                                                        \
+      win32_format_error(errBuf, sizeof(errBuf), "Failed to open nvcuda.dll",  \
+                         GetLastError());                                      \
+      PyErr_SetString(PyExc_RuntimeError, errBuf);                             \
+      return NULL;                                                             \
+    }                                                                          \
+    symbolName##_t funcHandle =                                                \
+        (symbolName##_t)GetProcAddress((HMODULE)handle, #symbolName);          \
+    if (!funcHandle) {                                                         \
+      char errBuf[512];                                                        \
+      win32_format_error(errBuf, sizeof(errBuf),                               \
+                         "Failed to retrieve " #symbolName " from nvcuda.dll", \
+                         GetLastError());                                      \
+      PyErr_SetString(PyExc_RuntimeError, errBuf);                             \
+      return NULL;                                                             \
+    }                                                                          \
+    return funcHandle;                                                         \
+  }
+#endif
 
 defineGetFunctionHandle(getCuOccupancyMaxActiveClustersHandle,
                         cuOccupancyMaxActiveClusters);
@@ -463,7 +510,12 @@ static PyObject *PyCUtensorMap_alloc(PyTypeObject *type, Py_ssize_t n_items) {
   void *mem = NULL;
   size_t size = type->tp_basicsize;
 
+#ifdef _WIN32
+  mem = _aligned_malloc(size, 128);
+  if (mem == NULL) {
+#else
   if (posix_memalign(&mem, 128, size) != 0) {
+#endif
     PyErr_NoMemory();
     return NULL;
   }
@@ -477,7 +529,13 @@ static void PyCUtensorMap_dealloc(PyObject *self) {
   Py_TYPE(self)->tp_free(self);
 }
 
-static void PyCUtensorMap_free(void *ptr) { free(ptr); }
+static void PyCUtensorMap_free(void *ptr) {
+#ifdef _WIN32
+  _aligned_free(ptr);
+#else
+  free(ptr);
+#endif
+}
 
 // clang-format off
 static PyTypeObject PyCUtensorMapType = {
@@ -1178,51 +1236,21 @@ typedef enum {
 } ExtractorTypeIndex;
 
 Extractor extraction_map[EXTRACTOR_TYPE_COUNT] = {
-    [EXTRACTOR_UNKOWN_INDEX] =
-        (Extractor){.extract = NULL, .size = 0, .name = NULL},
-    [EXTRACTOR_POINTER_INDEX] = (Extractor){.extract = extractPointer,
-                                            .size = sizeof(CUdeviceptr),
-                                            .name = NULL},
-    [EXTRACTOR_INT8_INDEX] = (Extractor){.extract = extractI8,
-                                         .size = sizeof(int8_t),
-                                         .name = {"i8"}},
-    [EXTRACTOR_INT16_INDEX] = (Extractor){.extract = extractI16,
-                                          .size = sizeof(int16_t),
-                                          .name = {"i16"}},
-    [EXTRACTOR_INT32_INDEX] = (Extractor){.extract = extractI32,
-                                          .size = sizeof(int32_t),
-                                          .name = {"i1", "i32"}},
-    [EXTRACTOR_INT64_INDEX] = (Extractor){.extract = extractI64,
-                                          .size = sizeof(int64_t),
-                                          .name = {"i64"}},
-    [EXTRACTOR_UINT8_INDEX] = (Extractor){.extract = extractU8,
-                                          .size = sizeof(uint8_t),
-                                          .name = {"u8"}},
-    [EXTRACTOR_UINT16_INDEX] = (Extractor){.extract = extractU16,
-                                           .size = sizeof(uint16_t),
-                                           .name = {"u16"}},
-    [EXTRACTOR_UINT32_INDEX] = (Extractor){.extract = extractU32,
-                                           .size = sizeof(uint32_t),
-                                           .name = {"u1", "u32"}},
-    [EXTRACTOR_UINT64_INDEX] = (Extractor){.extract = extractU64,
-                                           .size = sizeof(uint64_t),
-                                           .name = {"u64"}},
-    [EXTRACTOR_FP16_INDEX] = (Extractor){.extract = extractFP16,
-                                         .size = sizeof(uint16_t),
-                                         .name = {"fp16"}},
-    [EXTRACTOR_BF16_INDEX] = (Extractor){.extract = extractBF16,
-                                         .size = sizeof(uint16_t),
-                                         .name = {"bf16"}},
-    [EXTRACTOR_FP32_INDEX] = (Extractor){.extract = extractFP32,
-                                         .size = sizeof(uint32_t),
-                                         .name = {"fp32", "f32"}},
-    [EXTRACTOR_FP64_INDEX] = (Extractor){.extract = extractFP64,
-                                         .size = sizeof(uint64_t),
-                                         .name = {"fp64"}},
-    [EXTRACTOR_NVTMADESC_INDEX] = (Extractor){.extract = extractTmaDesc,
-                                              .size = sizeof(CUtensorMap),
-                                              .alignment = alignof(CUtensorMap),
-                                              .name = {"nvTmaDesc"}},
+    {NULL, 0, 0, NULL},
+    {extractPointer, sizeof(CUdeviceptr), 0, NULL},
+    {extractI8, sizeof(int8_t), 0, {"i8"}},
+    {extractI16, sizeof(int16_t), 0, {"i16"}},
+    {extractI32, sizeof(int32_t), 0, {"i1", "i32"}},
+    {extractI64, sizeof(int64_t), 0, {"i64"}},
+    {extractU8, sizeof(uint8_t), 0, {"u8"}},
+    {extractU16, sizeof(uint16_t), 0, {"u16"}},
+    {extractU32, sizeof(uint32_t), 0, {"u1", "u32"}},
+    {extractU64, sizeof(uint64_t), 0, {"u64"}},
+    {extractFP16, sizeof(uint16_t), 0, {"fp16"}},
+    {extractBF16, sizeof(uint16_t), 0, {"bf16"}},
+    {extractFP32, sizeof(uint32_t), 0, {"fp32", "f32"}},
+    {extractFP64, sizeof(uint64_t), 0, {"fp64"}},
+    {extractTmaDesc, sizeof(CUtensorMap), alignof(CUtensorMap), {"nvTmaDesc"}},
 };
 
 Extractor getExtractor(uint8_t index) {

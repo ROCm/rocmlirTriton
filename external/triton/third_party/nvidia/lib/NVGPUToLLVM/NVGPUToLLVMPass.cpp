@@ -141,7 +141,8 @@ std::string patchPtxAsm(Operation *op, std::string ptxAsm) {
     assert(endIterator != ptxAsm.end() && "unexpected asm format");
 
     auto end = std::distance(ptxAsm.begin(), endIterator);
-    auto patchLocation = std::make_pair(start, end);
+    auto patchLocation =
+        std::make_pair(static_cast<int>(start), static_cast<int>(end));
     patchLocations.push_back(patchLocation);
     auto patchValue = ptxAsm.substr(start + 1, end - start - 1);
     patchValues.push_back(patchValue);
@@ -532,9 +533,9 @@ static Value createTMAlloc(IRRewriter &rewriter, LLVM::LLVMFuncOp func,
       {ptxBuilder.newOperand(pred, "b"), ptxBuilder.newOperand(sharedMem, "r")},
       /*onlyAttachMLIRArgs=*/true);
   ptxBuilder.launch(rewriter, loc, void_ty(func->getContext()));
-  NVVM::Barrier0Op::create(rewriter, loc);
+  NVVM::BarrierOp::create(rewriter, loc);
   Value address = b.load(i32_ty, sharedMem);
-  NVVM::Barrier0Op::create(rewriter, loc);
+  NVVM::BarrierOp::create(rewriter, loc);
   address = b.inttoptr(ptr_ty(func.getContext(), 6), address);
   return address;
 }
@@ -559,7 +560,7 @@ void freeTMAlloc(LLVM::LLVMFuncOp func, Value alloc, size_t size, Value pred,
       NVVM::ClusterArriveOp::create(b, loc, UnitAttr::get(ctx));
       NVVM::ClusterWaitOp::create(b, loc, UnitAttr::get(ctx));
     } else {
-      NVVM::Barrier0Op::create(b, loc);
+      NVVM::BarrierOp::create(b, loc);
     }
     PTXBuilder ptxBuilder;
     // Calculate the predicate in the inline asm to avoid creating long
@@ -635,6 +636,7 @@ static void lowerTensorMemoryAlloc(ModuleOp mod) {
 class ConvertNVGPUToLLVM
     : public impl::ConvertNVGPUToLLVMBase<ConvertNVGPUToLLVM> {
 public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertNVGPUToLLVM)
   using impl::ConvertNVGPUToLLVMBase<
       ConvertNVGPUToLLVM>::ConvertNVGPUToLLVMBase;
 
