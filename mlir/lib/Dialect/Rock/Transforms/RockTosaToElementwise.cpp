@@ -52,6 +52,11 @@ namespace {
 // Generic templates for 1:1 TOSA -> arith/math replacement on tensors.
 // ===--------------------------------------------------------------------=== //
 
+static bool isHardwareTanhSupportedType(ShapedType type) {
+  Type elemTy = type.getElementType();
+  return elemTy.isF32() || elemTy.isF16() || elemTy.isBF16();
+}
+
 // Create a rock.transform that broadcasts `input` to `targetShape`.
 // Dimensions where the source has size 1 and the target has size > 1 use
 // Broadcast{1} (i.e. index % 1 = 0). Returns the input unchanged if shapes
@@ -596,7 +601,10 @@ struct RockTosaToElementwise
     // Mark ops that Triton's TritonToTritonGPU conversion cannot handle as
     // illegal so the workaround patterns below get applied to them.
     target.addDynamicallyLegalOp<math::TanhOp>([&](math::TanhOp op) {
-      return hasHardwareTanh || !isa<ShapedType>(op.getType());
+      auto shapedType = dyn_cast<ShapedType>(op.getType());
+      if (!shapedType)
+        return true;
+      return hasHardwareTanh && isHardwareTanhSupportedType(shapedType);
     });
     target.addDynamicallyLegalOp<math::PowFOp>(
         [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
@@ -666,12 +674,10 @@ struct RockTosaToElementwise
     // math.tanh and math.powf so we use upstream
     // math::populateExpansionPatterns to expand them into ops Triton supports.
     //
-    // if the target has dedicated tanh instructions then we keep `math.tanh`
-    // and let the Triton pipeline lower it to v_tanh_* (via llvm.amdgcn.tanh)
-    // instead of expanding it here.
-    SmallVector<StringRef> opsToExpand = {"powf"};
-    if (!hasHardwareTanh)
-      opsToExpand.push_back("tanh");
+    // On hardware-tanh targets, shaped f32/f16/bf16 math.tanh is legal and
+    // remains for the Triton pipeline to lower to v_tanh_*. Other shaped
+    // math.tanh ops are illegal and expanded here.
+    SmallVector<StringRef> opsToExpand = {"powf", "tanh"};
     math::populateExpansionPatterns(patterns, opsToExpand);
 
     // This is to support migraphx.neg operator, which will be expanded to

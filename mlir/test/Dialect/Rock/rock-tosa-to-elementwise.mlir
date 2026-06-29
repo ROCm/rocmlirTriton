@@ -852,6 +852,24 @@ func.func @tanh_direct_gfx1250_preserved(%arg0: tensor<32xf32>, %arg1: tensor<32
 
 // -----
 
+// Unsupported by gfx1250 v_tanh, so direct shaped math.tanh is expanded.
+// CHECK-LABEL: @tanh_direct_gfx1250_f64_expanded
+// CHECK-NOT:   math.tanh
+// CHECK:       arith.cmpf
+// CHECK-NOT:   math.tanh
+// CHECK:       math.exp
+// CHECK-NOT:   math.tanh
+// CHECK:       arith.divf
+// CHECK-NOT:   math.tanh
+// CHECK:       return
+func.func @tanh_direct_gfx1250_f64_expanded(%arg0: tensor<32xf64>) -> tensor<32xf64>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1250"} {
+  %0 = math.tanh %arg0 : tensor<32xf64>
+  return %0 : tensor<32xf64>
+}
+
+// -----
+
 // Only tanh is exempted on gfx1250: math.powf is still expanded because the
 // Triton pipeline has no dedicated lowering for it.
 // CHECK-LABEL: @powf_gfx1250_still_expanded
