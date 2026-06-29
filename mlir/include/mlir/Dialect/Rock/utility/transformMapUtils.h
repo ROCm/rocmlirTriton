@@ -119,6 +119,13 @@ getMaxVectorization(Value transformed, uint32_t dim,
 /// fear of breaking existing IR.
 void collapseContiguousMerges(Value transformed);
 
+/// Returns the upper-space (view-side / map-domain) dim indices that the given
+/// map constrains for validity: the non-trivially padded dims of every `Pad`
+/// and the upper dims of every invalidatable `Embed`. These are the
+/// coordinates whose values a runtime validity mask would be computed from. The
+/// result is empty iff `mapImpactsValidity(map)` is false.
+SmallVector<unsigned> validityImpactingUpperDims(TransformMapAttr map);
+
 /// Returns true if the given `TransformMapAttr` has impacts on the validity
 /// of the underlying coordinates. If this returns true, the code generating
 /// indexing must pause and generate a validity tests using the inputs (upper

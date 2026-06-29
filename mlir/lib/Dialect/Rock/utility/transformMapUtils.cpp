@@ -1069,21 +1069,28 @@ bool mlir::rock::embedCanBeInvalid(TransformMapAttr map, TransformAttr op) {
                       });
 }
 
-bool mlir::rock::mapImpactsValidity(TransformMapAttr map) {
-  bool result = false;
+SmallVector<unsigned>
+mlir::rock::validityImpactingUpperDims(TransformMapAttr map) {
+  SmallVector<unsigned> dims;
   for (TransformAttr op : map.getOps()) {
     TransformType type = op.getType();
-    ArrayRef<int64_t> params = op.getParams();
     if (type == TransformType::Pad) {
-      for (size_t i = 0, e = params.size(); i < e; i += 2) {
-        // Trivial padding doesn't impact validity
-        result |= (params[i] != 0 || params[i + 1] != 0);
-      }
+      ArrayRef<int64_t> params = op.getParams();
+      ArrayRef<uint32_t> upper = op.getUpperDims();
+      for (size_t i = 0, e = upper.size(); i < e; ++i)
+        // Trivial padding doesn't impact validity.
+        if (params[2 * i] != 0 || params[2 * i + 1] != 0)
+          dims.push_back(upper[i]);
     } else if (type == TransformType::Embed) {
-      result |= embedCanBeInvalid(map, op);
+      if (embedCanBeInvalid(map, op))
+        llvm::append_range(dims, op.getUpperDims());
     }
   }
-  return result;
+  return dims;
+}
+
+bool mlir::rock::mapImpactsValidity(TransformMapAttr map) {
+  return !validityImpactingUpperDims(map).empty();
 }
 
 AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
