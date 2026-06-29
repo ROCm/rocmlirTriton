@@ -165,6 +165,9 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     auto ptrType = triton::PointerType::get(info.elementType, 1);
 
     for (Value oldValue : info.valuesToReplace) {
+      // Replace every tt.splat of the extract_ptr result with a splat (with ptr
+      // type) of the block arg. early_inc lets us erase the splat while
+      // iterating.
       for (Operation *user : llvm::make_early_inc_range(oldValue.getUsers())) {
         auto splatOp = dyn_cast<triton::SplatOp>(user);
         if (!splatOp)
