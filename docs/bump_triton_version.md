@@ -13,6 +13,12 @@ Note that we want to use Triton from https://github.com/triton-lang/triton-windo
 
 ## Step 1: Import new upstream revisions
 
+Use the Triton-bump commit-message convention for upstream subtree
+imports, such as `[TRITON-BUMP]` or a Jira-tracked
+`[AIROCMLIR-NNN]` prefix. The `[EXTERNAL]` prefix is reserved for
+downstream vendored-tree patch commits that modify `external/triton/`
+or `external/llvm-project/` outside an upstream import / bump commit.
+
 ### 1.1 Record the current repository commit
 
 ```bash

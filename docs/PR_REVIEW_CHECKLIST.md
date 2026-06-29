@@ -179,12 +179,20 @@ upstream merge, not build-time inputs. Consequently:
 - Editing files under `external/triton/` or `external/llvm-project/`
   directly is expected; do NOT flag the direct edit itself as a
   violation.
+- **Major** -- a downstream commit that modifies files under
+  `external/triton/` or `external/llvm-project/` does not use a
+  `[EXTERNAL]` commit subject prefix. This rule applies to local
+  downstream fixes in the vendored trees, not upstream import / bump
+  commits; upstream bumps are covered by the next section. Downstream
+  vendored-tree changes should be explicit in the commit history so
+  patch records can be audited against the exact subtree diff.
 - **Major** -- a downstream change to the vendored trees lands WITHOUT a
   matching patch under `triton-patches/` or `llvm-patches/` and an entry
   in `triton-patches/triton-patch-content.txt` or
   `llvm-patches/llvm-patch-content.txt`. The patch must match the
-  committed edit, and the PR description must either link the upstream
-  issue/PR or explain why the change is a permanent fork.
+  corresponding downstream `[EXTERNAL]` commit diff, and the PR
+  description must either link the upstream issue/PR or explain why the
+  change is a permanent fork.
 
 ### Triton / LLVM subtree updates (upstream bumps)
 

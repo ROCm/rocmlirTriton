@@ -402,8 +402,8 @@ jobs:
             fi
             git_fetch_with_auth --no-tags --deepen=500 origin "$base_ref" "$HEAD_SHA"
           done
-          git merge-base "origin/$base_ref" HEAD >/dev/null
-          git diff "origin/${base_ref}...HEAD" > /tmp/pr/diff.patch
+          merge_base=$(git merge-base "origin/$base_ref" HEAD)
+          git diff "${merge_base}...HEAD" > /tmp/pr/diff.patch
           # meta.files derived from the same pinned ref range as diff.patch, in
           # the [{"path":...}] shape the skill reads. --no-renames = one row per
           # path; core.quotePath keeps each line a single safe path.
@@ -414,6 +414,35 @@ jobs:
             /tmp/pr/meta.json > /tmp/pr/meta.tmp
           mv /tmp/pr/meta.tmp /tmp/pr/meta.json
           rm /tmp/pr/files.json
+          # Commit-level metadata lets the read-only review step check
+          # conventions that cannot be inferred from the final PR diff alone,
+          # such as requiring vendored-subtree edits to live in [EXTERNAL]
+          # commits and comparing patch records against the exact commit diff.
+          # Keep this block in sync with the interactive appendix in
+          # .claude/skills/review-rocmlir-triton-pr/SKILL.md.
+          mkdir -p /tmp/pr/commit_diffs
+          : > /tmp/pr/commits.ndjson
+          while IFS= read -r sha; do
+            subject=$(git log -1 --format=%s "$sha")
+            diff_path="/tmp/pr/commit_diffs/${sha}.patch"
+            # Compare each commit against its first parent. This preserves the
+            # actual subtree-import diff for merge commits while matching the
+            # normal single-parent commit diff.
+            parent=$(git rev-parse "${sha}^1" 2>/dev/null) \
+              || parent=$(git hash-object -t tree /dev/null)
+            paths=$(git diff --name-only --no-renames "$parent" "$sha" \
+              | jq -Rn '[inputs | select(length > 0)]')
+            git diff --no-ext-diff --unified=3 "$parent" "$sha" > "$diff_path"
+            jq -n \
+              --arg sha "$sha" \
+              --arg subject "$subject" \
+              --arg diffPath "$diff_path" \
+              --argjson paths "$paths" \
+              '{sha: $sha, subject: $subject, paths: $paths, diffPath: $diffPath}' \
+              >> /tmp/pr/commits.ndjson
+          done < <(git log --reverse --format='%H' "${merge_base}..HEAD")
+          jq -s '.' /tmp/pr/commits.ndjson > /tmp/pr/commits.json
+          rm /tmp/pr/commits.ndjson
           # CI status from the REST API (not `gh pr checks --json`, which is
           # absent on some runner-pool gh versions and silently fell through to
           # `[]` -- letting a review approve with zero CI visibility). Query
@@ -626,6 +655,9 @@ jobs:
                                             files array, all anchored to the pinned SHA)
               - /tmp/pr/diff.patch         (the unified diff, generated locally from
                                             origin/<base>...HEAD on the pinned SHA)
+              - /tmp/pr/commits.json       (commit subjects, touched paths, and
+                                            per-commit diff paths for commit-level
+                                            review rules)
               - /tmp/pr/checks.json        (CI status)
               - /tmp/pr/prev_comments.json (existing inline review comments)
 
@@ -643,6 +675,10 @@ jobs:
               - Read('/tmp/pr/diff.patch')         -- can be tens of KB; use Read
                                                       offset/limit or Grep for a
                                                       specific path.
+              - Read('/tmp/pr/commits.json')       -- scan commit subjects and
+                                                      paths; read each diffPath only
+                                                      when a commit-level rule needs
+                                                      the exact commit diff.
               - Read('/tmp/pr/checks.json')        -- scan the array yourself for
                                                       entries with bucket == "fail"
                                                       or "cancel".
@@ -958,6 +994,8 @@ jobs:
           path: |
             /tmp/pr/actions.json
             /tmp/pr/meta.json
+            /tmp/pr/commits.json
+            /tmp/pr/commit_diffs/
           retention-days: 7
           if-no-files-found: error
 
