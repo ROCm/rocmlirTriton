@@ -814,7 +814,7 @@ public:
       // Let LLVM handle compare+swap loop; branch-based pred should be fine
       if (valueElemTy.isBF16() && getNVIDIAComputeCapability(moduleOp) < 90) {
         // Lower atomic bin-op and sem to LLVM
-        auto llvmAtomicBinOp = matchAtomicOp(atomicRmwAttr);
+        auto llvmAtomicBinOp = matchAtomicOp(atomicRmwAttr, op.getVal().getType());
         auto llvmAtomicMemOrdering = getMemoryOrdering(op.getSem());
 
         // Generate dominating undef

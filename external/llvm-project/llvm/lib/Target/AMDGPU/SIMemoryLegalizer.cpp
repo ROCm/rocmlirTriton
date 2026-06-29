@@ -148,6 +148,11 @@ private:
   bool IsNonTemporal = false;
   bool IsLastUse = false;
   bool IsCooperative = false;
+  /// True if a workgroup-scope operation was demoted to wavefront scope because
+  /// the workgroup fits in a single wave. Such a demotion drops workgroup-scope
+  /// LDS waits that are still required for correctness (see
+  /// insertDemotedWorkgroupLDSWait).
+  bool WasWorkgroupScopeDemoted = false;
 
   // TODO: Should we assume Cooperative=true if no MMO is present?
   SIMemOpInfo(
@@ -217,8 +222,10 @@ private:
         this->Scope == SIAtomicScope::WORKGROUP &&
         (llvm::isStrongerThan(this->Ordering, AtomicOrdering::Monotonic) ||
          llvm::isStrongerThan(this->FailureOrdering,
-                              AtomicOrdering::Monotonic)))
+                              AtomicOrdering::Monotonic))) {
       this->Scope = SIAtomicScope::WAVEFRONT;
+      this->WasWorkgroupScopeDemoted = true;
+    }
   }
 
 public:
@@ -276,6 +283,10 @@ public:
 
   /// \returns True if this is a cooperative load or store atomic.
   bool isCooperative() const { return IsCooperative; }
+
+  /// \returns True if a workgroup-scope operation was demoted to wavefront
+  /// scope because the workgroup fits in a single wave.
+  bool wasWorkgroupScopeDemoted() const { return WasWorkgroupScopeDemoted; }
 
   /// \returns True if ordering constraint of the machine instruction used to
   /// create this SIMemOpInfo is unordered or higher, false otherwise.
@@ -461,6 +472,25 @@ public:
                           IsCrossAddrSpaceOrdering, Pos,
                           AtomicOrdering::Release, /*AtomicsOnly=*/false);
     return Changed;
+  }
+
+  /// Re-insert the workgroup-scope LDS wait that the single-wave demotion
+  /// (WORKGROUP -> WAVEFRONT) would otherwise drop. This is required for
+  /// correctness even in a single-wave workgroup: an "S_WAITCNT lgkmcnt(0)" is
+  /// still needed to keep LDS accesses ordered with respect to later
+  /// global/GDS accesses of the same wave (cross-address-space ordering), and
+  /// asynchronous VMEM->LDS direct loads are not ordered within a wavefront and
+  /// need the lds_direct wait. Only the LDS address space is re-waited; global
+  /// waits (if any) are legitimately dropped by the single-wave demotion. This
+  /// is a no-op for operations that do not order the LDS address space.
+  bool insertDemotedWorkgroupLDSWait(MachineBasicBlock::iterator &MI,
+                                     SIAtomicAddrSpace AddrSpace,
+                                     bool IsCrossAddrSpaceOrdering,
+                                     AtomicOrdering Order) const {
+    return insertWait(MI, SIAtomicScope::WORKGROUP,
+                      AddrSpace & SIAtomicAddrSpace::LDS,
+                      SIMemOp::LOAD | SIMemOp::STORE, IsCrossAddrSpaceOrdering,
+                      Position::BEFORE, Order, /*AtomicsOnly=*/false);
   }
 
   /// Handle operations that are considered non-volatile.
@@ -2363,11 +2393,18 @@ bool SIMemoryLegalizer::expandStore(const SIMemOpInfo &MOI,
       Changed |= CC->handleCooperativeAtomic(*MI);
 
     if (MOI.getOrdering() == AtomicOrdering::Release ||
-        MOI.getOrdering() == AtomicOrdering::SequentiallyConsistent)
+        MOI.getOrdering() == AtomicOrdering::SequentiallyConsistent) {
+      // A release demoted to wavefront scope for a single-wave workgroup still
+      // needs the workgroup-scope LDS wait that demotion would otherwise drop.
+      if (MOI.wasWorkgroupScopeDemoted())
+        Changed |= CC->insertDemotedWorkgroupLDSWait(
+            MI, MOI.getOrderingAddrSpace(),
+            MOI.getIsCrossAddressSpaceOrdering(), MOI.getOrdering());
       Changed |= CC->insertRelease(MI, MOI.getScope(),
                                    MOI.getOrderingAddrSpace(),
                                    MOI.getIsCrossAddressSpaceOrdering(),
                                    Position::BEFORE);
+    }
 
     Changed |= CC->finalizeStore(StoreMI, /*Atomic=*/true);
     return Changed;
@@ -2402,6 +2439,13 @@ bool SIMemoryLegalizer::expandAtomicFence(const SIMemOpInfo &MOI,
                       << ", scope=" << toString(MOI.getScope())
                       << ", ordering-AS=" << OrderingAddrSpace << "\n");
     const AtomicOrdering Order = MOI.getOrdering();
+    // A workgroup fence demoted to wavefront scope for a single-wave workgroup
+    // still needs the workgroup-scope LDS wait that demotion would otherwise
+    // drop (see insertDemotedWorkgroupLDSWait).
+    if (MOI.wasWorkgroupScopeDemoted())
+      Changed |= CC->insertDemotedWorkgroupLDSWait(
+          MI, OrderingAddrSpace, MOI.getIsCrossAddressSpaceOrdering(), Order);
+
     if (Order == AtomicOrdering::Acquire) {
       // Acquire fences only need to wait on the previous atomic they pair with.
       Changed |= CC->insertWait(MI, MOI.getScope(), OrderingAddrSpace,
@@ -2469,11 +2513,18 @@ bool SIMemoryLegalizer::expandAtomicCmpxchgOrRmw(const SIMemOpInfo &MOI,
     if (Order == AtomicOrdering::Release ||
         Order == AtomicOrdering::AcquireRelease ||
         Order == AtomicOrdering::SequentiallyConsistent ||
-        MOI.getFailureOrdering() == AtomicOrdering::SequentiallyConsistent)
+        MOI.getFailureOrdering() == AtomicOrdering::SequentiallyConsistent) {
+      // A release demoted to wavefront scope for a single-wave workgroup still
+      // needs the workgroup-scope LDS wait that demotion would otherwise drop.
+      if (MOI.wasWorkgroupScopeDemoted())
+        Changed |= CC->insertDemotedWorkgroupLDSWait(
+            MI, MOI.getOrderingAddrSpace(),
+            MOI.getIsCrossAddressSpaceOrdering(), Order);
       Changed |= CC->insertRelease(MI, MOI.getScope(),
                                    MOI.getOrderingAddrSpace(),
                                    MOI.getIsCrossAddressSpaceOrdering(),
                                    Position::BEFORE);
+    }
 
     if (Order == AtomicOrdering::Acquire ||
         Order == AtomicOrdering::AcquireRelease ||
