@@ -171,7 +171,7 @@ private:
                                            sign->getResult(0), defaultFlags);
     } else if (calleeName == "__ocml_tanh_f32" ||
                calleeName == "__ocml_tanh_f16") {
-      assert(operands.size() == 1);
+      assert(operands.size() == 1 && "tanh expects a single operand");
       if (targetInfo.getISAFamily() == triton::amdgpu::ISAFamily::GFX1250) {
         const char *intrinsic = nullptr;
         if (calleeName == "__ocml_tanh_f32")
