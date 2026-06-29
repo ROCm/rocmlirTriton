@@ -585,8 +585,9 @@ struct RockTosaToElementwise
     ConversionTarget target(*ctx);
 
     // check if the target has dedicated tanh instructions, in that case the
-    // Triton pipeline emits those instructions directly from math.tanh. On such targets we keep
-    // `math.tanh` instead of expanding it into elementary ops below.
+    // Triton pipeline emits those instructions directly from math.tanh. On such
+    // targets we keep `math.tanh` instead of expanding it into elementary ops
+    // below.
     StringAttr arch = rock::getArchValueOnFunc(func);
     bool hasHardwareTanh = rock::archHasHardwareTanh(arch);
 
