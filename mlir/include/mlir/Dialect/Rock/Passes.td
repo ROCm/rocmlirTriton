@@ -511,15 +511,14 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
               "Allow flushing denormal numbers">,
        Option<"scalarizePackedFops", "scalarize-packed-fops", "bool", "false",
               "Scalarize packed float operations">,
-       Option<"scheduleHint", "schedule-hint", "int64_t", "-1",
-              "Scheduling hint ordinal (-1=arch default, 0=none, "
-              "1=attention, 2=memory-bound-attention). See "
-              "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding.">,
        Option<"llvmFnAttrs", "llvm-fn-attrs", "std::string", "\"\"",
               "Debug-only: comma-separated LLVM function attributes (name or "
               "name=value) applied to the kernel after Triton's attributes. "
               "Mirrors the experimental llvm_fn_attrs HIPOption in "
-              "compiler.py.">];
+              "compiler.py.">,
+       Option<"useExpertScheduling", "use-expert-scheduling", "int", "-1",
+              "Tri-state override of the AMDGPU expert-scheduling codegen flag "
+              "(-1=arch default (on for gfx1250), 0=off, 1=on).">];
 }
 
 def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {

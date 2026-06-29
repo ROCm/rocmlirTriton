@@ -111,12 +111,6 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
            "(kKnobDefault=off, 0=off, 1=on; requires useBufferOps to be on). "
            "Debug-only override; not a perfConfig knob."),
       init(kKnobDefault)};
-  PassOptions::Option<int64_t> scheduleHint{
-      *this, "scheduleHint",
-      desc("Per-kernel scheduling hint ordinal (kKnobDefault=arch default, "
-           "0=none, 1=attention, 2=memory-bound-attention). See "
-           "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding."),
-      init(kKnobDefault)};
 };
 
 /// Adds the `triton` pipeline to the `OpPassManager`.
@@ -151,17 +145,18 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> allowFlushDenorm{
       *this, "allowFlushDenorm", desc("Whether to allow flush denorm"),
       init(true)};
-  PassOptions::Option<int64_t> scheduleHint{
-      *this, "scheduleHint",
-      desc("Per-kernel scheduling hint ordinal forwarded to TritonToHsaco "
-           "(see mlir/Dialect/Rock/utility/KnobUtils.h)"),
-      init(kKnobDefault)};
   PassOptions::Option<std::string> llvmFnAttrs{
       *this, "llvmFnAttrs",
       desc("Debug-only override: comma-separated LLVM function attributes "
            "(name or name=value) applied to the kernel after Triton's "
            "attributes."),
       init("")};
+  PassOptions::Option<int> useExpertScheduling{
+      *this, "useExpertScheduling",
+      desc("Override AMDGPU expert-scheduling codegen flag "
+           "(kKnobDefault=arch default (on for gfx1250), 0=off, 1=on). "
+           "Debug-only override; not a perfConfig knob."),
+      init(kKnobDefault)};
 };
 
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.

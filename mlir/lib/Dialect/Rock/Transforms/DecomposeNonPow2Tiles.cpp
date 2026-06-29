@@ -425,8 +425,7 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
         params.getNumStages(), params.getWavesPerEU(),
         params.getGridGroupSize(), params.getUseAsyncCopy(),
         params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
-        params.getUseBufferOps(), params.getUseBufferAtomics(),
-        params.getScheduleHint());
+        params.getUseBufferOps(), params.getUseBufferAtomics());
   };
 
   SmallVector<Value> resultGrid;

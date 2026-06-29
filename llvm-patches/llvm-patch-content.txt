@@ -5,85 +5,90 @@ This directory holds downstream patch records against the Triton-pinned LLVM
 tree (external/llvm-project).
 
 ----------------------------------------------------------------------
-patch193499.patch
+patch205637.patch
 ----------------------------------------------------------------------
-- Upstream PR     : https://github.com/llvm/llvm-project/pull/193499
-- Upstream commit : 81d618b6bc1e71cda79fe7bf9cbab63933dd5975
-- Upstream title  : [AMDGPU][SIInsertWaitcnts] Fix iota_range assertion
-                    when OtherMarks is empty in mergeAsyncMarks()
-- File Fixed      : llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp
+- Upstream commit : 8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/205637
+- Upstream title  : [AMDGPU] Align to LDS granularity in occupancy calculation
+- File Fixed      : llvm/lib/Target/AMDGPU/AMDGPUSubtarget.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPUSubtarget.h
+                    llvm/lib/Target/AMDGPU/GCNSubtarget.cpp
+                    llvm/test/CodeGen/AMDGPU/occupancy-levels.ll
+- Contents        : Adds an LDSAllocationGranularity field to AMDGPUSubtarget,
+                    initializes it from AMDGPU::getLdsDwGranularity(*this),
+                    and rounds queried per-workgroup LDS bytes up to that
+                    allocation granularity before computing LDS-limited
+                    occupancy in getOccupancyWithWorkGroupSizes.
 
 Symptom without the patch
 -------------------------
-rocmlir-driver -c aborts during code generation with:
+For gfx950 attention kernels whose static LDS usage is not already aligned to
+the hardware allocation block, occupancy can be overestimated. The backend may
+then schedule/codegen under an occupancy assumption that does not match the
+actual allocated LDS footprint, producing numerically incorrect results in the
+i8 attention repro:
 
-  Assertion `Begin <= End && "Begin must be less or equal to End."' failed.
-  Stack frame: WaitcntBrackets::mergeAsyncMarks ->
-               seq_inclusive<unsigned>(1, 0) -> iota_range ctor
-
-The bug fires at a CFG join where one predecessor has pending async
-memory operations (ASYNCMARK / WAIT_ASYNCMARK pushed onto AsyncMarks)
-and the other does not. MergeCount becomes min(0, N) = 0 and the loop
-`for (auto Idx : seq_inclusive<unsigned>(1, MergeCount))` violates
-Begin <= End. The fix adds an early `return StrictDom` when
-MergeCount == 0.
-
-Regression test that guards this patch
---------------------------------------
-mlir/test/fusion/nightly-misc-e2e/attention-i8-SIInsertWantcnts.mlir
-
-  Compile-only. Cross-compiles attention -t i8  and pipes through 
-  `rocmlir-driver -c`. FileCheck pattern `CHECK: triton.hsaco` requires 
-  successful codegen; reverting this patch makes rocmlir-driver abort and 
-  FileCheck's stdin is empty.
-
-----------------------------------------------------------------------
-patch198508.patch
-----------------------------------------------------------------------
-- Upstream PR     : https://github.com/llvm/llvm-project/pull/198508
-- Upstream commit : ace44dc5a2a48e5d024bc5c015f69a67cd9be909
-- Upstream title  : [AMDGPU] Gate `S_LSHL[1-4]_ADD_U32` patterns on uniform
-                    results
-- File Fixed      : llvm/lib/Target/AMDGPU/SOPInstructions.td
-- Contents        : SOPInstructions.td fix plus the 13
-                    llvm/test/CodeGen/AMDGPU/*.ll LIT test updates
-                    (CHECK-line-only; no logic). All hunks verified to apply
-                    cleanly against the pinned LLVM (87717bf9).
-
-Symptom without the patch
--------------------------
-On gfx1201 (RDNA4, wave32), grouped convolution with split-K > 1 (packed
-f16 atomics) produces incorrect output: ~6 of every 8 consecutive output
-channels are zeroed. The miscompile only appears at LLVM middle-end
-opt level >= 2 (rocmlir-driver --gO>=2, i.e. the default); --gO=1 was the
-prior workaround.
+  -operation attention -t i8 --arch gfx950:sramecc+:xnack- ... \
+  -seq_len_q 381 -seq_len_k 78 -num_heads_q 64 -num_heads_kv 4 \
+  -head_dim_qk 68 -head_dim_v 94 -split_kv=2 \
+  --perf_config=attn:v1:256,16,128,1,1,2,0,1,3,4,8
 
 Root cause
 ----------
-The s_lshlN_add_u32 selection patterns added by upstream PR#167032
-("Generate s_lshl?_add_u32", commit 125b6b591741, present in the pinned
-LLVM) are not gated on uniformity. At -O2, GVN + InstCombine reassociate
-the per-lane output-channel offset into a `(workitem.id-derived << 2) +
-base` shape that matches the scalar S_LSHL2_ADD_U32 pattern even though
-the value is divergent (IR UniformityAnalysis correctly marks the whole
-chain divergent). SIFixSGPRCopies then satisfies the SALU operand by
-inserting `v_readfirstlane_b32` on the divergent channel, collapsing every
-lane to lane 0's channel index -> the per-lane packed-f16 atomic stores
-all target the same channel, dropping the rest.
+getOccupancyWithWorkGroupSizes divided total LDS capacity by the raw queried
+LDS byte count. Hardware allocates LDS in target-specific blocks, so unaligned
+LDS sizes consume more LDS than the raw byte count implies. Rounding the query
+up to LDSAllocationGranularity makes the occupancy calculation match allocation
+granularity and prevents the overestimated occupancy.
 
-The companion SDAG divergence-tracking fix (PR#147560, commit
-9293b65a616b) that would have caught this was reverted in the pinned LLVM
-by PR#152548 (commit c7c022948031), so the missing UniformBinFrag gate is
-the actionable fix.
-
-The fix wraps each pattern in `UniformBinFrag<shlN_add>` (matching the
-other SOP2 scalar patterns in the file) so divergent shl/add chains select
-the vector `V_LSHL_ADD_U32` instead. Drop this patch on the next Triton
-bump that pulls commit ace44dc5a2a4 into the pinned LLVM (it lands after
-the current pin 87717bf9, dated 2026-04-08; the fix merged 2026-05-19).
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c.
 
 ----------------------------------------------------------------------
-mlir-rocm-runtime-standalone.patch
+patch207473.patch
+----------------------------------------------------------------------
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/207473
+- Upstream title  : [AMDGPU] Preserve LDS waits when demoting single-wave
+                    workgroup scope to wavefront
+- File Fixed      : llvm/lib/Target/AMDGPU/SIMemoryLegalizer.cpp
+                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-memops.ll
+                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-fence-mmra-local.ll (new)
+- Contents        : Records when a workgroup-scope fence/atomic is demoted to
+                    wavefront scope for a single-wave workgroup (the new
+                    SIMemOpInfo::WasWorkgroupScopeDemoted flag, set alongside
+                    the WORKGROUP -> WAVEFRONT demotion) and re-inserts the
+                    workgroup-scope LDS wait the demotion would otherwise drop.
+                    A new SICacheControl::insertDemotedWorkgroupLDSWait() helper
+                    waits only the LDS address space at WORKGROUP scope; it is
+                    called from expandStore, expandAtomicFence, and
+                    expandAtomicCmpxchgOrRmw. Global waits are still legitimately
+                    dropped by the single-wave demotion.
+
+Symptom without the patch
+-------------------------
+#187673 demotes workgroup-scoped fences and non-relaxed workgroup atomics to
+wavefront scope when the kernel's workgroup fits in a single wave
+(AMDGPUSubtarget::isSingleWavefrontWorkgroup). Collapsing the scope to
+WAVEFRONT in the SIMemOpInfo constructor (before insertWait runs) also drops
+two LDS waits that SIMemoryLegalizer only emits at WORKGROUP scope: the
+"S_WAITCNT lgkmcnt(0)" that orders LDS against later global/GDS accesses of the
+same wave, and the "S_WAITCNT_lds_direct" wait for asynchronous VMEM->LDS
+direct loads (buffer_load ... lds). Both are required for correctness
+regardless of wave count, so single-wave workgroups that use LDS miscompile --
+e.g. a ds_read is not drained before a subsequent buffer_load ... lds.
+
+Root cause
+----------
+The single-wave WORKGROUP -> WAVEFRONT demotion is too coarse. Eliding
+cross-wave synchronization is sound when there is only one wave, but the two
+LDS waits above are intra-wave ordering / async-copy completion, not cross-wave
+synchronization, so they must survive the demotion.
+
+As of this bump #207473 is still open upstream (unmerged). Drop this patch on
+the next LLVM/Triton bump that pulls it into the pinned LLVM.
+
+----------------------------------------------------------------------
+patch205651.patch
 ----------------------------------------------------------------------
 - Upstream PR     : https://github.com/llvm/llvm-project/pull/205651
 - Upstream title  : [MLIR][ROCm] Build mlir_rocm_runtime STANDALONE
@@ -132,9 +137,50 @@ Drop this patch on the next LLVM/Triton bump that pulls the upstream PR into
 the pinned LLVM.
 
 ----------------------------------------------------------------------
-patch1.patch
-patch2.patch
-patch3.patch
-patch4.patch
+patch167347.patch
 ----------------------------------------------------------------------
-TODO: Add missing patch descriptions
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/167347
+- Upstream title  : [AMDGPU] Verify dominance when rewriting spills to
+                    registers
+- JIRA case       : https://amd-hub.atlassian.net/browse/LCOMPILER-2224
+- File Fixed      : llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.h (new)
+- Contents        : Requires a MachineDominatorTree in the AGPR-copy-MFMA
+                    rewrite pass and, before eliminating a VGPR spill slot,
+                    verifies via the new
+                    AMDGPU::checkAGPRCopyMFMAJointDominance() helper that
+                    every reachable reload of the slot is jointly dominated
+                    by stores to that same slot; slots with no reachable
+                    store, or with a reload some store-free path can reach,
+                    are skipped. The helper is split into the new
+                    AMDGPURewriteAGPRCopyMFMA.h so it can be unit-tested.
+
+Symptom without the patch
+-------------------------
+AMDGPURewriteAGPRCopyMFMA::eliminateSpillsOfReassignedVGPRs() can collapse a
+VGPR spill slot into a single virtual register even when a reload of that
+slot is not dominated by the slot's stores. Replacing all references with
+one vreg then yields invalid MIR -- a vreg use not dominated by its def --
+which trips the machine verifier / crashes the backend.
+
+Root cause
+----------
+Spill save/restore goes through stack memory, which (unlike SSA values) has
+no dominance guarantee: a slot can have stores in several blocks that do not
+jointly dominate all of its reloads (e.g. a poison/undef incoming value on
+some control-flow path). Folding the slot back into one register imposes an
+SSA def->use dominance that the original spill never had.
+
+Downstream divergence from the upstream PR
+------------------------------------------
+Upstream #167347 (by Austin Kerbow) checks only that each reload is
+dominated by *some* single store. Reviewers (jayfoad, ruiling) pointed out
+that the correct, weaker requirement is *joint* dominance -- every path from
+entry to a reload must pass through a store block. This patch implements
+that stronger/more-correct joint-dominance check instead, and factors it
+into checkAGPRCopyMFMAJointDominance() for unit testing.
+
+As of this bump #167347 is still open upstream (unmerged). Drop or reconcile
+this patch once it -- or a successor such as #198472
+("[AMDGPU] Fixed crash due to virtual register defs not dominating uses") --
+lands in the pinned LLVM with an equivalent or stronger dominance check.

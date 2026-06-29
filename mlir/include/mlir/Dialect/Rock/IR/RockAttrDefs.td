@@ -290,14 +290,6 @@ def Rock_GemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - scheduleHint: Bitfield selector mirroring upstream Triton's
-      `HIPOptions.schedule_hint`, which is a comma-separated multi-select
-      string ("attention,memory-bound-attention"). Encoded as a bitfield so
-      that combinations are expressible end-to-end.
-      kKnobDefault=-1=arch default, 0=none, bit 0 (=1)=attention,
-      bit 1 (=2)=memory-bound-attention. Bit assignments are append-only;
-      new variants must claim a new bit and the table in
-      KnobUtils.cpp must be extended in lockstep.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -321,12 +313,11 @@ def Rock_GemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$scheduleHint);
+      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics);
 
   let extraClassDeclaration = [{
     void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("gemm:v2:"
+        ("gemm:v3:"
         + Twine(getMPerBlock()) + ","
         + Twine(getNPerBlock()) + ","
         + Twine(getKPerBlock()) + ","
@@ -342,8 +333,7 @@ def Rock_GemmParamsAttr
         + Twine(getUseBlockPingpong()) + ","
         + Twine(getUseInThreadTranspose()) + ","
         + Twine(getUseBufferOps()) + ","
-        + Twine(getUseBufferAtomics()) + ","
-        + Twine(getScheduleHint()))
+        + Twine(getUseBufferAtomics()))
         .toVector(perfStr);
     }
 
@@ -392,14 +382,6 @@ def Rock_GemmGemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - scheduleHint: Bitfield selector mirroring upstream Triton's
-      `HIPOptions.schedule_hint`, which is a comma-separated multi-select
-      string ("attention,memory-bound-attention"). Encoded as a bitfield so
-      that combinations are expressible end-to-end.
-      kKnobDefault=-1=arch default, 0=none, bit 0 (=1)=attention,
-      bit 1 (=2)=memory-bound-attention. Bit assignments are append-only;
-      new variants must claim a new bit and the table in
-      KnobUtils.cpp must be extended in lockstep.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -423,12 +405,11 @@ def Rock_GemmGemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$scheduleHint);
+      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics);
 
   let extraClassDeclaration = [{
     void getPerfConfigStr(::llvm::SmallVectorImpl<char> &perfStr) {
-      ("attn:v2:"
+      ("attn:v3:"
       + Twine(getMPerBlockG0()) + ","
       + Twine(getNPerBlockG0()) + ","
       + Twine(getKPerBlock()) + ","
@@ -444,8 +425,7 @@ def Rock_GemmGemmParamsAttr
       + Twine(getUseBlockPingpong()) + ","
       + Twine(getUseInThreadTranspose()) + ","
       + Twine(getUseBufferOps()) + ","
-      + Twine(getUseBufferAtomics()) + ","
-      + Twine(getScheduleHint()))
+      + Twine(getUseBufferAtomics()))
       .toVector(perfStr);
     }
 
