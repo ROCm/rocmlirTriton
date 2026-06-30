@@ -95,17 +95,14 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
 
     // Check if the source is a block argument (tensor)
     auto blockArg = dyn_cast<BlockArgument>(tensorOperand);
-    if (!blockArg)
-      llvm_unreachable("extract_ptr source must be a block argument");
+    assert(blockArg && "extract_ptr source must be a block argument");
 
     auto tensorType = dyn_cast<RankedTensorType>(tensorOperand.getType());
-    if (!tensorType)
-      llvm_unreachable("extract_ptr source must be a tensor");
+    assert(tensorType && "extract_ptr source must be a tensor");
 
-    // The result of extract_ptr must be PtrGlueType, which we replace with a
-    // !tt.ptr.
-    if (extractPtrOp.getResult().getType() != getPtrGlueType(ctx))
-      llvm_unreachable("extract_ptr result must be the pointer glue type");
+    // The result of extract_ptr is PtrGlueType, which we replace with a !tt.ptr.
+    assert(extractPtrOp.getResult().getType() == getPtrGlueType(ctx) &&
+           "extract_ptr result must be the pointer glue type");
 
     ArgConversionInfo info;
     info.argIndex = blockArg.getArgNumber();
@@ -214,9 +211,8 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
       // Adding two pointer tensors is not valid pointer arithmetic and should
       // never be produced upstream (TransformsToPointerArith only ever adds an
       // integer offset to a base pointer).
-      if (lhsPtr && rhsPtr)
-        llvm_unreachable("arith.addi on two pointer tensors is not valid "
-                         "pointer arithmetic");
+      assert(!(lhsPtr && rhsPtr) && "arith.addi on two pointer tensors is not "
+                                    "valid pointer arithmetic");
       // Convert only when exactly one operand is a pointer tensor; neither is
       // an ordinary integer add.
       if (lhsPtr != rhsPtr)
