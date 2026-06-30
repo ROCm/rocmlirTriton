@@ -535,19 +535,20 @@ struct TransformsToPtrRewritePattern
       if (isConstantBuffer) {
         // For constants (like fakeTensor), use base pointer of 0
         // These are only used for index calculations, not actual memory access
-        baseAddr =
-            arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(0));
+        baseAddr = arith::ConstantOp::create(
+            b, loc, b.getIntegerAttr(rock::getPtrGlueType(b.getContext()), 0));
       } else {
         // For function arguments, hoist to function entry
         auto parentFunc = op->getParentOfType<func::FuncOp>();
         b.setInsertionPointToStart(&parentFunc.front());
 
-        // Extract the base pointer from the tensor as i32
+        // Extract the base pointer from the tensor as the pointer glue type
         baseAddr = rock::ExtractPtrOp::create(b, loc, buffer);
       }
     }
     // Use triton.splat for broadcasting scalar to triton
-    auto splatType = RankedTensorType::get(shape, b.getI32Type());
+    auto splatType =
+        RankedTensorType::get(shape, rock::getPtrGlueType(b.getContext()));
     Value baseAddrSplat = triton::SplatOp::create(b, loc, splatType, baseAddr);
     // InsertionGuard restores original insertion point here
 

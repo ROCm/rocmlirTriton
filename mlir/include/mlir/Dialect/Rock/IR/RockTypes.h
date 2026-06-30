@@ -15,6 +15,7 @@
 #ifndef MLIR_DIALECT_ROCK_IR_ROCKTYPES_H
 #define MLIR_DIALECT_ROCK_IR_ROCKTYPES_H
 
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpDefinition.h"
 
 #include "mlir/Dialect/Rock/IR/RockTypes.h.inc"
@@ -23,6 +24,25 @@ namespace mlir {
 namespace rock {
 ConvOpType convOpTypeFromKernelType(KernelType kernelType);
 KernelType kernelTypeFromConvOpType(ConvOpType convOpType);
+
+/// This type represents the pointer in rock IR.
+/// It is used as a "glue" between rock IR and triton IR (which has its own
+/// pointer type).
+///
+/// Note: this is NOT the width of the final pointer. It is only the type
+/// that rock.extract_ptr produces and that pointer-offset arithmetic operates
+/// on. During RockTensorToTritonPtr, this type is discarded and replaced by the
+/// real !tt.ptr kernel argument, which lowers to a genuine pointer (which might
+/// be 32 or 64 bit).
+constexpr unsigned kPtrGlueBitWidth = 32;
+
+inline IntegerType getPtrGlueType(MLIRContext *ctx) {
+  return IntegerType::get(ctx, kPtrGlueBitWidth);
+}
+
+inline bool isPtrGlueType(Type type) {
+  return type.isInteger(kPtrGlueBitWidth);
+}
 } // namespace rock
 } // namespace mlir
 

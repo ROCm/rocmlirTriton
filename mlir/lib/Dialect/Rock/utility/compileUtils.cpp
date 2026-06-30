@@ -88,12 +88,12 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
     info.blockSize = tritonBlockSize;
     info.clusterSize = numCTAs;
 
-    // Get grid_size from module attribute (set by FuncToTritonFunc)
+    // Get grid_size from module attribute (set by RockTensorToTritonPtr)
     std::string gridAttrName = "rock.grid_size." + info.name;
     if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
       info.gridSize = gridAttr.getInt();
 
-    // Get prefill arg info from module attribute (set by FuncToTritonFunc)
+    // Get prefill arg info from module attribute (set by RockTensorToTritonPtr)
     std::string prefillAttrName = "rock.prefill_args." + info.name;
     if (auto prefillArr = moduleOp->getAttrOfType<ArrayAttr>(prefillAttrName)) {
       for (Attribute entry : prefillArr) {

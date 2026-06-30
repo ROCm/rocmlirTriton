@@ -430,20 +430,19 @@ def RockSerializeHostFuncsPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
-def RockFuncToTritonFuncPass
-    : Pass<"rock-func-to-triton-func", "::mlir::ModuleOp"> {
-  let summary =
-      "Convert func.func kernels to tt.func with Triton pointer arguments";
+def RockTensorToTritonPtrPass
+    : Pass<"rock-tensor-to-triton-ptr", "::mlir::ModuleOp"> {
+  let summary = "Convert tensor semantic kernels (rock) to pointer semantic "
+                "kernels (triton)";
   let description = [{
-    This pass transforms Rock kernel functions from the standard `func.func` dialect
-    to Triton's `tt.func` dialect, preparing them for the Triton compilation pipeline.
+    This pass transforms kernels from tensor semantic to pointer semantic.
 
     Key transformations:
-    1. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
+    1. Converts `arith.addi` on pointer tensors to `tt.addptr`
     2. Replaces tensor arguments with `!tt.ptr<element_type>` Triton pointers
     3. Eliminates rock.extract_ptr and adapts the users to use the !tt.ptr directly.
-    4. Converts `arith.addi` on pointer tensors to `tt.addptr`
-    5. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
+    4. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
+    5. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
     6. Stores host functions (wrappers, main) as module attributes for later restoration
     7. Preserves grid size as module attributes for gpu.launch_func
   }];
@@ -530,7 +529,7 @@ def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
     After Triton lowers kernels to LLVM IR and `TritonToHsacoPass` produces
     HSACO, this pass materializes a `gpu.binary` from that HSACO (with kernel
     metadata), marks the module as a GPU container, and when host functions
-    were serialized by `RockFuncToTritonFuncPass`, restores them from
+    were serialized by `RockTensorToTritonPtrPass`, restores them from
     `rock.host_functions` and rewrites `func.call` to `gpu.launch_func`.
 
     The `gpu.binary` is emitted whenever kernels and HSACO are present, even if

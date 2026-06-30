@@ -543,9 +543,9 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(createCanonicalizerPass());
 
   funcPm2.addPass(rock::createRockToTTIRPass());
-  // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to
+  // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
-  pm.addPass(rock::createRockFuncToTritonFuncPass());
+  pm.addPass(rock::createRockTensorToTritonPtrPass());
   // After this point, function is triton::FuncOp
   auto &ttFuncPm = pm.nest<triton::FuncOp>();
   ttFuncPm.addPass(createCanonicalizerPass());
@@ -738,7 +738,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   }
 
   // Emit gpu.binary from HSACO, restore host functions (main, wrapper) if
-  // serialized during RockFuncToTritonFuncPass, and convert func.call @kernel
+  // serialized during RockTensorToTritonPtrPass, and convert func.call @kernel
   // to gpu.launch_func when applicable.
   rock::RockEmitGpuBinaryPassOptions emitGpuBinaryOpts;
   emitGpuBinaryOpts.triple = options.triple;

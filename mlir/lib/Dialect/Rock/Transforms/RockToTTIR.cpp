@@ -158,10 +158,11 @@ struct RockLoadPtrOpRewritePattern
     auto resultTensorType = cast<RankedTensorType>(op.getResult().getType());
     Type elementType = resultTensorType.getElementType();
 
-    // Verify pointerTensor is a tensor of i32
+    // Verify pointerTensor is a tensor of the pointer glue type
     auto ptrTensorType = dyn_cast<RankedTensorType>(pointerTensor.getType());
-    if (!ptrTensorType || !ptrTensorType.getElementType().isInteger(32)) {
-      LLVM_DEBUG(llvm::dbgs() << "Pointer tensor is not a tensor of i32\n");
+    if (!ptrTensorType || !isPtrGlueType(ptrTensorType.getElementType())) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Pointer tensor is not a tensor of the ptr glue type\n");
       return failure();
     }
 
@@ -306,10 +307,11 @@ struct RockStorePtrOpRewritePattern
     // of fusion ops (e.g., arith.addf) rather than the raw GEMM result.
     Value valueToStore = op.getSource();
 
-    // 2. Verify pointer tensor is a tensor of i32
+    // 2. Verify pointer tensor is a tensor of the pointer glue type
     auto ptrTensorType = dyn_cast<RankedTensorType>(pointerTensor.getType());
-    if (!ptrTensorType || !ptrTensorType.getElementType().isInteger(32)) {
-      LLVM_DEBUG(llvm::dbgs() << "Pointer tensor is not a tensor of i32\n");
+    if (!ptrTensorType || !isPtrGlueType(ptrTensorType.getElementType())) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Pointer tensor is not a tensor of the ptr glue type\n");
       return failure();
     }
 

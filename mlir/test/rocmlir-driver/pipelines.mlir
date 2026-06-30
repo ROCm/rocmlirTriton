@@ -74,7 +74,7 @@
 // GPU-NEXT:rock-transforms-to-pointer-arith,
 // GPU-NEXT:canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // GPU-NEXT:rock-to-ttir),
-// GPU-NEXT:rock-func-to-triton-func,
+// GPU-NEXT:rock-tensor-to-triton-ptr,
 // GPU-NEXT:tt.func(canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // GPU-NEXT:cse))
 

@@ -1,4 +1,5 @@
-//===- FuncToTritonFunc.cpp - Convert func.func to tt.func for Triton -----===//
+//===- TensorToTritonPtr.cpp - Convert tensor semantic kernels (rock) to pointer
+// semantic kernels (triton) --===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -38,12 +39,12 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKFUNCTOTRITONFUNCPASS
+#define GEN_PASS_DEF_ROCKTENSORTOTRITONPTRPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-func-to-triton-func"
+#define DEBUG_TYPE "rock-tensor-to-triton-ptr"
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -60,9 +61,9 @@ static bool isTensorOfPointers(Type type) {
   return false;
 }
 
-struct RockFuncToTritonFuncPass
-    : public rock::impl::RockFuncToTritonFuncPassBase<
-          RockFuncToTritonFuncPass> {
+struct RockTensorToTritonPtrPass
+    : public rock::impl::RockTensorToTritonPtrPassBase<
+          RockTensorToTritonPtrPass> {
   void runOnOperation() override;
 
 private:
@@ -72,7 +73,7 @@ private:
 
 } // end anonymous namespace
 
-void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
+void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
   IRRewriter rewriter(ctx);
@@ -83,8 +84,7 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     unsigned argIndex;
     Type elementType;
     RankedTensorType tensorType; // Original tensor type for size calculation
-    SmallVector<Value>
-        valuesToReplace; // extract_ptr results to replace with block arg
+    Value valueToReplace; // extract_ptr result to replace with the block arg
     rock::ExtractPtrOp extractPtrOp;
   };
   SmallVector<ArgConversionInfo> argsToConvert;
@@ -92,26 +92,16 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   funcOp.walk([&](rock::ExtractPtrOp extractPtrOp) {
     Value tensorOperand = extractPtrOp.getSource();
 
-    // Check if the source is a block argument (tensor)
-    auto blockArg = dyn_cast<BlockArgument>(tensorOperand);
-    if (!blockArg)
-      return;
+    auto blockArg = cast<BlockArgument>(tensorOperand);
+    auto tensorType = cast<RankedTensorType>(tensorOperand.getType());
 
-    auto tensorType = dyn_cast<RankedTensorType>(tensorOperand.getType());
-    if (!tensorType)
-      return;
-
-    // The result of extract_ptr is i32, which is what we need to replace
-    if (extractPtrOp.getResult().getType().isInteger(32)) {
-      // Found the pattern - record it
-      ArgConversionInfo info;
-      info.argIndex = blockArg.getArgNumber();
-      info.elementType = tensorType.getElementType();
-      info.tensorType = tensorType;
-      info.valuesToReplace.push_back(extractPtrOp.getResult());
-      info.extractPtrOp = extractPtrOp;
-      argsToConvert.push_back(info);
-    }
+    ArgConversionInfo info;
+    info.argIndex = blockArg.getArgNumber();
+    info.elementType = tensorType.getElementType();
+    info.tensorType = tensorType;
+    info.valueToReplace = extractPtrOp.getResult();
+    info.extractPtrOp = extractPtrOp;
+    argsToConvert.push_back(info);
   });
 
   // Step 2: Build new function type with tt.ptr arguments
@@ -122,35 +112,18 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   bool hasTensorArgs = llvm::any_of(
       funcType.getInputs(), [](Type t) { return isa<RankedTensorType>(t); });
 
-  if (argsToConvert.empty() && !hasTensorArgs)
+  if (!hasTensorArgs)
     return;
 
+  // Build the new pointer-based signature. Every tensor argument becomes a
+  // !tt.ptr.
   SmallVector<Type> newInputTypes;
-  DenseMap<unsigned, Type> argElementTypes;
-
-  for (const auto &info : argsToConvert) {
-    argElementTypes[info.argIndex] = info.elementType;
-  }
-
-  DenseSet<unsigned> deadTensorArgs;
-  for (unsigned i = 0; i < funcType.getNumInputs(); ++i) {
-    auto it = argElementTypes.find(i);
-    if (it != argElementTypes.end()) {
-      newInputTypes.push_back(triton::PointerType::get(it->second, 1));
-    } else if (auto tensorType =
-                   dyn_cast<RankedTensorType>(funcType.getInput(i))) {
-      // Tensor arguments without rock.extract_ptr (e.g. dead fusion inputs)
-      // must still become pointers. Triton kernels cannot have bare tensor
-      // arguments.  We convert rather than remove to preserve the positional
-      // ABI: RockSerializeHostFuncsPass has already frozen the host-side
-      // func.call with the original argument list, so dropping an argument
-      // here would cause a host/kernel argument mismatch at launch time.
+  for (Type inputType : funcType.getInputs()) {
+    if (auto tensorType = dyn_cast<RankedTensorType>(inputType))
       newInputTypes.push_back(
           triton::PointerType::get(tensorType.getElementType(), 1));
-      deadTensorArgs.insert(i);
-    } else {
-      newInputTypes.push_back(funcType.getInput(i));
-    }
+    else
+      newInputTypes.push_back(inputType);
   }
 
   auto newFuncType =
@@ -160,42 +133,35 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   // Also rebuild the tt.splat
   // that broadcasts it as a ptr tensor, and drop the dead extract_ptr.
   Block &entryBlock = funcOp.front();
+  for (unsigned i = 0, e = newInputTypes.size(); i < e; ++i)
+    entryBlock.getArgument(i).setType(newInputTypes[i]);
+
+  // For each used tensor argument, rebuild the tt.splat that broadcast
+  // its extract_ptr result so it now broadcasts the (already retyped) !tt.ptr
+  // block argument, then drop the dead extract_ptr.
   for (auto &info : argsToConvert) {
     BlockArgument blockArg = entryBlock.getArgument(info.argIndex);
-    auto ptrType = triton::PointerType::get(info.elementType, 1);
+    auto ptrType = cast<triton::PointerType>(blockArg.getType());
 
-    for (Value oldValue : info.valuesToReplace) {
-      // Replace every tt.splat of the extract_ptr result with a splat (with ptr
-      // type) of the block arg. early_inc lets us erase the splat while
-      // iterating.
-      for (Operation *user : llvm::make_early_inc_range(oldValue.getUsers())) {
-        auto splatOp = dyn_cast<triton::SplatOp>(user);
-        if (!splatOp)
-          continue;
-        auto resultType = cast<RankedTensorType>(splatOp.getResult().getType());
-        auto newResultType = RankedTensorType::get(
-            resultType.getShape(), ptrType, resultType.getEncoding());
-        rewriter.setInsertionPoint(splatOp);
-        rewriter.replaceOpWithNewOp<triton::SplatOp>(splatOp, newResultType,
-                                                     blockArg);
-      }
+    // Replace every tt.splat of the extract_ptr result with a splat (with ptr
+    // type) of the block arg. early_inc lets us erase the splat while
+    // iterating.
+    for (Operation *user :
+         llvm::make_early_inc_range(info.valueToReplace.getUsers())) {
+      auto splatOp = dyn_cast<triton::SplatOp>(user);
+      if (!splatOp)
+        continue;
+      auto resultType = cast<RankedTensorType>(splatOp.getResult().getType());
+      auto newResultType = RankedTensorType::get(resultType.getShape(), ptrType,
+                                                 resultType.getEncoding());
+      rewriter.setInsertionPoint(splatOp);
+      rewriter.replaceOpWithNewOp<triton::SplatOp>(splatOp, newResultType,
+                                                   blockArg);
     }
-
-    // Retype the block argument now that its splat users are ptr-typed.
-    blockArg.setType(ptrType);
 
     // The extract_ptr is dead once its splat users have been replaced.
     if (info.extractPtrOp)
       rewriter.eraseOp(info.extractPtrOp);
-  }
-
-  // Update block argument types for dead tensor args (those without
-  // rock.extract_ptr patterns). Triton kernels cannot have bare tensor args, so
-  // these still become pointers even though nothing reads them.
-  for (unsigned i : deadTensorArgs) {
-    BlockArgument blockArg = entryBlock.getArgument(i);
-    auto tensorType = cast<RankedTensorType>(blockArg.getType());
-    blockArg.setType(triton::PointerType::get(tensorType.getElementType(), 1));
   }
 
   // Step 4: Create tt.func and move body
@@ -235,9 +201,8 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
       // Adding two pointer tensors is not valid pointer arithmetic and should
       // never be produced upstream (TransformsToPointerArith only ever adds an
       // integer offset to a base pointer).
-      if (lhsPtr && rhsPtr)
-        llvm_unreachable("arith.addi on two pointer tensors is not valid "
-                         "pointer arithmetic");
+      assert(!(lhsPtr && rhsPtr) && "arith.addi on two pointer tensors is not "
+                                    "valid pointer arithmetic");
       // Convert only when exactly one operand is a pointer tensor; neither is
       // an ordinary integer add.
       if (lhsPtr != rhsPtr)
@@ -273,7 +238,7 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   }
 }
 
-void RockFuncToTritonFuncPass::runOnOperation() {
+void RockTensorToTritonPtrPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
 
   // Collect kernel functions (host functions were already serialized and
@@ -324,7 +289,7 @@ void RockFuncToTritonFuncPass::runOnOperation() {
   WalkResult result = moduleOp->walk([&](Operation *op) {
     if (op->getDialect() && op->getDialect()->getNamespace() ==
                                 rock::RockDialect::getDialectNamespace()) {
-      op->emitError("unexpected Rock op remaining after FuncToTritonFunc");
+      op->emitError("unexpected Rock op remaining after RockTensorToTritonPtr");
       return WalkResult::interrupt();
     }
     return WalkResult::advance();

@@ -1,4 +1,4 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-func-to-triton-func --split-input-file | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-tensor-to-triton-ptr --split-input-file | FileCheck %s
 
 // Verifies func.func with rock.kernel is converted to tt.func with pointer arguments
 // CHECK: module attributes {{{.*}}rock.grid_size.test_basic_conversion = 2 : i32
@@ -501,5 +501,18 @@ func.func @test_arg_attrs_preserved(
   %a = tt.load %p0, %cst_mask : tensor<64x64x!tt.ptr<f16>>
   %a_f32 = arith.extf %a : tensor<64x64xf16> to tensor<64x64xf32>
   tt.store %p1, %a_f32, %cst_mask : tensor<64x64x!tt.ptr<f32>>
+  return
+}
+
+// -----
+
+// Verifies an "empty" kernel whose tensor arguments are ALL unused still 
+// gets every tensor arg converted to !tt.ptr.
+// CHECK-LABEL: tt.func @test_all_unused_tensor_args
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>, %[[ARG1:.*]]: !tt.ptr<f32>)
+//      CHECK:   tt.return
+//  CHECK-NOT:   func.func
+//  CHECK-NOT:   tensor<
+func.func @test_all_unused_tensor_args(%arg0: tensor<4096xf16>, %arg1: tensor<4096xf32>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
   return
 }
