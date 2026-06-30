@@ -93,16 +93,8 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
   funcOp.walk([&](rock::ExtractPtrOp extractPtrOp) {
     Value tensorOperand = extractPtrOp.getSource();
 
-    // Check if the source is a block argument (tensor)
-    auto blockArg = dyn_cast<BlockArgument>(tensorOperand);
-    assert(blockArg && "extract_ptr source must be a block argument");
-
-    auto tensorType = dyn_cast<RankedTensorType>(tensorOperand.getType());
-    assert(tensorType && "extract_ptr source must be a tensor");
-
-    // The result of extract_ptr is PtrGlueType, which we replace with a !tt.ptr.
-    assert(extractPtrOp.getResult().getType() == getPtrGlueType(ctx) &&
-           "extract_ptr result must be the pointer glue type");
+    auto blockArg = cast<BlockArgument>(tensorOperand);
+    auto tensorType = cast<RankedTensorType>(tensorOperand.getType());
 
     ArgConversionInfo info;
     info.argIndex = blockArg.getArgNumber();
