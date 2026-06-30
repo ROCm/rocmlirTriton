@@ -198,8 +198,8 @@ def RockLowerBlockwiseToPtrPass
 
 def RockDecomposeNonPow2TilesPass
     : Pass<"rock-decompose-nonpow2-tiles", "::mlir::func::FuncOp"> {
-  let summary = "Split non-power-of-two blockwise tiles into power-of-two "
-                "sub-tiles (M/N peeling)";
+  let summary = "Split non-power-of-two gridwise GEMM tiles into power-of-two "
+                "sub-gridwise_gemms (M/N peeling)";
   let description = [{
     Rock tuning params may legally carry non-power-of-two tiles (e.g. an
     mPerBlock/nPerBlock of 80), but the Triton layouts later produced by

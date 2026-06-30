@@ -15,12 +15,12 @@
 // limitations under the License.
 // =============================================================================
 //
-// Rock tensors may carry non-power-of-two blockwise tiles, but the Triton
-// layouts produced later by RockToTTIR require power-of-two tensor shapes. The
-// per-block tile sizes live in the GEMM tuning parameters (mPerBlock /
-// nPerBlock); when one of them is not a power of two (e.g. 80, the alignment of
-// a real extent of 77 up to a multiple of the MMA granularity), the blockwise
-// tiles produced downstream are non-power-of-two.
+// The per-block tile sizes live in the GEMM tuning parameters (mPerBlock /
+// nPerBlock) and may legally be non-power-of-two. For example, to cover a GEMM
+// with M = 77 the tuning logic may pick an mPerBlock of 80 (= 64 + 16), which is
+// not a power of two. The Triton layouts produced later by RockToTTIR, however,
+// require power-of-two tensor shapes, so these non-power-of-two tiles must be
+// split before then.
 //
 // This pass runs at the *gridwise* layer: after rock.gemm has been lowered to
 // rock.gridwise_gemm (so transposes/padding are resolved, the operands are
@@ -42,8 +42,9 @@
 //     extra fusion input sliced the same way and one rock.store per cell into
 //     the sliced output view.
 //
-// The slice restructures dim D (= blocks * tile) into (block, iter), slices the
-// iter sub-dim to the segment, and re-merges, so block `b` of the sub-op's
+// The slice restructures the dimension being split, D is M (for an M-segment)
+// or N (for an N-segment), with D = blocks * tile into (block, iter), slices
+// the iter sub-dim to the segment, and re-merges, so block `b` of the sub-op's
 // dimension maps onto rows `b*tile + seg.offset + i` of the original. Because
 // every sub-op keeps the same mBlocks/nBlocks/G, GridwiseGemmToBlockwise
 // derives an identical grid layout and identical K-loop bounds for all of them,
@@ -73,6 +74,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/MathExtras.h"

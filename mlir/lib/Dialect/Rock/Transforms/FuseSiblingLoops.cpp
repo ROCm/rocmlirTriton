@@ -49,6 +49,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/RegionUtils.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -74,18 +75,22 @@ struct RockFuseSiblingLoopsPass
 
 } // end anonymous namespace
 
-/// Two loops can be fused only if their lower/upper bounds and step have the
-/// same constant value. Compared by value (not SSA identity) because each
-/// decomposed sub-gemm materializes its own bound constants.
-static bool haveIdenticalConstantBounds(scf::ForOp a, scf::ForOp b) {
-  auto sameConst = [](Value x, Value y) -> bool {
+/// Two loops can be fused only if their lower/upper bounds and step are equal,
+/// so they share an iteration space. Each bound matches if it is the same SSA
+/// value (covers dynamic bounds computed once and reused by both loops) or has
+/// the same constant value (the common case: each decomposed sub-gemm
+/// materializes its own bound constants, so SSA identity does not hold).
+static bool haveIdenticalBounds(scf::ForOp a, scf::ForOp b) {
+  auto sameBound = [](Value x, Value y) -> bool {
+    if (x == y)
+      return true;
     std::optional<int64_t> cx = getConstantIntValue(x);
     std::optional<int64_t> cy = getConstantIntValue(y);
     return cx && cy && *cx == *cy;
   };
-  return sameConst(a.getLowerBound(), b.getLowerBound()) &&
-         sameConst(a.getUpperBound(), b.getUpperBound()) &&
-         sameConst(a.getStep(), b.getStep());
+  return sameBound(a.getLowerBound(), b.getLowerBound()) &&
+         sameBound(a.getUpperBound(), b.getUpperBound()) &&
+         sameBound(a.getStep(), b.getStep());
 }
 
 /// Ensure `v` dominates `source` (the fusion anchor), hoisting if needed.
@@ -155,7 +160,7 @@ static void fuseSiblingsInBlock(Block &block, IRRewriter &rewriter) {
       scf::ForOp target = loops[j];
       if (fused.contains(target.getOperation()))
         continue;
-      if (!haveIdenticalConstantBounds(source, target)) {
+      if (!haveIdenticalBounds(source, target)) {
         LLVM_DEBUG(llvm::dbgs() << "Skipping fusion of loops " << i << " and "
                                 << j << ": bounds differ\n");
         continue;

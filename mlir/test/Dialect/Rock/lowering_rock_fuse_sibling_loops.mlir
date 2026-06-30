@@ -97,6 +97,76 @@ func.func @fuse_distinct_bound_constants(%init0: f32, %init1: f32) -> (f32, f32)
 
 // -----
 
+// Dynamic bounds that are the *same SSA value* fuse: the shared %ub guarantees
+// an identical iteration space (bounds match by SSA identity, no constant
+// needed).
+
+// CHECK-LABEL: func.func @fuse_same_dynamic_bound
+// CHECK: scf.for
+// CHECK-NOT: scf.for
+func.func @fuse_same_dynamic_bound(%ub: index, %init0: f32, %init1: f32) -> (f32, f32) attributes {rock.kernel} {
+  %lb = arith.constant 0 : index
+  %step = arith.constant 1 : index
+  %r0 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init0) -> (f32) {
+    %v = arith.addf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %r1 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init1) -> (f32) {
+    %v = arith.mulf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  return %r0, %r1 : f32, f32
+}
+
+// -----
+
+// Distinct dynamic bounds are not fused: %ub0 and %ub1 are different SSA values
+// and not constants, so the iteration spaces cannot be proven equal.
+
+// CHECK-LABEL: func.func @distinct_dynamic_bounds
+// CHECK: scf.for
+// CHECK: scf.for
+func.func @distinct_dynamic_bounds(%ub0: index, %ub1: index, %init0: f32, %init1: f32) -> (f32, f32) attributes {rock.kernel} {
+  %lb = arith.constant 0 : index
+  %step = arith.constant 1 : index
+  %r0 = scf.for %i = %lb to %ub0 step %step iter_args(%acc = %init0) -> (f32) {
+    %v = arith.addf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %r1 = scf.for %i = %lb to %ub1 step %step iter_args(%acc = %init1) -> (f32) {
+    %v = arith.mulf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  return %r0, %r1 : f32, f32
+}
+
+// -----
+
+// Single-iteration loops (0..1, all constant) still fuse at the pass level.
+// (In the full pipeline the DCE step before this pass inlines single-trip loops
+// into straight-line code, so this case is only reachable when running the pass
+// in isolation.)
+
+// CHECK-LABEL: func.func @fuse_single_iteration
+// CHECK: scf.for
+// CHECK-NOT: scf.for
+func.func @fuse_single_iteration(%init0: f32, %init1: f32) -> (f32, f32) attributes {rock.kernel} {
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 1 : index
+  %step = arith.constant 1 : index
+  %r0 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init0) -> (f32) {
+    %v = arith.addf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %r1 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init1) -> (f32) {
+    %v = arith.mulf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  return %r0, %r1 : f32, f32
+}
+
+// -----
+
 // A function without the rock.kernel attribute is skipped entirely.
 
 // CHECK-LABEL: func.func @not_a_kernel
