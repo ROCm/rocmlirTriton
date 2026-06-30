@@ -26,6 +26,66 @@ func.func @fuse_two_siblings(%init0: f32, %init1: f32) -> (f32, f32) attributes 
 
 // -----
 
+// Three independent sibling loops with identical bounds collapse into a single
+// loop carrying all three accumulators.
+
+// CHECK-LABEL: func.func @fuse_three_siblings
+// CHECK: %[[FUSED:.*]]:3 = scf.for
+// CHECK-NOT: scf.for
+// CHECK: return
+func.func @fuse_three_siblings(%init0: f32, %init1: f32, %init2: f32) -> (f32, f32, f32) attributes {rock.kernel} {
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 8 : index
+  %step = arith.constant 1 : index
+  %r0 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init0) -> (f32) {
+    %v = arith.addf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %r1 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init1) -> (f32) {
+    %v = arith.mulf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %r2 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init2) -> (f32) {
+    %v = arith.subf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  return %r0, %r1, %r2 : f32, f32, f32
+}
+
+// -----
+
+// Four independent sibling loops with identical bounds collapse into a single
+// loop carrying all four accumulators.
+
+// CHECK-LABEL: func.func @fuse_four_siblings
+// CHECK: %[[FUSED:.*]]:4 = scf.for
+// CHECK-NOT: scf.for
+// CHECK: return
+func.func @fuse_four_siblings(%init0: f32, %init1: f32, %init2: f32, %init3: f32) -> (f32, f32, f32, f32) attributes {rock.kernel} {
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 8 : index
+  %step = arith.constant 1 : index
+  %r0 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init0) -> (f32) {
+    %v = arith.addf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %r1 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init1) -> (f32) {
+    %v = arith.mulf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %r2 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init2) -> (f32) {
+    %v = arith.subf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %r3 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init3) -> (f32) {
+    %v = arith.addf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  return %r0, %r1, %r2, %r3 : f32, f32, f32, f32
+}
+
+// -----
+
 // Different upper bounds: not fused.
 
 // CHECK-LABEL: func.func @different_bounds
@@ -67,6 +127,46 @@ func.func @dependent_loops(%init0: f32) -> (f32) attributes {rock.kernel} {
     scf.yield %v : f32
   }
   return %r1 : f32
+}
+
+// -----
+
+// An op sitting between the two loops feeds the second loop but transitively
+// depends on the first loop's result. It is pure (so it would normally be
+// hoisted above the anchor to satisfy dominance), but hoisting recurses into
+// its operands and hits the anchor's own result, which cannot move. Fusion is
+// therefore correctly rejected and both loops are left in place.
+
+// CHECK-LABEL: func.func @dependent_loops_via_intermediate
+// CHECK: scf.for
+// CHECK: scf.for
+func.func @dependent_loops_via_intermediate(%init0: f32) -> (f32) attributes {rock.kernel} {
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 8 : index
+  %step = arith.constant 1 : index
+  %r0 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init0) -> (f32) {
+    %v = arith.addf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %mid = arith.mulf %r0, %r0 : f32
+  %r1 = scf.for %i = %lb to %ub step %step iter_args(%acc = %mid) -> (f32) {
+    %v = arith.addf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  return %r1 : f32
+}
+
+// -----
+
+// A kernel whose gridwise lowering produced no scf.for loops at all: there is
+// nothing to fuse, so the pass must run cleanly and leave the body unchanged.
+
+// CHECK-LABEL: func.func @no_loops
+// CHECK-NOT: scf.for
+// CHECK: return
+func.func @no_loops(%arg0: f32) -> f32 attributes {rock.kernel} {
+  %v = arith.addf %arg0, %arg0 : f32
+  return %v : f32
 }
 
 // -----

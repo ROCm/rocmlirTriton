@@ -118,6 +118,33 @@ func.func @test_output_fusion(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf16>
 
 // -----
 
+#pcst80x80 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// ============================================================
+// Output fusion against a splat arith.constant: the gemm result
+// is multiplied by a splat constant before the store. The splat
+// is re-materialized per cell at the matching sub-tile shape, so
+// the chain replicates to 4 gemms, 4 constants, 4 muls, 4 stores.
+// ============================================================
+
+// canonicalize hoists the per-cell splat constants to the top of the function,
+// ahead of the sub-gemms.
+// CHECK-LABEL: func.func @test_output_fusion_splat_constant
+// CHECK-COUNT-4: arith.constant dense<2.000000e+00>
+// CHECK-COUNT-4: rock.gridwise_gemm
+// CHECK-NOT: rock.gridwise_gemm
+// CHECK-COUNT-4: arith.mulf
+// CHECK-COUNT-4: rock.store
+func.func @test_output_fusion_splat_constant(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf16>, %c: tensor<1x160x160xf32>) -> tensor<1x160x160xf32> attributes {rock.kernel} {
+  %r = rock.gridwise_gemm(%a, %b) {params = #pcst80x80} : tensor<1x160x64xf16>, tensor<1x64x160xf16> -> tensor<1x160x160xf32>
+  %cst = arith.constant dense<2.000000e+00> : tensor<1x160x160xf32>
+  %mul = arith.mulf %r, %cst : tensor<1x160x160xf32>
+  %out = rock.store %mul to %c by set : tensor<1x160x160xf32> -> tensor<1x160x160xf32> to tensor<1x160x160xf32>
+  return %out : tensor<1x160x160xf32>
+}
+
+// -----
+
 #p112x64 = #rock.gemm_params<mPerBlock = 112, nPerBlock = 64, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 
 // ============================================================

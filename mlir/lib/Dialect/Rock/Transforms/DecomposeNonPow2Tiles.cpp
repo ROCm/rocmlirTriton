@@ -329,15 +329,17 @@ private:
   }
 
   LogicalResult splitFusion(Operation *op, SmallVector<Value> &grid) {
+    assert(op->getNumResults() == 1 &&
+           "fusion ops with multiple results are not supported");
     SmallVector<SmallVector<Value>> operandGrids;
     for (Value operand : op->getOperands()) {
-      FailureOr<SmallVector<Value>> gg = split(operand);
-      if (failed(gg))
+      FailureOr<SmallVector<Value>> operandGrid = split(operand);
+      if (failed(operandGrid))
         return failure();
-      operandGrids.push_back(*gg);
+      operandGrids.push_back(*operandGrid);
     }
-    for (const auto &gg : operandGrids)
-      if (static_cast<int64_t>(gg.size()) != numCells())
+    for (const auto &operandGrid : operandGrids)
+      if (static_cast<int64_t>(operandGrid.size()) != numCells())
         return failure();
 
     for (int64_t cell = 0; cell < numCells(); ++cell) {
@@ -402,6 +404,10 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
   int64_t G = cType.getShape()[0];
   int64_t M = cType.getShape()[1];
   int64_t N = cType.getShape()[2];
+  assert(M % mPerBlock == 0 &&
+         "gemm M dimension must be a multiple of mPerBlock");
+  assert(N % nPerBlock == 0 &&
+         "gemm N dimension must be a multiple of nPerBlock");
   int64_t mBlocks = M / mPerBlock;
   int64_t nBlocks = N / nPerBlock;
   Type cElemType = cType.getElementType();

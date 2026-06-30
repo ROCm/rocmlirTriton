@@ -195,6 +195,27 @@ void RockFuseSiblingLoopsPass::runOnOperation() {
                << "Skipping non-kernel func @" << func.getName() << "\n");
     return;
   }
+
+  // Fusion interleaves the sibling loop bodies, which is only safe when the
+  // loops are independent. We prove that purely from SSA dependences (see
+  // makeTargetOperandsDominate), which is sufficient only while the kernel is
+  // value-semantic, i.e. every op is memory-effect-free -- the case this early
+  // in the pipeline (before bufferization, no memref/ptr ops). If any op has a
+  // memory effect we can no longer rule out a memory dependence between the
+  // loops, so error out rather than risk silently reordering memory operations.
+  Operation *funcOp = func.getOperation();
+  if (func.walk([&](Operation *op) {
+            // Skip the func itself (FuncOp is not memory-effect-free) and check
+            // only the ops it contains.
+            if (op == funcOp || isMemoryEffectFree(op))
+              return WalkResult::advance();
+            op->emitError("rock-fuse-sibling-loops requires value-semantic IR "
+                          "but found an op with memory effects");
+            return WalkResult::interrupt();
+          })
+          .wasInterrupted())
+    return signalPassFailure();
+
   IRRewriter rewriter(&getContext());
 
   // Process every block (loops are only fused with siblings in the same block).
