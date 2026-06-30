@@ -85,18 +85,18 @@ TEST(FindFallbackTest, StrixFallsBackToGfx1151) {
 
 TEST(FindFallbackTest, AttentionStrixFallsBackToGfx1151) {
   // The Strix Halo variants should fall back to gfx1151 for attention too.
-  EXPECT_EQ(
-      "gfx1151_attention_f16",
-      ParamLookupTable<GemmGemmParamsAttr>::findFallback("gfx1150_attention_f16"));
-  EXPECT_EQ(
-      "gfx1151_attention_f16",
-      ParamLookupTable<GemmGemmParamsAttr>::findFallback("gfx1152_attention_f16"));
-  EXPECT_EQ(
-      "gfx1151_attention_i8",
-      ParamLookupTable<GemmGemmParamsAttr>::findFallback("gfx1150_attention_i8"));
-  EXPECT_EQ(
-      "gfx1151_attention_i8",
-      ParamLookupTable<GemmGemmParamsAttr>::findFallback("gfx1152_attention_i8"));
+  EXPECT_EQ("gfx1151_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1150_attention_f16"));
+  EXPECT_EQ("gfx1151_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1152_attention_f16"));
+  EXPECT_EQ("gfx1151_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1150_attention_i8"));
+  EXPECT_EQ("gfx1151_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1152_attention_i8"));
 }
 
 TEST(FindFallbackTest, Fp8FallsBackToI8) {
