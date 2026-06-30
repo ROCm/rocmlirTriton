@@ -205,7 +205,7 @@ existing `rock::*` equivalent.
 ### Bridge passes between Rock and Triton
 
 The Rock<->Triton bridge passes -- `RockToTTIRPass`,
-`RockFuncToTritonFuncPass`, `RockSerializeHostFuncsPass`,
+`RockTensorToTritonPtrPass`, `RockSerializeHostFuncsPass`,
 `TritonToHsacoPass`, the Triton-related code in
 `rock::buildTritonPipeline` / `buildBackendPipeline` in
 `Pipelines.cpp`, and `tritonUtils.cpp` -- are rocmlirTriton-specific.
@@ -240,7 +240,7 @@ A diff is "shared" if its file path matches any of:
 
 - `mlir/lib/Dialect/Rock/` -- **except** the rocmlirTriton-only
   bridge-pass source files in `mlir/lib/Dialect/Rock/Transforms/`:
-  `RockToTTIR.cpp`, `FuncToTritonFunc.cpp`, `SerializeHostFuncs.cpp`
+  `RockToTTIR.cpp`, `TensorToTritonPtr.cpp`, `SerializeHostFuncs.cpp`
   (and any future Triton-only restore/serialize pass added beside
   them).
 - `mlir/lib/Dialect/MIGraphX/`.
@@ -262,8 +262,8 @@ rocmlirTriton diff.
 - `external/triton/`, `triton-patches/`, `cmake/triton.cmake`,
   `scripts/build-llvm.sh`, `cmake.sh`.
 - The bridge-pass source files in `mlir/lib/Dialect/Rock/Transforms/`:
-  `RockToTTIR.cpp` (pass `RockToTTIRPass`), `FuncToTritonFunc.cpp`
-  (pass `RockFuncToTritonFuncPass`), `SerializeHostFuncs.cpp` (pass
+  `RockToTTIR.cpp` (pass `RockToTTIRPass`), `TensorToTritonPtr.cpp`
+  (pass `RockTensorToTritonPtrPass`), `SerializeHostFuncs.cpp` (pass
   `RockSerializeHostFuncsPass`); plus the Triton portion of
   `rock::buildTritonPipeline` / `buildBackendPipeline` in
   `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` and

@@ -30,9 +30,9 @@ KernelType kernelTypeFromConvOpType(ConvOpType convOpType);
 /// pointer type).
 ///
 /// Note: this is NOT the width of the final pointer. It is only the type
-/// that rock.extract_ptr produces and that pointer-offset arithmetic operates on.
-/// During RockTensorToTritonPtr, this type is discarded and replaced by the real
-/// !tt.ptr kernel argument, which lowers to a genuine pointer (which might
+/// that rock.extract_ptr produces and that pointer-offset arithmetic operates
+/// on. During RockTensorToTritonPtr, this type is discarded and replaced by the
+/// real !tt.ptr kernel argument, which lowers to a genuine pointer (which might
 /// be 32 or 64 bit).
 constexpr unsigned kPtrGlueBitWidth = 32;
 
