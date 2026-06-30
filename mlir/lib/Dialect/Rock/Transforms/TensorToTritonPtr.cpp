@@ -84,8 +84,7 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
     unsigned argIndex;
     Type elementType;
     RankedTensorType tensorType; // Original tensor type for size calculation
-    SmallVector<Value>
-        valuesToReplace; // extract_ptr results to replace with block arg
+    Value valueToReplace; // extract_ptr result to replace with the block arg
     rock::ExtractPtrOp extractPtrOp;
   };
   SmallVector<ArgConversionInfo> argsToConvert;
@@ -100,7 +99,7 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
     info.argIndex = blockArg.getArgNumber();
     info.elementType = tensorType.getElementType();
     info.tensorType = tensorType;
-    info.valuesToReplace.push_back(extractPtrOp.getResult());
+    info.valueToReplace = extractPtrOp.getResult();
     info.extractPtrOp = extractPtrOp;
     argsToConvert.push_back(info);
   });
@@ -144,21 +143,20 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
     BlockArgument blockArg = entryBlock.getArgument(info.argIndex);
     auto ptrType = cast<triton::PointerType>(blockArg.getType());
 
-    for (Value oldValue : info.valuesToReplace) {
-      // Replace every tt.splat of the extract_ptr result with a splat (with ptr
-      // type) of the block arg. early_inc lets us erase the splat while
-      // iterating.
-      for (Operation *user : llvm::make_early_inc_range(oldValue.getUsers())) {
-        auto splatOp = dyn_cast<triton::SplatOp>(user);
-        if (!splatOp)
-          continue;
-        auto resultType = cast<RankedTensorType>(splatOp.getResult().getType());
-        auto newResultType = RankedTensorType::get(
-            resultType.getShape(), ptrType, resultType.getEncoding());
-        rewriter.setInsertionPoint(splatOp);
-        rewriter.replaceOpWithNewOp<triton::SplatOp>(splatOp, newResultType,
-                                                     blockArg);
-      }
+    // Replace every tt.splat of the extract_ptr result with a splat (with ptr
+    // type) of the block arg. early_inc lets us erase the splat while
+    // iterating.
+    for (Operation *user :
+         llvm::make_early_inc_range(info.valueToReplace.getUsers())) {
+      auto splatOp = dyn_cast<triton::SplatOp>(user);
+      if (!splatOp)
+        continue;
+      auto resultType = cast<RankedTensorType>(splatOp.getResult().getType());
+      auto newResultType = RankedTensorType::get(resultType.getShape(), ptrType,
+                                                 resultType.getEncoding());
+      rewriter.setInsertionPoint(splatOp);
+      rewriter.replaceOpWithNewOp<triton::SplatOp>(splatOp, newResultType,
+                                                   blockArg);
     }
 
     // The extract_ptr is dead once its splat users have been replaced.
