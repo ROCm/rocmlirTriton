@@ -423,13 +423,13 @@ func.func @rock_gemm_f4_datatype_fallback(%a : tensor<1x72x128xf4E2M1FN>, %b : t
 }
 
 // gfx1150 has no quick-tuning list of its own, so with no perf_config the lookup
-// falls back to the closest architecture relative that does (gfx1100).
+// falls back to the closest architecture relative that does (gfx1151).
 // CHECK-LABEL: func.func @rock_gemm_gfx1150_arch_fallback
 // GRID-LABEL: rock_gemm_gfx1150_arch_fallback
 func.func @rock_gemm_gfx1150_arch_fallback(%a : tensor<1x72x128xf16>, %b : tensor<1x72x115200xf16>, %c : tensor<1x128x115200xf16>) -> tensor<1x128x115200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1150", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 64, kPerBlock = 256, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 14400
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 128, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.grid_size = 1800
   // GRID: rock.gridwise_gemm
   %result = rock.gemm tr %a * %b
   : tensor<1x72x128xf16> * tensor<1x72x115200xf16> -> tensor<1x128x115200xf16>
