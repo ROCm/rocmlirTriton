@@ -198,33 +198,55 @@ def RockLowerBlockwiseToPtrPass
 
 def RockDecomposeNonPow2TilesPass
     : Pass<"rock-decompose-nonpow2-tiles", "::mlir::func::FuncOp"> {
-  let summary = "Split non-power-of-two blockwise tiles into power-of-two "
-                "sub-tiles (M/N peeling)";
+  let summary = "Split non-power-of-two gridwise GEMM tiles into power-of-two "
+                "sub-gridwise_gemms (M/N peeling)";
   let description = [{
-    Rock tensors may legally carry non-power-of-two dimensions (e.g. an
-    mPerBlock/nPerBlock of 80), but the Triton layouts produced by RockToTTIR
-    require power-of-two shapes. Running after LowerStores and before
-    LowerBlockwiseToPtr, this pass splits every blockwise_gemm whose result tile
-    has a non-power-of-two M or N into a grid of power-of-two sub-tile GEMMs:
+    Rock tuning params may legally carry non-power-of-two tiles (e.g. an
+    mPerBlock/nPerBlock of 80), but the Triton layouts later produced by
+    RockToTTIR require power-of-two shapes. This pass splits every
+    rock.gridwise_gemm whose mPerBlock or nPerBlock is not a power of two into a
+    grid of power-of-two-tile sub-gridwise_gemms.
 
-    1. M and N are decomposed into minimal power-of-two segments (80 -> {64, 16}),
-       giving an (m-segment, n-segment) grid of cells.
-    2. A (M x K) is sliced into M-segments and B (K x N) into N-segments; cell
-       (i, j) multiplies A-segment i by B-segment j, so each A-segment is reused
-       across a row of cells and each B-segment down a column. One blockwise_gemm
-       and one accumulator init are emitted per cell. The split recurses through
-       the input/output fusion DAGs (loads, splat constants, elementwise ops,
-       stores), slicing destinations per cell.
+    Runs after GemmToGridwise/AttnToGridwise (so it sees canonical
+    rock.gridwise_gemm ops with tuning params and the func grid_size) and before
+    GridwiseGemmToBlockwise (so the IR is still full-tensor gridwise ops, with no
+    loops, blockwise ops, or Triton ops to reason about).
 
-    The K-loop form (accumulator carried as the scf.for iter_arg) is rebuilt with
-    one iter_arg per cell; the loopless single-K-step form emits the per-cell
-    GEMMs directly.
+    1. mPerBlock/nPerBlock are decomposed into minimal power-of-two segments
+       (80 -> {64, 16}), giving an (m-segment, n-segment) grid of cells.
+    2. Per cell, A (G x M x K) is sliced to its M-segment and B (G x K x N) to
+       its N-segment (reusing each A-segment across a row of cells and each
+       B-segment down a column), and a sub-gridwise_gemm with a pow2 tile is
+       emitted. The output fusion chain and stores are replicated per cell, with
+       extra fusion inputs sliced to match. Input fusion needs no handling: it
+       rides on the sliced A/B views and is tiled (pow2) downstream.
 
-    The segments exactly cover the original extent (64 + 16 = 80), so every
-    element computed and stored is live; no padding is introduced.
+    Every sub-op keeps the same mBlocks/nBlocks/grid_size, so the grid layout is
+    unchanged. The segments exactly cover the original extent (64 + 16 = 80), so
+    no padding is introduced. Each sub-op lowers to its own K-loop downstream;
+    merging those sibling loops is a separate follow-up.
   }];
-  let dependentDialects = ["rock::RockDialect", "scf::SCFDialect",
-                           "arith::ArithDialect"];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
+}
+
+def RockFuseSiblingLoopsPass
+    : Pass<"rock-fuse-sibling-loops", "::mlir::func::FuncOp"> {
+  let summary =
+      "Fuse independent sibling scf.for K-loops with identical bounds";
+  let description = [{
+    DecomposeNonPow2Tiles splits one non-power-of-two rock.gridwise_gemm into
+    several power-of-two sub-gemms, each of which GridwiseGemmToBlockwise lowers
+    to its own scf.for K-loop with identical bounds (K/kPerBlock, step 1). These
+    sibling loops reload the shared operand (B for an M-split, A for an N-split).
+
+    This pass fuses sibling scf.for loops that live in the same block and have
+    numerically identical lower/upper bounds and step into a single loop, as
+    long as they are mutually independent (neither loop transitively uses the
+    other's results). Bounds are compared by constant value rather than SSA
+    identity, because each sub-gemm builds its own bound constants. Running CSE
+    afterwards deduplicates the now-co-located shared operand loads.
+  }];
+  let dependentDialects = ["rock::RockDialect", "scf::SCFDialect"];
 }
 
 def RockConvertNarrowTypeSignaturesPass
