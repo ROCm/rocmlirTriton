@@ -371,31 +371,6 @@ struct ReducedPtr {
   Value accInit;        // zero offset accumulator initializer
 };
 
-/// TODO: https://amd-hub.atlassian.net/browse/AIROCMLIR-1021
-///
-/// True when FuncToTritonFunc cannot safely lower the recurrences this loop
-/// would produce, so we must not hoist.
-///
-/// Until FuncToTritonFunc lowering is made robust, refuse to hoist.
-static bool funcToTritonFuncCannotLowerRecurrences(scf::ForOp loop,
-                                                   ArrayRef<Candidate> cands) {
-  // (1) Loop nest.
-  if (loop->getParentOfType<scf::ForOp>())
-    return true;
-  if (loop.getBody()
-          ->walk([](scf::ForOp) { return WalkResult::interrupt(); })
-          .wasInterrupted())
-    return true;
-
-  // (2) Two candidates sharing the same root buffer.
-  llvm::SmallDenseSet<Value> seenRoots;
-  for (const Candidate &c : cands)
-    if (!seenRoots.insert(c.rootBase).second)
-      return true;
-
-  return false;
-}
-
 /// Try to LICM all eligible transforms_to_ptr ops in `loop`.
 /// Returns true (and rewrites the loop) if at least one was reduced.
 static bool tryHoistInvariantTransforms(scf::ForOp loop) {
@@ -408,9 +383,6 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     }
   }
   if (candidates.empty())
-    return false;
-
-  if (funcToTritonFuncCannotLowerRecurrences(loop, candidates))
     return false;
 
   Location loc = loop.getLoc();
