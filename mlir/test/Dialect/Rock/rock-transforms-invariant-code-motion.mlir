@@ -246,3 +246,54 @@ func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x
 
   return %res : tensor<256x32xi8>
 }
+
+// -----
+
+// Two hoistable loads in one loop that point to the same root buffer
+// (%arg0) but view it through differently-shaped tiles (64x64 and 64x128).
+//
+// CHECK-LABEL: func @hoist_two_sharing_base
+//  CHECK-SAME: (%[[BUF:.*]]: tensor<32768xf16>, %[[INITA:.*]]: tensor<64x64xf16>, %[[INITB:.*]]: tensor<64x128xf16>)
+//       CHECK:   %[[PTRS0:.*]], %[[MASK0:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32] {{.*}} -> tensor<64x64xi32>
+//       CHECK:   arith.muli
+//       CHECK:   %[[STRIDET0:.*]] = tt.splat %{{.*}} : i32 -> tensor<64x64xi32>
+//       CHECK:   arith.constant dense<0> : tensor<64x64xi32>
+//       CHECK:   %[[PTRS1:.*]], %[[MASK1:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32] {{.*}} -> tensor<64x128xi32>
+//       CHECK:   arith.muli
+//       CHECK:   %[[STRIDET1:.*]] = tt.splat %{{.*}} : i32 -> tensor<64x128xi32>
+//       CHECK:   arith.constant dense<0> : tensor<64x128xi32>
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INITA]], %{{.*}} = %[[INITB]], %[[ACC0:.*]] = %{{.*}}, %[[ACC1:.*]] = %{{.*}}) ->
+//       CHECK:     %[[P0:.*]] = arith.addi %[[PTRS0]], %[[ACC0]] : tensor<64x64xi32>
+//       CHECK:     %[[P1:.*]] = arith.addi %[[PTRS1]], %[[ACC1]] : tensor<64x128xi32>
+//       CHECK:     rock.blockwise_load_ptr %[[P0]][%[[MASK0]]]
+//       CHECK:     rock.blockwise_load_ptr %[[P1]][%[[MASK1]]]
+//   CHECK-NOT:     rock.transforms_to_ptr
+//       CHECK:     %[[INC0:.*]] = arith.addi %[[ACC0]], %[[STRIDET0]] : tensor<64x64xi32>
+//       CHECK:     %[[INC1:.*]] = arith.addi %[[ACC1]], %[[STRIDET1]] : tensor<64x128xi32>
+//       CHECK:     scf.yield %{{.*}}, %{{.*}}, %[[INC0]], %[[INC1]]
+#map = affine_map<(d0, d1, d2) -> (d1 * 128 + d2)>
+#map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
+#map2 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 128 + d5)>
+#transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
+#transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
+#transform_map2 = #rock.transform_map<#map2 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{1, 128} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 1, 64, 128] -> [1, 256, 128]>
+func.func @hoist_two_sharing_base(%arg0: tensor<32768xf16>, %initA: tensor<64x64xf16>, %initB: tensor<64x128xf16>) -> (tensor<64x64xf16>, tensor<64x128xf16>) attributes {rock.kernel, rock.arch = "gfx1201"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c4_i32 = arith.constant 4 : i32
+  %0 = rock.transform %arg0 by #transform_map : tensor<32768xf16> to tensor<1x256x128xf16>
+  %r:2 = scf.for %k = %c0_i32 to %c4_i32 step %c1_i32 iter_args(%accA = %initA, %accB = %initB) -> (tensor<64x64xf16>, tensor<64x128xf16>) : i32 {
+    // View A: 64x64 tile of the buffer.
+    %a = rock.transform %0 by #transform_map1 : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
+    %pa, %ma = rock.transforms_to_ptr %a[%k, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
+    %la = rock.blockwise_load_ptr %pa[%ma] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    // View B: 64x128 tile of the *same* buffer (differently shaped recurrence).
+    %b = rock.transform %0 by #transform_map2 : tensor<1x256x128xf16> to tensor<4x1x1x1x64x128xf16>
+    %pb, %mb = rock.transforms_to_ptr %b[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<4x1x1x1x64x128xf16> -> tensor<64x128xi32>, tensor<64x128xi1>
+    %lb = rock.blockwise_load_ptr %pb[%mb] {cacheModifier = #rock<CacheModifier none>} : tensor<64x128xi32>, tensor<64x128xi1> -> tensor<64x128xf16>
+    %sa = arith.addf %accA, %la : tensor<64x64xf16>
+    %sb = arith.addf %accB, %lb : tensor<64x128xf16>
+    scf.yield %sa, %sb : tensor<64x64xf16>, tensor<64x128xf16>
+  }
+  return %r#0, %r#1 : tensor<64x64xf16>, tensor<64x128xf16>
+}
