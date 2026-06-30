@@ -1,5 +1,5 @@
 //===- TensorToTritonPtr.cpp - Convert tensor semantic kernels (rock) to pointer
-//semantic kernels (triton) --===//
+// semantic kernels (triton) --===//
 //
 // Copyright 2026 The MLIR Authors.
 //
