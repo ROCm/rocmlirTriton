@@ -24,7 +24,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
   SerializeHostFuncs.cpp
-  FuncToTritonFunc.cpp
+  TensorToTritonPtr.cpp
   ResolveKernelLaunchParams.cpp
   RockEmitGpuBinary.cpp
   SortDimensionsMemoryLayout.cpp

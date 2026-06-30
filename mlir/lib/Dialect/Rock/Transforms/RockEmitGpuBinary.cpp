@@ -17,7 +17,7 @@
 // =============================================================================
 //
 // This pass builds gpu.binary from HSACO (and kernel metadata), optionally
-// restores host functions stored during RockFuncToTritonFuncPass, and converts
+// restores host functions stored during RockTensorToTritonPtrPass, and converts
 // kernel func.call ops to gpu.launch_func when host code is present.
 //
 //===----------------------------------------------------------------------===//

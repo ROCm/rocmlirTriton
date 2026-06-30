@@ -1,4 +1,5 @@
-//===- FuncToTritonFunc.cpp - Convert func.func to tt.func for Triton -----===//
+//===- TensorToTritonPtr.cpp - Convert tensor semantic kernels (rock) to pointer
+//semantic kernels (triton) --===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -38,12 +39,12 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKFUNCTOTRITONFUNCPASS
+#define GEN_PASS_DEF_ROCKTENSORTOTRITONPTRPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-func-to-triton-func"
+#define DEBUG_TYPE "rock-tensor-to-triton-ptr"
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -60,9 +61,9 @@ static bool isTensorOfPointers(Type type) {
   return false;
 }
 
-struct RockFuncToTritonFuncPass
-    : public rock::impl::RockFuncToTritonFuncPassBase<
-          RockFuncToTritonFuncPass> {
+struct RockTensorToTritonPtrPass
+    : public rock::impl::RockTensorToTritonPtrPassBase<
+          RockTensorToTritonPtrPass> {
   void runOnOperation() override;
 
 private:
@@ -72,7 +73,7 @@ private:
 
 } // end anonymous namespace
 
-void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
+void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
   IRRewriter rewriter(ctx);
@@ -251,7 +252,7 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   }
 }
 
-void RockFuncToTritonFuncPass::runOnOperation() {
+void RockTensorToTritonPtrPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
 
   // Collect kernel functions (host functions were already serialized and
@@ -302,7 +303,7 @@ void RockFuncToTritonFuncPass::runOnOperation() {
   WalkResult result = moduleOp->walk([&](Operation *op) {
     if (op->getDialect() && op->getDialect()->getNamespace() ==
                                 rock::RockDialect::getDialectNamespace()) {
-      op->emitError("unexpected Rock op remaining after FuncToTritonFunc");
+      op->emitError("unexpected Rock op remaining after RockTensorToTritonPtr");
       return WalkResult::interrupt();
     }
     return WalkResult::advance();

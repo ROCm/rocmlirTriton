@@ -1,4 +1,4 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-func-to-triton-func --split-input-file | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-tensor-to-triton-ptr --split-input-file | FileCheck %s
 
 // Verifies func.func with rock.kernel is converted to tt.func with pointer arguments
 // CHECK: module attributes {{{.*}}rock.grid_size.test_basic_conversion = 2 : i32
