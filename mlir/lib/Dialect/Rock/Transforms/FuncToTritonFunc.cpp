@@ -15,10 +15,11 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 //
-// This pass transforms Rock kernel functions from func.func to Triton's tt.func.
-// It converts tensor arguments to Triton pointer types (!tt.ptr), eliminates the
-// pointer extraction chain (rock.extract_ptr), converts arith.addi on pointer
-// tensors to tt.addptr, and sets up pointer attributes for optimization.
+// This pass transforms Rock kernel functions from func.func to Triton's
+// tt.func. It converts tensor arguments to Triton pointer types (!tt.ptr),
+// eliminates the pointer extraction chain (rock.extract_ptr), converts
+// arith.addi on pointer tensors to tt.addptr, and sets up pointer attributes
+// for optimization.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,7 +28,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -60,13 +61,11 @@ static bool isTensorOfPointers(Type type) {
 }
 
 struct RockFuncToTritonFuncPass
-    : public rock::impl::RockFuncToTritonFuncPassBase<RockFuncToTritonFuncPass> {
+    : public rock::impl::RockFuncToTritonFuncPassBase<
+          RockFuncToTritonFuncPass> {
   void runOnOperation() override;
 
 private:
-  /// Map from original i32 values to converted tt.ptr values
-  IRMapping valueMapping;
-
   /// Process a single kernel function (convert to tt.func)
   void processFunction(func::FuncOp funcOp);
 };
@@ -74,9 +73,9 @@ private:
 } // end anonymous namespace
 
 void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
-  valueMapping.clear();
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
+  IRRewriter rewriter(ctx);
 
   // Step 1: Find all rock.extract_ptr patterns and collect info
   // Pattern: block_arg (tensor) -> rock.extract_ptr -> tt.splat
@@ -84,9 +83,8 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     unsigned argIndex;
     Type elementType;
     RankedTensorType tensorType; // Original tensor type for size calculation
-    SmallVector<Value> valuesToReplace; // extract_ptr results to replace with block arg
-    // Ops in the chain that need to be erased (in order: splats, extract_ptr)
-    SmallVector<triton::SplatOp> oldSplatOps;
+    SmallVector<Value>
+        valuesToReplace; // extract_ptr results to replace with block arg
     rock::ExtractPtrOp extractPtrOp;
   };
   SmallVector<ArgConversionInfo> argsToConvert;
@@ -155,63 +153,49 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
     }
   }
 
-  auto newFuncType = FunctionType::get(ctx, newInputTypes, funcType.getResults());
+  auto newFuncType =
+      FunctionType::get(ctx, newInputTypes, funcType.getResults());
 
-  // Step 3: For each extract_ptr result, replace its users with the block argument
-  // We do this BEFORE changing types so the old ops become dead
+  // Step 3: Rewrite each pointer block argument to have the type !tt.ptr.
+  // Also rebuild the tt.splat
+  // that broadcasts it as a ptr tensor, and drop the dead extract_ptr.
   Block &entryBlock = funcOp.front();
   for (auto &info : argsToConvert) {
     BlockArgument blockArg = entryBlock.getArgument(info.argIndex);
     auto ptrType = triton::PointerType::get(info.elementType, 1);
 
     for (Value oldValue : info.valuesToReplace) {
-      // For each user of the extract_ptr result (like tt.splat), create a replacement
-      for (OpOperand &use : llvm::make_early_inc_range(oldValue.getUses())) {
-        Operation *user = use.getOwner();
-
-        if (auto splatOp = dyn_cast<triton::SplatOp>(user)) {
-          // Create new splat with pointer type
-          builder.setInsertionPoint(splatOp);
-          auto resultType = cast<RankedTensorType>(splatOp.getResult().getType());
-          auto newResultType = RankedTensorType::get(
-              resultType.getShape(), ptrType, resultType.getEncoding());
-          Value newSplat = triton::SplatOp::create(
-              builder, splatOp.getLoc(), newResultType, blockArg);
-
-          // Map old splat result to new for downstream propagation
-          valueMapping.map(splatOp.getResult(), newSplat);
-
-          // Replace all uses of old splat with new splat
-          splatOp.getResult().replaceAllUsesWith(newSplat);
-
-          // Track old splat for later erasure
-          info.oldSplatOps.push_back(splatOp);
-        }
+      // Replace every tt.splat of the extract_ptr result with a splat (with ptr
+      // type) of the block arg. early_inc lets us erase the splat while
+      // iterating.
+      for (Operation *user : llvm::make_early_inc_range(oldValue.getUsers())) {
+        auto splatOp = dyn_cast<triton::SplatOp>(user);
+        if (!splatOp)
+          continue;
+        auto resultType = cast<RankedTensorType>(splatOp.getResult().getType());
+        auto newResultType = RankedTensorType::get(
+            resultType.getShape(), ptrType, resultType.getEncoding());
+        rewriter.setInsertionPoint(splatOp);
+        rewriter.replaceOpWithNewOp<triton::SplatOp>(splatOp, newResultType,
+                                                     blockArg);
       }
     }
 
-    // Update the block argument type
+    // Retype the block argument now that its splat users are ptr-typed.
     blockArg.setType(ptrType);
+
+    // The extract_ptr is dead once its splat users have been replaced.
+    if (info.extractPtrOp)
+      rewriter.eraseOp(info.extractPtrOp);
   }
 
   // Update block argument types for dead tensor args (those without
-  // rock.extract_ptr patterns that were converted to pointers above).
+  // rock.extract_ptr patterns). Triton kernels cannot have bare tensor args, so
+  // these still become pointers even though nothing reads them.
   for (unsigned i : deadTensorArgs) {
     BlockArgument blockArg = entryBlock.getArgument(i);
     auto tensorType = cast<RankedTensorType>(blockArg.getType());
     blockArg.setType(triton::PointerType::get(tensorType.getElementType(), 1));
-  }
-
-  // Erase the ops in the chain (users first, producers last)
-  // Order: old splats -> extract_ptr
-  for (auto &info : argsToConvert) {
-    // First erase the old splat ops (they use extract_ptr result)
-    for (auto splatOp : info.oldSplatOps) {
-      splatOp.erase();
-    }
-    // Then erase extract_ptr (uses block arg)
-    if (info.extractPtrOp)
-      info.extractPtrOp.erase();
   }
 
   // Step 4: Create tt.func and move body
@@ -233,128 +217,59 @@ void RockFuncToTritonFuncPass::processFunction(func::FuncOp funcOp) {
   // Convert func.return to tt.return
   ttFuncOp.walk([&](func::ReturnOp returnOp) {
     builder.setInsertionPoint(returnOp);
-    triton::ReturnOp::create(builder, returnOp.getLoc(), returnOp.getOperands());
+    triton::ReturnOp::create(builder, returnOp.getLoc(),
+                             returnOp.getOperands());
     returnOp.erase();
   });
 
   funcOp.erase();
 
-  // Continue with remaining transformations
-  SmallVector<Operation *, 8> opsToErase;
-
-  // Step 5: Convert arith.addi on pointer tensors to tt.addptr
+  // Step 5: Convert arith.addi on pointer tensors to tt.addptr.
   bool changed = true;
   while (changed) {
     changed = false;
+    SmallVector<arith::AddIOp> toConvert;
     ttFuncOp.walk([&](arith::AddIOp addOp) {
-      // Skip if already scheduled for erasure
-      if (llvm::is_contained(opsToErase, addOp.getOperation()))
-        return;
-
-      Value lhs = addOp.getLhs();
-      Value rhs = addOp.getRhs();
-
-      Value mappedLhs = valueMapping.lookupOrNull(lhs);
-      Value mappedRhs = valueMapping.lookupOrNull(rhs);
-
-      // Check if either operand is a pointer tensor (either mapped or directly)
-      Value ptrOperand = nullptr;
-      Value offsetOperand = nullptr;
-
-      if (mappedLhs && isTensorOfPointers(mappedLhs.getType())) {
-        ptrOperand = mappedLhs;
-        offsetOperand = mappedRhs ? mappedRhs : rhs;
-      } else if (mappedRhs && isTensorOfPointers(mappedRhs.getType())) {
-        ptrOperand = mappedRhs;
-        offsetOperand = mappedLhs ? mappedLhs : lhs;
-      } else if (isTensorOfPointers(lhs.getType())) {
-        // Direct pointer tensor (already converted)
-        ptrOperand = lhs;
-        offsetOperand = mappedRhs ? mappedRhs : rhs;
-      } else if (isTensorOfPointers(rhs.getType())) {
-        ptrOperand = rhs;
-        offsetOperand = mappedLhs ? mappedLhs : lhs;
-      }
-
-      if (!ptrOperand)
-        return;
-
-      // Don't convert if offset is also a pointer (shouldn't happen)
-      if (isTensorOfPointers(offsetOperand.getType()))
-        return;
-
-      Location loc = addOp.getLoc();
-      builder.setInsertionPoint(addOp);
-
-      // Create tt.addptr
-      Value newAddPtr = triton::AddPtrOp::create(
-          builder, loc, ptrOperand.getType(), ptrOperand, offsetOperand);
-
-      valueMapping.map(addOp.getResult(), newAddPtr);
-      opsToErase.push_back(addOp);
-      changed = true;
+      bool lhsPtr = isTensorOfPointers(addOp.getLhs().getType());
+      bool rhsPtr = isTensorOfPointers(addOp.getRhs().getType());
+      // Adding two pointer tensors is not valid pointer arithmetic and should
+      // never be produced upstream (TransformsToPointerArith only ever adds an
+      // integer offset to a base pointer).
+      if (lhsPtr && rhsPtr)
+        llvm_unreachable("arith.addi on two pointer tensors is not valid "
+                         "pointer arithmetic");
+      // Convert only when exactly one operand is a pointer tensor; neither is
+      // an ordinary integer add.
+      if (lhsPtr != rhsPtr)
+        toConvert.push_back(addOp);
     });
+    for (arith::AddIOp addOp : toConvert) {
+      Value lhs = addOp.getLhs(), rhs = addOp.getRhs();
+      bool lhsPtr = isTensorOfPointers(lhs.getType());
+      Value ptr = lhsPtr ? lhs : rhs;
+      Value offset = lhsPtr ? rhs : lhs;
+      rewriter.setInsertionPoint(addOp);
+      rewriter.replaceOpWithNewOp<triton::AddPtrOp>(addOp, ptr.getType(), ptr,
+                                                    offset);
+      changed = true;
+    }
   }
 
-  // Step 6: Propagate pointer tensors through rock.cast_to_ptr ops
+  // Step 6: A rock.cast_to_ptr whose source already became a pointer tensor
+  // (through the addptr chain or a ptr splat) is now an identity and folds
+  // away.
   changed = true;
   while (changed) {
     changed = false;
-
-    // Handle rock.cast_to_ptr - if input maps to pointer tensor, replace it
+    SmallVector<rock::CastToPtrOp> toFold;
     ttFuncOp.walk([&](rock::CastToPtrOp castOp) {
-      if (llvm::is_contained(opsToErase, castOp.getOperation()))
-        return;
-
-      Value src = castOp.getSrc();
-      Value mappedSrc = valueMapping.lookupOrNull(src);
-
-      // in some cases, there's no tt.add_ptr, so mappedSrc = nullptr
-      if (!mappedSrc)
-        mappedSrc = src;
-
-      if (!isTensorOfPointers(mappedSrc.getType()))
-        return;
-
-      // Check if already mapped
-      if (valueMapping.contains(castOp.getResult()))
-        return;
-
-      // The cast_to_ptr produces a pointer tensor, but we already have one
-      valueMapping.map(castOp.getResult(), mappedSrc);
-      opsToErase.push_back(castOp);
-      changed = true;
+      if (isTensorOfPointers(castOp.getSrc().getType()))
+        toFold.push_back(castOp);
     });
-  }
-
-  // Step 7: Update all remaining uses
-  ttFuncOp.walk([&](Operation *op) {
-    // Skip ops we're about to erase
-    if (llvm::is_contained(opsToErase, op))
-      return;
-
-    bool needsUpdate = false;
-    for (Value operand : op->getOperands()) {
-      if (valueMapping.contains(operand)) {
-        needsUpdate = true;
-        break;
-      }
+    for (rock::CastToPtrOp castOp : toFold) {
+      rewriter.replaceOp(castOp, castOp.getSrc());
+      changed = true;
     }
-
-    if (!needsUpdate)
-      return;
-
-    // Update operands
-    for (OpOperand &operand : op->getOpOperands()) {
-      if (Value mapped = valueMapping.lookupOrNull(operand.get())) {
-        operand.set(mapped);
-      }
-    }
-  });
-
-  // Erase the converted operations in reverse order
-  for (auto it = opsToErase.rbegin(); it != opsToErase.rend(); ++it) {
-    (*it)->erase();
   }
 }
 
