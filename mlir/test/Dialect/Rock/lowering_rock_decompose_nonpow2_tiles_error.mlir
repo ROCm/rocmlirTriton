@@ -68,3 +68,24 @@ func.func @test_unsupported_use(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf1
   %r = rock.gridwise_gemm(%a, %b) {params = #p80x80c} : tensor<1x160x64xf16>, tensor<1x64x160xf16> -> tensor<1x160x160xf32>
   return %r : tensor<1x160x160xf32>
 }
+
+// -----
+
+#p3x1 = #rock.gemm_params<mPerBlock = 3, nPerBlock = 1, kPerBlock = 2, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// ============================================================
+// Error: the output-fusion chain multiplies the gemm result by a
+// non-splat arith.constant. The splitter re-materializes *splat*
+// constants per cell, but cannot slice a dense non-splat constant,
+// so splitting the store source fails. (mPerBlock = 3 splits along
+// M into {2,1}; N = 1 keeps the constant tiny.)
+// ============================================================
+
+func.func @test_nonsplat_constant_fusion(%a: tensor<1x3x2xf16>, %b: tensor<1x2x1xf16>, %c: tensor<1x3x1xf32>) -> tensor<1x3x1xf32> attributes {rock.kernel} {
+  // expected-error @+1 {{failed to split store source}}
+  %r = rock.gridwise_gemm(%a, %b) {params = #p3x1} : tensor<1x3x2xf16>, tensor<1x2x1xf16> -> tensor<1x3x1xf32>
+  %cst = arith.constant dense<[[[1.000000e+00], [2.000000e+00], [3.000000e+00]]]> : tensor<1x3x1xf32>
+  %mul = arith.mulf %r, %cst : tensor<1x3x1xf32>
+  %out = rock.store %mul to %c by set : tensor<1x3x1xf32> -> tensor<1x3x1xf32> to tensor<1x3x1xf32>
+  return %out : tensor<1x3x1xf32>
+}
