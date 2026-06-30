@@ -80,10 +80,16 @@ struct RockFuseSiblingLoopsPass
 /// value (covers dynamic bounds computed once and reused by both loops) or has
 /// the same constant value (the common case: each decomposed sub-gemm
 /// materializes its own bound constants, so SSA identity does not hold).
+/// Constant comparison goes through getConstantIntValue, which ignores the
+/// value's type, so we additionally require the bound types to match -- two
+/// loops whose induction variables differ in type (e.g. index vs i32) cannot be
+/// fused into one, since scf.for ties the IV type to the bound types.
 static bool haveIdenticalBounds(scf::ForOp a, scf::ForOp b) {
   auto sameBound = [](Value x, Value y) -> bool {
     if (x == y)
       return true;
+    if (x.getType() != y.getType())
+      return false;
     std::optional<int64_t> cx = getConstantIntValue(x);
     std::optional<int64_t> cy = getConstantIntValue(y);
     return cx && cy && *cx == *cy;

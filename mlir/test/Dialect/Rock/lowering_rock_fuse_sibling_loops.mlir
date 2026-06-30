@@ -242,6 +242,33 @@ func.func @distinct_dynamic_bounds(%ub0: index, %ub1: index, %init0: f32, %init1
 
 // -----
 
+// Same numeric bounds but different induction-variable types (index vs i32):
+// not fused. The bounds are equal as integers, but scf.for ties the IV type to
+// the bound types, so the loops do not share an iteration space.
+
+// CHECK-LABEL: func.func @different_iv_types
+// CHECK: scf.for
+// CHECK: scf.for
+func.func @different_iv_types(%init0: f32, %init1: f32) -> (f32, f32) attributes {rock.kernel} {
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 8 : index
+  %step = arith.constant 1 : index
+  %lbi = arith.constant 0 : i32
+  %ubi = arith.constant 8 : i32
+  %stepi = arith.constant 1 : i32
+  %r0 = scf.for %i = %lb to %ub step %step iter_args(%acc = %init0) -> (f32) {
+    %v = arith.addf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  %r1 = scf.for %i = %lbi to %ubi step %stepi iter_args(%acc = %init1) -> (f32) : i32 {
+    %v = arith.mulf %acc, %acc : f32
+    scf.yield %v : f32
+  }
+  return %r0, %r1 : f32, f32
+}
+
+// -----
+
 // Single-iteration loops (0..1, all constant) still fuse at the pass level.
 // (In the full pipeline the DCE step before this pass inlines single-trip loops
 // into straight-line code, so this case is only reachable when running the pass
