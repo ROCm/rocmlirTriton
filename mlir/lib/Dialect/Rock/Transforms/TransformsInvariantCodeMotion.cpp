@@ -460,8 +460,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   // - The iter_arg: a pure integer offset.
   // - The base pointer
   // The only way to collapse to a single addi (simpler, and might affect
-  // performance) would be to adapt RockTensorToTritonPtr lowering to recognize a
-  // tt.addptr recurrence carried through an scf.for iter_arg.
+  // performance) would be to adapt RockTensorToTritonPtr lowering to recognize
+  // a tt.addptr recurrence carried through an scf.for iter_arg.
   llvm::SmallPtrSet<Operation *, 4> candidateOps;
   for (auto [j, r] : llvm::enumerate(reduced)) {
     candidateOps.insert(r.op.getOperation());

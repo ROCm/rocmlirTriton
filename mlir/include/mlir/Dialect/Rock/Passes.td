@@ -410,8 +410,8 @@ def RockSerializeHostFuncsPass
 
 def RockTensorToTritonPtrPass
     : Pass<"rock-tensor-to-triton-ptr", "::mlir::ModuleOp"> {
-  let summary =
-      "Convert tensor semantic kernels (rock) to pointer semantic kernels (triton)";
+  let summary = "Convert tensor semantic kernels (rock) to pointer semantic "
+                "kernels (triton)";
   let description = [{
     This pass transforms kernels from tensor semantic to pointer semantic.
 
