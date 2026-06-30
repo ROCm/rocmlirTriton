@@ -17,10 +17,10 @@
 //
 // The per-block tile sizes live in the GEMM tuning parameters (mPerBlock /
 // nPerBlock) and may legally be non-power-of-two. For example, to cover a GEMM
-// with M = 77 the tuning logic may pick an mPerBlock of 80 (= 64 + 16), which is
-// not a power of two. The Triton layouts produced later by RockToTTIR, however,
-// require power-of-two tensor shapes, so these non-power-of-two tiles must be
-// split before then.
+// with M = 77 the tuning logic may pick an mPerBlock of 80 (= 64 + 16), which
+// is not a power of two. The Triton layouts produced later by RockToTTIR,
+// however, require power-of-two tensor shapes, so these non-power-of-two tiles
+// must be split before then.
 //
 // This pass runs at the *gridwise* layer: after rock.gemm has been lowered to
 // rock.gridwise_gemm (so transposes/padding are resolved, the operands are
@@ -127,10 +127,10 @@ static SmallVector<Segment> decomposePow2(int64_t n) {
 }
 
 /// Build a view of the rank-3 gridwise operand `view` in which each dimension
-/// listed in `sliceDims` (which has size `blocks[k] * tiles[k]`) is restructured
-/// into (block, iter) = (blocks[k], tiles[k]), the iter sub-dim is sliced to
-/// `segs[k]`, and the two are re-merged. The resulting dimension has size
-/// `blocks[k] * segs[k].length`, and block `bk` of it maps onto original
+/// listed in `sliceDims` (which has size `blocks[k] * tiles[k]`) is
+/// restructured into (block, iter) = (blocks[k], tiles[k]), the iter sub-dim is
+/// sliced to `segs[k]`, and the two are re-merged. The resulting dimension has
+/// size `blocks[k] * segs[k].length`, and block `bk` of it maps onto original
 /// indices `bk*tiles[k] + segs[k].offset + i`. Dimensions not in `sliceDims`
 /// pass through unchanged.
 static Value sliceBlockedDims(OpBuilder &b, Location loc, Value view,
@@ -168,7 +168,8 @@ static Value sliceBlockedDims(OpBuilder &b, Location loc, Value view,
                    {blocks[k], tiles[k]});
         up += 2;
       } else {
-        l1.passThrough({StringRef(baseStore[i])}, {up}, {StringRef(baseStore[i])});
+        l1.passThrough({StringRef(baseStore[i])}, {up},
+                       {StringRef(baseStore[i])});
         up += 1;
       }
     }
@@ -217,7 +218,8 @@ static Value sliceBlockedDims(OpBuilder &b, Location loc, Value view,
         l3.merge(StringRef(baseStore[i]), up,
                  {StringRef(blkStore[i]), StringRef(itStore[i])});
       } else {
-        l3.passThrough({StringRef(baseStore[i])}, {up}, {StringRef(baseStore[i])});
+        l3.passThrough({StringRef(baseStore[i])}, {up},
+                       {StringRef(baseStore[i])});
       }
       up += 1;
     }
@@ -245,7 +247,8 @@ public:
                  int64_t nBlocks, int64_t mPerBlock, int64_t nPerBlock,
                  ArrayRef<Segment> mSegs, ArrayRef<Segment> nSegs)
       : b(b), loc(loc), g(g), mBlocks(mBlocks), nBlocks(nBlocks),
-        mPerBlock(mPerBlock), nPerBlock(nPerBlock), mSegs(mSegs), nSegs(nSegs) {}
+        mPerBlock(mPerBlock), nPerBlock(nPerBlock), mSegs(mSegs), nSegs(nSegs) {
+  }
 
   void seed(Value v, SmallVector<Value> grid) { memo[v] = std::move(grid); }
 
@@ -319,9 +322,8 @@ private:
       return failure();
     Attribute elem = splat.getSplatValue<Attribute>();
     for (int64_t cell = 0; cell < numCells(); ++cell) {
-      auto subTy =
-          RankedTensorType::get(cellShape(cell, type.getElementType()),
-                                type.getElementType());
+      auto subTy = RankedTensorType::get(cellShape(cell, type.getElementType()),
+                                         type.getElementType());
       grid.push_back(arith::ConstantOp::create(
           b, loc, subTy, SplatElementsAttr::get(subTy, elem)));
     }
@@ -349,9 +351,8 @@ private:
       Operation *cloned = b.clone(*op, m);
       for (OpResult res : cloned->getResults()) {
         auto rt = cast<RankedTensorType>(res.getType());
-        res.setType(
-            RankedTensorType::get(cellShape(cell, rt.getElementType()),
-                                  rt.getElementType()));
+        res.setType(RankedTensorType::get(cellShape(cell, rt.getElementType()),
+                                          rt.getElementType()));
       }
       grid.push_back(cloned->getResult(0));
     }
@@ -395,8 +396,8 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
   SmallVector<Segment> mSegs = decomposePow2(mPerBlock);
   SmallVector<Segment> nSegs = decomposePow2(nPerBlock);
 
-  Value a = gemm.getA();   // [G, M, K]
-  Value bMat = gemm.getB(); // [G, K, N]
+  Value a = gemm.getA();                                      // [G, M, K]
+  Value bMat = gemm.getB();                                   // [G, K, N]
   auto cType = cast<RankedTensorType>(gemm.getC().getType()); // [G, M, N]
   if (cType.getRank() != 3)
     return gemm.emitError(
