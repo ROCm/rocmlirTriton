@@ -43,3 +43,13 @@ target_include_directories(MLIRRockUnitTests
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../lib/Dialect/Rock/Transforms
 )
 rocmlir_add_triton_includes(MLIRRockUnitTests)
+
+if(WIN32)
+  target_link_libraries(MLIRRockUnitTests
+    PRIVATE
+    TritonAMDGPUDialectToLLVM
+    TritonAMDAnalysis
+    MLIRUBToLLVM
+    TritonNVIDIAGPUToLLVM
+  )
+endif()

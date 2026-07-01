@@ -14,6 +14,7 @@ target_link_libraries(rocmlir-translate
   MLIRROCDLToLLVMIRTranslation
   MLIRAnalysis
   MLIRFuncInlinerExtension
+  MLIRRockUtility
 
   TritonIR
   TritonGPUIR
