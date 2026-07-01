@@ -62,6 +62,60 @@ struct RockTransformsToPointerArithPass
 
 namespace {
 
+/// Shared tail of the TransformsToPtrOp / CoordsToPtrOp lowerings. Given the
+/// chain `root` buffer, the remaining `transformVec`, the seeded `initValues`
+/// (extra indices + ranges for TransformsToPtrOp, coordinate tensors for
+/// CoordsToPtrOp), and the result tile `shape`, expand to the linearized
+/// offset + mask, prepend the base pointer, and replace `op`. The only
+/// difference between the two callers is how `initValues` is seeded.
+static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
+                                    Location loc, Value buffer,
+                                    ArrayRef<TransformMapAttr> transformVec,
+                                    ValueRange initValues,
+                                    ArrayRef<int64_t> shape) {
+  // After regularize-input, the root of any transform chain must be either
+  // a block argument (kernel input tensor) or an arith.constant (splat).
+  if (!isa<BlockArgument>(buffer) &&
+      !buffer.getDefiningOp<arith::ConstantOp>()) {
+    return op->emitOpError("expected transform chain root to be a block "
+                           "argument or arith.constant, but got: ")
+           << *buffer.getDefiningOp();
+  }
+
+  FailureOr<OffsetAndMask> expanded =
+      expandCoordsToOffsetAndMask(b, loc, transformVec, initValues, shape);
+  if (failed(expanded))
+    return op->emitOpError("Transforms are not well formed");
+
+  // Hoist pointer extraction to function entry to avoid redundant extractions
+  // when the op is inside loops or other control flow.
+  // For constant buffers (like fakeTensor used for index calculations),
+  // we use a base pointer of 0 since the actual pointer value doesn't matter.
+  Value baseAddr;
+  {
+    OpBuilder::InsertionGuard guard(b);
+    bool isConstantBuffer = buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
+    if (isConstantBuffer) {
+      baseAddr = arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(0));
+    } else {
+      auto parentFunc = op->getParentOfType<func::FuncOp>();
+      b.setInsertionPointToStart(&parentFunc.front());
+      baseAddr = rock::ExtractPtrOp::create(b, loc, buffer);
+    }
+  }
+  auto splatType = RankedTensorType::get(shape, b.getI32Type());
+  Value baseAddrSplat = triton::SplatOp::create(b, loc, splatType, baseAddr);
+
+  // baseAddr is i32 which might be too narrow in some cases.
+  // This is intentional: rock-to-ttir replaces this i32 tensor with a
+  // tt.ptr-based tt.addptr, so the actual address width is handled there.
+  Value pointerTensor =
+      arith::AddIOp::create(b, loc, baseAddrSplat, expanded->offset);
+
+  b.replaceOp(op, {pointerTensor, expanded->mask});
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // TransformsToPtrOp lowering.
 //===----------------------------------------------------------------------===//
@@ -72,68 +126,47 @@ struct TransformsToPtrRewritePattern
   LogicalResult matchAndRewrite(TransformsToPtrOp op,
                                 PatternRewriter &b) const override {
     Location loc = op.getLoc();
-    Value source = op.getSource();
-    ValueRange extraIndices = op.getExtraIndices();
-
     auto pointerResultType = cast<RankedTensorType>(op.getPointers().getType());
     ArrayRef<int64_t> shape = pointerResultType.getShape();
 
-    source = isolateTransforms(b, source);
-
+    Value source = isolateTransforms(b, op.getSource());
     auto [buffer, transforms, _] = untransform(b, source);
-
-    // After regularize-input, the root of any transform chain must be either
-    // a block argument (kernel input tensor) or an arith.constant (splat).
-    if (!isa<BlockArgument>(buffer) &&
-        !buffer.getDefiningOp<arith::ConstantOp>()) {
-      return op.emitOpError("expected transform chain root to be a block "
-                            "argument or arith.constant, but got: ")
-             << *buffer.getDefiningOp();
-    }
 
     // Seed the chain with the extra (scalar) indices followed by one range
     // tensor per result tile dimension.
-    SmallVector<Value> initValues(extraIndices);
+    SmallVector<Value> initValues(op.getExtraIndices());
     for (size_t dimension = 0; dimension < shape.size(); ++dimension)
       initValues.push_back(
           makeRange(b, loc, 0, shape[dimension], shape.size(), dimension));
 
     SmallVector<TransformMapAttr> transformVec =
         llvm::to_vector(transforms.getAsRange<TransformMapAttr>());
+    return lowerToPointer(b, op, loc, buffer, transformVec, initValues, shape);
+  }
+};
 
-    FailureOr<OffsetAndMask> expanded =
-        expandCoordsToOffsetAndMask(b, loc, transformVec, initValues, shape);
-    if (failed(expanded))
-      return op.emitOpError("Transforms are not well formed");
+//===----------------------------------------------------------------------===//
+// CoordsToPtrOp lowering.
+//===----------------------------------------------------------------------===//
+struct CoordsToPtrRewritePattern : public OpRewritePattern<CoordsToPtrOp> {
+  using OpRewritePattern<CoordsToPtrOp>::OpRewritePattern;
 
-    // Hoist pointer extraction to function entry to avoid redundant extractions
-    // when TransformsToPtrOp is inside loops or other control flow.
-    // For constant buffers (like fakeTensor used for index calculations),
-    // we use a base pointer of 0 since the actual pointer value doesn't matter.
-    Value baseAddr;
-    {
-      OpBuilder::InsertionGuard guard(b);
-      bool isConstantBuffer =
-          buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
-      if (isConstantBuffer) {
-        baseAddr = arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(0));
-      } else {
-        auto parentFunc = op->getParentOfType<func::FuncOp>();
-        b.setInsertionPointToStart(&parentFunc.front());
-        baseAddr = rock::ExtractPtrOp::create(b, loc, buffer);
-      }
-    }
-    auto splatType = RankedTensorType::get(shape, b.getI32Type());
-    Value baseAddrSplat = triton::SplatOp::create(b, loc, splatType, baseAddr);
+  LogicalResult matchAndRewrite(CoordsToPtrOp op,
+                                PatternRewriter &b) const override {
+    Location loc = op.getLoc();
+    auto pointerResultType = cast<RankedTensorType>(op.getPointers().getType());
+    ArrayRef<int64_t> shape = pointerResultType.getShape();
 
-    // baseAddr is i32 which might be too narrow in some cases.
-    // This is intentional: rock-to-ttir replaces this i32 tensor with a
-    // tt.ptr-based tt.addptr, so the actual address width is handled there.
-    Value pointerTensor =
-        arith::AddIOp::create(b, loc, baseAddrSplat, expanded->offset);
+    Value source = isolateTransforms(b, op.getSource());
+    auto [buffer, transforms, _] = untransform(b, source);
 
-    b.replaceOp(op, {pointerTensor, expanded->mask});
-    return success();
+    // The chain is already seeded at an intermediate coordinate space: the
+    // coordinate operands are the upper-space coordinates of the remaining
+    // sub-chain directly (possibly reduced-rank; the expansion broadcasts).
+    SmallVector<Value> initValues(op.getCoords());
+    SmallVector<TransformMapAttr> transformVec =
+        llvm::to_vector(transforms.getAsRange<TransformMapAttr>());
+    return lowerToPointer(b, op, loc, buffer, transformVec, initValues, shape);
   }
 };
 
@@ -142,7 +175,7 @@ struct TransformsToPtrRewritePattern
 void RockTransformsToPointerArithPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
-  target.addIllegalOp<rock::TransformsToPtrOp>();
+  target.addIllegalOp<rock::TransformsToPtrOp, rock::CoordsToPtrOp>();
   // Note: We don't mark TransformOp as illegal. After TransformsToPtrOp
   // conversion, transform chains become dead code (each transform only used
   // by the next transform in the chain). These will be cleaned up by
@@ -151,7 +184,7 @@ void RockTransformsToPointerArithPass::runOnOperation() {
                          triton::TritonDialect>();
 
   RewritePatternSet patterns(ctx);
-  patterns.add<TransformsToPtrRewritePattern>(ctx);
+  patterns.add<TransformsToPtrRewritePattern, CoordsToPtrRewritePattern>(ctx);
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
     signalPassFailure();

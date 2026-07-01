@@ -783,6 +783,37 @@ def Rock_TransformsToPtrOp
   }];
 }
 
+def Rock_CoordsToPtrOp
+    : Rock_Op<"coords_to_ptr", [Pure, AllShapesMatch<["pointers", "mask"]>]>,
+      Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
+          Variadic<RankedTensorOf<[I32]>>:$coords)>,
+      Results<(outs RankedTensorOf<[I32]>:$pointers,
+          RankedTensorOf<[I1]>:$mask)> {
+  let summary = "Convert intermediate coordinate tensors + a transform "
+                "sub-chain to pointer and mask tensors";
+
+  let description = [{
+    Like `rock.transforms_to_ptr`, but the transform chain is seeded at the
+    upper space of `source`'s remaining transform sub-chain by one explicit
+    coordinate tensor per dimension (`coords`), rather than by scalar extra
+    indices plus per-tile ranges.
+
+    Used by the carry-based LICM path: the loop-variant coordinates are carried
+    as loop iter_args and fed here, so no floordiv/mod is recomputed per
+    iteration. Lowered away by `rock-transforms-to-pointer-arith`, which expands
+    the sub-chain to the same `extract_ptr`/`addi` + mask shape as
+    `transforms_to_ptr`. The coordinate tensors may be reduced-rank; the
+    lowering broadcasts them to the tile shape during expansion.
+  }];
+
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    attr-dict $source `(` $coords `)`
+    `:` type($source) `(` type($coords) `)` `->`
+    type($pointers) `,` type($mask)
+  }];
+}
+
 // blockwise_reduction
 def Rock_BlockwiseReduceOp
     : Rock_Op<"blockwise_reduce",
