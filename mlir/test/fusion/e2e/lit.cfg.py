@@ -4,6 +4,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 import tempfile
 
 import lit.formats
@@ -30,6 +31,16 @@ config.test_exec_root = os.path.join(config.mlir_obj_root, 'test')
 
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
+# CMAKE_SHARED_LIBRARY_PREFIX: 'lib' on Unix, '' on Windows MSVC. Mirrors the
+# main and e2e lit configs so shared-lib filenames resolve on both platforms.
+config.substitutions.append(('%shlibprefix', '' if sys.platform == 'win32' else 'lib'))
+# Generated fusion E2E tests invoke the widget as a bare `rocm-run`; Windows
+# can't execute the shebang bash script, so route it to the Python companion.
+# The negative lookahead leaves `rocm-run.py` untouched.
+if sys.platform == 'win32':
+    _rocm_run_py = os.path.join(config.mlir_src_root, 'utils', 'widgets', 'rocm-run.py')
+    config.substitutions.append(
+        (r'\brocm-run\b(?!\.py)', '"%s" "%s"' % (sys.executable, _rocm_run_py)))
 config.substitutions.append(("%mlir_src_root", config.mlir_src_root))
 config.substitutions.append(('%random_data', config.random_data))
 config.substitutions.append(('%rocmlir_gen_flags', config.rocmlir_gen_flags))
@@ -74,6 +85,14 @@ config.excludes = [
 llvm_config.with_environment('PATH', config.mlir_rock_tools_dir, append_path=True)
 llvm_config.with_environment('PATH', config.lit_tools_dir, append_path=True)
 llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
+
+if sys.platform == 'win32':
+    if config.rocm_path:
+        llvm_config.with_environment('ROCM_PATH', config.rocm_path)
+        llvm_config.with_environment('PATH',
+                                     os.path.join(config.rocm_path, 'bin'),
+                                     append_path=True)
+    llvm_config.with_environment('ROCMLIR_BUILD_DIR', os.path.dirname(config.mlir_rock_tools_dir))
 
 tool_dirs = [config.mlir_rock_tools_dir, config.mlir_tools_dir, config.llvm_tools_dir]
 tools = ['rocmlir-opt']

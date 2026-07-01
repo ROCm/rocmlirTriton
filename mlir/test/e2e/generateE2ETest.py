@@ -6,7 +6,7 @@ The configuration files are in TOML format.  Below is an example:
 
     directory= "mlir/test/rocmlir-driver/auto_e2e/"
     prefix = "rocmlir-gen"
-    suffix = "--arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
+    suffix = "--arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%conv_validation_wrapper_library_dir/%shlibprefixconv-validation-wrappers%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_runner_utils%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
 
     [[axis]]
     name = "operation"
@@ -38,13 +38,26 @@ The configuration files are in TOML format.  Below is an example:
     values = ["f16", "bf16"]
 
 """
-import tomli
+# Python 3.11+ ships tomllib in the stdlib; fall back to the external tomli
+# backport (same API) only if it is unavailable.
+try:
+    import tomllib as tomli
+except ModuleNotFoundError:
+    import tomli
 import itertools
 import os
 import sys
 import getopt
 import glob
-from hip import hip
+import shutil
+import subprocess
+if sys.platform == 'win32':
+    try:
+        from hip import hip
+    except ImportError:
+        hip = None
+else:
+    from hip import hip
 
 
 def hip_check(call_result):
@@ -57,16 +70,56 @@ def hip_check(call_result):
     return result
 
 
-def get_arch():
-    agents = set()
-    device_count = hip_check(hip.hipGetDeviceCount())
-    for device in range(device_count):
-        props = hip.hipDeviceProp_t()
-        hip_check(hip.hipGetDeviceProperties(props, device))
-        agent = props.gcnArchName.decode('utf-8')
-        agents.add(agent)
+def _find_amdgpu_arch():
+    # amdgpu-arch prints the gfx arch of each installed GPU, one per line. Its
+    # location differs by ROCm distribution: <root>/bin (HIP SDK) and
+    # <root>/lib/llvm/bin (TheRock). Search the ROCm/HIP root first so we do not
+    # pick up an unrelated amdgpu-arch on PATH (e.g. the one bundled with Visual
+    # Studio's LLVM, which cannot enumerate AMD GPUs); PATH is the last resort.
+    exe = 'amdgpu-arch.exe' if sys.platform == 'win32' else 'amdgpu-arch'
+    root = os.environ.get('ROCM_PATH') or os.environ.get('HIP_PATH')
+    if root:
+        for sub in ('bin', os.path.join('lib', 'llvm', 'bin')):
+            cand = os.path.join(root, sub, exe)
+            if os.path.isfile(cand):
+                return cand
+    return shutil.which('amdgpu-arch')
 
-    return agents
+
+def get_arch():
+    if sys.platform == 'win32':
+        env_arch = os.environ.get('ROCMLIR_TEST_TARGET_ARCH')
+        if env_arch:
+            agents = set(a.strip() for a in env_arch.split(',') if a.strip())
+            if len(agents) != 1:
+                raise ValueError("ROCMLIR_TEST_TARGET_ARCH requires one architecture")
+            return agents
+
+    # Linux primary path: hip-python FFI.
+    if hip is not None:
+        agents = set()
+        device_count = hip_check(hip.hipGetDeviceCount())
+        for device in range(device_count):
+            props = hip.hipDeviceProp_t()
+            hip_check(hip.hipGetDeviceProperties(props, device))
+            agents.add(props.gcnArchName.decode('utf-8'))
+        return agents
+
+    if sys.platform == 'win32':
+        tool = _find_amdgpu_arch()
+        if tool:
+            try:
+                out = subprocess.check_output([tool], stderr=subprocess.DEVNULL).decode()
+            except (subprocess.CalledProcessError, OSError):
+                out = ''
+            # TheRock prints a HIP Library Path banner before the architecture.
+            agents = {ln.strip() for ln in out.splitlines() if ln.strip().startswith('gfx')}
+            if agents:
+                if len(agents) != 1:
+                    raise ValueError("amdgpu-arch reported multiple architectures")
+                return agents
+
+    return set()
 
 
 def generate_option_list(prefixes: dict, table: list, key1: str, key2: str):
@@ -142,7 +195,11 @@ if __name__ == '__main__':
         if "prefix" in axis:
             axis_prefixes[axis["name"]] = axis["prefix"]
 
-    arch_names = get_arch()
+    try:
+        arch_names = get_arch()
+    except ValueError as err:
+        print(err, file=sys.stderr)
+        sys.exit(1)
     arch = ','.join(arch_names)
     combinations = generate_option_list(axis_prefixes, toml_dict, "axis", "values")
 

@@ -29,13 +29,19 @@ set(MLIR_CMAKE_CONFIG_DIR
 # Passed to lit.site.cfg.py.in to set up the path where to find the libraries
 # for linalg integration tests.
 # Use LLVM_TOOLS_BINARY_DIR from find_package(MLIR) which points to the LLVM build
-set(MLIR_DIALECT_LINALG_INTEGRATION_TEST_LIB_DIR ${LLVM_LIBRARY_DIR})
+# On Windows MSVC, shared libraries (.dll) live in the runtime/bin directory,
+# not the lib directory (which holds only import .lib files). Point the test
+# library dirs at the bin dirs there. See the %shlibprefix substitution in
+# lit.cfg.py for the matching filename-prefix fix.
+if(WIN32)
+  set(MLIR_DIALECT_LINALG_INTEGRATION_TEST_LIB_DIR ${LLVM_TOOLS_BINARY_DIR})
+  set(MLIR_CONV_VALIDATION_WRAPPER_LIBRARY_DIR ${ROCMLIR_BIN_DIR})
+else()
+  set(MLIR_DIALECT_LINALG_INTEGRATION_TEST_LIB_DIR ${LLVM_LIBRARY_DIR})
+  set(MLIR_CONV_VALIDATION_WRAPPER_LIBRARY_DIR ${ROCMLIR_LIB_DIR})
+endif()
 set(MLIR_LIB_DIR ${LLVM_LIBRARY_DIR})
 set(MLIR_RUNNER_UTILS_DIR ${LLVM_TOOLS_BINARY_DIR})
-
-# Passed to lit.site.cfg.py.in to set up the path where to find the libraries
-# for the rocm runner tests.
-set(MLIR_CONV_VALIDATION_WRAPPER_LIBRARY_DIR ${ROCMLIR_LIB_DIR})
 
 message(STATUS "LLVM_TOOLS_BINARY_DIR: ${LLVM_TOOLS_BINARY_DIR}")
 message(STATUS "LLVM_LIBRARY_DIR: ${LLVM_LIBRARY_DIR}")
