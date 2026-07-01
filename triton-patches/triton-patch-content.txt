@@ -12,11 +12,22 @@ patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-gfx1170.patch
+patch-partitionloops-clang-cl.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
+
+patch-partitionloops-clang-cl.patch
+  Downstream Windows portability edit (no upstream PR). Changes
+  partitions.getPartition((int)0) to partitions.getPartition(0u) in
+  lib/Dialect/TritonGPU/Transforms/WarpSpecialization/PartitionLoops.cpp.
+  `(int)0` is also a null-pointer constant, so under clang-cl the call is
+  ambiguous between getPartition(unsigned) and getPartition(Operation*); an
+  explicitly unsigned literal selects the intended getPartition(unsigned)
+  overload. No-op for GCC/Clang on Linux, which resolve the overload fine.
+  Keep until the ambiguous call is fixed upstream in triton-windows.
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
