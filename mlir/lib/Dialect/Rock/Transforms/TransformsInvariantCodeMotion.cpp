@@ -28,7 +28,6 @@
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/IRMapping.h"
-#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -359,10 +358,19 @@ struct Candidate {
   SmallVector<int64_t> digits;  // per-loop-step carry digit, per carried dim
 };
 
-/// Carry fallback for `analyzeCandidate`: the iv flows through a single `Merge`
-/// (e.g. the conv `gemmK` packing) whose decomposition is non-contiguous and/or
-/// drives the validity mask. We carry that merge's decomposed lower coordinates
-/// and rebuild offset + mask from the sub-chain below the merge each iteration.
+/// Carry fallback for `analyzeCandidate`
+///
+/// If the transforms_to_ptr we are analyzing is supported by our current
+/// implemetation, fill in the candidate struct and return true.
+///
+/// If we bail, it can be for 2 main reasons:
+/// 1. Fundamentally we cannot handle this case: For example, if
+/// the loop step is not constant, there is nothing we can do (not a limitation
+/// of this transform)
+/// 2. The implementation does not support this case. Here it's unclear if
+/// supporting more cases would actually improve performance, since the carry
+/// path on complex IRs can potentially make things worse due to register
+/// pressure.
 static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
                                   ArrayRef<unsigned> ivPositions,
                                   ArrayRef<TransformMapAttr> transforms,
@@ -375,44 +383,50 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
 
   // The per-iteration merged diff must be a compile-time constant, so the loop
   // step must be constant.
-  APInt stepAP;
-  if (!matchPattern(loop.getStep(), m_ConstantInt(&stepAP)))
-    return bail("loop step is not a compile-time constant");
-  int64_t stepConst = stepAP.getSExtValue();
+  std::optional<APInt> stepAP = loop.getConstantStep();
+  if (!stepAP)
+    return bail("loop step is not a compile time constant");
+  int64_t stepConst = stepAP->getSExtValue();
 
   // Propagate the unit-iv diff down the chain, locating the single Merge whose
   // merged upper dim the iv reaches with a nonzero diff.
   DenseMap<unsigned, int64_t> diff;
   for (unsigned p : ivPositions)
     diff[p] = 1;
+
   int mergeIdx = -1;
   TransformAttr mergeOp;
   int64_t mergedDiffUnit = 0;
   for (size_t mapIdx = 0; mapIdx < transforms.size(); ++mapIdx) {
     TransformMapAttr map = transforms[mapIdx];
-    auto upper = [&](unsigned d) -> int64_t {
-      auto it = diff.find(d);
-      return it == diff.end() ? 0 : it->second;
-    };
     for (TransformAttr t : map.getOps()) {
+      // We are looking for (only one) Merge that the IV
+      // reaches with a nonzero diff. `diff.lookup` yields 0 for untouched dims.
       if (t.getType() != TransformType::Merge)
         continue;
-      if (upper(t.getUpperDims()[0]) == 0)
+
+      int64_t mergedDiff = diff.lookup(t.getUpperDims()[0]);
+      if (mergedDiff == 0)
         continue;
+
       if (mergeIdx != -1)
         return bail("more than one iv-traversed merge (not yet supported)");
+
       mergeIdx = static_cast<int>(mapIdx);
       mergeOp = t;
-      mergedDiffUnit = upper(t.getUpperDims()[0]);
+      mergedDiffUnit = mergedDiff;
     }
+
     // We reconstruct the variant mask only from the sub-chain *below* the
     // merge, so no validity-impacting map may sit at or above it.
     if (mapImpactsValidity(map) &&
         (mergeIdx == -1 || static_cast<int>(mapIdx) <= mergeIdx))
       return bail("validity-impacting map at or above the iv-traversed merge");
+
     FailureOr<DenseMap<unsigned, int64_t>> lower = applyDiffOneMap(map, diff);
     if (failed(lower))
       return bail("non-constant diff while propagating to the merge");
+
     diff = std::move(*lower);
   }
   if (mergeIdx == -1)
@@ -420,10 +434,8 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
 
   // Per-loop-step carry digits from the merge's nested place values.
   ArrayRef<int64_t> e = mergeOp.getParams();
+  // How far the merged coordinate moves per loop iteration.
   int64_t D = mergedDiffUnit * stepConst;
-  SmallVector<int64_t> P(e.size(), 1);
-  for (int j = static_cast<int>(e.size()) - 2; j >= 0; --j)
-    P[j] = P[j + 1] * e[j + 1];
 
   cand.kind = CandKind::Carry;
   cand.op = op;
@@ -433,9 +445,7 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
   cand.variantPositions.assign(mergeOp.getLowerDims().begin(),
                                mergeOp.getLowerDims().end());
   cand.radices.assign(e.begin(), e.end());
-  cand.digits.clear();
-  for (size_t j = 0; j < e.size(); ++j)
-    cand.digits.push_back(j == 0 ? (D / P[0]) : (D / P[j]) % e[j]);
+  cand.digits = delinearize(D, computeSuffixProduct(e));
   return true;
 }
 
@@ -476,7 +486,7 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
       hasLoopVariantNonIvIdx = true;
   }
   if (ivPositions.empty())
-    return bail("pointer does not depend on the iv (already loop-invariant)");
+    return bail("pointer does not depend on the iv (there is nothing to do)");
 
   // Walk the transform chain down to its root.
   SmallVector<TransformMapAttr> transforms;
@@ -506,10 +516,8 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
   //
   // Unlike the affine path (which rewrites the base op in place and can
   // reference a loop-variant non-iv index directly), the carry path
-  // reconstructs the base coordinate slice in the preheader via
-  // `cloneSliceBeforeLoop`, which asserts every loop-defined value it walks is
-  // the iv. A loop-variant non-iv index would trip that assert, so bail before
-  // attempting the carry decomposition.
+  // cannot handle this case via cloneSliceBeforeLoop implementation, so we
+  // bail.
   if (hasLoopVariantNonIvIdx)
     return bail("an extra index is loop-variant but is not the IV (carry path "
                 "cannot rebuild it in the preheader)");
@@ -746,8 +754,11 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
         candidates.push_back(cand);
     }
   }
-  if (candidates.empty())
+  if (candidates.empty()) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "No candidates to simplify, skip " << loop.getLoc() << "\n");
     return false;
+  }
 
   Location loc = loop.getLoc();
   Value iv = loop.getInductionVar();
