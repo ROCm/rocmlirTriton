@@ -2,16 +2,16 @@
 
 // CHECK-LABEL: func @hoist_linear_load
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32768xf16>, %[[INIT:.*]]: tensor<64x64xf16>)
-//       CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32]
-//       CHECK:   %[[STRIDE:.*]] = arith.muli
-// The offset accumulator is carried as a uniform scalar (i32), not a full tile:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[ACC:.*]] = %{{.*}}) -> (tensor<64x64xf16>, i32)
-//       CHECK:     %[[ACCT:.*]] = tt.splat %[[ACC]] : i32 -> tensor<64x64xi32>
-//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[ACCT]] : tensor<64x64xi32>
+// No hoisting: the loop carries only the original iter_arg (no offset accumulator).
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<64x64xf16>)
+// Base pointer rebuilt in the loop with the iv pinned to the lower bound %c0_i32:
+//       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32]
+//       CHECK:     %[[D:.*]] = arith.subi %[[IV]], %{{.*}} : i32
+//       CHECK:     %[[OFF:.*]] = arith.muli %[[D]], %{{.*}} : i32
+//       CHECK:     %[[OFFT:.*]] = tt.splat %[[OFF]] : i32 -> tensor<64x64xi32>
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<64x64xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
-//   CHECK-NOT:     rock.transforms_to_ptr
-//       CHECK:     %[[INC:.*]] = arith.addi %[[ACC]], %[[STRIDE]] : i32
-//       CHECK:     scf.yield %{{.*}}, %[[INC]]
+//       CHECK:     scf.yield %{{.*}} : tensor<64x64xf16>
 #map = affine_map<(d0, d1, d2) -> (d1 * 128 + d2)>
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
@@ -36,17 +36,17 @@ func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>)
 //
 // CHECK-LABEL: func @hoist_index_iv
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32768xf16>, %[[INIT:.*]]: tensor<64x64xf16>)
-//       CHECK:   rock.transforms_to_ptr %{{.*}}[%{{.*}}, %c0_i32, %c0_i32, %c1_i32]
-//       CHECK:   %[[STEPC:.*]] = arith.index_cast %{{.*}} : index to i32
-//       CHECK:   %[[STRIDE:.*]] = arith.muli %[[STEPC]], %{{.*}} : i32
-// The offset accumulator is carried as a uniform scalar (i32), not a full tile:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[ACC:.*]] = %{{.*}}) -> (tensor<64x64xf16>, i32)
-//       CHECK:     %[[ACCT:.*]] = tt.splat %[[ACC]] : i32 -> tensor<64x64xi32>
-//       CHECK:     %[[PTR:.*]] = arith.addi %{{.*}}, %[[ACCT]] : tensor<64x64xi32>
+// No hoisting; only the original iter_arg is carried:
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<64x64xf16>) {
+// Base index uses the loop lower bound (index_cast of %c0), not the iv:
+//       CHECK:     rock.transforms_to_ptr %{{.*}}[%{{.*}}, %c0_i32, %c0_i32, %c1_i32]
+//       CHECK:     %[[D:.*]] = arith.subi %[[IV]], %{{.*}} : index
+//       CHECK:     %[[DC:.*]] = arith.index_cast %[[D]] : index to i32
+//       CHECK:     %[[OFF:.*]] = arith.muli %[[DC]], %{{.*}} : i32
+//       CHECK:     %[[OFFT:.*]] = tt.splat %[[OFF]] : i32 -> tensor<64x64xi32>
+//       CHECK:     %[[PTR:.*]] = arith.addi %{{.*}}, %[[OFFT]] : tensor<64x64xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%{{.*}}]
-//   CHECK-NOT:     rock.transforms_to_ptr
-//       CHECK:     %[[INC:.*]] = arith.addi %[[ACC]], %[[STRIDE]] : i32
-//       CHECK:     scf.yield %{{.*}}, %[[INC]]
+//       CHECK:     scf.yield
 #map = affine_map<(d0, d1, d2) -> (d1 * 128 + d2)>
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
@@ -106,28 +106,27 @@ func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>)
 
 // 1x1-convolution-style loop with two operands sharing one loop:
 //   - the filter chain has no validity-impacting maps and a linear offset, so
-//     it IS hoisted (base pointer in the preheader, offset accumulator carried),
-//   - the input chain has a Pad on K, so it is NOT hoisted and its
+//     it IS simplified in place (base op pinned to the lower bound + scalar
+//     affine tail, left in the loop),
+//   - the input chain has a Pad on K, so it is NOT simplified and its
 //     transforms_to_ptr stays inside the loop, still indexed by the iv.
 //
 // CHECK-LABEL: func @hoist_one_of_two
 //  CHECK-SAME: (%[[FILTER:.*]]: tensor<32768xf16>, %[[INPUT:.*]]: tensor<32512xf16>, %[[INIT:.*]]: tensor<64x64xf16>)
-// Filter operand hoisted (iv replaced by the lower bound %c0_i32):
-//       CHECK:   %[[FPTRS:.*]], %[[FMASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32]
-//       CHECK:   %[[STRIDE:.*]] = arith.muli
-// The offset accumulator is carried as a uniform scalar (i32), not a full tile:
-//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[ACC:.*]] = %{{.*}}) -> (tensor<64x64xf16>, i32)
-// Filter pointer reconstructed from the hoisted base + the splatted accumulator:
-//       CHECK:     %[[ACCT:.*]] = tt.splat %[[ACC]] : i32 -> tensor<64x64xi32>
-//       CHECK:     %[[FPTR:.*]] = arith.addi %[[FPTRS]], %[[ACCT]] : tensor<64x64xi32>
+// No hoisting and no offset accumulator: only the original iter_arg is carried.
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<64x64xf16>)
+// Filter operand simplified in place: base op pinned to %c0_i32 + scalar affine tail.
+//       CHECK:     %[[FPTRS:.*]], %[[FMASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32]
+//       CHECK:     %[[FD:.*]] = arith.subi %[[IV]], %{{.*}} : i32
+//       CHECK:     %[[FOFF:.*]] = arith.muli %[[FD]], %{{.*}} : i32
+//       CHECK:     %[[FOFFT:.*]] = tt.splat %[[FOFF]] : i32 -> tensor<64x64xi32>
+//       CHECK:     %[[FPTR:.*]] = arith.addi %[[FPTRS]], %[[FOFFT]] : tensor<64x64xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[FPTR]][%[[FMASK]]]
-// Input operand NOT hoisted: its transforms_to_ptr stays in the loop, still
+// Input operand NOT simplified: its transforms_to_ptr stays in the loop, still
 // indexed by the induction variable %[[IV]]:
 //       CHECK:     %[[IPTRS:.*]], %[[IMASK:.*]] = rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c1_i32]
 //       CHECK:     rock.blockwise_load_ptr %[[IPTRS]][%[[IMASK]]]
-// Accumulator advances by the stride and is yielded alongside the result:
-//       CHECK:     %[[INC:.*]] = arith.addi %[[ACC]], %[[STRIDE]] : i32
-//       CHECK:     scf.yield %{{.*}}, %[[INC]]
+//       CHECK:     scf.yield
 func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16>, %init: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
@@ -166,17 +165,16 @@ func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16
 //
 // CHECK-LABEL: func @hoist_pad_on_non_iv_dim
 //  CHECK-SAME: (%[[FILTER:.*]]: tensor<36864xi8>, %[[INIT:.*]]: tensor<256x32xi8>)
-// Hoisted to the preheader (iv -> lower bound %c0_i32):
-//       CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
-//       CHECK:   %[[STRIDE:.*]] = arith.muli
-// The offset accumulator is carried as a uniform scalar (i32), not a full tile:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[ACC:.*]] = %{{.*}}) -> (tensor<256x32xi8>, i32)
-//       CHECK:     %[[ACCT:.*]] = tt.splat %[[ACC]] : i32 -> tensor<256x32xi32>
-//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[ACCT]] : tensor<256x32xi32>
+// No hoisting; only the original iter_arg is carried:
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<256x32xi8>)
+// Base op pinned to %c0_i32 (Pad on a non-iv dim keeps the mask iv-invariant):
+//       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
+//       CHECK:     %[[D:.*]] = arith.subi %[[IV]], %{{.*}} : i32
+//       CHECK:     %[[OFF:.*]] = arith.muli %[[D]], %{{.*}} : i32
+//       CHECK:     %[[OFFT:.*]] = tt.splat %[[OFF]] : i32 -> tensor<256x32xi32>
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<256x32xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
-//   CHECK-NOT:     rock.transforms_to_ptr
-//       CHECK:     %[[INC:.*]] = arith.addi %[[ACC]], %[[STRIDE]] : i32
-//       CHECK:     scf.yield %{{.*}}, %[[INC]]
+//       CHECK:     scf.yield
 func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
@@ -212,16 +210,16 @@ func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x
 //
 // CHECK-LABEL: func @hoist_conv_filter_merge
 //  CHECK-SAME: (%[[FILTER:.*]]: tensor<36864xi8>, %[[INIT:.*]]: tensor<256x32xi8>)
-//       CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
-//       CHECK:   %[[STRIDE:.*]] = arith.muli
-// The offset accumulator is carried as a uniform scalar (i32), not a full tile:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[ACC:.*]] = %{{.*}}) -> (tensor<256x32xi8>, i32)
-//       CHECK:     %[[ACCT:.*]] = tt.splat %[[ACC]] : i32 -> tensor<256x32xi32>
-//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[ACCT]] : tensor<256x32xi32>
+// No hoisting; only the original iter_arg is carried:
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<256x32xi8>)
+// Base op pinned to %c0_i32; the merge is constant-folded away at the lb seed:
+//       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
+//       CHECK:     %[[D:.*]] = arith.subi %[[IV]], %{{.*}} : i32
+//       CHECK:     %[[OFF:.*]] = arith.muli %[[D]], %{{.*}} : i32
+//       CHECK:     %[[OFFT:.*]] = tt.splat %[[OFF]] : i32 -> tensor<256x32xi32>
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<256x32xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
-//   CHECK-NOT:     rock.transforms_to_ptr
-//       CHECK:     %[[INC:.*]] = arith.addi %[[ACC]], %[[STRIDE]] : i32
-//       CHECK:     scf.yield %{{.*}}, %[[INC]]
+//       CHECK:     scf.yield
 func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
@@ -254,22 +252,15 @@ func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x
 //
 // CHECK-LABEL: func @hoist_two_sharing_base
 //  CHECK-SAME: (%[[BUF:.*]]: tensor<32768xf16>, %[[INITA:.*]]: tensor<64x64xf16>, %[[INITB:.*]]: tensor<64x128xf16>)
-//       CHECK:   %[[PTRS0:.*]], %[[MASK0:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32] {{.*}} -> tensor<64x64xi32>
-//       CHECK:   %[[STRIDE0:.*]] = arith.muli
-//       CHECK:   %[[PTRS1:.*]], %[[MASK1:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32] {{.*}} -> tensor<64x128xi32>
-//       CHECK:   %[[STRIDE1:.*]] = arith.muli
-// Both offset accumulators are carried as uniform scalars (i32), not full tiles:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INITA]], %{{.*}} = %[[INITB]], %[[ACC0:.*]] = %{{.*}}, %[[ACC1:.*]] = %{{.*}}) -> (tensor<64x64xf16>, tensor<64x128xf16>, i32, i32)
-//       CHECK:     %[[ACCT0:.*]] = tt.splat %[[ACC0]] : i32 -> tensor<64x64xi32>
-//       CHECK:     %[[P0:.*]] = arith.addi %[[PTRS0]], %[[ACCT0]] : tensor<64x64xi32>
-//       CHECK:     %[[ACCT1:.*]] = tt.splat %[[ACC1]] : i32 -> tensor<64x128xi32>
-//       CHECK:     %[[P1:.*]] = arith.addi %[[PTRS1]], %[[ACCT1]] : tensor<64x128xi32>
+// No hoisting and no offset accumulators: only the two original iter_args:
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INITA]], %{{.*}} = %[[INITB]]) -> (tensor<64x64xf16>, tensor<64x128xf16>)
+//       CHECK:     %[[PTRS0:.*]], %[[MASK0:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32] {{.*}} -> tensor<64x64xi32>
+//       CHECK:     %[[P0:.*]] = arith.addi %[[PTRS0]], %{{.*}} : tensor<64x64xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[P0]][%[[MASK0]]]
+//       CHECK:     %[[PTRS1:.*]], %[[MASK1:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32] {{.*}} -> tensor<64x128xi32>
+//       CHECK:     %[[P1:.*]] = arith.addi %[[PTRS1]], %{{.*}} : tensor<64x128xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[P1]][%[[MASK1]]]
-//   CHECK-NOT:     rock.transforms_to_ptr
-//       CHECK:     %[[INC0:.*]] = arith.addi %[[ACC0]], %[[STRIDE0]] : i32
-//       CHECK:     %[[INC1:.*]] = arith.addi %[[ACC1]], %[[STRIDE1]] : i32
-//       CHECK:     scf.yield %{{.*}}, %{{.*}}, %[[INC0]], %[[INC1]]
+//       CHECK:     scf.yield
 #map = affine_map<(d0, d1, d2) -> (d1 * 128 + d2)>
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #map2 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 128 + d5)>
@@ -309,16 +300,15 @@ func.func @hoist_two_sharing_base(%arg0: tensor<32768xf16>, %initA: tensor<64x64
 //
 // CHECK-LABEL: func @hoist_conv_1x1_unit_merge
 //  CHECK-SAME: (%[[FILTER:.*]]: tensor<4096xi8>, %[[INIT:.*]]: tensor<64x32xi8>)
-//       CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
-//       CHECK:   %[[STRIDE:.*]] = arith.muli
-// The offset accumulator is carried as a uniform scalar (i32), not a full tile:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[ACC:.*]] = %{{.*}}) -> (tensor<64x32xi8>, i32)
-//       CHECK:     %[[ACCT:.*]] = tt.splat %[[ACC]] : i32 -> tensor<64x32xi32>
-//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[ACCT]] : tensor<64x32xi32>
+// No hoisting; only the original iter_arg is carried:
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<64x32xi8>)
+//       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
+//       CHECK:     %[[D:.*]] = arith.subi %[[IV]], %{{.*}} : i32
+//       CHECK:     %[[OFF:.*]] = arith.muli %[[D]], %{{.*}} : i32
+//       CHECK:     %[[OFFT:.*]] = tt.splat %[[OFF]] : i32 -> tensor<64x32xi32>
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<64x32xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
-//   CHECK-NOT:     rock.transforms_to_ptr
-//       CHECK:     %[[INC:.*]] = arith.addi %[[ACC]], %[[STRIDE]] : i32
-//       CHECK:     scf.yield %{{.*}}, %[[INC]]
+//       CHECK:     scf.yield
 func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x32xi8>) -> tensor<64x32xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
@@ -355,19 +345,17 @@ func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x
 //
 // CHECK-LABEL: func @hoist_conv_input_carry
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<8xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
-// Hoisted to the preheader with the iv replaced by the loop lower bound:
-//       CHECK:   %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
-// The loop carries the decomposed merge coordinates (channel + tap) as extra
-// iter_args alongside the result:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[CI:.*]] = %{{.*}}, %[[TAP:.*]] = %{{.*}}) ->
-// The offset/mask reconstruction uses no division and the op is gone from the
-// loop body:
+// The loop carries the validity tap coordinate + offset accumulator (full tiles)
+// alongside the result:
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) ->
+// Base pointer rebuilt in the loop pinned to the lower bound %c0_i32 (not hoisted):
+//       CHECK:     %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
+// The offset/mask reconstruction uses no division in the loop body:
 //   CHECK-NOT:     floordiv
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remsi
-//   CHECK-NOT:     rock.transforms_to_ptr
-// Mask rebuilt from the carried tap coordinate, pointer rebuilt from the
-// hoisted base + reconstructed offset, then loaded:
+// Mask rebuilt from the carried tap coordinate, pointer rebuilt from the in-loop
+// base + reconstructed offset, then loaded:
 //       CHECK:     arith.cmpi ult
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]]
@@ -419,16 +407,15 @@ func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) ->
 //
 // CHECK-LABEL: func @hoist_conv2d_input_carry_rank_redundant
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
-// Hoisted seed (iv -> loop lower bound):
-//       CHECK:   %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
 // Two tap coordinates + offset carried as full tiles (tensor<2x4>, not the
-// minimal tensor<2x1>); the channel is dropped (three iter_args, not four):
+// minimal tensor<2x1>); the channel is dropped (three carried iter_args):
 //       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>)
-// Mask rebuilt with no division and the op is gone from the loop body:
+// Base pointer rebuilt in the loop pinned to the lower bound %c0_i32 (not hoisted):
+//       CHECK:     %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
+// Mask rebuilt with no division in the loop body:
 //   CHECK-NOT:     floordiv
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remsi
-//   CHECK-NOT:     rock.transforms_to_ptr
 //       CHECK:     arith.cmpi ult, %{{.*}} : tensor<2x4xi32>
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]]
@@ -484,22 +471,21 @@ func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: 
 //
 // CHECK-LABEL: func @hoist_conv2d_input_carry_offset_recurrence
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
-// Seed pointer hoisted to the preheader (iv -> loop lower bound):
-//       CHECK:   %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
 // The two validity taps and the offset accumulator are carried as full tiles
 // (tensor<2x4xi32>); the channel coordinate is NOT an iter_arg:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>)
-// The pointer is the carried offset added to the hoisted base -- NOT re-expanded
-// from the coordinates each iteration:
-//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFF:.*]] : tensor<2x4xi32>
-//       CHECK:     rock.blockwise_load_ptr %[[PTR]]
-//   CHECK-NOT:     rock.transforms_to_ptr
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %[[OFF:.*]] = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>)
+// Base pointer rebuilt in the loop pinned to the lower bound %c0_i32 (not hoisted):
+//       CHECK:     %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
 //   CHECK-NOT:     floordiv
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remsi
 // Validity mask rebuilt from the carried full-tile taps (the halo moves with
 // the iv) -- a full-tile compare, no minimal-rank broadcast:
 //       CHECK:     arith.cmpi ult, %{{.*}} : tensor<2x4xi32>
+// The pointer is the carried offset added to the in-loop base -- NOT re-expanded
+// from the coordinates each iteration:
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFF]] : tensor<2x4xi32>
+//       CHECK:     rock.blockwise_load_ptr %[[PTR]]
 // The taps advance with a full-tile odometer (cmp + select on tensor<2x4>), and
 // the carried offset accumulator is advanced by the full-tile per-step delta.
 // The same %OFF fed to the load is the value incremented and yielded:
