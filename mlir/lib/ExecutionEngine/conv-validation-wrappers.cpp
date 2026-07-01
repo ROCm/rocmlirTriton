@@ -25,6 +25,19 @@
 #include <cmath>
 #include <unordered_map>
 
+// Export only the C entry points resolved by the ORC JIT. Windows hides DLL
+// symbols by default; explicit exports avoid exposing linked C++/CRT internals.
+// Other platforms use default visibility.
+#if defined(_WIN32)
+#ifdef CONV_VALIDATION_WRAPPERS_BUILDING
+#define CVW_EXPORT __declspec(dllexport)
+#else
+#define CVW_EXPORT __declspec(dllimport)
+#endif
+#else
+#define CVW_EXPORT __attribute__((visibility("default")))
+#endif
+
 // Get program load time using function-local static (initialized on first call)
 // This measures time from first access, which happens at library load via
 // constructor
@@ -44,7 +57,7 @@ static struct ProgramLoadTimeInitializer {
 #pragma clang diagnostic pop
 
 // Called at the start of main() to measure JIT compilation time
-extern "C" void programStart() {
+extern "C" CVW_EXPORT void programStart() {
   auto now = std::chrono::steady_clock::now();
   auto elapsed =
       std::chrono::duration<double, std::milli>(now - getProgramLoadTime())
@@ -55,11 +68,11 @@ extern "C" void programStart() {
 // Timing utilities for CPU validation functions
 static std::chrono::steady_clock::time_point cpuTimerStartPoint;
 
-extern "C" void cpuTimerStart() {
+extern "C" CVW_EXPORT void cpuTimerStart() {
   cpuTimerStartPoint = std::chrono::steady_clock::now();
 }
 
-extern "C" void cpuTimerStop() {
+extern "C" CVW_EXPORT void cpuTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
   auto elapsed =
       std::chrono::duration<double, std::milli>(endPoint - cpuTimerStartPoint)
@@ -70,11 +83,11 @@ extern "C" void cpuTimerStop() {
 // Timing utilities for GPU kernel execution
 static std::chrono::steady_clock::time_point gpuTimerStartPoint;
 
-extern "C" void gpuTimerStart() {
+extern "C" CVW_EXPORT void gpuTimerStart() {
   gpuTimerStartPoint = std::chrono::steady_clock::now();
 }
 
-extern "C" void gpuTimerStop() {
+extern "C" CVW_EXPORT void gpuTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
   auto elapsed =
       std::chrono::duration<double, std::milli>(endPoint - gpuTimerStartPoint)
@@ -85,11 +98,11 @@ extern "C" void gpuTimerStop() {
 // Timing utilities for memory initialization
 static std::chrono::steady_clock::time_point initTimerStartPoint;
 
-extern "C" void initTimerStart() {
+extern "C" CVW_EXPORT void initTimerStart() {
   initTimerStartPoint = std::chrono::steady_clock::now();
 }
 
-extern "C" void initTimerStop() {
+extern "C" CVW_EXPORT void initTimerStop() {
   auto endPoint = std::chrono::steady_clock::now();
   auto elapsed =
       std::chrono::duration<double, std::milli>(endPoint - initTimerStartPoint)
@@ -97,21 +110,21 @@ extern "C" void initTimerStop() {
   printf("Memory init time: %.3f ms\n", elapsed);
 }
 
-extern "C" void seedRandomValues(uint32_t seed) {
+extern "C" CVW_EXPORT void seedRandomValues(uint32_t seed) {
   if (seed == 0)
     std::srand(time(0));
   else
     std::srand(seed);
 }
 
-extern "C" float randomIntegerValue(int16_t min, int16_t max) {
+extern "C" CVW_EXPORT float randomIntegerValue(int16_t min, int16_t max) {
   if (min == max)
     return min;
   int16_t randVal = (std::rand() % (max - min)) + min;
   return static_cast<float>(randVal);
 }
 
-extern "C" float randomFloatValue(int16_t min, int16_t max) {
+extern "C" CVW_EXPORT float randomFloatValue(int16_t min, int16_t max) {
   auto minAsF = static_cast<float>(min);
   if (min == max)
     // Lower float values to prevent inf in big fp16 tests where not all sides
@@ -302,7 +315,7 @@ void mcpuVerify(T *gpuResults, T *validationResults, long long dataSize,
 }
 
 // Compare the results in f32
-extern "C" void
+extern "C" CVW_EXPORT void
 mcpuVerifyFloat(float *gpuAllocated, float *gpuAligned, int64_t gpuOffset,
                 int64_t gpuSize, int64_t gpuStride, float *valAllocated,
                 float *valAligned, int64_t valOffset, int64_t valSize,
@@ -595,13 +608,12 @@ void mcpuVerifyAllclose(T *gpuResults, T *validationResults, long long dataSize,
   printf("[%d %d %d]\n", all_pass, all_pass, all_pass);
 }
 
-extern "C" void mcpuVerifyFloatAllclose(float *gpuAllocated, float *gpuAligned,
-                                        int64_t gpuOffset, int64_t gpuSize,
-                                        int64_t gpuStride, float *valAllocated,
-                                        float *valAligned, int64_t valOffset,
-                                        int64_t valSize, int64_t valStride,
-                                        float atol, float rtol, char printDebug,
-                                        bool isFP32) {
+extern "C" CVW_EXPORT void
+mcpuVerifyFloatAllclose(float *gpuAllocated, float *gpuAligned,
+                        int64_t gpuOffset, int64_t gpuSize, int64_t gpuStride,
+                        float *valAllocated, float *valAligned,
+                        int64_t valOffset, int64_t valSize, int64_t valStride,
+                        float atol, float rtol, char printDebug, bool isFP32) {
   assert(gpuSize == valSize);
   mcpuVerifyAllclose<float>(gpuAligned, valAligned, valSize, atol, rtol,
                             printDebug, isFP32);
@@ -663,34 +675,33 @@ void mcpuVerifyInt(GPUTYPE *gpuAligned, VALTYPE *valAligned, long long dataSize,
   }
 }
 
-extern "C" void mcpuVerifyInt32Int32(int32_t *gpuAllocated, int32_t *gpuAligned,
-                                     int64_t gpuOffset, int64_t gpuSize,
-                                     int64_t gpuStride, int32_t *valAllocated,
-                                     int32_t *valAligned, int32_t valOffset,
-                                     int64_t valSize, int64_t valStride,
-                                     char printDebug) {
+extern "C" CVW_EXPORT void
+mcpuVerifyInt32Int32(int32_t *gpuAllocated, int32_t *gpuAligned,
+                     int64_t gpuOffset, int64_t gpuSize, int64_t gpuStride,
+                     int32_t *valAllocated, int32_t *valAligned,
+                     int32_t valOffset, int64_t valSize, int64_t valStride,
+                     char printDebug) {
 
   assert(gpuSize == valSize);
   mcpuVerifyInt<int32_t, int32_t>(gpuAligned, valAligned, valSize, printDebug);
 }
 
-extern "C" void mcpuVerifyInt32Int64(int32_t *gpuAllocated, int32_t *gpuAligned,
-                                     int64_t gpuOffset, int64_t gpuSize,
-                                     int64_t gpuStride, int64_t *valAllocated,
-                                     int64_t *valAligned, int64_t valOffset,
-                                     int64_t valSize, int64_t valStride,
-                                     char printDebug) {
+extern "C" CVW_EXPORT void
+mcpuVerifyInt32Int64(int32_t *gpuAllocated, int32_t *gpuAligned,
+                     int64_t gpuOffset, int64_t gpuSize, int64_t gpuStride,
+                     int64_t *valAllocated, int64_t *valAligned,
+                     int64_t valOffset, int64_t valSize, int64_t valStride,
+                     char printDebug) {
 
   assert(gpuSize == valSize);
   mcpuVerifyInt<int32_t, int64_t>(gpuAligned, valAligned, valSize, printDebug);
 }
 
-extern "C" void mcpuVerifyInt8Int64(int8_t *gpuAllocated, int8_t *gpuAligned,
-                                    int64_t gpuOffset, int64_t gpuSize,
-                                    int64_t gpuStride, int64_t *valAllocated,
-                                    int64_t *valAligned, int64_t valOffset,
-                                    int64_t valSize, int64_t valStride,
-                                    char printDebug) {
+extern "C" CVW_EXPORT void
+mcpuVerifyInt8Int64(int8_t *gpuAllocated, int8_t *gpuAligned, int64_t gpuOffset,
+                    int64_t gpuSize, int64_t gpuStride, int64_t *valAllocated,
+                    int64_t *valAligned, int64_t valOffset, int64_t valSize,
+                    int64_t valStride, char printDebug) {
 
   assert(gpuSize == valSize);
   mcpuVerifyInt<int8_t, int64_t>(gpuAligned, valAligned, valSize, printDebug);
@@ -736,12 +747,11 @@ void mcpuVerifyNaive(T *gpuAligned, T *valAligned, long long dataSize,
   }
 }
 
-extern "C" void mcpuVerifyInt8Int8(int8_t *gpuAllocated, int8_t *gpuAligned,
-                                   int64_t gpuOffset, int64_t gpuSize,
-                                   int64_t gpuStride, int8_t *valAllocated,
-                                   int8_t *valAligned, int32_t valOffset,
-                                   int64_t valSize, int64_t valStride,
-                                   char printDebug) {
+extern "C" CVW_EXPORT void
+mcpuVerifyInt8Int8(int8_t *gpuAllocated, int8_t *gpuAligned, int64_t gpuOffset,
+                   int64_t gpuSize, int64_t gpuStride, int8_t *valAllocated,
+                   int8_t *valAligned, int32_t valOffset, int64_t valSize,
+                   int64_t valStride, char printDebug) {
 
   assert(gpuSize == valSize);
   mcpuVerifyNaive(gpuAligned, valAligned, valSize, printDebug);
