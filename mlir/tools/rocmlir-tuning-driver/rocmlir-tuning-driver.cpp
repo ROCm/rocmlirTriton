@@ -58,6 +58,8 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <optional>
@@ -464,31 +466,71 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
   std::optional<StringRef> redirects[3] = {std::nullopt, StringRef(""),
                                            StringRef("")};
 
+  // Launch the child without waiting, then enforce the wall-clock budget from
+  // this thread. We deliberately do NOT use sys::ExecuteAndWait's SecondsToWait:
+  // its timeout is implemented with alarm()/SIGALRM (see
+  // llvm/lib/Support/Unix/Program.inc), which are process-global and therefore
+  // unsafe when many worker threads compile concurrently -- the LLVM source
+  // documents this with FIXMEs, and concurrent alarm() calls cancel each other
+  // so the per-config timeout never reliably fires. Instead we follow the
+  // ExecuteNoWait + Wait-poll idiom from ProgramTest.cpp
+  // (TestExecuteNoWaitTimeoutPolling): poll with a non-blocking Wait
+  // (SecondsToWait=0, which never arms the shared alarm timer) and kill the
+  // child ourselves once the deadline passes. Each thread only ever waits on its
+  // own PID, so this is race-free across workers.
   std::string execErr;
   bool execFailed = false;
-  auto start = std::chrono::steady_clock::now();
-  int rc = llvm::sys::ExecuteAndWait(driverPath, args, /*Env=*/std::nullopt,
-                                     redirects, /*SecondsToWait=*/timeoutSec,
-                                     /*MemoryLimit=*/0, &execErr, &execFailed);
-  double elapsed =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-          .count();
-
-  if (execFailed || rc == -1) {
+  llvm::sys::ProcessInfo procInfo =
+      llvm::sys::ExecuteNoWait(driverPath, args, /*Env=*/std::nullopt, redirects,
+                               /*MemoryLimit=*/0, &execErr, &execFailed);
+  if (execFailed || procInfo.Pid == llvm::sys::ProcessInfo::InvalidPid) {
     fail("Failed to launch rocmlir-driver for config: " + perfConfig + " (" +
          execErr + ")");
     return result;
   }
 
-  // ExecuteAndWait returns -2 for both a timeout-kill and a crash. Disambiguate
-  // using the measured wall time: at/over budget => timeout. A timeout is a
-  // non-fatal skip reported as N/A, so stay silent here (tuningRunner.py parses
-  // stdout/stderr and must not see extra noise).
-  if (rc == -2) {
-    if (elapsed >= static_cast<double>(timeoutSec))
-      result.status = CompilationStatus::TimedOut;
-    else
-      fail("rocmlir-driver crashed for config: " + perfConfig);
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+  llvm::sys::ProcessInfo waitResult;
+  bool timedOut = false;
+  while (true) {
+    std::string waitErr;
+    // SecondsToWait=0 => non-blocking poll (WNOHANG). Returns Pid==0 while the
+    // child is still running, Pid==procInfo.Pid (with ReturnCode) once it exits.
+    waitResult = llvm::sys::Wait(procInfo, /*SecondsToWait=*/0, &waitErr);
+    if (waitResult.Pid == procInfo.Pid)
+      break; // Child finished; waitResult.ReturnCode holds its exit status.
+    if (waitResult.Pid != 0) {
+      // Neither "still running" (0) nor "our child" => a genuine wait error.
+      fail("Error waiting for rocmlir-driver for config: " + perfConfig + " (" +
+           waitErr + ")");
+      return result;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      timedOut = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  // Budget exceeded: kill and reap. SIGKILL cannot be caught, and rocmlir-driver
+  // links in-process (no grandchildren to orphan), so the blocking reap returns
+  // promptly. A timeout is a non-fatal skip reported as N/A, so stay silent here
+  // (tuningRunner.py parses stdout/stderr and must not see extra noise).
+  if (timedOut) {
+    kill(procInfo.Pid, SIGKILL);
+    (void)llvm::sys::Wait(procInfo, /*SecondsToWait=*/std::nullopt,
+                          /*ErrMsg=*/nullptr);
+    result.status = CompilationStatus::TimedOut;
+    return result;
+  }
+
+  int rc = waitResult.ReturnCode;
+
+  // A negative ReturnCode means the child died on a signal (crash), not a normal
+  // exit. Report it (this is not an expected "not applicable" outcome).
+  if (rc < 0) {
+    fail("rocmlir-driver crashed for config: " + perfConfig);
     return result;
   }
 
