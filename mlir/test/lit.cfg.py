@@ -4,6 +4,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 import tempfile
 
 import lit.formats
@@ -38,6 +39,9 @@ config.substitutions.append(
 config.substitutions.append(('%rocmlir_gen_flags', config.rocmlir_gen_flags))
 config.substitutions.append(('%arch', config.arch))
 config.substitutions.append(('%pv', config.populate_validation))
+# CMAKE_SHARED_LIBRARY_PREFIX: 'lib' on Unix, '' on Windows MSVC. RUN lines use
+# %shlibprefix<name>%shlibext so shared-lib filenames resolve on both.
+config.substitutions.append(('%shlibprefix', '' if sys.platform == 'win32' else 'lib'))
 
 # ROCM_PATH lets the performance scripts (perfRunner.py, ...) locate ROCm tools
 # such as rocminfo when ROCm is installed somewhere other than /opt/rocm (e.g. a
@@ -60,6 +64,23 @@ tool_patterns = [
     ToolSubst('count', config.count_executable, unresolved='fatal'),
 ]
 config.substitutions.append(('%python', '"%s"' % (sys.executable)))
+
+# Windows does not honour Python shebangs, so bare `foo.py` RUN lines fail with
+# "command not found". Substitute the perf/tuning scripts with an explicit
+# python.exe invocation of the copy in the tools dir.
+if sys.platform == 'win32':
+    for _script in ('parameterSweeps.py', 'attentionSweeps.py', 'perfRunner.py', 'tuningRunner.py'):
+        _path = os.path.join(config.mlir_rock_tools_dir, _script)
+        config.substitutions.append(
+            (r'\b' + re.escape(_script) + r'\b', '"%s" "%s"' % (sys.executable, _path)))
+
+    # The `rocm-run` widget is a shebang bash script (not executable on Windows)
+    # that tests invoke as a bare `rocm-run`. Route it to its cross-platform
+    # Python companion. The negative lookahead leaves `rocm-run.py` untouched.
+    _rocm_run_py = os.path.join(os.path.dirname(__file__), '..', 'utils', 'widgets', 'rocm-run.py')
+    config.substitutions.append(
+        (r'\brocm-run\b(?!\.py)', '"%s" "%s"' % (sys.executable, _rocm_run_py)))
+
 llvm_config.add_tool_substitutions(tool_patterns, [config.llvm_tools_dir])
 ##############
 
@@ -81,6 +102,14 @@ config.test_exec_root = os.path.join(config.mlir_obj_root, 'mlir', 'test')
 llvm_config.with_environment('PATH', config.mlir_rock_tools_dir, append_path=True)
 llvm_config.with_environment('PATH', config.lit_tools_dir, append_path=True)
 llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
+
+if sys.platform == 'win32':
+    if config.rocm_path:
+        llvm_config.with_environment('ROCM_PATH', config.rocm_path)
+        llvm_config.with_environment('PATH',
+                                     os.path.join(config.rocm_path, 'bin'),
+                                     append_path=True)
+    llvm_config.with_environment('ROCMLIR_BUILD_DIR', os.path.dirname(config.mlir_rock_tools_dir))
 
 tool_dirs = [config.mlir_rock_tools_dir, config.mlir_tools_dir, config.llvm_tools_dir]
 tools = ['rocmlir-opt', 'rocmlir-translate']

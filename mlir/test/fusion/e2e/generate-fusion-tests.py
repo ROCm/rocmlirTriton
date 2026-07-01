@@ -4,7 +4,12 @@ import os
 import argparse
 import shutil
 import itertools
-import tomli
+# Python 3.11+ ships tomllib in the stdlib; fall back to the external tomli
+# backport (same API) only if it is unavailable.
+try:
+    import tomllib as tomli
+except ModuleNotFoundError:
+    import tomli
 
 RANDTYPE = {'f32': 'float', 'f16': 'float', 'bf16': 'float', 'i32': 'int', 'i8': 'int'}
 
