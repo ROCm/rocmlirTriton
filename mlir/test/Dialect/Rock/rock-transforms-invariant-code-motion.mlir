@@ -516,3 +516,103 @@ func.func @hoist_conv2d_input_carry_offset_recurrence(%arg0: tensor<32xi8>, %arg
   }
   return %res : tensor<2x4xi8>
 }
+
+// -----
+
+// Loop-variant, non-iv extra index on the AFFINE path. The 4th extra index
+// (n_block) is a second loop iter_arg (%vb) that advances every iteration, so
+// it is loop-variant but is NOT the induction variable. The affine rewrite
+// handles this and does NOT bail: it re-expresses the base op in place, pinning
+// the iv (slot 0) to the loop lower bound %c0_i32 while referencing the
+// loop-variant %vb (slot 3) directly, and folds the iv contribution into the
+// usual scalar affine tail. The base op stays loop-variant through %vb (so it
+// is not hoistable), but the per-iteration iv work is still reduced to one
+// scalar multiply + splat + add rather than being threaded through the tile
+// index computation.
+//
+// CHECK-LABEL: func @affine_variant_non_iv_index
+//  CHECK-SAME: (%[[ARG0:.*]]: tensor<32768xf16>, %[[INIT:.*]]: tensor<64x64xf16>)
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[VB:.*]] = %{{.*}}) -> (tensor<64x64xf16>, i32)
+// Base op: iv (slot 0) pinned to %c0_i32; the loop-variant %[[VB]] kept in slot 3:
+//       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %[[VB]]]
+//       CHECK:     %[[D:.*]] = arith.subi %[[IV]], %{{.*}} : i32
+//       CHECK:     %[[OFF:.*]] = arith.muli %[[D]], %{{.*}} : i32
+//       CHECK:     %[[OFFT:.*]] = tt.splat %[[OFF]] : i32 -> tensor<64x64xi32>
+//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<64x64xi32>
+//       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
+//       CHECK:     scf.yield
+#map = affine_map<(d0, d1, d2) -> (d1 * 128 + d2)>
+#map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
+#transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
+#transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
+func.func @affine_variant_non_iv_index(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c2_i32 = arith.constant 2 : i32
+  %0 = rock.transform %arg0 by #transform_map : tensor<32768xf16> to tensor<1x256x128xf16>
+  // %vb is a second loop-carried index (advanced each iteration): loop-variant
+  // but not the iv.
+  %1:2 = scf.for %arg2 = %c0_i32 to %c2_i32 step %c1_i32 iter_args(%arg3 = %arg1, %vb = %c0_i32) -> (tensor<64x64xf16>, i32) : i32 {
+    %2 = rock.transform %0 by #transform_map1 : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
+    %pointers, %mask = rock.transforms_to_ptr %2[%arg2, %c0_i32, %c0_i32, %vb] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
+    %3 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %vbn = arith.addi %vb, %c1_i32 : i32
+    scf.yield %3, %vbn : tensor<64x64xf16>, i32
+  }
+  return %1#0 : tensor<64x64xf16>
+}
+
+// -----
+
+// Loop-variant, non-iv extra index on the CARRY path. Same halo-padded conv
+// input chain as @hoist_conv_input_carry (the iv straddles a non-contiguous
+// Merge and the mask is iv-dependent, so the affine fast path cannot apply),
+// but g_block (slot 1) is fed by a second loop iter_arg (%vb) that advances
+// every iteration. The carry path rebuilds the base coordinate slice in the
+// preheader via cloneSliceBeforeLoop, which only knows how to reconstruct the
+// iv; a loop-variant non-iv index would trip its assertion. The pass therefore
+// bails and leaves the loop untouched.
+//
+// CHECK-LABEL: func @carry_variant_non_iv_index
+//  CHECK-SAME: (%[[ARG0:.*]]: tensor<8xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
+// The pass bails: the loop still carries only the original two iter_args (the
+// result accumulator + the loop-variant index) with NO carry odometer state
+// added -- the return type list is unchanged:
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %[[VB:.*]] = %{{.*}}) -> (tensor<2x4xi8>, i32)
+// The transforms_to_ptr is left verbatim in the loop, still indexed by the iv
+// %[[IV]] (slot 0, NOT pinned to %c0_i32) and the loop-variant %[[VB]] (slot 1):
+//       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %[[VB]], %c0_i32, %c0_i32]
+//       CHECK:     rock.blockwise_load_ptr
+// No mixed-radix carry machinery was emitted:
+//   CHECK-NOT:     arith.cmpi uge
+//   CHECK-NOT:     arith.select
+//       CHECK:     scf.yield
+#map = affine_map<(d0, d1, d2, d3) -> (d2 * 4 + d3)>
+#map1 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3 - 1)>
+#map2 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3 + d4)>
+#map3 = affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 3, d1 mod 3, d2)>
+#map4 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)>
+#transform_map = #rock.transform_map<#map by [<Unmerge{2, 4} ["ci", "1i"] at [2, 3] -> ["raw"] at [0]>, <AddDim{1} ["ni"] at [0] -> [] at []>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [1, 1, 2, 4] -> [8]>
+#transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Pad{1, 1} ["1ipad"] at [3] -> ["1i"] at [3]>] bounds = [1, 1, 2, 6] -> [1, 1, 2, 4]>
+#transform_map2 = #rock.transform_map<#map2 by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [3]>] bounds = [1, 1, 2, 3, 4] -> [1, 1, 2, 6]>
+#transform_map3 = #rock.transform_map<#map3 by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 3} ["gemmK"] at [1] -> ["ci", "1"] at [2, 3]>, <Merge{1, 4} ["gemmN"] at [2] -> ["ni", "1o"] at [0, 4]>] bounds = [1, 6, 4] -> [1, 1, 2, 3, 4]>
+#transform_map4 = #rock.transform_map<#map4 by [<PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{3, 2} ["k_loop", "k_iter"] at [0, 4] -> ["gemmK"] at [1]>, <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["gemmN"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [3, 1, 1, 1, 2, 4] -> [1, 6, 4]>
+func.func @carry_variant_non_iv_index(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c3_i32 = arith.constant 3 : i32
+  %0 = rock.transform %arg0 by #transform_map : tensor<8xi8> to tensor<1x1x2x4xi8>
+  %1 = rock.transform %0 by #transform_map1 : tensor<1x1x2x4xi8> to tensor<1x1x2x6xi8>
+  %2 = rock.transform %1 by #transform_map2 : tensor<1x1x2x6xi8> to tensor<1x1x2x3x4xi8>
+  // %vb is a second loop-carried index (advanced each iteration): loop-variant
+  // but not the iv. Fed into g_block (slot 1).
+  %res:2 = scf.for %k = %c0_i32 to %c3_i32 step %c1_i32 iter_args(%acc = %arg1, %vb = %c0_i32) -> (tensor<2x4xi8>, i32) : i32 {
+    %3 = rock.transform %2 by #transform_map3 : tensor<1x1x2x3x4xi8> to tensor<1x6x4xi8>
+    %4 = rock.transform %3 by #transform_map4 : tensor<1x6x4xi8> to tensor<3x1x1x1x2x4xi8>
+    %ptr, %mask = rock.transforms_to_ptr %4[%k, %vb, %c0_i32, %c0_i32] : tensor<3x1x1x1x2x4xi8> -> tensor<2x4xi32>, tensor<2x4xi1>
+    %load = rock.blockwise_load_ptr %ptr[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<2x4xi32>, tensor<2x4xi1> -> tensor<2x4xi8>
+    %vbn = arith.addi %vb, %c1_i32 : i32
+    scf.yield %load, %vbn : tensor<2x4xi8>, i32
+  }
+  return %res#0 : tensor<2x4xi8>
+}

@@ -173,8 +173,8 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
       return it == diff.end() ? 0 : it->second;
     };
 
-    // Carry-neutrality guard: for any Merge the iv flows through (nonzero merged
-    // diff), the lower dims must nest contiguously in the buffer
+    // Carry-neutrality guard: for any Merge the iv flows through (nonzero
+    // merged diff), the lower dims must nest contiguously in the buffer
     // (stride(q_j) == stride(q_{j+1}) * e_{j+1}); otherwise the offset is only
     // piecewise-linear in the iv and there is no single constant stride.
     for (TransformAttr t : map.getOps()) {
@@ -243,7 +243,8 @@ static bool variantImpactsValidity(ArrayRef<TransformMapAttr> belowMaps,
           ArrayRef<int64_t> params = op.getParams();
           ArrayRef<uint32_t> ld = op.getLowerDims();
           for (size_t i = 0; i < ld.size(); ++i)
-            if ((params[2 * i] != 0 || params[2 * i + 1] != 0) && nonzero(ld[i]))
+            if ((params[2 * i] != 0 || params[2 * i + 1] != 0) &&
+                nonzero(ld[i]))
               return true;
         } else if (op.getType() == TransformType::Embed) {
           if (embedCanBeInvalid(map, op) && nonzero(op.getLowerDims()[0]))
@@ -326,33 +327,33 @@ static Value castScalar(OpBuilder &b, Location loc, Value v, Type toTy) {
 }
 
 /// How an in-loop `transforms_to_ptr` is incrementalized across iterations.
+/// In theory, Affine candidates are always preferred over Carry candidates,
+/// since the lowering is simpler for Affine candidates. However, the Affine
+/// lowering is too simple to support all cases, so for the case where we bail
+/// out, we fall back to Carry.
 enum class CandKind {
-  /// The linearized offset is affine in the iv and the mask is loop-invariant:
-  /// carry a single integer accumulator (`base + k*stride`).
+  /// The linearized offset is affine in the IV and the mask is loop-invariant:
+  /// carry a single integer accumulator (`base + IV*stride`).
   Affine,
-  /// The iv flows through a non-contiguous `Merge` and/or the mask depends on
-  /// the iv: carry the merge's decomposed lower coordinates (one
+  /// The IV flows through a non-contiguous `Merge` and/or the mask depends on
+  /// the IV: carry the merge's decomposed lower coordinates (one
   /// `tensor<tile x i32>` each) and rebuild the offset + mask every iteration.
   Carry,
 };
 
-/// A LICM candidate: an in-loop `transforms_to_ptr` op together with the
-/// information needed to incrementalize it. `rootBase` is the block argument the
-/// transform chain bottoms out in (used to detect aliasing of the same buffer).
+/// A simplification candidate: an `transforms_to_ptr` op together with the
+/// information needed to incrementalize it.
 struct Candidate {
-  CandKind kind;
-  TransformsToPtrOp op;
-  Value rootBase;
+  CandKind kind;        // Affine or Carry
+  TransformsToPtrOp op; // The op to be simplified
+  Value rootBase;       // The block argument of the op.
 
-  // --- Affine ---
+  // Used for Affine candidates.
   int64_t unitStride = 0;
 
-  // --- Carry ---
+  // Used for Carry candidates.
   SmallVector<TransformMapAttr> transforms; // view -> root
-  unsigned mergeIdx = 0;                     // index of the iv-traversed Merge
-  // Lower-space positions (in the merge map's lower coordinate space) of the
-  // merge's decomposed dims, in merge order (highest place value first). These
-  // are the coordinates carried as iter_args.
+  unsigned mergeIdx = 0;
   SmallVector<unsigned> variantPositions;
   SmallVector<int64_t> radices; // merge params, per carried dim
   SmallVector<int64_t> digits;  // per-loop-step carry digit, per carried dim
@@ -404,8 +405,8 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
       mergeOp = t;
       mergedDiffUnit = upper(t.getUpperDims()[0]);
     }
-    // We reconstruct the variant mask only from the sub-chain *below* the merge,
-    // so no validity-impacting map may sit at or above it.
+    // We reconstruct the variant mask only from the sub-chain *below* the
+    // merge, so no validity-impacting map may sit at or above it.
     if (mapImpactsValidity(map) &&
         (mergeIdx == -1 || static_cast<int>(mapIdx) <= mergeIdx))
       return bail("validity-impacting map at or above the iv-traversed merge");
@@ -457,20 +458,22 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
     return bail("loop does not have exactly one induction variable");
   Value iv = *maybeIv;
 
-  // Classify each transforms_to_ptr index: it must be either the loop iv (which
-  // we will incrementalize) or loop-invariant (ignored). A third possibility is
-  // pointer does not depend on the iv, which we skip.
+  // Classify each transforms_to_ptr index as the loop iv (which we
+  // incrementalize), loop-invariant (referenced directly), or loop-variant but
+  // not the iv. The last kind is only tracked here, not rejected: the affine
+  // path handles it (it rewrites the base op in place and references the index
+  // directly), while the carry path cannot and bails on it below. If no index
+  // is the iv the pointer is already loop-invariant and there is nothing to do.
   ValueRange extra = op.getExtraIndices();
   SmallVector<unsigned> ivPositions;
+  bool hasLoopVariantNonIvIdx = false;
   for (auto [pos, idx] : llvm::enumerate(extra)) {
     if (isInductionVar(idx, iv)) {
       ivPositions.push_back(pos);
       continue;
     }
-    // TODO: We may want to LICM in these cases too:
-    // https://amd-hub.atlassian.net/browse/AIROCMLIR-1029
     if (isDefinedInLoop(idx, loop))
-      return bail("an extra index is loop-variant but is not the iv");
+      hasLoopVariantNonIvIdx = true;
   }
   if (ivPositions.empty())
     return bail("pointer does not depend on the iv (already loop-invariant)");
@@ -483,12 +486,8 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
     return bail("transform chain root is not a block argument");
   cand.rootBase = root;
 
-  // Affine fast path: the mask is loop-invariant (no validity-impacting map
-  // constrains an iv-dependent coordinate) *and* the linearized offset has a
-  // single constant per-iteration stride. A Pad/Embed on a dimension unrelated
-  // to the iv (e.g. a padded gemmM while the iv lives in gemmK) keeps the mask
-  // invariant. The stride propagation mirrors rocMLIR's index-diff rules and is
-  // exact through Merge/Unmerge reconstructions (e.g. the conv gemmK packing).
+  // Affine path: the mask does not depend on the IV and the offset can be
+  // incremented by a single constant per iteration.
   if (!maskDependsOnIv(transforms, ivPositions)) {
     DenseMap<unsigned, int64_t> ivDiff;
     for (unsigned p : ivPositions)
@@ -502,8 +501,18 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
     }
   }
 
-  // Carry fallback: the iv flows through a non-contiguous Merge and/or the mask
-  // depends on the iv. Carry the merge's decomposed coordinates instead.
+  // Carry fallback: the IV flows through a non-contiguous Merge and/or the mask
+  // depends on the IV. Carry the merge's decomposed coordinates instead.
+  //
+  // Unlike the affine path (which rewrites the base op in place and can
+  // reference a loop-variant non-iv index directly), the carry path
+  // reconstructs the base coordinate slice in the preheader via
+  // `cloneSliceBeforeLoop`, which asserts every loop-defined value it walks is
+  // the iv. A loop-variant non-iv index would trip that assert, so bail before
+  // attempting the carry decomposition.
+  if (hasLoopVariantNonIvIdx)
+    return bail("an extra index is loop-variant but is not the IV (carry path "
+                "cannot rebuild it in the preheader)");
   if (analyzeCarryCandidate(op, loop, ivPositions, transforms, root, cand))
     return true;
 
@@ -538,9 +547,9 @@ static Value splatI32(OpBuilder &b, Location loc, RankedTensorType tt,
 
 /// Emit the per-iteration mixed-radix carry update of the decomposed merge
 /// coordinates `carried` (highest place value first). Each coordinate advances
-/// by its constant `digit`; overflow past `radix` carries 1 into the next-higher
-/// place. Pure add/cmp/select - no div/mod. The highest place is never wrapped
-/// (the loop bounds keep it in range).
+/// by its constant `digit`; overflow past `radix` carries 1 into the
+/// next-higher place. Pure add/cmp/select - no div/mod. The highest place is
+/// never wrapped (the loop bounds keep it in range).
 static SmallVector<Value> emitCarryUpdate(OpBuilder &b, Location loc,
                                           ArrayRef<Value> carried,
                                           ArrayRef<int64_t> radices,
@@ -549,14 +558,14 @@ static SmallVector<Value> emitCarryUpdate(OpBuilder &b, Location loc,
   SmallVector<Value> out(carried.size());
   Value carryInt; // null == no incoming carry
   for (int j = static_cast<int>(carried.size()) - 1; j >= 0; --j) {
-    Value v =
-        arith::AddIOp::create(b, loc, carried[j], splatI32(b, loc, tt, digits[j]));
+    Value v = arith::AddIOp::create(b, loc, carried[j],
+                                    splatI32(b, loc, tt, digits[j]));
     if (carryInt)
       v = arith::AddIOp::create(b, loc, v, carryInt);
     if (j > 0) {
       Value radix = splatI32(b, loc, tt, radices[j]);
-      Value ge = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::uge, v,
-                                       radix);
+      Value ge =
+          arith::CmpIOp::create(b, loc, arith::CmpIPredicate::uge, v, radix);
       Value vsub = arith::SubIOp::create(b, loc, v, radix);
       v = arith::SelectOp::create(b, loc, ge, vsub, v);
       carryInt = arith::SelectOp::create(b, loc, ge, splatI32(b, loc, tt, 1),
@@ -577,19 +586,19 @@ struct FullTileCarry {
 /// Full-tile distributed variant of `emitCarryUpdate`. `suffix` holds the
 /// validity-impacting merge coordinates as full `tensor<kIter x nPerBlock>`
 /// tiles (highest place first); each advances by its constant `digit`, wrapping
-/// at its `radix` with the carry rippling into the next-higher place. Unlike the
-/// minimal-rank update, *every* suffix coordinate wraps when `hasPrefix` is set,
-/// because the dropped high non-validity coordinate sits above them; its own
-/// per-step offset contribution is `(prefixDigit + carryOut) * prefixStride`,
-/// recovered here without ever materializing that coordinate. The returned
-/// `offsetDelta` is `sum_j (delta coord_j) * strides[j]` over the suffix plus
-/// the prefix term - a full tile, so the offset recurrence stays vector-
-/// resident.
+/// at its `radix` with the carry rippling into the next-higher place. Unlike
+/// the minimal-rank update, *every* suffix coordinate wraps when `hasPrefix` is
+/// set, because the dropped high non-validity coordinate sits above them; its
+/// own per-step offset contribution is `(prefixDigit + carryOut) *
+/// prefixStride`, recovered here without ever materializing that coordinate.
+/// The returned `offsetDelta` is `sum_j (delta coord_j) * strides[j]` over the
+/// suffix plus the prefix term - a full tile, so the offset recurrence stays
+/// vector- resident.
 static FullTileCarry
 emitFullTileCarry(OpBuilder &b, Location loc, ArrayRef<Value> suffix,
                   ArrayRef<int64_t> radices, ArrayRef<int64_t> digits,
-                  ArrayRef<int64_t> strides, bool hasPrefix, int64_t prefixDigit,
-                  int64_t prefixStride) {
+                  ArrayRef<int64_t> strides, bool hasPrefix,
+                  int64_t prefixDigit, int64_t prefixStride) {
   auto tt = cast<RankedTensorType>(suffix[0].getType());
   FullTileCarry out;
   out.nextSuffix.resize(suffix.size());
@@ -674,8 +683,9 @@ struct Reduced {
   // coordinates and the offset accumulator are then carried as full
   // tensor<kIter x nPerBlock> tiles - distributed across the lanes (vector
   // registers) rather than uniform (scalar registers) - so neither the mask
-  // rebuild nor the offset recurrence needs a cross-lane broadcast. `carriedInits`
-  // holds the full-tile suffix seeds and `offsetAccInit` a full-tile zero.
+  // rebuild nor the offset recurrence needs a cross-lane broadcast.
+  // `carriedInits` holds the full-tile suffix seeds and `offsetAccInit` a
+  // full-tile zero.
   bool fullTile = false;
   unsigned suffixCount = 0; // trailing variantPositions carried full-tile
   bool hasPrefix = false;   // a single high non-validity coord was dropped
@@ -686,8 +696,8 @@ struct Reduced {
 /// Rewrite an Affine candidate in place: replace the in-loop transforms_to_ptr
 /// with a base op pinned to the loop's lower bound plus the scalar affine tail
 /// `(iv - lb) * unitStride`. Nothing is hoisted - the (loop-invariant) base op
-/// stays in the loop body, so this performs the offset/mask simplification only;
-/// a later generic LICM pass may hoist the base op out of the loop.
+/// stays in the loop body, so this performs the offset/mask simplification
+/// only; a later generic LICM pass may hoist the base op out of the loop.
 static void rewriteAffineInLoop(Candidate &cand, Value iv, Value lb) {
   TransformsToPtrOp op = cand.op;
   OpBuilder b(op);
@@ -697,9 +707,8 @@ static void rewriteAffineInLoop(Candidate &cand, Value iv, Value lb) {
   // at lb, while loop-invariant indices are referenced directly.
   SmallVector<Value> baseIdx;
   for (Value idx : op.getExtraIndices())
-    baseIdx.push_back(isInductionVar(idx, iv)
-                          ? castScalar(b, loc, lb, idx.getType())
-                          : idx);
+    baseIdx.push_back(
+        isInductionVar(idx, iv) ? castScalar(b, loc, lb, idx.getType()) : idx);
 
   auto ptrType = cast<RankedTensorType>(op.getPointers().getType());
   Type maskType = op.getMask().getType();
@@ -726,9 +735,8 @@ static void rewriteAffineInLoop(Candidate &cand, Value iv, Value lb) {
 }
 
 /// Simplify all eligible transforms_to_ptr ops in `loop`: Affine candidates are
-/// rewritten in place, Carry candidates get loop-carried odometer state. No
-/// pointer/mask computation is hoisted out of the loop. Returns true if the loop
-/// (or any op in it) was changed.
+/// rewritten in place, Carry candidates get loop-carried odometer state.
+/// Returns true if the IR was changed.
 static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   SmallVector<Candidate, 0> candidates;
   for (Operation &o : loop.getBody()->without_terminator()) {
@@ -746,8 +754,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   Value lb = loop.getLowerBound();
   Value step = loop.getStep();
 
-  // Affine candidates are rewritten in place (no hoist, no iter_args): a base op
-  // pinned to lb plus a scalar affine tail, left in the loop body. Carry
+  // Affine candidates are rewritten in place (no hoist, no iter_args): a base
+  // op pinned to lb plus a scalar affine tail, left in the loop body. Carry
   // candidates need loop-carried odometer state, so they are collected here and
   // the loop is rebuilt below.
   SmallVector<Candidate, 0> carryCands;
@@ -792,8 +800,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     r.ptrType = ptrType;
     r.maskType = maskType;
 
-    // Carry path. Reconstruct the merge's lower coordinate vector at iv == lb by
-    // expanding the chain above and including the merge over the (lb-pinned)
+    // Carry path. Reconstruct the merge's lower coordinate vector at iv == lb
+    // by expanding the chain above and including the merge over the (lb-pinned)
     // extra indices plus per-tile ranges - exactly the seed the lowering uses,
     // but stopping at the merge's lower space.
     ArrayRef<int64_t> outShape = ptrType.getShape();
@@ -822,9 +830,9 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     // Carry the decomposed coordinates at their natural (minimal) rank. A
     // variant coordinate only varies along the iv-traversed gemmK dimension, so
     // (*iter0)[pos] is a reduced-rank tensor (e.g. tensor<kIter x 1>).
-    // Broadcasting it up to the full kIter x nPerBlock tile here would make both
-    // the persistent iter_arg state and the per-iteration carry update scale
-    // with nPerBlock for no reason - every column would be identical.
+    // Broadcasting it up to the full kIter x nPerBlock tile here would make
+    // both the persistent iter_arg state and the per-iteration carry update
+    // scale with nPerBlock for no reason - every column would be identical.
     for (unsigned pos : cand.variantPositions)
       r.carriedInits.push_back((*iter0)[pos]);
 
@@ -900,7 +908,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
       r.carriedInits.clear();
       for (unsigned pos :
            ArrayRef<unsigned>(cand.variantPositions).take_back(suffixCount))
-        r.carriedInits.push_back(broadcastToShape(b, loc, (*iter0)[pos], outShape));
+        r.carriedInits.push_back(
+            broadcastToShape(b, loc, (*iter0)[pos], outShape));
       auto offTy = RankedTensorType::get(outShape, b.getI32Type());
       r.offsetAccInit = splatI32(b, loc, offTy, 0);
       r.iterArgCount = suffixCount + 1;
@@ -925,7 +934,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     reduced.push_back(std::move(r));
   }
 
-  // New iter_args: the original ones followed by each candidate's carried state.
+  // New iter_args: the original ones followed by each candidate's carried
+  // state.
   unsigned numOrig = loop.getInitArgs().size();
   SmallVector<Value> newInits(loop.getInitArgs().begin(),
                               loop.getInitArgs().end());
@@ -987,8 +997,7 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
       FailureOr<Value> mask =
           expandCoordsToMask(b, loc, r.belowMaps, coords, r.outShape);
       assert(succeeded(mask) && "sub-chain mask expansion must succeed");
-      Value offset =
-          newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
+      Value offset = newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
       Value ptr = arith::AddIOp::create(b, loc, carryBasePtr, offset);
       bodyMap.map(r.op.getPointers(), ptr);
       bodyMap.map(r.op.getMask(), *mask);
@@ -1099,10 +1108,10 @@ void RockTransformsInvariantCodeMotionPass::runOnOperation() {
   if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
     return;
 
-  // Re-walk after each rewrite: tryHoistInvariantTransforms may replace the loop
-  // op (carry path), so collected handles would dangle. After a rewrite the base
-  // ops are pinned to iv == lb and no longer depend on the iv, so they are not
-  // re-selected as candidates and this terminates.
+  // Re-walk after each rewrite: tryHoistInvariantTransforms may replace the
+  // loop op (carry path), so collected handles would dangle. After a rewrite
+  // the base ops are pinned to iv == lb and no longer depend on the iv, so they
+  // are not re-selected as candidates and this terminates.
   bool changed = true;
   while (changed) {
     changed = false;
