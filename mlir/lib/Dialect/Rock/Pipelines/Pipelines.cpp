@@ -26,7 +26,6 @@
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/AMDGPU/Transforms/Passes.h"
 #include "mlir/Dialect/Affine/Transforms/Passes.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -57,11 +56,8 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-
-#include "mlir/IR/AttrTypeSubElements.h"
 
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "amd/include/TritonAMDGPUToLLVM/Passes.h"
@@ -133,218 +129,6 @@ struct HijackTTGIRPass
   }
 };
 
-// Experimental: redistribute the gather (reduction-operand) global-load layout
-// so that each warp owns a full reduction (gemmK) strip instead of replicating
-// the uniform mixed-radix address odometer across warps. This is the in-tree
-// pass form of a validated TTGIR hand-edit (the gather's `#blocked` warpsPerCTA
-// moved off the free/N dim and onto the reduction/K dim), which removed SGPR
-// spill and ~2x'd throughput on padded convolutions.
-//
-// We anchor on `amdgpu.in_thread_transpose`, which exposes both the gather
-// `#blocked` (its operand) and the paired `#linear` (its result). We recompute
-// the new `#linear` exactly as the in-thread-transpose pass does
-// (`deduceOutputLayout`) and remap both encodings across the module with an
-// AttrTypeReplacer, which also rewrites nested encodings such as
-// `slice<{parent = #blocked}>`. Runs at the makeTTGIR/makeLLIR boundary (right
-// after ConvertWarpPipeline, before SCF is lowered), where `#blocked` is
-// exclusive to the gather path. Inert unless ROCK_GATHER_KSPLIT is set.
-//
-// ROCK_GATHER_KSPLIT values:
-//   (unset / empty)       -> inert
-//   "t<A>x<B>_w<C>x<D>"    -> set threadsPerWarp = [A, B], warpsPerCTA = [C, D]
-//   "<C>x<D>"             -> set warpsPerCTA = [C, D] (keep threadsPerWarp)
-//   anything else (e.g. 1) -> move all warps onto the reduction dim
-struct RockSetGatherInputLayoutPass
-    : public PassWrapper<RockSetGatherInputLayoutPass, OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(RockSetGatherInputLayoutPass)
-
-  StringRef getArgument() const final { return "rock-set-gather-input-layout"; }
-  StringRef getDescription() const final {
-    return "Redistribute the gather-load layout onto the reduction dim "
-           "(env ROCK_GATHER_KSPLIT)";
-  }
-
-  // Parse "AxB" into {A, B}; returns failure on malformed input.
-  static LogicalResult parsePair(StringRef s, SmallVectorImpl<unsigned> &out) {
-    auto [a, b] = s.split('x');
-    unsigned va = 0, vb = 0;
-    if (a.getAsInteger(10, va) || b.getAsInteger(10, vb))
-      return failure();
-    out.assign({va, vb});
-    return success();
-  }
-
-  void runOnOperation() override {
-    const char *spec = std::getenv("ROCK_GATHER_KSPLIT");
-    if (!spec || spec[0] == '\0')
-      return; // inert unless explicitly requested
-    StringRef specStr(spec);
-
-    ModuleOp mod = getOperation();
-    MLIRContext *ctx = mod.getContext();
-
-    // Identify the gather encodings via the first in_thread_transpose op.
-    triton::amdgpu::InThreadTransposeOp transpose;
-    mod.walk([&](triton::amdgpu::InThreadTransposeOp op) {
-      if (!transpose)
-        transpose = op;
-    });
-    if (!transpose)
-      return; // e.g. in-thread-transpose disabled; nothing to retarget
-
-    auto srcTy = cast<RankedTensorType>(transpose.getSrc().getType());
-    auto dstTy = cast<RankedTensorType>(transpose.getResult().getType());
-    auto oldBlocked =
-        dyn_cast<triton::gpu::BlockedEncodingAttr>(srcTy.getEncoding());
-    auto oldLinear =
-        dyn_cast<triton::gpu::LinearEncodingAttr>(dstTy.getEncoding());
-    if (!oldBlocked || !oldLinear) {
-      transpose.emitWarning(
-          "rock-set-gather-input-layout: unexpected gather encodings; skipping");
-      return;
-    }
-
-    ArrayRef<int64_t> shape = srcTy.getShape();
-    SmallVector<unsigned> order(oldBlocked.getOrder());
-    SmallVector<unsigned> sizePerThread(oldBlocked.getSizePerThread());
-    SmallVector<unsigned> threadsPerWarp(oldBlocked.getThreadsPerWarp());
-    SmallVector<unsigned> warpsPerCTA(oldBlocked.getWarpsPerCTA());
-
-    // Grammar (2D gather):
-    //   "sAxB_tCxD_wExF" -> sizePerThread=[A,B], threadsPerWarp=[C,D],
-    //                       warpsPerCTA=[E,F]
-    //   "tCxD_wExF"      -> threadsPerWarp + warpsPerCTA (keep sizePerThread)
-    //   "wExF" / "ExF"   -> warpsPerCTA only (keep the rest)
-    //   anything else    -> default policy: all warps onto the reduction dim
-    auto malformed = [&]() {
-      transpose.emitWarning("malformed ROCK_GATHER_KSPLIT; skipping");
-    };
-    if (specStr.starts_with("s")) {
-      StringRef rest = specStr.drop_front(1);
-      auto [sPart, tw] = rest.split("_t");
-      auto [tPart, wPart] = tw.split("_w");
-      SmallVector<unsigned> s, t, w;
-      if (failed(parsePair(sPart, s)) || failed(parsePair(tPart, t)) ||
-          failed(parsePair(wPart, w))) {
-        malformed();
-        return;
-      }
-      sizePerThread = s;
-      threadsPerWarp = t;
-      warpsPerCTA = w;
-    } else if (specStr.starts_with("t")) {
-      StringRef rest = specStr.drop_front(1);
-      auto [tPart, wPart] = rest.split("_w");
-      SmallVector<unsigned> t, w;
-      if (failed(parsePair(tPart, t)) || failed(parsePair(wPart, w))) {
-        malformed();
-        return;
-      }
-      threadsPerWarp = t;
-      warpsPerCTA = w;
-    } else if (specStr.contains('x')) {
-      StringRef wPart = specStr.starts_with("w") ? specStr.drop_front(1) : specStr;
-      SmallVector<unsigned> w;
-      if (failed(parsePair(wPart, w))) {
-        malformed();
-        return;
-      }
-      warpsPerCTA = w;
-    } else {
-      // Default policy: put every warp on the reduction dim (the slowest-
-      // varying dim, i.e. order.back()), leaving the contiguous dim to lanes.
-      unsigned kDim = order.back();
-      unsigned totalWarps = 1;
-      for (unsigned w : warpsPerCTA)
-        totalWarps *= w;
-      for (unsigned i = 0; i < warpsPerCTA.size(); ++i)
-        warpsPerCTA[i] = (i == kDim) ? totalWarps : 1u;
-    }
-
-    // Safety guard: a custom spec must (a) keep the wave size and warp count of
-    // the original layout (we only redistribute lanes/warps, never change how
-    // many there are) and (b) tile the gather shape cleanly. Otherwise bail and
-    // leave the original layout in place so a layout sweep can't crash the
-    // pipeline on an ill-formed candidate.
-    auto product = [](ArrayRef<unsigned> v) {
-      unsigned p = 1;
-      for (unsigned x : v)
-        p *= x;
-      return p;
-    };
-    if (sizePerThread.size() != shape.size() ||
-        threadsPerWarp.size() != shape.size() ||
-        warpsPerCTA.size() != shape.size() ||
-        product(threadsPerWarp) != product(oldBlocked.getThreadsPerWarp()) ||
-        product(warpsPerCTA) != product(oldBlocked.getWarpsPerCTA())) {
-      transpose.emitWarning("ROCK_GATHER_KSPLIT: spec changes wave/warp counts "
-                            "or rank; skipping");
-      return;
-    }
-    for (unsigned d = 0; d < shape.size(); ++d) {
-      unsigned cover = sizePerThread[d] * threadsPerWarp[d] * warpsPerCTA[d];
-      if (cover == 0 || shape[d] % cover != 0) {
-        transpose.emitWarning("ROCK_GATHER_KSPLIT: spec does not tile the "
-                              "gather shape; skipping");
-        return;
-      }
-    }
-
-    auto newBlocked = triton::gpu::BlockedEncodingAttr::get(
-        ctx, sizePerThread, threadsPerWarp, warpsPerCTA, order,
-        oldBlocked.getCGALayout());
-    if (newBlocked == oldBlocked)
-      return; // already in the desired layout
-
-    // Recompute the paired linear layout exactly as the in-thread-transpose
-    // pass would for the new blocked encoding.
-    triton::LinearLayout newLL =
-        triton::amdgpu::InThreadTransposeOp::deduceOutputLayout(shape,
-                                                                newBlocked);
-    auto newLinear =
-        triton::gpu::LinearEncodingAttr::get(ctx, std::move(newLL));
-
-    // Remap both encodings everywhere. The replacer recurses into nested
-    // encodings (so slice<{parent = #blocked}> is rewritten too) when applied
-    // to a type. We drive it explicitly over result types, block-argument
-    // types, and constant value attributes: arith.constant stores `value` as an
-    // inherent attribute (a property), so its type must be fixed alongside the
-    // result type to keep the two consistent.
-    AttrTypeReplacer replacer;
-    replacer.addReplacement([&](Attribute attr) -> std::optional<Attribute> {
-      if (attr == oldBlocked)
-        return Attribute(newBlocked);
-      if (attr == oldLinear)
-        return Attribute(newLinear);
-      return std::nullopt;
-    });
-
-    mod.walk([&](Operation *op) {
-      for (Value res : op->getResults()) {
-        Type nt = replacer.replace(res.getType());
-        if (nt != res.getType())
-          res.setType(nt);
-      }
-      for (Region &region : op->getRegions())
-        for (Block &block : region)
-          for (BlockArgument arg : block.getArguments()) {
-            Type nt = replacer.replace(arg.getType());
-            if (nt != arg.getType())
-              arg.setType(nt);
-          }
-      if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
-        if (auto dense = dyn_cast<DenseElementsAttr>(constOp.getValue())) {
-          Type nt = replacer.replace(dense.getType());
-          if (nt != dense.getType())
-            constOp.setValueAttr(dense.reshape(cast<ShapedType>(nt)));
-        }
-      }
-    });
-
-    llvm::errs() << "// -----// ROCK_GATHER_KSPLIT: gather #blocked -> "
-                 << newBlocked << " //----- //\n";
-  }
-};
 } // namespace
 
 // Based on make_ttir() in
@@ -541,10 +325,6 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // Experimental: optionally replace the final TTGIR with a hand-edited file
   // from $ROCK_HIJACK_TTGIR before lowering to LLVM. Inert unless set.
   pm->addPass(std::make_unique<HijackTTGIRPass>());
-  // Experimental: optionally redistribute the gather (reduction-operand) load
-  // layout onto the reduction dim to remove the per-warp scalar address-odometer
-  // spill. Inert unless $ROCK_GATHER_KSPLIT is set.
-  pm->addPass(std::make_unique<RockSetGatherInputLayoutPass>());
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
