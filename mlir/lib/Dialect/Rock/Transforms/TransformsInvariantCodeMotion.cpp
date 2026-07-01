@@ -631,21 +631,24 @@ emitFullTileCarry(OpBuilder &b, Location loc, ArrayRef<Value> suffix,
   return out;
 }
 
-/// Per-candidate preheader values + iter_arg layout for the rewritten loop.
+/// Per-candidate carried state + iter_arg layout for the rewritten loop. Only
+/// Carry candidates flow through here; Affine candidates are rewritten in place
+/// by `rewriteAffineInLoop`, leaving the loop structure untouched.
 struct Reduced {
-  CandKind kind;
   TransformsToPtrOp op;      // original in-loop op (to be removed)
   unsigned iterArgStart = 0; // first new iter_arg index for this candidate
   unsigned iterArgCount = 0; // number of new iter_args contributed
 
-  // --- Affine ---
-  Value basePtr;      // loop-invariant pointer tensor at iv == lb
-  Value baseMask;     // loop-invariant mask
-  Value strideScalar; // constant per-iteration scalar offset increment
-  Value accInit;      // zero scalar offset accumulator initializer
+  // Inputs to the base transforms_to_ptr op, which is rebuilt *inside* the loop
+  // body pinned to iv == lb rather than hoisted into the preheader (this pass
+  // no longer performs the hoist). The op is loop-invariant, so a subsequent
+  // generic LICM pass may hoist it.
+  Value srcPre;               // transform source, iv pinned to lb
+  SmallVector<Value> baseIdx; // extra indices, iv pinned to lb
+  RankedTensorType ptrType;
+  Type maskType;
 
   // --- Carry ---
-  Value carryBasePtr;                      // pointer tensor at iv == lb
   Value offset0;                           // linearized offset at iv == lb
   SmallVector<Value> iter0Coords;          // merge-lower coord vector at iv==lb
   SmallVector<Value> carriedInits;         // init for the carried iter_args
@@ -680,8 +683,52 @@ struct Reduced {
   int64_t prefixStride = 0; // its linearized buffer offset stride
 };
 
-/// Try to LICM all eligible transforms_to_ptr ops in `loop`.
-/// Returns true (and rewrites the loop) if at least one was reduced.
+/// Rewrite an Affine candidate in place: replace the in-loop transforms_to_ptr
+/// with a base op pinned to the loop's lower bound plus the scalar affine tail
+/// `(iv - lb) * unitStride`. Nothing is hoisted - the (loop-invariant) base op
+/// stays in the loop body, so this performs the offset/mask simplification only;
+/// a later generic LICM pass may hoist the base op out of the loop.
+static void rewriteAffineInLoop(Candidate &cand, Value iv, Value lb) {
+  TransformsToPtrOp op = cand.op;
+  OpBuilder b(op);
+  Location loc = op.getLoc();
+
+  // Pin the iv to lb: an index that is the iv (or a cast of it) is re-expressed
+  // at lb, while loop-invariant indices are referenced directly.
+  SmallVector<Value> baseIdx;
+  for (Value idx : op.getExtraIndices())
+    baseIdx.push_back(isInductionVar(idx, iv)
+                          ? castScalar(b, loc, lb, idx.getType())
+                          : idx);
+
+  auto ptrType = cast<RankedTensorType>(op.getPointers().getType());
+  Type maskType = op.getMask().getType();
+  auto base = TransformsToPtrOp::create(b, loc, ptrType, maskType,
+                                        op.getSource(), baseIdx);
+
+  // The offset is affine in the iv with a single constant stride, so
+  // offset(iv) = offset(lb) + (iv - lb) * unitStride. offset(lb) is the base
+  // op's per-element tile; the tail is a uniform scalar splat onto it. The
+  // resulting `addi(basePtr, splat)` is the "base pointer + integer offset"
+  // shape RockToTTIR/TensorToTritonPtr lower to a tt.addptr.
+  Type offsetTy = ptrType.getElementType();
+  Value ivMinusLb = arith::SubIOp::create(b, loc, iv, lb);
+  Value stride = arith::ConstantOp::create(
+      b, loc, b.getIntegerAttr(offsetTy, cand.unitStride));
+  Value delta = arith::MulIOp::create(
+      b, loc, castScalar(b, loc, ivMinusLb, offsetTy), stride);
+  Value deltaSplat = triton::SplatOp::create(b, loc, ptrType, delta);
+  Value ptr = arith::AddIOp::create(b, loc, base.getPointers(), deltaSplat);
+
+  op.getPointers().replaceAllUsesWith(ptr);
+  op.getMask().replaceAllUsesWith(base.getMask());
+  op.erase();
+}
+
+/// Simplify all eligible transforms_to_ptr ops in `loop`: Affine candidates are
+/// rewritten in place, Carry candidates get loop-carried odometer state. No
+/// pointer/mask computation is hoisted out of the loop. Returns true if the loop
+/// (or any op in it) was changed.
 static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   SmallVector<Candidate, 0> candidates;
   for (Operation &o : loop.getBody()->without_terminator()) {
@@ -699,18 +746,34 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   Value lb = loop.getLowerBound();
   Value step = loop.getStep();
 
+  // Affine candidates are rewritten in place (no hoist, no iter_args): a base op
+  // pinned to lb plus a scalar affine tail, left in the loop body. Carry
+  // candidates need loop-carried odometer state, so they are collected here and
+  // the loop is rebuilt below.
+  SmallVector<Candidate, 0> carryCands;
+  bool changed = false;
+  for (Candidate &cand : candidates) {
+    if (cand.kind == CandKind::Affine) {
+      rewriteAffineInLoop(cand, iv, lb);
+      changed = true;
+    } else {
+      carryCands.push_back(cand);
+    }
+  }
+  if (carryCands.empty())
+    return changed;
+
   OpBuilder b(loop);
 
-  // Build per-candidate preheader values: a base pointer at iv == lb plus the
-  // carried-state initializers (an affine accumulator, or the decomposed merge
-  // coordinates).
+  // Build each carry candidate's iter_arg initial values before the loop (as
+  // SSA requires). The base transforms_to_ptr op is NOT hoisted here; it is
+  // rebuilt inside the loop body (see below), leaving only the offset/mask
+  // simplification.
   SmallVector<Reduced, 0> reduced;
-  for (Candidate &cand : candidates) {
-    // Rebuild the loop-invariant inputs in the preheader with the iv pinned to
-    // the loop's lower bound. Seeding the clone map with iv -> lb means an
-    // index that is the iv (or a cast of it, e.g. index_cast(iv) for an
-    // index-typed loop) is re-expressed at lb, while loop-invariant indices are
-    // referenced directly.
+  for (Candidate &cand : carryCands) {
+    // Pin the iv to lb for the base op inputs: an index that is the iv (or a
+    // cast of it, e.g. index_cast(iv) for an index-typed loop) is re-expressed
+    // at lb, while loop-invariant indices are referenced directly.
     IRMapping cloneMap;
     cloneMap.map(iv, lb);
     Value srcPre = cloneSliceBeforeLoop(b, cand.op.getSource(), loop, cloneMap);
@@ -721,38 +784,13 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
 
     auto ptrType = cast<RankedTensorType>(cand.op.getPointers().getType());
     Type maskType = cand.op.getMask().getType();
-    auto baseOp =
-        TransformsToPtrOp::create(b, loc, ptrType, maskType, srcPre, baseIdx);
 
     Reduced r;
-    r.kind = cand.kind;
     r.op = cand.op;
-
-    if (cand.kind == CandKind::Affine) {
-      // The per-iteration offset increment is `step * unitStride`, expressed in
-      // the pointer-offset element type. The offsets are integers independent
-      // of the induction-variable type, so cast the step to that type before
-      // multiplying by the constant stride.
-      Type offsetTy = ptrType.getElementType();
-      Value strideScalar = arith::MulIOp::create(
-          b, loc, castScalar(b, loc, step, offsetTy),
-          arith::ConstantOp::create(
-              b, loc, b.getIntegerAttr(offsetTy, cand.unitStride)));
-      // Carry the offset accumulator as a uniform scalar, not a full-tile
-      // tensor. The accumulator is (iv - lb)/step * stride, identical across
-      // every element of the pointer tile, so materializing it at the tile
-      // shape would burn one register per tile element of loop-carried state to
-      // represent a single scalar's worth of information. We splat it onto the
-      // (loop-invariant) base pointer lazily inside the body instead.
-      r.basePtr = baseOp.getPointers();
-      r.baseMask = baseOp.getMask();
-      r.strideScalar = strideScalar;
-      r.accInit = arith::ConstantOp::create(
-          b, loc, b.getIntegerAttr(offsetTy, 0));
-      r.iterArgCount = 1;
-      reduced.push_back(std::move(r));
-      continue;
-    }
+    r.srcPre = srcPre;
+    r.baseIdx = baseIdx;
+    r.ptrType = ptrType;
+    r.maskType = maskType;
 
     // Carry path. Reconstruct the merge's lower coordinate vector at iv == lb by
     // expanding the chain above and including the merge over the (lb-pinned)
@@ -775,7 +813,6 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
         ArrayRef<TransformMapAttr>(cand.transforms)
             .drop_front(cand.mergeIdx + 1));
 
-    r.carryBasePtr = baseOp.getPointers();
     r.iter0Coords = *iter0;
     r.belowMaps = belowMaps;
     r.variantPositions = cand.variantPositions;
@@ -894,15 +931,11 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
                               loop.getInitArgs().end());
   for (Reduced &r : reduced) {
     r.iterArgStart = newInits.size();
-    if (r.kind == CandKind::Affine) {
-      newInits.push_back(r.accInit);
-    } else {
-      for (Value v : r.carriedInits)
-        newInits.push_back(v);
-      // Pointer recurrence carries the reduced-rank offset accumulator last.
-      if (!r.offsetStrides.empty())
-        newInits.push_back(r.offsetAccInit);
-    }
+    for (Value v : r.carriedInits)
+      newInits.push_back(v);
+    // Pointer recurrence carries the reduced-rank offset accumulator last.
+    if (!r.offsetStrides.empty())
+      newInits.push_back(r.offsetAccInit);
   }
 
   auto newLoop =
@@ -918,31 +951,26 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
 
   // Reconstruct each candidate's pointer/mask inside the body.
   //
-  // Affine: pointer = basePtr + acc (a single add that RockToTTIR/
-  // FuncToTritonFunc lower to a tt.addptr recurrence) with a loop-invariant
-  // mask.
+  // The base transforms_to_ptr op (iv pinned to lb) is rebuilt here, inside the
+  // loop body, instead of being hoisted: this pass performs the offset/mask
+  // simplification only. The base op is loop-invariant, so a later generic LICM
+  // pass may hoist it.
   //
   // Carry: rebuild the decomposed coordinate vector from the carried iter_args
-  // (variant entries) and the hoisted iter-0 coordinates (invariant entries).
-  // With a pointer recurrence (the common case) the offset is carried, so only
-  // the mask is rebuilt and the pointer is `carryBasePtr + broadcast(acc)`.
+  // (variant entries) and the iter-0 coordinates (invariant entries). With a
+  // pointer recurrence (the common case) the offset is carried, so only the
+  // mask is rebuilt and the pointer is `carryBasePtr + broadcast(acc)`.
   // Otherwise we fall back to re-expanding the sub-chain for this iteration's
   // offset and mask, with the pointer `carryBasePtr + (offset_k - offset_0)`.
   // Both keep the "base pointer + integer offset" shape downstream expects.
   llvm::SmallPtrSet<Operation *, 4> candidateOps;
   for (Reduced &r : reduced) {
     candidateOps.insert(r.op.getOperation());
-    if (r.kind == CandKind::Affine) {
-      Value acc = newLoop.getRegionIterArg(r.iterArgStart);
-      // Broadcast the scalar accumulator onto the base pointer tile transiently;
-      // the splat is uniform so it stays in scalar registers until the addi.
-      Value accSplat = triton::SplatOp::create(
-          b, loc, cast<RankedTensorType>(r.basePtr.getType()), acc);
-      Value ptr = arith::AddIOp::create(b, loc, r.basePtr, accSplat);
-      bodyMap.map(r.op.getPointers(), ptr);
-      bodyMap.map(r.op.getMask(), r.baseMask);
-      continue;
-    }
+
+    // Base pointer/mask at iv == lb, built in the loop body (unhoisted).
+    auto baseOp = TransformsToPtrOp::create(b, loc, r.ptrType, r.maskType,
+                                            r.srcPre, r.baseIdx);
+    Value carryBasePtr = baseOp.getPointers();
 
     if (r.fullTile) {
       // Full-tile distributed carry: the validity (suffix) coordinates are
@@ -961,7 +989,7 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
       assert(succeeded(mask) && "sub-chain mask expansion must succeed");
       Value offset =
           newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
-      Value ptr = arith::AddIOp::create(b, loc, r.carryBasePtr, offset);
+      Value ptr = arith::AddIOp::create(b, loc, carryBasePtr, offset);
       bodyMap.map(r.op.getPointers(), ptr);
       bodyMap.map(r.op.getMask(), *mask);
       continue;
@@ -981,7 +1009,7 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
       Value acc =
           newLoop.getRegionIterArg(r.iterArgStart + r.variantPositions.size());
       Value accTile = broadcastToShape(b, loc, acc, r.outShape);
-      Value ptr = arith::AddIOp::create(b, loc, r.carryBasePtr, accTile);
+      Value ptr = arith::AddIOp::create(b, loc, carryBasePtr, accTile);
       bodyMap.map(r.op.getPointers(), ptr);
       bodyMap.map(r.op.getMask(), *mask);
       continue;
@@ -991,7 +1019,7 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
         expandCoordsToOffsetAndMask(b, loc, r.belowMaps, coords, r.outShape);
     assert(succeeded(om) && "sub-chain expansion must succeed");
     Value delta = arith::SubIOp::create(b, loc, om->offset, r.offset0);
-    Value ptr = arith::AddIOp::create(b, loc, r.carryBasePtr, delta);
+    Value ptr = arith::AddIOp::create(b, loc, carryBasePtr, delta);
     bodyMap.map(r.op.getPointers(), ptr);
     bodyMap.map(r.op.getMask(), om->mask);
   }
@@ -1009,12 +1037,6 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   for (Value y : oldYield.getResults())
     newYields.push_back(bodyMap.lookupOrDefault(y));
   for (Reduced &r : reduced) {
-    if (r.kind == CandKind::Affine) {
-      Value acc = newLoop.getRegionIterArg(r.iterArgStart);
-      newYields.push_back(arith::AddIOp::create(b, loc, acc, r.strideScalar));
-      continue;
-    }
-
     if (r.fullTile) {
       // Advance the full-tile validity coordinates (odometer) and the full-tile
       // offset accumulator by the per-step delta returned by the same odometer.
@@ -1077,9 +1099,10 @@ void RockTransformsInvariantCodeMotionPass::runOnOperation() {
   if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
     return;
 
-  // Re-walk after each rewrite: tryHoistInvariantTransforms replaces the loop
-  // op, so collected handles would dangle. A reduced loop has no remaining
-  // candidates (they become preheader ops + iter_args), so this terminates.
+  // Re-walk after each rewrite: tryHoistInvariantTransforms may replace the loop
+  // op (carry path), so collected handles would dangle. After a rewrite the base
+  // ops are pinned to iv == lb and no longer depend on the iv, so they are not
+  // re-selected as candidates and this terminates.
   bool changed = true;
   while (changed) {
     changed = false;
