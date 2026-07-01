@@ -11,7 +11,7 @@
 // RUN: rocmlir-gen -operation attention -t f32 --arch %arch -g 1 -seq_len_q 348 -seq_len_k 122 -num_heads_q 16 -num_heads_kv 4 -head_dim_qk 251 -head_dim_v 4 -with-attn-scale=False -with-attn-bias=True -transQ=True -transK=False -transV=True -transO=False -causal=False -return_lse=False -split_kv=1 --perf_config=attn:v1:64,32,32,2,1,4,0,1,1,0,0 -pv \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c \
-// RUN: | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void \
+// RUN: | mlir-runner --shared-libs=%linalg_test_lib_dir/%shlibprefixmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/%shlibprefixconv-validation-wrappers%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_runner_utils%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_float16_utils%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_async_runtime%shlibext --entry-point-result=void \
 // RUN: | FileCheck %s
 // CHECK: [1 1 1]
 
@@ -28,5 +28,5 @@
 // RUN: rocmlir-gen -operation attention -t f16 --arch %arch -g 1 -seq_len_q 1158 -seq_len_k 68 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 176 -head_dim_v 88 -with-attn-scale=False -with-attn-bias=False -transQ=True -transK=False -transV=False -transO=False -causal=True -return_lse=False -split_kv=1 --perf_config=attn:v1:64,256,16,2,1,4,16,1,1,0,1 -pv -pr -pvr \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c \
-// RUN: | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void \
+// RUN: | mlir-runner --shared-libs=%linalg_test_lib_dir/%shlibprefixmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/%shlibprefixconv-validation-wrappers%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_runner_utils%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_float16_utils%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_async_runtime%shlibext --entry-point-result=void \
 // RUN: | FileCheck %s

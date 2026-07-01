@@ -3,7 +3,7 @@
 // RUN:   --rocmlir-gen-path rocmlir-gen \
 // RUN:   --rocmlir-driver-path rocmlir-driver \
 // RUN:   --runner-path mlir-runner \
-// RUN:   --libs "%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext" \
+// RUN:   --libs "%linalg_test_lib_dir/%shlibprefixmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/%shlibprefixconv-validation-wrappers%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_runner_utils%shlibext" \
 // RUN:   -arch %arch --tolerance 0.05 | FileCheck %s
 
 // Verify hipblaslt GEMM bf16 256x256x128 produces correct results
