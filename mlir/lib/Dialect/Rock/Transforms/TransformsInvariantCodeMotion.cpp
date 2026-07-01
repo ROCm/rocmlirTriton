@@ -661,7 +661,7 @@ emitFullTileCarry(OpBuilder &b, Location loc, ArrayRef<Value> suffix,
 
 /// Per-candidate carried state + iter_arg layout for the rewritten loop. Only
 /// Carry candidates flow through here; Affine candidates are rewritten in place
-/// by `rewriteAffineInLoop`, leaving the loop structure untouched.
+/// by `simplifyAffineCandidate`, leaving the loop structure untouched.
 struct Reduced {
   TransformsToPtrOp op;      // original in-loop op (to be removed)
   unsigned iterArgStart = 0; // first new iter_arg index for this candidate
@@ -712,12 +712,14 @@ struct Reduced {
   int64_t prefixStride = 0; // its linearized buffer offset stride
 };
 
-/// Rewrite an Affine candidate in place: replace the in-loop transforms_to_ptr
-/// with a base op pinned to the loop's lower bound plus the scalar affine tail
-/// `(iv - lb) * unitStride`. Nothing is hoisted - the (loop-invariant) base op
-/// stays in the loop body, so this performs the offset/mask simplification
-/// only; a later generic LICM pass may hoist the base op out of the loop.
-static void rewriteAffineInLoop(Candidate &cand, Value iv, Value lb) {
+/// Simplify an Affine candidate
+///
+/// The offset is affine in the IV with a single constant stride, so
+/// offset(IV) = offset(LB) + (IV - LB) * unitStride. offset(LB) is the base
+/// op's per-element tile; the tail is a uniform scalar splat onto it. The
+/// resulting `addi(basePtr, splat)` is the "base pointer + integer offset"
+/// shape RockToTTIR/TensorToTritonPtr lower to a tt.addptr.
+static void simplifyAffineCandidate(Candidate &cand, Value iv, Value lb) {
   TransformsToPtrOp op = cand.op;
   OpBuilder b(op);
   Location loc = op.getLoc();
@@ -734,11 +736,7 @@ static void rewriteAffineInLoop(Candidate &cand, Value iv, Value lb) {
   auto base = TransformsToPtrOp::create(b, loc, ptrType, maskType,
                                         op.getSource(), baseIdx);
 
-  // The offset is affine in the iv with a single constant stride, so
-  // offset(iv) = offset(lb) + (iv - lb) * unitStride. offset(lb) is the base
-  // op's per-element tile; the tail is a uniform scalar splat onto it. The
-  // resulting `addi(basePtr, splat)` is the "base pointer + integer offset"
-  // shape RockToTTIR/TensorToTritonPtr lower to a tt.addptr.
+  // Emit the IR for the simplification offset computation.
   Type offsetTy = ptrType.getElementType();
   Value ivMinusLb = arith::SubIOp::create(b, loc, iv, lb);
   Value stride = arith::ConstantOp::create(
@@ -752,6 +750,9 @@ static void rewriteAffineInLoop(Candidate &cand, Value iv, Value lb) {
   op.getMask().replaceAllUsesWith(base.getMask());
   op.erase();
 }
+
+static void simplifyCarryCandidates(scf::ForOp loop,
+                                    MutableArrayRef<Candidate> carryCands);
 
 /// Simplify all eligible transforms_to_ptr ops in `loop`: Affine candidates are
 /// rewritten in place, Carry candidates get loop-carried coordinate state.
@@ -771,27 +772,37 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     return false;
   }
 
-  Location loc = loop.getLoc();
   Value iv = loop.getInductionVar();
   Value lb = loop.getLowerBound();
-  Value step = loop.getStep();
 
-  // Affine candidates are rewritten in place
-  // Carry candidates need loop-carried coordinate state, so they are collected
-  // here and the loop is rebuilt below.
+  // Affine candidates are rewritten in place; Carry candidates need
+  // loop-carried coordinate state, so they are collected here and handled by
+  // simplifyCarryCandidates.
   SmallVector<Candidate, 0> carryCands;
   bool changed = false;
   for (Candidate &cand : candidates) {
     if (cand.kind == CandKind::Affine) {
-      rewriteAffineInLoop(cand, iv, lb);
+      simplifyAffineCandidate(cand, iv, lb);
       changed = true;
     } else {
       carryCands.push_back(cand);
     }
   }
-  if (carryCands.empty())
-    return changed;
 
+  if (!carryCands.empty())
+    simplifyCarryCandidates(loop, carryCands);
+
+  return changed;
+}
+
+/// Rewrite the Carry candidates in `carryCands`: replace `loop` with a new loop
+/// that carries the merge's decomposed coordinate state.
+static void simplifyCarryCandidates(scf::ForOp loop,
+                                    MutableArrayRef<Candidate> carryCands) {
+  Location loc = loop.getLoc();
+  Value iv = loop.getInductionVar();
+  Value lb = loop.getLowerBound();
+  Value step = loop.getStep();
   OpBuilder b(loop);
 
   // Build each carry candidate's iter_arg initial values before the loop (as
@@ -1121,7 +1132,6 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   for (unsigned i = 0; i < numOrig; ++i)
     loop.getResult(i).replaceAllUsesWith(newLoop.getResult(i));
   loop.erase();
-  return true;
 }
 
 } // end anonymous namespace
