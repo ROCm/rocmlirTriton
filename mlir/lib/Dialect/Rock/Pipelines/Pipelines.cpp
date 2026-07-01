@@ -46,8 +46,6 @@
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Tosa/IR/TargetEnv.h"
 #include "mlir/Dialect/Tosa/Transforms/Passes.h"
-#include "mlir/Parser/Parser.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 
@@ -68,68 +66,10 @@
 
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/TargetSelect.h"
-#include <cstdlib>
 #include <optional>
 
 using namespace mlir;
 using namespace mlir::triton;
-
-namespace {
-// Experimental hijack: if ROCK_HIJACK_TTGIR points at a file, parse it as a
-// TritonGPU module and swap it in for the current kernel module, then let the
-// remaining (lowering-only) passes run normally. This lets us hand-edit the
-// final TTGIR (e.g. rebalance a dot's #blocked layout) and validate both
-// correctness and performance end-to-end. Inserted at the makeTTGIR/makeLLIR
-// boundary (right after ConvertWarpPipeline), where the top-level module body
-// is kernel-only and host functions live in a module attribute. The original
-// module attributes are preserved (parsed attrs only overlay), so the
-// serialized-host-funcs attribute survives the swap. Inert unless the env var
-// is set.
-struct HijackTTGIRPass
-    : public PassWrapper<HijackTTGIRPass, OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(HijackTTGIRPass)
-
-  StringRef getArgument() const final { return "rock-hijack-ttgir"; }
-  StringRef getDescription() const final {
-    return "Replace the kernel TTGIR module body from $ROCK_HIJACK_TTGIR";
-  }
-
-  void runOnOperation() override {
-    const char *path = std::getenv("ROCK_HIJACK_TTGIR");
-    if (!path || path[0] == '\0')
-      return; // inert unless explicitly requested
-
-    ModuleOp cur = getOperation();
-    MLIRContext *ctx = cur.getContext();
-
-    OwningOpRef<ModuleOp> parsed =
-        parseSourceFile<ModuleOp>(StringRef(path), ParserConfig(ctx));
-    if (!parsed) {
-      cur.emitError("ROCK_HIJACK_TTGIR: failed to parse '") << path << "'";
-      return signalPassFailure();
-    }
-
-    // Merge attributes with the ORIGINAL module as the base so that
-    // original-only attributes (notably the serialized host functions added
-    // by RockSerializeHostFuncs) are preserved; parsed attributes overlay.
-    NamedAttrList merged(cur->getAttrDictionary());
-    for (NamedAttribute na : parsed->getOperation()->getAttrs())
-      merged.set(na.getName(), na.getValue());
-
-    // Swap the body: drop the existing kernel ops and splice in the parsed
-    // ones (same context, so attributes/types/values are interned and valid).
-    Block *dst = cur.getBody();
-    Block *src = parsed->getBody();
-    dst->clear();
-    dst->getOperations().splice(dst->end(), src->getOperations());
-
-    cur->setAttrs(merged.getDictionary(ctx));
-
-    llvm::errs() << "// -----// TTGIR HIJACK: using " << path << " //----- //\n";
-  }
-};
-
-} // namespace
 
 // Based on make_ttir() in
 // @triton//:third_party/amd/backend/compiler.py
@@ -322,9 +262,6 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // register pressure.
   if (useReductionLayout == 1)
     pm->addPass(rock::createRockSetReductionLayoutPass());
-  // Experimental: optionally replace the final TTGIR with a hand-edited file
-  // from $ROCK_HIJACK_TTGIR before lowering to LLVM. Inert unless set.
-  pm->addPass(std::make_unique<HijackTTGIRPass>());
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -559,8 +496,6 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // breaks downstream lowering ("rock.arch not found on kernel function").
   funcPm2.addPass(createRemoveDeadValuesPass());
   funcPm2.addPass(rock::createRockTransformsInvariantCodeMotionPass());
-  funcPm2.addPass(createCanonicalizerPass());
-  funcPm2.addPass(createCSEPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
