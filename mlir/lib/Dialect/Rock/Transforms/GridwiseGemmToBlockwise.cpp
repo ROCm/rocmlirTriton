@@ -279,21 +279,16 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value nIterations =
         ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
 
-    scf::ForOp loopOp = createMainLoop(b, loc, nIterations, ValueRange{initAcc});
-    Value loopResult;
-    {
-      PatternRewriter::InsertionGuard guard(b);
-      b.setInsertionPointToStart(loopOp.getBody());
-      Value iv = loopOp.getInductionVar();
-      Value accArg = loopOp.getRegionIterArg(0);
+    // Choose cache modifiers for the operands based on data reuse: a skinny
+    // GEMM streams the large (low-reuse) operand to avoid evicting the one
+    // that is actually reused across workgroups.
+    auto cacheModifiers = chooseGemmLoadCacheModifiers(
+        arch, elementTypeALoad, elementTypeBLoad, G, M, N, K, mBlocks, nBlocks,
+        aReloads, bReloads);
+    rock::CacheModifier cacheA = cacheModifiers.first;
+    rock::CacheModifier cacheB = cacheModifiers.second;
 
-      // Choose cache modifiers for the operands based on data reuse: a skinny
-      // GEMM streams the large (low-reuse) operand to avoid evicting the one
-      // that is actually reused across workgroups.
-      auto [cacheA, cacheB] = chooseGemmLoadCacheModifiers(
-          arch, elementTypeALoad, elementTypeBLoad, G, M, N, K, mBlocks,
-          nBlocks, aReloads, bReloads);
-
+    auto emitGemmIteration = [&](Value iv, Value accArg) -> Value {
       // Load from global memory to registers
       Value loadedB =
           rock::loadTile(b, loc, matB, /*kiter=*/iv, "n", gridCoords, kPerBlock,
@@ -326,9 +321,33 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
           op.getQuantBlockSizeAttr(),
           /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
           /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
+      return newAcc;
+    };
 
-      // Yield the new accumulator
-      scf::YieldOp::create(b, loc, ValueRange{newAcc});
+    Value loopResult;
+    // For im2col/broadcast-style operands, a constant K tile index lets the
+    // transform-map address arithmetic fold per tile while preserving the
+    // selected GEMM block shape.
+    bool unrollStaticKLoop =
+        !isScaledGemm && (aReloads || bReloads) && kIterations <= 64;
+    if (unrollStaticKLoop) {
+      loopResult = initAcc;
+      for (int64_t i = 0; i < kIterations; ++i) {
+        Value iv = ConstantIntOp::create(b, loc, b.getI32Type(), i);
+        loopResult = emitGemmIteration(iv, loopResult);
+      }
+    } else {
+      scf::ForOp loopOp =
+          createMainLoop(b, loc, nIterations, ValueRange{initAcc});
+      {
+        PatternRewriter::InsertionGuard guard(b);
+        b.setInsertionPointToStart(loopOp.getBody());
+        Value iv = loopOp.getInductionVar();
+        Value accArg = loopOp.getRegionIterArg(0);
+
+        Value newAcc = emitGemmIteration(iv, accArg);
+        scf::YieldOp::create(b, loc, ValueRange{newAcc});
+      }
       loopResult = loopOp.getResult(0);
     }
 
