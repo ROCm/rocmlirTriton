@@ -467,10 +467,10 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
                                            StringRef("")};
 
   // Launch the child without waiting, then enforce the wall-clock budget from
-  // this thread. We deliberately do NOT use sys::ExecuteAndWait's
+  // this thread. We deliberately do not use sys::ExecuteAndWait's
   // SecondsToWait: its timeout is implemented with alarm()/SIGALRM (see
   // llvm/lib/Support/Unix/Program.inc), which are process-global and therefore
-  // unsafe when many worker threads compile concurrently -- the LLVM source
+  // unsafe when many worker threads compile concurrently. The LLVM source
   // documents this with FIXMEs, and concurrent alarm() calls cancel each other
   // so the per-config timeout never reliably fires. Instead we follow the
   // ExecuteNoWait + Wait-poll idiom from ProgramTest.cpp
