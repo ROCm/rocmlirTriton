@@ -59,7 +59,6 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
-#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <optional>
