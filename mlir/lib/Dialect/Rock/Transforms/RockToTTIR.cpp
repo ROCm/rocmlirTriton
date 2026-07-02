@@ -266,10 +266,18 @@ struct RockBlockwiseGemmOpRewritePattern
                                            matrixAKPack, matrixBKPack);
     } else {
       // Create tt.dot operation
-      result =
-          triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
-                                /*inputPrecision=*/triton::InputPrecision::IEEE,
-                                /*maxNumImpreciseAcc=*/0);
+      Type aElemType = aTensorType.getElementType();
+      Type bElemType = bTensorType.getElementType();
+      // On RDNA WMMA targets, IEEE f32 dot lowers through the software FMA
+      // path. The bf16x3 decomposition lets Triton use WMMA while retaining a
+      // higher-accuracy f32 approximation than a single bf16 product.
+      triton::InputPrecision inputPrecision =
+          aElemType.isF32() && bElemType.isF32()
+              ? triton::InputPrecision::BF16x3
+              : triton::InputPrecision::IEEE;
+      result = triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
+                                     inputPrecision,
+                                     /*maxNumImpreciseAcc=*/0);
     }
 
     // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it

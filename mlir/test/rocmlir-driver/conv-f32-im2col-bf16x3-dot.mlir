@@ -1,8 +1,8 @@
 // RUN: rocmlir-driver -kernel-pipeline=gpu --arch=gfx1201 %s | FileCheck %s
 
 // CHECK-LABEL: tt.func @rock_conv_gkc01_ngc01_ngk01
-// CHECK-NOT: scf.for
-// CHECK-COUNT-36: tt.dot {{.*}} tensor<64x32xf32> * tensor<32x64xf32> -> tensor<64x64xf32>
+// CHECK: scf.for
+// CHECK: tt.dot {{.*}}, inputPrecision = bf16x3 {{.*}} tensor<64x32xf32> * tensor<32x64xf32> -> tensor<64x64xf32>
 
 #map = affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 128 + d2) * 3 + d3) * 3 + d4)>
 #map1 = affine_map<(d0, d1, d2, d3, d4) -> ((d2 * 256 + d3) * 256 + d4)>
