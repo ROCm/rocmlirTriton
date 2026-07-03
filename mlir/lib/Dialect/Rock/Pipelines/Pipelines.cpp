@@ -429,8 +429,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
                                const rock::KernelOptions &options) {
   // rock lowering (tuning, global to block)
   /* rocmlir-opt
+   *   --rock-split-cross-tile-fusion
    *   --rock-affix-params
    *   --rock-lower-reduce
+   *   --rock-elementwise-to-gridwise
    *   --rock-regularize-output
    *   --rock-regularize-inter-gemm-fusion
    *   --rock-conv-to-gemm
@@ -439,6 +441,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
    *   --rock-attn-to-gridwise
    *   --rock-gridwise-attn-to-blockwise
    *   --rock-gridwise-gemm-to-blockwise
+   *   --rock-gridwise-elementwise-to-blockwise
    *   --rock-insert-output-fusion-loads
    *   --rock-regularize-input
    *   --rock-lower-loads
@@ -457,8 +460,20 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.nest<func::FuncOp>().addPass(std::move(pass));
     pm.addPass(createCSEPass());
   };
+  // Split a cross-tile output fusion (two different slices of the same gemm
+  // result combined elementwise) into a gemm kernel + an elementwise kernel
+  // joined by an intermediate buffer. This is a module-level pass and must run
+  // before affix-params / regularize-output, which would otherwise silently
+  // miscompile
+  // the pattern (collapsing both slices to the same value). It is a no-op for
+  // kernels that do not exhibit the cross-tile pattern.
+  pm.addPass(rock::createRockSplitCrossTileFusionPass());
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
+  // Introduce a gridwise_elementwise root for pure-elementwise kernels before
+  // regularize-output, so the elementwise store gets normalized (trailing view
+  // transforms moved onto the store destination) exactly like a gemm tail.
+  addWithDCE(rock::createRockElementwiseToGridwisePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
   addWithDCE(rock::createRockRegularizeInterGemmFusionPass());
   addWithDCE(rock::createRockConvToGemmPass());
@@ -467,6 +482,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockAttnToGridwisePass());
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
+  addWithDCE(rock::createRockGridwiseElementwiseToBlockwisePass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
@@ -487,6 +503,13 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
   addWithDCE(rock::createRockLegalizeFloatTypesPass());
+
+  // Emit the host driver function for any cross-tile fusion split (see
+  // rock-split-cross-tile-fusion above). Must run AFTER kernel signatures are
+  // final (rock-elementwise-to-gridwise has appended the elementwise output arg)
+  // and BEFORE SerializeHostFuncs, so the freshly created (non-kernel)
+  // host driver function is serialized as a host function.
+  pm.addPass(rock::createRockLinkSplitKernelsPass());
 
   // Serialize and erase host functions BEFORE any func-level pass that
   // changes the kernel signature (e.g. RockToTTIRPass sets return to void).

@@ -522,6 +522,35 @@ def Rock_GridwiseGemmOp
   let hasVerifier = 1;
 }
 
+// gridwise_elementwise
+def Rock_GridwiseElementwiseOp
+    : Rock_Op<"gridwise_elementwise", [Pure, RockFusionRoot]>,
+      Arguments<(ins AnyRankedTensor:$input, I64Attr:$mPerBlock,
+          I64Attr:$nPerBlock)>,
+      Results<(outs AnyRankedTensor:$output)> {
+  let summary = "Gridwise elementwise kernel root";
+  let description = [{
+    The `rock.gridwise_elementwise` op is the FusionRoot for a pure
+    elementwise kernel that has no gemm/conv/attention. It marks one
+    elementwise input as the "primary" tensor whose per-block tile anchors the
+    output fusion chain, exactly the way a `rock.gridwise_gemm` result does.
+
+    `input` is the primary input view in output (G x M x N) space, and `output`
+    has the same type. `mPerBlock`/`nPerBlock` are the output tile dimensions
+    that, together with the func-level `rock.block_size` / `rock.grid_size`,
+    drive the linear output tiling.
+
+    `RockGridwiseElementwiseToBlockwise` lowers this op into:
+      %tile = rock.load_marker %input views [<output_tiling>] [%g, %m, %n]
+      %full = rock.store_marker %tile views [<output_tiling>] [%g, %m, %n]
+    so all remaining elementwise inputs become regular output-fusion loads and
+    the existing lower-loads / lower-stores path produces the kernel.
+  }];
+  let assemblyFormat = [{
+    `(` $input `)` attr-dict `:` type($input) `->` type($output)
+  }];
+}
+
 // gridwise_attention
 def Rock_GridwiseAttentionOp
     : Rock_Op<"gridwise_attention", [RecursiveMemoryEffects,

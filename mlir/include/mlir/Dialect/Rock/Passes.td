@@ -63,6 +63,73 @@ def RockAttnToGridwisePass
                            "arith::ArithDialect"];
 }
 
+def RockElementwiseToGridwisePass
+    : Pass<"rock-elementwise-to-gridwise", "::mlir::func::FuncOp"> {
+  let summary = "introduce a gridwise_elementwise root for pure elementwise "
+                "(no gemm/conv/attention) kernels";
+  let description = [{
+    For a kernel function that has no FusionRoot but whose returned value is
+    produced by an elementwise (arith/math) fusion chain, this pass:
+    1. inserts the output argument + rock.store for each return operand,
+    2. sets the func-level rock.block_size / rock.grid_size, and
+    3. wraps the primary elementwise input in a rock.gridwise_elementwise root.
+    This is the elementwise analogue of rock-gemm-to-gridwise.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect"];
+}
+
+def RockSplitCrossTileFusionPass
+    : Pass<"rock-split-cross-tile-fusion", "::mlir::ModuleOp"> {
+  let summary = "split a cross-tile output fusion into a gemm kernel + an "
+                "elementwise kernel joined by an intermediate buffer";
+  let description = [{
+    Detects a kernel whose single gemm-like FusionRoot feeds an output fusion
+    that combines two different slices (or other non-identity transforms) of
+    the same root result — a cross-tile dependency that cannot be expressed as
+    a single fused writeback and is silently miscompiled by
+    rock-regularize-output. It outlines the kernel into two `rock.kernel`
+    functions joined by an intermediate buffer of the root's full shape:
+    `<name>_gemm` stores the gemm result to the buffer, and `<name>_elementwise`
+    reads the buffer and runs the (now non-cross-tile) elementwise tail.
+    Must run before rock-regularize-output and rock-affix-params.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect"];
+}
+
+def RockLinkSplitKernelsPass
+    : Pass<"rock-link-split-kernels", "::mlir::ModuleOp"> {
+  let summary = "emit a host driver function for a split cross-tile "
+                "fusion that allocates the intermediate buffer and launches "
+                "both kernels";
+  let description = [{
+    Companion to rock-split-cross-tile-fusion. The split pass runs early (before
+    rock-affix-params) and tags each half of the split with split-link
+    metadata (rock.split_group / rock.split_role / rock.split_arg_src /
+    rock.split_out_src). This pass runs late — after kernel signatures are
+    finalized (e.g. rock-elementwise-to-gridwise has appended the elementwise
+    output argument) but before rock-serialize-host-funcs — and reconstructs a
+    host function named after the original (pre-split) kernel. That function
+    allocates the intermediate device buffer (gpu.alloc), calls `<name>_gemm`
+    then `<name>_elementwise`, and frees the buffer (gpu.dealloc). Because it is
+    not marked rock.kernel, it is serialized as a host function and its kernel
+    calls are later rewritten to gpu.launch_func by rock-emit-gpu-binary.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect", "gpu::GPUDialect",
+                           "bufferization::BufferizationDialect",
+                           "memref::MemRefDialect"];
+}
+
+def RockGridwiseElementwiseToBlockwisePass
+    : Pass<"rock-gridwise-elementwise-to-blockwise", "::mlir::func::FuncOp"> {
+  let summary = "lower gridwise_elementwise into a load_marker + store_marker "
+                "output tile, reusing the output-fusion store path";
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect", "triton::TritonDialect"];
+}
+
 def RockFoldBroadcastPass
     : Pass<"rock-fold-broadcast", "::mlir::func::FuncOp"> {
   let summary =
