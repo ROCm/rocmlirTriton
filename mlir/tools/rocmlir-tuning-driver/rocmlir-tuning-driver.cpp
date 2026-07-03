@@ -528,13 +528,6 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
 
   int rc = waitResult.ReturnCode;
 
-  // A negative ReturnCode means the child died on a signal (crash), not a
-  // normal exit. Report it (this is not an expected "not applicable" outcome).
-  if (rc < 0) {
-    fail("rocmlir-driver crashed for config: " + perfConfig);
-    return result;
-  }
-
   if (rc == rock::kExitNotApplicable) {
     result.status = CompilationStatus::NotApplicable;
     return result;
