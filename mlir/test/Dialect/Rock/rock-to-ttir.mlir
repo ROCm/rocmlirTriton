@@ -363,7 +363,10 @@ func.func @test_unscaled_gemm_f8(
 
 // CHECK-LABEL: @test_gemm_f32
 // CHECK-SAME: (%[[A:.*]]: tensor<64x64xf32>, %[[B:.*]]: tensor<64x64xf32>, %[[C:.*]]: tensor<64x64xf32>)
-//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+// On WMMA archs (%arch may be RDNA) an f32 dot picks up inputPrecision = bf16x3
+// via the bf16x3 decomposition; on CDNA / gfx1250 it stays the default IEEE and
+// the attribute is elided. Accept either so the test is arch-agnostic.
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]]{{(, inputPrecision = bf16x3)?}} : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
 //      CHECK:   return
 //  CHECK-NOT:   rock.blockwise_gemm
 func.func @test_gemm_f32(

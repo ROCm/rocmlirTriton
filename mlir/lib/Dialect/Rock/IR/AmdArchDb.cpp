@@ -214,6 +214,24 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch,
   return getMatrixAccelKind(arch, aType, bType, scaleAType, scaleBType);
 }
 
+bool mlir::rock::usesBf16x3F32Dot(StringRef arch, Type inputTypeA,
+                                  Type inputTypeB) {
+  Type elemA = getElementTypeOrSelf(inputTypeA);
+  Type elemB = getElementTypeOrSelf(inputTypeB);
+  if (!elemA.isF32() || !elemB.isF32())
+    return false;
+
+  // The arch has native f32 matrix acceleration (e.g. CDNA MFMA, gfx1250):
+  // no bf16x3 emulation is needed.
+  if (getMatrixAccelKind(arch, elemA, elemB) != MatrixAccelKind::None)
+    return false;
+
+  // f32 has no matrix unit here; the bf16x3 dot decomposition only pays off if
+  // bf16 lands on a matrix accelerator (WMMA on RDNA3/RDNA4, or MFMA).
+  Type bf16 = BFloat16Type::get(elemA.getContext());
+  return getMatrixAccelKind(arch, bf16, bf16) != MatrixAccelKind::None;
+}
+
 bool mlir::rock::hasAccel(StringRef arch,
                           RockGemmGemmWrapperInterface gemmGemmOp) {
   auto [firstGemm, secondGemm] = getMatrixAccelKind(arch, gemmGemmOp);

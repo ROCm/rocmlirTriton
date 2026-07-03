@@ -80,20 +80,6 @@ static triton::CacheModifier toTritonCacheModifier(rock::CacheModifier cache) {
   llvm_unreachable("unknown rock::CacheModifier");
 }
 
-static bool shouldUseBf16x3ForF32Dot(StringRef arch, Type aElemType,
-                                     Type bElemType) {
-  if (!aElemType.isF32() || !bElemType.isF32())
-    return false;
-
-  MatrixAccelKind f32Accel =
-      rock::getMatrixAccelKind(arch, aElemType, bElemType);
-  if (f32Accel != MatrixAccelKind::None)
-    return false;
-
-  Type bf16 = BFloat16Type::get(aElemType.getContext());
-  return rock::getMatrixAccelKind(arch, bf16, bf16) == MatrixAccelKind::WMMA;
-}
-
 //===----------------------------------------------------------------------===//
 // RockBlockwiseReduceOpRewritePattern - Convert rock.blockwise_reduce to tt.reduce
 //===----------------------------------------------------------------------===//
@@ -277,12 +263,12 @@ struct RockBlockwiseGemmOpRewritePattern
       // Create tt.dot operation
       Type aElemType = aTensorType.getElementType();
       Type bElemType = bTensorType.getElementType();
-      // On WMMA targets without native f32 matrix acceleration, bf16x3 lets
-      // Triton use BF16 WMMA instead of the software FMA path.
+      // On targets without native f32 matrix acceleration, bf16x3 lets Triton
+      // use the BF16 matrix accelerator instead of the software FMA path.
       StringRef arch = rock::getArchValue(op);
       bool useBf16x3 =
           !disableFastMath &&
-          shouldUseBf16x3ForF32Dot(arch, aElemType, bElemType);
+          rock::usesBf16x3F32Dot(arch, aElemType, bElemType);
       triton::InputPrecision inputPrecision =
           useBf16x3 ? triton::InputPrecision::BF16x3
                     : triton::InputPrecision::IEEE;
