@@ -1,0 +1,13 @@
+directory = "PrConvF32Bf16x3Dot"
+prefix = "rocmlir-gen"
+suffix = "--operation conv -t f32 --arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+
+[[axis]]
+name = "layout"
+values = ["-fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw"]
+
+[[suite]]
+name = "pr_conv_f32_bf16x3_dot"
+
+[[suite.test]]
+config = "-batchsize=4 -groupsize=1 -in_channels=32 -out_channels=32 -in_h=16 -in_w=16 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --padding_h=1 --padding_w=1 --conv_stride_h=1 --conv_stride_w=1"

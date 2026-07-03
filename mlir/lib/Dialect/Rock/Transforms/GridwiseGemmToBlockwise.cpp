@@ -327,9 +327,10 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value loopResult;
     // For im2col/broadcast-style operands, a constant K tile index lets the
     // transform-map address arithmetic fold per tile while preserving the
-    // selected GEMM block shape. Keep this to very short loops: larger f32 3x3
-    // convolutions now use WMMA through bf16x3 decomposition, and full unroll
-    // adds enough register pressure to lose performance.
+    // selected GEMM block shape. Keep this to very short loops: on WMMA targets
+    // without native f32 matrix acceleration, larger f32 3x3 convolutions can
+    // use WMMA through bf16x3 decomposition, and full unroll adds enough
+    // register pressure to lose performance.
     bool unrollStaticKLoop =
         !isScaledGemm && (aReloads || bReloads) && kIterations <= 4;
     if (unrollStaticKLoop) {

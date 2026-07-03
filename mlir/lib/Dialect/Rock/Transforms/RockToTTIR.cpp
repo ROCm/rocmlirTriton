@@ -21,6 +21,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
@@ -74,6 +76,20 @@ static triton::CacheModifier toTritonCacheModifier(rock::CacheModifier cache) {
     return triton::CacheModifier::CV;
   }
   llvm_unreachable("unknown rock::CacheModifier");
+}
+
+static bool shouldUseBf16x3ForF32Dot(StringRef arch, Type aElemType,
+                                     Type bElemType) {
+  if (!aElemType.isF32() || !bElemType.isF32())
+    return false;
+
+  MatrixAccelKind f32Accel =
+      rock::getMatrixAccelKind(arch, aElemType, bElemType);
+  if (f32Accel != MatrixAccelKind::None)
+    return false;
+
+  Type bf16 = BFloat16Type::get(aElemType.getContext());
+  return rock::getMatrixAccelKind(arch, bf16, bf16) == MatrixAccelKind::WMMA;
 }
 
 //===----------------------------------------------------------------------===//
@@ -257,11 +273,11 @@ struct RockBlockwiseGemmOpRewritePattern
       // Create tt.dot operation
       Type aElemType = aTensorType.getElementType();
       Type bElemType = bTensorType.getElementType();
-      // On RDNA WMMA targets, IEEE f32 dot lowers through the software FMA
-      // path. The bf16x3 decomposition lets Triton use WMMA while retaining a
-      // higher-accuracy f32 approximation than a single bf16 product.
+      // On WMMA targets without native f32 matrix acceleration, bf16x3 lets
+      // Triton use BF16 WMMA instead of the software FMA path.
+      StringRef arch = rock::getArchValue(op);
       triton::InputPrecision inputPrecision =
-          aElemType.isF32() && bElemType.isF32()
+          shouldUseBf16x3ForF32Dot(arch, aElemType, bElemType)
               ? triton::InputPrecision::BF16x3
               : triton::InputPrecision::IEEE;
       result = triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
