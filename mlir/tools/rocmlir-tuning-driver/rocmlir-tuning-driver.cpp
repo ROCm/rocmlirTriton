@@ -529,6 +529,9 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
            " (" + std::strerror(errno) + ")");
       return result;
     }
+
+    // Reap the killed child so it doesn't linger as a zombie; SIGKILL
+    // guarantees it dies, so this blocking wait returns promptly.
     (void)llvm::sys::Wait(procInfo, /*SecondsToWait=*/std::nullopt,
                           /*ErrMsg=*/nullptr);
     result.status = CompilationStatus::TimedOut;
