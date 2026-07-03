@@ -266,8 +266,9 @@ struct RockBlockwiseGemmOpRewritePattern
       // On targets without native f32 matrix acceleration, bf16x3 lets Triton
       // use the BF16 matrix accelerator instead of the software FMA path.
       StringRef arch = rock::getArchValue(op);
-      bool useBf16x3 = !disableFastMath &&
-                       rock::usesBf16x3F32Dot(arch, aElemType, bElemType);
+      bool useBf16x3 =
+          !disableFastMath &&
+          shouldUseBf16x3ForF32Dot(arch, aElemType, bElemType);
       triton::InputPrecision inputPrecision =
           useBf16x3 ? triton::InputPrecision::BF16x3
                     : triton::InputPrecision::IEEE;
