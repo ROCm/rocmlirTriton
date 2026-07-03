@@ -56,10 +56,12 @@
 
 #include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -519,7 +521,14 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
   // N/A, so stay silent here (tuningRunner.py parses stdout/stderr and must not
   // see extra noise).
   if (timedOut) {
-    kill(procInfo.Pid, SIGKILL);
+    // ESRCH means the child already exited on its own in the race window
+    // between the deadline check and here, which is harmless. Any other error
+    // is unexpected (we own this PID and SIGKILL is always valid).
+    if (kill(procInfo.Pid, SIGKILL) != 0 && errno != ESRCH) {
+      fail("Failed to kill timed-out rocmlir-driver for config: " + perfConfig +
+           " (" + std::strerror(errno) + ")");
+      return result;
+    }
     (void)llvm::sys::Wait(procInfo, /*SecondsToWait=*/std::nullopt,
                           /*ErrMsg=*/nullptr);
     result.status = CompilationStatus::TimedOut;
