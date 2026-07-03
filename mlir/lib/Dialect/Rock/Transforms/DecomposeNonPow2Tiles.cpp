@@ -346,6 +346,86 @@ private:
 } // end anonymous namespace
 
 //===----------------------------------------------------------------------===//
+// Store splitting (shared by the GEMM and pure-elementwise paths)
+//===----------------------------------------------------------------------===//
+
+/// Split each blockwise_store in `storesIn` whose source tile is partitioned by
+/// `mSegs` x `nSegs` into one power-of-two sub-store per cell, slicing the
+/// destination view accordingly and threading the destination through the
+/// sub-stores so every (pure) store result stays live. `splitter` must already
+/// be able to `split()` each store source (the GEMM path seeds the accumulator
+/// grid; the elementwise path splits recursively from the blockwise_loads).
+static LogicalResult splitStoresIntoSubTiles(OpBuilder &b, Location loc,
+                                             func::FuncOp func,
+                                             TileSplitter &splitter,
+                                             ArrayRef<Operation *> storesIn,
+                                             ArrayRef<Segment> mSegs,
+                                             ArrayRef<Segment> nSegs) {
+  int64_t nCol = static_cast<int64_t>(nSegs.size());
+
+  // New ops go at each original store, not at the terminator: in chained-store
+  // cases the store result feeds later views, so the replacement must dominate
+  // those existing uses.
+  SmallVector<Operation *> orderedStores(storesIn.begin(), storesIn.end());
+  DenseMap<Operation *, unsigned> opOrder;
+  unsigned nextOpOrder = 0;
+  func.walk([&](Operation *op) { opOrder.try_emplace(op, nextOpOrder++); });
+  llvm::sort(orderedStores, [&](Operation *lhs, Operation *rhs) {
+    if (lhs->getBlock() == rhs->getBlock())
+      return lhs->isBeforeInBlock(rhs);
+    return opOrder.lookup(lhs) < opOrder.lookup(rhs);
+  });
+  DominanceInfo domInfo(func);
+
+  for (Operation *storeOp : orderedStores) {
+    b.setInsertionPoint(storeOp);
+    auto store = cast<BlockwiseStoreOp>(storeOp);
+    FailureOr<SmallVector<Value>> srcGrid = splitter.split(store.getSource());
+    if (failed(srcGrid))
+      return store.emitError(
+          "rock-decompose-nonpow2-tiles: failed to split store source");
+
+    // Defensive invariant: every store-source sub-tile must dominate this
+    // store's replacement point. This guards against a value shared between the
+    // in-loop GEMM-input split and the post-loop output-fusion split, whose
+    // cached in-loop sub-tiles would not dominate here. Recomputed per store
+    // since each split() may have inserted new ops.
+    for (Value sub : *srcGrid)
+      if (!domInfo.dominates(sub, storeOp))
+        return store.emitError(
+            "rock-decompose-nonpow2-tiles: store-source sub-tile does not "
+            "dominate the store insertion point (a value is shared between "
+            "in-loop GEMM-input and post-loop output-fusion splitting)");
+
+    auto [destRoot, destMaps, _] = rock::untransform(b, store.getDest());
+    Type storeResultType = store.getResult().getType();
+    SmallVector<Value> extraIdx(store.getExtraIndices().begin(),
+                                store.getExtraIndices().end());
+    StoreMethod method = store.getStoreMethod();
+
+    // Thread the destination through each sub-store so the final tensor value
+    // represents all disjoint tile writes, and every pure store result is live.
+    Value currentDestRoot = destRoot;
+    for (auto [i, mSeg] : llvm::enumerate(mSegs)) {
+      for (auto [j, nSeg] : llvm::enumerate(nSegs)) {
+        Value view = rock::transform(b, currentDestRoot, destMaps);
+        unsigned viewRank = cast<RankedTensorType>(view.getType()).getRank();
+        Value destSeg = sliceViewDims(
+            b, loc, view, {viewRank - 2, viewRank - 1},
+            {mSeg.offset, nSeg.offset}, {mSeg.length, nSeg.length});
+        auto st = BlockwiseStoreOp::create(b, loc, storeResultType,
+                                           (*srcGrid)[i * nCol + j], destSeg,
+                                           extraIdx, method);
+        currentDestRoot = st.getResult();
+      }
+    }
+    store.getResult().replaceAllUsesWith(currentDestRoot);
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // GEMM splitting
 //===----------------------------------------------------------------------===//
 
@@ -500,69 +580,41 @@ static LogicalResult processGemm(BlockwiseGemmOp gemm) {
 
   // Output side: bind accResult's grid to the per-cell results, then split each
   // store's source and emit one sub-store per cell into the sliced destination.
-  // New ops go at each original store, not at the terminator: in chained-store
-  // cases the store result feeds later views, so the replacement must dominate
-  // those existing uses.
   splitter.seed(accResult, resultGrid);
 
   func::FuncOp func = gemm->getParentOfType<func::FuncOp>();
-  SmallVector<Operation *> orderedStores(stores.begin(), stores.end());
-  DenseMap<Operation *, unsigned> opOrder;
-  unsigned nextOpOrder = 0;
-  func.walk([&](Operation *op) { opOrder.try_emplace(op, nextOpOrder++); });
-  llvm::sort(orderedStores, [&](Operation *lhs, Operation *rhs) {
-    if (lhs->getBlock() == rhs->getBlock())
-      return lhs->isBeforeInBlock(rhs);
-    return opOrder.lookup(lhs) < opOrder.lookup(rhs);
-  });
-  DominanceInfo domInfo(func);
+  return splitStoresIntoSubTiles(b, loc, func, splitter, stores.getArrayRef(),
+                                 mSegs, nSegs);
+}
 
-  for (Operation *storeOp : orderedStores) {
-    b.setInsertionPoint(storeOp);
-    auto store = cast<BlockwiseStoreOp>(storeOp);
-    FailureOr<SmallVector<Value>> srcGrid = splitter.split(store.getSource());
-    if (failed(srcGrid))
-      return gemm.emitError(
-          "rock-decompose-nonpow2-tiles: failed to split store source");
+//===----------------------------------------------------------------------===//
+// Pure-elementwise (gemm-less) splitting
+//===----------------------------------------------------------------------===//
 
-    // Defensive invariant: every store-source sub-tile must dominate this
-    // store's replacement point. This guards against a value shared between the
-    // in-loop GEMM-input split and the post-loop output-fusion split, whose
-    // cached in-loop sub-tiles would not dominate here. Recomputed per store
-    // since each split() may have inserted new ops.
-    for (Value sub : *srcGrid)
-      if (!domInfo.dominates(sub, storeOp))
-        return gemm.emitError(
-            "rock-decompose-nonpow2-tiles: store-source sub-tile does not "
-            "dominate the store insertion point (a value is shared between "
-            "in-loop GEMM-input and post-loop output-fusion splitting)");
+/// Split a non-power-of-two pure-elementwise `blockwise_store` (the output of a
+/// gridwise_elementwise kernel: blockwise_load(s) -> elementwise -> store, with
+/// no GEMM) into a grid of power-of-two sub-stores. Unlike the GEMM path there
+/// is no contraction and no K-loop: the TileSplitter recurses straight from the
+/// store source through the elementwise fusion into the blockwise_loads, each of
+/// which is sliced per power-of-two cell.
+static LogicalResult processElementwiseStore(BlockwiseStoreOp store) {
+  Location loc = store.getLoc();
+  auto srcType = cast<RankedTensorType>(store.getSource().getType());
+  if (srcType.getRank() != 2)
+    return store.emitError(
+        "rock-decompose-nonpow2-tiles: expected a 2-D elementwise store tile");
 
-    auto [destRoot, destMaps, _] = rock::untransform(b, store.getDest());
-    Type storeResultType = store.getResult().getType();
-    SmallVector<Value> extraIdx(store.getExtraIndices().begin(),
-                                store.getExtraIndices().end());
-    StoreMethod method = store.getStoreMethod();
+  Partition part = partitionOf(srcType);
+  if (isWholePartition(part))
+    return success();
 
-    // Thread the destination through each sub-store so the final tensor value
-    // represents all disjoint tile writes, and every pure store result is live.
-    Value currentDestRoot = destRoot;
-    for (auto [i, mSeg] : llvm::enumerate(mSegs)) {
-      for (auto [j, nSeg] : llvm::enumerate(nSegs)) {
-        Value view = rock::transform(b, currentDestRoot, destMaps);
-        unsigned viewRank = cast<RankedTensorType>(view.getType()).getRank();
-        Value destSeg = sliceViewDims(
-            b, loc, view, {viewRank - 2, viewRank - 1},
-            {mSeg.offset, nSeg.offset}, {mSeg.length, nSeg.length});
-        auto st = BlockwiseStoreOp::create(b, loc, storeResultType,
-                                           (*srcGrid)[i * nCol + j], destSeg,
-                                           extraIdx, method);
-        currentDestRoot = st.getResult();
-      }
-    }
-    store.getResult().replaceAllUsesWith(currentDestRoot);
-  }
-
-  return success();
+  func::FuncOp func = store->getParentOfType<func::FuncOp>();
+  OpBuilder b(store);
+  IRMapping cloneMap;
+  TileSplitter splitter(b, loc, cloneMap, /*oldBody=*/nullptr);
+  Operation *storeOp = store.getOperation();
+  return splitStoresIntoSubTiles(b, loc, func, splitter, {storeOp}, part[0],
+                                 part[1]);
 }
 
 //===----------------------------------------------------------------------===//
@@ -594,5 +646,25 @@ void RockDecomposeNonPow2TilesPass::runOnOperation() {
 
   for (BlockwiseGemmOp gemm : targets)
     if (failed(processGemm(gemm)))
+      return signalPassFailure();
+
+  // Pure-elementwise kernels (rock.gridwise_elementwise) have no blockwise_gemm,
+  // so their non-power-of-two output tiles are never reached from a GEMM anchor.
+  // Decompose them directly from the (non-pow2) blockwise_store. Only funcs
+  // with no GEMM at all take this path: in a GEMM kernel the non-pow2 stores are
+  // already handled above (and the now-dead originals must not be reprocessed).
+  bool hasGemm = false;
+  func.walk([&](BlockwiseGemmOp) { hasGemm = true; });
+  if (hasGemm)
+    return;
+
+  SmallVector<BlockwiseStoreOp> elementwiseStores;
+  func.walk([&](BlockwiseStoreOp store) {
+    if (hasNonPow2Dim(store.getSource()))
+      elementwiseStores.push_back(store);
+  });
+
+  for (BlockwiseStoreOp store : elementwiseStores)
+    if (failed(processElementwiseStore(store)))
       return signalPassFailure();
 }

@@ -532,3 +532,48 @@ func.func @test_cache_modifier_propagation(%arg0: tensor<787456xf16>, %arg1: ten
   %16 = rock.blockwise_store %12 -> %15[%3, %9, %11] by set : tensor<80x80xf32> -> tensor<1x13x7x80x80xf32> -> tensor<524288xf32>
   return %16 : tensor<524288xf32>
 }
+
+// -----
+
+// ============================================================
+// Pure-elementwise (gemm-less) kernel: a rock.gridwise_elementwise root lowered
+// to blockwise_load x2 -> addf -> blockwise_store on a non-power-of-two 12x24
+// tile (AIROCMLIR-709 Phase 4). With no blockwise_gemm to anchor on, the pass
+// must decompose straight from the store: the 12x24 tile splits into a 2x2 grid
+// {8,4} x {16,8}, so each blockwise_load/elementwise/blockwise_store becomes
+// four power-of-two sub-tiles. This is the elementwise half produced by
+// rock-split-cross-tile-fusion for mixr-double-slice-add.
+// ============================================================
+
+// The non-power-of-two 12x24 tile must be gone; every load/add/store is a
+// power-of-two sub-tile of the {8,4} x {16,8} grid.
+// CHECK-LABEL: func.func @elementwise_nonpow2
+// CHECK-NOT:   tensor<12x24xf16>
+// CHECK-DAG:   rock.blockwise_load {{.*}} -> tensor<8x16xf16>
+// CHECK-DAG:   rock.blockwise_load {{.*}} -> tensor<8x8xf16>
+// CHECK-DAG:   rock.blockwise_load {{.*}} -> tensor<4x16xf16>
+// CHECK-DAG:   rock.blockwise_load {{.*}} -> tensor<4x8xf16>
+// CHECK-DAG:   arith.addf {{.*}} : tensor<8x16xf16>
+// CHECK-DAG:   arith.addf {{.*}} : tensor<8x8xf16>
+// CHECK-DAG:   arith.addf {{.*}} : tensor<4x16xf16>
+// CHECK-DAG:   arith.addf {{.*}} : tensor<4x8xf16>
+// CHECK-DAG:   rock.blockwise_store {{.*}} tensor<8x16xf16>
+// CHECK-DAG:   rock.blockwise_store {{.*}} tensor<8x8xf16>
+// CHECK-DAG:   rock.blockwise_store {{.*}} tensor<4x16xf16>
+// CHECK-DAG:   rock.blockwise_store {{.*}} tensor<4x8xf16>
+func.func @elementwise_nonpow2(%arg0: tensor<2304xf16>, %arg1: tensor<1152xf16>) -> tensor<1152xf16> attributes {rock.arch = "gfx942", rock.block_size = 64 : i32, rock.grid_size = 4 : i32, rock.kernel} {
+  %c0 = arith.constant 0 : i32
+  %15 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> ((d0 * 24 + d1) * 24 + d2)> by [<Unmerge{4, 24, 24} ["dim0", "dim1", "dim2"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [4, 24, 24] -> [2304]> : tensor<2304xf16> to tensor<4x24x24xf16>
+  %16 = rock.transform %15 by <affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<Slice{0, 4, 0, 12, 0, 24} ["dim0_sliced", "dim1_sliced", "dim2_sliced"] at [0, 1, 2] -> ["dim0", "dim1", "dim2"] at [0, 1, 2]>] bounds = [4, 12, 24] -> [4, 24, 24]> : tensor<4x24x24xf16> to tensor<4x12x24xf16>
+  %17 = rock.transform %16 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 12 + d3, d2 * 24 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 12} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{1, 24} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [4, 1, 1, 12, 24] -> [4, 12, 24]> : tensor<4x12x24xf16> to tensor<4x1x1x12x24xf16>
+  %18 = rock.blockwise_load %17[%c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>} : tensor<4x1x1x12x24xf16> -> tensor<12x24xf16>
+  %19 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> ((d0 * 24 + d1) * 24 + d2)> by [<Unmerge{4, 24, 24} ["dim0", "dim1", "dim2"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [4, 24, 24] -> [2304]> : tensor<2304xf16> to tensor<4x24x24xf16>
+  %20 = rock.transform %19 by <affine_map<(d0, d1, d2) -> (d0, d1 + 12, d2)> by [<Slice{0, 4, 12, 24, 0, 24} ["dim0_sliced", "dim1_sliced", "dim2_sliced"] at [0, 1, 2] -> ["dim0", "dim1", "dim2"] at [0, 1, 2]>] bounds = [4, 12, 24] -> [4, 24, 24]> : tensor<4x24x24xf16> to tensor<4x12x24xf16>
+  %21 = rock.transform %20 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 12 + d3, d2 * 24 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 12} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{1, 24} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [4, 1, 1, 12, 24] -> [4, 12, 24]> : tensor<4x12x24xf16> to tensor<4x1x1x12x24xf16>
+  %22 = rock.blockwise_load %21[%c0, %c0, %c0] {cacheModifier = #rock<CacheModifier cs>} : tensor<4x1x1x12x24xf16> -> tensor<12x24xf16>
+  %23 = arith.addf %18, %22 : tensor<12x24xf16>
+  %24 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> ((d0 * 12 + d1) * 24 + d2)> by [<Unmerge{4, 12, 24} ["col0", "col1", "col2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [4, 12, 24] -> [1152]> : tensor<1152xf16> to tensor<4x12x24xf16>
+  %25 = rock.transform %24 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 12 + d3, d2 * 24 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 12} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{1, 24} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [4, 1, 1, 12, 24] -> [4, 12, 24]> : tensor<4x12x24xf16> to tensor<4x1x1x12x24xf16>
+  %26 = rock.blockwise_store %23 -> %25[%c0, %c0, %c0] by set : tensor<12x24xf16> -> tensor<4x1x1x12x24xf16> -> tensor<1152xf16>
+  return %26 : tensor<1152xf16>
+}
