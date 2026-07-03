@@ -101,6 +101,36 @@ TEST(PerfConfigOrderingGemmTest, IsApplicableLDSAtBoundary) {
   EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx942"));
 }
 
+// f32 on a WMMA arch (gfx1100 = RDNA3) is lowered onto bf16 WMMA via bf16x3, so
+// non-16-aligned tiles (like the skinny f32 quick-tuning entries) must be
+// treated as not conservatively applicable.
+TEST(PerfConfigOrderingGemmTest, IsApplicableRejectsSkinnyF32OnWmma) {
+  GemmOrderingTestEnv e;
+  // M=4 is not a multiple of 16; every other field is otherwise applicable.
+  auto pSkinnyM = e.gemm(4, 32, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  EXPECT_FALSE(
+      isGemmParamsConservativelyApplicable(pSkinnyM, e.f32, e.f32, "gfx1100"));
+  // K=8 is not a multiple of the bf16 WMMA k-step (16).
+  auto pSkinnyK = e.gemm(32, 32, 8, 1, 1, 4, 0, 1, 1, 0, 0);
+  EXPECT_FALSE(
+      isGemmParamsConservativelyApplicable(pSkinnyK, e.f32, e.f32, "gfx1100"));
+}
+
+TEST(PerfConfigOrderingGemmTest, IsApplicableAcceptsAlignedF32OnWmma) {
+  GemmOrderingTestEnv e;
+  auto p = e.gemm(16, 16, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  EXPECT_TRUE(
+      isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx1100"));
+}
+
+// The bf16x3 WMMA-alignment gate must not affect archs with a native f32 matrix
+// unit (gfx942 = CDNA/MFMA): a skinny f32 tile stays applicable there.
+TEST(PerfConfigOrderingGemmTest, IsApplicableSkinnyF32NativeAccelUnaffected) {
+  GemmOrderingTestEnv e;
+  auto p = e.gemm(4, 32, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx942"));
+}
+
 // --- orderParams ---
 
 TEST(PerfConfigOrderingGemmTest, OrderParamsEmpty) {

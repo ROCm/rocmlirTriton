@@ -143,6 +143,17 @@ inline bool isGemmParamsConservativelyApplicable(
   // hand back shaped types; normalize so `getIntOrFloatBitWidth()` is safe.
   Type aElem = getElementTypeOrSelf(aElemType);
   Type bElem = getElementTypeOrSelf(bElemType);
+  // f32 on RDNA3/RDNA4 has no native f32 matrix unit; it is lowered onto the
+  // bf16 matrix accelerator via the bf16x3 dot decomposition, which needs
+  // accel-legal tiles (M/N/K multiples of 16). The f32 quick-tuning table still
+  // carries skinny non-accel tiles, so treat non-16-aligned tiles as not
+  // conservatively applicable here. This keeps the running / skip-benchmarking
+  // `front()` on an accel-friendly config (the conservative default is
+  // 32x32x32) without editing the table.
+  if (usesBf16x3F32Dot(arch, aElem, bElem) &&
+      (p.getMPerBlock() % 16 != 0 || p.getNPerBlock() % 16 != 0 ||
+       p.getKPerBlock() % 16 != 0))
+    return false;
   // FP4 operands are upcast 8-at-a-time by the AMD Triton `Fp4ToFpOp`
   // lowering; a `kPerBlock` that is not a multiple of `kFp4KPerBlockMultiple`
   // leaves a partial group and crashes that pass.

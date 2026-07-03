@@ -65,7 +65,12 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
   auto arch = rock::getArchValue(op);
   bool hasAcceleration = false;
   if (auto gemmOp = dyn_cast<RockGemmWrapperInterface>(op))
-    hasAcceleration = rock::hasAccel(arch, gemmOp);
+    // f32 on RDNA3/RDNA4 has no native matrix unit but is lowered onto bf16
+    // WMMA via the bf16x3 dot decomposition, so it must use the accelerated
+    // (16-aligned) M/N tile generator rather than the non-accel one.
+    hasAcceleration = rock::hasAccel(arch, gemmOp) ||
+                      rock::usesBf16x3F32Dot(arch, gemmOp.getAType(),
+                                             gemmOp.getBType());
   else if (auto gemmGemmOp = dyn_cast<RockGemmGemmWrapperInterface>(op))
     hasAcceleration = rock::hasAccel(arch, gemmGemmOp);
   else
@@ -173,8 +178,18 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
   bool isMfma = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;
+  // f32 has no native matrix unit on RDNA3/RDNA4, but RockToTTIR emits a
+  // bf16x3 tt.dot that Triton decomposes onto bf16 WMMA. Such f32 GEMMs must
+  // therefore be tuned over the WMMA range (16-aligned M/N, WMMA-legal
+  // kPerBlock, kpack=1) rather than the non-accel FMA range, whose skinny
+  // kPerBlock values (4/8) are not WMMA-eligible.
+  // TODO: attention (gemm+gemm) f32 on RDNA3/RDNA4 also lowers onto bf16 WMMA
+  // via the bf16x3 decomposition, so `getRangeGemmGemm` (and the gemm+gemm
+  // branch of `computeDPerBlock`) should apply the same WMMA-range routing.
   bool isWmma = accelKind == MatrixAccelKind::WMMA ||
-                accelKind == MatrixAccelKind::ScaledWMMA;
+                accelKind == MatrixAccelKind::ScaledWMMA ||
+                rock::usesBf16x3F32Dot(arch, gemmOp.getAType(),
+                                       gemmOp.getBType());
 
   std::vector<uint32_t> kPerBlockMFMA =
       kind == TuningParamSetKind::Exhaustive
@@ -250,6 +265,10 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
 static std::vector<std::vector<uint32_t>>
 getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
                  TuningParamSetKind kind) {
+  // TODO: f32 attention on RDNA3/RDNA4 lowers onto bf16 WMMA via the bf16x3
+  // decomposition (see `rock::usesBf16x3F32Dot` and its use in
+  // `getRangeGemm`), so this function should likewise route such f32 gemm+gemm
+  // ops onto the WMMA range instead of the non-accel one.
   std::vector<uint32_t> numWavesRange = computeNumWaves(kind, waveSize);
   auto mPerBlock = computeDPerBlock(gemmGemmOp, kind, GemmMNDim::M);
   auto nPerBlock = computeDPerBlock(gemmGemmOp, kind, GemmMNDim::N);

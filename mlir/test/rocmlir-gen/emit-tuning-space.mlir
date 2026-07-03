@@ -42,24 +42,29 @@
 // `getAccelRangeGemmGemm`.
 // RUN: rocmlir-gen --arch gfx1100 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-ATTN-KPACK \
-// RUN:       --implicit-check-not="attn:v4:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
-// CHECK-WMMA-ATTN-KPACK: attn:v4:{{[0-9]+,[0-9]+,[0-9]+,1,}}
+// RUN:       --implicit-check-not="attn:v2:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
+// CHECK-WMMA-ATTN-KPACK: attn:v2:{{[0-9]+,[0-9]+,[0-9]+,1,}}
+
+// f32 on gfx1100 (RDNA3) has no native f32 matrix instruction, but RockToTTIR
+// lowers the f32 tt.dot onto bf16 WMMA via the bf16x3 decomposition. Its GEMM
+// tuning space must therefore use the WMMA range (kpack=1,
+// matrixInstrNonkdim=0, WMMA-legal kPerBlock >= 32, numWaves in {4,8}) rather
+// than the non-accel FMA range, whose kPerBlock of 4/8/16 is not WMMA-legal.
+// RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-GEMM-F32-BF16X3 \
+// RUN:       --implicit-check-not="gemm:v2:{{[0-9]+,[0-9]+,(4|8|16),}}" \
+// RUN:       --implicit-check-not="gemm:v2:{{[0-9]+,[0-9]+,[0-9]+,2,}}" \
+// RUN:       --implicit-check-not="gemm:v2:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}"
+// CHECK-WMMA-GEMM-F32-BF16X3: gemm:v2:{{[0-9]+,[0-9]+,(32|64),1,[0-9]+,(4|8),0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1}}
 
 //===----------------------------------------------------------------------===//
 // Non-accel tuning space
 //===----------------------------------------------------------------------===//
 
-// f32 on gfx1100 (RDNA3) has no matrix-accel instruction (WMMA has no f32
-// mode), so this exercises the non-accel (FMA) path.
-// RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=full 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI \
-// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,(32|64|128|256|512),}}" \
-// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,2,}}" \
-// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}"
-// CHECK-NAVI: gemm:v4:{{(32|64|128),(32|64|128),(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1}}
-
-// f32 attention on gfx1100 (RDNA3) has no matrix-accel instruction either,
-// so this exercises the non-accel `getRangeGemmGemm` path.
+// f32 attention on gfx1100 (RDNA3) has no matrix-accel instruction, and the
+// bf16x3 -> WMMA tuning routing is currently scoped to plain GEMM
+// (`getRangeGemm`), so attention still exercises the non-accel
+// `getRangeGemmGemm` path.
 // RUN: rocmlir-gen --arch gfx1100 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-ATTN \
 // RUN:       --implicit-check-not="attn:v4:{{[0-9]+,[0-9]+,[0-9]+,2,}}" \
