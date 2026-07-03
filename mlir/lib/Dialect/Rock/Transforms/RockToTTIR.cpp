@@ -268,7 +268,7 @@ struct RockBlockwiseGemmOpRewritePattern
       StringRef arch = rock::getArchValue(op);
       bool useBf16x3 =
           !disableFastMath &&
-          shouldUseBf16x3ForF32Dot(arch, aElemType, bElemType);
+          rock::usesBf16x3F32Dot(arch, aElemType, bElemType);
       triton::InputPrecision inputPrecision =
           useBf16x3 ? triton::InputPrecision::BF16x3
                     : triton::InputPrecision::IEEE;
