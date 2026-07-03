@@ -5,31 +5,31 @@
 // AIROCMLIR-709 Phase 3: host driver for a cross-tile fusion split.
 //
 // rock-split-cross-tile-fusion outlines @mlir_double_slice_add into a gemm
-// kernel + an elementwise kernel and tags each half with split-link metadata.
-// rock-link-split-kernels (run after rock-elementwise-to-gridwise has
-// appended the elementwise output argument) reconstructs a host function named
-// after the original kernel that allocates the intermediate device buffer and
-// launches both kernels in order. The kernel func.call ops are later rewritten
-// to gpu.launch_func by rock-emit-gpu-binary.
+// kernel + an elementwise kernel and records the linkage in a single typed
+// rock.split_link op. rock-link-split-kernels (run after
+// rock-elementwise-to-gridwise has appended the elementwise output argument)
+// reconstructs a host function named after the original kernel that allocates
+// the intermediate device buffer and launches both kernels in order. The kernel
+// func.call ops are later rewritten to gpu.launch_func by rock-emit-gpu-binary.
 
-// --- The split records split-link metadata on both halves. ---
+// --- The split leaves both kernel halves + a private, bodyless declaration
+//     with the original kernel's name so the host's call stays resolvable
+//     until rock-link-split-kernels fills in the body. ---
 // TAGS: func.func @mlir_double_slice_add_gemm
-// TAGS-SAME:  rock.split_arg_src = array<i64: 0, 1, -1>
-// TAGS-SAME:  rock.split_group = "mlir_double_slice_add"
-// TAGS-SAME:  rock.split_role = "gemm"
 // TAGS: func.func @mlir_double_slice_add_elementwise
-// TAGS-SAME:  rock.split_arg_src = array<i64: -1>
-// TAGS-SAME:  rock.split_group = "mlir_double_slice_add"
-// TAGS-SAME:  rock.split_out_src = array<i64: 2>
-// TAGS-SAME:  rock.split_role = "elementwise"
-// --- The split leaves a private, bodyless declaration with the original
-//     kernel's name so the host's call stays resolvable until
-//     rock-link-split-kernels fills in the body. ---
 // TAGS: func.func private @mlir_double_slice_add(tensor<2048xf16>, tensor<1024xf16>, tensor<1024xf16>) -> tensor<1024xf16>{{$}}
+// --- The linkage is recorded in one typed op (attrs print alphabetically). ---
+// TAGS: rock.split_link
+// TAGS-SAME:  elementwise = @mlir_double_slice_add_elementwise
+// TAGS-SAME:  elementwiseArgSrc = array<i64: -1>
+// TAGS-SAME:  elementwiseOutSrc = array<i64: 2>
+// TAGS-SAME:  gemm = @mlir_double_slice_add_gemm
+// TAGS-SAME:  gemmArgSrc = array<i64: 0, 1, -1>
+// TAGS-SAME:  orig = @mlir_double_slice_add
 
 // --- The host driver function has the original kernel's name and
 //     signature, is NOT a rock.kernel, and chains the two launches through an
-//     intermediate device buffer. The metadata is stripped from the kernels.
+//     intermediate device buffer. The rock.split_link op is consumed + erased.
 //     It is the private declaration left by the split (so the host call stays
 //     resolvable), filled in here, so it prints after the two kernels. ---
 // ORCH:       func.func @mlir_double_slice_add_gemm

@@ -105,11 +105,11 @@ def RockLinkSplitKernelsPass
                 "both kernels";
   let description = [{
     Companion to rock-split-cross-tile-fusion. The split pass runs early (before
-    rock-affix-params) and tags each half of the split with split-link
-    metadata (rock.split_group / rock.split_role / rock.split_arg_src /
-    rock.split_out_src). This pass runs late — after kernel signatures are
+    rock-affix-params) and records the linkage in a single typed rock.split_link
+    op. This pass runs late — after kernel signatures are
     finalized (e.g. rock-elementwise-to-gridwise has appended the elementwise
-    output argument) but before rock-serialize-host-funcs — and reconstructs a
+    output argument) but before rock-serialize-host-funcs — consumes and erases
+    that op, and reconstructs a
     host function named after the original (pre-split) kernel. That function
     allocates the intermediate device buffer (gpu.alloc), calls `<name>_gemm`
     then `<name>_elementwise`, and frees the buffer (gpu.dealloc). Because it is

@@ -189,22 +189,6 @@ usedBlockArgs(func::FuncOp funcOp, ArrayRef<Operation *> ops) {
   return result;
 }
 
-// Split-link metadata attached to each split kernel so the later
-// rock-link-split-kernels pass (which runs after kernel signatures are
-// finalized) can rebuild a host function that allocates the intermediate buffer
-// and launches both kernels. See LinkSplitKernels.cpp and the attribute
-// documentation in utility/splitLink.h.
-static void tagSplitLink(OpBuilder &b, func::FuncOp kernel,
-                         StringRef group, StringRef role,
-                         ArrayRef<int64_t> argSrc,
-                         ArrayRef<int64_t> outSrc) {
-  kernel->setAttr(SplitLinkGroupAttr, b.getStringAttr(group));
-  kernel->setAttr(SplitLinkRoleAttr, b.getStringAttr(role));
-  kernel->setAttr(SplitLinkArgSrcAttr, b.getDenseI64ArrayAttr(argSrc));
-  if (!outSrc.empty())
-    kernel->setAttr(SplitLinkOutSrcAttr, b.getDenseI64ArrayAttr(outSrc));
-}
-
 // Carry over the rock kernel marker + device attributes onto a split kernel.
 static void copyKernelAttrs(func::FuncOp from, func::FuncOp to) {
   for (StringRef name :
@@ -253,9 +237,13 @@ static LogicalResult splitKernel(func::FuncOp funcOp, Operation *rootOp,
   SmallVector<BlockArgument> headArgs = usedBlockArgs(funcOp, headOps);
   SmallVector<BlockArgument> tailArgs = usedBlockArgs(funcOp, tailOpsNoStore);
 
+  ModuleOp moduleOp = funcOp->getParentOfType<ModuleOp>();
   OpBuilder b(funcOp);
   Location loc = funcOp.getLoc();
   std::string baseName = funcOp.getName().str();
+
+  // Argument-source maps recorded on the rock.split_link op (see below).
+  SmallVector<int64_t> gemmArgSrc, elemArgSrc, elemOutSrc;
 
   // --- kernel A: gemm inputs -> store gemm result to the intermediate buf ---
   {
@@ -269,12 +257,9 @@ static LogicalResult splitKernel(func::FuncOp funcOp, Operation *rootOp,
         func::FuncOp::create(b, loc, baseName + "_gemm", funcType);
     copyKernelAttrs(funcOp, gemmFunc);
 
-    SmallVector<int64_t> argSrc;
     for (BlockArgument arg : headArgs)
-      argSrc.push_back(arg.getArgNumber());
-    argSrc.push_back(SplitIntermediateArg);
-    tagSplitLink(b, gemmFunc, baseName, SplitLinkRoleGemm, argSrc,
-                 /*outSrc=*/{});
+      gemmArgSrc.push_back(arg.getArgNumber());
+    gemmArgSrc.push_back(SplitIntermediateArg);
 
     Block *body = gemmFunc.addEntryBlock();
     OpBuilder bodyB(body, body->end());
@@ -311,15 +296,11 @@ static LogicalResult splitKernel(func::FuncOp funcOp, Operation *rootOp,
         func::FuncOp::create(b, loc, baseName + "_elementwise", funcType);
     copyKernelAttrs(funcOp, pwFunc);
 
-    SmallVector<int64_t> argSrc;
-    argSrc.push_back(SplitIntermediateArg);
+    elemArgSrc.push_back(SplitIntermediateArg);
     for (BlockArgument arg : tailArgs)
-      argSrc.push_back(arg.getArgNumber());
-    SmallVector<int64_t> outSrc;
+      elemArgSrc.push_back(arg.getArgNumber());
     if (auto outArg = dyn_cast<BlockArgument>(storeOp.getDest()))
-      outSrc.push_back(outArg.getArgNumber());
-    tagSplitLink(b, pwFunc, baseName, SplitLinkRoleElementwise, argSrc,
-                 outSrc);
+      elemOutSrc.push_back(outArg.getArgNumber());
 
     Block *body = pwFunc.addEntryBlock();
     OpBuilder bodyB(body, body->begin());
@@ -350,6 +331,20 @@ static LogicalResult splitKernel(func::FuncOp funcOp, Operation *rootOp,
   // A bodyless declaration must be private; rock-link-split-kernels adds
   // the body later (all calls to it are intra-module, so private is fine).
   stub.setPrivate();
+
+  // Record the linkage in a single typed op (consumed + erased by
+  // rock-link-split-kernels once kernel signatures are final). The symbol
+  // references keep both kernel halves + the stub alive across the pipeline.
+  MLIRContext *ctx = b.getContext();
+  auto ref = [&](const Twine &n) {
+    return FlatSymbolRefAttr::get(ctx, n.str());
+  };
+  b.setInsertionPointToEnd(moduleOp.getBody());
+  SplitLinkOp::create(b, loc, ref(baseName), ref(baseName + "_gemm"),
+                      ref(baseName + "_elementwise"),
+                      b.getDenseI64ArrayAttr(gemmArgSrc),
+                      b.getDenseI64ArrayAttr(elemArgSrc),
+                      b.getDenseI64ArrayAttr(elemOutSrc));
 
   funcOp.erase();
   return success();

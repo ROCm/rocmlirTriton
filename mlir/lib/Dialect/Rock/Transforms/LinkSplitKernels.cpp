@@ -19,8 +19,9 @@
 //
 // rock-split-cross-tile-fusion (SplitCrossTileFusion.cpp) splits one fused
 // kernel `@orig` into `@orig_gemm` + `@orig_elementwise` joined by an
-// intermediate buffer, and erases `@orig`. But the host still calls `@orig` by
-// name. This pass recreates a host function `@orig` that:
+// intermediate buffer, records the linkage in a typed `rock.split_link` op, and
+// leaves a private stub `@orig`. But the host still calls `@orig` by name. This
+// pass recreates a host function `@orig` that:
 //
 //   func.func @orig(%a0, ..., %aN) -> Tret {         // NOT rock.kernel (host)
 //     %dev   = gpu.alloc() : memref<flat>            // intermediate device buf
@@ -38,8 +39,9 @@
 // destination-passing results), so launches execute in order and the
 // intermediate buffer carries data from the gemm to the elementwise kernel.
 //
-// The original-kernel signature is reconstructed from the split-link
-// metadata recorded on each half (see utility/splitLink.h).
+// The original-kernel signature is reconstructed from the arg-source maps on
+// the rock.split_link op (see RockOps.td / utility/splitLink.h), which is then
+// consumed and erased.
 //
 //===----------------------------------------------------------------------===//
 
@@ -56,7 +58,6 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
@@ -70,11 +71,6 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-struct SplitGroup {
-  func::FuncOp gemm;
-  func::FuncOp elementwise;
-};
-
 struct RockLinkSplitKernelsPass
     : public rock::impl::RockLinkSplitKernelsPassBase<
           RockLinkSplitKernelsPass> {
@@ -82,25 +78,23 @@ struct RockLinkSplitKernelsPass
 };
 } // namespace
 
-static ArrayRef<int64_t> getArgSrc(func::FuncOp f, StringRef name) {
-  if (auto attr = f->getAttrOfType<DenseI64ArrayAttr>(name))
-    return attr.asArrayRef();
-  return {};
-}
-
 // Reconstruct the original (pre-split) kernel signature and emit the host
-// driver function for one split group.
-static LogicalResult emitHostDriver(OpBuilder &b, StringRef group,
-                                    const SplitGroup &sg) {
-  func::FuncOp gemm = sg.gemm;
-  func::FuncOp pw = sg.elementwise;
+// driver function described by one rock.split_link op.
+static LogicalResult emitHostDriver(OpBuilder &b, SplitLinkOp link) {
+  ModuleOp moduleOp = link->getParentOfType<ModuleOp>();
+  auto gemm = moduleOp.lookupSymbol<func::FuncOp>(link.getGemmAttr());
+  auto pw = moduleOp.lookupSymbol<func::FuncOp>(link.getElementwiseAttr());
+  if (!gemm || !pw)
+    return link.emitError("split-link: could not resolve gemm/elementwise "
+                          "kernel referenced by rock.split_link");
 
+  StringRef group = link.getOrigAttr().getValue();
   FunctionType gemmTy = gemm.getFunctionType();
   FunctionType pwTy = pw.getFunctionType();
 
-  ArrayRef<int64_t> gemmArgSrc = getArgSrc(gemm, SplitLinkArgSrcAttr);
-  ArrayRef<int64_t> pwArgSrc = getArgSrc(pw, SplitLinkArgSrcAttr);
-  ArrayRef<int64_t> pwOutSrc = getArgSrc(pw, SplitLinkOutSrcAttr);
+  ArrayRef<int64_t> gemmArgSrc = link.getGemmArgSrc();
+  ArrayRef<int64_t> pwArgSrc = link.getElementwiseArgSrc();
+  ArrayRef<int64_t> pwOutSrc = link.getElementwiseOutSrc();
 
   if (gemmArgSrc.size() != gemmTy.getNumInputs())
     return gemm.emitError("split-link: gemm arg_src (")
@@ -161,7 +155,6 @@ static LogicalResult emitHostDriver(OpBuilder &b, StringRef group,
   // body here; if absent (e.g. this pass is run standalone in a test), create
   // the function fresh. Intentionally NOT marked rock.kernel: it is a host
   // function.
-  ModuleOp moduleOp = gemm->getParentOfType<ModuleOp>();
   func::FuncOp orchFunc = moduleOp.lookupSymbol<func::FuncOp>(group);
   if (orchFunc) {
     if (!orchFunc.isDeclaration())
@@ -210,45 +203,22 @@ static LogicalResult emitHostDriver(OpBuilder &b, StringRef group,
 
   gpu::DeallocOp::create(bb, loc, TypeRange{}, ValueRange{devBuf});
   func::ReturnOp::create(bb, loc, pwCall.getResult(0));
-
-  // Strip split-link metadata from the kernels now that it is consumed.
-  for (func::FuncOp k : {gemm, pw}) {
-    k->removeAttr(SplitLinkGroupAttr);
-    k->removeAttr(SplitLinkRoleAttr);
-    k->removeAttr(SplitLinkArgSrcAttr);
-    k->removeAttr(SplitLinkOutSrcAttr);
-  }
   return success();
 }
 
 void RockLinkSplitKernelsPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
 
-  llvm::MapVector<StringRef, SplitGroup> groups;
-  moduleOp.walk([&](func::FuncOp f) {
-    auto group = f->getAttrOfType<StringAttr>(SplitLinkGroupAttr);
-    auto role = f->getAttrOfType<StringAttr>(SplitLinkRoleAttr);
-    if (!group || !role)
-      return;
-    SplitGroup &sg = groups[group.getValue()];
-    if (role.getValue() == SplitLinkRoleGemm)
-      sg.gemm = f;
-    else if (role.getValue() == SplitLinkRoleElementwise)
-      sg.elementwise = f;
-  });
-
-  if (groups.empty())
+  SmallVector<SplitLinkOp> links;
+  moduleOp.walk([&](SplitLinkOp op) { links.push_back(op); });
+  if (links.empty())
     return;
 
   OpBuilder b(moduleOp);
-  for (auto &entry : groups) {
-    const SplitGroup &sg = entry.second;
-    if (!sg.gemm || !sg.elementwise) {
-      moduleOp.emitError("split-link: incomplete split group '")
-          << entry.first << "' (missing gemm or elementwise half)";
+  for (SplitLinkOp link : links) {
+    if (failed(emitHostDriver(b, link)))
       return signalPassFailure();
-    }
-    if (failed(emitHostDriver(b, entry.first, sg)))
-      return signalPassFailure();
+    // The linkage is consumed; erase the op so it does not reach serialization.
+    link.erase();
   }
 }

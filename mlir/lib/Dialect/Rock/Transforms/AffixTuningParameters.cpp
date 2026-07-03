@@ -14,7 +14,6 @@
 #include "mlir/Dialect/Rock/Tuning/UtilityParams.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/splitLink.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
@@ -223,12 +222,6 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       BlockSizeAttr::getMnemonic(),
       GridSizeAttr::getMnemonic(),
       CpuVerifierAttr::getMnemonic(),
-      // Cross-tile fusion split-link metadata (consumed later by
-      // rock-link-split-kernels); see utility/splitLink.h.
-      SplitLinkGroupAttr,
-      SplitLinkRoleAttr,
-      SplitLinkArgSrcAttr,
-      SplitLinkOutSrcAttr,
   };
   static const llvm::StringSet<> knownArgRockAttrs = {
       PrefillAttr::getMnemonic(),
