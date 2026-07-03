@@ -498,7 +498,9 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
 
-  funcPm2.addPass(rock::createRockToTTIRPass());
+  rock::RockToTTIRPassOptions rockToTTIROpts;
+  rockToTTIROpts.disableFastMath = options.disableFastMath;
+  funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
   // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());

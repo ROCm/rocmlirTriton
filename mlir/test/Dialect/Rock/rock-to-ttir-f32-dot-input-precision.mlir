@@ -1,9 +1,15 @@
 // RUN: sed s/##TOKEN_ARCH##/gfx1201/g %s | rocmlir-opt -rock-to-ttir | FileCheck %s --check-prefix=BF16X3
+// RUN: sed s/##TOKEN_ARCH##/gfx1201/g %s | rocmlir-opt -rock-to-ttir=disable-fast-math=true | FileCheck %s --check-prefix=NOFAST
 // RUN: sed s/##TOKEN_ARCH##/gfx1250/g %s | rocmlir-opt -rock-to-ttir | FileCheck %s --check-prefix=NATIVE
 // RUN: sed s/##TOKEN_ARCH##/gfx942/g %s | rocmlir-opt -rock-to-ttir | FileCheck %s --check-prefix=NATIVE
 
 // BF16X3-LABEL: @f32_dot
 // BF16X3: tt.dot {{.*}}, inputPrecision = bf16x3 : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+
+// NOFAST-LABEL: @f32_dot
+// NOFAST: tt.dot
+// NOFAST-NOT: inputPrecision = bf16x3
+// NOFAST-SAME: : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
 
 // NATIVE-LABEL: @f32_dot
 // NATIVE: tt.dot

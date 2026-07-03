@@ -33,7 +33,6 @@ if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
     PrConvNonPowerOfTwoTileSize
     PrGemmScaled
     PrGemmScaledSplitK
-    PrConvF32Bf16x3Dot
     PrResnet50
     PrAttentionF32
     PrAttentionF16

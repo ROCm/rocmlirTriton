@@ -53,6 +53,8 @@ using namespace mlir::arith;
 
 namespace {
 struct RockToTTIRPass : public rock::impl::RockToTTIRPassBase<RockToTTIRPass> {
+  using RockToTTIRPassBase::RockToTTIRPassBase;
+
   void runOnOperation() override;
 };
 
@@ -222,7 +224,9 @@ struct RockLoadPtrOpRewritePattern
 //===----------------------------------------------------------------------===//
 struct RockBlockwiseGemmOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseGemmOp> {
-  using OpRewritePattern<rock::BlockwiseGemmOp>::OpRewritePattern;
+  RockBlockwiseGemmOpRewritePattern(MLIRContext *ctx, bool disableFastMath)
+      : OpRewritePattern<rock::BlockwiseGemmOp>(ctx),
+        disableFastMath(disableFastMath) {}
 
   LogicalResult matchAndRewrite(rock::BlockwiseGemmOp op,
                                 PatternRewriter &rewriter) const override {
@@ -276,10 +280,12 @@ struct RockBlockwiseGemmOpRewritePattern
       // On WMMA targets without native f32 matrix acceleration, bf16x3 lets
       // Triton use BF16 WMMA instead of the software FMA path.
       StringRef arch = rock::getArchValue(op);
+      bool useBf16x3 =
+          !disableFastMath &&
+          shouldUseBf16x3ForF32Dot(arch, aElemType, bElemType);
       triton::InputPrecision inputPrecision =
-          shouldUseBf16x3ForF32Dot(arch, aElemType, bElemType)
-              ? triton::InputPrecision::BF16x3
-              : triton::InputPrecision::IEEE;
+          useBf16x3 ? triton::InputPrecision::BF16x3
+                    : triton::InputPrecision::IEEE;
       result = triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
                                      inputPrecision,
                                      /*maxNumImpreciseAcc=*/0);
@@ -301,6 +307,9 @@ struct RockBlockwiseGemmOpRewritePattern
     rewriter.replaceOp(op, result);
     return success();
   }
+
+private:
+  bool disableFastMath;
 };
 
 struct RockStorePtrOpRewritePattern
@@ -481,7 +490,7 @@ void RockToTTIRPass::runOnOperation() {
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
   patterns.add<RockLoadPtrOpRewritePattern>(ctx);
-  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
+  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx, disableFastMath);
   patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ArithTruncFToFpToFpPattern>(ctx);
   patterns.add<ArithExtFToFpToFpPattern>(ctx);
