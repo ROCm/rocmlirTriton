@@ -19,9 +19,12 @@
 // MIGRAPHX-NEXT:migraphx-tosa-simplify))
 
 // GPU:Kernel pipeline:
-// GPU-NEXT:builtin.module(func.func(rock-affix-params),
+// GPU-NEXT:builtin.module(rock-split-cross-tile-fusion,
+// GPU-NEXT:func.func(rock-affix-params),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-lower-reduce),
+// GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:func.func(rock-elementwise-to-gridwise),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-regularize-output),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
@@ -39,6 +42,8 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-gridwise-gemm-to-blockwise),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:func.func(rock-gridwise-elementwise-to-blockwise),
+// GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-insert-output-fusion-loads),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-regularize-input),
@@ -55,6 +60,7 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-legalize-float-types),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:rock-link-split-kernels,
 // GPU-NEXT:rock-serialize-host-funcs,
 // GPU-NEXT:arith-emulate-unsupported-floats{source-types={f4E2M1FN,
 // GPU-NEXT:f8E4M3FN,
