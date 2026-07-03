@@ -2,10 +2,10 @@
 // RUN: rocmlir-opt -rock-split-cross-tile-fusion -rock-elementwise-to-gridwise -rock-link-split-kernels %s | FileCheck %s --check-prefix=ORCH
 // RUN: rocmlir-driver -kernel-pipeline=gpu -arch gfx942 %s | FileCheck %s --check-prefix=HOST
 
-// AIROCMLIR-709 Phase 3: host driver for a cross-tile fusion split.
+// Host driver for a cross-tile fusion split.
 //
 // rock-split-cross-tile-fusion outlines @mlir_double_slice_add into a gemm
-// kernel + an elementwise kernel and records the linkage in a single typed
+// kernel + an elementwise kernel and records the linkage in a typed
 // rock.split_link op. rock-link-split-kernels (run after
 // rock-elementwise-to-gridwise has appended the elementwise output argument)
 // reconstructs a host function named after the original kernel that allocates

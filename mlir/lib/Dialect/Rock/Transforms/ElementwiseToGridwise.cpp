@@ -28,8 +28,7 @@
 //   3. inserts the output argument + rock.store for the return value.
 //
 // rock-gridwise-elementwise-to-blockwise then lowers the gridwise_elementwise
-// into
-// a load_marker + store_marker output tile, after which the existing
+// into a load_marker + store_marker output tile, after which the existing
 // insert-output-fusion-loads / lower-loads / lower-stores path takes over,
 // treating every remaining elementwise input as a normal output-fusion load.
 //

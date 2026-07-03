@@ -591,12 +591,10 @@ static LogicalResult processGemm(BlockwiseGemmOp gemm) {
 // Pure-elementwise (gemm-less) splitting
 //===----------------------------------------------------------------------===//
 
-/// Split a non-power-of-two pure-elementwise `blockwise_store` (the output of a
-/// gridwise_elementwise kernel: blockwise_load(s) -> elementwise -> store, with
-/// no GEMM) into a grid of power-of-two sub-stores. Unlike the GEMM path there
-/// is no contraction and no K-loop: the TileSplitter recurses straight from the
-/// store source through the elementwise fusion into the blockwise_loads, each of
-/// which is sliced per power-of-two cell.
+/// Split a non-power-of-two pure-elementwise `blockwise_store` (gemm-less:
+/// blockwise_load(s) -> elementwise -> store) into a grid of power-of-two
+/// sub-stores. With no contraction/K-loop, the TileSplitter recurses straight
+/// from the store source through the fusion into the blockwise_loads.
 static LogicalResult processElementwiseStore(BlockwiseStoreOp store) {
   Location loc = store.getLoc();
   auto srcType = cast<RankedTensorType>(store.getSource().getType());
@@ -633,11 +631,8 @@ void RockDecomposeNonPow2TilesPass::runOnOperation() {
   if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
     return;
 
-  // Anchor on the GEMM: a blockwise_gemm whose accumulator (result) tile has a
-  // non-power-of-two M or N must be decomposed. This covers both the K-loop
-  // form and the loopless form left when a single-K-step loop was folded away.
-  // The surrounding input/output fusion (loads, elementwise ops, stores) is
-  // split as part of processing each GEMM, so loads need no separate entry.
+  // Anchor on the GEMM: a blockwise_gemm with a non-power-of-two result tile is
+  // decomposed together with its surrounding input/output fusion.
   SmallVector<BlockwiseGemmOp> targets;
   func.walk([&](BlockwiseGemmOp gemm) {
     if (hasNonPow2Dim(gemm.getResult()))
@@ -648,11 +643,9 @@ void RockDecomposeNonPow2TilesPass::runOnOperation() {
     if (failed(processGemm(gemm)))
       return signalPassFailure();
 
-  // Pure-elementwise kernels (rock.gridwise_elementwise) have no blockwise_gemm,
-  // so their non-power-of-two output tiles are never reached from a GEMM anchor.
-  // Decompose them directly from the (non-pow2) blockwise_store. Only funcs
-  // with no GEMM at all take this path: in a GEMM kernel the non-pow2 stores are
-  // already handled above (and the now-dead originals must not be reprocessed).
+  // Gemm-less kernels have no blockwise_gemm anchor, so decompose their non-pow2
+  // stores directly. Only for funcs with no GEMM (a GEMM kernel's stores are
+  // already handled above).
   bool hasGemm = false;
   func.walk([&](BlockwiseGemmOp) { hasGemm = true; });
   if (hasGemm)

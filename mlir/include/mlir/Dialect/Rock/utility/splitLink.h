@@ -15,13 +15,10 @@
 // limitations under the License.
 // ============================================================
 //
-// Shared constant describing how a cross-tile fusion was split into a gemm
-// kernel + an elementwise kernel (AIROCMLIR-709). The linkage itself is carried
-// by the typed `rock.split_link` op (see RockOps.td), produced by
-// rock-split-cross-tile-fusion (SplitCrossTileFusion.cpp) and consumed by
-// rock-link-split-kernels (LinkSplitKernels.cpp) once kernel signatures are
-// finalized. This header only defines the sentinel used inside that op's
-// argument-source arrays.
+// The linkage between the two halves of a cross-tile fusion split is carried by
+// the typed `rock.split_link` op (see RockOps.td), produced by
+// rock-split-cross-tile-fusion and consumed by rock-link-split-kernels. This
+// header only defines the sentinel used inside that op's argument-source arrays.
 //
 //===----------------------------------------------------------------------===//
 

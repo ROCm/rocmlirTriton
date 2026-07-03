@@ -15,16 +15,15 @@
 // limitations under the License.
 // ============================================================
 //
-// AIROCMLIR-709 Phase 3: host driver for cross-tile fusion splits.
+// Host driver for cross-tile fusion splits.
 //
-// rock-split-cross-tile-fusion (SplitCrossTileFusion.cpp) splits one fused
-// kernel `@orig` into `@orig_gemm` + `@orig_elementwise` joined by an
-// intermediate buffer, records the linkage in a typed `rock.split_link` op, and
-// leaves a private stub `@orig`. But the host still calls `@orig` by name. This
-// pass recreates a host function `@orig` that:
+// rock-split-cross-tile-fusion leaves `@orig_gemm` + `@orig_elementwise`, a
+// private stub `@orig`, and a `rock.split_link` op. This pass fills in `@orig`
+// as a (non-kernel) host driver that allocates the intermediate buffer, calls
+// the two kernels in order, and frees it:
 //
-//   func.func @orig(%a0, ..., %aN) -> Tret {         // NOT rock.kernel (host)
-//     %dev   = gpu.alloc() : memref<flat>            // intermediate device buf
+//   func.func @orig(%a0, ..., %aN) -> Tret {
+//     %dev   = gpu.alloc() : memref<flat>
 //     %inter = bufferization.to_tensor %dev ...
 //     %g = func.call @orig_gemm(<gemm inputs>, %inter)
 //     %o = func.call @orig_elementwise(%g, <tail inputs>, <outputs>)
@@ -32,16 +31,10 @@
 //     return %o
 //   }
 //
-// It runs late (after rock-elementwise-to-gridwise has appended the elementwise
-// output argument, so kernel signatures are final) but before
-// rock-serialize-host-funcs. The two func.call ops are rewritten to
-// gpu.launch_func by rock-emit-gpu-binary (which handles tensor operands and
-// destination-passing results), so launches execute in order and the
-// intermediate buffer carries data from the gemm to the elementwise kernel.
-//
-// The original-kernel signature is reconstructed from the arg-source maps on
-// the rock.split_link op (see RockOps.td / utility/splitLink.h), which is then
-// consumed and erased.
+// It reconstructs the signature from the split_link arg-source maps, then erases
+// the op. Runs after signatures are final (rock-elementwise-to-gridwise appended
+// the output arg) and before rock-serialize-host-funcs; rock-emit-gpu-binary
+// later rewrites the two calls to gpu.launch_func.
 //
 //===----------------------------------------------------------------------===//
 

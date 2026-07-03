@@ -538,11 +538,10 @@ func.func @test_cache_modifier_propagation(%arg0: tensor<787456xf16>, %arg1: ten
 // ============================================================
 // Pure-elementwise (gemm-less) kernel: a rock.gridwise_elementwise root lowered
 // to blockwise_load x2 -> addf -> blockwise_store on a non-power-of-two 12x24
-// tile (AIROCMLIR-709 Phase 4). With no blockwise_gemm to anchor on, the pass
-// must decompose straight from the store: the 12x24 tile splits into a 2x2 grid
-// {8,4} x {16,8}, so each blockwise_load/elementwise/blockwise_store becomes
-// four power-of-two sub-tiles. This is the elementwise half produced by
-// rock-split-cross-tile-fusion for mixr-double-slice-add.
+// tile. With no blockwise_gemm to anchor on, the pass decomposes straight from
+// the store: the 12x24 tile splits into a 2x2 grid {8,4} x {16,8}, so each
+// blockwise_load/elementwise/blockwise_store becomes four power-of-two
+// sub-tiles.
 // ============================================================
 
 // The non-power-of-two 12x24 tile must be gone; every load/add/store is a

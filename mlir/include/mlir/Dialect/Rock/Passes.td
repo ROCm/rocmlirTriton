@@ -84,15 +84,12 @@ def RockSplitCrossTileFusionPass
   let summary = "split a cross-tile output fusion into a gemm kernel + an "
                 "elementwise kernel joined by an intermediate buffer";
   let description = [{
-    Detects a kernel whose single gemm-like FusionRoot feeds an output fusion
-    that combines two different slices (or other non-identity transforms) of
-    the same root result — a cross-tile dependency that cannot be expressed as
-    a single fused writeback and is silently miscompiled by
-    rock-regularize-output. It outlines the kernel into two `rock.kernel`
-    functions joined by an intermediate buffer of the root's full shape:
-    `<name>_gemm` stores the gemm result to the buffer, and `<name>_elementwise`
-    reads the buffer and runs the (now non-cross-tile) elementwise tail.
-    Must run before rock-regularize-output and rock-affix-params.
+    Detects a fusion that combines two different slices of the same gemm result
+    (a cross-tile dependency that rock-regularize-output miscompiles) and
+    outlines it into two `rock.kernel` functions joined by an intermediate
+    buffer: `<name>_gemm` stores the gemm result to the buffer, and
+    `<name>_elementwise` reads it and runs the elementwise tail. Must run before
+    rock-regularize-output and rock-affix-params.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect"];
@@ -104,17 +101,12 @@ def RockLinkSplitKernelsPass
                 "fusion that allocates the intermediate buffer and launches "
                 "both kernels";
   let description = [{
-    Companion to rock-split-cross-tile-fusion. The split pass runs early (before
-    rock-affix-params) and records the linkage in a single typed rock.split_link
-    op. This pass runs late — after kernel signatures are
-    finalized (e.g. rock-elementwise-to-gridwise has appended the elementwise
-    output argument) but before rock-serialize-host-funcs — consumes and erases
-    that op, and reconstructs a
-    host function named after the original (pre-split) kernel. That function
-    allocates the intermediate device buffer (gpu.alloc), calls `<name>_gemm`
-    then `<name>_elementwise`, and frees the buffer (gpu.dealloc). Because it is
-    not marked rock.kernel, it is serialized as a host function and its kernel
-    calls are later rewritten to gpu.launch_func by rock-emit-gpu-binary.
+    Companion to rock-split-cross-tile-fusion. Consumes the rock.split_link op
+    and fills in the original (pre-split) kernel as a host function that
+    allocates the intermediate buffer (gpu.alloc), calls `<name>_gemm` then
+    `<name>_elementwise`, and frees it (gpu.dealloc). Runs after kernel
+    signatures are final but before rock-serialize-host-funcs; the kernel calls
+    are later rewritten to gpu.launch_func by rock-emit-gpu-binary.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect", "gpu::GPUDialect",

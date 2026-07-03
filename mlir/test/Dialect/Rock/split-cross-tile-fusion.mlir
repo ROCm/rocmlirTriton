@@ -1,12 +1,11 @@
 // RUN: rocmlir-opt -rock-split-cross-tile-fusion %s | FileCheck %s
 // RUN: rocmlir-opt -rock-split-cross-tile-fusion -rock-elementwise-to-gridwise %s | FileCheck %s --check-prefix=PWROOT
 
-// AIROCMLIR-709 Pattern 1: a fusion that adds two *different* slices of the same
-// gemm output is a cross-tile dependency that cannot be expressed as a single
-// fused gemm-writeback kernel (and is silently miscompiled by
-// rock-regularize-output). rock-split-cross-tile-fusion detects the pattern and
-// outlines it into a gemm kernel + an elementwise kernel joined by an
-// intermediate buffer of the gemm result's (flattened) shape.
+// A fusion that adds two different slices of the same gemm output is a
+// cross-tile dependency that cannot be a single fused gemm-writeback kernel (and
+// is miscompiled by rock-regularize-output). rock-split-cross-tile-fusion
+// detects the pattern and outlines it into a gemm kernel + an elementwise kernel
+// joined by an intermediate buffer of the gemm result's (flattened) shape.
 
 #map = affine_map<(d0, d1, d2) -> ((d0 * 16 + d1) * 16 + d2)>
 #map1 = affine_map<(d0, d1, d2) -> ((d0 * 32 + d1) * 16 + d2)>

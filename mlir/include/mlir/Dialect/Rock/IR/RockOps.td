@@ -560,20 +560,14 @@ def Rock_SplitLinkOp
           DenseI64ArrayAttr:$elementwiseOutSrc)> {
   let summary = "Records how a cross-tile fusion kernel was split";
   let description = [{
-    The `rock.split_link` op records how `rock-split-cross-tile-fusion` outlined
-    the original fused kernel `orig` into a `gemm` half and an `elementwise` half
-    joined by an intermediate buffer. It is produced by that pass and consumed
-    (then erased) by `rock-link-split-kernels`, which rebuilds the host driver
-    `orig` once kernel signatures are final.
+    Records how `rock-split-cross-tile-fusion` outlined the fused kernel `orig`
+    into a `gemm` half and an `elementwise` half joined by an intermediate
+    buffer. Consumed (and erased) by `rock-link-split-kernels`, which rebuilds
+    the `orig` host driver.
 
     `gemmArgSrc` / `elementwiseArgSrc` map each half's arguments back to the
-    original kernel's argument index, or -1 for the intermediate buffer.
-    `elementwiseOutSrc` maps the output argument(s) appended to the elementwise
-    half after the split (by `rock-elementwise-to-gridwise`) back to the original
-    output argument index.
-
-    This carries the split linkage in one typed op instead of `rock.split_*`
-    string attributes spread across both kernel halves.
+    original kernel's argument index (-1 for the intermediate buffer);
+    `elementwiseOutSrc` maps the output argument(s) appended after the split.
   }];
   let assemblyFormat = [{ attr-dict }];
 }

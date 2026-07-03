@@ -15,34 +15,22 @@
 // limitations under the License.
 // ============================================================
 //
-// AIROCMLIR-709 Pattern 1: a fusion that adds two different slices of the same
-// gemm output, e.g.
+// Splits a fusion that combines two different slices of the same gemm output
+// (e.g. addf(gemm[:,0:12,:], gemm[:,12:24,:])). This cannot be a single fused
+// gemm-writeback kernel because the two slices live in different workgroup
+// tiles; rock-regularize-output miscompiles it by collapsing both slices to the
+// same gemm value (addf(%g, %g) = 2*gemm).
 //
-//   %g  = rock.gemm ...                       -> tensor<4x24x24xf16>  (root)
-//   %s0 = rock.transform %g by Slice{0..12}
-//   %s1 = rock.transform %g by Slice{12..24}
-//   %a  = arith.addf %s0, %s1
-//   ... rock.store %a ...
+// Running before rock-regularize-output, this pass splits the kernel into two
+// kernels joined by an intermediate global buffer:
 //
-// cannot be expressed as a single fused gemm-writeback kernel: output element
-// (b,m,n) depends on gemm(b,m,n) AND gemm(b,m+12,n), which live in DIFFERENT
-// workgroup tiles. rock-regularize-output silently miscompiles it (it looks
-// through both Slice transforms and collapses them to the same gemm value,
-// producing addf(%g, %g) = 2*gemm).
+//   gemm kernel:        gemm inputs   -> rock.store %g to %intermediate
+//   elementwise kernel: %intermediate -> slice + slice + add -> rock.store
 //
-// This pass detects that pattern *before* rock-regularize-output and splits the
-// single kernel into two kernels joined by an intermediate global buffer:
-//
-//   kernel A (gemm):        gemm inputs -> rock.store %g to %intermediate
-//   kernel B (elementwise): %intermediate -> slice + slice + add -> rock.store
-//
-// kernel B has no FusionRoot, so it flows through the pure-elementwise path
-// (rock-elementwise-to-gridwise / rock-gridwise-elementwise-to-blockwise). The
-// two slices now read a fully-materialized buffer, so they are plain global
-// loads and the cross-tile dependency disappears.
-//
-// The host driver (allocating the intermediate buffer and launching both
-// kernels) is handled separately (AIROCMLIR-709 Phase 3).
+// The elementwise kernel has no FusionRoot, so it flows through the
+// pure-elementwise path (rock-elementwise-to-gridwise /
+// rock-gridwise-elementwise-to-blockwise) reading a fully-materialized buffer.
+// The host driver is built later by rock-link-split-kernels.
 //
 //===----------------------------------------------------------------------===//
 
@@ -206,11 +194,9 @@ static LogicalResult splitKernel(func::FuncOp funcOp, Operation *rootOp,
                                  StoreOp storeOp) {
   Value rootResult = rootOp->getResult(0);
   auto bufType = cast<RankedTensorType>(rootResult.getType());
-  // Rock global buffers are 1-D linearized tensors at the function boundary
-  // (logical N-D shapes are reconstructed inside the kernel via Unmerge/Merge
-  // views). The intermediate buffer joining the two kernels therefore uses the
-  // flattened type; the gemm kernel flattens its result on the way out and the
-  // elementwise kernel expands the flat argument back to the logical shape.
+  // Rock global buffers are 1-D linearized tensors at the function boundary, so
+  // the intermediate buffer uses the flattened type: the gemm kernel flattens
+  // its result on the way out and the elementwise kernel expands it back.
   auto flatBufType = cast<RankedTensorType>(getFlattenedType(bufType));
 
   // Generic per-dimension names for the flatten/expand views.
@@ -222,13 +208,9 @@ static LogicalResult splitKernel(func::FuncOp funcOp, Operation *rootOp,
   SmallVector<Operation *> headOps = collectHeadOps(rootOp);
   SmallVector<Operation *> tailOps = collectTailOps(rootResult);
 
-  // The original kernel already had its output store inserted (by
-  // rock-insert-output-stores in the highlevel pipeline). The elementwise
-  // kernel is rebuilt as a *native* pure-elementwise kernel — it returns the
-  // elementwise value and carries no rock.store / output argument — so that the
-  // later rock-elementwise-to-gridwise pass can wrap it in a
-  // gridwise_elementwise root and insert the store itself (it bails if a store
-  // already exists).
+  // Drop the original store: the elementwise kernel returns the pre-store value
+  // and carries no rock.store / output arg, so rock-elementwise-to-gridwise can
+  // add its own (it bails if a store already exists).
   SmallVector<Operation *> tailOpsNoStore;
   for (Operation *op : tailOps)
     if (op != storeOp.getOperation())
@@ -287,9 +269,7 @@ static LogicalResult splitKernel(func::FuncOp funcOp, Operation *rootOp,
     for (BlockArgument arg : tailArgs)
       argTypes.push_back(arg.getType());
 
-    // The elementwise kernel returns the (pre-store) elementwise value; the
-    // output argument + rock.store are added later by
-    // rock-elementwise-to-gridwise.
+    // Returns the pre-store value; output arg + store added later.
     Type retType = storeOp.getSource().getType();
     auto funcType = b.getFunctionType(argTypes, {retType});
     auto pwFunc =
@@ -321,20 +301,16 @@ static LogicalResult splitKernel(func::FuncOp funcOp, Operation *rootOp,
   }
 
   // Leave a non-kernel declaration with the original name and signature in place
-  // of the erased kernel. The host still calls `@orig` by name, and the rest of
-  // the kernel pipeline (which runs on the whole module and verifies after every
-  // pass) would otherwise see that call dangling until rock-link-split-kernels
-  // recreates `@orig` ~dozens of passes later. That pass fills in
-  // this declaration's body once both kernels' signatures are final.
+  // of the erased kernel, so the host's call to `@orig` stays resolvable (and
+  // module verification stays happy) until rock-link-split-kernels fills in its
+  // body once both kernels' signatures are final.
   b.setInsertionPoint(funcOp);
   auto stub = func::FuncOp::create(b, loc, baseName, funcOp.getFunctionType());
-  // A bodyless declaration must be private; rock-link-split-kernels adds
-  // the body later (all calls to it are intra-module, so private is fine).
+  // A bodyless declaration must be private (calls to it are intra-module).
   stub.setPrivate();
 
-  // Record the linkage in a single typed op (consumed + erased by
-  // rock-link-split-kernels once kernel signatures are final). The symbol
-  // references keep both kernel halves + the stub alive across the pipeline.
+  // Record the linkage in a typed op for rock-link-split-kernels. The symbol
+  // references also keep both halves + the stub alive across the pipeline.
   MLIRContext *ctx = b.getContext();
   auto ref = [&](const Twine &n) {
     return FlatSymbolRefAttr::get(ctx, n.str());

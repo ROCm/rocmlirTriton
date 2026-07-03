@@ -462,11 +462,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   };
   // Split a cross-tile output fusion (two different slices of the same gemm
   // result combined elementwise) into a gemm kernel + an elementwise kernel
-  // joined by an intermediate buffer. This is a module-level pass and must run
-  // before affix-params / regularize-output, which would otherwise silently
-  // miscompile
-  // the pattern (collapsing both slices to the same value). It is a no-op for
-  // kernels that do not exhibit the cross-tile pattern.
+  // joined by an intermediate buffer. This module-level pass must run before
+  // affix-params / regularize-output, which would otherwise miscompile the
+  // pattern by collapsing both slices to the same value. It is a no-op for
+  // kernels without the cross-tile pattern.
   pm.addPass(rock::createRockSplitCrossTileFusionPass());
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
@@ -505,10 +504,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockLegalizeFloatTypesPass());
 
   // Emit the host driver function for any cross-tile fusion split (see
-  // rock-split-cross-tile-fusion above). Must run AFTER kernel signatures are
+  // rock-split-cross-tile-fusion above). Must run after kernel signatures are
   // final (rock-elementwise-to-gridwise has appended the elementwise output arg)
-  // and BEFORE SerializeHostFuncs, so the freshly created (non-kernel)
-  // host driver function is serialized as a host function.
+  // and before SerializeHostFuncs, so the non-kernel host driver is serialized
+  // as a host function.
   pm.addPass(rock::createRockLinkSplitKernelsPass());
 
   // Serialize and erase host functions BEFORE any func-level pass that
