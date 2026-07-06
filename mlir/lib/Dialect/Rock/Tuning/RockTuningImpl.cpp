@@ -162,12 +162,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
 
   std::vector<uint32_t> wavesPerEUList = {0};
   std::vector<uint32_t> gridGroupSizeList = {0};
-  // The reduction-layout warp redistribution is opt-in and only worth the
-  // extra search dimension in the exhaustive space; every other kind pins it
-  // off (0).
-  std::vector<uint32_t> useReductionLayoutList =
-      kind == TuningParamSetKind::Exhaustive ? std::vector<uint32_t>{0, 1}
-                                             : std::vector<uint32_t>{0};
   // std::vector<uint32_t> wavesPerEUList;
   // wavesPerEUList.push_back(0); // use heuristic
   // for (uint32_t wavesPerEU = 1; wavesPerEU <= maxWavesPerEU; wavesPerEU *= 2)
@@ -204,10 +198,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numWavesRange,     // numWaves
       {16, 32},          // matrixInstrNonkdim
       {1, 2, 3},         // numStages
-      wavesPerEUList,         // wavesPerEU
-      gridGroupSizeList,      // gridGroupSize
-      numCTAsList,            // numCTAs
-      useReductionLayoutList  // useReductionLayout
+      wavesPerEUList,    // wavesPerEU
+      gridGroupSizeList, // gridGroupSize
+      numCTAsList        // numCTAs
   };
 
   // WMMA (RDNA) parameters
@@ -220,10 +213,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       {4, 8},            // numWaves
       {0},               // matrixInstrNonkdim
       {1, 2, 3},         // numStages
-      wavesPerEUList,         // wavesPerEU
-      gridGroupSizeList,      // gridGroupSize
-      numCTAsList,            // numCTAs
-      useReductionLayoutList  // useReductionLayout
+      wavesPerEUList,    // wavesPerEU
+      gridGroupSizeList, // gridGroupSize
+      numCTAsList        // numCTAs
   };
 
   // Non-accel (FMA) parameters.
@@ -243,10 +235,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numWavesNonAccel,  // numWaves (= blockSize / waveSize)
       {0},               // matrixInstrNonkdim (no matrix-accel instr)
       {1, 2, 3},         // numStages
-      wavesPerEUList,         // wavesPerEU
-      gridGroupSizeList,      // gridGroupSize
-      numCTAsList,            // numCTAs
-      useReductionLayoutList  // useReductionLayout
+      wavesPerEUList,    // wavesPerEU
+      gridGroupSizeList, // gridGroupSize
+      numCTAsList        // numCTAs
   };
 
   if (isMfma)
@@ -264,11 +255,6 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   auto nPerBlock = computeDPerBlock(gemmGemmOp, kind, GemmMNDim::N);
   std::vector<uint32_t> wavesPerEUList = {0};
   std::vector<uint32_t> gridGroupSizeList = {0};
-  // Opt-in reduction-layout warp redistribution: only swept in the exhaustive
-  // space, pinned off (0) otherwise.
-  std::vector<uint32_t> useReductionLayoutList =
-      kind == TuningParamSetKind::Exhaustive ? std::vector<uint32_t>{0, 1}
-                                             : std::vector<uint32_t>{0};
 
   std::vector<uint32_t> kPerBlock = {16, 32, 64, 128, 512, 1024, 2048};
   // use the actual K dimension, typically it's 128 for attention
@@ -302,8 +288,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       {1, 2, 3},
       wavesPerEUList,
       gridGroupSizeList,
-      numCTAsList,
-      useReductionLayoutList};
+      numCTAsList};
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsWMMA = {
       /*gemm0MPerBlock=*/mPerBlock,
       /*gemm0NPerBlock=*/nPerBlock,
@@ -314,8 +299,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       {1, 2},
       wavesPerEUList,
       gridGroupSizeList,
-      numCTAsList,
-      useReductionLayoutList};
+      numCTAsList};
 
   // Non-accel path.
   std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
@@ -335,8 +319,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       {1, 2},
       wavesPerEUList,
       gridGroupSizeList,
-      numCTAsList,
-      useReductionLayoutList};
+      numCTAsList};
 
   auto [firstGemmKind, secondGemmKind] =
       rock::getMatrixAccelKind(rock::getArchValue(gemmGemmOp), gemmGemmOp);
@@ -365,9 +348,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
 // - `useInThreadTranspose`             (set to kKnobDefault)
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
-//
-// `useReductionLayout` is swept over {0, 1} in the Exhaustive space only; in
-// every other tuning kind it is pinned off (0).
+// - `useReductionLayout`               (set to 0)
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
@@ -389,24 +370,20 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                   for (uint32_t wavesPerEU : validRangeGemmGemmParams[7]) {
                     for (uint32_t gridGroupSize : validRangeGemmGemmParams[8]) {
                       for (uint32_t numCTAs : validRangeGemmGemmParams[9]) {
-                        for (uint32_t useReductionLayout :
-                             validRangeGemmGemmParams[10]) {
-                          auto gemmGemmParams = GemmGemmParamsAttr::get(
-                              gemmGemmOp.getContext(), gemm0MPerBlock,
-                              gemm0NPerBlock, gemmKPerBlock, gemmKPack, numCTAs,
-                              numWaves, matrixInstrNonkdim, splitKFactor,
-                              numStages, wavesPerEU, gridGroupSize,
-                              /*useAsyncCopy=*/kKnobDefault,
-                              /*useBlockPingpong=*/kKnobDefault,
-                              /*useInThreadTranspose=*/kKnobDefault,
-                              /*useBufferOps=*/kKnobDefault,
-                              /*useBufferAtomics=*/kKnobDefault,
-                              /*scheduleHint=*/scheduleHint,
-                              /*useReductionLayout=*/useReductionLayout);
-                          newSpace->tuningRange.push_back(
-                              cast<RockTuningParamAttrInterface>(
-                                  gemmGemmParams));
-                        }
+                        auto gemmGemmParams = GemmGemmParamsAttr::get(
+                            gemmGemmOp.getContext(), gemm0MPerBlock,
+                            gemm0NPerBlock, gemmKPerBlock, gemmKPack, numCTAs,
+                            numWaves, matrixInstrNonkdim, splitKFactor,
+                            numStages, wavesPerEU, gridGroupSize,
+                            /*useAsyncCopy=*/kKnobDefault,
+                            /*useBlockPingpong=*/kKnobDefault,
+                            /*useInThreadTranspose=*/kKnobDefault,
+                            /*useBufferOps=*/kKnobDefault,
+                            /*useBufferAtomics=*/kKnobDefault,
+                            /*scheduleHint=*/scheduleHint,
+                            /*useReductionLayout=*/0);
+                        newSpace->tuningRange.push_back(
+                            cast<RockTuningParamAttrInterface>(gemmGemmParams));
                       }
                     }
                   }
@@ -520,9 +497,7 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
 // - `useInThreadTranspose`             (set to kKnobDefault)
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
-//
-// `useReductionLayout` is swept over {0, 1} in the Exhaustive space only; in
-// every other tuning kind it is pinned off (0).
+// - `useReductionLayout`               (set to 0)
 static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     RockGemmWrapperInterface gemmOp,
                                     TuningParamSetKind kind) {
@@ -549,25 +524,23 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                   for (int64_t wavesPerEU : params[7]) {
                     for (int64_t gridGroupSize : params[8]) {
                       for (uint32_t numCTAs : params[9]) {
-                        for (uint32_t useReductionLayout : params[10]) {
-                          auto gemmParams = GemmParamsAttr::get(
-                              b.getContext(), gemmMPerBlock, gemmNPerBlock,
-                              gemmKPerBlock, gemmKPack, numCTAs, numWaves,
-                              matrixInstrNonkdim, splitKFactor, numStages,
-                              wavesPerEU, gridGroupSize,
-                              /*useAsyncCopy=*/kKnobDefault,
-                              /*useBlockPingpong=*/kKnobDefault,
-                              /*useInThreadTranspose=*/kKnobDefault,
-                              /*useBufferOps=*/kKnobDefault,
-                              /*useBufferAtomics=*/kKnobDefault,
-                              /*scheduleHint=*/kKnobDefault,
-                              /*useReductionLayout=*/useReductionLayout);
-                          if (kind != TuningParamSetKind::Full ||
-                              succeeded(tuningInfo->couldBePerformant(
-                                  info, gemmParams)))
-                            newSpace->tuningRange.push_back(
-                                cast<RockTuningParamAttrInterface>(gemmParams));
-                        }
+                        auto gemmParams = GemmParamsAttr::get(
+                            b.getContext(), gemmMPerBlock, gemmNPerBlock,
+                            gemmKPerBlock, gemmKPack, numCTAs, numWaves,
+                            matrixInstrNonkdim, splitKFactor, numStages,
+                            wavesPerEU, gridGroupSize,
+                            /*useAsyncCopy=*/kKnobDefault,
+                            /*useBlockPingpong=*/kKnobDefault,
+                            /*useInThreadTranspose=*/kKnobDefault,
+                            /*useBufferOps=*/kKnobDefault,
+                            /*useBufferAtomics=*/kKnobDefault,
+                            /*scheduleHint=*/kKnobDefault,
+                            /*useReductionLayout=*/0);
+                        if (kind != TuningParamSetKind::Full ||
+                            succeeded(tuningInfo->couldBePerformant(
+                                info, gemmParams)))
+                          newSpace->tuningRange.push_back(
+                              cast<RockTuningParamAttrInterface>(gemmParams));
                       }
                     }
                   }
