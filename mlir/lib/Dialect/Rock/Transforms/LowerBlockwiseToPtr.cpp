@@ -24,6 +24,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -49,27 +50,6 @@ struct RockLowerBlockwiseToPtrPass
 } // end anonymous namespace
 
 namespace {
-
-static Value findStoreResultReplacement(Value value, Type resultType) {
-  Value current = value;
-  while (current) {
-    if (current.getType() == resultType)
-      return current;
-
-    if (auto transformOp = current.getDefiningOp<TransformOp>()) {
-      current = transformOp.getInput();
-      continue;
-    }
-
-    if (auto storeOp = current.getDefiningOp<BlockwiseStoreOp>()) {
-      current = storeOp.getDest();
-      continue;
-    }
-
-    return {};
-  }
-  return {};
-}
 
 //===----------------------------------------------------------------------===//
 // BlockwiseLoadOp lowering.
@@ -115,7 +95,7 @@ struct BlockwiseStoreRewritePattern
     auto storeMethod = op.getStoreMethod();
 
     Value resultReplacement =
-        findStoreResultReplacement(dest, op.getResult().getType());
+        rock::findStoreResultReplacement(dest, op.getResult().getType());
     if (resultReplacement) {
       op.getResult().replaceAllUsesWith(resultReplacement);
     } else if (!op.getResult().use_empty()) {

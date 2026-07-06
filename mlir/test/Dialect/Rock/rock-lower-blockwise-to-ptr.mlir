@@ -230,6 +230,29 @@ func.func @test_store_no_indices(%arg0: tensor<64x64xf32>, %arg1: tensor<4096xf3
 
 // -----
 
+// Chained blockwise_store destinations must lower both stores to the same
+// underlying destination view instead of treating the first store result as a
+// pointer root.
+// CHECK-LABEL: @test_chained_blockwise_store_dest
+// CHECK-SAME: (%[[SRC0:.*]]: tensor<64x64xf32>, %[[SRC1:.*]]: tensor<64x64xf32>, %[[DST:.*]]: tensor<4096xf32>)
+//      CHECK:   %[[DSTVIEW:.*]] = rock.transform %[[DST]] by
+//      CHECK:   %[[PTRS0:.*]], %[[MASK0:.*]] = rock.transforms_to_ptr %[[DSTVIEW]]
+//      CHECK:   rock.blockwise_store_ptr %[[SRC0]] -> %[[PTRS0]](%[[MASK0]]) by  atomic_add
+//      CHECK:   %[[PTRS1:.*]], %[[MASK1:.*]] = rock.transforms_to_ptr %[[DSTVIEW]]
+//      CHECK:   rock.blockwise_store_ptr %[[SRC1]] -> %[[PTRS1]](%[[MASK1]]) by  atomic_add
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_store
+func.func @test_chained_blockwise_store_dest(%src0: tensor<64x64xf32>, %src1: tensor<64x64xf32>, %dst: tensor<4096xf32>) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %dst_view = rock.transform %dst by <affine_map<(m, n) -> (n * 64 + m)> by [<Unmerge{64, 64} ["n", "m"] at [1, 0] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf32> to tensor<64x64xf32>
+  %s0 = rock.blockwise_store %src0 -> %dst_view by atomic_add
+    : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<64x64xf32>
+  %s1 = rock.blockwise_store %src1 -> %s0 by atomic_add
+    : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<64x64xf32>
+  return %s1 : tensor<64x64xf32>
+}
+
+// -----
+
 // Verifies that ReturnOpRewritePattern, when triggered by a return whose
 // operand is produced by a blockwise_store, also clears the parent function's
 // result attributes (the function becomes void).

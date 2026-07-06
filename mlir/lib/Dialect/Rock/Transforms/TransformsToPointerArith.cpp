@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -58,6 +59,28 @@ struct RockTransformsToPointerArithPass
 } // end anonymous namespace
 
 namespace {
+
+static void resolveStoreResultRoot(OpBuilder &b, Value &buffer,
+                                   ArrayAttr &transforms) {
+  while (Operation *defOp = buffer.getDefiningOp()) {
+    Value dest;
+    if (auto blockwiseStoreOp = dyn_cast<BlockwiseStoreOp>(defOp)) {
+      dest = blockwiseStoreOp.getDest();
+    } else if (auto storeOp = dyn_cast<StoreOp>(defOp)) {
+      dest = storeOp.getDest();
+    } else {
+      return;
+    }
+
+    Value replacement =
+        rock::findStoreResultReplacement(dest, buffer.getType());
+    if (!replacement)
+      return;
+
+    std::tie(buffer, transforms, std::ignore) =
+        rock::untransform(b, replacement, transforms);
+  }
+}
 
 // Helper function to create a tensor range using tt.make_range with proper
 // shape. Creates a tensor where the non-unit dimension contains values [start,
@@ -465,6 +488,7 @@ struct TransformsToPtrRewritePattern
     source = isolateTransforms(b, source);
 
     auto [buffer, transforms, _] = untransform(b, source);
+    resolveStoreResultRoot(b, buffer, transforms);
 
     // After regularize-input, the root of any transform chain must be either
     // a block argument (kernel input tensor) or an arith.constant (splat).

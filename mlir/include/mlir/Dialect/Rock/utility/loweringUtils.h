@@ -146,6 +146,11 @@ FailureOr<SmallVector<BlockArgument>> traceRootOutputToArgs(Value output,
 // Trace value to a block argument, going through view-like operations
 FailureOr<BlockArgument> findBlockArgument(Value value);
 
+/// Find the same-typed value in a store destination chain that can replace a
+/// store result. This traces through transform ops and earlier store results
+/// used as destinations.
+Value findStoreResultReplacement(Value dest, Type resultType);
+
 llvm::FailureOr<ArrayAttr>
 computeOutputTransforms(OpBuilder &b, Location loc, int64_t mPerBlock,
                         int64_t nPerBlock, ArrayRef<int64_t> bidGridLengths);

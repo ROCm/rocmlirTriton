@@ -335,6 +335,32 @@ FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {
   return maybeBlockArg;
 }
 
+Value mlir::rock::findStoreResultReplacement(Value dest, Type resultType) {
+  Value current = dest;
+  while (current) {
+    if (current.getType() == resultType)
+      return current;
+
+    if (auto transformOp = current.getDefiningOp<TransformOp>()) {
+      current = transformOp.getInput();
+      continue;
+    }
+
+    if (auto blockwiseStoreOp = current.getDefiningOp<BlockwiseStoreOp>()) {
+      current = blockwiseStoreOp.getDest();
+      continue;
+    }
+
+    if (auto storeOp = current.getDefiningOp<StoreOp>()) {
+      current = storeOp.getDest();
+      continue;
+    }
+
+    return {};
+  }
+  return {};
+}
+
 // Helper function to get attributes from parents
 template <typename RetAttrType>
 static FailureOr<RetAttrType> getAttrFromOpOrParents(
@@ -401,7 +427,10 @@ mlir::rock::traceRootOutputToStoreOps(Value output) {
     for (OpOperand &use : current.getUses()) {
       Operation *owner = use.getOwner();
       if (auto storeOp = dyn_cast<StoreOp>(owner)) {
-        stores.insert(storeOp);
+        // Only the stored-value operand consumes the traced output. A store
+        // result may also be threaded into a later store's destination.
+        if (use.get() == storeOp.getSource())
+          stores.insert(storeOp);
       } else if (isForwardTraceOp(owner)) {
         for (Value result : owner->getResults())
           worklist.push_back(result);
