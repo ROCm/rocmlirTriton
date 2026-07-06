@@ -339,26 +339,28 @@ func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x
 // non-linear in the iv; the tap also flows through an Embed sliding window into
 // a padded width, so the validity mask depends on the iv too. Rather than leave
 // the op in the loop, the pass carries the decomposed merge coordinates
-// (channel, tap) as extra iter_args and rebuilds the offset + mask each
-// iteration with add/mul/compare/select and a mixed-radix carry -- no
-// floordiv/mod in the loop (cf. rocMLIR's IndexDiffUpdate).
+// (channel, tap) as extra iter_args, advances them with a mixed-radix carry
+// (add/compare/select, no floordiv/mod -- cf. rocMLIR's IndexDiffUpdate), and
+// emits a single rock.coords_to_ptr that defers the offset + mask expansion to
+// rock-transforms-to-pointer-arith.
 //
 // CHECK-LABEL: func @hoist_conv_input_carry
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<8xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
-// The loop carries the validity tap coordinate + offset accumulator (full tiles)
-// alongside the result:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) ->
-// Base pointer rebuilt in the loop pinned to the lower bound %c0_i32 (not hoisted):
-//       CHECK:     %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
-// The offset/mask reconstruction uses no division in the loop body:
+// The loop carries the two decomposed gemmK coordinates (channel, tap) as
+// minimal-rank iter_args alongside the result (no offset accumulator):
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x1xi32>, tensor<2x1xi32>)
+// A single coords_to_ptr seeds the sub-chain below the merge with the coord
+// vector and defers all offset/mask expansion to the lowering:
+//       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.coords_to_ptr %{{.*}}[%{{.*}}]
+// No division in the loop body (the merge split is maintained by the carry, not
+// recomputed):
 //   CHECK-NOT:     floordiv
+//   CHECK-NOT:     arith.divui
 //   CHECK-NOT:     arith.divsi
+//   CHECK-NOT:     arith.remui
 //   CHECK-NOT:     arith.remsi
-// Mask rebuilt from the carried tap coordinate, pointer rebuilt from the in-loop
-// base + reconstructed offset, then loaded:
-//       CHECK:     arith.cmpi ult
-//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
-//       CHECK:     rock.blockwise_load_ptr %[[PTR]]
+// Pointer and mask come straight from coords_to_ptr:
+//       CHECK:     rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]]
 // Mixed-radix carry update (compare + select) advances the coordinates:
 //       CHECK:     arith.cmpi uge
 //       CHECK:     arith.select
@@ -389,111 +391,36 @@ func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) ->
 
 // -----
 
-// Full-tile distributed carry: the 2D-conv-input case. gemmK is a
-// Merge{2, 3, 3} of (channel, tap0, tap1) and the iv (k_loop, stride 2 in
-// gemmK) straddles the tap factors, so the affine fast path bails and the pass
-// takes the carry path. Both spatial taps flow through a halo Pad + Embed
-// sliding window, so the validity mask is iv-dependent and the op cannot be
-// hoisted as a plain linear recurrence.
-//
-// Of the three decomposed coordinates only the two spatial taps impact validity
-// (they feed the Pad/Embed); the channel only scales the buffer offset. The
-// taps are the validity *suffix* of the decomposition, so the pass carries the
-// two taps and the offset as FULL tensor<2x4> tiles (lane-distributed -> vector
-// registers, no scalar-register spill) and DROPS the channel coordinate
-// entirely, recovering its offset contribution from the taps' carry-out. (The
-// minimal-rank recurrence remains in the pass as a fallback for shapes where the
-// validity coordinates are not a clean suffix.)
+// Carry path, 2D conv input. gemmK is a Merge{2, 3, 3} of (channel, tap0, tap1)
+// and the iv (k_loop, stride 2 in gemmK) straddles the tap factors, so the
+// affine fast path bails. Both spatial taps flow through a halo Pad + Embed
+// sliding window, so the validity mask is iv-dependent. The pass carries all
+// three decomposed coordinates (channel, tap0, tap1) as minimal-rank iter_args,
+// advances them with a 3-digit mixed-radix carry, and emits one
+// rock.coords_to_ptr (offset + mask expansion deferred to the lowering). The
+// coordinates only vary along the iv-traversed k dimension, so they are carried
+// at reduced rank (tensor<2x1>, not the full tensor<2x4> tile).
 //
 // CHECK-LABEL: func @hoist_conv2d_input_carry_rank_redundant
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
-// Two tap coordinates + offset carried as full tiles (tensor<2x4>, not the
-// minimal tensor<2x1>); the channel is dropped (three carried iter_args):
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>)
-// Base pointer rebuilt in the loop pinned to the lower bound %c0_i32 (not hoisted):
-//       CHECK:     %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
-// Mask rebuilt with no division in the loop body:
+// Three decomposed coordinates carried as minimal-rank iter_args (tensor<2x1>):
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x1xi32>, tensor<2x1xi32>, tensor<2x1xi32>)
+// A single coords_to_ptr defers offset/mask expansion to the lowering:
+//       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.coords_to_ptr %{{.*}}[%{{.*}}]
+// No division in the loop body (the merge split is maintained by the carry):
 //   CHECK-NOT:     floordiv
+//   CHECK-NOT:     arith.divui
 //   CHECK-NOT:     arith.divsi
+//   CHECK-NOT:     arith.remui
 //   CHECK-NOT:     arith.remsi
-//       CHECK:     arith.cmpi ult, %{{.*}} : tensor<2x4xi32>
-//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
-//       CHECK:     rock.blockwise_load_ptr %[[PTR]]
-// The odometer carry advances the taps at full tile (tensor<2x4>):
-//       CHECK:     arith.cmpi uge, %{{.*}} : tensor<2x4xi32>
-//       CHECK:     arith.select %{{.*}} : tensor<2x4xi1>, tensor<2x4xi32>
-//       CHECK:     scf.yield %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>
-func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
-  %c0_i32 = arith.constant 0 : i32
-  %c1_i32 = arith.constant 1 : i32
-  %c9_i32 = arith.constant 9 : i32
-
-  // raw input buffer (ngc01): ci=2, 0i=4, 1i=4 -> 32.
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> ((d2 * 4 + d3) * 4 + d4)> by [<Unmerge{2, 4, 4} ["ci", "0i", "1i"] at [2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["ni"] at [0] -> [] at []>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [1, 1, 2, 4, 4] -> [32]> : tensor<32xi8> to tensor<1x1x2x4x4xi8>
-  // Halo pad on both spatial dims: 4 -> 6 (validity-impacting).
-  %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3 - 1, d4 - 1)> by [<PassThrough ["ni"] at [0] -> ["ni"] at [0]>, <PassThrough ["gi"] at [1] -> ["gi"] at [1]>, <PassThrough ["ci"] at [2] -> ["ci"] at [2]>, <Pad{1, 1, 1, 1} ["0ipad", "1ipad"] at [3, 4] -> ["0i", "1i"] at [3, 4]>] bounds = [1, 1, 2, 6, 6] -> [1, 1, 2, 4, 4]> : tensor<1x1x2x4x4xi8> to tensor<1x1x2x6x6xi8>
-  // Sliding windows: 0ipad = tap0 + 0o ; 1ipad = tap1 + 1o.
-  %2 = rock.transform %1 by <affine_map<(d0, d1, d2, d3, d4, d5, d6) -> (d0, d1, d2, d3 + d4, d5 + d6)> by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Embed{1, 1} ["0", "0o"] at [3, 4] -> ["0ipad"] at [3]>, <Embed{1, 1} ["1", "1o"] at [5, 6] -> ["1ipad"] at [4]>] bounds = [1, 1, 2, 3, 4, 3, 4] -> [1, 1, 2, 6, 6]> : tensor<1x1x2x6x6xi8> to tensor<1x1x2x3x4x3x4xi8>
-
-  %res = scf.for %k = %c0_i32 to %c9_i32 step %c1_i32 iter_args(%acc = %arg1) -> (tensor<2x4xi8>) : i32 {
-    // Merge (ci, tap0, tap1) into gemmK (radix 2,3,3); (ni, 0o, 1o) into gemmN.
-    %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 9, (d1 mod 9) floordiv 3, d2 floordiv 4, d1 mod 3, d2 mod 4)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 3, 3} ["gemmK"] at [1] -> ["ci", "0", "1"] at [2, 3, 5]>, <Merge{1, 4, 4} ["gemmN"] at [2] -> ["ni", "0o", "1o"] at [0, 4, 6]>] bounds = [1, 18, 16] -> [1, 1, 2, 3, 4, 3, 4]> : tensor<1x1x2x3x4x3x4xi8> to tensor<1x18x16xi8>
-    // Tiling: k_loop (the iv) feeds gemmK with stride 2 (k_iter = 2); n_iter = 4.
-    %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)> by [<PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{9, 2} ["k_loop", "k_iter"] at [0, 4] -> ["gemmK"] at [1]>, <Unmerge{4, 4} ["n_block", "n_iter"] at [3, 5] -> ["gemmN"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [9, 1, 1, 4, 2, 4] -> [1, 18, 16]> : tensor<1x18x16xi8> to tensor<9x1x1x4x2x4xi8>
-    %ptr, %mask = rock.transforms_to_ptr %4[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<9x1x1x4x2x4xi8> -> tensor<2x4xi32>, tensor<2x4xi1>
-    %load = rock.blockwise_load_ptr %ptr[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<2x4xi32>, tensor<2x4xi1> -> tensor<2x4xi8>
-    scf.yield %load : tensor<2x4xi8>
-  }
-  return %res : tensor<2x4xi8>
-}
-
-// -----
-
-// Full-tile distributed offset recurrence for the carry path. Same 2D-conv-
-// input carry IR as @hoist_conv2d_input_carry_rank_redundant, but the CHECK
-// lines pin the full-tile distributed shape that the pass now produces.
-//
-// gemmK = Merge{2, 3, 3} of (channel, tap0, tap1). Only the two spatial taps
-// feed the halo Pad/Embed, so they are the validity-impacting *suffix* of the
-// decomposition; the channel only scales the buffer offset. The pass therefore:
-//
-//   1. carries the two validity taps AND the offset accumulator as FULL tiles
-//      (tensor<2x4xi32>) -- lane-distributed, so they stay in vector registers
-//      instead of being uniform (scalar-register) minimal-rank tensors, and
-//   2. DROPS the channel coordinate: it is never an iter_arg. Its per-step
-//      offset contribution is recovered from the taps' carry-out
-//      (delta_channel = digit_channel + carry_out_of_tap0), so no third
-//      coordinate tile is carried.
-//
-// The offset is advanced by a per-step delta (a recurrence, NOT a re-expansion
-// from the coordinates); only the validity mask is rebuilt each iteration, from
-// the carried full-tile taps (no cross-lane broadcast).
-//
-// CHECK-LABEL: func @hoist_conv2d_input_carry_offset_recurrence
-//  CHECK-SAME: (%[[ARG0:.*]]: tensor<32xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
-// The two validity taps and the offset accumulator are carried as full tiles
-// (tensor<2x4xi32>); the channel coordinate is NOT an iter_arg:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %[[OFF:.*]] = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>)
-// Base pointer rebuilt in the loop pinned to the lower bound %c0_i32 (not hoisted):
-//       CHECK:     %[[PTRS:.*]], %{{.*}} = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
-//   CHECK-NOT:     floordiv
-//   CHECK-NOT:     arith.divsi
-//   CHECK-NOT:     arith.remsi
-// Validity mask rebuilt from the carried full-tile taps (the halo moves with
-// the iv) -- a full-tile compare, no minimal-rank broadcast:
-//       CHECK:     arith.cmpi ult, %{{.*}} : tensor<2x4xi32>
-// The pointer is the carried offset added to the in-loop base -- NOT re-expanded
-// from the coordinates each iteration:
-//       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFF]] : tensor<2x4xi32>
-//       CHECK:     rock.blockwise_load_ptr %[[PTR]]
-// The taps advance with a full-tile odometer (cmp + select on tensor<2x4>), and
-// the carried offset accumulator is advanced by the full-tile per-step delta.
-// The same %OFF fed to the load is the value incremented and yielded:
-//       CHECK:     arith.cmpi uge, %{{.*}} : tensor<2x4xi32>
-//       CHECK:     arith.select %{{.*}} : tensor<2x4xi1>, tensor<2x4xi32>
-//       CHECK:     %[[OFFNEXT:.*]] = arith.addi %[[OFF]], %{{.*}} : tensor<2x4xi32>
+//       CHECK:     rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]]
+// Two carry stages (compare + select) for the two lower digits (tap1, tap0):
+//       CHECK:     arith.cmpi uge
+//       CHECK:     arith.select
+//       CHECK:     arith.cmpi uge
+//       CHECK:     arith.select
 //       CHECK:     scf.yield
-func.func @hoist_conv2d_input_carry_offset_recurrence(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c9_i32 = arith.constant 9 : i32
