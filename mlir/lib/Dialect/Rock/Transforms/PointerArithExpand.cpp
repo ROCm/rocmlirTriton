@@ -1,4 +1,4 @@
-//===- PointerArithExpand.cpp - shared transform->arith expansion --------===//
+//===- PointerArithExpand.cpp - shared transform->arith helpers ----------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -16,8 +16,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "PointerArithExpand.h"
-
-#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/AffineExpr.h"
@@ -323,133 +321,4 @@ mlir::rock::expandAffineMap(OpBuilder &builder, Location loc, AffineMap affineMa
   if (llvm::all_of(expanded, [](Value v) { return v; }))
     return expanded;
   return failure();
-}
-
-//===----------------------------------------------------------------------===//
-// Validity.
-//===----------------------------------------------------------------------===//
-
-Value mlir::rock::updateValidityAfter(OpBuilder &b, Location loc,
-                                      TransformMapAttr map, ValueRange outputs) {
-  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
-  ArrayRef<int64_t> lowerBounds = map.getLowerBounds();
-
-  // unsigned < catches both negatives (as all negatives are > the bound)
-  // and being too large on the right.
-  auto addLowerDimUltClamp = [&](uint32_t lowerDim) {
-    int64_t bound = lowerBounds[lowerDim];
-    Value boundConst = arith::ConstantOp::create(
-        b, loc, b.getIntegerAttr(b.getI32Type(), bound));
-    Value output = outputs[lowerDim];
-    auto [o, bc] = ensureCompatible(b, loc, output, boundConst);
-    Value inBounds =
-        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, o, bc);
-    auto [ib, iv] = ensureCompatible(b, loc, inBounds, isValid);
-    isValid = arith::AndIOp::create(b, loc, ib, iv);
-  };
-
-  for (TransformAttr op : map.getOps()) {
-    TransformType type = op.getType();
-    ArrayRef<uint32_t> lowerDims = op.getLowerDims();
-    ArrayRef<int64_t> params = op.getParams();
-    if (type == TransformType::Pad) {
-      for (const auto &pair : llvm::enumerate(lowerDims)) {
-        size_t leftParam = 2 * pair.index();
-        size_t rightParam = leftParam + 1;
-        uint32_t lowerDim = pair.value();
-        if (params[leftParam] == 0 && params[rightParam] == 0)
-          continue;
-        addLowerDimUltClamp(lowerDim);
-      }
-    }
-    if (type == TransformType::Embed) {
-      if (!embedCanBeInvalid(map, op))
-        continue;
-      addLowerDimUltClamp(op.getLowerDims()[0]);
-    }
-  }
-  return isValid;
-}
-
-//===----------------------------------------------------------------------===//
-// Chain expansion core.
-//===----------------------------------------------------------------------===//
-
-FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
-    OpBuilder &b, Location loc, ArrayRef<TransformMapAttr> transforms,
-    ValueRange startCoords, ArrayRef<int64_t> outShape) {
-  using AffineResults = SmallVector<Value>;
-
-  // Break the chain into segments that each end at a validity-impacting map,
-  // composing the intervening maps into a single affine map. A trailing
-  // segment with no validity impact carries the remaining maps.
-  SmallVector<std::pair<AffineMap, TransformMapAttr>> composedMaps;
-  SmallVector<TransformMapAttr> toCompose;
-  for (TransformMapAttr t : transforms) {
-    toCompose.push_back(t);
-    if (mapImpactsValidity(t)) {
-      composedMaps.emplace_back(composeTransforms(toCompose), t);
-      toCompose.clear();
-    }
-  }
-  composedMaps.emplace_back(composeTransforms(toCompose), nullptr);
-
-  AffineResults computed(startCoords);
-  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
-  for (const auto &[composedMap, transform] : composedMaps) {
-    if (!composedMap) // empty trailing segment
-      continue;
-    FailureOr<AffineResults> transformed =
-        expandAffineMap(b, loc, composedMap, computed);
-    if (failed(transformed))
-      return failure();
-    computed.assign(*transformed);
-    if (transform) {
-      Value validityUpdate = updateValidityAfter(b, loc, transform, computed);
-      auto [vu, iv] = ensureCompatible(b, loc, validityUpdate, isValid);
-      isValid = arith::AndIOp::create(b, loc, vu, iv);
-    }
-  }
-
-  if (computed.size() != 1)
-    return failure();
-
-  OffsetAndMask result;
-  result.offset = broadcastToShape(b, loc, computed[0], outShape);
-  result.mask = broadcastToShape(b, loc, isValid, outShape);
-  return result;
-}
-
-FailureOr<Value> mlir::rock::expandCoordsToMask(
-    OpBuilder &b, Location loc, ArrayRef<TransformMapAttr> transforms,
-    ValueRange startCoords, ArrayRef<int64_t> outShape) {
-  using AffineResults = SmallVector<Value>;
-
-  // Same segmentation as expandCoordsToOffsetAndMask, but only the segments
-  // that end at a validity-impacting map are needed; the trailing offset-only
-  // segment is intentionally not emitted (the caller keeps the offset via a
-  // recurrence).
-  SmallVector<std::pair<AffineMap, TransformMapAttr>> composedMaps;
-  SmallVector<TransformMapAttr> toCompose;
-  for (TransformMapAttr t : transforms) {
-    toCompose.push_back(t);
-    if (mapImpactsValidity(t)) {
-      composedMaps.emplace_back(composeTransforms(toCompose), t);
-      toCompose.clear();
-    }
-  }
-
-  AffineResults computed(startCoords);
-  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
-  for (const auto &[composedMap, transform] : composedMaps) {
-    FailureOr<AffineResults> transformed =
-        expandAffineMap(b, loc, composedMap, computed);
-    if (failed(transformed))
-      return failure();
-    computed.assign(*transformed);
-    Value validityUpdate = updateValidityAfter(b, loc, transform, computed);
-    auto [vu, iv] = ensureCompatible(b, loc, validityUpdate, isValid);
-    isValid = arith::AndIOp::create(b, loc, vu, iv);
-  }
-  return broadcastToShape(b, loc, isValid, outShape);
 }

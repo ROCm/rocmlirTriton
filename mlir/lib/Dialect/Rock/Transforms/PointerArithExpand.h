@@ -1,4 +1,4 @@
-//===- PointerArithExpand.h - shared transform->arith expansion ----------===//
+//===- PointerArithExpand.h - shared transform->arith helpers ------------===//
 //
 // Copyright 2026 The MLIR Authors.
 //
@@ -15,16 +15,12 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 //
-// Shared machinery for expanding rock transform-map chains into arith/triton
-// operations that compute a linearized buffer offset and a validity mask.
-//
-// This is the common core used by both:
-//   * TransformsToPointerArith.cpp - the TransformsToPtrOp lowering, which
-//     starts from the op's extra indices plus per-tile ranges, and
-//   * TransformsInvariantCodeMotion.cpp - the carry-based LICM path, which
-//     starts from loop-carried decomposed coordinate tensors instead.
+// Small shared helpers for building arith/triton coordinate arithmetic out of
+// rock transform maps. These are the primitives shared by
+// TransformsToPointerArith and TransformsInvariantCodeMotion passes.
 //
 //===----------------------------------------------------------------------===//
+
 #ifndef ROCK_TRANSFORMS_POINTERARITHEXPAND_H
 #define ROCK_TRANSFORMS_POINTERARITHEXPAND_H
 
@@ -64,43 +60,6 @@ Value broadcastToShape(OpBuilder &b, Location loc, Value v,
 FailureOr<SmallVector<Value>> expandAffineMap(OpBuilder &b, Location loc,
                                               AffineMap affineMap,
                                               ValueRange operands);
-
-/// Emit the validity (bounds) checks contributed by a single validity-impacting
-/// `map`, given the just-computed lower coordinates `outputs`. Returns an i1
-/// value (scalar or tensor) that is true where every check passes.
-Value updateValidityAfter(OpBuilder &b, Location loc, TransformMapAttr map,
-                          ValueRange outputs);
-
-/// The linearized buffer offset and validity mask produced by a transform
-/// chain. `offset` is an i32 value (scalar or tensor); `mask` is an i1 value.
-struct OffsetAndMask {
-  Value offset;
-  Value mask;
-};
-
-/// Run the transform chain `transforms` (ordered view->buffer) starting from
-/// `startCoords` (the upper-space coordinates of `transforms.front()`), and
-/// return the resulting linearized offset and validity mask, both broadcast to
-/// `outShape`. This is the shared core of the TransformsToPtrOp lowering: the
-/// lowering seeds `startCoords` with extra indices + tile ranges, while the
-/// LICM carry path seeds it with loop-carried decomposed coordinate tensors.
-FailureOr<OffsetAndMask>
-expandCoordsToOffsetAndMask(OpBuilder &b, Location loc,
-                            ArrayRef<TransformMapAttr> transforms,
-                            ValueRange startCoords, ArrayRef<int64_t> outShape);
-
-/// Like `expandCoordsToOffsetAndMask`, but computes *only* the validity mask
-/// (broadcast to `outShape`) and skips the final offset linearization. Used by
-/// the carry-based LICM path when the offset is maintained by an incremental
-/// pointer recurrence: the only per-iteration coordinate work left is the
-/// validity check, so re-linearizing the offset would be wasted arithmetic.
-/// Coordinates are still expanded through the validity-impacting maps (the
-/// padding halo moves with the iv), but the trailing offset-only segment is
-/// dropped. Returns an all-true mask when no map impacts validity.
-FailureOr<Value> expandCoordsToMask(OpBuilder &b, Location loc,
-                                    ArrayRef<TransformMapAttr> transforms,
-                                    ValueRange startCoords,
-                                    ArrayRef<int64_t> outShape);
 
 } // namespace rock
 } // namespace mlir

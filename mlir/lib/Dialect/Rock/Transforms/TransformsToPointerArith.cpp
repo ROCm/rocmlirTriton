@@ -15,10 +15,12 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 //
-// This pass lowers TransformsToPtrOp by expanding transform map chains into
-// arithmetic operations that compute pointer offsets and validity masks. The
-// coordinate/validity expansion engine itself lives in PointerArithExpand.cpp
-// so it can be shared with the carry-based LICM path.
+// This pass lowers TransformsToPtrOp and CoordsToPtrOp by expanding transform
+// map chains into arithmetic operations that compute pointer offsets and
+// validity masks. The coordinate/validity expansion engine lives here (its
+// only consumer); it is built on the small shared arith/broadcast helpers in
+// PointerArithExpand.cpp, which the carry-based LICM path also uses to seed the
+// coordinates it defers to this lowering via rock.coords_to_ptr.
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,6 +34,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -61,6 +64,115 @@ struct RockTransformsToPointerArithPass
 } // end anonymous namespace
 
 namespace {
+
+//===----------------------------------------------------------------------===//
+// Coordinate/validity expansion engine.
+//===----------------------------------------------------------------------===//
+
+/// The linearized buffer offset and validity mask produced by a transform
+/// chain. `offset` is an i32 value (scalar or tensor); `mask` is an i1 value.
+struct OffsetAndMask {
+  Value offset;
+  Value mask;
+};
+
+/// Emit the validity (bounds) checks contributed by a single validity-impacting
+/// `map`, given the just-computed lower coordinates `outputs`. Returns an i1
+/// value (scalar or tensor) that is true where every check passes.
+static Value updateValidityAfter(OpBuilder &b, Location loc,
+                                 TransformMapAttr map, ValueRange outputs) {
+  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
+  ArrayRef<int64_t> lowerBounds = map.getLowerBounds();
+
+  // unsigned < catches both negatives (as all negatives are > the bound)
+  // and being too large on the right.
+  auto addLowerDimUltClamp = [&](uint32_t lowerDim) {
+    int64_t bound = lowerBounds[lowerDim];
+    Value boundConst = arith::ConstantOp::create(
+        b, loc, b.getIntegerAttr(b.getI32Type(), bound));
+    Value output = outputs[lowerDim];
+    auto [o, bc] = ensureCompatible(b, loc, output, boundConst);
+    Value inBounds =
+        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, o, bc);
+    auto [ib, iv] = ensureCompatible(b, loc, inBounds, isValid);
+    isValid = arith::AndIOp::create(b, loc, ib, iv);
+  };
+
+  for (TransformAttr op : map.getOps()) {
+    TransformType type = op.getType();
+    ArrayRef<uint32_t> lowerDims = op.getLowerDims();
+    ArrayRef<int64_t> params = op.getParams();
+    if (type == TransformType::Pad) {
+      for (const auto &pair : llvm::enumerate(lowerDims)) {
+        size_t leftParam = 2 * pair.index();
+        size_t rightParam = leftParam + 1;
+        uint32_t lowerDim = pair.value();
+        if (params[leftParam] == 0 && params[rightParam] == 0)
+          continue;
+        addLowerDimUltClamp(lowerDim);
+      }
+    }
+    if (type == TransformType::Embed) {
+      if (!embedCanBeInvalid(map, op))
+        continue;
+      addLowerDimUltClamp(op.getLowerDims()[0]);
+    }
+  }
+  return isValid;
+}
+
+/// Run the transform chain `transforms` (ordered view->buffer) starting from
+/// `startCoords` (the upper-space coordinates of `transforms.front()`), and
+/// return the resulting linearized offset and validity mask, both broadcast to
+/// `outShape`. TransformsToPtrOp seeds `startCoords` with extra indices + tile
+/// ranges; CoordsToPtrOp seeds it with the (possibly reduced-rank) coordinate
+/// operands the LICM carry path handed off.
+static FailureOr<OffsetAndMask>
+expandCoordsToOffsetAndMask(OpBuilder &b, Location loc,
+                            ArrayRef<TransformMapAttr> transforms,
+                            ValueRange startCoords,
+                            ArrayRef<int64_t> outShape) {
+  using AffineResults = SmallVector<Value>;
+
+  // Break the chain into segments that each end at a validity-impacting map,
+  // composing the intervening maps into a single affine map. A trailing
+  // segment with no validity impact carries the remaining maps.
+  SmallVector<std::pair<AffineMap, TransformMapAttr>> composedMaps;
+  SmallVector<TransformMapAttr> toCompose;
+  for (TransformMapAttr t : transforms) {
+    toCompose.push_back(t);
+    if (mapImpactsValidity(t)) {
+      composedMaps.emplace_back(composeTransforms(toCompose), t);
+      toCompose.clear();
+    }
+  }
+  composedMaps.emplace_back(composeTransforms(toCompose), nullptr);
+
+  AffineResults computed(startCoords);
+  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
+  for (const auto &[composedMap, transform] : composedMaps) {
+    if (!composedMap) // empty trailing segment
+      continue;
+    FailureOr<AffineResults> transformed =
+        expandAffineMap(b, loc, composedMap, computed);
+    if (failed(transformed))
+      return failure();
+    computed.assign(*transformed);
+    if (transform) {
+      Value validityUpdate = updateValidityAfter(b, loc, transform, computed);
+      auto [vu, iv] = ensureCompatible(b, loc, validityUpdate, isValid);
+      isValid = arith::AndIOp::create(b, loc, vu, iv);
+    }
+  }
+
+  if (computed.size() != 1)
+    return failure();
+
+  OffsetAndMask result;
+  result.offset = broadcastToShape(b, loc, computed[0], outShape);
+  result.mask = broadcastToShape(b, loc, isValid, outShape);
+  return result;
+}
 
 /// Shared tail of the TransformsToPtrOp / CoordsToPtrOp lowerings. Given the
 /// chain `root` buffer, the remaining `transformVec`, the seeded `initValues`
