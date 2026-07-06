@@ -793,13 +793,11 @@ def Rock_CoordsToPtrOp
       "Convert transforms and coordinate tensors to pointer and mask tensors";
 
   let description = [{
-    Like `rock.transforms_to_ptr`, but the transform chain is seeded at the
-    upper space of `source`'s remaining transform sub-chain by one explicit
-    coordinate per dimension (`coords`), rather than by scalar extra indices
-    plus per-tile ranges.
+    Like `rock.transforms_to_ptr`, but the source is seeded by one explicit
+    coordinate per dimension (`coords`), rather than by scalar extraIndices.
 
-    Each coordinate can be:
-    - A scalar `i32` (behaving like the scalar extra indices of `transforms_to_ptr`)
+    Each coordinate (coord) can be:
+    - A scalar `i32` (behaving like the scalar extraIndices of `transforms_to_ptr`)
     - An `i32` tensor (per-lane coordinate, which might be either
       loop-carried or loop-invariant). This is typically a tensor coming from loop iter_args.
 

@@ -1814,13 +1814,10 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
 }
 
 LogicalResult CoordsToPtrOp::verify() {
-  // Shapes of pointers/mask are already tied by AllShapesMatch, and coord/
-  // pointer/mask element types are constrained by the op's ODS types. The
-  // coordinate tensors seed the upper space of the source's remaining
-  // transform sub-chain, so there must be exactly one per source dimension.
-  // Their shapes are intentionally unconstrained: the lowering broadcasts each
-  // coordinate to the tile shape while expanding.
-  auto sourceType = cast<RankedTensorType>(getSource().getType());
+  auto sourceType = dyn_cast<RankedTensorType>(getSource().getType());
+  if (!sourceType)
+    return emitOpError("source must be a ranked tensor");
+
   if (static_cast<int64_t>(getCoords().size()) != sourceType.getRank())
     return emitOpError("expected one coordinate per source dimension")
            << " (" << getCoords().size() << " != " << sourceType.getRank()
