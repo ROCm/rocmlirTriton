@@ -1,10 +1,11 @@
 triton-patches/ -- downstream Triton cherry-picks
 =================================================
 
-This directory holds patches against the Triton submodule
+This directory holds downstream patch records against the vendored Triton tree
 (external/triton/).
 
 ----------------------------------------------------------------------
+patch-wmma-preserve-discardable-attrs.patch
 patch10290.patch
 patch10450.patch
 patch10498.patch
@@ -12,8 +13,22 @@ patch10585.patch
 patch1.patch
 patch2.patch
 patch3.patch
+patch_buffer_atomics.patch
 ----------------------------------------------------------------------
 TODO: Add missing patch descriptions
+
+patch_buffer_atomics.patch
+  Enables buffer atomic RMW across all AMD GPU families in
+  TargetFeatures::supportsBufferAtomicRMW (gfx906/gfx908/gfx90a/gfx942/gfx950,
+  gfx101x/gfx103x/gfx11/gfx12, gfx1250). On older families BUFFER_ATOMIC_*
+  silently drops writes against fine-grained pinned host memory, but
+  rocmlirTriton never targets such allocations so this is safe.
+  Integer RMW works universally; the per-family FP restrictions for
+  BUFFER_ATOMIC_ADD_{F32,F64}/PK_ADD_{F16,BF16} are encoded in
+  supportsBufferAtomicFadd (e.g. gfx906/gfx101x/gfx103x have no FP buffer
+  atomic add; gfx11 only F32; gfx942 no PK_ADD_BF16; gfx12 no F64).
+  Upstreaming was attempted in https://github.com/triton-lang/triton/pull/10408
+  but it was rejected.
 
 patch10498.patch
   Extends patch10450's soffset-split safety check to peel sign-preserving
@@ -26,3 +41,21 @@ patch10498.patch
 patch10585.patch
   Fixes a case where the block ping pong schedule was wrongly being applied
   in situations where it was not safe to do so because of non-uniform masks.
+  
+patch-wmma-preserve-discardable-attrs.patch
+  Lets rocmlirTriton choose the WMMA result transposition downstream instead
+  of inside Triton.
+
+  rocmlirTriton computes a `rock.o_transposed` discardable attribute at the
+  rock level (rock-add-triton-metadata, run right after rock-lower-stores,
+  using the store destination's getMaxVectorization), carries it onto the
+  lowered tt.dot/tt.dot_scaled (RockToTTIR), and finally consumes it after
+  accelerate-matmul (rock-set-matmul-output-transpose) to set the WMMA
+  isTransposed flag so the epilogue store coalesces.
+
+  This patch is the small piece that has to live inside Triton: it makes
+  AccelerateAMDMatmul copy the discardable attributes from the original dot
+  onto every freshly-created accelerator dot (MFMA / WMMA / scaled / v_dot /
+  FMA paths) so downstream metadata such as `rock.o_transposed` survives the
+  rewrite. It adds no Triton-side decision logic; the orientation is chosen
+  by the downstream rock pass.

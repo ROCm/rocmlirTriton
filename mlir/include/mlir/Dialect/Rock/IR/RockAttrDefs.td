@@ -112,6 +112,54 @@ def ReduceMethod : Rock_I32Enum<"ReduceMethod",
 
 def ReduceMethodAttr : EnumAttr<Rock_Dialect, ReduceMethod, "ReduceMethod">;
 
+/// CacheModifier
+///
+/// Mirrors triton::CacheModifier (TritonAttrDefs.td) one-to-one (same names and
+/// integer values) so a rock cache modifier maps directly onto its Triton
+/// counterpart when lowering rock loads to tt.load. Replicated here to keep the
+/// Rock dialect free of a TableGen dependency on the Triton dialect.
+///
+/// The names come from the NVIDIA PTX cache operators (and are reused by Triton
+/// on AMD targets). Meanings, as documented by triton.language.load/store:
+///   none : no modifier; backend default.
+///   ca   : (load) cache at all levels (L1 and L2); the default load behaviour,
+///          data is expected to be reused.
+///   cg   : cache at global level only (L2 and below, bypassing L1). Valid on
+///          both loads and stores.
+///   cs   : cache streaming -- data is likely accessed once, so it is treated
+///   as
+///          evict-first to avoid polluting the cache. Valid on loads and
+///          stores.
+///   cv   : (load) don't cache and fetch again (treat as volatile /
+///   non-coherent
+///          read).
+///   wb   : (store) write-back to all coherent levels.
+///   wt   : (store) write-through to system memory.
+/// See the PTX cache operators reference:
+/// https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#cache-operators
+///
+/// Loads may use {none, ca, cg, cs, cv}; stores may use {none, cg, cs, wb, wt}.
+/// The load-side legality (rejecting the store-only wb/wt) is enforced by
+/// verifyLoadCacheModifier() in RockDialect.cpp, not by this enum.
+
+def CacheModifier_None : I32EnumAttrCase<"NONE", 1, "none">;
+def CacheModifier_CA : I32EnumAttrCase<"CA", 2, "ca">;
+def CacheModifier_CG : I32EnumAttrCase<"CG", 3, "cg">;
+def CacheModifier_WB : I32EnumAttrCase<"WB", 4, "wb">;
+def CacheModifier_CS : I32EnumAttrCase<"CS", 5, "cs">;
+def CacheModifier_WT : I32EnumAttrCase<"WT", 6, "wt">;
+def CacheModifier_CV : I32EnumAttrCase<"CV", 7, "cv">;
+
+def CacheModifier
+    : Rock_I32Enum<"CacheModifier",
+                   "Cache modifier hint for a memory access (mirrors "
+                   "triton::CacheModifier)",
+                   [CacheModifier_None, CacheModifier_CA, CacheModifier_CG,
+                    CacheModifier_WB, CacheModifier_CS, CacheModifier_WT,
+                    CacheModifier_CV]>;
+
+def CacheModifierAttr : EnumAttr<Rock_Dialect, CacheModifier, "CacheModifier">;
+
 /// TransformAttr
 def Rock_TransformAttr : Rock_Attr<"Transform"> {
     let mnemonic = "transform";
@@ -511,6 +559,38 @@ def Rock_NotApplicable : Rock_Attr<"NotApplicable"> {
     call `signalPassFailure()` so the pipeline halts; consumers (tuning
     driver) inspect this attribute on PM failure to distinguish a
     "not-applicable" config from a real compilation bug.
+  }];
+}
+
+def Rock_OTransposed : Rock_Attr<"OTransposed"> {
+  let mnemonic = "o_transposed";
+
+  let description = [{
+    Discardable metadata describing the in-memory layout of a GEMM output
+    tile.  It is attached (as a discardable attribute named `rock.o_transposed`)
+    to `rock.blockwise_gemm` by the `rock-add-triton-metadata` pass and is
+    carried onto the lowered `tt.dot` / `tt.dot_scaled` (and survives the
+    Triton `tritonamdgpu-accelerate-matmul` rewrite).
+
+    - `value = true`  -> the output is "transposed" (column-major: the M
+                         dimension is the fast/contiguous dimension of the
+                         output in global memory).
+    - `value = false` -> the output is row-major (the N dimension is fast).
+
+    `rock-set-matmul-output-transpose` later consumes this to pick the
+    accelerator result layout (e.g. the WMMA `isTransposed` flag) so the
+    epilogue store coalesces/vectorizes.
+  }];
+
+  let parameters = (ins "bool":$value);
+  let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    /// Name of the discardable attribute used to carry this metadata on ops
+    /// (e.g. `rock.blockwise_gemm`, `tt.dot`, `tt.dot_scaled`).
+    static constexpr ::llvm::StringLiteral getNameStr() {
+      return ::llvm::StringLiteral("rock.o_transposed");
+    }
   }];
 }
 

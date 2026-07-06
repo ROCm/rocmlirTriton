@@ -139,7 +139,7 @@ could not turn into a secret leak anyway because it has no secret.
 | `.github/scripts/tests/test_sanitize.sh` | Regression corpus of accept/reject fixtures for the sanitizer. |
 | `.github/CODEOWNERS` | Marks the perimeter paths as code-owner-protected (Layer 1). |
 | `docs/PR_REVIEW_CHECKLIST.md` | The Critical / Major / Minor checklist (+ license-header template + rocmlirTriton-specific sections) the review skill applies. Overlaid from the default branch by the **Overlay** step in [§8](#8-job-by-job-walkthrough), then read by the **Snapshot trusted review docs** step which injects the body into the prompt at runtime -- single source of truth ([§15](#15-maintenance--sync-points)). |
-| `docs/bump_triton_version.md` | The detailed Triton-bump guide the review skill applies when `external/triton` or `triton-patches/*.patch` changes. It is overlaid and injected with the same trusted-doc flow as `docs/PR_REVIEW_CHECKLIST.md`. |
+| `docs/bump_triton_version.md` | The detailed bump guide the review skill applies when a PR imports new upstream Triton/LLVM revisions or changes downstream patch records under `triton-patches/` / `llvm-patches/`. It is overlaid and injected with the same trusted-doc flow as `docs/PR_REVIEW_CHECKLIST.md`. |
 | `.claude/skills/review-rocmlir-triton-pr/SKILL.md` | The review logic (read-only). |
 | `.claude/skills/update-pr-review/SKILL.md` | The re-review reconciliation logic. |
 

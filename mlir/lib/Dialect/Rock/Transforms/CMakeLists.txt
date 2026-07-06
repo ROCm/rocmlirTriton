@@ -1,7 +1,9 @@
 add_rocmlir_dialect_library(MLIRRockTransforms
+  AddTritonMetadata.cpp
   AffixTuningParameters.cpp
   AnalyzeMemoryUse.cpp
   ConvToGemm.cpp
+  SetMatmulOutputTranspose.cpp
   DetectFlashDecoding.cpp
   FoldBroadcast.cpp
   GemmToGridwise.cpp
@@ -9,6 +11,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   GridwiseGemmToBlockwise.cpp
   GridwiseAttnToBlockwise.cpp
   DecomposeNonPow2Tiles.cpp
+  FuseSiblingLoops.cpp
   GridLayoutEmitter.cpp
   ViewToTransform.cpp
   FusionSplitkRegularizationPass.cpp
@@ -17,10 +20,12 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   ConvertNarrowTypeSignatures.cpp
   EmulateNarrowTypes.cpp
   PreserveMaskedLoadSemantics.cpp
+  CollapseContiguousMerges.cpp
+  TransformsInvariantCodeMotion.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
   SerializeHostFuncs.cpp
-  FuncToTritonFunc.cpp
+  TensorToTritonPtr.cpp
   ResolveKernelLaunchParams.cpp
   RockEmitGpuBinary.cpp
   SortDimensionsMemoryLayout.cpp
@@ -84,13 +89,6 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   TritonGPUIR
   TritonAnalysis
 )
-
-# HIP needed transitively via tritonUtils.h (included by RockToTTIR.cpp)
-if (NOT WIN32)
-  find_package(hip REQUIRED PATHS ${ROCM_PATH})
-  target_link_libraries(MLIRRockTransforms PUBLIC hip::host hip::amdhip64)
-  target_link_libraries(obj.MLIRRockTransforms PUBLIC hip::host hip::amdhip64)
-endif()
 
 rocmlir_add_triton_includes(MLIRRockTransforms)
 

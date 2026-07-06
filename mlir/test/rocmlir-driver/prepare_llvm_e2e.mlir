@@ -45,8 +45,11 @@
 // GEMM-SAME: alias_scopes
 // GEMM-SAME: noalias_scopes
 
-// --- Atomic gemm (gfx1100, atomic_add f32) ---
-// RUN: rocmlir-gen --arch gfx1100 --store-method atomic_add --operation gemm -t f32 -p \
+// --- Atomic gemm (gfx942, atomic_add bf16 -> global atomicrmw fadd) ---
+// gfx942 bf16 still lowers to a global llvm.atomicrmw fadd, exercising the
+// relaxAtomics annotation path. (gfx1100 f32 now uses buffer atomics, which
+// are lowered before rock-prepare-llvm runs and never appear as atomicrmw.)
+// RUN: rocmlir-gen --arch gfx942 --store-method atomic_add --operation gemm -t bf16 -p \
 // RUN:   | rocmlir-driver -c --mlir-print-ir-after=rock-prepare-llvm 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ATOMIC
 

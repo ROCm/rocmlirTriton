@@ -13,6 +13,14 @@ if(BUILD_FAT_LIBROCKCOMPILER)
 
   set(LIBRARY_NAME rockCompiler)
 
+  # The fat-library package must ship rocmlirTriton's own public headers so
+  # downstream consumers (MIGraphX) can resolve rocmlir_INCLUDE_DIR.
+  # This is deliberately independent of LLVM_INSTALL_TOOLCHAIN_ONLY, which is
+  # forced ON in cmake/triton.cmake solely to stop the in-tree LLVM/MLIR from
+  # installing its own toolchain and exporting MLIRTargets.
+  option(ROCMLIR_INSTALL_PACKAGE_HEADERS
+         "Install rocmlirTriton public headers as part of the fat-library package" ON)
+
   include(librockcompiler_deps.cmake)
   set(__rocmlir_targets ${__rocmlir_libs})
 
@@ -84,7 +92,6 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     add_custom_target(__generate_fat_library DEPENDS ${full_output_path})
     add_dependencies(${LIBRARY_NAME} __generate_fat_library)
 
-    target_link_libraries(${LIBRARY_NAME} INTERFACE hsa-runtime64::hsa-runtime64)
     target_link_libraries(${LIBRARY_NAME}
         INTERFACE
             $<BUILD_INTERFACE:${full_output_path}>
@@ -150,22 +157,17 @@ if(BUILD_FAT_LIBROCKCOMPILER)
       INCLUDES DESTINATION include/${package_name} ${ARG_EXTRA_INCLUDES}
     )
 
-    if(NOT WIN32)
-        set(DEPENDS_HSA DEPENDS hsa-runtime64)
-    endif()
-
     # Generate package config and version file
     rocm_export_targets(
       NAMESPACE ${CMAKE_PROJECT_NAME}::
       NAME ${package_name}
       TARGETS ${package_name}
       COMPATIBILITY AnyNewerVersion
-      ${DEPENDS_HSA}
       )
 
   endfunction()
 
-  if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
+  if (ROCMLIR_INSTALL_PACKAGE_HEADERS)
     rocm_install(DIRECTORY
       ${PROJECT_SOURCE_DIR}/mlir/include/mlir
       ${PROJECT_SOURCE_DIR}/mlir/include/mlir-c

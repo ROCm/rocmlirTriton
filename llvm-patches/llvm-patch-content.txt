@@ -1,8 +1,8 @@
 llvm-patches/ -- downstream LLVM cherry-picks
 =============================================
 
-This directory holds patches against the LLVM checkout that Triton pins
-(external/triton/llvm-project).
+This directory holds downstream patch records against the Triton-pinned LLVM
+tree (external/llvm-project).
 
 ----------------------------------------------------------------------
 patch193499.patch
@@ -81,6 +81,55 @@ other SOP2 scalar patterns in the file) so divergent shl/add chains select
 the vector `V_LSHL_ADD_U32` instead. Drop this patch on the next Triton
 bump that pulls commit ace44dc5a2a4 into the pinned LLVM (it lands after
 the current pin 87717bf9, dated 2026-04-08; the fix merged 2026-05-19).
+
+----------------------------------------------------------------------
+mlir-rocm-runtime-standalone.patch
+----------------------------------------------------------------------
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/205651
+- Upstream title  : [MLIR][ROCm] Build mlir_rocm_runtime STANDALONE
+- File Fixed      : mlir/lib/ExecutionEngine/CMakeLists.txt
+                    mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp
+- Contents        : Marks mlir_rocm_runtime STANDALONE so it no longer links
+                    LLVMSupport, mirroring mlir_cuda_runtime, and replaces
+                    the remaining SmallVector/ArrayRef use in
+                    mgpuMemHostRegisterMemRef with plain C++ pointer/stride
+                    logic.
+
+Symptom without the patch
+-------------------------
+Loading libmlir_rocm_runtime.so in a process that also reaches ROCm's
+libLLVM.so aborts during dynamic initialization with:
+
+  SmallPtrSet.h:301: Assertion `Bucket < End' failed.
+
+This fires whenever the runtime is dlopen-ed (mlir-runner --shared-libs, or
+the Python lit harness) in an environment whose ROCm comes from the
+_rocm_sdk_devel (TheRock) pip package: libmlir_rocm_runtime.so's DT_NEEDED
+chain libamdhip64 -> libamd_comgr -> libLLVM.so loads a second LLVM, and
+comgr's bundled libLLVM happens to share the exact 23.0git soname.
+
+Root cause
+----------
+libmlir_rocm_runtime.so was not built STANDALONE, so add_mlir_library linked
+LLVMSupport into it, exporting default-visibility llvm::* symbols
+(llvm::cl::SubCommand, ManagedStatic, CommandLine, ...). With both LLVMs in
+the process the dynamic linker interposes these data symbols, so the two
+instances share LLVM's cl::opt / pass-registry singletons and one tears the
+other's SmallPtrSet apart during static init.
+
+Why STANDALONE
+--------------
+RocmRuntimeWrappers.cpp's only LLVM use was SmallVector/ArrayRef in
+mgpuMemHostRegisterMemRef. Replacing it with plain pointer/stride logic lets
+the library drop LLVMSupport entirely (STANDALONE), so there are no LLVM
+symbols left to clash. This matches the intent of upstream commit 351ae0ca550c
+("[MLIR][CMake] Fix runtime libraries with PCH"), which made the other
+dlopen-ed runtimes STANDALONE but left mlir_rocm_runtime on a
+DISABLE_PCH_REUSE workaround because it still used LLVM ADTs. See
+ROCm/TheRock#4981.
+
+Drop this patch on the next LLVM/Triton bump that pulls the upstream PR into
+the pinned LLVM.
 
 ----------------------------------------------------------------------
 patch1.patch

@@ -55,7 +55,8 @@ struct LowerLoadMarker : public OpRewritePattern<LoadMarkerOp> {
       source = rock::transform(rewriter, source, extraViews);
 
     auto loadOp = BlockwiseLoadOp::create(rewriter, markerOp.getLoc(), source,
-                                          markerOp.getExtraIndices());
+                                          markerOp.getExtraIndices(),
+                                          markerOp.getCacheModifier());
 
     rewriter.replaceOp(markerOp, loadOp);
     return success();

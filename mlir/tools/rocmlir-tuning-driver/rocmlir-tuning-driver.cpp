@@ -29,7 +29,6 @@
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -57,9 +56,12 @@
 
 #include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -95,6 +97,58 @@ void pArgs(const std::tuple<Ts...> &formals, void **_vargs) {
 
 using namespace mlir;
 using namespace rocmlir::tuningdriver;
+
+// Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
+// (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
+// launch_cooperative_grid always 0. Returns LogicalResult instead of void.
+// Note: hipEventRecord is handled by callers, not by this function.
+// Do not move this to tritonUtils.cpp: that utility library is linked into the
+// Rock library set, which must stay free of HIP runtime dependencies. Keeping
+// the wrapper in this tool confines HIP linking to the tuning driver.
+static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
+                                  uint32_t blockSize, uint32_t shared_memory,
+                                  uint32_t num_ctas, hipStream_t stream,
+                                  void **params) {
+  if (gridX == 0)
+    return success();
+  if (num_ctas > 1) {
+    // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
+    // it loads HIP symbols via dlsym. We link directly, so no check needed.
+    // Zero-init so the unused bytes of the 64-byte hipLaunchAttributeValue
+    // union are well-defined rather than indeterminate padding.
+    hipLaunchAttribute attributes[2] = {};
+    // Attribute0: Cluster dimensions. HIP's hipLaunchAttributeID enum does not
+    // expose this attribute by name (it mirrors CUDA's
+    // CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION == 4), so use the raw value, as
+    // upstream driver.c does.
+    constexpr auto kHipLaunchAttributeClusterDimension =
+        static_cast<hipLaunchAttributeID>(4);
+    attributes[0].id = kHipLaunchAttributeClusterDimension;
+    int *cluster_dims = reinterpret_cast<int *>(attributes[0].val.pad);
+    cluster_dims[0] = num_ctas;
+    cluster_dims[1] = 1;
+    cluster_dims[2] = 1;
+    // Attribute1: Cooperative launch
+    attributes[1].id = hipLaunchAttributeCooperative;
+    attributes[1].val.cooperative = 0;
+
+    HIP_LAUNCH_CONFIG config = {
+        gridX * num_ctas, 1,      1,            // Grid size
+        blockSize,        1,      1,            // Block size
+        shared_memory,    stream, attributes, 2 // Number of attributes
+    };
+    hipError_t status = hipDrvLaunchKernelEx(&config, function, params, 0);
+    if (status != hipSuccess)
+      return failure();
+  } else {
+    hipError_t status =
+        hipModuleLaunchKernel(function, gridX, 1, 1, blockSize, 1, 1,
+                              shared_memory, stream, params, nullptr);
+    if (status != hipSuccess)
+      return failure();
+  }
+  return success();
+}
 
 static llvm::cl::opt<std::string> inputFilename{
     llvm::cl::Positional, llvm::cl::desc("<input file>"), llvm::cl::init("-")};
@@ -413,33 +467,78 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
   std::optional<StringRef> redirects[3] = {std::nullopt, StringRef(""),
                                            StringRef("")};
 
+  // Launch the child without waiting, then enforce the wall-clock budget from
+  // this thread. We deliberately do not use sys::ExecuteAndWait's
+  // SecondsToWait: its timeout is implemented with alarm()/SIGALRM (see
+  // llvm/lib/Support/Unix/Program.inc), which are process-global and therefore
+  // unsafe when many worker threads compile concurrently. The LLVM source
+  // documents this with FIXMEs, and concurrent alarm() calls cancel each other
+  // so the per-config timeout never reliably fires. Instead we follow the
+  // ExecuteNoWait + Wait-poll idiom from ProgramTest.cpp
+  // (TestExecuteNoWaitTimeoutPolling): poll with a non-blocking Wait
+  // (SecondsToWait=0, which never arms the shared alarm timer) and kill the
+  // child ourselves once the deadline passes. Each thread only ever waits on
+  // its own PID, so this is race-free across workers.
   std::string execErr;
   bool execFailed = false;
-  auto start = std::chrono::steady_clock::now();
-  int rc = llvm::sys::ExecuteAndWait(driverPath, args, /*Env=*/std::nullopt,
-                                     redirects, /*SecondsToWait=*/timeoutSec,
-                                     /*MemoryLimit=*/0, &execErr, &execFailed);
-  double elapsed =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-          .count();
-
-  if (execFailed || rc == -1) {
+  llvm::sys::ProcessInfo procInfo = llvm::sys::ExecuteNoWait(
+      driverPath, args, /*Env=*/std::nullopt, redirects,
+      /*MemoryLimit=*/0, &execErr, &execFailed);
+  if (execFailed || procInfo.Pid == llvm::sys::ProcessInfo::InvalidPid) {
     fail("Failed to launch rocmlir-driver for config: " + perfConfig + " (" +
          execErr + ")");
     return result;
   }
 
-  // ExecuteAndWait returns -2 for both a timeout-kill and a crash. Disambiguate
-  // using the measured wall time: at/over budget => timeout. A timeout is a
-  // non-fatal skip reported as N/A, so stay silent here (tuningRunner.py parses
-  // stdout/stderr and must not see extra noise).
-  if (rc == -2) {
-    if (elapsed >= static_cast<double>(timeoutSec))
-      result.status = CompilationStatus::TimedOut;
-    else
-      fail("rocmlir-driver crashed for config: " + perfConfig);
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+  llvm::sys::ProcessInfo waitResult;
+  bool timedOut = false;
+  while (true) {
+    std::string waitErr;
+    // SecondsToWait=0 => non-blocking poll (WNOHANG). Returns Pid==0 while the
+    // child is still running, Pid==procInfo.Pid (with ReturnCode) once it
+    // exits.
+    waitResult = llvm::sys::Wait(procInfo, /*SecondsToWait=*/0, &waitErr);
+    if (waitResult.Pid == procInfo.Pid)
+      break; // Child finished; waitResult.ReturnCode holds its exit status.
+    if (waitResult.Pid != 0) {
+      // Neither "still running" (0) nor "our child" => a genuine wait error.
+      fail("Error waiting for rocmlir-driver for config: " + perfConfig + " (" +
+           waitErr + ")");
+      return result;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      timedOut = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  // Budget exceeded: kill and reap. SIGKILL cannot be caught, and
+  // rocmlir-driver links in-process (no grandchildren to orphan), so the
+  // blocking reap returns promptly. A timeout is a non-fatal skip reported as
+  // N/A, so stay silent here (tuningRunner.py parses stdout/stderr and must not
+  // see extra noise).
+  if (timedOut) {
+    // ESRCH means the child already exited on its own in the race window
+    // between the deadline check and here, which is harmless. Any other error
+    // is unexpected (we own this PID and SIGKILL is always valid).
+    if (kill(procInfo.Pid, SIGKILL) != 0 && errno != ESRCH) {
+      fail("Failed to kill timed-out rocmlir-driver for config: " + perfConfig +
+           " (" + std::strerror(errno) + ")");
+      return result;
+    }
+
+    // Reap the killed child so it doesn't linger as a zombie; SIGKILL
+    // guarantees it dies, so this blocking wait returns promptly.
+    (void)llvm::sys::Wait(procInfo, /*SecondsToWait=*/std::nullopt,
+                          /*ErrMsg=*/nullptr);
+    result.status = CompilationStatus::TimedOut;
     return result;
   }
+
+  int rc = waitResult.ReturnCode;
 
   if (rc == rock::kExitNotApplicable) {
     result.status = CompilationStatus::NotApplicable;
@@ -523,9 +622,9 @@ measureKernel(unsigned iterations, hipStream_t stream,
     HIPCHECK(hipEventRecord(startEvents[iter], stream));
     for (auto [func, blockSize, gridSize, numCTAs] :
          llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-      if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                    /*shared_memory=*/0, numCTAs, stream,
-                                    argPointers.data())))
+      if (failed(launchKernel(func, gridSize, blockSize,
+                              /*shared_memory=*/0, numCTAs, stream,
+                              argPointers.data())))
         return failure();
     }
     HIPCHECK(hipEventRecord(stopEvents[iter], stream));
@@ -640,9 +739,9 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
         return failure();
       for (auto [func, blockSize, gridSize, numCTAs] :
            llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-        if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                      /*shared_memory=*/0, numCTAs, stream,
-                                      argPointers.data())))
+        if (failed(launchKernel(func, gridSize, blockSize,
+                                /*shared_memory=*/0, numCTAs, stream,
+                                argPointers.data())))
           return failure();
       }
     }
@@ -673,9 +772,9 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   for (unsigned iter = 0; iter < nWarmup; ++iter) {
     for (auto [func, blockSize, gridSize, numCTAs] :
          llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-      if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                    /*shared_memory=*/0, numCTAs, stream,
-                                    argPointers.data())))
+      if (failed(launchKernel(func, gridSize, blockSize,
+                              /*shared_memory=*/0, numCTAs, stream,
+                              argPointers.data())))
         return failure();
     }
   }

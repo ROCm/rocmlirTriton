@@ -63,6 +63,7 @@ from perfRunner import (
     TUNE_REP_MS,
     TUNE_WARMUP_MS,
     auto_precision_flags_att,
+    canonicalize_config,
 )
 
 # =============================================================================
@@ -252,8 +253,11 @@ class GpuTopology:
 
         rocm-smi reports physical device IDs regardless of environment variables (e.g., ROCR_VISIBLE_DEVICES and HIP_VISIBLE_DEVICES).
         """
+        rocm_smi = f"{perfRunner.ROCM_PATH}/bin/rocm-smi"
+        # rocm-smi can take ~20s to enumerate large multi-GPU systems, so allow
+        # a generous timeout to avoid spurious TimeoutExpired failures.
         output = subprocess.check_output(
-            ["rocm-smi", "--showproductname", "--showtoponuma", "--json"], text=True, timeout=10)
+            [rocm_smi, "--showproductname", "--showtoponuma", "--json"], text=True, timeout=60)
         data = json.loads(output)
 
         gpus = {}
@@ -421,9 +425,13 @@ class TuningStateFile:
     """
 
     def __init__(self, filepath: Optional[str], arch: str, num_cu: int, num_chiplets: int,
-                 tuning_space: str):
+                 tuning_space: str, conf_class: type):
         self.filepath = filepath
         self.context_key = f"{arch}/{num_cu}/{num_chiplets}/{tuning_space}"
+        self._arch = arch
+        self._num_cu = num_cu
+        self._num_chiplets = num_chiplets
+        self._conf_class = conf_class
         self._lock = threading.Lock()
         self._all_contexts: Dict[str, Dict[str, str]] = {}  # context_key -> {tv -> state_str}
         self._state = TuningState()
@@ -454,6 +462,14 @@ class TuningStateFile:
                         continue  # Remove - will retry
                     if state == ConfigState.RUNNING:
                         state = ConfigState.CRASHED  # Stale running = crashed
+                    # Canonicalize so a legacy / non-canonical key still matches
+                    # the canonicalized configs we tune. Keep the raw key on
+                    # failure so it survives a save/load round-trip.
+                    try:
+                        tv = canonicalize_test_vector(tv, self._conf_class, self._arch,
+                                                      self._num_cu, self._num_chiplets)
+                    except ValueError:
+                        pass
                     self._state.configs[tv] = state
                 except ValueError:
                     logger.warning(f"Unknown state '{state_str}' for config '{tv}' in state file")
@@ -551,7 +567,7 @@ class TunedConfigsCache:
         return len(self._results)
 
     @classmethod
-    def from_output_file(cls, options: Options) -> 'TunedConfigsCache':
+    def from_output_file(cls, options: Options, conf_class: type) -> 'TunedConfigsCache':
         """Load previously tuned configurations from an output TSV file.
 
         Format (new): # arch\tnumCUs\tnumChiplets\ttestVector\tperfConfig\tTFlops\ttuningSpace\tcommitId\ttimestamp\tdurationSec
@@ -592,7 +608,7 @@ class TunedConfigsCache:
                     continue
 
                 # Parse data line
-                result = cls._parse_data_line(line.split('\t'), column_indices, options,
+                result = cls._parse_data_line(line.split('\t'), column_indices, options, conf_class,
                                               header_tuning_space, current_commit, warned_commits)
                 if result:
                     results[result.test_vector] = result
@@ -629,7 +645,7 @@ class TunedConfigsCache:
 
     @staticmethod
     def _parse_data_line(fields: List[str], column_indices: Dict[str, int], options: Options,
-                         header_tuning_space: Optional[str], current_commit: str,
+                         conf_class: type, header_tuning_space: Optional[str], current_commit: str,
                          warned_commits: set) -> Optional[TuningResult]:
         """Parse a data line and return TuningResult if valid.
 
@@ -669,6 +685,15 @@ class TunedConfigsCache:
 
         test_vector = get_field('testVector')
         if not test_vector:
+            return None
+
+        # Canonicalize so a legacy / non-canonical testVector still matches the
+        # canonicalized configs we tune (and perfRunner's lookup key). Skip rows
+        # we can't parse rather than poisoning the cache with a bad key.
+        try:
+            test_vector = canonicalize_test_vector(test_vector, conf_class, options.arch,
+                                                   options.num_cu, options.num_chiplets)
+        except ValueError:
             return None
 
         perf_config = get_field('perfConfig')
@@ -1443,12 +1468,12 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
     if ctx.options.retune:
         cache = TunedConfigsCache()
     else:
-        cache = TunedConfigsCache.from_output_file(ctx.options)
+        cache = TunedConfigsCache.from_output_file(ctx.options, ctx.conf_class)
 
     # Load state file
     state_file = TuningStateFile(get_state_filepath(ctx.options.output), ctx.options.chip,
                                  ctx.options.num_cu, ctx.options.num_chiplets,
-                                 ctx.options.tuning_space_kind)
+                                 ctx.options.tuning_space_kind, ctx.conf_class)
     state = state_file.state
 
     if cache.count() > 0:
@@ -1726,6 +1751,40 @@ def load_configs(op_type: Operation, parsed_args: argparse.Namespace, paths: Pat
     return loaders[op_type]()
 
 
+def canonicalize_test_vector(tv: str, conf_class: type, arch: str, num_cu: int,
+                             num_chiplets: int) -> str:
+    """Canonicalize a single test vector under ``conf_class``.
+
+    perfRunner resolves tuning-DB entries by ``config.to_command_line()``, so the
+    persisted ``testVector`` column, the dedup/state-file keys, and that lookup
+    key must all be the same canonical string. ``.mlir`` test vectors are file
+    paths (handled via ``--emit-tuning-key``) and pass through unchanged.
+
+    Raises ``ValueError`` if ``conf_class`` cannot parse ``tv``.
+    """
+    if tv.endswith(".mlir"):
+        return tv
+    return canonicalize_config(tv, conf_class, arch, num_cu, num_chiplets)
+
+
+def canonicalize_configs(configs: List[str], conf_class: type, arch: str, num_cu: int,
+                         num_chiplets: int) -> List[str]:
+    """Best-effort canonicalization of a list of input configs.
+
+    Unparseable vectors are kept verbatim (with a warning) so they surface the
+    same error later during tuning instead of being silently dropped here.
+    """
+    canonicalized = []
+    for tv in configs:
+        try:
+            canonicalized.append(
+                canonicalize_test_vector(tv, conf_class, arch, num_cu, num_chiplets))
+        except ValueError as e:
+            logger.warning(f"Could not canonicalize test vector '{tv}': {e}")
+            canonicalized.append(tv)
+    return canonicalized
+
+
 # =============================================================================
 # Entry Point
 # =============================================================================
@@ -1998,6 +2057,11 @@ def main(args=None):
     num_cu = perfRunner.get_num_cu(chip)
     num_chiplets = perfRunner.get_num_chiplets(chip, num_cu)
 
+    conf_class = get_config_class(op_type)
+    # Canonicalize configs so the persisted DB key, the dedup/state-file keys,
+    # and the perfRunner ``to_command_line()`` lookup key all match.
+    configs = canonicalize_configs(configs, conf_class, arch, num_cu, num_chiplets)
+
     options = Options(chip=chip,
                       arch=arch,
                       num_cu=num_cu,
@@ -2022,7 +2086,7 @@ def main(args=None):
                       perf_config_timeout=parsed_args.perf_config_timeout)
 
     ctx = TuningContext(configs=configs,
-                        conf_class=get_config_class(op_type),
+                        conf_class=conf_class,
                         paths=paths,
                         options=options,
                         gpu_topology=gpu_topology,

@@ -61,6 +61,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/MathExtras.h"
 #include <cstdint>
 #include <optional>
 #include <tuple>
@@ -89,6 +90,44 @@ struct RockGridwiseAttnToBlockwisePass
 };
 
 } // end anonymous namespace
+
+// Pick cache modifiers for the K and V loads in attention / gemm+gemm. Q always
+// stays cached (reused across the whole nLoop). K/V are only reused across the
+// seqQ tiles (reuse factor = gemm0MBlocks; GQA repeats fold into seqQ, split-KV
+// just partitions seqK), so when seqQ is skinny (decode) they are read once:
+// stream them (CS) under cache pressure (Q+K+V don't fit in the LLC). K and V
+// are decided independently (kReloads/vReloads): an operand that reloads data
+// (non-injective view, e.g. a conv im2col gemm0) relies on caching and is never
+// streamed.
+//
+// NOTE: runs at the load_marker stage assuming a single Q/K/V; consider moving
+// after LowerLoads (which materializes the actual blockwise loads) for fusion.
+static std::pair<rock::CacheModifier, rock::CacheModifier>
+chooseAttentionKVCacheModifiers(StringRef arch, Type qElemType,
+                                int64_t qNumElems, Type kElemType,
+                                int64_t kNumElems, bool kReloads,
+                                Type vElemType, int64_t vNumElems,
+                                bool vReloads, int64_t gemm0MBlocks) {
+  const int64_t llcBytes = rock::getLastLevelCacheSize(arch);
+  auto bytesOf = [](int64_t numElems, Type elemType) -> int64_t {
+    return llvm::divideCeil(numElems * elemType.getIntOrFloatBitWidth(), 8);
+  };
+  const int64_t footprintBytes = bytesOf(qNumElems, qElemType) +
+                                 bytesOf(kNumElems, kElemType) +
+                                 bytesOf(vNumElems, vElemType);
+
+  constexpr int64_t kSkinnyBlockThreshold = 2;
+  const bool stream =
+      footprintBytes > llcBytes && gemm0MBlocks < kSkinnyBlockThreshold;
+
+  rock::CacheModifier cacheK = rock::CacheModifier::NONE;
+  rock::CacheModifier cacheV = rock::CacheModifier::NONE;
+  if (stream && !kReloads)
+    cacheK = rock::CacheModifier::CS;
+  if (stream && !vReloads)
+    cacheV = rock::CacheModifier::CS;
+  return {cacheK, cacheV};
+}
 
 //===----------------------------------------------------------------------===//
 // GridwiseGemm lowering.
@@ -539,9 +578,9 @@ struct GridwiseAttentionRewritePattern
 
       // Create a LoadMarkerOp placeholder for a scalar-like load.
       ArrayAttr emptyViews = rewriter.getArrayAttr({});
-      auto markerOp =
-          LoadMarkerOp::create(rewriter, loc, resultType, tensorAddDim,
-                               emptyViews, ValueRange{gridCoordsGemm0.g_block});
+      auto markerOp = LoadMarkerOp::create(
+          rewriter, loc, resultType, tensorAddDim, emptyViews,
+          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE);
 
       return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
@@ -887,7 +926,8 @@ struct GridwiseAttentionRewritePattern
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, root, otherInputMap,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
-                     gridCoords.n_block});
+                     gridCoords.n_block},
+          rock::CacheModifier::NONE);
 
       mapping.map(block.getArgument(i + 1), markerOp.getResult());
     }
@@ -1010,11 +1050,24 @@ struct GridwiseAttentionRewritePattern
     assert(gemm1M % gemm1MPerBlock == 0);
     SmallVector<int64_t, 3> gemm0BidGridLengths = {gemm0G, gemm0MBlocks,
                                                    gemm0NBlocks};
+    // Whether the K/V loads reload data (non-injective view: conv im2col,
+    // broadcast, ...). Such operands rely on caching and are never streamed.
+    FailureOr<bool> maybeKReloads = rock::isInputNonInjective(inK);
+    FailureOr<bool> maybeVReloads = rock::isInputNonInjective(inV);
+    if (failed(maybeKReloads))
+      return op->emitOpError("could not trace K to determine load injectivity");
+    if (failed(maybeVReloads))
+      return op->emitOpError("could not trace V to determine load injectivity");
+    bool kReloads = maybeKReloads.value();
+    bool vReloads = maybeVReloads.value();
+
     LLVM_DEBUG(llvm::dbgs()
                << "elemTypeQLoad: " << elemTypeQLoad << "\n"
                << "elemTypeKLoad: " << elemTypeKLoad << "\n"
-               << "elemTypeVLoad: " << elemTypeVLoad << "\n");
-    
+               << "elemTypeVLoad: " << elemTypeVLoad << "\n"
+               << "kReloads: " << (kReloads ? "yes" : "no") << "\n"
+               << "vReloads: " << (vReloads ? "yes" : "no") << "\n");
+
     // Compute output transforms for this load
     FailureOr<ArrayAttr> maybeGemm0OutTileView = computeOutputTransforms(
         rewriter, loc, gemm0MPerBlock, gemm0NPerBlock, gemm0BidGridLengths);
@@ -1048,6 +1101,14 @@ struct GridwiseAttentionRewritePattern
     int64_t gridSize = maybeGridSize->getInt();
         
     auto arch = rock::getArchValue(op);
+
+    // Cache hint for the K/V loads: stream them when seqQ is skinny (decode)
+    // and the KV cache doesn't fit in the LLC. Q is always kept cached.
+    auto [cacheK, cacheV] = chooseAttentionKVCacheModifiers(
+        arch, elemTypeQLoad, inQ.getType().getNumElements(), elemTypeKLoad,
+        inK.getType().getNumElements(), kReloads, elemTypeVLoad,
+        inV.getType().getNumElements(), vReloads, gemm0MBlocks);
+
     auto gridCoordsGemm0mIter0 = layout::makeGxNGridLayout(
         rewriter, loc, bid, gemm0MBlocks,
         rewriter.createOrFold<arith::ConstantIntOp>(loc, rewriter.getI32Type(),
@@ -1114,10 +1175,10 @@ struct GridwiseAttentionRewritePattern
           rewriter, loc, bid, gemm0MBlocks, zero, gridSize, arch,
           rock::getNumChipletsValue(op), splitKVConst);
 
-      loadedQ =
-          rock::loadTile(rewriter, loc, inQ, /*kiter=*/zero, "m",
-                         gridCoordsGemm0LoadQ, gemm0KPerBlock, gemm0MPerBlock,
-                         /*isKFirst=*/false, gemm0BidGridLengths);
+      loadedQ = rock::loadTile(
+          rewriter, loc, inQ, /*kiter=*/zero, "m", gridCoordsGemm0LoadQ,
+          gemm0KPerBlock, gemm0MPerBlock,
+          /*isKFirst=*/false, gemm0BidGridLengths, rock::CacheModifier::NONE);
     }
 
     Type accType = rock::getAccType(elemTypeQ, elemTypeK);
@@ -1170,13 +1231,14 @@ struct GridwiseAttentionRewritePattern
           loadedQ =
               rock::loadTile(rewriter, loc, inQ, /*kiter=*/kLoopIV, "m",
                              gridCoordsGemm0, gemm0KPerBlock, gemm0MPerBlock,
-                             /*isKFirst=*/false, gemm0BidGridLengths);
+                             /*isKFirst=*/false, gemm0BidGridLengths,
+                             rock::CacheModifier::NONE);
         }
 
         Value loadedK =
             rock::loadTile(rewriter, loc, inK, /*kiter=*/kLoopIV, "n",
                            gridCoordsGemm0, gemm0KPerBlock, gemm0NPerBlock,
-                           /*isKFirst=*/true, gemm0BidGridLengths);
+                           /*isKFirst=*/true, gemm0BidGridLengths, cacheK);
 
         Value newAcc = BlockwiseGemmOp::create(
             rewriter, loc, loadedQ, loadedK, accArg,
@@ -1353,10 +1415,11 @@ struct GridwiseAttentionRewritePattern
           rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
           rock::getNumChipletsValue(op), splitKVConst);
 
-      Value loadedV = rock::loadTile(rewriter, loc, inV,
-                                     /*kIter=*/nLoopIV, "n", gridCoordsGemm1,
-                                     gemm1KPerBlock, gemm1NPerBlock,
-                                     /*isKFirst=*/true, gemm1BidGridLengths);
+      Value loadedV =
+          rock::loadTile(rewriter, loc, inV,
+                         /*kIter=*/nLoopIV, "n", gridCoordsGemm1,
+                         gemm1KPerBlock, gemm1NPerBlock,
+                         /*isKFirst=*/true, gemm1BidGridLengths, cacheV);
 
       Value gemm1Out = BlockwiseGemmOp::create(
           rewriter, loc, gemm0Out, loadedV, gemm1InitAcc,

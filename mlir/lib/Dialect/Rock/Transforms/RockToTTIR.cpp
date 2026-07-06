@@ -54,6 +54,28 @@ struct RockToTTIRPass : public rock::impl::RockToTTIRPassBase<RockToTTIRPass> {
   void runOnOperation() override;
 };
 
+// Map a rock cache modifier onto its triton counterpart. The two enums mirror
+// each other one-to-one (see RockAttrDefs.td / TritonAttrDefs.td).
+static triton::CacheModifier toTritonCacheModifier(rock::CacheModifier cache) {
+  switch (cache) {
+  case rock::CacheModifier::NONE:
+    return triton::CacheModifier::NONE;
+  case rock::CacheModifier::CA:
+    return triton::CacheModifier::CA;
+  case rock::CacheModifier::CG:
+    return triton::CacheModifier::CG;
+  case rock::CacheModifier::WB:
+    return triton::CacheModifier::WB;
+  case rock::CacheModifier::CS:
+    return triton::CacheModifier::CS;
+  case rock::CacheModifier::WT:
+    return triton::CacheModifier::WT;
+  case rock::CacheModifier::CV:
+    return triton::CacheModifier::CV;
+  }
+  llvm_unreachable("unknown rock::CacheModifier");
+}
+
 //===----------------------------------------------------------------------===//
 // RockBlockwiseReduceOpRewritePattern - Convert rock.blockwise_reduce to tt.reduce
 //===----------------------------------------------------------------------===//
@@ -136,10 +158,11 @@ struct RockLoadPtrOpRewritePattern
     auto resultTensorType = cast<RankedTensorType>(op.getResult().getType());
     Type elementType = resultTensorType.getElementType();
 
-    // Verify pointerTensor is a tensor of i32
+    // Verify pointerTensor is a tensor of the pointer glue type
     auto ptrTensorType = dyn_cast<RankedTensorType>(pointerTensor.getType());
-    if (!ptrTensorType || !ptrTensorType.getElementType().isInteger(32)) {
-      LLVM_DEBUG(llvm::dbgs() << "Pointer tensor is not a tensor of i32\n");
+    if (!ptrTensorType || !isPtrGlueType(ptrTensorType.getElementType())) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Pointer tensor is not a tensor of the ptr glue type\n");
       return failure();
     }
 
@@ -167,7 +190,7 @@ struct RockLoadPtrOpRewritePattern
     // LoadOp takes: ptr, mask (optional), other (optional), cache, evict,
     // isVolatile.
     auto cacheAttr = triton::CacheModifierAttr::get(
-        rewriter.getContext(), triton::CacheModifier::NONE);
+        rewriter.getContext(), toTritonCacheModifier(op.getCacheModifier()));
     auto evictAttr = triton::EvictionPolicyAttr::get(
         rewriter.getContext(), triton::EvictionPolicy::NORMAL);
     auto isVolatileAttr = rewriter.getBoolAttr(false);
@@ -248,6 +271,20 @@ struct RockBlockwiseGemmOpRewritePattern
                                 /*inputPrecision=*/triton::InputPrecision::IEEE,
                                 /*maxNumImpreciseAcc=*/0);
     }
+
+    // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it
+    // survives into the Triton pipeline. Only forward rock.*-prefixed
+    // discardable attrs: copying unrelated attrs that rock does not own could
+    // trip another dialect's verifier downstream.
+    if (Operation *dotOp = result.getDefiningOp()) {
+      std::string rockPrefix =
+          (Twine(rock::RockDialect::getDialectNamespace()) + ".").str();
+      for (NamedAttribute attr : op->getDiscardableAttrs()) {
+        if (attr.getName().getValue().starts_with(rockPrefix))
+          dotOp->setDiscardableAttr(attr.getName(), attr.getValue());
+      }
+    }
+
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -270,10 +307,11 @@ struct RockStorePtrOpRewritePattern
     // of fusion ops (e.g., arith.addf) rather than the raw GEMM result.
     Value valueToStore = op.getSource();
 
-    // 2. Verify pointer tensor is a tensor of i32
+    // 2. Verify pointer tensor is a tensor of the pointer glue type
     auto ptrTensorType = dyn_cast<RankedTensorType>(pointerTensor.getType());
-    if (!ptrTensorType || !ptrTensorType.getElementType().isInteger(32)) {
-      LLVM_DEBUG(llvm::dbgs() << "Pointer tensor is not a tensor of i32\n");
+    if (!ptrTensorType || !isPtrGlueType(ptrTensorType.getElementType())) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Pointer tensor is not a tensor of the ptr glue type\n");
       return failure();
     }
 

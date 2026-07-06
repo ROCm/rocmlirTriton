@@ -119,6 +119,13 @@ getMaxVectorization(Value transformed, uint32_t dim,
 /// fear of breaking existing IR.
 void collapseContiguousMerges(Value transformed);
 
+/// Returns the upper-space (view-side / map-domain) dim indices that the given
+/// map constrains for validity: the non-trivially padded dims of every `Pad`
+/// and the upper dims of every invalidatable `Embed`. These are the
+/// coordinates whose values a runtime validity mask would be computed from. The
+/// result is empty iff `mapImpactsValidity(map)` is false.
+SmallVector<unsigned> validityImpactingUpperDims(TransformMapAttr map);
+
 /// Returns true if the given `TransformMapAttr` has impacts on the validity
 /// of the underlying coordinates. If this returns true, the code generating
 /// indexing must pause and generate a validity tests using the inputs (upper
@@ -271,6 +278,15 @@ getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
 // argument. If the pattern match succeds, the function returns the
 // type of the block argument, otherwise it returns failure.
 FailureOr<Type> getInputFusionElementType(Value value);
+
+// Given a kernel operand `value`, walks the same def chain as
+// getInputFusionElementType (through rock.transform views and input-fusion ops
+// back to the kernel block arguments) and reports whether any transform in the
+// chain is non-injective ("reloads" data): Embed (e.g. overlapping conv
+// im2col), Broadcast or AddDim. Such operands rely on caching for their
+// repeated reads, so callers (e.g. cache-modifier heuristics) should not stream
+// them. Returns failure if the chain cannot be resolved.
+FailureOr<bool> isInputNonInjective(Value value);
 
 // Same as above but for output fusions
 FailureOr<Type> getOutputFusionElementType(Value value);

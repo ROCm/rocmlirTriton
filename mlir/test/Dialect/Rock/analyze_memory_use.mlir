@@ -5,7 +5,7 @@
 // CHECK-LABEL: @base_case
 // CHECK-SAME: (%{{.*}}: tensor<16xf32> {llvm.align = 16 : i64, llvm.dereferenceable = 64 : i64, llvm.noalias, llvm.nocapture, llvm.nofree, llvm.nonnull, llvm.noundef, llvm.readonly, tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %{{.*}}: tensor<16xf32> {llvm.align = 16 : i64, llvm.dereferenceable = 64 : i64, llvm.noalias, llvm.nocapture, llvm.nofree, llvm.nonnull, llvm.noundef, llvm.writeonly, tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %{{.*}}: index)
 func.func @base_case(%arg0: tensor<16xf32>, %arg1: tensor<16xf32>, %arg2: index) -> tensor<16xf32> attributes {rock.kernel} {
-  %v = rock.blockwise_load %arg0 : tensor<16xf32> -> tensor<16xf32>
+  %v = rock.blockwise_load %arg0 {cacheModifier = #rock<CacheModifier none>} : tensor<16xf32> -> tensor<16xf32>
   %out = rock.blockwise_store %v -> %arg1 by set
     : tensor<16xf32> -> tensor<16xf32> -> tensor<16xf32>
   return %out : tensor<16xf32>
@@ -15,7 +15,7 @@ func.func @base_case(%arg0: tensor<16xf32>, %arg1: tensor<16xf32>, %arg2: index)
 // CHECK-LABEL: @atomic_case
 // CHECK-SAME: (%{{.*}}: tensor<16xf32> {{{.*}}llvm.readonly{{.*}}}, %{{.*}}: tensor<16xf32> {llvm.align = 16 : i64, llvm.dereferenceable = 64 : i64, llvm.noalias, llvm.nocapture, llvm.nofree, llvm.nonnull, llvm.noundef, tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32},
 func.func @atomic_case(%arg0: tensor<16xf32>, %arg1: tensor<16xf32>, %arg2: index) -> tensor<16xf32> attributes {rock.kernel} {
-  %v = rock.blockwise_load %arg0 : tensor<16xf32> -> tensor<16xf32>
+  %v = rock.blockwise_load %arg0 {cacheModifier = #rock<CacheModifier none>} : tensor<16xf32> -> tensor<16xf32>
   %out = rock.blockwise_store %v -> %arg1 by atomic_add
     : tensor<16xf32> -> tensor<16xf32> -> tensor<16xf32>
   return %out : tensor<16xf32>
@@ -31,7 +31,7 @@ func.func @dead_arg(%arg0: tensor<16xf32>) attributes {rock.kernel} {
 // CHECK-NOT: llvm.dereferenceable
 // CHECK-NOT: tt.pointer_range
 func.func @dynamic_shape(%arg0: tensor<?xf32>) -> tensor<?xf32> attributes {rock.kernel} {
-  %v = rock.blockwise_load %arg0 : tensor<?xf32> -> tensor<?xf32>
+  %v = rock.blockwise_load %arg0 {cacheModifier = #rock<CacheModifier none>} : tensor<?xf32> -> tensor<?xf32>
   %out = rock.blockwise_store %v -> %arg0 by atomic_add
     : tensor<?xf32> -> tensor<?xf32> -> tensor<?xf32>
   return %out : tensor<?xf32>
@@ -49,7 +49,7 @@ func.func @f4_odd_length(%arg0: tensor<3xf4E2M1FN>) attributes {rock.kernel} {
 // CHECK-LABEL: @separate_read_write
 // CHECK-SAME: (%{{.*}}: tensor<16xf32> {{{.*}}llvm.readonly{{.*}}}, %{{.*}}: tensor<16xf32> {{{.*}}llvm.writeonly{{.*}}}
 func.func @separate_read_write(%arg0: tensor<16xf32>, %arg1: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
-  %v = rock.blockwise_load %arg0 : tensor<16xf32> -> tensor<16xf32>
+  %v = rock.blockwise_load %arg0 {cacheModifier = #rock<CacheModifier none>} : tensor<16xf32> -> tensor<16xf32>
   %out = rock.blockwise_store %v -> %arg1 by set
     : tensor<16xf32> -> tensor<16xf32> -> tensor<16xf32>
   return %out : tensor<16xf32>

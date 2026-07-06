@@ -177,6 +177,12 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::triton::gpu::createTritonGPUOptimizeThreadLocality());
   pm->addPass(mlir::createTritonAMDGPUAccelerateMatmul(
       {options.arch, options.matrixInstrNonkdim, options.kpack}));
+  // --- rocmlirTriton pass ----
+  // Must run after accelerate-matmul (consumes the accelerator dot) and before
+  // remove-layout-conversions (folds away the convert_layout ops it inserts).
+  pm->addPass(rock::createRockSetMatmulOutputTransposePass());
+  // --- rocmlirTriton pass ----
+
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   // TODO ROCm Check if we want to compare MI100 and greater
   pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
@@ -459,19 +465,28 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
   addWithDCE(rock::createRockGemmToGridwisePass());
   addWithDCE(rock::createRockAttnToGridwisePass());
+
+  // Must run after AttnToGridwise and before GridwiseGemmToBlockwise.
+  addWithDCE(rock::createRockDecomposeNonPow2TilesPass());
+
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
+  // Must run after GridwiseGemmToBlockwise and before InsertOutputFusionLoads.
+  // CSE after deduplicates the now-co-located shared operand loads.
+  addWithCSE(rock::createRockFuseSiblingLoopsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
+
+  // Must run after lower-stores (needs the rock.blockwise_store) and before
+  // lower-blockwise-to-ptr (which lowers it away).
+  addWithDCE(rock::createRockAddTritonMetadataPass());
+
   // We run this pass after lower-stores to catch redundant casts that cannot be
   // flagged earlier due to loads/stores that sit between truncf/extf pairs.
   if (!options.disableFastMath)
     addWithDCE(rock::createRockAllowFastMathFlagsPass());
-
-  // Must run after LowerStores and before the Triton layouts are produced.
-  addWithDCE(rock::createRockDecomposeNonPow2TilesPass());
 
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
@@ -513,14 +528,24 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(rock::createRockAnalyzeMemoryUsePass());
   funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
+  // Must run BEFORE TransformsToPointerArith: it simplifies the rock.transform
+  // chains feeding TransformsToPtrOp by collapsing contiguous merges.
+  funcPm2.addPass(rock::createRockCollapseContiguousMergesPass());
+  // CollapseContiguousMerges builds the collapsed chain fresh and rewires onto
+  // it, leaving the original chain dead. DCE it so TransformsToPointerArith
+  // only sees the collapsed chain. Keep this nested per-func: a module-level
+  // RemoveDeadValues strips the kernel function / its rock.arch attribute and
+  // breaks downstream lowering ("rock.arch not found on kernel function").
+  funcPm2.addPass(createRemoveDeadValuesPass());
+  funcPm2.addPass(rock::createRockTransformsInvariantCodeMotionPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
 
   funcPm2.addPass(rock::createRockToTTIRPass());
-  // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to
+  // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
-  pm.addPass(rock::createRockFuncToTritonFuncPass());
+  pm.addPass(rock::createRockTensorToTritonPtrPass());
   // After this point, function is triton::FuncOp
   auto &ttFuncPm = pm.nest<triton::FuncOp>();
   ttFuncPm.addPass(createCanonicalizerPass());
@@ -713,7 +738,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   }
 
   // Emit gpu.binary from HSACO, restore host functions (main, wrapper) if
-  // serialized during RockFuncToTritonFuncPass, and convert func.call @kernel
+  // serialized during RockTensorToTritonPtrPass, and convert func.call @kernel
   // to gpu.launch_func when applicable.
   rock::RockEmitGpuBinaryPassOptions emitGpuBinaryOpts;
   emitGpuBinaryOpts.triple = options.triple;

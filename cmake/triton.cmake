@@ -1,79 +1,121 @@
 message(STATUS "Adding Triton src dependency")
 
 #===----------------------------------------------------------------------===//
-# Triton Project Configuration
-# NOTE: Triton requires a pre-built LLVM/MLIR. Set MLIR_DIR before configuring.
+# Paths for building rocmlirTriton
 #===----------------------------------------------------------------------===//
 
 set(TRITON_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/triton")
 set(TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
+set(ROCMLIR_LLVM_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-project")
+
+# external/llvm-project and external/triton are vendored directly in this repo
+# (imported via git subtree) with our downstream patches committed on top, so
+# there are no submodules to initialize and nothing to patch at configure time.
+# The patch files are kept under llvm-patches/ and triton-patches/ for
+# provenance and to ease the next upstream bump.
 
 #===----------------------------------------------------------------------===//
-# LLVM/MLIR Configuration
-# Triton uses find_package(MLIR) - must be provided externally
+# LLVM/MLIR (in-tree)
+#
+# LLVM/MLIR is always built from the vendored external/llvm-project tree as
+# part of this same CMake build via add_subdirectory.
+#
+# We manually populate the MLIR_*/LLVM_* discovery variables that
+# find_package(MLIR) would normally set, so that Triton's CMake (which we
+# patch to skip find_package when MLIRSupport already exists) and our own
+# code keep working unchanged.
 #===----------------------------------------------------------------------===//
 
-# User must provide MLIR_DIR (e.g., from a built LLVM or system installation)
-if(NOT DEFINED MLIR_DIR)
-  # Try common locations
-  if(DEFINED ENV{MLIR_DIR})
-    set(MLIR_DIR $ENV{MLIR_DIR} CACHE PATH "Path to MLIR CMake config")
-  elseif(EXISTS "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir/MLIRConfig.cmake")
-    # Default: Use LLVM built by Triton's build-llvm-project.sh script
-    set(MLIR_DIR "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir" CACHE PATH "Path to MLIR CMake config")
-  elseif(DEFINED LLVM_LIBRARY_DIR)
-    set(MLIR_DIR "${LLVM_LIBRARY_DIR}/cmake/mlir" CACHE PATH "Path to MLIR CMake config")
-  else()
-    # LLVM/MLIR not found — automatically build it via our wrapper script
-    set(_build_llvm_script "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-llvm.sh")
-    if(EXISTS "${_build_llvm_script}")
-      message(STATUS "LLVM/MLIR not found. Running ${_build_llvm_script} to build it...")
-      execute_process(
-        COMMAND bash "${_build_llvm_script}"
-        RESULT_VARIABLE _build_llvm_result
-      )
-      if(NOT _build_llvm_result EQUAL 0)
-        message(FATAL_ERROR "scripts/build-llvm.sh failed (exit code: ${_build_llvm_result})")
-      endif()
-      # After building, the MLIR config should now exist
-      if(EXISTS "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir/MLIRConfig.cmake")
-        set(MLIR_DIR "${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir" CACHE PATH "Path to MLIR CMake config")
-      else()
-        message(FATAL_ERROR
-          "scripts/build-llvm.sh completed but MLIRConfig.cmake was not found at\n"
-          "  ${TRITON_PROJECT_DIR}/llvm-project/build/lib/cmake/mlir/\n"
-          "Check the build output above for errors.")
-      endif()
-    else()
-      message(FATAL_ERROR 
-        "MLIR_DIR must be set to the path containing MLIRConfig.cmake\n"
-        "Example: cmake -DMLIR_DIR=/path/to/llvm-build/lib/cmake/mlir ..\n"
-        "You can build LLVM/MLIR using: bash scripts/build-llvm.sh")
-    endif()
-  endif()
+if(NOT EXISTS "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/CMakeLists.txt")
+  message(FATAL_ERROR
+    "external/llvm-project/llvm/CMakeLists.txt is missing.\n"
+    "\n"
+    "external/llvm-project is vendored via git subtree and should always be "
+    "present in a normal checkout; if it is missing the working tree is "
+    "incomplete.\n")
 endif()
 
-message(STATUS "MLIR_DIR: ${MLIR_DIR}")
+message(STATUS "Adding Triton-pinned LLVM/MLIR (external/llvm-project) src dependency")
 
-# Find MLIR package (this also sets up LLVM variables)
-find_package(MLIR REQUIRED CONFIG PATHS ${MLIR_DIR})
+# LLVM/MLIR build flags. Must be set BEFORE add_subdirectory so they take
+# effect when LLVM processes its own CMakeLists.txt.
+set(LLVM_ENABLE_PROJECTS "mlir;lld" CACHE STRING "List of LLVM sub-projects")
+set(LLVM_ENABLE_ZSTD OFF CACHE BOOL "")
+set(LLVM_ENABLE_ZLIB OFF CACHE BOOL "")
+set(LLVM_ENABLE_TERMINFO OFF CACHE BOOL "")
+set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "")
+set(LLVM_INSTALL_UTILS ON CACHE BOOL "")
 
-# Set up LLD_DIR based on MLIR_DIR location
-get_filename_component(_llvm_cmake_dir "${MLIR_DIR}" DIRECTORY)
-set(LLD_DIR "${_llvm_cmake_dir}/lld" CACHE PATH "Path to LLD CMake config")
-message(STATUS "LLD_DIR: ${LLD_DIR}")
-message(STATUS "Found MLIR ${MLIR_VERSION} at ${MLIR_DIR}")
-message(STATUS "LLVM_INCLUDE_DIRS: ${LLVM_INCLUDE_DIRS}")
-message(STATUS "MLIR_INCLUDE_DIRS: ${MLIR_INCLUDE_DIRS}")
+# In-tree dev builds do not install MLIR; consumers (us, Triton) use the
+# build tree directly. Skipping install(EXPORT MLIRTargets) also avoids
+# CMake errors about Triton's first-class targets (TritonGPUTransforms,
+# etc.) not being in MLIR's export set when our Rock libraries link them.
+set(LLVM_INSTALL_TOOLCHAIN_ONLY ON CACHE BOOL "")
 
-# Set up CMake module paths from found MLIR/LLVM
+# Disable LLVM's PCH reuse machinery. When LLVM is in-tree, LLVM's
+# CMake (see llvm/lib/Support/CMakeLists.txt and add_llvm_library
+# PRECOMPILE_HEADERS) wires every library that links LLVMSupport to
+# reuse LLVMSupport's PCH (`target_precompile_headers(... REUSE_FROM
+# LLVMSupport)`), which propagates transitively to our Rock libraries
+# and to mlir/lib/ExecutionEngine/conv-validation-wrappers.cpp. The PCH
+# is compiled with LLVM's own flags (-std=c++17, no GNU extensions);
+# if our targets compile with -std=gnu++17 (the CMake default for
+# GCC/Clang when CMAKE_CXX_EXTENSIONS is left at its ON default),
+# Clang refuses to load the PCH with "GNU extensions was disabled in
+# AST file ... but is currently enabled".
+set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON CACHE BOOL "")
+
+if(MLIR_ENABLE_ROCM_RUNNER)
+  set(LLVM_TARGETS_TO_BUILD "X86;AMDGPU" CACHE STRING "")
+else()
+  set(LLVM_TARGETS_TO_BUILD "AMDGPU" CACHE STRING "")
+endif()
+
+# Matches rocMLIR approach in cmake/llvm-project.cmake.
+# This is needed to compile rocmlirTriton and LLVM together.
+# Before, we used to compile each project in a different build
+# directory using a separate bash script. By doing a monolithic build,
+# we avoid the bash script to handle the separate build process.
+add_subdirectory("${ROCMLIR_LLVM_PROJECT_DIR}/llvm"
+                 "external/llvm-project/llvm"
+                 EXCLUDE_FROM_ALL)
+
+# MLIR writes its build-tree config files to ${CMAKE_BINARY_DIR} (top-level),
+# not to its own per-directory binary dir. See
+# external/llvm-project/mlir/cmake/modules/CMakeLists.txt (the
+# `mlir_cmake_builddir` variable).
+#
+# We point the package dirs at the build tree. LLVM_DIR must be cached because
+# MLIRConfig.cmake's find_dependency(LLVM) consults the cache; without this it
+# can discover ROCm SDK LLVM through CMAKE_PREFIX_PATH and mix incompatible LLVM
+# headers with the in-tree MLIR headers.
+set(MLIR_CMAKE_DIR "${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX}/cmake/mlir")
+set(MLIR_DIR "${MLIR_CMAKE_DIR}")
+
+set(LLVM_LIBRARY_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/lib${LLVM_LIBDIR_SUFFIX}")
+set(LLVM_CMAKE_DIR "${LLVM_LIBRARY_DIR}/cmake/llvm")
+set(LLVM_DIR "${LLVM_CMAKE_DIR}" CACHE PATH "Path to in-tree LLVM CMake package" FORCE)
+set(LLD_DIR "${LLVM_LIBRARY_DIR}/cmake/lld")
+
+# find_package(MLIR) normally sets LLVM_TOOLS_BINARY_DIR. In the in-tree
+# flow it isn't, so derive it from LLVM_EXTERNAL_BIN_DIR. Downstream code
+# (e.g. mlir/test/CMakeLists.txt computing LLVM_LIT_TOOLS_DIR) depends on it.
+set(LLVM_TOOLS_BINARY_DIR "${LLVM_EXTERNAL_BIN_DIR}")
+
+list(APPEND MLIR_INCLUDE_DIRS
+  "${ROCMLIR_LLVM_PROJECT_DIR}/mlir/include"
+  "${LLVM_EXTERNAL_BUILD_DIR}/llvm/tools/mlir/include")
+list(APPEND LLVM_INCLUDE_DIRS
+  "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/include"
+  "${LLVM_EXTERNAL_BUILD_DIR}/llvm/include")
+
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 
-# Include LLVM/MLIR CMake utilities
-include(TableGen)
-include(AddLLVM)
-include(AddMLIR)
+message(STATUS "MLIR_DIR: ${MLIR_DIR}")
+message(STATUS "LLD_DIR: ${LLD_DIR}")
+message(STATUS "MLIR_INCLUDE_DIRS: ${MLIR_INCLUDE_DIRS}")
+message(STATUS "LLVM_INCLUDE_DIRS: ${LLVM_INCLUDE_DIRS}")
 
 #===----------------------------------------------------------------------===//
 # ROCm Configuration
@@ -94,17 +136,11 @@ list(APPEND CMAKE_MODULE_PATH "${ROCM_PATH}/hip/cmake")
 # Triton Build Options (matching external/triton/CMakeLists.txt)
 #===----------------------------------------------------------------------===//
 
-# Disable Python module - we're using C++ API only
 set(TRITON_BUILD_PYTHON_MODULE OFF CACHE BOOL "Don't build Python bindings")
-
-# Disable Proton profiler
 set(TRITON_BUILD_PROTON OFF CACHE BOOL "Don't build Proton profiler")
-
-# Disable unit tests (can enable later)
 set(TRITON_BUILD_UT OFF CACHE BOOL "Don't build Triton unit tests")
-
-# Enable AMD backend via TRITON_CODEGEN_BACKENDS
-set(TRITON_CODEGEN_BACKENDS "amd" "nvidia" CACHE STRING "Enable AMD codegen backend")
+set(TRITON_CODEGEN_BACKENDS "amd" "nvidia"
+    CACHE STRING "Triton codegen backends to enable")
 
 #===----------------------------------------------------------------------===//
 # Include Directories
@@ -137,6 +173,7 @@ set(MLIR_TABLEGEN_EXE mlir-tblgen)
 #===----------------------------------------------------------------------===//
 # Configure TRITON_CACHE_PATH (mimics get_triton_cache_path() logic in setup.py)
 #===----------------------------------------------------------------------===//
+
 if(NOT TRITON_CACHE_PATH)
   if(DEFINED ENV{TRITON_HOME})
     set(TRITON_CACHE_PATH "$ENV{TRITON_HOME}/.triton"
@@ -152,37 +189,49 @@ endif()
 message(STATUS "TRITON_CACHE_PATH: ${TRITON_CACHE_PATH}")
 
 #===----------------------------------------------------------------------===//
-# Tell Triton where LLVM lives so it reuses our local build instead of
-# downloading a prebuilt version.
+# LLVM_SYSPATH
+# Triton uses our in-tree LLVM targets directly, so LLVM_SYSPATH is unused but
+# harmless to set; point it at the in-tree LLVM build dir.
 #===----------------------------------------------------------------------===//
+
 if(NOT LLVM_SYSPATH)
   if(DEFINED ENV{LLVM_SYSPATH})
-    set(LLVM_SYSPATH "$ENV{LLVM_SYSPATH}" CACHE PATH "Path to LLVM install used by Triton")
+    set(LLVM_SYSPATH "$ENV{LLVM_SYSPATH}"
+        CACHE PATH "Path to LLVM install used by Triton")
   else()
-    # Reuse the MLIR_DIR-derived LLVM prefix so Triton doesn't redownload prebuilts.
-    # MLIR_DIR is e.g. .../llvm-project/build/lib/cmake/mlir → prefix is .../llvm-project/build
-    get_filename_component(_mlir_parent "${MLIR_DIR}" DIRECTORY)   # lib/cmake
-    get_filename_component(_mlir_parent "${_mlir_parent}" DIRECTORY) # lib
-    get_filename_component(_llvm_prefix "${_mlir_parent}" DIRECTORY)  # build
-    set(LLVM_SYSPATH "${_llvm_prefix}" CACHE PATH "Path to LLVM install used by Triton")
+    set(LLVM_SYSPATH "${LLVM_EXTERNAL_BUILD_DIR}/llvm"
+        CACHE PATH "Path to LLVM install used by Triton")
   endif()
 endif()
 message(STATUS "LLVM_SYSPATH: ${LLVM_SYSPATH}")
+
+#===----------------------------------------------------------------------===//
+# JSON_SYSPATH
+# Triton always resolves the nlohmann/json third-party package at configure
+# time (external/triton/CMakeLists.txt invokes build_helpers.py with
+# `--packages llvm json`), and the helper downloads json from GitHub unless
+# JSON_SYSPATH is set. Those headers are only consumed by Proton, which we
+# disable (TRITON_BUILD_PROTON=OFF), so the fetch is pure overhead.
+#===----------------------------------------------------------------------===//
+
+if(NOT JSON_SYSPATH)
+  if(DEFINED ENV{JSON_SYSPATH})
+    set(JSON_SYSPATH "$ENV{JSON_SYSPATH}"
+        CACHE PATH "Path to nlohmann/json headers used by Triton")
+  else()
+    set(_rocmlir_json_syspath "${CMAKE_CURRENT_BINARY_DIR}/external/triton/rocmlir-json-stub")
+    file(MAKE_DIRECTORY "${_rocmlir_json_syspath}/include")
+    set(JSON_SYSPATH "${_rocmlir_json_syspath}"
+        CACHE PATH "Path to nlohmann/json headers used by Triton (stub; unused while Proton is off)")
+  endif()
+endif()
+message(STATUS "JSON_SYSPATH: ${JSON_SYSPATH}")
 
 #===----------------------------------------------------------------------===//
 # Add Triton subdirectory
 #===----------------------------------------------------------------------===//
 
 add_subdirectory("${TRITON_PROJECT_DIR}" "external/triton" EXCLUDE_FROM_ALL)
-
-#===----------------------------------------------------------------------===//
-# Create dummy targets for MLIR tablegen dependencies
-# When using pre-built MLIR, tablegen targets don't exist but headers do
-#===----------------------------------------------------------------------===//
-
-if(NOT TARGET MLIRConversionPassIncGen)
-  add_custom_target(MLIRConversionPassIncGen)
-endif()
 
 #===----------------------------------------------------------------------===//
 # Helper Functions for rocMLIR Libraries

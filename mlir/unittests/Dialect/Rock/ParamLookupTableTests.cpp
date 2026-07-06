@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include <gtest/gtest.h>
 
@@ -68,12 +69,34 @@ TEST(FindFallbackTest, UnavailableTuningList) {
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f16"));
   EXPECT_EQ("gfx1201_conv_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1200_conv_f16"));
-  EXPECT_EQ("gfx1100_gemm_f16",
-            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1150_gemm_f16"));
   EXPECT_EQ("gfx90a_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx908_gemm_f16"));
   EXPECT_EQ("gfx1100_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1000_gemm_f16"));
+}
+
+TEST(FindFallbackTest, StrixFallsBackToGfx1151) {
+  // The Strix Halo variants should fall back to gfx1151
+  EXPECT_EQ("gfx1151_gemm_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1150_gemm_f16"));
+  EXPECT_EQ("gfx1151_gemm_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1152_gemm_f16"));
+}
+
+TEST(FindFallbackTest, AttentionStrixFallsBackToGfx1151) {
+  // The Strix Halo variants should fall back to gfx1151 for attention too.
+  EXPECT_EQ("gfx1151_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1150_attention_f16"));
+  EXPECT_EQ("gfx1151_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1152_attention_f16"));
+  EXPECT_EQ("gfx1151_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1150_attention_i8"));
+  EXPECT_EQ("gfx1151_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1152_attention_i8"));
 }
 
 TEST(FindFallbackTest, Fp8FallsBackToI8) {

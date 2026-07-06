@@ -27,8 +27,11 @@ from perfCommonUtils import Operation, GEMMLibrary
 SPLITK_IDX = 7
 
 # global variables.
-ROCPROF = '/opt/rocm/bin/rocprofv3'
-MIOPENDRIVER = '/opt/rocm/bin/MIOpenDriver'
+# Honor ROCM_PATH so the scripts work with relocatable/SDK ROCm installs
+# instead of assuming the system path at /opt/rocm.
+ROCM_PATH = os.environ.get('ROCM_PATH', '/opt/rocm')
+ROCPROF = f'{ROCM_PATH}/bin/rocprofv3'
+MIOPENDRIVER = f'{ROCM_PATH}/bin/MIOpenDriver'
 BENCHMARKING_RESULT_FILE_NAME = 'results'
 BENCHMARKING_STATS_FILE_NAME = 'results_kernel_stats.csv'
 BENCHMARKING_METRICS_FILE_NAME = 'results_counter_collection.csv'
@@ -1879,6 +1882,32 @@ def run_config_with_mlir(config: PerfConfiguration,
     return nanoseconds
 
 
+def canonicalize_config(config_str: str, conf_class: type, arch: str, num_cu: int,
+                        num_chiplets: int) -> str:
+    """Canonicalize a config by round-tripping it through
+    ``conf_class.from_command_line`` / ``to_command_line``.
+
+    perfRunner resolves tuned perf-configs from the tuning DB by
+    ``config.to_command_line()`` (see ``benchmark_mlir``), so every producer and
+    consumer of a config string must agree on this canonical form. Running each
+    config string through here makes a raw test vector (e.g. one missing the
+    ``-m conv ... -t 1`` MIOpen suffix, or spelling a layout differently) match
+    the key perfRunner looks up by.
+
+    ``PerfConfiguration`` is the fusion catch-all and dispatches by
+    positional-arg prefix: a ``conv*`` first token routes to
+    ``ConvConfiguration``, otherwise to ``GemmConfiguration``.
+
+    Raises ``ValueError`` if ``conf_class`` cannot parse ``config_str``.
+    """
+    resolved_class = conf_class
+    if resolved_class is PerfConfiguration:
+        resolved_class = (ConvConfiguration
+                          if config_str.lstrip().startswith('conv') else GemmConfiguration)
+    config = resolved_class.from_command_line(config_str.split(), arch, num_cu, num_chiplets)
+    return config.to_command_line()
+
+
 # Benchmarking function.
 def benchmark_mlir(commandline,
                    conf_class,
@@ -2323,7 +2352,7 @@ def get_num_chiplets(chip, num_cu):
 
 def get_num_cu(chip):
     try:
-        rocminfo = subprocess.check_output("/opt/rocm/bin/rocminfo", stderr=subprocess.PIPE)
+        rocminfo = subprocess.check_output(f"{ROCM_PATH}/bin/rocminfo", stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         print(e.stderr.decode('utf-8'))
         raise
