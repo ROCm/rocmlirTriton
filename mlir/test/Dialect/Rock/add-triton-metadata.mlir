@@ -199,9 +199,10 @@ func.func @chained_gemm(%a: tensor<64x64xf16>, %b: tensor<64x64xf16>, %c: tensor
 
 // -----
 
-// Sequential stores to the same output can rebuild a destination view from the
-// previous rock.blockwise_store result. The vectorization query should trace
-// through that previous store without emitting diagnostics.
+// Sequential stores to the same output can thread the previous
+// rock.blockwise_store result directly as the next destination. The
+// vectorization query should trace through that previous store and process its
+// destination transforms.
 
 #seq_store_row = #rock.transform_map<affine_map<(m, n) -> (m * 64 + n)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]>
 
@@ -216,13 +217,11 @@ func.func @sequential_stores_same_output(%a: tensor<64x64xf16>, %b: tensor<64x64
   %dest1 = rock.transform %dest_raw by #seq_store_row
     : tensor<4096xf32> to tensor<64x64xf32>
   %r1 = rock.blockwise_store %g1 -> %dest1 by atomic_add
-    : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+    : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<64x64xf32>
   %g2 = rock.blockwise_gemm(%a, %b, %c)
     : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
-  %dest2 = rock.transform %r1 by #seq_store_row
-    : tensor<4096xf32> to tensor<64x64xf32>
-  %r2 = rock.blockwise_store %g2 -> %dest2 by atomic_add
-    : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  %r2 = rock.blockwise_store %g2 -> %r1 by atomic_add
+    : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<64x64xf32>
   return
 }
 

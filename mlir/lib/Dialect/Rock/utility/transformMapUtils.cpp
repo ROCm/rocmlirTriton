@@ -811,10 +811,9 @@ mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
       currentVal = trOp.getInput();
       return true;
     }
-    if (isa<BlockwiseStoreOp>(definingOp)) {
-      // A blockwise_store result is the updated destination tensor, not a view
-      // of the store's dest operand. Stop at that raw tensor quietly.
-      return false;
+    if (auto storeOp = dyn_cast<BlockwiseStoreOp>(definingOp)) {
+      currentVal = storeOp.getDest();
+      return true;
     }
     definingOp->emitError("Unexpected op\n");
     return false;
