@@ -786,30 +786,38 @@ def Rock_TransformsToPtrOp
 def Rock_CoordsToPtrOp
     : Rock_Op<"coords_to_ptr", [Pure, AllShapesMatch<["pointers", "mask"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
-          Variadic<RankedTensorOf<[I32]>>:$coords)>,
+          Variadic<AnyTypeOf<[RankedTensorOf<[I32]>, I32]>>:$coords)>,
       Results<(outs RankedTensorOf<[I32]>:$pointers,
           RankedTensorOf<[I1]>:$mask)> {
-  let summary = "Convert intermediate coordinate tensors + a transform "
-                "sub-chain to pointer and mask tensors";
+  let summary =
+      "Convert transforms and coordinate tensors to pointer and mask tensors";
 
   let description = [{
     Like `rock.transforms_to_ptr`, but the transform chain is seeded at the
     upper space of `source`'s remaining transform sub-chain by one explicit
-    coordinate tensor per dimension (`coords`), rather than by scalar extra
-    indices plus per-tile ranges.
+    coordinate per dimension (`coords`), rather than by scalar extra indices
+    plus per-tile ranges.
 
-    Used by the carry-based LICM path: the loop-variant coordinates are carried
-    as loop iter_args and fed here, so no floordiv/mod is recomputed per
-    iteration. Lowered away by `rock-transforms-to-pointer-arith`, which expands
-    the sub-chain to the same `extract_ptr`/`addi` + mask shape as
-    `transforms_to_ptr`. The coordinate tensors may be reduced-rank; the
-    lowering broadcasts them to the tile shape during expansion.
+    Each coordinate can be:
+    - A scalar `i32` (behaving like the scalar extra indices of `transforms_to_ptr`)
+    - An `i32` tensor (per-lane coordinate, which might be either
+      loop-carried or loop-invariant). This is typically a tensor coming from loop iter_args.
+
+    Compared to `transforms_to_ptr`, this achieves the same thing, but allows
+    for a more efficient lowering, which is achieved by the TransformsInvariantCodeMotion pass.
+    The reason is that the tensors used for the coordinates are partially computed
+    outside of the main loop (i.e., the div, mod, etc), leaving the cheap part
+    of the coordinate recomputation inside the main loop, avoiding the recomputation
+    of such expensive operations per iteration.
+
+    Similar to `transforms_to_ptr`, this op is lowered by `rock-transforms-to-pointer-arith`,
+    which expands the op to the same `extract_ptr`/`addi` + mask shape as `transforms_to_ptr`.
   }];
 
   let hasVerifier = 1;
   let assemblyFormat = [{
-    attr-dict $source `(` $coords `)`
-    `:` type($source) `(` type($coords) `)` `->`
+    attr-dict $source `[` $coords `]`
+    `:` type($source) `,` type($coords) `->`
     type($pointers) `,` type($mask)
   }];
 }
