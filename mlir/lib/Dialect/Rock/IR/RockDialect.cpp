@@ -1813,18 +1813,6 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
   return success();
 }
 
-LogicalResult CoordsToPtrOp::verify() {
-  auto sourceType = dyn_cast<RankedTensorType>(getSource().getType());
-  if (!sourceType)
-    return emitOpError("source must be a ranked tensor");
-
-  if (static_cast<int64_t>(getCoords().size()) != sourceType.getRank())
-    return emitOpError("expected one coordinate per source dimension")
-           << " (" << getCoords().size() << " != " << sourceType.getRank()
-           << ")";
-  return success();
-}
-
 //===-----------------------------------------------------===//
 // ReduceOp
 //===-----------------------------------------------------===//

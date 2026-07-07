@@ -302,11 +302,3 @@ func.func @rock_attention(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v
 // CHECK-LABEL: func.func @rock_attention
 // CHECK: rock.attention
 
-func.func @rock_coords_to_ptr(%arg0: tensor<8xi8>, %ca: tensor<2x1xi32>, %cb: tensor<1x4xi32>) -> (tensor<2x4xi32>, tensor<2x4xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 4 + d1)> by [<Unmerge{2, 4} ["a", "b"] at [0, 1] -> ["raw"] at [0]>] bounds = [2, 4] -> [8]> : tensor<8xi8> to tensor<2x4xi8>
-  %pointers, %mask = rock.coords_to_ptr %0[%ca, %cb] : tensor<2x4xi8>, tensor<2x1xi32>, tensor<1x4xi32> -> tensor<2x4xi32>, tensor<2x4xi1>
-  return %pointers, %mask : tensor<2x4xi32>, tensor<2x4xi1>
-}
-// CHECK-LABEL: func.func @rock_coords_to_ptr
-// CHECK: rock.coords_to_ptr %{{.*}}[%{{.*}}, %{{.*}}] : tensor<2x4xi8>, tensor<2x1xi32>, tensor<1x4xi32> -> tensor<2x4xi32>, tensor<2x4xi1>
-

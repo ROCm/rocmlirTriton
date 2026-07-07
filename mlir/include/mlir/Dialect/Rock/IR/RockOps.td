@@ -783,43 +783,6 @@ def Rock_TransformsToPtrOp
   }];
 }
 
-def Rock_CoordsToPtrOp
-    : Rock_Op<"coords_to_ptr", [Pure, AllShapesMatch<["pointers", "mask"]>]>,
-      Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
-          Variadic<AnyTypeOf<[RankedTensorOf<[I32]>, I32]>>:$coords)>,
-      Results<(outs RankedTensorOf<[I32]>:$pointers,
-          RankedTensorOf<[I1]>:$mask)> {
-  let summary =
-      "Convert transforms and coordinate tensors to pointer and mask tensors";
-
-  let description = [{
-    Like `rock.transforms_to_ptr`, but the source is seeded by one explicit
-    coordinate per dimension (`coords`), rather than by scalar extraIndices.
-
-    Each coordinate (coord) can be:
-    - A scalar `i32` (behaving like the scalar extraIndices of `transforms_to_ptr`)
-    - An `i32` tensor (per-lane coordinate, which might be either
-      loop-carried or loop-invariant). This is typically a tensor coming from loop iter_args.
-
-    Compared to `transforms_to_ptr`, this achieves the same thing, but allows
-    for a more efficient lowering, which is achieved by the TransformsInvariantCodeMotion pass.
-    The reason is that the tensors used for the coordinates are partially computed
-    outside of the main loop (i.e., the div, mod, etc), leaving the cheap part
-    of the coordinate recomputation inside the main loop, avoiding the recomputation
-    of such expensive operations per iteration.
-
-    Similar to `transforms_to_ptr`, this op is lowered by `rock-transforms-to-pointer-arith`,
-    which expands the op to the same `extract_ptr`/`addi` + mask shape as `transforms_to_ptr`.
-  }];
-
-  let hasVerifier = 1;
-  let assemblyFormat = [{
-    attr-dict $source `[` $coords `]`
-    `:` type($source) `,` type($coords) `->`
-    type($pointers) `,` type($mask)
-  }];
-}
-
 // blockwise_reduction
 def Rock_BlockwiseReduceOp
     : Rock_Op<"blockwise_reduce",

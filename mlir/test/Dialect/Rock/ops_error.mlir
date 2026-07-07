@@ -747,19 +747,6 @@ func.func @transforms_to_ptr_last_dims_mismatch(
 }
 
 // =============================================================================
-// rock.coords_to_ptr tests
-// =============================================================================
-
-// Wrong number of coordinates: there must be exactly one coordinate operand per
-// source dimension (the coords seed the upper space of the sub-chain).
-func.func @coords_to_ptr_wrong_coord_count(
-    %src: tensor<2x4xf16>, %c: tensor<2x1xi32>) -> (tensor<2x4xi32>, tensor<2x4xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{expected one coordinate per source dimension (1 != 2)}}
-  %ptrs, %mask = rock.coords_to_ptr %src[%c] : tensor<2x4xf16>, tensor<2x1xi32> -> tensor<2x4xi32>, tensor<2x4xi1>
-  return %ptrs, %mask : tensor<2x4xi32>, tensor<2x4xi1>
-}
-
-// =============================================================================
 // rock.blockwise_store tests
 // =============================================================================
 
