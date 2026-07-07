@@ -927,6 +927,39 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
   return reduced;
 }
 
+/// Build the base pointer tile at iv == lb (all extra indices pinned to lb).
+/// The op's mask output is unused (the mask is iv-dependent and rebuilt each
+/// iteration by `buildCarryMask`).
+static Value buildCarryBasePtr(OpBuilder &b, Location loc, const Reduced &r) {
+  auto baseOp = TransformsToPtrOp::create(b, loc, r.ptrType, r.maskType,
+                                          r.srcPre, r.baseIdx);
+  return baseOp.getPointers();
+}
+
+/// Rebuild the validity mask for the current iteration: splice the carried
+/// suffix coordinates (the new loop's iter_args) into the iv == lb coordinate
+/// vector, then re-expand the sub-chain below the merge.
+static Value buildCarryMask(OpBuilder &b, Location loc, const Reduced &r,
+                            scf::ForOp newLoop) {
+  SmallVector<Value> coords(r.iter0Coords);
+  ArrayRef<unsigned> suffixPos =
+      ArrayRef<unsigned>(r.coordPositions).take_back(r.suffixCount);
+  for (auto [k, pos] : llvm::enumerate(suffixPos))
+    coords[pos] = newLoop.getRegionIterArg(r.iterArgStart + k);
+  FailureOr<Value> mask =
+      expandCoordsToMask(b, loc, r.belowMaps, coords, r.ptrType.getShape());
+  assert(succeeded(mask) && "sub-chain mask expansion must succeed");
+  return *mask;
+}
+
+/// Form the current pointer as the base tile plus the carried full-tile offset
+/// accumulator (the last iter_arg for this candidate). No offset re-expansion.
+static Value buildCarryPtr(OpBuilder &b, Location loc, Value basePtr,
+                           const Reduced &r, scf::ForOp newLoop) {
+  Value offset = newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
+  return arith::AddIOp::create(b, loc, basePtr, offset);
+}
+
 /// Rewrite the eligible Carry candidates in `carryCands`: replace `loop` with a
 /// new loop that carries the merge's decomposed coordinate state via the
 /// full-tile pointer recurrence.
@@ -972,56 +1005,50 @@ static void simplifyCarryCandidates(scf::ForOp loop,
   // pointer/mask at iv == lb, splice the carried full-tile validity (suffix)
   // coordinates into the coord vector, rebuild only the mask, and form the
   // pointer as the base plus the carried full-tile offset accumulator (no
-  // offset re-expansion). The base op is loop-invariant, so a later generic
-  // LICM pass may hoist it.
+  // offset re-expansion).
   llvm::SmallPtrSet<Operation *, 4> candidateOps;
   for (Reduced &r : reduced) {
     candidateOps.insert(r.op.getOperation());
 
-    auto baseOp = TransformsToPtrOp::create(b, loc, r.ptrType, r.maskType,
-                                            r.srcPre, r.baseIdx);
-    Value carryBasePtr = baseOp.getPointers();
-
-    SmallVector<Value> coords(r.iter0Coords);
-    ArrayRef<unsigned> suffixPos =
-        ArrayRef<unsigned>(r.coordPositions).take_back(r.suffixCount);
-    for (auto [k, pos] : llvm::enumerate(suffixPos))
-      coords[pos] = newLoop.getRegionIterArg(r.iterArgStart + k);
-    FailureOr<Value> mask =
-        expandCoordsToMask(b, loc, r.belowMaps, coords, r.ptrType.getShape());
-    assert(succeeded(mask) && "sub-chain mask expansion must succeed");
-    Value offset = newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
-    Value ptr = arith::AddIOp::create(b, loc, carryBasePtr, offset);
+    Value basePtr = buildCarryBasePtr(b, loc, r);
+    Value mask = buildCarryMask(b, loc, r, newLoop);
+    Value ptr = buildCarryPtr(b, loc, basePtr, r, newLoop);
     bodyMap.map(r.op.getPointers(), ptr);
-    bodyMap.map(r.op.getMask(), *mask);
+    bodyMap.map(r.op.getMask(), mask);
   }
 
+  // Now just clone the other ops into the new body.
   for (Operation &o : loop.getBody()->without_terminator()) {
     if (candidateOps.contains(&o))
       continue;
     b.clone(o, bodyMap);
   }
 
-  // Build the new yield: original yields (remapped) plus the advanced carried
-  // coordinates (coordinate carry) for each candidate.
+  // Build the new yield
   auto oldYield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
   SmallVector<Value> newYields;
   for (Value y : oldYield.getResults())
     newYields.push_back(bodyMap.lookupOrDefault(y));
+
+  // Emit IR for the the advanced carried coordinates (coordinate carry) for
+  // each candidate.
   for (Reduced &r : reduced) {
-    // Advance the full-tile validity (suffix) coordinates (odometer) and the
-    // full-tile offset accumulator by the per-step delta from that odometer.
+    // Advance the full-tile validity (suffix) coordinates and the
+    // full-tile offset accumulator by the per-step delta.
     SmallVector<Value> suffix;
     for (unsigned k = 0; k < r.suffixCount; ++k)
       suffix.push_back(newLoop.getRegionIterArg(r.iterArgStart + k));
+
     FullTileCarry stepCarry = emitFullTileCarry(
         b, loc, suffix,
         ArrayRef<int64_t>(r.coordSizes).take_back(r.suffixCount),
         ArrayRef<int64_t>(r.coordSteps).take_back(r.suffixCount),
         ArrayRef<int64_t>(r.offsetStrides).take_back(r.suffixCount),
         r.hasPrefix, r.prefixStep, r.prefixStride);
+
     for (Value v : stepCarry.nextSuffix)
       newYields.push_back(v);
+
     Value offset = newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
     newYields.push_back(
         arith::AddIOp::create(b, loc, offset, stepCarry.offsetDelta));
