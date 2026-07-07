@@ -738,13 +738,13 @@ static void simplifyAffineCandidate(Candidate &cand, Value iv, Value lb) {
   op.erase();
 }
 
-static void simplifyCarryCandidates(scf::ForOp loop,
+static bool simplifyCarryCandidates(scf::ForOp loop,
                                     MutableArrayRef<Candidate> carryCands);
 
 /// Simplify all eligible transforms_to_ptr ops in `loop`: Affine candidates are
 /// rewritten in place, Carry candidates get loop-carried coordinate state.
 /// Returns true if the IR was changed.
-static bool tryHoistInvariantTransforms(scf::ForOp loop) {
+static bool trySimplifyTransformsCandidates(scf::ForOp loop) {
   SmallVector<Candidate, 0> candidates;
   for (Operation &o : loop.getBody()->without_terminator()) {
     if (auto tp = dyn_cast<TransformsToPtrOp>(&o)) {
@@ -776,8 +776,8 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
     }
   }
 
-  if (!carryCands.empty())
-    simplifyCarryCandidates(loop, carryCands);
+  if (!carryCands.empty() && simplifyCarryCandidates(loop, carryCands))
+    changed = true;
 
   return changed;
 }
@@ -962,8 +962,9 @@ static Value buildCarryPtr(OpBuilder &b, Location loc, Value basePtr,
 
 /// Rewrite the eligible Carry candidates in `carryCands`: replace `loop` with a
 /// new loop that carries the merge's decomposed coordinate state via the
-/// full-tile pointer recurrence.
-static void simplifyCarryCandidates(scf::ForOp loop,
+/// full-tile pointer recurrence. Returns true if `loop` was replaced, false if
+/// no candidate qualified and the IR was left unchanged.
+static bool simplifyCarryCandidates(scf::ForOp loop,
                                     MutableArrayRef<Candidate> carryCands) {
   Location loc = loop.getLoc();
   Value iv = loop.getInductionVar();
@@ -975,7 +976,7 @@ static void simplifyCarryCandidates(scf::ForOp loop,
 
   // No carry candidate qualified for the pointer-recurrence rewrite: bail out.
   if (reduced.empty())
-    return;
+    return false;
 
   // New iter_args: the original ones followed by each candidate's carried
   // coordinates.
@@ -1059,6 +1060,7 @@ static void simplifyCarryCandidates(scf::ForOp loop,
   for (unsigned i = 0; i < numOrig; ++i)
     loop.getResult(i).replaceAllUsesWith(newLoop.getResult(i));
   loop.erase();
+  return true;
 }
 
 } // end anonymous namespace
@@ -1068,7 +1070,7 @@ void RockTransformsInvariantCodeMotionPass::runOnOperation() {
   if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
     return;
 
-  // Re-walk after each rewrite: tryHoistInvariantTransforms may replace the
+  // Re-walk after each rewrite: trySimplifyTransformsCandidates may replace the
   // loop op (carry path), so collected handles would dangle. After a rewrite
   // the base ops are pinned to iv == lb and no longer depend on the iv, so they
   // are not re-selected as candidates and this terminates.
@@ -1078,7 +1080,7 @@ void RockTransformsInvariantCodeMotionPass::runOnOperation() {
     SmallVector<scf::ForOp> loops;
     func.walk([&](scf::ForOp f) { loops.push_back(f); });
     for (scf::ForOp f : loops) {
-      if (tryHoistInvariantTransforms(f)) {
+      if (trySimplifyTransformsCandidates(f)) {
         changed = true;
         break;
       }
