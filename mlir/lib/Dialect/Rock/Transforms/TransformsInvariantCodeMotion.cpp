@@ -782,16 +782,18 @@ static bool tryHoistInvariantTransforms(scf::ForOp loop) {
   return changed;
 }
 
-/// Rewrite the eligible Carry candidates in `carryCands`: replace `loop` with a
-/// new loop that carries the merge's decomposed coordinate state via the
-/// full-tile pointer recurrence.
-static void simplifyCarryCandidates(scf::ForOp loop,
-                                    MutableArrayRef<Candidate> carryCands) {
+/// Analyze each carry candidate and, for those eligible for the full-tile
+/// pointer recurrence, emit their preheader init values (base coordinates,
+/// carried suffix coordinates, zero offset accumulator) and return the
+/// per-candidate `Reduced` state. Ineligible candidates are skipped (their op
+/// is left in the loop, to be lowered in place by
+/// rock-transforms-to-pointer-arith).
+static SmallVector<Reduced, 0>
+buildReducedCarries(OpBuilder &b, scf::ForOp loop,
+                    MutableArrayRef<Candidate> carryCands) {
   Location loc = loop.getLoc();
   Value iv = loop.getInductionVar();
   Value lb = loop.getLowerBound();
-  Value step = loop.getStep();
-  OpBuilder b(loop);
 
   // Build each carry candidate's iter_arg initial values before the loop (as
   // SSA requires): the merge's decomposed coordinates at iv == lb.
@@ -844,23 +846,18 @@ static void simplifyCarryCandidates(scf::ForOp loop,
     SmallVector<bool> impacts(cand.coordPositions.size());
     for (auto [i, pos] : llvm::enumerate(cand.coordPositions))
       impacts[i] = variantImpactsValidity(belowMaps, pos);
-    int firstImpact = -1;
-    for (auto [i, v] : llvm::enumerate(impacts)) {
-      if (v) {
-        firstImpact = static_cast<int>(i);
-        break;
-      }
-    }
-    if (firstImpact >= 0) {
-      // Not a suffix if a coord below firstImpact impacts validity, or one
-      // at/above it does not: `(i < firstImpact) == impacts[i]` flags both.
-      bool isSuffix = true;
-      for (auto [i, v] : llvm::enumerate(impacts))
-        if ((static_cast<int>(i) < firstImpact) == v)
-          isSuffix = false;
-      prefixSize = static_cast<unsigned>(firstImpact);
-      suffixCount = cand.coordPositions.size() - prefixSize;
-      fullTileOk = isSuffix && prefixSize <= 1;
+
+    // Eligible only when the validity-impacting coords are a contiguous suffix:
+    // find the first impacting coord (everything before it is non-impacting by
+    // construction) and require everything from there on to also impact. The
+    // non-impacting prefix is dropped, so it may be at most one coord.
+    auto *firstImpact = llvm::find(impacts, true);
+    if (firstImpact != impacts.end()) {
+      prefixSize = std::distance(impacts.begin(), firstImpact);
+      suffixCount = impacts.size() - prefixSize;
+      fullTileOk = prefixSize <= 1 &&
+                   llvm::all_of(llvm::make_range(firstImpact, impacts.end()),
+                                [](bool v) { return v; });
     }
 
     // Not eligible for the pointer-recurrence carry (the validity coordinates
@@ -927,6 +924,21 @@ static void simplifyCarryCandidates(scf::ForOp loop,
     r.offsetAccInit = splatI32(b, loc, offTy, 0);
     reduced.push_back(std::move(r));
   }
+  return reduced;
+}
+
+/// Rewrite the eligible Carry candidates in `carryCands`: replace `loop` with a
+/// new loop that carries the merge's decomposed coordinate state via the
+/// full-tile pointer recurrence.
+static void simplifyCarryCandidates(scf::ForOp loop,
+                                    MutableArrayRef<Candidate> carryCands) {
+  Location loc = loop.getLoc();
+  Value iv = loop.getInductionVar();
+  Value lb = loop.getLowerBound();
+  Value step = loop.getStep();
+  OpBuilder b(loop);
+
+  SmallVector<Reduced, 0> reduced = buildReducedCarries(b, loop, carryCands);
 
   // No carry candidate qualified for the pointer-recurrence rewrite: bail out.
   if (reduced.empty())
