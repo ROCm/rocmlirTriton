@@ -735,8 +735,8 @@ def Rock_BlockwiseStoreOp
                AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Arg<TensorOf<NativeMemoryOpTypes>, "destination view">:$dest,
-          Optional<AnyRankedTensor>:$resultAlias,
-          Variadic<I32>:$extraIndices, StoreMethodAttr:$storeMethod)>,
+          Optional<AnyRankedTensor>:$resultAlias, Variadic<I32>:$extraIndices,
+          StoreMethodAttr:$storeMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Write out values to transformed destination";
 

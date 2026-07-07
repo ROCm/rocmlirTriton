@@ -143,9 +143,9 @@ void updateStoreOpForGemm(PatternRewriter &b, Location loc, Value convResult,
   for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
     if (auto storeOp = dyn_cast<StoreOp>(user)) {
       Type storeResultType = storeOp.getResult().getType();
-      auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
-                                        gemmDest, storeOp.getResultAlias(),
-                                        storeMethod);
+      auto newStoreOp =
+          StoreOp::create(b, loc, storeResultType, gemmResult, gemmDest,
+                          storeOp.getResultAlias(), storeMethod);
       b.replaceOp(storeOp, newStoreOp.getResult());
     }
   }
@@ -1171,9 +1171,9 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
         return failure();
 
       auto [gemmResult, gemmDest] = maybe.value();
-      auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
-                                        gemmDest, currentResultAlias,
-                                        storeMethod);
+      auto newStoreOp =
+          StoreOp::create(b, loc, storeResultType, gemmResult, gemmDest,
+                          currentResultAlias, storeMethod);
       finalStoreResult = newStoreOp.getResult();
       if (idx + 1 < kernelIds.size()) {
         currentResultAlias = finalStoreResult;
@@ -1672,11 +1672,9 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
       if (source == op.getResult())
         source = result;
       b.setInsertionPoint(storeOp);
-      auto newStoreOp = rock::StoreOp::create(b, storeOp.getLoc(),
-                                              storeOp.getResult().getType(),
-                                              source, view,
-                                              storeOp.getResultAlias(),
-                                              storeMethod);
+      auto newStoreOp = rock::StoreOp::create(
+          b, storeOp.getLoc(), storeOp.getResult().getType(), source, view,
+          storeOp.getResultAlias(), storeMethod);
       b.replaceOp(storeOp, newStoreOp.getResult());
     }
 

@@ -72,10 +72,12 @@ namespace {
 //       : tensor<...> -> tensor<1x320x128xf32> to tensor<1x160x128xf32>
 //   %dest1 = rock.transform %s0 ... Slice{160, 320}
 //
-// `untransform(%dest1)` must keep the Slice{160, 320} transform, but it stops at
+// `untransform(%dest1)` must keep the Slice{160, 320} transform, but it stops
+// at
 // `%s0`, whose defining op is a store. If we resumed blindly from that store's
-// `dest` operand (`%dest0`), we would also accumulate Slice{0, 160}, incorrectly
-// making the first store's slice part of the second store's pointer arithmetic.
+// `dest` operand (`%dest0`), we would also accumulate Slice{0, 160},
+// incorrectly making the first store's slice part of the second store's pointer
+// arithmetic.
 //
 // Instead, store ops carry an explicit `resultAlias` value. In the example the
 // alias maps `%s0` back to the full `%dest`, while same-typed stores can omit
