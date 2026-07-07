@@ -23,7 +23,7 @@ func.func @test_blockwise_load(%arg0: tensor<32768xf16>, %dst: tensor<4096xf16>)
 
   // Consume the loaded tile so the function is naturally void after lowering.
   %dstView = rock.transform %dst by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf16> to tensor<64x64xf16>
-  %3 = rock.blockwise_store %2 -> %dstView by set : tensor<64x64xf16> -> tensor<64x64xf16> -> tensor<4096xf16>
+  %3 = rock.blockwise_store %2 -> %dstView alias %dst by set : tensor<64x64xf16> -> tensor<64x64xf16> alias tensor<4096xf16> -> tensor<4096xf16>
 
   return %3 : tensor<4096xf16>
 }
@@ -47,7 +47,7 @@ func.func @test_blockwise_store(%arg0: tensor<64x64xf32>, %arg1: tensor<8192xf32
   %0 = rock.transform %arg1 by <affine_map<(d0, d1, d2) -> (d1 * 128 + d2)> by [<Unmerge{64, 128} ["m", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 128] -> [8192]> : tensor<8192xf32> to tensor<1x64x128xf32>
   %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 64 + d3, d2 * 64 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 64} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 1, 2, 64, 64] -> [1, 64, 128]> : tensor<1x64x128xf32> to tensor<1x1x2x64x64xf32>
 
-  %2 = rock.blockwise_store %arg0 -> %1[%c0_i32, %c0_i32, %c1_i32] by set : tensor<64x64xf32> -> tensor<1x1x2x64x64xf32> -> tensor<8192xf32>
+  %2 = rock.blockwise_store %arg0 -> %1 alias %arg1 [%c0_i32, %c0_i32, %c1_i32] by set : tensor<64x64xf32> -> tensor<1x1x2x64x64xf32> alias tensor<8192xf32> -> tensor<8192xf32>
 
   return %2 : tensor<8192xf32>
 }
@@ -81,7 +81,7 @@ func.func @test_multiple_ops(%arg0: tensor<8192xf16>, %arg1: tensor<8192xf16>, %
 
   // Store result (matrix C)
   %7 = rock.transform %arg2 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf32> to tensor<64x64xf32>
-  %8 = rock.blockwise_store %6 -> %7 by set : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  %8 = rock.blockwise_store %6 -> %7 alias %arg2 by set : tensor<64x64xf32> -> tensor<64x64xf32> alias tensor<4096xf32> -> tensor<4096xf32>
 
   return %8 : tensor<4096xf32>
 }
@@ -98,7 +98,7 @@ func.func @test_store_atomic_add(%arg0: tensor<64x64xf32>, %arg1: tensor<4096xf3
   %c0_i32 = arith.constant 0 : i32
 
   %0 = rock.transform %arg1 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf32> to tensor<64x64xf32>
-  %1 = rock.blockwise_store %arg0 -> %0 by atomic_add : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  %1 = rock.blockwise_store %arg0 -> %0 alias %arg1 by atomic_add : tensor<64x64xf32> -> tensor<64x64xf32> alias tensor<4096xf32> -> tensor<4096xf32>
 
   return %1 : tensor<4096xf32>
 }
@@ -114,7 +114,7 @@ func.func @test_store_atomic_max(%arg0: tensor<64x64xf32>, %arg1: tensor<4096xf3
   %c0_i32 = arith.constant 0 : i32
 
   %0 = rock.transform %arg1 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf32> to tensor<64x64xf32>
-  %1 = rock.blockwise_store %arg0 -> %0 by atomic_max : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  %1 = rock.blockwise_store %arg0 -> %0 alias %arg1 by atomic_max : tensor<64x64xf32> -> tensor<64x64xf32> alias tensor<4096xf32> -> tensor<4096xf32>
 
   return %1 : tensor<4096xf32>
 }
@@ -136,7 +136,7 @@ func.func @test_load_i8(%arg0: tensor<4096xi8>, %dst: tensor<4096xi8>) -> tensor
   %1 = rock.blockwise_load %0[%c0_i32] {cacheModifier = #rock<CacheModifier none>} : tensor<1x64x64xi8> -> tensor<64x64xi8>
 
   %dstView = rock.transform %dst by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xi8> to tensor<64x64xi8>
-  %2 = rock.blockwise_store %1 -> %dstView by set : tensor<64x64xi8> -> tensor<64x64xi8> -> tensor<4096xi8>
+  %2 = rock.blockwise_store %1 -> %dstView alias %dst by set : tensor<64x64xi8> -> tensor<64x64xi8> alias tensor<4096xi8> -> tensor<4096xi8>
 
   return %2 : tensor<4096xi8>
 }
@@ -158,7 +158,7 @@ func.func @test_nonsquare_tile(%arg0: tensor<4096xf16>, %dst: tensor<4096xf16>) 
   %1 = rock.blockwise_load %0[%c0_i32] {cacheModifier = #rock<CacheModifier none>} : tensor<1x32x128xf16> -> tensor<32x128xf16>
 
   %dstView = rock.transform %dst by <affine_map<(d0, d1) -> (d0 * 128 + d1)> by [<Unmerge{32, 128} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [32, 128] -> [4096]> : tensor<4096xf16> to tensor<32x128xf16>
-  %2 = rock.blockwise_store %1 -> %dstView by set : tensor<32x128xf16> -> tensor<32x128xf16> -> tensor<4096xf16>
+  %2 = rock.blockwise_store %1 -> %dstView alias %dst by set : tensor<32x128xf16> -> tensor<32x128xf16> alias tensor<4096xf16> -> tensor<4096xf16>
 
   return %2 : tensor<4096xf16>
 }
@@ -188,7 +188,7 @@ func.func @test_inside_scf_for(%arg0: tensor<8192xf16>, %dst: tensor<4096xf16>) 
   }
 
   %dstView = rock.transform %dst by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf16> to tensor<64x64xf16>
-  %3 = rock.blockwise_store %result -> %dstView by set : tensor<64x64xf16> -> tensor<64x64xf16> -> tensor<4096xf16>
+  %3 = rock.blockwise_store %result -> %dstView alias %dst by set : tensor<64x64xf16> -> tensor<64x64xf16> alias tensor<4096xf16> -> tensor<4096xf16>
 
   return %3 : tensor<4096xf16>
 }
@@ -208,7 +208,7 @@ func.func @test_no_indices(%arg0: tensor<4096xf16>, %dst: tensor<4096xf16>) -> t
   %1 = rock.blockwise_load %0 {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf16> -> tensor<64x64xf16>
 
   %dstView = rock.transform %dst by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf16> to tensor<64x64xf16>
-  %2 = rock.blockwise_store %1 -> %dstView by set : tensor<64x64xf16> -> tensor<64x64xf16> -> tensor<4096xf16>
+  %2 = rock.blockwise_store %1 -> %dstView alias %dst by set : tensor<64x64xf16> -> tensor<64x64xf16> alias tensor<4096xf16> -> tensor<4096xf16>
 
   return %2 : tensor<4096xf16>
 }
@@ -223,7 +223,7 @@ func.func @test_no_indices(%arg0: tensor<4096xf16>, %dst: tensor<4096xf16>) -> t
 //  CHECK-NOT:   rock.blockwise_store
 func.func @test_store_no_indices(%arg0: tensor<64x64xf32>, %arg1: tensor<4096xf32>) -> tensor<4096xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
   %0 = rock.transform %arg1 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf32> to tensor<64x64xf32>
-  %1 = rock.blockwise_store %arg0 -> %0 by set : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  %1 = rock.blockwise_store %arg0 -> %0 alias %arg1 by set : tensor<64x64xf32> -> tensor<64x64xf32> alias tensor<4096xf32> -> tensor<4096xf32>
 
   return %1 : tensor<4096xf32>
 }
@@ -267,7 +267,7 @@ func.func @test_return_clears_res_attrs(%arg0: tensor<64x64xf32>, %arg1: tensor<
     -> (tensor<4096xf32> {rock.prefill = 0.000000e+00 : f32})
     attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
   %0 = rock.transform %arg1 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf32> to tensor<64x64xf32>
-  %1 = rock.blockwise_store %arg0 -> %0 by set : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  %1 = rock.blockwise_store %arg0 -> %0 alias %arg1 by set : tensor<64x64xf32> -> tensor<64x64xf32> alias tensor<4096xf32> -> tensor<4096xf32>
 
   return %1 : tensor<4096xf32>
 }
@@ -285,7 +285,7 @@ func.func @test_return_clears_res_attrs(%arg0: tensor<64x64xf32>, %arg1: tensor<
 //      CHECK:   return %[[RES]] : tensor<4096xf32>
 func.func @test_non_kernel_func_untouched(%arg0: tensor<64x64xf32>, %arg1: tensor<4096xf32>) -> tensor<4096xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg1 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf32> to tensor<64x64xf32>
-  %1 = rock.blockwise_store %arg0 -> %0 by set : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  %1 = rock.blockwise_store %arg0 -> %0 alias %arg1 by set : tensor<64x64xf32> -> tensor<64x64xf32> alias tensor<4096xf32> -> tensor<4096xf32>
 
   return %1 : tensor<4096xf32>
 }

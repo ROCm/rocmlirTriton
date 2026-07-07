@@ -471,6 +471,7 @@ def Rock_StoreOp
     : Rock_Op<"store", [Pure,
                         AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, AnyRankedTensor:$dest,
+          Optional<AnyRankedTensor>:$resultAlias,
           StoreMethodAttr:$storeMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Store tensor result to destination";
@@ -484,7 +485,15 @@ def Rock_StoreOp
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{
-    $source `to` $dest `by` $storeMethod attr-dict `:` type($source) `->` type ($result) `to` type($dest)
+    $source `to` $dest (`alias` $resultAlias^)? `by` $storeMethod
+    attr-dict `:` type($source) `->` type($result) `to` type($dest)
+    (`alias` type($resultAlias)^)?
+  }];
+  let extraClassDeclaration = [{
+    Value getResultAliasOrDest() {
+      Value resultAlias = getResultAlias();
+      return resultAlias ? resultAlias : getDest();
+    }
   }];
 }
 
@@ -721,10 +730,12 @@ def Rock_BlockwiseLoadPtrOp
 // blockwise_store
 def Rock_BlockwiseStoreOp
     : Rock_Op<"blockwise_store",
-              [Pure, DeclareOpInterfaceMethods<RockWriterOpInterface>,
+              [Pure, AttrSizedOperandSegments,
+               DeclareOpInterfaceMethods<RockWriterOpInterface>,
                AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Arg<TensorOf<NativeMemoryOpTypes>, "destination view">:$dest,
+          Optional<AnyRankedTensor>:$resultAlias,
           Variadic<I32>:$extraIndices, StoreMethodAttr:$storeMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Write out values to transformed destination";
@@ -733,10 +744,18 @@ def Rock_BlockwiseStoreOp
   }];
 
   let assemblyFormat = [{
-    attr-dict $source  `->` $dest (`[` $extraIndices^ `]`)? `by` $storeMethod
-    `:` type($source) `->` type($dest) `->` type($result)
+    attr-dict $source  `->` $dest (`alias` $resultAlias^)?
+    (`[` $extraIndices^ `]`)? `by` $storeMethod
+    `:` type($source) `->` type($dest) (`alias` type($resultAlias)^)?
+    `->` type($result)
   }];
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    Value getResultAliasOrDest() {
+      Value resultAlias = getResultAlias();
+      return resultAlias ? resultAlias : getDest();
+    }
+  }];
 }
 
 // blockwise_store_ptr

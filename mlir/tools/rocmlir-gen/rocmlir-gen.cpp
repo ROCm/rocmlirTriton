@@ -2954,8 +2954,9 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
 
   // Store the flat result to the C argument
   Value cArg = func.getArgument(cIdx);
-  Value storedVal =
-      rock::StoreOp::create(b, loc, cFlatType, flatResult, cArg, storeMethod);
+  Value storedVal = rock::StoreOp::create(b, loc, cFlatType, flatResult, cArg,
+                                          /*resultAlias=*/Value(),
+                                          storeMethod);
 
   func::ReturnOp::create(b, loc, storedVal);
 
@@ -3755,7 +3756,8 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       rock::flattenOutput(builder, loc, attention.getResult(), outputDimNames);
   Value outputArg = func.getArgument(outputArgIdx);
   Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
-                                          flatResult, outputArg, storeMethod);
+                                          flatResult, outputArg,
+                                          /*resultAlias=*/Value(), storeMethod);
 
   SmallVector<Value> returnOperands = {storedOut};
   if (returnLSE) {
@@ -3763,7 +3765,8 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
         rock::flattenOutput(builder, loc, attention.getLse(), lseDimNames);
     Value lseArg = func.getArgument(lseArgIdx);
     Value storedLSE = rock::StoreOp::create(builder, loc, lseFlatType, flatLSE,
-                                            lseArg, rock::StoreMethod::Set);
+                                            lseArg, /*resultAlias=*/Value(),
+                                            rock::StoreMethod::Set);
     returnOperands.push_back(storedLSE);
   }
 
@@ -3879,7 +3882,8 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   // Store the result to the transformed output tensor
   Value storedOut =
       rock::StoreOp::create(builder, loc, flatArgTypes[flatArgTypes.size() - 1],
-                            convElntGemm.getResult(), output, storeMethod);
+                            convElntGemm.getResult(), output,
+                            /*resultAlias=*/Value(), storeMethod);
 
   func::ReturnOp::create(builder, loc, storedOut);
 
@@ -3981,7 +3985,8 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
                                          outputDimNames);
   Value outputArg = func.getArgument(func.getNumArguments() - 1);
   Value storedOut = rock::StoreOp::create(builder, loc, outputFlatType,
-                                          flatResult, outputArg, storeMethod);
+                                          flatResult, outputArg,
+                                          /*resultAlias=*/Value(), storeMethod);
 
   func::ReturnOp::create(builder, loc, {storedOut});
   if (!disableSplitKForTuning)

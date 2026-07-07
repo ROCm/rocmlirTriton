@@ -195,9 +195,9 @@ func.func @test_m_three_segments(%a: tensor<1x224x64xf16>, %b: tensor<1x64x128xf
 func.func @test_chained_stores_nonpow2(%a0: tensor<1x160x64xf16>, %b0: tensor<1x64x128xf16>, %a1: tensor<1x160x64xf16>, %b1: tensor<1x64x128xf16>, %dest: tensor<1x320x128xf32>) -> tensor<1x320x128xf32> attributes {rock.kernel} {
   %r0 = rock.gridwise_gemm(%a0, %b0) {params = #pc80x64} : tensor<1x160x64xf16>, tensor<1x64x128xf16> -> tensor<1x160x128xf32>
   %dest0 = rock.transform %dest by <affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Slice{0, 160} ["m0"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 160, 128] -> [1, 320, 128]> : tensor<1x320x128xf32> to tensor<1x160x128xf32>
-  %s0 = rock.store %r0 to %dest0 by set : tensor<1x160x128xf32> -> tensor<1x320x128xf32> to tensor<1x160x128xf32>
+  %s0 = rock.store %r0 to %dest0 alias %dest by set : tensor<1x160x128xf32> -> tensor<1x320x128xf32> to tensor<1x160x128xf32> alias tensor<1x320x128xf32>
   %r1 = rock.gridwise_gemm(%a1, %b1) {params = #pc80x64} : tensor<1x160x64xf16>, tensor<1x64x128xf16> -> tensor<1x160x128xf32>
   %dest1 = rock.transform %s0 by <affine_map<(d0, d1, d2) -> (d0, d1 + 160, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Slice{160, 320} ["m1"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 160, 128] -> [1, 320, 128]> : tensor<1x320x128xf32> to tensor<1x160x128xf32>
-  %s1 = rock.store %r1 to %dest1 by set : tensor<1x160x128xf32> -> tensor<1x320x128xf32> to tensor<1x160x128xf32>
+  %s1 = rock.store %r1 to %dest1 alias %s0 by set : tensor<1x160x128xf32> -> tensor<1x320x128xf32> to tensor<1x160x128xf32> alias tensor<1x320x128xf32>
   return %s1 : tensor<1x320x128xf32>
 }

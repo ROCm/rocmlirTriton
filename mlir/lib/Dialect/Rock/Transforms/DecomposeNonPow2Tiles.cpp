@@ -497,7 +497,7 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
       Value view = rock::transform(b, currentDestRoot, destMaps);
       Value destCell = splitter.sliceCell(view, cell);
       auto st = StoreOp::create(b, loc, storeResultType, (*srcGrid)[cell],
-                                destCell, method);
+                                destCell, currentDestRoot, method);
       currentDestRoot = st.getResult();
     }
     store.getResult().replaceAllUsesWith(currentDestRoot);

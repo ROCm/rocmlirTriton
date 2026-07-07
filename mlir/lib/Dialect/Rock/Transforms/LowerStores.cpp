@@ -255,7 +255,8 @@ void RockLowerStoresPass::runOnOperation() {
     // Create BlockwiseStoreOp with combined transforms
     auto bstOp = BlockwiseStoreOp::create(
         builder, loc, storeOp.getResult().getType(), fusedTile, combinedDest,
-        storeMarkerOp.getExtraIndices(), storeOp.getStoreMethod());
+        storeOp.getResultAlias(), storeMarkerOp.getExtraIndices(),
+        storeOp.getStoreMethod());
 
     LLVM_DEBUG(llvm::dbgs() << "Created BlockwiseStoreOp: " << bstOp << "\n");
 

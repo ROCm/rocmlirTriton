@@ -260,7 +260,8 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     }
     rw.setInsertionPoint(storeOp);
     auto newStoreOp = rock::StoreOp::create(
-        rw, storeOp.getLoc(), storeResultTypes[i], source, view, storeMethod);
+        rw, storeOp.getLoc(), storeResultTypes[i], source, view,
+        storeOp.getResultAlias(), storeMethod);
     rw.replaceOp(storeOp, newStoreOp.getResult());
   }
 

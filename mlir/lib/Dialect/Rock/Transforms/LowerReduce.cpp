@@ -142,7 +142,8 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     // via setStoreMethodAndPrefill which sets the atomic method + prefill.
     auto newStore =
         StoreOp::create(rewriter, loc, storeOp.getResult().getType(),
-                        reduceInput, transformedDest, storeOp.getStoreMethod());
+                        reduceInput, transformedDest, storeOp.getResultAlias(),
+                        storeOp.getStoreMethod());
     if (failed(setStoreMethodAndPrefill(rewriter, newStore, storeMethod)))
       return storeOp.emitError("failed to set store method and prefill");
 

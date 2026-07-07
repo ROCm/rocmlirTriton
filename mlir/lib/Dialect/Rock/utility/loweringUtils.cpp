@@ -320,12 +320,12 @@ FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {
     } else if (auto store = dyn_cast_or_null<StoreOp>(value.getDefiningOp())) {
       SmallVector<TransformMapAttr> transforms;
       std::tie(value, std::ignore) =
-          rock::untransform(store.getDest(), transforms);
+          rock::untransform(store.getResultAliasOrDest(), transforms);
     } else if (auto blockwiseStore =
                    dyn_cast_or_null<BlockwiseStoreOp>(value.getDefiningOp())) {
       SmallVector<TransformMapAttr> transforms;
       std::tie(value, std::ignore) =
-          rock::untransform(blockwiseStore.getDest(), transforms);
+          rock::untransform(blockwiseStore.getResultAliasOrDest(), transforms);
     } else {
       return failure();
     }
@@ -333,32 +333,6 @@ FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {
   }
 
   return maybeBlockArg;
-}
-
-Value mlir::rock::findStoreResultReplacement(Value dest, Type resultType) {
-  Value current = dest;
-  while (current) {
-    if (current.getType() == resultType)
-      return current;
-
-    if (auto transformOp = current.getDefiningOp<TransformOp>()) {
-      current = transformOp.getInput();
-      continue;
-    }
-
-    if (auto blockwiseStoreOp = current.getDefiningOp<BlockwiseStoreOp>()) {
-      current = blockwiseStoreOp.getDest();
-      continue;
-    }
-
-    if (auto storeOp = current.getDefiningOp<StoreOp>()) {
-      current = storeOp.getDest();
-      continue;
-    }
-
-    return {};
-  }
-  return {};
 }
 
 // Helper function to get attributes from parents

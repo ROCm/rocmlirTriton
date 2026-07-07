@@ -1114,10 +1114,14 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
     if (isa<ViewLikeOpInterface>(user))
       continue;
     // Store chaining is valid when the previous store result is threaded as
-    // the destination tensor for the next same-kind store. The dest operand is
-    // operand 1.
-    if (isa<StoreOpT>(user) && use.getOperandNumber() == 1)
-      continue;
+    // the destination tensor or explicit result alias for the next same-kind
+    // store.
+    if (auto nextStore = dyn_cast<StoreOpT>(user)) {
+      if (use.get() == nextStore.getDest())
+        continue;
+      if (nextStore.getResultAlias() && use.get() == nextStore.getResultAlias())
+        continue;
+    }
     if (isa<func::ReturnOp>(user)) {
       if (++returnUseCount > 1)
         return op.emitOpError("result may be returned at most once");
@@ -1130,6 +1134,21 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
   return success();
 }
 
+template <typename StoreOpT>
+static LogicalResult verifyStoreResultAlias(StoreOpT op) {
+  Value resultAlias = op.getResultAlias();
+  if (!resultAlias)
+    return success();
+
+  if (resultAlias.getType() != op.getResult().getType()) {
+    return op.emitOpError("resultAlias type must match result type")
+           << " (alias: " << resultAlias.getType()
+           << ", result: " << op.getResult().getType() << ")";
+  }
+
+  return success();
+}
+
 LogicalResult StoreOp::verify() {
   auto sourceType = cast<ShapedType>(getSource().getType());
   auto destType = cast<ShapedType>(getDest().getType());
@@ -1137,6 +1156,9 @@ LogicalResult StoreOp::verify() {
   if (sourceType.getShape() != destType.getShape())
     return emitOpError("source and dest shapes must match")
            << " (source: " << sourceType << ", dest: " << destType << ")";
+
+  if (failed(verifyStoreResultAlias(*this)))
+    return failure();
 
   return verifyStoreResultUses(*this, getResult());
 }
@@ -1598,6 +1620,9 @@ LogicalResult BlockwiseStoreOp::verify() {
            << " (" << destType.getShape().take_back(sourceType.getRank())
            << " != " << sourceType.getShape() << ")";
   }
+
+  if (failed(verifyStoreResultAlias(*this)))
+    return failure();
 
   return verifyStoreResultUses(*this, getResult());
 }

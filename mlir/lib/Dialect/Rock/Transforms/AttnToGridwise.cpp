@@ -650,7 +650,9 @@ static LogicalResult commonAttentionGemmElmtGemm(
           rw.setInsertionPoint(storeOp);
           auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
                                                   storeOp.getResult().getType(),
-                                                  source, view, storeMethod);
+                                                  source, view,
+                                                  storeOp.getResultAlias(),
+                                                  storeMethod);
           rw.replaceOp(storeOp, newStoreOp.getResult());
         }
       };

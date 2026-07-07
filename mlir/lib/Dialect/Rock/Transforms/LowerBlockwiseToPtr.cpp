@@ -94,14 +94,7 @@ struct BlockwiseStoreRewritePattern
     auto extraIndices = op.getExtraIndices();
     auto storeMethod = op.getStoreMethod();
 
-    Value resultReplacement =
-        rock::findStoreResultReplacement(dest, op.getResult().getType());
-    if (resultReplacement) {
-      op.getResult().replaceAllUsesWith(resultReplacement);
-    } else if (!op.getResult().use_empty()) {
-      return op.emitOpError(
-          "cannot find same-typed destination view for store result uses");
-    }
+    op.getResult().replaceAllUsesWith(op.getResultAliasOrDest());
 
     auto transformsToPtrOp =
         TransformsToPtrOp::create(b, loc, dest, extraIndices);

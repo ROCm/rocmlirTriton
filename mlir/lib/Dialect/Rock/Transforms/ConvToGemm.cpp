@@ -144,7 +144,8 @@ void updateStoreOpForGemm(PatternRewriter &b, Location loc, Value convResult,
     if (auto storeOp = dyn_cast<StoreOp>(user)) {
       Type storeResultType = storeOp.getResult().getType();
       auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
-                                        gemmDest, storeMethod);
+                                        gemmDest, storeOp.getResultAlias(),
+                                        storeMethod);
       b.replaceOp(storeOp, newStoreOp.getResult());
     }
   }
@@ -1150,8 +1151,18 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // Thread the destination through each per-kernel store so the single
     // returned tensor represents all disjoint bwd_data phase writes. Depending
     // on the incoming store type, stores may return either the untransformed
-    // root tensor or the logical destination-view type. Rebuild the original
-    // view only when the store result is the root type.
+    // root tensor or the logical destination-view type. Keep the store result
+    // alias separate from the destination view: root-typed store results alias
+    // the current root value, while view-typed results alias the current view.
+    Value currentResultAlias;
+    if (storeResultType == destRoot.getType()) {
+      currentResultAlias = destRoot;
+    } else if (storeResultType == destBuffer.getType()) {
+      currentResultAlias = destBuffer;
+    } else {
+      return bwdDataOp.emitOpError(
+          "store result type does not match destination root or view");
+    }
     Value currentDest = destBuffer;
     Value finalStoreResult;
     for (auto [idx, kid] : llvm::enumerate(kernelIds)) {
@@ -1161,15 +1172,16 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
 
       auto [gemmResult, gemmDest] = maybe.value();
       auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
-                                        gemmDest, storeMethod);
+                                        gemmDest, currentResultAlias,
+                                        storeMethod);
       finalStoreResult = newStoreOp.getResult();
       if (idx + 1 < kernelIds.size()) {
+        currentResultAlias = finalStoreResult;
         if (finalStoreResult.getType() == destRoot.getType()) {
           currentDest = rock::transform(b, finalStoreResult, destMaps);
         } else {
-          if (finalStoreResult.getType() != destBuffer.getType())
-            return bwdDataOp.emitOpError(
-                "store result type does not match destination root or view");
+          assert(finalStoreResult.getType() == destBuffer.getType() &&
+                 "non-root store result must have destination-view type");
           currentDest = finalStoreResult;
         }
       }
@@ -1662,7 +1674,9 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
       b.setInsertionPoint(storeOp);
       auto newStoreOp = rock::StoreOp::create(b, storeOp.getLoc(),
                                               storeOp.getResult().getType(),
-                                              source, view, storeMethod);
+                                              source, view,
+                                              storeOp.getResultAlias(),
+                                              storeMethod);
       b.replaceOp(storeOp, newStoreOp.getResult());
     }
 
