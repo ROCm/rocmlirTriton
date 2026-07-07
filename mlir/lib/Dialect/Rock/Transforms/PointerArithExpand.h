@@ -45,11 +45,6 @@ namespace rock {
 Value makeRange(OpBuilder &b, Location loc, int32_t start, int32_t end,
                 int64_t numDims, int64_t nonUnitDim);
 
-/// Broadcast two (scalar or tensor) values to a common shape, inserting the
-/// needed triton.splat / triton.broadcast ops, and return the rewired pair.
-std::pair<Value, Value> ensureCompatible(OpBuilder &b, Location loc, Value lhs,
-                                         Value rhs);
-
 /// Splat/broadcast `v` (scalar or tensor) to a tensor of shape `shape`.
 Value broadcastToShape(OpBuilder &b, Location loc, Value v,
                        ArrayRef<int64_t> shape);
@@ -61,14 +56,9 @@ FailureOr<SmallVector<Value>> expandAffineMap(OpBuilder &b, Location loc,
                                               AffineMap affineMap,
                                               ValueRange operands);
 
-/// Emit the validity (bounds) checks contributed by a single validity-impacting
-/// `map`, given the just-computed lower coordinates `outputs`. Returns an i1
-/// value (scalar or tensor) that is true where every check passes.
-Value updateValidityAfter(OpBuilder &b, Location loc, TransformMapAttr map,
-                          ValueRange outputs);
-
 /// The linearized buffer offset and validity mask produced by a transform
-/// chain. `offset` is an i32 value (scalar or tensor); `mask` is an i1 value.
+/// chain. `mask` is an i1 value; `offset` is an i32 value (scalar or tensor),
+/// or null when `computeOffset` is false.
 struct OffsetAndMask {
   Value offset;
   Value mask;
@@ -79,23 +69,17 @@ struct OffsetAndMask {
 /// return the resulting linearized offset and validity mask, both broadcast to
 /// `outShape`. The TransformsToPtrOp lowering seeds `startCoords` with extra
 /// indices + per-tile ranges.
+///
+/// When `computeOffset` is false, only the validity mask is produced: the
+/// trailing offset-only maps are skipped and `offset` is left null. The
+/// carry-based LICM path uses this because it maintains the offset via an
+/// incremental pointer recurrence, so re-linearizing it would be wasted
+/// arithmetic. An all-true mask is returned when no map impacts validity.
 FailureOr<OffsetAndMask>
 expandCoordsToOffsetAndMask(OpBuilder &b, Location loc,
                             ArrayRef<TransformMapAttr> transforms,
-                            ValueRange startCoords, ArrayRef<int64_t> outShape);
-
-/// Like `expandCoordsToOffsetAndMask`, but computes *only* the validity mask
-/// (broadcast to `outShape`) and skips the final offset linearization. Used by
-/// the carry-based LICM path when the offset is maintained by an incremental
-/// pointer recurrence: the only per-iteration coordinate work left is the
-/// validity check, so re-linearizing the offset would be wasted arithmetic.
-/// Coordinates are still expanded through the validity-impacting maps (the
-/// padding halo moves with the iv), but the trailing offset-only segment is
-/// dropped. Returns an all-true mask when no map impacts validity.
-FailureOr<Value> expandCoordsToMask(OpBuilder &b, Location loc,
-                                    ArrayRef<TransformMapAttr> transforms,
-                                    ValueRange startCoords,
-                                    ArrayRef<int64_t> outShape);
+                            ValueRange startCoords, ArrayRef<int64_t> outShape,
+                            bool computeOffset = true);
 
 } // namespace rock
 } // namespace mlir

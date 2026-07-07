@@ -946,10 +946,10 @@ static Value buildCarryMask(OpBuilder &b, Location loc, const Reduced &r,
       ArrayRef<unsigned>(r.coordPositions).take_back(r.suffixCount);
   for (auto [k, pos] : llvm::enumerate(suffixPos))
     coords[pos] = newLoop.getRegionIterArg(r.iterArgStart + k);
-  FailureOr<Value> mask =
-      expandCoordsToMask(b, loc, r.belowMaps, coords, r.ptrType.getShape());
-  assert(succeeded(mask) && "sub-chain mask expansion must succeed");
-  return *mask;
+  FailureOr<OffsetAndMask> om = expandCoordsToOffsetAndMask(
+      b, loc, r.belowMaps, coords, r.ptrType.getShape(), /*computeOffset=*/false);
+  assert(succeeded(om) && "sub-chain mask expansion must succeed");
+  return om->mask;
 }
 
 /// Form the current pointer as the base tile plus the carried full-tile offset

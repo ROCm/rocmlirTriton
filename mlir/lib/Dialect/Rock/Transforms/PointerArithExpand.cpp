@@ -148,14 +148,16 @@ static SmallVector<Value> ensureCompatibleShapes(OpBuilder &builder,
   return results;
 }
 
-} // namespace
-
-std::pair<Value, Value> mlir::rock::ensureCompatible(OpBuilder &builder,
-                                                     Location loc, Value lhs,
-                                                     Value rhs) {
+// Broadcast two (scalar or tensor) values to a common shape, inserting the
+// needed triton.splat / triton.broadcast ops, and return the rewired pair.
+static std::pair<Value, Value> ensureCompatible(OpBuilder &builder,
+                                                Location loc, Value lhs,
+                                                Value rhs) {
   auto results = ensureCompatibleShapes(builder, loc, {lhs, rhs});
   return {results[0], results[1]};
 }
+
+} // namespace
 
 Value mlir::rock::broadcastToShape(OpBuilder &b, Location loc, Value v,
                                    ArrayRef<int64_t> shape) {
@@ -194,7 +196,7 @@ public:
     auto rhs = visit(expr.getRHS());
     if (!lhs || !rhs)
       return nullptr;
-    auto [l, r] = mlir::rock::ensureCompatible(builder, loc, lhs, rhs);
+    auto [l, r] = ensureCompatible(builder, loc, lhs, rhs);
     return OpTy::create(builder, loc, l, r, overflowFlags);
   }
 
@@ -225,7 +227,7 @@ public:
     // analyzable by Triton's AxisInfoAnalysis so global loads can be
     // vectorized. The previous `select` form collapsed pointer contiguity to 1
     // (AxisInfo cannot prove the operand is non-negative across the tile).
-    auto [l, r] = mlir::rock::ensureCompatible(builder, loc, lhs, rhs);
+    auto [l, r] = ensureCompatible(builder, loc, lhs, rhs);
     return arith::RemUIOp::create(builder, loc, l, r);
   }
 
@@ -245,7 +247,7 @@ public:
     // directly rather than a signed quotient guarded by a negative-value
     // correction `select`; this keeps pointer contiguity visible to Triton's
     // AxisInfoAnalysis so loads can be vectorized.
-    auto [l, r] = mlir::rock::ensureCompatible(builder, loc, lhs, rhs);
+    auto [l, r] = ensureCompatible(builder, loc, lhs, rhs);
     return arith::DivUIOp::create(builder, loc, l, r);
   }
 
@@ -266,12 +268,12 @@ public:
     // AxisInfoAnalysis so loads can be vectorized.
     Value oneCst =
         arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(1));
-    auto [r, o] = mlir::rock::ensureCompatible(builder, loc, rhs, oneCst);
+    auto [r, o] = ensureCompatible(builder, loc, rhs, oneCst);
     Value divisorMinusOne = arith::SubIOp::create(builder, loc, r, o);
     auto [l, dm1] =
-        mlir::rock::ensureCompatible(builder, loc, lhs, divisorMinusOne);
+        ensureCompatible(builder, loc, lhs, divisorMinusOne);
     Value numerator = arith::AddIOp::create(builder, loc, l, dm1);
-    auto [num, r2] = mlir::rock::ensureCompatible(builder, loc, numerator, rhs);
+    auto [num, r2] = ensureCompatible(builder, loc, numerator, rhs);
     return arith::DivUIOp::create(builder, loc, num, r2);
   }
 
@@ -329,8 +331,11 @@ mlir::rock::expandAffineMap(OpBuilder &builder, Location loc, AffineMap affineMa
 // Validity.
 //===----------------------------------------------------------------------===//
 
-Value mlir::rock::updateValidityAfter(OpBuilder &b, Location loc,
-                                      TransformMapAttr map, ValueRange outputs) {
+// Emit the validity (bounds) checks contributed by a single validity-impacting
+// `map`, given the just-computed lower coordinates `outputs`. Returns an i1
+// value (scalar or tensor) that is true where every check passes.
+static Value updateValidityAfter(OpBuilder &b, Location loc,
+                                 TransformMapAttr map, ValueRange outputs) {
   Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
   ArrayRef<int64_t> lowerBounds = map.getLowerBounds();
 
@@ -377,12 +382,13 @@ Value mlir::rock::updateValidityAfter(OpBuilder &b, Location loc,
 
 FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
     OpBuilder &b, Location loc, ArrayRef<TransformMapAttr> transforms,
-    ValueRange startCoords, ArrayRef<int64_t> outShape) {
+    ValueRange startCoords, ArrayRef<int64_t> outShape, bool computeOffset) {
   using AffineResults = SmallVector<Value>;
 
   // Break the chain into segments that each end at a validity-impacting map,
-  // composing the intervening maps into a single affine map. A trailing
-  // segment with no validity impact carries the remaining maps.
+  // composing the intervening maps into a single affine map. The trailing
+  // segment (the offset-only maps below the last validity check) is only
+  // needed when computing the offset; the mask-only path skips it.
   SmallVector<std::pair<AffineMap, TransformMapAttr>> composedMaps;
   SmallVector<TransformMapAttr> toCompose;
   for (TransformMapAttr t : transforms) {
@@ -392,7 +398,8 @@ FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
       toCompose.clear();
     }
   }
-  composedMaps.emplace_back(composeTransforms(toCompose), nullptr);
+  if (computeOffset)
+    composedMaps.emplace_back(composeTransforms(toCompose), nullptr);
 
   AffineResults computed(startCoords);
   Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
@@ -411,45 +418,12 @@ FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
     }
   }
 
-  if (computed.size() != 1)
-    return failure();
-
   OffsetAndMask result;
-  result.offset = broadcastToShape(b, loc, computed[0], outShape);
   result.mask = broadcastToShape(b, loc, isValid, outShape);
-  return result;
-}
-
-FailureOr<Value> mlir::rock::expandCoordsToMask(
-    OpBuilder &b, Location loc, ArrayRef<TransformMapAttr> transforms,
-    ValueRange startCoords, ArrayRef<int64_t> outShape) {
-  using AffineResults = SmallVector<Value>;
-
-  // Same segmentation as expandCoordsToOffsetAndMask, but only the segments
-  // that end at a validity-impacting map are needed; the trailing offset-only
-  // segment is intentionally not emitted (the caller keeps the offset via a
-  // recurrence).
-  SmallVector<std::pair<AffineMap, TransformMapAttr>> composedMaps;
-  SmallVector<TransformMapAttr> toCompose;
-  for (TransformMapAttr t : transforms) {
-    toCompose.push_back(t);
-    if (mapImpactsValidity(t)) {
-      composedMaps.emplace_back(composeTransforms(toCompose), t);
-      toCompose.clear();
-    }
-  }
-
-  AffineResults computed(startCoords);
-  Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
-  for (const auto &[composedMap, transform] : composedMaps) {
-    FailureOr<AffineResults> transformed =
-        expandAffineMap(b, loc, composedMap, computed);
-    if (failed(transformed))
+  if (computeOffset) {
+    if (computed.size() != 1)
       return failure();
-    computed.assign(*transformed);
-    Value validityUpdate = updateValidityAfter(b, loc, transform, computed);
-    auto [vu, iv] = ensureCompatible(b, loc, validityUpdate, isValid);
-    isValid = arith::AndIOp::create(b, loc, vu, iv);
+    result.offset = broadcastToShape(b, loc, computed[0], outShape);
   }
-  return broadcastToShape(b, loc, isValid, outShape);
+  return result;
 }
