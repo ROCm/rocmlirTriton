@@ -32,6 +32,7 @@ function(add_proton_library name)
   # Use system to skip warnings caused by legacy clang compilers
   target_include_directories(${name}
     SYSTEM PRIVATE
+      ${ROCPROFILER_SDK_INCLUDE_DIR}
       "${ROCM_INCLUDE_DIR}"
   )
 
@@ -93,3 +94,9 @@ endif()
 
 # ============ Link any external libs required by Proton backends ============
 link_proton_backend_external_libs()
+
+if(WIN32)
+  target_link_libraries(proton PRIVATE dlfcn)
+  set_target_properties(proton PROPERTIES PREFIX "lib")
+  set_target_properties(proton PROPERTIES SUFFIX ".pyd")
+endif()

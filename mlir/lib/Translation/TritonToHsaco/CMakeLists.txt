@@ -85,10 +85,20 @@ target_compile_definitions(obj.TritonToHsacoTranslation PRIVATE
 # and the install-tree layout (<prefix>/include/lld, used when LLVM is consumed
 # via find_package from an installed package).
 if("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
+  set(LLD_INCLUDE_CANDIDATES "")
+  # rocmlirTriton in-tree build: lld is vendored next to llvm/ in
+  # external/llvm-project, so its headers live at <src>/lld/include. Prefer
+  # this explicit source path. We cannot rely on LLVM_INCLUDE_DIRS[0] pointing
+  # at the source tree here: Triton's own CMake runs build_helpers.py and
+  # FORCE-overwrites LLVM_INCLUDE_DIRS with the build-tree include dir only,
+  # so the LLVM_INCLUDE_DIRS-based derivation below would miss lld/include.
+  if(DEFINED LLVM_EXTERNAL_SRC_DIR)
+    list(APPEND LLD_INCLUDE_CANDIDATES "${LLVM_EXTERNAL_SRC_DIR}/lld/include")
+  endif()
   list(GET LLVM_INCLUDE_DIRS 0 LLVM_FIRST_INCLUDE_DIR)
   get_filename_component(LLVM_SRC_DIR "${LLVM_FIRST_INCLUDE_DIR}" DIRECTORY)
   get_filename_component(LLVM_PROJECT_DIR "${LLVM_SRC_DIR}" DIRECTORY)
-  set(LLD_INCLUDE_CANDIDATES
+  list(APPEND LLD_INCLUDE_CANDIDATES
     "${LLVM_PROJECT_DIR}/lld/include"
     "${LLVM_FIRST_INCLUDE_DIR}/lld"
     "${LLVM_FIRST_INCLUDE_DIR}"

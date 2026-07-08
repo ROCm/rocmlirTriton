@@ -777,8 +777,8 @@ ExtractRuntimeGlobalSymbol(Process *process, ConstString name,
   return symbol_load_addr;
 }
 
-// Batched version of ExtractRuntimeGlobalSymbol. Resolves symbols and reads
-// their values in a single batch using ReadUnsignedIntegersFromMemory.
+/// Batched version of ExtractRuntimeGlobalSymbol. Resolves symbols and reads
+/// their values in a single batch using ReadUnsignedIntegersFromMemory.
 static llvm::SmallVector<RuntimeGlobalSymbolResult>
 ExtractRuntimeGlobalSymbolsBatched(
     Process *process, const ModuleSP &module_sp,
@@ -1352,7 +1352,7 @@ size_t AppleObjCRuntimeV2::GetByteOffsetForIvar(CompilerType &parent_ast_type,
     buffer.append(class_name.GetStringRef());
     buffer.push_back('.');
     buffer.append(ivar_name);
-    ConstString ivar_const_str(buffer.c_str());
+    ConstString ivar_const_str(buffer);
 
     // Try to get the ivar offset address from the symbol table first using the
     // name we created above
@@ -1522,7 +1522,7 @@ public:
       if (!err.Success())
         return element();
 
-      return element(ConstString(key_string.c_str()),
+      return element(ConstString(key_string),
                      (ObjCLanguageRuntime::ObjCISA)value);
     }
 
@@ -2245,7 +2245,7 @@ AppleObjCRuntimeV2::DynamicClassInfoExtractor::UpdateISAToDescriptorMap(
 
   if (class_buffer_addr != LLDB_INVALID_ADDRESS) {
     arguments.GetValueAtIndex(index++)->GetScalar() = class_buffer_addr;
-    arguments.GetValueAtIndex(index++)->GetScalar() = class_buffer_byte_size;
+    arguments.GetValueAtIndex(index++)->GetScalar() = class_buffer_len;
   }
 
   // Only dump the runtime classes from the expression evaluation if the log is
@@ -2795,20 +2795,20 @@ void AppleObjCRuntimeV2::WarnIfNoClassesCached(
   case SharedCacheWarningReason::eNotEnoughClassesRead:
     Debugger::ReportWarning("could not find Objective-C class data in "
                             "the process. This may reduce the quality of type "
-                            "information available.\n",
+                            "information available\n",
                             debugger.GetID(), &m_no_classes_cached_warning);
     break;
   case SharedCacheWarningReason::eExpressionExecutionFailure:
     Debugger::ReportWarning(
         "could not execute support code to read "
         "Objective-C class data in the process. This may "
-        "reduce the quality of type information available.\n",
+        "reduce the quality of type information available\n",
         debugger.GetID(), &m_no_classes_cached_warning);
     break;
   case SharedCacheWarningReason::eExpressionUnableToRun:
     Debugger::ReportWarning(
         "could not execute support code to read Objective-C class data because "
-        "it's not yet safe to do so, and will be retried later.\n",
+        "it's not yet safe to do so, and will be retried later\n",
         debugger.GetID(), nullptr);
     break;
   }
@@ -2845,7 +2845,7 @@ void AppleObjCRuntimeV2::WarnIfNoExpandedSharedCache() {
   } else {
     os << "read from the shared cache";
   }
-  os << ". This will likely reduce debugging performance.\n";
+  os << ". This will likely reduce debugging performance\n";
 
   Debugger::ReportWarning(buffer, debugger.GetID(),
                           &m_no_expanded_cache_warning);
@@ -3481,28 +3481,29 @@ bool AppleObjCRuntimeV2::GetCFBooleanValuesIfNeeded() {
   static ConstString g_kCFBooleanFalse("kCFBooleanFalse");
   static ConstString g_kCFBooleanTrue("kCFBooleanTrue");
 
-  std::function<lldb::addr_t(ConstString, ConstString)> get_symbol =
-      [this](ConstString sym, ConstString real_sym) -> lldb::addr_t {
-    SymbolContextList sc_list;
-    GetProcess()->GetTarget().GetImages().FindSymbolsWithNameAndType(
-        sym, lldb::eSymbolTypeData, sc_list);
-    if (sc_list.GetSize() == 1) {
-      SymbolContext sc;
-      sc_list.GetContextAtIndex(0, sc);
-      if (sc.symbol)
-        return sc.symbol->GetLoadAddress(&GetProcess()->GetTarget());
-    }
-    GetProcess()->GetTarget().GetImages().FindSymbolsWithNameAndType(
-        real_sym, lldb::eSymbolTypeData, sc_list);
-    if (sc_list.GetSize() != 1)
+  static ModuleSpec corefoundation_module_spec(FileSpec("CoreFoundation"));
+
+  ModuleSP corefoundation_module_sp =
+      GetProcess()->GetTarget().GetImages().FindFirstModule(
+          corefoundation_module_spec);
+
+  if (!corefoundation_module_sp)
+    return false;
+
+  auto get_symbol = [this, &corefoundation_module_sp](
+                        ConstString sym, ConstString real_sym) -> lldb::addr_t {
+    const Symbol *symbol =
+        corefoundation_module_sp->FindFirstSymbolWithNameAndType(
+            sym, lldb::eSymbolTypeData);
+    if (symbol)
+      return symbol->GetLoadAddress(&GetProcess()->GetTarget());
+
+    symbol = corefoundation_module_sp->FindFirstSymbolWithNameAndType(
+        real_sym, lldb::eSymbolTypeData);
+    if (!symbol)
       return LLDB_INVALID_ADDRESS;
 
-    SymbolContext sc;
-    sc_list.GetContextAtIndex(0, sc);
-    if (!sc.symbol)
-      return LLDB_INVALID_ADDRESS;
-
-    lldb::addr_t addr = sc.symbol->GetLoadAddress(&GetProcess()->GetTarget());
+    lldb::addr_t addr = symbol->GetLoadAddress(&GetProcess()->GetTarget());
     Status error;
     addr = GetProcess()->ReadPointerFromMemory(addr, error);
     if (error.Fail())

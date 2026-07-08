@@ -193,6 +193,7 @@ private:
 struct ConvertBuiltinFuncToLLVM
     : public triton::impl::ConvertBuiltinFuncToLLVMBase<
           ConvertBuiltinFuncToLLVM> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertBuiltinFuncToLLVM)
   ConvertBuiltinFuncToLLVM(StringRef gfxArch, bool ftz) {
     this->gfxArch = gfxArch.str();
     this->ftz = ftz;
@@ -203,7 +204,7 @@ struct ConvertBuiltinFuncToLLVM
     ModuleOp mod = getOperation();
 
     GreedyRewriteConfig config;
-    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Aggressive);
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
 
     AMD::TargetInfo targetInfo(this->gfxArch.getValue());
     RewritePatternSet patterns(context);

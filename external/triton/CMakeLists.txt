@@ -18,8 +18,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # Triton configuration
 ################################################################################
 
+option(TRITON_BUILD_BINARY "Build C++ Triton binaries" ON)
 option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
 option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
+option(TRITON_BUILD_GSAN "Build GSan" OFF)
 option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
 option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
 option(TRITON_OFFLINE_BUILD "Build without downloading dependencies" OFF)
@@ -185,11 +187,10 @@ if(NOT MSVC)
   set(CMAKE_C_FLAGS_TRITONBUILDWITHO1 "-O1")
   set(CMAKE_CXX_FLAGS_TRITONBUILDWITHO1 "-O1")
 else()
-  set(CMAKE_C_FLAGS_TRITONRELBUILDWITHASSERTS "/Zi /RTC1 /bigobj /Zc:preprocessor /permissive-")
-  set(CMAKE_CXX_FLAGS_TRITONRELBUILDWITHASSERTS "/Zi /RTC1 /bigobj /Zc:preprocessor /permissive-")
-  set(CMAKE_EXE_LINKER_FLAGS_TRITONRELBUILDWITHASSERTS "/debug:fastlink /INCREMENTAL")
-  set(CMAKE_MODULE_LINKER_FLAGS_TRITONRELBUILDWITHASSERTS "/debug:fastlink /INCREMENTAL")
-  set(CMAKE_SHARED_LINKER_FLAGS_TRITONRELBUILDWITHASSERTS "/debug:fastlink /INCREMENTAL")
+  set(CMAKE_C_FLAGS_TRITONRELBUILDWITHASSERTS "/Zi /RTC1")
+  set(CMAKE_CXX_FLAGS_TRITONRELBUILDWITHASSERTS "/Zi /RTC1")
+  set(CMAKE_C_FLAGS_TRITONBUILDWITHO1 "/O1")
+  set(CMAKE_CXX_FLAGS_TRITONBUILDWITHO1 "/O1")
 endif()
 
 # Default build type
@@ -210,7 +211,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 if(NOT MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS  -fPIC -std=gnu++17")
 else()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /nologo /bigobj /Zc:__STDC__ /Zc:preprocessor /permissive- /utf-8")
 endif()
 
 ################################################################################
@@ -241,11 +242,20 @@ include(AddMLIR)
 
 function(add_triton_object name)
   cmake_parse_arguments(ARG "" "" "DEPENDS;LINK_LIBS" ${ARGN})
-  add_library(${name} OBJECT)
-  target_sources(${name}
-    PRIVATE ${ARG_UNPARSED_ARGUMENTS}
-    INTERFACE $<TARGET_OBJECTS:${name}>
-  )
+
+  if(WIN32)
+    # On Windows with MSVC, OBJECT libraries don't produce .lib files but CMake
+    # generates bare .lib references for them in link commands, causing LNK1181.
+    # Use STATIC libraries instead so CMake generates full-path .lib references.
+    add_library(${name} STATIC ${ARG_UNPARSED_ARGUMENTS})
+  else()
+    add_library(${name} OBJECT)
+    target_sources(${name}
+      PRIVATE ${ARG_UNPARSED_ARGUMENTS}
+      INTERFACE $<TARGET_OBJECTS:${name}>
+    )
+  endif()
+
   if(ARG_DEPENDS)
     add_dependencies(${name} ${ARG_DEPENDS})
   endif()
@@ -284,7 +294,7 @@ if(NOT MSVC)
   endif()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default ")
 else()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4244 /wd4624 /wd4715 /wd4530")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /WX /wd4244 /wd4267 /wd4293 /wd4624")
 endif()
 
 include_directories(".")
@@ -305,10 +315,14 @@ if (NOT WIN32 AND NOT APPLE AND NOT BSD)
   link_libraries(stdc++fs)
 endif()
 
+if(WIN32)
+  add_subdirectory(third_party/dlfcn-win32)
+  include_directories(${PROJECT_SOURCE_DIR}/third_party/dlfcn-win32)
+endif()
+
 ################################################################################
 # Python module
 ################################################################################
-
 if(TRITON_BUILD_PYTHON_MODULE)
   message(STATUS "Adding Python module")
   set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
@@ -381,7 +395,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     pybind11::headers
   )
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
-     CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR # macOS arm64
+     CMAKE_SYSTEM_PROCESSOR MATCHES "[Aa][Rr][Mm]64" OR # macOS/Windows arm64
      CMAKE_OSX_ARCHITECTURES MATCHES "arm64")  # also macOS arm64
       list(APPEND TRITON_LIBRARIES
           LLVMAArch64CodeGen
@@ -412,15 +426,25 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   set(TRITON_BACKENDS_TUPLE "(${TRITON_BACKENDS_TUPLE})")
   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
-  add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
+  set(TRITON_PYTHON_BINDING_SRCS
+                  ${PYTHON_SRC_PATH}/main.cc
                   ${PYTHON_SRC_PATH}/ir.cc
                   ${PYTHON_SRC_PATH}/gluon_ir.cc
-                  ${CMAKE_CURRENT_SOURCE_DIR}/python/triton/experimental/gsan/src/gsan_testing.cc
                   ${PYTHON_SRC_PATH}/linear_layout.cc
                   ${PYTHON_SRC_PATH}/passes.cc
                   ${PYTHON_SRC_PATH}/interpreter.cc
                   ${PYTHON_SRC_PATH}/llvm.cc
                   ${PYTHON_SRC_PATH}/specialize.cc)
+  if(TRITON_BUILD_GSAN)
+    list(APPEND TRITON_PYTHON_BINDING_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/python/triton/experimental/gsan/src/gsan_testing.cc)
+  endif()
+  add_library(triton SHARED ${TRITON_PYTHON_BINDING_SRCS})
+
+  if(TRITON_BUILD_GSAN)
+    target_compile_definitions(triton PRIVATE TRITON_BUILD_GSAN=1)
+  else()
+    target_compile_definitions(triton PRIVATE TRITON_BUILD_GSAN=0)
+  endif()
 
   # Link triton with its dependencies
   target_link_libraries(triton PRIVATE ${TRITON_LIBRARIES})
@@ -431,7 +455,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
   set_target_properties(triton PROPERTIES INTERFACE_LINK_LIBRARIES "")
 
   if(WIN32)
-    target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS} dlfcn)
     set_target_properties(triton PROPERTIES SUFFIX ".pyd")
     set_target_properties(triton PROPERTIES PREFIX "lib")
   else()
@@ -470,10 +494,19 @@ if(TRITON_BUILD_PYTHON_MODULE)
       message(FATAL_ERROR "TRITON_WHEEL_DIR must be set.")
   endif()
 
-  configure_file(
-    "${LLVM_SYSPATH}/bin/FileCheck"
-    "${TRITON_WHEEL_DIR}/FileCheck"
-    COPYONLY)
+  if(TRITON_BUILD_UT)
+    if(WIN32)
+      configure_file(
+        "${LLVM_SYSPATH}/bin/FileCheck.exe"
+        "${TRITON_WHEEL_DIR}/FileCheck.exe"
+        COPYONLY)
+    else()
+      configure_file(
+        "${LLVM_SYSPATH}/bin/FileCheck"
+        "${TRITON_WHEEL_DIR}/FileCheck"
+        COPYONLY)
+    endif()
+  endif()
 
   # Build plugins when building libtriton since they depend on libtriton.
   if(TRITON_EXT_ENABLED)
@@ -502,10 +535,13 @@ endif()
 find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
-add_subdirectory(bin)
-add_subdirectory(test)
+
+if(TRITON_BUILD_BINARY)
+  add_subdirectory(bin)
+endif()
 
 if(TRITON_BUILD_UT)
+  add_subdirectory(test)
   add_subdirectory(unittest)
   # This target runs all the unit tests.
   add_custom_target(check-triton-unit-tests

@@ -8,9 +8,13 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 
 #include "gtest/gtest.h"
+
+#include <string>
+#include <vector>
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -23,6 +27,33 @@ struct PerfConfigTestEnv {
 
   StringAttr str(StringRef s) { return StringAttr::get(&ctx, s); }
 };
+
+struct WarningCapture {
+  std::vector<std::string> warnings;
+  ScopedDiagnosticHandler handler;
+
+  WarningCapture(MLIRContext &ctx)
+      : handler(&ctx, [this](Diagnostic &diag) {
+          if (diag.getSeverity() == DiagnosticSeverity::Warning) {
+            warnings.push_back(diag.str());
+            return success();
+          }
+          return failure();
+        }) {}
+};
+
+void expectScheduleHintWarning(const WarningCapture &capture,
+                               int64_t scheduleHint) {
+  ASSERT_EQ(capture.warnings.size(), 1u);
+  const std::string &warning = capture.warnings.front();
+  EXPECT_NE(warning.find("scheduleHint=" + std::to_string(scheduleHint)),
+            std::string::npos)
+      << warning;
+  EXPECT_NE(
+      warning.find("scheduleHint is no longer supported and will be ignored"),
+      std::string::npos)
+      << warning;
+}
 } // namespace
 
 // --- GemmParamsAttr: v1 back-compat ---
@@ -42,20 +73,24 @@ TEST(PerfConfigParsingTest, GemmParamsValidV1BackCompat) {
   EXPECT_EQ(attr.getNumStages(), 2);
   EXPECT_EQ(attr.getWavesPerEU(), 0);
   EXPECT_EQ(attr.getGridGroupSize(), 1);
-  // v1 strings predate the knob fields; the parser must default all 6
+  // v1 strings predate the knob fields; the parser must default all 5
   // knobs to `kKnobDefault` so older tuning DBs continue to work.
   EXPECT_EQ(attr.getUseAsyncCopy(), kKnobDefault);
   EXPECT_EQ(attr.getUseBlockPingpong(), kKnobDefault);
   EXPECT_EQ(attr.getUseInThreadTranspose(), kKnobDefault);
   EXPECT_EQ(attr.getUseBufferOps(), kKnobDefault);
   EXPECT_EQ(attr.getUseBufferAtomics(), kKnobDefault);
-  EXPECT_EQ(attr.getScheduleHint(), kKnobDefault);
 }
 
-// --- GemmParamsAttr: v2 ---
+// --- GemmParamsAttr: v2 read-only back-compat ---
+//
+// v2 carried a trailing `scheduleHint` bitfield (the 6th knob field). That
+// knob was removed in v3; v2 strings are still accepted read-only, with the
+// trailing token parsed and discarded. Re-serialization always emits v3.
 
-TEST(PerfConfigParsingTest, GemmParamsValidV2AllDefaults) {
+TEST(PerfConfigParsingTest, GemmParamsV2BackCompatDiscardsScheduleHint) {
   PerfConfigTestEnv e;
+  WarningCapture capture(e.ctx);
   auto attr = GemmParamsAttr::get(
       e.str("gemm:v2:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1"));
   ASSERT_TRUE(attr);
@@ -66,83 +101,48 @@ TEST(PerfConfigParsingTest, GemmParamsValidV2AllDefaults) {
   EXPECT_EQ(attr.getUseInThreadTranspose(), kKnobDefault);
   EXPECT_EQ(attr.getUseBufferOps(), kKnobDefault);
   EXPECT_EQ(attr.getUseBufferAtomics(), kKnobDefault);
-  EXPECT_EQ(attr.getScheduleHint(), kKnobDefault);
+  EXPECT_TRUE(capture.warnings.empty());
 }
 
-TEST(PerfConfigParsingTest, GemmParamsValidV2MixedKnobs) {
+TEST(PerfConfigParsingTest, GemmParamsV2MixedKnobsReserializeAsV3) {
   PerfConfigTestEnv e;
+  WarningCapture capture(e.ctx);
   // Knob block: useAsyncCopy=1, useBlockPingpong=0, useInThreadTranspose=-1,
-  // useBufferOps=1, useBufferAtomics=0,
-  // scheduleHint=2 (memory-bound-attention).
+  // useBufferOps=1, useBufferAtomics=0, plus a trailing scheduleHint=2 that
+  // must be parsed and discarded.
   auto attr = GemmParamsAttr::get(
       e.str("gemm:v2:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0,2"));
   ASSERT_TRUE(attr);
+  expectScheduleHintWarning(capture, 2);
   EXPECT_EQ(attr.getUseAsyncCopy(), 1);
   EXPECT_EQ(attr.getUseBlockPingpong(), 0);
   EXPECT_EQ(attr.getUseInThreadTranspose(), kKnobDefault);
   EXPECT_EQ(attr.getUseBufferOps(), 1);
   EXPECT_EQ(attr.getUseBufferAtomics(), 0);
-  EXPECT_EQ(attr.getScheduleHint(), 2);
+  // Re-serialization drops the trailing scheduleHint and emits v3.
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "gemm:v3:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0");
 }
 
-TEST(PerfConfigParsingTest, GemmParamsV2RoundTrip) {
+TEST(PerfConfigParsingTest, GemmParamsV2IgnoresArbitraryScheduleHintValue) {
   PerfConfigTestEnv e;
-  StringRef original = "gemm:v2:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0,2";
-  auto attr = GemmParamsAttr::get(e.str(original));
+  WarningCapture capture(e.ctx);
+  // The trailing scheduleHint token is no longer validated; any integer is
+  // accepted and discarded (here 4, which was an "unknown bit" pre-v3).
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v2:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,4"));
   ASSERT_TRUE(attr);
-  StringAttr serialized = attr.getPerfConfigAttr();
-  EXPECT_EQ(serialized.strref(), original);
+  expectScheduleHintWarning(capture, 4);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "gemm:v3:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1");
 }
-
-TEST(PerfConfigParsingTest, GemmParamsV2ScheduleHintCombination) {
-  PerfConfigTestEnv e;
-  // scheduleHint is a bitfield (see KnobUtils.h). 3 = attention |
-  // memory-bound-attention, mirroring upstream's
-  // `schedule_hint="attention,memory-bound-attention"`. The round-trip
-  // must preserve the combined value as-is.
-  StringRef original = "gemm:v2:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,3";
-  auto attr = GemmParamsAttr::get(e.str(original));
-  ASSERT_TRUE(attr);
-  EXPECT_EQ(attr.getScheduleHint(), 3);
-  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
-}
-
-// --- GemmParamsAttr: v2 knob-range validation ---
 
 TEST(PerfConfigParsingTest, GemmParamsV2RejectsBoolKnobAboveOne) {
   PerfConfigTestEnv e;
-  // useBlockPingpong = 2 -- not in {-1, 0, 1}. Without validation this
-  // round-trips through and is truthy-coerced to "force on" in
-  // Pipelines.cpp; we want it rejected at parse time instead.
+  // useBlockPingpong = 2 -- not in {-1, 0, 1}. The bool knobs are still
+  // validated on the v2 back-compat path.
   auto attr = GemmParamsAttr::get(
       e.str("gemm:v2:128,128,16,1,1,4,32,1,2,0,1,-1,2,-1,-1,-1,-1"));
-  EXPECT_FALSE(attr);
-}
-
-TEST(PerfConfigParsingTest, GemmParamsV2RejectsBoolKnobBelowMinusOne) {
-  PerfConfigTestEnv e;
-  // useAsyncCopy = -2 -- not in {-1, 0, 1}.
-  auto attr = GemmParamsAttr::get(
-      e.str("gemm:v2:128,128,16,1,1,4,32,1,2,0,1,-2,-1,-1,-1,-1,-1"));
-  EXPECT_FALSE(attr);
-}
-
-TEST(PerfConfigParsingTest, GemmParamsV2RejectsScheduleHintUnknownBit) {
-  PerfConfigTestEnv e;
-  // scheduleHint = 4 -- bit 2 is not in `kAllScheduleHintBits` today.
-  // Accepting it would silently lose the hint downstream.
-  auto attr = GemmParamsAttr::get(
-      e.str("gemm:v2:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,4"));
-  EXPECT_FALSE(attr);
-}
-
-TEST(PerfConfigParsingTest,
-     GemmParamsV2RejectsScheduleHintNegativeNonSentinel) {
-  PerfConfigTestEnv e;
-  // scheduleHint = -2 -- only `-1` (kKnobDefault) is a legal negative
-  // value.
-  auto attr = GemmParamsAttr::get(
-      e.str("gemm:v2:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-2"));
   EXPECT_FALSE(attr);
 }
 
@@ -161,9 +161,57 @@ TEST(PerfConfigParsingTest, GemmParamsV2TooManyParams) {
   EXPECT_FALSE(attr);
 }
 
-TEST(PerfConfigParsingTest, GemmParamsUnknownVersionV3) {
+// --- GemmParamsAttr: v3 (current) ---
+
+TEST(PerfConfigParsingTest, GemmParamsValidV3AllDefaults) {
   PerfConfigTestEnv e;
-  auto attr = GemmParamsAttr::get(e.str("gemm:v3:128,128,16,1,1,4,32,1,2,0,1"));
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v3:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1"));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getMPerBlock(), 128);
+  EXPECT_EQ(attr.getGridGroupSize(), 1);
+  EXPECT_EQ(attr.getUseAsyncCopy(), kKnobDefault);
+  EXPECT_EQ(attr.getUseBlockPingpong(), kKnobDefault);
+  EXPECT_EQ(attr.getUseInThreadTranspose(), kKnobDefault);
+  EXPECT_EQ(attr.getUseBufferOps(), kKnobDefault);
+  EXPECT_EQ(attr.getUseBufferAtomics(), kKnobDefault);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsV3RoundTrip) {
+  PerfConfigTestEnv e;
+  StringRef original = "gemm:v3:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0";
+  auto attr = GemmParamsAttr::get(e.str(original));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsV3RejectsBoolKnobAboveOne) {
+  PerfConfigTestEnv e;
+  // useBlockPingpong = 2 -- not in {-1, 0, 1}.
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v3:128,128,16,1,1,4,32,1,2,0,1,-1,2,-1,-1,-1"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsV3TooFewParams) {
+  PerfConfigTestEnv e;
+  // v3 expects 16 fields (11 tunables + 5 knobs).
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v3:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsV3TooManyParams) {
+  PerfConfigTestEnv e;
+  // A stray trailing field (e.g. an old v2 scheduleHint) is rejected for v3.
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v3:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsUnknownVersionV4) {
+  PerfConfigTestEnv e;
+  auto attr = GemmParamsAttr::get(e.str("gemm:v4:128,128,16,1,1,4,32,1,2,0,1"));
   EXPECT_FALSE(attr);
 }
 
@@ -229,57 +277,54 @@ TEST(PerfConfigParsingTest, GemmGemmParamsValidV1BackCompat) {
   EXPECT_EQ(attr.getUseInThreadTranspose(), kKnobDefault);
   EXPECT_EQ(attr.getUseBufferOps(), kKnobDefault);
   EXPECT_EQ(attr.getUseBufferAtomics(), kKnobDefault);
-  EXPECT_EQ(attr.getScheduleHint(), kKnobDefault);
 }
 
-// --- GemmGemmParamsAttr: v2 ---
+// --- GemmGemmParamsAttr: v2 read-only back-compat ---
 
-TEST(PerfConfigParsingTest, GemmGemmParamsValidV2AllDefaults) {
+TEST(PerfConfigParsingTest, GemmGemmParamsV2BackCompatDiscardsScheduleHint) {
   PerfConfigTestEnv e;
+  WarningCapture capture(e.ctx);
   auto attr = GemmGemmParamsAttr::get(
       e.str("attn:v2:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1"));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getMPerBlockG0(), 64);
-  EXPECT_EQ(attr.getScheduleHint(), kKnobDefault);
+  EXPECT_EQ(attr.getUseBufferAtomics(), kKnobDefault);
+  EXPECT_TRUE(capture.warnings.empty());
 }
 
-TEST(PerfConfigParsingTest, GemmGemmParamsValidV2MixedKnobs) {
+TEST(PerfConfigParsingTest, GemmGemmParamsV2MixedKnobsReserializeAsV3) {
   PerfConfigTestEnv e;
+  WarningCapture capture(e.ctx);
   auto attr = GemmGemmParamsAttr::get(
       e.str("attn:v2:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0,1"));
   ASSERT_TRUE(attr);
+  expectScheduleHintWarning(capture, 1);
   EXPECT_EQ(attr.getUseAsyncCopy(), 1);
   EXPECT_EQ(attr.getUseBlockPingpong(), 0);
   EXPECT_EQ(attr.getUseInThreadTranspose(), kKnobDefault);
   EXPECT_EQ(attr.getUseBufferOps(), 1);
   EXPECT_EQ(attr.getUseBufferAtomics(), 0);
-  EXPECT_EQ(attr.getScheduleHint(), 1);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "attn:v3:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0");
 }
 
-TEST(PerfConfigParsingTest, GemmGemmParamsV2RoundTrip) {
+TEST(PerfConfigParsingTest, GemmGemmParamsV2IgnoresArbitraryScheduleHintValue) {
   PerfConfigTestEnv e;
-  StringRef original = "attn:v2:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0,1";
-  auto attr = GemmGemmParamsAttr::get(e.str(original));
+  WarningCapture capture(e.ctx);
+  // The trailing scheduleHint token is accepted and discarded (here 4).
+  auto attr = GemmGemmParamsAttr::get(
+      e.str("attn:v2:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,4"));
   ASSERT_TRUE(attr);
-  StringAttr serialized = attr.getPerfConfigAttr();
-  EXPECT_EQ(serialized.strref(), original);
+  expectScheduleHintWarning(capture, 4);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "attn:v3:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1");
 }
-
-// --- GemmGemmParamsAttr: v2 knob-range validation ---
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV2RejectsBoolKnobAboveOne) {
   PerfConfigTestEnv e;
   // useBlockPingpong = 2 -- not in {-1, 0, 1}.
   auto attr = GemmGemmParamsAttr::get(
       e.str("attn:v2:64,64,32,2,1,2,16,1,1,0,1,-1,2,-1,-1,-1,-1"));
-  EXPECT_FALSE(attr);
-}
-
-TEST(PerfConfigParsingTest, GemmGemmParamsV2RejectsScheduleHintUnknownBit) {
-  PerfConfigTestEnv e;
-  // scheduleHint = 4 -- unknown bit.
-  auto attr = GemmGemmParamsAttr::get(
-      e.str("attn:v2:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,4"));
   EXPECT_FALSE(attr);
 }
 
@@ -290,10 +335,36 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV2TooFewParams) {
   EXPECT_FALSE(attr);
 }
 
-TEST(PerfConfigParsingTest, GemmGemmParamsUnknownVersionV3) {
+// --- GemmGemmParamsAttr: v3 (current) ---
+
+TEST(PerfConfigParsingTest, GemmGemmParamsValidV3AllDefaults) {
+  PerfConfigTestEnv e;
+  auto attr = GemmGemmParamsAttr::get(
+      e.str("attn:v3:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1"));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getMPerBlockG0(), 64);
+  EXPECT_EQ(attr.getUseBufferAtomics(), kKnobDefault);
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsV3RoundTrip) {
+  PerfConfigTestEnv e;
+  StringRef original = "attn:v3:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0";
+  auto attr = GemmGemmParamsAttr::get(e.str(original));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsV3TooManyParams) {
+  PerfConfigTestEnv e;
+  auto attr = GemmGemmParamsAttr::get(
+      e.str("attn:v3:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsUnknownVersionV4) {
   PerfConfigTestEnv e;
   auto attr =
-      GemmGemmParamsAttr::get(e.str("attn:v3:64,64,32,2,1,2,16,1,1,0,1"));
+      GemmGemmParamsAttr::get(e.str("attn:v4:64,64,32,2,1,2,16,1,1,0,1"));
   EXPECT_FALSE(attr);
 }
 

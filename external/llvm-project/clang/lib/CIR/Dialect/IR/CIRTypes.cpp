@@ -336,14 +336,22 @@ Type RecordType::getLargestMember(const ::mlir::DataLayout &dataLayout) const {
   auto endIt = getPadded() ? std::prev(members.end()) : members.end();
   if (endIt == members.begin())
     return {};
-  return *std::max_element(
-      members.begin(), endIt, [&](Type lhs, Type rhs) {
-        return dataLayout.getTypeABIAlignment(lhs) <
-                   dataLayout.getTypeABIAlignment(rhs) ||
-               (dataLayout.getTypeABIAlignment(lhs) ==
-                    dataLayout.getTypeABIAlignment(rhs) &&
-                dataLayout.getTypeSize(lhs) < dataLayout.getTypeSize(rhs));
-      });
+  return *std::max_element(members.begin(), endIt, [&](Type lhs, Type rhs) {
+    return dataLayout.getTypeABIAlignment(lhs) <
+               dataLayout.getTypeABIAlignment(rhs) ||
+           (dataLayout.getTypeABIAlignment(lhs) ==
+                dataLayout.getTypeABIAlignment(rhs) &&
+            dataLayout.getTypeSize(lhs) < dataLayout.getTypeSize(rhs));
+  });
+}
+
+mlir::Type RecordType::getPadding() const {
+  if (!getPadded())
+    return {};
+  llvm::ArrayRef<mlir::Type> members = getMembers();
+  if (members.empty())
+    return {};
+  return members.back();
 }
 
 bool RecordType::isLayoutIdentical(const RecordType &other) {
@@ -379,8 +387,28 @@ PointerType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
 llvm::TypeSize
 RecordType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                               mlir::DataLayoutEntryListRef params) const {
-  if (isUnion())
-    return dataLayout.getTypeSize(getLargestMember(dataLayout));
+  if (isUnion()) {
+    mlir::Type largest = getLargestMember(dataLayout);
+    if (!largest)
+      return llvm::TypeSize::getFixed(0);
+    // `getLargestMember` returns the highest-aligned variant (which dictates
+    // the union's alignment), not necessarily the largest by size.  When the
+    // union is `padded` -- i.e., its highest-aligned variant is strictly
+    // smaller than its layout size, as happens for any union containing both
+    // a small high-alignment scalar and a larger low-alignment array (e.g.,
+    // `union { char[16]; size_t; }`) -- `lowerUnion` appended a trailing
+    // byte-array member to extend the highest-aligned variant up to the
+    // layout size, and `LowerToLLVM` mirrors this by emitting the union as
+    // `{largest, padding}`.  Include that padding here so `getTypeSize`
+    // reports the same size `LowerToLLVM` produces; otherwise a parent
+    // record containing the union gets a spurious tail-padding member added
+    // by `insertPadding`, making `sizeof(parent)` and array GEPs off by the
+    // missing bytes.
+    llvm::TypeSize size = dataLayout.getTypeSizeInBits(largest);
+    if (mlir::Type tailPad = getPadding())
+      size += dataLayout.getTypeSizeInBits(tailPad);
+    return size;
+  }
 
   auto recordSize = static_cast<uint64_t>(computeStructSize(dataLayout));
   return llvm::TypeSize::getFixed(recordSize * 8);
@@ -389,8 +417,12 @@ RecordType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 uint64_t
 RecordType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
                             ::mlir::DataLayoutEntryListRef params) const {
-  if (isUnion())
-    return dataLayout.getTypeABIAlignment(getLargestMember(dataLayout));
+  if (isUnion()) {
+    mlir::Type largest = getLargestMember(dataLayout);
+    if (!largest)
+      return 1;
+    return dataLayout.getTypeABIAlignment(largest);
+  }
 
   // Packed structures always have an ABI alignment of 1.
   if (getPacked())

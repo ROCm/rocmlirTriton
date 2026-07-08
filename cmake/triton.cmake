@@ -112,6 +112,18 @@ list(APPEND LLVM_INCLUDE_DIRS
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 
+# Triton's own CMake (external/triton/CMakeLists.txt) runs build_helpers.py
+# write_thirdparty_cmake_vars and includes the generated cache file, which
+# FORCE-overwrites MLIR_DIR with ${LLVM_SYSPATH}/lib/cmake/mlir (the layout
+# of a prebuilt LLVM install). That path does not exist in our in-tree
+# monolithic build (MLIR emits its build-tree package under the top-level
+# CMAKE_BINARY_DIR, i.e. ${MLIR_CMAKE_DIR}), so the MLIR_DIR we set above gets
+# clobbered before Triton calls find_package(MLIR REQUIRED CONFIG ...). Here we
+# make the lookup resolve via the default search: Triton's find_package(MLIR)
+# does not pass NO_DEFAULT_PATH, so when the clobbered MLIR_DIR points at a
+# non-existent directory CMake falls back to searching CMAKE_PREFIX_PATH.
+list(APPEND CMAKE_PREFIX_PATH "${MLIR_CMAKE_DIR}")
+
 message(STATUS "MLIR_DIR: ${MLIR_DIR}")
 message(STATUS "LLD_DIR: ${LLD_DIR}")
 message(STATUS "MLIR_INCLUDE_DIRS: ${MLIR_INCLUDE_DIRS}")

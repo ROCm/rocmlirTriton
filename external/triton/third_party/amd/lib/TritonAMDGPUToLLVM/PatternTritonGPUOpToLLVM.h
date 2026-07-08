@@ -2,7 +2,6 @@
 #define TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_PATTERNTRITONGPUOPTOLLVM_H_
 
 #include "TargetInfo.h"
-#include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -27,6 +26,13 @@ void populateElementwiseOpToLLVMPatterns(
     ModuleAxisInfoAnalysis &axisInfoAnalysis, ModuleAllocation &allocation,
     const TargetInfo &targetInfo, PatternBenefit benefit);
 
+void populateFpCastOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                    RewritePatternSet &patterns, bool ftz,
+                                    ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                                    ModuleAllocation &allocation,
+                                    const TargetInfo &targetInfo,
+                                    PatternBenefit benefit);
+
 // Manipulates with execution mode register which is per-wavefront one.
 // The register controls execution of instructions - e.g., rounding modes,
 // exception handling, etc.
@@ -36,7 +42,6 @@ void populateLoadStoreOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                        const TargetInfo &targetInfo,
                                        RewritePatternSet &patterns,
                                        ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                                       const DataFlowSolver *uniformitySolver,
                                        PatternBenefit benefit);
 
 void populateSPMDOpToLLVMPattern(LLVMTypeConverter &typeConverter,
