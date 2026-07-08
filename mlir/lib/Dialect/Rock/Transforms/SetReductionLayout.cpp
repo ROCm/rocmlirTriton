@@ -64,13 +64,32 @@ Operation *findFeedingLoad(Value operand) {
       def = def->getOperand(0).getDefiningOp();
       continue;
     }
-
+    // Shared-memory staging: local_load reads a buffer produced by a
+    // local_alloc, whose contents come either from the alloc's init operand or
+    // from a local_store writing that buffer.
     if (auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(def)) {
       auto alloc =
           localLoad.getSrc().getDefiningOp<triton::gpu::LocalAllocOp>();
-      if (!alloc || !alloc.getSrc())
+      if (!alloc)
         return nullptr;
-      def = alloc.getSrc().getDefiningOp();
+      if (Value init = alloc.getSrc()) {
+        def = init.getDefiningOp();
+        continue;
+      }
+      // No init operand: follow the single local_store that writes the buffer.
+      // Bail on zero or multiple writers rather than guess.
+      triton::gpu::LocalStoreOp store;
+      for (Operation *user : alloc->getResult(0).getUsers()) {
+        auto candidate = dyn_cast<triton::gpu::LocalStoreOp>(user);
+        if (!candidate)
+          continue;
+        if (store)
+          return nullptr;
+        store = candidate;
+      }
+      if (!store)
+        return nullptr;
+      def = store.getSrc().getDefiningOp();
       continue;
     }
     return nullptr;
@@ -221,11 +240,12 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
 
   // Correctness guard against shared producers. The in-place rewrite changes
   // the type seen by every consumer of a scoped op's result, so bail unless
-  // each such consumer is one we handle. convert_layout and local_alloc are
-  // safe outside consumers: they sink the distributed tensor into a
-  // differently-typed result (a dot-operand layout or a shared-memory memdesc)
-  // that is decoupled from the source's distributed encoding, so only its
-  // element type and shape -- unchanged by this rewrite -- must still match.
+  // each such consumer is one we handle. convert_layout and the shared-memory
+  // staging ops (local_alloc / local_store) are safe outside consumers: they
+  // sink the distributed tensor into a differently-typed result (a dot-operand
+  // layout or a shared-memory memdesc) that is decoupled from the source's
+  // distributed encoding, so only its element type and shape -- unchanged by
+  // this rewrite -- must still match.
   for (Operation *op : scope) {
     for (Value result : op->getResults()) {
       if (replacer.replace(result.getType()) == result.getType())
@@ -233,7 +253,7 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
       for (Operation *user : result.getUsers())
         if (!scope.contains(user) &&
             !isa<triton::gpu::ConvertLayoutOp, triton::gpu::LocalAllocOp,
-                 scf::ForOp, scf::YieldOp>(user)) {
+                 triton::gpu::LocalStoreOp, scf::ForOp, scf::YieldOp>(user)) {
           LLVM_DEBUG(llvm::dbgs()
                      << "rock-set-reduction-layout: rewrite would escape its "
                         "scope (value shared with an outside consumer); "
