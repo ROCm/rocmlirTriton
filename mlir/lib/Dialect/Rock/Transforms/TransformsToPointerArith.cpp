@@ -608,6 +608,61 @@ struct TransformsToPtrRewritePattern
     auto [base, offset] = ensureCompatible(b, loc, baseAddrSplat, computed[0]);
     Value pointerTensor = arith::AddIOp::create(b, loc, base, offset);
 
+    // Vectorization hint (ported from classic rocMLIR's structural analysis).
+    // The transform chain still carries the exact im2col/gemm coordinate
+    // structure here; `getMaxVectorization` walks it to *prove* the contiguous
+    // run length along each tile dimension, capped at the 128-bit physical
+    // vector width (f32 -> 4). We attach it as
+    // `tt.contiguity`/`tt.divisibility` discardable attrs on the pointer op
+    // that `rock-tensor-to-triton-ptr` turns into `tt.addptr` (see
+    // TensorToTritonPtr, which forwards these onto the new op). Triton's
+    // `AxisInfoAnalysis` cannot recover this contiguity after the chain is
+    // flattened into `divui`/`remui`, so without the hint the im2col input
+    // operand is scalarized to `contiguity=1`. With it, the coalescer widens
+    // `sizePerThread` and `ConvertToBufferOps` emits `buffer_load_dwordx4`,
+    // matching classic rocMLIR's memory path. The LDS staging
+    // (`local_alloc`/`local_load`) already decouples this wide global load from
+    // the MFMA operand layout.
+    //
+    // Divisibility is asserted as `vecLen * elemBytes` bytes:
+    // `getMaxVectorization` has proved the `vecLen`-wide load reads only valid
+    // contiguous elements, and AMD `buffer_load_dwordN` tolerates element (not
+    // 16-byte) alignment. Constant (index-calculation) buffers never touch
+    // memory, so skip them.
+    if (!buffer.getDefiningOp<arith::ConstantOp>()) {
+      auto sourceType = cast<ShapedType>(source.getType());
+      size_t numExtra = extraIndices.size();
+      // `source` is a higher-rank view: leading `numExtra` dims are the block
+      // coordinates fixed by `extraIndices`; the trailing `shape.size()` dims
+      // are the per-thread tile that becomes the pointer tensor. Map tile dim
+      // `d` to source dim `numExtra + d`.
+      if (sourceType.getRank() ==
+          static_cast<int64_t>(numExtra + shape.size())) {
+        int64_t elemBytes =
+            std::max<int64_t>(1, sourceType.getElementTypeBitWidth() / 8);
+        SmallVector<int32_t> contigPerDim(shape.size(), 1);
+        SmallVector<int32_t> divPerDim(shape.size(), 1);
+        bool haveHint = false;
+        for (uint32_t d = 0; d < shape.size(); ++d) {
+          int64_t vecLen =
+              getMaxVectorization(source, static_cast<uint32_t>(numExtra + d))
+                  .max;
+          contigPerDim[d] = static_cast<int32_t>(vecLen);
+          divPerDim[d] = static_cast<int32_t>(vecLen * elemBytes);
+          if (vecLen > 1)
+            haveHint = true;
+        }
+        if (haveHint) {
+          auto hintTy = RankedTensorType::get(
+              {static_cast<int64_t>(shape.size())}, b.getI32Type());
+          pointerTensor.getDefiningOp()->setAttr(
+              "tt.contiguity", DenseIntElementsAttr::get(hintTy, contigPerDim));
+          pointerTensor.getDefiningOp()->setAttr(
+              "tt.divisibility", DenseIntElementsAttr::get(hintTy, divPerDim));
+        }
+      }
+    }
+
     // Create the mask tensor by broadcasting isValid to the right shape
     Value maskTensor;
     if (isa<RankedTensorType>(isValid.getType())) {
