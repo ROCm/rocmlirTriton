@@ -1,0 +1,44 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 006784b72..7f5adb748 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -121,20 +121,25 @@ set_property(
+     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/json-version.txt"
+ )
+ find_package(Python3 REQUIRED COMPONENTS Interpreter)
+-set(TRITON_THIRD_PARTY_CMAKE_VARS_FILE "${CMAKE_CURRENT_BINARY_DIR}/triton-third-party-vars.cmake")
+-execute_process(
+-  COMMAND
+-    ${Python3_EXECUTABLE}
+-    "${CMAKE_CURRENT_SOURCE_DIR}/python/build_helpers.py"
+-    write_thirdparty_cmake_vars
+-    ${TRITON_BUILD_HELPER_COMMON_ARGS}
+-    --output
+-    "${TRITON_THIRD_PARTY_CMAKE_VARS_FILE}"
+-    --packages llvm json
+-  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+-  COMMAND_ERROR_IS_FATAL ANY
+-)
+-include("${TRITON_THIRD_PARTY_CMAKE_VARS_FILE}")
++# In-tree builds already provide LLVM/MLIR targets and package paths. Skip
++# build_helpers.py there because it resolves external dependencies, overwrites
++# those paths, and may access the network. Standalone builds still use it.
++if(NOT TARGET MLIRSupport)
++  set(TRITON_THIRD_PARTY_CMAKE_VARS_FILE "${CMAKE_CURRENT_BINARY_DIR}/triton-third-party-vars.cmake")
++  execute_process(
++    COMMAND
++      ${Python3_EXECUTABLE}
++      "${CMAKE_CURRENT_SOURCE_DIR}/python/build_helpers.py"
++      write_thirdparty_cmake_vars
++      ${TRITON_BUILD_HELPER_COMMON_ARGS}
++      --output
++      "${TRITON_THIRD_PARTY_CMAKE_VARS_FILE}"
++      --packages llvm json
++    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
++    COMMAND_ERROR_IS_FATAL ANY
++  )
++  include("${TRITON_THIRD_PARTY_CMAKE_VARS_FILE}")
++endif()
+ 
+ if(TRITON_BUILD_PYTHON_MODULE)
+   set_property(

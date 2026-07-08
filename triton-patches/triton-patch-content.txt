@@ -6,6 +6,7 @@ This directory holds downstream patch records against the vendored Triton tree
 
 ----------------------------------------------------------------------
 patch-wmma-preserve-discardable-attrs.patch
+patch-skip-build-helpers-in-tree.patch
 patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
@@ -153,3 +154,15 @@ patch10928.patch
 
   Drop this patch on the next Triton bump that pulls PR #10928 into
   external/triton.
+
+patch-skip-build-helpers-in-tree.patch
+  Downstream in-tree-build edit (no upstream PR). Wraps Triton's
+  build_helpers.py write_thirdparty_cmake_vars invocation in CMakeLists.txt with
+  `if(NOT TARGET MLIRSupport)` so it is skipped when Triton is built in-tree via
+  rocMLIR's add_subdirectory (MLIRSupport already exists as a target). In-tree,
+  that step is unnecessary, LLVM/MLIR come from add_subdirectory and
+  cmake/triton.cmake already sets LLVM_DIR/MLIR_DIR and it is fragile (it can
+  block on network access to the prebuilt-LLVM release bucket). Standalone Triton
+  builds (no MLIRSupport target) still run it unchanged.
+  Keep until upstream Triton offers an in-tree/embedded build mode that avoids
+  the external-LLVM resolution step.

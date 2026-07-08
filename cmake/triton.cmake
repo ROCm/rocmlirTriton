@@ -90,7 +90,14 @@ add_subdirectory("${ROCMLIR_LLVM_PROJECT_DIR}/llvm"
 # can discover ROCm SDK LLVM through CMAKE_PREFIX_PATH and mix incompatible LLVM
 # headers with the in-tree MLIR headers.
 set(MLIR_CMAKE_DIR "${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX}/cmake/mlir")
-set(MLIR_DIR "${MLIR_CMAKE_DIR}")
+# Cache MLIR_DIR (the find_package result variable) so Triton's
+# `find_package(MLIR CONFIG PATHS ${MLIR_DIR})` resolves to the in-tree MLIR
+# build-tree package on a clean configure. A plain (non-cache) variable is not
+# honored as find_package's <pkg>_DIR anchor, so without caching find_package
+# fails to locate the build-tree MLIRConfig.cmake (generated under
+# ${CMAKE_BINARY_DIR}/lib/cmake/mlir, see mlir_cmake_builddir). Mirrors the
+# LLVM_DIR caching below.
+set(MLIR_DIR "${MLIR_CMAKE_DIR}" CACHE PATH "Path to in-tree MLIR CMake package" FORCE)
 
 set(LLVM_LIBRARY_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/lib${LLVM_LIBDIR_SUFFIX}")
 set(LLVM_CMAKE_DIR "${LLVM_LIBRARY_DIR}/cmake/llvm")
@@ -112,17 +119,12 @@ list(APPEND LLVM_INCLUDE_DIRS
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 
-# Triton's own CMake (external/triton/CMakeLists.txt) runs build_helpers.py
-# write_thirdparty_cmake_vars and includes the generated cache file, which
-# FORCE-overwrites MLIR_DIR with ${LLVM_SYSPATH}/lib/cmake/mlir (the layout
-# of a prebuilt LLVM install). That path does not exist in our in-tree
-# monolithic build (MLIR emits its build-tree package under the top-level
-# CMAKE_BINARY_DIR, i.e. ${MLIR_CMAKE_DIR}), so the MLIR_DIR we set above gets
-# clobbered before Triton calls find_package(MLIR REQUIRED CONFIG ...). Here we
-# make the lookup resolve via the default search: Triton's find_package(MLIR)
-# does not pass NO_DEFAULT_PATH, so when the clobbered MLIR_DIR points at a
-# non-existent directory CMake falls back to searching CMAKE_PREFIX_PATH.
-list(APPEND CMAKE_PREFIX_PATH "${MLIR_CMAKE_DIR}")
+# NOTE: Upstream Triton's build_helpers.py would otherwise FORCE-overwrite
+# MLIR_DIR to a ${LLVM_SYSPATH}-relative prebuilt-LLVM layout, which doesn't
+# exist in our in-tree monolithic build. We sidestep that entirely by skipping
+# build_helpers for in-tree builds (see the `if(NOT TARGET MLIRSupport)` guard
+# in external/triton/CMakeLists.txt), so MLIR_DIR set above is never clobbered
+# and Triton's find_package(MLIR CONFIG PATHS ${MLIR_DIR}) resolves directly.
 
 message(STATUS "MLIR_DIR: ${MLIR_DIR}")
 message(STATUS "LLD_DIR: ${LLD_DIR}")
@@ -216,28 +218,6 @@ if(NOT LLVM_SYSPATH)
   endif()
 endif()
 message(STATUS "LLVM_SYSPATH: ${LLVM_SYSPATH}")
-
-#===----------------------------------------------------------------------===//
-# JSON_SYSPATH
-# Triton always resolves the nlohmann/json third-party package at configure
-# time (external/triton/CMakeLists.txt invokes build_helpers.py with
-# `--packages llvm json`), and the helper downloads json from GitHub unless
-# JSON_SYSPATH is set. Those headers are only consumed by Proton, which we
-# disable (TRITON_BUILD_PROTON=OFF), so the fetch is pure overhead.
-#===----------------------------------------------------------------------===//
-
-if(NOT JSON_SYSPATH)
-  if(DEFINED ENV{JSON_SYSPATH})
-    set(JSON_SYSPATH "$ENV{JSON_SYSPATH}"
-        CACHE PATH "Path to nlohmann/json headers used by Triton")
-  else()
-    set(_rocmlir_json_syspath "${CMAKE_CURRENT_BINARY_DIR}/external/triton/rocmlir-json-stub")
-    file(MAKE_DIRECTORY "${_rocmlir_json_syspath}/include")
-    set(JSON_SYSPATH "${_rocmlir_json_syspath}"
-        CACHE PATH "Path to nlohmann/json headers used by Triton (stub; unused while Proton is off)")
-  endif()
-endif()
-message(STATUS "JSON_SYSPATH: ${JSON_SYSPATH}")
 
 #===----------------------------------------------------------------------===//
 # Add Triton subdirectory
