@@ -162,10 +162,6 @@ static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(
     return analyzeSmallTensorRangeOverride;
   return false;
 }
-<<<<<<< HEAD
-
-=======
->>>>>>> f0b2a45163 (EXPERIMENTAL: Unconditionally schedule SetReductionLayout on convs)
 // Based on make_ttgir() in
 // @triton//:third_party/amd/backend/compiler.py
 static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,

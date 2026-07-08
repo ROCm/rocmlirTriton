@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AttrTypeSubElements.h"
@@ -19,6 +20,8 @@
 
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
@@ -153,20 +156,18 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
   Attribute newLinear =
       triton::gpu::LinearEncodingAttr::get(ctx, std::move(newLL));
 
-  // Gather the layout-connectivity class of this load: every value that must
-  // move to the redistributed layout together.
-  llvm::SetVector<Value> classValues;
-  llvm::SetVector<Operation *> classOps;
-  SmallVector<Value> worklist;
-  auto enqueue = [&](Value v) {
-    if (v && classValues.insert(v))
-      worklist.push_back(v);
-  };
-
-  enqueue(load->getResult(0));
+  // Collect exactly the ops whose types must move to the redistributed layout:
+  // the load itself, the backward slice feeding its pointer/mask/other operands
+  // (splat/addptr/make_range/broadcast/offset constants that share the load
+  // encoding), and any in_thread_transpose consuming it.
+  llvm::SetVector<Operation *> scope;
+  BackwardSliceOptions sliceOpts;
+  sliceOpts.omitBlockArguments = true;
+  (void)getBackwardSlice(load, &scope, sliceOpts);
+  scope.insert(load);
   for (Operation *user : load->getResult(0).getUsers())
     if (isa<triton::amdgpu::InThreadTransposeOp>(user))
-      enqueue(user->getResult(0));
+      scope.insert(user);
 
   // Close the scope over scf.for loop-carried edges. The load's pointer/mask
   // operands may be computed inside an scf.for from a value carried across
@@ -205,28 +206,7 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
         auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
         addOpAndSlice(yieldOp.getOperand(iterIdx).getDefiningOp());
       }
-      continue; // block arguments have no defining op to walk
     }
-
-    Operation *def = v.getDefiningOp();
-    if (!def)
-      continue;
-
-    // We may have a scf.for result, reached from the result side: bridge to the
-    // iter_arg and yielded value. Don't walk the loop's own operands or recurse
-    // into its body; the carried result is retyped as an ordinary class value.
-    if (auto forOp = dyn_cast<scf::ForOp>(def)) {
-      unsigned i = cast<OpResult>(v).getResultNumber();
-      auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-      enqueue(forOp.getInitArgs()[i]);
-      enqueue(yield.getOperand(i));
-      enqueue(forOp.getRegionIterArg(i));
-      continue;
-    }
-
-    classOps.insert(def);
-    for (Value operand : def->getOperands())
-      enqueue(operand);
   }
 
   AttrTypeReplacer replacer;
