@@ -608,27 +608,18 @@ struct TransformsToPtrRewritePattern
     auto [base, offset] = ensureCompatible(b, loc, baseAddrSplat, computed[0]);
     Value pointerTensor = arith::AddIOp::create(b, loc, base, offset);
 
-    // Vectorization hint (ported from classic rocMLIR's structural analysis).
-    // The transform chain still carries the exact im2col/gemm coordinate
-    // structure here; `getMaxVectorization` walks it to *prove* the contiguous
-    // run length along each tile dimension, capped at the 128-bit physical
-    // vector width (f32 -> 4). We attach it as
-    // `tt.contiguity`/`tt.divisibility` discardable attrs on the pointer op
-    // that `rock-tensor-to-triton-ptr` turns into `tt.addptr` (see
-    // TensorToTritonPtr, which forwards these onto the new op). Triton's
-    // `AxisInfoAnalysis` cannot recover this contiguity after the chain is
-    // flattened into `divui`/`remui`, so without the hint the im2col input
-    // operand is scalarized to `contiguity=1`. With it, the coalescer widens
-    // `sizePerThread` and `ConvertToBufferOps` emits `buffer_load_dwordx4`,
-    // matching classic rocMLIR's memory path. The LDS staging
-    // (`local_alloc`/`local_load`) already decouples this wide global load from
-    // the MFMA operand layout.
+    // Attach a vectorization hint so the global load gets widened. Triton's
+    // AxisInfoAnalysis can't see through the flattened im2col address math
+    // (divui/remui) and would scalarize the load to contiguity=1. Here the
+    // transform chain is still intact, so getMaxVectorization can prove the
+    // contiguous run length per tile dim (capped at 128 bits, i.e. 4 for f32).
+    // We stamp it as tt.contiguity/tt.divisibility on the pointer op (which
+    // rock-tensor-to-triton-ptr turns into tt.addptr); the coalescer then
+    // widens the load to buffer_load_dwordx4. LDS staging keeps this decoupled
+    // from the MFMA operand layout, so correctness is unaffected.
     //
-    // Divisibility is asserted as `vecLen * elemBytes` bytes:
-    // `getMaxVectorization` has proved the `vecLen`-wide load reads only valid
-    // contiguous elements, and AMD `buffer_load_dwordN` tolerates element (not
-    // 16-byte) alignment. Constant (index-calculation) buffers never touch
-    // memory, so skip them.
+    // Divisibility is vecLen*elemBytes bytes (buffer_load_dwordN only needs
+    // element alignment). Constant index-calc buffers never load, so skip them.
     if (!buffer.getDefiningOp<arith::ConstantOp>()) {
       auto sourceType = cast<ShapedType>(source.getType());
       size_t numExtra = extraIndices.size();
