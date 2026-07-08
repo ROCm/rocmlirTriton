@@ -50,7 +50,8 @@ struct GemmOrderingTestEnv {
         /*useBlockPingpong=*/kKnobDefault,
         /*useInThreadTranspose=*/kKnobDefault,
         /*useBufferOps=*/kKnobDefault,
-        /*useBufferAtomics=*/kKnobDefault);
+        /*useBufferAtomics=*/kKnobDefault,
+        /*useReductionLayout=*/0);
   }
 };
 } // namespace

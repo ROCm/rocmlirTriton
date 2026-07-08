@@ -2269,10 +2269,14 @@ constexpr size_t SmallVectorInlineSize = 32;
 // Number of trailing knob fields appended in each versioned perfConfig schema.
 // The sentinel value (`rock::kKnobDefault` = `-1`) lives in `KnobUtils.h`.
 //
-// NOTE: If you want to bump the perfConfig to v4, add a new `kNumKnobFieldsV4`
+// NOTE: If you want to bump the perfConfig to v5, add a new `kNumKnobFieldsV5`
 // constant and update the parser to expect the new number of fields.
+//
+// v3 dropped the legacy `scheduleHint` knob (v2's 6th field). v4 re-grows the
+// knob block by appending `useReductionLayout` on top of v3's five knobs.
 constexpr size_t kNumKnobFieldsV2 = 6;
 constexpr size_t kNumKnobFieldsV3 = 5;
+constexpr size_t kNumKnobFieldsV4 = 6;
 
 // Reject invalid knob values, reusing `rock::isValidKnobBoolean`.
 LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
@@ -2294,6 +2298,19 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
                    << " (arch default), 0 (off), or 1 (on)\n";
       return failure();
     }
+  }
+  return success();
+}
+
+// `useReductionLayout` is a plain on/off gate; only 0 (off) and 1 (on) are
+// valid.
+LogicalResult validateReductionLayout(StringRef perfConfigStr,
+                                      int64_t useReductionLayout) {
+  if (useReductionLayout != 0 && useReductionLayout != 1) {
+    llvm::errs() << "invalid perfConfig '" << perfConfigStr
+                 << "': field `useReductionLayout` = " << useReductionLayout
+                 << "; expected 0 (off) or 1 (on)\n";
+    return failure();
   }
   return success();
 }
@@ -2356,8 +2373,8 @@ parsePerfConfigStr(StringRef configStr, StringRef expectedPrefix = "") {
 // the given version (11 tunable fields plus the version's knob fields), or
 // std::nullopt if the version is unknown.
 std::optional<size_t> getExpectedPerfConfigFieldCount(int version) {
-  static constexpr size_t kNumKnobFieldsByVersion[] = {0, kNumKnobFieldsV2,
-                                                       kNumKnobFieldsV3};
+  static constexpr size_t kNumKnobFieldsByVersion[] = {
+      0, kNumKnobFieldsV2, kNumKnobFieldsV3, kNumKnobFieldsV4};
   if (version < 1 ||
       version > static_cast<int>(std::size(kNumKnobFieldsByVersion)))
     return std::nullopt;
@@ -2383,6 +2400,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
+  // v4: 11 tunable fields + 6 knob fields = 17 (v3 knobs + useReductionLayout).
   std::optional<size_t> expectedCount =
       getExpectedPerfConfigFieldCount(version);
   if (!expectedCount || params.size() != *expectedCount) {
@@ -2406,6 +2424,8 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useInThreadTranspose = kKnobDefault;
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
+  // v4 addition; v1/v2/v3 strings predate it and default it to 0 (off).
+  int64_t useReductionLayout = 0;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2418,9 +2438,13 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       warnIfScheduleHintIgnored(perfConfigStrAttr.getContext(),
                                 perfConfigStrAttr.strref(), scheduleHint);
     }
+    if (version >= 4)
+      useReductionLayout = params[idx++];
     if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
                                  useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics))) {
+                                 useBufferOps, useBufferAtomics)) ||
+        failed(validateReductionLayout(perfConfigStrAttr.strref(),
+                                       useReductionLayout))) {
       return {};
     }
   }
@@ -2429,7 +2453,36 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       perfConfigStrAttr.getContext(), mPerBlock, nPerBlock, kPerBlock, kpack,
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics);
+      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
+}
+
+void GemmParamsAttr::getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
+  // `useReductionLayout` is a v4 addition. Stay backward-compatible with the
+  // many stored/checked v3 perfConfig strings by serializing the v3 form (16
+  // fields) whenever the knob sits at its default (0 = off), and only emitting
+  // the longer v4 form (17 fields) when it is explicitly enabled. This mirrors
+  // the version handling in `get()` above.
+  std::string common =
+      (Twine(getMPerBlock()) + "," + Twine(getNPerBlock()) + "," +
+       Twine(getKPerBlock()) + "," + Twine(getKpack()) + "," +
+       Twine(getNumCTAs()) + "," + Twine(getNumWaves()) + "," +
+       Twine(getMatrixInstrNonkdim()) + "," + Twine(getSplitKFactor()) + "," +
+       Twine(getNumStages()) + "," + Twine(getWavesPerEU()) + "," +
+       Twine(getGridGroupSize()) + "," + Twine(getUseAsyncCopy()) + "," +
+       Twine(getUseBlockPingpong()) + "," + Twine(getUseInThreadTranspose()) +
+       "," + Twine(getUseBufferOps()) + "," + Twine(getUseBufferAtomics()))
+          .str();
+  if (getUseReductionLayout() != 0)
+    (Twine("gemm:v4:") + common + "," + Twine(getUseReductionLayout()))
+        .toVector(perfStr);
+  else
+    (Twine("gemm:v3:") + common).toVector(perfStr);
+}
+
+StringAttr GemmParamsAttr::getPerfConfigAttr() {
+  SmallVector<char, 64> buf;
+  getPerfConfigStr(buf);
+  return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
 }
 
 //===-----------------------------------------------------===//
@@ -2449,6 +2502,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
+  // v4: 11 tunable fields + 6 knob fields = 17 (v3 knobs + useReductionLayout).
   std::optional<size_t> expectedCount =
       getExpectedPerfConfigFieldCount(version);
   if (!expectedCount || params.size() != *expectedCount) {
@@ -2472,6 +2526,8 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useInThreadTranspose = kKnobDefault;
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
+  // v4 addition; v1/v2/v3 strings predate it and default it to 0 (off).
+  int64_t useReductionLayout = 0;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2484,9 +2540,13 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       warnIfScheduleHintIgnored(perfConfigStrAttr.getContext(),
                                 perfConfigStrAttr.strref(), scheduleHint);
     }
+    if (version >= 4)
+      useReductionLayout = params[idx++];
     if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
                                  useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics))) {
+                                 useBufferOps, useBufferAtomics)) ||
+        failed(validateReductionLayout(perfConfigStrAttr.strref(),
+                                       useReductionLayout))) {
       return {};
     }
   }
@@ -2495,7 +2555,35 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       perfConfigStrAttr.getContext(), mPerBlockG0, nPerBlockG0, kPerBlock,
       kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics);
+      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
+}
+
+void GemmGemmParamsAttr::getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
+  // See the note on `GemmParamsAttr::getPerfConfigStr`: serialize the v3 form
+  // (16 fields) whenever `useReductionLayout` is at its default (0 = off), and
+  // only the longer v4 form (17 fields) when it is explicitly enabled, to stay
+  // backward-compatible.
+  std::string common =
+      (Twine(getMPerBlockG0()) + "," + Twine(getNPerBlockG0()) + "," +
+       Twine(getKPerBlock()) + "," + Twine(getKpack()) + "," +
+       Twine(getNumCTAs()) + "," + Twine(getNumWaves()) + "," +
+       Twine(getMatrixInstrNonkdim()) + "," + Twine(getSplitKFactor()) + "," +
+       Twine(getNumStages()) + "," + Twine(getWavesPerEU()) + "," +
+       Twine(getGridGroupSize()) + "," + Twine(getUseAsyncCopy()) + "," +
+       Twine(getUseBlockPingpong()) + "," + Twine(getUseInThreadTranspose()) +
+       "," + Twine(getUseBufferOps()) + "," + Twine(getUseBufferAtomics()))
+          .str();
+  if (getUseReductionLayout() != 0)
+    (Twine("attn:v4:") + common + "," + Twine(getUseReductionLayout()))
+        .toVector(perfStr);
+  else
+    (Twine("attn:v3:") + common).toVector(perfStr);
+}
+
+StringAttr GemmGemmParamsAttr::getPerfConfigAttr() {
+  SmallVector<char, 64> buf;
+  getPerfConfigStr(buf);
+  return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
 }
 
 //===----------------------------------------------------------------------===//
