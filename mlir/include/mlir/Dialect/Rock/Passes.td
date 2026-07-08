@@ -777,6 +777,21 @@ def RockSetMatmulOutputTransposePass
                            "triton::gpu::TritonGPUDialect"];
 }
 
+def RockSetReductionLayoutPass
+    : Pass<"rock-set-reduction-layout", "::mlir::ModuleOp"> {
+  let summary = "Redistribute the reduction-operand load layout onto the "
+                "reduction dim";
+  let description = [{
+    Redistribute the reduction-operand global-load `#blocked`
+    layout so that each warp owns a full reduction (K) strip. Moving
+    the load's `warpsPerCTA` off the free/N dim and onto the reduction/K dim
+    can potentially reduce SGPR spill on convolution kernels.
+  }];
+  let dependentDialects = ["rock::RockDialect", "triton::gpu::TritonGPUDialect",
+                           "triton::amdgpu::TritonAMDGPUDialect",
+                           "arith::ArithDialect"];
+}
+
 def RockAnalyzeMemoryUsePass
     : Pass<"rock-analyze-memory-use", "::mlir::func::FuncOp"> {
   let summary = "Analyze kernel argument memory usage and set attributes";

@@ -290,6 +290,9 @@ def Rock_GemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
+    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
+      redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
+      gather operand to cut SGPR spill. 0=off (default), 1=on.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -302,6 +305,7 @@ def Rock_GemmParamsAttr
     - `useInThreadTranspose`             (set to -1)
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
+    - `useReductionLayout`               (set to 0)
   }];
 
   let parameters = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
@@ -313,35 +317,14 @@ def Rock_GemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics);
+      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
+      DefaultValuedParameter<"int64_t", "0">:$useReductionLayout);
 
   let extraClassDeclaration = [{
-    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("gemm:v3:"
-        + Twine(getMPerBlock()) + ","
-        + Twine(getNPerBlock()) + ","
-        + Twine(getKPerBlock()) + ","
-        + Twine(getKpack()) + ","
-        + Twine(getNumCTAs()) + ","
-        + Twine(getNumWaves()) + ","
-        + Twine(getMatrixInstrNonkdim()) + ","
-        + Twine(getSplitKFactor()) + ","
-        + Twine(getNumStages()) + ","
-        + Twine(getWavesPerEU()) + ","
-        + Twine(getGridGroupSize()) + ","
-        + Twine(getUseAsyncCopy()) + ","
-        + Twine(getUseBlockPingpong()) + ","
-        + Twine(getUseInThreadTranspose()) + ","
-        + Twine(getUseBufferOps()) + ","
-        + Twine(getUseBufferAtomics()))
-        .toVector(perfStr);
-    }
-
-    StringAttr getPerfConfigAttr() {
-        SmallVector<char, 64> buf;
-        getPerfConfigStr(buf);
-        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
-    }
+    /// Serialize this attribute to its perfConfig string form. See the
+    /// definition in RockDialect.cpp
+    void getPerfConfigStr(::llvm::SmallVectorImpl<char> &perfStr);
+    ::mlir::StringAttr getPerfConfigAttr();
   }];
 
   let builders = [AttrBuilderWithInferredContext<(
@@ -382,6 +365,9 @@ def Rock_GemmGemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
+    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
+      redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
+      gather operand to cut SGPR spill. 0=off (default), 1=on.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -394,6 +380,7 @@ def Rock_GemmGemmParamsAttr
     - `useInThreadTranspose`             (set to -1)
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
+    - `useReductionLayout`               (set to 0)
   }];
 
   let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
@@ -405,35 +392,14 @@ def Rock_GemmGemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics);
+      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
+      DefaultValuedParameter<"int64_t", "0">:$useReductionLayout);
 
   let extraClassDeclaration = [{
-    void getPerfConfigStr(::llvm::SmallVectorImpl<char> &perfStr) {
-      ("attn:v3:"
-      + Twine(getMPerBlockG0()) + ","
-      + Twine(getNPerBlockG0()) + ","
-      + Twine(getKPerBlock()) + ","
-      + Twine(getKpack()) + ","
-      + Twine(getNumCTAs()) + ","
-      + Twine(getNumWaves()) + ","
-      + Twine(getMatrixInstrNonkdim()) + ","
-      + Twine(getSplitKFactor()) + ","
-      + Twine(getNumStages()) + ","
-      + Twine(getWavesPerEU()) + ","
-      + Twine(getGridGroupSize()) + ","
-      + Twine(getUseAsyncCopy()) + ","
-      + Twine(getUseBlockPingpong()) + ","
-      + Twine(getUseInThreadTranspose()) + ","
-      + Twine(getUseBufferOps()) + ","
-      + Twine(getUseBufferAtomics()))
-      .toVector(perfStr);
-    }
-
-    StringAttr getPerfConfigAttr() {
-        SmallVector<char, 64> buf;
-        getPerfConfigStr(buf);
-        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
-    }
+    /// Serialize this attribute to its perfConfig string form. See the
+    /// definition in RockDialect.cpp
+    void getPerfConfigStr(::llvm::SmallVectorImpl<char> &perfStr);
+    ::mlir::StringAttr getPerfConfigAttr();
 
     // Bridge accessors for the RockTuningParamAttrInterface so generic code
     // (e.g. perf-config validation) can treat gemm and gemm+gemm uniformly.

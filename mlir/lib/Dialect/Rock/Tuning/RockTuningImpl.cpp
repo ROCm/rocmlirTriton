@@ -348,6 +348,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
 // - `useInThreadTranspose`             (set to kKnobDefault)
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
+// - `useReductionLayout`               (set to 0)
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
@@ -378,7 +379,8 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useBlockPingpong=*/kKnobDefault,
                             /*useInThreadTranspose=*/kKnobDefault,
                             /*useBufferOps=*/kKnobDefault,
-                            /*useBufferAtomics=*/kKnobDefault);
+                            /*useBufferAtomics=*/kKnobDefault,
+                            /*useReductionLayout=*/0);
                         newSpace->tuningRange.push_back(
                             cast<RockTuningParamAttrInterface>(gemmGemmParams));
                       }
@@ -494,6 +496,7 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
 // - `useInThreadTranspose`             (set to kKnobDefault)
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
+// - `useReductionLayout`               (set to 0)
 static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     RockGemmWrapperInterface gemmOp,
                                     TuningParamSetKind kind) {
@@ -529,7 +532,8 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useBlockPingpong=*/kKnobDefault,
                             /*useInThreadTranspose=*/kKnobDefault,
                             /*useBufferOps=*/kKnobDefault,
-                            /*useBufferAtomics=*/kKnobDefault);
+                            /*useBufferAtomics=*/kKnobDefault,
+                            /*useReductionLayout=*/0);
                         if (kind != TuningParamSetKind::Full ||
                             succeeded(tuningInfo->couldBePerformant(
                                 info, gemmParams)))
