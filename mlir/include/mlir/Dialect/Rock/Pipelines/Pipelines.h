@@ -111,6 +111,12 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
            "(kKnobDefault=off, 0=off, 1=on; requires useBufferOps to be on). "
            "Debug-only override; not a perfConfig knob."),
       init(kKnobDefault)};
+  PassOptions::Option<int64_t> useReductionLayout{
+      *this, "useReductionLayout",
+      desc("Gate the rock-set-reduction-layout pass (warp redistribution "
+           "onto the reduction dim). 0=off (default), 1=on. Not tuned; "
+           "opt-in via the perfConfig."),
+      init(0)};
 };
 
 /// Adds the `triton` pipeline to the `OpPassManager`.
