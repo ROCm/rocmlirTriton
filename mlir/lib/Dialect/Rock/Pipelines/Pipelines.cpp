@@ -162,7 +162,10 @@ static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(
     return analyzeSmallTensorRangeOverride;
   return false;
 }
+<<<<<<< HEAD
 
+=======
+>>>>>>> f0b2a45163 (EXPERIMENTAL: Unconditionally schedule SetReductionLayout on convs)
 // Based on make_ttgir() in
 // @triton//:third_party/amd/backend/compiler.py
 static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
@@ -255,13 +258,18 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int64_t useReductionLayout) {
+                     int numStages, int64_t scheduleHint) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
-  // Redistribute the layout of the reduction dimension to reduce
-  // register pressure.
-  if (useReductionLayout == 1)
-    pm->addPass(rock::createRockSetReductionLayoutPass());
+  // Redistribute the gather reduction-operand load layout onto the reduction
+  // dim to remove the per-warp scalar address-odometer spill. Dot-driven and
+  // in_thread_transpose-agnostic, but it must run after ConvertWarpPipeline (so
+  // its warp redistribution is not re-derived away) and before SCF is lowered.
+  // Runs unconditionally: the pass self-selects, rewriting only a gather
+  // reduction-operand load whose warps are not already on the reduction dim,
+  // and no-ops otherwise (verified down to identical assembly), so gating it on
+  // a perfConfig knob provides no benefit.
+  pm->addPass(rock::createRockSetReductionLayoutPass());
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -521,7 +529,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.useReductionLayout);
+  makeLLIR(&pm, arch, options.numStages, options.scheduleHint);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)

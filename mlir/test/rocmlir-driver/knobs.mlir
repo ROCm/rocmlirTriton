@@ -167,7 +167,7 @@
 // V2_BACKCOMPAT: tritonamdgpu-pipeline{use_async_copy=false
 
 //===----------------------------------------------------------------------===//
-// useReductionLayout
+// rock-set-reduction-layout
 //===----------------------------------------------------------------------===//
 //
 // `useReductionLayout` is the v4 perfConfig knob. It is opt-in:
@@ -191,8 +191,8 @@
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_ON
 
-// RL_DEFAULT-NOT: rock-set-reduction-layout
-// RL_OFF-NOT: rock-set-reduction-layout
+// RL_DEFAULT: rock-set-reduction-layout
+// RL_OFF: rock-set-reduction-layout
 // RL_ON: rock-set-reduction-layout
 
 //===----------------------------------------------------------------------===//
