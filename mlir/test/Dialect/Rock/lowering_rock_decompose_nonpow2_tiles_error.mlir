@@ -89,3 +89,23 @@ func.func @test_nonsplat_constant_fusion(%a: tensor<1x3x2xf16>, %b: tensor<1x2x1
   %out = rock.store %mul to %c by set : tensor<1x3x1xf32> -> tensor<1x3x1xf32> to tensor<1x3x1xf32>
   return %out : tensor<1x3x1xf32>
 }
+
+// -----
+
+#ak0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 48, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#ak1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 16, kPerBlock = 48, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// Error: non-power-of-two seqLenK (gemm0 nPerBlock = 48). The
+// head dim (80) is non-power-of-two so the attention is selected
+// for splitting, but seqLenK is the softmax reduction and cannot
+// be split (that is what splitKV is for).
+// ============================================================
+
+func.func @test_attn_nonpow2_seqlenk(%q: tensor<1x64x32xf32>, %k: tensor<1x32x96xf32>, %v: tensor<1x96x80xf32>, %o: tensor<1x64x80xf32>) -> tensor<1x64x80xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+  // expected-error @+1 {{non-power-of-two gemm0 nPerBlock (seqLenK) is not supported for attention}}
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>, params0 = #ak0, params1 = #ak1, splitKV = 1 : i32} : tensor<1x64x32xf32>, tensor<1x32x96xf32>, tensor<1x96x80xf32> -> tensor<1x64x80xf32>
+  %out = rock.store %result to %o by set : tensor<1x64x80xf32> -> tensor<1x64x80xf32> to tensor<1x64x80xf32>
+  return %out : tensor<1x64x80xf32>
+}

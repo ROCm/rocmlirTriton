@@ -67,6 +67,14 @@ bool mlir::rock::isValidKBlocks(int64_t kBlocks, int64_t N) {
   return kBlocks >= 1 && N % kBlocks == 0;
 }
 
+uint32_t mlir::rock::tileReducingPartitions(uint32_t d) {
+  if (d == 0 || llvm::isPowerOf2_64(d))
+    return d;
+  uint32_t top = llvm::PowerOf2Ceil(d) / 2; // largest power of two < d
+  uint32_t rem = d - top;
+  return top + llvm::PowerOf2Ceil(rem);
+}
+
 LogicalResult mlir::rock::calculateKBlockNum(const int64_t batchSize,
                                              const GemmSize &gemmSize,
                                              int64_t MPerBlock,

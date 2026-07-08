@@ -22,6 +22,45 @@ func.func @gridwise_attn_prefix_offset_requires_causal(
   return %r : tensor<1x384x64xf32>
 }
 
+// gemm0MSliceOffset is only meaningful alongside gemm0MOrigPerBlock, which
+// records the pre-split tile the offset indexes into.
+func.func @gridwise_attn_slice_offset_without_orig_per_block(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{gemm0MSliceOffset requires gemm0MOrigPerBlock to be set}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    gemm0MSliceOffset = 32 : index,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
+// The slice [gemm0MSliceOffset, gemm0MSliceOffset + params0.mPerBlock) must fit
+// inside the original tile: here 32 + 32 > 48.
+func.func @gridwise_attn_slice_outside_orig_per_block(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{the gemm0 M slice [gemm0MSliceOffset, gemm0MSliceOffset + params0.mPerBlock) must lie within [0, gemm0MOrigPerBlock)}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    gemm0MOrigPerBlock = 48 : index,
+    gemm0MSliceOffset = 32 : index,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
 // -----------------------------------------------------------------------------
 // attention tests
 // -----------------------------------------------------------------------------

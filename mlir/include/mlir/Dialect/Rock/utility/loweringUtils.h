@@ -61,6 +61,12 @@ bool isWrWAtomicKernel(StringRef arch, Type dataType, bool requiredPadding);
 // in memory.
 bool is4GBMemoryType(ShapedType type);
 
+// Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
+// tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
+// round the remainder up to the next pow2. e.g. 77 = 64 + 13 -> 64 + 16 = 80.
+// Returns `d` unchanged when it is already a power of two.
+uint32_t tileReducingPartitions(uint32_t d);
+
 // Returns true if `kBlocks` is a structurally valid backward-weight K-blocks
 // value for batch dimension `N`: strictly positive and an exact divisor of
 // `N`. The bwd-weight atomic-add lowering in `ConvToGemm` splits the batch

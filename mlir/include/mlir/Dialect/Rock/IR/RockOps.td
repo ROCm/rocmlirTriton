@@ -567,6 +567,8 @@ def Rock_GridwiseAttentionOp
           I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowSize,
           UnitAttr:$disableQBypassLDS, OptionalAttr<IndexAttr>:$prePadG0M,
           OptionalAttr<IndexAttr>:$prePadG0N,
+          OptionalAttr<IndexAttr>:$gemm0MOrigPerBlock,
+          OptionalAttr<IndexAttr>:$gemm0MSliceOffset,
           OptionalAttr<IndexAttr>:$numRepeatsGQA,
           OptionalAttr<TypeAttr>:$softmaxType, Rock_GemmParamsAttr:$params0,
           Rock_GemmParamsAttr:$params1,
