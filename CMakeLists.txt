@@ -2,7 +2,73 @@ cmake_minimum_required(VERSION 3.20)
 
 # Allow VERSION for projects, as expected in CMake 3.0+
 cmake_policy(SET CMP0048 NEW)
+
+#===----------------------------------------------------------------------===//
+# Windows toolchain auto-detection
+# NOTE: This MUST happen before project() so CMake doesn't detect MSVC first.
+#===----------------------------------------------------------------------===//
+
+if(WIN32 AND NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
+  # Resolve the ROCm/HIP root. Precedence matches cmake/triton.cmake so a single
+  # -DROCM_PATH drives both the toolchain here and the HIP package discovery
+  # there:  -DROCM_PATH (cache) -> ENV{ROCM_PATH} -> ENV{HIP_PATH} -> C:/opt/rocm
+  if(DEFINED ROCM_PATH)
+    set(_rocmlir_hip_root "${ROCM_PATH}")
+  elseif(DEFINED ENV{ROCM_PATH})
+    set(_rocmlir_hip_root "$ENV{ROCM_PATH}")
+  elseif(DEFINED ENV{HIP_PATH})
+    set(_rocmlir_hip_root "$ENV{HIP_PATH}")
+  else()
+    set(_rocmlir_hip_root "C:/opt/rocm")
+  endif()
+  file(TO_CMAKE_PATH "${_rocmlir_hip_root}" _rocmlir_hip_root)
+
+  # clang-cl lives under lib/llvm/bin in the TheRock / Linux-style ROCm layout,
+  # and directly under bin in the Windows HIP SDK. Prefer the former.
+  if(EXISTS "${_rocmlir_hip_root}/lib/llvm/bin/clang-cl.exe")
+    set(_rocmlir_clang_cl "${_rocmlir_hip_root}/lib/llvm/bin/clang-cl.exe")
+  elseif(EXISTS "${_rocmlir_hip_root}/bin/clang-cl.exe")
+    set(_rocmlir_clang_cl "${_rocmlir_hip_root}/bin/clang-cl.exe")
+  endif()
+
+  if(_rocmlir_clang_cl)
+    set(CMAKE_C_COMPILER   "${_rocmlir_clang_cl}" CACHE FILEPATH "")
+    set(CMAKE_CXX_COMPILER "${_rocmlir_clang_cl}" CACHE FILEPATH "")
+    message(STATUS "Using ROCm clang-cl at ${_rocmlir_clang_cl}")
+  else()
+    message(FATAL_ERROR
+      "clang-cl not found under ${_rocmlir_hip_root} "
+      "(checked lib/llvm/bin and bin). Set ROCM_PATH/HIP_PATH or -DROCM_PATH to "
+      "your ROCm/HIP install (or pass -DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER).")
+  endif()
+endif()
+
+# Use LLD (lld-link) as the linker on Windows. The CMake-native
+# `CMAKE_LINKER_TYPE` knob would be cleaner but requires CMake 3.29+; we keep
+# `cmake_minimum_required(VERSION 3.20)` for Linux compatibility, so we pass
+# `-fuse-ld=lld` directly to the clang-cl driver, which translates it to
+# `lld-link.exe` internally on Windows.
+if(WIN32)
+  add_link_options("-fuse-ld=lld")
+endif()
+
+# Default to a Release build on Windows. This must happen before project() so
+# that LLVM's add_unittest() / gtest discovery (which snapshots CMAKE_BUILD_TYPE
+# eagerly and maps its per-object variables) does not latch onto CMake's
+# implicit default (which Ninja picks up as Debug on MSVC-flavored toolchains).
+if(WIN32 AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 project(rocMLIR VERSION 2.0.0 LANGUAGES CXX C)
+
+if(WIN32 AND
+   (NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+    NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC"))
+  message(FATAL_ERROR
+    "Windows builds require clang-cl; configured compiler is "
+    "${CMAKE_CXX_COMPILER_ID} (${CMAKE_CXX_COMPILER}).")
+endif()
 
 # New in CMake 3.20. https://cmake.org/cmake/help/latest/policy/CMP0116.html
 if(POLICY CMP0116)
@@ -11,6 +77,31 @@ endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "")
+
+#===----------------------------------------------------------------------===//
+# Windows / MSVC-compatible compiler adjustments
+#===----------------------------------------------------------------------===//
+
+if(WIN32)
+  # clang-cl/MSVC default to delayed template parsing, which breaks the standard
+  # two-phase name lookup Triton/MLIR rely on (multiple `detail` namespaces
+  # found at instantiation time); disable it so clang-cl matches clang on Linux.
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fno-delayed-template-parsing>")
+
+  # Triton passes cl.exe-only /Zc flags plus /WX; clang-cl warns
+  # -Wunused-command-line-argument on them and /WX makes it fatal. Suppress it
+  # for C/C++ only (ml64 misparses a leading -W as its /W warning level).
+  add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-command-line-argument>")
+
+  # Suppress MSVC STL noise: MSVC's <complex> header deprecates std::complex<T>
+  # for non-floating T; MLIR's APFloat-based code legitimately uses it.
+  add_compile_definitions(
+    _SILENCE_NONFLOATING_COMPLEX_DEPRECATION_WARNING
+    # MSVC's getenv/etc. deprecation warnings are not actionable here.
+    _CRT_SECURE_NO_WARNINGS
+    _CRT_NONSTDC_NO_WARNINGS
+  )
+endif()
 
 # Adapted from https://blog.kitware.com/cmake-and-the-default-build-type/
 set(default_build_type "Release")
@@ -84,7 +175,14 @@ if(BUILD_MIXR_TARGET)
 endif()
 
 if(NOT DEFINED BUILD_FAT_LIBROCKCOMPILER)
-  set(BUILD_FAT_LIBROCKCOMPILER OFF CACHE BOOL "Build fat rockCompiler library to link into Rock driver")
+  # LLVM shared-library linkage is not viable on Windows (no DLL export
+  # annotations for LLVM/MLIR classes), so the static fat-lib build is the
+  # only viable default on WIN32.
+  if(WIN32)
+    set(BUILD_FAT_LIBROCKCOMPILER ON CACHE BOOL "Build fat rockCompiler library to link into Rock driver")
+  else()
+    set(BUILD_FAT_LIBROCKCOMPILER OFF CACHE BOOL "Build fat rockCompiler library to link into Rock driver")
+  endif()
 endif()
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "")
