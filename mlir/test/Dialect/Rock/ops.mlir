@@ -137,7 +137,7 @@ func.func @rock_store_result_view_fanout(%source : tensor<4x4xf32>, %dest : tens
 
 func.func @rock_store_result_store_chain(%source : tensor<4x4xf32>, %dest : tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result0 = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
-  %result1 = rock.store %source to %result0 by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %result1 = rock.store %source to %dest alias %result0 by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32> alias tensor<4x4xf32>
   func.return %result1 : tensor<4x4xf32>
 }
 // CHECK-LABEL: func.func @rock_store_result_store_chain

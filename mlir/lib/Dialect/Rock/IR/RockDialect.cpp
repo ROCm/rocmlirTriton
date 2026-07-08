@@ -1113,12 +1113,9 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
     Operation *user = use.getOwner();
     if (isa<ViewLikeOpInterface>(user))
       continue;
-    // Store chaining is valid when the previous store result is threaded as
-    // the destination tensor or explicit result alias for the next same-kind
-    // store.
+    // Store chaining is valid only when the previous store result is threaded
+    // as the explicit result alias for the next same-kind store.
     if (auto nextStore = dyn_cast<StoreOpT>(user)) {
-      if (use.get() == nextStore.getDest())
-        continue;
       if (nextStore.getResultAlias() && use.get() == nextStore.getResultAlias())
         continue;
     }
@@ -1129,8 +1126,28 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
     }
     return op.emitOpError(
         "result must be used directly by a func.return, view-like op, or "
-        "destination operand of another same-kind store");
+        "resultAlias operand of another same-kind store");
   }
+  return success();
+}
+
+static bool isStoreResultOrViewOfStoreResult(Value value) {
+  while (Operation *defOp = value.getDefiningOp()) {
+    if (isa<StoreOp, BlockwiseStoreOp>(defOp))
+      return true;
+    auto viewOp = dyn_cast<ViewLikeOpInterface>(defOp);
+    if (!viewOp)
+      return false;
+    value = viewOp.getViewSource();
+  }
+  return false;
+}
+
+template <typename StoreOpT>
+static LogicalResult verifyStoreDest(StoreOpT op) {
+  if (isStoreResultOrViewOfStoreResult(op.getDest()))
+    return op.emitOpError(
+        "dest must not be a store result or view of a store result");
   return success();
 }
 
@@ -1158,6 +1175,9 @@ LogicalResult StoreOp::verify() {
            << " (source: " << sourceType << ", dest: " << destType << ")";
 
   if (failed(verifyStoreResultAlias(*this)))
+    return failure();
+
+  if (failed(verifyStoreDest(*this)))
     return failure();
 
   return verifyStoreResultUses(*this, getResult());
@@ -1622,6 +1642,9 @@ LogicalResult BlockwiseStoreOp::verify() {
   }
 
   if (failed(verifyStoreResultAlias(*this)))
+    return failure();
+
+  if (failed(verifyStoreDest(*this)))
     return failure();
 
   return verifyStoreResultUses(*this, getResult());

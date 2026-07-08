@@ -811,10 +811,6 @@ mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
       currentVal = trOp.getInput();
       return true;
     }
-    if (auto storeOp = dyn_cast<BlockwiseStoreOp>(definingOp)) {
-      currentVal = storeOp.getResultAliasOrDest();
-      return true;
-    }
     definingOp->emitError("Unexpected op\n");
     return false;
   };

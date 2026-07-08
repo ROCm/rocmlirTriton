@@ -1148,25 +1148,21 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     std::tie(destRoot, destMaps, std::ignore) =
         rock::untransform(b, destBuffer);
 
-    // Thread the destination through each per-kernel store so the single
-    // returned tensor represents all disjoint bwd_data phase writes. Depending
-    // on the incoming store type, stores may return either the untransformed
-    // root tensor or the logical destination-view type. Keep the store result
-    // alias separate from the destination view: root-typed store results alias
-    // the current root value, while view-typed results alias the current view.
-    Value currentResultAlias;
-    if (storeResultType == destRoot.getType()) {
+    // Thread only the store result alias through each per-kernel store so the
+    // single returned tensor represents all disjoint bwd_data phase writes. The
+    // actual destination view stays rooted at the original destination buffer.
+    Value currentResultAlias = originalStoreOp.getResultAlias();
+    if (!currentResultAlias && storeResultType == destRoot.getType()) {
       currentResultAlias = destRoot;
-    } else if (storeResultType == destBuffer.getType()) {
+    } else if (!currentResultAlias && storeResultType == destBuffer.getType()) {
       currentResultAlias = destBuffer;
-    } else {
+    } else if (!currentResultAlias) {
       return bwdDataOp.emitOpError(
           "store result type does not match destination root or view");
     }
-    Value currentDest = destBuffer;
     Value finalStoreResult;
     for (auto [idx, kid] : llvm::enumerate(kernelIds)) {
-      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, currentDest);
+      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
       if (failed(maybe))
         return failure();
 
@@ -1177,20 +1173,13 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       finalStoreResult = newStoreOp.getResult();
       if (idx + 1 < kernelIds.size()) {
         currentResultAlias = finalStoreResult;
-        if (finalStoreResult.getType() == destRoot.getType()) {
-          currentDest = rock::transform(b, finalStoreResult, destMaps);
-        } else {
-          assert(finalStoreResult.getType() == destBuffer.getType() &&
-                 "non-root store result must have destination-view type");
-          currentDest = finalStoreResult;
-        }
       }
     }
 
     // BwdData with multiple kernel IDs emits N independent gemm + store pairs,
     // each writing a disjoint slice of the same output buffer. Since
-    // `rock.store` is Pure, each store result must be live; threading the
-    // destination through the stores makes the final result represent the full
+    // `rock.store` is Pure, each store result must be live; threading
+    // resultAlias through the stores makes the final result represent the full
     // logical output without exposing per-phase stores in the function ABI.
     b.replaceOp(originalStoreOp, finalStoreResult);
     b.eraseOp(bwdDataOp);

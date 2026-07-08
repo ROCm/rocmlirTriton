@@ -13,11 +13,8 @@
   bounds = [64, 64] -> [64, 64]>
 
 // The first GEMM is stored and also feeds the second GEMM. The second store
-// uses the first store's result directly as its destination, so vectorization
-// inference must skip through that store result and process the original
-// destination transform. The get_length marker uses a view of that store result
-// because blockwise_store results may only be used by returns, view-like ops, or
-// same-kind store destination operands.
+// writes to the same destination view while the first store result is threaded
+// through resultAlias to keep the pure store chain live.
 //
 // CHECK-LABEL: func @chained_gemm_reuses_store_result
 // CHECK: [[G1:%.*]] = rock.blockwise_gemm
@@ -25,20 +22,12 @@
 // CHECK: [[R1:%.*]] = rock.blockwise_store [[G1]]
 // CHECK: [[G1F16:%.*]] = arith.truncf [[G1]]
 // CHECK: rock.blockwise_gemm([[G1F16]]
-// CHECK: [[R1VIEW:%.*]] = rock.transform [[R1]]
+// CHECK: rock.blockwise_store {{.*}} -> [[DEST1]] alias [[R1]]
 // CHECK: "get_length"([[DEST1]])
 // CHECK-SAME: bufferVectorSize = 1 : index
 // CHECK-SAME: in_dim = 0 : i64
 // CHECK-SAME: result = 1 : index
 // CHECK: "get_length"([[DEST1]])
-// CHECK-SAME: bufferVectorSize = 1 : index
-// CHECK-SAME: in_dim = 1 : i64
-// CHECK-SAME: result = 64 : index
-// CHECK: "get_length"([[R1VIEW]])
-// CHECK-SAME: bufferVectorSize = 1 : index
-// CHECK-SAME: in_dim = 0 : i64
-// CHECK-SAME: result = 1 : index
-// CHECK: "get_length"([[R1VIEW]])
 // CHECK-SAME: bufferVectorSize = 1 : index
 // CHECK-SAME: in_dim = 1 : i64
 // CHECK-SAME: result = 64 : index
@@ -58,14 +47,10 @@ func.func @chained_gemm_reuses_store_result(
   %g2 = rock.blockwise_gemm(%g1f16, %b2, %c2)
     : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32>
       -> tensor<64x64xf32>
-  %r2 = rock.blockwise_store %g2 -> %r1 by set
-    : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<64x64xf32>
-  %r1_view = rock.transform %r1 by #identity_2d
-    : tensor<64x64xf32> to tensor<64x64xf32>
+  %r2 = rock.blockwise_store %g2 -> %dest1 alias %r1 by set
+    : tensor<64x64xf32> -> tensor<64x64xf32> alias tensor<64x64xf32> -> tensor<64x64xf32>
 
   "get_length"(%dest1) {in_dim = 0 : i64} : (tensor<64x64xf32>) -> ()
   "get_length"(%dest1) {in_dim = 1 : i64} : (tensor<64x64xf32>) -> ()
-  "get_length"(%r1_view) {in_dim = 0 : i64} : (tensor<64x64xf32>) -> ()
-  "get_length"(%r1_view) {in_dim = 1 : i64} : (tensor<64x64xf32>) -> ()
   return
 }

@@ -172,9 +172,9 @@ func.func @test_m_three_segments(%a: tensor<1x224x64xf16>, %b: tensor<1x64x128xf
 // ============================================================
 // Chained stores (bwd-data shape): two gemms write disjoint M
 // halves of the same output; the second store's destination is
-// a view of the first store's result. Each gemm splits along M
-// into {64,16}, and the threading must be preserved so the
-// second store writes through the first store's chain.
+// another view of the original output. Each gemm splits along M
+// into {64,16}, and the resultAlias chain must be preserved so the
+// final store result represents both writes.
 // ============================================================
 
 // The first original store sits before the second gemm, so the decomposed
@@ -186,8 +186,8 @@ func.func @test_m_three_segments(%a: tensor<1x224x64xf16>, %b: tensor<1x64x128xf
 // CHECK: rock.store
 // CHECK: rock.gridwise_gemm
 // CHECK: rock.gridwise_gemm
-// The second store must write through a view of the first store's chain
-// (offset +160), not the original argument.
+// The second store writes through the original argument with offset +160 while
+// aliasing the first store result.
 // CHECK: rock.transform %{{.*}} -> (d0, d1 + 160, d2)
 // CHECK: rock.store
 // CHECK: rock.store
@@ -197,7 +197,7 @@ func.func @test_chained_stores_nonpow2(%a0: tensor<1x160x64xf16>, %b0: tensor<1x
   %dest0 = rock.transform %dest by <affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Slice{0, 160} ["m0"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 160, 128] -> [1, 320, 128]> : tensor<1x320x128xf32> to tensor<1x160x128xf32>
   %s0 = rock.store %r0 to %dest0 alias %dest by set : tensor<1x160x128xf32> -> tensor<1x320x128xf32> to tensor<1x160x128xf32> alias tensor<1x320x128xf32>
   %r1 = rock.gridwise_gemm(%a1, %b1) {params = #pc80x64} : tensor<1x160x64xf16>, tensor<1x64x128xf16> -> tensor<1x160x128xf32>
-  %dest1 = rock.transform %s0 by <affine_map<(d0, d1, d2) -> (d0, d1 + 160, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Slice{160, 320} ["m1"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 160, 128] -> [1, 320, 128]> : tensor<1x320x128xf32> to tensor<1x160x128xf32>
+  %dest1 = rock.transform %dest by <affine_map<(d0, d1, d2) -> (d0, d1 + 160, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Slice{160, 320} ["m1"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 160, 128] -> [1, 320, 128]> : tensor<1x320x128xf32> to tensor<1x160x128xf32>
   %s1 = rock.store %r1 to %dest1 alias %s0 by set : tensor<1x160x128xf32> -> tensor<1x320x128xf32> to tensor<1x160x128xf32> alias tensor<1x320x128xf32>
   return %s1 : tensor<1x320x128xf32>
 }

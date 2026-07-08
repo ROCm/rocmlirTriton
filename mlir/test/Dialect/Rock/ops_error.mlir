@@ -613,7 +613,7 @@ func.func @store_shape_mismatch(
 // Result used by a non-return op
 func.func @store_result_not_returned(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
   %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   %neg = arith.negf %out : tensor<4x4xf32>
   return %neg : tensor<4x4xf32>
@@ -622,9 +622,28 @@ func.func @store_result_not_returned(
 // Result used as another store's source
 func.func @store_result_used_as_store_source(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
   %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   %out2 = rock.store %out to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %out2 : tensor<4x4xf32>
+}
+
+// Result used directly as another store's dest
+func.func @store_result_used_as_store_dest(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %out2 = rock.store %source to %out by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %out2 : tensor<4x4xf32>
+}
+
+// Result used through a view as another store's dest
+func.func @store_result_view_used_as_store_dest(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %view = rock.transform %out by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [4, 4] -> [4, 4]> : tensor<4x4xf32> to tensor<4x4xf32>
+  // expected-error @+1 {{dest must not be a store result or view of a store result}}
+  %out2 = rock.store %source to %view by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   return %out2 : tensor<4x4xf32>
 }
 
@@ -774,7 +793,7 @@ func.func @blockwise_store_rank_mismatch(
 func.func @blockwise_store_not_returned(
     %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
     %alias: tensor<768xf32>, %i0: i32) -> tensor<768xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
   %0 = rock.blockwise_store %src -> %dest alias %alias [%i0] by set
     : tensor<16x16xf32> -> tensor<3x16x16xf32> alias tensor<768xf32> -> tensor<768xf32>
   %neg = arith.negf %0 : tensor<768xf32>
@@ -786,12 +805,35 @@ func.func @blockwise_store_result_used_as_store_source(
     %src: tensor<768xf32>, %dest0: tensor<3x768xf32>,
     %dest1: tensor<3x2304xf32>, %alias0: tensor<2304xf32>,
     %alias1: tensor<6912xf32>, %i0: i32) -> tensor<6912xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
   %0 = rock.blockwise_store %src -> %dest0 alias %alias0 [%i0] by set
     : tensor<768xf32> -> tensor<3x768xf32> alias tensor<2304xf32> -> tensor<2304xf32>
   %1 = rock.blockwise_store %0 -> %dest1 alias %alias1 [%i0] by set
     : tensor<2304xf32> -> tensor<3x2304xf32> alias tensor<6912xf32> -> tensor<6912xf32>
   return %1 : tensor<6912xf32>
+}
+
+// Result used directly as another blockwise_store's dest
+func.func @blockwise_store_result_used_as_store_dest(
+    %src: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %0 = rock.blockwise_store %src -> %dest by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  %1 = rock.blockwise_store %src -> %0 by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  return %1 : tensor<16x16xf32>
+}
+
+// Result used through a view as another blockwise_store's dest
+func.func @blockwise_store_result_view_used_as_store_dest(
+    %src: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %0 = rock.blockwise_store %src -> %dest by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  %view = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [16, 16] -> [16, 16]> : tensor<16x16xf32> to tensor<16x16xf32>
+  // expected-error @+1 {{dest must not be a store result or view of a store result}}
+  %1 = rock.blockwise_store %src -> %view by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  return %1 : tensor<16x16xf32>
 }
 
 // Result has multiple uses

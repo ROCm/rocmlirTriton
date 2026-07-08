@@ -317,15 +317,6 @@ FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {
     if (auto viewOp =
             dyn_cast_or_null<ViewLikeOpInterface>(value.getDefiningOp())) {
       value = viewOp.getViewSource();
-    } else if (auto store = dyn_cast_or_null<StoreOp>(value.getDefiningOp())) {
-      SmallVector<TransformMapAttr> transforms;
-      std::tie(value, std::ignore) =
-          rock::untransform(store.getResultAliasOrDest(), transforms);
-    } else if (auto blockwiseStore =
-                   dyn_cast_or_null<BlockwiseStoreOp>(value.getDefiningOp())) {
-      SmallVector<TransformMapAttr> transforms;
-      std::tie(value, std::ignore) =
-          rock::untransform(blockwiseStore.getResultAliasOrDest(), transforms);
     } else {
       return failure();
     }
@@ -401,8 +392,7 @@ mlir::rock::traceRootOutputToStoreOps(Value output) {
     for (OpOperand &use : current.getUses()) {
       Operation *owner = use.getOwner();
       if (auto storeOp = dyn_cast<StoreOp>(owner)) {
-        // Only the stored-value operand consumes the traced output. A store
-        // result may also be threaded into a later store's destination.
+        // Only the stored-value operand consumes the traced output.
         if (use.get() == storeOp.getSource())
           stores.insert(storeOp);
       } else if (isForwardTraceOp(owner)) {

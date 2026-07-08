@@ -60,51 +60,6 @@ struct RockTransformsToPointerArithPass
 
 namespace {
 
-// Resolve `source` to its underlying root buffer (a block argument or
-// arith.constant) together with the full transform stack sitting above it.
-//
-// Without pipelined store-result SSA chains, this is just `untransform`: peel
-// transforms until reaching the actual buffer root. Pipelined store-result SSA
-// can put store results in the middle of that chain, though. For example:
-//
-//   %dest0 = rock.transform %dest ... Slice{0, 160}
-//   %s0 = rock.store %r0 to %dest0
-//       : tensor<...> -> tensor<1x320x128xf32> to tensor<1x160x128xf32>
-//   %dest1 = rock.transform %s0 ... Slice{160, 320}
-//
-// `untransform(%dest1)` must keep the Slice{160, 320} transform, but it stops
-// at
-// `%s0`, whose defining op is a store. If we resumed blindly from that store's
-// `dest` operand (`%dest0`), we would also accumulate Slice{0, 160},
-// incorrectly making the first store's slice part of the second store's pointer
-// arithmetic.
-//
-// Instead, store ops carry an explicit `resultAlias` value. In the example the
-// alias maps `%s0` back to the full `%dest`, while same-typed stores can omit
-// the alias and default to their `dest`. The next loop iteration resumes
-// `untransform` from that alias, preserving the same transform stack the
-// non-pipelined IR would have produced.
-static std::pair<Value, ArrayAttr> resolveStoreResultRoot(OpBuilder &b,
-                                                          Value source) {
-  Value buffer;
-  ArrayAttr transforms;
-  Value current = source;
-  while (true) {
-    std::tie(buffer, transforms, std::ignore) =
-        rock::untransform(b, current, transforms);
-
-    Operation *defOp = buffer.getDefiningOp();
-    if (auto blockwiseStoreOp = dyn_cast_or_null<BlockwiseStoreOp>(defOp)) {
-      current = blockwiseStoreOp.getResultAliasOrDest();
-    } else if (auto storeOp = dyn_cast_or_null<StoreOp>(defOp)) {
-      current = storeOp.getResultAliasOrDest();
-    } else {
-      break;
-    }
-  }
-  return {buffer, transforms};
-}
-
 // Helper function to create a tensor range using tt.make_range with proper
 // shape. Creates a tensor where the non-unit dimension contains values [start,
 // end).
@@ -510,7 +465,9 @@ struct TransformsToPtrRewritePattern
 
     source = isolateTransforms(b, source);
 
-    auto [buffer, transforms] = resolveStoreResultRoot(b, source);
+    Value buffer;
+    ArrayAttr transforms;
+    std::tie(buffer, transforms, std::ignore) = rock::untransform(b, source);
 
     // After regularize-input, the root of any transform chain must be either
     // a block argument (kernel input tensor) or an arith.constant (splat).
