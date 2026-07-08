@@ -1344,15 +1344,14 @@ static Value makeNDMemRef(OpBuilder &b, Value var, uint32_t ndim) {
   return var;
 }
 
-static std::pair<int64_t, int64_t> getMandNPerBlock(OpBuilder builder,
-                                                    const GenParams &params) {
-  // Mirrors PopulateParamsGemmGemm::obtainTuningParameters: prefer the
-  // user-supplied perfConfig, otherwise fall back to the first quick-tuning
-  // entry for this (arch, kernel, dtype).
-  assert(params.operation.has_value() && !params.types.empty());
+static std::pair<int64_t, int64_t>
+getMandNPerBlock(OpBuilder builder, const GenParams &params,
+                 rock::RockGemmGemmWrapperInterface op) {
+  // Mirror exactly what AffixTuningParameters picks, so the CPU and GPU use
+  // the same perf_config. A different perf_config would give the CPU and GPU
+  // a different split count in split-KV, causing verification failures.
   std::vector<rock::GemmGemmParamsAttr> defaults =
-      rock::PopulateParamsGemmGemm::getTuningParameters(
-          builder, params.arch, *params.operation, params.types[0]);
+      rock::PopulateParamsGemmGemm::getTuningParameters(builder, op);
   FailureOr<rock::GemmGemmParamsAttr> attnPerfConfig =
       rock::materializeTuningParams<rock::GemmGemmParamsAttr>(
           builder, params.perfConfig, defaults);
@@ -1535,7 +1534,16 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   // hack for split-kv:
   // use LSE and output tensors to compute final attention result
   if (splitKV > 1) {
-    int64_t nPerBlock = getMandNPerBlock(b, params).second;
+    // Resolve the block sizes from the *same* op the compiler will tune, so the
+    // reference split-KV partition matches the generated kernel exactly.
+    rock::AttentionOp attnOp;
+    module.walk([&](rock::AttentionOp op) { attnOp = op; });
+    assert(attnOp && "split-kv requires a rock.attention op in the module");
+    int64_t nPerBlock =
+        getMandNPerBlock(
+            b, params,
+            cast<rock::RockGemmGemmWrapperInterface>(attnOp.getOperation()))
+            .second;
 
     // TODO: causal masking is not implemented yet
     // typically, causal masking is used in the prefill phase, where split-KV is

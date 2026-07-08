@@ -10,7 +10,8 @@ module {
       group = 1 : i64,
       padding = [1, 1, 1, 1],
       padding_mode = 0 : i64,
-      stride = [2, 2]} : <1x512x32x32xf32, 524288x1024x32x1>, <512x384x4x4xf32, 6144x16x4x1> -> <1x384x64x64xf32, 1572864x4096x64x1>
+      stride = [2, 2],
+      perf_config = "gemm:v1:64,64,32,1,1,4,32,1,1,0,0"} : <1x512x32x32xf32, 524288x1024x32x1>, <512x384x4x4xf32, 6144x16x4x1> -> <1x384x64x64xf32, 1572864x4096x64x1>
     return %0 : !migraphx.shaped<1x384x64x64xf32, 1572864x4096x64x1>
   }
 }
