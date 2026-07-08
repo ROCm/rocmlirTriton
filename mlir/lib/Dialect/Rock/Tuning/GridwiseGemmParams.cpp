@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LogicalResult.h"
@@ -51,6 +52,22 @@ PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
     auto convDims = ConvolutionDims::fromOp(op);
     info.numCu = rock::getNumCUValue(convOp);
     info.batchSize = convDims.n;
+  }
+
+  // Strided backward-data convolution stages the A (M x K) operand tile
+  // expanded in LDS: the strided gather pulls overlapping filter taps into
+  // shared memory, so the real Triton `ttg.shared` allocation grows with
+  // stride, saturating at the filter footprint. Charge the applicability LDS
+  // check the (per-spatial-dim) product of `min(stride, filter)`; unit stride
+  // or a 1x1 filter yields 1 (no expansion).
+  if (auto convOp = dyn_cast<ConvBwdDataOp>(*op)) {
+    auto convDims = ConvolutionDims::fromOp(op);
+    auto strides = extractFromIntegerArrayAttr<int64_t>(convOp.getStrides());
+    int64_t factor = 1;
+    size_t numSpatial = std::min(strides.size(), convDims.fil.size());
+    for (size_t i = 0; i < numSpatial; ++i)
+      factor *= std::min(strides[i], convDims.fil[i]);
+    info.mLdsExpansionFactor = std::max<int64_t>(factor, 1);
   }
   func::FuncOp func = op->getParentOfType<func::FuncOp>();
   WalkResult wRes = func.walk(
@@ -230,7 +247,7 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
       b, perfConfig,
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
                           info.arch, info.quantBlockSize, info.aScaleType,
-                          info.bScaleType));
+                          info.bScaleType, info.mLdsExpansionFactor));
 }
 
 FailureOr<GemmParamsAttr>
@@ -249,7 +266,7 @@ PopulateParams::obtainTuningParameters(OpBuilder &b,
 std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
     StringRef arch, std::optional<int64_t> quantBlockSize, Type aScaleType,
-    Type bScaleType) const {
+    Type bScaleType, int64_t mLdsExpansionFactor) const {
   auto perfConfigs =
       ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
 
@@ -272,16 +289,18 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     res.push_back(params);
   }
   auto ordered = orderParams<GemmParamsAttr>(res, [&](GemmParamsAttr p) {
-    return isGemmParamsConservativelyApplicable(
-        p, dataTypeA, dataTypeB, arch, quantBlockSize, aScaleType, bScaleType);
+    return isGemmParamsConservativelyApplicable(p, dataTypeA, dataTypeB, arch,
+                                                quantBlockSize, aScaleType,
+                                                bScaleType, mLdsExpansionFactor);
   });
   // Guarantee MIGRAPHX_SKIP_BENCHMARKING consumers see an applicable
   // `front()`: if no table entry passed the check, prepend the conservative
   // default (which is rounded up to a multiple of `quantBlockSize` for
   // scaled GEMMs so it also satisfies the divisibility constraint).
-  if (ordered.empty() || !isGemmParamsConservativelyApplicable(
-                             ordered.front(), dataTypeA, dataTypeB, arch,
-                             quantBlockSize, aScaleType, bScaleType))
+  if (ordered.empty() ||
+      !isGemmParamsConservativelyApplicable(
+          ordered.front(), dataTypeA, dataTypeB, arch, quantBlockSize,
+          aScaleType, bScaleType, mLdsExpansionFactor))
     ordered.insert(ordered.begin(),
                    getConservativeDefaultGemmParams(
                        b.getContext(), quantBlockSize, dataTypeA, dataTypeB));

@@ -85,6 +85,15 @@ struct PopulateParamsInfo {
   std::optional<int64_t> quantBlockSize;
   Type aScaleType;
   Type bScaleType;
+  // Strided backward-data convolution stages the A (M x K) operand tile
+  // expanded in LDS: the strided gather pulls overlapping filter taps into
+  // shared memory, so the real Triton `ttg.shared` allocation grows with
+  // stride (bounded by the filter footprint). This is the per-spatial-dim
+  // product of `min(stride, filter)`; it is 1 for forward conv / gemm /
+  // unit-stride bwd-data (no expansion). The applicability LDS check charges
+  // the A-tile this many times so it does not under-count and pick a config
+  // that overflows LDS. See isGemmParamsConservativelyApplicable.
+  int64_t mLdsExpansionFactor = 1;
 
   PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
                      Type gemmBType, KernelType kernelType)
@@ -131,10 +140,17 @@ inline bool isFp4ElementType(Type type) {
 ///   - charges per-tile scale storage to the LDS budget.
 /// Non-scaled callers leave these arguments at their defaults and behave
 /// exactly as before.
+///
+/// `mLdsExpansionFactor` charges the A (M x K) operand tile that many times.
+/// It is 1 everywhere except strided backward-data convolution, whose Triton
+/// lowering stages an LDS tile expanded by the strided filter gather (see
+/// `PopulateParamsInfo::mLdsExpansionFactor`). Without it this check
+/// under-counts LDS and admits configs that overflow shared memory on the GPU.
 inline bool isGemmParamsConservativelyApplicable(
     GemmParamsAttr p, Type aElemType, Type bElemType, StringRef arch,
     std::optional<int64_t> quantBlockSize = std::nullopt,
-    Type aScaleType = nullptr, Type bScaleType = nullptr) {
+    Type aScaleType = nullptr, Type bScaleType = nullptr,
+    int64_t mLdsExpansionFactor = 1) {
   if (p.getKpack() != 1 || p.getSplitKFactor() != 1 || p.getNumCTAs() != 1)
     return false;
   if (quantBlockSize.has_value() && p.getKPerBlock() % *quantBlockSize != 0)
@@ -150,7 +166,8 @@ inline bool isGemmParamsConservativelyApplicable(
       p.getKPerBlock() % kFp4KPerBlockMultiple != 0)
     return false;
   int64_t totalBits =
-      (p.getMPerBlock() * p.getKPerBlock() * aElem.getIntOrFloatBitWidth()) +
+      (mLdsExpansionFactor * p.getMPerBlock() * p.getKPerBlock() *
+       aElem.getIntOrFloatBitWidth()) +
       (p.getNPerBlock() * p.getKPerBlock() * bElem.getIntOrFloatBitWidth());
   if (quantBlockSize.has_value() && (aScaleType || bScaleType)) {
     int64_t scaleK = llvm::divideCeil(p.getKPerBlock(), *quantBlockSize);
@@ -262,7 +279,8 @@ public:
   std::vector<GemmParamsAttr> getTuningParameters(
       OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
       StringRef arch, std::optional<int64_t> quantBlockSize = std::nullopt,
-      Type aScaleType = nullptr, Type bScaleType = nullptr) const;
+      Type aScaleType = nullptr, Type bScaleType = nullptr,
+      int64_t mLdsExpansionFactor = 1) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;
