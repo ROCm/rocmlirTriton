@@ -1131,23 +1131,31 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
   return success();
 }
 
-static bool isStoreResultOrViewOfStoreResult(Value value) {
+static Value getStoreDestRoot(Value value) {
   while (Operation *defOp = value.getDefiningOp()) {
-    if (isa<StoreOp, BlockwiseStoreOp>(defOp))
-      return true;
     auto viewOp = dyn_cast<ViewLikeOpInterface>(defOp);
     if (!viewOp)
-      return false;
+      return value;
     value = viewOp.getViewSource();
   }
-  return false;
+  return value;
 }
 
 template <typename StoreOpT>
 static LogicalResult verifyStoreDest(StoreOpT op) {
-  if (isStoreResultOrViewOfStoreResult(op.getDest()))
+  Value destRoot = getStoreDestRoot(op.getDest());
+  if (isa_and_nonnull<StoreOp, BlockwiseStoreOp>(destRoot.getDefiningOp()))
     return op.emitOpError(
         "dest must not be a store result or view of a store result");
+
+  auto blockArg = dyn_cast<BlockArgument>(destRoot);
+  func::FuncOp funcOp = op->template getParentOfType<func::FuncOp>();
+  if (!blockArg || !funcOp ||
+      blockArg.getOwner() != &funcOp.getBody().front()) {
+    return op.emitOpError(
+        "dest transform chain root must be a function entry block argument");
+  }
+
   return success();
 }
 

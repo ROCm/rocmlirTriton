@@ -647,6 +647,20 @@ func.func @store_result_view_used_as_store_dest(
   return %out2 : tensor<4x4xf32>
 }
 
+// Dest rooted at a non-entry block argument
+func.func @store_dest_rooted_at_loop_block_arg(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %out = scf.for %i = %c0 to %c1 step %c1 iter_args(%iter_dest = %dest) -> (tensor<4x4xf32>) {
+    %view = rock.transform %iter_dest by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [4, 4] -> [4, 4]> : tensor<4x4xf32> to tensor<4x4xf32>
+    // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+    %stored = rock.store %source to %view alias %iter_dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32> alias tensor<4x4xf32>
+    scf.yield %stored : tensor<4x4xf32>
+  }
+  return %out : tensor<4x4xf32>
+}
+
 // Result has multiple uses
 func.func @store_result_multiple_uses(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> (tensor<4x4xf32>, tensor<4x4xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
@@ -834,6 +848,21 @@ func.func @blockwise_store_result_view_used_as_store_dest(
   %1 = rock.blockwise_store %src -> %view by set
     : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
   return %1 : tensor<16x16xf32>
+}
+
+// Dest rooted at a non-entry block argument
+func.func @blockwise_store_dest_rooted_at_loop_block_arg(
+    %src: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %out = scf.for %i = %c0 to %c1 step %c1 iter_args(%iter_dest = %dest) -> (tensor<16x16xf32>) {
+    %view = rock.transform %iter_dest by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [16, 16] -> [16, 16]> : tensor<16x16xf32> to tensor<16x16xf32>
+    // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+    %stored = rock.blockwise_store %src -> %view alias %iter_dest by set
+      : tensor<16x16xf32> -> tensor<16x16xf32> alias tensor<16x16xf32> -> tensor<16x16xf32>
+    scf.yield %stored : tensor<16x16xf32>
+  }
+  return %out : tensor<16x16xf32>
 }
 
 // Result has multiple uses
