@@ -465,9 +465,7 @@ struct TransformsToPtrRewritePattern
 
     source = isolateTransforms(b, source);
 
-    Value buffer;
-    ArrayAttr transforms;
-    std::tie(buffer, transforms, std::ignore) = rock::untransform(b, source);
+    auto [buffer, transforms, _] = rock::untransform(b, source);
 
     // After regularize-input, the root of any transform chain must be either
     // a block argument (kernel input tensor) or an arith.constant (splat).
