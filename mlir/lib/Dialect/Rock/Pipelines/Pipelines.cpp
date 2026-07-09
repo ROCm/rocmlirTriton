@@ -253,18 +253,11 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 1. makeLLIR (the function below)
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
-static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int numStages) {
+static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
-  // Redistribute the gather reduction-operand load layout onto the reduction
-  // dim to remove the per-warp scalar address-odometer spill. Dot-driven and
-  // in_thread_transpose-agnostic, but it must run after ConvertWarpPipeline (so
-  // its warp redistribution is not re-derived away) and before SCF is lowered.
-  // Runs unconditionally: the pass self-selects, rewriting only a gather
-  // reduction-operand load whose warps are not already on the reduction dim,
-  // and no-ops otherwise (verified down to identical assembly), so gating it on
-  // a perfConfig knob provides no benefit.
+  // Redistribute the layout of the reduction dimension to reduce
+  // register pressure.
   pm->addPass(rock::createRockSetReductionLayoutPass());
   pm->addPass(mlir::createSCFToControlFlowPass());
 
@@ -525,7 +518,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.numStages);
+  makeLLIR(&pm, arch);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)

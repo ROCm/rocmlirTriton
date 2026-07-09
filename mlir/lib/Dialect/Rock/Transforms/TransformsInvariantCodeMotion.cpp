@@ -1070,6 +1070,11 @@ void RockTransformsInvariantCodeMotionPass::runOnOperation() {
   if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
     return;
 
+  // TODO: Investigate if this can be beneficial for non-convolution kernels.
+  // https://amd-hub.atlassian.net/browse/AIROCMLIR-1049
+  if (!func->hasAttr(rock::ConvKernelAttr::getMnemonic()))
+    return;
+
   // Re-walk after each rewrite: trySimplifyTransformsCandidates may replace the
   // loop op (carry path), so collected handles would dangle. After a rewrite
   // the base ops are pinned to iv == lb and no longer depend on the iv, so they
