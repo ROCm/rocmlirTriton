@@ -8,9 +8,9 @@
 // types, otherwise LLVM math lowering can see i8 operands for math.exp.
 //
 // CHECK: IR Dump After MathExtendToSupportedTypes
-// CHECK: arith.extf {{.*}} : tensor<64x32xf8E4M3FN> to tensor<64x32xf32>
-// CHECK-NEXT: math.exp {{.*}} : tensor<64x32xf32>
-// CHECK-NEXT: arith.truncf {{.*}} : tensor<64x32xf32> to tensor<64x32xf8E4M3FN>
+// CHECK: arith.extf {{.*}} : tensor<[[SHAPE:[0-9]+x[0-9]+]]xf8E4M3FN> to tensor<[[SHAPE]]xf32>
+// CHECK-NEXT: math.exp {{.*}} : tensor<[[SHAPE]]xf32>
+// CHECK-NEXT: arith.truncf {{.*}} : tensor<[[SHAPE]]xf32> to tensor<[[SHAPE]]xf8E4M3FN>
 
 module {
   func.func @mlir_convolution_exp(%arg0: !migraphx.shaped<1x16x4x4xf8E4M3FN, 256x16x4x1>, %arg1: !migraphx.shaped<2x16x3x3xf8E4M3FN, 144x9x3x1>) -> !migraphx.shaped<1x2x2x2xf8E4M3FN, 8x4x2x1> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel = "mixr"} {
