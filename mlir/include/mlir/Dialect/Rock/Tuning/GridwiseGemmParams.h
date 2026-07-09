@@ -276,11 +276,12 @@ public:
   // `bScaleType` for block-scaled (MXFP-style) GEMMs so the applicability
   // check accounts for scale-tile LDS use and the `kPerBlock %
   // quantBlockSize == 0` constraint.
-  std::vector<GemmParamsAttr> getTuningParameters(
-      OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
-      StringRef arch, std::optional<int64_t> quantBlockSize = std::nullopt,
-      Type aScaleType = nullptr, Type bScaleType = nullptr,
-      int64_t mLdsExpansionFactor = 1) const;
+  std::vector<GemmParamsAttr>
+  getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
+                      Type dataTypeB, StringRef arch,
+                      std::optional<int64_t> quantBlockSize = std::nullopt,
+                      Type aScaleType = nullptr, Type bScaleType = nullptr,
+                      int64_t mLdsExpansionFactor = 1) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;

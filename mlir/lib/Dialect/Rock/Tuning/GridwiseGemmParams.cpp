@@ -289,9 +289,9 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     res.push_back(params);
   }
   auto ordered = orderParams<GemmParamsAttr>(res, [&](GemmParamsAttr p) {
-    return isGemmParamsConservativelyApplicable(p, dataTypeA, dataTypeB, arch,
-                                                quantBlockSize, aScaleType,
-                                                bScaleType, mLdsExpansionFactor);
+    return isGemmParamsConservativelyApplicable(
+        p, dataTypeA, dataTypeB, arch, quantBlockSize, aScaleType, bScaleType,
+        mLdsExpansionFactor);
   });
   // Guarantee MIGRAPHX_SKIP_BENCHMARKING consumers see an applicable
   // `front()`: if no table entry passed the check, prepend the conservative
