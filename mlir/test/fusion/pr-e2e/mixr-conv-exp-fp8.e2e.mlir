@@ -1,4 +1,5 @@
-// RUN: rocmlir-gen -fut mlir_convolution_exp --arch %arch --clone-harness %s \
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s \
+// RUN:   | rocmlir-gen -fut mlir_convolution_exp --arch %arch --clone-harness - \
 // RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel --arch %arch \
 // RUN:   | rocmlir-gen -ph -print-results -rand 1 -rand_type float -fut mlir_convolution_exp --verifier clone - \
 // RUN:   | rocmlir-driver -c --arch %arch -o %t.bin --mlir-print-ir-after=math-extend-to-supported-types 2> %t.check \
