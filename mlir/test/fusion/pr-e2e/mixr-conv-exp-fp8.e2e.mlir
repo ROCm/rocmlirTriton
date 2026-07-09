@@ -2,9 +2,13 @@
 // RUN:   | rocmlir-gen -fut mlir_convolution_exp --arch %arch --clone-harness - \
 // RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel --arch %arch \
 // RUN:   | rocmlir-gen -ph -print-results -rand 1 -rand_type float -fut mlir_convolution_exp --verifier clone - \
-// RUN:   | rocmlir-driver -c --arch %arch -o %t.bin --mlir-print-ir-after=math-extend-to-supported-types 2> %t.check \
-// RUN:   && rocm-run %t.bin >> %t.check \
-// RUN:   && FileCheck %s --check-prefixes=IR,CLONE --input-file %t.check
+// RUN:   | rocmlir-driver -c --arch %arch \
+// RUN:   | rocm-run \
+// RUN:   | FileCheck %s --check-prefix=CLONE
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel --arch %arch \
+// RUN:   | rocmlir-driver -c --arch %arch -o /dev/null --mlir-print-ir-after=math-extend-to-supported-types 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=IR
 
 // E2E regression test for fp8 math fusion lowering. The kernel pipeline must
 // promote fp8 math operands before fp8 tensors are legalized to integer storage

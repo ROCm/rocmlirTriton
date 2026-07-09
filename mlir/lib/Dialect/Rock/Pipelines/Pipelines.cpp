@@ -430,11 +430,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // Legalize math ops on narrow floats before they are converted to integer
   // storage types. LLVM math intrinsics do not accept fp8/fp4 operands.
   {
-    math::MathExtendToSupportedTypesOptions extendToLLVMTypesOptions;
-    extendToLLVMTypesOptions.extraTypeStrs = {"f16"};
-    extendToLLVMTypesOptions.targetTypeStr = "f32";
-    addWithDCE(
-        math::createMathExtendToSupportedTypes(extendToLLVMTypesOptions));
+    math::MathExtendToSupportedTypesOptions mathExtendOptions;
+    mathExtendOptions.extraTypeStrs = {"f16"};
+    mathExtendOptions.targetTypeStr = "f32";
+    addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
   }
 
   // We run this pass after lower-stores to catch redundant casts that cannot be
