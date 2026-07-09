@@ -75,11 +75,21 @@ public:
   }
 
   CudaExampleUtils() {
+#ifdef _WIN32
+    dylibHandle = dlopen("nvcuda.dll", RTLD_NOLOAD | RTLD_LAZY);
+#else
     dylibHandle = dlopen("libcuda.so.1", RTLD_NOLOAD | RTLD_LAZY);
+#endif
     if (dylibHandle == nullptr) {
+#ifdef _WIN32
+      throw std::runtime_error(
+          "Could not find an already-loaded `nvcuda.dll`. Initialize "
+          "Triton's NVIDIA runtime before using this helper.");
+#else
       throw std::runtime_error(
           "Could not find an already-loaded `libcuda.so.1`. Initialize "
           "Triton's NVIDIA runtime before using this helper.");
+#endif
     }
     cuMemAlloc = loadSymbol<cuMemAlloc_t>("cuMemAlloc_v2");
     cuMemFree = loadSymbol<cuMemFree_t>("cuMemFree_v2");
@@ -156,6 +166,15 @@ createTritonGPUProxyFenceInsertionWrapper(int32_t capability) {
   return ttng::createTritonGPUProxyFenceInsertion(options);
 }
 
+std::unique_ptr<mlir::Pass>
+createInitializeWSClusterBarriersWrapper(int32_t capability,
+                                         int32_t ptxVersion) {
+  mlir::triton::InitializeWSClusterBarriersOptions options;
+  options.computeCapability = capability;
+  options.ptxVersion = ptxVersion;
+  return mlir::triton::createInitializeWSClusterBarriers(options);
+}
+
 void init_triton_nvidia_passes_ttnvgpuir(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_plan_cta", ttng::createTritonNvidiaGPUPlanCTAPass);
   ADD_PASS_WRAPPER_1("add_fence_insertion",
@@ -174,6 +193,9 @@ void init_triton_nvidia_passes_ttnvgpuir(py::module &&m) {
                      ttng::createTritonNvidiaGPUCheckMatmulTwoCTAPass);
   ADD_PASS_WRAPPER_0("add_nvgpu_to_llvm",
                      mlir::triton::createConvertNVGPUToLLVM);
+  ADD_PASS_WRAPPER_2("add_initialize_ws_cluster_barriers",
+                     createInitializeWSClusterBarriersWrapper, int32_t,
+                     int32_t);
   ADD_PASS_WRAPPER_0("add_warp_specialize_to_llvm",
                      mlir::triton::createConvertWarpSpecializeToLLVM);
   ADD_PASS_WRAPPER_0("add_allocate_tensor_memory",

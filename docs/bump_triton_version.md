@@ -24,31 +24,163 @@ or `external/llvm-project/` outside an upstream import / bump commit.
 ```bash
 export OLD_REPO=$(git rev-parse HEAD)
 ```
+### 1.2 Drop the previously applied patches
 
-### 1.2 Pull the new versions
+Before importing new upstream revisions, reverse-apply every downstream
+patch so the vendored trees match clean upstream again. This turns the
+subsequent `git subtree pull` into a clean upstream-to-upstream merge
+instead of one that has to reconcile our local edits.
 
-Import the desired upstream Triton and LLVM revisions into their vendored
-subtrees from the repository root. Replace `<triton-ref>` and `<llvm-ref>`
-with the branch, tag, or commit selected for the bump:
+Reverse-apply every `*.patch` in each directory from its subtree root.
+Order matters for stacked patches (ones that touch the same file build on
+each other), so reverse newest-first; `sort -r` does this for our
+PR-numbered patch names (e.g. `patch10498` is reversed before the
+`patch10450` it stacks on):
 
 ```bash
+# LLVM patches -> external/llvm-project
+cd external/llvm-project
+for p in $(ls ../../llvm-patches/*.patch | sort -r); do
+  patch -p1 -R --force < "$p"
+done
+cd ../..
+
+# Triton patches -> external/triton
+cd external/triton
+for p in $(ls ../../triton-patches/*.patch | sort -r); do
+  patch -p1 -R --force < "$p"
+done
+cd ../..
+```
+
+### 1.3 Pull the new versions
+
+Import the desired upstream Triton and LLVM revisions into their vendored
+subtrees from the repository root. Replace `<triton-ref>` with the latest
+commit hash from https://github.com/triton-lang/triton-windows/tree/main-windows,
+and replace `<llvm_ref>` with the commit hash in llvm-info.json on `main-windows`:
+
+Each `git subtree pull --squash` creates two commits: a synthetic
+`Squashed '<prefix>/' changes from <old>..<new>` commit (the merge's
+second parent, whose message carries a long per-upstream-commit list plus
+the `git-subtree-dir:` / `git-subtree-split:` trailers) and a merge commit
+that joins it into the branch. Collapse each pair into a single commit
+with a clean message, keeping only the two `git-subtree-*` trailers (drop
+the bullet list):
+
+```bash
+# Triton
 git subtree pull --prefix=external/triton \
-  https://github.com/triton-lang/triton-windows.git <triton-ref>
+  https://github.com/triton-lang/triton-windows.git <triton-ref> --squash
+split=$(git log -1 --format=%b HEAD^2 | sed -n 's/^git-subtree-split: //p')
+git reset --soft HEAD^1
+git commit -m "Bump external/triton to ${split:0:12}" \
+  -m "git-subtree-dir: external/triton
+git-subtree-split: $split"
 
+# LLVM
 git subtree pull --prefix=external/llvm-project \
-  https://github.com/llvm/llvm-project.git <llvm-ref>
+  https://github.com/llvm/llvm-project.git <llvm-ref> --squash
+split=$(git log -1 --format=%b HEAD^2 | sed -n 's/^git-subtree-split: //p')
+git reset --soft HEAD^1
+git commit -m "Bump external/llvm-project to ${split:0:12}" \
+  -m "git-subtree-dir: external/llvm-project
+git-subtree-split: $split"
+```
 
+Note: Always use `--squash`. The `triton-windows` `main-windows` branch is
+rebased onto upstream Triton on every release, which rewrites its commit
+SHAs. A non-squash `git subtree pull` relies on shared commit ancestry, so a
+rebased upstream makes the entire branch look like new work and produces
+spurious conflicts (or `fatal: refusing to merge unrelated histories`).
+`--squash` sidesteps this.
+
+### 1.4 Clean the git history
+
+Step 1.2 has to be its own commit, because `git subtree pull` refuses to
+run with a dirty working tree. Once the bumps are in, the history looks
+like:
+
+```
+<OLD_REPO>
+Remove previously applied patches
+Bump external/triton to <triton-sha>
+Bump external/llvm-project to <llvm-sha>
+```
+
+We don't want to carry the additional "Remove previously applied
+patches" commit, so we fold it into the bump with an interactive rebase:
+
+```bash
+git rebase -i "$OLD_REPO"
+```
+
+In the todo list, mark the Triton bump as `squash` so it merges into the
+patch-removal commit directly above it:
+
+```
+pick   <hash> Remove previously applied patches
+squash <hash> Bump external/triton to <triton-sha>
+pick   <hash> Bump external/llvm-project to <llvm-sha>
+```
+
+When the combined-message editor opens, keep the `Bump external/triton to
+<triton-sha>` subject and its `git-subtree-dir:` / `git-subtree-split:`
+trailers, and delete everything else. The result is a single commit that
+both bumps Triton and drops the now-obsolete patches.
+
+Capture the tip after any folding, since the rebase rewrites hashes:
+
+```bash
 export NEW_REPO=$(git rev-parse HEAD)
 ```
 
-`external/triton` and `external/llvm-project` are directories inside this
-repository, not nested Git repositories. Do not use `git -C
-external/triton rev-parse HEAD` to record the upstream revision; it
-returns the main repository's `HEAD`. Use the `OLD_REPO..NEW_REPO`
-bracket below to inspect what the subtree pulls changed under each
-prefix.
+## Step 2: Reconcile downstream patch records and re-apply the survivors
 
-## Step 2: Rebuild LLVM/MLIR
+We keep downstream patch records under `triton-patches/` and
+`llvm-patches/` so the next upstream import can re-apply or reconcile
+local divergence. After Step 1 the vendored trees are at clean upstream
+of the new revision (Step 1.2 reverse-applied every patch), so a patch's
+change being present in the tree right now means it landed upstream.
+
+Re-evaluate every patch and sort it into one of three buckets: drop
+(now upstream), apply (still needed, applies cleanly), or update
+(still needed but upstream context drifted, so the hunks must be refreshed
+first). Keep the human-readable patch indexes in sync at the same time:
+`triton-patches/triton-patch-content.txt` and
+`llvm-patches/llvm-patch-content.txt` should drop removed patches, rename
+survivors, and update the "drop this patch" guidance for the new pins.
+
+### 2.1 Classify each patch
+
+For each patch, check the files that are modified and do:
+
+```bash
+cd external/triton
+git diff ${OLD_REPO}..${NEW_REPO} -- FILE
+```
+
+Compare the upstream changes with the corresponding `.patch` file.
+
+If the changes are already in `external/triton`, then remove the `.patch` file
+and its entry in the matching `*-patch-content.txt` index.
+If they are still needed, then update the .patch contents accordingly.
+
+### 2.2 Apply the survivors to the vendored tree
+
+The records are not applied at build time; the edits must be committed
+into the vendored tree. Apply every still required patch from its
+subtree root and confirm there are no rejects:
+
+```bash
+( cd external/triton      && patch -p1 < ../../triton-patches/PATCH.patch )
+( cd external/llvm-project && patch -p1 < ../../llvm-patches/PATCH.patch )
+```
+
+Offsets and small fuzz are expected (upstream shifted the surrounding
+lines); rejects are not.
+
+## Step 3: Rebuild LLVM/MLIR
 
 The LLVM version must remain compatible with the imported Triton tree
 (`external/triton/cmake/llvm-hash.txt` is a useful cross-check). Build
@@ -62,32 +194,6 @@ Patch files are not applied during configure or build; they are records
 of downstream cherry-picks that must be kept in sync with the committed
 vendored trees.
 
-## Step 3: Check if downstream patch records are still needed
-
-We keep downstream patch records under `triton-patches/` and
-`llvm-patches/` so the next upstream import can re-apply or reconcile
-local divergence. Re-evaluate each one; it may no longer be needed if the
-change was merged upstream.
-
-For each Triton patch, check the files that are modified and do:
-
-```bash
-git diff "$OLD_REPO..$NEW_REPO" -- external/triton/FILE
-```
-
-For each LLVM patch, use the same pattern in the LLVM subtree:
-
-```bash
-git diff "$OLD_REPO..$NEW_REPO" -- external/llvm-project/FILE
-```
-
-Compare the upstream changes with the corresponding `.patch` file.
-
-If the changes are already in the imported upstream tree, remove the
-patch file and its entry in the matching `*-patch-content.txt` index.
-Otherwise, refresh the patch so it matches the committed vendored-tree
-edit.
-
 ## Step 4: Analyze Upstream Changes
 
 Generate a diff between `OLD_REPO` and `NEW_REPO` for the key files that
@@ -100,7 +206,9 @@ for f in \
     third_party/amd/python/triton_amd.cc \
     python/src/llvm.cc \
     third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp \
-    third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h; do
+    third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h \
+    CMakeLists.txt \
+    python/build_helpers.py; do
   git diff "$OLD_REPO..$NEW_REPO" --function-context -- "external/triton/$f" > "$(basename "$f").diff"
 done
 ```
@@ -150,6 +258,10 @@ single module for easy updating:
 Header: `mlir/include/mlir/Dialect/Rock/utility/tritonUtils.h`
 
 If there are any new architecture not handled by our rocmlirTriton functions we should see warnings/errors because the switch would not be handling all cases.
+
+We also carry a **downstream patch** to this file: `triton-patches/patch-wmma-preserve-discardable-attrs.patch`. It adds a `copyDiscardableAttrs()` helper that the accelerate-matmul rewrite patterns call when creating the new (WMMA/MFMA/scaled) dot, so that the `rock.o_transposed` metadata set by `rock-add-triton-metadata` survives onto the rewritten dot. `mlir/lib/Dialect/Rock/Transforms/SetMatmulOutputTranspose.cpp` reads that metadata back via `getDiscardableAttr(rock::OTransposedAttr::getNameStr())`, so dropping the patch silently breaks `rock-set-matmul-output-transpose` (no compile error, just lost output-transpose tuning).
+
+Because this is a downstream patch, the `AccelerateAMDMatmul.cpp.diff` generated in Step 4 will show `copyDiscardableAttrs` and its call sites as *removed* (our patched old tree vs. pristine new upstream) — that is expected and is the signal to **re-apply the patch**, not a deletion to accept. After a bump, confirm `copyDiscardableAttrs` is present in the vendored `AccelerateAMDMatmul.cpp` with a call at every dot-creation site, and that `accelerate-matmul-preserve-rock-metadata*.mlir` / `set-matmul-output-transpose.mlir` still pass.
 
 ### 5.3.1 Kernel Launch Wrapper (from `driver.c`)
 
@@ -296,7 +408,7 @@ When reviewing diffs, **skip changes** related to these features.
 
 On a bump, review the upstream diff and propagate any default/semantic changes:
 
-| Upstream (`compiler.py`)                          | perfConfig field (v2 trailing block)  | Pipeline option                                                |
+| Upstream (`compiler.py`)                          | perfConfig field (v3 trailing block)  | Pipeline option                                                |
 |---------------------------------------------------|---------------------------------------|----------------------------------------------------------------|
 | `knobs.amd.use_async_copy`                        | `useAsyncCopy`                        | `TritonOptions::useAsyncCopy`                                  |
 | `knobs.amd.use_block_pingpong`                    | `useBlockPingpong`                    | `TritonOptions::useBlockPingpong`                              |
@@ -304,7 +416,18 @@ On a bump, review the upstream diff and propagate any default/semantic changes:
 | `knobs.amd.use_buffer_ops`                        | `useBufferOps`                        | `TritonOptions::useBufferOps`                                  |
 | `knobs.amd.use_buffer_atomics`                    | `useBufferAtomics`                    | `TritonOptions::useBufferAtomics`                              |
 | `knobs.amd.buffer_ops_analyze_small_tensor_range` | (not in perfConfig -- debug-only)     | `TritonOptions::bufferOpsAnalyzeSmallTensorRange`              |
-| `HIPOptions.schedule_hint`                        | `scheduleHint`                        | `TritonOptions::scheduleHint` / `BackendOptions::scheduleHint` |
+| `knobs.amd.use_expert_scheduling`                 | (not in perfConfig -- debug-only)     | `BackendOptions::useExpertScheduling` -> `TritonToHsacoOptions::useExpertScheduling` (backend/HSACO stage, not the Triton MLIR pipeline) |
+
+`knobs.amd.use_expert_scheduling` deliberately diverges from upstream Triton's
+implementation at the final LLVM codegen step. Upstream appends
+`"amdgpu-expert-scheduling-mode"` to the `translate_to_asm` flags, and
+`python/src/llvm.cc` applies those flags by mutating LLVM's process-global
+command-line options. `rocmlir-tuning-driver` compiles perf configs in parallel
+worker threads, so `TritonToHsaco.cpp` must instead stamp the LLVM function
+attribute `amdgpu-expert-scheduling-mode=true/false` on every defined function.
+LLVM's AMDGPU backend reads this attribute when no process command-line
+occurrence of the global option exists; do not replace it with the upstream
+global-option path during a Triton bump.
 
 If upstream adds a new `knobs.amd.*` switch around an existing pass we
 already replicate, decide whether it's a *tuner* knob (per-arch defaults
@@ -312,17 +435,17 @@ vary, plausibly affects perf-tunable shapes) or a *debug* knob (universal
 default, no tuning value). For a tuner knob: add a corresponding
 `Option<int>` to `TritonOptions` (use the `kKnobDefault = -1` tri-state
 sentinel), append a matching `int64_t` field to `Rock_GemmParamsAttr` /
-`Rock_GemmGemmParamsAttr` in `RockAttrDefs.td`, extend the `v2` parser in
-`RockDialect.cpp` (and its range validator), and propagate the value
-through `compileUtils.cpp`. For a debug knob: only add the
-`TritonOptions` field (and document it like
+`Rock_GemmGemmParamsAttr` in `RockAttrDefs.td`, bump the perfConfig schema
+to the next `vN` and extend the parser in `RockDialect.cpp` (add a
+`kNumKnobFieldsVN` and keep the previous version readable for back-compat),
+and propagate the value through `compileUtils.cpp`. For a debug knob: only
+add the `TritonOptions` field (and document it like
 `bufferOpsAnalyzeSmallTensorRange`); skip the perfConfig schema entirely.
 
-If upstream adds a new `SchedHint` enum entry, claim a new bit in
-`kScheduleHintBitTable` in `KnobUtils.cpp` and document it in
-the `RockAttrDefs.td` docstring; `expandScheduleHintBitfield` will then
-pick it up automatically. The LLIR-only `memory-bound-attention`
-literal already has its own bit and lives next to the table.
+`HIPOptions.schedule_hint` is intentionally not mirrored: upstream gutted
+it (the field is now a no-op default `''`, and the TTGIR/LLIR sched-hint
+passes plus the `memory-bound-attention -> amdgpu-sched-strategy=iterative-ilp`
+mapping were all removed).
 
 ## Step 9: Handling Pass Interface Changes
 
@@ -360,6 +483,14 @@ Upstream occasionally adds new required CMake variables or download hooks to
 Because we embed Triton via
 `add_subdirectory` in `cmake/triton.cmake`, but Triton does it through `setup.py`, any change must be wired up on our side or the build will fail or start downloading things unnecessarily.
 
+In particular, when `external/triton/CMakeLists.txt` or
+`external/triton/python/build_helpers.py` changes, check whether
+`cmake/triton.cmake` needs matching cache options or path fixes. New
+`TRITON_BUILD_*` options should be explicitly set when we rely on disabling
+optional Triton components, and generated third-party CMake cache variables
+must not leave Triton's `find_package(MLIR)` pointed at a prebuilt LLVM/MLIR
+layout instead of rocmlirTriton's in-tree build.
+
 ## Step 11: Run Tests
 
 ```bash
@@ -377,6 +508,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `third_party/amd/python/triton_amd.cc`
 - [ ] Generate diff for `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp`
 - [ ] Generate diff for `third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h`
+- [ ] Generate diff for `CMakeLists.txt` and `python/build_helpers.py`, then update `cmake/triton.cmake` for any new build options, downloads, or generated cache variables
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/TritonAttrDefs.td` and reconcile the mirrored `CacheModifier` enum (see section 5.4)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
@@ -442,7 +574,6 @@ If new Triton headers are needed:
 | HSACO translation | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
 | Architecture database | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
 | Triton utility replicas | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
-| `schedule_hint` parser | `mlir/lib/Dialect/Rock/utility/KnobUtils.cpp` |
 | Mirrored `CacheModifier` enum | `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` |
 | Triton `CacheModifier` source | `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` |
 | Triton compiler.py | `external/triton/third_party/amd/backend/compiler.py` |

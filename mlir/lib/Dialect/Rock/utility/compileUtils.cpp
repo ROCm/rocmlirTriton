@@ -195,12 +195,10 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
   tritonOpts.useInThreadTranspose = params.getUseInThreadTranspose();
   tritonOpts.useBufferOps = params.getUseBufferOps();
   tritonOpts.useBufferAtomics = params.getUseBufferAtomics();
-  tritonOpts.scheduleHint = params.getScheduleHint();
 
   backendOpts.numWarps = params.getNumWaves();
   backendOpts.numCTAs = params.getNumCTAs();
   backendOpts.wavesPerEU = params.getWavesPerEU();
-  backendOpts.scheduleHint = params.getScheduleHint();
   return success();
 }
 

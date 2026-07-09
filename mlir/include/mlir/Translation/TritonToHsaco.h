@@ -14,6 +14,7 @@
 #ifndef MLIR_TRANSLATION_TRITONTOHSACO_H
 #define MLIR_TRANSLATION_TRITONTOHSACO_H
 
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallVector.h"
@@ -37,10 +38,8 @@ struct TritonToHsacoOptions {
   bool enableFpFusion = true;
   bool allowFlushDenorm = true;
   bool scalarizePackedFops = false; // Scalarize packed float ops
-  // Scheduling hint ordinal (-1=arch default, 0=none, 1=attention,
-  // 2=memory-bound-attention). See KnobUtils.h for the encoding.
-  int64_t scheduleHint = -1;
   std::string llvmFnAttrs;
+  int useExpertScheduling = kKnobDefault;
   std::vector<std::string> externLibPaths; // Paths to external device libraries
                                            // (ocml.bc, ockl.bc, etc.)
 };

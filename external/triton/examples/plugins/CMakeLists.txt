@@ -14,6 +14,12 @@ set(TritonPluginsTestLib_SOURCES
     TritonPlugin.cpp
     )
 
+if(WIN32)
+  set(TRITON_EXAMPLE_PLUGIN_LINK_LIBS MLIRPass)
+else()
+  set(TRITON_EXAMPLE_PLUGIN_LINK_LIBS triton)
+endif()
+
 # Dialect Plugins
 add_subdirectory(DialectPlugins)
 
@@ -26,7 +32,7 @@ foreach( plugin ${TRITON_PLUGIN_PASSES} )
       TritonCanonicalizeIncGen
       TritonPluginsIncGen
     )
-    target_link_libraries(${plugin} PRIVATE triton)
+    target_link_libraries(${plugin} PRIVATE ${TRITON_EXAMPLE_PLUGIN_LINK_LIBS})
 
     # CMAKE_LIBRARY_OUTPUT_DIRECTORY is only set during the Python
     # build. It is empty if building directly from the root
@@ -39,5 +45,8 @@ foreach( plugin ${TRITON_PLUGIN_PASSES} )
       "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/../plugins")
     endif(DEFINED CMAKE_LIBRARY_OUTPUT_DIRECTORY)
 
-    target_compile_options(${plugin} PRIVATE -fvisibility=hidden ${TRITON_DISABLE_EH_RTTI_FLAGS})
+    if(NOT MSVC)
+        target_compile_options(${plugin} PRIVATE -fvisibility=hidden)
+    endif()
+    target_compile_options(${plugin} PRIVATE ${TRITON_DISABLE_EH_RTTI_FLAGS})
 endforeach()

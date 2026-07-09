@@ -37,6 +37,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/Any.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -75,7 +76,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/TargetParser/TargetParser.h"
+#include "llvm/TargetParser/AMDGPUTargetParser.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
@@ -119,10 +120,11 @@ namespace {
 ///
 /// The default `llvm::DiagnosticHandler` (installed by `LLVMContextImpl`)
 /// is a no-op stub whose `handleDiagnostics` returns `false`, causing
-/// `LLVMContext::diagnose` to fall through to its built-in stderr printer
-/// (and `exit(1)` for `DS_Error`). Returning `false` here preserves that
-/// exact behaviour for every diagnostic that doesn't match the predicate
-/// below, so non-matching errors, remarks, and warnings are unaffected.
+/// `LLVMContext::diagnose` to fall through to its built-in stderr printer.
+/// For a `DS_Error` diagnostic, `diagnose` records `HasErrors` on the
+/// handler (it no longer aborts the process); the caller is responsible for
+/// inspecting that flag and failing. Returning `false` here preserves that
+/// built-in behaviour for every diagnostic that doesn't match the predicate
 class SuppressWarningHandler : public llvm::DiagnosticHandler {
 public:
   bool handleDiagnostics(const llvm::DiagnosticInfo &diag) override {
@@ -222,11 +224,16 @@ void setABIVersion(llvm::Module &module, int version) {
                        version);
 }
 
+/// Mirrors upstream compiler.py `is_coexec_scheduler_supported(arch)`.
+static bool isCoexecSchedulerSupported(llvm::StringRef arch) {
+  return arch.starts_with("gfx1250");
+}
+
 /// Set kernel function attributes
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
                          int numCTAs, bool allowFlushDenorm, bool enableAsan,
-                         int64_t scheduleHint, StringRef llvmFnAttrs) {
+                         bool enableExpertScheduling, StringRef llvmFnAttrs) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
@@ -246,32 +253,35 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   kernelFn->addFnAttr("amdgpu-flat-work-group-size",
                       "1," + std::to_string(totalThreads));
 
-  // memory-bound-attention schedule hint enables iterative-ilp scheduler.
-  // Mirror upstream compiler.py, function make_llir():
-  //   if "memory-bound-attention" in options.schedule_hint.split(','):
-  //       kernel_fn.add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
-  // `scheduleHint` is a stable bitfield (see KnobUtils.h);
-  // multiple hint bits can be set simultaneously, so we test the
-  // memory-bound-attention bit instead of comparing for equality.
-  //
-  // TODO(roctriton): Set scheduleHint in ToBlockwise? or somewhere else?
-  // Or should we just tune it?
-  if (!rock::isValidScheduleHintBitfield(scheduleHint)) {
-    llvm::errs() << "ignoring invalid scheduleHint bitfield " << scheduleHint
-                 << " in TritonToHsaco. Update kScheduleHintBitTable in "
-                    "KnobUtils.cpp if a new variant was added "
-                    "upstream.\n";
-  } else if (scheduleHint != rock::kKnobDefault &&
-             (scheduleHint & rock::kScheduleHintMemoryBoundAttention)) {
-    kernelFn->addFnAttr("amdgpu-sched-strategy", "iterative-ilp");
-  }
-
   kernelFn->addFnAttr("uniform-work-group-size", "true");
 
   if (wavesPerEU > 0) {
     std::string wavesStr =
         std::to_string(wavesPerEU) + ", " + std::to_string(wavesPerEU);
     kernelFn->addFnAttr("amdgpu-waves-per-eu", wavesStr);
+  }
+
+  // gfx1250 coexec scheduler hint. Mirrors upstream compiler.py make_llir():
+  //   if is_coexec_scheduler_supported(options.arch) and options.num_warps <=
+  //   4:
+  //       kernel_fn.add_fn_attr("amdgpu-sched-strategy", "coexec")
+  // Added after waves-per-eu, matching upstream order.
+  if (isCoexecSchedulerSupported(archStr) && numWarps <= 4) {
+    kernelFn->addFnAttr("amdgpu-sched-strategy", "coexec");
+  }
+
+  // Deliberate divergence from upstream Triton: compiler.py passes
+  // "amdgpu-expert-scheduling-mode" as a translate_to_asm flag, which the
+  // Python llvm.cc binding applies by mutating LLVM's process-global cl::opt.
+  // rocmlir-tuning-driver compiles configs concurrently in one process, so
+  // stamp the backend's per-function attribute on every defined function
+  // instead. This keeps upstream's "all functions" behavior without touching
+  // process-global state. SIInsertWaitcnts reads this attribute when the global
+  // option was not set on the process command line.
+  for (llvm::Function &fn : module) {
+    if (!fn.isDeclaration())
+      fn.addFnAttr("amdgpu-expert-scheduling-mode",
+                   enableExpertScheduling ? "true" : "false");
   }
 
   std::string denormalMode = allowFlushDenorm ? "preserve-sign" : "ieee";
@@ -283,7 +293,7 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   // override causes LLVM's per-function subtarget lookup to key off a bare
   // `"target-features"=""` attribute and silently *ignore* the TM-level
   // `-mattr` we later set on `tmAsm` in `make_amdgcn` (which is where
-  // `-real-true16` is added for gfx11 fp8 kernels). Upstream Triton only
+  // `-real-true16` is added for gfx11 kernels). Upstream Triton only
   // touches `target-features` in the asan path (see
   // `add_fn_target_feature("+xnack")` in compiler.py).
   if (enableAsan) {
@@ -408,7 +418,18 @@ void optimizeModule(llvm::Module &module, llvm::TargetMachine *tm,
   tuningOptions.LoopVectorization = true;
   tuningOptions.SLPVectorization = true;
 
-  llvm::PassBuilder pb(tm, tuningOptions);
+  // Disable the VectorCombine pass. Mirrors upstream compiler.py make_llir(),
+  // which now calls `llvm.optimize_module(..., disable_vector_combine=True)`;
+  // in llvm.cc that registers a should-run callback skipping VectorCombinePass.
+  // VectorCombinePass::name() returns the C++ class name, not the registry
+  // name "vector-combine".
+  llvm::PassInstrumentationCallbacks pic;
+  pic.registerShouldRunOptionalPassCallback(
+      [](llvm::StringRef passName, llvm::Any) {
+        return passName != "VectorCombinePass";
+      });
+
+  llvm::PassBuilder pb(tm, tuningOptions, /*PGOOpt=*/std::nullopt, &pic);
 
   pb.registerModuleAnalyses(mam);
   pb.registerCGSCCAnalyses(cgam);
@@ -533,8 +554,7 @@ std::optional<SmallVector<char, 0>> assembleAMDGCN(StringRef assembly,
   std::unique_ptr<llvm::MCSubtargetInfo> sti(
       target->createMCSubtargetInfo(triple, archStr, features));
 
-  llvm::MCContext ctx(triple, mai.get(), mri.get(), sti.get(), &srcMgr,
-                      &mcOptions);
+  llvm::MCContext ctx(triple, *mai, *mri, *sti, &srcMgr);
   std::unique_ptr<llvm::MCObjectFileInfo> mofi(
       target->createMCObjectFileInfo(ctx, /*PIC=*/false,
                                      /*LargeCodeModel=*/false));
@@ -559,7 +579,7 @@ std::optional<SmallVector<char, 0>> assembleAMDGCN(StringRef assembly,
   std::unique_ptr<llvm::MCAsmParser> parser(
       createMCAsmParser(srcMgr, ctx, *mcStreamer, *mai));
   std::unique_ptr<llvm::MCTargetAsmParser> tap(
-      target->createMCAsmParser(*sti, *parser, *mcii, mcOptions));
+      target->createMCAsmParser(*sti, *parser, *mcii));
   if (!tap) {
     llvm::errs() << "Assembler initialization error\n";
     return std::nullopt;
@@ -668,30 +688,18 @@ std::optional<SmallVector<char, 0>> makeHSACO(StringRef amdgcnAsm,
   return linkHSACO(*objectCode);
 }
 
-// Detect whether any kernel argument points to an fp8 (8-bit float) element
-// type. Mirrors the `'f8E' in str(mod)` guard in Triton's compiler.py
-// make_llir() (triton-lang/triton PR #10400). We deliberately do not check for
-// fp4 (`f4E2M1FN`) as there is no fp4 type left to detect at this stage.
-// Regardless of how fp4 is used (scaled `quant_dot`, a plain `dot`, or even
-// elementwise ops) Rock's narrow-type legalization rewrites
-// `f4E2M1FN -> i4 -> packed i8` during the kernel pipeline well before the
-// Triton lowering.
-static bool usesFp8KernelArg(ModuleOp module) {
-  bool found = false;
-  module.walk([&](LLVM::LLVMFuncOp funcOp) {
-    for (unsigned i = 0, e = funcOp.getNumArguments(); i < e; ++i) {
-      auto pointeeTy = funcOp.getArgAttrOfType<TypeAttr>(i, "tt.pointee_type");
-      if (!pointeeTy)
-        continue;
-      Type elemTy = pointeeTy.getValue();
-      if (isa<FloatType>(elemTy) && elemTy.getIntOrFloatBitWidth() == 8) {
-        found = true;
-        return WalkResult::interrupt();
-      }
-    }
-    return WalkResult::advance();
-  });
-  return found;
+/// Mirrors upstream compiler.py `is_expert_scheduling_enabled(arch)`. gfx1250
+/// is the only arch with AMDGPU expert-scheduling codegen support. Upstream
+/// enables it there by default but honors the optional
+/// `knobs.amd.use_expert_scheduling` (env `TRITON_HIP_USE_EXPERT_SCHEDULING`)
+/// override
+static bool isExpertSchedulingEnabled(llvm::StringRef arch,
+                                      int useExpertScheduling) {
+  if (!arch.starts_with("gfx1250"))
+    return false;
+  if (useExpertScheduling == mlir::rock::kKnobDefault)
+    return true;
+  return useExpertScheduling != 0;
 }
 
 } // namespace
@@ -732,9 +740,12 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   std::string features = options.features;
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
 
-  auto [isaFamily, _] = rock::getArch(arch);
-  bool disableTrue16 =
-      isaFamily == triton::amdgpu::ISAFamily::RDNA3 && usesFp8KernelArg(module);
+  // Upstream compiler.py disable_real_true16_feature() passes `-real-true16`
+  // for every gfx11 (RDNA3 / RDNA3.5) kernel, unconditionally, in both
+  // make_amdgcn and make_hsaco. It is no longer gated on fp8 operand usage.
+  bool disableTrue16 = arch.starts_with("gfx11");
+  bool enableExpertScheduling =
+      isExpertSchedulingEnabled(arch, options.useExpertScheduling);
 
   auto triple = llvm::Triple(options.triple);
   // Set target triple and data layout (attach_target_triple in compiler.py)
@@ -778,10 +789,10 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
                << " vs options.numCTAs=" << options.numCTAs << "\n");
   }
 
-  // Set kernel attributes (including schedule_hint for memory-bound-attention)
+  // Set kernel attributes
   setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
                       numCTAs, options.allowFlushDenorm, enableAsan,
-                      options.scheduleHint, options.llvmFnAttrs);
+                      enableExpertScheduling, options.llvmFnAttrs);
 
   // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
   // compiler.py lines 412-423
@@ -890,6 +901,16 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     return failure();
   }
 
+  // LLVMContext::diagnose no longer aborts on a DS_Error diagnostic; it only
+  // records DiagnosticHandler::HasErrors and prints the message. Backend
+  // errors such as the AMDGPU RegisterAllocator out-of-registers error surface
+  // this way during code generation, so propagate them as a failure instead of
+  // emitting a binary for a kernel that the backend rejected.
+  if (llvmContext.getDiagHandlerPtr()->HasErrors) {
+    llvm::errs() << "LLVM backend reported errors during code generation\n";
+    return failure();
+  }
+
   // make_amdgcn (compiler.py)
   if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_DUMP")) {
     std::string envVal(dumpEnv);
@@ -971,8 +992,8 @@ public:
     options.enableFpFusion = enableFpFusion.getValue();
     options.allowFlushDenorm = allowFlushDenorm.getValue();
     options.scalarizePackedFops = scalarizePackedFops.getValue();
-    options.scheduleHint = scheduleHint.getValue();
     options.llvmFnAttrs = llvmFnAttrs.getValue();
+    options.useExpertScheduling = useExpertScheduling.getValue();
 
     // Call the translation
     auto hsacoOrErr = translateTritonToHsaco(module, options);
