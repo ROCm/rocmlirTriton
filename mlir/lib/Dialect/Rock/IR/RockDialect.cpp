@@ -1133,7 +1133,8 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
 
 template <typename StoreOpT>
 static LogicalResult verifyStoreDest(StoreOpT op) {
-  FailureOr<BlockArgument> maybeBlockArg = rock::findBlockArgument(op.getDest());
+  FailureOr<BlockArgument> maybeBlockArg =
+      rock::findBlockArgument(op.getDest());
   func::FuncOp funcOp = op->template getParentOfType<func::FuncOp>();
   if (failed(maybeBlockArg) || !funcOp ||
       maybeBlockArg->getOwner() != &funcOp.getBody().front()) {
