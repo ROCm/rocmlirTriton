@@ -90,7 +90,8 @@ static void lowerBlockwiseStore(BlockwiseStoreOp op) {
 
   op.getResult().replaceAllUsesWith(op.getResultAliasOrDest());
 
-  auto transformsToPtrOp = TransformsToPtrOp::create(b, loc, dest, extraIndices);
+  auto transformsToPtrOp =
+      TransformsToPtrOp::create(b, loc, dest, extraIndices);
   Value pointerTensor = transformsToPtrOp.getPointers();
   Value maskTensor = transformsToPtrOp.getMask();
   BlockwiseStorePtrOp::create(b, loc, pointerTensor, maskTensor, source,
