@@ -8,7 +8,6 @@ add_rocmlir_dialect_library(MLIRRockOps
   RockGemmGemmWrapperInterface.cpp
   RockConvInterface.cpp
   RockTuningParamAttrInterface.cpp
-  RockAcceptingViewOpInterface.cpp
   RockWriterOpInterface.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -19,7 +18,6 @@ add_rocmlir_dialect_library(MLIRRockOps
   MLIRRockGemmWrapperInterfaceIncGen
   MLIRRockGemmGemmWrapperInterfaceIncGen
   MLIRRockTuningParamAttrInterfaceIncGen
-  MLIRRockAcceptingViewOpInterfaceIncGen
   MLIRRockWriterOpInterfaceIncGen
   MLIRRockOpsIncGen
   )

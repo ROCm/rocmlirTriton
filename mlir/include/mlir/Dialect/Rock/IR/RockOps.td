@@ -17,7 +17,6 @@ include "mlir/Dialect/Rock/IR/RockAttrDefs.td"
 include "mlir/Dialect/Rock/IR/RockConvInterface.td"
 include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.td"
 include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.td"
-include "mlir/Dialect/Rock/IR/RockAcceptingViewOpInterface.td"
 include "mlir/Dialect/Rock/IR/RockWriterOpInterface.td"
 include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -722,8 +721,7 @@ def Rock_BlockwiseLoadPtrOp
 // blockwise_store
 def Rock_BlockwiseStoreOp
     : Rock_Op<"blockwise_store",
-              [Pure, DeclareOpInterfaceMethods<RockAcceptingViewOpInterface>,
-               DeclareOpInterfaceMethods<RockWriterOpInterface>,
+              [Pure, DeclareOpInterfaceMethods<RockWriterOpInterface>,
                AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Arg<TensorOf<NativeMemoryOpTypes>, "destination view">:$dest,
