@@ -427,6 +427,16 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // lower-blockwise-to-ptr (which lowers it away).
   addWithDCE(rock::createRockAddTritonMetadataPass());
 
+  // Legalize math ops on narrow floats before they are converted to integer
+  // storage types. LLVM math intrinsics do not accept fp8/fp4 operands.
+  {
+    math::MathExtendToSupportedTypesOptions extendToLLVMTypesOptions;
+    extendToLLVMTypesOptions.extraTypeStrs = {"f16"};
+    extendToLLVMTypesOptions.targetTypeStr = "f32";
+    addWithDCE(
+        math::createMathExtendToSupportedTypes(extendToLLVMTypesOptions));
+  }
+
   // We run this pass after lower-stores to catch redundant casts that cannot be
   // flagged earlier due to loads/stores that sit between truncf/extf pairs.
   if (!options.disableFastMath)
