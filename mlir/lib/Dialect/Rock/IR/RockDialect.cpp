@@ -49,7 +49,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -1581,35 +1580,6 @@ LogicalResult BlockwiseLoadPtrOp::verify() {
 //===-----------------------------------------------------===//
 // BlockwiseStoreOp
 //===-----------------------------------------------------===//
-
-SmallPtrSet<OpOperand *, 2> BlockwiseStoreOp::getAcceptingViewOperands() {
-  auto operands = getOperation()->getOpOperands();
-  return {operands.begin() + 1};
-}
-
-std::optional<OperandRange>
-BlockwiseStoreOp::getExtraIndices(OpOperand &operand) {
-  if (!getAcceptingViewOperands().contains(&operand)) {
-    return std::nullopt;
-  }
-  // Only one operand supports view
-  return getExtraIndices();
-}
-
-Operation *
-BlockwiseStoreOp::cloneWithExtraIndices(OpBuilder &builder, OpOperand &operand,
-                                        Value view,
-                                        ArrayRef<Value> newExtraIndices) {
-  if (!getAcceptingViewOperands().contains(&operand)) {
-    return getOperation();
-  }
-
-  // Only one operand supports view
-  auto newOp = BlockwiseStoreOp::create(
-      builder, getLoc(), getResult().getType(), getSource(), view,
-      newExtraIndices, getStoreMethod());
-  return newOp.getOperation();
-}
 
 LogicalResult BlockwiseStoreOp::verify() {
   auto sourceType = cast<RankedTensorType>(getSource().getType());
