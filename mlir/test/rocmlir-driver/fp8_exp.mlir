@@ -1,4 +1,7 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel --arch %arch | rocmlir-driver -c --arch %arch -o /dev/null --mlir-print-ir-after=math-extend-to-supported-types > %t 2>&1 && FileCheck %s < %t
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel --arch %arch \
+// RUN:   | rocmlir-driver -c --arch %arch -o /dev/null --mlir-print-ir-after=math-extend-to-supported-types 2>&1 \
+// RUN:   | FileCheck %s
 
 // Regression test for fp8 math fusion lowering. The kernel pipeline must
 // promote fp8 math operands before fp8 tensors are legalized to integer storage
