@@ -1818,8 +1818,20 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
                              "number of extra indices exceeds source rank");
   auto shape =
       sourceType.getShape().take_back(sourceType.getRank() - numExtraIndices);
+
+  // Choose the offset element width. If evaluating the transform chain that
+  // feeds this op could overflow a signed 32-bit integer (large padded index
+  // domains) or the underlying buffer exceeds the 32-bit byte range, the
+  // pointer offset must be computed in 64 bits. Otherwise 32-bit offsets are
+  // sufficient (and cheaper, and keep buffer-op eligibility downstream).
+  SmallVector<TransformMapAttr> transforms;
+  bool needs64Bit;
+  std::tie(std::ignore, needs64Bit) =
+      untransform(adaptor.getSource(), transforms);
+  unsigned offsetWidth = needs64Bit ? 64 : 32;
+
   inferredReturnTypes.push_back(
-      RankedTensorType::get(shape, IntegerType::get(context, 32)));
+      RankedTensorType::get(shape, IntegerType::get(context, offsetWidth)));
   inferredReturnTypes.push_back(
       RankedTensorType::get(shape, IntegerType::get(context, 1)));
   return success();

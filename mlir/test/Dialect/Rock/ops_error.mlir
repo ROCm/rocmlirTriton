@@ -675,7 +675,7 @@ func.func @store_result_multiple_uses(
 
 // Source is not i32
 func.func @cast_to_ptr_src_not_i32(%src: tensor<64x64xf32>) -> tensor<64x64x!tt.ptr<f16>> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %0 = rock.cast_to_ptr %src : tensor<64x64xf32> -> tensor<64x64x!tt.ptr<f16>>
   return %0 : tensor<64x64x!tt.ptr<f16>>
 }
@@ -704,6 +704,15 @@ func.func @extract_ptr_not_block_arg(%src: tensor<64x64xf32>) -> i32 attributes 
   // expected-error @+1 {{source must be a block argument}}
   %0 = rock.extract_ptr %cst : tensor<64x64xf32> -> i32
   return %0 : i32
+}
+
+// -----
+
+// Result must be an i32 or i64 placeholder
+func.func @extract_ptr_bad_result_type(%src: tensor<64x64xf32>) -> i16 attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result #0 must be 32-bit signless integer or 64-bit signless integer}}
+  %0 = rock.extract_ptr %src : tensor<64x64xf32> -> i16
+  return %0 : i16
 }
 
 // =============================================================================
@@ -744,7 +753,7 @@ func.func @blockwise_reduce_elem_type_mismatch(%input: tensor<64x64xf32>) -> ten
 
 // Pointers element type not i32
 func.func @transforms_to_ptr_ptr_not_i32(%src: tensor<64x64xf32>) -> (tensor<64x64xf16>, tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{result #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %ptrs, %mask = rock.transforms_to_ptr %src : tensor<64x64xf32> -> tensor<64x64xf16>, tensor<64x64xi1>
   return %ptrs, %mask : tensor<64x64xf16>, tensor<64x64xi1>
 }
@@ -936,7 +945,7 @@ func.func @blockwise_load_cache_modifier_wt(
 // Pointer tensor element type not i32
 func.func @blockwise_load_ptr_ptr_not_i32(
     %ptrs: tensor<64x64xf32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
@@ -980,7 +989,7 @@ func.func @blockwise_load_ptr_cache_modifier_wt(
 // Pointer tensor element type not i32
 func.func @blockwise_store_ptr_ptr_not_i32(
     %src: tensor<64x64xf32>, %ptrs: tensor<64x64xf16>, %mask: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
     : tensor<64x64xf32> -> tensor<64x64xf16>(tensor<64x64xi1>)
   return

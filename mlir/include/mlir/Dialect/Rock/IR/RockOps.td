@@ -694,7 +694,7 @@ def Rock_BlockwiseLoadOp
 def Rock_BlockwiseLoadPtrOp
     : Rock_Op<"blockwise_load_ptr", [AllShapesMatch<["pointerTensor",
                                                      "maskTensor", "result"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32]>,
+      Arguments<(ins Arg<RankedTensorOf<[I32, I64]>,
                          "Pointer tensor", [MemRead]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           CacheModifierAttr:$cacheModifier)>,
@@ -762,7 +762,7 @@ def Rock_BlockwiseStoreOp
 def Rock_BlockwiseStorePtrOp
     : Rock_Op<"blockwise_store_ptr",
               [AllShapesMatch<["pointerTensor", "maskTensor", "source"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32]>,
+      Arguments<(ins Arg<RankedTensorOf<[I32, I64]>,
                          "Pointer tensor", [MemWrite]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
@@ -784,7 +784,7 @@ def Rock_TransformsToPtrOp
                                         InferTypeOpInterface>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Variadic<I32>:$extraIndices)>,
-      Results<(outs RankedTensorOf<[I32]>:$pointers,
+      Results<(outs RankedTensorOf<[I32, I64]>:$pointers,
           RankedTensorOf<[I1]>:$mask)> {
   let summary = "Convert transforms to pointer and mask tensors";
 
@@ -827,7 +827,7 @@ def Rock_CastToPtrOp
     Casts a tensor to a pointer tensor representation.
   }];
 
-  let arguments = (ins RankedTensorOf<[I32]>:$src);
+  let arguments = (ins RankedTensorOf<[I32, I64]>:$src);
 
   let results = (outs AnyRankedTensor:$result);
 
@@ -835,23 +835,20 @@ def Rock_CastToPtrOp
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
 }
 
-def Rock_ExtractPtrOp
-    : Rock_Op<"extract_ptr", [Pure, DeclareOpInterfaceMethods<
-                                        InferTypeOpInterface>]> {
-  let summary = "Extract a pointer from a tensor as an i32";
+def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {
+  let summary = "Extract a pointer from a tensor as an i32 or i64 placeholder";
 
   let description = [{
     The `rock.extract_ptr` op extracts the base pointer from a tensor and
-    returns it as an i32. This operation is used to obtain the memory address
-    of tensor data for pointer arithmetic computations.
-
-    Please note that this op is only used as a glue between
-    tensor inputs (rock IR) and pointer inputs (triton IR).
+    returns it as an i32 or i64 placeholder for the real !tt.ptr. Its width is
+    chosen to match the offset arithmetic it feeds (i64 when 64-bit indexing is
+    required) so the base+offset add type-checks; RockTensorToTritonPtr later
+    replaces it with the actual !tt.ptr kernel argument.
   }];
 
   let arguments = (ins AnyRankedTensor:$source);
 
-  let results = (outs I32:$result);
+  let results = (outs AnyTypeOf<[I32, I64]>:$result);
 
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";

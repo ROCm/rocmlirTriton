@@ -42,6 +42,31 @@ func.func @test_addi_to_addptr(%arg0: tensor<4096xf16>) attributes {rock.arch = 
 
 // -----
 
+// Verifies the i64 pointer-offset path (large/padded index domains): the base is
+// extracted directly as i64, its splat is retyped to !tt.ptr, and the i64 offset
+// flows straight into tt.addptr with no base-widening extension needed.
+// CHECK-LABEL: tt.func @test_addi_to_addptr_i64
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>)
+//      CHECK:   %[[SPLAT:.*]] = tt.splat %[[ARG0]] : !tt.ptr<f16> -> tensor<64x!tt.ptr<f16>>
+//      CHECK:   %[[RANGE:.*]] = tt.make_range
+//      CHECK:   %[[OFFSET:.*]] = arith.extsi %[[RANGE]] : tensor<64xi32> to tensor<64xi64>
+//      CHECK:   tt.addptr %[[SPLAT]], %[[OFFSET]] : tensor<64x!tt.ptr<f16>>, tensor<64xi64>
+//  CHECK-NOT:   rock.extract_ptr
+//  CHECK-NOT:   rock.cast_to_ptr
+func.func @test_addi_to_addptr_i64(%arg0: tensor<4096xf16>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i64
+  %1 = tt.splat %0 : i64 -> tensor<64xi64>
+  %offset = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+  %offset64 = arith.extsi %offset : tensor<64xi32> to tensor<64xi64>
+  %2 = arith.addi %1, %offset64 : tensor<64xi64>
+  %3 = rock.cast_to_ptr %2 : tensor<64xi64> -> tensor<64x!tt.ptr<f16>>
+  %4 = tt.load %3, %cst_mask : tensor<64x!tt.ptr<f16>>
+  return
+}
+
+// -----
+
 // Verifies multiple pointer arguments are all converted
 // CHECK-LABEL: tt.func @test_multiple_args
 // CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>, %[[ARG1:.*]]: !tt.ptr<f16>, %[[ARG2:.*]]: !tt.ptr<f32>)
