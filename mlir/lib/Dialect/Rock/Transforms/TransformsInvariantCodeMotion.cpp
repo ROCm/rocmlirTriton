@@ -556,10 +556,12 @@ static Value cloneSliceBeforeLoop(OpBuilder &b, Value v, scf::ForOp loop,
   return map.lookup(v);
 }
 
-/// Create a constant i32 tensor of shape `tt`, every element equal to `v`.
-static Value splatI32(OpBuilder &b, Location loc, RankedTensorType tt,
-                      int64_t v) {
-  Value s = arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(v));
+/// Create a constant tensor of shape/element-type `tt`, every element equal to
+/// `v`.
+static Value splatConst(OpBuilder &b, Location loc, RankedTensorType tt,
+                        int64_t v) {
+  Value s = arith::ConstantOp::create(b, loc,
+                                      b.getIntegerAttr(tt.getElementType(), v));
   return triton::SplatOp::create(b, loc, tt, s);
 }
 
@@ -589,38 +591,38 @@ emitFullTileCarry(OpBuilder &b, Location loc, ArrayRef<Value> suffix,
   auto tt = cast<RankedTensorType>(suffix[0].getType());
   FullTileCarry out;
   out.nextSuffix.resize(suffix.size());
-  Value carry; // full-tile i32; null == no incoming carry
-  Value delta; // full-tile i32; null == 0
+  Value carry; // full-tile; null == no incoming carry
+  Value delta; // full-tile; null == 0
   for (int j = static_cast<int>(suffix.size()) - 1; j >= 0; --j) {
     Value v = arith::AddIOp::create(b, loc, suffix[j],
-                                    splatI32(b, loc, tt, steps[j]));
+                                    splatConst(b, loc, tt, steps[j]));
     if (carry)
       v = arith::AddIOp::create(b, loc, v, carry);
     // A suffix coordinate is the global top only when no prefix coordinate was
     // dropped above it; the loop bound keeps the global top from wrapping.
     if (j > 0 || hasPrefix) {
-      Value size = splatI32(b, loc, tt, sizes[j]);
+      Value size = splatConst(b, loc, tt, sizes[j]);
       Value ge =
           arith::CmpIOp::create(b, loc, arith::CmpIPredicate::uge, v, size);
       Value vsub = arith::SubIOp::create(b, loc, v, size);
       v = arith::SelectOp::create(b, loc, ge, vsub, v);
-      carry = arith::SelectOp::create(b, loc, ge, splatI32(b, loc, tt, 1),
-                                      splatI32(b, loc, tt, 0));
+      carry = arith::SelectOp::create(b, loc, ge, splatConst(b, loc, tt, 1),
+                                      splatConst(b, loc, tt, 0));
     } else {
       carry = Value();
     }
     out.nextSuffix[j] = v;
     Value dCoord = arith::SubIOp::create(b, loc, v, suffix[j]);
-    Value term =
-        arith::MulIOp::create(b, loc, dCoord, splatI32(b, loc, tt, strides[j]));
+    Value term = arith::MulIOp::create(b, loc, dCoord,
+                                       splatConst(b, loc, tt, strides[j]));
     delta = delta ? arith::AddIOp::create(b, loc, delta, term) : term;
   }
   if (hasPrefix) {
-    Value dPrefix = splatI32(b, loc, tt, prefixStep);
+    Value dPrefix = splatConst(b, loc, tt, prefixStep);
     if (carry)
       dPrefix = arith::AddIOp::create(b, loc, dPrefix, carry);
     Value term = arith::MulIOp::create(b, loc, dPrefix,
-                                       splatI32(b, loc, tt, prefixStride));
+                                       splatConst(b, loc, tt, prefixStride));
     delta = delta ? arith::AddIOp::create(b, loc, delta, term) : term;
   }
   out.offsetDelta = delta;
@@ -920,8 +922,8 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
          ArrayRef<unsigned>(cand.coordPositions).take_back(suffixCount))
       r.carriedInits.push_back(
           broadcastToShape(b, loc, (*iter0)[pos], outShape));
-    auto offTy = RankedTensorType::get(outShape, b.getI32Type());
-    r.offsetAccInit = splatI32(b, loc, offTy, 0);
+    auto offTy = RankedTensorType::get(outShape, ptrType.getElementType());
+    r.offsetAccInit = splatConst(b, loc, offTy, 0);
     reduced.push_back(std::move(r));
   }
   return reduced;
@@ -947,7 +949,8 @@ static Value buildCarryMask(OpBuilder &b, Location loc, const Reduced &r,
   for (auto [k, pos] : llvm::enumerate(suffixPos))
     coords[pos] = newLoop.getRegionIterArg(r.iterArgStart + k);
   FailureOr<OffsetAndMask> om = expandCoordsToOffsetAndMask(
-      b, loc, r.belowMaps, coords, r.ptrType.getShape(), /*computeOffset=*/false);
+      b, loc, r.belowMaps, coords, r.ptrType.getShape(),
+      /*computeOffset=*/false);
   assert(succeeded(om) && "sub-chain mask expansion must succeed");
   return om->mask;
 }

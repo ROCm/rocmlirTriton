@@ -445,13 +445,7 @@ def Rock_ConvKernel : Rock_Attr<"ConvKernel"> {
   let description = [{
     Marker attribute indicating that a kernel function was lowered from a
     convolution (`rock.conv`, `rock.conv_bwd_data`, `rock.conv_bwd_weight`, or
-    `rock.conv_elementwise_gemm`). It is stamped on the kernel function by
-    `rock-conv-to-gemm` before the convolution ops are rewritten into gemms,
-    and is preserved through the func-to-`tt.func` conversion. Later passes use
-    it to restrict convolution-only behaviour (e.g. the loop-carried pointer
-    recurrence and reduction-layout redistribution) without having to
-    re-derive the kernel's convolution origin after the conv ops are gone.
-    Implies `rock.kernel`.
+    `rock.conv_elementwise_gemm`).
   }];
 }
 
