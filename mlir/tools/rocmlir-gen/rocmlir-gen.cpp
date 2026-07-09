@@ -1537,7 +1537,10 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
     // Resolve the block sizes from the *same* op the compiler will tune, so the
     // reference split-KV partition matches the generated kernel exactly.
     rock::AttentionOp attnOp;
-    module.walk([&](rock::AttentionOp op) { attnOp = op; });
+    module.walk([&](rock::AttentionOp op) {
+      assert(!attnOp && "expected exactly one rock.attention op in the module");
+      attnOp = op;
+    });
     assert(attnOp && "split-kv requires a rock.attention op in the module");
     int64_t nPerBlock =
         getMandNPerBlock(
