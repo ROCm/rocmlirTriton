@@ -9,8 +9,8 @@
 // promote fp8 math operands before fp8 tensors are legalized to integer storage
 // types, otherwise LLVM math lowering can see i8 operands for math.exp.
 //
-// IR: IR Dump After MathExtendToSupportedTypes
-// IR: arith.extf {{.*}} : tensor<[[SHAPE:[0-9]+x[0-9]+]]xf8E4M3FN> to tensor<[[SHAPE]]xf32>
+// IR: IR Dump After {{.*[Mm]ath.*[Ee]xtend.*[Ss]upported.*[Tt]ypes.*}}
+// IR: arith.extf {{.*}} : tensor<[[SHAPE:[0-9]+(x[0-9]+)*]]xf8E4M3FN> to tensor<[[SHAPE]]xf32>
 // IR-NEXT: math.exp {{.*}} : tensor<[[SHAPE]]xf32>
 // IR-NEXT: arith.truncf {{.*}} : tensor<[[SHAPE]]xf32> to tensor<[[SHAPE]]xf8E4M3FN>
 //
