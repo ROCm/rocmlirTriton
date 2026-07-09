@@ -94,16 +94,19 @@ static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
   Value baseAddr;
   {
     OpBuilder::InsertionGuard guard(b);
-    bool isConstantBuffer = buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
+    bool isConstantBuffer =
+        buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
     if (isConstantBuffer) {
-      baseAddr = arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(0));
+      baseAddr = arith::ConstantOp::create(
+          b, loc, b.getIntegerAttr(rock::getPtrGlueType(b.getContext()), 0));
     } else {
       auto parentFunc = op->getParentOfType<func::FuncOp>();
       b.setInsertionPointToStart(&parentFunc.front());
       baseAddr = rock::ExtractPtrOp::create(b, loc, buffer);
     }
   }
-  auto splatType = RankedTensorType::get(shape, b.getI32Type());
+  auto splatType =
+      RankedTensorType::get(shape, rock::getPtrGlueType(b.getContext()));
   Value baseAddrSplat = triton::SplatOp::create(b, loc, splatType, baseAddr);
 
   // baseAddr is i32 which might be too narrow in some cases.

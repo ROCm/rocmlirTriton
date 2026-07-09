@@ -64,9 +64,8 @@ Value mlir::rock::makeRange(OpBuilder &b, Location loc, int32_t start,
 
 namespace {
 // Broadcast two tensors to a common shape (unit dims expand to the peer size).
-static std::pair<Value, Value> broadcastTensors(OpBuilder &builder,
-                                                 Location loc, Value lhs,
-                                                 Value rhs) {
+static std::pair<Value, Value>
+broadcastTensors(OpBuilder &builder, Location loc, Value lhs, Value rhs) {
   auto tensorLhsType = cast<RankedTensorType>(lhs.getType());
   auto tensorRhsType = cast<RankedTensorType>(rhs.getType());
   auto lhsShape = tensorLhsType.getShape();
@@ -116,9 +115,8 @@ static Value broadcastScalarToTensor(OpBuilder &builder, Location loc,
   return triton::SplatOp::create(builder, loc, resultType, scalar);
 }
 
-static SmallVector<Value> ensureCompatibleShapes(OpBuilder &builder,
-                                                 Location loc,
-                                                 ValueRange values) {
+static SmallVector<Value>
+ensureCompatibleShapes(OpBuilder &builder, Location loc, ValueRange values) {
   if (values.size() < 2)
     return SmallVector<Value>(values);
 
@@ -150,9 +148,8 @@ static SmallVector<Value> ensureCompatibleShapes(OpBuilder &builder,
 
 // Broadcast two (scalar or tensor) values to a common shape, inserting the
 // needed triton.splat / triton.broadcast ops, and return the rewired pair.
-static std::pair<Value, Value> ensureCompatible(OpBuilder &builder,
-                                                Location loc, Value lhs,
-                                                Value rhs) {
+static std::pair<Value, Value>
+ensureCompatible(OpBuilder &builder, Location loc, Value lhs, Value rhs) {
   auto results = ensureCompatibleShapes(builder, loc, {lhs, rhs});
   return {results[0], results[1]};
 }
@@ -263,15 +260,14 @@ public:
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
     // Operands are non-negative and the divisor positive (see visitModExpr), so
-    // ceildiv(a, b) == (a + b - 1) udiv b. This avoids the signed negative-value
-    // correction `select`, keeping the result analyzable by Triton's
-    // AxisInfoAnalysis so loads can be vectorized.
+    // ceildiv(a, b) == (a + b - 1) udiv b. This avoids the signed
+    // negative-value correction `select`, keeping the result analyzable by
+    // Triton's AxisInfoAnalysis so loads can be vectorized.
     Value oneCst =
         arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(1));
     auto [r, o] = ensureCompatible(builder, loc, rhs, oneCst);
     Value divisorMinusOne = arith::SubIOp::create(builder, loc, r, o);
-    auto [l, dm1] =
-        ensureCompatible(builder, loc, lhs, divisorMinusOne);
+    auto [l, dm1] = ensureCompatible(builder, loc, lhs, divisorMinusOne);
     Value numerator = arith::AddIOp::create(builder, loc, l, dm1);
     auto [num, r2] = ensureCompatible(builder, loc, numerator, rhs);
     return arith::DivUIOp::create(builder, loc, num, r2);
@@ -308,9 +304,10 @@ static Value expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
 }
 } // namespace
 
-FailureOr<SmallVector<Value>>
-mlir::rock::expandAffineMap(OpBuilder &builder, Location loc, AffineMap affineMap,
-                           ValueRange operands) {
+FailureOr<SmallVector<Value>> mlir::rock::expandAffineMap(OpBuilder &builder,
+                                                          Location loc,
+                                                          AffineMap affineMap,
+                                                          ValueRange operands) {
   auto numDims = affineMap.getNumDims();
   // rocMLIR currently uses static strides/shapes, so symbols are always 0.
   assert(affineMap.getNumSymbols() == 0 &&
