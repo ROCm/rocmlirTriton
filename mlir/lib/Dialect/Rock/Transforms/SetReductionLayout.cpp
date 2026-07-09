@@ -277,6 +277,11 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
       BlockArgument arg = forOp.getRegionIterArg(i);
       arg.setType(replacer.replace(arg.getType()));
       Value res = forOp.getResult(i);
+      // Make sure that the results of the loop are not used before updating the
+      // type.
+      assert(res.use_empty() &&
+             "loop-carried reduction-layout slot has post-loop uses; retyping "
+             "its result would corrupt them");
       res.setType(replacer.replace(res.getType()));
     }
   }
