@@ -1143,23 +1143,12 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     Value destBuffer = originalStoreOp.getDest();
     ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
 
-    Value destRoot;
-    ArrayAttr destMaps;
-    std::tie(destRoot, destMaps, std::ignore) =
-        rock::untransform(b, destBuffer);
-
     // Thread only the store result alias through each per-kernel store so the
     // single returned tensor represents all disjoint bwd_data phase writes. The
     // actual destination view stays rooted at the original destination buffer.
+    // If the original store had no explicit alias, the first generated store
+    // starts the SSA chain and later stores alias the previous store result.
     Value currentResultAlias = originalStoreOp.getResultAlias();
-    if (!currentResultAlias && storeResultType == destRoot.getType()) {
-      currentResultAlias = destRoot;
-    } else if (!currentResultAlias && storeResultType == destBuffer.getType()) {
-      currentResultAlias = destBuffer;
-    } else if (!currentResultAlias) {
-      return bwdDataOp.emitOpError(
-          "store result type does not match destination root or view");
-    }
     Value finalStoreResult;
     for (auto [idx, kid] : llvm::enumerate(kernelIds)) {
       auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
@@ -1178,9 +1167,10 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
 
     // BwdData with multiple kernel IDs emits N independent gemm + store pairs,
     // each writing a disjoint slice of the same output buffer. Since
-    // `rock.store` is Pure, each store result must be live; threading
-    // resultAlias through the stores makes the final result represent the full
-    // logical output without exposing per-phase stores in the function ABI.
+    // `rock.store` is Pure, each store result must be live; threading later
+    // stores through the previous store result makes the final result represent
+    // the full logical output without exposing per-phase stores in the function
+    // ABI.
     b.replaceOp(originalStoreOp, finalStoreResult);
     b.eraseOp(bwdDataOp);
 

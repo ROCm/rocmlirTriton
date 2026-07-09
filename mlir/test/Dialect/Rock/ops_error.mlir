@@ -642,7 +642,7 @@ func.func @store_result_view_used_as_store_dest(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   %view = rock.transform %out by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [4, 4] -> [4, 4]> : tensor<4x4xf32> to tensor<4x4xf32>
-  // expected-error @+1 {{dest must not be a store result or view of a store result}}
+  // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
   %out2 = rock.store %source to %view by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   return %out2 : tensor<4x4xf32>
 }
@@ -844,7 +844,7 @@ func.func @blockwise_store_result_view_used_as_store_dest(
   %0 = rock.blockwise_store %src -> %dest by set
     : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
   %view = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [16, 16] -> [16, 16]> : tensor<16x16xf32> to tensor<16x16xf32>
-  // expected-error @+1 {{dest must not be a store result or view of a store result}}
+  // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
   %1 = rock.blockwise_store %src -> %view by set
     : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
   return %1 : tensor<16x16xf32>
