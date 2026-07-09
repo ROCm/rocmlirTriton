@@ -56,15 +56,18 @@
 
 #include <atomic>
 #include <cassert>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
-#include <csignal>
 #include <cstdlib>
-#include <cstring>
 #include <mutex>
 #include <optional>
 #include <thread>
+
+#ifndef _WIN32
+#include <cerrno>
+#include <csignal>
+#include <cstring>
+#endif
 
 // Utilities to allocate buffers
 #include "../utils/performance/common/benchmarkUtils.h"
@@ -587,25 +590,21 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
-  // Budget exceeded: kill and reap. SIGKILL cannot be caught, and
-  // rocmlir-driver links in-process (no grandchildren to orphan), so the
-  // blocking reap returns promptly. A timeout is a non-fatal skip reported as
-  // N/A, so stay silent here (tuningRunner.py parses stdout/stderr and must not
-  // see extra noise).
+  // Budget exceeded: terminate and reap. Keep the POSIX path PID-specific;
+  // LLVM's finite Wait timeout uses process-global SIGALRM and is unsafe across
+  // concurrent tuning workers.
   if (timedOut) {
-    // ESRCH means the child already exited on its own in the race window
-    // between the deadline check and here, which is harmless. Any other error
-    // is unexpected (we own this PID and SIGKILL is always valid).
+#ifdef _WIN32
+    (void)llvm::sys::Wait(procInfo, /*SecondsToWait=*/1, /*ErrMsg=*/nullptr);
+#else
     if (kill(procInfo.Pid, SIGKILL) != 0 && errno != ESRCH) {
       fail("Failed to kill timed-out rocmlir-driver for config: " + perfConfig +
            " (" + std::strerror(errno) + ")");
       return result;
     }
-
-    // Reap the killed child so it doesn't linger as a zombie; SIGKILL
-    // guarantees it dies, so this blocking wait returns promptly.
     (void)llvm::sys::Wait(procInfo, /*SecondsToWait=*/std::nullopt,
                           /*ErrMsg=*/nullptr);
+#endif
     result.status = CompilationStatus::TimedOut;
     return result;
   }
