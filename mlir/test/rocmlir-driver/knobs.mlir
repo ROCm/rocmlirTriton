@@ -170,30 +170,31 @@
 // useReductionLayout
 //===----------------------------------------------------------------------===//
 //
-// `useReductionLayout` is the v4 perfConfig knob. It is opt-in:
-// no arch enables it by default, so both the default (0, elided in the
-// backward-compatible v3 serialization) and the explicit v3 form keep the
-// `rock-set-reduction-layout` pass out of the pipeline. Only an explicit
-// `gemm:v4:...,1` schedules it.
+// `useReductionLayout` is the v4 perfConfig knob. The
+// `rock-set-reduction-layout` pass is always scheduled: it rewrites convolution
+// kernels (`rock.conv_kernel`) unconditionally, and the knob is threaded to the
+// pass as `use-reduction-layout` to additionally force the rewrite on every
+// kernel when set to 1. So the knob controls the pass option, not whether the
+// pass is present.
 
-// Default (v3 string, knob absent): the reduction-layout pass is not scheduled.
+// Default (v3 string, knob absent): scheduled with the force option off.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_DEFAULT
 
-// v4 with useReductionLayout=0 (explicit off): still absent.
+// v4 with useReductionLayout=0 (explicit off): force option off.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,0 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_OFF
 
-// v4 with useReductionLayout=1 (force on): the pass is scheduled.
+// v4 with useReductionLayout=1 (force on): force option on.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,1 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_ON
 
-// RL_DEFAULT-NOT: rock-set-reduction-layout
-// RL_OFF-NOT: rock-set-reduction-layout
-// RL_ON: rock-set-reduction-layout
+// RL_DEFAULT: rock-set-reduction-layout{use-reduction-layout=0}
+// RL_OFF: rock-set-reduction-layout{use-reduction-layout=0}
+// RL_ON: rock-set-reduction-layout{use-reduction-layout=1}
 
 //===----------------------------------------------------------------------===//
 // `--pass-pipeline=...` validation
