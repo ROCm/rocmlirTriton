@@ -1,0 +1,15 @@
+diff --git a/third_party/proton/Dialect/lib/Dialect/Proton/IR/CMakeLists.txt b/third_party/proton/Dialect/lib/Dialect/Proton/IR/CMakeLists.txt
+index 7fa2ff43cd90..438c3eb5f929 100644
+--- a/third_party/proton/Dialect/lib/Dialect/Proton/IR/CMakeLists.txt
++++ b/third_party/proton/Dialect/lib/Dialect/Proton/IR/CMakeLists.txt
+@@ -5,4 +5,10 @@ add_triton_library(ProtonIR
+   DEPENDS
+   ProtonTableGen
+   ProtonAttrDefsIncGen
++
++  LINK_LIBS PUBLIC
++  MLIRIR
++  MLIRLLVMDialect
++  MLIRFunctionInterfaces
++  MLIRTransformUtils
+ )
