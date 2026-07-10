@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The knobs are serialized into the `gemm:v3:` / `attn:v3:` perfConfig
+// The knobs are serialized into the `gemm:v4:` / `attn:v4:` perfConfig
 // schema and threaded through `TritonOptions` / `BackendOptions` in
 // `Pipelines.h`. They split into two shapes:
 //

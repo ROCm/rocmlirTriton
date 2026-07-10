@@ -321,10 +321,36 @@ def Rock_GemmParamsAttr
       DefaultValuedParameter<"int64_t", "0">:$useReductionLayout);
 
   let extraClassDeclaration = [{
-    /// Serialize this attribute to its perfConfig string form. See the
-    /// definition in RockDialect.cpp
-    void getPerfConfigStr(::llvm::SmallVectorImpl<char> &perfStr);
-    ::mlir::StringAttr getPerfConfigAttr();
+    // v4 is the single canonical output form (17 fields: the v3 knobs plus
+    // `useReductionLayout`). Older versions remain accepted on input by
+    // `get()`; only the serialized form is fixed to v4.
+    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
+        ("gemm:v4:"
+        + Twine(getMPerBlock()) + ","
+        + Twine(getNPerBlock()) + ","
+        + Twine(getKPerBlock()) + ","
+        + Twine(getKpack()) + ","
+        + Twine(getNumCTAs()) + ","
+        + Twine(getNumWaves()) + ","
+        + Twine(getMatrixInstrNonkdim()) + ","
+        + Twine(getSplitKFactor()) + ","
+        + Twine(getNumStages()) + ","
+        + Twine(getWavesPerEU()) + ","
+        + Twine(getGridGroupSize()) + ","
+        + Twine(getUseAsyncCopy()) + ","
+        + Twine(getUseBlockPingpong()) + ","
+        + Twine(getUseInThreadTranspose()) + ","
+        + Twine(getUseBufferOps()) + ","
+        + Twine(getUseBufferAtomics()) + ","
+        + Twine(getUseReductionLayout()))
+        .toVector(perfStr);
+    }
+
+    StringAttr getPerfConfigAttr() {
+        SmallVector<char, 64> buf;
+        getPerfConfigStr(buf);
+        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
+    }
   }];
 
   let builders = [AttrBuilderWithInferredContext<(
@@ -396,10 +422,36 @@ def Rock_GemmGemmParamsAttr
       DefaultValuedParameter<"int64_t", "0">:$useReductionLayout);
 
   let extraClassDeclaration = [{
-    /// Serialize this attribute to its perfConfig string form. See the
-    /// definition in RockDialect.cpp
-    void getPerfConfigStr(::llvm::SmallVectorImpl<char> &perfStr);
-    ::mlir::StringAttr getPerfConfigAttr();
+    // v4 is the single canonical output form (17 fields: the v3 knobs plus
+    // `useReductionLayout`). Older versions remain accepted on input by
+    // `get()`; only the serialized form is fixed to v4.
+    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
+        ("attn:v4:"
+        + Twine(getMPerBlockG0()) + ","
+        + Twine(getNPerBlockG0()) + ","
+        + Twine(getKPerBlock()) + ","
+        + Twine(getKpack()) + ","
+        + Twine(getNumCTAs()) + ","
+        + Twine(getNumWaves()) + ","
+        + Twine(getMatrixInstrNonkdim()) + ","
+        + Twine(getSplitKFactor()) + ","
+        + Twine(getNumStages()) + ","
+        + Twine(getWavesPerEU()) + ","
+        + Twine(getGridGroupSize()) + ","
+        + Twine(getUseAsyncCopy()) + ","
+        + Twine(getUseBlockPingpong()) + ","
+        + Twine(getUseInThreadTranspose()) + ","
+        + Twine(getUseBufferOps()) + ","
+        + Twine(getUseBufferAtomics()) + ","
+        + Twine(getUseReductionLayout()))
+        .toVector(perfStr);
+    }
+
+    StringAttr getPerfConfigAttr() {
+        SmallVector<char, 64> buf;
+        getPerfConfigStr(buf);
+        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
+    }
 
     // Bridge accessors for the RockTuningParamAttrInterface so generic code
     // (e.g. perf-config validation) can treat gemm and gemm+gemm uniformly.

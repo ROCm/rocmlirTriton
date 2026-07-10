@@ -2456,35 +2456,6 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
 }
 
-void GemmParamsAttr::getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-  // `useReductionLayout` is a v4 addition. Stay backward-compatible with the
-  // many stored/checked v3 perfConfig strings by serializing the v3 form (16
-  // fields) whenever the knob sits at its default (0 = off), and only emitting
-  // the longer v4 form (17 fields) when it is explicitly enabled. This mirrors
-  // the version handling in `get()` above.
-  std::string common =
-      (Twine(getMPerBlock()) + "," + Twine(getNPerBlock()) + "," +
-       Twine(getKPerBlock()) + "," + Twine(getKpack()) + "," +
-       Twine(getNumCTAs()) + "," + Twine(getNumWaves()) + "," +
-       Twine(getMatrixInstrNonkdim()) + "," + Twine(getSplitKFactor()) + "," +
-       Twine(getNumStages()) + "," + Twine(getWavesPerEU()) + "," +
-       Twine(getGridGroupSize()) + "," + Twine(getUseAsyncCopy()) + "," +
-       Twine(getUseBlockPingpong()) + "," + Twine(getUseInThreadTranspose()) +
-       "," + Twine(getUseBufferOps()) + "," + Twine(getUseBufferAtomics()))
-          .str();
-  if (getUseReductionLayout() != 0)
-    (Twine("gemm:v4:") + common + "," + Twine(getUseReductionLayout()))
-        .toVector(perfStr);
-  else
-    (Twine("gemm:v3:") + common).toVector(perfStr);
-}
-
-StringAttr GemmParamsAttr::getPerfConfigAttr() {
-  SmallVector<char, 64> buf;
-  getPerfConfigStr(buf);
-  return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
-}
-
 //===-----------------------------------------------------===//
 // GemmGemmParamsAttr
 //===-----------------------------------------------------===//
@@ -2556,34 +2527,6 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
-}
-
-void GemmGemmParamsAttr::getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-  // See the note on `GemmParamsAttr::getPerfConfigStr`: serialize the v3 form
-  // (16 fields) whenever `useReductionLayout` is at its default (0 = off), and
-  // only the longer v4 form (17 fields) when it is explicitly enabled, to stay
-  // backward-compatible.
-  std::string common =
-      (Twine(getMPerBlockG0()) + "," + Twine(getNPerBlockG0()) + "," +
-       Twine(getKPerBlock()) + "," + Twine(getKpack()) + "," +
-       Twine(getNumCTAs()) + "," + Twine(getNumWaves()) + "," +
-       Twine(getMatrixInstrNonkdim()) + "," + Twine(getSplitKFactor()) + "," +
-       Twine(getNumStages()) + "," + Twine(getWavesPerEU()) + "," +
-       Twine(getGridGroupSize()) + "," + Twine(getUseAsyncCopy()) + "," +
-       Twine(getUseBlockPingpong()) + "," + Twine(getUseInThreadTranspose()) +
-       "," + Twine(getUseBufferOps()) + "," + Twine(getUseBufferAtomics()))
-          .str();
-  if (getUseReductionLayout() != 0)
-    (Twine("attn:v4:") + common + "," + Twine(getUseReductionLayout()))
-        .toVector(perfStr);
-  else
-    (Twine("attn:v3:") + common).toVector(perfStr);
-}
-
-StringAttr GemmGemmParamsAttr::getPerfConfigAttr() {
-  SmallVector<char, 64> buf;
-  getPerfConfigStr(buf);
-  return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
 }
 
 //===----------------------------------------------------------------------===//
