@@ -214,7 +214,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
 
-  if (isBufferOpsEnabled(options.useBufferOps)) {
+  bool useBufferOps = isBufferOpsEnabled(options.useBufferOps);
+  if (useBufferOps) {
     pm->addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonAMDGPUCanonicalizePointers());
     pm->addPass(mlir::createCanonicalizerPass());
@@ -231,6 +232,11 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
       mlir::createTritonAMDGPUPrepareIfCombining());
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
+  if (useBufferOps) {
+    // Run after CSE so matching assume and loop-bound expressions share SSA,
+    // letting range analysis prove both non-negative.
+    pm->addPass(mlir::createTritonAMDGPUAnnotateBufferOpSplitSafety());
+  }
   pm->addPass(mlir::createSymbolDCEPass());
   // TODO(roctriton): Implement options like this.
   // if (options.instrumentationMode == "fpsan") {
