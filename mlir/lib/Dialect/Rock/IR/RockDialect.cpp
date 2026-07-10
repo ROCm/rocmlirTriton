@@ -1975,7 +1975,7 @@ GemmGemmSize GemmElementwiseGemmOp::getGemmGemmSize() {
           m = dimsA[offsetA + (getATransposed() ? 1 : 0)],
           k = dimsA[offsetA + (getATransposed() ? 0 : 1)],
           n = dimsB[offsetB + (getBTransposed() ? 0 : 1)],
-          o = dimsC[offsetC + (getCTransposed() ? 1 : 0)];
+          o = dimsC[offsetC + (getCTransposed() ? 0 : 1)];
   return GemmGemmSize(g, m, k, n, o);
 }
 
@@ -2235,7 +2235,7 @@ GemmGemmSize AttentionOp::getGemmGemmSize() {
           m = dimsA[offsetA + (getQTransposed() ? 1 : 0)],
           k = dimsA[offsetA + (getQTransposed() ? 0 : 1)],
           n = dimsB[offsetB + (getKTransposed() ? 0 : 1)],
-          o = dimsC[offsetC + (getVTransposed() ? 1 : 0)];
+          o = dimsC[offsetC + (getVTransposed() ? 0 : 1)];
   return GemmGemmSize(g, m, k, n, o);
 }
 
