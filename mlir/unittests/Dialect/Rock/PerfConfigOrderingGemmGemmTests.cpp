@@ -96,7 +96,7 @@ struct GemmGemmOrderingTestEnv {
         /*useInThreadTranspose=*/kKnobDefault,
         /*useBufferOps=*/kKnobDefault,
         /*useBufferAtomics=*/kKnobDefault,
-        /*useReductionLayout=*/0);
+        /*useReductionLayout=*/kKnobDefault);
   }
 };
 } // namespace

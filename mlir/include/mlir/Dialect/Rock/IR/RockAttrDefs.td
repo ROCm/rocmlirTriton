@@ -292,7 +292,7 @@ def Rock_GemmParamsAttr
       to be enabled).
     - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
       redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
-      gather operand to cut SGPR spill. 0=off (default), 1=on.
+      gather operand to cut SGPR spill.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -305,7 +305,7 @@ def Rock_GemmParamsAttr
     - `useInThreadTranspose`             (set to -1)
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
-    - `useReductionLayout`               (set to 0)
+    - `useReductionLayout`               (set to -1)
   }];
 
   let parameters = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
@@ -318,7 +318,7 @@ def Rock_GemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "0">:$useReductionLayout);
+      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout);
 
   let extraClassDeclaration = [{
     // v4 is the single canonical output form (17 fields: the v3 knobs plus
@@ -393,7 +393,7 @@ def Rock_GemmGemmParamsAttr
       to be enabled).
     - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
       redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
-      gather operand to cut SGPR spill. 0=off (default), 1=on.
+      gather operand to cut SGPR spill.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -406,7 +406,7 @@ def Rock_GemmGemmParamsAttr
     - `useInThreadTranspose`             (set to -1)
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
-    - `useReductionLayout`               (set to 0)
+    - `useReductionLayout`               (set to -1)
   }];
 
   let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
@@ -419,7 +419,7 @@ def Rock_GemmGemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "0">:$useReductionLayout);
+      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout);
 
   let extraClassDeclaration = [{
     // v4 is the single canonical output form (17 fields: the v3 knobs plus

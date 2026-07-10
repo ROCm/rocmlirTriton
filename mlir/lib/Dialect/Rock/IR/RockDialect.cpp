@@ -2302,14 +2302,15 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
   return success();
 }
 
-// `useReductionLayout` is a plain on/off gate; only 0 (off) and 1 (on) are
-// valid.
+// `useReductionLayout` is a tri-state gate like the other knobs: -1 (the knob
+// default / heuristic, currently off), 0 (off), or 1 (on).
 LogicalResult validateReductionLayout(StringRef perfConfigStr,
                                       int64_t useReductionLayout) {
-  if (useReductionLayout != 0 && useReductionLayout != 1) {
+  if (useReductionLayout != kKnobDefault && useReductionLayout != 0 &&
+      useReductionLayout != 1) {
     llvm::errs() << "invalid perfConfig '" << perfConfigStr
                  << "': field `useReductionLayout` = " << useReductionLayout
-                 << "; expected 0 (off) or 1 (on)\n";
+                 << "; expected -1 (default), 0 (off), or 1 (on)\n";
     return failure();
   }
   return success();
@@ -2424,8 +2425,9 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useInThreadTranspose = kKnobDefault;
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
-  // v4 addition; v1/v2/v3 strings predate it and default it to 0 (off).
-  int64_t useReductionLayout = 0;
+  // v4 addition; v1/v2/v3 strings predate it and default it to the knob
+  // default (-1 = heuristic, currently off).
+  int64_t useReductionLayout = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2497,8 +2499,9 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useInThreadTranspose = kKnobDefault;
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
-  // v4 addition; v1/v2/v3 strings predate it and default it to 0 (off).
-  int64_t useReductionLayout = 0;
+  // v4 addition; v1/v2/v3 strings predate it and default it to the knob
+  // default (-1 = heuristic, currently off).
+  int64_t useReductionLayout = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
