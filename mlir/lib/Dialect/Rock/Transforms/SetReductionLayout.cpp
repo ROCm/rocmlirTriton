@@ -295,6 +295,8 @@ void RockSetReductionLayoutPass::runOnOperation() {
   // reduction (K) dim implied by its operand position.
   llvm::MapVector<Operation *, unsigned> loadKDim;
   llvm::DenseSet<Operation *> conflicting;
+  // TODO: Support the case where the same load is assigned to multiple tt.dots.
+  // This can be beneficial specially if we used DecomposeNonPow2 pass.
   auto record = [&](Value operand, unsigned kDim) {
     Operation *load = findFeedingLoad(operand);
     if (!load)

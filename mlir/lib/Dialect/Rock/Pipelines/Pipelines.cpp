@@ -106,19 +106,11 @@ static void validateTritonOptionsKnobs(const rock::TritonOptions &options) {
       {"useBufferAtomics", options.useBufferAtomics},
       {"bufferOpsAnalyzeSmallTensorRange",
        options.bufferOpsAnalyzeSmallTensorRange},
+      {"useReductionLayout", options.useReductionLayout},
   };
   for (auto [name, value] : boolKnobs) {
     if (!rock::isValidKnobBoolean(value))
       reject(name, value);
-  }
-  // `useReductionLayout` is a tri-state gate like the knobs above:
-  // `kKnobDefault` (-1, heuristic/currently off), 0 (off), or 1 (on).
-  if (!rock::isValidKnobBoolean(options.useReductionLayout)) {
-    llvm::report_fatal_error(
-        Twine("invalid `--pass-pipeline=triton{useReductionLayout=") +
-            Twine(options.useReductionLayout) +
-            "}`; expected -1 (default), 0 (off), or 1 (on)",
-        /*GenCrashDiag=*/false);
   }
 }
 
