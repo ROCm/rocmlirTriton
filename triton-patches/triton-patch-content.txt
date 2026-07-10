@@ -13,6 +13,7 @@ patch-buffer-atomics.patch
 patch10497.patch
 patch10563.patch
 patch10715.patch
+patch10832.patch
 ----------------------------------------------------------------------
 
 patch-buffer-atomics.patch
@@ -104,3 +105,18 @@ patch10715.patch
 
   Drop this patch on the next Triton bump that pulls the revert (upstream main
   at a4ce9c2 or later) into external/triton.
+
+patch10832.patch
+  Gives the ProtonIR object library the MLIR usage requirements it actually
+  needs (MLIRIR, MLIRLLVMDialect, MLIRFunctionInterfaces, MLIRTransformUtils),
+  matching the includes in Dialect.cpp / Ops.cpp and mirroring every other MLIR
+  dialect library. ProtonIR was the only dialect target declaring no LINK_LIBS
+  at all, so its compiles inherited no build ordering against the TableGen
+  generated MLIR headers (e.g. mlir/IR/BuiltinLocationAttributes.h.inc). In an
+  in-tree LLVM + Triton build at high parallelism CMake could schedule
+  Dialect.cpp before those headers were generated, producing an intermittent
+  "file not found" failure. Mirrors upstream Triton PR
+  https://github.com/triton-lang/triton/pull/10832 exactly.
+
+  Drop this patch on the next Triton bump that pulls PR #10832 (upstream main at
+  cf8bb65 or later) into external/triton.
