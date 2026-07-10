@@ -21,6 +21,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
@@ -51,6 +53,8 @@ using namespace mlir::arith;
 
 namespace {
 struct RockToTTIRPass : public rock::impl::RockToTTIRPassBase<RockToTTIRPass> {
+  using RockToTTIRPassBase::RockToTTIRPassBase;
+
   void runOnOperation() override;
 };
 
@@ -217,7 +221,9 @@ struct RockLoadPtrOpRewritePattern
 //===----------------------------------------------------------------------===//
 struct RockBlockwiseGemmOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseGemmOp> {
-  using OpRewritePattern<rock::BlockwiseGemmOp>::OpRewritePattern;
+  RockBlockwiseGemmOpRewritePattern(MLIRContext *ctx, bool disableFastMath)
+      : OpRewritePattern<rock::BlockwiseGemmOp>(ctx),
+        disableFastMath(disableFastMath) {}
 
   LogicalResult matchAndRewrite(rock::BlockwiseGemmOp op,
                                 PatternRewriter &rewriter) const override {
@@ -266,10 +272,19 @@ struct RockBlockwiseGemmOpRewritePattern
                                            matrixAKPack, matrixBKPack);
     } else {
       // Create tt.dot operation
-      result =
-          triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
-                                /*inputPrecision=*/triton::InputPrecision::IEEE,
-                                /*maxNumImpreciseAcc=*/0);
+      Type aElemType = aTensorType.getElementType();
+      Type bElemType = bTensorType.getElementType();
+      // On targets without native f32 matrix acceleration, bf16x3 lets Triton
+      // use the BF16 matrix accelerator instead of the software FMA path.
+      StringRef arch = rock::getArchValue(op);
+      bool useBf16x3 = !disableFastMath &&
+                       rock::usesBf16x3F32Dot(arch, aElemType, bElemType);
+      triton::InputPrecision inputPrecision =
+          useBf16x3 ? triton::InputPrecision::BF16x3
+                    : triton::InputPrecision::IEEE;
+      result = triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
+                                     inputPrecision,
+                                     /*maxNumImpreciseAcc=*/0);
     }
 
     // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it
@@ -288,6 +303,9 @@ struct RockBlockwiseGemmOpRewritePattern
     rewriter.replaceOp(op, result);
     return success();
   }
+
+private:
+  bool disableFastMath;
 };
 
 struct RockStorePtrOpRewritePattern
@@ -478,7 +496,7 @@ void RockToTTIRPass::runOnOperation() {
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
   patterns.add<RockLoadPtrOpRewritePattern>(ctx);
-  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
+  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx, disableFastMath);
   patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ArithTruncFToFpToFpPattern>(ctx);
   patterns.add<ArithExtFToFpToFpPattern>(ctx);

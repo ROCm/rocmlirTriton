@@ -376,6 +376,8 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   let summary = "Convert Rock dialect operations to Triton IR";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect", "triton::TritonDialect"];
+  let options = [Option<"disableFastMath", "disable-fast-math", "bool", "false",
+                        "Disable fast-math dependent lowering choices">];
 }
 
 def RockSortDimensionsMemoryLayoutPass
