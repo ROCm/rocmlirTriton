@@ -61,6 +61,9 @@ defvar GemmInputTypes = [F32, F16, BF16, I<4>, I8, F8E5M2FNUZ, F8E4M3FNUZ,
 // This can be extended for quantization.
 defvar GemmOutputTypes = [F32, F16, BF16, I32, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M2, F8E4M3FN];
 defvar GemmAccumulatorTypes = [F32, F16, BF16, I32];
+// Integer widths used for pointer offset arithmetic (i32, or i64 when a
+// transform chain's linearized index domain can exceed 32 bits).
+defvar PtrTypes = [I32, I64];
 
 def Rock_ConvOp : Rock_ConvOpBase<"conv"> {
   let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$filter,
@@ -694,7 +697,7 @@ def Rock_BlockwiseLoadOp
 def Rock_BlockwiseLoadPtrOp
     : Rock_Op<"blockwise_load_ptr", [AllShapesMatch<["pointerTensor",
                                                      "maskTensor", "result"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32, I64]>,
+      Arguments<(ins Arg<RankedTensorOf<PtrTypes>,
                          "Pointer tensor", [MemRead]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           CacheModifierAttr:$cacheModifier)>,
@@ -762,7 +765,7 @@ def Rock_BlockwiseStoreOp
 def Rock_BlockwiseStorePtrOp
     : Rock_Op<"blockwise_store_ptr",
               [AllShapesMatch<["pointerTensor", "maskTensor", "source"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32, I64]>,
+      Arguments<(ins Arg<RankedTensorOf<PtrTypes>,
                          "Pointer tensor", [MemWrite]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
@@ -784,7 +787,7 @@ def Rock_TransformsToPtrOp
                                         InferTypeOpInterface>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Variadic<I32>:$extraIndices)>,
-      Results<(outs RankedTensorOf<[I32, I64]>:$pointers,
+      Results<(outs RankedTensorOf<PtrTypes>:$pointers,
           RankedTensorOf<[I1]>:$mask)> {
   let summary = "Convert transforms to pointer and mask tensors";
 
@@ -827,7 +830,7 @@ def Rock_CastToPtrOp
     Casts a tensor to a pointer tensor representation.
   }];
 
-  let arguments = (ins RankedTensorOf<[I32, I64]>:$src);
+  let arguments = (ins RankedTensorOf<PtrTypes>:$src);
 
   let results = (outs AnyRankedTensor:$result);
 
@@ -848,7 +851,7 @@ def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {
 
   let arguments = (ins AnyRankedTensor:$source);
 
-  let results = (outs AnyTypeOf<[I32, I64]>:$result);
+  let results = (outs AnyTypeOf<PtrTypes>:$result);
 
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
