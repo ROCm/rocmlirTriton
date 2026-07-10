@@ -79,7 +79,7 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
       dPerBlockList.push_back(dPerBlock);
   } else {
     // non-accel
-    return {4, 8, 16, 32, 64};
+    dPerBlockList = {32, 64, 128, 256};
   }
 
   // For a plain GEMM with a small (< MAX_MN_PER_BLOCK) M/N, cap the list with a
@@ -100,6 +100,18 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
   }
 
   return dPerBlockList;
+}
+
+// Drop kPerBlock candidates larger than the K dimension rounded up to the next
+// power of two: a tile bigger than PowerOf2Ceil(K) would only pad K and waste
+// work. Guarantees the capping tile itself stays so K is always covered.
+static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
+  if (k <= 0)
+    return;
+  uint32_t cap = static_cast<uint32_t>(llvm::PowerOf2Ceil(k));
+  llvm::erase_if(kPerBlockList, [&](uint32_t v) { return v > cap; });
+  if (!llvm::is_contained(kPerBlockList, cap))
+    kPerBlockList.push_back(cap);
 }
 
 static std::vector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
@@ -188,6 +200,12 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
           ? std::vector<uint32_t>{32, 64, 128, 256}
           : std::vector<uint32_t>{32, 64};
 
+  // Cap the K tiles by the actual K dimension so we don't tune (and pad) K
+  // tiles that are far larger than the problem's K.
+  int64_t gemmK = gemmOp.getGemmSize().k;
+  capKPerBlockByK(kPerBlockMFMA, gemmK);
+  capKPerBlockByK(kPerBlockWMMA, gemmK);
+
   std::vector<uint32_t> numCTAsList;
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
     numCTAsList.push_back(n);
@@ -220,9 +238,10 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  // Non-accel (FMA) parameters.
-  std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
-  std::vector<uint32_t> kPerBlockNonAccel = {4, 8, 16};
+  // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (which has a
+  // dedicated non-accel branch and caps by the actual M/N dimension).
+  std::vector<uint32_t> kPerBlockNonAccel = {1, 4, 8, 16};
+  capKPerBlockByK(kPerBlockNonAccel, gemmK);
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64u, 128u, 256u}) {
     if (blockSize % waveSize == 0)
@@ -230,8 +249,8 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   }
   assert(!numWavesNonAccel.empty() && "numWavesNonAccel must be non-empty");
   std::vector<std::vector<uint32_t>> validRangeNonAccelParams = {
-      dPerBlockNonAccel, // M/block
-      dPerBlockNonAccel, // N/block
+      mPerBlock,         // M/block
+      nPerBlock,         // N/block
       kPerBlockNonAccel, // K/block
       {1},               // kPackList (no kpack on non-accel FMA path)
       numWavesNonAccel,  // numWaves (= blockSize / waveSize)
@@ -258,12 +277,15 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   std::vector<uint32_t> wavesPerEUList = {0};
   std::vector<uint32_t> gridGroupSizeList = {0};
 
+  int64_t gemm0K = gemmGemmOp.getGemmGemmSize().k;
+
   std::vector<uint32_t> kPerBlock = {16, 32, 64, 128, 512, 1024, 2048};
   // use the actual K dimension, typically it's 128 for attention
   if (kind != TuningParamSetKind::Exhaustive) {
-    kPerBlock = {static_cast<uint32_t>(
-        llvm::PowerOf2Ceil(gemmGemmOp.getGemmGemmSize().k))};
+    kPerBlock = {static_cast<uint32_t>(llvm::PowerOf2Ceil(gemm0K))};
   }
+  // Drop K tiles larger than PowerOf2Ceil(K).
+  capKPerBlockByK(kPerBlock, gemm0K);
 
   auto arch = rock::getArchValue(gemmGemmOp);
   std::vector<uint32_t> numCTAsList;
