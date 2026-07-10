@@ -179,6 +179,6 @@ func.func @rock_conv_gkc01_ngc01_ngk01(%arg0: tensor<73728xf32>, %arg1: tensor<1
   %8 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 64 + d2) * 14 + d3) * 14 + d4)> by [<Unmerge{32, 64, 14, 14} ["no", "ko", "0o", "1o"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["go"] at [1] -> [] at []>] bounds = [32, 1, 64, 14, 14] -> [401408]> : tensor<401408xf32> to tensor<32x1x64x14x14xf32>
   %9 = rock.transform %8 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)> by [<PassThrough ["no", "go", "ko", "0o", "1o"] at [0, 1, 2, 3, 4] -> ["no", "go", "ko", "0o", "1o"] at [0, 1, 2, 3, 4]>] bounds = [32, 1, 64, 14, 14] -> [32, 1, 64, 14, 14]> : tensor<32x1x64x14x14xf32> to tensor<32x1x64x14x14xf32>
   %10 = rock.transform %9 by <affine_map<(d0, d1, d2) -> (d2 floordiv 196, d0, d1, (d2 mod 196) floordiv 14, d2 mod 14)> by [<PassThrough ["gemmG"] at [0] -> ["go"] at [1]>, <PassThrough ["gemmM"] at [1] -> ["ko"] at [2]>, <Merge{32, 14, 14} ["gemmN"] at [2] -> ["no", "0o", "1o"] at [0, 3, 4]>] bounds = [1, 64, 6272] -> [32, 1, 64, 14, 14]> : tensor<32x1x64x14x14xf32> to tensor<1x64x6272xf32>
-  %12 = rock.store %7 to %10 by set : tensor<1x64x6272xf32> -> tensor<401408xf32> to tensor<1x64x6272xf32>
+  %12 = rock.store %7 to %10 alias %arg2 by set : tensor<1x64x6272xf32> -> tensor<401408xf32> to tensor<1x64x6272xf32> alias tensor<401408xf32>
   return %12 : tensor<401408xf32>
 }

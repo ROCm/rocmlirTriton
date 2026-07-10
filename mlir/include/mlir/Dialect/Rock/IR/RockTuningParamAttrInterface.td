@@ -200,17 +200,6 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
                      /*args=*/(ins),
                      /*methodBody=*/"",
                      /*defaultImplementation=*/"">,
-                 InterfaceMethod<
-                     /*desc=*/[{
-          Bitfield selector mirroring upstream Triton's
-          `HIPOptions.schedule_hint`. -1 means "use the arch default", 0
-          means "none".
-        }],
-                     /*retType=*/"int64_t",
-                     /*methodName=*/"getScheduleHint",
-                     /*args=*/(ins),
-                     /*methodBody=*/"",
-                     /*defaultImplementation=*/"">,
   ];
 }
 

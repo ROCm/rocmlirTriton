@@ -6,18 +6,16 @@ This directory holds downstream patch records against the vendored Triton tree
 
 ----------------------------------------------------------------------
 patch-wmma-preserve-discardable-attrs.patch
-patch10290.patch
-patch10450.patch
-patch10498.patch
-patch10585.patch
-patch1.patch
-patch2.patch
-patch3.patch
-patch_buffer_atomics.patch
+patch-float-atomic-minmax-lowering.patch
+patch-preserve-arith-bitcast-lowering.patch
+patch-skip-subbyte-reduce-data-duplication.patch
+patch-buffer-atomics.patch
+patch10497.patch
+patch10563.patch
+patch10715.patch
 ----------------------------------------------------------------------
-TODO: Add missing patch descriptions
 
-patch_buffer_atomics.patch
+patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
   TargetFeatures::supportsBufferAtomicRMW (gfx906/gfx908/gfx90a/gfx942/gfx950,
   gfx101x/gfx103x/gfx11/gfx12, gfx1250). On older families BUFFER_ATOMIC_*
@@ -59,3 +57,50 @@ patch-wmma-preserve-discardable-attrs.patch
   FMA paths) so downstream metadata such as `rock.o_transposed` survives the
   rewrite. It adds no Triton-side decision logic; the orientation is chosen
   by the downstream rock pass.
+
+patch-float-atomic-minmax-lowering.patch
+  Fixes Triton atomic max/min lowering for floating-point element types. The
+  shared matchAtomicOp helper now receives the value type and maps floating
+  MAX/MIN operations to LLVM `fmax` / `fmin` rather than integer max/min; the
+  AMD intra-wave reduction path handles those new floating atomic binops.
+
+patch-preserve-arith-bitcast-lowering.patch
+  Keeps `arith.bitcast` legal through Triton's Triton-to-TritonGPU and
+  TritonGPU-to-LLVM conversion pipeline by adding the corresponding generic
+  conversion and LLVM lowering patterns.
+
+patch-skip-subbyte-reduce-data-duplication.patch
+  Prevents ReduceDataDuplication from materializing sub-byte tensors through
+  local memory. Triton's convert-layout lowering already widens these transfers
+  to i8 and truncates back to the logical element type, so introducing local
+  memory here is incorrect for sub-byte element types.
+
+patch10497.patch
+  Adds the RDNA FMA-dot layout rebalancing logic in AccelerateAMDMatmul, plus
+  coverage for f32 FMA dots on RDNA. When WMMA cannot handle the dot, the FMA
+  path rewrites imbalanced blocked layouts into a more balanced layout to
+  reduce LDS read volume, then converts back to the original result layout.
+
+patch10563.patch
+  Extends InThreadTranspose coverage and logic for the FMA dot path on RDNA.
+  The pass now recognizes when FMA dot operands benefit from an in-thread
+  transpose and avoids applying the transform when the operand-major layout is
+  already the orientation the FMA dot wants in LDS.
+
+patch10715.patch
+  Reverts the AMD buffer soffset optimization series, mirroring upstream Triton
+  revert https://github.com/triton-lang/triton/pull/10715 (which reverts #10362
+  and its follow-up fixes). The series caused various stability issues,
+  including a gfx950/MI350 bf16 inference miscompile (NaN) under torch.compile.
+
+  Removes the whole soffset-split machinery: the OffsetUniformitySplit /
+  UniformityAnalysis helpers and the amdgpu-annotate-buffer-op-split-safety
+  pass (AnnotateBufferOpSplitSafety.cpp, its Passes.td registration, the
+  triton_amd.cc binding, compiler.py invocation, and the .mlir tests), and
+  restores BufferOpsEmitter / LoadStoreOpToLLVM / TritonGPUToLLVM to their
+  pre-soffset-split buffer-op lowering. This also supersedes the earlier
+  downstream soffset follow-up (patch10498, whose stale description remains
+  below); once this revert is in, that machinery no longer exists to patch.
+
+  Drop this patch on the next Triton bump that pulls the revert (upstream main
+  at a4ce9c2 or later) into external/triton.

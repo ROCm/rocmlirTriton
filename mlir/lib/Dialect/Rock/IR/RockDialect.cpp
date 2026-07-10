@@ -49,7 +49,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -1114,11 +1113,12 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
     Operation *user = use.getOwner();
     if (isa<ViewLikeOpInterface>(user))
       continue;
-    // Store chaining is valid when the previous store result is threaded as
-    // the destination tensor for the next same-kind store. The dest operand is
-    // operand 1.
-    if (isa<StoreOpT>(user) && use.getOperandNumber() == 1)
-      continue;
+    // Store chaining is valid only when the previous store result is threaded
+    // as the explicit result alias for the next same-kind store.
+    if (auto nextStore = dyn_cast<StoreOpT>(user)) {
+      if (nextStore.getResultAlias() && use.get() == nextStore.getResultAlias())
+        continue;
+    }
     if (isa<func::ReturnOp>(user)) {
       if (++returnUseCount > 1)
         return op.emitOpError("result may be returned at most once");
@@ -1126,8 +1126,37 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
     }
     return op.emitOpError(
         "result must be used directly by a func.return, view-like op, or "
-        "destination operand of another same-kind store");
+        "resultAlias operand of another same-kind store");
   }
+  return success();
+}
+
+template <typename StoreOpT>
+static LogicalResult verifyStoreDest(StoreOpT op) {
+  FailureOr<BlockArgument> maybeBlockArg =
+      rock::findBlockArgument(op.getDest());
+  func::FuncOp funcOp = op->template getParentOfType<func::FuncOp>();
+  if (failed(maybeBlockArg) || !funcOp ||
+      maybeBlockArg->getOwner() != &funcOp.getBody().front()) {
+    return op.emitOpError(
+        "dest transform chain root must be a function entry block argument");
+  }
+
+  return success();
+}
+
+template <typename StoreOpT>
+static LogicalResult verifyStoreResultAlias(StoreOpT op) {
+  Value resultAlias = op.getResultAlias();
+  if (!resultAlias)
+    return success();
+
+  if (resultAlias.getType() != op.getResult().getType()) {
+    return op.emitOpError("resultAlias type must match result type")
+           << " (alias: " << resultAlias.getType()
+           << ", result: " << op.getResult().getType() << ")";
+  }
+
   return success();
 }
 
@@ -1138,6 +1167,12 @@ LogicalResult StoreOp::verify() {
   if (sourceType.getShape() != destType.getShape())
     return emitOpError("source and dest shapes must match")
            << " (source: " << sourceType << ", dest: " << destType << ")";
+
+  if (failed(verifyStoreResultAlias(*this)))
+    return failure();
+
+  if (failed(verifyStoreDest(*this)))
+    return failure();
 
   return verifyStoreResultUses(*this, getResult());
 }
@@ -1582,35 +1617,6 @@ LogicalResult BlockwiseLoadPtrOp::verify() {
 // BlockwiseStoreOp
 //===-----------------------------------------------------===//
 
-SmallPtrSet<OpOperand *, 2> BlockwiseStoreOp::getAcceptingViewOperands() {
-  auto operands = getOperation()->getOpOperands();
-  return {operands.begin() + 1};
-}
-
-std::optional<OperandRange>
-BlockwiseStoreOp::getExtraIndices(OpOperand &operand) {
-  if (!getAcceptingViewOperands().contains(&operand)) {
-    return std::nullopt;
-  }
-  // Only one operand supports view
-  return getExtraIndices();
-}
-
-Operation *
-BlockwiseStoreOp::cloneWithExtraIndices(OpBuilder &builder, OpOperand &operand,
-                                        Value view,
-                                        ArrayRef<Value> newExtraIndices) {
-  if (!getAcceptingViewOperands().contains(&operand)) {
-    return getOperation();
-  }
-
-  // Only one operand supports view
-  auto newOp = BlockwiseStoreOp::create(
-      builder, getLoc(), getResult().getType(), getSource(), view,
-      newExtraIndices, getStoreMethod());
-  return newOp.getOperation();
-}
-
 LogicalResult BlockwiseStoreOp::verify() {
   auto sourceType = cast<RankedTensorType>(getSource().getType());
   auto destType = cast<RankedTensorType>(getDest().getType());
@@ -1628,6 +1634,12 @@ LogicalResult BlockwiseStoreOp::verify() {
            << " (" << destType.getShape().take_back(sourceType.getRank())
            << " != " << sourceType.getShape() << ")";
   }
+
+  if (failed(verifyStoreResultAlias(*this)))
+    return failure();
+
+  if (failed(verifyStoreDest(*this)))
+    return failure();
 
   return verifyStoreResultUses(*this, getResult());
 }
@@ -2237,22 +2249,20 @@ namespace {
 
 constexpr size_t SmallVectorInlineSize = 32;
 
-// Number of trailing knob fields appended in the v2 perfConfig schema.
-// The sentinel value (`rock::kKnobDefault` = `-1`) and the `scheduleHint`
-// bit constants live in `KnobUtils.h`.
+// Number of trailing knob fields appended in each versioned perfConfig schema.
+// The sentinel value (`rock::kKnobDefault` = `-1`) lives in `KnobUtils.h`.
 //
-// NOTE: If you want to bump the perfConfig to v3, you need to add a new
-// `kNumKnobFieldsV3` constant and update the parser to expect the new number
-// of fields.
+// NOTE: If you want to bump the perfConfig to v4, add a new `kNumKnobFieldsV4`
+// constant and update the parser to expect the new number of fields.
 constexpr size_t kNumKnobFieldsV2 = 6;
+constexpr size_t kNumKnobFieldsV3 = 5;
 
-// Reject invalid knob values, reusing `rock::isValidKnobBoolean` and
-// `rock::isValidScheduleHintBitfield`.
+// Reject invalid knob values, reusing `rock::isValidKnobBoolean`.
 LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
                                 int64_t useBlockPingpong,
                                 int64_t useInThreadTranspose,
-                                int64_t useBufferOps, int64_t useBufferAtomics,
-                                int64_t scheduleHint) {
+                                int64_t useBufferOps,
+                                int64_t useBufferAtomics) {
   const std::pair<StringRef, int64_t> boolKnobs[] = {
       {"useAsyncCopy", useAsyncCopy},
       {"useBlockPingpong", useBlockPingpong},
@@ -2268,12 +2278,18 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
       return failure();
     }
   }
-  if (!rock::isValidScheduleHintBitfield(scheduleHint)) {
-    llvm::errs() << "invalid perfConfig '" << perfConfigStr
-                 << "': field `scheduleHint` = " << scheduleHint << "\n";
-    return failure();
-  }
   return success();
+}
+
+void warnIfScheduleHintIgnored(MLIRContext *context, StringRef perfConfigStr,
+                               int64_t scheduleHint) {
+  if (scheduleHint == kKnobDefault)
+    return;
+
+  emitWarning(UnknownLoc::get(context))
+      << "perfConfig '" << perfConfigStr
+      << "' uses v2 scheduleHint=" << scheduleHint
+      << ", but scheduleHint is no longer supported and will be ignored";
 }
 
 struct PerfConfigParseResult {
@@ -2319,6 +2335,18 @@ parsePerfConfigStr(StringRef configStr, StringRef expectedPrefix = "") {
   return PerfConfigParseResult{version, params};
 }
 
+// Returns the expected number of comma-separated fields for a perf-config of
+// the given version (11 tunable fields plus the version's knob fields), or
+// std::nullopt if the version is unknown.
+std::optional<size_t> getExpectedPerfConfigFieldCount(int version) {
+  static constexpr size_t kNumKnobFieldsByVersion[] = {0, kNumKnobFieldsV2,
+                                                       kNumKnobFieldsV3};
+  if (version < 1 ||
+      version > static_cast<int>(std::size(kNumKnobFieldsByVersion)))
+    return std::nullopt;
+  return 11 + kNumKnobFieldsByVersion[version - 1];
+}
+
 } // namespace
 
 //===-----------------------------------------------------===//
@@ -2335,13 +2363,12 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   auto &params = parsed->params;
 
   // v1: 11 tunable fields. The 6 knob fields default to `kKnobDefault`.
-  // v2: 11 tunable fields + 6 knob fields = 17 fields.
-  size_t expectedCount = 0;
-  if (version == 1)
-    expectedCount = 11;
-  else if (version == 2)
-    expectedCount = 11 + kNumKnobFieldsV2;
-  if (expectedCount == 0 || params.size() != expectedCount) {
+  // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
+  //     accepted read-only and discarded).
+  // v3: 11 tunable fields + 5 knob fields = 16.
+  std::optional<size_t> expectedCount =
+      getExpectedPerfConfigFieldCount(version);
+  if (!expectedCount || params.size() != *expectedCount) {
     return {};
   }
 
@@ -2362,18 +2389,21 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useInThreadTranspose = kKnobDefault;
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
-  int64_t scheduleHint = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
     useInThreadTranspose = params[idx++];
     useBufferOps = params[idx++];
     useBufferAtomics = params[idx++];
-    scheduleHint = params[idx++];
+    // v2 carried a trailing `scheduleHint` bitfield; accept and discard it.
+    if (version == 2) {
+      int64_t scheduleHint = params[idx++];
+      warnIfScheduleHintIgnored(perfConfigStrAttr.getContext(),
+                                perfConfigStrAttr.strref(), scheduleHint);
+    }
     if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
                                  useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 scheduleHint))) {
+                                 useBufferOps, useBufferAtomics))) {
       return {};
     }
   }
@@ -2382,7 +2412,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       perfConfigStrAttr.getContext(), mPerBlock, nPerBlock, kPerBlock, kpack,
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics, scheduleHint);
+      useInThreadTranspose, useBufferOps, useBufferAtomics);
 }
 
 //===-----------------------------------------------------===//
@@ -2399,13 +2429,12 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   auto &params = parsed->params;
 
   // v1: 11 tunable fields. The 6 knob fields default to `kKnobDefault`.
-  // v2: 11 tunable fields + 6 knob fields = 17 fields.
-  size_t expectedCount = 0;
-  if (version == 1)
-    expectedCount = 11;
-  else if (version == 2)
-    expectedCount = 11 + kNumKnobFieldsV2;
-  if (expectedCount == 0 || params.size() != expectedCount) {
+  // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
+  //     accepted read-only and discarded).
+  // v3: 11 tunable fields + 5 knob fields = 16.
+  std::optional<size_t> expectedCount =
+      getExpectedPerfConfigFieldCount(version);
+  if (!expectedCount || params.size() != *expectedCount) {
     return {};
   }
 
@@ -2426,18 +2455,21 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useInThreadTranspose = kKnobDefault;
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
-  int64_t scheduleHint = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
     useInThreadTranspose = params[idx++];
     useBufferOps = params[idx++];
     useBufferAtomics = params[idx++];
-    scheduleHint = params[idx++];
+    // v2 carried a trailing `scheduleHint` bitfield; accept and discard it.
+    if (version == 2) {
+      int64_t scheduleHint = params[idx++];
+      warnIfScheduleHintIgnored(perfConfigStrAttr.getContext(),
+                                perfConfigStrAttr.strref(), scheduleHint);
+    }
     if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
                                  useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 scheduleHint))) {
+                                 useBufferOps, useBufferAtomics))) {
       return {};
     }
   }
@@ -2446,7 +2478,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       perfConfigStrAttr.getContext(), mPerBlockG0, nPerBlockG0, kPerBlock,
       kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics, scheduleHint);
+      useInThreadTranspose, useBufferOps, useBufferAtomics);
 }
 
 //===----------------------------------------------------------------------===//

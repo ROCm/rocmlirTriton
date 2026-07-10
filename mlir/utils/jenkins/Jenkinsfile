@@ -1,6 +1,8 @@
 // PR CI and nightly MIGraphX stage are enabled. Other nightly/weekly stages are commented out.
 // used for private CI
 import groovy.transform.Field
+import hudson.plugins.git.extensions.impl.CheckoutOption
+import hudson.plugins.git.extensions.impl.CloneOption
 import java.util.concurrent.ConcurrentHashMap
 import org.jenkinsci.plugins.workflow.support.steps.AgentOfflineException
 
@@ -11,6 +13,10 @@ ConcurrentHashMap<String,String> DOCKER_ARGS_BY_NODE = new ConcurrentHashMap<>()
 
 @Field
 String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
+// Jenkins Git plugin defaults to 10 minutes per git command.
+// Use 2h for fetches that can exceed that on slow network.
+@Field
+final int GIT_SCM_TIMEOUT_MINUTES = 120
 
 void buildProject(String target, String cmakeOpts) {
     timeout(time: 60, activity: true, unit: 'MINUTES') {
@@ -64,59 +70,158 @@ void gitHealthCheck() {
     echo "[healthcheck] Git OK"
 }
 
+Map scmWithGitTimeout(Object baseScm = scm) {
+    List extensions = []
+    boolean hasCloneOption = false
+    boolean hasCheckoutOption = false
+
+    (baseScm.extensions ?: []).each { ext ->
+        if (ext instanceof CloneOption) {
+            extensions << [
+                $class: 'CloneOption',
+                depth: ext.depth ?: 0,
+                shallow: ext.shallow ?: false,
+                noTags: ext.noTags ?: false,
+                reference: ext.reference ?: '',
+                honorRefspec: ext.honorRefspec ?: false,
+                timeout: gitTimeoutAtLeast(ext.timeout)
+            ]
+            hasCloneOption = true
+        } else if (ext instanceof CheckoutOption) {
+            extensions << [$class: 'CheckoutOption', timeout: gitTimeoutAtLeast(ext.timeout)]
+            hasCheckoutOption = true
+        } else {
+            extensions << ext
+        }
+    }
+
+    if (!hasCloneOption) {
+        extensions << [$class: 'CloneOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
+    }
+    if (!hasCheckoutOption) {
+        extensions << [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
+    }
+
+    Map checkoutScm = [
+        $class: 'GitSCM',
+        branches: baseScm.branches,
+        doGenerateSubmoduleConfigurations: baseScm.doGenerateSubmoduleConfigurations ?: false,
+        extensions: extensions,
+        submoduleCfg: baseScm.submoduleCfg ?: [],
+        userRemoteConfigs: baseScm.userRemoteConfigs
+    ]
+    if (baseScm.gitTool) {
+        checkoutScm.gitTool = baseScm.gitTool
+    }
+    if (baseScm.browser) {
+        checkoutScm.browser = baseScm.browser
+    }
+    return checkoutScm
+}
+
+int gitTimeoutAtLeast(Integer timeout) {
+    int currentTimeout = timeout ?: 0
+    return Math.max(currentTimeout, GIT_SCM_TIMEOUT_MINUTES)
+}
+
+String scmCheckoutRetryContext(Object err) {
+    String msg = "${err}".toLowerCase()
+    try {
+        def logLines = currentBuild?.rawBuild?.getLog(500) ?: []
+        msg = msg + '\n' + logLines.join('\n').toLowerCase()
+    } catch (ignored) {
+        // Fall back to the exception text; retry classification should not mask the checkout failure.
+    }
+    return msg
+}
+
+boolean isRetriableScmCheckoutError(String msg) {
+    return [
+        "connection reset by peer",
+        "curl 18",
+        "transfer closed with outstanding read data remaining",
+        "bytes of body are still expected",
+        "unexpected disconnect while reading sideband packet",
+        "fatal: early eof",
+        "invalid index-pack output",
+        "bad pack header"
+    ].any { msg.contains(it) }
+}
+
 // Retry checkout without shallow clone if GitSCM chokes on a specific SHA
-void robustScmCheckout() {
+void robustScmCheckout(Map opts = [:]) {
     int maxAttempts = 2
+    String repoUrl = opts.get('repoUrl', null) as String
+    String ref = opts.get('ref', opts.get('branch', null)) as String
+    String repoName = opts.get('repoName', repoUrl ?: 'SCM') as String
+    boolean externalCheckout = repoUrl as boolean
+
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            // This inner 'try' handles the "reference is not a tree" fallback
+            // This inner 'try' handles the "reference is not a tree" fallback for the main SCM checkout.
             try {
-                echo "[SCM] Attempting checkout (${attempt}/${maxAttempts})..."
-                checkout scm
-                echo "[SCM] Checkout successful"
-                // If checkout succeeds, exit the function immediately
+                echo "[SCM] Attempting ${repoName} checkout (${attempt}/${maxAttempts})..."
+                if (externalCheckout) {
+                    if (!ref) {
+                        error "[SCM] Missing ref/branch for ${repoName} checkout"
+                    }
+                    checkout(changelog: false, poll: false, scm: [
+                        $class: 'GitSCM',
+                        branches: [[name: ref]],
+                        doGenerateSubmoduleConfigurations: false,
+                        extensions: [
+                            [$class: 'CloneOption', timeout: GIT_SCM_TIMEOUT_MINUTES],
+                            [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
+                        ],
+                        userRemoteConfigs: [[url: repoUrl]]
+                    ])
+                } else {
+                    checkout(scmWithGitTimeout())
+                }
+                echo "[SCM] ${repoName} checkout successful"
                 return
             } catch (err) {
                 def msg = "${err}".toLowerCase()
-                if (!msg.contains("reference is not a tree") && !msg.contains("could not checkout")) {
-                    // If it's not a known transient error, re-throw it to be caught by the outer block
+                if (externalCheckout || (!msg.contains("reference is not a tree") && !msg.contains("could not checkout"))) {
+                    // If it's not a known shallow-checkout problem, re-throw it to be caught by the outer block.
                     throw err
                 }
 
-                // This is the fallback logic for the "reference is not a tree" error
+                // This is the fallback logic for the "reference is not a tree" error.
                 echo "[SCM] Default checkout failed: ${err}. Retrying ONCE with robust deep clone"
                 String repo = scm?.userRemoteConfigs?.getAt(0)?.url
                 String cred = scm?.userRemoteConfigs?.getAt(0)?.credentialsId
-                String ref  = env.CHANGE_ID ? "refs/pull/${env.CHANGE_ID}/head"
+                String currentRef = env.CHANGE_ID ? "refs/pull/${env.CHANGE_ID}/head"
                                           : env.BRANCH_NAME ? "refs/heads/${env.BRANCH_NAME}"
                                           : "HEAD"
-                
+
                 def deepScm = [
                     $class: 'GitSCM',
-                    userRemoteConfigs: [[url: repo, credentialsId: cred, refspec: "+${ref}:${ref}"]],
-                    branches: [[name: ref]],
+                    userRemoteConfigs: [[url: repo, credentialsId: cred, refspec: "+${currentRef}:${currentRef}"]],
+                    branches: [[name: currentRef]],
                     doGenerateSubmoduleConfigurations: false,
                     extensions: [
-                        [$class: 'CloneOption', depth: 0, shallow: false, noTags: false, honorRefspec: true],
-                        [$class: 'CheckoutOption', timeout: 20]
+                        [$class: 'CloneOption', depth: 0, shallow: false, noTags: false, honorRefspec: true, timeout: GIT_SCM_TIMEOUT_MINUTES],
+                        [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
                     ]
                 ]
                 checkout(deepScm)
                 echo "[SCM] Deep clone checkout successful."
-                // If the deep clone succeeds, exit the function
                 return
             }
         } catch (err) {
-            // This outer 'catch' block is specifically for retrying network errors
-            def msg = "${err}".toLowerCase()
-            if (msg.contains("connection reset by peer") && attempt < maxAttempts) {
-                echo "[SCM] Attempt ${attempt}/${maxAttempts} failed due to a network error."
+            // This outer 'catch' block is specifically for retrying network errors.
+            def msg = scmCheckoutRetryContext(err)
+            if (isRetriableScmCheckoutError(msg) && attempt < maxAttempts) {
+                echo "[SCM] ${repoName} checkout attempt ${attempt}/${maxAttempts} failed due to a transient git fetch error."
+                if (externalCheckout) {
+                    echo "[SCM] Removing partial ${repoName} checkout before retrying..."
+                    deleteDir()
+                }
                 echo "[SCM] Waiting 2 minutes before retrying..."
                 sleep(time: 2, unit: 'MINUTES')
-                // The loop will now continue to the next attempt.
             } else {
-                // This is either not a network error, or it was the final attempt. Fail the build
-                echo "[SCM] Unrecoverable SCM error after ${attempt} attempt(s)."
+                echo "[SCM] Unrecoverable ${repoName} checkout error after ${attempt} attempt(s)."
                 throw err
             }
         }
@@ -266,8 +371,7 @@ void buildMIGraphX(String cmakeOpts) {
 }
 
 void getAndBuildMIGraphX(String cmakeOpts) {
-    git branch: params.MIGraphXBranch, poll: false,\
-        url: 'https://github.com/ROCm/AMDMIGraphX.git'
+    robustScmCheckout(repoUrl: 'https://github.com/ROCm/AMDMIGraphX.git', ref: params.MIGraphXBranch, repoName: 'MIGraphX')
     buildMIGraphX(cmakeOpts)
 }
 
@@ -299,13 +403,45 @@ String dockerImageCIMIGraphX() {
     return 'rocm/mlir-migraphx-ci:rocm7.2-latest'
 }
 
-// For when the docker image is in a private repo
+def retryDockerOperation(String description, Closure operation) {
+    int attempt = 0
+    def result = null
+    retry(10) {
+        attempt += 1
+        try {
+            result = operation()
+        } catch (err) {
+            echo "[Docker retry] ${description} failed on attempt ${attempt}/10 on ${env.NODE_NAME}: ${err}"
+            if (attempt < 10) {
+                echo "[Docker retry] Waiting 5 seconds before retrying ${description}"
+                sleep(time: 5, unit: 'SECONDS')
+            }
+            throw err
+        }
+    }
+    return result
+}
+
+// For when the docker image is in a private repo, and to avoid anonymous Docker Hub pull throttling.
 void explicitDockerLogin() {
     withCredentials([usernamePassword(credentialsId: DOCKER_HUB_CREDS,
-                                      usernameVariable: 'D_USER', 
+                                      usernameVariable: 'D_USER',
                                       passwordVariable: 'D_PASS')]) {
-        sh "echo $D_PASS | docker login -u $D_USER --password-stdin"
+        retryDockerOperation('docker login to DockerHub') {
+            sh '''
+                set +x
+                printf "%s\n" "$D_PASS" | docker login -u "$D_USER" --password-stdin
+            '''
+        }
     }
+}
+
+def pullDockerImage(String imageName) {
+    def img = docker.image(imageName)
+    retryDockerOperation("docker pull ${imageName}") {
+        img?.pull()
+    }
+    return img
 }
 
 void preMergeCheck(String codepath) {
@@ -1037,8 +1173,8 @@ pipeline {
                                                 args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                 // Check these args
                                                 echo "Running ${CODEPATH} on ${env.NODE_NAME} with: ${args}"
-                                                img = docker.image(dockerImage())
-                                                img?.pull()
+                                                explicitDockerLogin()
+                                                img = pullDockerImage(dockerImage())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1203,8 +1339,8 @@ pipeline {
                                                 args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                 // Check these args
                                                 echo "Running ${CODEPATH} on ${env.NODE_NAME} with: ${args}"
-                                                img = docker.image(dockerImage())
-                                                img?.pull()
+                                                explicitDockerLogin()
+                                                img = pullDockerImage(dockerImage())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1293,8 +1429,8 @@ pipeline {
                                                 args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                 // Check these args
                                                 echo "Running ${CHIP} on ${env.NODE_NAME} with: ${args}"
-                                                img = docker.image(dockerImage())
-                                                img?.pull()
+                                                explicitDockerLogin()
+                                                img = pullDockerImage(dockerImage())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1494,8 +1630,8 @@ PY
                                                 args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                 // Check these args
                                                 echo "Running ${CHIP} on ${env.NODE_NAME} with: ${args}"
-                                                img = docker.image(dockerImage())
-                                                img?.pull()
+                                                explicitDockerLogin()
+                                                img = pullDockerImage(dockerImage())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1716,8 +1852,7 @@ PY
 
                                                 // Explicit docker login since this repo is private
                                                 explicitDockerLogin()
-                                                img = docker.image(dockerImageCIMIGraphX())
-                                                img?.pull()
+                                                img = pullDockerImage(dockerImageCIMIGraphX())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1841,8 +1976,8 @@ PY
                                                     args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                     // Check these args
                                                     echo "Running ${CODEPATH} on ${env.NODE_NAME} with: ${args}"
-                                                    img = docker.image(dockerImage())
-                                                    img?.pull()
+                                                    explicitDockerLogin()
+                                                    img = pullDockerImage(dockerImage())
                                                 }
                                                 // Spin up ONE container and stay in it for all substages
                                                 img.inside(args) {

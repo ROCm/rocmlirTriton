@@ -45,7 +45,7 @@ public:
       : numThreadsPerWarp(numThreadsPerWarp) {}
 
   bool isBarrierOp(Operation *op) const override {
-    return isa<NVVM::Barrier0Op>(op);
+    return isa<NVVM::BarrierOp>(op);
   }
 
   Type getBarrierHandleType(MLIRContext *ctx) const override {
@@ -76,8 +76,7 @@ public:
     if (numThreads == 32) {
       LLVM::NVIDIA::createSyncWarp(b.getLoc(), b);
     } else {
-      NVVM::BarrierOp::create(b, b.getLoc(), TypeRange{}, handle,
-                              b.i32_val(numThreads), {}, Value{});
+      NVVM::BarrierOp::create(b, b.getLoc(), handle, b.i32_val(numThreads));
     }
   }
 
@@ -263,6 +262,7 @@ namespace {
 struct ConvertWarpSpecializeToLLVM
     : public mlir::triton::impl::ConvertWarpSpecializeToLLVMBase<
           ConvertWarpSpecializeToLLVM> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertWarpSpecializeToLLVM)
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     // FIXME: Assume warp specialization only happens on Blackwell.

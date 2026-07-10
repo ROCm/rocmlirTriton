@@ -20,10 +20,9 @@ TEST(FindFallbackTest, ExactMatch) {
 }
 
 TEST(FindFallbackTest, OldestRelative) {
-  // gfx906 is supported but has no tuning entries. gfx908 has no conv_f16 entry
-  // in the table after the cleanup, so the oldest available gfx9* relative is
-  // gfx90a.
-  EXPECT_EQ("gfx90a_conv_f16",
+  // gfx906 is supported but has no tuning entries. gfx908 has a conv_f16 entry
+  // and is the closest (oldest) available gfx9* relative to gfx906.
+  EXPECT_EQ("gfx908_conv_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx906_conv_f16"));
 }
 
@@ -69,8 +68,10 @@ TEST(FindFallbackTest, UnavailableTuningList) {
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f16"));
   EXPECT_EQ("gfx1201_conv_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1200_conv_f16"));
-  EXPECT_EQ("gfx90a_gemm_f16",
-            ParamLookupTable<GemmParamsAttr>::findFallback("gfx908_gemm_f16"));
+  // gfx906 has no gemm_f16 entry, so it falls back to its closest relative that
+  // does, gfx908
+  EXPECT_EQ("gfx908_gemm_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx906_gemm_f16"));
   EXPECT_EQ("gfx1100_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1000_gemm_f16"));
 }
@@ -109,4 +110,28 @@ TEST(FindFallbackTest, F4FallsBackToI8) {
   // f4 has no 4-bit neighbour, so it also falls back to i8.
   EXPECT_EQ("gfx942_gemm_i8",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_gemm_f4"));
+}
+
+TEST(FindFallbackTest, Gfx908ExactMatches) {
+  // gfx908 now ships its own gemm/conv quick-tuning lists, so each dtype is an
+  // exact match rather than a fallback.
+  EXPECT_EQ("gfx908_gemm_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx908_gemm_f16"));
+  EXPECT_EQ("gfx908_conv_i8",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx908_conv_i8"));
+  EXPECT_EQ("gfx908_attention_f32",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx908_attention_f32"));
+}
+
+TEST(FindFallbackTest, OlderArchFallsBackToGfx908) {
+  // gfx906 has no lists of its own; gfx908 is its closest gfx9* relative that
+  // does, across gemm, conv, and attention.
+  EXPECT_EQ("gfx908_gemm_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx906_gemm_f16"));
+  EXPECT_EQ("gfx908_conv_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx906_conv_f16"));
+  EXPECT_EQ("gfx908_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx906_attention_f16"));
 }

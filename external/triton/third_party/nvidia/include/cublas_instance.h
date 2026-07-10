@@ -41,7 +41,11 @@ private:
       const cublasLtMatrixLayout_t, const cublasLtMatmulAlgo_t *, void *,
       size_t, cudaStream_t);
 
+#ifdef _WIN32
+  static constexpr const char *name = "cublasLt64_12.dll";
+#else
   static constexpr const char *name = "libcublas.so";
+#endif
 
   cublasLtCreate_t cublasLtCreate;
   cublasLtDestroy_t cublasLtDestroy;
@@ -76,7 +80,12 @@ private:
     if (dylibHandle == nullptr) {
       throw std::runtime_error("Could not find `" + std::string(name) +
                                "`. Make sure it is in your "
-                               "LD_LIBRARY_PATH.");
+#ifdef _WIN32
+                               "PATH."
+#else
+                               "LD_LIBRARY_PATH."
+#endif
+      );
     }
     dlerror(); // Clear any existing error
 

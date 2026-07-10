@@ -198,8 +198,7 @@ inline GemmParamsAttr getConservativeDefaultGemmParams(
                              /*useBlockPingpong=*/kKnobDefault,
                              /*useInThreadTranspose=*/kKnobDefault,
                              /*useBufferOps=*/kKnobDefault,
-                             /*useBufferAtomics=*/kKnobDefault,
-                             /*scheduleHint=*/kKnobDefault);
+                             /*useBufferAtomics=*/kKnobDefault);
 }
 
 /// Bump the first param matching `isApplicable` to the front, preserving the

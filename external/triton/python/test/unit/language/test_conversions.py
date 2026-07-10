@@ -271,6 +271,7 @@ def upcast_test(src_dtype, dst_dtype, exponent_bits, mantissa_bits, exponent_bia
     ('float8e4b8', 'float16'),
 
     ('float8e5b16', 'float32'),
+    ('float8e5b16', 'bfloat16'),
     ('float8e5b16', 'float16'),
 ])
 def test_typeconvert_upcast(src_dtype, dst_dtype, device):
@@ -278,8 +279,7 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
     # On HIP, fp8e4nv upcasting to fp32 is only supported on CDNA4, and
     # fp8e4nv upcasting to bf16 and fp16 is only supported on CDNA3 and CDNA4.
     if is_cuda():
-        if ((src_dtype == 'float8e4nv' and torch.cuda.get_device_capability(0) < (8, 9))
-            or src_dtype in ('float8e4b8', 'float8e5b16')):
+        if src_dtype in ('float8e4b8', 'float8e5b16'):
             # If the dtype should error out in the given device, we assert that and return
             with pytest.raises(triton.CompilationError, match="not supported in this architecture"):
                 launch_exhaustive_populate(getattr(tl, src_dtype), 0, 65536, False, 8, 0x7f, device=device)
@@ -294,7 +294,7 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
             with pytest.raises(triton.CompilationError, match="not supported in this architecture"):
                 launch_exhaustive_populate(getattr(tl, src_dtype), 0, 65536, False, 8, 0x7f, device=device)
             return
-        if src_dtype in ('float8e4b8', 'float8e5b16') and (is_hip_cdna2() or is_hip_rdna4() or is_hip_gfx1250()):
+        if src_dtype in ('float8e4b8', 'float8e5b16') and is_hip_cdna2():
             pytest.skip(f"{src_dtype} is not supported on current AMD GPU")
 
     # dtype : (exponent_bits, mantissa_bits, exponent_bias, max_repr)
@@ -337,19 +337,13 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
 
     if is_cuda():
-        if src_dtype != 'float32' and torch.cuda.get_device_capability(0) < (9, 0):
-            pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
-
-        if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and torch.cuda.get_device_capability(0) < (9, 0):
-            pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on NVGPU with compute capability 9.0+")
-
         if dst_dtype in ('float8e5b16', 'float8e4b8') and rounding == 'rtne':
             pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on AMDGPU CDNA3")
 
     if is_hip():
         if dst_dtype in FP8_DTYPES and is_hip_rdna3():
             pytest.skip(f"{dst_dtype} is not supported on AMDGPU RDNA3")
-        if dst_dtype in ('float8e4b8', 'float8e5b16') and (is_hip_cdna2() or is_hip_rdna4() or is_hip_gfx1250()):
+        if dst_dtype in ('float8e4b8', 'float8e5b16') and is_hip_cdna2():
             pytest.skip(f"{dst_dtype} is not supported on current AMD GPU")
 
     # dtype : (exponent_bits, mantissa_bits, exponent_bias)

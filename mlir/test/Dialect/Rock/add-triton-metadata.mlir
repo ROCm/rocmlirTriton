@@ -6,7 +6,7 @@
 // records a discardable rock.o_transposed attribute: true when M vectorizes
 // strictly better than N (column-major / transposed output), false otherwise.
 
-// RUN: rocmlir-opt -rock-add-triton-metadata --mlir-print-local-scope --split-input-file %s | FileCheck %s
+// RUN: rocmlir-opt -rock-add-triton-metadata --mlir-print-local-scope --split-input-file %s 2>&1 | FileCheck %s --implicit-check-not="Unexpected op"
 
 // Row-major destination (last dim contiguous): N vectorizes better than M, so
 // the output is not transposed.
@@ -194,6 +194,32 @@ func.func @chained_gemm(%a: tensor<64x64xf16>, %b: tensor<64x64xf16>, %c: tensor
     : tensor<4096xf32> to tensor<64x64xf32>
   %r = rock.blockwise_store %g2 -> %dest by set
     : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  return
+}
+
+// -----
+
+// Sequential stores to the same output thread the previous rock.blockwise_store
+// result through resultAlias while keeping the destination view fixed.
+
+#seq_store_row = #rock.transform_map<affine_map<(m, n) -> (m * 64 + n)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]>
+
+// CHECK-LABEL: @sequential_stores_same_output
+//      CHECK:   rock.blockwise_gemm
+// CHECK-SAME:     rock.o_transposed = #rock.o_transposed<false>
+//      CHECK:   rock.blockwise_gemm
+// CHECK-SAME:     rock.o_transposed = #rock.o_transposed<false>
+func.func @sequential_stores_same_output(%a: tensor<64x64xf16>, %b: tensor<64x64xf16>, %c: tensor<64x64xf32>, %dest_raw: tensor<4096xf32>) attributes {rock.kernel} {
+  %g1 = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %dest1 = rock.transform %dest_raw by #seq_store_row
+    : tensor<4096xf32> to tensor<64x64xf32>
+  %r1 = rock.blockwise_store %g1 -> %dest1 by atomic_add
+    : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<64x64xf32>
+  %g2 = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %r2 = rock.blockwise_store %g2 -> %dest1 alias %r1 by atomic_add
+    : tensor<64x64xf32> -> tensor<64x64xf32> alias tensor<64x64xf32> -> tensor<64x64xf32>
   return
 }
 

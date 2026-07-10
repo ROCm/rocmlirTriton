@@ -3,10 +3,74 @@
 #include <hip/hip_runtime_api.h>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
-#include <dlfcn.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#ifdef _WIN32
+#include <malloc.h>
+#include <windows.h>
+// Windows compatibility layer for dlopen/dlsym/dlclose/dlerror
+#define RTLD_NOW 0
+#define RTLD_LAZY 0
+#define RTLD_LOCAL 0
+static char dlerror_buf[512];
+// Format a Windows error code into a human-readable message.
+static void win32_format_error(char *buf, size_t bufsize, const char *context,
+                               DWORD err) {
+  char msg[256] = {0};
+  DWORD len =
+      FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                     NULL, err, 0, msg, sizeof(msg), NULL);
+  // Strip trailing \r\n
+  while (len > 0 && (msg[len - 1] == '\r' || msg[len - 1] == '\n'))
+    msg[--len] = '\0';
+  snprintf(buf, bufsize, "%s: %s (error %lu)", context,
+           len ? msg : "Unknown error", (unsigned long)err);
+}
+static inline void *dlopen(const char *filename, int flags) {
+  (void)flags;
+  // Reuse HIP DLL if already loaded to share GPU memory context
+  const char *basename = strrchr(filename, '\\') + 1;
+  HMODULE h = GetModuleHandleA(basename);
+  if (!h) {
+    h = LoadLibraryA(filename);
+    if (!h) {
+      char context[256];
+      snprintf(context, sizeof(context), "LoadLibrary failed for '%s'",
+               filename);
+      win32_format_error(dlerror_buf, sizeof(dlerror_buf), context,
+                         GetLastError());
+    }
+  }
+  return (void *)h;
+}
+static inline void *dlsym(void *handle, const char *symbol) {
+  void *p = (void *)GetProcAddress((HMODULE)handle, symbol);
+  if (!p) {
+    char context[256];
+    snprintf(context, sizeof(context), "GetProcAddress failed for '%s'",
+             symbol);
+    win32_format_error(dlerror_buf, sizeof(dlerror_buf), context,
+                       GetLastError());
+  }
+  return p;
+}
+static inline int dlclose(void *handle) {
+  return FreeLibrary((HMODULE)handle) ? 0 : -1;
+}
+static inline const char *dlerror(void) {
+  return dlerror_buf[0] ? dlerror_buf : NULL;
+}
+#else
+#include <dlfcn.h>
+#endif
+
+#ifdef _WIN32
+#define HIP_LIB_NAME "amdhip64.dll"
+#else
+#define HIP_LIB_NAME "libamdhip64.so"
+#endif
 
 // Include shared TDM utilities
 #include "TDMCommon.h"
@@ -35,8 +99,8 @@ typedef struct {
 } TDMDescriptor;
 
 typedef struct {
-  PyObject_HEAD;
-  TDMDescriptor desc;
+  PyObject_HEAD // No extra semicolon in typedef struct
+      TDMDescriptor desc;
 } PyTDMDescriptorObject;
 
 static PyObject *PyTDMDescriptor_new(PyTypeObject *type, PyObject *args,
@@ -69,8 +133,8 @@ typedef enum { ARG_CONSTEXPR = 0, ARG_KERNEL = 1, ARG_TUPLE = 2 } ArgType;
 
 // Annotation struct to know how the argument should be handled.
 typedef struct {
-  PyObject_HEAD;
-  PyObject *nested_tuple; // Can be a List of PyKernelArgObjects or None
+  PyObject_HEAD               // No extra semicolon in typedef struct
+      PyObject *nested_tuple; // Can be a List of PyKernelArgObjects or None
   ArgType type;
 } PyKernelArgObject;
 
@@ -134,12 +198,15 @@ static bool encodeTDMDescriptor(TDMDescriptor *desc, int elementBitWidth,
     adjustedBlockSize[i] = (uint32_t)adjustedBlockSize64[i];
 
   // group0 (128 bits / 4 dwords) effective bit encoding:
-  // [1:0]:     pred (to be filled later)
+  // [1:0]:     pred (defaulted to 1)
   // [63:32]:   lds address (to be filled later)
   // [120:64]:  global address
   // [127:126]: type - currently always set to 0x2
+  // Default pred = 1 (matches device createTDMDescriptor) so a host descriptor
+  // used by a copy without an explicit pred update doesn't silently no-op.
+  desc->group0_0 = 1;
   desc->group0_2 = (uint32_t)(globalAddress & 0xFFFFFFFF);
-  desc->group0_3 = (uint32_t)((globalAddress >> 32) & 0x7FFFFFFF) | (0x1 << 31);
+  desc->group0_3 = (uint32_t)((globalAddress >> 32) & 0x7FFFFFFF) | (1U << 31);
 
   // group1 (256 bits / 8 dwords) effective bit encoding:
   // [15:0]:    multicast mask
@@ -321,7 +388,7 @@ static int checkDriverVersion(void *lib) {
   error = dlerror();
   if (error) {
     PyErr_SetString(PyExc_RuntimeError,
-                    "cannot query 'hipDriverGetVersion' from libamdhip64.so");
+                    "cannot query 'hipDriverGetVersion' from " HIP_LIB_NAME);
     dlclose(lib);
     return -1;
   }
@@ -336,9 +403,9 @@ static int checkDriverVersion(void *lib) {
     const int hipPatchVersion =
         TRITON_HIP_DRIVER_EXTRACT_PATCH_VERSION(hipVersion);
     snprintf(msgBuff, sizeof(msgBuff),
-             "libamdhip64 version %d.%d.%d is not supported! Required major "
+             "%s version %d.%d.%d is not supported! Required major "
              "version is >=%d.",
-             hipMajVersion, hipMinVersion, hipPatchVersion,
+             HIP_LIB_NAME, hipMajVersion, hipMinVersion, hipPatchVersion,
              TRITON_HIP_DRIVER_REQ_MAJOR_VERSION);
     PyErr_SetString(PyExc_RuntimeError, msgBuff);
     dlclose(lib);
@@ -364,7 +431,7 @@ bool initSymbolTable() {
   }
 
   if (!lib) {
-    PyErr_SetString(PyExc_RuntimeError, "cannot open libamdhip64.so");
+    PyErr_SetString(PyExc_RuntimeError, "cannot open " HIP_LIB_NAME);
     return false;
   }
 
@@ -383,7 +450,7 @@ bool initSymbolTable() {
   error = dlerror();
   if (error) {
     PyErr_SetString(PyExc_RuntimeError,
-                    "cannot query 'hipGetProcAddress' from libamdhip64.so");
+                    "cannot query 'hipGetProcAddress' from " HIP_LIB_NAME);
     dlclose(lib);
     return false;
   }
@@ -399,7 +466,7 @@ bool initSymbolTable() {
   if (required && status != hipSuccess) {                                      \
     PyErr_SetString(PyExc_RuntimeError,                                        \
                     "cannot get address for '" #hipSymbolName                  \
-                    "' from libamdhip64.so");                                  \
+                    "' from " HIP_LIB_NAME);                                   \
     dlclose(lib);                                                              \
     return false;                                                              \
   }

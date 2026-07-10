@@ -425,8 +425,7 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
         params.getNumStages(), params.getWavesPerEU(),
         params.getGridGroupSize(), params.getUseAsyncCopy(),
         params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
-        params.getUseBufferOps(), params.getUseBufferAtomics(),
-        params.getScheduleHint());
+        params.getUseBufferOps(), params.getUseBufferAtomics());
   };
 
   SmallVector<Value> resultGrid;
@@ -466,8 +465,8 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
                           mSegs, nSegs);
   splitter.seed(gemm.getResult(), resultGrid);
 
-  // Process stores in program order so chained stores (store N+1 writes through
-  // a view of store N's result) thread correctly.
+  // Process stores in program order so explicit resultAlias chains thread
+  // through the decomposed sub-stores correctly.
   func::FuncOp func = gemm->getParentOfType<func::FuncOp>();
   SmallVector<Operation *> orderedStores;
   for (StoreOp st : stores)
@@ -491,17 +490,18 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
     Type storeResultType = store.getResult().getType();
     StoreMethodAttr method = store.getStoreMethodAttr();
 
-    // Thread the destination through each sub-store so the final tensor value
-    // represents all disjoint tile writes.
-    Value currentDestRoot = destRoot;
+    // Keep destination views rooted at the original destination. Only the
+    // result alias advances through the sub-store chain.
+    Value currentResultAlias =
+        store.getResultAlias() ? store.getResultAlias() : destRoot;
     for (int64_t cell = 0; cell < splitter.numCells(); ++cell) {
-      Value view = rock::transform(b, currentDestRoot, destMaps);
+      Value view = rock::transform(b, destRoot, destMaps);
       Value destCell = splitter.sliceCell(view, cell);
       auto st = StoreOp::create(b, loc, storeResultType, (*srcGrid)[cell],
-                                destCell, method);
-      currentDestRoot = st.getResult();
+                                destCell, currentResultAlias, method);
+      currentResultAlias = st.getResult();
     }
-    store.getResult().replaceAllUsesWith(currentDestRoot);
+    store.getResult().replaceAllUsesWith(currentResultAlias);
   }
 
   return success();

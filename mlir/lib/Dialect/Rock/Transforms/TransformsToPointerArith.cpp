@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -464,7 +465,7 @@ struct TransformsToPtrRewritePattern
 
     source = isolateTransforms(b, source);
 
-    auto [buffer, transforms, _] = untransform(b, source);
+    auto [buffer, transforms, _] = rock::untransform(b, source);
 
     // After regularize-input, the root of any transform chain must be either
     // a block argument (kernel input tensor) or an arith.constant (splat).

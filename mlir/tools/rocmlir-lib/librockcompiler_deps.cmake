@@ -139,6 +139,7 @@ MLIRIR
 MLIRIndexDialect
 MLIRIndexToLLVM
 MLIRIndexingMapOpInterface
+MLIRInferIntDivisibilityOpInterface
 MLIRInferIntRangeCommon
 MLIRInferIntRangeInterface
 MLIRInferStridedMetadataInterface

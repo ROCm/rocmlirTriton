@@ -1,22 +1,24 @@
-// Case 1: fp8 pointer arg present -> `disableTrue16` -> fake16 (plain VGPRs).
+// Case 1: gfx11 (RDNA3) -> disableTrue16 -> fake16 (plain VGPRs).
 // RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1100' %s 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=FAKE16
-// Case 2: same kernel without the fp8 arg -> true16 left enabled (.l/.h subregs).
-// RUN: sed 's/ {tt.pointee_type = f8E4M3FN}//' %s \
-// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1100' 2>&1 \
+// Case 2: gfx12 (RDNA4) -> disable does NOT apply -> true16 (.l/.h subregs).
+// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1200' %s 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=TRUE16
 
-// Verify the gfx11 (RDNA3) true16 workaround in translateTritonToHsaco(): when a
-// kernel argument points to an fp8 element type, `disableTrue16` adds the
-// `-real-true16` target feature to the AMDGCN/HSACO codegen TargetMachine. That
-// feature is not reflected in the LLVM IR, so we inspect the AMDGCN assembly
-// dump (AMDGCN_ENABLE_DUMP). With true16 disabled the f16 ops use full 32-bit
-// VGPRs (fake16); otherwise the backend emits true16 `.l`/`.h` subregisters.
+// Verify the gfx11 (RDNA3) true16 workaround in translateTritonToHsaco(): for
+// every gfx11 kernel `disableTrue16` adds the `-real-true16` target feature to
+// the AMDGCN/HSACO codegen TargetMachine, unconditionally (it is not gated on
+// fp8 operand usage). This mirrors upstream compiler.py
+// disable_real_true16_feature(), which returns `-real-true16` for any arch
+// starting with "gfx11" and "" otherwise. That feature is not reflected in the
+// LLVM IR, so we inspect the AMDGCN assembly dump (AMDGCN_ENABLE_DUMP). On gfx11
+// the f16 ops use full 32-bit VGPRs (fake16); on a gfx12 arch, where the disable
+// does not apply, the backend emits true16 `.l`/`.h` subregisters.
 
 // FAKE16: v_add_f16_e32 v{{[0-9]+}}, v{{[0-9]+}}, v{{[0-9]+}}
 // TRUE16: v_add_f16_e32 v{{[0-9]+}}.{{[lh]}}, v{{[0-9]+}}.{{[lh]}}, v{{[0-9]+}}.{{[lh]}}
 module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
-  llvm.func amdgpu_kernelcc @kernel(%arg0: !llvm.ptr {tt.pointee_type = f8E4M3FN}, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
+  llvm.func amdgpu_kernelcc @kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
     %0 = llvm.load %arg1 : !llvm.ptr -> f16
     %1 = llvm.load %arg2 : !llvm.ptr -> f16
     %2 = llvm.fadd %0, %1 : f16

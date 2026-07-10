@@ -55,6 +55,23 @@ func.func @test_no_store(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf16>) att
 
 // -----
 
+#p80x80_alias = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// ============================================================
+// Error: a rock.store resultAlias is not a store sink for the
+// traced gridwise_gemm output. Only the store source operand
+// should count as consuming the output.
+// ============================================================
+
+func.func @test_store_alias_is_not_output_sink(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf16>, %src: tensor<1x160x160xf32>, %dest: tensor<1x160x160xf32>) -> tensor<1x160x160xf32> attributes {rock.kernel} {
+  // expected-error @+1 {{cannot trace gridwise_gemm output to rock.store}}
+  %r = rock.gridwise_gemm(%a, %b) {params = #p80x80_alias} : tensor<1x160x64xf16>, tensor<1x64x160xf16> -> tensor<1x160x160xf32>
+  %out = rock.store %src to %dest alias %r by set : tensor<1x160x160xf32> -> tensor<1x160x160xf32> to tensor<1x160x160xf32> alias tensor<1x160x160xf32>
+  return %out : tensor<1x160x160xf32>
+}
+
+// -----
+
 #p80x80c = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 
 // ============================================================

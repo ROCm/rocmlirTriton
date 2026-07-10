@@ -46,7 +46,11 @@ class HipblasLtInstance {
       const hipblasLtMatrixLayout_t, void *, const hipblasLtMatrixLayout_t,
       const hipblasLtMatmulAlgo_t *, void *, size_t, hipStream_t);
 
+#ifdef _WIN32
+  static constexpr const char *name = "libhipblaslt.dll";
+#else
   static constexpr const char *name = "libhipblaslt.so";
+#endif
 
   hipblasLtCreate_t hipblasLtCreate;
   hipblasLtDestroy_t hipblasLtDestroy;
@@ -81,7 +85,12 @@ class HipblasLtInstance {
     if (dylibHandle == nullptr) {
       throw std::runtime_error("Could not find `" + std::string(name) +
                                "`. Make sure it is in your "
-                               "LD_LIBRARY_PATH.");
+#ifdef _WIN32
+                               "PATH."
+#else
+                               "LD_LIBRARY_PATH."
+#endif
+      );
     }
     dlerror(); // Clear any existing error
 

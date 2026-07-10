@@ -814,8 +814,8 @@ static Operation *sliceOp(Operation *op, int offset, IRMapping &mappings,
                     builder.getContext(),
                     dim == 0 ? tmem.getBlockM() / 2 : tmem.getBlockM(),
                     dim == 1 ? tmem.getBlockN() / 2 : tmem.getBlockN(),
-                    tmem.getColStride(), tmem.getCGALayout(),
-                    tmem.getTwoCTAs());
+                    tmem.getColStride(), tmem.getCGALayout(), tmem.getTwoCTAs(),
+                    tmem.getFp4Padded());
             auto newType = MemDescType::get(shape, type.getElementType(),
                                             accEncoding, type.getMemorySpace(),
                                             type.getMutableMemory());
@@ -921,7 +921,8 @@ static Operation *sliceOp(Operation *op, int offset, IRMapping &mappings,
           builder.getContext(),
           dim == 0 ? tmem.getBlockM() / 2 : tmem.getBlockM(),
           dim == 1 ? tmem.getBlockN() / 2 : tmem.getBlockN(),
-          tmem.getColStride(), tmem.getCGALayout(), tmem.getTwoCTAs());
+          tmem.getColStride(), tmem.getCGALayout(), tmem.getTwoCTAs(),
+          tmem.getFp4Padded());
       auto newType = MemDescType::get(shape, retType.getElementType(),
                                       accEncoding, retType.getMemorySpace(),
                                       retType.getMutableMemory());
@@ -1375,6 +1376,7 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
 class NVGPUTestWSDataPartitionPass
     : public impl::NVGPUTestWSDataPartitionBase<NVGPUTestWSDataPartitionPass> {
 public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(NVGPUTestWSDataPartitionPass)
   using impl::NVGPUTestWSDataPartitionBase<
       NVGPUTestWSDataPartitionPass>::NVGPUTestWSDataPartitionBase;
 
