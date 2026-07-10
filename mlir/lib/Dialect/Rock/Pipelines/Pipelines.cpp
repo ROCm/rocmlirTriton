@@ -262,6 +262,7 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
                      int64_t useReductionLayout) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
+  // --- rocmlirTriton pass ----
   // Redistribute the layout of the reduction dimension to reduce register
   // pressure. Always scheduled: the pass runs on convolution kernels
   // (`rock.conv_kernel`) unconditionally, and the `useReductionLayout`
@@ -269,6 +270,7 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
   reductionLayoutOpts.useReductionLayout = useReductionLayout;
   pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
+  // --- rocmlirTriton pass ----
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?

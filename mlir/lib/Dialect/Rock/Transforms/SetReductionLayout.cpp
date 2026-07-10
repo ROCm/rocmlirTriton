@@ -328,6 +328,9 @@ void RockSetReductionLayoutPass::runOnOperation() {
 
   // A single load that feeds two dots as different operands (conflicting
   // reduction dims) is ambiguous; leave it untouched rather than guess.
+  //
+  // TODO: Duplicating the load (one clone per reduction dim) would let each dot
+  // keep its ideal layout, but whether it's beneficial is not clear.
   for (auto [load, kDim] : loadKDim) {
     if (conflicting.contains(load)) {
       load->emitWarning("rock-set-reduction-layout: load feeds dot operands "

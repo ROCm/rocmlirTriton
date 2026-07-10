@@ -786,6 +786,11 @@ def RockSetReductionLayoutPass
     layout so that each warp owns a full reduction (K) strip. Moving
     the load's `warpsPerCTA` off the free/N dim and onto the reduction/K dim
     can potentially reduce SGPR spill on convolution kernels.
+
+    This only applies to `tt.load`/`amdgpu.buffer_load` staged through an
+    `amdgpu.in_thread_transpose`, whose re-layout decouples the read
+    distribution from the LDS layout the dot consumes; direct-to-LDS and TDM
+    loads have no such stage and are out of scope.
   }];
   let dependentDialects = ["rock::RockDialect", "triton::gpu::TritonGPUDialect",
                            "triton::amdgpu::TritonAMDGPUDialect",
