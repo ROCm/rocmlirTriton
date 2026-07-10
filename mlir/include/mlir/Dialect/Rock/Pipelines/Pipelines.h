@@ -114,9 +114,9 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
   PassOptions::Option<int64_t> useReductionLayout{
       *this, "useReductionLayout",
       desc("Gate the rock-set-reduction-layout pass (warp redistribution "
-           "onto the reduction dim). 0=off (default), 1=on. Not tuned; "
-           "opt-in via the perfConfig."),
-      init(0)};
+           "onto the reduction dim). kKnobDefault=-1 (heuristic, currently "
+           "off), 0=off, 1=on. Not tuned; opt-in via the perfConfig."),
+      init(kKnobDefault)};
 };
 
 /// Adds the `triton` pipeline to the `OpPassManager`.

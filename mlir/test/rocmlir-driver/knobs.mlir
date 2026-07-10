@@ -170,16 +170,21 @@
 // useReductionLayout
 //===----------------------------------------------------------------------===//
 //
-// `useReductionLayout` is the v4 perfConfig knob. It is opt-in:
-// no arch enables it by default, so both the default (0, elided in the
-// backward-compatible v3 serialization) and the explicit v3 form keep the
-// `rock-set-reduction-layout` pass out of the pipeline. Only an explicit
-// `gemm:v4:...,1` schedules it.
+// `useReductionLayout` is the v4 perfConfig knob and a tri-state gate like the
+// other knobs: -1 (the knob default / heuristic, currently off), 0 (off), or
+// 1 (on). Both the default (-1, elided in the backward-compatible v3
+// serialization) and an explicit 0 keep the `rock-set-reduction-layout` pass
+// out of the pipeline. Only an explicit `gemm:v4:...,1` schedules it.
 
-// Default (v3 string, knob absent): the reduction-layout pass is not scheduled.
+// Default (v3 string, knob absent -> defaults to -1): pass is not scheduled.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_DEFAULT
+
+// v4 with useReductionLayout=-1 (heuristic default, currently off): absent.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=RL_HEURISTIC
 
 // v4 with useReductionLayout=0 (explicit off): still absent.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,0 \
@@ -192,6 +197,7 @@
 // RUN:   | FileCheck %s --check-prefix=RL_ON
 
 // RL_DEFAULT-NOT: rock-set-reduction-layout
+// RL_HEURISTIC-NOT: rock-set-reduction-layout
 // RL_OFF-NOT: rock-set-reduction-layout
 // RL_ON: rock-set-reduction-layout
 
@@ -209,12 +215,8 @@
 // RUN:   | not rocmlir-opt --pass-pipeline='builtin.module(rock-triton-pipeline{arch=gfx942 useAsyncCopy=-2})' 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=BAD_USEASYNCCOPY
 
-// useReductionLayout is stricter than the boolean knobs above: it has no arch
-// default, so -1 is rejected (not treated as a sentinel) ...
-// RUN: echo 'module {}' \
-// RUN:   | not rocmlir-opt --pass-pipeline='builtin.module(rock-triton-pipeline{arch=gfx942 useReductionLayout=-1})' 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=BAD_USEREDUCTIONLAYOUT_NEG
-
+// useReductionLayout is a tri-state gate like the boolean knobs above, so -1
+// (the knob default) is accepted; out-of-range values are rejected.
 // RUN: echo 'module {}' \
 // RUN:   | not rocmlir-opt --pass-pipeline='builtin.module(rock-triton-pipeline{arch=gfx942 useReductionLayout=2})' 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=BAD_USEREDUCTIONLAYOUT_TWO
@@ -225,8 +227,5 @@
 // BAD_USEASYNCCOPY: LLVM ERROR: invalid `--pass-pipeline=triton{useAsyncCopy=-2}`
 // BAD_USEASYNCCOPY-SAME: expected -1 (arch default), 0 (off), or 1 (on)
 
-// BAD_USEREDUCTIONLAYOUT_NEG: LLVM ERROR: invalid `--pass-pipeline=triton{useReductionLayout=-1}`
-// BAD_USEREDUCTIONLAYOUT_NEG-SAME: expected 0 (off) or 1 (on)
-
 // BAD_USEREDUCTIONLAYOUT_TWO: LLVM ERROR: invalid `--pass-pipeline=triton{useReductionLayout=2}`
-// BAD_USEREDUCTIONLAYOUT_TWO-SAME: expected 0 (off) or 1 (on)
+// BAD_USEREDUCTIONLAYOUT_TWO-SAME: expected -1 (default), 0 (off), or 1 (on)

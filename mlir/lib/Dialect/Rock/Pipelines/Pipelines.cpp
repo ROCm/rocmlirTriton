@@ -111,13 +111,13 @@ static void validateTritonOptionsKnobs(const rock::TritonOptions &options) {
     if (!rock::isValidKnobBoolean(value))
       reject(name, value);
   }
-  // `useReductionLayout` is a strict 0/1 gate with no arch default; unlike the
-  // knobs above it does not accept `kKnobDefault` (-1).
-  if (options.useReductionLayout != 0 && options.useReductionLayout != 1) {
+  // `useReductionLayout` is a tri-state gate like the knobs above:
+  // `kKnobDefault` (-1, heuristic/currently off), 0 (off), or 1 (on).
+  if (!rock::isValidKnobBoolean(options.useReductionLayout)) {
     llvm::report_fatal_error(
         Twine("invalid `--pass-pipeline=triton{useReductionLayout=") +
             Twine(options.useReductionLayout) +
-            "}`; expected 0 (off) or 1 (on)",
+            "}`; expected -1 (default), 0 (off), or 1 (on)",
         /*GenCrashDiag=*/false);
   }
 }
