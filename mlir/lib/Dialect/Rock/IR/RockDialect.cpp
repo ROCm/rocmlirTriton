@@ -1113,11 +1113,12 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
     Operation *user = use.getOwner();
     if (isa<ViewLikeOpInterface>(user))
       continue;
-    // Store chaining is valid when the previous store result is threaded as
-    // the destination tensor for the next same-kind store. The dest operand is
-    // operand 1.
-    if (isa<StoreOpT>(user) && use.getOperandNumber() == 1)
-      continue;
+    // Store chaining is valid only when the previous store result is threaded
+    // as the explicit result alias for the next same-kind store.
+    if (auto nextStore = dyn_cast<StoreOpT>(user)) {
+      if (nextStore.getResultAlias() && use.get() == nextStore.getResultAlias())
+        continue;
+    }
     if (isa<func::ReturnOp>(user)) {
       if (++returnUseCount > 1)
         return op.emitOpError("result may be returned at most once");
@@ -1125,8 +1126,37 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
     }
     return op.emitOpError(
         "result must be used directly by a func.return, view-like op, or "
-        "destination operand of another same-kind store");
+        "resultAlias operand of another same-kind store");
   }
+  return success();
+}
+
+template <typename StoreOpT>
+static LogicalResult verifyStoreDest(StoreOpT op) {
+  FailureOr<BlockArgument> maybeBlockArg =
+      rock::findBlockArgument(op.getDest());
+  func::FuncOp funcOp = op->template getParentOfType<func::FuncOp>();
+  if (failed(maybeBlockArg) || !funcOp ||
+      maybeBlockArg->getOwner() != &funcOp.getBody().front()) {
+    return op.emitOpError(
+        "dest transform chain root must be a function entry block argument");
+  }
+
+  return success();
+}
+
+template <typename StoreOpT>
+static LogicalResult verifyStoreResultAlias(StoreOpT op) {
+  Value resultAlias = op.getResultAlias();
+  if (!resultAlias)
+    return success();
+
+  if (resultAlias.getType() != op.getResult().getType()) {
+    return op.emitOpError("resultAlias type must match result type")
+           << " (alias: " << resultAlias.getType()
+           << ", result: " << op.getResult().getType() << ")";
+  }
+
   return success();
 }
 
@@ -1137,6 +1167,12 @@ LogicalResult StoreOp::verify() {
   if (sourceType.getShape() != destType.getShape())
     return emitOpError("source and dest shapes must match")
            << " (source: " << sourceType << ", dest: " << destType << ")";
+
+  if (failed(verifyStoreResultAlias(*this)))
+    return failure();
+
+  if (failed(verifyStoreDest(*this)))
+    return failure();
 
   return verifyStoreResultUses(*this, getResult());
 }
@@ -1598,6 +1634,12 @@ LogicalResult BlockwiseStoreOp::verify() {
            << " (" << destType.getShape().take_back(sourceType.getRank())
            << " != " << sourceType.getShape() << ")";
   }
+
+  if (failed(verifyStoreResultAlias(*this)))
+    return failure();
+
+  if (failed(verifyStoreDest(*this)))
+    return failure();
 
   return verifyStoreResultUses(*this, getResult());
 }

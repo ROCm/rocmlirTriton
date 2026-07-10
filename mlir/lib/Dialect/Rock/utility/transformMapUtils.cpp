@@ -28,6 +28,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
@@ -800,30 +801,24 @@ mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
   Value currentVal = transformed;
   auto contiguousMerges = findContiguousGroups(transformed);
 
-  // Advance to the next operation to analyze, updating any vectorization
-  // analysis state as needed. This function must update currentVal, and may
-  // update other variables. This advances to the next rock.transform operation.
-  auto advance = [&]() -> bool {
-    Operation *definingOp = currentVal.getDefiningOp();
-    if (!definingOp)
-      return false;
-    if (auto trOp = dyn_cast<TransformOp>(definingOp)) {
-      currentVal = trOp.getInput();
-      return true;
+  // This analysis is called after the Rock regularization passes have made the
+  // view a pure rock.transform chain rooted at a block argument. Any other
+  // defining op means the IR does not satisfy that contract.
+  while (Operation *definingOp = currentVal.getDefiningOp()) {
+    auto trOp = dyn_cast<TransformOp>(definingOp);
+    if (!trOp) {
+      definingOp->emitError()
+          << "expected only rock.transform ops in transform chain after "
+             "regularization";
+      llvm::report_fatal_error("Malformed transform chain");
     }
-    definingOp->emitError("Unexpected op\n");
-    return false;
-  };
-
-  do {
-    if (auto trOp = currentVal.getDefiningOp<TransformOp>()) {
-      TransformMapAttr transformMap = trOp.getTransform();
-      LLVM_DEBUG(llvm::dbgs() << "Max vectorization data: ");
-      data.debugPrint();
-      LLVM_DEBUG(llvm::dbgs() << "Processing: " << transformMap << "\n");
-      data = propagateVectorizationInfo(transformMap, data, contiguousMerges);
-    }
-  } while (advance());
+    TransformMapAttr transformMap = trOp.getTransform();
+    LLVM_DEBUG(llvm::dbgs() << "Max vectorization data: ");
+    data.debugPrint();
+    LLVM_DEBUG(llvm::dbgs() << "Processing: " << transformMap << "\n");
+    data = propagateVectorizationInfo(transformMap, data, contiguousMerges);
+    currentVal = trOp.getInput();
+  }
   LLVM_DEBUG(llvm::dbgs() << "Final max vectorization data: ");
   data.debugPrint();
 

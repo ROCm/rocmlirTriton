@@ -181,6 +181,7 @@ static void insertStoreOps(func::FuncOp funcOp, func::ReturnOp returnOp,
                                    /*result=*/info.returnOperand.getType(),
                                    /*source=*/info.returnOperand,
                                    /*dest=*/info.storeArg,
+                                   /*resultAlias=*/Value(),
                                    /*storeMethod=*/storeMethodAttr);
     returnOp.setOperand(info.returnIndex, storeOp.getResult());
   }

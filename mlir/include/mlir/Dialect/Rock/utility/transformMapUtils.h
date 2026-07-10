@@ -88,20 +88,21 @@ struct VectorizationResult {
   int64_t bufferVectorSize = 1;
 };
 
-/// Given a transformed Value `transformed`, which is the result of applying
-/// a sequence of zero or more `rock.transforms` (with an optional single
-/// intervening `rock.scalarize` in the middle), a dimension `dim` in the
+/// Given a transformed Value `transformed`, which is the result of applying a
+/// sequence of zero or more `rock.transforms`, a dimension `dim` in the
 /// coordinate space of `transformed`, and an optional `inputDimLen` (if
 /// different from the maximum possible length), return `VectorizationLengths`
 /// where `max` is the largest stride `s` such that length-`s` slices of `dim`
 /// correspond to contiguous slices of the underlying memory for `transformed`.
-/// `bufferVectorSize` will be set to a value > 1 to reflect an intervening
-/// `rock.scalarize` operation.
 ///
 /// `ignoreDataType` forces vectorization even when the inferred vectorization
 /// length for `transformed` would cause vector operations on its data type
 /// to exceed the maximum hardware vector memory operation for that type. It
 /// is primarily intended for testing.
+///
+/// This analysis assumes it runs after the Rock regularization passes, when
+/// `transformed` is a pure chain of `rock.transform` ops rooted at a block
+/// argument. A non-transform defining op in the chain indicates malformed IR.
 VectorizationResult
 getMaxVectorization(Value transformed, uint32_t dim,
                     std::optional<int64_t> inputDimLen = std::nullopt,

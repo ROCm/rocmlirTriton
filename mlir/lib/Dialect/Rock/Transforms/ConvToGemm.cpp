@@ -143,8 +143,9 @@ void updateStoreOpForGemm(PatternRewriter &b, Location loc, Value convResult,
   for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
     if (auto storeOp = dyn_cast<StoreOp>(user)) {
       Type storeResultType = storeOp.getResult().getType();
-      auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
-                                        gemmDest, storeMethod);
+      auto newStoreOp =
+          StoreOp::create(b, loc, storeResultType, gemmResult, gemmDest,
+                          storeOp.getResultAlias(), storeMethod);
       b.replaceOp(storeOp, newStoreOp.getResult());
     }
   }
@@ -1142,44 +1143,34 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     Value destBuffer = originalStoreOp.getDest();
     ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
 
-    Value destRoot;
-    ArrayAttr destMaps;
-    std::tie(destRoot, destMaps, std::ignore) =
-        rock::untransform(b, destBuffer);
-
-    // Thread the destination through each per-kernel store so the single
-    // returned tensor represents all disjoint bwd_data phase writes. Depending
-    // on the incoming store type, stores may return either the untransformed
-    // root tensor or the logical destination-view type. Rebuild the original
-    // view only when the store result is the root type.
-    Value currentDest = destBuffer;
+    // Thread only the store result alias through each per-kernel store so the
+    // single returned tensor represents all disjoint bwd_data phase writes. The
+    // actual destination view stays rooted at the original destination buffer.
+    // If the original store had no explicit alias, the first generated store
+    // starts the SSA chain and later stores alias the previous store result.
+    Value currentResultAlias = originalStoreOp.getResultAlias();
     Value finalStoreResult;
     for (auto [idx, kid] : llvm::enumerate(kernelIds)) {
-      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, currentDest);
+      auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
       if (failed(maybe))
         return failure();
 
       auto [gemmResult, gemmDest] = maybe.value();
-      auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
-                                        gemmDest, storeMethod);
+      auto newStoreOp =
+          StoreOp::create(b, loc, storeResultType, gemmResult, gemmDest,
+                          currentResultAlias, storeMethod);
       finalStoreResult = newStoreOp.getResult();
       if (idx + 1 < kernelIds.size()) {
-        if (finalStoreResult.getType() == destRoot.getType()) {
-          currentDest = rock::transform(b, finalStoreResult, destMaps);
-        } else {
-          if (finalStoreResult.getType() != destBuffer.getType())
-            return bwdDataOp.emitOpError(
-                "store result type does not match destination root or view");
-          currentDest = finalStoreResult;
-        }
+        currentResultAlias = finalStoreResult;
       }
     }
 
     // BwdData with multiple kernel IDs emits N independent gemm + store pairs,
     // each writing a disjoint slice of the same output buffer. Since
-    // `rock.store` is Pure, each store result must be live; threading the
-    // destination through the stores makes the final result represent the full
-    // logical output without exposing per-phase stores in the function ABI.
+    // `rock.store` is Pure, each store result must be live; threading later
+    // stores through the previous store result makes the final result represent
+    // the full logical output without exposing per-phase stores in the function
+    // ABI.
     b.replaceOp(originalStoreOp, finalStoreResult);
     b.eraseOp(bwdDataOp);
 
@@ -1660,9 +1651,9 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
       if (source == op.getResult())
         source = result;
       b.setInsertionPoint(storeOp);
-      auto newStoreOp = rock::StoreOp::create(b, storeOp.getLoc(),
-                                              storeOp.getResult().getType(),
-                                              source, view, storeMethod);
+      auto newStoreOp = rock::StoreOp::create(
+          b, storeOp.getLoc(), storeOp.getResult().getType(), source, view,
+          storeOp.getResultAlias(), storeMethod);
       b.replaceOp(storeOp, newStoreOp.getResult());
     }
 
