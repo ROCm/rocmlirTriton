@@ -16,7 +16,7 @@
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -51,7 +51,7 @@ func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>)
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @hoist_index_iv(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_index_iv(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
@@ -87,7 +87,7 @@ func.func @hoist_index_iv(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) ->
 #transform_map = #rock.transform_map<#map by [<Unmerge{254, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 254, 128] -> [32512]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2} ["kpad"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 256, 128] -> [1, 254, 128]>
 #transform_map2 = #rock.transform_map<#map2 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -127,7 +127,7 @@ func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>)
 //       CHECK:     %[[IPTRS:.*]], %[[IMASK:.*]] = rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c1_i32]
 //       CHECK:     rock.blockwise_load_ptr %[[IPTRS]][%[[IMASK]]]
 //       CHECK:     scf.yield
-func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16>, %init: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16>, %init: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -175,7 +175,7 @@ func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<256x32xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
 //       CHECK:     scf.yield
-func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c18_i32 = arith.constant 18 : i32
@@ -220,7 +220,7 @@ func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<256x32xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
 //       CHECK:     scf.yield
-func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c18_i32 = arith.constant 18 : i32
@@ -267,7 +267,7 @@ func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
 #transform_map2 = #rock.transform_map<#map2 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{1, 128} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 1, 64, 128] -> [1, 256, 128]>
-func.func @hoist_two_sharing_base(%arg0: tensor<32768xf16>, %initA: tensor<64x64xf16>, %initB: tensor<64x128xf16>) -> (tensor<64x64xf16>, tensor<64x128xf16>) attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_two_sharing_base(%arg0: tensor<32768xf16>, %initA: tensor<64x64xf16>, %initB: tensor<64x128xf16>) -> (tensor<64x64xf16>, tensor<64x128xf16>) attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -309,7 +309,7 @@ func.func @hoist_two_sharing_base(%arg0: tensor<32768xf16>, %initA: tensor<64x64
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<64x32xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
 //       CHECK:     scf.yield
-func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x32xi8>) -> tensor<64x32xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x32xi8>) -> tensor<64x32xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c2_i32 = arith.constant 2 : i32
@@ -349,9 +349,11 @@ func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x
 //
 // CHECK-LABEL: func @hoist_conv_input_carry
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<8xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
-// The loop carries the tap coordinate (full tile) and a full-tile offset
-// accumulator alongside the result:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>)
+// The loop carries the tap coordinate and the offset accumulator at their
+// minimal (reduced) rank -- tensor<2x1>, not the full tensor<2x4> tile -- since
+// they are invariant along the gemmN (n_iter) tile axis the merge does not feed;
+// they are broadcast up to the full tile only where consumed:
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x1xi32>, tensor<2x1xi32>)
 // Base pointer rebuilt at iv == lb (all extra indices pinned to %c0_i32):
 //       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
 // No division in the offset/mask rebuild (the merge split is maintained by the
@@ -361,14 +363,15 @@ func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remui
 //   CHECK-NOT:     arith.remsi
-// Pointer = base + carried offset accumulator:
+// Pointer = base + carried offset accumulator (broadcast to the full tile):
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][
-// Mixed-radix carry update (compare + select) advances the coordinate:
-//       CHECK:     arith.cmpi uge
-//       CHECK:     arith.select
+// Mixed-radix carry update (compare + select) advances the coordinate at reduced
+// rank:
+//       CHECK:     arith.cmpi uge, %{{.*}}, %{{.*}} : tensor<2x1xi32>
+//       CHECK:     arith.select %{{.*}}, %{{.*}}, %{{.*}} : tensor<2x1xi1>, tensor<2x1xi32>
 //       CHECK:     scf.yield
-func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c3_i32 = arith.constant 3 : i32
@@ -407,9 +410,11 @@ func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) ->
 //
 // CHECK-LABEL: func @hoist_conv2d_input_carry_rank_redundant
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
-// The two tap coordinates (full tile) and a full-tile offset accumulator are
-// carried alongside the result:
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x4xi32>, tensor<2x4xi32>, tensor<2x4xi32>)
+// The two tap coordinates and the offset accumulator are carried at their
+// minimal (reduced) rank -- tensor<2x1>, not the full tensor<2x4> tile -- since
+// they are invariant along the gemmN (n_iter) tile axis the merge does not feed;
+// they are broadcast up to the full tile only where consumed:
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<2x4xi8>, tensor<2x1xi32>, tensor<2x1xi32>, tensor<2x1xi32>)
 // Base pointer rebuilt at iv == lb (all extra indices pinned to %c0_i32):
 //       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
 // No division in the offset/mask rebuild (the merge split is maintained by the
@@ -419,16 +424,17 @@ func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) ->
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remui
 //   CHECK-NOT:     arith.remsi
-// Pointer = base + carried offset accumulator:
+// Pointer = base + carried offset accumulator (broadcast to the full tile):
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][
-// Two carry stages (compare + select) for the two lower digits (tap1, tap0):
-//       CHECK:     arith.cmpi uge
-//       CHECK:     arith.select
-//       CHECK:     arith.cmpi uge
-//       CHECK:     arith.select
+// Two carry stages (compare + select) for the two lower digits (tap1, tap0), at
+// reduced rank:
+//       CHECK:     arith.cmpi uge, %{{.*}}, %{{.*}} : tensor<2x1xi32>
+//       CHECK:     arith.select %{{.*}}, %{{.*}}, %{{.*}} : tensor<2x1xi1>, tensor<2x1xi32>
+//       CHECK:     arith.cmpi uge, %{{.*}}, %{{.*}} : tensor<2x1xi32>
+//       CHECK:     arith.select %{{.*}}, %{{.*}}, %{{.*}} : tensor<2x1xi1>, tensor<2x1xi32>
 //       CHECK:     scf.yield
-func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c9_i32 = arith.constant 9 : i32
@@ -476,9 +482,12 @@ func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: 
 //
 // CHECK-LABEL: func @hoist_conv2d_input_carry_no_prefix
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<16xi8>, %[[INIT:.*]]: tensor<1x4xi8>)
-// Both tap coordinates (full tile) and a full-tile offset accumulator are
-// carried alongside the result (no coordinate is dropped as a prefix):
-//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<1x4xi8>, tensor<1x4xi32>, tensor<1x4xi32>, tensor<1x4xi32>)
+// Both tap coordinates and the offset accumulator are carried at their minimal
+// (reduced) rank -- tensor<1x1>, not the full tensor<1x4> tile -- since they are
+// invariant along the gemmN (n_iter) tile axis the merge does not feed (and no
+// coordinate is dropped as a prefix); they are broadcast up to the full tile
+// only where consumed:
+//       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (tensor<1x4xi8>, tensor<1x1xi32>, tensor<1x1xi32>, tensor<1x1xi32>)
 // Base pointer rebuilt at iv == lb (all extra indices pinned to %c0_i32):
 //       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
 // No division in the offset/mask rebuild (the merge split is maintained by the
@@ -488,16 +497,16 @@ func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: 
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remui
 //   CHECK-NOT:     arith.remsi
-// Pointer = base + carried offset accumulator:
+// Pointer = base + carried offset accumulator (broadcast to the full tile):
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<1x4xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][
 // Exactly ONE mixed-radix wrap stage: only the lower coordinate (tap1) has a
 // compare/select; the top coordinate (tap0) is never wrapped:
-//       CHECK:     arith.cmpi uge
-//       CHECK:     arith.select
+//       CHECK:     arith.cmpi uge, %{{.*}}, %{{.*}} : tensor<1x1xi32>
+//       CHECK:     arith.select %{{.*}}, %{{.*}}, %{{.*}} : tensor<1x1xi1>, tensor<1x1xi32>
 //   CHECK-NOT:     arith.cmpi uge
 //       CHECK:     scf.yield
-func.func @hoist_conv2d_input_carry_no_prefix(%arg0: tensor<16xi8>, %arg1: tensor<1x4xi8>) -> tensor<1x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @hoist_conv2d_input_carry_no_prefix(%arg0: tensor<16xi8>, %arg1: tensor<1x4xi8>) -> tensor<1x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c9_i32 = arith.constant 9 : i32
@@ -552,7 +561,7 @@ func.func @hoist_conv2d_input_carry_no_prefix(%arg0: tensor<16xi8>, %arg1: tenso
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @affine_variant_non_iv_index(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @affine_variant_non_iv_index(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c2_i32 = arith.constant 2 : i32
@@ -604,7 +613,7 @@ func.func @affine_variant_non_iv_index(%arg0: tensor<32768xf16>, %arg1: tensor<6
 #transform_map2 = #rock.transform_map<#map2 by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [3]>] bounds = [1, 1, 2, 3, 4] -> [1, 1, 2, 6]>
 #transform_map3 = #rock.transform_map<#map3 by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 3} ["gemmK"] at [1] -> ["ci", "1"] at [2, 3]>, <Merge{1, 4} ["gemmN"] at [2] -> ["ni", "1o"] at [0, 4]>] bounds = [1, 6, 4] -> [1, 1, 2, 3, 4]>
 #transform_map4 = #rock.transform_map<#map4 by [<PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{3, 2} ["k_loop", "k_iter"] at [0, 4] -> ["gemmK"] at [1]>, <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["gemmN"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [3, 1, 1, 1, 2, 4] -> [1, 6, 4]>
-func.func @carry_variant_non_iv_index(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @carry_variant_non_iv_index(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c3_i32 = arith.constant 3 : i32
@@ -663,7 +672,7 @@ func.func @skip_non_kernel_func(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf1
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @no_hoist_iv_independent(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @no_hoist_iv_independent(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -689,7 +698,7 @@ func.func @no_hoist_iv_independent(%arg0: tensor<32768xf16>, %arg1: tensor<64x64
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c0_i32]
 //   CHECK-NOT:     arith.cmpi uge
 //       CHECK:     scf.yield
-func.func @carry_non_constant_step(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>, %step: i32) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @carry_non_constant_step(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>, %step: i32) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c3_i32 = arith.constant 3 : i32
   // raw input buffer (ngc1): ci=2, 1i=4 -> 8.
@@ -721,7 +730,7 @@ func.func @carry_non_constant_step(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>, %
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c0_i32]
 //   CHECK-NOT:     arith.cmpi uge
 //       CHECK:     scf.yield
-func.func @carry_multi_prefix_not_simplified(%arg0: tensor<16xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @carry_multi_prefix_not_simplified(%arg0: tensor<16xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c6_i32 = arith.constant 6 : i32
@@ -757,7 +766,7 @@ func.func @carry_multi_prefix_not_simplified(%arg0: tensor<16xi8>, %arg1: tensor
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c0_i32]
 //   CHECK-NOT:     arith.cmpi uge
 //       CHECK:     scf.yield
-func.func @carry_pad_above_merge(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+func.func @carry_pad_above_merge(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c2_i32 = arith.constant 2 : i32

@@ -1,9 +1,10 @@
 // A padded 3x3 conv makes the input tensor's validity mask depend on the GEMM
 // K-loop IV, so rock-transforms-invariant-code-motion takes the carry path: it
 // decomposes the non-contiguous gemmK Merge, carries the decomposed tap
-// coordinates plus a full-tile offset accumulator as loop iter_args, and
-// advances them with a mixed-radix odometer while rebuilding the mask each
-// iteration. This exercises the carry-path pointer recurrence end to end.
+// coordinates plus an offset accumulator (at their reduced, gemmK-only rank) as
+// loop iter_args, and advances them with a mixed-radix odometer while rebuilding
+// the full-tile mask each iteration. This exercises the carry-path pointer
+// recurrence end to end.
 
 // RUN: rocmlir-gen -pv --operation conv -t i8 --arch %arch --fil_layout gkc01 --in_layout ngc01 --out_layout ngk01 --batchsize 64 --in_channels 128 --in_h 28 --in_w 28 --out_channels 128 --fil_h 3 --fil_w 3 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1 --groupsize 1 \
 // RUN:   --perf_config="$(rocmlir-gen --operation conv -t i8 --arch %arch --fil_layout gkc01 --in_layout ngc01 --out_layout ngk01 --batchsize 64 --in_channels 128 --in_h 28 --in_w 28 --out_channels 128 --fil_h 3 --fil_w 3 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1 --groupsize 1 --emit-tuning-space=quick | sed -n '1p' | sed -e 's/^gemm:v3:/gemm:v4:/' -e 's/$/,1/')" \

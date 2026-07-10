@@ -572,17 +572,18 @@ struct FullTileCarry {
   Value offsetDelta;
 };
 
-/// Advance the full-tile distributed carry by one loop step. `suffix` holds the
-/// validity-impacting merge coordinates as full `tensor<kIter x nPerBlock>`
-/// tiles (highest place first); each advances by its constant `step`, wrapping
-/// at its `size` with the carry rippling into the next-higher place. *Every*
-/// suffix coordinate wraps when `hasPrefix` is set,
+/// Advance the distributed carry by one loop step. `suffix` holds the
+/// validity-impacting merge coordinates as minimal-rank tiles (highest place
+/// first; unit in any tile dim they do not vary along, e.g. `tensor<kIter x 1>`
+/// for conv taps that are invariant across nPerBlock); each advances by its
+/// constant `step`, wrapping at its `size` with the carry rippling into the
+/// next-higher place. *Every* suffix coordinate wraps when `hasPrefix` is set,
 /// because the dropped high non-validity coordinate sits above them; its own
 /// per-step offset contribution is `(prefixStep + carryOut) * prefixStride`,
 /// recovered here without ever materializing that coordinate. The returned
 /// `offsetDelta` is `sum_j (delta coord_j) * strides[j]` over the suffix plus
-/// the prefix term - a full tile, so the offset recurrence stays vector-
-/// resident.
+/// the prefix term, at that same minimal rank, so the carried offset recurrence
+/// does not scale with the collapsed tile dims.
 static FullTileCarry
 emitFullTileCarry(OpBuilder &b, Location loc, ArrayRef<Value> suffix,
                   ArrayRef<int64_t> sizes, ArrayRef<int64_t> steps,
@@ -916,13 +917,33 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
       r.prefixStep = cand.coordSteps[0];
       r.prefixStride = strides[0];
     }
-    // Carry the validity (suffix) coordinates as full tiles plus a full-tile
-    // zero offset accumulator (the base pointer already encodes offset0).
-    for (unsigned pos :
-         ArrayRef<unsigned>(cand.coordPositions).take_back(suffixCount))
-      r.carriedInits.push_back(
-          broadcastToShape(b, loc, (*iter0)[pos], outShape));
-    auto offTy = RankedTensorType::get(outShape, ptrType.getElementType());
+    // Carry the validity (suffix) coordinates and the offset accumulator at
+    // their intrinsic (minimal) rank instead of broadcasting them to the full
+    // tile. They are functions of the iv-traversed merge's decomposed
+    // coordinates only, so they are invariant along any tile dimension the
+    // merge does not feed (e.g. the conv nPerBlock axis, which comes from
+    // gemmN): `expandAffineMap` already produces them as `tensor<kIter x 1>`
+    // rather than `tensor<kIter x nPerBlock>`. Keeping the carried state minimal
+    // shrinks both the loop-carried iter_args and the per-iteration carry
+    // arithmetic by the collapsed factor; the values are broadcast back to the
+    // full tile only where consumed (the pointer add in `buildCarryPtr`; the
+    // mask rebuild in `buildCarryMask` already broadcasts internally). The mask
+    // itself stays full-rank because it also mixes the non-carried (full-rank)
+    // coordinates.
+    ArrayRef<unsigned> suffixPos =
+        ArrayRef<unsigned>(cand.coordPositions).take_back(suffixCount);
+    // Common minimal tensor shape of the carried coordinates: unit in every
+    // tile dim none of them varies along, so `emitFullTileCarry` (which runs on
+    // this shape) and the offset accumulator collapse accordingly.
+    SmallVector<int64_t> carryShape(outShape.size(), 1);
+    for (unsigned pos : suffixPos)
+      if (auto tt = dyn_cast<RankedTensorType>((*iter0)[pos].getType()))
+        for (size_t d = 0; d < carryShape.size(); ++d)
+          carryShape[d] = std::max(carryShape[d], tt.getShape()[d]);
+    for (unsigned pos : suffixPos)
+      r.carriedInits.push_back(broadcastToShape(b, loc, (*iter0)[pos],
+                                                carryShape));
+    auto offTy = RankedTensorType::get(carryShape, ptrType.getElementType());
     r.offsetAccInit = splatConst(b, loc, offTy, 0);
     reduced.push_back(std::move(r));
   }
@@ -955,11 +976,15 @@ static Value buildCarryMask(OpBuilder &b, Location loc, const Reduced &r,
   return om->mask;
 }
 
-/// Form the current pointer as the base tile plus the carried full-tile offset
+/// Form the current pointer as the base tile plus the carried offset
 /// accumulator (the last iter_arg for this candidate). No offset re-expansion.
+/// The accumulator is carried at minimal rank, so it is broadcast to the
+/// full-rank base pointer tile here.
 static Value buildCarryPtr(OpBuilder &b, Location loc, Value basePtr,
                            const Reduced &r, scf::ForOp newLoop) {
   Value offset = newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
+  offset = broadcastToShape(
+      b, loc, offset, cast<RankedTensorType>(basePtr.getType()).getShape());
   return arith::AddIOp::create(b, loc, basePtr, offset);
 }
 
