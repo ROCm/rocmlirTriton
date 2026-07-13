@@ -50,3 +50,19 @@ tt.func @apply_load(%arg0: !tt.ptr<f32>) {
   %v = tt.load %ptr {rock.vec_contiguity = dense<[1, 4]> : tensor<2xi32>, rock.vec_divisibility = dense<[4, 16]> : tensor<2xi32>} : tensor<4x8x!tt.ptr<f32>>
   tt.return
 }
+
+// -----
+
+// Apply cleanup when the pointer is NOT an addptr: if canonicalize-pointers
+// folded the pointer arithmetic away (e.g. a zero offset), there is no addptr
+// to re-stamp -- but the apply phase must still erase the Rock-private markers
+// so they do not leak into the final Triton IR.
+// APPLY-LABEL: tt.func @apply_no_addptr
+//       APPLY:   tt.load
+//   APPLY-NOT:     rock.vec_contiguity
+//   APPLY-NOT:     rock.vec_divisibility
+tt.func @apply_no_addptr(%arg0: !tt.ptr<f32>) {
+  %splat = tt.splat %arg0 : !tt.ptr<f32> -> tensor<4x8x!tt.ptr<f32>>
+  %v = tt.load %splat {rock.vec_contiguity = dense<[1, 4]> : tensor<2xi32>, rock.vec_divisibility = dense<[4, 16]> : tensor<2xi32>} : tensor<4x8x!tt.ptr<f32>>
+  tt.return
+}
