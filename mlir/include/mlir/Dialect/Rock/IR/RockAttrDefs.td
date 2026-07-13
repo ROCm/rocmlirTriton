@@ -290,9 +290,13 @@ def Rock_GemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
-      redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
-      gather operand to cut SGPR spill.
+    - useReductionLayout: Force override for the `rock-set-reduction-layout`
+      pass, which redistributes GPU warps onto the reduction (K) dim of the
+      global-load gather operand to cut SGPR spill. The pass always runs on
+      convolution kernels (those marked `rock.conv_kernel`); this knob=1
+      additionally forces the rewrite on every kernel. Tri-state like the other
+      knobs: -1 (default / heuristic, currently disabled, equivalent to 0), 0
+      (off), 1 (on).
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -391,9 +395,13 @@ def Rock_GemmGemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
-      redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
-      gather operand to cut SGPR spill.
+    - useReductionLayout: Force override for the `rock-set-reduction-layout`
+      pass, which redistributes GPU warps onto the reduction (K) dim of the
+      global-load gather operand to cut SGPR spill. The pass always runs on
+      convolution kernels (those marked `rock.conv_kernel`); this knob=1
+      additionally forces the rewrite on every kernel. Tri-state like the other
+      knobs: -1 (default / heuristic, currently disabled, equivalent to 0), 0
+      (off), 1 (on).
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -489,6 +497,15 @@ def Rock_Kernel : Rock_Attr<"Kernel"> {
   let description = [{
     Marker attribute to indicate that a function is a GPU kernel.
     This attribute can be attached to func.func operations to mark them as kernels.
+  }];
+}
+
+def Rock_ConvKernel : Rock_Attr<"ConvKernel"> {
+  let mnemonic = "rock.conv_kernel";
+  let description = [{
+    Marker attribute indicating that a kernel function was lowered from a
+    convolution (`rock.conv`, `rock.conv_bwd_data`, `rock.conv_bwd_weight`, or
+    `rock.conv_elementwise_gemm`).
   }];
 }
 
