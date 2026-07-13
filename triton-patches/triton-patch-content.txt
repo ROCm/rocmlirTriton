@@ -12,7 +12,6 @@ patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch10497.patch
 patch10563.patch
-patch10715.patch
 patch10832.patch
 ----------------------------------------------------------------------
 
@@ -86,25 +85,7 @@ patch10563.patch
   Extends InThreadTranspose coverage and logic for the FMA dot path on RDNA.
   The pass now recognizes when FMA dot operands benefit from an in-thread
   transpose and avoids applying the transform when the operand-major layout is
-  already the orientation the FMA dot wants in LDS.
-
-patch10715.patch
-  Reverts the AMD buffer soffset optimization series, mirroring upstream Triton
-  revert https://github.com/triton-lang/triton/pull/10715 (which reverts #10362
-  and its follow-up fixes). The series caused various stability issues,
-  including a gfx950/MI350 bf16 inference miscompile (NaN) under torch.compile.
-
-  Removes the whole soffset-split machinery: the OffsetUniformitySplit /
-  UniformityAnalysis helpers and the amdgpu-annotate-buffer-op-split-safety
-  pass (AnnotateBufferOpSplitSafety.cpp, its Passes.td registration, the
-  triton_amd.cc binding, compiler.py invocation, and the .mlir tests), and
-  restores BufferOpsEmitter / LoadStoreOpToLLVM / TritonGPUToLLVM to their
-  pre-soffset-split buffer-op lowering. This also supersedes the earlier
-  downstream soffset follow-up (patch10498, whose stale description remains
-  below); once this revert is in, that machinery no longer exists to patch.
-
-  Drop this patch on the next Triton bump that pulls the revert (upstream main
-  at a4ce9c2 or later) into external/triton.
+    already the orientation the FMA dot wants in LDS.
 
 patch10832.patch
   Gives the ProtonIR object library the MLIR usage requirements it actually
