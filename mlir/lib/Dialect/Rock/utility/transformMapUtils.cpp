@@ -26,6 +26,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -2526,4 +2527,117 @@ FailureOr<Type> mlir::rock::getOutputFusionElementType(Value value) {
     return failure();
 
   return maybeElemType.value();
+}
+
+//===----------------------------------------------------------------------===//
+// Non-power-of-two tile peeling
+//===----------------------------------------------------------------------===//
+
+SmallVector<Pow2Segment> mlir::rock::decomposePow2(int64_t n) {
+  SmallVector<Pow2Segment> segs;
+  int64_t off = 0;
+  for (int64_t rem = n; rem > 0;) {
+    int64_t seg = static_cast<int64_t>(llvm::bit_floor<uint64_t>(rem));
+    segs.push_back({off, seg});
+    off += seg;
+    rem -= seg;
+  }
+  return segs;
+}
+
+Value mlir::rock::sliceBlockedDims(OpBuilder &b, Location loc, Value view,
+                                   ArrayRef<unsigned> sliceDims,
+                                   ArrayRef<int64_t> blocks,
+                                   ArrayRef<int64_t> tiles,
+                                   ArrayRef<Pow2Segment> segs) {
+  auto type = cast<RankedTensorType>(view.getType());
+  ArrayRef<int64_t> shape = type.getShape();
+  unsigned rank = shape.size();
+
+  auto sliceIdx = [&](unsigned d) -> int {
+    for (auto [k, dd] : llvm::enumerate(sliceDims))
+      if (dd == d)
+        return static_cast<int>(k);
+    return -1;
+  };
+
+  SmallVector<std::string> baseStore, blkStore, itStore;
+  for (unsigned i = 0; i < rank; ++i) {
+    baseStore.push_back(("d" + Twine(i)).str());
+    blkStore.push_back(("d" + Twine(i) + "b").str());
+    itStore.push_back(("d" + Twine(i) + "i").str());
+  }
+  SmallVector<StringRef> baseNames(baseStore.begin(), baseStore.end());
+
+  // Layer 1: restructure each sliced dim into (block, iter).
+  BottomUpTMBuilder l1(b, baseNames, shape, loc);
+  {
+    unsigned up = 0;
+    for (unsigned i = 0; i < rank; ++i) {
+      int k = sliceIdx(i);
+      if (k >= 0) {
+        l1.unmerge({StringRef(blkStore[i]), StringRef(itStore[i])},
+                   {up, up + 1}, StringRef(baseStore[i]),
+                   {blocks[k], tiles[k]});
+        up += 2;
+      } else {
+        l1.passThrough({StringRef(baseStore[i])}, {up},
+                       {StringRef(baseStore[i])});
+        up += 1;
+      }
+    }
+  }
+  TransformMapAttr a1 = l1.get();
+
+  // Layer 2: slice only the iter sub-dims that are actually narrowed; every
+  // other dim (including iter sub-dims whose segment already covers the whole
+  // tile) passes through unchanged, so the Slice transform lists just the dims
+  // it really shrinks instead of all of them.
+  BottomUpTMBuilder l2 = BottomUpTMBuilder::above(l1, a1);
+  SmallVector<StringRef> names2;
+  l2.getStartNames(names2);
+
+  llvm::SmallDenseSet<StringRef> slicedNames;
+  SmallVector<StringRef> sliceNames;
+  SmallVector<int64_t> begins, ends;
+  for (unsigned i = 0; i < rank; ++i) {
+    int k = sliceIdx(i);
+    if (k < 0 || (segs[k].offset == 0 && segs[k].length == tiles[k]))
+      continue;
+    StringRef nm(itStore[i]);
+    slicedNames.insert(nm);
+    sliceNames.push_back(nm);
+    begins.push_back(segs[k].offset);
+    ends.push_back(segs[k].offset + segs[k].length);
+  }
+
+  SmallVector<StringRef> passNames;
+  for (StringRef nm : names2)
+    if (!slicedNames.contains(nm))
+      passNames.push_back(nm);
+  if (!passNames.empty())
+    l2.passThrough(passNames);
+  if (!sliceNames.empty())
+    l2.slice(sliceNames, sliceNames, begins, ends);
+  TransformMapAttr a2 = l2.get();
+
+  // Layer 3: re-merge (block, iter) back into the original dimension.
+  BottomUpTMBuilder l3 = BottomUpTMBuilder::above(l2, a2);
+  {
+    unsigned up = 0;
+    for (unsigned i = 0; i < rank; ++i) {
+      int k = sliceIdx(i);
+      if (k >= 0) {
+        l3.merge(StringRef(baseStore[i]), up,
+                 {StringRef(blkStore[i]), StringRef(itStore[i])});
+      } else {
+        l3.passThrough({StringRef(baseStore[i])}, {up},
+                       {StringRef(baseStore[i])});
+      }
+      up += 1;
+    }
+  }
+  TransformMapAttr a3 = l3.get();
+
+  return rock::transform(b, view, b.getArrayAttr({a3, a2, a1}));
 }
