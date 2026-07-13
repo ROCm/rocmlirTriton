@@ -106,6 +106,7 @@ static void validateTritonOptionsKnobs(const rock::TritonOptions &options) {
       {"useBufferAtomics", options.useBufferAtomics},
       {"bufferOpsAnalyzeSmallTensorRange",
        options.bufferOpsAnalyzeSmallTensorRange},
+      {"useReductionLayout", options.useReductionLayout},
   };
   for (auto [name, value] : boolKnobs) {
     if (!rock::isValidKnobBoolean(value))
@@ -153,7 +154,6 @@ static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(
     return analyzeSmallTensorRangeOverride;
   return false;
 }
-
 // Based on make_ttgir() in
 // @triton//:third_party/amd/backend/compiler.py
 static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
@@ -245,9 +245,16 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 1. makeLLIR (the function below)
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
-static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch) {
+static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
+                     int64_t useReductionLayout) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
+  // Redistribute the layout of the reduction dimension to reduce register
+  // pressure. Always scheduled, but the `useReductionLayout`
+  // actually controls whether it runs.
+  rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
+  reductionLayoutOpts.useReductionLayout = useReductionLayout;
+  pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -507,7 +514,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch);
+  makeLLIR(&pm, arch, options.useReductionLayout);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)

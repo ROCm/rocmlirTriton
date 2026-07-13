@@ -290,6 +290,9 @@ def Rock_GemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
+    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
+      redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
+      gather operand to cut SGPR spill.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -302,6 +305,7 @@ def Rock_GemmParamsAttr
     - `useInThreadTranspose`             (set to -1)
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
+    - `useReductionLayout`               (set to -1)
   }];
 
   let parameters = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
@@ -313,11 +317,15 @@ def Rock_GemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics);
+      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
+      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout);
 
   let extraClassDeclaration = [{
+    // v4 is the single canonical output form (17 fields: the v3 knobs plus
+    // `useReductionLayout`). Older versions remain accepted on input by
+    // `get()`; only the serialized form is fixed to v4.
     void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("gemm:v3:"
+        ("gemm:v4:"
         + Twine(getMPerBlock()) + ","
         + Twine(getNPerBlock()) + ","
         + Twine(getKPerBlock()) + ","
@@ -333,7 +341,8 @@ def Rock_GemmParamsAttr
         + Twine(getUseBlockPingpong()) + ","
         + Twine(getUseInThreadTranspose()) + ","
         + Twine(getUseBufferOps()) + ","
-        + Twine(getUseBufferAtomics()))
+        + Twine(getUseBufferAtomics()) + ","
+        + Twine(getUseReductionLayout()))
         .toVector(perfStr);
     }
 
@@ -382,6 +391,9 @@ def Rock_GemmGemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
+    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
+      redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
+      gather operand to cut SGPR spill.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -394,6 +406,7 @@ def Rock_GemmGemmParamsAttr
     - `useInThreadTranspose`             (set to -1)
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
+    - `useReductionLayout`               (set to -1)
   }];
 
   let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
@@ -405,28 +418,33 @@ def Rock_GemmGemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics);
+      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
+      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout);
 
   let extraClassDeclaration = [{
-    void getPerfConfigStr(::llvm::SmallVectorImpl<char> &perfStr) {
-      ("attn:v3:"
-      + Twine(getMPerBlockG0()) + ","
-      + Twine(getNPerBlockG0()) + ","
-      + Twine(getKPerBlock()) + ","
-      + Twine(getKpack()) + ","
-      + Twine(getNumCTAs()) + ","
-      + Twine(getNumWaves()) + ","
-      + Twine(getMatrixInstrNonkdim()) + ","
-      + Twine(getSplitKFactor()) + ","
-      + Twine(getNumStages()) + ","
-      + Twine(getWavesPerEU()) + ","
-      + Twine(getGridGroupSize()) + ","
-      + Twine(getUseAsyncCopy()) + ","
-      + Twine(getUseBlockPingpong()) + ","
-      + Twine(getUseInThreadTranspose()) + ","
-      + Twine(getUseBufferOps()) + ","
-      + Twine(getUseBufferAtomics()))
-      .toVector(perfStr);
+    // v4 is the single canonical output form (17 fields: the v3 knobs plus
+    // `useReductionLayout`). Older versions remain accepted on input by
+    // `get()`; only the serialized form is fixed to v4.
+    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
+        ("attn:v4:"
+        + Twine(getMPerBlockG0()) + ","
+        + Twine(getNPerBlockG0()) + ","
+        + Twine(getKPerBlock()) + ","
+        + Twine(getKpack()) + ","
+        + Twine(getNumCTAs()) + ","
+        + Twine(getNumWaves()) + ","
+        + Twine(getMatrixInstrNonkdim()) + ","
+        + Twine(getSplitKFactor()) + ","
+        + Twine(getNumStages()) + ","
+        + Twine(getWavesPerEU()) + ","
+        + Twine(getGridGroupSize()) + ","
+        + Twine(getUseAsyncCopy()) + ","
+        + Twine(getUseBlockPingpong()) + ","
+        + Twine(getUseInThreadTranspose()) + ","
+        + Twine(getUseBufferOps()) + ","
+        + Twine(getUseBufferAtomics()) + ","
+        + Twine(getUseReductionLayout()))
+        .toVector(perfStr);
     }
 
     StringAttr getPerfConfigAttr() {
@@ -471,6 +489,15 @@ def Rock_Kernel : Rock_Attr<"Kernel"> {
   let description = [{
     Marker attribute to indicate that a function is a GPU kernel.
     This attribute can be attached to func.func operations to mark them as kernels.
+  }];
+}
+
+def Rock_ConvKernel : Rock_Attr<"ConvKernel"> {
+  let mnemonic = "rock.conv_kernel";
+  let description = [{
+    Marker attribute indicating that a kernel function was lowered from a
+    convolution (`rock.conv`, `rock.conv_bwd_data`, `rock.conv_bwd_weight`, or
+    `rock.conv_elementwise_gemm`).
   }];
 }
 

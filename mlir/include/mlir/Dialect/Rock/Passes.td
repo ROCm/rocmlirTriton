@@ -777,6 +777,31 @@ def RockSetMatmulOutputTransposePass
                            "triton::gpu::TritonGPUDialect"];
 }
 
+def RockSetReductionLayoutPass
+    : Pass<"rock-set-reduction-layout", "::mlir::ModuleOp"> {
+  let summary = "Redistribute the reduction-operand load layout onto the "
+                "reduction dim";
+  let description = [{
+    Redistribute the reduction-operand global-load `#blocked`
+    layout so that each warp owns a full reduction (K) strip. Moving
+    the load's `warpsPerCTA` off the free/N dim and onto the reduction/K dim
+    can potentially reduce SGPR spill on convolution kernels.
+
+    This only applies to `tt.load`/`amdgpu.buffer_load` staged through an
+    `amdgpu.in_thread_transpose`, whose re-layout decouples the read
+    distribution from the LDS layout the dot consumes; direct-to-LDS and TDM
+    loads have no such stage and are out of scope.
+  }];
+  let dependentDialects = ["rock::RockDialect", "triton::gpu::TritonGPUDialect",
+                           "triton::amdgpu::TritonAMDGPUDialect",
+                           "arith::ArithDialect"];
+  let options = [Option<
+      "useReductionLayout", "use-reduction-layout", "int64_t", /*default=*/"0",
+      "Force the rewrite on every kernel when set to 1. When 0 (default) the "
+      "rewrite still runs, but only on convolution kernels (those carrying the "
+      "`rock.conv_kernel` attribute).">];
+}
+
 def RockAnalyzeMemoryUsePass
     : Pass<"rock-analyze-memory-use", "::mlir::func::FuncOp"> {
   let summary = "Analyze kernel argument memory usage and set attributes";

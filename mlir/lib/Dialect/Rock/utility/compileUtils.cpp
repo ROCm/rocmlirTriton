@@ -195,6 +195,7 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
   tritonOpts.useInThreadTranspose = params.getUseInThreadTranspose();
   tritonOpts.useBufferOps = params.getUseBufferOps();
   tritonOpts.useBufferAtomics = params.getUseBufferAtomics();
+  tritonOpts.useReductionLayout = params.getUseReductionLayout();
 
   backendOpts.numWarps = params.getNumWaves();
   backendOpts.numCTAs = params.getNumCTAs();
