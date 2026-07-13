@@ -566,12 +566,11 @@ struct TransformsToPtrRewritePattern
     // when TransformsToPtrOp is inside loops or other control flow.
     // For constant buffers (like fakeTensor used for index calculations),
     // we use a base pointer of 0 since the actual pointer value doesn't matter.
+    bool isConstantBuffer =
+        buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
     Value baseAddr;
     {
       OpBuilder::InsertionGuard guard(b);
-
-      bool isConstantBuffer =
-          buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
 
       if (isConstantBuffer) {
         // For constants (like fakeTensor), use base pointer of 0
@@ -621,7 +620,7 @@ struct TransformsToPtrRewritePattern
     //
     // Divisibility is vecLen*elemBytes bytes (the widened load only needs
     // element alignment). Constant index-calc buffers never load, so skip them.
-    if (isConstantBuffer) {
+    if (!isConstantBuffer) {
       auto sourceType = cast<ShapedType>(source.getType());
       size_t numExtra = extraIndices.size();
       // `source` is a higher-rank view: leading `numExtra` dims are the block

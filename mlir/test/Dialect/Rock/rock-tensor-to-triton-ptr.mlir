@@ -67,6 +67,31 @@ func.func @test_addi_to_addptr_i64(%arg0: tensor<4096xf16>) attributes {rock.arc
 
 // -----
 
+// Verifies the im2col vectorization hints TransformsToPointerArith stamps on
+// the pointer-arithmetic arith.addi survive the arith.addi -> tt.addptr
+// rewrite. replaceOpWithNewOp does not copy discardable attrs, so the pass
+// must re-stamp them; AxisInfoAnalysis (and canonicalize-pointers) read the
+// hint off the tt.addptr to widen the load.
+// CHECK-LABEL: tt.func @test_vectorization_hints_propagated
+// CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>)
+//      CHECK:   %[[SPLAT:.*]] = tt.splat %[[ARG0]] : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
+//      CHECK:   tt.addptr %[[SPLAT]], {{.*}} {tt.contiguity = dense<[1, 8]> : tensor<2xi32>, tt.divisibility = dense<[2, 16]> : tensor<2xi32>} : tensor<64x64x!tt.ptr<f16>>, tensor<64x64xi32>
+//  CHECK-NOT:   rock.cast_to_ptr
+func.func @test_vectorization_hints_propagated(%arg0: tensor<4096xf16>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64x64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32
+  %1 = tt.splat %0 : i32 -> tensor<64x64xi32>
+  %offset = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+  %offset_exp = tt.expand_dims %offset {axis = 1 : i32} : tensor<64xi32> -> tensor<64x1xi32>
+  %offset_bcast = tt.broadcast %offset_exp : tensor<64x1xi32> -> tensor<64x64xi32>
+  %2 = arith.addi %1, %offset_bcast {tt.contiguity = dense<[1, 8]> : tensor<2xi32>, tt.divisibility = dense<[2, 16]> : tensor<2xi32>} : tensor<64x64xi32>
+  %3 = rock.cast_to_ptr %2 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %4 = tt.load %3, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  return
+}
+
+// -----
+
 // Verifies multiple pointer arguments are all converted
 // CHECK-LABEL: tt.func @test_multiple_args
 // CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>, %[[ARG1:.*]]: !tt.ptr<f16>, %[[ARG2:.*]]: !tt.ptr<f32>)
