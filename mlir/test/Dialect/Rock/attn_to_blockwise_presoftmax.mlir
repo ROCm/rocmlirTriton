@@ -311,12 +311,12 @@ func.func @attn_single_chiplet_odd_cu(
 // -----
 
 // CHECK-LABEL: func @attn_multi_chiplet_even
-// XCD remapping should use numChipletsPerGroup = ceil(num_chiplets/2) = 4,
-// NOT ceil(num_cu/2) = 152
+// XCD remapping should reorder workgroups using numChiplets = 8
+// (bid % 8 selects the XCD, bid / 8 gives the local bid), NOT num_cu = 304.
 // CHECK: %[[BID:.*]] = tt.get_program_id x
-// CHECK: %[[CHIPLET_GRP:.*]] = arith.constant 4 : i32
-// CHECK: arith.remui %[[BID]], %[[CHIPLET_GRP]]
-// CHECK: arith.divui %[[BID]], %[[CHIPLET_GRP]]
+// CHECK: %[[NUMCHIP:.*]] = arith.constant 8 : i32
+// CHECK: arith.remui %[[BID]], %[[NUMCHIP]]
+// CHECK: arith.divui %[[BID]], %[[NUMCHIP]]
 // CHECK: arith.cmpi sgt
 // CHECK: arith.select
 // CHECK: rock.store_marker
