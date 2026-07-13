@@ -322,9 +322,6 @@ func.func @rock_gemm_from_conv(%a : tensor<1x72x128xf32>, %b : tensor<1x72x11520
   return %out : tensor<1x128x115200xf32>
 }
 
-// A non-power-of-two kPerBlock is accepted for a plain gemm: it rides through
-// affix unchanged (validated as merely positive, not power-of-two) and is
-// peeled into power-of-two K segments later, in rock-gridwise-gemm-to-blockwise.
 // CHECK-LABEL: func.func @rock_gemm_nonpow2_k
 // GRID-LABEL: rock_gemm_nonpow2_k
 func.func @rock_gemm_nonpow2_k(%a : tensor<1x128x96xf16>, %b : tensor<1x96x128xf16>, %c : tensor<1x128x128xf16>) -> tensor<1x128x128xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 120 : i32} {
