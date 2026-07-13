@@ -235,6 +235,18 @@ static llvm::cl::opt<unsigned> perfConfigTimeout(
         "continues with the remaining configs for the problem)."),
     llvm::cl::value_desc("seconds"), llvm::cl::init(0));
 
+static llvm::cl::opt<unsigned> perfConfigRunTimeout(
+    "perf-config-run-timeout",
+    llvm::cl::desc(
+        "Per-perf-config GPU-run timeout in seconds. 0 (default) disables the "
+        "timeout. This does not include compilation; use --perf-config-timeout "
+        "for that. When > 0, timed stream synchronization bounds the wall-clock "
+        "time spent benchmarking each config; a run that exceeds this budget is "
+        "presumed hung and the process is force-exited with a distinct exit code "
+        "(rock::kExitGpuTimeout). tuningRunner.py maps it to a 'gpu timed out' "
+        "state and advances to the next problem config."),
+    llvm::cl::value_desc("seconds"), llvm::cl::init(0));
+
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef filename,
                                             MLIRContext *context) {
@@ -285,6 +297,62 @@ static benchmark::DataType getDataType(Type inputType) {
       return failure();                                                        \
     }                                                                          \
   } while (0)
+
+using SteadyTimePoint = std::chrono::steady_clock::time_point;
+
+static std::optional<SteadyTimePoint> makeTimeoutDeadline(unsigned timeoutSec) {
+  if (timeoutSec == 0)
+    return std::nullopt;
+  return std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+}
+
+static bool hasTimedOut(const std::optional<SteadyTimePoint> &deadline) {
+  return deadline && std::chrono::steady_clock::now() >= *deadline;
+}
+
+static LogicalResult synchronizeStreamWithTimeout(
+    hipStream_t stream, const std::optional<SteadyTimePoint> &gpuRunDeadline,
+    unsigned timeoutSec, StringRef perfConfig, StringRef phase) {
+  // Preserve the historical behavior when no GPU-run timeout was requested:
+  // block until all previously queued work on this stream completes.
+  if (!gpuRunDeadline) {
+    HIPCHECK(hipStreamSynchronize(stream));
+    return success();
+  }
+
+  // With a timeout enabled, avoid hipStreamSynchronize because it can block
+  // forever when a kernel wedges. Instead, poll the same stream with
+  // hipStreamQuery.
+  while (true) {
+    hipError_t status = hipStreamQuery(stream);
+    if (status == hipSuccess)
+      return success();
+
+    // hipErrorNotReady is the normal "still running" result for an incomplete
+    // stream. Any other status is a real HIP failure rather than a timeout.
+    if (status != hipErrorNotReady) {
+      llvm::errs() << "HIP error while synchronizing stream during " << phase
+                   << " for config: " << perfConfig << " - "
+                   << hipGetErrorString(status) << "\n";
+      return failure();
+    }
+
+    // Once the per-config budget is exceeded, treat the current GPU run as
+    // hung. We intentionally terminate the process instead of returning failure:
+    // after a presumed GPU hang, the in-process HIP context is not trustworthy.
+    if (hasTimedOut(gpuRunDeadline)) {
+      llvm::errs() << "GPU run timed out after " << timeoutSec
+                   << "s during " << phase << " for config: " << perfConfig
+                   << " (kernel presumed hung)\n";
+      llvm::errs().flush();
+      std::_Exit(rock::kExitGpuTimeout);
+    }
+
+    // Keep the polling interval short enough to notice hangs promptly while
+    // avoiding a hot spin on long-running but healthy kernels.
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
 
 static double computeMedian(const std::vector<double> &values) {
   if (values.empty())
@@ -358,6 +426,7 @@ struct BenchmarkParams {
   std::string benchmarkConfig;
   bool flushLastLevelCache;
   unsigned perfConfigTimeoutSec;
+  unsigned perfConfigRunTimeoutSec;
 };
 
 enum class CompilationStatus {
@@ -490,8 +559,7 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
     return result;
   }
 
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+  const auto deadline = makeTimeoutDeadline(timeoutSec);
   llvm::sys::ProcessInfo waitResult;
   bool timedOut = false;
   while (true) {
@@ -508,7 +576,7 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
            waitErr + ")");
       return result;
     }
-    if (std::chrono::steady_clock::now() >= deadline) {
+    if (hasTimedOut(deadline)) {
       timedOut = true;
       break;
     }
@@ -586,7 +654,9 @@ measureKernel(unsigned iterations, hipStream_t stream,
               const std::vector<hipFunction_t> &functions,
               ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
               ArrayRef<uint32_t> numCTAsList, std::vector<void *> &argPointers,
-              std::vector<double> &measurements, bool useLastLevelCacheSize) {
+              std::vector<double> &measurements, bool useLastLevelCacheSize,
+              const std::optional<SteadyTimePoint> &gpuRunDeadline,
+              unsigned timeoutSec, StringRef perfConfig) {
   // Pre-allocate one event pair per iteration so we can record them all in a
   // tight loop and synchronize only once at the end. This matches Triton's
   // do_bench, which minimizes host-side overhead between launches (no
@@ -631,7 +701,9 @@ measureKernel(unsigned iterations, hipStream_t stream,
   }
 
   // Single synchronization after all iterations have been queued.
-  HIPCHECK(hipStreamSynchronize(stream));
+  if (failed(synchronizeStreamWithTimeout(stream, gpuRunDeadline, timeoutSec,
+                                          perfConfig, "measurement")))
+    return failure();
 
   for (unsigned iter = 0; iter < iterations; ++iter) {
     float currentMilliseconds = 0.0;
@@ -716,6 +788,21 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     }
   });
 
+  // Apply one user-specified GPU-run deadline across all stream
+  // synchronization for this perf config. Compilation is not included; this
+  // begins after the config has compiled and the HIP stream/module/launch
+  // metadata are ready.
+  std::optional<SteadyTimePoint> gpuRunDeadline =
+      makeTimeoutDeadline(params.perfConfigRunTimeoutSec);
+
+  // Finish setup work queued before benchmarking (currently the H2D copies)
+  // using the same timeout deadline so no stream synchronization can hang
+  // indefinitely.
+  if (failed(synchronizeStreamWithTimeout(
+          stream, gpuRunDeadline, params.perfConfigRunTimeoutSec,
+          result.perfConfig, "setup")))
+    return failure();
+
   // Estimate the per-launch runtime so we can size warmup/benchmark iteration
   // counts from the requested time budgets (Triton do_bench style). We time a
   // handful of launches (flushing caches between them) using a single event
@@ -746,7 +833,10 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
       }
     }
     HIPCHECK(hipEventRecord(stopEvent, stream));
-    HIPCHECK(hipStreamSynchronize(stream));
+    if (failed(synchronizeStreamWithTimeout(
+            stream, gpuRunDeadline, params.perfConfigRunTimeoutSec,
+            result.perfConfig, "runtime estimation")))
+      return failure();
 
     float elapsedMs = 0.0;
     HIPCHECK(hipEventElapsedTime(&elapsedMs, startEvent, stopEvent));
@@ -778,14 +868,18 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
         return failure();
     }
   }
-  HIPCHECK(hipStreamSynchronize(stream));
+  if (failed(synchronizeStreamWithTimeout(stream, gpuRunDeadline,
+                                          params.perfConfigRunTimeoutSec,
+                                          result.perfConfig, "warmup")))
+    return failure();
 
   // Measure runs
   std::vector<double> measurements;
 
   if (failed(measureKernel(iterations, stream, functions, blockSizes, gridSizes,
                            numCTAsList, argPointers, measurements,
-                           params.flushLastLevelCache)))
+                           params.flushLastLevelCache, gpuRunDeadline,
+                           params.perfConfigRunTimeoutSec, result.perfConfig)))
     return failure();
 
   if (params.showAllMeasurements) {
@@ -949,7 +1043,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            numCompileThreads,
                                            benchmarkConfig,
                                            flushLastLevelCache,
-                                           perfConfigTimeout};
+                                           perfConfigTimeout,
+                                           perfConfigRunTimeout};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);
