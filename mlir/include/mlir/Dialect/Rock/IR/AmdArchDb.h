@@ -113,9 +113,6 @@ bool isFastAtomicMaxSupported(StringRef arch, Dtype dtype);
 /// reference (e.g. hipBLASLt validation).
 bool archSupportsAccelFp8(StringRef arch);
 
-/// Whether this architecture uses the OCP FP8 formats (E4M3FN / E5M2).
-bool archSupportsOcpFp8(StringRef arch);
-
 /// Whether this architecture has scaled-GEMM matrix acceleration (scaled
 /// MFMA on CDNA4 / gfx950, scaled WMMA on GFX1250).
 bool archSupportsScaledGemm(StringRef arch);

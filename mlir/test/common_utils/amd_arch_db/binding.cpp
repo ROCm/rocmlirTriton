@@ -74,13 +74,6 @@ PYBIND11_MODULE(amd_arch_db, m) {
       py::arg("arch"));
 
   m.def(
-      "arch_supports_ocp_fp8",
-      [](const std::string &arch) {
-        return mlir::rock::archSupportsOcpFp8(arch);
-      },
-      py::arg("arch"));
-
-  m.def(
       "arch_supports_scaled_gemm",
       [](const std::string &arch) {
         return mlir::rock::archSupportsScaledGemm(arch);

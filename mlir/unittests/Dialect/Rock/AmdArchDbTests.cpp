@@ -435,29 +435,6 @@ TEST(AmdArchDbTest, ArchSupportsAccelFp8WithTriple) {
   EXPECT_FALSE(archSupportsAccelFp8("amdgcn-amd-amdhsa:gfx906"));
 }
 
-// --- archSupportsOcpFp8 ---
-//
-// OCP FP8 is a narrower capability than generic FP8 acceleration: gfx942 has
-// native FNUZ FP8 MFMA, while gfx950 and gfx12+ use the OCP FP8 formats.
-
-TEST(AmdArchDbTest, ArchSupportsOcpFp8) {
-  EXPECT_FALSE(archSupportsOcpFp8("gfx906"));  // GCN5_1
-  EXPECT_FALSE(archSupportsOcpFp8("gfx908"));  // CDNA1
-  EXPECT_FALSE(archSupportsOcpFp8("gfx90a"));  // CDNA2
-  EXPECT_FALSE(archSupportsOcpFp8("gfx942"));  // CDNA3 (FNUZ FP8)
-  EXPECT_TRUE(archSupportsOcpFp8("gfx950"));   // CDNA4 (OCP FP8)
-  EXPECT_FALSE(archSupportsOcpFp8("gfx1010")); // RDNA1
-  EXPECT_FALSE(archSupportsOcpFp8("gfx1030")); // RDNA2
-  EXPECT_FALSE(archSupportsOcpFp8("gfx1100")); // RDNA3
-  EXPECT_TRUE(archSupportsOcpFp8("gfx1200"));  // RDNA4 (OCP FP8)
-  EXPECT_TRUE(archSupportsOcpFp8("gfx1250"));  // GFX1250 (OCP FP8)
-}
-
-TEST(AmdArchDbTest, ArchSupportsOcpFp8WithTriple) {
-  EXPECT_TRUE(archSupportsOcpFp8("amdgcn-amd-amdhsa:gfx950"));
-  EXPECT_FALSE(archSupportsOcpFp8("amdgcn-amd-amdhsa:gfx942"));
-}
-
 // --- archSupportsScaledGemm ---
 //
 // Scaled matrix acceleration: ScaledMFMA on CDNA4 (gfx950), ScaledWMMA on

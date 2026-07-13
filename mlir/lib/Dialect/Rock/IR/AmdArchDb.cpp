@@ -8,7 +8,6 @@
 
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 
-#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/Builders.h"
@@ -358,13 +357,6 @@ bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
   return rock::getMfmaVersion(isaFamily) >= 3 ||
          rock::getWmmaVersion(isaFamily) >= 2;
-}
-
-bool mlir::rock::archSupportsOcpFp8(StringRef arch) {
-  auto [_, chip] = getArch(arch);
-  FailureOr<mlir::amdgpu::Chipset> maybeChipset =
-      mlir::amdgpu::Chipset::parse(chip);
-  return succeeded(maybeChipset) && mlir::amdgpu::hasOcpFp8(*maybeChipset);
 }
 
 bool mlir::rock::archSupportsScaledGemm(StringRef arch) {
