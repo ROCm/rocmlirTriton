@@ -228,4 +228,4 @@
 // BAD_USEASYNCCOPY-SAME: expected -1 (arch default), 0 (off), or 1 (on)
 
 // BAD_USEREDUCTIONLAYOUT_TWO: LLVM ERROR: invalid `--pass-pipeline=triton{useReductionLayout=2}`
-// BAD_USEREDUCTIONLAYOUT_TWO-SAME: expected -1 (default), 0 (off), or 1 (on)
+// BAD_USEREDUCTIONLAYOUT_TWO-SAME: expected -1 (arch default), 0 (off), or 1 (on)
