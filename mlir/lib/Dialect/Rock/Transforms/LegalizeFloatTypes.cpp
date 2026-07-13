@@ -1243,8 +1243,8 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
       if (gemmOperandIs4Bit) {
         if (!kPack.has_value())
           return gemmOp.emitError("kPack is undefined");
-        if (!kPack.value() &&
-            !rock::archSupportsNonKPackedScaledInput(rock::getArchValue(gemmOp))) {
+        if (!kPack.value() && !rock::archSupportsNonKPackedScaledInput(
+                                  rock::getArchValue(gemmOp))) {
           rock::markAsNotApplicable(gemmOp);
           return gemmOp.emitError(
               "sub-byte packing in the non-K (M/N) dimension is not "
