@@ -10,12 +10,12 @@
 //      CHECK:   tt.expand_dims
 //      CHECK:   arith.muli
 //      CHECK:   arith.addi
+//      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
 // The innermost tile dim is contiguous (vecLen 8 for f16, capped at 128 bits),
 // so the pointer add carries a vectorization hint; the outer dim is strided
 // (vecLen 1). Divisibility is vecLen*elemBytes.
 //      CHECK:   arith.addi {{.*}} {tt.contiguity = dense<[1, 8]> : tensor<2xi32>, tt.divisibility = dense<[2, 16]> : tensor<2xi32>} : tensor<64x64xi32>
-//      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_transforms_to_ptr_load(%arg0: tensor<32768xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
@@ -45,10 +45,10 @@ func.func @test_transforms_to_ptr_load(%arg0: tensor<32768xf16>) -> tensor<64x64
 //      CHECK:   tt.expand_dims
 //      CHECK:   arith.muli
 //      CHECK:   arith.addi
+//      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
 // f32 store: innermost vecLen is 4 (128 bits / 4 bytes), divisibility 4*4=16.
 //      CHECK:   arith.addi {{.*}} {tt.contiguity = dense<[1, 4]> : tensor<2xi32>, tt.divisibility = dense<[4, 16]> : tensor<2xi32>} : tensor<64x64xi32>
-//      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   rock.blockwise_store_ptr {{.*}} by  set
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_transforms_to_ptr_store(%arg0: tensor<64x64xf32>, %arg1: tensor<8192xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
@@ -112,9 +112,9 @@ func.func @test_extract_ptr_hoisting(%arg0: tensor<8192xf16>, %arg1: tensor<8192
 //      CHECK:   %[[BOUND:.*]] = arith.constant 63 : i32
 //      CHECK:   arith.cmpi ult, {{.*}}, {{.*}} : tensor<64x1xi32>
 //      CHECK:   arith.andi {{.*}} : tensor<64x1xi1>
+//      CHECK:   tt.broadcast {{.*}} : tensor<64x1xi1> -> tensor<64x64xi1>
 //      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
 //      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
-//      CHECK:   tt.broadcast {{.*}} : tensor<64x1xi1> -> tensor<64x64xi1>
 //      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_pad_mask(%arg0: tensor<4032xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
@@ -165,9 +165,9 @@ func.func @test_constant_buffer(%arg0: tensor<64x64xf16>, %arg1: tensor<64x64xf1
 //      CHECK:   tt.expand_dims
 //      CHECK:   arith.muli
 //      CHECK:   arith.addi
+//      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
 //      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
-//      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_no_extra_indices(%arg0: tensor<4096xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {

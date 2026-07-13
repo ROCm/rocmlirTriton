@@ -46,6 +46,8 @@ namespace {
 struct RockSetReductionLayoutPass
     : public rock::impl::RockSetReductionLayoutPassBase<
           RockSetReductionLayoutPass> {
+  using rock::impl::RockSetReductionLayoutPassBase<
+      RockSetReductionLayoutPass>::RockSetReductionLayoutPassBase;
   void runOnOperation() override;
 };
 
@@ -305,9 +307,19 @@ void RockSetReductionLayoutPass::runOnOperation() {
     if (!inserted && it->second != kDim)
       conflicting.insert(load);
   };
-  mod.walk([&](triton::DotOpInterface dot) {
-    record(dot.getA(), /*kDim=*/1u);
-    record(dot.getB(), /*kDim=*/0u);
+  // Convolution kernels (marked `rock.conv_kernel`) always get the rewrite;
+  // the `useReductionLayout` perfConfig knob additionally forces it on every
+  // kernel when set to 1.
+  // TODO: Investigate if this can be beneficial for non-convolution kernels.
+  // https://amd-hub.atlassian.net/browse/AIROCMLIR-1049
+  bool forceAll = useReductionLayout == 1;
+  mod.walk([&](triton::FuncOp func) {
+    if (!forceAll && !func->hasAttr(rock::ConvKernelAttr::getMnemonic()))
+      return;
+    func.walk([&](triton::DotOpInterface dot) {
+      record(dot.getA(), /*kDim=*/1u);
+      record(dot.getB(), /*kDim=*/0u);
+    });
   });
   if (loadKDim.empty()) {
     LLVM_DEBUG(llvm::dbgs()

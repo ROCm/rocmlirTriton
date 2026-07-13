@@ -154,7 +154,6 @@ static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(
     return analyzeSmallTensorRangeOverride;
   return false;
 }
-
 // Based on make_ttgir() in
 // @triton//:third_party/amd/backend/compiler.py
 static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
@@ -265,10 +264,13 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
                      int64_t useReductionLayout) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
-  // Redistribute the layout of the reduction dimension to reduce
-  // register pressure.
-  if (useReductionLayout == 1)
-    pm->addPass(rock::createRockSetReductionLayoutPass());
+  // Redistribute the layout of the reduction dimension to reduce register
+  // pressure. Always scheduled: the pass runs on convolution kernels
+  // (`rock.conv_kernel`) unconditionally, and the `useReductionLayout`
+  // perfConfig knob additionally forces it on every kernel when set to 1.
+  rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
+  reductionLayoutOpts.useReductionLayout = useReductionLayout;
+  pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
