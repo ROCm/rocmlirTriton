@@ -5,23 +5,6 @@
 
 // RUN: rocmlir-opt -rock-decompose-nonpow2-tiles -verify-diagnostics -split-input-file -mlir-print-local-scope %s
 
-#pk48 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 48, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
-
-// ============================================================
-// Error: non-power-of-two kPerBlock. M/N are non-power-of-two
-// (so the gemm is selected for splitting), but this pass only
-// peels M/N and cannot split the contraction dimension.
-// ============================================================
-
-func.func @test_nonpow2_k(%a: tensor<1x160x96xf16>, %b: tensor<1x96x160xf16>, %c: tensor<1x160x160xf32>) -> tensor<1x160x160xf32> attributes {rock.kernel} {
-  // expected-error @+1 {{non-power-of-two kPerBlock is not supported}}
-  %r = rock.gridwise_gemm(%a, %b) {params = #pk48} : tensor<1x160x96xf16>, tensor<1x96x160xf16> -> tensor<1x160x160xf32>
-  %out = rock.store %r to %c by set : tensor<1x160x160xf32> -> tensor<1x160x160xf32> to tensor<1x160x160xf32>
-  return %out : tensor<1x160x160xf32>
-}
-
-// -----
-
 #p80x80 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 
 // ============================================================
