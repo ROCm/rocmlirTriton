@@ -104,17 +104,17 @@ struct RockBridgeVectorizationHintsPass
       if (isStash) {
         // addptr (hinted by TransformsToPointerArith) -> memory op marker.
         if (Attribute c = addPtrOp->getDiscardableAttr(kContiguity))
-          op->setAttr(kMarkContiguity, c);
+          op->setDiscardableAttr(kMarkContiguity, c);
         if (Attribute d = addPtrOp->getDiscardableAttr(kDivisibility))
-          op->setAttr(kMarkDivisibility, d);
+          op->setDiscardableAttr(kMarkDivisibility, d);
       } else {
         // memory op marker -> rebuilt addptr, then drop the markers.
         if (Attribute c = op->getDiscardableAttr(kMarkContiguity)) {
-          addPtrOp->setAttr(kContiguity, c);
+          addPtrOp->setDiscardableAttr(kContiguity, c);
           op->removeDiscardableAttr(kMarkContiguity);
         }
         if (Attribute d = op->getDiscardableAttr(kMarkDivisibility)) {
-          addPtrOp->setAttr(kDivisibility, d);
+          addPtrOp->setDiscardableAttr(kDivisibility, d);
           op->removeDiscardableAttr(kMarkDivisibility);
         }
       }
