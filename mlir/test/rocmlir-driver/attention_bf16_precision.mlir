@@ -14,12 +14,12 @@
 
 // --- GPU assembly: gfx1100 (RDNA3) ---
 // RUN: rocmlir-gen --arch gfx1100 --operation attention -rand 1 -current_seq_len=17 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -t bf16 -p \
-// RUN:   | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=GFX1100
 
 // --- GPU assembly: gfx1200 (RDNA4) ---
 // RUN: rocmlir-gen --arch gfx1200 --operation attention -rand 1 -current_seq_len=17 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias -t bf16 -p \
-// RUN:   | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=GFX1200
 
 // --- CPU LLVM IR (host reference) ---

@@ -1,10 +1,10 @@
 // The extra rocmlir-opt calls check IR validity
 
-// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 1 -m 1 -k 1 -n 1 | rocmlir-opt --mlir-print-local-scope | FileCheck %s -D\$ITYPE=f32 -D\$OTYPE=f32 --check-prefixes=ALLUNIT
-// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 2 -m 1 -k 1 -n 1 | rocmlir-opt --mlir-print-local-scope | FileCheck %s -D\$ITYPE=f32 -D\$OTYPE=f32 --check-prefixes=ONLYG
-// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 1 -m 2 -k 1 -n 1 | rocmlir-opt --mlir-print-local-scope | FileCheck %s -D\$ITYPE=f32 -D\$OTYPE=f32 --check-prefixes=ONLYM
-// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 1 -m 1 -k 2 -n 1 | rocmlir-opt --mlir-print-local-scope | FileCheck %s -D\$ITYPE=f32 -D\$OTYPE=f32 --check-prefixes=ONLYK
-// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 1 -m 1 -k 1 -n 2 | rocmlir-opt --mlir-print-local-scope | FileCheck %s -D\$ITYPE=f32 -D\$OTYPE=f32 --check-prefixes=ONLYN
+// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 1 -m 1 -k 1 -n 1 | rocmlir-opt --mlir-print-local-scope | FileCheck %s '-D$ITYPE=f32' '-D$OTYPE=f32' --check-prefixes=ALLUNIT
+// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 2 -m 1 -k 1 -n 1 | rocmlir-opt --mlir-print-local-scope | FileCheck %s '-D$ITYPE=f32' '-D$OTYPE=f32' --check-prefixes=ONLYG
+// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 1 -m 2 -k 1 -n 1 | rocmlir-opt --mlir-print-local-scope | FileCheck %s '-D$ITYPE=f32' '-D$OTYPE=f32' --check-prefixes=ONLYM
+// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 1 -m 1 -k 2 -n 1 | rocmlir-opt --mlir-print-local-scope | FileCheck %s '-D$ITYPE=f32' '-D$OTYPE=f32' --check-prefixes=ONLYK
+// RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation gemm -g 1 -m 1 -k 1 -n 2 | rocmlir-opt --mlir-print-local-scope | FileCheck %s '-D$ITYPE=f32' '-D$OTYPE=f32' --check-prefixes=ONLYN
 
 // ALLUNIT-LABEL: module
 // ALLUNIT-NEXT: func.func @rock_gemm

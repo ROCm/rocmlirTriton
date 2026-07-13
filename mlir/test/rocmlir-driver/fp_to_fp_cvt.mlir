@@ -1,17 +1,17 @@
 // GEMM: f16 output writeback truncates the f32 accumulator to f16.
-// RUN: rocmlir-gen --arch gfx90a  --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX90A --implicit-check-not=v_cvt_pk_f16_f32
-// RUN: rocmlir-gen --arch gfx942  --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942 --implicit-check-not=v_cvt_pk_f16_f32
-// RUN: rocmlir-gen --arch gfx950  --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX950 --implicit-check-not=v_cvt_f16_f32
-// RUN: rocmlir-gen --arch gfx1100 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1100 --implicit-check-not=v_cvt_pk_f16_f32
-// RUN: rocmlir-gen --arch gfx1200 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1200 --implicit-check-not=v_cvt_pk_f16_f32
-// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1250 --implicit-check-not=v_cvt_f16_f32
+// RUN: rocmlir-gen --arch gfx90a  --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX90A --implicit-check-not=v_cvt_pk_f16_f32
+// RUN: rocmlir-gen --arch gfx942  --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942 --implicit-check-not=v_cvt_pk_f16_f32
+// RUN: rocmlir-gen --arch gfx950  --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX950 --implicit-check-not=v_cvt_f16_f32
+// RUN: rocmlir-gen --arch gfx1100 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1100 --implicit-check-not=v_cvt_pk_f16_f32
+// RUN: rocmlir-gen --arch gfx1200 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1200 --implicit-check-not=v_cvt_pk_f16_f32
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1250 --implicit-check-not=v_cvt_f16_f32
 
 // Attention: the f16 output is likewise produced by truncating an f32 result.
-// RUN: rocmlir-gen --arch gfx942  --operation attention -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942 --implicit-check-not=v_cvt_pk_f16_f32
-// RUN: rocmlir-gen --arch gfx950  --operation attention -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX950 --implicit-check-not=v_cvt_f16_f32
-// RUN: rocmlir-gen --arch gfx1100 --operation attention -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1100 --implicit-check-not=v_cvt_pk_f16_f32
-// RUN: rocmlir-gen --arch gfx1200 --operation attention -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1200 --implicit-check-not=v_cvt_pk_f16_f32
-// RUN: rocmlir-gen --arch gfx1250 --operation attention -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1250 --implicit-check-not=v_cvt_f16_f32
+// RUN: rocmlir-gen --arch gfx942  --operation attention -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942 --implicit-check-not=v_cvt_pk_f16_f32
+// RUN: rocmlir-gen --arch gfx950  --operation attention -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX950 --implicit-check-not=v_cvt_f16_f32
+// RUN: rocmlir-gen --arch gfx1100 --operation attention -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1100 --implicit-check-not=v_cvt_pk_f16_f32
+// RUN: rocmlir-gen --arch gfx1200 --operation attention -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1200 --implicit-check-not=v_cvt_pk_f16_f32
+// RUN: rocmlir-gen --arch gfx1250 --operation attention -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1250 --implicit-check-not=v_cvt_f16_f32
 
 // A packed f16 GEMM/attention accumulates in f32 and truncates the result to
 // f16 for the output. Only targets with the `cvt-pk-f16-f32-inst` subtarget
