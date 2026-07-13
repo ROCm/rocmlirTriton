@@ -21,6 +21,22 @@ func.func @test_basic_conversion(%arg0: tensor<4096xf16>) attributes {rock.arch 
 
 // -----
 
+// Verifies the rock.conv_kernel marker attribute survives the func.func to
+// tt.func conversion (it rides along in getDiscardableAttrs()).
+// CHECK-LABEL: tt.func @test_conv_kernel_attr_preserved
+// CHECK-SAME: attributes {
+// CHECK-SAME: rock.conv_kernel
+func.func @test_conv_kernel_attr_preserved(%arg0: tensor<4096xf16>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.conv_kernel, rock.grid_size = 1 : i32, rock.block_size = 256 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64x64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32
+  %1 = tt.splat %0 : i32 -> tensor<64x64xi32>
+  %2 = rock.cast_to_ptr %1 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %3 = tt.load %2, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  return
+}
+
+// -----
+
 // Verifies arith.addi on pointer tensor is converted to tt.addptr
 // CHECK-LABEL: tt.func @test_addi_to_addptr
 // CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>)
