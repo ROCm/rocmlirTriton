@@ -22,8 +22,8 @@
 // `divui`/`remui`. The AMD `tritonamdgpu-canonicalize-pointers` pass rebuilds
 // the pointer arithmetic into fresh ops and drops those discardable attrs, so
 // by the time `tritonamdgpu-convert-buffer-ops` runs its `AxisInfoAnalysis` the
-// hint is gone and the load is scalarized to `buffer_load_dword`.
-//
+// hint is gone and the load is scalarized.
+
 // This pass bridges that gap entirely on the Rock side, so no patch to the
 // Triton submodule is needed. It runs in two phases around
 // canonicalize-pointers:

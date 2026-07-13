@@ -34,6 +34,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 namespace rock {
@@ -615,12 +616,12 @@ struct TransformsToPtrRewritePattern
     // contiguous run length per tile dim (capped at 128 bits, i.e. 4 for f32).
     // We stamp it as tt.contiguity/tt.divisibility on the pointer op (which
     // rock-tensor-to-triton-ptr turns into tt.addptr); the coalescer then
-    // widens the load to buffer_load_dwordx4. LDS staging keeps this decoupled
-    // from the MFMA operand layout, so correctness is unaffected.
+    // widens the load to a single 128-bit buffer load. LDS staging keeps this
+    // decoupled from the MFMA operand layout, so correctness is unaffected.
     //
-    // Divisibility is vecLen*elemBytes bytes (buffer_load_dwordN only needs
+    // Divisibility is vecLen*elemBytes bytes (the widened load only needs
     // element alignment). Constant index-calc buffers never load, so skip them.
-    if (!buffer.getDefiningOp<arith::ConstantOp>()) {
+    if (isConstantBuffer) {
       auto sourceType = cast<ShapedType>(source.getType());
       size_t numExtra = extraIndices.size();
       // `source` is a higher-rank view: leading `numExtra` dims are the block
@@ -630,7 +631,7 @@ struct TransformsToPtrRewritePattern
       if (sourceType.getRank() ==
           static_cast<int64_t>(numExtra + shape.size())) {
         int64_t elemBytes =
-            std::max<int64_t>(1, sourceType.getElementTypeBitWidth() / 8);
+            llvm::divideCeil(sourceType.getElementTypeBitWidth(), 8);
         SmallVector<int32_t> contigPerDim(shape.size(), 1);
         SmallVector<int32_t> divPerDim(shape.size(), 1);
         bool haveHint = false;
