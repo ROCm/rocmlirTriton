@@ -3,11 +3,14 @@
 // The pass redistributes the reduction-operand global-load #blocked layout so
 // that every warp owns a reduction (K) strip. 
 //
-// RUN: rocmlir-opt -rock-set-reduction-layout --mlir-print-local-scope --split-input-file %s | FileCheck %s
+// These tests exercise the rewrite mechanics on kernels that do not carry the
+// `rock.conv_kernel` attribute, so they force the rewrite on with
+// `use-reduction-layout=1` (the default only rewrites convolution kernels).
+// RUN: rocmlir-opt -rock-set-reduction-layout="use-reduction-layout=1" --mlir-print-local-scope --split-input-file %s | FileCheck %s
 //
 // The conflict path (a single load feeding dot operands with disagreeing
 // reduction dims) emits a warning to stderr; check it separately.
-// RUN: rocmlir-opt -rock-set-reduction-layout --split-input-file %s 2>&1 | FileCheck %s --check-prefix=CONFLICT
+// RUN: rocmlir-opt -rock-set-reduction-layout="use-reduction-layout=1" --split-input-file %s 2>&1 | FileCheck %s --check-prefix=CONFLICT
 
 // The B / reduction operand (64x64) is loaded "gather"-style: its reduction dim
 // (dim 0) is the slowest-varying dim (order = [1, 0]). Its warpsPerCTA = [2, 2]
