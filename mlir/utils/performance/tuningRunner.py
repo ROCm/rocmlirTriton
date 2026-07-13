@@ -1523,8 +1523,7 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
     if state.timed_out_count() > 0:
         logger.warning(f"Found {state.timed_out_count()} timed out config(s) in state file")
     if state.gpu_timed_out_count() > 0:
-        logger.warning(
-            f"Found {state.gpu_timed_out_count()} gpu-timed-out config(s) in state file")
+        logger.warning(f"Found {state.gpu_timed_out_count()} gpu-timed-out config(s) in state file")
     if state.failed_count() > 0:
         logger.warning(f"Found {state.failed_count()} failed config(s) in state file")
 
