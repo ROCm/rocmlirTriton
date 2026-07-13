@@ -4,8 +4,8 @@
 // F32:  %[[RES:.*]] = memref.cast {{.*}} : memref<{{.*}}> to memref<*xf32>
 // F32-NEXT:    call @printMemrefF32(%[[RES]]) : (memref<*xf32>) -> ()
 
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -prc -t f16 | FileCheck %s --check-prefixes=CHECK -D\$TYPE=f16
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -prc -t bf16 | FileCheck %s --check-prefix=CHECK -D\$TYPE=bf16
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -prc -t f16 | FileCheck %s --check-prefixes=CHECK '-D$TYPE=f16'
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -prc -t bf16 | FileCheck %s --check-prefix=CHECK '-D$TYPE=bf16'
 
 // CHECK-LABEL: func.func @conv_cpu
 // CHECK-SAME: (%{{.*}}: tensor<9216x[[$TYPE]]>, %{{.*}}: tensor<1048576x[[$TYPE]]>, %{{.*}}: tensor<14745600x[[$TYPE]]>)

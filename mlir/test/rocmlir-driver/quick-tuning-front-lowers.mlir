@@ -8,6 +8,11 @@
 // This mirrors the MIGraphX skip-benchmarking path expectation that front()
 // should be directly usable.
 //
+// The --perf_config="$(...)" RUN lines below use POSIX command substitution,
+// which the lit internal shell does not support on Windows; the logic is
+// platform-independent and stays covered on Linux.
+// UNSUPPORTED: system-windows
+//
 // RUN: rocmlir-gen --arch %arch --operation gemm -t f16 -out_datatype f32 -g 1 -m 256 -k 128 -n 256 -transA=False -transB=False --emit-tuning-space=quick | FileCheck %s --check-prefix=CHECK-GEMM-NT
 // RUN: rocmlir-gen --arch %arch --operation gemm -t f16 -out_datatype f32 -g 1 -m 256 -k 128 -n 256 -transA=False -transB=False --perf_config="$(rocmlir-gen --arch %arch --operation gemm -t f16 -out_datatype f32 -g 1 -m 256 -k 128 -n 256 -transA=False -transB=False --emit-tuning-space=quick | sed -n '1p')" | rocmlir-driver -c -o /dev/null
 //
