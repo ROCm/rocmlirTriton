@@ -98,24 +98,25 @@ struct RockBridgeVectorizationHintsPass
       if (!ptr)
         return;
       auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
-      if (!addPtrOp)
-        return;
 
       if (isStash) {
         // addptr (hinted by TransformsToPointerArith) -> memory op marker.
+        // Nothing to stash if the pointer is not a hinted addptr.
+        if (!addPtrOp)
+          return;
         if (Attribute c = addPtrOp->getDiscardableAttr(kContiguity))
           op->setDiscardableAttr(kMarkContiguity, c);
         if (Attribute d = addPtrOp->getDiscardableAttr(kDivisibility))
           op->setDiscardableAttr(kMarkDivisibility, d);
       } else {
-        // memory op marker -> rebuilt addptr, then drop the markers.
-        if (Attribute c = op->getDiscardableAttr(kMarkContiguity)) {
-          addPtrOp->setDiscardableAttr(kContiguity, c);
-          op->removeDiscardableAttr(kMarkContiguity);
+        // memory op marker -> rebuilt addptr. Always erase the markers.
+        if (Attribute c = op->removeDiscardableAttr(kMarkContiguity)) {
+          if (addPtrOp)
+            addPtrOp->setDiscardableAttr(kContiguity, c);
         }
-        if (Attribute d = op->getDiscardableAttr(kMarkDivisibility)) {
-          addPtrOp->setDiscardableAttr(kDivisibility, d);
-          op->removeDiscardableAttr(kMarkDivisibility);
+        if (Attribute d = op->removeDiscardableAttr(kMarkDivisibility)) {
+          if (addPtrOp)
+            addPtrOp->setDiscardableAttr(kDivisibility, d);
         }
       }
     });
