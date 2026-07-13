@@ -292,6 +292,40 @@ FailureOr<bool> isInputNonInjective(Value value);
 // Same as above but for output fusions
 FailureOr<Type> getOutputFusionElementType(Value value);
 
+//===----------------------------------------------------------------------===//
+// Non-power-of-two tile peeling
+//===----------------------------------------------------------------------===//
+
+/// A power-of-two segment of a tile dimension: the half-open interval
+/// [offset, offset + length), where `length` is a power of two.
+struct Pow2Segment {
+  int64_t offset;
+  int64_t length;
+};
+
+/// Decompose `n` into a minimal sequence of power-of-two segments (largest
+/// first) that exactly cover [0, n). A power-of-two `n` yields a single {0, n}
+/// segment, so the split is a no-op for that (common) case. For example,
+/// 48 -> {{0, 32}, {32, 16}}.
+SmallVector<Pow2Segment> decomposePow2(int64_t n);
+
+/// Build a view of the rank-N tensor `view` in which each dimension listed in
+/// `sliceDims` (which has size `blocks[k] * tiles[k]`) is restructured into
+/// (block, iter) = (blocks[k], tiles[k]), the iter sub-dim is sliced to
+/// `segs[k]`, and the two are re-merged. The resulting dimension has size
+/// `blocks[k] * segs[k].length`, and block `bk` of it maps onto original
+/// indices `bk*tiles[k] + segs[k].offset + i`. Dimensions not in `sliceDims`
+/// pass through unchanged; iter sub-dims whose segment already covers the whole
+/// tile are passed through instead of sliced.
+///
+/// `sliceDims`, `blocks`, `tiles` and `segs` are parallel arrays with one entry
+/// per sliced dimension. This produces a zero-copy view used to peel
+/// non-power-of-two per-block tiles into power-of-two segments (M/N in
+/// rock-decompose-nonpow2-tiles, K in rock-gridwise-gemm-to-blockwise).
+Value sliceBlockedDims(OpBuilder &b, Location loc, Value view,
+                       ArrayRef<unsigned> sliceDims, ArrayRef<int64_t> blocks,
+                       ArrayRef<int64_t> tiles, ArrayRef<Pow2Segment> segs);
+
 } // end namespace rock
 } // end namespace mlir
 #endif

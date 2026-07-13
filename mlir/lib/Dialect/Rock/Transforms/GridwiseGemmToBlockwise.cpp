@@ -56,7 +56,6 @@
 #include "GridLayoutEmitter.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/bit.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -138,113 +137,6 @@ chooseGemmLoadCacheModifiers(StringRef arch, Type aElemType, Type bElemType,
 
   return {cacheA, cacheB};
 }
-
-//===----------------------------------------------------------------------===//
-// Non-power-of-two K tile peeling
-//===----------------------------------------------------------------------===//
-
-namespace {
-/// A power-of-two segment [offset, offset + length) of the per-block K tile.
-struct KSegment {
-  int64_t offset;
-  int64_t length;
-};
-} // namespace
-
-/// Decompose `n` into a minimal sequence of power-of-two segments (largest
-/// first) that exactly cover [0, n). A power-of-two `n` yields a single
-/// {0, n} segment, so the split is a no-op for that (common) case. For example
-/// kPerBlock = 48 -> {{0, 32}, {32, 16}}.
-static SmallVector<KSegment> decomposeKPow2(int64_t n) {
-  SmallVector<KSegment> segs;
-  int64_t off = 0;
-  for (int64_t rem = n; rem > 0;) {
-    int64_t seg = static_cast<int64_t>(llvm::bit_floor<uint64_t>(rem));
-    segs.push_back({off, seg});
-    off += seg;
-    rem -= seg;
-  }
-  return segs;
-}
-
-/// Used to support non-power-of-two kPerBlock.
-///
-/// Slices the contraction dimension `kDimIdx` into N sub-slices, where N is the
-/// number of power-of-two segments. For example, if kPerBlock = 48, then N = 2
-/// and the sub-slices are 32 and 16. So, at high-level, we do:
-///
-/// for l in 0..1:
-/// acc += gemm( A.view_32[block l], B.view_32[block l] )   # contributes 32
-/// acc += gemm( A.view_16[block l], B.view_16[block l] )   # contributes 16
-static Value sliceOperandKSegment(OpBuilder &b, Location loc, Value operand,
-                                  unsigned kDimIdx, int64_t kIters,
-                                  int64_t kPerBlock, KSegment seg) {
-  auto type = cast<RankedTensorType>(operand.getType());
-  ArrayRef<int64_t> shape = type.getShape();
-  unsigned rank = shape.size();
-
-  SmallVector<std::string> baseStore, loopStore, iterStore;
-  for (unsigned i = 0; i < rank; ++i) {
-    baseStore.push_back(("d" + Twine(i)).str());
-    loopStore.push_back(("d" + Twine(i) + "l").str());
-    iterStore.push_back(("d" + Twine(i) + "i").str());
-  }
-  SmallVector<StringRef> baseNames(baseStore.begin(), baseStore.end());
-
-  // Layer 1: restructure the K dim into (k_loop, k_iter); pass the rest.
-  BottomUpTMBuilder l1(b, baseNames, shape, loc);
-  {
-    unsigned up = 0;
-    for (unsigned i = 0; i < rank; ++i) {
-      if (i == kDimIdx) {
-        l1.unmerge({StringRef(loopStore[i]), StringRef(iterStore[i])},
-                   {up, up + 1}, StringRef(baseStore[i]), {kIters, kPerBlock});
-        up += 2;
-      } else {
-        l1.passThrough({StringRef(baseStore[i])}, {up},
-                       {StringRef(baseStore[i])});
-        up += 1;
-      }
-    }
-  }
-  TransformMapAttr a1 = l1.get();
-
-  // Layer 2: slice the k_iter sub-dim to the segment; pass the rest.
-  BottomUpTMBuilder l2 = BottomUpTMBuilder::above(l1, a1);
-  SmallVector<StringRef> names2;
-  l2.getStartNames(names2);
-  StringRef kIterName(iterStore[kDimIdx]);
-  SmallVector<StringRef> passNames;
-  for (StringRef nm : names2)
-    if (nm != kIterName)
-      passNames.push_back(nm);
-  l2.passThrough(passNames);
-  l2.slice({kIterName}, {kIterName}, {seg.offset}, {seg.offset + seg.length});
-  TransformMapAttr a2 = l2.get();
-
-  // Layer 3: re-merge (k_loop, k_iter) back into the K dimension.
-  BottomUpTMBuilder l3 = BottomUpTMBuilder::above(l2, a2);
-  {
-    unsigned up = 0;
-    for (unsigned i = 0; i < rank; ++i) {
-      if (i == kDimIdx) {
-        l3.merge(StringRef(baseStore[i]), up,
-                 {StringRef(loopStore[i]), StringRef(iterStore[i])});
-      } else {
-        l3.passThrough({StringRef(baseStore[i])}, {up},
-                       {StringRef(baseStore[i])});
-      }
-      up += 1;
-    }
-  }
-  TransformMapAttr a3 = l3.get();
-
-  return rock::transform(b, operand, b.getArrayAttr({a3, a2, a1}));
-}
-
-//===----------------------------------------------------------------------===//
-// GridwiseGemm lowering.
-//===----------------------------------------------------------------------===//
 
 namespace {
 
@@ -385,7 +277,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
 
     // If needed, peel a non-power-of-two kPerBlock into power-of-two segments (e.g.
     // kPerBlock = 48 -> {32, 16}).
-    SmallVector<KSegment> kSegs = decomposeKPow2(kPerBlock);
+    SmallVector<Pow2Segment> kSegs = decomposePow2(kPerBlock);
     bool peelK = kSegs.size() > 1;
     if (peelK && isScaledGemm) {
       rock::markAsNotApplicable(op);
@@ -400,11 +292,13 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     // than the else branch.
     SmallVector<Value> segMatA, segMatB;
     if (peelK) {
-      for (KSegment seg : kSegs) {
-        segMatA.push_back(sliceOperandKSegment(b, loc, matA, /*kDimIdx=*/2,
-                                               kIterations, kPerBlock, seg));
-        segMatB.push_back(sliceOperandKSegment(b, loc, matB, /*kDimIdx=*/1,
-                                               kIterations, kPerBlock, seg));
+      for (Pow2Segment seg : kSegs) {
+        segMatA.push_back(sliceBlockedDims(b, loc, matA, /*sliceDims=*/{2},
+                                           /*blocks=*/{kIterations},
+                                           /*tiles=*/{kPerBlock}, {seg}));
+        segMatB.push_back(sliceBlockedDims(b, loc, matB, /*sliceDims=*/{1},
+                                           /*blocks=*/{kIterations},
+                                           /*tiles=*/{kPerBlock}, {seg}));
       }
     } else {
       segMatA.push_back(matA);
