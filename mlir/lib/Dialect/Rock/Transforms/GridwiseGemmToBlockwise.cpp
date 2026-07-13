@@ -56,6 +56,7 @@
 #include "GridLayoutEmitter.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -136,6 +137,112 @@ chooseGemmLoadCacheModifiers(StringRef arch, Type aElemType, Type bElemType,
   }
 
   return {cacheA, cacheB};
+}
+
+//===----------------------------------------------------------------------===//
+// Non-power-of-two K tile peeling
+//===----------------------------------------------------------------------===//
+
+namespace {
+/// A power-of-two segment [offset, offset + length) of the per-block K tile.
+struct KSegment {
+  int64_t offset;
+  int64_t length;
+};
+} // namespace
+
+/// Decompose `n` into a minimal sequence of power-of-two segments (largest
+/// first) that exactly cover [0, n). A power-of-two `n` yields a single
+/// {0, n} segment, so the split is a no-op for that (common) case. For example
+/// kPerBlock = 48 -> {{0, 32}, {32, 16}}.
+static SmallVector<KSegment> decomposeKPow2(int64_t n) {
+  SmallVector<KSegment> segs;
+  int64_t off = 0;
+  for (int64_t rem = n; rem > 0;) {
+    int64_t seg = static_cast<int64_t>(llvm::bit_floor<uint64_t>(rem));
+    segs.push_back({off, seg});
+    off += seg;
+    rem -= seg;
+  }
+  return segs;
+}
+
+/// Build a view of the rank-3 gemm operand `operand` in which the contraction
+/// dimension `kDimIdx` (of size `kIters * kPerBlock`) is restructured into
+/// (k_loop, k_iter) = (kIters, kPerBlock), the k_iter sub-dim is sliced to
+/// `seg`, and the two are re-merged. The resulting K dimension has size
+/// `kIters * seg.length`, and k_loop index `l` of it maps onto original K
+/// indices `l * kPerBlock + seg.offset + i`.
+///
+/// Feeding this view to the regular `loadTile` (with kPerBlock = seg.length)
+/// therefore loads, for outer K-loop iteration `l`, exactly the K sub-tile
+/// [l*kPerBlock + seg.offset, l*kPerBlock + seg.offset + seg.length) -- a
+/// power-of-two-wide slab -- while keeping the outer loop trip count kIters
+/// unchanged.
+static Value sliceOperandKSegment(OpBuilder &b, Location loc, Value operand,
+                                  unsigned kDimIdx, int64_t kIters,
+                                  int64_t kPerBlock, KSegment seg) {
+  auto type = cast<RankedTensorType>(operand.getType());
+  ArrayRef<int64_t> shape = type.getShape();
+  unsigned rank = shape.size();
+
+  SmallVector<std::string> baseStore, loopStore, iterStore;
+  for (unsigned i = 0; i < rank; ++i) {
+    baseStore.push_back(("d" + Twine(i)).str());
+    loopStore.push_back(("d" + Twine(i) + "l").str());
+    iterStore.push_back(("d" + Twine(i) + "i").str());
+  }
+  SmallVector<StringRef> baseNames(baseStore.begin(), baseStore.end());
+
+  // Layer 1: restructure the K dim into (k_loop, k_iter); pass the rest.
+  BottomUpTMBuilder l1(b, baseNames, shape, loc);
+  {
+    unsigned up = 0;
+    for (unsigned i = 0; i < rank; ++i) {
+      if (i == kDimIdx) {
+        l1.unmerge({StringRef(loopStore[i]), StringRef(iterStore[i])},
+                   {up, up + 1}, StringRef(baseStore[i]), {kIters, kPerBlock});
+        up += 2;
+      } else {
+        l1.passThrough({StringRef(baseStore[i])}, {up},
+                       {StringRef(baseStore[i])});
+        up += 1;
+      }
+    }
+  }
+  TransformMapAttr a1 = l1.get();
+
+  // Layer 2: slice the k_iter sub-dim to the segment; pass the rest.
+  BottomUpTMBuilder l2 = BottomUpTMBuilder::above(l1, a1);
+  SmallVector<StringRef> names2;
+  l2.getStartNames(names2);
+  StringRef kIterName(iterStore[kDimIdx]);
+  SmallVector<StringRef> passNames;
+  for (StringRef nm : names2)
+    if (nm != kIterName)
+      passNames.push_back(nm);
+  l2.passThrough(passNames);
+  l2.slice({kIterName}, {kIterName}, {seg.offset}, {seg.offset + seg.length});
+  TransformMapAttr a2 = l2.get();
+
+  // Layer 3: re-merge (k_loop, k_iter) back into the K dimension.
+  BottomUpTMBuilder l3 = BottomUpTMBuilder::above(l2, a2);
+  {
+    unsigned up = 0;
+    for (unsigned i = 0; i < rank; ++i) {
+      if (i == kDimIdx) {
+        l3.merge(StringRef(baseStore[i]), up,
+                 {StringRef(loopStore[i]), StringRef(iterStore[i])});
+      } else {
+        l3.passThrough({StringRef(baseStore[i])}, {up},
+                       {StringRef(baseStore[i])});
+      }
+      up += 1;
+    }
+  }
+  TransformMapAttr a3 = l3.get();
+
+  return rock::transform(b, operand, b.getArrayAttr({a3, a2, a1}));
 }
 
 //===----------------------------------------------------------------------===//
@@ -279,6 +386,37 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value nIterations =
         ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
 
+    // Peel a non-power-of-two per-block K tile into power-of-two segments (e.g.
+    // kPerBlock = 48 -> {32, 16}). The Triton layouts produced downstream
+    // require power-of-two tensor shapes, so each K-loop iteration contracts
+    // the segments in sequence, accumulating into the same per-workgroup tile
+    // (an in-register reduction along K -- no atomics, output side unchanged).
+    // A power-of-two kPerBlock yields a single {0, kPerBlock} segment, leaving
+    // the emitted IR identical to the un-peeled path.
+    SmallVector<KSegment> kSegs = decomposeKPow2(kPerBlock);
+    bool peelK = kSegs.size() > 1;
+    if (peelK && isScaledGemm) {
+      rock::markAsNotApplicable(op);
+      return op->emitOpError("non-power-of-two kPerBlock is not supported for "
+                             "scaled gemm");
+    }
+
+    // Pre-build the loop-invariant per-segment K-sliced operand views. A single
+    // (power-of-two) segment reuses the operands directly, so their views are
+    // left untouched.
+    SmallVector<Value> segMatA, segMatB;
+    if (peelK) {
+      for (KSegment seg : kSegs) {
+        segMatA.push_back(sliceOperandKSegment(b, loc, matA, /*kDimIdx=*/2,
+                                               kIterations, kPerBlock, seg));
+        segMatB.push_back(sliceOperandKSegment(b, loc, matB, /*kDimIdx=*/1,
+                                               kIterations, kPerBlock, seg));
+      }
+    } else {
+      segMatA.push_back(matA);
+      segMatB.push_back(matB);
+    }
+
     scf::ForOp loopOp = createMainLoop(b, loc, nIterations, ValueRange{initAcc});
     Value loopResult;
     {
@@ -294,41 +432,48 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
           arch, elementTypeALoad, elementTypeBLoad, G, M, N, K, mBlocks,
           nBlocks, aReloads, bReloads);
 
-      // Load from global memory to registers
-      Value loadedB =
-          rock::loadTile(b, loc, matB, /*kiter=*/iv, "n", gridCoords, kPerBlock,
-                         nPerBlock, /*isKFirst=*/true, bidGridLengths, cacheB);
-      Value loadedA =
-          rock::loadTile(b, loc, matA, /*kiter=*/iv, "m", gridCoords, kPerBlock,
-                         mPerBlock, /*isKFirst=*/false, bidGridLengths, cacheA);
+      // Contract each power-of-two K segment in turn, threading the accumulator
+      // so every segment of this K-loop iteration reduces into the same tile.
+      // (A power-of-two kPerBlock has a single full-width segment; scaled gemms
+      // are restricted to that case above.)
+      Value acc = accArg;
+      for (auto [segIdx, seg] : llvm::enumerate(kSegs)) {
+        // Load from global memory to registers
+        Value loadedB = rock::loadTile(
+            b, loc, segMatB[segIdx], /*kiter=*/iv, "n", gridCoords, seg.length,
+            nPerBlock, /*isKFirst=*/true, bidGridLengths, cacheB);
+        Value loadedA = rock::loadTile(
+            b, loc, segMatA[segIdx], /*kiter=*/iv, "m", gridCoords, seg.length,
+            mPerBlock, /*isKFirst=*/false, bidGridLengths, cacheA);
 
-      Value loadedScaleA, loadedScaleB;
-      if (isScaledGemm) {
-        // Note we load with dName="m" here because the shape of scaleB is [B,
-        // N, K] instead of [B, K, N]. This is because tt.dot_scaled expected
-        // scaleB transposed
-        // Scales share the reuse pattern of the operand they scale, so reuse
-        // the same cache modifier chosen for A/B above.
-        loadedScaleB =
-            rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
-                           quantKPerBlock, nPerBlock,
-                           /*isKFirst=*/false, bidGridLengths, cacheB);
-        loadedScaleA =
-            rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
-                           quantKPerBlock, mPerBlock,
-                           /*isKFirst=*/false, bidGridLengths, cacheA);
+        Value loadedScaleA, loadedScaleB;
+        if (isScaledGemm) {
+          // Note we load with dName="m" here because the shape of scaleB is [B,
+          // N, K] instead of [B, K, N]. This is because tt.dot_scaled expected
+          // scaleB transposed
+          // Scales share the reuse pattern of the operand they scale, so reuse
+          // the same cache modifier chosen for A/B above.
+          loadedScaleB =
+              rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
+                             quantKPerBlock, nPerBlock,
+                             /*isKFirst=*/false, bidGridLengths, cacheB);
+          loadedScaleA =
+              rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
+                             quantKPerBlock, mPerBlock,
+                             /*isKFirst=*/false, bidGridLengths, cacheA);
+        }
+
+        // Emit blockwise GEMM. This will load data from LDS (or registers) and
+        // compute the MMA at the same time
+        acc = BlockwiseGemmOp::create(
+            b, loc, loadedA, loadedB, acc, loadedScaleA, loadedScaleB,
+            op.getQuantBlockSizeAttr(),
+            /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+            /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
       }
 
-      // Emit blockwise GEMM. This will load data from LDS (or registers) and
-      // compute the MMA at the same time
-      Value newAcc = BlockwiseGemmOp::create(
-          b, loc, loadedA, loadedB, accArg, loadedScaleA, loadedScaleB,
-          op.getQuantBlockSizeAttr(),
-          /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
-          /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
-
       // Yield the new accumulator
-      scf::YieldOp::create(b, loc, ValueRange{newAcc});
+      scf::YieldOp::create(b, loc, ValueRange{acc});
       loopResult = loopOp.getResult(0);
     }
 
