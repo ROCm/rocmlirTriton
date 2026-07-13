@@ -67,3 +67,27 @@
 // RUN:       --implicit-check-not="attn:v4:{{(16|256),}}" \
 // RUN:       --implicit-check-not="attn:v4:{{[0-9]+,(16|256),}}"
 // CHECK-NAVI-ATTN: attn:v4:{{(32|64|128),(32|64|128),[0-9]+,1,[0-9]+,[0-9]+,0,(1|2),[0-9]+,0,0,-1,-1,-1,-1,-1,-1}}
+
+//===----------------------------------------------------------------------===//
+// Non-power-of-two kPerBlock candidates that evenly divide K
+//===----------------------------------------------------------------------===//
+
+// When K has non-power-of-two divisors (here K = 576 = 64*3*3, i.e. a conv's
+// C*fil_h*fil_w), the accelerated paths offer kPerBlock values that divide K so
+// the tuner can peel K into pow2 segments instead of padding it. On WMMA
+// (gfx1201) the base kPerBlock list {32,64} gains 36/48/72/96/144/192.
+// RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-DIVK
+// CHECK-WMMA-DIVK: gemm:v3:{{[0-9]+,[0-9]+,48,1,}}
+
+// The MFMA path grows the same way; 48 (= 576/12) is offered on gfx942.
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f16 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-DIVK
+// CHECK-MFMA-DIVK: gemm:v3:{{[0-9]+,[0-9]+,48,1,}}
+
+// A K that is a pure power of two (K = 128) must not introduce any non-pow2
+// kPerBlock: only 32/64/128/256 appear on WMMA.
+// RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 128 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-POW2K \
+// RUN:       --implicit-check-not="gemm:v3:{{[0-9]+,[0-9]+,(36|48|72|96|144|192),}}"
+// CHECK-WMMA-POW2K: gemm:v3:{{[0-9]+,[0-9]+,(32|64|128|256),1,}}

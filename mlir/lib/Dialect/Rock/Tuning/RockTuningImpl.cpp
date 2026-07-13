@@ -49,6 +49,12 @@ enum class GemmMNDim { M, N };
 // which a small dimension is covered by a single tightly-fitting tile.
 #define MAX_MN_PER_BLOCK 256
 
+// Upper bound on the non-power-of-two kPerBlock candidates we derive from the K
+// dimension. Kept modest so the K tile's LDS footprint and the search space
+// stay bounded; oversized configs that still overflow LDS are dropped later by
+// the applicability / couldBePerformant checks.
+#define MAX_K_PER_BLOCK 256
+
 // Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
 // tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
 // round the remainder up to the next pow2. e.g. 77 = 64 + 13 -> 64 + 16 = 80.
@@ -153,6 +159,33 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
   return {1, 3, 4};
 }
 
+// Append non-power-of-two kPerBlock candidates that evenly divide the GEMM K
+// dimension. A kPerBlock that divides K eliminates K padding, and is peeled
+// into power-of-two K segments downstream by rock-gridwise-gemm-to-blockwise
+// (each segment lowers to a tt.dot; sub-instruction-width segments are
+// zero-padded, so the result stays correct). Only accelerated (MFMA/WMMA) plain
+// gemms get these: scaled gemm and gemm+gemm keep power-of-two K tiles, and the
+// FMA path is left as-is. Candidates are bounded to [min(kList), maxK] to keep
+// the K segments and the search space reasonable.
+static void appendDividingKPerBlock(std::vector<uint32_t> &kList,
+                                    RockGemmWrapperInterface gemmOp,
+                                    uint32_t maxK) {
+  if (gemmOp.getScaleA() || gemmOp.getScaleB())
+    return;
+  int64_t k = gemmOp.getGemmSize().k;
+  if (k <= 0 || kList.empty())
+    return;
+  uint32_t minK = *llvm::min_element(kList);
+  uint32_t hiK = std::min<uint32_t>(maxK, static_cast<uint32_t>(k));
+  for (uint32_t d = minK; d <= hiK; ++d) {
+    if (k % d != 0 || llvm::isPowerOf2_64(d))
+      continue; // pow2 divisors are already in the base list
+    if (!llvm::is_contained(kList, d))
+      kList.push_back(d);
+  }
+  llvm::sort(kList);
+}
+
 static std::vector<std::vector<uint32_t>>
 getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
              int64_t maxWavesPerEU, TuningParamSetKind kind) {
@@ -185,6 +218,11 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       kind == TuningParamSetKind::Exhaustive
           ? std::vector<uint32_t>{32, 64, 128, 256}
           : std::vector<uint32_t>{32, 64};
+
+  // Add kPerBlock candidates that evenly divide K (non-pow2) so the tuner can
+  // trade K padding for K peeling on accelerated gemms.
+  appendDividingKPerBlock(kPerBlockMFMA, gemmOp, MAX_K_PER_BLOCK);
+  appendDividingKPerBlock(kPerBlockWMMA, gemmOp, MAX_K_PER_BLOCK);
 
   std::vector<uint32_t> numCTAsList;
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
