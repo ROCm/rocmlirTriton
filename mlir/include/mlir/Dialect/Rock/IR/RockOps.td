@@ -17,7 +17,6 @@ include "mlir/Dialect/Rock/IR/RockAttrDefs.td"
 include "mlir/Dialect/Rock/IR/RockConvInterface.td"
 include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.td"
 include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.td"
-include "mlir/Dialect/Rock/IR/RockAcceptingViewOpInterface.td"
 include "mlir/Dialect/Rock/IR/RockWriterOpInterface.td"
 include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -62,6 +61,9 @@ defvar GemmInputTypes = [F32, F16, BF16, I<4>, I8, F8E5M2FNUZ, F8E4M3FNUZ,
 // This can be extended for quantization.
 defvar GemmOutputTypes = [F32, F16, BF16, I32, I8, F8E5M2FNUZ, F8E4M3FNUZ, F8E5M2, F8E4M3FN];
 defvar GemmAccumulatorTypes = [F32, F16, BF16, I32];
+// Integer widths used for pointer offset arithmetic (i32, or i64 when a
+// transform chain's linearized index domain can exceed 32 bits).
+defvar PtrTypes = [I32, I64];
 
 def Rock_ConvOp : Rock_ConvOpBase<"conv"> {
   let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$filter,
@@ -472,6 +474,7 @@ def Rock_StoreOp
     : Rock_Op<"store", [Pure,
                         AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, AnyRankedTensor:$dest,
+          Optional<AnyRankedTensor>:$resultAlias,
           StoreMethodAttr:$storeMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Store tensor result to destination";
@@ -485,7 +488,15 @@ def Rock_StoreOp
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{
-    $source `to` $dest `by` $storeMethod attr-dict `:` type($source) `->` type ($result) `to` type($dest)
+    $source `to` $dest (`alias` $resultAlias^)? `by` $storeMethod
+    attr-dict `:` type($source) `->` type($result) `to` type($dest)
+    (`alias` type($resultAlias)^)?
+  }];
+  let extraClassDeclaration = [{
+    Value getResultAliasOrDest() {
+      Value resultAlias = getResultAlias();
+      return resultAlias ? resultAlias : getDest();
+    }
   }];
 }
 
@@ -686,7 +697,7 @@ def Rock_BlockwiseLoadOp
 def Rock_BlockwiseLoadPtrOp
     : Rock_Op<"blockwise_load_ptr", [AllShapesMatch<["pointerTensor",
                                                      "maskTensor", "result"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32]>,
+      Arguments<(ins Arg<RankedTensorOf<PtrTypes>,
                          "Pointer tensor", [MemRead]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           CacheModifierAttr:$cacheModifier)>,
@@ -722,12 +733,13 @@ def Rock_BlockwiseLoadPtrOp
 // blockwise_store
 def Rock_BlockwiseStoreOp
     : Rock_Op<"blockwise_store",
-              [Pure, DeclareOpInterfaceMethods<RockAcceptingViewOpInterface>,
+              [Pure, AttrSizedOperandSegments,
                DeclareOpInterfaceMethods<RockWriterOpInterface>,
                AllElementTypesMatch<["source", "dest", "result"]>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Arg<TensorOf<NativeMemoryOpTypes>, "destination view">:$dest,
-          Variadic<I32>:$extraIndices, StoreMethodAttr:$storeMethod)>,
+          Optional<AnyRankedTensor>:$resultAlias, Variadic<I32>:$extraIndices,
+          StoreMethodAttr:$storeMethod)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Write out values to transformed destination";
 
@@ -735,17 +747,25 @@ def Rock_BlockwiseStoreOp
   }];
 
   let assemblyFormat = [{
-    attr-dict $source  `->` $dest (`[` $extraIndices^ `]`)? `by` $storeMethod
-    `:` type($source) `->` type($dest) `->` type($result)
+    attr-dict $source  `->` $dest (`alias` $resultAlias^)?
+    (`[` $extraIndices^ `]`)? `by` $storeMethod
+    `:` type($source) `->` type($dest) (`alias` type($resultAlias)^)?
+    `->` type($result)
   }];
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    Value getResultAliasOrDest() {
+      Value resultAlias = getResultAlias();
+      return resultAlias ? resultAlias : getDest();
+    }
+  }];
 }
 
 // blockwise_store_ptr
 def Rock_BlockwiseStorePtrOp
     : Rock_Op<"blockwise_store_ptr",
               [AllShapesMatch<["pointerTensor", "maskTensor", "source"]>]>,
-      Arguments<(ins Arg<RankedTensorOf<[I32]>,
+      Arguments<(ins Arg<RankedTensorOf<PtrTypes>,
                          "Pointer tensor", [MemWrite]>:$pointerTensor,
           Arg<RankedTensorOf<[I1]>, "Mask tensor">:$maskTensor,
           Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
@@ -767,7 +787,7 @@ def Rock_TransformsToPtrOp
                                         InferTypeOpInterface>]>,
       Arguments<(ins Arg<TensorOf<NativeMemoryOpTypes>, "source">:$source,
           Variadic<I32>:$extraIndices)>,
-      Results<(outs RankedTensorOf<[I32]>:$pointers,
+      Results<(outs RankedTensorOf<PtrTypes>:$pointers,
           RankedTensorOf<[I1]>:$mask)> {
   let summary = "Convert transforms to pointer and mask tensors";
 
@@ -810,7 +830,7 @@ def Rock_CastToPtrOp
     Casts a tensor to a pointer tensor representation.
   }];
 
-  let arguments = (ins RankedTensorOf<[I32]>:$src);
+  let arguments = (ins RankedTensorOf<PtrTypes>:$src);
 
   let results = (outs AnyRankedTensor:$result);
 
@@ -818,23 +838,20 @@ def Rock_CastToPtrOp
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
 }
 
-def Rock_ExtractPtrOp
-    : Rock_Op<"extract_ptr", [Pure, DeclareOpInterfaceMethods<
-                                        InferTypeOpInterface>]> {
-  let summary = "Extract a pointer from a tensor as an i32";
+def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {
+  let summary = "Extract a pointer from a tensor as an i32 or i64 placeholder";
 
   let description = [{
     The `rock.extract_ptr` op extracts the base pointer from a tensor and
-    returns it as an i32. This operation is used to obtain the memory address
-    of tensor data for pointer arithmetic computations.
-
-    Please note that this op is only used as a glue between
-    tensor inputs (rock IR) and pointer inputs (triton IR).
+    returns it as an i32 or i64 placeholder for the real !tt.ptr. Its width is
+    chosen to match the offset arithmetic it feeds (i64 when 64-bit indexing is
+    required) so the base+offset add type-checks; RockTensorToTritonPtr later
+    replaces it with the actual !tt.ptr kernel argument.
   }];
 
   let arguments = (ins AnyRankedTensor:$source);
 
-  let results = (outs I32:$result);
+  let results = (outs AnyTypeOf<PtrTypes>:$result);
 
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";

@@ -613,7 +613,7 @@ func.func @store_shape_mismatch(
 // Result used by a non-return op
 func.func @store_result_not_returned(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
   %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   %neg = arith.negf %out : tensor<4x4xf32>
   return %neg : tensor<4x4xf32>
@@ -622,10 +622,43 @@ func.func @store_result_not_returned(
 // Result used as another store's source
 func.func @store_result_used_as_store_source(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
   %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   %out2 = rock.store %out to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   return %out2 : tensor<4x4xf32>
+}
+
+// Result used directly as another store's dest
+func.func @store_result_used_as_store_dest(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %out2 = rock.store %source to %out by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %out2 : tensor<4x4xf32>
+}
+
+// Result used through a view as another store's dest
+func.func @store_result_view_used_as_store_dest(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %view = rock.transform %out by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [4, 4] -> [4, 4]> : tensor<4x4xf32> to tensor<4x4xf32>
+  // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+  %out2 = rock.store %source to %view by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %out2 : tensor<4x4xf32>
+}
+
+// Dest rooted at a non-entry block argument
+func.func @store_dest_rooted_at_loop_block_arg(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %out = scf.for %i = %c0 to %c1 step %c1 iter_args(%iter_dest = %dest) -> (tensor<4x4xf32>) {
+    %view = rock.transform %iter_dest by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [4, 4] -> [4, 4]> : tensor<4x4xf32> to tensor<4x4xf32>
+    // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+    %stored = rock.store %source to %view alias %iter_dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32> alias tensor<4x4xf32>
+    scf.yield %stored : tensor<4x4xf32>
+  }
+  return %out : tensor<4x4xf32>
 }
 
 // Result has multiple uses
@@ -642,7 +675,7 @@ func.func @store_result_multiple_uses(
 
 // Source is not i32
 func.func @cast_to_ptr_src_not_i32(%src: tensor<64x64xf32>) -> tensor<64x64x!tt.ptr<f16>> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %0 = rock.cast_to_ptr %src : tensor<64x64xf32> -> tensor<64x64x!tt.ptr<f16>>
   return %0 : tensor<64x64x!tt.ptr<f16>>
 }
@@ -671,6 +704,15 @@ func.func @extract_ptr_not_block_arg(%src: tensor<64x64xf32>) -> i32 attributes 
   // expected-error @+1 {{source must be a block argument}}
   %0 = rock.extract_ptr %cst : tensor<64x64xf32> -> i32
   return %0 : i32
+}
+
+// -----
+
+// Result must be an i32 or i64 placeholder
+func.func @extract_ptr_bad_result_type(%src: tensor<64x64xf32>) -> i16 attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result #0 must be 32-bit signless integer or 64-bit signless integer}}
+  %0 = rock.extract_ptr %src : tensor<64x64xf32> -> i16
+  return %0 : i16
 }
 
 // =============================================================================
@@ -711,7 +753,7 @@ func.func @blockwise_reduce_elem_type_mismatch(%input: tensor<64x64xf32>) -> ten
 
 // Pointers element type not i32
 func.func @transforms_to_ptr_ptr_not_i32(%src: tensor<64x64xf32>) -> (tensor<64x64xf16>, tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{result #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %ptrs, %mask = rock.transforms_to_ptr %src : tensor<64x64xf32> -> tensor<64x64xf16>, tensor<64x64xi1>
   return %ptrs, %mask : tensor<64x64xf16>, tensor<64x64xi1>
 }
@@ -773,10 +815,10 @@ func.func @blockwise_store_rank_mismatch(
 // Result not used by return
 func.func @blockwise_store_not_returned(
     %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
-    %i0: i32) -> tensor<768xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
-  %0 = rock.blockwise_store %src -> %dest[%i0] by set
-    : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
+    %alias: tensor<768xf32>, %i0: i32) -> tensor<768xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %0 = rock.blockwise_store %src -> %dest alias %alias [%i0] by set
+    : tensor<16x16xf32> -> tensor<3x16x16xf32> alias tensor<768xf32> -> tensor<768xf32>
   %neg = arith.negf %0 : tensor<768xf32>
   return %neg : tensor<768xf32>
 }
@@ -784,22 +826,61 @@ func.func @blockwise_store_not_returned(
 // Result used as another blockwise_store's source
 func.func @blockwise_store_result_used_as_store_source(
     %src: tensor<768xf32>, %dest0: tensor<3x768xf32>,
-    %dest1: tensor<3x2304xf32>, %i0: i32) -> tensor<6912xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or destination operand of another same-kind store}}
-  %0 = rock.blockwise_store %src -> %dest0[%i0] by set
-    : tensor<768xf32> -> tensor<3x768xf32> -> tensor<2304xf32>
-  %1 = rock.blockwise_store %0 -> %dest1[%i0] by set
-    : tensor<2304xf32> -> tensor<3x2304xf32> -> tensor<6912xf32>
+    %dest1: tensor<3x2304xf32>, %alias0: tensor<2304xf32>,
+    %alias1: tensor<6912xf32>, %i0: i32) -> tensor<6912xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %0 = rock.blockwise_store %src -> %dest0 alias %alias0 [%i0] by set
+    : tensor<768xf32> -> tensor<3x768xf32> alias tensor<2304xf32> -> tensor<2304xf32>
+  %1 = rock.blockwise_store %0 -> %dest1 alias %alias1 [%i0] by set
+    : tensor<2304xf32> -> tensor<3x2304xf32> alias tensor<6912xf32> -> tensor<6912xf32>
   return %1 : tensor<6912xf32>
+}
+
+// Result used directly as another blockwise_store's dest
+func.func @blockwise_store_result_used_as_store_dest(
+    %src: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %0 = rock.blockwise_store %src -> %dest by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  %1 = rock.blockwise_store %src -> %0 by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  return %1 : tensor<16x16xf32>
+}
+
+// Result used through a view as another blockwise_store's dest
+func.func @blockwise_store_result_view_used_as_store_dest(
+    %src: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %0 = rock.blockwise_store %src -> %dest by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  %view = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [16, 16] -> [16, 16]> : tensor<16x16xf32> to tensor<16x16xf32>
+  // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+  %1 = rock.blockwise_store %src -> %view by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  return %1 : tensor<16x16xf32>
+}
+
+// Dest rooted at a non-entry block argument
+func.func @blockwise_store_dest_rooted_at_loop_block_arg(
+    %src: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %out = scf.for %i = %c0 to %c1 step %c1 iter_args(%iter_dest = %dest) -> (tensor<16x16xf32>) {
+    %view = rock.transform %iter_dest by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [16, 16] -> [16, 16]> : tensor<16x16xf32> to tensor<16x16xf32>
+    // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+    %stored = rock.blockwise_store %src -> %view alias %iter_dest by set
+      : tensor<16x16xf32> -> tensor<16x16xf32> alias tensor<16x16xf32> -> tensor<16x16xf32>
+    scf.yield %stored : tensor<16x16xf32>
+  }
+  return %out : tensor<16x16xf32>
 }
 
 // Result has multiple uses
 func.func @blockwise_store_multiple_uses(
     %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
-    %i0: i32) -> (tensor<768xf32>, tensor<768xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+    %alias: tensor<768xf32>, %i0: i32) -> (tensor<768xf32>, tensor<768xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{result may be returned at most once}}
-  %0 = rock.blockwise_store %src -> %dest[%i0] by set
-    : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
+  %0 = rock.blockwise_store %src -> %dest alias %alias [%i0] by set
+    : tensor<16x16xf32> -> tensor<3x16x16xf32> alias tensor<768xf32> -> tensor<768xf32>
   return %0, %0 : tensor<768xf32>, tensor<768xf32>
 }
 
@@ -864,7 +945,7 @@ func.func @blockwise_load_cache_modifier_wt(
 // Pointer tensor element type not i32
 func.func @blockwise_load_ptr_ptr_not_i32(
     %ptrs: tensor<64x64xf32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
@@ -908,7 +989,7 @@ func.func @blockwise_load_ptr_cache_modifier_wt(
 // Pointer tensor element type not i32
 func.func @blockwise_store_ptr_ptr_not_i32(
     %src: tensor<64x64xf32>, %ptrs: tensor<64x64xf16>, %mask: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
     : tensor<64x64xf32> -> tensor<64x64xf16>(tensor<64x64xi1>)
   return

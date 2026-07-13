@@ -40,6 +40,38 @@ func.func @test_store_conversion(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi
 
 // -----
 
+// A blockwise_load_ptr with a 64-bit offset tensor (emitted for large/padded
+// index domains) lowers just like the i32 case: the i64 offset tensor is cast
+// to a pointer tensor and consumed by tt.load.
+// CHECK-LABEL: @test_load_conversion_i64
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xi64>, %[[MASK:.*]]: tensor<64x64xi1>)
+//      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[ARG0]] : tensor<64x64xi64> -> tensor<64x64x!tt.ptr<f16>>
+//      CHECK:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf16>
+//      CHECK:   %[[RESULT:.*]] = tt.load %[[PTR_TENSOR]], %[[MASK]], %[[ZERO]] : tensor<64x64x!tt.ptr<f16>>
+//      CHECK:   return %[[RESULT]] : tensor<64x64xf16>
+//  CHECK-NOT:   rock.blockwise_load_ptr
+func.func @test_load_conversion_i64(%arg0: tensor<64x64xi64>, %arg1: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi64>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// -----
+
+// As above, but for stores: a 64-bit offset tensor lowers to a pointer-tensor
+// cast feeding tt.store.
+// CHECK-LABEL: @test_store_conversion_i64
+// CHECK-SAME: (%[[VALUE:.*]]: tensor<64x64xf32>, %[[PTRS:.*]]: tensor<64x64xi64>, %[[MASK:.*]]: tensor<64x64xi1>)
+//      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi64> -> tensor<64x64x!tt.ptr<f32>>
+//      CHECK:   tt.store %[[PTR_TENSOR]], %[[VALUE]], %[[MASK]] : tensor<64x64x!tt.ptr<f32>>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_store_ptr
+func.func @test_store_conversion_i64(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi64>, %arg2: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi64>(tensor<64x64xi1>)
+  return
+}
+
+// -----
+
 // CHECK-LABEL: @test_gemm_conversion
 // CHECK-SAME: (%[[A:.*]]: tensor<64x64xf16>, %[[B:.*]]: tensor<64x64xf16>, %[[C:.*]]: tensor<64x64xf32>)
 //      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xf16> * tensor<64x64xf16> -> tensor<64x64xf32>

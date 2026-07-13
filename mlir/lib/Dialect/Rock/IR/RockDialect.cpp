@@ -49,7 +49,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -1114,11 +1113,12 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
     Operation *user = use.getOwner();
     if (isa<ViewLikeOpInterface>(user))
       continue;
-    // Store chaining is valid when the previous store result is threaded as
-    // the destination tensor for the next same-kind store. The dest operand is
-    // operand 1.
-    if (isa<StoreOpT>(user) && use.getOperandNumber() == 1)
-      continue;
+    // Store chaining is valid only when the previous store result is threaded
+    // as the explicit result alias for the next same-kind store.
+    if (auto nextStore = dyn_cast<StoreOpT>(user)) {
+      if (nextStore.getResultAlias() && use.get() == nextStore.getResultAlias())
+        continue;
+    }
     if (isa<func::ReturnOp>(user)) {
       if (++returnUseCount > 1)
         return op.emitOpError("result may be returned at most once");
@@ -1126,8 +1126,37 @@ static LogicalResult verifyStoreResultUses(StoreOpT op, Value result) {
     }
     return op.emitOpError(
         "result must be used directly by a func.return, view-like op, or "
-        "destination operand of another same-kind store");
+        "resultAlias operand of another same-kind store");
   }
+  return success();
+}
+
+template <typename StoreOpT>
+static LogicalResult verifyStoreDest(StoreOpT op) {
+  FailureOr<BlockArgument> maybeBlockArg =
+      rock::findBlockArgument(op.getDest());
+  func::FuncOp funcOp = op->template getParentOfType<func::FuncOp>();
+  if (failed(maybeBlockArg) || !funcOp ||
+      maybeBlockArg->getOwner() != &funcOp.getBody().front()) {
+    return op.emitOpError(
+        "dest transform chain root must be a function entry block argument");
+  }
+
+  return success();
+}
+
+template <typename StoreOpT>
+static LogicalResult verifyStoreResultAlias(StoreOpT op) {
+  Value resultAlias = op.getResultAlias();
+  if (!resultAlias)
+    return success();
+
+  if (resultAlias.getType() != op.getResult().getType()) {
+    return op.emitOpError("resultAlias type must match result type")
+           << " (alias: " << resultAlias.getType()
+           << ", result: " << op.getResult().getType() << ")";
+  }
+
   return success();
 }
 
@@ -1138,6 +1167,12 @@ LogicalResult StoreOp::verify() {
   if (sourceType.getShape() != destType.getShape())
     return emitOpError("source and dest shapes must match")
            << " (source: " << sourceType << ", dest: " << destType << ")";
+
+  if (failed(verifyStoreResultAlias(*this)))
+    return failure();
+
+  if (failed(verifyStoreDest(*this)))
+    return failure();
 
   return verifyStoreResultUses(*this, getResult());
 }
@@ -1582,35 +1617,6 @@ LogicalResult BlockwiseLoadPtrOp::verify() {
 // BlockwiseStoreOp
 //===-----------------------------------------------------===//
 
-SmallPtrSet<OpOperand *, 2> BlockwiseStoreOp::getAcceptingViewOperands() {
-  auto operands = getOperation()->getOpOperands();
-  return {operands.begin() + 1};
-}
-
-std::optional<OperandRange>
-BlockwiseStoreOp::getExtraIndices(OpOperand &operand) {
-  if (!getAcceptingViewOperands().contains(&operand)) {
-    return std::nullopt;
-  }
-  // Only one operand supports view
-  return getExtraIndices();
-}
-
-Operation *
-BlockwiseStoreOp::cloneWithExtraIndices(OpBuilder &builder, OpOperand &operand,
-                                        Value view,
-                                        ArrayRef<Value> newExtraIndices) {
-  if (!getAcceptingViewOperands().contains(&operand)) {
-    return getOperation();
-  }
-
-  // Only one operand supports view
-  auto newOp = BlockwiseStoreOp::create(
-      builder, getLoc(), getResult().getType(), getSource(), view,
-      newExtraIndices, getStoreMethod());
-  return newOp.getOperation();
-}
-
 LogicalResult BlockwiseStoreOp::verify() {
   auto sourceType = cast<RankedTensorType>(getSource().getType());
   auto destType = cast<RankedTensorType>(getDest().getType());
@@ -1628,6 +1634,12 @@ LogicalResult BlockwiseStoreOp::verify() {
            << " (" << destType.getShape().take_back(sourceType.getRank())
            << " != " << sourceType.getShape() << ")";
   }
+
+  if (failed(verifyStoreResultAlias(*this)))
+    return failure();
+
+  if (failed(verifyStoreDest(*this)))
+    return failure();
 
   return verifyStoreResultUses(*this, getResult());
 }
@@ -1806,8 +1818,25 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
                              "number of extra indices exceeds source rank");
   auto shape =
       sourceType.getShape().take_back(sourceType.getRank() - numExtraIndices);
+
+  // This is where the pointer offset type (i32 vs i64) is decided for the whole
+  // lowering: the element type of the pointer tensor produced here dictates the
+  // width of all downstream pointer arithmetic.
+  //
+  // If evaluating the transform
+  // chain that feeds this op could overflow a signed 32-bit integer (large
+  // padded index domains) or the underlying buffer exceeds the 32-bit byte
+  // range, the pointer offset must be computed in 64 bits. Otherwise 32-bit
+  // offsets are sufficient (and cheaper, and keep buffer-op eligibility
+  // downstream).
+  SmallVector<TransformMapAttr> transforms;
+  bool needs64Bit;
+  std::tie(std::ignore, needs64Bit) =
+      untransform(adaptor.getSource(), transforms);
+  unsigned offsetWidth = needs64Bit ? 64 : 32;
+
   inferredReturnTypes.push_back(
-      RankedTensorType::get(shape, IntegerType::get(context, 32)));
+      RankedTensorType::get(shape, IntegerType::get(context, offsetWidth)));
   inferredReturnTypes.push_back(
       RankedTensorType::get(shape, IntegerType::get(context, 1)));
   return success();

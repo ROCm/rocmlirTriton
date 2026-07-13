@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -61,9 +62,10 @@ namespace {
 
 // Helper function to create a tensor range using tt.make_range with proper
 // shape. Creates a tensor where the non-unit dimension contains values [start,
-// end).
+// end). The values are produced in i32 (tt.make_range requires i32) and then
+// sign-extended to `elemType` when a wider (i64) index domain is required.
 static Value makeRange(OpBuilder &b, Location loc, int32_t start, int32_t end,
-                       int64_t numDims, int64_t nonUnitDim) {
+                       int64_t numDims, int64_t nonUnitDim, Type elemType) {
   SmallVector<int64_t> unitDimIndices;
   assert(numDims > 0);
   assert(nonUnitDim >= 0 && nonUnitDim < numDims);
@@ -93,6 +95,14 @@ static Value makeRange(OpBuilder &b, Location loc, int32_t start, int32_t end,
 
     expandedTensor = triton::ExpandDimsOp::create(b, loc, expandedType,
                                                   expandedTensor, unitDimIdx);
+  }
+
+  // Widen the i32 range to the required index width if needed.
+  if (elemType != b.getI32Type()) {
+    auto currentType = cast<RankedTensorType>(expandedTensor.getType());
+    auto widenedType = RankedTensorType::get(currentType.getShape(), elemType);
+    expandedTensor =
+        arith::ExtSIOp::create(b, loc, widenedType, expandedTensor);
   }
   return expandedTensor;
 }
@@ -223,9 +233,9 @@ public:
   /// This internal class expects arguments to be non-null, checks must be
   /// performed at the call site.
   AffineApplyExpander(OpBuilder &builder, ValueRange dimValues,
-                      ValueRange symbolValues, Location loc)
+                      ValueRange symbolValues, Location loc, Type indexType)
       : builder(builder), dimValues(dimValues), symbolValues(symbolValues),
-        loc(loc) {}
+        loc(loc), indexType(indexType) {}
 
   template <typename OpTy>
   Value buildBinaryExpr(AffineBinaryOpExpr expr,
@@ -335,8 +345,8 @@ public:
     auto rhs = visit(expr.getRHS());
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
-    Value oneCst =
-        arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(1));
+    Value oneCst = arith::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(indexType, 1));
     auto [r, o] = ensureCompatible(builder, loc, rhs, oneCst);
     Value divisorMinusOne = arith::SubIOp::create(builder, loc, r, o);
     auto [l, dm1] = ensureCompatible(builder, loc, lhs, divisorMinusOne);
@@ -347,8 +357,7 @@ public:
 
   Value visitConstantExpr(AffineConstantExpr expr) {
     return arith::ConstantOp::create(
-        builder, loc,
-        builder.getIntegerAttr(builder.getI32Type(), expr.getValue()));
+        builder, loc, builder.getIntegerAttr(indexType, expr.getValue()));
   }
 
   Value visitDimExpr(AffineDimExpr expr) {
@@ -369,22 +378,26 @@ private:
   ValueRange symbolValues;
 
   Location loc;
+  // Element type used for constants introduced while expanding the affine
+  // expression (i32 or i64). Must match the width of the incoming coordinate
+  // values so that arith ops have matching operand types.
+  Type indexType;
 };
 
 /// Create a sequence of operations that implement the `expr` applied to the
 /// given dimension and symbol values.
 static mlir::Value expandAffineExpr(OpBuilder &builder, Location loc,
                                     AffineExpr expr, ValueRange dimValues,
-                                    ValueRange symbolValues) {
-  return AffineApplyExpander(builder, dimValues, symbolValues, loc).visit(expr);
+                                    ValueRange symbolValues, Type indexType) {
+  return AffineApplyExpander(builder, dimValues, symbolValues, loc, indexType)
+      .visit(expr);
 }
 
 /// Create a sequence of operations that implement the `affineMap` applied to
 /// the given `operands` (as it it were an AffineApplyOp).
-static FailureOr<SmallVector<Value>> expandAffineMap(OpBuilder &builder,
-                                                     Location loc,
-                                                     AffineMap affineMap,
-                                                     ValueRange operands) {
+static FailureOr<SmallVector<Value>>
+expandAffineMap(OpBuilder &builder, Location loc, AffineMap affineMap,
+                ValueRange operands, Type indexType) {
   auto numDims = affineMap.getNumDims();
   // rocMLIR currently uses static strides/shapes, so symbols are always 0.
   assert(affineMap.getNumSymbols() == 0 &&
@@ -392,9 +405,10 @@ static FailureOr<SmallVector<Value>> expandAffineMap(OpBuilder &builder,
   if (operands.size() != numDims)
     return failure();
 
-  auto expanded = llvm::to_vector(llvm::map_range(
-      affineMap.getResults(), [&builder, loc, operands](AffineExpr expr) {
-        return expandAffineExpr(builder, loc, expr, operands, {});
+  auto expanded = llvm::to_vector(
+      llvm::map_range(affineMap.getResults(), [&builder, loc, operands,
+                                               indexType](AffineExpr expr) {
+        return expandAffineExpr(builder, loc, expr, operands, {}, indexType);
       }));
   if (llvm::all_of(expanded, [](Value v) { return v; }))
     return expanded;
@@ -402,7 +416,8 @@ static FailureOr<SmallVector<Value>> expandAffineMap(OpBuilder &builder,
 }
 
 static Value updateValidityAfter(OpBuilder &b, Location loc,
-                                 TransformMapAttr map, ValueRange outputs) {
+                                 TransformMapAttr map, ValueRange outputs,
+                                 Type indexType) {
   Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
   ArrayRef<int64_t> lowerBounds = map.getLowerBounds();
 
@@ -410,8 +425,8 @@ static Value updateValidityAfter(OpBuilder &b, Location loc,
   // and being too large on the right.
   auto addLowerDimUltClamp = [&](uint32_t lowerDim) {
     int64_t bound = lowerBounds[lowerDim];
-    Value boundConst = arith::ConstantOp::create(
-        b, loc, b.getIntegerAttr(b.getI32Type(), bound));
+    Value boundConst =
+        arith::ConstantOp::create(b, loc, b.getIntegerAttr(indexType, bound));
     Value output = outputs[lowerDim];
     auto [o, bc] = ensureCompatible(b, loc, output, boundConst);
     Value inBounds =
@@ -461,10 +476,27 @@ struct TransformsToPtrRewritePattern
     // Get output shapes from result types (tensors)
     auto pointerResultType = cast<RankedTensorType>(op.getPointers().getType());
     ArrayRef<int64_t> shape = pointerResultType.getShape();
+    // The offset element width (i32 or i64) is decided by
+    // TransformsToPtrOp::inferReturnTypes based on whether the transform chain
+    // requires 64-bit indexing. All coordinate/offset arithmetic below is
+    // produced in this width so it cannot overflow before reaching tt.addptr.
+    Type indexElemType = pointerResultType.getElementType();
 
     source = isolateTransforms(b, source);
 
-    auto [buffer, transforms, _] = untransform(b, source);
+    auto [buffer, transforms, isBig] = untransform(b, source);
+
+    // Defensive check: the op verifier already rejects a result type that
+    // disagrees with inferReturnTypes, but guard against that and this pass
+    // diverging so we never emit i32 offsets for a chain needing 64-bit
+    // indexing.
+    if (isBig != indexElemType.isInteger(64)) {
+      return op.emitOpError("offset element type ")
+             << indexElemType
+             << " disagrees with the transform chain's 64-bit indexing "
+                "requirement (expected "
+             << (isBig ? "i64" : "i32") << ")";
+    }
 
     // After regularize-input, the root of any transform chain must be either
     // a block argument (kernel input tensor) or an arith.constant (splat).
@@ -475,11 +507,18 @@ struct TransformsToPtrRewritePattern
              << *buffer.getDefiningOp();
     }
 
-    SmallVector<Value> initValues(extraIndices);
+    // Seed with the extra (grid coordinate) indices, widened to the index
+    // element width so they compose with the make_range coordinates.
+    SmallVector<Value> initValues;
+    for (Value extraIndex : extraIndices) {
+      if (extraIndex.getType() != indexElemType)
+        extraIndex = arith::ExtSIOp::create(b, loc, indexElemType, extraIndex);
+      initValues.push_back(extraIndex);
+    }
     for (size_t dimension = 0; dimension < shape.size(); ++dimension) {
       // Create the range values using triton.make_range
-      auto rangeValue =
-          makeRange(b, loc, 0, shape[dimension], shape.size(), dimension);
+      auto rangeValue = makeRange(b, loc, 0, shape[dimension], shape.size(),
+                                  dimension, indexElemType);
       initValues.push_back(rangeValue);
     }
 
@@ -510,12 +549,13 @@ struct TransformsToPtrRewritePattern
         continue;
 
       FailureOr<AffineResults> transformed =
-          expandAffineMap(b, loc, composedMap, computed);
+          expandAffineMap(b, loc, composedMap, computed, indexElemType);
       if (failed(transformed))
         return op.emitOpError("Transforms are not well formed");
       computed.assign(*transformed);
       if (transform) { // Time for bounds checks or other validity updates
-        Value validityUpdate = updateValidityAfter(b, loc, transform, computed);
+        Value validityUpdate =
+            updateValidityAfter(b, loc, transform, computed, indexElemType);
         auto [vu, iv] = ensureCompatible(b, loc, validityUpdate, isValid);
         isValid = arith::AndIOp::create(b, loc, vu, iv);
       }
@@ -536,19 +576,23 @@ struct TransformsToPtrRewritePattern
         // For constants (like fakeTensor), use base pointer of 0
         // These are only used for index calculations, not actual memory access
         baseAddr = arith::ConstantOp::create(
-            b, loc, b.getIntegerAttr(rock::getPtrGlueType(b.getContext()), 0));
+            b, loc, b.getIntegerAttr(indexElemType, 0));
       } else {
         // For function arguments, hoist to function entry
         auto parentFunc = op->getParentOfType<func::FuncOp>();
         b.setInsertionPointToStart(&parentFunc.front());
 
-        // Extract the base pointer from the tensor as the pointer glue type
-        baseAddr = rock::ExtractPtrOp::create(b, loc, buffer);
+        // Extract the base pointer from the tensor as a placeholder integer.
+        // Its width matches the offset arithmetic (i32, or i64 when 64-bit
+        // indexing is required) so the base+offset add below type-checks
+        // without an explicit extension. RockTensorToTritonPtr later discards
+        // this and re-splats the real !tt.ptr, so the width is irrelevant to
+        // the final address.
+        baseAddr = rock::ExtractPtrOp::create(b, loc, indexElemType, buffer);
       }
     }
     // Use triton.splat for broadcasting scalar to triton
-    auto splatType =
-        RankedTensorType::get(shape, rock::getPtrGlueType(b.getContext()));
+    auto splatType = RankedTensorType::get(shape, indexElemType);
     Value baseAddrSplat = triton::SplatOp::create(b, loc, splatType, baseAddr);
     // InsertionGuard restores original insertion point here
 
@@ -557,9 +601,10 @@ struct TransformsToPtrRewritePattern
                             "linearized index, but got ")
              << computed.size() << " results";
     }
-    // baseAddr is i32 which might be too narrow in some cases.
-    // This is intentional: rock-to-ttir replaces this i32 tensor with a
-    // tt.ptr-based tt.addptr, so the actual address width is handled there.
+    // baseAddrSplat and the offset share indexElemType, so the add type-checks
+    // directly. Its *value* is a placeholder: RockTensorToTritonPtr replaces
+    // this splat with a genuine !tt.ptr tensor and turns this add into a
+    // tt.addptr, so the actual address width is handled there.
     auto [base, offset] = ensureCompatible(b, loc, baseAddrSplat, computed[0]);
     Value pointerTensor = arith::AddIOp::create(b, loc, base, offset);
 

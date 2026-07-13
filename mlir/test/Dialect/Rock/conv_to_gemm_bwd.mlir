@@ -112,23 +112,24 @@ func.func @bwd_data_dilated(%arg0: tensor<144xf32>, %arg1: tensor<128xf32>, %arg
 // in the count for a "fully populated" stride>1 case.
 //
 // `rock.store` is `Pure`, so each per-phase store result must be kept alive
-// in the SSA chain. The BwdData branch in `RockConvToGemmPass` threads the
-// destination through the stores and returns only the final store result.
+// in the SSA chain. The first generated store starts the chain, then the
+// BwdData branch in `RockConvToGemmPass` threads resultAlias through later
+// stores and returns only the final store result.
 // ============================================================================
 // CHECK-LABEL: @bwd_data_strided_multi_kernel
 // CHECK-SAME: -> tensor<512xf32>
 // CHECK-NOT: rock.conv_bwd_data
 // CHECK: rock.gemm tr
-// CHECK: %[[STORE0:.*]] = rock.store {{.*}} by set :
-// CHECK: rock.transform %[[STORE0]]
+// CHECK: %[[STORE0:.*]] = rock.store {{.*}} to {{%[^ ]+}} by set :
+// CHECK-NOT: rock.transform %[[STORE0]]
 // CHECK: rock.gemm tr
-// CHECK: %[[STORE1:.*]] = rock.store {{.*}} by set :
-// CHECK: rock.transform %[[STORE1]]
+// CHECK: %[[STORE1:.*]] = rock.store {{.*}} alias %[[STORE0]] by set :
+// CHECK-NOT: rock.transform %[[STORE1]]
 // CHECK: rock.gemm tr
-// CHECK: %[[STORE2:.*]] = rock.store {{.*}} by set :
-// CHECK: rock.transform %[[STORE2]]
+// CHECK: %[[STORE2:.*]] = rock.store {{.*}} alias %[[STORE1]] by set :
+// CHECK-NOT: rock.transform %[[STORE2]]
 // CHECK: rock.gemm tr
-// CHECK: %[[STORE3:.*]] = rock.store {{.*}} by set :
+// CHECK: %[[STORE3:.*]] = rock.store {{.*}} alias %[[STORE2]] by set :
 // CHECK-NOT: rock.gemm
 // CHECK-NOT: rock.store
 // CHECK: return %[[STORE3]]

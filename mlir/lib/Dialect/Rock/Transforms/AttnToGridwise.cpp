@@ -648,9 +648,9 @@ static LogicalResult commonAttentionGemmElmtGemm(
           if (source == rootOut)
             source = newRootOut;
           rw.setInsertionPoint(storeOp);
-          auto newStoreOp = rock::StoreOp::create(rw, storeOp.getLoc(),
-                                                  storeOp.getResult().getType(),
-                                                  source, view, storeMethod);
+          auto newStoreOp = rock::StoreOp::create(
+              rw, storeOp.getLoc(), storeOp.getResult().getType(), source, view,
+              storeOp.getResultAlias(), storeMethod);
           rw.replaceOp(storeOp, newStoreOp.getResult());
         }
       };

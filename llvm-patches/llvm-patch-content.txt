@@ -45,47 +45,51 @@ Drop this patch on the next LLVM/Triton bump that includes upstream commit
 8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c.
 
 ----------------------------------------------------------------------
-patch207473.patch
+patch208280.patch
 ----------------------------------------------------------------------
-- Upstream PR     : https://github.com/llvm/llvm-project/pull/207473
-- Upstream title  : [AMDGPU] Preserve LDS waits when demoting single-wave
-                    workgroup scope to wavefront
-- File Fixed      : llvm/lib/Target/AMDGPU/SIMemoryLegalizer.cpp
-                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-memops.ll
-                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-fence-mmra-local.ll (new)
-- Contents        : Records when a workgroup-scope fence/atomic is demoted to
-                    wavefront scope for a single-wave workgroup (the new
-                    SIMemOpInfo::WasWorkgroupScopeDemoted flag, set alongside
-                    the WORKGROUP -> WAVEFRONT demotion) and re-inserts the
-                    workgroup-scope LDS wait the demotion would otherwise drop.
-                    A new SICacheControl::insertDemotedWorkgroupLDSWait() helper
-                    waits only the LDS address space at WORKGROUP scope; it is
-                    called from expandStore, expandAtomicFence, and
-                    expandAtomicCmpxchgOrRmw. Global waits are still legitimately
-                    dropped by the single-wave demotion.
+- Upstream commit : 41c4167cd066e8a9c3185917cafa9bef2cbfdb6d
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/208280
+- Upstream title  : Revert "[AMDGPU] Use wavefront scope for single-wave
+                    workgroup synchronization (#187673)"
+- File Fixed      : llvm/docs/AMDGPUUsage.rst
+                    llvm/lib/Target/AMDGPU/AMDGPULowerIntrinsics.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPUSubtarget.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPUSubtarget.h
+                    llvm/lib/Target/AMDGPU/SIMemoryLegalizer.cpp
+                    llvm/test/CodeGen/AMDGPU/flat-saddr-atomics.ll
+                    llvm/test/CodeGen/AMDGPU/global-saddr-atomics.ll
+                    llvm/test/CodeGen/AMDGPU/llvm.amdgcn.load.monitor.gfx1250.ll
+                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-fence-mmra-local.ll (deleted)
+                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-memops.ll (deleted)
+- Contents        : Reverts upstream #187673's single-wave WORKGROUP ->
+                    WAVEFRONT scope demotion for workgroup-scope fences and
+                    non-relaxed atomics. Removes AMDGPUSubtarget::
+                    isSingleWavefrontWorkgroup() and the SIMemoryLegalizer
+                    demotion plumbing, restores the affected atomic wait/test
+                    expectations, and deletes the now-invalid single-wave
+                    memory-legalizer coverage, including the downstream-only
+                    #207473 fence/MMRA test. The remaining barrier lowering
+                    optimization computes the single-wave condition locally.
 
 Symptom without the patch
 -------------------------
 #187673 demotes workgroup-scoped fences and non-relaxed workgroup atomics to
-wavefront scope when the kernel's workgroup fits in a single wave
-(AMDGPUSubtarget::isSingleWavefrontWorkgroup). Collapsing the scope to
-WAVEFRONT in the SIMemOpInfo constructor (before insertWait runs) also drops
-two LDS waits that SIMemoryLegalizer only emits at WORKGROUP scope: the
-"S_WAITCNT lgkmcnt(0)" that orders LDS against later global/GDS accesses of the
-same wave, and the "S_WAITCNT_lds_direct" wait for asynchronous VMEM->LDS
-direct loads (buffer_load ... lds). Both are required for correctness
-regardless of wave count, so single-wave workgroups that use LDS miscompile --
-e.g. a ds_read is not drained before a subsequent buffer_load ... lds.
+wavefront scope when the kernel's workgroup fits in a single wave. That
+demotion can drop ordering that is still required within a single wave, notably
+for asynchronous DMA/VMEM-to-LDS behavior and LDS ordering against later
+global/GDS accesses. The narrower downstream fix in #207473 preserved the
+missing LDS waits, but upstream instead reverted the demotion wholesale in
+#208280.
 
 Root cause
 ----------
-The single-wave WORKGROUP -> WAVEFRONT demotion is too coarse. Eliding
-cross-wave synchronization is sound when there is only one wave, but the two
-LDS waits above are intra-wave ordering / async-copy completion, not cross-wave
-synchronization, so they must survive the demotion.
+The single-wave WORKGROUP -> WAVEFRONT equivalence was too broad for backend
+memory legalization. Workgroup-scope synchronization can carry ordering
+requirements that are not merely cross-wave synchronization, so lowering it to
+wavefront scope before SIMemoryLegalizer runs loses required waits/scopes.
 
-As of this bump #207473 is still open upstream (unmerged). Drop this patch on
-the next LLVM/Triton bump that pulls it into the pinned LLVM.
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 41c4167cd066e8a9c3185917cafa9bef2cbfdb6d.
 
 ----------------------------------------------------------------------
 patch205651.patch
