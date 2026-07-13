@@ -1348,7 +1348,7 @@ static std::pair<int64_t, int64_t>
 getMandNPerBlock(OpBuilder builder, const GenParams &params,
                  rock::RockGemmGemmWrapperInterface op) {
   // Mirror exactly what AffixTuningParameters picks, so the CPU and GPU use
-  // the same perf_config. A different perf_config would give the CPU and GPU
+  // the same perf_config. A different perf_config could give the CPU and GPU
   // a different split count in split-KV, causing verification failures.
   std::vector<rock::GemmGemmParamsAttr> defaults =
       rock::PopulateParamsGemmGemm::getTuningParameters(builder, op);
