@@ -646,9 +646,9 @@ struct TransformsToPtrRewritePattern
         if (haveHint) {
           auto hintTy = RankedTensorType::get(
               {static_cast<int64_t>(shape.size())}, b.getI32Type());
-          pointerTensor.getDefiningOp()->setAttr(
+          pointerTensor.getDefiningOp()->setDiscardableAttr(
               "tt.contiguity", DenseIntElementsAttr::get(hintTy, contigPerDim));
-          pointerTensor.getDefiningOp()->setAttr(
+          pointerTensor.getDefiningOp()->setDiscardableAttr(
               "tt.divisibility", DenseIntElementsAttr::get(hintTy, divPerDim));
         }
       }

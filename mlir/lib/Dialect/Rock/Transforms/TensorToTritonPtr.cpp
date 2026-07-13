@@ -228,7 +228,7 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
       auto addPtrOp = rewriter.replaceOpWithNewOp<triton::AddPtrOp>(
           addOp, ptr.getType(), ptr, offset);
       for (const NamedAttribute &hint : hints)
-        addPtrOp->setAttr(hint.getName(), hint.getValue());
+        addPtrOp->setDiscardableAttr(hint.getName(), hint.getValue());
       changed = true;
     }
   }
