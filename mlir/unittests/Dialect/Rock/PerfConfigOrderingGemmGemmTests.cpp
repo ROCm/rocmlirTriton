@@ -72,6 +72,7 @@ struct GemmGemmOrderingTestEnv {
         /*vTransposed=*/UnitAttr{}, /*oTransposed=*/UnitAttr{},
         /*causal=*/UnitAttr{},
         /*splitKV=*/builder.getI32IntegerAttr(1),
+        /*slidingWindowSize=*/IntegerAttr{},
         /*softmaxType=*/TypeAttr{},
         /*params0=*/nullptr, /*params1=*/nullptr,
         /*preSoftmaxHasSplitKVTransforms=*/BoolAttr{});

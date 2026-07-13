@@ -273,6 +273,83 @@ static FailureOr<Value> removeSplitKVFromQ(PatternRewriter &rewriter,
   return result;
 }
 
+// Common helper to slice away splitKV dimension by fixing it to index 0.
+// Takes a tensor with splitKV in batch dimension and slices it out.
+// Input: [batch*splitKV, dim0, dim1, ...] -> Output: [batch, dim0, dim1, ...]
+// For 1D tensors: [batch*splitKV] -> [batch]
+static FailureOr<Value>
+sliceSplitKVFromBatch(PatternRewriter &rewriter, Location loc, Value tensor,
+                      int64_t splitKV, ArrayRef<StringRef> trailingDimNames) {
+  auto tensorType = cast<ShapedType>(tensor.getType());
+  ArrayRef<int64_t> shape = tensorType.getShape();
+
+  if (shape.empty()) {
+    LLVM_DEBUG(llvm::dbgs() << "Cannot process 0D tensor\n");
+    return failure();
+  }
+
+  int64_t currentBatch = shape[0];
+  if (currentBatch % splitKV != 0) {
+    LLVM_DEBUG(llvm::dbgs() << "Batch dimension " << currentBatch
+                            << " not divisible by splitKV " << splitKV << "\n");
+    return failure();
+  }
+
+  int64_t newBatch = currentBatch / splitKV;
+
+  // Step 1: Unmerge batch to [newBatch, splitKV, ...]
+  SmallVector<StringRef> lowerNames = {"batch_merged"};
+  lowerNames.append(trailingDimNames.begin(), trailingDimNames.end());
+
+  rock::BottomUpTMBuilder builder(rewriter, lowerNames, shape, loc);
+  builder.unmerge({"batch", "splitKV"}, {0, 1}, "batch_merged",
+                  {newBatch, splitKV});
+
+  // PassThrough for trailing dimensions (starting at index 2 in output)
+  SmallVector<uint32_t> trailingUpperDims, trailingLowerDims;
+  for (size_t i = 0; i < trailingDimNames.size(); ++i) {
+    trailingUpperDims.push_back(2 + i);
+    trailingLowerDims.push_back(1 + i);
+  }
+  if (!trailingDimNames.empty()) {
+    builder.passThrough(trailingDimNames, trailingUpperDims, trailingDimNames);
+  }
+
+  TransformMapAttr unmergeMap = builder.get();
+  Value intermediate =
+      rock::TransformOp::create(rewriter, loc, tensor, unmergeMap);
+
+  ArrayRef<int64_t> intermediateShape =
+      cast<ShapedType>(intermediate.getType()).getShape();
+
+  // Step 2: Drop splitKV dimension by fixing it to index 0
+  SmallVector<StringRef> intermediateNames = {"batch", "splitKV"};
+  intermediateNames.append(trailingDimNames.begin(), trailingDimNames.end());
+
+  rock::BottomUpTMBuilder sliceBuilder(rewriter, intermediateNames,
+                                       intermediateShape, loc);
+
+  // PassThrough for batch
+  sliceBuilder.passThrough({"batch"}, {0}, {"batch"});
+
+  // Drop splitKV dimension by fixing it to index 0
+  sliceBuilder.dropDimAtIndex("splitKV", 0);
+
+  // PassThrough for trailing dimensions
+  if (!trailingDimNames.empty()) {
+    SmallVector<uint32_t> upperDims;
+    for (size_t i = 0; i < trailingDimNames.size(); ++i) {
+      upperDims.push_back(1 + i);
+    }
+    sliceBuilder.passThrough(trailingDimNames, upperDims, trailingDimNames);
+  }
+
+  TransformMapAttr sliceMap = sliceBuilder.get();
+
+  return rock::TransformOp::create(rewriter, loc, intermediate, sliceMap)
+      .getResult();
+}
+
 // Helper function to remove splitKV from K or V tensors
 // K: [B*H*splitKV, K, seq_k/splitKV] -> [B*H, K, seq_k]
 // V: [B*H*splitKV, seq_k/splitKV, D] -> [B*H, seq_k, D]
@@ -408,17 +485,43 @@ struct DetectFlashDecodingPattern : public OpRewritePattern<AttentionOp> {
     Value newKeys = maybeNewKeys.value();
     Value newValues = maybeNewValues.value();
 
+    // Slice the optional currentSeqLen/prefixOffset tensors the same way Q/K/V
+    // are sliced. These are 1D [batch*splitKV] tensors; slicing to [batch]
+    // keeps batch-size verification consistent for splitKV + KV-cache/sliding
+    // window.
+    int64_t splitKVVal = splitKVFromQ;
+    auto transformOptionalTensor = [&](Value tensor) -> FailureOr<Value> {
+      if (!tensor)
+        return Value{};
+      return sliceSplitKVFromBatch(rewriter, op.getLoc(), tensor, splitKVVal,
+                                   {});
+    };
+
+    auto maybeNewCurrentSeqLen = transformOptionalTensor(op.getCurrentSeqLen());
+    if (failed(maybeNewCurrentSeqLen)) {
+      op.emitError("Failed to slice currentSeqLen for splitKV");
+      return failure();
+    }
+    Value newCurrentSeqLen = maybeNewCurrentSeqLen.value();
+
+    auto maybeNewPrefixOffset = transformOptionalTensor(op.getPrefixOffset());
+    if (failed(maybeNewPrefixOffset)) {
+      op.emitError("Failed to slice prefixOffset for splitKV");
+      return failure();
+    }
+    Value newPrefixOffset = maybeNewPrefixOffset.value();
+
     Type resultType = op.getResult().getType();
     Type lseType = op.getLse().getType();
 
     auto newOp = rock::AttentionOp::create(
         rewriter, op->getLoc(), resultType, lseType, newQueries, newKeys,
-        newValues, op.getPreSoftmaxElemWiseInputs(), op.getCurrentSeqLen(),
-        op.getPrefixOffset(), op.getNumHeadsQAttr(), op.getNumHeadsKVAttr(),
+        newValues, op.getPreSoftmaxElemWiseInputs(), newCurrentSeqLen,
+        newPrefixOffset, op.getNumHeadsQAttr(), op.getNumHeadsKVAttr(),
         op.getQTransposedAttr(), op.getKTransposedAttr(),
         op.getVTransposedAttr(), op.getOTransposedAttr(), op.getCausalAttr(),
-        rewriter.getI32IntegerAttr(splitKVFromQ), op.getSoftmaxTypeAttr(),
-        op.getParams0Attr(), op.getParams1Attr(),
+        rewriter.getI32IntegerAttr(splitKVFromQ), op.getSlidingWindowSizeAttr(),
+        op.getSoftmaxTypeAttr(), op.getParams0Attr(), op.getParams1Attr(),
         /*preSoftmaxHasSplitKVTransforms=*/rewriter.getBoolAttr(true));
 
     // Copy the preSoftmax elementwise region if it exists
