@@ -9,12 +9,17 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/Support/MathExtras.h"
 
 #include "gtest/gtest.h"
+
+#include <set>
+#include <memory>
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -334,4 +339,67 @@ TEST(PerfConfigOrderingGemmTest, FromOpExtractsScaleElementTypeOnRealGemmOp) {
   EXPECT_TRUE(isGemmParamsConservativelyApplicable(
       p, info.gemmAType, info.gemmBType, info.arch, info.quantBlockSize,
       info.aScaleType, info.bScaleType));
+}
+
+// --- non-power-of-two kPerBlock candidate generation ---
+
+// The tuning space for a plain accelerated gemm must offer non-power-of-two
+// kPerBlock values that evenly divide K (peeled into pow2 K segments
+// downstream), so the tuner can drop K padding on shapes like a conv with
+// K = C*fil_h*fil_w. Guards `appendDividingKPerBlock` in RockTuningImpl.cpp.
+TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisors) {
+  MLIRContext ctx;
+  DialectRegistry reg;
+  reg.insert<rock::RockDialect>();
+  reg.insert<func::FuncDialect>();
+  ctx.appendDialectRegistry(reg);
+  ctx.loadAllAvailableDialects();
+  OpBuilder b(&ctx);
+  Location loc = b.getUnknownLoc();
+  Type f16 = b.getF16Type();
+
+  // K = 576 = 64 * 3 * 3 (the user's conv C*fil_h*fil_w). Its non-pow2 divisors
+  // in the tunable range include 36, 48, 72, 96, 144.
+  const int64_t K = 576;
+  auto aT = RankedTensorType::get({1, 256, K}, f16);
+  auto bT = RankedTensorType::get({1, K, 256}, f16);
+  auto cT = RankedTensorType::get({1, 256, 256}, f16);
+
+  OwningOpRef<ModuleOp> module = ModuleOp::create(loc);
+  b.setInsertionPointToEnd(module->getBody());
+  auto funcType = b.getFunctionType({aT, bT}, {cT});
+  auto func = func::FuncOp::create(b, loc, "test", funcType);
+  Block *body = func.addEntryBlock();
+  b.setInsertionPointToStart(body);
+  auto gemmOp = GemmOp::create(
+      b, loc, /*c=*/cT, /*a=*/body->getArgument(0), /*b=*/body->getArgument(1),
+      /*scaleA=*/Value(), /*scaleB=*/Value(), /*aTransposed=*/UnitAttr{},
+      /*bTransposed=*/UnitAttr{}, /*oTransposed=*/UnitAttr{},
+      /*aScaleTransposed=*/UnitAttr{}, /*bScaleTransposed=*/UnitAttr{},
+      /*quantBlockSize=*/IntegerAttr{}, /*params=*/nullptr);
+  func::ReturnOp::create(b, loc, gemmOp.getResult());
+
+  // gfx1201 (RDNA4) drives the WMMA path; base kPerBlock list is {32, 64}.
+  (*module)->setAttr(rock::ArchAttr::getMnemonic(),
+                     b.getStringAttr("amdgcn-amd-amdhsa:gfx1201"));
+
+  TuningParamSpaceSettings settings;
+  std::unique_ptr<TuningParamSet> space(
+      createTunableParamSpace(*module, TuningParamSetKind::Full, settings));
+  ASSERT_NE(space, nullptr);
+  ASSERT_FALSE(space->tuningRange.empty());
+
+  std::set<int64_t> kValues;
+  for (auto param : space->tuningRange)
+    kValues.insert(cast<GemmParamsAttr>(param).getKPerBlock());
+
+  // The user's target non-pow2 K tile (48 = 576/12) is offered, ...
+  EXPECT_TRUE(kValues.count(48)) << "expected non-pow2 kPerBlock=48 in space";
+  // ... a pow2 divisor from the base list is still present, ...
+  EXPECT_TRUE(kValues.count(64)) << "expected base pow2 kPerBlock=64 in space";
+  // ... and every non-power-of-two kPerBlock candidate divides K exactly.
+  for (int64_t k : kValues)
+    if (!llvm::isPowerOf2_64(static_cast<uint64_t>(k)))
+      EXPECT_EQ(K % k, 0)
+          << "non-pow2 kPerBlock=" << k << " must evenly divide K=" << K;
 }
