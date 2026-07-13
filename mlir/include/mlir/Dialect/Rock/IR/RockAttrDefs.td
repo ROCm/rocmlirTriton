@@ -290,13 +290,9 @@ def Rock_GemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - useReductionLayout: Force override for the `rock-set-reduction-layout`
-      pass, which redistributes GPU warps onto the reduction (K) dim of the
-      global-load gather operand to cut SGPR spill. The pass always runs on
-      convolution kernels (those marked `rock.conv_kernel`); this knob=1
-      additionally forces the rewrite on every kernel. Tri-state like the other
-      knobs: -1 (default / heuristic, currently disabled, equivalent to 0), 0
-      (off), 1 (on).
+    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
+      redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
+      gather operand to cut SGPR spill.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -395,13 +391,9 @@ def Rock_GemmGemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - useReductionLayout: Force override for the `rock-set-reduction-layout`
-      pass, which redistributes GPU warps onto the reduction (K) dim of the
-      global-load gather operand to cut SGPR spill. The pass always runs on
-      convolution kernels (those marked `rock.conv_kernel`); this knob=1
-      additionally forces the rewrite on every kernel. Tri-state like the other
-      knobs: -1 (default / heuristic, currently disabled, equivalent to 0), 0
-      (off), 1 (on).
+    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
+      redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
+      gather operand to cut SGPR spill.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
