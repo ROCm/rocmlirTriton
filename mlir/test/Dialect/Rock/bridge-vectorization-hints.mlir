@@ -1,9 +1,17 @@
+// expected-error@-1 {{rock-bridge-vectorization-hints: unknown phase 'bogus' (expected 'stash' or 'apply')}}
+
 // Verifies the two phases of rock-bridge-vectorization-hints, which carry the
 // im2col vectorization hint across tritonamdgpu-canonicalize-pointers without a
 // Triton submodule patch.
 
 // RUN: rocmlir-opt -rock-bridge-vectorization-hints=phase=stash -split-input-file %s | FileCheck %s --check-prefix=STASH
 // RUN: rocmlir-opt -rock-bridge-vectorization-hints=phase=apply -split-input-file %s | FileCheck %s --check-prefix=APPLY
+
+// Negative: any phase other than 'stash'/'apply' must fail the pass. The error
+// is emitted on the top-level module (reported at line 0), so the expected-error
+// directive is pinned to line 1 above and references it with @-1. This run
+// omits -split-input-file so the file is one module and the error fires once.
+// RUN: rocmlir-opt -rock-bridge-vectorization-hints=phase=bogus -verify-diagnostics %s
 
 // Stash: the hint on the tt.addptr is copied onto the consuming tt.load under
 // Rock-private attr names (which survive canonicalize-pointers), while the
