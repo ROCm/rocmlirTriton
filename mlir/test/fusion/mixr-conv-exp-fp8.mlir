@@ -1,5 +1,6 @@
-// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel --arch gfx950 %s \
-// RUN:   | rocmlir-driver -c --arch gfx950 -o /dev/null --mlir-print-ir-after=math-extend-to-supported-types 2>&1 \
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel --arch %arch - \
+// RUN:   | rocmlir-driver -c --arch %arch -o /dev/null --mlir-print-ir-after=math-extend-to-supported-types 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=IR
 
 // Regression test for fp8 math fusion lowering. The kernel pipeline must
@@ -12,7 +13,7 @@
 // IR-NEXT: arith.truncf {{.*}} : tensor<[[SHAPE]]xf32> to tensor<[[SHAPE]]xf8E4M3FN>
 
 module {
-  func.func @mlir_convolution_exp(%arg0: !migraphx.shaped<1x16x4x4xf8E4M3FN, 256x16x4x1>, %arg1: !migraphx.shaped<2x16x3x3xf8E4M3FN, 144x9x3x1>) -> !migraphx.shaped<1x2x2x2xf8E4M3FN, 8x4x2x1> attributes {rock.arch = "gfx950", rock.kernel = "mixr"} {
+  func.func @mlir_convolution_exp(%arg0: !migraphx.shaped<1x16x4x4xf8E4M3FN, 256x16x4x1>, %arg1: !migraphx.shaped<2x16x3x3xf8E4M3FN, 144x9x3x1>) -> !migraphx.shaped<1x2x2x2xf8E4M3FN, 8x4x2x1> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel = "mixr"} {
     %0 = migraphx.convolution %arg0, %arg1 {dilation = [1, 1], group = 1 : i64, padding = [0, 0, 0, 0], padding_mode = 0 : i64, stride = [1, 1]} : <1x16x4x4xf8E4M3FN, 256x16x4x1>, <2x16x3x3xf8E4M3FN, 144x9x3x1> -> <1x2x2x2xf8E4M3FN, 8x4x2x1>
     %1 = migraphx.exp %0 : <1x2x2x2xf8E4M3FN, 8x4x2x1> -> <1x2x2x2xf8E4M3FN, 8x4x2x1>
     return %1 : !migraphx.shaped<1x2x2x2xf8E4M3FN, 8x4x2x1>
