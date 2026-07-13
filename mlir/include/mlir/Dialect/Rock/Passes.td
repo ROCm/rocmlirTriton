@@ -378,6 +378,27 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
                            "arith::ArithDialect", "triton::TritonDialect"];
 }
 
+def RockBridgeVectorizationHintsPass
+    : Pass<"rock-bridge-vectorization-hints", "::mlir::ModuleOp"> {
+  let summary = "Preserve im2col vectorization hints across "
+                "tritonamdgpu-canonicalize-pointers";
+  let description = [{
+    TransformsToPointerArith attaches `tt.contiguity`/`tt.divisibility` hints on
+    the `tt.addptr` feeding a global load so Triton's AxisInfoAnalysis can widen
+    it. The AMD canonicalize-pointers pass rebuilds the pointer arithmetic and
+    drops those discardable attrs before convert-buffer-ops consumes them. This
+    pass bridges the gap on the Rock side (no Triton submodule patch needed):
+    run with `phase=stash` before canonicalize-pointers to park the hint on the
+    consuming memory op, and with `phase=apply` after to re-stamp it onto the
+    rebuilt `tt.addptr`.
+  }];
+  let dependentDialects = ["triton::TritonDialect"];
+  let options = [Option<"phase", "phase", "std::string",
+                        /*default=*/"\"stash\"",
+                        "Either 'stash' (before canonicalize-pointers) or "
+                        "'apply' (after)">];
+}
+
 def RockSortDimensionsMemoryLayoutPass
     : Pass<"rock-sort-dimensions-memory-layout", "::mlir::func::FuncOp"> {
   let summary = "Sort dimensions by stride of the underlying memory layout";
