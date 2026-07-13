@@ -376,6 +376,19 @@ bool mlir::rock::archSupportsScaledGemm(StringRef arch) {
   return false;
 }
 
+bool mlir::rock::archSupportsNonKPackedScaledInput(StringRef arch) {
+  // Only CDNA4 (gfx950) scaled MFMA implements that path (via
+  // ds_load_tr_b4). GFX1250 scaled WMMA supports this in hardware,
+  // but Triton does not currently support it.
+  //
+  // Note: the "K-pack" here is different from the `kpack` in the perf-config
+  // This kpack is the per-operand bool `matrixA/BKPack` (-> `lhs/rhs_k_pack` on
+  // tt.dot_scaled): for a sub-byte (fp4) operand it says whether the two 4-bit
+  // values packed into an i8 are adjacent along K (true) or along M/N (false).
+  auto [isaFamily, _] = getArch(arch);
+  return isaFamily == ISAFamily::CDNA4;
+}
+
 int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
