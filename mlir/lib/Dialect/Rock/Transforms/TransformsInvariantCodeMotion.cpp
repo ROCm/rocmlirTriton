@@ -907,7 +907,8 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
                               .take_front(cand.mergeIdx + 1));
     FailureOr<SmallVector<Value>> iter0 =
         expandAffineMap(b, loc, aboveMap, initValues, idxTy);
-    assert(succeeded(iter0) && "merge-prefix expansion must succeed");
+    if (failed(iter0))
+      continue;
 
     Reduced r;
     r.op = cand.op;
@@ -951,9 +952,10 @@ static Value buildCarryBasePtr(OpBuilder &b, Location loc, const Reduced &r) {
 
 /// Rebuild the validity mask for the current iteration: splice the carried
 /// suffix coordinates (the new loop's iter_args) into the iv == lb coordinate
-/// vector, then re-expand the sub-chain below the merge.
-static Value buildCarryMask(OpBuilder &b, Location loc, const Reduced &r,
-                            scf::ForOp newLoop) {
+/// vector, then re-expand the sub-chain below the merge. Returns failure if the
+/// sub-chain expansion fails.
+static FailureOr<Value> buildCarryMask(OpBuilder &b, Location loc,
+                                       const Reduced &r, scf::ForOp newLoop) {
   SmallVector<Value> coords(r.iter0Coords);
   ArrayRef<unsigned> suffixPos =
       ArrayRef<unsigned>(r.coordPositions).take_back(r.suffixCount);
@@ -963,7 +965,8 @@ static Value buildCarryMask(OpBuilder &b, Location loc, const Reduced &r,
       b, loc, r.belowMaps, coords, r.ptrType.getShape(),
       r.ptrType.getElementType(),
       /*computeOffset=*/false);
-  assert(succeeded(om) && "sub-chain mask expansion must succeed");
+  if (failed(om))
+    return failure();
   return om->mask;
 }
 
@@ -1027,10 +1030,14 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
     candidateOps.insert(r.op.getOperation());
 
     Value basePtr = buildCarryBasePtr(b, loc, r);
-    Value mask = buildCarryMask(b, loc, r, newLoop);
+    FailureOr<Value> mask = buildCarryMask(b, loc, r, newLoop);
+    if (failed(mask)) {
+      newLoop.erase();
+      return false;
+    }
     Value ptr = buildCarryPtr(b, loc, basePtr, r, newLoop);
     bodyMap.map(r.op.getPointers(), ptr);
-    bodyMap.map(r.op.getMask(), mask);
+    bodyMap.map(r.op.getMask(), *mask);
   }
 
   // Now just clone the other ops into the new body.
