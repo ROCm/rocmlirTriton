@@ -385,14 +385,10 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
   int64_t mPerBlock = params.getMPerBlock();
   int64_t nPerBlock = params.getNPerBlock();
 
-  // This pass only peels the M and N tiles; it cannot split the contraction
-  // dimension. A non-power-of-two kPerBlock would therefore still yield a
-  // non-power-of-two K tile downstream, which the Triton layouts cannot
-  // represent, so reject it explicitly rather than failing later.
-  if (!llvm::isPowerOf2_64(params.getKPerBlock()))
-    return gemm.emitError("rock-decompose-nonpow2-tiles: non-power-of-two "
-                          "kPerBlock is not supported");
-
+  // This pass only peels the M and N tiles; the contraction (K) dimension is
+  // left untouched here. A non-power-of-two kPerBlock rides along on the
+  // sub-gemms unchanged and is peeled into power-of-two K segments downstream
+  // by rock-gridwise-gemm-to-blockwise, so it needs no special handling here.
   SmallVector<Segment> mSegs = decomposePow2(mPerBlock);
   SmallVector<Segment> nSegs = decomposePow2(nPerBlock);
 
