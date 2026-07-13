@@ -58,9 +58,6 @@
 // RUN: | FileCheck %s --check-prefix=SCALED-NPERBLOCK-NOT-POW2
 
 // ---- kPerBlock: positive (gemm) vs power-of-two (gemm+gemm / scaled) -------
-// rock-gridwise-gemm-to-blockwise peels a non-power-of-two K tile for a plain
-// gemm, so gemm only requires kPerBlock to be positive. gemm+gemm (attention)
-// and scaled gemm are not K-peeled, so they still require a power of two.
 
 // RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
 // RUN:   --perf_config "gemm:v1:128,128,0,1,1,4,16,1,2,0,0" \

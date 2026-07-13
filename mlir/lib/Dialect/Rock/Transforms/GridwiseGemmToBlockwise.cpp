@@ -167,18 +167,15 @@ static SmallVector<KSegment> decomposeKPow2(int64_t n) {
   return segs;
 }
 
-/// Build a view of the rank-3 gemm operand `operand` in which the contraction
-/// dimension `kDimIdx` (of size `kIters * kPerBlock`) is restructured into
-/// (k_loop, k_iter) = (kIters, kPerBlock), the k_iter sub-dim is sliced to
-/// `seg`, and the two are re-merged. The resulting K dimension has size
-/// `kIters * seg.length`, and k_loop index `l` of it maps onto original K
-/// indices `l * kPerBlock + seg.offset + i`.
+/// Used to support non-power-of-two kPerBlock.
 ///
-/// Feeding this view to the regular `loadTile` (with kPerBlock = seg.length)
-/// therefore loads, for outer K-loop iteration `l`, exactly the K sub-tile
-/// [l*kPerBlock + seg.offset, l*kPerBlock + seg.offset + seg.length) -- a
-/// power-of-two-wide slab -- while keeping the outer loop trip count kIters
-/// unchanged.
+/// Slices the contraction dimension `kDimIdx` into N sub-slices, where N is the
+/// number of power-of-two segments. For example, if kPerBlock = 48, then N = 2
+/// and the sub-slices are 32 and 16. So, at high-level, we do:
+///
+/// for l in 0..1:
+/// acc += gemm( A.view_32[block l], B.view_32[block l] )   # contributes 32
+/// acc += gemm( A.view_16[block l], B.view_16[block l] )   # contributes 16
 static Value sliceOperandKSegment(OpBuilder &b, Location loc, Value operand,
                                   unsigned kDimIdx, int64_t kIters,
                                   int64_t kPerBlock, KSegment seg) {
@@ -386,13 +383,8 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value nIterations =
         ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
 
-    // Peel a non-power-of-two per-block K tile into power-of-two segments (e.g.
-    // kPerBlock = 48 -> {32, 16}). The Triton layouts produced downstream
-    // require power-of-two tensor shapes, so each K-loop iteration contracts
-    // the segments in sequence, accumulating into the same per-workgroup tile
-    // (an in-register reduction along K -- no atomics, output side unchanged).
-    // A power-of-two kPerBlock yields a single {0, kPerBlock} segment, leaving
-    // the emitted IR identical to the un-peeled path.
+    // If needed, peel a non-power-of-two kPerBlock into power-of-two segments (e.g.
+    // kPerBlock = 48 -> {32, 16}).
     SmallVector<KSegment> kSegs = decomposeKPow2(kPerBlock);
     bool peelK = kSegs.size() > 1;
     if (peelK && isScaledGemm) {
@@ -401,9 +393,11 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
                              "scaled gemm");
     }
 
-    // Pre-build the loop-invariant per-segment K-sliced operand views. A single
+    // Build the operand views for the K slices. A single
     // (power-of-two) segment reuses the operands directly, so their views are
-    // left untouched.
+    // left untouched. Left as two branches intentionally since the peelK
+    // branch emits more complex transforms, which might be less performant
+    // than the else branch.
     SmallVector<Value> segMatA, segMatB;
     if (peelK) {
       for (KSegment seg : kSegs) {
@@ -434,8 +428,6 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
 
       // Contract each power-of-two K segment in turn, threading the accumulator
       // so every segment of this K-loop iteration reduces into the same tile.
-      // (A power-of-two kPerBlock has a single full-width segment; scaled gemms
-      // are restricted to that case above.)
       Value acc = accArg;
       for (auto [segIdx, seg] : llvm::enumerate(kSegs)) {
         // Load from global memory to registers
