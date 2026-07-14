@@ -20,8 +20,8 @@
 #include "gtest/gtest.h"
 
 #include <algorithm>
-#include <set>
 #include <memory>
+#include <set>
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -407,12 +407,12 @@ TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisors) {
       continue;
     // Every non-pow2 kPerBlock must obey the window heuristic:
     int64_t minMN = std::min(m, n);
-    EXPECT_EQ(K % k, 0)
-        << "non-pow2 kPerBlock=" << k << " must evenly divide K=" << K;
+    EXPECT_EQ(K % k, 0) << "non-pow2 kPerBlock=" << k
+                        << " must evenly divide K=" << K;
     EXPECT_EQ(llvm::popcount(static_cast<uint64_t>(k)), 2)
         << "non-pow2 kPerBlock=" << k << " must peel into two pow2 segments";
-    EXPECT_GE(k, minMN / 2) << "non-pow2 kPerBlock=" << k
-                            << " below window for min(m,n)=" << minMN;
+    EXPECT_GE(k, minMN / 2)
+        << "non-pow2 kPerBlock=" << k << " below window for min(m,n)=" << minMN;
     EXPECT_LT(k, minMN) << "non-pow2 kPerBlock=" << k
                         << " must be the smallest tile edge for min(m,n)="
                         << minMN;
