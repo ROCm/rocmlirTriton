@@ -236,7 +236,7 @@ static llvm::cl::opt<unsigned> perfConfigTimeout(
     llvm::cl::value_desc("seconds"), llvm::cl::init(0));
 
 static llvm::cl::opt<unsigned> perfConfigRunTimeout(
-    "perf-config-run-timeout",
+    "gpu-run-timeout",
     llvm::cl::desc(
         "Per-perf-config GPU-run timeout in seconds. 0 (default) disables the "
         "timeout. This does not include compilation; use --perf-config-timeout "

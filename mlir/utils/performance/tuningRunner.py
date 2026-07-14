@@ -76,7 +76,7 @@ from perfRunner import (
 VERIFY_REPEATS = 1
 
 # Exit code rocmlir-tuning-driver uses when a perf-config's GPU run exceeds the
-# --perf-config-run-timeout budget and is presumed hung. Must stay in sync with
+# --gpu-run-timeout budget and is presumed hung. Must stay in sync with
 # rock::kExitGpuTimeout in mlir/include/mlir/Dialect/Rock/utility/compileUtils.h.
 GPU_TIMEOUT_EXIT_CODE = 3
 
@@ -1353,7 +1353,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         f"--show-all-measurements={options.debug}",
         f"--num-compile-threads={num_compile_threads}",
         f"--perf-config-timeout={options.perf_config_timeout}",
-        f"--perf-config-run-timeout={options.gpu_run_timeout}",
+        f"--gpu-run-timeout={options.gpu_run_timeout}",
     ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")

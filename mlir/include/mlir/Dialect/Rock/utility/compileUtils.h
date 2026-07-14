@@ -24,7 +24,7 @@ namespace rock {
 constexpr int kExitNotApplicable = 2;
 
 /// Process exit code signalling that a perf-config's GPU run exceeded the
-/// per-config run-timeout budget (--perf-config-run-timeout) and the kernel is
+/// per-config run-timeout budget (--gpu-run-timeout) and the kernel is
 /// presumed hung. Must be non-zero and distinct from EXIT_FAILURE
 /// and kExitNotApplicable.
 constexpr int kExitGpuTimeout = 3;
