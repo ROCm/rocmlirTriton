@@ -431,6 +431,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // storage types. LLVM math intrinsics do not accept fp8/fp4 operands.
   {
     math::MathExtendToSupportedTypesOptions mathExtendOptions;
+    // TODO: Gfx1250 has support for some bf16 math operations. Therefore this
+    // pass should pass through those supported opertions for bf16 on gfx1250.
     mathExtendOptions.extraTypeStrs = {"f16"};
     mathExtendOptions.targetTypeStr = "f32";
     addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
