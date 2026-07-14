@@ -235,7 +235,7 @@ static llvm::cl::opt<unsigned> perfConfigTimeout(
         "continues with the remaining configs for the problem)."),
     llvm::cl::value_desc("seconds"), llvm::cl::init(0));
 
-static llvm::cl::opt<unsigned> perfConfigRunTimeout(
+static llvm::cl::opt<unsigned> gpuRunTimeout(
     "gpu-run-timeout",
     llvm::cl::desc(
         "Per-perf-config GPU-run timeout in seconds. 0 (default) disables the "
@@ -426,7 +426,7 @@ struct BenchmarkParams {
   std::string benchmarkConfig;
   bool flushLastLevelCache;
   unsigned perfConfigTimeoutSec;
-  unsigned perfConfigRunTimeoutSec;
+  unsigned gpuRunTimeoutSec;
 };
 
 enum class CompilationStatus {
@@ -793,13 +793,13 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   // begins after the config has compiled and the HIP stream/module/launch
   // metadata are ready.
   std::optional<SteadyTimePoint> gpuRunDeadline =
-      makeTimeoutDeadline(params.perfConfigRunTimeoutSec);
+      makeTimeoutDeadline(params.gpuRunTimeoutSec);
 
   // Finish setup work queued before benchmarking (currently the H2D copies)
   // using the same timeout deadline so no stream synchronization can hang
   // indefinitely.
   if (failed(synchronizeStreamWithTimeout(
-          stream, gpuRunDeadline, params.perfConfigRunTimeoutSec,
+          stream, gpuRunDeadline, params.gpuRunTimeoutSec,
           result.perfConfig, "setup")))
     return failure();
 
@@ -834,7 +834,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     }
     HIPCHECK(hipEventRecord(stopEvent, stream));
     if (failed(synchronizeStreamWithTimeout(
-            stream, gpuRunDeadline, params.perfConfigRunTimeoutSec,
+            stream, gpuRunDeadline, params.gpuRunTimeoutSec,
             result.perfConfig, "runtime estimation")))
       return failure();
 
@@ -869,7 +869,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     }
   }
   if (failed(synchronizeStreamWithTimeout(stream, gpuRunDeadline,
-                                          params.perfConfigRunTimeoutSec,
+                                          params.gpuRunTimeoutSec,
                                           result.perfConfig, "warmup")))
     return failure();
 
@@ -879,7 +879,7 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   if (failed(measureKernel(iterations, stream, functions, blockSizes, gridSizes,
                            numCTAsList, argPointers, measurements,
                            params.flushLastLevelCache, gpuRunDeadline,
-                           params.perfConfigRunTimeoutSec, result.perfConfig)))
+                           params.gpuRunTimeoutSec, result.perfConfig)))
     return failure();
 
   if (params.showAllMeasurements) {
@@ -1044,7 +1044,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            benchmarkConfig,
                                            flushLastLevelCache,
                                            perfConfigTimeout,
-                                           perfConfigRunTimeout};
+                                           gpuRunTimeout};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);
