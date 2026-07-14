@@ -275,8 +275,8 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value nIterations =
         ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
 
-    // If needed, peel a non-power-of-two kPerBlock into power-of-two segments (e.g.
-    // kPerBlock = 48 -> {32, 16}).
+    // If needed, peel a non-power-of-two kPerBlock into power-of-two segments
+    // (e.g. kPerBlock = 48 -> {32, 16}).
     SmallVector<Pow2Segment> kSegs = decomposePow2(kPerBlock);
     bool peelK = kSegs.size() > 1;
     if (peelK && isScaledGemm) {
