@@ -216,9 +216,18 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 
   bool useBufferOps = isBufferOpsEnabled(options.useBufferOps);
   if (useBufferOps) {
+    // canonicalize-pointers rebuilds the pointer arithmetic and drops the
+    // im2col vectorization hints TransformsToPointerArith placed on tt.addptr.
+    // Bridge them on the Rock side so no Triton submodule patch is needed:
+    // stash the hint onto the consuming load before, re-stamp it onto the
+    // rebuilt tt.addptr after, so convert-buffer-ops can still widen the load.
+    pm->addPass(
+        rock::createRockBridgeVectorizationHintsPass({/*phase=*/"stash"}));
     pm->addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonAMDGPUCanonicalizePointers());
     pm->addPass(mlir::createCanonicalizerPass());
+    pm->addPass(
+        rock::createRockBridgeVectorizationHintsPass({/*phase=*/"apply"}));
     pm->addPass(mlir::createTritonAMDGPUConvertToBufferOps(
         {options.arch, isBufferAtomicsEnabled(options.useBufferAtomics),
          isBufferOpsAnalyzeSmallTensorRangeEnabled(

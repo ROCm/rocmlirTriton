@@ -38,6 +38,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 namespace rock {
@@ -70,7 +71,8 @@ namespace {
 /// (i32 or i64), expand to the linearized offset + mask, prepend the base
 /// pointer, and replace `op`.
 static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
-                                    Location loc, Value buffer,
+                                    Location loc, Value buffer, Value source,
+                                    size_t numExtra,
                                     ArrayRef<TransformMapAttr> transformVec,
                                     ValueRange initValues,
                                     ArrayRef<int64_t> shape, Type indexType) {
@@ -92,11 +94,10 @@ static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
   // when the op is inside loops or other control flow.
   // For constant buffers (like fakeTensor used for index calculations),
   // we use a base pointer of 0 since the actual pointer value doesn't matter.
+  bool isConstantBuffer = buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
   Value baseAddr;
   {
     OpBuilder::InsertionGuard guard(b);
-    bool isConstantBuffer =
-        buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
     if (isConstantBuffer) {
       baseAddr =
           arith::ConstantOp::create(b, loc, b.getIntegerAttr(indexType, 0));
@@ -119,6 +120,51 @@ static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
   // address width is handled there.
   Value pointerTensor =
       arith::AddIOp::create(b, loc, baseAddrSplat, expanded->offset);
+
+  // Attach a vectorization hint so the global load gets widened. Triton's
+  // AxisInfoAnalysis can't see through the flattened im2col address math
+  // (divui/remui) and would scalarize the load to contiguity=1. Here the
+  // transform chain is still intact, so getMaxVectorization can prove the
+  // contiguous run length per tile dim (capped at 128 bits, i.e. 4 for f32).
+  // We stamp it as tt.contiguity/tt.divisibility on the pointer op (which
+  // rock-tensor-to-triton-ptr turns into tt.addptr); the coalescer then
+  // widens the load to a single 128-bit buffer load. LDS staging keeps this
+  // decoupled from the MFMA operand layout, so correctness is unaffected.
+  //
+  // Divisibility is vecLen*elemBytes bytes (the widened load only needs
+  // element alignment). Constant index-calc buffers never load, so skip them.
+  if (!isConstantBuffer) {
+    auto sourceType = cast<ShapedType>(source.getType());
+    // `source` is a higher-rank view: leading `numExtra` dims are the block
+    // coordinates fixed by the extra indices; the trailing `shape.size()` dims
+    // are the per-thread tile that becomes the pointer tensor. Map tile dim
+    // `d` to source dim `numExtra + d`.
+    if (sourceType.getRank() ==
+        static_cast<int64_t>(numExtra + shape.size())) {
+      int64_t elemBytes =
+          llvm::divideCeil(sourceType.getElementTypeBitWidth(), 8);
+      SmallVector<int32_t> contigPerDim(shape.size(), 1);
+      SmallVector<int32_t> divPerDim(shape.size(), 1);
+      bool haveHint = false;
+      for (uint32_t d = 0; d < shape.size(); ++d) {
+        int64_t vecLen =
+            getMaxVectorization(source, static_cast<uint32_t>(numExtra + d))
+                .max;
+        contigPerDim[d] = static_cast<int32_t>(vecLen);
+        divPerDim[d] = static_cast<int32_t>(vecLen * elemBytes);
+        if (vecLen > 1)
+          haveHint = true;
+      }
+      if (haveHint) {
+        auto hintTy = RankedTensorType::get(
+            {static_cast<int64_t>(shape.size())}, b.getI32Type());
+        pointerTensor.getDefiningOp()->setDiscardableAttr(
+            "tt.contiguity", DenseIntElementsAttr::get(hintTy, contigPerDim));
+        pointerTensor.getDefiningOp()->setDiscardableAttr(
+            "tt.divisibility", DenseIntElementsAttr::get(hintTy, divPerDim));
+      }
+    }
+  }
 
   b.replaceOp(op, {pointerTensor, expanded->mask});
   return success();
@@ -161,6 +207,7 @@ struct TransformsToPtrRewritePattern
     // tensor per result tile dimension. The extra indices arrive as i32 and are
     // widened to the index width so they compose with the make_range
     // coordinates.
+    size_t numExtra = op.getExtraIndices().size();
     SmallVector<Value> initValues;
     for (Value extraIndex : op.getExtraIndices()) {
       if (extraIndex.getType() != indexElemType)
@@ -173,8 +220,8 @@ struct TransformsToPtrRewritePattern
 
     SmallVector<TransformMapAttr> transformVec =
         llvm::to_vector(transforms.getAsRange<TransformMapAttr>());
-    return lowerToPointer(b, op, loc, buffer, transformVec, initValues, shape,
-                          indexElemType);
+    return lowerToPointer(b, op, loc, buffer, source, numExtra, transformVec,
+                          initValues, shape, indexElemType);
   }
 };
 
