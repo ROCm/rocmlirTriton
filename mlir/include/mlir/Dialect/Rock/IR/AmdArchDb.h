@@ -59,6 +59,15 @@ MatrixAccelKind getMatrixAccelKind(StringRef arch, Type inputTypeA,
 MatrixAccelKind getMatrixAccelKind(StringRef arch,
                                    RockGemmWrapperInterface gemmOp);
 
+/// Whether an f32 GEMM/dot on `arch` takes the bf16x3 matrix path: the
+/// architecture has no native f32 matrix unit, but its bf16 matrix
+/// accelerator is used (via the 3xBF16 `tt.dot` decomposition in Triton's
+/// F32DotTC) to emulate the f32 multiply. True only when both inputs are f32,
+/// `getMatrixAccelKind(arch, f32, f32) == None`, and
+/// `getMatrixAccelKind(arch, bf16, bf16) != None` (WMMA on RDNA3/RDNA4, or
+/// MFMA). The caller still applies any fast-math gating separately.
+bool usesBf16x3F32Dot(StringRef arch, Type inputTypeA, Type inputTypeB);
+
 /// Extract the ISAFamily and chip name from an architecture string. The chip
 /// name is the bare gfx token (e.g. "gfx1100"), with any target-triple prefix
 /// and `:feature` suffixes stripped.

@@ -1,7 +1,7 @@
 // exp() amplifies conv rounding errors: exp(x+e)-exp(x) ~ e*exp(x), so the
-// default f32 rtol (1.3e-6) is insufficient. Override rtol to 1e-5 which
-// covers the amplification factor (~6.4x observed).
-// RUN: rocmlir-gen -fut test_fusion --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel | rocmlir-gen -ph -fut test_fusion -rand 1 -rand_type float -rtol=1e-5 --verifier clone - | rocmlir-driver -c -arch %arch | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// default f32 rtol (1.3e-6) is insufficient. BF16x3 f32-dot emulation on RDNA
+// needs a wider tolerance for the amplified error.
+// RUN: rocmlir-gen -fut test_fusion --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel | rocmlir-gen -ph -fut test_fusion -rand 1 -rand_type float -rtol=7e-5 --verifier clone - | rocmlir-driver -c -arch %arch | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 
 module {
 // CHECK: [1 1 1]
