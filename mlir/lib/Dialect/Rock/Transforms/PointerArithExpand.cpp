@@ -317,10 +317,11 @@ static Value expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
 }
 } // namespace
 
-FailureOr<SmallVector<Value>>
-mlir::rock::expandAffineMap(OpBuilder &builder, Location loc,
-                            AffineMap affineMap, ValueRange operands,
-                            Type indexType) {
+FailureOr<SmallVector<Value>> mlir::rock::expandAffineMap(OpBuilder &builder,
+                                                          Location loc,
+                                                          AffineMap affineMap,
+                                                          ValueRange operands,
+                                                          Type indexType) {
   auto numDims = affineMap.getNumDims();
   // rocMLIR currently uses static strides/shapes, so symbols are always 0.
   assert(affineMap.getNumSymbols() == 0 &&
@@ -328,9 +329,9 @@ mlir::rock::expandAffineMap(OpBuilder &builder, Location loc,
   if (operands.size() != numDims)
     return failure();
 
-  auto expanded = llvm::to_vector(llvm::map_range(
-      affineMap.getResults(),
-      [&builder, loc, operands, indexType](AffineExpr expr) {
+  auto expanded = llvm::to_vector(
+      llvm::map_range(affineMap.getResults(), [&builder, loc, operands,
+                                               indexType](AffineExpr expr) {
         return expandAffineExpr(builder, loc, expr, operands, {}, indexType);
       }));
   if (llvm::all_of(expanded, [](Value v) { return v; }))
