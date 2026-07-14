@@ -79,16 +79,16 @@
 // gains 36 and 48 on top of the pow2 base {32,64}.
 // RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-DIVK
-// CHECK-WMMA-DIVK: gemm:v3:{{[0-9]+,[0-9]+,48,1,}}
+// CHECK-WMMA-DIVK: gemm:v4:{{[0-9]+,[0-9]+,48,1,}}
 
 // The MFMA path grows the same way; 48 (= 576/12) is offered on gfx942.
 // RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f16 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-DIVK
-// CHECK-MFMA-DIVK: gemm:v3:{{[0-9]+,[0-9]+,48,1,}}
+// CHECK-MFMA-DIVK: gemm:v4:{{[0-9]+,[0-9]+,48,1,}}
 
 // A K that is a pure power of two (K = 128) must not introduce any non-pow2
 // kPerBlock: only 32/64/128/256 appear on WMMA.
 // RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 128 -n 256 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-POW2K \
-// RUN:       --implicit-check-not="gemm:v3:{{[0-9]+,[0-9]+,(36|48|72|96|144|192),}}"
-// CHECK-WMMA-POW2K: gemm:v3:{{[0-9]+,[0-9]+,(32|64|128|256),1,}}
+// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,(36|48|72|96|144|192),}}"
+// CHECK-WMMA-POW2K: gemm:v4:{{[0-9]+,[0-9]+,(32|64|128|256),1,}}
