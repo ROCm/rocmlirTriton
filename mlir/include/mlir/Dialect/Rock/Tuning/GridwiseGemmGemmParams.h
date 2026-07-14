@@ -69,8 +69,9 @@ private:
 /// bytes once and scaled by the pipeline stage count. This is the single
 /// source of truth shared by `isGemmGemmParamsConservativelyApplicable` and
 /// `estimateGemmGemmLdsBytes`.
-inline int64_t gemmGemmLdsBytes(GemmGemmParamsAttr p, int64_t gemm1NPerBlock,
-                                int64_t aBits, int64_t bBits) {
+static inline int64_t gemmGemmLdsBytes(GemmGemmParamsAttr p,
+                                       int64_t gemm1NPerBlock, int64_t aBits,
+                                       int64_t bBits) {
   int64_t totalBits = (p.getMPerBlockG0() * p.getKPerBlock() * aBits) +
                       (p.getNPerBlockG0() * p.getKPerBlock() * bBits) +
                       (p.getNPerBlockG0() * gemm1NPerBlock * bBits);
