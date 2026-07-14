@@ -128,6 +128,12 @@ int64_t getLDSSize(StringRef arch);
 /// across the variants within an ISA family.
 int64_t getLastLevelCacheSize(StringRef arch);
 
+/// Get the size in bytes of the L2 cache shared by the compute units within one
+/// scheduling scope: per-XCD on chiplet-based CDNA (CDNA3/CDNA4), otherwise the
+/// per-device L2. This is the cache that the workgroups co-scheduled on that
+/// scope reuse through, as opposed to the larger cross-scope last-level cache.
+int64_t getL2CacheSize(StringRef arch);
+
 /// Whether the architecture supports multi-CTA
 bool supportsMultiCTALaunch(StringRef arch);
 

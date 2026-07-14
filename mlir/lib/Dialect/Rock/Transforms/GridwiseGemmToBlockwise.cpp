@@ -174,8 +174,6 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
       return op->emitOpError()
              << "Could not determine the underlying data type of output";
 
-    auto elemTypeOutStore = maybeElemTypeOutStore.value();
-
     auto scaleA = op.getScaleA();
     auto scaleB = op.getScaleB();
     bool hasScaleA = scaleA != nullptr;
@@ -231,13 +229,22 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value bid =
         triton::GetProgramIdOp::create(b, op.getLoc(), triton::ProgramIDDim::X);
 
+    // Whole-matrix byte sizes and the L2 capacity feed the residency-aware
+    // (1-D GROUP_SIZE_M) grid-layout heuristic in makeGroupedGridLayout.
+    const int64_t l2Bytes = rock::getL2CacheSize(arch);
+    auto matrixBytes = [](int64_t numElems, Type elemType) -> int64_t {
+      return llvm::divideCeil(numElems * elemType.getIntOrFloatBitWidth(), 8);
+    };
+    const int64_t aTotalBytes = matrixBytes(G * M * K, elementTypeALoad);
+    const int64_t bTotalBytes = matrixBytes(G * N * K, elementTypeBLoad);
+
     // Compute grid coordinates
     int64_t gridGroupSize = tuningParams.getGridGroupSize();
     auto gridCoords = layout::makeGroupedGridLayout(
         b, loc, bid,
         {G, mBlocks, nBlocks, rock::getNumCUValue(op),
-         rock::getNumChipletsValue(op), elementTypeALoad, elemTypeOutStore,
-         gridGroupSize},
+         rock::getNumChipletsValue(op), elementTypeALoad, gridGroupSize,
+         mPerBlock, kPerBlock, aTotalBytes, bTotalBytes, l2Bytes},
         arch);
 
     int64_t numWaves = tuningParams.getNumWaves();

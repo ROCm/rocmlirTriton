@@ -459,6 +459,36 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   }
 }
 
+int64_t mlir::rock::getL2CacheSize(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+
+  constexpr int64_t kMiB = 1024 * 1024;
+
+  // L2 shared by the compute units in one scheduling scope (per-XCD on
+  // chiplet-based CDNA, per-device otherwise). Largest L2 within the family.
+  switch (isaFamily) {
+  case ISAFamily::GCN5_1:
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+    return 4 * kMiB;
+  case ISAFamily::RDNA3:
+    return 6 * kMiB;
+  case ISAFamily::RDNA4:
+    return 8 * kMiB;
+  case ISAFamily::CDNA1:
+  case ISAFamily::CDNA2: // per-GCD
+    return 8 * kMiB;
+  case ISAFamily::CDNA3: // per-XCD
+    return 4 * kMiB;
+  // TODO(gfx950/gfx1250): confirm once AMD publishes a number.
+  case ISAFamily::CDNA4:   // per-XCD; assumed same as CDNA3
+  case ISAFamily::GFX1250: // assumed
+    return 4 * kMiB;
+  case ISAFamily::Unknown: // Unknown arch: assume a small per-scope L2.
+    return 4 * kMiB;
+  }
+}
+
 int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 

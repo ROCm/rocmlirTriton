@@ -81,23 +81,58 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
                                                     Location loc, Value bid,
                                                     GridLayoutInfo info,
                                                     StringRef arch) {
-  // Heuristic to compute groupSize
-  // This also covers the cases where the output width is larger
-  // than the input width
-  int64_t bitWidthOut = info.outputType.getIntOrFloatBitWidth();
-  int64_t bitWidthIn =
-      std::min((int64_t)info.inputType.getIntOrFloatBitWidth(), bitWidthOut);
-  int64_t groupSize = std::ceil(std::sqrt(info.numCU / info.numChiplets)) *
-                      (bitWidthOut / bitWidthIn);
-  // use gridGroupSize if it's not zero
+  // The swizzle below is a 1-D GROUP_SIZE_M super-grouping: groupSizeM (a.k.a.
+  // GROUP_SIZE_M), the M-block band height, is its only knob. We pick it from
+  // L2 residency of the operands (see below).
+  int64_t gridSize = info.gBlocks * info.mBlocks * info.nBlocks;
+  int64_t concurrentWorkgroups =
+      std::max(int64_t{1}, info.numCU / info.numChiplets);
+  int64_t gridPerChiplet = std::max(int64_t{1}, gridSize / info.numChiplets);
+
+  auto elemBytes = [](Type t) -> double {
+    return llvm::divideCeil(t.getIntOrFloatBitWidth(), 8);
+  };
+
+  // A band is groupSizeM M-blocks spanning the *full* N width, swept
+  // column-major. So each A row-block is reused across all of N (A is read once
+  // overall), while B is re-read once per band -> mBlocks / groupSizeM passes.
+  // Pick the band height from L2 residency:
+  //
+  //   * B fits L2 (and A does not): B stays resident across bands, so its
+  //   passes
+  //     are cache hits and groupSizeM does not affect DRAM traffic. Use
+  //     groupSizeM = 1 (row-major) to keep A's live footprint minimal so B
+  //     stays resident (e.g. big A, tiny B).
+  //   * otherwise: make the band as tall as A-strip residency in L2 allows. The
+  //     groupSizeM live A row-blocks (mPerBlock x kPerBlock each) must fit in
+  //     L2; taller bands mean fewer B passes. When A fits L2 this gives
+  //     groupSizeM = mBlocks (one band, B streamed once -- e.g. conv, tiny A).
+  bool aFitsL2 = info.aTotalBytes <= info.l2Bytes;
+  bool bFitsL2 = info.bTotalBytes <= info.l2Bytes;
+  double aSlabBytes =
+      info.mPerBlock * elemBytes(info.inputType) * info.kPerBlock;
+
+  int64_t groupSizeM;
   if (info.gridGroupSize != 0) {
-    groupSize = info.gridGroupSize;
-    LLVM_DEBUG(llvm::dbgs() << "Setting groupSize by using tuning params to "
-                            << groupSize << "\n");
+    // Explicit tuning override.
+    groupSizeM = info.gridGroupSize;
+    LLVM_DEBUG(llvm::dbgs() << "Setting groupSizeM by using tuning params to "
+                            << groupSizeM << "\n");
+  } else if (bFitsL2 && !aFitsL2) {
+    // B resident: stream A once, keep B cached
+    groupSizeM = 1;
+    LLVM_DEBUG(llvm::dbgs() << "B fits L2: groupSizeM = 1 (row-major)\n");
   } else {
+    // Tallest band whose live A row-blocks fit L2 (== mBlocks when A fits L2).
+    int64_t maxByL2 = aSlabBytes > 0.0
+                          ? (int64_t)((double)info.l2Bytes / aSlabBytes)
+                          : info.mBlocks;
+    groupSizeM = std::min(info.mBlocks, std::max(int64_t{1}, maxByL2));
     LLVM_DEBUG(llvm::dbgs()
-               << "Using heuristic to set groupSize to " << groupSize << "\n");
+               << "L2-bounded band height groupSizeM " << groupSizeM << "\n");
   }
+  groupSizeM = std::min(std::max(int64_t{1}, groupSizeM),
+                        std::max(int64_t{1}, info.mBlocks));
 
   // Currently the firmware will launch workgroups
   // in a round-robin fashion to each chiplet. However
@@ -106,17 +141,22 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
   // Therefore, adjust bid to make every consecutive #groups of chiplets
   // be slowest changing in the grid.
   if (info.numChiplets > 1) {
-    int64_t gridSize = info.gBlocks * info.mBlocks * info.nBlocks;
-    int64_t chunkSize =
-        std::min(groupSize * groupSize,
-                 std::max(int64_t{1}, gridSize / info.numChiplets));
+    // Give each chiplet whole columns of the band so its groupSizeM A
+    // row-blocks are reused across the columns it owns (and each column's
+    // B-slab is reused down its groupSizeM rows). Columns per chunk ~ the
+    // concurrent wave, so chunkSize stays a multiple of groupSizeM. Bounded by
+    // the per-chiplet grid.
+    int64_t colsPerChunk =
+        std::max(int64_t{1}, concurrentWorkgroups / groupSizeM);
+    int64_t chunkSize = std::min(groupSizeM * colsPerChunk, gridPerChiplet);
     bid = rearrangeWorkgroupsForXCC(loc, b, bid, gridSize, info.numChiplets,
                                     chunkSize);
   }
 
-  Value mBlocksPerGroup = b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), groupSize);
-  Value blocksPerGroup =
-      b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), groupSize * info.nBlocks);
+  Value mBlocksPerGroup =
+      b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), groupSizeM);
+  Value blocksPerGroup = b.createOrFold<ConstantIntOp>(
+      loc, b.getIntegerType(32), groupSizeM * info.nBlocks);
   Value mBlocksValue = b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), info.mBlocks);
 
   // Compute g_block first and the bid in the actual group g_block

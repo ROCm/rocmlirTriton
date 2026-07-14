@@ -40,9 +40,15 @@ struct GridLayoutInfo {
   int64_t nBlocks;
   int64_t numCU;
   int64_t numChiplets;
-  Type inputType;
-  Type outputType;
+  Type inputType; // A operand load element type
   int64_t gridGroupSize;
+  // Tile sizes and whole-matrix byte counts for the L2-residency (1-D
+  // GROUP_SIZE_M) groupSizeM heuristic.
+  int64_t mPerBlock;   // M-block tile (elements)
+  int64_t kPerBlock;   // K-loop tile (elements)
+  int64_t aTotalBytes; // whole A matrix in bytes (G*M*K * sizeof(A elem))
+  int64_t bTotalBytes; // whole B matrix in bytes (G*N*K * sizeof(B elem))
+  int64_t l2Bytes;     // L2 shared by the concurrent workgroups
 };
 
 /// This function emits the right triplet of <group,block_m,block_n>
