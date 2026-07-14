@@ -106,8 +106,9 @@ static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
       auto parentFunc = op->getParentOfType<func::FuncOp>();
       b.setInsertionPointToStart(&parentFunc.front());
       // The base pointer placeholder shares the offset width so the base+offset
-      // add type-checks. RockTensorToTritonPtr later discards this and re-splats
-      // the real !tt.ptr, so the width is irrelevant to the final address.
+      // add type-checks. RockTensorToTritonPtr later discards this and
+      // re-splats the real !tt.ptr, so the width is irrelevant to the final
+      // address.
       baseAddr = rock::ExtractPtrOp::create(b, loc, indexType, buffer);
     }
   }
