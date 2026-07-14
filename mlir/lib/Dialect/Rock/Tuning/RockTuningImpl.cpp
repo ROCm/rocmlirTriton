@@ -802,7 +802,17 @@ static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
   unsigned numInputs = attnOp.getPreSoftmaxElemWiseInputs().size();
   unsigned numQuantInputs = isQuantized ? 2u : 0u;
 
-  for (unsigned i = numQuantInputs; i < numInputs; ++i) {
+  // Entry block argument 0 is the QK^T product; arguments 1.. correspond 1:1 to
+  // the pre-softmax elementwise inputs. AttentionOp verification does not
+  // currently enforce this arity (only single-block + one yielded value), so
+  // clamp the upper bound to the block's actual argument count to avoid an
+  // out-of-bounds block-argument access on malformed IR.
+  unsigned numBlockArgs = entry.getNumArguments();
+  unsigned lastInput = numBlockArgs > 0 ? numBlockArgs - 1 : 0;
+  if (lastInput > numInputs)
+    lastInput = numInputs;
+
+  for (unsigned i = numQuantInputs; i < lastInput; ++i) {
     // Follow the input through shape/type-only ops (broadcasts, reshapes,
     // casts, rock.transform, ...) to the arithmetic op that consumes it.
     SmallVector<Value> worklist{entry.getArgument(i + 1)};
