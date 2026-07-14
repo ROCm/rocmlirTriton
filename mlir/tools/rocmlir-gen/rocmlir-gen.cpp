@@ -69,6 +69,7 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -6572,6 +6573,20 @@ int main(int argc, char **argv) {
   // Parse pass names in main to ensure static initialization completed.
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "MLIR Rock Dialect host generation\n");
+
+  // `-p` generates a kernel from command-line options unless an input file is
+  // provided. LLVM reports shell pipes and named FIFOs as fifo_file for fd 0;
+  // checking the file status lets us detect those streams without consuming any
+  // input, so accidental upstream output is not silently ignored.
+  constexpr int stdinFD = 0;
+  llvm::sys::fs::file_status stdinStatus;
+  bool stdinIsPipeOrFIFO =
+      !llvm::sys::fs::status(stdinFD, stdinStatus) &&
+      stdinStatus.type() == llvm::sys::fs::file_type::fifo_file;
+  if (populateDefaultValues && inputFilename.empty() && stdinIsPipeOrFIFO) {
+    llvm::errs() << "warning: rocmlir-gen -p is ignoring piped stdin because "
+                    "no input file was specified\n";
+  }
 
   amdgpu::Chipset chipset;
   if (!arch.getValue().empty()) {
