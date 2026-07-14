@@ -30,6 +30,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -774,6 +775,55 @@ extractLayouts(Operation *op, llvm::StringMap<unsigned> &fLayoutMap,
   return success();
 }
 
+// Determine whether an attention op fuses a pre-softmax scale and/or bias, as
+// created by rocmlir-gen's `--with-attn-scale` / `--with-attn-bias`. Scale
+// folds an extra elementwise multiply of the QK^T scores by an external input;
+// bias folds an elementwise add. Both change the generated kernel (and thus its
+// optimal perf config), so they are part of the tuning-problem identity and
+// must appear in the tuning key.
+//
+// The fusion is encoded as ops inside the `preSoftmaxBody` region (arith ops on
+// the rocmlir-gen path, tosa ops on the migraphx path) that consume the
+// region's block arguments. Block argument 0 is the QK^T product; the remaining
+// block arguments map 1:1 to `preSoftmaxElemWiseInputs`. Constant scales/biases
+// and causal masks are not external inputs (they are folded into the body or
+// captured by the `causal` attribute), so they are intentionally not treated as
+// attn scale/bias here. For quantized (i8) attention the first two elementwise
+// inputs are dequantization operands, not the attention scale/bias, so they are
+// skipped.
+static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
+                                  bool &hasAttnScale, bool &hasAttnBias) {
+  hasAttnScale = false;
+  hasAttnBias = false;
+  Region &body = attnOp.getPreSoftmaxBody();
+  if (body.empty())
+    return;
+  Block &entry = body.front();
+  unsigned numInputs = attnOp.getPreSoftmaxElemWiseInputs().size();
+  unsigned numQuantInputs = isQuantized ? 2u : 0u;
+
+  for (unsigned i = numQuantInputs; i < numInputs; ++i) {
+    // Follow the input through shape/type-only ops (broadcasts, reshapes,
+    // casts, rock.transform, ...) to the arithmetic op that consumes it.
+    SmallVector<Value> worklist{entry.getArgument(i + 1)};
+    llvm::SmallPtrSet<Value, 8> seen;
+    while (!worklist.empty()) {
+      Value v = worklist.pop_back_val();
+      if (!seen.insert(v).second)
+        continue;
+      for (Operation *user : v.getUsers()) {
+        StringRef name = user->getName().getStringRef();
+        if (name == "arith.mulf" || name == "tosa.mul")
+          hasAttnScale = true;
+        else if (name == "arith.addf" || name == "tosa.add")
+          hasAttnBias = true;
+        else
+          llvm::append_range(worklist, user->getResults());
+      }
+    }
+  }
+}
+
 static LogicalResult
 getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
                     SmallVectorImpl<char> &out) {
@@ -905,6 +955,16 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
     problemOS << "-seq_len_k " << seqLenK << sep;
     problemOS << "-head_dim_qk " << headDimQK << sep;
     problemOS << "-head_dim_v " << headDimV;
+
+    auto attentionOp = cast<AttentionOp>(gemmGemmOp);
+    bool hasAttnScale = false, hasAttnBias = false;
+    getAttentionScaleBias(attentionOp, elemTypeQ.isInteger(8), hasAttnScale,
+                          hasAttnBias);
+    // Keep these last and in this order to match the layout parsed by
+    // AttentionConfiguration.from_command_line() in perfRunner.py.
+    problemOS << sep << "-with-attn-scale "
+              << (hasAttnScale ? "true" : "false");
+    problemOS << sep << "-with-attn-bias " << (hasAttnBias ? "true" : "false");
   } else if (isConvGemm) {
     auto convGemmOp = cast<ConvElementwiseGemmOp>(gemmGemmOp);
     ArrayRef<int64_t> inShape = convGemmOp.getInput().getType().getShape();
