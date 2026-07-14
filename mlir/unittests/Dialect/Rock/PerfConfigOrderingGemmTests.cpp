@@ -14,10 +14,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/MathExtras.h"
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <set>
 #include <memory>
 
@@ -346,7 +348,9 @@ TEST(PerfConfigOrderingGemmTest, FromOpExtractsScaleElementTypeOnRealGemmOp) {
 // The tuning space for a plain accelerated gemm must offer non-power-of-two
 // kPerBlock values that evenly divide K (peeled into pow2 K segments
 // downstream), so the tuner can drop K padding on shapes like a conv with
-// K = C*fil_h*fil_w. Guards `appendDividingKPerBlock` in RockTuningImpl.cpp.
+// K = C*fil_h*fil_w. Each such candidate must satisfy the window heuristic in
+// `windowDividingKPerBlock` (RockTuningImpl.cpp): it peels into exactly two
+// pow2 segments and is the smallest tile edge, i.e. in [min(m,n)/2, min(m,n)).
 TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisors) {
   MLIRContext ctx;
   DialectRegistry reg;
@@ -390,16 +394,33 @@ TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisors) {
   ASSERT_FALSE(space->tuningRange.empty());
 
   std::set<int64_t> kValues;
-  for (auto param : space->tuningRange)
-    kValues.insert(cast<GemmParamsAttr>(param).getKPerBlock());
+  bool saw48 = false, saw64 = false;
+  for (auto param : space->tuningRange) {
+    auto gemmParams = cast<GemmParamsAttr>(param);
+    int64_t m = gemmParams.getMPerBlock();
+    int64_t n = gemmParams.getNPerBlock();
+    int64_t k = gemmParams.getKPerBlock();
+    kValues.insert(k);
+    saw48 |= (k == 48);
+    saw64 |= (k == 64);
+    if (llvm::isPowerOf2_64(static_cast<uint64_t>(k)))
+      continue;
+    // Every non-pow2 kPerBlock must obey the window heuristic:
+    int64_t minMN = std::min(m, n);
+    EXPECT_EQ(K % k, 0)
+        << "non-pow2 kPerBlock=" << k << " must evenly divide K=" << K;
+    EXPECT_EQ(llvm::popcount(static_cast<uint64_t>(k)), 2)
+        << "non-pow2 kPerBlock=" << k << " must peel into two pow2 segments";
+    EXPECT_GE(k, minMN / 2) << "non-pow2 kPerBlock=" << k
+                            << " below window for min(m,n)=" << minMN;
+    EXPECT_LT(k, minMN) << "non-pow2 kPerBlock=" << k
+                        << " must be the smallest tile edge for min(m,n)="
+                        << minMN;
+  }
 
-  // The user's target non-pow2 K tile (48 = 576/12) is offered, ...
-  EXPECT_TRUE(kValues.count(48)) << "expected non-pow2 kPerBlock=48 in space";
-  // ... a pow2 divisor from the base list is still present, ...
-  EXPECT_TRUE(kValues.count(64)) << "expected base pow2 kPerBlock=64 in space";
-  // ... and every non-power-of-two kPerBlock candidate divides K exactly.
-  for (int64_t k : kValues)
-    if (!llvm::isPowerOf2_64(static_cast<uint64_t>(k)))
-      EXPECT_EQ(K % k, 0)
-          << "non-pow2 kPerBlock=" << k << " must evenly divide K=" << K;
+  // The user's target non-pow2 K tile (48 = 576/12) is offered (it lands in the
+  // [32,64) window of a min(m,n)=64 tile), ...
+  EXPECT_TRUE(saw48) << "expected non-pow2 kPerBlock=48 in space";
+  // ... and a pow2 divisor from the base list is still present.
+  EXPECT_TRUE(saw64) << "expected base pow2 kPerBlock=64 in space";
 }
