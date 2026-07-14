@@ -35,6 +35,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LogicalResult.h"
@@ -195,31 +196,79 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
   return {1, 3, 4};
 }
 
-// Append non-power-of-two kPerBlock candidates that evenly divide the GEMM K
-// dimension. A kPerBlock that divides K eliminates K padding, and is peeled
-// into power-of-two K segments downstream by rock-gridwise-gemm-to-blockwise
-// (each segment lowers to a tt.dot; sub-instruction-width segments are
-// zero-padded, so the result stays correct). Only accelerated (MFMA/WMMA) plain
-// gemms get these: scaled gemm and gemm+gemm keep power-of-two K tiles, and the
-// FMA path is left as-is. Candidates are bounded to [min(kList), maxK] to keep
-// the K segments and the search space reasonable.
-static void appendDividingKPerBlock(std::vector<uint32_t> &kList,
-                                    RockGemmWrapperInterface gemmOp,
-                                    uint32_t maxK) {
-  if (gemmOp.getScaleA() || gemmOp.getScaleB())
-    return;
-  int64_t k = gemmOp.getGemmSize().k;
-  if (k <= 0 || kList.empty())
-    return;
-  uint32_t minK = *llvm::min_element(kList);
-  uint32_t hiK = std::min<uint32_t>(maxK, static_cast<uint32_t>(k));
-  for (uint32_t d = minK; d <= hiK; ++d) {
-    if (k % d != 0 || llvm::isPowerOf2_64(d))
-      continue; // pow2 divisors are already in the base list
-    if (!llvm::is_contained(kList, d))
-      kList.push_back(d);
+// Non-power-of-two kPerBlock heuristic. 3 ideas:
+//
+//   (1) It must divide K evenly
+//   (2) It must genereate exactly two power-of-two K segments
+//   (3) Tile size must be within [min(m,n)/2, min(m,n))
+//
+// Empirically, this gives a small amount of candidates and always
+// captures the best kPerBlock candidate (i.e., we dont need to consider all
+// possible kPerBlock candidates).
+//
+// Its real strength is that it barely grows the search space. A normal
+// perfConfig axis multiplies the entire product (each value pairs with every
+// combination of the other knobs). A non-pow2 K instead attaches only to the
+// (m,n) tiles that land in the window [min(m,n)/2, min(m,n)):
+//   - a power-of-two K (32, 64, ...) is valid for every (m,n), so it pairs with
+//     all tiles;
+//   - k=72 (= 64+8) needs min(m,n)=128, so it attaches only to tiles such as
+//     (128,128), (128,256), (192,128);
+//   - k=144 (= 128+16) needs min(m,n)=256, so it attaches only to (192,256).
+//
+// For example, for K=1728, windowDividingKPerBlock returns {36,48,72,96,144},
+// growing the whole space by ~18%, not 5x.
+static SmallVector<uint32_t, 2>
+windowDividingKPerBlock(int64_t k, uint32_t mPerBlock, uint32_t nPerBlock,
+                        uint32_t minBaseK, uint32_t maxK) {
+  SmallVector<uint32_t, 2> candidates;
+  if (k <= 0)
+    return candidates;
+  uint32_t minMN = std::min(mPerBlock, nPerBlock);
+  uint32_t lo = std::max(minBaseK, minMN / 2);
+  uint32_t hi = std::min<uint32_t>(maxK, minMN);
+  hi = std::min<uint32_t>(hi, static_cast<uint32_t>(k));
+  for (uint32_t d = lo; d < hi; ++d) {
+    if (k % d == 0 && llvm::popcount(d) == 2)
+      candidates.push_back(d);
   }
-  llvm::sort(kList);
+  return candidates;
+}
+
+static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
+                                              TuningParamSetKind kind,
+                                              uint32_t mPerBlock,
+                                              uint32_t nPerBlock) {
+  auto arch = rock::getArchValue(gemmOp);
+  auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
+  bool isMfma = accelKind == MatrixAccelKind::MFMA ||
+                accelKind == MatrixAccelKind::ScaledMFMA;
+  bool isWmma = accelKind == MatrixAccelKind::WMMA ||
+                accelKind == MatrixAccelKind::ScaledWMMA;
+
+  std::vector<uint32_t> kList;
+  if (isMfma)
+    kList = kind == TuningParamSetKind::Exhaustive
+                ? std::vector<uint32_t>{16, 32, 64, 128, 256, 512}
+                : std::vector<uint32_t>{16, 32, 64, 128};
+  else if (isWmma)
+    kList = kind == TuningParamSetKind::Exhaustive
+                ? std::vector<uint32_t>{32, 64, 128, 256}
+                : std::vector<uint32_t>{32, 64};
+  else
+    return {4, 8, 16}; // non-accel (FMA) keeps a small pow2-ish K list
+
+  // Also tune non-pow2 K tiles (only on non-scaled GEMMs).
+  if (!gemmOp.getScaleA() && !gemmOp.getScaleB()) {
+    int64_t k = gemmOp.getGemmSize().k;
+    uint32_t baseMinK = *llvm::min_element(kList);
+    for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
+                                              MAX_K_PER_BLOCK))
+      if (!llvm::is_contained(kList, d))
+        kList.push_back(d);
+    llvm::sort(kList);
+  }
+  return kList;
 }
 
 static std::vector<std::vector<uint32_t>>
@@ -245,26 +294,8 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   bool isWmma = accelKind == MatrixAccelKind::WMMA ||
                 accelKind == MatrixAccelKind::ScaledWMMA;
 
-  std::vector<uint32_t> kPerBlockMFMA =
-      kind == TuningParamSetKind::Exhaustive
-          ? std::vector<uint32_t>{16, 32, 64, 128, 256, 512}
-          : std::vector<uint32_t>{16, 32, 64, 128};
-
-  std::vector<uint32_t> kPerBlockWMMA =
-      kind == TuningParamSetKind::Exhaustive
-          ? std::vector<uint32_t>{32, 64, 128, 256}
-          : std::vector<uint32_t>{32, 64};
-
-  // Cap the K tiles by the actual K dimension so we don't tune (and pad) K
-  // tiles that are far larger than the problem's K.
-  int64_t gemmK = gemmOp.getGemmSize().k;
-  capKPerBlockByK(kPerBlockMFMA, gemmK);
-  capKPerBlockByK(kPerBlockWMMA, gemmK);
-
-  // Add kPerBlock candidates that evenly divide K (non-pow2)
-  appendDividingKPerBlock(kPerBlockMFMA, gemmOp, MAX_K_PER_BLOCK);
-  appendDividingKPerBlock(kPerBlockWMMA, gemmOp, MAX_K_PER_BLOCK);
-
+  // The K/block axis is not returned here: it depends on the (m,n) tile and is
+  // built per tile by computeKPerBlock in createGemmTuningRangeBF.
   std::vector<uint32_t> numCTAsList;
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
     numCTAsList.push_back(n);
@@ -272,7 +303,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
       mPerBlock,         // M/block
       nPerBlock,         // N/block
-      kPerBlockMFMA,     // K/block
       {1},               // kPackList
       numWavesRange,     // numWaves
       {16, 32},          // matrixInstrNonkdim
@@ -287,7 +317,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   std::vector<std::vector<uint32_t>> validRangeWmmaParams = {
       mPerBlock,         // M/block
       nPerBlock,         // N/block
-      kPerBlockWMMA,     // K/block
       {1},               // kPackList
       {4, 8},            // numWaves
       {0},               // matrixInstrNonkdim
@@ -299,8 +328,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
 
   // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (which has a
   // dedicated non-accel branch and caps by the actual M/N dimension).
-  std::vector<uint32_t> kPerBlockNonAccel = {1, 4, 8, 16};
-  capKPerBlockByK(kPerBlockNonAccel, gemmK);
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64u, 128u, 256u}) {
     if (blockSize % waveSize == 0)
@@ -310,7 +337,6 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   std::vector<std::vector<uint32_t>> validRangeNonAccelParams = {
       mPerBlock,         // M/block
       nPerBlock,         // N/block
-      kPerBlockNonAccel, // K/block
       {1},               // kPackList (no kpack on non-accel FMA path)
       numWavesNonAccel,  // numWaves (= blockSize / waveSize)
       {0},               // matrixInstrNonkdim (no matrix-accel instr)
@@ -609,22 +635,23 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
   OpBuilder b(gemmOp.getContext());
   for (uint32_t gemmMPerBlock : params[0]) {
     for (uint32_t gemmNPerBlock : params[1]) {
-      for (uint32_t gemmKPerBlock : params[2]) {
+      for (uint32_t gemmKPerBlock :
+           computeKPerBlock(gemmOp, kind, gemmMPerBlock, gemmNPerBlock)) {
         // Skip tiles whose lowered index/mask tensors would exceed Triton's
         // per-tensor element cap; they cannot compile (see
         // exceedsTritonTensorCap).
         if (exceedsTritonTensorCap(gemmMPerBlock, gemmNPerBlock, gemmKPerBlock))
           continue;
-        for (uint32_t gemmKPack : params[3]) {
-          for (uint32_t numWaves : params[4]) {
-            for (uint32_t matrixInstrNonkdim : params[5]) {
+        for (uint32_t gemmKPack : params[2]) {
+          for (uint32_t numWaves : params[3]) {
+            for (uint32_t matrixInstrNonkdim : params[4]) {
               auto optimalSplitKFactors = computeOptimalSplitKFactors(
                   gemmOp, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock);
               for (int64_t splitKFactor : optimalSplitKFactors) {
-                for (int64_t numStages : params[6]) {
-                  for (int64_t wavesPerEU : params[7]) {
-                    for (int64_t gridGroupSize : params[8]) {
-                      for (uint32_t numCTAs : params[9]) {
+                for (int64_t numStages : params[5]) {
+                  for (int64_t wavesPerEU : params[6]) {
+                    for (int64_t gridGroupSize : params[7]) {
+                      for (uint32_t numCTAs : params[8]) {
                         auto gemmParams = GemmParamsAttr::get(
                             b.getContext(), gemmMPerBlock, gemmNPerBlock,
                             gemmKPerBlock, gemmKPack, numCTAs, numWaves,
