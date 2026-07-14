@@ -13,7 +13,8 @@ patch-buffer-atomics.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
-=======
+patch-scaled-wmma-fp4-nonk-pack-fallback.patch
+----------------------------------------------------------------------
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
@@ -101,3 +102,21 @@ patch10832.patch
 
   Drop this patch on the next Triton bump that pulls PR #10832 (upstream main at
   cf8bb65 or later) into external/triton.
+
+patch-scaled-wmma-fp4-nonk-pack-fallback.patch
+  Makes ScaledBlockedToScaledWMMAF8F6F4 bail when an fp4 (e2m1) operand is
+  packed along the non-K (M/N) dimension, i.e. lhs_k_pack/rhs_k_pack is false.
+  Unlike the CDNA4 scaled MFMA path, the native scaled WMMA instruction has no
+  transpose-load repack for an M/N-adjacent fp4 pair, so feeding it such an
+  operand produces invalid IR (mismatched scale factors) on gfx1250. Bailing
+  here lets the generic DecomposeScaledBlocked fallback emulate the dot (upcast
+  each fp4 operand with ttg.fp4_to_fp, apply the scale, and emit a plain
+  unscaled tt.dot), which already handles both packing directions correctly.
+  Coverage lives downstream in
+  mlir/test/fusion/mixr-dot-scaled-wmma-fp4-nonk-pack-gfx1250.mlir, since
+  rocmlirTriton CI does not run the vendored Triton lit suite.
+
+  This is downstream-only for now; native M/N-packed fp4 on gfx1250 would
+  require porting the MFMA M/N handling into the WMMA pattern plus enabling the
+  gfx1250 tile layout in the LocalLoadPackedTransposedOp lowering
+  (MemoryOpToLLVM), tracked as a follow-up optimization.

@@ -1,0 +1,20 @@
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
+index 44e2d5472..bb2c55b6c 100644
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
+@@ -1188,6 +1188,15 @@ public:
+       return rewriter.notifyMatchFailure(dotOp, "Not supported yet mxfp type");
+     }
+ 
++    // The native scaled WMMA does not support packing along the non-K (M/N)
++    // dimension, so we bail out and use the DecomposeScaledBlocked fallback.
++    if ((aElemType == ScaleDotElemType::E2M1 && !dotOp.getLhsKPack()) ||
++        (bElemType == ScaleDotElemType::E2M1 && !dotOp.getRhsKPack())) {
++      return rewriter.notifyMatchFailure(
++          dotOp, "fp4 operand packed along the non-K (M/N) dimension is not "
++                 "supported by native scaled WMMA");
++    }
++
+     unsigned scaleFactor = dotOp.deduceScaleFactor();
+ 
+     MLIRContext *ctx = dotOp.getContext();
