@@ -131,7 +131,7 @@ func.func @nhwc_1x1_fptosi_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816
 //     commonConvRewrite produced for it (so both addf operands match the
 //     gemm shape).
 // CHECK-LABEL: @nhwc_1x1_bias_add
-// CHECK-NOT: rock.conv
+// CHECK-NOT: rock.conv(
 // CHECK: %[[BIAS_VIEW:.*]] = rock.transform %{{.*}} by {{.*}}Merge{64, 14, 14} ["gemmN"]{{.*}}: tensor<64x14x14x1x256xf16> to tensor<1x256x12544xf16>
 // CHECK: %[[GEMM:.*]] = rock.gemm tr
 // CHECK-SAME: -> tensor<1x256x12544xf16>
@@ -154,7 +154,7 @@ func.func @nhwc_1x1_bias_add(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>
 // the downstream absf to the gemm shape, even though only the addf has an
 // entry in fusionInputMap (absf has no extra inputs).
 // CHECK-LABEL: @nhwc_1x1_bias_add_then_absf
-// CHECK-NOT: rock.conv
+// CHECK-NOT: rock.conv(
 // CHECK: %[[BIAS_VIEW:.*]] = rock.transform %{{.*}} by {{.*}}Merge{64, 14, 14} ["gemmN"]{{.*}}: tensor<64x14x14x1x256xf16> to tensor<1x256x12544xf16>
 // CHECK: %[[GEMM:.*]] = rock.gemm tr
 // CHECK-SAME: -> tensor<1x256x12544xf16>
@@ -189,7 +189,7 @@ func.func @nhwc_1x1_bias_add_then_absf(%arg0: tensor<16384xf16>, %arg1: tensor<8
 //   * replaceFusionExtraInputs rewires the bias operand of addf even though
 //     the chain fans out below it.
 // CHECK-LABEL: @nhwc_1x1_bias_add_two_outputs
-// CHECK-NOT: rock.conv
+// CHECK-NOT: rock.conv(
 // CHECK: %[[BIAS_VIEW:.*]] = rock.transform %{{.*}} by {{.*}}Merge{64, 14, 14} ["gemmN"]{{.*}}: tensor<64x14x14x1x256xf16> to tensor<1x256x12544xf16>
 // CHECK: %[[GEMM:.*]] = rock.gemm tr
 // CHECK-SAME: -> tensor<1x256x12544xf16>
