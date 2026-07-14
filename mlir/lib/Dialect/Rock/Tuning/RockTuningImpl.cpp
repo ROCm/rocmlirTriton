@@ -56,10 +56,8 @@ enum class GemmMNDim { M, N };
 #define MAX_MN_PER_BLOCK 256
 
 // Upper bound on the non-power-of-two kPerBlock candidates we derive from the K
-// dimension. Kept modest so the K tile's LDS footprint and the search space
-// stay bounded; oversized configs that still overflow LDS are dropped later by
-// the applicability / couldBePerformant checks.
-#define MAX_K_PER_BLOCK 256
+// dimension.
+#define MAX_NONPOW2_K_PER_BLOCK 256
 
 // Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
 // tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
@@ -263,7 +261,7 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     int64_t k = gemmOp.getGemmSize().k;
     uint32_t baseMinK = *llvm::min_element(kList);
     for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
-                                              MAX_K_PER_BLOCK))
+                                              MAX_NONPOW2_K_PER_BLOCK))
       if (!llvm::is_contained(kList, d))
         kList.push_back(d);
     llvm::sort(kList);
