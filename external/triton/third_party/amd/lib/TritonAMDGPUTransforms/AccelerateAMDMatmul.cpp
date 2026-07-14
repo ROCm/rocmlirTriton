@@ -1188,6 +1188,15 @@ public:
       return rewriter.notifyMatchFailure(dotOp, "Not supported yet mxfp type");
     }
 
+    // The native scaled WMMA does not support packing along the non-K (M/N)
+    // dimension, so we bail out and use the DecomposeScaledBlocked fallback.
+    if ((aElemType == ScaleDotElemType::E2M1 && !dotOp.getLhsKPack()) ||
+        (bElemType == ScaleDotElemType::E2M1 && !dotOp.getRhsKPack())) {
+      return rewriter.notifyMatchFailure(
+          dotOp, "fp4 operand packed along the non-K (M/N) dimension is not "
+                 "supported by native scaled WMMA");
+    }
+
     unsigned scaleFactor = dotOp.deduceScaleFactor();
 
     MLIRContext *ctx = dotOp.getContext();
