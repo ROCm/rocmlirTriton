@@ -55,10 +55,6 @@ enum class GemmMNDim { M, N };
 // which a small dimension is covered by a single tightly-fitting tile.
 #define MAX_MN_PER_BLOCK 256
 
-// Upper bound on the non-power-of-two kPerBlock candidates we derive from the K
-// dimension.
-#define MAX_NONPOW2_K_PER_BLOCK 256
-
 // Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
 // tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
 // round the remainder up to the next pow2. e.g. 77 = 64 + 13 -> 64 + 16 = 80.
@@ -197,25 +193,31 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 // Non-power-of-two kPerBlock heuristic. 3 ideas:
 //
 //   (1) It must divide K evenly
-//   (2) It must genereate exactly two power-of-two K segments
+//   (2) It must generate exactly two power-of-two K segments
 //   (3) Tile size must be within [min(m,n)/2, min(m,n))
 //
 // Empirically, this gives a small amount of candidates and always
 // captures the best kPerBlock candidate (i.e., we dont need to consider all
 // possible kPerBlock candidates).
 //
-// Its real strength is that it barely grows the search space. A normal
-// perfConfig axis multiplies the entire product (each value pairs with every
-// combination of the other knobs). A non-pow2 K instead attaches only to the
-// (m,n) tiles that land in the window [min(m,n)/2, min(m,n)):
-//   - a power-of-two K (32, 64, ...) is valid for every (m,n), so it pairs with
-//     all tiles;
-//   - k=72 (= 64+8) needs min(m,n)=128, so it attaches only to tiles such as
-//     (128,128), (128,256), (192,128);
-//   - k=144 (= 128+16) needs min(m,n)=256, so it attaches only to (192,256).
+// Its real strength is that it barely grows the search space. It is evaluated
+// per (m,n) tile and returns only the two-segment divisors of K that fall in
+// that tile's [min(m,n)/2, min(m,n)) window (in the worst case, 2 values per
+// tile). A power-of-two K is valid for every (m,n), but a non-pow2 K attaches
+// only to the tiles whose window it lands in, so it does not multiply the
+// size of the search space.
 //
-// For example, for K=1728, windowDividingKPerBlock returns {36,48,72,96,144},
-// growing the whole space by ~18%, not 5x.
+// For example, for K=1728:
+//
+// Each enumerated (m,n) tile gains exactly 2 candidates, and the union across
+// all tiles is {18,24,36,48,72,96,144,192}. I.e.,
+// {18,24} attach to min(m,n)=32
+// {36,48} attach to min(m,n)=64
+// {72,96} attach to min(m,n)=128
+// {144,192} attach to min(m,n)=256
+//
+// The space grows from 4500 to 5460 configs (+21%) instead of 5x (4500 ->
+// 22500).
 static SmallVector<uint32_t, 2>
 windowDividingKPerBlock(int64_t k, uint32_t mPerBlock, uint32_t nPerBlock,
                         uint32_t minBaseK, uint32_t maxK) {
