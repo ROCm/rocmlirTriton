@@ -227,7 +227,7 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     int64_t k = gemmOp.getGemmSize().k;
     uint32_t baseMinK = *llvm::min_element(kList);
     for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
-                                              MAX_NONPOW2_K_PER_BLOCK))
+                                              /*maxK=*/256))
       if (!llvm::is_contained(kList, d))
         kList.push_back(d);
     llvm::sort(kList);
