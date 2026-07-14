@@ -229,9 +229,11 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value bid =
         triton::GetProgramIdOp::create(b, op.getLoc(), triton::ProgramIDDim::X);
 
-    // Whole-matrix byte sizes and the L2 capacity feed the residency-aware
-    // (1-D GROUP_SIZE_M) grid-layout heuristic in makeGroupedGridLayout.
+    // Whole-matrix byte sizes and the cache capacities feed the residency-aware
+    // (1-D GROUP_SIZE_M) grid-layout heuristic in makeGroupedGridLayout: LLC
+    // decides the read-once operand, L2 bounds the band height.
     const int64_t l2Bytes = rock::getL2CacheSize(arch);
+    const int64_t llcBytes = rock::getLastLevelCacheSize(arch);
     auto matrixBytes = [](int64_t numElems, Type elemType) -> int64_t {
       return llvm::divideCeil(numElems * elemType.getIntOrFloatBitWidth(), 8);
     };
@@ -243,8 +245,9 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     auto gridCoords = layout::makeGroupedGridLayout(
         b, loc, bid,
         {G, mBlocks, nBlocks, rock::getNumCUValue(op),
-         rock::getNumChipletsValue(op), elementTypeALoad, gridGroupSize,
-         mPerBlock, kPerBlock, aTotalBytes, bTotalBytes, l2Bytes},
+         rock::getNumChipletsValue(op), elementTypeALoad, elementTypeBLoad,
+         gridGroupSize, mPerBlock, nPerBlock, kPerBlock, aTotalBytes,
+         bTotalBytes, l2Bytes, llcBytes},
         arch);
 
     int64_t numWaves = tuningParams.getNumWaves();

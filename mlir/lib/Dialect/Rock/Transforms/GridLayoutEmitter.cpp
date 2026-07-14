@@ -27,6 +27,8 @@
 
 #include "llvm/Support/Debug.h"
 
+#include <cmath>
+
 #include "GridLayoutEmitter.h"
 
 #define DEBUG_TYPE "rock-grid-layout-emitter"
@@ -83,7 +85,8 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
                                                     StringRef arch) {
   // The swizzle below is a 1-D GROUP_SIZE_M super-grouping: groupSizeM (a.k.a.
   // GROUP_SIZE_M), the M-block band height, is its only knob. We pick it from
-  // L2 residency of the operands (see below).
+  // cache residency of the operands: LLC decides which operand is read from
+  // DRAM once, L2 bounds the band height (see below).
   int64_t gridSize = info.gBlocks * info.mBlocks * info.nBlocks;
   int64_t concurrentWorkgroups =
       std::max(int64_t{1}, info.numCU / info.numChiplets);
@@ -96,21 +99,31 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
   // A band is groupSizeM M-blocks spanning the *full* N width, swept
   // column-major. So each A row-block is reused across all of N (A is read once
   // overall), while B is re-read once per band -> mBlocks / groupSizeM passes.
-  // Pick the band height from L2 residency:
   //
-  //   * B fits L2 (and A does not): B stays resident across bands, so its
-  //   passes
-  //     are cache hits and groupSizeM does not affect DRAM traffic. Use
-  //     groupSizeM = 1 (row-major) to keep A's live footprint minimal so B
-  //     stays resident (e.g. big A, tiny B).
-  //   * otherwise: make the band as tall as A-strip residency in L2 allows. The
-  //     groupSizeM live A row-blocks (mPerBlock x kPerBlock each) must fit in
-  //     L2; taller bands mean fewer B passes. When A fits L2 this gives
-  //     groupSizeM = mBlocks (one band, B streamed once -- e.g. conv, tiny A).
-  bool aFitsL2 = info.aTotalBytes <= info.l2Bytes;
-  bool bFitsL2 = info.bTotalBytes <= info.l2Bytes;
+  // Two caches play different roles:
+  //   * The last-level cache (Infinity Cache / MALL, or L2 when there is none)
+  //     governs *DRAM traffic*: an operand that fits it is fetched from DRAM
+  //     once regardless of how many times the swizzle re-reads it (later reads
+  //     hit the LLC). So the read-once decision below tests LLC residency.
+  //   * L2 (per-XCD scope) governs *reuse speed*: it bounds how tall a band can
+  //     be while the live A row-blocks stay L2-resident across the N sweep.
+  //
+  // When exactly one operand fits the LLC, the other is the one that costs DRAM
+  // traffic, so drive the band height to whichever extreme reads it once:
+  //   * B fits LLC (and A does not): B is read from DRAM once no matter what.
+  //     Use groupSizeM = 1 (row-major) to keep A's live footprint minimal so B
+  //     keeps its cache residency (e.g. big A, tiny B).
+  //   * A fits LLC (and B does not): A is read from DRAM once no matter what.
+  //     Use groupSizeM = mBlocks (one band) so B is streamed exactly once; A is
+  //     reused from the LLC across the sweep (e.g. conv, tiny A).
+  // When both fit or neither fits, the A-vs-B tradeoff is real: make the band
+  // as tall as L2 residency allows (fewer B passes) -- see the quadratic below.
+  bool aFitsLLC = info.aTotalBytes <= info.llcBytes;
+  bool bFitsLLC = info.bTotalBytes <= info.llcBytes;
   double aSlabBytes =
-      info.mPerBlock * elemBytes(info.inputType) * info.kPerBlock;
+      info.mPerBlock * elemBytes(info.aInputType) * info.kPerBlock;
+  double bSlabBytes =
+      info.nPerBlock * elemBytes(info.bInputType) * info.kPerBlock;
 
   int64_t groupSizeM;
   if (info.gridGroupSize != 0) {
@@ -118,15 +131,43 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
     groupSizeM = info.gridGroupSize;
     LLVM_DEBUG(llvm::dbgs() << "Setting groupSizeM by using tuning params to "
                             << groupSizeM << "\n");
-  } else if (bFitsL2 && !aFitsL2) {
-    // B resident: stream A once, keep B cached
+  } else if (bFitsLLC && !aFitsLLC) {
+    // B read from DRAM once regardless: stream A once, keep B's footprint
+    // cached
     groupSizeM = 1;
-    LLVM_DEBUG(llvm::dbgs() << "B fits L2: groupSizeM = 1 (row-major)\n");
+    LLVM_DEBUG(llvm::dbgs() << "B fits LLC: groupSizeM = 1 (row-major)\n");
+  } else if (aFitsLLC && !bFitsLLC) {
+    // A read from DRAM once regardless: one band streams B once, A reused via
+    // LLC
+    groupSizeM = info.mBlocks;
+    LLVM_DEBUG(llvm::dbgs()
+               << "A fits LLC: groupSizeM = mBlocks (single band)\n");
   } else {
-    // Tallest band whose live A row-blocks fit L2 (== mBlocks when A fits L2).
-    int64_t maxByL2 = aSlabBytes > 0.0
-                          ? (int64_t)((double)info.l2Bytes / aSlabBytes)
-                          : info.mBlocks;
+    // Make the band as tall as possible to cut B passes (mBlocks/groupSizeM),
+    // bounded by keeping the live wave L2-resident. The sweep is column-major,
+    // so the concurrent P workgroups span ~ceil(P/h) columns x h rows; L2 must
+    // hold the h persistent A row-blocks plus the ~P/h active B col-blocks:
+    //
+    //     h*aSlab + (P/h)*bSlab <= L2.
+    //
+    // The tallest feasible h is the larger root of
+    //     aSlab*h^2 - L2*h + P*bSlab = 0.
+    // When the discriminant is negative no h holds both working sets at once (A
+    // cannot stay resident across the sweep), so fall back to the footprint-
+    // minimizing square wave h = sqrt(P*bSlab/aSlab). Both collapse to the
+    // plain L2/aSlab band when the cache is roomy relative to concurrency (P <<
+    // h).
+    const double P = (double)concurrentWorkgroups;
+    const double l2 = (double)info.l2Bytes;
+    int64_t maxByL2;
+    if (aSlabBytes <= 0.0) {
+      maxByL2 = info.mBlocks;
+    } else {
+      double disc = l2 * l2 - 4.0 * aSlabBytes * P * bSlabBytes;
+      double h = disc >= 0.0 ? (l2 + std::sqrt(disc)) / (2.0 * aSlabBytes)
+                             : std::sqrt(P * bSlabBytes / aSlabBytes);
+      maxByL2 = (int64_t)h;
+    }
     groupSizeM = std::min(info.mBlocks, std::max(int64_t{1}, maxByL2));
     LLVM_DEBUG(llvm::dbgs()
                << "L2-bounded band height groupSizeM " << groupSizeM << "\n");
