@@ -73,9 +73,10 @@
 //===----------------------------------------------------------------------===//
 
 // When K has non-power-of-two divisors (here K = 576 = 64*3*3, i.e. a conv's
-// C*fil_h*fil_w), the accelerated paths offer kPerBlock values that divide K so
-// the tuner can peel K into pow2 segments instead of padding it. On WMMA
-// (gfx1201) the base kPerBlock list {32,64} gains 36/48/72/96/144/192.
+// C*fil_h*fil_w), the accelerated paths offer, per (m,n) tile, the divisors of K
+// that peel into two pow2 segments and fall under the window
+// [min(m,n)/2, min(m,n)). On WMMA (gfx1201) a min(m,n)=64 tile
+// gains 36 and 48 on top of the pow2 base {32,64}.
 // RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-DIVK
 // CHECK-WMMA-DIVK: gemm:v3:{{[0-9]+,[0-9]+,48,1,}}
