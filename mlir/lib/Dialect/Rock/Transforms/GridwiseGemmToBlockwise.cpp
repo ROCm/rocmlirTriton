@@ -151,13 +151,14 @@ chooseGemmLoadCacheModifiers(StringRef arch, Type aElemType, Type bElemType,
 // This keeps the common case untouched and pays the multi-segment cost only on
 // the single tail, instead of widening every iteration to a non-power-of-two
 // kPerBlock.
-static Value
-emitKReductionLoop(PatternRewriter &b, Location loc, GridwiseGemmOp op,
-                   Value matA, Value matB, Value scaleA, Value scaleB,
-                   Value initAcc, rock::layout::GridCoordinates gridCoords,
-                   SmallVector<int64_t, 3> &bidGridLengths,
-                   rock::CacheModifier cacheA, rock::CacheModifier cacheB,
-                   int64_t quantKPerBlock) {
+static Value emitKReductionLoop(PatternRewriter &b, Location loc,
+                                GridwiseGemmOp op, Value matA, Value matB,
+                                Value scaleA, Value scaleB, Value initAcc,
+                                rock::layout::GridCoordinates gridCoords,
+                                SmallVector<int64_t, 3> &bidGridLengths,
+                                rock::CacheModifier cacheA,
+                                rock::CacheModifier cacheB,
+                                int64_t quantKPerBlock) {
   int64_t K = cast<ShapedType>(matA.getType()).getShape()[2];
   GemmParamsAttr params = op.getParams();
   int64_t kPerBlock = params.getKPerBlock();
@@ -182,9 +183,9 @@ emitKReductionLoop(PatternRewriter &b, Location loc, GridwiseGemmOp op,
                             /*tiles=*/{kSize}, {Pow2Segment{start, len}});
   };
 
-  // Emit the A/B (and, for scaled GEMMs, scale) loads and the blockwise_gemm for
-  // one K tile of width `segLen` at K block `kIter` of the given operand views,
-  // reducing into `acc`.
+  // Emit the A/B (and, for scaled GEMMs, scale) loads and the blockwise_gemm
+  // for one K tile of width `segLen` at K block `kIter` of the given operand
+  // views, reducing into `acc`.
   auto contract = [&](Value aView, Value bView, Value kIter, int64_t segLen,
                       Value acc) -> Value {
     Value loadedB =
@@ -228,9 +229,8 @@ emitKReductionLoop(PatternRewriter &b, Location loc, GridwiseGemmOp op,
     {
       PatternRewriter::InsertionGuard guard(b);
       b.setInsertionPointToStart(loopOp.getBody());
-      Value newAcc =
-          contract(matAMain, matBMain, loopOp.getInductionVar(), kPerBlock,
-                   loopOp.getRegionIterArg(0));
+      Value newAcc = contract(matAMain, matBMain, loopOp.getInductionVar(),
+                              kPerBlock, loopOp.getRegionIterArg(0));
       scf::YieldOp::create(b, loc, ValueRange{newAcc});
     }
     acc = loopOp.getResult(0);
