@@ -1248,7 +1248,8 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
           rock::markAsNotApplicable(gemmOp);
           return gemmOp.emitError(
               "sub-byte packing in the non-K (M/N) dimension is not "
-              "supported on this architecture, see archSupportsNonKPackedScaledInput");
+              "supported on this architecture, see "
+              "archSupportsNonKPackedScaledInput");
         }
         if (isA)
           gemmOp.setMatrixAKPackAttr(builder.getBoolAttr(kPack.value()));
