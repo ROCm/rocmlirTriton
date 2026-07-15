@@ -81,3 +81,26 @@ func.func @gemm_k_below_kperblock(%arg0: tensor<1x64x48xf16>, %arg1: tensor<1x48
   %out = rock.store %result to %arg2 by set : tensor<1x64x64xf32> -> tensor<1x64x64xf32> to tensor<1x64x64xf32>
   return %out : tensor<1x64x64xf32>
 }
+
+// -----
+
+// K = 96, kPerBlock = 64 -> kMain = 64 (one kPerBlock tile), kRem = 32. The
+// main loop runs a single iteration, which -canonicalize folds away entirely:
+// what remains is one kPerBlock-wide blockwise_gemm reducing the zero
+// accumulator over [0, 64), followed by the peeled 32-wide tail over [64, 96).
+// So a "one main iteration" case is two straight-line gemms with no scf.for.
+// CHECK-NOT: rock.gridwise_gemm
+// CHECK-LABEL: @gemm_k96_kperblock64
+// CHECK-SAME: -> tensor<1x64x64xf32>
+func.func @gemm_k96_kperblock64(%arg0: tensor<1x64x96xf16>, %arg1: tensor<1x96x64xf16>, %arg2: tensor<1x64x64xf32>) -> tensor<1x64x64xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 228 : i32, rock.kernel} {
+  // CHECK:     %[[ACC0:.+]] = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
+  // CHECK-NOT: scf.for
+  // Main region [0, 64): one kPerBlock=64 tile reducing the zero accumulator.
+  // CHECK:     %[[MAIN:.+]] = rock.blockwise_gemm(%{{.*}}, %{{.*}}, %[[ACC0]]) : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  // Peeled tail [64, 96): the leftover 32.
+  // CHECK:     %[[TAIL:.+]] = rock.blockwise_gemm(%{{.*}}, %{{.*}}, %[[MAIN]]) : tensor<64x32xf16>, tensor<32x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  // CHECK:     rock.store_marker %[[TAIL]] {{.*}} : tensor<64x64xf32> -> tensor<1x64x64xf32>
+  %result = rock.gridwise_gemm(%arg0, %arg1) {params = #rock.gemm_params<kPerBlock = 64, mPerBlock = 64, nPerBlock = 64, kpack = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>} : tensor<1x64x96xf16>, tensor<1x96x64xf16> -> tensor<1x64x64xf32>
+  %out = rock.store %result to %arg2 by set : tensor<1x64x64xf32> -> tensor<1x64x64xf32> to tensor<1x64x64xf32>
+  return %out : tensor<1x64x64xf32>
+}
