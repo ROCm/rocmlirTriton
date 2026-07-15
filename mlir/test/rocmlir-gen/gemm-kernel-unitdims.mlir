@@ -9,7 +9,7 @@
 // ALLUNIT-LABEL: module
 // ALLUNIT-NEXT: func.func @rock_gemm
 // ALLUNIT-SAME: ([[arg0:%.+]]: tensor<1x[[$ITYPE]]>, [[arg1:%.+]]: tensor<1x[[$ITYPE]]>, [[arg2:%.+]]: tensor<1x[[$OTYPE]]>)
-// ALLUNIT-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// ALLUNIT-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.enable_streamk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // ALLUNIT-NEXT: [[gemmA:%.+]] = rock.transform [[arg0]]
 // ALLUNIT-SAME: <Unmerge{1} ["k"]
 // ALLUNIT-SAME: <AddDim{1} ["g"]
@@ -25,7 +25,7 @@
 // ONLYG-LABEL: module
 // ONLYG-NEXT: func.func @rock_gemm
 // ONLYG-SAME: ([[arg0:%.+]]: tensor<2x[[$ITYPE]]>, [[arg1:%.+]]: tensor<2x[[$ITYPE]]>, [[arg2:%.+]]: tensor<2x[[$OTYPE]]>)
-// ONLYG-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// ONLYG-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.enable_streamk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // ONLYG-NEXT: [[gemmA:%.+]] = rock.transform [[arg0]]
 // ONLYG-SAME: <Unmerge{2} ["g"]
 // ONLYG-SAME: <AddDim{1} ["m"]
@@ -41,7 +41,7 @@
 // ONLYM-LABEL: module
 // ONLYM-NEXT: func.func @rock_gemm
 // ONLYM-SAME: ([[arg0:%.+]]: tensor<2x[[$ITYPE]]>, [[arg1:%.+]]: tensor<1x[[$ITYPE]]>, [[arg2:%.+]]: tensor<2x[[$OTYPE]]>)
-// ONLYM-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// ONLYM-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.enable_streamk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // ONLYM-NEXT: [[gemmA:%.+]] = rock.transform [[arg0]]
 // ONLYM-SAME: <Unmerge{2} ["m"]
 // ONLYM-SAME: <AddDim{1} ["g"]
@@ -57,7 +57,7 @@
 // ONLYK-LABEL: module
 // ONLYK-NEXT: func.func @rock_gemm
 // ONLYK-SAME: ([[arg0:%.+]]: tensor<2x[[$ITYPE]]>, [[arg1:%.+]]: tensor<2x[[$ITYPE]]>, [[arg2:%.+]]: tensor<1x[[$OTYPE]]>)
-// ONLYK-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// ONLYK-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.enable_streamk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // ONLYK-NEXT: [[gemmA:%.+]] = rock.transform [[arg0]]
 // ONLYK-SAME: <Unmerge{2} ["k"]
 // ONLYK-SAME: <AddDim{1} ["g"]
@@ -73,7 +73,7 @@
 // ONLYN-LABEL: module
 // ONLYN-NEXT: func.func @rock_gemm
 // ONLYN-SAME: ([[arg0:%.+]]: tensor<1x[[$ITYPE]]>, [[arg1:%.+]]: tensor<2x[[$ITYPE]]>, [[arg2:%.+]]: tensor<2x[[$OTYPE]]>)
-// ONLYN-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
+// ONLYN-SAME: attributes {rock.arch = "{{.*}}", rock.enable_splitk_for_tuning, rock.enable_streamk_for_tuning, rock.kernel, rock.num_chiplets = {{.*}}, rock.num_cu = {{.*}}}
 // ONLYN-NEXT: [[gemmA:%.+]] = rock.transform [[arg0]]
 // ONLYN-SAME: <Unmerge{1} ["k"]
 // ONLYN-SAME: <AddDim{1} ["g"]

@@ -892,6 +892,12 @@ static llvm::cl::opt<bool> disableSplitKForTuning(
     llvm::cl::desc("disable split-K GEMM scheme for tuning"),
     llvm::cl::init(false));
 
+// TODO[stream-K]: remove after integrating with MIGraphX
+static llvm::cl::opt<bool> disableStreamKForTuning(
+    "disable-stream-k-for-tuning",
+    llvm::cl::desc("disable stream-K GEMM scheme for tuning"),
+    llvm::cl::init(false));
+
 ////////////////////////////////////////////////////////////////////////////////
 ////  Struct KernelIF
 ////  - Detected/capture kernel interface
@@ -2974,6 +2980,9 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   if (!disableSplitKForTuning)
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),
                   b.getUnitAttr());
+  if (!disableStreamKForTuning)
+    func->setAttr(rock::EnableStreamKForTuningAttr::getMnemonic(),
+                  b.getUnitAttr());
 
   module.push_back(func);
   return func;
@@ -3901,6 +3910,9 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   if (!disableSplitKForTuning)
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),
                   builder.getUnitAttr());
+  if (!disableStreamKForTuning)
+    func->setAttr(rock::EnableStreamKForTuningAttr::getMnemonic(),
+                  builder.getUnitAttr());
 
   module.push_back(func);
   return func;
@@ -4002,6 +4014,9 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   func::ReturnOp::create(builder, loc, {storedOut});
   if (!disableSplitKForTuning)
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),
+                  builder.getUnitAttr());
+  if (!disableStreamKForTuning)
+    func->setAttr(rock::EnableStreamKForTuningAttr::getMnemonic(),
                   builder.getUnitAttr());
 
   module.push_back(func);

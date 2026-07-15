@@ -422,6 +422,9 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockGemmToGridwisePass());
   addWithDCE(rock::createRockAttnToGridwisePass());
 
+  // Must run after Gemm/AttnToGridwise and before DecomposeNonPow2Tiles.
+  addWithDCE(rock::createRockStreamKDecomposePass());
+
   // Must run after AttnToGridwise and before GridwiseGemmToBlockwise.
   addWithDCE(rock::createRockDecomposeNonPow2TilesPass());
 

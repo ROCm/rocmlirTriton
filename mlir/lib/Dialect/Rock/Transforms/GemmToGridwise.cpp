@@ -312,8 +312,6 @@ GemmRewritePattern::arrangeSplitKTransform(
   SmallVector<Value> outputViewsNew;
   DenseMap<Value, Value> fusionInputMapNew(fusionInputMap);
   Value scaleANew{nullptr}, scaleBNew{nullptr};
-  ArrayRef<int64_t> aShape = cast<RankedTensorType>(a.getType()).getShape();
-  ArrayRef<int64_t> bShape = cast<RankedTensorType>(b.getType()).getShape();
   ArrayRef<int64_t> cShape =
       cast<RankedTensorType>(outputViews[0].getType()).getShape();
   for (auto outputView : outputViews) {
@@ -321,142 +319,45 @@ GemmRewritePattern::arrangeSplitKTransform(
       return op->emitError("all output views must have the same shape");
   }
 
-  const int64_t K = aShape[2];
-
   struct GemmOperandsData {
     Value &in;
     Value &out;
-    SmallVector<StringRef> inputDimNames;
-    ArrayRef<int64_t> inputShape;
+    StringRef preservedName;
     uint32_t nonKDim;
     uint32_t kDim;
-    uint32_t newNonKDim;
-    int64_t kLen;
   };
 
-  llvm::SmallVector<GemmOperandsData, 4> gemmOperands{
-      {a, aNew, {"gemmG", "gemmM", "gemmK"}, aShape, 1, 2, 1, K},
-      {b, bNew, {"gemmG", "gemmK", "gemmN"}, bShape, 2, 1, 3, K}};
+  llvm::SmallVector<GemmOperandsData, 4> gemmOperands{{a, aNew, "gemmM", 1, 2},
+                                                      {b, bNew, "gemmN", 2, 1}};
   if (scaleA && scaleB) {
-    ArrayRef<int64_t> scaleAShape =
-        cast<RankedTensorType>(scaleA.getType()).getShape();
-    ArrayRef<int64_t> scaleBShape =
-        cast<RankedTensorType>(scaleB.getType()).getShape();
-    int64_t scaleAK = scaleAShape[2];
-    int64_t scaleBK = scaleBShape[2];
-    gemmOperands.push_back({scaleA,
-                            scaleANew,
-                            {"gemmG", "gemmM", "gemmK"},
-                            scaleAShape,
-                            1,
-                            2,
-                            1,
-                            scaleAK});
+    gemmOperands.push_back({scaleA, scaleANew, "gemmM", 1, 2});
     // After normalizeMatrix(scaleB, ..., "gemmN", "gemmK"), scaleB is [G, N, K]
-    gemmOperands.push_back({scaleB,
-                            scaleBNew,
-                            {"gemmG", "gemmN", "gemmK"},
-                            scaleBShape,
-                            1,
-                            2,
-                            1,
-                            scaleBK});
+    gemmOperands.push_back({scaleB, scaleBNew, "gemmN", 1, 2});
   }
   for (auto &gemmOperand : gemmOperands) {
-    // Prepare matrix A and B - i.e.,
-    //    (gemmG, gemmK, gemmM) and (gemmG, gemmK, gemmN), respectively
-    // Using bottom-up transformations
-    // 1. unmerge (gemmK) -> (gemmKSplit, gemmK*)
-    // 2. merge (gemmG, gemmKSplit) -> (gemmG*)
-
-    StringRef preservedDimName;
-    for (auto &dimName : gemmOperand.inputDimNames) {
-      if ((dimName != "gemmK") && (dimName != "gemmG"))
-        preservedDimName = dimName;
-    }
-
-    int64_t operandK = gemmOperand.kLen;
-    assert(operandK % splitKFactor == 0 &&
-           "operandK must be divisible by splitKFactor after padding");
-    BottomUpTMBuilder unmergeTransform(builder, gemmOperand.inputDimNames,
-                                       gemmOperand.inputShape, loc);
-
-    unmergeTransform.passThrough({"gemmG", preservedDimName},
-                                 {0, gemmOperand.newNonKDim},
-                                 {"gemmG", preservedDimName});
-    unmergeTransform.unmerge({"gemmKSplit", "gemmK"},
-                             {gemmOperand.kDim, gemmOperand.kDim + 1}, "gemmK",
-                             {splitKFactor, operandK / splitKFactor});
-
-    auto unmergeTransformAttr = unmergeTransform.get();
-
-    SmallVector<Attribute> transformAttrs;
-    transformAttrs.push_back(unmergeTransformAttr);
-
-    auto mergeTransform =
-        BottomUpTMBuilder::above(unmergeTransform, unmergeTransformAttr);
-
-    mergeTransform.merge("gemmG", 0, {"gemmG", "gemmKSplit"});
-    mergeTransform.passThrough({"gemmK", preservedDimName},
-                               {gemmOperand.kDim, gemmOperand.nonKDim},
-                               {"gemmK", preservedDimName});
-
-    auto mergeTransformAttr = mergeTransform.get();
-    transformAttrs.push_back(mergeTransformAttr);
-
-    std::reverse(transformAttrs.begin(), transformAttrs.end());
-    ArrayAttr arrayTransformAttrs = builder.getArrayAttr(transformAttrs);
-    gemmOperand.out =
-        mlir::rock::transform(builder, gemmOperand.in, arrayTransformAttrs);
+    // Fold the split-K factor into G:
+    //   1. unmerge (gemmK) -> (gemmKSplit, gemmK*)
+    //   2. merge (gemmG, gemmKSplit) -> (gemmG*)
+    gemmOperand.out = splitKFoldOperand(
+        builder, loc, gemmOperand.in, splitKFactor, gemmOperand.kDim,
+        gemmOperand.nonKDim, gemmOperand.preservedName);
   }
 
-  {
-    // Prepare matrix C - i.e., (gemmG, gemmM, gemmN)
-    // Using top-down transformations
-    // 1. merge (gemmG * gemmKSplit, gemmM, gemmN) -> (gemmG, gemmKSplit, gemmM,
-    // gemmN)
-    // 2. ignore (gemmG, gemmKSplit, gemmM, gemmN) -> (gemmG, gemmM, gemmN)
-
-    const int64_t G = cShape[0];
-    const int64_t M = cShape[1];
-    const int64_t N = cShape[2];
-
-    TopDownTMBuilder mergeTransform(builder, {"gemmG", "gemmM", "gemmN"},
-                                    {G * splitKFactor, M, N});
-
-    mergeTransform.merge({"gemmG", "gemmKSplit"}, {0, 1}, "gemmG",
-                         {G, splitKFactor});
-    mergeTransform.passThrough({"gemmM", "gemmN"}, {2, 3}, {"gemmM", "gemmN"});
-    auto mergeTransformAttr = mergeTransform.get();
-
-    SmallVector<Attribute> transformAttrs;
-    transformAttrs.push_back(mergeTransformAttr);
-
-    TopDownTMBuilder ignoreTransform =
-        TopDownTMBuilder::below(mergeTransform, mergeTransformAttr);
-
-    ignoreTransform.ignore("gemmKSplit");
-    ignoreTransform.passThrough({"gemmG", "gemmM", "gemmN"}, {0, 1, 2},
-                                {"gemmG", "gemmM", "gemmN"});
-
-    TransformMapAttr ignoreTransformAttr = ignoreTransform.get();
-    transformAttrs.push_back(ignoreTransformAttr);
-
-    ArrayAttr arrayTransformAttrs = builder.getArrayAttr(transformAttrs);
-    for (auto view : outputViews) {
-      OpBuilder::InsertionGuard guard(builder);
-      if (Operation *defOp = view.getDefiningOp())
-        builder.setInsertionPointAfter(defOp);
-      outputViewsNew.push_back(
-          mlir::rock::transform(builder, view, arrayTransformAttrs));
-    }
-    // Apply the same transforms to fusion extra inputs.
-    // Set insertion point after each value's defining op to maintain dominance.
-    for (auto &[orig, view] : fusionInputMapNew) {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointAfter(view.getDefiningOp());
-      view = mlir::rock::transform(builder, view, arrayTransformAttrs);
-    }
+  // Map the C side ([G*splitK, M, N]) back onto the real [G, M, N] destination,
+  // ignoring the split dimension so every K-split accumulates into the same
+  // tile. Set the insertion point after each value's defining op to maintain
+  // dominance.
+  for (auto view : outputViews) {
+    OpBuilder::InsertionGuard guard(builder);
+    if (Operation *defOp = view.getDefiningOp())
+      builder.setInsertionPointAfter(defOp);
+    outputViewsNew.push_back(
+        splitKFoldOutputView(builder, loc, view, splitKFactor));
+  }
+  for (auto &[orig, view] : fusionInputMapNew) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(view.getDefiningOp());
+    view = splitKFoldOutputView(builder, loc, view, splitKFactor);
   }
   return SplitKTransformedOperands{
       aNew, bNew, outputViewsNew, fusionInputMapNew, scaleANew, scaleBNew};

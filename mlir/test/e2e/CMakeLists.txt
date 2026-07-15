@@ -39,6 +39,7 @@ if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
     PrAttentionBF16
     PrAttentionI8
     PrGemmSplitK
+    PrGemmStreamK
     PrGemmElementwiseGemmF32
     PrGemmElementwiseGemmF16
     PrGemmElementwiseGemmBF16
@@ -85,6 +86,9 @@ if (ROCK_E2E_TEST_ENABLED)
   gemm_split_k_bf16
   gemm_split_k_f32
   gemm_scaled_split_k_f4
+  gemm_stream_k_f16
+  gemm_stream_k_bf16
+  gemm_stream_k_f32
   )
   list(APPEND CONFIGS
   )

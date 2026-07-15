@@ -92,6 +92,10 @@ bool isSplitKRequested(ModuleOp mod, StringRef perfConfig);
 bool isSplitKRequested(StringAttr perfConfig);
 int64_t retrieveSplitKValue(StringAttr perfConfig);
 
+bool isStreamKRequested(ModuleOp mod, StringRef perfConfig);
+bool isStreamKRequested(StringAttr perfConfig);
+int64_t retrieveStreamKMultiple(StringAttr perfConfig);
+
 // This method checks a given fused module is actually fusible
 // for the given perfConfig
 bool isModuleFusible(ModuleOp module, StringRef perfConfig);

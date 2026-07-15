@@ -1,0 +1,31 @@
+directory = "PrGemmStreamK"
+prefix = "rocmlir-gen"
+suffix = "--operation gemm --arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
+
+# streamKMultiple sits right before the knob block in the v5 perf-config (splitK
+# stays 1: the stream-K remainder re-splits K itself and can't compose with an
+# already split-K gemm). `-1` are the six default knobs. Value 1/2 = that
+# multiple of num_cu resident blocks. Depending on the target's num_cu the pass
+# either hybrid-decomposes or gracefully falls back to plain data-parallel; both
+# are validated for numerical correctness here.
+[[axis]]
+name = "streamKMultiple"
+values = ["gemm:v5:64,64,64,1,1,4,32,1,2,0,0,1,-1,-1,-1,-1,-1,-1", "gemm:v5:64,64,64,1,1,4,32,1,2,0,0,2,-1,-1,-1,-1,-1,-1"]
+prefix = "-perf_config="
+
+[[axis]]
+name = "data type"
+values = ["f16"]
+prefix = "-t "
+
+## Gemm variants
+[[suite]]
+name = "PrGemmStreamK"
+
+# Ragged small grid: hybrid-decomposes on low-num_cu targets (e.g. gfx942).
+[[suite.test]]
+config = "-g 1 -m 640 -k 256 -n 448"
+
+# Larger grid: hybrid-decomposes on high-num_cu targets (e.g. gfx90a, gfx950).
+[[suite.test]]
+config = "-g 1 -m 1024 -k 256 -n 1920"

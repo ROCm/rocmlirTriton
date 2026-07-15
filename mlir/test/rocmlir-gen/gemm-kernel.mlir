@@ -27,7 +27,7 @@
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 // CHECK-LABEL: func.func @rock_gemm
 // CHECK-SAME: (%[[aRaw:.*]]: tensor<2362368xf32>, %[[bRaw:.*]]: tensor<1181184xf32>, %[[cRaw:.*]]: tensor<1572864xf32>)
-// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.enable_splitk_for_tuning, rock.kernel
+// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.enable_splitk_for_tuning, rock.enable_streamk_for_tuning, rock.kernel
 // CHECK-NEXT: %[[a:.*]] = rock.transform %[[aRaw]] by #[[$trMapAUnmerge]]
 // CHECK-NEXT: %[[b:.*]] = rock.transform %[[bRaw]] by #[[$trMapBUnmerge]]
 // CHECK-NEXT: rock.gemm

@@ -86,9 +86,10 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
       params.getKPerBlock(), params.getKpack(), params.getNumCTAs(),
       params.getNumWaves(), params.getMatrixInstrNonkdim(), splitKFactor,
       params.getNumStages(), params.getWavesPerEU(), params.getGridGroupSize(),
-      params.getUseAsyncCopy(), params.getUseBlockPingpong(),
-      params.getUseInThreadTranspose(), params.getUseBufferOps(),
-      params.getUseBufferAtomics(), params.getUseReductionLayout());
+      /*streamKMultiple=*/0, params.getUseAsyncCopy(),
+      params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
+      params.getUseBufferOps(), params.getUseBufferAtomics(),
+      params.getUseReductionLayout());
 }
 
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
@@ -106,8 +107,8 @@ GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
       params.getNPerBlockG0(), params.getKpack(), params.getNumCTAs(),
       params.getNumWaves(), params.getMatrixInstrNonkdim(),
       params.getSplitKFactor(), params.getNumStages(), params.getWavesPerEU(),
-      params.getGridGroupSize(), params.getUseAsyncCopy(),
-      params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
-      params.getUseBufferOps(), params.getUseBufferAtomics(),
-      params.getUseReductionLayout());
+      params.getGridGroupSize(), /*streamKMultiple=*/0,
+      params.getUseAsyncCopy(), params.getUseBlockPingpong(),
+      params.getUseInThreadTranspose(), params.getUseBufferOps(),
+      params.getUseBufferAtomics(), params.getUseReductionLayout());
 }

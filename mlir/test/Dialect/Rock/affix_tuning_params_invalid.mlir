@@ -105,3 +105,18 @@ func.func @mlir_dot_max_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280
     %out = rock.store %res to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
     return %out : tensor<1x2x320xf32>
   }
+
+// The stream-K remainder is a split-K reduction, so it inherits the same fusion
+// legality restrictions. A `maximumf` output fusion cannot be reconstructed from
+// partial sums; with a stream-K perfConfig (streamKMultiple >= 1) the module is
+// marked `rock.not_applicable`.
+// NA-LABEL: 'func.func' operation: @mlir_dot_max_streamk
+// NA: module attributes {rock.not_applicable
+func.func @mlir_dot_max_streamk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280x320xf32>, %arg3: tensor<1x2x320xf32>) -> tensor<1x2x320xf32> attributes {rock.enable_streamk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
+    %cst = arith.constant dense<0.000000e+00> : tensor<1x2x320xf32>
+    // expected-error @+1 {{Fusion with StreamK perfConfig is not legal}}
+    %gemm_result = rock.gemm %arg1 * %arg2 {perf_config = "gemm:v5:64,64,64,1,1,4,16,1,2,0,0,1,-1,-1,-1,-1,-1,-1"} : tensor<1x2x1280xf32> * tensor<1x1280x320xf32> -> tensor<1x2x320xf32>
+    %res = arith.maximumf %gemm_result, %cst : tensor<1x2x320xf32>
+    %out = rock.store %res to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
+    return %out : tensor<1x2x320xf32>
+  }

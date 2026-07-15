@@ -23,6 +23,15 @@ namespace rock {
 // Checks whether a function is valid for split-k.
 LogicalResult testFusionLegalitySplitK(func::FuncOp func);
 
+// Checks whether a function is valid for stream-k. The stream-k remainder is a
+// split-k reduction (atomic_add into a zero-prefilled output), so the fusion
+// legality requirements are the same as split-k.
+LogicalResult testFusionLegalityStreamK(func::FuncOp func);
+
+// Overload of `testFusionLegalityStreamK` for `ModuleOp` (assumes the module
+// contains a single `func::FuncOp`), analogous to the split-k overload.
+LogicalResult testFusionLegalityStreamK(ModuleOp mod);
+
 // Checks whether a function contains any `rock::ReduceOp` and
 // the atomic operation is supported by the hardware.
 LogicalResult testFusionLegalityReduce(func::FuncOp func);

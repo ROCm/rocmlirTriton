@@ -46,6 +46,7 @@ struct GemmOrderingTestEnv {
     return GemmParamsAttr::get(
         &ctx, mPerBlock, nPerBlock, kPerBlock, kpack, numCTAs, numWaves,
         matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize,
+        /*streamKMultiple=*/0,
         /*useAsyncCopy=*/kKnobDefault,
         /*useBlockPingpong=*/kKnobDefault,
         /*useInThreadTranspose=*/kKnobDefault,

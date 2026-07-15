@@ -283,6 +283,9 @@ def Rock_GemmParamsAttr
       workgroups onto the grid (see `makeGroupedGridLayout`); larger groups
       improve L2 locality across the grouped M-blocks at the cost of
       scheduling flexibility
+    - streamKMultiple: Controls the `rock-stream-k-decompose` pass. `0` disables
+      the pass; any value `>= 1` enables it with a persistent grid of
+      `streamKMultiple * num_cu` workgroups.
     - useAsyncCopy: Overrides the per-arch default application for the async-copy schedule.
     - useBlockPingpong: Overrides the per-arch default application for the block-pingpong schedule.
     - useInThreadTranspose: Overrides the per-arch default application for the in-thread-transpose pass.
@@ -295,11 +298,12 @@ def Rock_GemmParamsAttr
       gather operand to cut SGPR spill.
 
     NOTE: The following fields are serialized into the perfConfig but they are
-    not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
-    or `-1` (the knob default) by the tuner:
+    not actually tuned. Instead, they are always set to `0` (use the backend heuristic
+    / disabled) or `-1` (the knob default) by the tuner:
 
     - `wavesPerEU`                       (set to 0)
     - `gridGroupSize`                    (set to 0)
+    - `streamKMultiple`                  (set to 0)
     - `useAsyncCopy`                     (set to -1)
     - `useBlockPingpong`                 (set to -1)
     - `useInThreadTranspose`             (set to -1)
@@ -313,6 +317,7 @@ def Rock_GemmParamsAttr
       "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
       "int64_t":$splitKFactor, "int64_t":$numStages, "int64_t":$wavesPerEU,
       "int64_t":$gridGroupSize,
+      DefaultValuedParameter<"int64_t", "0">:$streamKMultiple,
       DefaultValuedParameter<"int64_t", "-1">:$useAsyncCopy,
       DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
@@ -321,11 +326,12 @@ def Rock_GemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout);
 
   let extraClassDeclaration = [{
-    // v4 is the single canonical output form (17 fields: the v3 knobs plus
-    // `useReductionLayout`). Older versions remain accepted on input by
-    // `get()`; only the serialized form is fixed to v4.
+    // v5 is the single canonical output form (18 fields: the v4 fields plus
+    // `streamKMultiple`, which is serialized right after the tunable prefix,
+    // before the knob block). Older versions remain accepted on input by
+    // `get()`; only the serialized form is fixed to v5.
     void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("gemm:v4:"
+        ("gemm:v5:"
         + Twine(getMPerBlock()) + ","
         + Twine(getNPerBlock()) + ","
         + Twine(getKPerBlock()) + ","
@@ -337,6 +343,7 @@ def Rock_GemmParamsAttr
         + Twine(getNumStages()) + ","
         + Twine(getWavesPerEU()) + ","
         + Twine(getGridGroupSize()) + ","
+        + Twine(getStreamKMultiple()) + ","
         + Twine(getUseAsyncCopy()) + ","
         + Twine(getUseBlockPingpong()) + ","
         + Twine(getUseInThreadTranspose()) + ","
@@ -471,6 +478,13 @@ def Rock_EnableSplitKForTuning : Rock_Attr<"EnableSplitKForTuning"> {
   let mnemonic = "rock.enable_splitk_for_tuning";
   let description = [{
     Whether we tune for split-k. If unset, split-k=1.
+  }];
+}
+
+def Rock_EnableStreamKForTuning : Rock_Attr<"EnableStreamKForTuning"> {
+  let mnemonic = "rock.enable_streamk_for_tuning";
+  let description = [{
+    Whether we tune for stream-k. If unset, streamKMultiple=0 (disabled).
   }];
 }
 

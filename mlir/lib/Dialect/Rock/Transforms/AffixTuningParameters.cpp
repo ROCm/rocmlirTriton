@@ -215,6 +215,7 @@ private:
 LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
   static const llvm::StringSet<> knownFuncRockAttrs = {
       EnableSplitKForTuningAttr::getMnemonic(),
+      EnableStreamKForTuningAttr::getMnemonic(),
       ArchAttr::getMnemonic(),
       KernelAttr::getMnemonic(),
       NumCUAttr::getMnemonic(),
@@ -365,6 +366,13 @@ void AffixTuningParameters::affixTuningParametersImpl(
     if (failed(testFusionLegalitySplitK(funcParent))) {
       rock::markAsNotApplicable(op);
       op->emitError() << "Fusion with SplitK perfConfig is not legal";
+      return signalPassFailure();
+    }
+  }
+  if (rock::isStreamKRequested(perfConfigAttr)) {
+    if (failed(testFusionLegalityStreamK(funcParent))) {
+      rock::markAsNotApplicable(op);
+      op->emitError() << "Fusion with StreamK perfConfig is not legal";
       return signalPassFailure();
     }
   }

@@ -109,6 +109,21 @@ SmallVector<int64_t> backwardDataKernelIds(ArrayRef<int64_t> strideDims,
 Value padMatrix(Value matrix, OpBuilder &b, Location loc, StringRef firstDim,
                 int64_t firstDimPad, StringRef secondDim, int64_t secondDimPad);
 
+/// Fold a split-K factor into the G dimension of a rank-3 gemm operand.
+/// `kDim`/`nonKDim` are the original K and non-(G,K) positions of `operand`
+/// (dim 0 is always G), e.g. A [G,M,K]: kDim=2, nonKDim=1; B [G,K,N]: kDim=1,
+/// nonKDim=2. `operand`'s K must already be a multiple of `splitK`. Returns a
+/// view of shape [G*splitK, ..., K/splitK].
+Value splitKFoldOperand(OpBuilder &b, Location loc, Value operand,
+                        int64_t splitK, unsigned kDim, unsigned nonKDim,
+                        StringRef preservedName);
+
+/// Build a view that maps a [G*splitK, M, N] gridwise output back onto the real
+/// [G, M, N] destination `view`, ignoring the split dimension so every K-split
+/// accumulates into the same output tile (used with an atomic_add store).
+Value splitKFoldOutputView(OpBuilder &b, Location loc, Value view,
+                           int64_t splitK);
+
 // Apply padding to a vector in its `firstDim` if applicable.
 Value padVector(Value vector, OpBuilder &b, Location loc, StringRef firstDim,
                 int64_t firstDimPad);

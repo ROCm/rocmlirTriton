@@ -194,6 +194,7 @@ inline GemmParamsAttr getConservativeDefaultGemmParams(
                              /*matrixInstrNonkdim=*/0,
                              /*splitKFactor=*/1, /*numStages=*/1,
                              /*wavesPerEU=*/0, /*gridGroupSize=*/0,
+                             /*streamKMultiple=*/0,
                              /*useAsyncCopy=*/kKnobDefault,
                              /*useBlockPingpong=*/kKnobDefault,
                              /*useInThreadTranspose=*/kKnobDefault,

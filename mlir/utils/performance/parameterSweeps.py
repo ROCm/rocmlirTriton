@@ -70,7 +70,7 @@ def _decode_cmd_output(data: bytes) -> str:
 class PerfConfig:
     """Serialized perf-config for the Triton-backed rocMLIR pipeline.
 
-    The new format is a ``<kind>:v1:`` string with 11 comma-separated integer
+    The base format is a ``<kind>:v1:`` string with 11 comma-separated integer
     fields. Two ``kind`` values exist (see RockAttrDefs.td):
 
     * ``gemm`` / GemmParamsAttr (used for gemm and conv kernels):
@@ -81,21 +81,43 @@ class PerfConfig:
         mPerBlockG0, nPerBlockG0, kPerBlock, kpack, numCTAs, numWaves,
         matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize
 
+    Stream-K adds a 12th tunable field, ``streamKMultiple``, to the ``gemm``
+    kind only (GemmGemmParamsAttr has no stream-K). That field only exists in
+    the ``v5`` schema, so a ``gemm`` config carrying it is serialized as
+    ``gemm:v5:`` with the six trailing knob fields set to ``kKnobDefault``
+    (-1, "use arch default"). Configs without it stay on ``v1``.
+
     See ``parsePerfConfigStr`` in mlir/lib/Dialect/Rock/IR/RockDialect.cpp.
     """
 
-    EXPECTED_FIELDS = 11
+    EXPECTED_FIELDS_V1 = 11
+    # v5 appends `streamKMultiple` to the tunable prefix (gemm only).
+    EXPECTED_FIELDS_V5 = 12
+    # v5 carries six trailing knob fields; the sweep leaves them at the arch
+    # default sentinel (rock::kKnobDefault) rather than tuning them here.
+    _NUM_KNOB_FIELDS_V5 = 6
+    _KNOB_DEFAULT = -1
 
     def __init__(self, config: Sequence[int], kind: str = 'gemm'):
         if kind not in ('gemm', 'attn'):
             raise ValueError(f"Invalid PerfConfig kind: {kind!r}")
-        if len(config) != self.EXPECTED_FIELDS:
+        n = len(config)
+        if kind == 'attn' and n != self.EXPECTED_FIELDS_V1:
             raise ValueError(
-                f"PerfConfig expects {self.EXPECTED_FIELDS} fields, got {len(config)}: {config!r}")
+                f"attn PerfConfig expects {self.EXPECTED_FIELDS_V1} fields, "
+                f"got {n}: {config!r}")
+        if kind == 'gemm' and n not in (self.EXPECTED_FIELDS_V1, self.EXPECTED_FIELDS_V5):
+            raise ValueError(
+                f"gemm PerfConfig expects {self.EXPECTED_FIELDS_V1} or "
+                f"{self.EXPECTED_FIELDS_V5} fields, got {n}: {config!r}")
         self._config = tuple(config)
         self._kind = kind
 
     def __str__(self):
+        if self._kind == 'gemm' and len(self._config) == self.EXPECTED_FIELDS_V5:
+            fields = list(self._config) + [self._KNOB_DEFAULT] * self._NUM_KNOB_FIELDS_V5
+            suffix = ','.join(str(v) for v in fields)
+            return f'{self._kind}:v5:{suffix}'
         suffix = ','.join(str(v) for v in self._config)
         return f'{self._kind}:v1:{suffix}'
 
@@ -536,6 +558,14 @@ PERF_CONFIG_OPTIONS = {
     # The driver heuristic only emits {1} or {1, 3, 4}; we sweep more to
     # exercise the splitK lowering path.
     'split_k_factor': [1, 2, 3, 4],
+    # streamKMultiple: 0 disables stream-K (plain data-parallel grid); a
+    # positive value P selects a persistent grid of P * num_cu blocks. The
+    # C++ tuner (computeOptimalStreamKMultiples in RockTuningImpl.cpp) only
+    # offers {0, 1, 2}; we mirror that. Stream-K only applies to the `gemm`
+    # kind (gemm/conv), and cannot compose with splitKFactor > 1 (the
+    # rock-stream-k-decompose pass rejects that combination), so the sampler
+    # forces streamKMultiple = 0 whenever splitKFactor > 1.
+    'stream_k_multiple': [0, 1, 2],
     'num_stages': [1, 2, 3],
     # The C++ tuner pins these at 0 ("use heuristic"); the commented-out code
     # in getRangeGemm shows the intended sweep range. 0 is kept so the
@@ -746,7 +776,9 @@ _MAX_PERF_CONFIG_RETRIES = 256
 
 
 def _sampled_perf_within_budget(rng: random.Random, arch: str, dtype: str,
-                                split_k_choices: Sequence[int]) -> Tuple[int, ...]:
+                                split_k_choices: Sequence[int],
+                                stream_k_choices: Optional[Sequence[int]] = None
+                                ) -> Tuple[int, ...]:
     """Like :func:`sample_perf_config` but rejects perf-configs whose
     effective per-thread state exceeds the arch budget. We loop with a
     generous retry cap rather than enumerating the valid subspace because the
@@ -754,7 +786,7 @@ def _sampled_perf_within_budget(rng: random.Random, arch: str, dtype: str,
     we care about, and we don't want to silently bias the sample distribution
     by filtering an enumerated list."""
     for _ in range(_MAX_PERF_CONFIG_RETRIES):
-        perf = sample_perf_config(rng, arch, split_k_choices)
+        perf = sample_perf_config(rng, arch, split_k_choices, stream_k_choices)
         if _perf_within_budget(perf, dtype, arch):
             return perf
     raise RuntimeError(f"sample_perf_config exceeded {_MAX_PERF_CONFIG_RETRIES} retries for "
@@ -770,14 +802,25 @@ def _is_pow2(n: int) -> bool:
 def sample_perf_config(rng: random.Random,
                        arch: str,
                        split_k_choices: Sequence[int],
+                       stream_k_choices: Optional[Sequence[int]] = None,
                        pow2_only: bool = False) -> Tuple[int, ...]:
-    """Returns one random 11-field perf-config tuple (gemm:v1 / attn:v1).
+    """Returns one random perf-config tuple.
+
+    Without ``stream_k_choices`` the tuple has 11 fields (gemm:v1 / attn:v1);
+    with it, a 12th ``streamKMultiple`` field is appended (gemm:v5).
 
     ``arch`` selects the valid ``kpack`` set (see :func:`_kpack_choices`).
     ``split_k_choices`` is the list of permissible ``splitKFactor`` values
     for this caller — typically :func:`_split_k_choices(dtype)` for conv/gemm
     and ``[1]`` for attention (whose K-split is exposed via the separate
     ``-split_kv`` kernel arg, not via the perf-config splitK).
+
+    ``stream_k_choices`` is the list of permissible ``streamKMultiple`` values
+    — typically :func:`_stream_k_choices(dtype)` for conv/gemm and ``None`` for
+    attention (GemmGemmParamsAttr has no stream-K). Stream-K's split-K
+    remainder cannot compose with an already split gemm (rock-stream-k-decompose
+    rejects it), so ``streamKMultiple`` is forced to 0 whenever the sampled
+    ``splitKFactor`` is > 1, mirroring RockTuningImpl.cpp.
 
     ``pow2_only`` restricts ``mPerBlock``/``nPerBlock`` to powers of two.
     PERF_CONFIG_OPTIONS now includes non-pow2 m/n tiles to exercise the
@@ -790,7 +833,8 @@ def sample_perf_config(rng: random.Random,
     if pow2_only:
         m_choices = [v for v in m_choices if _is_pow2(v)]
         n_choices = [v for v in n_choices if _is_pow2(v)]
-    return (
+    split_k_factor = rng.choice(split_k_choices)
+    config = [
         rng.choice(m_choices),
         rng.choice(n_choices),
         rng.choice(opts['k_per_block']),
@@ -798,11 +842,19 @@ def sample_perf_config(rng: random.Random,
         rng.choice(opts['num_ctas']),
         rng.choice(opts['num_waves']),
         rng.choice(opts['matrix_instr_nonkdim']),
-        rng.choice(split_k_choices),
+        split_k_factor,
         rng.choice(opts['num_stages']),
         rng.choice(opts['waves_per_eu']),
         rng.choice(opts['grid_group_size']),
-    )
+    ]
+    if stream_k_choices is not None:
+        stream_k_multiple = rng.choice(stream_k_choices)
+        # Stream-K re-splits K in its remainder wave, which cannot compose with
+        # an already split-K gemm; keep them mutually exclusive.
+        if split_k_factor > 1:
+            stream_k_multiple = 0
+        config.append(stream_k_multiple)
+    return tuple(config)
 
 
 # Hard cap on per-axis resampling in ``_sample_conv_axis``. The valid-shape
@@ -904,11 +956,11 @@ def default_seed() -> int:
     return datetime.now(timezone.utc).isocalendar()[1]
 
 
-# Accumulator/output dtype used to decide whether splitK is legal in the
-# sweep. Any floating-point input lowers to an f32 accumulator on AMD GPUs;
+# Accumulator/output dtype used to decide whether splitK/stream-K is legal in
+# the sweep. Any floating-point input lowers to an f32 accumulator on AMD GPUs;
 # i8 is the odd one out (i32 accumulator). This is intentionally simpler
-# than ``perfRunner.OUTPUT_DATA_TYPES_MAP`` — for the splitK gate we only
-# care about the f32 / not-f32 boundary, not the exact user-visible output.
+# than ``perfRunner.OUTPUT_DATA_TYPES_MAP`` — for the splitK/stream-K gate we
+# only care about the f32 / not-f32 boundary, not the exact user-visible output.
 _OUTPUT_DTYPE_FOR_SPLITK = {
     'f32': 'f32',
     'f16': 'f32',
@@ -928,6 +980,17 @@ def _split_k_choices(input_dtype: str) -> List[int]:
     return [1]
 
 
+def _stream_k_choices(input_dtype: str) -> List[int]:
+    """Permissible ``streamKMultiple`` values for ``input_dtype``. Stream-K's
+    remainder wave accumulates its K-split partials via atomics, which (like
+    splitK > 1) is only legal when the accumulator is f32; non-f32 outputs
+    (i.e. i8) are restricted to ``[0]`` (stream-K disabled). Everything else
+    gets the full ``PERF_CONFIG_OPTIONS['stream_k_multiple']`` set."""
+    if _OUTPUT_DTYPE_FOR_SPLITK[input_dtype] == 'f32':
+        return PERF_CONFIG_OPTIONS['stream_k_multiple']
+    return [0]
+
+
 def random_conv_cases(num_samples: int, arch: str, seed: Optional[int] = None):
     """Yields ``num_samples`` random ``(conv_shape, perf_config)`` tuples.
 
@@ -939,7 +1002,9 @@ def random_conv_cases(num_samples: int, arch: str, seed: Optional[int] = None):
         shape = _sample_conv_shape(rng)
         # shape[2] is the input dtype (op, layout, dtype, n, c, k, ...).
         dtype = shape[2]
-        yield (shape, _sampled_perf_within_budget(rng, arch, dtype, _split_k_choices(dtype)))
+        yield (shape, _sampled_perf_within_budget(rng, arch, dtype,
+                                                  _split_k_choices(dtype),
+                                                  _stream_k_choices(dtype)))
 
 
 def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
@@ -953,7 +1018,9 @@ def random_gemm_cases(num_samples: int, arch: str, seed: Optional[int] = None):
         shape = _sample_gemm_shape(rng)
         # shape[0] is the input dtype (dtype, g, m, k, n, trans_a, trans_b, trans_o).
         dtype = shape[0]
-        yield (shape, _sampled_perf_within_budget(rng, arch, dtype, _split_k_choices(dtype)))
+        yield (shape, _sampled_perf_within_budget(rng, arch, dtype,
+                                                  _split_k_choices(dtype),
+                                                  _stream_k_choices(dtype)))
 
 
 def to_conv_test(params, options: Options) -> ConvConfiguration:
@@ -1190,7 +1257,8 @@ def _dry_run(kind: str, num_samples: int, arch: str, seed: Optional[int]) -> boo
         else:  # 'conv'
             shape = _sample_conv_shape(rng)
             dtype = shape[2]
-        perf = sample_perf_config(rng, arch, _split_k_choices(dtype))
+        perf = sample_perf_config(rng, arch, _split_k_choices(dtype),
+                                  _stream_k_choices(dtype))
         score = _compile_cost_score(perf, dtype, arch)
         verdict = "ACCEPT" if _perf_within_budget(perf, dtype, arch) else "REJECT"
         if verdict == "ACCEPT":

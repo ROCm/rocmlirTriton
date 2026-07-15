@@ -502,6 +502,38 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
                                      gemmNPerBlock, gemmKPerBlock, numCUs);
 }
 
+// Compute the stream-K multiples (P = streamKMultiple * num_cu) worth tuning.
+// 0 (disabled, i.e. plain data-parallel) is always included; positive multiples
+// are only offered when stream-K tuning is enabled and the data-parallel grid
+// is poorly balanced across CUs (a ragged tail), reusing the split-K
+// work-imbalance heuristic. Larger multiples rarely help and add atomic
+// contention, so we cap the search at 1 and 2 (cf. Triton stream-K occupancy).
+static SmallVector<int64_t>
+computeOptimalStreamKMultiples(RockGemmWrapperInterface gemmOp,
+                               int32_t gemmMPerBlock, int32_t gemmNPerBlock,
+                               int32_t gemmKPerBlock) {
+  SmallVector<int64_t> streamKValues = {0};
+
+  auto func = cast<func::FuncOp>(gemmOp->getParentOp());
+  if (!func->hasAttr(rock::EnableStreamKForTuningAttr::getMnemonic()))
+    return streamKValues;
+
+  auto info = PopulateParamsInfo::fromOp(gemmOp);
+  uint32_t numCUs = rock::getMinNumCU(rock::getArchValue(gemmOp));
+  if (succeeded(rock::getNumCU(gemmOp)))
+    numCUs = rock::getNumCU(gemmOp).value();
+
+  const double dataParallelImbalance = computeWorkImbalance(
+      info.gemmSize, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock, numCUs);
+  constexpr double imbalanceThreshold = 1.20;
+  if (dataParallelImbalance < imbalanceThreshold)
+    return streamKValues;
+
+  streamKValues.push_back(1);
+  streamKValues.push_back(2);
+  return streamKValues;
+}
+
 // The full space is a brute-force search starting with the configs that have
 // the smallest parameters. This filters out perf configs that are
 // known to be impossible during tthe AffixTuningParams check.
@@ -537,27 +569,37 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
             for (uint32_t matrixInstrNonkdim : params[5]) {
               auto optimalSplitKFactors = computeOptimalSplitKFactors(
                   gemmOp, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock);
+              auto optimalStreamKMultiples = computeOptimalStreamKMultiples(
+                  gemmOp, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock);
               for (int64_t splitKFactor : optimalSplitKFactors) {
-                for (int64_t numStages : params[6]) {
-                  for (int64_t wavesPerEU : params[7]) {
-                    for (int64_t gridGroupSize : params[8]) {
-                      for (uint32_t numCTAs : params[9]) {
-                        auto gemmParams = GemmParamsAttr::get(
-                            b.getContext(), gemmMPerBlock, gemmNPerBlock,
-                            gemmKPerBlock, gemmKPack, numCTAs, numWaves,
-                            matrixInstrNonkdim, splitKFactor, numStages,
-                            wavesPerEU, gridGroupSize,
-                            /*useAsyncCopy=*/kKnobDefault,
-                            /*useBlockPingpong=*/kKnobDefault,
-                            /*useInThreadTranspose=*/kKnobDefault,
-                            /*useBufferOps=*/kKnobDefault,
-                            /*useBufferAtomics=*/kKnobDefault,
-                            /*useReductionLayout=*/kKnobDefault);
-                        if (kind != TuningParamSetKind::Full ||
-                            succeeded(tuningInfo->couldBePerformant(
-                                info, gemmParams)))
-                          newSpace->tuningRange.push_back(
-                              cast<RockTuningParamAttrInterface>(gemmParams));
+                for (int64_t streamKMultiple : optimalStreamKMultiples) {
+                  // Stream-K re-splits K in its remainder wave, which cannot
+                  // compose with an already split-K gemm
+                  // (rock-stream-k-decompose errors on this), so skip that
+                  // combination.
+                  if (splitKFactor > 1 && streamKMultiple >= 1)
+                    continue;
+                  for (int64_t numStages : params[6]) {
+                    for (int64_t wavesPerEU : params[7]) {
+                      for (int64_t gridGroupSize : params[8]) {
+                        for (uint32_t numCTAs : params[9]) {
+                          auto gemmParams = GemmParamsAttr::get(
+                              b.getContext(), gemmMPerBlock, gemmNPerBlock,
+                              gemmKPerBlock, gemmKPack, numCTAs, numWaves,
+                              matrixInstrNonkdim, splitKFactor, numStages,
+                              wavesPerEU, gridGroupSize, streamKMultiple,
+                              /*useAsyncCopy=*/kKnobDefault,
+                              /*useBlockPingpong=*/kKnobDefault,
+                              /*useInThreadTranspose=*/kKnobDefault,
+                              /*useBufferOps=*/kKnobDefault,
+                              /*useBufferAtomics=*/kKnobDefault,
+                              /*useReductionLayout=*/kKnobDefault);
+                          if (kind != TuningParamSetKind::Full ||
+                              succeeded(tuningInfo->couldBePerformant(
+                                  info, gemmParams)))
+                            newSpace->tuningRange.push_back(
+                                cast<RockTuningParamAttrInterface>(gemmParams));
+                        }
                       }
                     }
                   }
@@ -1361,6 +1403,30 @@ bool isSplitKRequested(ModuleOp mod, StringRef perfConfig) {
   return walkResult.wasInterrupted();
 }
 
+int64_t retrieveStreamKMultiple(StringAttr perfConfig) {
+  // stream-k is only tunable on plain gemm (GemmParamsAttr); gemm+gemm has no
+  // streamKMultiple field.
+  auto params = GemmParamsAttr::get(perfConfig);
+  return params ? params.getStreamKMultiple() : 0;
+}
+
+bool isStreamKRequested(StringAttr perfConfig) {
+  return retrieveStreamKMultiple(perfConfig) >= 1;
+}
+
+bool isStreamKRequested(ModuleOp mod, StringRef perfConfig) {
+  auto perfConfigAttr = StringAttr::get(mod->getContext(), perfConfig);
+  WalkResult walkResult = mod.walk([&](Operation *op) -> WalkResult {
+    if (isa<RockGemmWrapperInterface, RockGemmGemmWrapperInterface>(op) &&
+        isStreamKRequested(perfConfigAttr))
+      return WalkResult::interrupt();
+
+    return WalkResult::advance();
+  });
+
+  return walkResult.wasInterrupted();
+}
+
 RocmlirSplitKSelectionLikelihood isSplitKFaster(int64_t gDim, int64_t mDim,
                                                 int64_t nDim, int64_t kDim,
                                                 int64_t numCUs) {
@@ -1370,9 +1436,11 @@ RocmlirSplitKSelectionLikelihood isSplitKFaster(int64_t gDim, int64_t mDim,
 bool isModuleFusible(ModuleOp module, StringRef perfConfig) {
   bool fusible = succeeded(rock::testFusionLegalityReduce(module)) &&
                  succeeded(rock::testFusionLegalityBwdDataConv(module));
-  if (!rock::isSplitKRequested(module, perfConfig))
-    return fusible;
-  return fusible && succeeded(rock::testFusionLegalitySplitK(module));
+  if (rock::isSplitKRequested(module, perfConfig))
+    fusible = fusible && succeeded(rock::testFusionLegalitySplitK(module));
+  if (rock::isStreamKRequested(module, perfConfig))
+    fusible = fusible && succeeded(rock::testFusionLegalityStreamK(module));
+  return fusible;
 }
 
 } // namespace rock

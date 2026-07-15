@@ -3,21 +3,21 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: rocmlir-gen --arch gfx90a --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=104 --emit-tuning-space=full | FileCheck %s --check-prefixes=CHECK-MI
-// CHECK-MI: gemm:v4:64,64,128,1,1,4,16,4,1,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-MI: gemm:v5:64,64,128,1,1,4,16,4,1,0,0,0,-1,-1,-1,-1,-1,-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM
-// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:v4:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:v4:16,16,16,1,1,1,32,1,1,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:v5:16,16,16,1,1,1,16,1,1,0,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:v5:16,16,16,1,1,1,32,1,1,0,0,0,-1,-1,-1,-1,-1,-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-SPLITKFACTOR
-// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v4:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v4:16,16,16,1,1,1,16,3,1,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v4:16,16,16,1,1,1,16,4,1,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v5:16,16,16,1,1,1,16,1,1,0,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v5:16,16,16,1,1,1,16,3,1,0,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:v5:16,16,16,1,1,1,16,4,1,0,0,0,-1,-1,-1,-1,-1,-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-NUMSTAGES
-// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v4:16,16,16,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v4:16,16,16,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1
-// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v4:16,16,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v5:16,16,16,1,1,1,16,1,1,0,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v5:16,16,16,1,1,1,16,1,2,0,0,0,-1,-1,-1,-1,-1,-1
+// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:v5:16,16,16,1,1,1,16,1,3,0,0,0,-1,-1,-1,-1,-1,-1
 
 // Attention emits the gemm+gemm (attn) perfConfig with the same five default
 // knob fields; there is no longer a schedule-hint knob.
@@ -26,8 +26,8 @@
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-GFX950-KPACK \
-// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
-// CHECK-MFMA-GFX950-KPACK: gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,1,}}
+// RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
+// CHECK-MFMA-GFX950-KPACK: gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,1,}}
 
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
@@ -35,8 +35,8 @@
 
 // RUN: rocmlir-gen --arch gfx1100 --operation=gemm -t f16 -g 1 -m 256 -k 128 -n 256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-GEMM-KPACK-F16 \
-// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
-// CHECK-WMMA-GEMM-KPACK-F16: gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,1,}}
+// RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
+// CHECK-WMMA-GEMM-KPACK-F16: gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,1,}}
 
 // The WMMA attention tuning space applies the same hardcoding in
 // `getAccelRangeGemmGemm`.
@@ -53,10 +53,10 @@
 // mode), so this exercises the non-accel (FMA) path.
 // RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI \
-// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,(32|64|128|256|512),}}" \
-// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,2,}}" \
-// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}"
-// CHECK-NAVI: gemm:v4:{{(32|64|128),(32|64|128),(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1}}
+// RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,(32|64|128|256|512),}}" \
+// RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,2,}}" \
+// RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}"
+// CHECK-NAVI: gemm:v5:{{(32|64|128),(32|64|128),(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,0,-1,-1,-1,-1,-1,-1}}
 
 // f32 attention on gfx1100 (RDNA3) has no matrix-accel instruction either,
 // so this exercises the non-accel `getRangeGemmGemm` path.

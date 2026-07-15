@@ -35,6 +35,8 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-attn-to-gridwise),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:func.func(rock-stream-k-decompose),
+// GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-decompose-nonpow2-tiles),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-gridwise-attn-to-blockwise),

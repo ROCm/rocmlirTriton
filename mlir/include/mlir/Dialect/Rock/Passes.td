@@ -229,6 +229,36 @@ def RockDecomposeNonPow2TilesPass
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }
 
+def RockStreamKDecomposePass
+    : Pass<"rock-stream-k-decompose", "::mlir::func::FuncOp"> {
+  let summary = "Decompose a gridwise GEMM into data-parallel wave sub-gemms "
+                "plus a split-K remainder (hybrid stream-K)";
+  let description = [{
+    Implements hybrid stream-K entirely at the gridwise layer, reusing the same
+    "multiple rock.gridwise_gemm in one kernel" pattern as
+    rock-decompose-nonpow2-tiles. Given a persistent launch of P = num_cu
+    workgroups, one rock.gridwise_gemm covering `gridFull = mBlocks*nBlocks*G`
+    output tiles is split into:
+
+      * `W = floor(mBlocks / mBlocksPerWave)` data-parallel wave sub-gemms, each
+        covering `mBlocksPerWave*nBlocks*G == P` tiles (a contiguous M-block
+        slice of A and the output; B shared), stored with `set`; and
+      * one remainder sub-gemm over the leftover `mBlocks % mBlocksPerWave`
+        M-blocks, whose K is split by `splitK = P / remainderTiles` (folded into
+        the G dimension exactly like split-K) and accumulated with `atomic_add`
+        into a zero-prefilled output.
+
+    Every sub-gemm resolves to exactly P grid tiles, so the func `grid_size` is
+    set to P and each workgroup runs all sub-gemms sequentially: its DP tile in
+    each wave, then its K-slice of a remainder tile.
+
+    Runs after GemmToGridwise/AttnToGridwise and before
+    rock-decompose-nonpow2-tiles (so the wave/remainder sub-gemms are themselves
+    pow2-tile-decomposed if needed) and GridwiseGemmToBlockwise.
+  }];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
+}
+
 def RockFuseSiblingLoopsPass
     : Pass<"rock-fuse-sibling-loops", "::mlir::func::FuncOp"> {
   let summary =

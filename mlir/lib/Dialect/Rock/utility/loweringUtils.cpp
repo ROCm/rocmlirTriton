@@ -309,6 +309,72 @@ Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
   return TransformOp::create(b, loc, matrix, padAttr);
 }
 
+Value mlir::rock::splitKFoldOperand(OpBuilder &b, Location loc, Value operand,
+                                    int64_t splitK, unsigned kDim,
+                                    unsigned nonKDim, StringRef preservedName) {
+  auto type = cast<RankedTensorType>(operand.getType());
+  ArrayRef<int64_t> shape = type.getShape();
+  assert(shape.size() == 3 && "expected a rank-3 [G, *, *] gemm operand");
+  assert(kDim >= 1 && kDim <= 2 && "kDim must be 1 or 2 (G is dim 0)");
+  assert(nonKDim >= 1 && nonKDim <= 2 && "nonKDim must be 1 or 2 (G is dim 0)");
+  assert(nonKDim != kDim && "nonKDim must differ from kDim");
+  assert(splitK >= 1 && "splitK must be positive");
+  int64_t operandK = shape[kDim];
+  assert(operandK % splitK == 0 &&
+         "operand K must be divisible by splitK after padding");
+
+  // The unmerge inserts the split sub-dim (gemmKSplit) at `kDim`, so the
+  // preserved dim shifts right by one only if it currently sits after `kDim`.
+  unsigned newNonKDim = nonKDim < kDim ? nonKDim : nonKDim + 1;
+
+  SmallVector<StringRef, 3> inNames(3);
+  inNames[0] = "gemmG";
+  inNames[kDim] = "gemmK";
+  inNames[nonKDim] = preservedName;
+
+  // Bottom: unmerge gemmK -> (gemmKSplit, gemmK); the preserved dim moves to
+  // newNonKDim to make room for the extra split sub-dim.
+  BottomUpTMBuilder unmerge(b, inNames, shape, loc);
+  unmerge.passThrough({"gemmG", preservedName}, {0, newNonKDim},
+                      {"gemmG", preservedName});
+  unmerge.unmerge({"gemmKSplit", "gemmK"}, {kDim, kDim + 1}, "gemmK",
+                  {splitK, operandK / splitK});
+  TransformMapAttr unmergeAttr = unmerge.get();
+
+  // Above: merge (gemmG, gemmKSplit) -> gemmG; restore the original K/preserved
+  // positions.
+  BottomUpTMBuilder merge = BottomUpTMBuilder::above(unmerge, unmergeAttr);
+  merge.merge("gemmG", 0, {"gemmG", "gemmKSplit"});
+  merge.passThrough({"gemmK", preservedName}, {kDim, nonKDim},
+                    {"gemmK", preservedName});
+  TransformMapAttr mergeAttr = merge.get();
+
+  return rock::transform(b, operand, b.getArrayAttr({mergeAttr, unmergeAttr}));
+}
+
+Value mlir::rock::splitKFoldOutputView(OpBuilder &b, Location loc, Value view,
+                                       int64_t splitK) {
+  auto type = cast<RankedTensorType>(view.getType());
+  ArrayRef<int64_t> shape = type.getShape();
+  assert(shape.size() == 3 && "expected a rank-3 [G, M, N] output view");
+  assert(splitK >= 1 && "splitK must be positive");
+  int64_t G = shape[0], M = shape[1], N = shape[2];
+
+  TopDownTMBuilder merge(b, {"gemmG", "gemmM", "gemmN"}, {G * splitK, M, N},
+                         loc);
+  merge.merge({"gemmG", "gemmKSplit"}, {0, 1}, "gemmG", {G, splitK});
+  merge.passThrough({"gemmM", "gemmN"}, {2, 3}, {"gemmM", "gemmN"});
+  TransformMapAttr mergeAttr = merge.get();
+
+  TopDownTMBuilder ignore = TopDownTMBuilder::below(merge, mergeAttr);
+  ignore.ignore("gemmKSplit");
+  ignore.passThrough({"gemmG", "gemmM", "gemmN"}, {0, 1, 2},
+                     {"gemmG", "gemmM", "gemmN"});
+  TransformMapAttr ignoreAttr = ignore.get();
+
+  return rock::transform(b, view, b.getArrayAttr({mergeAttr, ignoreAttr}));
+}
+
 FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {
   auto maybeBlockArg = dyn_cast_or_null<BlockArgument>(value);
   while (!maybeBlockArg) {

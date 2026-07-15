@@ -7,7 +7,7 @@
 // CHECK-SAME: %[[bRaw:.*1]]: tensor<32768xf32>,
 // CHECK-SAME: %[[cRaw:.*2]]: tensor<32768xf32>,
 // CHECK-SAME: %[[outputRaw:.*3]]: tensor<32768xf32>)
-// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.enable_splitk_for_tuning, rock.kernel}
+// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.enable_splitk_for_tuning, rock.enable_streamk_for_tuning, rock.kernel}
 // CHECK-NEXT: %[[a:.*]] = rock.transform %[[aRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>
 // CHECK-NEXT: %[[b:.*]] = rock.transform %[[bRaw]] {{.*}} : tensor<32768xf32> to tensor<1x32x1024xf32>
 // CHECK-NEXT: %[[c:.*]] = rock.transform %[[cRaw]] {{.*}} : tensor<32768xf32> to tensor<1x1024x32xf32>

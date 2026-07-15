@@ -2277,14 +2277,19 @@ constexpr size_t SmallVectorInlineSize = 32;
 // Number of trailing knob fields appended in each versioned perfConfig schema.
 // The sentinel value (`rock::kKnobDefault` = `-1`) lives in `KnobUtils.h`.
 //
-// NOTE: If you want to bump the perfConfig to v5, add a new `kNumKnobFieldsV5`
-// constant and update the parser to expect the new number of fields.
+// NOTE: If you want to bump the perfConfig to v6, add a new field-count entry
+// and update the parser to expect the new number of fields.
 //
 // v3 dropped the legacy `scheduleHint` knob (v2's 6th field). v4 re-grows the
-// knob block by appending `useReductionLayout` on top of v3's five knobs.
+// knob block by appending `useReductionLayout` on top of v3's five knobs. v5
+// keeps v4's six knobs but adds `streamKMultiple` (GemmParams only) to the
+// tunable prefix, right before the knob block.
 constexpr size_t kNumKnobFieldsV2 = 6;
 constexpr size_t kNumKnobFieldsV3 = 5;
 constexpr size_t kNumKnobFieldsV4 = 6;
+constexpr size_t kNumKnobFieldsV5 = 6;
+// Base tunable-field count shared by all versions; v5+ adds `streamKMultiple`.
+constexpr size_t kNumTunableFields = 11;
 
 // Reject invalid knob values, reusing `rock::isValidKnobBoolean`.
 LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
@@ -2366,15 +2371,18 @@ parsePerfConfigStr(StringRef configStr, StringRef expectedPrefix = "") {
 }
 
 // Returns the expected number of comma-separated fields for a perf-config of
-// the given version (11 tunable fields plus the version's knob fields), or
-// std::nullopt if the version is unknown.
+// the given version (the tunable fields plus the version's knob fields), or
+// std::nullopt if the version is unknown. v5+ carries one extra tunable field
+// (`streamKMultiple`).
 std::optional<size_t> getExpectedPerfConfigFieldCount(int version) {
   static constexpr size_t kNumKnobFieldsByVersion[] = {
-      0, kNumKnobFieldsV2, kNumKnobFieldsV3, kNumKnobFieldsV4};
+      0, kNumKnobFieldsV2, kNumKnobFieldsV3, kNumKnobFieldsV4,
+      kNumKnobFieldsV5};
   if (version < 1 ||
       version > static_cast<int>(std::size(kNumKnobFieldsByVersion)))
     return std::nullopt;
-  return 11 + kNumKnobFieldsByVersion[version - 1];
+  size_t numTunable = kNumTunableFields + (version >= 5 ? 1 : 0);
+  return numTunable + kNumKnobFieldsByVersion[version - 1];
 }
 
 } // namespace
@@ -2397,6 +2405,8 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
   // v4: 11 tunable fields + 6 knob fields = 17 (v3 knobs + useReductionLayout).
+  // v5: 12 tunable fields (adds `streamKMultiple` before the knobs) + 6 knob
+  //     fields = 18.
   std::optional<size_t> expectedCount =
       getExpectedPerfConfigFieldCount(version);
   if (!expectedCount || params.size() != *expectedCount) {
@@ -2415,6 +2425,18 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t numStages = params[idx++];
   int64_t wavesPerEU = params[idx++];
   int64_t gridGroupSize = params[idx++];
+  // `streamKMultiple` sits at the end of the tunable prefix (v5+); older
+  // versions predate it and default to 0 (stream-K disabled).
+  int64_t streamKMultiple = 0;
+  if (version >= 5)
+    streamKMultiple = params[idx++];
+  if (streamKMultiple < 0) {
+    llvm::errs()
+        << "perfConfig '" << perfConfigStrAttr.strref()
+        << "' has invalid streamKMultiple=" << streamKMultiple
+        << "; expected 0 (disabled) or a positive multiple of num_cu\n";
+    return {};
+  }
   int64_t useAsyncCopy = kKnobDefault;
   int64_t useBlockPingpong = kKnobDefault;
   int64_t useInThreadTranspose = kKnobDefault;
@@ -2446,8 +2468,9 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   return GemmParamsAttr::get(
       perfConfigStrAttr.getContext(), mPerBlock, nPerBlock, kPerBlock, kpack,
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
-      wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
+      wavesPerEU, gridGroupSize, streamKMultiple, useAsyncCopy,
+      useBlockPingpong, useInThreadTranspose, useBufferOps, useBufferAtomics,
+      useReductionLayout);
 }
 
 //===-----------------------------------------------------===//

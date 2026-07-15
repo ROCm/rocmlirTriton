@@ -172,6 +172,21 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(ModuleOp mod) {
   return testFusionLegalitySplitK(func);
 }
 
+LogicalResult mlir::rock::testFusionLegalityStreamK(func::FuncOp func) {
+  // The stream-k remainder folds K exactly like split-k and accumulates via
+  // atomic_add into a zero-prefilled output, so the hardware/fusion legality
+  // requirements are identical to split-k.
+  return testFusionLegalitySplitK(func);
+}
+
+LogicalResult mlir::rock::testFusionLegalityStreamK(ModuleOp mod) {
+  auto funcs = mod.getOps<func::FuncOp>();
+  assert(std::distance(funcs.begin(), funcs.end()) &&
+         "expected ModuleOp containing a single func::FuncOp");
+  func::FuncOp func = *(funcs.begin());
+  return testFusionLegalityStreamK(func);
+}
+
 LogicalResult mlir::rock::testFusionLegalityReduce(func::FuncOp func) {
   WalkResult walkResult = func.walk([&](rock::ReduceOp reduceOp) -> WalkResult {
     auto outElemType = reduceOp.getResult().getType().getElementType();

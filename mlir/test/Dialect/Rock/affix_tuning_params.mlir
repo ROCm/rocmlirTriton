@@ -806,3 +806,17 @@ func.func @mlir_dot_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280x320
   %out = rock.store %result to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
   return %out : tensor<1x2x320xf32>
 }
+
+// A pinned stream-K perf config (streamKMultiple = 1, splitKFactor = 1) with a
+// plain `set` store and no illegal fusion affixes cleanly and preserves the
+// streamKMultiple field on the resulting gemm params. The
+// `rock.enable_streamk_for_tuning` attribute is accepted by the pass.
+// CHECK-LABEL: @mlir_dot_streamk
+// GRID-LABEL: @mlir_dot_streamk
+func.func @mlir_dot_streamk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280x320xf32>, %arg3: tensor<1x2x320xf32>) -> tensor<1x2x320xf32> attributes {rock.enable_streamk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
+  // CHECK: rock.gemm
+  // CHECK-SAME: streamKMultiple = 1
+  %result = rock.gemm %arg1 * %arg2 {rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-", perf_config = "gemm:v5:64,64,64,1,1,4,16,1,2,0,0,1,-1,-1,-1,-1,-1,-1"} : tensor<1x2x1280xf32> * tensor<1x1280x320xf32> -> tensor<1x2x320xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
+  return %out : tensor<1x2x320xf32>
+}
