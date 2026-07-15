@@ -459,6 +459,27 @@ TEST(AmdArchDbTest, ArchSupportsScaledGemmWithTriple) {
   EXPECT_FALSE(archSupportsScaledGemm("amdgcn-amd-amdhsa:gfx942"));
 }
 
+// --- archSupportsNonKPackedScaledInput ---
+//
+// Only CDNA4 (gfx950) can lower a scaled fp4 dot whose operand is packed along
+// the non-K (M/N) dimension, via its transpose-load repack.
+
+TEST(AmdArchDbTest, ArchSupportsNonKPackedScaledInput) {
+  EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx906"));  // GCN5_1
+  EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx908"));  // CDNA1
+  EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx90a"));  // CDNA2
+  EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx942"));  // CDNA3
+  EXPECT_TRUE(archSupportsNonKPackedScaledInput("gfx950"));   // CDNA4
+  EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx1100")); // RDNA3
+  EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx1200")); // RDNA4
+  EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx1250")); // GFX1250 (WMMA)
+}
+
+TEST(AmdArchDbTest, ArchSupportsNonKPackedScaledInputWithTriple) {
+  EXPECT_TRUE(archSupportsNonKPackedScaledInput("amdgcn-amd-amdhsa:gfx950"));
+  EXPECT_FALSE(archSupportsNonKPackedScaledInput("amdgcn-amd-amdhsa:gfx1250"));
+}
+
 // --- gfx906-specific arch-string forms ---
 
 // Verify that triple- and feature-suffixed forms of the gfx906 arch string

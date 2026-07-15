@@ -81,6 +81,13 @@ PYBIND11_MODULE(amd_arch_db, m) {
       py::arg("arch"));
 
   m.def(
+      "arch_supports_non_k_packed_scaled_input",
+      [](const std::string &arch) {
+        return mlir::rock::archSupportsNonKPackedScaledInput(arch);
+      },
+      py::arg("arch"));
+
+  m.def(
       "get_wave_size",
       [](const std::string &arch) { return mlir::rock::getWaveSize(arch); },
       py::arg("arch"));

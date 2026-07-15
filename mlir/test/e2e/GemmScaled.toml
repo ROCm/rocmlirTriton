@@ -37,6 +37,22 @@ name = "scaleB dtype"
 values = ["f8E8M0FNU"]
 prefix =  "-scale_b_dtype "
 
+# fp4 is packed to i8 along the stride-1 dimension. Packing along the non-K
+# (M/N) dimension (transB=false for B, or transA=true for A) only lowers on
+# arches with the transpose-load repack (CDNA4); gate those variants on the
+# `non_k_packed_scaled_input` lit feature. The two blocks are OR-ed together.
+[[require]]
+feature = "non_k_packed_scaled_input"
+[[require.match]]
+name = "transB"
+values = ["false"]
+
+[[require]]
+feature = "non_k_packed_scaled_input"
+[[require.match]]
+name = "transA"
+values = ["true"]
+
 ## Gemm variants
 [[suite]]
 name = "gemm_scaled"
