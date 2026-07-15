@@ -82,7 +82,8 @@ static bool hasMfmaSupport(Location loc, int mfmaVersion, Type elemA,
     return false;
 
   // All known MFMA tile sizes across CDNA1/CDNA2/CDNA3/CDNA4:
-  // - 16x16: mfma_f32_16x16x*, mfma_i32_16x16x*, mfma_scale_f32_16x16x128_f8f6f4
+  // - 16x16: mfma_f32_16x16x*, mfma_i32_16x16x*,
+  // mfma_scale_f32_16x16x128_f8f6f4
   // - 32x32: mfma_f32_32x32x*, mfma_i32_32x32x*, mfma_scale_f32_32x32x64_f8f6f4
   // - 4x64/64x4: specialized shapes for certain types (not for scaled)
   // For scaled MFMA, only 16x16 and 32x32 are available.
@@ -163,7 +164,8 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   Location loc = UnknownLoc::get(ctx);
 
   // Determine if scales are provided
-  bool hasScales = static_cast<bool>(scaleAType) || static_cast<bool>(scaleBType);
+  bool hasScales =
+      static_cast<bool>(scaleAType) || static_cast<bool>(scaleBType);
 
   // Check MFMA support (CDNA architectures)
   int mfmaVersion = rock::getMfmaVersion(isaFamily);
@@ -186,9 +188,9 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   // Check WMMA support (RDNA architectures)
   int wmmaVersion = rock::getWmmaVersion(isaFamily);
   if (wmmaVersion > 0) {
-    // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2, E2M1)
-    // Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops.
-    // See supportsTypes() in ScaledBlockedToScaledWMMAF8F6F4
+    // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2,
+    // E2M1) Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops. See
+    // supportsTypes() in ScaledBlockedToScaledWMMAF8F6F4
     bool canUseScaledWmma = hasScales && wmmaVersion >= 3 &&
                             isScaledWmmaType(elemA) && isScaledWmmaType(elemB);
 
@@ -205,8 +207,9 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   return MatrixAccelKind::None;
 }
 
-MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch,
-                                               RockGemmWrapperInterface gemmOp) {
+MatrixAccelKind
+mlir::rock::getMatrixAccelKind(StringRef arch,
+                               RockGemmWrapperInterface gemmOp) {
   Type aType = gemmOp.getAType();
   Type bType = gemmOp.getBType();
   Type scaleAType = gemmOp.getScaleAType();
@@ -381,10 +384,18 @@ bool mlir::rock::archSupportsNonKPackedScaledInput(StringRef arch) {
   // ds_load_tr_b4). GFX1250 scaled WMMA supports this in hardware,
   // but Triton does not currently support it.
   //
-  // Note: the "K-pack" here is different from the `kpack` in the perf-config
+  // NOTE 1: the "K-pack" here is different from the `kpack` in the perf-config
   // This kpack is the per-operand bool `matrixA/BKPack` (-> `lhs/rhs_k_pack` on
   // tt.dot_scaled): for a sub-byte (fp4) operand it says whether the two 4-bit
   // values packed into an i8 are adjacent along K (true) or along M/N (false).
+  //
+  // NOTE 2: Triton supports emulating non-K-packed scaled input in software via
+  // DecomposeScaledBlocked, but this is currently broken on gfx1250. It crashes
+  // with: error: 'ttg.convert_layout' op requires the same shape for all
+  // operands and results
+  //
+  // TODO: In the future, whenever DecomposeScaledBlocked is fixed on gfx1250,
+  // or the native path for gfx1250 is implemented, we should add gfx1250 here.
   auto [isaFamily, _] = getArch(arch);
   return isaFamily == ISAFamily::CDNA4;
 }
