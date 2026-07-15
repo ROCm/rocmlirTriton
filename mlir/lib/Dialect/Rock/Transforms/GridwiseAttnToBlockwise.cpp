@@ -650,6 +650,26 @@ struct GridwiseAttentionRewritePattern
                                               constGemm0NPerBlock);
       end = rewriter.createOrFold<arith::DivUIOp>(loc, numerator,
                                                   constGemm0NPerBlock);
+
+      // Bound the N-loop by the static number of K/V blocks so it can never
+      // iterate past the physical allocation. This holds uniformly for every
+      // masking mode:
+      //   - causal / prefix-causal already clamp effectiveSeqLen to <=
+      //     gemm0N - 1 above, so end <= gemm0NBlocks and this is a no-op;
+      //   - pure KV cache uses effectiveSeqLen = the runtime currentSeqLen,
+      //     which can exceed gemm0N (out of contract, or via the ceil headroom
+      //     on the last tile), so this is the active bound.
+      // Iterations past gemm0NBlocks only ever cover K/V rows that do not
+      // exist, so clamping here removes no valid work. Upstream rocMLIR leaves
+      // the loop unbounded and relies on the buffer descriptor carrying
+      // num_records = the real allocation to clamp the reads in hardware;
+      // Triton's AMD buffer lowering sets num_records to INT_MAX-1 and disables
+      // that bound, so we enforce it on the trip count instead.
+      int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
+      Value constGemm0NBlocks = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), gemm0NBlocks);
+      end = arith::MinUIOp::create(rewriter, loc, end, constGemm0NBlocks);
+
       Value one = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 1);
       Value zero = rewriter.createOrFold<arith::ConstantIntOp>(

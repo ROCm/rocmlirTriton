@@ -14,7 +14,13 @@ module {
   // CHECK: %[[EFFECTIVE_SEQ:.*]] = arith.minui %[[EFFECTIVE_SEQ_UNBOUND]], %c{{.*}} : i32
   // Ceiling division: (effectiveSeqLen + blockSize) / blockSize
   // CHECK: arith.addi %[[EFFECTIVE_SEQ]], %c32{{.*}} : i32
-  // CHECK: %[[END:.*]] = arith.divui %{{.*}}, %c32{{.*}} : i32
+  // CHECK: %[[END_UNBOUND:.*]] = arith.divui %{{.*}}, %c32{{.*}} : i32
+
+  // The trip count is then clamped to the static N-block count (gemm0N /
+  // nPerBlock = 64 / 32 = 2) so the N-loop can never iterate past the K/V
+  // allocation. For prefix causal this is a no-op (effectiveSeqLen is already
+  // bounded by gemm0N - 1 above), but the bound is applied uniformly.
+  // CHECK: %[[END:.*]] = arith.minui %[[END_UNBOUND]], %c2{{.*}} : i32
 
   // Verify the main loop uses the computed end bound
   // CHECK: scf.for %{{.*}} = %c0{{.*}} to %[[END]] step %c1{{.*}}
