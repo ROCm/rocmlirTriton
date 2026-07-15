@@ -82,7 +82,8 @@ static bool hasMfmaSupport(Location loc, int mfmaVersion, Type elemA,
     return false;
 
   // All known MFMA tile sizes across CDNA1/CDNA2/CDNA3/CDNA4:
-  // - 16x16: mfma_f32_16x16x*, mfma_i32_16x16x*, mfma_scale_f32_16x16x128_f8f6f4
+  // - 16x16: mfma_f32_16x16x*, mfma_i32_16x16x*,
+  // mfma_scale_f32_16x16x128_f8f6f4
   // - 32x32: mfma_f32_32x32x*, mfma_i32_32x32x*, mfma_scale_f32_32x32x64_f8f6f4
   // - 4x64/64x4: specialized shapes for certain types (not for scaled)
   // For scaled MFMA, only 16x16 and 32x32 are available.
@@ -163,7 +164,8 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   Location loc = UnknownLoc::get(ctx);
 
   // Determine if scales are provided
-  bool hasScales = static_cast<bool>(scaleAType) || static_cast<bool>(scaleBType);
+  bool hasScales =
+      static_cast<bool>(scaleAType) || static_cast<bool>(scaleBType);
 
   // Check MFMA support (CDNA architectures)
   int mfmaVersion = rock::getMfmaVersion(isaFamily);
@@ -186,9 +188,9 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   // Check WMMA support (RDNA architectures)
   int wmmaVersion = rock::getWmmaVersion(isaFamily);
   if (wmmaVersion > 0) {
-    // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2, E2M1)
-    // Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops.
-    // See supportsTypes() in ScaledBlockedToScaledWMMAF8F6F4
+    // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2,
+    // E2M1) Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops. See
+    // supportsTypes() in ScaledBlockedToScaledWMMAF8F6F4
     bool canUseScaledWmma = hasScales && wmmaVersion >= 3 &&
                             isScaledWmmaType(elemA) && isScaledWmmaType(elemB);
 
@@ -205,8 +207,9 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   return MatrixAccelKind::None;
 }
 
-MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch,
-                                               RockGemmWrapperInterface gemmOp) {
+MatrixAccelKind
+mlir::rock::getMatrixAccelKind(StringRef arch,
+                               RockGemmWrapperInterface gemmOp) {
   Type aType = gemmOp.getAType();
   Type bType = gemmOp.getBType();
   Type scaleAType = gemmOp.getScaleAType();
