@@ -75,9 +75,13 @@ from perfRunner import (
 # full result (e.g. 10 repeats → ~10× vs reference). Verification must use 1.
 VERIFY_REPEATS = 1
 
-# Exit code rocmlir-tuning-driver uses when a perf-config's GPU run exceeds the
-# --gpu-run-timeout budget and is presumed hung. Must stay in sync with
-# rock::kExitGpuTimeout in mlir/include/mlir/Dialect/Rock/utility/compileUtils.h.
+# Compile timeouts are recoverable per-config outcomes inside
+# rocmlir-tuning-driver: the driver kills that rocmlir-driver child process,
+# emits N/A for that perf config, and continues tuning. A GPU run timeout is
+# different: an in-process kernel may have hung and left the HIP context
+# untrustworthy, so the driver exits the whole process with this distinct code.
+# Must stay in sync with rock::kExitGpuTimeout in
+# mlir/include/mlir/Dialect/Rock/utility/compileUtils.h.
 GPU_TIMEOUT_EXIT_CODE = 3
 
 OUTPUT_HEADER_COLUMNS = [
