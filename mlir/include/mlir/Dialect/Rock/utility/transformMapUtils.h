@@ -309,19 +309,23 @@ struct Pow2Segment {
 /// 48 -> {{0, 32}, {32, 16}}.
 SmallVector<Pow2Segment> decomposePow2(int64_t n);
 
-/// Build a view of the rank-N tensor `view` in which each dimension listed in
-/// `sliceDims` (which has size `blocks[k] * tiles[k]`) is restructured into
-/// (block, iter) = (blocks[k], tiles[k]), the iter sub-dim is sliced to
-/// `segs[k]`, and the two are re-merged. The resulting dimension has size
-/// `blocks[k] * segs[k].length`, and block `bk` of it maps onto original
-/// indices `bk*tiles[k] + segs[k].offset + i`. Dimensions not in `sliceDims`
-/// pass through unchanged; iter sub-dims whose segment already covers the whole
-/// tile are passed through instead of sliced.
+/// Zero-copy view that keeps only a power-of-two sub-slice of each tile along
+/// the given dimensions. Each dimension in `sliceDims` is treated as
+/// `blocks[k]` tiles of `tiles[k]` elements; within every tile only the
+/// `segs[k]` range [offset, offset+length) is kept, so the dimension shrinks
+/// from `blocks[k]*tiles[k]` to `blocks[k]*segs[k].length`. Block `bk`,
+/// element `i` maps back to original index `bk*tiles[k] + segs[k].offset + i`.
+/// Dimensions not in `sliceDims` (and tiles whose segment already spans the
+/// whole tile) pass through unchanged.
 ///
-/// `sliceDims`, `blocks`, `tiles` and `segs` are parallel arrays with one entry
-/// per sliced dimension. This produces a zero-copy view used to peel
-/// non-power-of-two per-block tiles into power-of-two segments (M/N in
-/// rock-decompose-nonpow2-tiles, K in rock-gridwise-gemm-to-blockwise).
+/// Example (one dim): size 96 = 2 tiles of 48, seg = {offset 32, length 16}.
+/// Result is size 32 (= 2 * 16); block b, element i reads original index
+/// b*48 + 32 + i.
+///
+/// `sliceDims`, `blocks`, `tiles`, `segs` are parallel arrays (one entry per
+/// sliced dim). Used to peel non-power-of-two per-block tiles into pow2
+/// segments (M/N in rock-decompose-nonpow2-tiles, K in
+/// rock-gridwise-gemm-to-blockwise).
 Value sliceBlockedDims(OpBuilder &b, Location loc, Value view,
                        ArrayRef<unsigned> sliceDims, ArrayRef<int64_t> blocks,
                        ArrayRef<int64_t> tiles, ArrayRef<Pow2Segment> segs);
