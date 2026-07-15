@@ -585,21 +585,28 @@ struct GridwiseAttentionRewritePattern
       return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
 
-    // This is needed for KV Cache/Causal/Prefix Causal masking support
-    if (isCausal || isKVCache || isPrefixCausal) {
-      if (isKVCache) {
-        currentSeqLen = loadTensorValue(currentSeqLenTensor);
-        effectiveSeqLen = currentSeqLen;
-      }
+    bool hasCausalBound = isCausal || isPrefixCausal;
+    if (hasCausalBound || isKVCache) {
+      assert((!isPrefixCausal || isCausal) &&
+             "isPrefixCausal requires isCausal");
 
-      if (isCausal || isPrefixCausal) {
+      Value one = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), 1);
+      Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), gemm0NPerBlock);
+      int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
+      Value constGemm0NBlocks = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), gemm0NBlocks);
+
+      if (isKVCache)
+        currentSeqLen = loadTensorValue(currentSeqLenTensor);
+
+      if (hasCausalBound) {
         // Compute the last Q position in the block.
-        // (nIndex + 1) * NPerBlock - 1.
+        // (mIndex + 1) * MPerBlock - 1.
         Value mIndex = gridCoordsGemm0.m_block;
         Value constGemm0MPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), gemm0MPerBlock);
-        Value one = rewriter.createOrFold<arith::ConstantIntOp>(
-            loc, rewriter.getI32Type(), 1);
         Value mIndexPlusOne = arith::AddIOp::create(rewriter, loc, mIndex, one);
         Value nextBlockStart = arith::MulIOp::create(
             rewriter, loc, mIndexPlusOne, constGemm0MPerBlock);
@@ -614,20 +621,15 @@ struct GridwiseAttentionRewritePattern
         }
 
         if (isPrefixCausal) {
-          assert(isCausal && "isPrefixCausal requires isCausal");
-          // For prefix causal: effective seq len = maxRowOfBlock + offset
-          // This determines how many M-blocks we need to process
           prefixOffset = loadTensorValue(prefixOffsetTensor);
           maxRowOfBlock =
               arith::AddIOp::create(rewriter, loc, maxRowOfBlock, prefixOffset);
         }
 
-        if (effectiveSeqLen) {
-          // if effectiveSeqLen is set, it means KV Cache is enabled,
-          // so we need to take the minimum of currentSeqLen and maxRowOfBlock
-          maxRowOfBlock = arith::MinUIOp::create(rewriter, loc, currentSeqLen,
-                                                 maxRowOfBlock);
-        }
+        effectiveSeqLen = maxRowOfBlock;
+        if (isKVCache)
+          effectiveSeqLen = arith::MinUIOp::create(rewriter, loc, currentSeqLen,
+                                                   effectiveSeqLen);
 
         // For prefix causal, adding prefix_offset can push maxRowOfBlock beyond
         // gemm0N. Similarly, when gemm0M > gemm0N, the last query position can
@@ -636,42 +638,24 @@ struct GridwiseAttentionRewritePattern
           // Bound by actual K dimension (key sequence length)
           Value gemm0NMinusOne = rewriter.createOrFold<arith::ConstantIntOp>(
               loc, rewriter.getI32Type(), gemm0N - 1);
-          maxRowOfBlock = arith::MinUIOp::create(rewriter, loc, maxRowOfBlock,
-                                                 gemm0NMinusOne);
+          effectiveSeqLen = arith::MinUIOp::create(
+              rewriter, loc, effectiveSeqLen, gemm0NMinusOne);
         }
-
-        effectiveSeqLen = maxRowOfBlock;
+      } else {
+        effectiveSeqLen = currentSeqLen;
       }
 
       // compute end index
-      Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), gemm0NPerBlock);
       Value numerator = arith::AddIOp::create(rewriter, loc, effectiveSeqLen,
                                               constGemm0NPerBlock);
       end = rewriter.createOrFold<arith::DivUIOp>(loc, numerator,
                                                   constGemm0NPerBlock);
 
-      // Bound the N-loop by the static number of K/V blocks so it can never
-      // iterate past the physical allocation. This holds uniformly for every
-      // masking mode:
-      //   - causal / prefix-causal already clamp effectiveSeqLen to <=
-      //     gemm0N - 1 above, so end <= gemm0NBlocks and this is a no-op;
-      //   - pure KV cache uses effectiveSeqLen = the runtime currentSeqLen,
-      //     which can exceed gemm0N (out of contract, or via the ceil headroom
-      //     on the last tile), so this is the active bound.
-      // Iterations past gemm0NBlocks only ever cover K/V rows that do not
-      // exist, so clamping here removes no valid work. Upstream rocMLIR leaves
-      // the loop unbounded and relies on the buffer descriptor carrying
-      // num_records = the real allocation to clamp the reads in hardware;
-      // Triton's AMD buffer lowering sets num_records to INT_MAX-1 and disables
-      // that bound, so we enforce it on the trip count instead.
-      int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
-      Value constGemm0NBlocks = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), gemm0NBlocks);
+      // Clamp the trip count to the physical K/V allocation. Causal modes are
+      // already bounded by effectiveSeqLen; pure KV cache needs this because
+      // Triton's AMD buffer lowering does not use num_records to bound reads.
       end = arith::MinUIOp::create(rewriter, loc, end, constGemm0NBlocks);
 
-      Value one = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), 1);
       Value zero = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 0);
 
