@@ -200,6 +200,19 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 // captures the best kPerBlock candidate (i.e., we dont need to consider all
 // possible kPerBlock candidates).
 //
+// Intuition behind each rule:
+//   (1) We avoid a remainder iteration and K padding/masking.
+//   (2) The more segments, the more overhead.
+//   (3) LDS used per K-iteration is kPerBlock*(mPerBlock+nPerBlock), so
+//   kPerBlock trades loop/sync overhead (small K -> many iterations)
+//   against LDS pressure/occupancy (large K -> fewer resident
+//   workgroups). The useful range is at the block's own scale:
+//   after min(m,n) the K tile dominates LDS and occupancy drops, so a
+//   bigger K stops helping, hence the upper bound min(m,n).
+//   The lower bound min(m,n)/2 is just the next pow2 down: the only non-pow2
+//   K that is worth adding are the ones between the largest pow2 gap
+//   (min(m,n)/2 -> min(m,n)); smaller K is already sampled by the pow2 list.
+//
 // Its real strength is that it barely grows the search space. It is evaluated
 // per (m,n) tile and returns only the two-segment divisors of K that fall in
 // that tile's [min(m,n)/2, min(m,n)) window (in the worst case, 2 values per
