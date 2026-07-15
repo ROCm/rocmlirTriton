@@ -240,9 +240,12 @@ static llvm::cl::opt<unsigned> gpuRunTimeout(
     llvm::cl::desc(
         "Per-perf-config GPU-run timeout in seconds. 0 (default) disables the "
         "timeout. This does not include compilation; use --perf-config-timeout "
-        "for that. When > 0, timed stream synchronization bounds the wall-clock "
-        "time spent benchmarking each config; a run that exceeds this budget is "
-        "presumed hung and the process is force-exited with a distinct exit code "
+        "for that. When > 0, timed stream synchronization bounds the "
+        "wall-clock "
+        "time spent benchmarking each config; a run that exceeds this budget "
+        "is "
+        "presumed hung and the process is force-exited with a distinct exit "
+        "code "
         "(rock::kExitGpuTimeout). tuningRunner.py maps it to a 'gpu timed out' "
         "state and advances to the next problem config."),
     llvm::cl::value_desc("seconds"), llvm::cl::init(0));
@@ -338,11 +341,12 @@ static LogicalResult synchronizeStreamWithTimeout(
     }
 
     // Once the per-config budget is exceeded, treat the current GPU run as
-    // hung. We intentionally terminate the process instead of returning failure:
-    // after a presumed GPU hang, the in-process HIP context is not trustworthy.
+    // hung. We intentionally terminate the process instead of returning
+    // failure: after a presumed GPU hang, the in-process HIP context is not
+    // trustworthy.
     if (hasTimedOut(gpuRunDeadline)) {
-      llvm::errs() << "GPU run timed out after " << timeoutSec
-                   << "s during " << phase << " for config: " << perfConfig
+      llvm::errs() << "GPU run timed out after " << timeoutSec << "s during "
+                   << phase << " for config: " << perfConfig
                    << " (kernel presumed hung)\n";
       llvm::errs().flush();
       std::_Exit(rock::kExitGpuTimeout);
@@ -798,9 +802,9 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
   // Finish setup work queued before benchmarking (currently the H2D copies)
   // using the same timeout deadline so no stream synchronization can hang
   // indefinitely.
-  if (failed(synchronizeStreamWithTimeout(
-          stream, gpuRunDeadline, params.gpuRunTimeoutSec,
-          result.perfConfig, "setup")))
+  if (failed(synchronizeStreamWithTimeout(stream, gpuRunDeadline,
+                                          params.gpuRunTimeoutSec,
+                                          result.perfConfig, "setup")))
     return failure();
 
   // Estimate the per-launch runtime so we can size warmup/benchmark iteration
@@ -834,8 +838,8 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     }
     HIPCHECK(hipEventRecord(stopEvent, stream));
     if (failed(synchronizeStreamWithTimeout(
-            stream, gpuRunDeadline, params.gpuRunTimeoutSec,
-            result.perfConfig, "runtime estimation")))
+            stream, gpuRunDeadline, params.gpuRunTimeoutSec, result.perfConfig,
+            "runtime estimation")))
       return failure();
 
     float elapsedMs = 0.0;
