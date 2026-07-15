@@ -4,6 +4,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   AnalyzeMemoryUse.cpp
   ConvToGemm.cpp
   SetMatmulOutputTranspose.cpp
+  SetReductionLayout.cpp
   DetectFlashDecoding.cpp
   FoldBroadcast.cpp
   GemmToGridwise.cpp
@@ -84,10 +85,13 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   # TritonGPUIR depends on TritonNvidiaGPUIR because it references NVIDIA types/ops
   # TritonAnalysis provides supportMMA, getReshapeDecomposition
   # TritonGPUTransforms provides inferDstEncoding, verifyBarrierType
+  # TritonAMDGPUIR defines amdgpu.in_thread_transpose and its
+  # deduceOutputLayout helper, used by rock-set-reduction-layout.
   TritonGPUTransforms
   TritonIR
   TritonGPUIR
   TritonAnalysis
+  TritonAMDGPUIR
 )
 
 rocmlir_add_triton_includes(MLIRRockTransforms)

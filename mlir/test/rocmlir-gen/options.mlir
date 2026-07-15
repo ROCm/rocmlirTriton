@@ -47,3 +47,8 @@
 // WARN_PADDING_H: you can't use both padding_h and (padding_h_l,padding_h_r).
 // RUN: rocmlir-gen --arch %arch -p -padding_w 2 -padding_w_r 1 2>&1 | FileCheck %s --check-prefix=WARN_PADDING_W
 // WARN_PADDING_W: you can't use both padding_w and (padding_w_l,padding_w_r).
+
+// `-p` generates a fresh kernel and ignores stdin unless an input file is named.
+// Warn when upstream pipeline output is being dropped.
+// RUN: echo ignored | rocmlir-gen --arch %arch -p 2>&1 >/dev/null | FileCheck %s --check-prefix=WARN_PIPED_STDIN
+// WARN_PIPED_STDIN: warning: rocmlir-gen -p is ignoring piped stdin because no input file was specified

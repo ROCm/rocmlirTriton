@@ -167,6 +167,27 @@ func.func @test_m_three_segments(%a: tensor<1x224x64xf16>, %b: tensor<1x64x128xf
 
 // -----
 
+#pknob80x80 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1, useReductionLayout = 1>
+
+// ============================================================
+// Knob propagation: the input params opt into the reduction-layout gate
+// (useReductionLayout = 1, the v4 perfConfig knob). Every power-of-two sub-tile
+// produced by the 2x2 split must carry the same knob so a tuned config is not
+// silently dropped during decomposition.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_reduction_layout_knob_propagates
+// CHECK-COUNT-4: rock.gridwise_gemm{{.*}}useReductionLayout = 1
+// CHECK-NOT: rock.gridwise_gemm
+// CHECK-NOT: mPerBlock = 80
+func.func @test_reduction_layout_knob_propagates(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf16>, %c: tensor<1x160x160xf32>) -> tensor<1x160x160xf32> attributes {rock.kernel} {
+  %r = rock.gridwise_gemm(%a, %b) {params = #pknob80x80} : tensor<1x160x64xf16>, tensor<1x64x160xf16> -> tensor<1x160x160xf32>
+  %out = rock.store %r to %c by set : tensor<1x160x160xf32> -> tensor<1x160x160xf32> to tensor<1x160x160xf32>
+  return %out : tensor<1x160x160xf32>
+}
+
+// -----
+
 #pc80x64 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 64, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 
 // ============================================================

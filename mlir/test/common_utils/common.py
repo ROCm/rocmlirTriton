@@ -50,6 +50,7 @@ def apply_arch_features(config, lit_config):
     config.arch_support_atomic_max_f32 = False
     config.arch_support_accel_fp8 = False
     config.arch_support_scaled_gemm = False
+    config.arch_support_non_k_packed_scaled_input = False
     config.arch_support_kpack = False
 
     if not config.rocm_path:
@@ -80,4 +81,6 @@ def apply_arch_features(config, lit_config):
         chip, amd_arch_db.Dtype.F32)
     config.arch_support_accel_fp8 = amd_arch_db.arch_supports_accel_fp8(chip)
     config.arch_support_scaled_gemm = amd_arch_db.arch_supports_scaled_gemm(chip)
+    config.arch_support_non_k_packed_scaled_input = (
+        amd_arch_db.arch_supports_non_k_packed_scaled_input(chip))
     config.arch_support_kpack = amd_arch_db.get_max_kpack(chip) > 1
