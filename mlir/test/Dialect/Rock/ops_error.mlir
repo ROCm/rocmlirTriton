@@ -118,6 +118,51 @@ func.func @gridwise_attention_sliding_window_only_for_attention(%q: tensor<1x384
   return %result : tensor<1x384x64xf32>
 }
 
+func.func @gridwise_attention_sliding_window_not_positive(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %csl: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowSize must be positive}}
+  %result = rock.gridwise_attention(%q, %k, %v, %csl) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 1, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowSize = -5 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_window_requires_current_seq_len(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowSize requires currentSeqLen to be set}}
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowSize = 128 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_window_exceeds_max_seq_len(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %csl: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowSize must not exceed max sequence length}}
+  %result = rock.gridwise_attention(%q, %k, %v, %csl) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 1, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowSize = 600 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
 // -----------------------------------------------------------------------------
 // gemm tests 
 // -----------------------------------------------------------------------------

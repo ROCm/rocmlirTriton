@@ -1260,6 +1260,14 @@ static LogicalResult detectMissingArguments() {
           << "If split-kv > 1 (flash decoding), we need to return LSE\n";
       return failure();
     }
+    // Sliding-window masking is defined relative to the KV-cache position, so
+    // the Rock verifier requires currentSeqLen. Reject the combination here
+    // instead of emitting IR that fails verification downstream.
+    if (slidingWindowSize > 0 && currentSeqLen.empty()) {
+      llvm::errs()
+          << "sliding_window_size requires current_seq_len to be set\n";
+      return failure();
+    }
   }
 
   if (operation == rock::KernelType::Attention ||
