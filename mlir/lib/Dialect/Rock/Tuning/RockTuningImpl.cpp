@@ -892,6 +892,14 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
       problemOS << "false" << sep;
 
     problemOS << "-split_kv " << attentionOp.getSplitKV() << sep;
+    // sliding_window_size is optional (KV-cache only); only emit it when set so
+    // non-sliding-window problems keep their existing tuning identity. Keep
+    // this in sync with AttentionConfiguration.from_command_line() in
+    // perfRunner.py.
+    if (std::optional<uint32_t> slidingWindowSize =
+            attentionOp.getSlidingWindowSize();
+        slidingWindowSize && *slidingWindowSize > 0)
+      problemOS << "-sliding_window_size " << *slidingWindowSize << sep;
     problemOS << "-num_heads_q " << attentionOp.getNumHeadsQ() << sep;
     problemOS << "-num_heads_kv " << attentionOp.getNumHeadsKV() << sep;
     problemOS << "-g " << qShape[0] / attentionOp.getNumHeadsQ() << sep;
