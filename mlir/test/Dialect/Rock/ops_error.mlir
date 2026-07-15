@@ -1185,7 +1185,7 @@ func.func @gemm_elementwise_gemm_body_no_block_args(
     %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
     -> tensor<1x4x2xf32>
     attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  // expected-error @+1 {{pre-second-GEMM body must have at least one block argument}}
+  // expected-error @+1 {{pre-second-GEMM body must have 1 block arguments (the first-GEMM result plus one per elementwise input), but has 0}}
   %r = rock.gemm_elementwise_gemm{
    ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
    ab = elementwise {

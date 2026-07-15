@@ -390,7 +390,7 @@ func.func @test_attention(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg
   %7 = rock.attention{
     qk = %6 * %3 : tensor<1x32x16xf16>, tensor<1x16x64xf16>
     qk = elementwise {
-  ^bb0(%arg3: tensor<1x32x64xf16>, %arg4: tensor<1x32x64xf16>):
+  ^bb0(%arg3: tensor<1x32x64xf16>):
     rock.yield %arg3 : tensor<1x32x64xf16>
   }
     softmax(qk) * %1 : tensor<1x64x8xf16>

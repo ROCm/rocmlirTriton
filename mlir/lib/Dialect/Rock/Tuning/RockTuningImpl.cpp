@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -782,10 +783,10 @@ extractLayouts(Operation *op, llvm::StringMap<unsigned> &fLayoutMap,
 // optimal perf config), so they are part of the tuning-problem identity and
 // must appear in the tuning key.
 //
-// The fusion is encoded as ops inside the `preSoftmaxBody` region (arith ops on
-// the rocmlir-gen path, tosa ops on the migraphx path) that consume the
-// region's block arguments. Block argument 0 is the QK^T product; the remaining
-// block arguments map 1:1 to `preSoftmaxElemWiseInputs`. Constant scales/biases
+// The fusion is encoded as ops inside the `preSoftmaxBody` region that consume
+// the region's block arguments. Block argument 0 is the QK^T product; the
+// remaining block arguments map 1:1 to `preSoftmaxElemWiseInputs`. Constant
+// scales/biases
 // and causal masks are not external inputs (they are folded into the body or
 // captured by the `causal` attribute), so they are intentionally not treated as
 // attn scale/bias here. For quantized (i8) attention the first two elementwise
@@ -803,18 +804,20 @@ static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
   unsigned numQuantInputs = isQuantized ? 2u : 0u;
 
   // Entry block argument 0 is the QK^T product; arguments 1.. correspond 1:1 to
-  // the pre-softmax elementwise inputs. AttentionOp verification does not
-  // currently enforce this arity (only single-block + one yielded value), so
-  // clamp the upper bound to the block's actual argument count to avoid an
-  // out-of-bounds block-argument access on malformed IR.
+  // the pre-softmax elementwise inputs. AttentionOp::verify pins this arity
+  // (see verifyGemmPlusGemmLikeOp), but clamp the upper bound to the block's
+  // actual argument count defensively so a stray call on unverified IR cannot
+  // make an out-of-bounds block-argument access.
   unsigned numBlockArgs = entry.getNumArguments();
   unsigned lastInput = numBlockArgs > 0 ? numBlockArgs - 1 : 0;
   if (lastInput > numInputs)
     lastInput = numInputs;
 
   for (unsigned i = numQuantInputs; i < lastInput; ++i) {
-    // Follow the input through shape/type-only ops (broadcasts, reshapes,
-    // casts, rock.transform, ...) to the arithmetic op that consumes it.
+    // Walk forward from the input through its use chain, stepping over any
+    // intermediate op (e.g. a `rock.transform` reshaping the input to match the
+    // scores) until we reach the multiply (scale) or add (bias) that consumes
+    // it.
     SmallVector<Value> worklist{entry.getArgument(i + 1)};
     llvm::SmallPtrSet<Value, 8> seen;
     while (!worklist.empty()) {
@@ -822,10 +825,9 @@ static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
       if (!seen.insert(v).second)
         continue;
       for (Operation *user : v.getUsers()) {
-        StringRef name = user->getName().getStringRef();
-        if (name == "arith.mulf" || name == "tosa.mul")
+        if (isa<arith::MulFOp>(user))
           hasAttnScale = true;
-        else if (name == "arith.addf" || name == "tosa.add")
+        else if (isa<arith::AddFOp>(user))
           hasAttnBias = true;
         else
           llvm::append_range(worklist, user->getResults());
@@ -937,8 +939,11 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
   else
     problemOS << "false" << sep;
 
+  bool hasAttnScale = false, hasAttnBias = false;
   if (isAttention) {
     auto attentionOp = cast<AttentionOp>(gemmGemmOp);
+    getAttentionScaleBias(attentionOp, elemTypeQ.isInteger(8), hasAttnScale,
+                          hasAttnBias);
     problemOS << "-causal ";
     if (attentionOp.getCausal())
       problemOS << "true" << sep;
@@ -965,11 +970,6 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
     problemOS << "-seq_len_k " << seqLenK << sep;
     problemOS << "-head_dim_qk " << headDimQK << sep;
     problemOS << "-head_dim_v " << headDimV;
-
-    auto attentionOp = cast<AttentionOp>(gemmGemmOp);
-    bool hasAttnScale = false, hasAttnBias = false;
-    getAttentionScaleBias(attentionOp, elemTypeQ.isInteger(8), hasAttnScale,
-                          hasAttnBias);
     // Keep these last and in this order to match the layout parsed by
     // AttentionConfiguration.from_command_line() in perfRunner.py.
     problemOS << sep << "-with-attn-scale "
