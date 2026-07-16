@@ -24,9 +24,9 @@ CONV_COLUMNS = [
     'DilationH', 'DilationW', 'StrideH', 'StrideW', 'PaddingH', 'PaddingW'
 ]
 ATTENTION_COLUMNS = [
-    'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV', 'WithAttnScale',
-    'WithAttnBias', 'TransBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK',
-    'HeadDimV'
+    'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV', 'SlidingWindowSize',
+    'WithAttnScale', 'WithAttnBias', 'TransBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ',
+    'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
 ]
 
 # Regex pattern for lookup table entries: {"arch_op_dtype", {Class::params, Class::count}}, // optional comment
