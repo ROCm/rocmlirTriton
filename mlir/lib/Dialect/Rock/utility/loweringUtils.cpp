@@ -123,11 +123,6 @@ mlir::rock::computeStreamKPlanForDim(StreamKPartDim partDim, int64_t g,
   if (span < 2 || span > numBlocks)
     return failure();
   const int64_t P = span * others;
-  // Reject partitions that leave the persistent grid substantially underfilled:
-  // a large `others` forces span low (down to 2), so P can sit well below
-  // targetP and idle a chunk of the CUs. Gate on the fill fraction P/targetP.
-  if (static_cast<double>(P) < kMinStreamKFillFraction * targetP)
-    return failure();
   const int64_t rem = numBlocks % span;
 
   // rb ("remainder blocks") is the number of partition-dim blocks left over
@@ -192,6 +187,13 @@ FailureOr<StreamKPlan> mlir::rock::chooseStreamKPlan(int64_t g, int64_t mBlocks,
                                                      : nBlocks;
     double overhead = double(plan->padBlocks) / double(numBlocks);
     if (overhead > kMaxStreamKPadFraction)
+      continue;
+    // Reject partitions that leave the persistent grid substantially
+    // underfilled: a large `others` forces span low (down to 2), so P can sit
+    // well below targetP and idle a chunk of the CUs. Gate on the fill fraction
+    // P/targetP.
+    const int64_t targetP = streamKMultiple * numCU;
+    if (static_cast<double>(plan->P) < kMinStreamKFillFraction * targetP)
       continue;
     if (failed(best) || overhead < bestOverhead) {
       best = plan;
