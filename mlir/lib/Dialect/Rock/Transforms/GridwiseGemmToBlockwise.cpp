@@ -138,10 +138,6 @@ chooseGemmLoadCacheModifiers(StringRef arch, Type aElemType, Type bElemType,
   return {cacheA, cacheB};
 }
 
-//===----------------------------------------------------------------------===//
-// GridwiseGemm lowering.
-//===----------------------------------------------------------------------===//
-
 namespace {
 
 //===----------------------------------------------------------------------===//
@@ -279,6 +275,36 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value nIterations =
         ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
 
+    // If needed, peel a non-power-of-two kPerBlock into power-of-two segments
+    // (e.g. kPerBlock = 48 -> {32, 16}).
+    SmallVector<Pow2Segment> kSegs = decomposePow2(kPerBlock);
+    bool peelK = kSegs.size() > 1;
+    if (peelK && isScaledGemm) {
+      rock::markAsNotApplicable(op);
+      return op->emitOpError("non-power-of-two kPerBlock is not supported for "
+                             "scaled gemm");
+    }
+
+    // Build the operand views for the K slices. A single
+    // (power-of-two) segment reuses the operands directly, so their views are
+    // left untouched. Left as two branches intentionally since the peelK
+    // branch emits more complex transforms, which might be less performant
+    // than the else branch.
+    SmallVector<Value> segMatA, segMatB;
+    if (peelK) {
+      for (Pow2Segment seg : kSegs) {
+        segMatA.push_back(sliceBlockedDims(b, loc, matA, /*sliceDims=*/{2},
+                                           /*blocks=*/{kIterations},
+                                           /*tiles=*/{kPerBlock}, {seg}));
+        segMatB.push_back(sliceBlockedDims(b, loc, matB, /*sliceDims=*/{1},
+                                           /*blocks=*/{kIterations},
+                                           /*tiles=*/{kPerBlock}, {seg}));
+      }
+    } else {
+      segMatA.push_back(matA);
+      segMatB.push_back(matB);
+    }
+
     scf::ForOp loopOp = createMainLoop(b, loc, nIterations, ValueRange{initAcc});
     Value loopResult;
     {
@@ -294,41 +320,46 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
           arch, elementTypeALoad, elementTypeBLoad, G, M, N, K, mBlocks,
           nBlocks, aReloads, bReloads);
 
-      // Load from global memory to registers
-      Value loadedB =
-          rock::loadTile(b, loc, matB, /*kiter=*/iv, "n", gridCoords, kPerBlock,
-                         nPerBlock, /*isKFirst=*/true, bidGridLengths, cacheB);
-      Value loadedA =
-          rock::loadTile(b, loc, matA, /*kiter=*/iv, "m", gridCoords, kPerBlock,
-                         mPerBlock, /*isKFirst=*/false, bidGridLengths, cacheA);
+      // Contract each power-of-two K segment in turn, threading the accumulator
+      // so every segment of this K-loop iteration reduces into the same tile.
+      Value acc = accArg;
+      for (auto [segIdx, seg] : llvm::enumerate(kSegs)) {
+        // Load from global memory to registers
+        Value loadedB = rock::loadTile(
+            b, loc, segMatB[segIdx], /*kiter=*/iv, "n", gridCoords, seg.length,
+            nPerBlock, /*isKFirst=*/true, bidGridLengths, cacheB);
+        Value loadedA = rock::loadTile(
+            b, loc, segMatA[segIdx], /*kiter=*/iv, "m", gridCoords, seg.length,
+            mPerBlock, /*isKFirst=*/false, bidGridLengths, cacheA);
 
-      Value loadedScaleA, loadedScaleB;
-      if (isScaledGemm) {
-        // Note we load with dName="m" here because the shape of scaleB is [B,
-        // N, K] instead of [B, K, N]. This is because tt.dot_scaled expected
-        // scaleB transposed
-        // Scales share the reuse pattern of the operand they scale, so reuse
-        // the same cache modifier chosen for A/B above.
-        loadedScaleB =
-            rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
-                           quantKPerBlock, nPerBlock,
-                           /*isKFirst=*/false, bidGridLengths, cacheB);
-        loadedScaleA =
-            rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
-                           quantKPerBlock, mPerBlock,
-                           /*isKFirst=*/false, bidGridLengths, cacheA);
+        Value loadedScaleA, loadedScaleB;
+        if (isScaledGemm) {
+          // Note we load with dName="m" here because the shape of scaleB is [B,
+          // N, K] instead of [B, K, N]. This is because tt.dot_scaled expected
+          // scaleB transposed
+          // Scales share the reuse pattern of the operand they scale, so reuse
+          // the same cache modifier chosen for A/B above.
+          loadedScaleB =
+              rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
+                             quantKPerBlock, nPerBlock,
+                             /*isKFirst=*/false, bidGridLengths, cacheB);
+          loadedScaleA =
+              rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
+                             quantKPerBlock, mPerBlock,
+                             /*isKFirst=*/false, bidGridLengths, cacheA);
+        }
+
+        // Emit blockwise GEMM. This will load data from LDS (or registers) and
+        // compute the MMA at the same time
+        acc = BlockwiseGemmOp::create(
+            b, loc, loadedA, loadedB, acc, loadedScaleA, loadedScaleB,
+            op.getQuantBlockSizeAttr(),
+            /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+            /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
       }
 
-      // Emit blockwise GEMM. This will load data from LDS (or registers) and
-      // compute the MMA at the same time
-      Value newAcc = BlockwiseGemmOp::create(
-          b, loc, loadedA, loadedB, accArg, loadedScaleA, loadedScaleB,
-          op.getQuantBlockSizeAttr(),
-          /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
-          /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
-
       // Yield the new accumulator
-      scf::YieldOp::create(b, loc, ValueRange{newAcc});
+      scf::YieldOp::create(b, loc, ValueRange{acc});
       loopResult = loopOp.getResult(0);
     }
 

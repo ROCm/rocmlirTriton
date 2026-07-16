@@ -292,6 +292,44 @@ FailureOr<bool> isInputNonInjective(Value value);
 // Same as above but for output fusions
 FailureOr<Type> getOutputFusionElementType(Value value);
 
+//===----------------------------------------------------------------------===//
+// Non-power-of-two tile peeling
+//===----------------------------------------------------------------------===//
+
+/// A power-of-two segment of a tile dimension: the half-open interval
+/// [offset, offset + length), where `length` is a power of two.
+struct Pow2Segment {
+  int64_t offset;
+  int64_t length;
+};
+
+/// Decompose `n` into a minimal sequence of power-of-two segments (largest
+/// first) that exactly cover [0, n). A power-of-two `n` yields a single {0, n}
+/// segment, so the split is a no-op for that (common) case. For example,
+/// 48 -> {{0, 32}, {32, 16}}.
+SmallVector<Pow2Segment> decomposePow2(int64_t n);
+
+/// Zero-copy view that keeps only a power-of-two sub-slice of each tile along
+/// the given dimensions. Each dimension in `sliceDims` is treated as
+/// `blocks[k]` tiles of `tiles[k]` elements; within every tile only the
+/// `segs[k]` range [offset, offset+length) is kept, so the dimension shrinks
+/// from `blocks[k]*tiles[k]` to `blocks[k]*segs[k].length`. Block `bk`,
+/// element `i` maps back to original index `bk*tiles[k] + segs[k].offset + i`.
+/// Dimensions not in `sliceDims` (and tiles whose segment already spans the
+/// whole tile) pass through unchanged.
+///
+/// Example (one dim): size 96 = 2 tiles of 48, seg = {offset 32, length 16}.
+/// Result is size 32 (= 2 * 16); block b, element i reads original index
+/// b*48 + 32 + i.
+///
+/// `sliceDims`, `blocks`, `tiles`, `segs` are parallel arrays (one entry per
+/// sliced dim). Used to peel non-power-of-two per-block tiles into pow2
+/// segments (M/N in rock-decompose-nonpow2-tiles, K in
+/// rock-gridwise-gemm-to-blockwise).
+Value sliceBlockedDims(OpBuilder &b, Location loc, Value view,
+                       ArrayRef<unsigned> sliceDims, ArrayRef<int64_t> blocks,
+                       ArrayRef<int64_t> tiles, ArrayRef<Pow2Segment> segs);
+
 } // end namespace rock
 } // end namespace mlir
 #endif
