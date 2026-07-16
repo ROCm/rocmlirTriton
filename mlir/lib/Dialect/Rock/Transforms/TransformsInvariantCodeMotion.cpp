@@ -390,8 +390,8 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
 
   // analyzeCandidate allows multiple extraIndices positions to be classified
   // as the loop IV, whereas analyzeCarryCandidate only records one merge.
-  // If the same IV affects another coordinate path outside that merge, 
-  // the carry rewrite pins all IV indices to lb and then only carries 
+  // If the same IV affects another coordinate path outside that merge,
+  // the carry rewrite pins all IV indices to lb and then only carries
   // the merge-decomposed coordinates, silently dropping the other IV-dependent
   // contribution. Therefore, we bail if there is more than one iv position.
   if (ivPositions.size() != 1)
