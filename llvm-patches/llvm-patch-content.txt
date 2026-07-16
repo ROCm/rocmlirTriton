@@ -188,3 +188,53 @@ As of this bump #167347 is still open upstream (unmerged). Drop or reconcile
 this patch once it -- or a successor such as #198472
 ("[AMDGPU] Fixed crash due to virtual register defs not dominating uses") --
 lands in the pinned LLVM with an equivalent or stronger dominance check.
+
+----------------------------------------------------------------------
+patch204648.patch
+----------------------------------------------------------------------
+- Upstream commit : 237fbfd (merge of d0f1670)
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/204648
+- Upstream title  : [CodeGen] Join live range segments after dead def move
+- File Fixed      : llvm/include/llvm/CodeGen/LiveInterval.h
+                    llvm/lib/CodeGen/LiveInterval.cpp
+                    llvm/lib/CodeGen/LiveIntervals.cpp
+- Contents        : Adds a shared LiveRange::mergeAdjacentSegments() helper that
+                    merges a segment with either touching neighbor that shares
+                    its value number. Uses it in MergeValueNumberInto() (replacing
+                    the inline forward/backward merge) and in
+                    LiveIntervals::HMEditor::handleMoveUp(), where the segments
+                    shifted down after a dead def is moved upward are retagged to
+                    the moved def's value number and then joined as we go
+                    (iterating by slot index up to the original end, since merging
+                    can erase segments). The upstream AMDGPU machine-scheduler
+                    regression test is omitted from this downstream record.
+
+Symptom without the patch
+-------------------------
+Moving a dead subregister def upward during machine scheduling
+(handleMoveUp) retags a following live-range segment to the same value
+number as the previous segment but leaves the two adjacent same-value
+segments unmerged. Live range verification rejects adjacent segments with
+the same value number, so with an asserts build the scheduler aborts (e.g.
+gfx950 attention kernels under -verify-misched); without asserts it produces
+malformed live ranges feeding register allocation.
+
+Root cause
+----------
+The retag loop in handleMoveUp only reassigned valno on the shifted-down
+segments and never joined any segment it made adjacent-and-equal to its
+neighbor, violating the LiveRange invariant that touching segments must not
+share a value number.
+
+CI coverage
+-----------
+mlir/test/rocmlir-driver/attention-i8-gfx950-sched-dead-def-join.mlir is a
+compile-only regression that pins the i8 gfx950 attention shape + perf_config
+which triggers this crash. With an asserts build lacking this patch,
+`rocmlir-driver -c` aborts in the machine scheduler
+(LiveIntervals::HMEditor::updateRange, `Assertion 'LR.verify()' failed`); with
+the patch it emits triton.hsaco. This lets a future LLVM bump catch the
+regression in normal CI instead of only during tuning.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 237fbfd.
