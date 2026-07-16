@@ -259,13 +259,8 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   std::vector<uint32_t> kPerBlock = {16, 32, 64, 128, 512, 1024, 2048};
   // use the actual K dimension, typically it's 128 for attention
   if (kind != TuningParamSetKind::Exhaustive) {
-    auto aShape = cast<ShapedType>(gemmGemmOp.getAType()).getShape();
-    int idx = gemmGemmOp.getTransposedA() ? 0 : 1;
-    assert(aShape.size() == 3 || aShape.size() == 2);
-    if (aShape.size() == 3)
-      idx++;
-    uint32_t gemm0KPerBlock = llvm::PowerOf2Ceil(aShape[idx]);
-    kPerBlock = {gemm0KPerBlock};
+    kPerBlock = {static_cast<uint32_t>(
+        llvm::PowerOf2Ceil(gemmGemmOp.getGemmGemmSize().k))};
   }
 
   auto arch = rock::getArchValue(gemmGemmOp);
