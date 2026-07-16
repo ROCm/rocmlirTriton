@@ -202,6 +202,14 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
     # the ``seqlen_k_lo`` block above guarantees this range is non-empty.
     current_seqlen = ([rng.randint(1, seqlen_k - 1) for _ in range(g)] if use_kvcache else None)
 
+    # Runtime sliding-window masking requires ``current_seqlen`` (KV-cache mode)
+    # and, per the rock.attention verifier, must be positive and must not exceed
+    # the max sequence length (``seqlen_k``). Leave it disabled (0) otherwise, and
+    # disable it half the time even in KV-cache mode so the sweep still covers the
+    # plain KV-cache path.
+    sliding_window_size = (rng.randint(1, seqlen_k)
+                           if use_kvcache and rng.choice([True, False]) else 0)
+
     num_heads_q, num_heads_kv = _sample_num_heads(rng)
 
     return (
@@ -223,6 +231,7 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
         return_lse,
         split_kv,
         current_seqlen,
+        sliding_window_size,
     )
 
 
@@ -316,7 +325,7 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
 def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
     shape, perf = params
     (dtype, g, slq, slk, nhq, nhkv, hdqk, hdv, scale, bias, tq, tk, tv, to, causal, return_lse,
-     split_kv, current_seqlen) = shape
+     split_kv, current_seqlen, sliding_window_size) = shape
     attn_config = perfRunner.AttentionConfiguration(
         dtype=dtype,
         g=g,
@@ -340,6 +349,7 @@ def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
         num_chiplets=options.num_chiplets,
         perf_config=str(PerfConfig(perf, kind='attn')),
         current_seqlen=current_seqlen,
+        sliding_window_size=sliding_window_size,
     )
     # Precision-aware rocmlir-gen flags (e.g. --pv-f64) picked up per-config
     # in parameterSweeps._build_rocmlir_gen_opts to combat CPU reference drift
