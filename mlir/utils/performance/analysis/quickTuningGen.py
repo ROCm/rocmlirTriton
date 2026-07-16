@@ -124,6 +124,12 @@ def load_data(files, no_splitk):
     if 'WithAttnBias' in df.columns and 'TransBias' not in df.columns:
         df['TransBias'] = False
 
+    # Sliding window is optional (KV-cache only) and omitted from the key when
+    # disabled, so legacy attention rows may lack the column; default it to the
+    # disabled value 0.
+    if 'SplitKV' in df.columns and 'SlidingWindowSize' not in df.columns:
+        df['SlidingWindowSize'] = 0
+
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)
     df = df[df['DataType'] != 'DataType']

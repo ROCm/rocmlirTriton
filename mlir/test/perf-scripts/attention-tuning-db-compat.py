@@ -144,8 +144,8 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         self.assertIn("-transBias true", trans_bias_config.to_command_line())
         self.assertIsNone(self.lookup_from_legacy_key(trans_bias_config, legacy_all_false_key))
 
-    def test_quick_tuning_gen_defaults_missing_trans_bias_column(self):
-        """Legacy debug TSV rows without TransBias get a false default."""
+    def test_quick_tuning_gen_defaults_missing_optional_columns(self):
+        """Legacy debug TSV rows without TransBias/SlidingWindowSize get defaults."""
         debug_path = Path(f"{self.tmp_prefix}.debug")
         debug_path.write_text(
             "DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
@@ -157,6 +157,8 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         df = load_data([str(debug_path)], no_splitk=False)
         self.assertIn("TransBias", df.columns)
         self.assertTrue(df["TransBias"].eq(False).all())
+        self.assertIn("SlidingWindowSize", df.columns)
+        self.assertTrue(df["SlidingWindowSize"].eq(0).all())
 
         grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
                              as_index=False)["TFlops"].max()
