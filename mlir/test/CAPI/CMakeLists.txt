@@ -3,6 +3,7 @@ set(LLVM_OPTIONAL_SOURCES
   tosa_miir.cc
   mixr_cobj.cc
   mixr_split_k.cpp
+  mixr_stream_k.cpp
   mixr_full.cpp
   reduce_fusible.cpp
 )

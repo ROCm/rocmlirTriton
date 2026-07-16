@@ -352,7 +352,11 @@ template <typename OpT>
 static LogicalResult setSplitKAttrs(OpT op, 
                                     PatternRewriter &rw) {
   auto perfConfig = op->template getAttrOfType<StringAttr>("perf_config");
-  if (perfConfig && rock::isSplitKRequested(perfConfig)) {
+  // Stream-K's remainder wave folds K and accumulates partials via atomic_add
+  // into a zero-prefilled output, exactly like split-K, so both require the
+  // kernel result to carry a rock.prefill = 0 attribute.
+  if (perfConfig && (rock::isSplitKRequested(perfConfig) ||
+                     rock::isStreamKRequested(perfConfig))) {
     func::FuncOp func = op->template getParentOfType<func::FuncOp>();
     SetVector<int64_t> resIndices = traceToRes(op->getResult(0), func);
     if (resIndices.empty())
@@ -367,7 +371,7 @@ static LogicalResult setSplitKAttrs(OpT op,
               .getElementType();
       if (!isa<Float32Type, Float16Type, BFloat16Type>(elementType)) {
         return rw.notifyMatchFailure(
-            op, "We only support F32, F16 and BF16 split-k, yet.");
+            op, "We only support F32, F16 and BF16 split-k/stream-k, yet.");
       }
       Attribute outputInitVal = rw.getFloatAttr(elementType, 0.0);
       func.setResultAttr(resNumber, rock::PrefillAttr::getMnemonic(),

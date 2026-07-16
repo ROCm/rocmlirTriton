@@ -155,6 +155,11 @@ struct ProgramOptions {
   int64_t N;
   int64_t K;
   int64_t splitKFactor;
+  // When >= 1, emit a stream-K (v5) perf_config with this streamKMultiple and a
+  // pinned splitKFactor of 1 instead of the split-K (v1) perf_config. Stream-K
+  // reuses split-K's fusion/prefill machinery, so this exercises the same
+  // fusibility and prefill-args CAPI paths for the stream-K perf_config format.
+  int64_t streamKMultiple;
   std::string targetArch;
   RocmlirTuningParamSetKind tuningLevel;
   int32_t verbosityLevel;
@@ -352,7 +357,15 @@ static bool constructAndTraverseIr(MlirContext ctx,
     mlirOperationDump(moduleMO);
 
   std::stringstream stream;
-  stream << "gemm:v1:64,64,64,1,1,4,16," << options.splitKFactor << ",2,0,0";
+  if (options.streamKMultiple >= 1) {
+    // v5 stream-K perf_config: splitKFactor stays 1 (mutually exclusive with
+    // stream-K); streamKMultiple is field 12, followed by the unused knob
+    // block.
+    stream << "gemm:v5:64,64,64,1,1,4,16,1,2,0,0," << options.streamKMultiple
+           << ",-1,-1,-1,-1,-1,-1";
+  } else {
+    stream << "gemm:v1:64,64,64,1,1,4,16," << options.splitKFactor << ",2,0,0";
+  }
   std::string streamStr = stream.str() + "\0";
   MlirStringRef perfStr = mlirStringRefCreateFromCString(streamStr.data());
 
@@ -437,6 +450,13 @@ llvm::cl::opt<int64_t>
     splitKFactor("split-k", llvm::cl::desc("num splits along k-th dimension"),
                  llvm::cl::init(4));
 
+llvm::cl::opt<int64_t> streamKMultiple(
+    "stream-k",
+    llvm::cl::desc(
+        "stream-K multiple; when >= 1 emit a v5 stream-K perf_config "
+        "(splitKFactor pinned to 1) instead of the split-K one"),
+    llvm::cl::init(0));
+
 llvm::cl::opt<DataType>
     dataType("t", llvm::cl::desc("used data type"),
              llvm::cl::values(clEnumVal(DataType::F32, "f32"),
@@ -465,11 +485,15 @@ llvm::cl::opt<int32_t> verbosityLevel("v", llvm::cl::desc("verbosity level"),
 
 int main(int argc, char *argv[]) {
   llvm::cl::ParseCommandLineOptions(argc, argv);
-  ProgramOptions options{
-      mDim.getValue(),           nDim.getValue(),
-      kDim.getValue(),           splitKFactor.getValue(),
-      targetArch.getValue(),     tuningLevel.getValue(),
-      verbosityLevel.getValue(), useElementwiseOp.getValue()};
+  ProgramOptions options{mDim.getValue(),
+                         nDim.getValue(),
+                         kDim.getValue(),
+                         splitKFactor.getValue(),
+                         streamKMultiple.getValue(),
+                         targetArch.getValue(),
+                         tuningLevel.getValue(),
+                         verbosityLevel.getValue(),
+                         useElementwiseOp.getValue()};
 
   auto ctx = CRAIIWrapper<MlirContext>(mlirContextCreate());
   MlirDialectRegistry registry = mlirDialectRegistryCreate();

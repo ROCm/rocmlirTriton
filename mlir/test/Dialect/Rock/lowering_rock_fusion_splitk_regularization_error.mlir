@@ -24,7 +24,7 @@ module {
 
 module {
   func.func @error_mulf_gemm_squared(%a: tensor<1x4x4xf16>, %b: tensor<1x4x4xf16>, %dest: tensor<1x4x4xf16>) -> tensor<1x4x4xf16> attributes {rock.kernel} {
-    // expected-error @below {{'rock.gemm' op has invalid output fusion for split-k}}
+    // expected-error @below {{'rock.gemm' op has invalid output fusion for a K reduction}}
     %gemm = rock.gemm %a * %b {params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 16, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 2, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>} : tensor<1x4x4xf16> * tensor<1x4x4xf16> -> tensor<1x4x4xf16>
     %sq = arith.mulf %gemm, %gemm : tensor<1x4x4xf16>
     %r = rock.store %sq to %dest by set : tensor<1x4x4xf16> -> tensor<1x4x4xf16> to tensor<1x4x4xf16>
@@ -40,7 +40,7 @@ module {
 
 module {
   func.func @error_divf_gemm_squared(%a: tensor<1x4x4xf16>, %b: tensor<1x4x4xf16>, %dest: tensor<1x4x4xf16>) -> tensor<1x4x4xf16> attributes {rock.kernel} {
-    // expected-error @below {{'rock.gemm' op has invalid output fusion for split-k}}
+    // expected-error @below {{'rock.gemm' op has invalid output fusion for a K reduction}}
     %gemm = rock.gemm %a * %b {params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 16, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 2, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>} : tensor<1x4x4xf16> * tensor<1x4x4xf16> -> tensor<1x4x4xf16>
     %d = arith.divf %gemm, %gemm : tensor<1x4x4xf16>
     %r = rock.store %d to %dest by set : tensor<1x4x4xf16> -> tensor<1x4x4xf16> to tensor<1x4x4xf16>

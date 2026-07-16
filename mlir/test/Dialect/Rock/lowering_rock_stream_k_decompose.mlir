@@ -111,6 +111,38 @@ func.func @fits_one_wave(%a: tensor<1x256x256xf16>, %b: tensor<1x256x256xf16>, %
 #params = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1, streamKMultiple = 1>
 
 // ============================================================
+// Output-fusion K-reduction regularization: a fused `add gemmOut, bias` is
+// applied once per K-fold, but the split-K remainder atomic_adds `splitK`
+// partial products into the same tile, so `bias` would be added `splitK` times.
+// The decompose pass divides `bias` by splitK (here 4) *only* in the remainder
+// cell; the data-parallel wave (stored `set`) adds `bias` unscaled.
+//
+//   remainder: add(gemmOut_rem, bias_rem / 4.0) -> atomic_add
+//   wave:      add(gemmOut_wave, bias_wave)      -> set
+// ============================================================
+
+// CHECK-LABEL: func.func @stream_k_fusion_regularization
+// CHECK-SAME: rock.grid_size = 80 : i32
+// The bias addend is divided by splitK = 4 exactly once (the remainder cell),
+// then added; the data-parallel wave adds the bias unscaled.
+// CHECK-DAG: %[[SK:.*]] = arith.constant dense<4.000000e+00>
+// CHECK-DAG: arith.addf %{{.*}}, %{{.*}} : tensor<1x1280x1024xf32>
+// CHECK-DAG: %[[DIV:.*]] = arith.divf %{{.*}}, %[[SK]] : tensor<4x1280x256xf32>
+// CHECK-DAG: arith.addf %{{.*}}, %[[DIV]] : tensor<4x1280x256xf32>
+// CHECK-DAG: rock.store{{.*}}by set
+// CHECK-DAG: rock.store{{.*}}by atomic_add
+func.func @stream_k_fusion_regularization(%a: tensor<1x1280x256xf16>, %b: tensor<1x256x1280xf16>, %c: tensor<1x1280x1280xf32>, %bias: tensor<1x1280x1280xf32>) -> tensor<1x1280x1280xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 80 : i32, rock.grid_size = 100 : i32} {
+  %r = rock.gridwise_gemm(%a, %b) {params = #params} : tensor<1x1280x256xf16>, tensor<1x256x1280xf16> -> tensor<1x1280x1280xf32>
+  %add = arith.addf %r, %bias : tensor<1x1280x1280xf32>
+  %out = rock.store %add to %c by set : tensor<1x1280x1280xf32> -> tensor<1x1280x1280xf32> to tensor<1x1280x1280xf32>
+  return %out : tensor<1x1280x1280xf32>
+}
+
+// -----
+
+#params = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1, streamKMultiple = 1>
+
+// ============================================================
 // K padding: same shape as stream_k_hybrid but K = 192 (a multiple of
 // kPerBlock = 64 but not of splitK * kPerBlock = 4 * 64 = 256). The split-K
 // remainder pads K up to 256 (Pad{0, 64}, zero-fill) so it folds evenly into

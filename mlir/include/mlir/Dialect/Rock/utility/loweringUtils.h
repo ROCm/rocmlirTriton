@@ -24,6 +24,7 @@
 namespace mlir {
 class Operation;
 class Type;
+class RewriterBase;
 
 namespace rock {
 struct ConvolutionDims;
@@ -123,6 +124,21 @@ Value splitKFoldOperand(OpBuilder &b, Location loc, Value operand,
 /// accumulates into the same output tile (used with an atomic_add store).
 Value splitKFoldOutputView(OpBuilder &b, Location loc, Value view,
                            int64_t splitK);
+
+/// Scale the non-gemm operand `other` of an output-fusion add/sub down by a
+/// K-reduction `factor`, returning `other / factor`. Used to keep a fused
+/// bias/addend correct when the gemm's K reduction is accumulated across
+/// `factor` atomic-add partials (split-K, and the stream-K remainder cell).
+Value scaleFusionAddendDown(OpBuilder &b, Location loc, Value other,
+                            int64_t factor);
+
+/// Regularize the output fusion hanging off `gemmResult` for a K reduction that
+/// accumulates `factor` partial products via atomic_add: every fused
+/// `add/sub gemmOut, other` has its `other` operand divided by `factor` so the
+/// fused result is unchanged. Used by the split-K fusion regularization pass.
+LogicalResult regularizeOutputFusionForKReduction(Value gemmResult,
+                                                  int64_t factor,
+                                                  RewriterBase &b);
 
 // Apply padding to a vector in its `firstDim` if applicable.
 Value padVector(Value vector, OpBuilder &b, Location loc, StringRef firstDim,

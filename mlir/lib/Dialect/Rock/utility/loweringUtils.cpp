@@ -14,10 +14,12 @@
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
+#include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
@@ -373,6 +375,49 @@ Value mlir::rock::splitKFoldOutputView(OpBuilder &b, Location loc, Value view,
   TransformMapAttr ignoreAttr = ignore.get();
 
   return rock::transform(b, view, b.getArrayAttr({mergeAttr, ignoreAttr}));
+}
+
+Value mlir::rock::scaleFusionAddendDown(OpBuilder &b, Location loc, Value other,
+                                        int64_t factor) {
+  Type otherElmType = cast<ShapedType>(other.getType()).getElementType();
+  Value factorValue = createConstantFloatOp(
+      b, loc, other.getType(), otherElmType, static_cast<float>(factor));
+  return b.createOrFold<arith::DivFOp>(loc, other, factorValue);
+}
+
+LogicalResult mlir::rock::regularizeOutputFusionForKReduction(Value gemmResult,
+                                                              int64_t factor,
+                                                              RewriterBase &b) {
+  // A K reduction spread across `factor` atomic-add partials applies every
+  // fused `add/sub gemmOut, other` `factor` times, so divide `other` by
+  // `factor` to keep the total unchanged. mul/div/neg/type-conversions
+  // distribute over the partial sum and need no change (checkValidOutputFusion
+  // only collects the add/sub ops here).
+  SmallVector<std::tuple<Operation *, int>> adds;
+  if (failed(checkValidOutputFusion(gemmResult, adds)))
+    return gemmResult.getDefiningOp()->emitOpError(
+        "has invalid output fusion for a K reduction");
+
+  for (auto [arithOp, gemmOutIndex] : adds) {
+    assert(arithOp->getNumOperands() == 2);
+    assert(gemmOutIndex == 0 || gemmOutIndex == 1);
+    b.setInsertionPoint(arithOp);
+    Value gemmOut = arithOp->getOperand(gemmOutIndex);
+    int otherIndex = (gemmOutIndex == 0) ? 1 : 0;
+    Value otherBySplitk = scaleFusionAddendDown(
+        b, arithOp->getLoc(), arithOp->getOperand(otherIndex), factor);
+    if (isa<arith::AddFOp>(arithOp)) {
+      b.replaceOpWithNewOp<arith::AddFOp>(arithOp, gemmOut, otherBySplitk);
+    } else if (isa<arith::SubFOp>(arithOp)) {
+      if (gemmOutIndex == 0)
+        b.replaceOpWithNewOp<arith::SubFOp>(arithOp, gemmOut, otherBySplitk);
+      else
+        b.replaceOpWithNewOp<arith::SubFOp>(arithOp, otherBySplitk, gemmOut);
+    } else {
+      return failure();
+    }
+  }
+  return success();
 }
 
 FailureOr<BlockArgument> mlir::rock::findBlockArgument(Value value) {

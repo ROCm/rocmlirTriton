@@ -5565,6 +5565,15 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
         if (!genParams.perfConfig.empty()) {
           auto pc = StringAttr::get(module->getContext(), genParams.perfConfig);
           atomicExtent = std::max(atomicExtent, rock::retrieveSplitKValue(pc));
+          // TODO(stream-K): stream-K's remainder wave re-splits K and merges
+          // the partials with atomic_add exactly like split-K, so it should
+          // also feed this rtol boost. Its effective split factor is
+          // `candP / remTiles` (see RockStreamKDecompose), which depends on the
+          // runtime grid decomposition (num_cu, per-dim tile counts) that is
+          // not resolved at this -ph harness-generation stage. Reproducing that
+          // search here (or extracting it into a shared helper) is needed to
+          // account for stream-K accumulation error; retrieveSplitKValue()
+          // returns 1 for a stream-K perf-config, so no boost is applied today.
         }
 
         if (atomicExtent > 1) {
@@ -5920,10 +5929,15 @@ static LogicalResult populateHostHarnessLogic(
     }
   }
   bool isRandom = (randomSeed != "fixed" && randomSeed != "none");
-  bool isSplitK = (genParams.perfConfig.empty())
-                      ? false
-                      : rock::isSplitKRequested(
-                            StringAttr::get(context, genParams.perfConfig));
+  // Both split-K and stream-K accumulate partial products via atomic_add into a
+  // zero-prefilled output, so their output args must be zero-initialized (not
+  // populated as a read operand). Stream-K carries splitKFactor == 1, so it is
+  // not caught by isSplitKRequested and must be checked separately.
+  bool isSplitK = !genParams.perfConfig.empty() &&
+                  (rock::isSplitKRequested(
+                       StringAttr::get(context, genParams.perfConfig)) ||
+                   rock::isStreamKRequested(
+                       StringAttr::get(context, genParams.perfConfig)));
 
   if (isRandom) {
     auto seedFunc = makeFuncDecl(module, "seedRandomValues", {b.getI32Type()});

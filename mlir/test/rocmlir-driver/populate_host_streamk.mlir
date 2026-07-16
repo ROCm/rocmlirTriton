@@ -1,0 +1,76 @@
+// Host-code generation with a stream-K perf_config (v5, streamKMultiple = 1 in
+// the field before the knob block; splitKFactor stays 1). Like split-k, stream-K
+// accumulates partial products via atomic_add into a zero-prefilled output, so
+// the output buffer is zero-initialized (not populated as a read operand); the
+// rest of the harness matches the plain/split-k host code. This checks that a
+// stream-K perf_config is accepted end-to-end by rocmlir-gen -ph and that the
+// output is zero-initialized.
+
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v5:64,64,64,1,1,4,16,1,2,0,0,1,-1,-1,-1,-1,-1,-1" -ph | FileCheck %s
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v5:64,64,64,1,1,4,16,1,2,0,0,1,-1,-1,-1,-1,-1,-1" -ph -t f16 | FileCheck %s
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -perf_config="gemm:v5:64,64,64,1,1,4,16,1,2,0,0,1,-1,-1,-1,-1,-1,-1" -ph -t i8 | FileCheck %s
+
+// CHECK-LABEL: func.func @main()
+// CHECK-NEXT: %[[filter:.*]] = memref.alloc() : memref<[[GKCYX:[0-9]+]]x[[TYPE:[a-zA-Z0-9]+]]>
+// CHECK-NEXT: arith.constant dense{{.*}} : vector<3x[[TYPE]]>
+// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
+// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
+// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
+// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
+// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
+// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
+// CHECK-NEXT: affine.for %[[if:.*]] = 0 to [[GKCYX]]
+// CHECK-NEXT: affine.apply {{.*}}(%[[if]])
+// CHECK-NEXT: vector.extract
+// CHECK-NEXT: memref.store %{{.*}}, %[[filter]][%[[if]]] : memref<[[GKCYX]]x[[TYPE]]>
+// CHECK-NEXT: }
+// CHECK-NEXT: %[[input:.*]] = memref.alloc() : memref<[[NGCHIWI:[0-9]+]]x[[TYPE]]>
+// CHECK-NEXT: arith.constant dense{{.*}} : vector<3x[[TYPE]]>
+// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
+// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
+// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
+// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
+// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
+// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
+// CHECK-NEXT: affine.for %[[ii:.*]] = 0 to [[NGCHIWI]]
+// CHECK-NEXT: affine.apply {{.*}}(%[[ii]])
+// CHECK-NEXT: vector.extract
+// CHECK-NEXT: memref.store %{{.*}}, %[[input]][%[[ii]]] : memref<[[NGCHIWI]]x[[TYPE]]>
+// CHECK-NEXT: }
+// The stream-K output is a zero-prefilled accumulator, so it is zero-initialized
+// (single-element init) exactly like split-k.
+// CHECK-NEXT: %[[output:.*]] = memref.alloc() : memref<[[NGKHOWO:[0-9]+]]x[[OTYPE:.*]]>
+// CHECK-NEXT: arith.constant dense{{.*}} : vector<1x[[OTYPE]]>
+// CHECK-NEXT: arith.constant {{.*}} : [[OTYPE]]
+// CHECK-NEXT: vector.insert {{.*}} : [[OTYPE]] into vector<1x[[OTYPE]]>
+// CHECK-NEXT: affine.for %[[io:.*]] = 0 to [[NGKHOWO]]
+// CHECK-NEXT: affine.apply {{.*}}(%[[io]])
+// CHECK-NEXT: vector.extract
+// CHECK-NEXT: memref.store %{{.*}}, %[[output]][%[[io]]] : memref<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: }
+// CHECK-NEXT: call @rock_conv_gkc01_ngc01_ngk01_gpu({{.*}}, {{.*}}, {{.*}}) : (memref<[[GKCYX]]x[[TYPE]]>, memref<[[NGCHIWI]]x[[TYPE]]>, memref<[[NGKHOWO]]x[[OTYPE]]>) -> ()
+// CHECK-NEXT: memref.dealloc %[[filter]]
+// CHECK-NEXT: memref.dealloc %[[input]]
+// CHECK-NEXT: memref.dealloc %[[output]]
+// CHECK-NEXT: return
+
+// CHECK: func.func @rock_conv_gkc01_ngc01_ngk01_gpu(%{{.*}}: memref<[[GKCYX]]x[[TYPE]]>, %{{.*}}: memref<[[NGCHIWI]]x[[TYPE]]>, %{{.*}}: memref<[[NGKHOWO]]x[[OTYPE]]>)
+// CHECK-NEXT: gpu.alloc  () : memref<[[GKCYX]]x[[TYPE]]>
+// CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[GKCYX]]x[[TYPE]]>,  memref<[[GKCYX]]x[[TYPE]]>
+// CHECK-NEXT: gpu.alloc  () : memref<[[NGCHIWI]]x[[TYPE]]>
+// CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[NGCHIWI]]x[[TYPE]]>,  memref<[[NGCHIWI]]x[[TYPE]]>
+// CHECK-NEXT: gpu.alloc  () : memref<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[NGKHOWO]]x[[OTYPE]]>,  memref<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: %{{.*}} = bufferization.to_tensor %{{.*}} restrict writable : memref<[[GKCYX]]x[[TYPE]]> to tensor<[[GKCYX]]x[[TYPE]]>
+// CHECK-NEXT: %{{.*}} = bufferization.to_tensor %{{.*}} restrict writable : memref<[[NGCHIWI]]x[[TYPE]]> to tensor<[[NGCHIWI]]x[[TYPE]]>
+// CHECK-NEXT: %{{.*}} = bufferization.to_tensor %{{.*}} restrict writable : memref<[[NGKHOWO]]x[[OTYPE]]> to tensor<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: %{{.*}} = call @rock_conv_gkc01_ngc01_ngk01(%{{.*}}, %{{.*}}, %{{.*}}) : (tensor<[[GKCYX]]x[[TYPE]]>, tensor<[[NGCHIWI]]x[[TYPE]]>, tensor<[[NGKHOWO]]x[[OTYPE]]>) -> tensor<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: %{{.*}} = bufferization.to_buffer %{{.*}} : tensor<[[NGKHOWO]]x[[OTYPE]]> to memref<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: memref.copy %{{.*}}, %{{.*}} : memref<[[NGKHOWO]]x[[OTYPE]]> to memref<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[GKCYX]]x[[TYPE]]>,  memref<[[GKCYX]]x[[TYPE]]>
+// CHECK-NEXT: gpu.dealloc  %{{.*}} : memref<[[GKCYX]]x[[TYPE]]>
+// CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[NGCHIWI]]x[[TYPE]]>,  memref<[[NGCHIWI]]x[[TYPE]]>
+// CHECK-NEXT: gpu.dealloc  %{{.*}} : memref<[[NGCHIWI]]x[[TYPE]]>
+// CHECK-NEXT: gpu.memcpy  %{{.*}}, %{{.*}} : memref<[[NGKHOWO]]x[[OTYPE]]>,  memref<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: gpu.dealloc  %{{.*}} : memref<[[NGKHOWO]]x[[OTYPE]]>
+// CHECK-NEXT: return

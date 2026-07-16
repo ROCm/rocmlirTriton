@@ -52,41 +52,6 @@ class RockFusionSplitkRegularizationPass
 };
 } // end namespace
 
-static LogicalResult
-divideAddBySplitkFactor(Value gemmResult, int64_t splitKFactor, IRRewriter &b) {
-  SmallVector<std::tuple<Operation *, int>> adds;
-  if (failed(checkValidOutputFusion(gemmResult, adds)))
-    return gemmResult.getDefiningOp()->emitOpError(
-        "has invalid output fusion for split-k");
-
-  for (auto [arithOp, gemmOutIndex] : adds) {
-    assert(arithOp->getNumOperands() == 2);
-    assert(gemmOutIndex == 0 || gemmOutIndex == 1);
-    LLVM_DEBUG(llvm::dbgs() << "Op to modify: " << arithOp << "\n");
-    b.setInsertionPoint(arithOp);
-    Value gemmOut = arithOp->getOperand(gemmOutIndex);
-    Value otherValue =
-        (gemmOutIndex == 0) ? arithOp->getOperand(1) : arithOp->getOperand(0);
-    Type otherElmType = cast<ShapedType>(otherValue.getType()).getElementType();
-    auto splitKFactorValue =
-        createConstantFloatOp(b, arithOp->getLoc(), otherValue.getType(),
-                              otherElmType, static_cast<float>(splitKFactor));
-    Value otherBySplitk = b.createOrFold<arith::DivFOp>(
-        arithOp->getLoc(), otherValue, splitKFactorValue);
-    if (isa<arith::AddFOp>(arithOp)) {
-      b.replaceOpWithNewOp<arith::AddFOp>(arithOp, gemmOut, otherBySplitk);
-    } else if (isa<arith::SubFOp>(arithOp)) {
-      if (gemmOutIndex == 0)
-        b.replaceOpWithNewOp<arith::SubFOp>(arithOp, gemmOut, otherBySplitk);
-      else
-        b.replaceOpWithNewOp<arith::SubFOp>(arithOp, otherBySplitk, gemmOut);
-    } else {
-      return failure();
-    }
-  }
-  return success();
-}
-
 static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
   IRRewriter rewriter(func->getContext());
   // TODO: extend this for gemm+gemm
@@ -124,8 +89,8 @@ static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
     GemmOp gemmOp = gemmOps[0];
     int64_t splitKFactor = gemmOp.getParams()->getSplitKFactor();
 
-    if (failed(divideAddBySplitkFactor(gemmOp.getResult(), splitKFactor,
-                                       rewriter)))
+    if (failed(regularizeOutputFusionForKReduction(gemmOp.getResult(),
+                                                   splitKFactor, rewriter)))
       return failure();
   }
 

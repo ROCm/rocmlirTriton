@@ -63,6 +63,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
@@ -196,9 +197,11 @@ public:
   StreamKOutputSplitter(OpBuilder &b, Location loc, unsigned partDim,
                         int64_t numBlocks, int64_t perBlock, int64_t g,
                         int64_t m, int64_t n, int64_t splitK,
-                        ArrayRef<StreamKCell> cells)
+                        ArrayRef<StreamKCell> cells,
+                        const DenseMap<Operation *, int> &scaledAddends)
       : b(b), loc(loc), partDim(partDim), numBlocks(numBlocks),
-        perBlock(perBlock), g(g), m(m), n(n), splitK(splitK), cells(cells) {}
+        perBlock(perBlock), g(g), m(m), n(n), splitK(splitK), cells(cells),
+        scaledAddends(scaledAddends) {}
 
   void seed(Value v, SmallVector<Value> grid) { memo[v] = std::move(grid); }
 
@@ -285,6 +288,20 @@ private:
       IRMapping map;
       for (auto [oi, operand] : llvm::enumerate(op->getOperands()))
         map.map(operand, operandGrids[oi][cell]);
+      // Stream-K remainder: a fused `add/sub gemmOut, other` is applied once
+      // per K-fold and the `splitK` folds atomic_add into the same tile, so
+      // `other` would be added `splitK` times. Divide it by `splitK` to keep
+      // the fused result correct. Data-parallel cells store `set` and need no
+      // scaling.
+      if (cells[cell].isRemainder) {
+        auto it = scaledAddends.find(op);
+        if (it != scaledAddends.end()) {
+          int otherIdx = (it->second == 0) ? 1 : 0;
+          map.map(op->getOperand(otherIdx),
+                  rock::scaleFusionAddendDown(
+                      b, loc, operandGrids[otherIdx][cell], splitK));
+        }
+      }
       Operation *cloned = b.clone(*op, map);
       for (OpResult res : cloned->getResults()) {
         auto rt = cast<RankedTensorType>(res.getType());
@@ -301,6 +318,7 @@ private:
   unsigned partDim;
   int64_t numBlocks, perBlock, g, m, n, splitK;
   ArrayRef<StreamKCell> cells;
+  const DenseMap<Operation *, int> &scaledAddends;
   DenseMap<Value, SmallVector<Value>> memo;
 };
 
@@ -450,6 +468,17 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
       return st.emitError("rock-stream-k-decompose: atomic_max output is "
                           "incompatible with the split-K remainder");
 
+  // Identify the fused `add/sub gemmOut, other` ops whose `other` operand must
+  // be divided by `splitK` in the remainder cell (same rule as split-K fusion
+  // regularization; only the remainder re-splits K + atomic_adds). mul/div/neg
+  // and type conversions distribute over the partial sum and are left alone.
+  SmallVector<std::tuple<Operation *, int>> adds;
+  if (failed(checkValidOutputFusion(gemm.getResult(), adds)))
+    return gemm.emitError("rock-stream-k-decompose: invalid output fusion");
+  DenseMap<Operation *, int> scaledAddends;
+  for (auto [arithOp, gemmOutIndex] : adds)
+    scaledAddends[arithOp] = gemmOutIndex;
+
   LLVM_DEBUG(llvm::dbgs() << "stream-K: P=" << P << " gridFull=" << gridFull
                           << " partDim=" << chosen->dim << " span=" << span
                           << " numWaves=" << numWaves << " remBlocks="
@@ -532,7 +561,8 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
   }
 
   StreamKOutputSplitter splitter(b, loc, pd, chosen->numBlocks,
-                                 chosen->perBlock, G, M, N, splitK, cells);
+                                 chosen->perBlock, G, M, N, splitK, cells,
+                                 scaledAddends);
   splitter.seed(gemm.getResult(), resultGrid);
 
   // Process stores in program order so explicit resultAlias chains thread
