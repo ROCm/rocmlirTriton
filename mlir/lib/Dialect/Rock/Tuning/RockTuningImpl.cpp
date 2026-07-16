@@ -806,18 +806,16 @@ static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
   Block &entry = body.front();
   unsigned numInputs = attnOp.getPreSoftmaxElemWiseInputs().size();
   unsigned numQuantInputs = isQuantized ? 2u : 0u;
+  if (numInputs <= numQuantInputs)
+    return;
 
   // Entry block argument 0 is the QK^T product; arguments 1.. correspond 1:1 to
   // the pre-softmax elementwise inputs. AttentionOp::verify pins this arity
-  // (see verifyGemmPlusGemmLikeOp), but clamp the upper bound to the block's
-  // actual argument count defensively so a stray call on unverified IR cannot
-  // make an out-of-bounds block-argument access.
-  unsigned numBlockArgs = entry.getNumArguments();
-  unsigned lastInput = numBlockArgs > 0 ? numBlockArgs - 1 : 0;
-  if (lastInput > numInputs)
-    lastInput = numInputs;
+  // (see verifyGemmPlusGemmLikeOp).
+  assert(entry.getNumArguments() == 1 + numInputs &&
+         "pre-softmax body arguments must match elementwise inputs");
 
-  for (unsigned i = numQuantInputs; i < lastInput; ++i) {
+  for (unsigned i = numQuantInputs; i < numInputs; ++i) {
     // Walk forward from the input through its use chain, stepping over any
     // intermediate op (e.g. a `rock.transform` reshaping the input to match the
     // scores) until we reach the multiply (scale) or add (bias) that consumes

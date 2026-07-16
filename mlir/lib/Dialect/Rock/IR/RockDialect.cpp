@@ -2102,10 +2102,10 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     // Block argument 0 is the first-GEMM result; the remaining arguments map
     // 1:1 to the pre-second-GEMM elementwise inputs.
     if (block.getNumArguments() != 1 + numElemwiseInputs)
-      return op.emitOpError("pre-second-GEMM body must have ")
+      return op.emitOpError("pre-second-GEMM body argument count must be ")
              << (1 + numElemwiseInputs)
-             << " block arguments (the first-GEMM result plus one per "
-                "elementwise input), but has "
+             << " (the first-GEMM result plus one per elementwise input), but "
+                "is "
              << block.getNumArguments();
     auto yieldOp = dyn_cast<rock::YieldOp>(block.getTerminator());
     if (!yieldOp)

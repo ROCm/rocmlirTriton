@@ -1141,9 +1141,10 @@ func.func @transform_output_shape_mismatch(%arg0: tensor<256x128xf16>) -> tensor
 // Pre-second-GEMM body verification tests
 //
 // `verifyGemmPlusGemmLikeOp` requires that, when the pre-second-GEMM region is
-// non-empty, it contains a single block with at least one block argument whose
-// terminator is a `rock.yield` that yields exactly one value. The same verifier
-// is shared by `rock.gemm_elementwise_gemm`, `rock.conv_elementwise_gemm` and
+// non-empty, it contains a single block whose arguments are the first-GEMM
+// result followed by one argument per elementwise input and whose terminator is
+// a `rock.yield` that yields exactly one value. The same verifier is shared by
+// `rock.gemm_elementwise_gemm`, `rock.conv_elementwise_gemm` and
 // `rock.attention`.
 // =============================================================================
 
@@ -1179,19 +1180,38 @@ func.func @gemm_elementwise_gemm_body_multi_block(
   return %r : tensor<1x4x2xf32>
 }
 
-// Zero block arguments: the body's entry block must accept at least the
-// running first-GEMM result as a block argument.
+// Zero block arguments: the body's entry block must accept the running
+// first-GEMM result as a block argument.
 func.func @gemm_elementwise_gemm_body_no_block_args(
     %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
     -> tensor<1x4x2xf32>
     attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  // expected-error @+1 {{pre-second-GEMM body must have 1 block arguments (the first-GEMM result plus one per elementwise input), but has 0}}
+  // expected-error @+1 {{pre-second-GEMM body argument count must be 1 (the first-GEMM result plus one per elementwise input), but is 0}}
   %r = rock.gemm_elementwise_gemm{
    ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
    ab = elementwise {
    ^bb0:
      %cst = arith.constant dense<0.0> : tensor<1x4x4xf32>
      rock.yield %cst : tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Non-zero but still wrong block argument count: when there are elementwise
+// inputs, the entry block must accept one block argument for each of them.
+func.func @gemm_elementwise_gemm_body_missing_elemwise_arg(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>,
+    %bias: tensor<1x4x4xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body argument count must be 2 (the first-GEMM result plus one per elementwise input), but is 1}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise otherIns(%bias : tensor<1x4x4xf32>) {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     rock.yield %qk : tensor<1x4x4xf32>
    }
    out = ab * %c : tensor<1x4x2xf32>
   } -> tensor<1x4x2xf32>
