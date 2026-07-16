@@ -1,6 +1,7 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --rock-conv-to-gemm --mlir-print-local-scope --split-input-file | FileCheck %s
 
 // CHECK-LABEL: @nhwc_1x1
+// CHECK-SAME: rock.conv_kernel
 // CHECK: <AddDim{1} ["0"] at [1] -> [] at []>, <PassThrough ["0o"] at [2] -> ["0ipad"] at [1]>, <AddDim{1} ["1"] at [3] -> [] at []>, <PassThrough ["1o"] at [4] -> ["1ipad"] at [2]>
 // CHECK-NOT: Embed
 // CHECK: rock.gemm
@@ -14,6 +15,7 @@ func.func @nhwc_1x1(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: 
 }
 
 // CHECK-LABEL: @nhwc_1x1_stride_2
+// CHECK-SAME: rock.conv_kernel
 // CHECK: <AddDim{1} ["0"] at [1] -> [] at []>, <Embed{2} ["0o"] at [2] -> ["0ipad"] at [1]>, <AddDim{1} ["1"] at [3] -> [] at []>, <Embed{2} ["1o"] at [4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm
 func.func @nhwc_1x1_stride_2(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<802816xf16>) -> tensor<64x7x7x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
@@ -26,6 +28,7 @@ func.func @nhwc_1x1_stride_2(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>
 }
 
 // CHECK-LABEL: @nhwc_3x3
+// CHECK-SAME: rock.conv_kernel
 // CHECK: <Embed{1, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm
 func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<2359296xf16>) -> tensor<64x12x12x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
@@ -41,6 +44,7 @@ func.func @nhwc_3x3(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2:
 // spatial padding. Output spatial = 14 + 2*1 - 3 + 1 = 14, so the output buffer
 // keeps shape 64x14x14x1x256 (same as @nhwc_3x3 but with padding).
 // CHECK-LABEL: @nhwc_3x3_padded
+// CHECK-SAME: rock.conv_kernel
 // CHECK: <Pad{1, 1, 1, 1} ["0ipad", "1ipad"] at [1, 2] -> ["0i", "1i"] at [1, 2]>
 // CHECK: <Embed{1, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm
@@ -57,6 +61,7 @@ func.func @nhwc_3x3_padded(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>,
 // Effective receptive field is (3-1)*2 + 1 = 5, so output spatial = 14 - 5 + 1
 // = 10 and the output buffer is 64x10x10x1x256 (1638400 f16 elements).
 // CHECK-LABEL: @nhwc_3x3_dilated
+// CHECK-SAME: rock.conv_kernel
 // CHECK: <Embed{2, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{2, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm
 func.func @nhwc_3x3_dilated(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<1638400xf16>) -> tensor<64x10x10x1x256xf16> attributes {rock.block_size = 128 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
@@ -72,6 +77,7 @@ func.func @nhwc_3x3_dilated(%arg0: tensor<147456xf16>, %arg1: tensor<802816xf16>
 // (per-group K=128, C=32). Total elements: 2*128*1*1*32=8192 filter,
 // 64*14*14*2*32=802816 input, 64*14*14*2*128=3211264 output.
 // CHECK-LABEL: @grouped_nhwc_1x1
+// CHECK-SAME: rock.conv_kernel
 // CHECK: rock.gemm
 // CHECK-SAME: tensor<2x{{[0-9]+}}x{{[0-9]+}}xf16> * tensor<2x{{[0-9]+}}x{{[0-9]+}}xf16>
 func.func @grouped_nhwc_1x1(%arg0: tensor<8192xf16>, %arg1: tensor<802816xf16>, %arg2: tensor<3211264xf16>) -> tensor<64x14x14x2x128xf16> attributes {rock.block_size = 128 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
@@ -87,6 +93,7 @@ func.func @grouped_nhwc_1x1(%arg0: tensor<8192xf16>, %arg1: tensor<802816xf16>, 
 // The conv produces f32 but the store destination is i32 (through arith.fptoui).
 // The gemm must produce f32 (matching conv inputs), not i32.
 // CHECK-LABEL: @nhwc_1x1_fptoui_fusion
+// CHECK-SAME: rock.conv_kernel
 // CHECK: rock.gemm
 // CHECK-SAME: -> tensor<{{[0-9x]+}}xf32>
 // CHECK: arith.fptoui {{.*}} : tensor<{{[0-9x]+}}xf32> to tensor<{{[0-9x]+}}xi32>
@@ -106,6 +113,7 @@ func.func @nhwc_1x1_fptoui_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816
 // different output cast (signed). The conv produces f32 but the destination is
 // i32 via arith.fptosi; the gemm must still produce f32.
 // CHECK-LABEL: @nhwc_1x1_fptosi_fusion
+// CHECK-SAME: rock.conv_kernel
 // CHECK: rock.gemm
 // CHECK-SAME: -> tensor<{{[0-9x]+}}xf32>
 // CHECK: arith.fptosi {{.*}} : tensor<{{[0-9x]+}}xf32> to tensor<{{[0-9x]+}}xi32>
@@ -131,6 +139,7 @@ func.func @nhwc_1x1_fptosi_fusion(%arg0: tensor<16384xf32>, %arg1: tensor<802816
 //     commonConvRewrite produced for it (so both addf operands match the
 //     gemm shape).
 // CHECK-LABEL: @nhwc_1x1_bias_add
+// CHECK-SAME: rock.conv_kernel
 // CHECK-NOT: rock.conv(
 // CHECK: %[[BIAS_VIEW:.*]] = rock.transform %{{.*}} by {{.*}}Merge{64, 14, 14} ["gemmN"]{{.*}}: tensor<64x14x14x1x256xf16> to tensor<1x256x12544xf16>
 // CHECK: %[[GEMM:.*]] = rock.gemm tr
@@ -154,6 +163,7 @@ func.func @nhwc_1x1_bias_add(%arg0: tensor<16384xf16>, %arg1: tensor<802816xf16>
 // the downstream absf to the gemm shape, even though only the addf has an
 // entry in fusionInputMap (absf has no extra inputs).
 // CHECK-LABEL: @nhwc_1x1_bias_add_then_absf
+// CHECK-SAME: rock.conv_kernel
 // CHECK-NOT: rock.conv(
 // CHECK: %[[BIAS_VIEW:.*]] = rock.transform %{{.*}} by {{.*}}Merge{64, 14, 14} ["gemmN"]{{.*}}: tensor<64x14x14x1x256xf16> to tensor<1x256x12544xf16>
 // CHECK: %[[GEMM:.*]] = rock.gemm tr
@@ -189,6 +199,7 @@ func.func @nhwc_1x1_bias_add_then_absf(%arg0: tensor<16384xf16>, %arg1: tensor<8
 //   * replaceFusionExtraInputs rewires the bias operand of addf even though
 //     the chain fans out below it.
 // CHECK-LABEL: @nhwc_1x1_bias_add_two_outputs
+// CHECK-SAME: rock.conv_kernel
 // CHECK-NOT: rock.conv(
 // CHECK: %[[BIAS_VIEW:.*]] = rock.transform %{{.*}} by {{.*}}Merge{64, 14, 14} ["gemmN"]{{.*}}: tensor<64x14x14x1x256xf16> to tensor<1x256x12544xf16>
 // CHECK: %[[GEMM:.*]] = rock.gemm tr
@@ -212,6 +223,7 @@ func.func @nhwc_1x1_bias_add_two_outputs(%arg0: tensor<16384xf16>, %arg1: tensor
 }
 
 // CHECK-LABEL: @conv_gemm_nhwc_1x1
+// CHECK-SAME: rock.conv_kernel
 // CHECK: <AddDim{1} ["0"] at [1] -> [] at []>, <PassThrough ["0o"] at [2] -> ["0ipad"] at [1]>, <AddDim{1} ["1"] at [3] -> [] at []>, <PassThrough ["1o"] at [4] -> ["1ipad"] at [2]>
 // CHECK-NOT: Embed
 // CHECK: rock.gemm_elementwise_gemm
@@ -229,6 +241,7 @@ func.func @conv_gemm_nhwc_1x1(%arg0: tensor<16384xf32>, %arg1: tensor<802816xf32
 }
 
 // CHECK-LABEL: @conv_gemm_nhwc_1x1_stride_2
+// CHECK-SAME: rock.conv_kernel
 // CHECK: <AddDim{1} ["0"] at [1] -> [] at []>, <Embed{2} ["0o"] at [2] -> ["0ipad"] at [1]>, <AddDim{1} ["1"] at [3] -> [] at []>, <Embed{2} ["1o"] at [4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm_elementwise_gemm
 func.func @conv_gemm_nhwc_1x1_stride_2(%arg0: tensor<16384xf32>, %arg1: tensor<802816xf32>, %arg2: tensor<65536xf32>, %arg3: tensor<802816xf32>) -> tensor<1x3136x256xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
@@ -245,6 +258,7 @@ func.func @conv_gemm_nhwc_1x1_stride_2(%arg0: tensor<16384xf32>, %arg1: tensor<8
 }
 
 // CHECK-LABEL: @conv_gemm_nhwc_3x3
+// CHECK-SAME: rock.conv_kernel
 // CHECK: <Embed{1, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm_elementwise_gemm
 func.func @conv_gemm_nhwc_3x3(%arg0: tensor<147456xf32>, %arg1: tensor<802816xf32>, %arg2: tensor<65536xf32>, %arg3: tensor<2359296xf32>) -> tensor<1x9216x256xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
@@ -261,6 +275,7 @@ func.func @conv_gemm_nhwc_3x3(%arg0: tensor<147456xf32>, %arg1: tensor<802816xf3
 }
 
 // CHECK-LABEL: @conv_gemm_nhwc_3x3_atomicadd
+// CHECK-SAME: rock.conv_kernel
 // CHECK: <Embed{1, 1} ["0", "0o"] at [1, 2] -> ["0ipad"] at [1]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [2]>
 // CHECK: rock.gemm_elementwise_gemm
 // CHECK: rock.store {{.*}} by atomic_add
@@ -281,6 +296,7 @@ func.func @conv_gemm_nhwc_3x3_atomicadd(%arg0: tensor<147456xf32>, %arg1: tensor
 // The conv-to-gemm pass must inline the region into the resulting
 // `rock.gemm_elementwise_gemm` (it uses inlineRegionBefore).
 // CHECK-LABEL: @conv_gemm_nhwc_1x1_elemwise
+// CHECK-SAME: rock.conv_kernel
 // CHECK: rock.gemm_elementwise_gemm
 // CHECK: ab = elementwise
 // CHECK: arith.negf
@@ -309,6 +325,7 @@ func.func @conv_gemm_nhwc_1x1_elemwise(%arg0: tensor<16384xf32>, %arg1: tensor<8
 // `* tr %c`). Here O=128, N=256, so c has shape [1, 128, 256] and the result
 // has shape [1, 12544, 128] (1605632 f32 elements).
 // CHECK-LABEL: @conv_gemm_nhwc_1x1_cTransposed
+// CHECK-SAME: rock.conv_kernel
 // CHECK: rock.gemm_elementwise_gemm
 // CHECK: out = ab * tr
 func.func @conv_gemm_nhwc_1x1_cTransposed(%arg0: tensor<16384xf32>, %arg1: tensor<802816xf32>, %arg2: tensor<32768xf32>, %arg3: tensor<1605632xf32>) -> tensor<1x12544x128xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
