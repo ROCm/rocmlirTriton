@@ -388,12 +388,16 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
     return false;
   };
 
-  // The per-iteration merged diff must be a compile-time constant, so the loop
-  // step must be constant.
-  std::optional<APInt> stepAP = loop.getConstantStep();
-  if (!stepAP)
-    return bail("loop step is not a compile time constant");
-  int64_t stepConst = stepAP->getSExtValue();
+  // analyzeCandidate allows multiple extraIndices positions to be classified
+  // as the loop IV, whereas analyzeCarryCandidate only records one merge.
+  // If the same IV affects another coordinate path outside that merge, 
+  // the carry rewrite pins all IV indices to lb and then only carries 
+  // the merge-decomposed coordinates, silently dropping the other IV-dependent
+  // contribution. Therefore, we bail if there is more than one iv position.
+  if (ivPositions.size() != 1)
+    return bail("iv is used in more than one extra index; the carry path "
+                "incrementalizes only one iv-driven coordinate, so the other "
+                "iv contributions to the address/mask would be ignored");
 
   // Propagate the unit-iv diff down the chain, locating the single Merge whose
   // merged upper dim the iv reaches with a nonzero diff.
@@ -444,8 +448,21 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
   // products). delinearize leaves the top coord un-wrapped, which is what we
   // want (the highest coord never wraps; the loop bounds keep it in range).
   ArrayRef<int64_t> mergeParams = mergeOp.getParams();
+
+  // The per-iteration merged diff must be a compile-time constant, so the loop
+  // step must be constant.
+  std::optional<APInt> stepAP = loop.getConstantStep();
+  if (!stepAP)
+    return bail("loop step is not a compile time constant");
+  int64_t stepConst = stepAP->getSExtValue();
+
   // How far the merged coordinate moves per loop iteration
   int64_t D = mergedDiffUnit * stepConst;
+
+  // A non-positive D (caused by a negative loop step, or a negative coefficient
+  // above the merge) would break the carry rewrite, so bail in such case.
+  if (D <= 0)
+    return bail("non-positive merged per-iteration diff");
 
   cand.kind = CandKind::Carry;
   cand.op = op;
