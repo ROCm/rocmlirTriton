@@ -186,19 +186,19 @@
 //===----------------------------------------------------------------------===//
 //
 // `useReductionLayout` is the v4 perfConfig knob and a tri-state like the other
-// knobs: -1 (the default / heuristic, currently disabled, equivalent to 0), 0
-// (off), or 1 (on). The `rock-set-reduction-layout` pass is always scheduled: it
-// rewrites convolution kernels (`rock.conv_kernel`) unconditionally, and the
-// knob is threaded to the pass as `use-reduction-layout` to additionally force
-// the rewrite on every kernel when set to 1. So the knob controls the pass
-// option, not whether the pass is present.
+// knobs: -1 (the default / heuristic), 0 (off), or 1 (on). The
+// `rock-set-reduction-layout` pass is always scheduled and the knob is threaded
+// to it as `use-reduction-layout`, which controls what the pass rewrites:
+// -1 rewrites only convolution kernels (`rock.conv_kernel`), 0 disables the
+// rewrite entirely, and 1 forces the rewrite on every kernel. So the knob
+// controls the pass option, not whether the pass is present.
 
-// Default (v3 string, knob absent -> defaults to -1): force option off.
+// Default (v3 string, knob absent -> defaults to -1): rewrite conv kernels only.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_DEFAULT
 
-// v4 with useReductionLayout=0 (explicit off): force option off.
+// v4 with useReductionLayout=0 (explicit off): disable the rewrite entirely.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,0 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_OFF

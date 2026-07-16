@@ -307,11 +307,15 @@ void RockSetReductionLayoutPass::runOnOperation() {
     if (!inserted && it->second != kDim)
       conflicting.insert(load);
   };
-  // Convolution kernels (marked `rock.conv_kernel`) always get the rewrite;
-  // the `useReductionLayout` perfConfig knob additionally forces it on every
-  // kernel when set to 1.
+  // The `useReductionLayout` perfConfig knob is a tri-state gate:
+  //   -1 (heuristic default): rewrite only convolution kernels (those carrying
+  //      the `rock.conv_kernel` attribute).
+  //    0 (off): disable the rewrite entirely; no kernel is touched.
+  //    1 (on): force the rewrite on every kernel.
   // TODO: Investigate if this can be beneficial for non-convolution kernels.
   // https://amd-hub.atlassian.net/browse/AIROCMLIR-1049
+  if (useReductionLayout == 0)
+    return;
   bool forceAll = useReductionLayout == 1;
   mod.walk([&](triton::FuncOp func) {
     if (!forceAll && !func->hasAttr(rock::ConvKernelAttr::getMnemonic()))
