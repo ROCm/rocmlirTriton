@@ -78,12 +78,18 @@ bool mlir::rock::isValidKBlocks(int64_t kBlocks, int64_t N) {
 // comfortably under that reclaimable tail so enabling stream-K stays a net win.
 static constexpr double kMaxStreamKPadFraction = 0.125;
 
+// Minimum fraction of the requested persistent grid (targetP = streamKMultiple
+// * numCU) a plan must actually fill. Since P = floor(targetP / others) *
+// others, a coarse partition (large `others`) can land P as low as
+// ~span/(span+1) of targetP -- down to ~2/3 when span == 2 -- leaving that many
+// CUs idle. Reject any partition dim that fills less than this fraction.
+static constexpr double kMinStreamKFillFraction = 0.75;
+
 FailureOr<StreamKPlan>
 mlir::rock::computeStreamKPlanForDim(StreamKPartDim partDim, int64_t g,
                                      int64_t mBlocks, int64_t nBlocks,
                                      int64_t numCU, int64_t streamKMultiple) {
-  if (g <= 0 || mBlocks <= 0 || nBlocks <= 0 || numCU <= 0 ||
-      streamKMultiple < 1)
+  if (streamKMultiple < 1)
     return failure();
 
   int64_t numBlocks, others;
@@ -117,18 +123,29 @@ mlir::rock::computeStreamKPlanForDim(StreamKPartDim partDim, int64_t g,
   if (span < 2 || span > numBlocks)
     return failure();
   const int64_t P = span * others;
+  // Reject partitions that leave the persistent grid substantially underfilled:
+  // a large `others` forces span low (down to 2), so P can sit well below
+  // targetP and idle a chunk of the CUs. Gate on the fill fraction P/targetP.
+  if (static_cast<double>(P) < kMinStreamKFillFraction * targetP)
+    return failure();
   const int64_t rem = numBlocks % span;
 
-  // Pick the remainder block count rb: a nonzero divisor of span (so the
-  // per-tile split-K factor span/rb is integral and every sub-gemm resolves to
-  // exactly P tiles). Choose the rb needing the least padding to reach residue
-  // rb; break ties toward the largest rb (=> smallest split-K => least atomic
-  // contention).
+  // rb ("remainder blocks") is the number of partition-dim blocks left over
+  // after the full data-parallel waves are peeled off: the ragged tail
+  //   paddedNumBlocks = numWaves * span + rb,   1 <= rb < span
+  // that is handled by K-splitting instead of as an underfilled wave. rb must
+  // be a nonzero *proper divisor* of span, so the per-tile split-K factor
+  // splitK = span/rb is integral and the tail fans out into rb*splitK = span
+  // sub-gemms -- exactly one more P-sized grid. Choose the rb needing the least
+  // padding to reach residue rb; break ties toward the largest rb (=> smallest
+  // split-K => least atomic contention).
   int64_t bestPad = -1, bestRb = 0;
   for (int64_t rb = 1; rb < span; ++rb) {
     if (span % rb != 0)
       continue;
-    int64_t pad = ((rb - rem) % span + span) % span;
+    // Smallest pad >= 0 that moves the current tail `rem` forward to `rb`.
+    // rb - rem is in (-span, span), so a single +span makes it non-negative.
+    int64_t pad = (rb - rem + span) % span;
     if (numBlocks + pad < span + rb)
       pad += span; // keep at least one full data-parallel wave
     if (bestPad < 0 || pad < bestPad || (pad == bestPad && rb > bestRb)) {
