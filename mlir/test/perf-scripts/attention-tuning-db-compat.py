@@ -144,6 +144,40 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         self.assertIn("-transBias true", trans_bias_config.to_command_line())
         self.assertIsNone(self.lookup_from_legacy_key(trans_bias_config, legacy_all_false_key))
 
+    def test_perf_runner_keeps_sliding_window_distinct(self):
+        """A sliding-window kernel must not fall back to a row that lacks it.
+
+        Unlike the boolean flags, sliding_window_size is only present in the key
+        when > 0, so its distinctness relies on the key string, not on the
+        false-flag stripping in lookup_tuning_db.
+        """
+        all_false_config = make_config(
+            "-with-attn-scale false -with-attn-bias false -transBias false")
+        legacy_all_false_key = drop_flags(all_false_config.to_command_line(),
+                                          " -with-attn-scale false", " -with-attn-bias false",
+                                          " -transBias false")
+
+        sliding_window_config = make_config(
+            "-sliding_window_size 8 -with-attn-scale false -with-attn-bias false -transBias false")
+
+        self.assertIn("-sliding_window_size 8", sliding_window_config.to_command_line())
+        self.assertIsNone(self.lookup_from_legacy_key(sliding_window_config, legacy_all_false_key))
+
+    def test_perf_runner_matches_pre_transbias_sliding_window_key(self):
+        """A sliding-window row from before transBias must still match.
+
+        Exercises the reconciled columns together: stripping the false-valued
+        transBias flag to reach a legacy row must not disturb the
+        sliding_window_size column that sits earlier in the key.
+        """
+        current_config = make_config(
+            "-sliding_window_size 8 -with-attn-scale false -with-attn-bias false -transBias false")
+        legacy_key = drop_flags(current_config.to_command_line(), " -transBias false")
+
+        self.assertIn("-sliding_window_size 8", legacy_key)
+        self.assertNotIn("-transBias", legacy_key)
+        self.assertEqual(self.lookup_from_legacy_key(current_config, legacy_key), PERFCONFIG)
+
     def test_quick_tuning_gen_defaults_missing_optional_columns(self):
         """Legacy debug TSV rows without TransBias/SlidingWindowSize get defaults."""
         debug_path = Path(f"{self.tmp_prefix}.debug")
