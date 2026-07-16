@@ -1624,7 +1624,7 @@ class AttentionConfiguration(PerfConfiguration):
         if dtype not in DATA_TYPES_ATTENTION:
             raise ValueError(f"Invalid datatype for a: {dtype}")
         if trans_bias and not with_attn_bias:
-            raise ValueError("trans_bias requires with_attn_bias")
+            raise ValueError("--transBias requires --with-attn-bias")
 
         self.datatype = dtype
         self.g = g

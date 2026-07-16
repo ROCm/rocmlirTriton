@@ -22,16 +22,16 @@
 // Attention scale/bias fusion is part of the problem key. It must round-trip
 // through --emit-tuning-key (see AttentionConfiguration in perfRunner.py).
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f32 -g 1 --with-attn-scale --with-attn-bias | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_SCALE_BIAS
-// CHECK_SCALE_BIAS: -t f32 -transQ false -transK false -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -with-attn-scale true -with-attn-bias true
+// CHECK_SCALE_BIAS: -t f32 -transQ false -transK false -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -with-attn-scale true -with-attn-bias true -transBias false
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f32 -g 1 --with-attn-scale | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_SCALE_ONLY
-// CHECK_SCALE_ONLY: -head_dim_v 32 -with-attn-scale true -with-attn-bias false
+// CHECK_SCALE_ONLY: -head_dim_v 32 -with-attn-scale true -with-attn-bias false -transBias false
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f32 -g 1 --with-attn-bias | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_BIAS_ONLY
 // CHECK_BIAS_ONLY: -head_dim_v 32 -with-attn-scale false -with-attn-bias true -transBias false
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f32 -g 1 --with-attn-bias --transBias | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_TRANS_BIAS
 // CHECK_TRANS_BIAS: -head_dim_v 32 -with-attn-scale false -with-attn-bias true -transBias true
 // Quantized (i8) dequantization inputs must not be mistaken for attn scale/bias.
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t i8 -g 8 --with-attn-scale --with-attn-bias | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_I8_SCALE_BIAS
-// CHECK_I8_SCALE_BIAS: -t i8 {{.*}} -head_dim_v 32 -with-attn-scale true -with-attn-bias true
+// CHECK_I8_SCALE_BIAS: -t i8 {{.*}} -head_dim_v 32 -with-attn-scale true -with-attn-bias true -transBias false
 // The same i8 kernel without scale/bias must classify both as false, proving the
 // dequantization mul/add are not counted as attn scale/bias.
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t i8 -g 8 | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_I8_NO_SCALE_BIAS
