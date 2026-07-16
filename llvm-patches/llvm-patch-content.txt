@@ -5,6 +5,83 @@ This directory holds downstream patch records against the Triton-pinned LLVM
 tree (external/llvm-project).
 
 ----------------------------------------------------------------------
+patch200945.patch
+----------------------------------------------------------------------
+- Upstream commit : 6359dd3b2a11316cc58c6a50807be1f2d964a3a3
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/200945
+- Upstream title  : [MachineScheduler] Rework dag-maps-huge-region
+- File Fixed      : llvm/include/llvm/CodeGen/ScheduleDAGInstrs.h
+                    llvm/lib/CodeGen/ScheduleDAGInstrs.cpp
+                    llvm/test/CodeGen/AArch64/dag-maps-huge-region.ll (new)
+                    llvm/test/CodeGen/AMDGPU/gfx-callable-return-types.ll
+                    llvm/test/CodeGen/AMDGPU/memintrinsic-unroll.ll
+                    llvm/test/CodeGen/X86/vector-interleaved-load-i64-stride-8.ll
+                    llvm/test/CodeGen/X86/vector-interleaved-store-i64-stride-8.ll
+- Contents        : Reworks MachineScheduler's dag-maps-huge-region handling
+                    so large scheduling regions periodically create a barrier
+                    chain and clear the memory dependency maps after a fixed
+                    number of memory operations. Lowers the default threshold
+                    to 500, removes the separate reduction-size option and
+                    map-reduction machinery, and updates the affected LIT
+                    expectations.
+
+Symptom without the patch
+-------------------------
+Large scheduling regions with many memory operations can spend excessive
+compile time and memory in ScheduleDAGInstrs dependency-map maintenance. In the
+problem cases upstream investigated, addChainDependencies() could dominate the
+CodeGen pipeline even after the old huge-region reduction kicked in.
+
+Root cause
+----------
+The old reduction waited until the load/store maps reached the huge-region
+limit, sorted the accumulated SUnit node numbers, inserted a barrier around the
+middle of the current set, and kept processing the remaining half of the maps.
+That still left large live dependency maps and repeated reduction work. The new
+scheme treats dag-maps-huge-region as a memory-operation interval: when the
+interval is reached, the current SUnit becomes the barrier chain, all memory
+dependency maps are cleared behind it, and subsequent memory operations depend
+on the barrier instead of retaining the full history.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+6359dd3b2a11316cc58c6a50807be1f2d964a3a3.
+
+----------------------------------------------------------------------
+patch202743.patch
+----------------------------------------------------------------------
+- Upstream commit : 253b574758902662cf2c9e1a9d5f62535325b827
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/202743
+- Upstream title  : [MachineScheduler] Check we don't add self dependency
+                    edge when adding barrier
+- File Fixed      : llvm/lib/CodeGen/ScheduleDAGInstrs.cpp
+                    llvm/test/CodeGen/X86/dag-maps-huge-region-crash.ll (new)
+- Contents        : Avoids adding a barrier dependency from an SUnit to
+                    itself when the same instruction becomes BarrierChain
+                    through FP-exception huge-region handling and then reaches
+                    memory-operation barrier handling. Adds an X86 regression
+                    test that forces dag-maps-huge-region=1.
+
+Symptom without the patch
+-------------------------
+With a very small dag-maps-huge-region threshold, an instruction that both may
+raise FP exceptions and performs a memory operation can first become the
+BarrierChain while clearing the FPExceptions map, then immediately try to add a
+memory dependency edge from that BarrierChain to itself. This can trip scheduler
+dependency assertions or crash during DAG construction.
+
+Root cause
+----------
+The follow-up to #200945 allowed both the FP-exception and memory-operation
+huge-region paths to run for the same SUnit. The FP-exception path sets
+BarrierChain to the current SUnit. The memory path then unconditionally added a
+predecessor barrier through BarrierChain, creating a self dependency when
+BarrierChain == SU. The fix skips that edge in the self case.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+253b574758902662cf2c9e1a9d5f62535325b827 or an equivalent mainline commit for
+#202743.
+
+----------------------------------------------------------------------
 patch205637.patch
 ----------------------------------------------------------------------
 - Upstream commit : 8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c
