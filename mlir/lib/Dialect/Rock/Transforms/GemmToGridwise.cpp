@@ -99,6 +99,67 @@ struct GemmRewritePattern : public OpConversionPattern<GemmOp> {
 };
 } // end namespace
 
+/// Stream-K padding for a gemm being lowered to a gridwise_gemm: when the
+/// perf-config requests stream-K (streamKMultiple >= 1, mutually exclusive with
+/// split-K and unsupported for scaled gemms), choose the partition dimension
+/// and apply all the padding RockStreamKDecompose relies on, in place on
+/// `a`/`b` (and the output/fusion views via `transformViews`):
+///   (1) pad the partition dim up to whole extra tiles so a balanced wave +
+///       split-K-remainder decomposition always exists, and
+///   (2) pad K (zero-fill) up to a multiple of splitK*kPerBlock so the
+///       remainder's K-split folds evenly (usually a no-op).
+/// Returns the chosen partition dim (to be stashed on the gridwise op for the
+/// pass), or nullopt when stream-K is off or not applicable. See the shared
+/// chooseStreamKPlan / StreamKDecompose.cpp.
+static std::optional<StreamKPartDim> applyStreamKPadding(
+    OpBuilder &rw, Location loc, GemmOp op, Attribute params,
+    int64_t splitKFactor, Value scaleA, Value scaleB, Value &a, Value &b,
+    ArrayRef<int64_t> &aShape, ArrayRef<int64_t> &bShape,
+    llvm::function_ref<void(llvm::function_ref<Value(Value)>)> transformViews) {
+  auto gwParams = cast<GemmParamsAttr>(params);
+  const int64_t streamKMultiple = gwParams.getStreamKMultiple();
+  if (streamKMultiple < 1 || splitKFactor > 1 || (scaleA && scaleB))
+    return std::nullopt;
+
+  int64_t mPerBlock = gwParams.getMPerBlock();
+  int64_t nPerBlock = gwParams.getNPerBlock();
+  int64_t kPerBlock = gwParams.getKPerBlock();
+  int64_t curG = cast<ShapedType>(a.getType()).getShape()[0];
+  int64_t curM = cast<ShapedType>(a.getType()).getShape()[1];
+  int64_t curN = cast<ShapedType>(b.getType()).getShape()[2];
+  int64_t numCU = rock::getNumCUValue(op);
+  auto maybePlan = rock::chooseStreamKPlan(
+      curG, curM / mPerBlock, curN / nPerBlock, numCU, streamKMultiple);
+  if (failed(maybePlan))
+    return std::nullopt;
+
+  if (maybePlan->padBlocks > 0) {
+    if (maybePlan->partDim == StreamKPartDim::M) {
+      int64_t padM = maybePlan->padBlocks * mPerBlock;
+      a = padMatrix(a, rw, loc, "gemmM", padM, "gemmK", 0);
+      transformViews([&](Value v) {
+        return padMatrix(v, rw, loc, "gemmM", padM, "gemmN", 0);
+      });
+    } else if (maybePlan->partDim == StreamKPartDim::N) {
+      int64_t padN = maybePlan->padBlocks * nPerBlock;
+      b = padMatrix(b, rw, loc, "gemmK", 0, "gemmN", padN);
+      transformViews([&](Value v) {
+        return padMatrix(v, rw, loc, "gemmM", 0, "gemmN", padN);
+      });
+    }
+  }
+  // K carries no output view, so only A and B need padding.
+  int64_t curK = cast<ShapedType>(a.getType()).getShape()[2];
+  int64_t padK = llvm::alignTo(curK, maybePlan->splitK * kPerBlock) - curK;
+  if (padK > 0) {
+    a = padMatrix(a, rw, loc, "gemmM", 0, "gemmK", padK);
+    b = padMatrix(b, rw, loc, "gemmK", padK, "gemmN", 0);
+  }
+  aShape = cast<ShapedType>(a.getType()).getShape();
+  bShape = cast<ShapedType>(b.getType()).getShape();
+  return maybePlan->partDim;
+}
+
 LogicalResult
 GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
                                     ConversionPatternRewriter &rw) const {
@@ -222,6 +283,13 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
         padMatrix(scaleB, rw, loc, "gemmN", extraPad.n, "gemmK", padScaleK);
   }
 
+  // Stream-K: choose the partition dim and apply its padding (see
+  // applyStreamKPadding). The chosen dim, if any, is stashed on the gridwise op
+  // below for RockStreamKDecompose.
+  std::optional<StreamKPartDim> streamKPartDim =
+      applyStreamKPadding(rw, loc, op, params, splitKFactor, scaleA, scaleB, a,
+                          b, aShape, bShape, transformViews);
+
   if (failed(computeGridSize(rw, op, a, b))) {
     return op.emitError("failed to compute the grid size of `GemmOp`");
   }
@@ -231,6 +299,10 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   auto gridwiseOp =
       GridwiseGemmOp::create(rw, loc, newOutputType, a, b, scaleA, scaleB, op.getQuantBlockSizeAttr(), 
                              cast<GemmParamsAttr>(params));
+  if (streamKPartDim)
+    gridwiseOp->setAttr(
+        StreamKPartDimAttr::getMnemonic(),
+        StreamKPartDimAttr::get(rw.getContext(), *streamKPartDim));
   Value result = gridwiseOp.getResult();
 
   // Propagate the new (potentially padded) output type through any fusion ops

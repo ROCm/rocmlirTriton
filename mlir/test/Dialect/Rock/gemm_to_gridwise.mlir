@@ -36,6 +36,82 @@ func.func @gemm_splitk(%a: tensor<1x72x128xf32>, %b: tensor<1x72x512xf32>, %c: t
   func.return %out : tensor<1x128x512xf32>
 }
 
+// Stream-K: streamKMultiple >= 1 makes gemm-to-gridwise choose a partition dim
+// and pad it up to whole tiles so RockStreamKDecompose can always decompose.
+// Here G=1, mBlocks=4096/32=128, nBlocks=4096/128=32, num_cu=70, targetP=140.
+// The M-partition (span=floor(140/32)=4) is cheapest; mBlocks 128 is padded to
+// 129 (rb=1) so M -> 4128 and grid_size = 129*32 = 4128. The chosen dim (M)
+// is recorded in rock.streamk_part_dim for the decompose pass.
+#streamk_params = #rock.gemm_params<mPerBlock = 32, nPerBlock = 128, kPerBlock = 16, kpack = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 3, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1, streamKMultiple = 2>
+
+// CHECK-LABEL: func.func @gemm_streamk_pads_partition_dim
+// CHECK-SAME: rock.grid_size = 4128 : i32
+func.func @gemm_streamk_pads_partition_dim(%a: tensor<1x4096x14336xf16>, %b: tensor<1x14336x4096xf16>, %c: tensor<1x4096x4096xf32>) -> tensor<1x4096x4096xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.num_cu = 70 : i32} {
+  // CHECK: rock.gridwise_gemm({{.*}}) {{.*}}rock.streamk_part_dim = #rock<rock.streamk_part_dim m>{{.*}} -> tensor<1x4128x4096xf32>
+  %result = rock.gemm %a * %b {
+    params = #streamk_params
+  } : tensor<1x4096x14336xf16> * tensor<1x14336x4096xf16> -> tensor<1x4096x4096xf32>
+  %out = rock.store %result to %c by set : tensor<1x4096x4096xf32> -> tensor<1x4096x4096xf32> to tensor<1x4096x4096xf32>
+  func.return %out : tensor<1x4096x4096xf32>
+}
+
+// Stream-K K padding: G=1, mBlocks=nBlocks=10 (gridFull=100), num_cu=80,
+// streamKMultiple=1 -> N-partition with splitK=4. K = 192 is a multiple of
+// kPerBlock=64 but not of splitK*kPerBlock=256, so gemm-to-gridwise zero-pads K
+// up to 256 (Pad{0, 64}) on A and B so the decompose pass's remainder folds
+// evenly. The partition dim (N) needs no tile padding here.
+#streamk_kpad_params = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1, streamKMultiple = 1>
+
+// CHECK-LABEL: func.func @gemm_streamk_pads_k
+// CHECK-SAME: rock.grid_size = 100 : i32
+func.func @gemm_streamk_pads_k(%a: tensor<1x1280x192xf16>, %b: tensor<1x192x1280xf16>, %c: tensor<1x1280x1280xf32>) -> tensor<1x1280x1280xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 80 : i32} {
+  // CHECK-DAG: Pad{0, 64} ["gemmKPad"]
+  // CHECK: rock.gridwise_gemm({{.*}}) {{.*}}rock.streamk_part_dim = #rock<rock.streamk_part_dim n>{{.*}} : tensor<1x1280x256xf16>, tensor<1x256x1280xf16> -> tensor<1x1280x1280xf32>
+  %result = rock.gemm %a * %b {
+    params = #streamk_kpad_params
+  } : tensor<1x1280x192xf16> * tensor<1x192x1280xf16> -> tensor<1x1280x1280xf32>
+  %out = rock.store %result to %c by set : tensor<1x1280x1280xf32> -> tensor<1x1280x1280xf32> to tensor<1x1280x1280xf32>
+  func.return %out : tensor<1x1280x1280xf32>
+}
+
+// Stream-K M + K padding: G=1, mBlocks=4096/32=128, nBlocks=4096/128=32,
+// num_cu=70, streamKMultiple=2 (targetP=140). N-partition span=floor(140/128)=1
+// is too small, so M is chosen (span=4, splitK=4); mBlocks 128 -> 129 pads M to
+// 4128. K=14352 is a multiple of kPerBlock=16 but not of splitK*kPerBlock=64, so
+// K is also zero-padded up to 14400 (Pad{0, 48}). So both M and K are padded.
+#streamk_mkpad_params = #rock.gemm_params<mPerBlock = 32, nPerBlock = 128, kPerBlock = 16, kpack = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 3, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1, streamKMultiple = 2>
+
+// CHECK-LABEL: func.func @gemm_streamk_pads_m_and_k
+// CHECK-SAME: rock.grid_size = 4128 : i32
+func.func @gemm_streamk_pads_m_and_k(%a: tensor<1x4096x14352xf16>, %b: tensor<1x14352x4096xf16>, %c: tensor<1x4096x4096xf32>) -> tensor<1x4096x4096xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100", rock.num_cu = 70 : i32} {
+  // CHECK-DAG: Pad{0, 48} ["gemmKPad"]
+  // CHECK: rock.gridwise_gemm({{.*}}) {{.*}}rock.streamk_part_dim = #rock<rock.streamk_part_dim m>{{.*}} : tensor<1x4128x14400xf16>, tensor<1x14400x4096xf16> -> tensor<1x4128x4096xf32>
+  %result = rock.gemm %a * %b {
+    params = #streamk_mkpad_params
+  } : tensor<1x4096x14352xf16> * tensor<1x14352x4096xf16> -> tensor<1x4096x4096xf32>
+  %out = rock.store %result to %c by set : tensor<1x4096x4096xf32> -> tensor<1x4096x4096xf32> to tensor<1x4096x4096xf32>
+  func.return %out : tensor<1x4096x4096xf32>
+}
+
+// Stream-K N + K padding: G=1, mBlocks=1280/128=10, nBlocks=1408/128=11,
+// num_cu=80, streamKMultiple=1 (targetP=80). N-partition (span=8) is chosen with
+// remBlocks=4/splitK=2; nBlocks 11 -> 12 pads N to 1536. K=192 is a multiple of
+// kPerBlock=64 but not of splitK*kPerBlock=128, so K is also zero-padded up to
+// 256 (Pad{0, 64}). So both N and K are padded.
+#streamk_nkpad_params = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1, streamKMultiple = 1>
+
+// CHECK-LABEL: func.func @gemm_streamk_pads_n_and_k
+// CHECK-SAME: rock.grid_size = 120 : i32
+func.func @gemm_streamk_pads_n_and_k(%a: tensor<1x1280x192xf16>, %b: tensor<1x192x1408xf16>, %c: tensor<1x1280x1408xf32>) -> tensor<1x1280x1408xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 80 : i32} {
+  // CHECK-DAG: Pad{0, 64} ["gemmKPad"]
+  // CHECK: rock.gridwise_gemm({{.*}}) {{.*}}rock.streamk_part_dim = #rock<rock.streamk_part_dim n>{{.*}} : tensor<1x1280x256xf16>, tensor<1x256x1536xf16> -> tensor<1x1280x1536xf32>
+  %result = rock.gemm %a * %b {
+    params = #streamk_nkpad_params
+  } : tensor<1x1280x192xf16> * tensor<1x192x1408xf16> -> tensor<1x1280x1408xf32>
+  %out = rock.store %result to %c by set : tensor<1x1280x1408xf32> -> tensor<1x1280x1408xf32> to tensor<1x1280x1408xf32>
+  func.return %out : tensor<1x1280x1408xf32>
+}
+
 // CHECK-LABEL: func.func @gemm_easy_case_from_conv_xdlops
 // CHECK-SAME: (%[[a:.*]]: tensor<1x72x128xf32>, %[[b:.*]]: tensor<1x72x512xf32>, %[[c:.*]]: tensor<1x128x512xf32>)
 // CHECK-SAME: rock.grid_size = 16 : i32

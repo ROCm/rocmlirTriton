@@ -19,17 +19,23 @@
 // "several rock.gridwise_gemm in one kernel" pattern proven by
 // rock-decompose-nonpow2-tiles.
 //
-// A batch-1/skinny GEMM whose tile grid does not evenly fill the machine wastes
-// the ragged tail wave. Given a persistent launch of P = num_cu workgroups, we
-// split one gridwise_gemm covering gridFull = mBlocks*nBlocks*G output tiles
-// into data-parallel waves plus a split-K remainder.
+// A GEMM whose tile grid does not evenly fill the machine wastes the ragged
+// tail wave. Given a persistent launch of P = streamKMultiple * num_cu
+// workgroups, we split one gridwise_gemm covering gridFull = mBlocks*nBlocks*G
+// output tiles into data-parallel waves plus a split-K remainder.
+//
+// The partition dimension and the padding needed to make the decomposition
+// exact are decided up front in GemmToGridwise (which pads the chosen dim by
+// whole tiles and records it in `rock.streamk_part_dim`) via the shared
+// `chooseStreamKPlan` / `computeStreamKPlanForDim` helpers in loweringUtils.
+// This pass just recovers that plan and materializes it.
 //
 // Each sub-gemm must be a rectangular rock.gridwise_gemm, so we cannot slice an
 // arbitrary flat tile range. Instead we partition along a single dimension and
 // span the other two fully, keeping every wave (and the leftover slab)
-// rectangular. The partition dimension is chosen by priority N -> M -> G: for
-// dimension D with `others` = product of the other two block counts, a wave
-// spans `span = P / others` blocks of D, so it has span*others == P tiles.
+// rectangular. For partition dim D with `others` = product of the other two
+// block counts, a wave spans `span = P / others` blocks of D, so it has
+// span*others == P tiles.
 //
 //   * W = floor(blocks(D) / span) *data-parallel wave* sub-gemms. Each slices
 //     the operand(s) touching D (A for M/G, B for N/G; the other operand is
@@ -390,67 +396,48 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
   assert(rock::getGridSize(gemm).value().getInt() == gridFull &&
          "gridFull must match the func grid_size set by GemmToGridwise");
 
-  // Choose the partition dimension by priority N -> M -> G. A wave spans the
-  // other two dimensions fully and `span` blocks along the partition dim, so
-  // wave tiles = span * others == P and both the waves and the trailing
-  // remainder slab stay rectangular (a single gridwise_gemm each).
-  struct Candidate {
-    unsigned dim;      // output/tile dim: 0=G, 1=M, 2=N
-    int64_t numBlocks; // blocks along dim
-    int64_t perBlock;  // elems per block (1 for G)
-    int64_t others;    // product of the other two block counts
-  };
-  const Candidate cands[3] = {/*N*/ {2, nBlocks, nPerBlock, G * mBlocks},
-                              /*M*/ {1, mBlocks, mPerBlock, G * nBlocks},
-                              /*G*/ {0, G, 1, mBlocks * nBlocks}};
-
-  // Search for the largest persistent grid size P at or just below the
-  // requested targetP that yields a clean rectangular decomposition. The
-  // invariants (P % others == 0, rb | s, P % remTiles == 0) are pure
-  // integer-divisibility on P, so the requested targetP often misses a solution
-  // that a slightly smaller P satisfies. Shrinking P trades a little occupancy
-  // for enabling stream-K, which is usually a net win. We only allow reducing P
-  // by a small fraction of a CU-wave (~20% of num_cu) so the effective
-  // occupancy stays close to what streamKMultiple requested rather than
-  // collapsing toward a single block per CU. This is purely a host-side tuning
-  // choice with no correctness impact.
-  const Candidate *chosen = nullptr;
-  int64_t P = 0, span = 0, numWaves = 0, remBlocks = 0, splitK = 0;
-  const int64_t minP = targetP - numCU / 5;
-  for (int64_t candP = targetP; candP >= minP && !chosen; --candP) {
-    for (const Candidate &c : cands) {
-      if (c.others == 0 || candP % c.others != 0)
-        continue;
-      int64_t s = candP / c.others; // blocks per wave along dim
-      if (s <= 0 || s > c.numBlocks)
-        continue;
-      int64_t rb = c.numBlocks % s; // trailing remainder blocks
-      if (rb == 0)
-        continue; // no ragged tail -> no stream-K benefit
-      int64_t remTiles = rb * c.others;
-      // The remainder's K is padded up to a multiple of sk*kPerBlock
-      // (zero-fill), so K need not divide evenly; only the tile-refill
-      // (candP % remTiles) matters.
-      if (candP % remTiles != 0)
-        continue;
-      chosen = &c;
-      P = candP;
-      span = s;
-      numWaves = c.numBlocks / s;
-      remBlocks = rb;
-      splitK = candP / remTiles; // split-K factor that refills P
-      break;
-    }
-  }
-  if (!chosen) {
-    // No rectangular decomposition refills any P in [numCU, targetP] exactly
-    // for any partition dim; leave the gemm unchanged.
+  // The partition dimension and padding are decided in GemmToGridwise (which
+  // padded the grid so the plan is exact) and recorded in the
+  // `rock.streamk_part_dim` attribute. Its absence means GemmToGridwise found
+  // no viable decomposition, so leave the gemm unchanged; otherwise rebuild the
+  // same (exact) plan via the shared helper.
+  auto dimAttr = gemm->getAttrOfType<StreamKPartDimAttr>(
+      StreamKPartDimAttr::getMnemonic());
+  if (!dimAttr) {
     LLVM_DEBUG(llvm::dbgs()
-               << "stream-K: no rectangular decomposition for P in [" << minP
-               << ", " << targetP << "] gridFull=" << gridFull
-               << " -> leaving gemm unchanged\n");
+               << "stream-K: no partition dim recorded (gridFull=" << gridFull
+               << ", targetP=" << targetP << ") -> leaving gemm unchanged\n");
     return success();
   }
+  FailureOr<StreamKPlan> maybePlan = rock::computeStreamKPlanForDim(
+      dimAttr.getValue(), G, mBlocks, nBlocks, numCU, streamKMultiple);
+  assert(succeeded(maybePlan) && maybePlan->padBlocks == 0 &&
+         "GemmToGridwise recorded a partition dim but the grid is not padded "
+         "for an exact decomposition");
+  const StreamKPlan plan = *maybePlan;
+  const StreamKPartDim partDim = plan.partDim;
+  // Numeric index of the partition dim into a [G, M, N] rank-3 shape (the enum
+  // values are defined to match), used by the slicing/output helpers below.
+  const unsigned pd = static_cast<unsigned>(partDim);
+  const int64_t P = plan.P;
+  const int64_t span = plan.span;
+  const int64_t numWaves = plan.numWaves;
+  const int64_t remBlocks = plan.remBlocks;
+  const int64_t splitK = plan.splitK;
+
+  // GemmToGridwise pads K up to a multiple of splitK*kPerBlock so the remainder
+  // K-split folds evenly (K already being a multiple of kPerBlock, this is a
+  // no-op whenever splitK divides K/kPerBlock).
+  assert(K % (splitK * kPerBlock) == 0 &&
+         "GemmToGridwise must pad K to a multiple of splitK*kPerBlock");
+
+  // Per-partition-dim descriptors used by the slicing/output helpers below.
+  const int64_t partNumBlocks = (partDim == StreamKPartDim::G)   ? G
+                                : (partDim == StreamKPartDim::M) ? mBlocks
+                                                                 : nBlocks;
+  const int64_t partPerBlock = (partDim == StreamKPartDim::G)   ? 1
+                               : (partDim == StreamKPartDim::M) ? mPerBlock
+                                                                : nPerBlock;
 
   // Output side: trace the gemm result to all its stores through the
   // output-fusion DAG, then replicate the fusion + stores per cell.
@@ -480,7 +467,7 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
     scaledAddends[arithOp] = gemmOutIndex;
 
   LLVM_DEBUG(llvm::dbgs() << "stream-K: P=" << P << " gridFull=" << gridFull
-                          << " partDim=" << chosen->dim << " span=" << span
+                          << " partDim=" << pd << " span=" << span
                           << " numWaves=" << numWaves << " remBlocks="
                           << remBlocks << " splitK=" << splitK << "\n");
 
@@ -503,22 +490,23 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
   // Slice A / B along the chosen partition dim. A ([G,M,K]) is sliced for a G-
   // or M-partition (shared for N); B ([G,K,N]) for a G- or N-partition (shared
   // for M).
-  unsigned pd = chosen->dim;
   auto sliceA = [&](Value v, int64_t start, int64_t count) -> Value {
-    if (pd == 2)
+    if (partDim == StreamKPartDim::N)
       return v; // N-partition: A shared
-    return sliceBlockRange(b, loc, v, pd, chosen->numBlocks,
-                           pd == 0 ? 1 : mPerBlock, start, count);
+    return sliceBlockRange(b, loc, v, pd, partNumBlocks,
+                           partDim == StreamKPartDim::G ? 1 : mPerBlock, start,
+                           count);
   };
   auto sliceB = [&](Value v, int64_t start, int64_t count) -> Value {
-    if (pd == 1)
+    if (partDim == StreamKPartDim::M)
       return v; // M-partition: B shared
-    return sliceBlockRange(b, loc, v, pd, chosen->numBlocks,
-                           pd == 0 ? 1 : nPerBlock, start, count);
+    return sliceBlockRange(b, loc, v, pd, partNumBlocks,
+                           partDim == StreamKPartDim::G ? 1 : nPerBlock, start,
+                           count);
   };
   auto makeType = [&](int64_t count, int64_t gMul) {
     SmallVector<int64_t, 3> s = {G, M, N};
-    s[pd] = count * chosen->perBlock;
+    s[pd] = count * partPerBlock;
     s[0] *= gMul; // split-K folds into G
     return RankedTensorType::get(s, cElemType);
   };
@@ -539,16 +527,11 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
   }
   {
     int64_t start = numWaves * span;
-    // Pad K (zero-fill) up to a multiple of splitK*kPerBlock so it folds evenly
-    // into the split-K remainder; padded reads contribute 0 to the reduction.
-    int64_t kPad = llvm::alignTo(K, splitK * kPerBlock);
-    int64_t kRightPad = kPad - K;
+    // K is padded up to a multiple of splitK*kPerBlock in GemmToGridwise (see
+    // the assert above), so the slice folds evenly into the split-K remainder
+    // with no further padding here.
     Value aSlice = sliceA(a, start, remBlocks);
     Value bSlice = sliceB(bMat, start, remBlocks);
-    if (kRightPad != 0) {
-      aSlice = padMatrix(aSlice, b, loc, "gemmM", 0, "gemmK", kRightPad);
-      bSlice = padMatrix(bSlice, b, loc, "gemmK", kRightPad, "gemmN", 0);
-    }
     Value aRem = rock::splitKFoldOperand(b, loc, aSlice, splitK,
                                          /*kDim=*/2, /*nonKDim=*/1, "gemmM");
     Value bRem = rock::splitKFoldOperand(b, loc, bSlice, splitK,
@@ -560,9 +543,8 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
     cells.push_back({start, remBlocks, /*isRemainder=*/true});
   }
 
-  StreamKOutputSplitter splitter(b, loc, pd, chosen->numBlocks,
-                                 chosen->perBlock, G, M, N, splitK, cells,
-                                 scaledAddends);
+  StreamKOutputSplitter splitter(b, loc, pd, partNumBlocks, partPerBlock, G, M,
+                                 N, splitK, cells, scaledAddends);
   splitter.seed(gemm.getResult(), resultGrid);
 
   // Process stores in program order so explicit resultAlias chains thread

@@ -515,14 +515,39 @@ computeOptimalStreamKMultiples(RockGemmWrapperInterface gemmOp,
   auto info = PopulateParamsInfo::fromOp(gemmOp);
   uint32_t numCUs = rock::getNumCUValue(gemmOp);
 
+  // Only worth stream-K when the data-parallel grid is poorly balanced across
+  // CUs (a ragged tail), reusing the split-K work-imbalance heuristic.
   const double dataParallelImbalance = computeWorkImbalance(
       info.gemmSize, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock, numCUs);
   constexpr double imbalanceThreshold = 1.20;
   if (dataParallelImbalance < imbalanceThreshold)
     return streamKValues;
 
-  streamKValues.push_back(1);
-  streamKValues.push_back(2);
+  // calculatePaddedGemmSize rounds M/N up to whole mPerBlock/nPerBlock tiles,
+  // so the tile counts are exact divisions.
+  const GemmSize paddedSize = calculatePaddedGemmSize(
+      gemmKPerBlock, gemmMPerBlock, gemmNPerBlock, info.gemmSize);
+  const int64_t numMTiles = paddedSize.m / gemmMPerBlock;
+  const int64_t numNTiles = paddedSize.n / gemmNPerBlock;
+  const int64_t gridFull = paddedSize.g * numMTiles * numNTiles;
+
+  // Stream-K only helps when the data-parallel grid over-fills the machine: the
+  // persistent grid P = streamKMultiple * numCU reclaims the ragged tail of an
+  // already-full grid. If it underfills (gridFull < numCU) there is no tail to
+  // reclaim and plain split-K is the right tool, so don't offer stream-K.
+  if (gridFull < numCUs)
+    return streamKValues;
+
+  // Among the remaining shapes, offer a multiple only if
+  // GemmToGridwise/StreamKDecompose can actually build a (padded) decomposition
+  // for it. Calling the shared chooseStreamKPlan here keeps the tuned space in
+  // lockstep with the pipeline and avoids handing out configs the pass would
+  // just bail on.
+  for (int64_t streamKMultiple : {1, 2}) {
+    if (succeeded(rock::chooseStreamKPlan(paddedSize.g, numMTiles, numNTiles,
+                                          numCUs, streamKMultiple)))
+      streamKValues.push_back(streamKMultiple);
+  }
   return streamKValues;
 }
 

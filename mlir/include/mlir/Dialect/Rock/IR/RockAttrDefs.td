@@ -112,6 +112,29 @@ def ReduceMethod : Rock_I32Enum<"ReduceMethod",
 
 def ReduceMethodAttr : EnumAttr<Rock_Dialect, ReduceMethod, "ReduceMethod">;
 
+/// StreamKPartDim
+///
+/// The gridwise tile dimension a hybrid stream-K decomposition partitions along
+/// (see chooseStreamKPlan / StreamKDecompose). The integer values match the
+/// [G, M, N] gridwise tensor dimension indices so they can be used directly to
+/// index a rank-3 shape.
+
+def StreamKPartDim_G : I32EnumAttrCase<"G", 0, "g">;
+def StreamKPartDim_M : I32EnumAttrCase<"M", 1, "m">;
+def StreamKPartDim_N : I32EnumAttrCase<"N", 2, "n">;
+
+def StreamKPartDim
+    : Rock_I32Enum<"StreamKPartDim",
+                   "Tile dimension a stream-K decomposition partitions along",
+                   [StreamKPartDim_G, StreamKPartDim_M, StreamKPartDim_N]>;
+
+// The mnemonic doubles as the discardable op-attribute name (fetched via
+// StreamKPartDimAttr::getMnemonic()) under which GemmToGridwise stashes the
+// chosen partition dim on a gridwise_gemm for StreamKDecompose to read,
+// matching the naming convention of the other rock.* marker attributes above.
+def StreamKPartDimAttr
+    : EnumAttr<Rock_Dialect, StreamKPartDim, "rock.streamk_part_dim">;
+
 /// CacheModifier
 ///
 /// Mirrors triton::CacheModifier (TritonAttrDefs.td) one-to-one (same names and

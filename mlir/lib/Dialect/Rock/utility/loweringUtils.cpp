@@ -69,6 +69,121 @@ bool mlir::rock::isValidKBlocks(int64_t kBlocks, int64_t N) {
   return kBlocks >= 1 && N % kBlocks == 0;
 }
 
+// Padding budget for stream-K feasibility: never waste more than this fraction
+// of the partition dimension on zero-filled tiles just to enable the
+// decomposition. Chosen to stay below the smallest tail stream-K is offered
+// for: the tuner only requests stream-K once the data-parallel work imbalance
+// is >= 1.20 (computeOptimalStreamKMultiples), i.e. a wasted-work floor of
+// (1.20 - 1) / 1.20 ~= 16.7%. Capping the padding at 1/8 keeps the overhead
+// comfortably under that reclaimable tail so enabling stream-K stays a net win.
+static constexpr double kMaxStreamKPadFraction = 0.125;
+
+FailureOr<StreamKPlan>
+mlir::rock::computeStreamKPlanForDim(StreamKPartDim partDim, int64_t g,
+                                     int64_t mBlocks, int64_t nBlocks,
+                                     int64_t numCU, int64_t streamKMultiple) {
+  if (g <= 0 || mBlocks <= 0 || nBlocks <= 0 || numCU <= 0 ||
+      streamKMultiple < 1)
+    return failure();
+
+  int64_t numBlocks, others;
+  switch (partDim) {
+  case StreamKPartDim::G:
+    numBlocks = g;
+    others = mBlocks * nBlocks;
+    break;
+  case StreamKPartDim::M:
+    numBlocks = mBlocks;
+    others = g * nBlocks;
+    break;
+  case StreamKPartDim::N:
+    numBlocks = nBlocks;
+    others = g * mBlocks;
+    break;
+  }
+  // `others` is a product of two block counts, all validated > 0 above, so it
+  // can never be non-positive here.
+  assert(others > 0 && "stream-K: `others` must be positive");
+
+  const int64_t targetP = streamKMultiple * numCU;
+  // Largest whole number of blocks per data-parallel wave that keeps the
+  // persistent grid P = span*others at or below the requested target. `span`
+  // must be >= 2: the remainder needs a *proper* nonzero divisor rb of span
+  // (1 <= rb < span) so splitK = span/rb is integral and a K-split remainder
+  // actually exists; span == 1 admits no such rb, and span == 0 means `others`
+  // alone already overshoots the target. It must also be <= numBlocks so at
+  // least one full wave fits along this dim.
+  const int64_t span = targetP / others; // floor
+  if (span < 2 || span > numBlocks)
+    return failure();
+  const int64_t P = span * others;
+  const int64_t rem = numBlocks % span;
+
+  // Pick the remainder block count rb: a nonzero divisor of span (so the
+  // per-tile split-K factor span/rb is integral and every sub-gemm resolves to
+  // exactly P tiles). Choose the rb needing the least padding to reach residue
+  // rb; break ties toward the largest rb (=> smallest split-K => least atomic
+  // contention).
+  int64_t bestPad = -1, bestRb = 0;
+  for (int64_t rb = 1; rb < span; ++rb) {
+    if (span % rb != 0)
+      continue;
+    int64_t pad = ((rb - rem) % span + span) % span;
+    if (numBlocks + pad < span + rb)
+      pad += span; // keep at least one full data-parallel wave
+    if (bestPad < 0 || pad < bestPad || (pad == bestPad && rb > bestRb)) {
+      bestPad = pad;
+      bestRb = rb;
+    }
+  }
+  if (bestPad < 0)
+    return failure();
+
+  const int64_t paddedNumBlocks = numBlocks + bestPad;
+  StreamKPlan plan;
+  plan.partDim = partDim;
+  plan.P = P;
+  plan.span = span;
+  plan.numWaves = (paddedNumBlocks - bestRb) / span;
+  plan.remBlocks = bestRb;
+  plan.splitK = span / bestRb;
+  plan.padBlocks = bestPad;
+  return plan;
+}
+
+FailureOr<StreamKPlan> mlir::rock::chooseStreamKPlan(int64_t g, int64_t mBlocks,
+                                                     int64_t nBlocks,
+                                                     int64_t numCU,
+                                                     int64_t streamKMultiple) {
+  // Priority order N -> M -> G, used as the final tie-break: the loop keeps the
+  // first (highest-priority) plan among those of equal padding overhead.
+  const StreamKPartDim order[3] = {StreamKPartDim::N, StreamKPartDim::M,
+                                   StreamKPartDim::G};
+  FailureOr<StreamKPlan> best = failure();
+  double bestOverhead = 0.0;
+  for (StreamKPartDim dim : order) {
+    FailureOr<StreamKPlan> plan = computeStreamKPlanForDim(
+        dim, g, mBlocks, nBlocks, numCU, streamKMultiple);
+    if (failed(plan))
+      continue;
+    // Groups can't be padded (that would add real batches), so only accept a
+    // G-partition when it needs no padding.
+    if (dim == StreamKPartDim::G && plan->padBlocks > 0)
+      continue;
+    int64_t numBlocks = (dim == StreamKPartDim::G)   ? g
+                        : (dim == StreamKPartDim::M) ? mBlocks
+                                                     : nBlocks;
+    double overhead = double(plan->padBlocks) / double(numBlocks);
+    if (overhead > kMaxStreamKPadFraction)
+      continue;
+    if (failed(best) || overhead < bestOverhead) {
+      best = plan;
+      bestOverhead = overhead;
+    }
+  }
+  return best;
+}
+
 LogicalResult mlir::rock::calculateKBlockNum(const int64_t batchSize,
                                              const GemmSize &gemmSize,
                                              int64_t MPerBlock,

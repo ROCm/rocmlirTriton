@@ -140,6 +140,40 @@ LogicalResult regularizeOutputFusionForKReduction(Value gemmResult,
                                                   int64_t factor,
                                                   RewriterBase &b);
 
+/// Plan for the hybrid stream-K decomposition of one gridwise_gemm. The tile
+/// grid is partitioned along `partDim` into `numWaves` data-parallel waves of
+/// `span` blocks each (spanning the other two dims fully, so span*others == P
+/// tiles) plus a trailing split-K remainder of `remBlocks` blocks whose K is
+/// split `splitK`-ways to also refill P. To make this exact, `partDim` must be
+/// padded by `padBlocks` whole tiles first (done in GemmToGridwise); when
+/// computed on the already-padded grid `padBlocks` is 0.
+struct StreamKPlan {
+  StreamKPartDim partDim; // dimension partitioned along (G, M, or N)
+  int64_t P;              // persistent grid size (span * others)
+  int64_t span;           // blocks per data-parallel wave along partDim
+  int64_t numWaves;       // number of full data-parallel waves
+  int64_t remBlocks;      // trailing remainder blocks (divides span)
+  int64_t splitK;         // remainder K-split factor (= span / remBlocks)
+  int64_t padBlocks;      // whole tiles to pad partDim with to make plan exact
+};
+
+/// Compute the minimal-padding stream-K plan for a *given* partition dim, or
+/// failure if that dim cannot host a decomposition (e.g. `others` exceeds the
+/// target grid so a >=2-block wave would overshoot, or `span` > numBlocks).
+/// Deterministic; padding only ever grows `partDim`, so re-running on the
+/// padded grid returns the same plan with `padBlocks == 0`.
+FailureOr<StreamKPlan> computeStreamKPlanForDim(StreamKPartDim partDim,
+                                                int64_t g, int64_t mBlocks,
+                                                int64_t nBlocks, int64_t numCU,
+                                                int64_t streamKMultiple);
+
+/// Choose the best stream-K partition dim (least padding overhead, tie-broken
+/// N -> M -> G) and return its plan, or failure if no dim is viable (or the
+/// cheapest exceeds the padding budget). G is only accepted with zero padding.
+FailureOr<StreamKPlan> chooseStreamKPlan(int64_t g, int64_t mBlocks,
+                                         int64_t nBlocks, int64_t numCU,
+                                         int64_t streamKMultiple);
+
 // Apply padding to a vector in its `firstDim` if applicable.
 Value padVector(Value vector, OpBuilder &b, Location loc, StringRef firstDim,
                 int64_t firstDimPad);

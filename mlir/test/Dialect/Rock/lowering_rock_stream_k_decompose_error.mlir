@@ -16,7 +16,7 @@
 // ============================================================
 
 func.func @stream_k_atomic_max(%a: tensor<1x1280x256xf16>, %b: tensor<1x256x1280xf16>, %c: tensor<1x1280x1280xf32>) -> tensor<1x1280x1280xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 80 : i32, rock.grid_size = 100 : i32} {
-  %r = rock.gridwise_gemm(%a, %b) {params = #params} : tensor<1x1280x256xf16>, tensor<1x256x1280xf16> -> tensor<1x1280x1280xf32>
+  %r = rock.gridwise_gemm(%a, %b) {params = #params, rock.streamk_part_dim = #rock<rock.streamk_part_dim n>} : tensor<1x1280x256xf16>, tensor<1x256x1280xf16> -> tensor<1x1280x1280xf32>
   // expected-error @+1 {{atomic_max output is incompatible with the split-K remainder}}
   %out = rock.store %r to %c by atomic_max : tensor<1x1280x1280xf32> -> tensor<1x1280x1280xf32> to tensor<1x1280x1280xf32>
   return %out : tensor<1x1280x1280xf32>
