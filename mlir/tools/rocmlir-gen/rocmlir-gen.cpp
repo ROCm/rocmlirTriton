@@ -540,6 +540,13 @@ static llvm::cl::opt<bool> hasAttnBias(
     llvm::cl::desc("Generate an attention kernel that is using a bias"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool>
+    transposeBias("transBias",
+                  llvm::cl::desc("whether the attention bias input is stored "
+                                 "as Gxseq_len_kxseq_len_q instead of the "
+                                 "default score layout Gxseq_len_qxseq_len_k"),
+                  llvm::cl::init(false));
+
 static llvm::cl::opt<bool> transposeQ(
     "transQ",
     llvm::cl::desc("whether matrix Q of attention op is "
@@ -1249,6 +1256,10 @@ static LogicalResult detectMissingArguments() {
   }
 
   if (operation == rock::KernelType::Attention) {
+    if (transposeBias && !hasAttnBias) {
+      llvm::errs() << "--transBias requires --with-attn-bias\n";
+      return failure();
+    }
     if (splitKV > 1 && !returnLSE) {
       llvm::errs()
           << "If split-kv > 1 (flash decoding), we need to return LSE\n";
@@ -3048,8 +3059,10 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
     result.push_back(sType);
   }
   if (hasAttnBias) {
-    SmallVector<int64_t> biasDims{groupSize * numHeadsQ, sequenceLengthQ,
-                                  sequenceLengthK};
+    SmallVector<int64_t> biasDims{
+        groupSize * numHeadsQ,
+        transposeBias ? sequenceLengthK : sequenceLengthQ,
+        transposeBias ? sequenceLengthQ : sequenceLengthK};
     RankedTensorType bType =
         RankedTensorType::get(biasDims, elemTypes[biasIndex]);
     result.push_back(bType);
@@ -3105,7 +3118,9 @@ getAttentionDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
   if (hasAttnScale)
     result.emplace_back(SmallVector<StringRef>{gName, seqQName, seqKName});
   if (hasAttnBias)
-    result.emplace_back(SmallVector<StringRef>{gName, seqQName, seqKName});
+    result.emplace_back(
+        SmallVector<StringRef>{gName, transposeBias ? seqKName : seqQName,
+                               transposeBias ? seqQName : seqKName});
   if (!currentSeqLen.empty())
     result.emplace_back(SmallVector<StringRef>{gName});
   if (!prefixOffset.empty())
@@ -3697,6 +3712,14 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   }
   if (hasAttnBias) {
     bias = unflattenedArgs[optionalArgsCounter++];
+    if (transposeBias) {
+      auto biasType = cast<ShapedType>(bias.getType());
+      SmallVector<uint32_t> startDims{0, 2, 1};
+      SmallVector<uint32_t> endDims{0, 1, 2};
+      rock::BottomUpTMBuilder transform(builder, biasType.getShape(), loc);
+      transform.passThrough(endDims, startDims);
+      bias = rock::TransformOp::create(builder, loc, bias, transform.get());
+    }
     elemwiseInputs.push_back(bias);
   }
   if (!currentSeqLen.empty()) {
@@ -4756,6 +4779,9 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
 
   if (hasAttnBias) {
     auto biasTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
+    if (transposeBias)
+      biasTensor =
+          rock::tosa::getTransposeOp(builder, loc, biasTensor, {0, 2, 1});
     biasTensor = applyPreSoftmaxInputMask(biasTensor, 0.0f);
 
     if (fuseQuantizedScaleBias) {

@@ -25,7 +25,8 @@ CONV_COLUMNS = [
 ]
 ATTENTION_COLUMNS = [
     'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV', 'WithAttnScale',
-    'WithAttnBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
+    'WithAttnBias', 'TransBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK',
+    'HeadDimV'
 ]
 
 # Regex pattern for lookup table entries: {"arch_op_dtype", {Class::params, Class::count}}, // optional comment
@@ -119,6 +120,9 @@ def load_data(files, no_splitk):
         # Read TSV content from stdin
         print("Reading from stdin...")
         df = pd.read_csv(sys.stdin, sep='\t', index_col=None, low_memory=False)
+
+    if 'WithAttnBias' in df.columns and 'TransBias' not in df.columns:
+        df['TransBias'] = False
 
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)

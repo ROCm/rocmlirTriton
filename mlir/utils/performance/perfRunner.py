@@ -999,7 +999,8 @@ def get_attn_configurations(filename):
         "-causal": default_to_false,
         "-return_lse": default_to_false,
         "-with-attn-scale": default_to_false,
-        "-with-attn-bias": default_to_false
+        "-with-attn-bias": default_to_false,
+        "-transBias": default_to_false
     }
 
     configs = []
@@ -1618,9 +1619,12 @@ class AttentionConfiguration(PerfConfiguration):
                  num_cu: int,
                  num_chiplets: int,
                  perf_config: str = '',
-                 current_seqlen: Optional[List[int]] = None):
+                 current_seqlen: Optional[List[int]] = None,
+                 trans_bias: bool = False):
         if dtype not in DATA_TYPES_ATTENTION:
             raise ValueError(f"Invalid datatype for a: {dtype}")
+        if trans_bias and not with_attn_bias:
+            raise ValueError("trans_bias requires with_attn_bias")
 
         self.datatype = dtype
         self.g = g
@@ -1632,6 +1636,7 @@ class AttentionConfiguration(PerfConfiguration):
         self.head_dim_v = head_dim_v
         self.with_attn_scale = with_attn_scale
         self.with_attn_bias = with_attn_bias
+        self.trans_bias = trans_bias
         self.trans_q = trans_q
         self.trans_k = trans_k
         self.trans_v = trans_v
@@ -1678,8 +1683,9 @@ class AttentionConfiguration(PerfConfiguration):
         values = [
             self.datatype, self.chip, self.num_cu, self.num_chiplets, self.trans_q, self.trans_k,
             self.trans_v, self.trans_o, self.causal, self.return_lse, self.split_kv,
-            self.with_attn_scale, self.with_attn_bias, self.g, self.seq_len_q, self.seq_len_k,
-            self.num_heads_q, self.num_heads_kv, self.head_dim_qk, self.head_dim_v, self.perfconfig,
+            self.with_attn_scale, self.with_attn_bias, self.trans_bias, self.g, self.seq_len_q,
+            self.seq_len_k, self.num_heads_q, self.num_heads_kv, self.head_dim_qk, self.head_dim_v,
+            self.perfconfig,
             self.compute_tflops(nanoseconds)
         ]
         assert (len(self.TABLE_COLUMNS) == len(values))
@@ -1702,9 +1708,9 @@ class AttentionConfiguration(PerfConfiguration):
             str(self.num_heads_kv), '-head_dim_qk',
             str(self.head_dim_qk), '-head_dim_v',
             str(self.head_dim_v), f"-with-attn-scale={self.with_attn_scale}",
-            f"-with-attn-bias={self.with_attn_bias}", f"-transQ={self.trans_q}",
-            f"-transK={self.trans_k}", f"-transV={self.trans_v}", f"-transO={self.trans_o}",
-            f"-causal={self.causal}", f"-return_lse={self.return_lse}",
+            f"-with-attn-bias={self.with_attn_bias}", f"-transBias={self.trans_bias}",
+            f"-transQ={self.trans_q}", f"-transK={self.trans_k}", f"-transV={self.trans_v}",
+            f"-transO={self.trans_o}", f"-causal={self.causal}", f"-return_lse={self.return_lse}",
             f"-split_kv={self.split_kv}",
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
@@ -1735,6 +1741,7 @@ class AttentionConfiguration(PerfConfiguration):
         split_kv = 1
         with_attn_scale = False
         with_attn_bias = False
+        trans_bias = False
         # Please keep this in sync with mlir::rock::getTuningProblemStr()
         for i in range(0, len(argv), 2):
             opt = argv[i]
@@ -1759,6 +1766,8 @@ class AttentionConfiguration(PerfConfiguration):
                 with_attn_scale = (val.lower() in ["1", "true"])
             elif opt.endswith("-with-attn-bias"):
                 with_attn_bias = (val.lower() in ["1", "true"])
+            elif opt.endswith("-transBias"):
+                trans_bias = (val.lower() in ["1", "true"])
             elif opt.endswith("-transQ"):
                 trans_q = (val.lower() in ["1", "true"])
             elif opt.endswith("-transK"):
@@ -1785,9 +1794,28 @@ class AttentionConfiguration(PerfConfiguration):
             if v is None:
                 raise ValueError("Incomplete Attention configuration")
 
-        return cls(dtype, g, seq_len_q, seq_len_k, num_heads_q, num_heads_kv, head_dim_qk,
-                   head_dim_v, with_attn_scale, with_attn_bias, trans_q, trans_k, trans_v, trans_o,
-                   causal, return_lse, split_kv, arch, num_cu, num_chiplets, perf_config)
+        return cls(dtype,
+                   g,
+                   seq_len_q,
+                   seq_len_k,
+                   num_heads_q,
+                   num_heads_kv,
+                   head_dim_qk,
+                   head_dim_v,
+                   with_attn_scale,
+                   with_attn_bias,
+                   trans_q,
+                   trans_k,
+                   trans_v,
+                   trans_o,
+                   causal,
+                   return_lse,
+                   split_kv,
+                   arch,
+                   num_cu,
+                   num_chiplets,
+                   perf_config,
+                   trans_bias=trans_bias)
 
     def to_command_line(self):
         return (
@@ -1799,7 +1827,8 @@ class AttentionConfiguration(PerfConfiguration):
             f"-g {self.g} " +
             f"-seq_len_q {str(self.seq_len_q)} -seq_len_k {str(self.seq_len_k)} -num_heads_q {str(self.num_heads_q)} -num_heads_kv {str(self.num_heads_kv)} -head_dim_qk {str(self.head_dim_qk)} -head_dim_v {str(self.head_dim_v)} "
             + f"-with-attn-scale {str(self.with_attn_scale).lower()} " +
-            f"-with-attn-bias {str(self.with_attn_bias).lower()}")
+            f"-with-attn-bias {str(self.with_attn_bias).lower()} " +
+            f"-transBias {str(self.trans_bias).lower()}")
 
 
 def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
@@ -1973,6 +2002,43 @@ def canonicalize_config(config_str: str, conf_class: type, arch: str, num_cu: in
     return config.to_command_line()
 
 
+def lookup_tuning_db(tuning_db: MaybeTuningDb, arch: str, config: PerfConfiguration,
+                     config_str: str) -> Optional[str]:
+    """Return the perf config for ``config_str``, including legacy attention keys.
+
+    Attention tuning keys gained optional identity flags over time. If an exact
+    lookup misses, try legacy keys with only false-valued attention flags
+    removed so older DB rows continue to match equivalent kernels.
+    """
+    if not tuning_db:
+        return None
+
+    if (arch, config_str) in tuning_db:
+        return tuning_db[arch, config_str]
+
+    if isinstance(config, AttentionConfiguration):
+        false_flags = []
+        if not config.with_attn_scale:
+            false_flags.append(" -with-attn-scale false")
+        if not config.with_attn_bias:
+            false_flags.append(" -with-attn-bias false")
+        if not config.trans_bias:
+            false_flags.append(" -transBias false")
+
+        # Older tuning DB rows may predate one or more false-valued attention
+        # identity flags. Never strip a true-valued flag: those describe
+        # different generated kernels and need separate tuning entries.
+        for num_stripped in range(1, len(false_flags) + 1):
+            for flag_group in itertools.combinations(false_flags, num_stripped):
+                legacy_config_str = config_str
+                for flag in flag_group:
+                    legacy_config_str = legacy_config_str.replace(flag, "")
+                if (arch, legacy_config_str) in tuning_db:
+                    return tuning_db[arch, legacy_config_str]
+
+    return None
+
+
 # Benchmarking function.
 def benchmark_mlir(commandline,
                    conf_class,
@@ -1987,8 +2053,9 @@ def benchmark_mlir(commandline,
     config = conf_class.from_command_line(commandline, arch, num_cu, num_chiplets)
     config_str = config.to_command_line()
     if tuning_db:
-        if (arch, config_str) in tuning_db:
-            config.set_perfconfig(tuning_db[arch, config_str])
+        perf_config = lookup_tuning_db(tuning_db, arch, config, config_str)
+        if perf_config is not None:
+            config.set_perfconfig(perf_config)
         else:  # Tuning DB present but doesn't contain config, return N/A
             return config.table_entry(np.nan)
 
