@@ -140,10 +140,7 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
     return splitKValues;
   }
 
-  uint32_t numCUs = rock::getMinNumCU(rock::getArchValue(gemmGemmOp));
-  auto opNumCUs = rock::getNumCU(gemmGemmOp);
-  if (succeeded(opNumCUs))
-    numCUs = opNumCUs.value();
+  uint32_t numCUs = rock::getNumCUValue(gemmGemmOp);
 
   SmallVector<int64_t, 3> aShape =
       llvm::to_vector<3>(cast<ShapedType>(gemmGemmOp.getAType()).getShape());
@@ -493,10 +490,7 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
     return splitKValues;
   }
 
-  uint32_t numCUs = rock::getMinNumCU(rock::getArchValue(gemmOp));
-  if (succeeded(rock::getNumCU(gemmOp))) {
-    numCUs = rock::getNumCU(gemmOp).value();
-  }
+  uint32_t numCUs = rock::getNumCUValue(gemmOp);
 
   return computeOptimalSplitKFactors(info.gemmSize, gemmMPerBlock,
                                      gemmNPerBlock, gemmKPerBlock, numCUs);
@@ -519,9 +513,7 @@ computeOptimalStreamKMultiples(RockGemmWrapperInterface gemmOp,
     return streamKValues;
 
   auto info = PopulateParamsInfo::fromOp(gemmOp);
-  uint32_t numCUs = rock::getMinNumCU(rock::getArchValue(gemmOp));
-  if (succeeded(rock::getNumCU(gemmOp)))
-    numCUs = rock::getNumCU(gemmOp).value();
+  uint32_t numCUs = rock::getNumCUValue(gemmOp);
 
   const double dataParallelImbalance = computeWorkImbalance(
       info.gemmSize, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock, numCUs);
