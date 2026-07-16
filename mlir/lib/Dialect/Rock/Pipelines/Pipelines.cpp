@@ -439,6 +439,17 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // lower-blockwise-to-ptr (which lowers it away).
   addWithDCE(rock::createRockAddTritonMetadataPass());
 
+  // Legalize math ops on narrow floats before they are converted to integer
+  // storage types. LLVM math intrinsics do not accept fp8/fp4 operands.
+  {
+    math::MathExtendToSupportedTypesOptions mathExtendOptions;
+    // TODO: Gfx1250 has support for some bf16 math operations. Therefore this
+    // pass should pass through those supported opertions for bf16 on gfx1250.
+    mathExtendOptions.extraTypeStrs = {"f16"};
+    mathExtendOptions.targetTypeStr = "f32";
+    addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
+  }
+
   // We run this pass after lower-stores to catch redundant casts that cannot be
   // flagged earlier due to loads/stores that sit between truncf/extf pairs.
   if (!options.disableFastMath)

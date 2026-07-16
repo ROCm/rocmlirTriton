@@ -75,6 +75,15 @@ from perfRunner import (
 # full result (e.g. 10 repeats → ~10× vs reference). Verification must use 1.
 VERIFY_REPEATS = 1
 
+# Compile timeouts are recoverable per-config outcomes inside
+# rocmlir-tuning-driver: the driver kills that rocmlir-driver child process,
+# emits N/A for that perf config, and continues tuning. A GPU run timeout is
+# different: an in-process kernel may have hung and left the HIP context
+# untrustworthy, so the driver exits the whole process with this distinct code.
+# Must stay in sync with rock::kExitGpuTimeout in
+# mlir/include/mlir/Dialect/Rock/utility/compileUtils.h.
+GPU_TIMEOUT_EXIT_CODE = 3
+
 OUTPUT_HEADER_COLUMNS = [
     'arch', 'numCUs', 'numChiplets', 'testVector', 'perfConfig', 'TFlops', 'tuningSpace',
     'commitId', 'timestamp', 'durationSec'
@@ -190,6 +199,7 @@ class Options:
     flush_last_level_cache: bool
     timeout: Optional[int]
     perf_config_timeout: int
+    gpu_run_timeout: int
 
 
 @dataclass
@@ -198,6 +208,7 @@ class TuningResult:
     test_vector: str
     success: bool
     timed_out: bool = False
+    gpu_timed_out: bool = False
     gpu_id: int = -1
     duration_seconds: float = 0.0
     timestamp: Optional[str] = None
@@ -336,6 +347,7 @@ class ConfigState(Enum):
         RUNNING -> SUCCEEDED (implicit): Tuning completes successfully (removed from state, written to output)
         RUNNING -> FAILED: Tuning completes with error
         RUNNING -> TIMED_OUT: Tuning exceeded timeout
+        RUNNING -> GPU_TIMED_OUT: A perf-config's GPU run hung (driver run-timeout tripped)
         RUNNING -> INTERRUPTED: User interrupted (Ctrl+C) during tuning
         RUNNING -> CRASHED: Detected on next startup (stale RUNNING state)
         <state> -> PENDING: User requests retry with --retry <state>
@@ -347,12 +359,14 @@ class ConfigState(Enum):
     RUNNING = "running"  # Currently being tuned
     FAILED = "failed"  # Tuning completed with error
     TIMED_OUT = "timed_out"  # Tuning exceeded timeout
+    GPU_TIMED_OUT = "gpu_timed_out"  # A perf-config's GPU run hung (driver run-timeout)
     INTERRUPTED = "interrupted"  # User interrupted during tuning (Ctrl+C)
     CRASHED = "crashed"  # Process crashed while tuning (detected on startup)
 
 
 # States representing unsuccessful tuning outcomes that are skipped by default
-UNSUCCESSFUL_STATES = frozenset({ConfigState.FAILED, ConfigState.TIMED_OUT, ConfigState.CRASHED})
+UNSUCCESSFUL_STATES = frozenset(
+    {ConfigState.FAILED, ConfigState.TIMED_OUT, ConfigState.GPU_TIMED_OUT, ConfigState.CRASHED})
 
 
 @dataclass
@@ -372,6 +386,10 @@ class TuningState:
 
     def set_timed_out(self, test_vector: str) -> None:
         self.configs[test_vector] = ConfigState.TIMED_OUT
+        self._pre_running_states.pop(test_vector, None)
+
+    def set_gpu_timed_out(self, test_vector: str) -> None:
+        self.configs[test_vector] = ConfigState.GPU_TIMED_OUT
         self._pre_running_states.pop(test_vector, None)
 
     def set_interrupted(self, test_vector: str) -> None:
@@ -394,6 +412,9 @@ class TuningState:
 
     def timed_out_count(self) -> int:
         return sum(1 for s in self.configs.values() if s == ConfigState.TIMED_OUT)
+
+    def gpu_timed_out_count(self) -> int:
+        return sum(1 for s in self.configs.values() if s == ConfigState.GPU_TIMED_OUT)
 
     def crashed_count(self) -> int:
         return sum(1 for s in self.configs.values() if s == ConfigState.CRASHED)
@@ -517,6 +538,11 @@ class TuningStateFile:
     def set_timed_out(self, test_vector: str) -> None:
         with self._lock:
             self._state.set_timed_out(test_vector)
+            self._save_locked()
+
+    def set_gpu_timed_out(self, test_vector: str) -> None:
+        with self._lock:
+            self._state.set_gpu_timed_out(test_vector)
             self._save_locked()
 
     def set_succeeded(self, test_vector: str) -> None:
@@ -1331,6 +1357,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         f"--show-all-measurements={options.debug}",
         f"--num-compile-threads={num_compile_threads}",
         f"--perf-config-timeout={options.perf_config_timeout}",
+        f"--gpu-run-timeout={options.gpu_run_timeout}",
     ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
@@ -1413,6 +1440,23 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         tuning_output = tuning_stdout.decode('utf-8')
         tuning_errors = tuning_stderr.decode('utf-8')
 
+        if tuning_driver.returncode == GPU_TIMEOUT_EXIT_CODE:
+            # A perf-config's GPU run hung and the driver's run-timeout logic
+            # tore the process down (see rock::kExitGpuTimeout). Treat the
+            # whole test vector as gpu-timed-out and advance to the next
+            # problem config.
+            gpu_logger.error(
+                format_error(
+                    f"GPU run hung (exceeded --gpu-run-timeout={options.gpu_run_timeout}s)",
+                    command=tuning_pipeline,
+                    stderr=tuning_errors,
+                    exit_code=tuning_driver.returncode,
+                    gpu_id=gpu_id))
+            return TuningResult(test_vector=test_vector,
+                                success=False,
+                                gpu_timed_out=True,
+                                gpu_id=gpu_id)
+
         if tuning_driver.returncode != 0:
             gpu_logger.error(
                 format_error("Tuning pipeline failed",
@@ -1482,6 +1526,8 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
         logger.warning(f"Found {state.crashed_count()} crashed config(s) in state file")
     if state.timed_out_count() > 0:
         logger.warning(f"Found {state.timed_out_count()} timed out config(s) in state file")
+    if state.gpu_timed_out_count() > 0:
+        logger.warning(f"Found {state.gpu_timed_out_count()} gpu-timed-out config(s) in state file")
     if state.failed_count() > 0:
         logger.warning(f"Found {state.failed_count()} failed config(s) in state file")
 
@@ -1577,6 +1623,8 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
                     state_file.set_succeeded(result.test_vector)
                 elif result.timed_out:
                     state_file.set_timed_out(result.test_vector)
+                elif result.gpu_timed_out:
+                    state_file.set_gpu_timed_out(result.test_vector)
                 else:
                     state_file.set_failed(result.test_vector)
 
@@ -1942,7 +1990,7 @@ def parse_arguments(gpu_topology: GpuTopology,
 
     parser.add_argument("--retry",
                         nargs='+',
-                        choices=["failed", "timed_out", "crashed"],
+                        choices=["failed", "timed_out", "gpu_timed_out", "crashed"],
                         default=[],
                         metavar='STATE',
                         help="Retry configs in specified states")
@@ -1994,6 +2042,18 @@ def parse_arguments(gpu_topology: GpuTopology,
         "compile in-process). When > 0, each config is compiled in a separate "
         "rocmlir-driver process that is killed if it exceeds this budget; the "
         "timed-out config is skipped (reported as N/A) and tuning continues.")
+
+    parser.add_argument(
+        "--gpu-run-timeout",
+        type=int,
+        default=0,
+        metavar='SECONDS',
+        help="Per-perf-config GPU-run timeout in seconds (default: 0 = no timeout). "
+        "When > 0, the tuning driver bounds the time spent benchmarking "
+        "each config; a run that exceeds this budget is presumed hung. Because a "
+        "hung GPU kernel cannot be interrupted in-process, the whole test vector is "
+        "marked 'gpu_timed_out' and tuning advances to the next problem config "
+        "(retry with '--retry gpu_timed_out').")
 
     parser.add_argument("-s",
                         "--status",
@@ -2083,7 +2143,8 @@ def main(args=None):
                       wait_for_compiles=parsed_args.wait_for_compiles,
                       flush_last_level_cache=parsed_args.flush_last_level_cache,
                       timeout=parsed_args.timeout,
-                      perf_config_timeout=parsed_args.perf_config_timeout)
+                      perf_config_timeout=parsed_args.perf_config_timeout,
+                      gpu_run_timeout=parsed_args.gpu_run_timeout)
 
     ctx = TuningContext(configs=configs,
                         conf_class=conf_class,

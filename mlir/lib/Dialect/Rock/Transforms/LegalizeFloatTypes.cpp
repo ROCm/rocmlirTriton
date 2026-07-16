@@ -33,6 +33,8 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
@@ -1241,6 +1243,14 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
       if (gemmOperandIs4Bit) {
         if (!kPack.has_value())
           return gemmOp.emitError("kPack is undefined");
+        if (!kPack.value() && !rock::archSupportsNonKPackedScaledInput(
+                                  rock::getArchValue(gemmOp))) {
+          rock::markAsNotApplicable(gemmOp);
+          return gemmOp.emitError(
+              "sub-byte packing in the non-K (M/N) dimension is not "
+              "supported on this architecture, see "
+              "archSupportsNonKPackedScaledInput");
+        }
         if (isA)
           gemmOp.setMatrixAKPackAttr(builder.getBoolAttr(kPack.value()));
         else
