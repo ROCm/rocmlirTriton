@@ -185,6 +185,39 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
                              as_index=False)["TFlops"].max()
         self.assertFalse(grouped.empty)
 
+    def test_quick_tuning_gen_fills_optional_columns_when_mixing_files(self):
+        """Mixing legacy and current TSVs must not drop legacy rows.
+
+        pd.concat keeps the TransBias/SlidingWindowSize columns from the newer
+        file and fills the legacy rows with NaN. Since groupby drops NaN keys by
+        default, those legacy rows would silently disappear unless the NaNs are
+        backfilled to their disabled defaults.
+        """
+        legacy_header = (
+            "DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
+            "Causal\tReturnLSE\tSplitKV\tWithAttnScale\tWithAttnBias\tG\tSeqLenQ\t"
+            "SeqLenK\tNumHeadsQ\tNumHeadsKV\tHeadDimQK\tHeadDimV\tPerfConfig\tTFlops\n")
+        legacy_path = Path(f"{self.tmp_prefix}.legacy.debug")
+        legacy_path.write_text(
+            legacy_header + f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
+            f"False\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t"
+            f"{PERFCONFIG}\t1.0\n")
+
+        current_header = legacy_header.rstrip("\n") + "\tTransBias\tSlidingWindowSize\n"
+        current_path = Path(f"{self.tmp_prefix}.current.debug")
+        current_path.write_text(
+            current_header + f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
+            f"False\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t"
+            f"{PERFCONFIG}\t1.0\tFalse\t0\n")
+
+        df = load_data([str(legacy_path), str(current_path)], no_splitk=False)
+        self.assertFalse(df["TransBias"].isna().any())
+        self.assertFalse(df["SlidingWindowSize"].isna().any())
+
+        grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
+                             as_index=False)["TFlops"].max()
+        self.assertEqual(len(grouped), 1)
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

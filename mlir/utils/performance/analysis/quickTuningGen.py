@@ -121,14 +121,24 @@ def load_data(files, no_splitk):
         print("Reading from stdin...")
         df = pd.read_csv(sys.stdin, sep='\t', index_col=None, low_memory=False)
 
-    if 'WithAttnBias' in df.columns and 'TransBias' not in df.columns:
-        df['TransBias'] = False
+    # Legacy attention TSVs predate the TransBias column. When such files are
+    # mixed with newer ones, pd.concat leaves NaN in the legacy rows rather than
+    # omitting the column, so fill both the missing-column and missing-value
+    # cases; otherwise groupby (dropna=True) would silently drop those rows.
+    if 'WithAttnBias' in df.columns:
+        if 'TransBias' not in df.columns:
+            df['TransBias'] = False
+        else:
+            df['TransBias'] = df['TransBias'].fillna(False)
 
     # Sliding window is optional (KV-cache only) and omitted from the key when
     # disabled, so legacy attention rows may lack the column; default it to the
-    # disabled value 0.
-    if 'SplitKV' in df.columns and 'SlidingWindowSize' not in df.columns:
-        df['SlidingWindowSize'] = 0
+    # disabled value 0. Handle the mixed-file NaN case for the same reason.
+    if 'SplitKV' in df.columns:
+        if 'SlidingWindowSize' not in df.columns:
+            df['SlidingWindowSize'] = 0
+        else:
+            df['SlidingWindowSize'] = df['SlidingWindowSize'].fillna(0)
 
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)
