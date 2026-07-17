@@ -132,13 +132,13 @@ def load_data(files, no_splitk):
             df['TransBias'] = df['TransBias'].fillna(False)
 
     # Sliding window is optional (KV-cache only) and omitted from the key when
-    # disabled, so legacy attention rows may lack the column; default it to the
-    # disabled value 0. Handle the mixed-file NaN case for the same reason.
-    if 'SplitKV' in df.columns:
-        if 'SlidingWindowSize' not in df.columns:
-            df['SlidingWindowSize'] = 0
-        else:
-            df['SlidingWindowSize'] = df['SlidingWindowSize'].fillna(0)
+    # disabled, so legacy attention rows may lack the column or carry NaN after
+    # a mixed-file concat; normalize it to the disabled value 0. Only attention
+    # grouping reads SlidingWindowSize, so defaulting it is a no-op elsewhere.
+    if 'SlidingWindowSize' not in df.columns:
+        df['SlidingWindowSize'] = 0
+    else:
+        df['SlidingWindowSize'] = df['SlidingWindowSize'].fillna(0)
 
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)
