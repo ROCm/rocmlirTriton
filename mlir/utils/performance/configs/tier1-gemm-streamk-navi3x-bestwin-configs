@@ -9,5 +9,5 @@
 # per-tile K-reduction atomics are too costly -> stream-K's few-remainder
 # re-split wins.
 #
-# Trailing comment: grid | m | n | k
--t f32 -out_datatype f32 -transA false -transB false -transO false -g 1 -m 2816 -n 2944 -k 4096   # 506 | 2816 | 2944 | 4096
+# grid=506 tiles (22*23), m=2816 n=2944 k=4096
+-t f32 -out_datatype f32 -transA false -transB false -transO false -g 1 -m 2816 -n 2944 -k 4096

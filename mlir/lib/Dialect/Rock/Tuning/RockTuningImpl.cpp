@@ -515,13 +515,18 @@ computeOptimalStreamKMultiples(RockGemmWrapperInterface gemmOp,
   auto info = PopulateParamsInfo::fromOp(gemmOp);
   uint32_t numCUs = rock::getNumCUValue(gemmOp);
 
-  // Only worth stream-K when the data-parallel grid is poorly balanced across
-  // CUs (a ragged tail), reusing the split-K work-imbalance heuristic.
-  const double dataParallelImbalance = computeWorkImbalance(
-      info.gemmSize, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock, numCUs);
-  constexpr double imbalanceThreshold = 1.20;
-  if (dataParallelImbalance < imbalanceThreshold)
-    return streamKValues;
+  // TODO[stream-K]: the work-imbalance gate below measures raggedness at the
+  // num_cu granularity, which is occupancy-blind: a grid that spills just past
+  // the occ*num_cu resident capacity (the real serialized-wave boundary on
+  // e.g. gfx1100 f32) looks perfectly balanced here and stream-K is never
+  // offered. Temporarily disabled so we can benchmark stream-K on such shapes.
+  // Restore an occupancy-aware gate (raggedness at occ*num_cu) before merging.
+  //
+  // const double dataParallelImbalance = computeWorkImbalance(
+  //     info.gemmSize, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock, numCUs);
+  // constexpr double imbalanceThreshold = 1.20;
+  // if (dataParallelImbalance < imbalanceThreshold)
+  //   return streamKValues;
 
   // calculatePaddedGemmSize rounds M/N up to whole mPerBlock/nPerBlock tiles,
   // so the tile counts are exact divisions.
