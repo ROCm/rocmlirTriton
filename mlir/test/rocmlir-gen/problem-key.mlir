@@ -41,9 +41,9 @@
 // RUN: rocmlir-gen --arch gfx942 --operation attention -current_seq_len=16 -sliding_window_size 8 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=CHECK_SW
 // CHECK_SW: -t f16 -transQ false -transK false -transV false -transO false -causal false -return_lse false -split_kv 1 -sliding_window_size 8 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32
 
-// sliding_window_size and transposed bias are independent optional columns that
-// were reconciled into one key. Emitting both at once pins their relative
-// order: -sliding_window_size comes right after -split_kv, and the
+// sliding_window_size and transBias are independent optional fields in the
+// attention tuning key. Emitting both at once pins their relative order:
+// -sliding_window_size comes right after -split_kv, and the
 // scale/bias/transBias suffix stays last (kept in sync with
 // AttentionConfiguration.from_command_line() / to_command_line() in perfRunner.py).
 // RUN: rocmlir-gen --arch gfx942 --operation attention -current_seq_len=16 -sliding_window_size 8 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 --with-attn-bias --transBias | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=CHECK_SW_TRANSBIAS

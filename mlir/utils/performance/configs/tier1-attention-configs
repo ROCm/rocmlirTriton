@@ -50,6 +50,3 @@
 -transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 3600 -seq_len_k 3600 -head_dim_qk 80 -head_dim_v 80
 -transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 225 -head_dim_qk 160 -head_dim_v 160
 -transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160
--t f16 -transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -sliding_window_size 1024 -current_seq_len 2048 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 1 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128
--t f16 -transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -sliding_window_size 512 -current_seq_len 3000 -num_heads_q 8 -num_heads_kv 2 -g 1 -seq_len_q 1 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128
--t f16 -transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -sliding_window_size 256 -current_seq_len 1000,2000 -num_heads_q 1 -num_heads_kv 1 -g 2 -seq_len_q 1 -seq_len_k 4096 -head_dim_qk 64 -head_dim_v 64
