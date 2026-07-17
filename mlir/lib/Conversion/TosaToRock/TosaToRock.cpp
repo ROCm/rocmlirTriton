@@ -2558,6 +2558,16 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         if (!sameSeqLenBlockArg(currentResult.seqLen,
                                 currentResult.slidingWindowSeqLen, seqLenSkip))
           return failure();
+        // Both masks must clamp currentSeqLen identically. sameSeqLenBlockArg
+        // only matches the underlying block argument (it skips through the
+        // clip min/max), so a divergent clip would otherwise be silently
+        // dropped: the folded op carries a single currentSeqLen with one clip
+        // and cannot reproduce two different clamp ranges. Reject the fusion
+        // instead. In well-formed IR the seq-len is clamped once and reused, so
+        // the two clips agree.
+        if (currentResult.seqLenClipMin != currentResult.slidingWindowClipMin ||
+            currentResult.seqLenClipMax != currentResult.slidingWindowClipMax)
+          return failure();
       } else {
         // Sliding-window-only mask: adopt its (validated) seq-len operand as
         // currentSeqLen so the resulting op verifies, preserving any clip
