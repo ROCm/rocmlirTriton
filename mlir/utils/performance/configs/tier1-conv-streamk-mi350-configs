@@ -7,13 +7,14 @@
 # falls to split-K), (1) over-fills the machine (grid >= num_cu, so
 # StreamKDecompose can build a P >= num_cu wave decomposition rather than bailing),
 # (2) has a ragged tail -- imbalance = ceil(grid/num_cu)*num_cu/grid >=
-# 1.20 -- and (3) has splittable K (gemmK >= 256). Underutilized /
-# GEMV shapes are excluded: the pass can't decompose them and
-# they fall to plain split-K instead. Eligible dtypes are those with fast
+# 1.20 -- (3) has splittable K (gemmK >= 256), and (4) is
+# compute-bound -- arith. intensity 2MNK/(bytes*(MK+KN+MN)) >= 60.
+# Underutilized / GEMV / memory-bound shapes are excluded: the pass can't
+# decompose them (or gains nothing) and they fall to plain split-K instead.
+# Eligible dtypes are those with fast
 # atomic_add on this arch: f16, f32.
 # See gen-streamk-configs.py for the full rationale.
 
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 256 -H 56 -W 56 -k 128 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 384 -H 28 -W 28 -k 512 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 256 -H 56 -W 56 -k 128 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 384 -H 28 -W 28 -k 512 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
@@ -38,10 +39,6 @@ convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 256 -H 50 -W 50 -k 256 -y 3 -x 
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 1024 -H 50 -W 50 -k 256 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 1024 -H 50 -W 50 -k 512 -y 1 -x 1 -p 0 -q 0 -u 2 -v 2 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 2048 -H 25 -W 25 -k 512 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 32 -H 160 -W 160 -k 64 -y 3 -x 3 -p 1 -q 1 -u 2 -v 2 -l 1 -j 1 -g 1
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 64 -H 80 -W 80 -k 64 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
-convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 32 -H 160 -W 160 -k 64 -y 3 -x 3 -p 1 -q 1 -u 2 -v 2 -l 1 -j 1 -g 1
-convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 64 -H 80 -W 80 -k 64 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 256 -H 52 -W 52 -k 128 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 512 -H 26 -W 26 -k 512 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 128 -H 52 -W 52 -k 128 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
@@ -50,11 +47,9 @@ convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 256 -H 26 -W 26 -k 512 -y 3 -x 
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 1280 -H 8 -W 8 -k 320 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 384 -H 8 -W 8 -k 384 -y 1 -x 3 -p 0 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 192 -H 17 -W 17 -k 320 -y 3 -x 3 -p 0 -q 0 -u 2 -v 2 -l 1 -j 1 -g 1
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 128 -H 17 -W 17 -k 128 -y 1 -x 7 -p 0 -q 3 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 384 -H 8 -W 8 -k 384 -y 3 -x 1 -p 1 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 448 -H 8 -W 8 -k 384 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 2048 -H 8 -W 8 -k 320 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 128 -H 17 -W 17 -k 128 -y 7 -x 1 -p 3 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 1280 -H 8 -W 8 -k 384 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 2048 -H 8 -W 8 -k 384 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 32 -c 192 -H 17 -W 17 -k 320 -y 3 -x 3 -p 0 -q 0 -u 2 -v 2 -l 1 -j 1 -g 1
@@ -63,7 +58,6 @@ conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 32 -c 1280 -H 8 -W 8 -k 192 -y 1 -x 1 -p
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 32 -c 192 -H 17 -W 17 -k 192 -y 3 -x 3 -p 0 -q 0 -u 2 -v 2 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 32 -c 2048 -H 8 -W 8 -k 320 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 32 -c 2048 -H 8 -W 8 -k 192 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 48 -H 128 -W 128 -k 96 -y 4 -x 4 -p 1 -q 1 -u 2 -v 2 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 192 -H 64 -W 64 -k 384 -y 3 -x 3 -p 1 -q 1 -u 2 -v 2 -l 1 -j 1 -g 1
 convfp16 -F 2 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 384 -H 32 -W 32 -k 512 -y 4 -x 4 -p 1 -q 1 -u 2 -v 2 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 387 -H 32 -W 32 -k 384 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
@@ -92,9 +86,6 @@ convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 512 -H 24 -W 24 -k 512 -y 3 -x 
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 848 -H 24 -W 24 -k 512 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 512 -H 24 -W 24 -k 512 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
 conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 848 -H 24 -W 24 -k 512 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 64 -H 96 -W 96 -k 64 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 48 -H 96 -W 96 -k 64 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 384 -H 96 -W 96 -k 64 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 512 -H 24 -W 24 -k 511 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1
 convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 384 -H 48 -W 48 -k 512 -y 3 -x 3 -p 1 -q 1 -u 2 -v 2 -l 1 -j 1 -g 1
 convfp16 -F 2 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 512 -H 24 -W 24 -k 512 -y 4 -x 4 -p 1 -q 1 -u 2 -v 2 -l 1 -j 1 -g 1

@@ -32,6 +32,11 @@ tile count and thus the odds of an over-filled grid with a tail):
 
 3. Splittable K: the remainder slab re-splits K, so ``gemmK >= 2 * MIN_K_PER_SPLIT``.
 
+4. Compute-bound: arithmetic intensity
+   ``2*M*N*K / (dtype_bytes*(M*K + K*N + M*N)) >= MIN_ARITH_INTENSITY``. Stream-K
+   repacks the compute tail but does nothing for a bandwidth-bound kernel (it even
+   adds atomic read-modify-write traffic), so memory-bound shapes fall to split-K.
+
 Per-arch knobs (num_cu, atomic-add dtype support, and hence the eligible dtype /
 conv op tokens) are in ``ARCHS`` below; one gemm + one conv list is emitted per
 arch.
@@ -57,6 +62,16 @@ IMBALANCE_THRESHOLD = 1.20
 # Splittability gate: each K-split workgroup must reduce over at least this many
 # K elements (a few kPerBlock iterations) to be worth its launch + atomic write.
 MIN_K_PER_SPLIT = 128
+# Arithmetic-intensity gate (FLOP per byte). Stream-K only pays off on
+# compute-bound GEMMs: it repacks the compute tail but does nothing for a
+# bandwidth-bound kernel (it even adds atomic read-modify-write traffic). A shape
+# below this intensity is memory-bound and falls to split-K, so drop it. The knee
+# is dtype-dependent (higher-peak matrix dtypes have a higher roofline knee); 60
+# is a conservative f32 threshold that also excludes the clearly memory-bound
+# low-K shapes for the matrix dtypes.
+MIN_ARITH_INTENSITY = 60
+# Bytes per element, used for the arithmetic-intensity estimate.
+DTYPE_BYTES = {'f32': 4, 'f16': 2, 'bf16': 2, 'int8': 1}
 
 
 class ArchSpec:
@@ -104,8 +119,17 @@ def imbalance(gemm_g: int, gemm_m: int, gemm_n: int, num_cu: int) -> float:
     return (max_wg_per_cu * num_cu) / grid
 
 
+def arith_intensity(gemm_m: int, gemm_n: int, gemm_k: int,
+                    dtype_bytes: int) -> float:
+    """GEMM arithmetic intensity in FLOP/byte (ignores G, which cancels):
+        2*M*N*K / (dtype_bytes * (M*K + K*N + M*N))."""
+    flops = 2 * gemm_m * gemm_n * gemm_k
+    byts = dtype_bytes * (gemm_m * gemm_k + gemm_k * gemm_n + gemm_m * gemm_n)
+    return flops / byts if byts else 0.0
+
+
 def is_candidate(gemm_g: int, gemm_m: int, gemm_n: int, gemm_k: int,
-                 num_cu: int) -> bool:
+                 num_cu: int, dtype_bytes: int) -> bool:
     if gemm_m <= 0 or gemm_n <= 0 or gemm_k <= 0:
         return False
     # Gate 0: reject GEMV / skinny shapes. If gemmM or gemmN is below one output
@@ -127,7 +151,13 @@ def is_candidate(gemm_g: int, gemm_m: int, gemm_n: int, gemm_k: int,
     if imbalance(gemm_g, gemm_m, gemm_n, num_cu) < IMBALANCE_THRESHOLD:
         return False
     # Gate 3: the remainder slab re-splits K, so K must be splittable at all.
-    return gemm_k >= 2 * MIN_K_PER_SPLIT
+    if gemm_k < 2 * MIN_K_PER_SPLIT:
+        return False
+    # Gate 4: compute-bound only. Stream-K repacks the compute tail but does
+    # nothing for a bandwidth-bound kernel (and adds atomic traffic), so a
+    # memory-bound shape falls to split-K -- drop it.
+    return arith_intensity(gemm_m, gemm_n, gemm_k, dtype_bytes) >= \
+        MIN_ARITH_INTENSITY
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +179,8 @@ def gemm_candidates(lines, arch: ArchSpec):
         line = line.strip()
         if not line or line.startswith('#'):
             continue
-        if _str_flag(line, '-t') not in arch.gemm_dtypes:
+        dtype = _str_flag(line, '-t')
+        if dtype not in arch.gemm_dtypes:
             continue
         g = _int_flag(line, '-g') or 1
         m = _int_flag(line, '-m')
@@ -157,7 +188,7 @@ def gemm_candidates(lines, arch: ArchSpec):
         k = _int_flag(line, '-k')
         if m is None or n is None or k is None:
             continue
-        if is_candidate(g, m, n, k, arch.num_cu):
+        if is_candidate(g, m, n, k, arch.num_cu, DTYPE_BYTES[dtype]):
             out.append(line)
     return out
 
@@ -215,7 +246,8 @@ def conv_candidates(lines, arch: ArchSpec):
         size = conv_gemm_size(line, arch)
         if size is None:
             continue
-        if is_candidate(*size, arch.num_cu):
+        dtype = arch.conv_tokens[line.split()[0]]
+        if is_candidate(*size, arch.num_cu, DTYPE_BYTES[dtype]):
             out.append(line)
     return out
 
@@ -231,9 +263,11 @@ def header(src: str, arch: ArchSpec) -> str:
 # falls to split-K), (1) over-fills the machine (grid >= num_cu, so
 # StreamKDecompose can build a P >= num_cu wave decomposition rather than bailing),
 # (2) has a ragged tail -- imbalance = ceil(grid/num_cu)*num_cu/grid >=
-# {IMBALANCE_THRESHOLD:.2f} -- and (3) has splittable K (gemmK >= {2 * MIN_K_PER_SPLIT}). Underutilized /
-# GEMV shapes are excluded: the pass can't decompose them and
-# they fall to plain split-K instead. Eligible dtypes are those with fast
+# {IMBALANCE_THRESHOLD:.2f} -- (3) has splittable K (gemmK >= {2 * MIN_K_PER_SPLIT}), and (4) is
+# compute-bound -- arith. intensity 2MNK/(bytes*(MK+KN+MN)) >= {MIN_ARITH_INTENSITY}.
+# Underutilized / GEMV / memory-bound shapes are excluded: the pass can't
+# decompose them (or gains nothing) and they fall to plain split-K instead.
+# Eligible dtypes are those with fast
 # atomic_add on this arch: {', '.join(sorted(arch.gemm_dtypes))}.
 # See gen-streamk-configs.py for the full rationale.
 """
