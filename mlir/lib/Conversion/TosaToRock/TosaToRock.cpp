@@ -1988,6 +1988,13 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     Value slidingWindowSeqLen;
     // Clip bounds detected on the sliding-window seq-len operand, re-emitted
     // when that operand is adopted as currentSeqLen.
+    //
+    // In valid IR the seq-len is clamped once and that single clip (the same
+    // min/max ops) feeds every mask, so when both a KV-cache and a
+    // sliding-window mask are present these bounds are identical to
+    // seqLenClip{Min,Max}. The two pairs exist only because each mask is
+    // matched independently; they are reconciled (and a mismatch is rejected)
+    // in getSeqLenMask so that only one effective clip is ever emitted.
     std::optional<int32_t> slidingWindowClipMin;
     std::optional<int32_t> slidingWindowClipMax;
   };
