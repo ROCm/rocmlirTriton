@@ -1,0 +1,34 @@
+# Best stream-K win candidates, hand-picked from tier1-conv-streamk-navi3x-configs
+# for Navi3x (RDNA3, gfx1100, num_cu = 70).
+#
+# Selection: shapes where stream-K should clearly beat both data-parallel and
+# split-K. Using the tuner's efficient tile, tile(d) = min(128, next_pow2(d)),
+#   grid = ceil(gemmM/tile(gemmM)) * ceil(gemmN/tile(gemmN))
+# each row satisfies ALL of:
+#   (1) single ragged round: ceil(grid/num_cu) == 2, and the 2nd round is
+#       nearly empty (grid only slightly > num_cu) -> under data-parallel most
+#       CUs sit idle for ~half the kernel. imbalance = ceil(grid/num_cu)*num_cu/grid
+#       >= 1.70 (i.e. a >=1.70x data-parallel->balanced ceiling).
+#   (2) compute-bound: arithmetic intensity >= 120 FLOP/byte and gemmK large
+#       (>=256), so the reclaimed idle CUs turn into real FMA throughput.
+#   (3) stream-K beats split-K: the imbalance is a small tail, so stream-K
+#       re-splits only the few remainder tiles (few atomics), whereas split-K
+#       would split every tile's K (broad atomic + output-prefill overhead) to
+#       fix the same tail.
+#
+# Columns in the trailing comment: imbalance | grid | gemmM | gemmN | gemmK | AI
+#
+# grid=74 cluster (2nd round only 6% full -> ~66/70 CUs idle in the tail):
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 192 -H 17 -W 17 -k 192 -y 1 -x 7 -p 0 -q 3 -u 1 -v 1 -l 1 -j 1 -g 1   # 1.89 | 74 | 192 | 4624 | 1344 | 293
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 160 -H 17 -W 17 -k 192 -y 1 -x 7 -p 0 -q 3 -u 1 -v 1 -l 1 -j 1 -g 1   # 1.89 | 74 | 192 | 4624 | 1120 | 270
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 160 -H 17 -W 17 -k 160 -y 7 -x 1 -p 3 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1   # 1.89 | 74 | 160 | 4624 | 1120 | 250
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 16 -c 128 -H 17 -W 17 -k 192 -y 7 -x 1 -p 3 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1   # 1.89 | 74 | 192 | 4624 |  896 | 241
+#
+# grid=79 cluster (2nd round 13% full), high AI / large K:
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 512 -H 102 -W 102 -k 128 -y 3 -x 3 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1  # 1.77 | 79 | 128 | 10000 | 4608 | 410
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 128 -H 100 -W 100 -k 128 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1  # 1.77 | 79 | 128 | 10000 | 1152 | 272
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 256 -H 202 -W 202 -k 128 -y 3 -x 3 -p 0 -q 0 -u 2 -v 2 -l 1 -j 1 -g 1  # 1.77 | 79 | 128 | 10000 | 2304 | 123
+#
+# grid=80 cluster (2nd round 14% full), tall-K GEMV-ish but compute-bound:
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 1536 -H 25 -W 25 -k 2048 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1  # 1.75 | 80 | 2048 | 625 | 1536 | 183
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 512 -H 25 -W 25 -k 2048 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1   # 1.75 | 80 | 2048 | 625 |  512 | 124

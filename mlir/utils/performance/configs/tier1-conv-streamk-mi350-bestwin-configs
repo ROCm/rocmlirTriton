@@ -1,0 +1,40 @@
+# Best stream-K win candidates, hand-picked from tier1-conv-streamk-mi350-configs
+# for MI350 (CDNA4, gfx950, num_cu = 256).
+#
+# Selection: shapes where stream-K should clearly beat both data-parallel and
+# split-K. Using the tuner's efficient tile, tile(d) = min(128, next_pow2(d)),
+#   grid = ceil(gemmM/tile(gemmM)) * ceil(gemmN/tile(gemmN))
+# each row satisfies ALL of:
+#   (1) single ragged round: ceil(grid/num_cu) == 2, with the 2nd round only
+#       ~12-33% full (grid only slightly > num_cu=256) -> under data-parallel
+#       most CUs sit idle for much of the kernel. imbalance =
+#       ceil(grid/num_cu)*num_cu/grid >= 1.50 (a >=1.50x data-parallel->balanced
+#       ceiling).
+#   (2) compute-bound: arithmetic intensity high (>=200 FLOP/byte here) and
+#       gemmK large (>=256, splittable), so reclaimed idle CUs become real
+#       matrix-core throughput.
+#   (3) stream-K beats split-K: the imbalance is a small tail, so stream-K
+#       re-splits only the few remainder tiles (few atomics), whereas split-K
+#       would split every tile's K (broad atomic + output-prefill overhead) to
+#       fix the same tail.
+# Eligible dtypes on gfx950 (fast atomic_add): f16, f32.
+#
+# Trailing comment columns: imbalance | grid | gemmM | gemmN | gemmK | AI | GFLOP
+#
+# grid=288 cluster (imbalance 1.78, 2nd round ~12% full):
+convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 512 -H 96 -W 96 -k 512 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1     # 1.78 | 288 | 512 |  9216 |  4608 | 1843 | 43.5
+convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 224 -H 192 -W 192 -k 96 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1    # 1.78 | 288 |  96 | 36864 |  2016 |  595 | 14.3
+#
+# grid=290 cluster (imbalance 1.77):
+convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 1280 -H 60 -W 60 -k 1280 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1   # 1.77 | 290 | 1280 | 3600 | 11520 | 2215 | 106.2
+conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 64 -c 192 -H 17 -W 17 -k 192 -y 1 -x 7 -p 0 -q 3 -u 1 -v 1 -l 1 -j 1 -g 1        # 1.77 | 290 | 192 | 18496 |  1344 |  324 |  9.6
+#
+# grid=308 cluster (imbalance 1.66):
+convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 100 -c 256 -H 14 -W 14 -k 256 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1   # 1.66 | 308 | 256 | 19600 |  2304 | 1088 | 23.1
+#
+# grid=320 cluster (imbalance 1.60):
+convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 2 -c 640 -H 64 -W 64 -k 640 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1     # 1.60 | 320 | 640 |  8192 |  5760 | 2131 | 60.4
+#
+# grid=339 cluster (imbalance 1.51), largest compute-bound cases:
+convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 960 -H 120 -W 120 -k 320 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1   # 1.51 | 339 | 320 | 14400 |  8640 | 1878 | 79.6
+convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 320 -H 120 -W 120 -k 320 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1   # 1.51 | 339 | 320 | 14400 |  2880 | 1309 | 26.5
