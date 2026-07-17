@@ -27,6 +27,8 @@
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -797,12 +799,37 @@ extractLayouts(Operation *op, llvm::StringMap<unsigned> &fLayoutMap,
   return success();
 }
 
+// Walk backward through a transform chain and report whether any individual
+// transform preserves rank and element extents while applying a non-identity
+// permutation. This catches layout-only changes, such as transposed attention
+// bias, even when they are surrounded by flatten/unflatten transforms.
+static bool hasRankPreservingNonIdentityPermutation(Value value) {
+  while (auto transformOp = value.getDefiningOp<TransformOp>()) {
+    auto valueType = dyn_cast<ShapedType>(transformOp.getResult().getType());
+    auto inputType = dyn_cast<ShapedType>(transformOp.getInput().getType());
+    if (valueType && inputType && valueType.getRank() == inputType.getRank()) {
+      SmallVector<int64_t> valueShape(valueType.getShape());
+      SmallVector<int64_t> inputShape(inputType.getShape());
+      llvm::sort(valueShape);
+      llvm::sort(inputShape);
+
+      AffineMap map = transformOp.getTransform().getMap().getAffineMap();
+      if (valueShape == inputShape && map && map.isPermutation() &&
+          !isIdentityOnShape(map, valueType.getShape()))
+        return true;
+    }
+    value = transformOp.getInput();
+  }
+  return false;
+}
+
 // Determine whether an attention op fuses a pre-softmax scale and/or bias, as
 // created by rocmlir-gen's `--with-attn-scale` / `--with-attn-bias`. Scale
 // folds an extra elementwise multiply of the QK^T scores by an external input;
 // bias folds an elementwise add. Both change the generated kernel (and thus its
 // optimal perf config), so they are part of the tuning-problem identity and
-// must appear in the tuning key.
+// must appear in the tuning key. A rank-preserving non-identity permutation on
+// the bias input records that the bias is loaded transposed.
 //
 // The fusion is encoded as ops inside the `preSoftmaxBody` region that consume
 // the region's block arguments. Block argument 0 is the QK^T product; the
@@ -814,9 +841,11 @@ extractLayouts(Operation *op, llvm::StringMap<unsigned> &fLayoutMap,
 // inputs are dequantization operands, not the attention scale/bias, so they are
 // skipped.
 static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
-                                  bool &hasAttnScale, bool &hasAttnBias) {
+                                  bool &hasAttnScale, bool &hasAttnBias,
+                                  bool &hasTransposedAttnBias) {
   hasAttnScale = false;
   hasAttnBias = false;
+  hasTransposedAttnBias = false;
   Region &body = attnOp.getPreSoftmaxBody();
   if (body.empty())
     return;
@@ -839,6 +868,8 @@ static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
     // it.
     SmallVector<Value> worklist{entry.getArgument(i + 1)};
     llvm::SmallPtrSet<Value, 8> seen;
+    bool isTransposedInput = hasRankPreservingNonIdentityPermutation(
+        attnOp.getPreSoftmaxElemWiseInputs()[i]);
     while (!worklist.empty()) {
       Value v = worklist.pop_back_val();
       if (!seen.insert(v).second)
@@ -846,10 +877,12 @@ static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
       for (Operation *user : v.getUsers()) {
         if (isa<arith::MulFOp>(user))
           hasAttnScale = true;
-        else if (isa<arith::AddFOp>(user))
+        else if (isa<arith::AddFOp>(user)) {
           hasAttnBias = true;
-        else
+          hasTransposedAttnBias |= isTransposedInput;
+        } else {
           llvm::append_range(worklist, user->getResults());
+        }
       }
     }
   }
@@ -959,10 +992,11 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
     problemOS << "false" << sep;
 
   bool hasAttnScale = false, hasAttnBias = false;
+  bool hasTransposedAttnBias = false;
   if (isAttention) {
     auto attentionOp = cast<AttentionOp>(gemmGemmOp);
     getAttentionScaleBias(attentionOp, elemTypeQ.isInteger(8), hasAttnScale,
-                          hasAttnBias);
+                          hasAttnBias, hasTransposedAttnBias);
     problemOS << "-causal ";
     if (attentionOp.getCausal())
       problemOS << "true" << sep;
@@ -994,6 +1028,8 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
     problemOS << sep << "-with-attn-scale "
               << (hasAttnScale ? "true" : "false");
     problemOS << sep << "-with-attn-bias " << (hasAttnBias ? "true" : "false");
+    problemOS << sep << "-transBias "
+              << (hasTransposedAttnBias ? "true" : "false");
   } else if (isConvGemm) {
     auto convGemmOp = cast<ConvElementwiseGemmOp>(gemmGemmOp);
     ArrayRef<int64_t> inShape = convGemmOp.getInput().getType().getShape();
