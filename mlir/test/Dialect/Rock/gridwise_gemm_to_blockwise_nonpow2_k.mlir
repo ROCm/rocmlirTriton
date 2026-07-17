@@ -51,3 +51,13 @@ func.func @gemm_pow2_kperblock_no_peel(%arg0: tensor<1x64x128xf16>, %arg1: tenso
   %out = rock.store %result to %arg2 by set : tensor<1x64x64xf32> -> tensor<1x64x64xf32> to tensor<1x64x64xf32>
   return %out : tensor<1x64x64xf32>
 }
+
+// -----
+
+func.func @gemm_nonpow2_kperblock_scaled_unsupported(%arg0: tensor<1x64x96xf4E2M1FN>, %arg1: tensor<1x96x64xf4E2M1FN>, %scaleA: tensor<1x64x6xf8E8M0FNU>, %scaleB: tensor<1x64x6xf8E8M0FNU>, %arg2: tensor<1x64x64xf32>) -> tensor<1x64x64xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 1 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.num_cu = 256 : i32, rock.kernel} {
+  // expected-error @+2 {{non-power-of-two kPerBlock is not supported for scaled gemm}}
+  // expected-error @+1 {{failed to legalize operation 'rock.gridwise_gemm'}}
+  %result = rock.gridwise_gemm(%arg0, %arg1, %scaleA, %scaleB) {quantBlockSize = 16 : i64, params = #rock.gemm_params<kPerBlock = 48, mPerBlock = 64, nPerBlock = 64, kpack = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>} : tensor<1x64x96xf4E2M1FN>, tensor<1x96x64xf4E2M1FN>, tensor<1x64x6xf8E8M0FNU>, tensor<1x64x6xf8E8M0FNU> -> tensor<1x64x64xf32>
+  %out = rock.store %result to %arg2 by set : tensor<1x64x64xf32> -> tensor<1x64x64xf32> to tensor<1x64x64xf32>
+  return %out : tensor<1x64x64xf32>
+}
