@@ -220,8 +220,7 @@ windowDividingKPerBlock(int64_t k, uint32_t mPerBlock, uint32_t nPerBlock,
   uint32_t minMN = std::min(mPerBlock, nPerBlock);
   uint32_t lo = std::max(minBaseK, minMN / 2);
   uint32_t hi = std::min<uint32_t>(maxK, minMN);
-  hi = std::min<uint32_t>(hi, static_cast<uint32_t>(k));
-  for (uint32_t d = lo; d < hi; ++d) {
+  for (uint32_t d = lo; d < hi && static_cast<int64_t>(d) <= k; ++d) {
     if (k % d == 0 && llvm::popcount(d) == 2)
       candidates.push_back(d);
   }
