@@ -85,6 +85,16 @@ static constexpr double kMaxStreamKPadFraction = 0.125;
 // CUs idle. Reject any partition dim that fills less than this fraction.
 static constexpr double kMinStreamKFillFraction = 0.75;
 
+// Maximum split-K factor allowed on the remainder slab. The tail re-splits K
+// splitK = span/rb ways and atomic_adds the partials, so a large splitK
+// concentrates heavy atomic read-modify-write contention on a thin remainder
+// (e.g. a single partition-dim block split 23 ways) -- the worst of both
+// worlds: split-K's atomic traffic without its balanced spread. Cap it so only
+// healthy remainders survive; shapes whose sole plan needs a bigger split fall
+// back to plain split-K instead. (The split-K tuner itself only ever uses
+// factors 3-4, so 8 is already generous.)
+static constexpr int64_t kMaxStreamKRemainderSplit = 8;
+
 FailureOr<StreamKPlan>
 mlir::rock::computeStreamKPlanForDim(StreamKPartDim partDim, int64_t g,
                                      int64_t mBlocks, int64_t nBlocks,
@@ -194,6 +204,11 @@ FailureOr<StreamKPlan> mlir::rock::chooseStreamKPlan(int64_t g, int64_t mBlocks,
     // P/targetP.
     const int64_t targetP = streamKMultiple * numCU;
     if (static_cast<double>(plan->P) < kMinStreamKFillFraction * targetP)
+      continue;
+    // Reject plans whose remainder re-splits K too many ways: a large split-K
+    // piles atomic_add contention onto a thin remainder slab (net loss vs
+    // plain split-K). See kMaxStreamKRemainderSplit.
+    if (plan->splitK > kMaxStreamKRemainderSplit)
       continue;
     if (failed(best) || overhead < bestOverhead) {
       best = plan;

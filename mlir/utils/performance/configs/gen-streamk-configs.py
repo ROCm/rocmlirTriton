@@ -36,10 +36,13 @@ uses split-K (not stream-K) to fill them.
 
 3. Splittable K: the remainder slab re-splits K, so ``gemmK >= 2 * MIN_K_PER_SPLIT``.
 
-4. Compute-bound: arithmetic intensity
-   ``2*M*N*K / (dtype_bytes*(M*K + K*N + M*N)) >= MIN_ARITH_INTENSITY``. Stream-K
-   repacks the compute tail but does nothing for a bandwidth-bound kernel (it even
-   adds atomic read-modify-write traffic), so memory-bound shapes fall to split-K.
+4. Buildable plan: chooseStreamKPlan succeeds for some tuned multiple (1 or 2),
+   including the remainder split-K cap
+   ``splitK = span/rb <= MAX_STREAMK_REMAINDER_SPLIT``. A shape whose only
+   decomposition needs a large remainder split concentrates atomic contention on
+   a thin slab (net loss vs plain split-K), so it falls to split-K. This mirrors
+   loweringUtils.cpp chooseStreamKPlan exactly, keeping the list in lockstep with
+   the pass.
 
 Per-arch knobs (num_cu, atomic-add dtype support, and hence the eligible dtype /
 conv op tokens) are in ``ARCHS`` below; one gemm + one conv list is emitted per
@@ -76,16 +79,18 @@ IMBALANCE_THRESHOLD = 1.20
 # Splittability gate: each K-split workgroup must reduce over at least this many
 # K elements (a few kPerBlock iterations) to be worth its launch + atomic write.
 MIN_K_PER_SPLIT = 128
-# Arithmetic-intensity gate (FLOP per byte). Stream-K only pays off on
-# compute-bound GEMMs: it repacks the compute tail but does nothing for a
-# bandwidth-bound kernel (it even adds atomic read-modify-write traffic). A shape
-# below this intensity is memory-bound and falls to split-K, so drop it. The knee
-# is dtype-dependent (higher-peak matrix dtypes have a higher roofline knee); 60
-# is a conservative f32 threshold that also excludes the clearly memory-bound
-# low-K shapes for the matrix dtypes.
-MIN_ARITH_INTENSITY = 60
-# Bytes per element, used for the arithmetic-intensity estimate.
-DTYPE_BYTES = {'f32': 4, 'f16': 2, 'bf16': 2, 'int8': 1}
+
+# --- Stream-K plan gates, mirroring loweringUtils.cpp chooseStreamKPlan so the
+# --- offline list stays in lockstep with what the pass will actually build. ---
+# Persistent-grid multiples the tuner tries (computeOptimalStreamKMultiples).
+STREAMK_MULTIPLES = (1, 2)
+# Max fraction of the partition dim we may pad to reach a clean tail.
+MAX_STREAMK_PAD_FRACTION = 0.125
+# Min fraction of the requested persistent grid (targetP) a plan must fill.
+MIN_STREAMK_FILL_FRACTION = 0.75
+# Max split-K factor on the remainder slab: a larger split concentrates atomic
+# contention on a thin remainder (net loss vs plain split-K), so drop it.
+MAX_STREAMK_REMAINDER_SPLIT = 8
 
 
 class ArchSpec:
@@ -146,17 +151,78 @@ def imbalance(gemm_g: int, gemm_m: int, gemm_n: int, num_cu: int) -> float:
     return (max_wg_per_cu * num_cu) / grid
 
 
-def arith_intensity(gemm_m: int, gemm_n: int, gemm_k: int,
-                    dtype_bytes: int) -> float:
-    """GEMM arithmetic intensity in FLOP/byte (ignores G, which cancels):
-        2*M*N*K / (dtype_bytes * (M*K + K*N + M*N))."""
-    flops = 2 * gemm_m * gemm_n * gemm_k
-    byts = dtype_bytes * (gemm_m * gemm_k + gemm_k * gemm_n + gemm_m * gemm_n)
-    return flops / byts if byts else 0.0
+def _stream_k_plan_for_dim(part: str, g: int, mblocks: int, nblocks: int,
+                           num_cu: int, skm: int):
+    """Port of computeStreamKPlanForDim: returns a dict with the plan's splitK,
+    pad and P for partition dim ``part`` (one of 'G'/'M'/'N'), or None if no
+    decomposition exists (mirrors the span >= 2 / span <= numBlocks / divisor
+    conditions)."""
+    if skm < 1:
+        return None
+    if part == 'G':
+        numblocks, others = g, mblocks * nblocks
+    elif part == 'M':
+        numblocks, others = mblocks, g * nblocks
+    else:  # 'N'
+        numblocks, others = nblocks, g * mblocks
+    if others <= 0:
+        return None
+    target_p = skm * num_cu
+    span = target_p // others  # floor
+    if span < 2 or span > numblocks:
+        return None
+    p = span * others
+    rem = numblocks % span
+    best_pad, best_rb = -1, 0
+    for rb in range(1, span):
+        if span % rb != 0:
+            continue
+        pad = (rb - rem + span) % span
+        if numblocks + pad < span + rb:
+            pad += span  # keep at least one full data-parallel wave
+        if best_pad < 0 or pad < best_pad or (pad == best_pad and rb > best_rb):
+            best_pad, best_rb = pad, rb
+    if best_pad < 0:
+        return None
+    return {'splitK': span // best_rb, 'pad': best_pad,
+            'numblocks': numblocks, 'P': p}
+
+
+def _choose_stream_k_plan(g: int, mblocks: int, nblocks: int, num_cu: int,
+                          skm: int):
+    """Port of chooseStreamKPlan: the best plan across partition dims subject to
+    the pad-overhead, fill-fraction and remainder split-K gates, or None."""
+    best, best_overhead = None, 0.0
+    for part in ('N', 'M', 'G'):  # priority order = final tie-break
+        plan = _stream_k_plan_for_dim(part, g, mblocks, nblocks, num_cu, skm)
+        if plan is None:
+            continue
+        if part == 'G' and plan['pad'] > 0:
+            continue  # groups can't be padded
+        overhead = plan['pad'] / plan['numblocks']
+        if overhead > MAX_STREAMK_PAD_FRACTION:
+            continue
+        if plan['P'] < MIN_STREAMK_FILL_FRACTION * (skm * num_cu):
+            continue
+        if plan['splitK'] > MAX_STREAMK_REMAINDER_SPLIT:
+            continue
+        if best is None or overhead < best_overhead:
+            best, best_overhead = plan, overhead
+    return best
+
+
+def has_stream_k_plan(gemm_g: int, gemm_m: int, gemm_n: int, num_cu: int) -> bool:
+    """A healthy stream-K plan exists for some tuned multiple (mirrors
+    computeOptimalStreamKMultiples' chooseStreamKPlan loop, incl. the remainder
+    split-K cap). Uses the same per-dimension efficient tile as the grid model."""
+    mblocks = math.ceil(gemm_m / _tile(gemm_m))
+    nblocks = math.ceil(gemm_n / _tile(gemm_n))
+    return any(_choose_stream_k_plan(gemm_g, mblocks, nblocks, num_cu, skm)
+               for skm in STREAMK_MULTIPLES)
 
 
 def is_candidate(gemm_g: int, gemm_m: int, gemm_n: int, gemm_k: int,
-                 num_cu: int, dtype_bytes: int) -> bool:
+                 num_cu: int) -> bool:
     if gemm_m <= 0 or gemm_n <= 0 or gemm_k <= 0:
         return False
     # Gate 0: reject GEMV / skinny shapes. If gemmM or gemmN is below one output
@@ -180,11 +246,12 @@ def is_candidate(gemm_g: int, gemm_m: int, gemm_n: int, gemm_k: int,
     # Gate 3: the remainder slab re-splits K, so K must be splittable at all.
     if gemm_k < 2 * MIN_K_PER_SPLIT:
         return False
-    # Gate 4: compute-bound only. Stream-K repacks the compute tail but does
-    # nothing for a bandwidth-bound kernel (and adds atomic traffic), so a
-    # memory-bound shape falls to split-K -- drop it.
-    return arith_intensity(gemm_m, gemm_n, gemm_k, dtype_bytes) >= \
-        MIN_ARITH_INTENSITY
+    # Gate 4: a healthy stream-K plan must actually exist for some tuned multiple
+    # -- mirrors chooseStreamKPlan, including the remainder split-K cap
+    # (splitK <= MAX_STREAMK_REMAINDER_SPLIT). Shapes whose only plan needs a
+    # big remainder split (heavy atomic contention on a thin slab) fall to plain
+    # split-K instead.
+    return has_stream_k_plan(gemm_g, gemm_m, gemm_n, num_cu)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +282,7 @@ def gemm_candidates(lines, arch: ArchSpec):
         k = _int_flag(line, '-k')
         if m is None or n is None or k is None:
             continue
-        if is_candidate(g, m, n, k, arch.num_cu, DTYPE_BYTES[dtype]):
+        if is_candidate(g, m, n, k, arch.num_cu):
             out.append(line)
     return out
 
@@ -273,8 +340,7 @@ def conv_candidates(lines, arch: ArchSpec):
         size = conv_gemm_size(line, arch)
         if size is None:
             continue
-        dtype = arch.conv_tokens[line.split()[0]]
-        if is_candidate(*size, arch.num_cu, DTYPE_BYTES[dtype]):
+        if is_candidate(*size, arch.num_cu):
             out.append(line)
     return out
 
@@ -291,8 +357,9 @@ def header(src: str, arch: ArchSpec) -> str:
 # falls to split-K), (1) over-fills the machine (grid >= num_cu, so
 # StreamKDecompose can build a P >= num_cu wave decomposition rather than bailing),
 # (2) has a ragged tail -- imbalance = ceil(grid/num_cu)*num_cu/grid >=
-# {IMBALANCE_THRESHOLD:.2f} -- (3) has splittable K (gemmK >= {2 * MIN_K_PER_SPLIT}), and (4) is
-# compute-bound -- arith. intensity 2MNK/(bytes*(MK+KN+MN)) >= {MIN_ARITH_INTENSITY}.
+# {IMBALANCE_THRESHOLD:.2f} -- (3) has splittable K (gemmK >= {2 * MIN_K_PER_SPLIT}), and
+# (4) has a buildable plan (chooseStreamKPlan succeeds for multiple 1 or 2 with
+# remainder splitK <= {MAX_STREAMK_REMAINDER_SPLIT}).
 # Underutilized / GEMV / memory-bound shapes are excluded: the pass can't
 # decompose them (or gains nothing) and they fall to plain split-K instead.
 # Eligible dtypes are those with fast
