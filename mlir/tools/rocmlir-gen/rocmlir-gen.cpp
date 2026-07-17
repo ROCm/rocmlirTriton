@@ -1276,10 +1276,18 @@ static LogicalResult detectMissingArguments() {
     // Sliding-window masking is defined relative to the KV-cache position, so
     // the Rock verifier requires currentSeqLen. Reject the combination here
     // instead of emitting IR that fails verification downstream.
-    if (slidingWindowSize > 0 && currentSeqLen.empty()) {
-      llvm::errs()
-          << "sliding_window_size requires current_seq_len to be set\n";
-      return failure();
+    if (slidingWindowSize > 0) {
+      // slidingWindowSize is later materialized into i32 attributes/constants,
+      // so reject values that would silently truncate.
+      if (slidingWindowSize > std::numeric_limits<int32_t>::max()) {
+        llvm::errs() << "sliding_window_size must fit in a 32-bit integer\n";
+        return failure();
+      }
+      if (currentSeqLen.empty()) {
+        llvm::errs()
+            << "sliding_window_size requires current_seq_len to be set\n";
+        return failure();
+      }
     }
   }
 
@@ -3452,22 +3460,24 @@ static Value slidingWindowMaskingTosa(OpBuilder builder, Location loc,
       builder, loc, currentSeqLenVal,
       rock::tosa::getOneTensor(builder, loc, outType), builder.getI32Type());
 
-  // Compute lowerBound = max(0, currentSeqLen - slidingWindowSize)
-  DenseElementsAttr windowSizeAttr = DenseIntElementsAttr::get(
-      RankedTensorType::get(inpShape, builder.getI32Type()),
-      static_cast<int32_t>(windowSize));
-  Value windowSizeConst = tosa::ConstOp::create(
-      builder, loc, windowSizeAttr.getType(), windowSizeAttr);
+  // Compute lowerBound = max(0, currentSeqLen - slidingWindowSize).
+  // Build the window-size and zero operands as rank-matched 1x...x1 scalar
+  // constants and let tosa.sub/tosa.maximum broadcast them, rather than
+  // materializing full-rank B*H*Q*K constant tensors.
+  SmallVector<int64_t, 4> scalarShape(inpShape.size(), 1);
+  auto scalarType = RankedTensorType::get(scalarShape, builder.getI32Type());
+  DenseElementsAttr windowSizeAttr =
+      DenseIntElementsAttr::get(scalarType, static_cast<int32_t>(windowSize));
+  Value windowSizeConst =
+      tosa::ConstOp::create(builder, loc, scalarType, windowSizeAttr);
   Value lowerBound = rock::tosa::createOpAndInfer<tosa::SubOp>(
       builder, loc, builder.getI32Type(), currentSeqLenBroadcast,
       windowSizeConst);
 
   // Clamp lower bound to >= 0
-  DenseElementsAttr zeroAttr = DenseIntElementsAttr::get(
-      RankedTensorType::get(inpShape, builder.getI32Type()),
-      static_cast<int32_t>(0));
-  Value zeroConst =
-      tosa::ConstOp::create(builder, loc, zeroAttr.getType(), zeroAttr);
+  DenseElementsAttr zeroAttr =
+      DenseIntElementsAttr::get(scalarType, static_cast<int32_t>(0));
+  Value zeroConst = tosa::ConstOp::create(builder, loc, scalarType, zeroAttr);
   lowerBound = rock::tosa::createOpAndInfer<tosa::MaximumOp>(
       builder, loc, builder.getI32Type(), lowerBound, zeroConst);
 

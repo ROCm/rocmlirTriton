@@ -720,8 +720,11 @@ struct GridwiseAttentionRewritePattern
       if (slidingWindowSize > 0) {
         Value slidingWindowStart = rewriter.createOrFold<arith::DivUIOp>(
             loc, slidingWindowLowerBound, constGemm0NPerBlock);
+        // start/slidingWindowStart are non-negative iteration indices derived
+        // from unsigned division; use unsigned max to stay consistent with the
+        // surrounding DivUIOp/MinUIOp arithmetic.
         start =
-            arith::MaxSIOp::create(rewriter, loc, start, slidingWindowStart);
+            arith::MaxUIOp::create(rewriter, loc, start, slidingWindowStart);
       }
 
       // compute last iteration of the block, this will be used later in

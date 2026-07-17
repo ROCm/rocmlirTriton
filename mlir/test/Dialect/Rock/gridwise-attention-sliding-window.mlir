@@ -13,9 +13,10 @@ module {
   // CHECK: %[[LOWER_BOUND:.*]] = arith.maxsi %[[SEQ_MINUS_WINDOW]], %c0{{.*}} : i32
 
   // The N-loop start iteration skips blocks fully below the lower bound:
-  // start = max(0, floor(slidingWindowLowerBound / nPerBlock)).
+  // start = max(0, floor(slidingWindowLowerBound / nPerBlock)). Both operands
+  // are non-negative iteration indices, so the max is unsigned.
   // CHECK: %[[SW_START:.*]] = arith.divui %[[LOWER_BOUND]], %c32{{.*}} : i32
-  // CHECK: %[[START:.*]] = arith.maxsi %c0{{.*}}, %[[SW_START]] : i32
+  // CHECK: %[[START:.*]] = arith.maxui %c0{{.*}}, %[[SW_START]] : i32
   // CHECK: scf.for %{{.*}} = %[[START]] to %{{.*}} step %c1
 
   // Sliding-window masking: nIndex < slidingWindowLowerBound is set to -inf.
