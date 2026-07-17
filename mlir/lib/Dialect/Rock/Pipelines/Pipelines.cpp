@@ -432,7 +432,14 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
   // Must run after GridwiseGemmToBlockwise and before InsertOutputFusionLoads.
   // CSE after deduplicates the now-co-located shared operand loads.
-  addWithCSE(rock::createRockFuseSiblingLoopsPass());
+  // NOTE (stream-K): fusing the sibling K-loops of the data-parallel waves
+  // merges their accumulators into one loop's iter_args, making all per-wave
+  // accumulators co-live (486 VGPR / 230 AGPR on gfx950 f32 4096^3). Keeping
+  // the loops separate lets StreamKDecompose's hoisted per-wave stores drain
+  // each accumulator before the next loop (132 VGPR / 0 AGPR). Re-enabling this
+  // pass regresses stream-K to 256 VGPR / 80 AGPR, so it stays disabled until
+  // fusion can be made to skip stream-K wave loops.
+  // addWithCSE(rock::createRockFuseSiblingLoopsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());

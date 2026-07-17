@@ -575,6 +575,17 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
     Value currentResultAlias =
         store.getResultAlias() ? store.getResultAlias() : destRoot;
     for (int64_t cell = 0; cell < splitter.numCells(); ++cell) {
+      // Hoist each sub-store next to the sub-gemm that produces its source, so
+      // that (once the sibling K-loops are kept separate) the accumulator is
+      // consumed and freed before the next wave's loop starts, instead of
+      // keeping one live 128x128 accumulator per wave until the end of the
+      // kernel (which multiplies VGPR/AGPR usage by the number of waves and
+      // collapses occupancy). Falls back to the original store location when the
+      // source has no defining op (e.g. fused through a block argument).
+      if (Operation *srcDef = (*srcGrid)[cell].getDefiningOp())
+        b.setInsertionPointAfter(srcDef);
+      else
+        b.setInsertionPoint(store);
       Value view = rock::transform(b, destRoot, destMaps);
       Value destCell = splitter.sliceCell(view, cell);
       // Data-parallel waves keep the original store method; the split-K
