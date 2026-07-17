@@ -1,0 +1,13 @@
+# Best stream-K win candidate (single GEMM problem config) for Navi3x
+# (RDNA3, gfx1100, num_cu = 70). Tune across data-parallel / split-K / stream-K.
+#
+# 128x128 tile -> grid = ceil(2816/128) * ceil(2944/128) = 22 * 23 = 506 tiles.
+# At occupancy ~7 the resident capacity is ~num_cu*occ = ~490, so the grid spills
+# into a 2nd occupancy-wave with only ~16 tiles (~3% full): under data-parallel
+# nearly the whole machine sits idle for that final wave. Large k = 4096 makes it
+# compute-bound, so the reclaimed CUs become real FMA throughput and split-K's
+# per-tile K-reduction atomics are too costly -> stream-K's few-remainder
+# re-split wins.
+#
+# Trailing comment: grid | m | n | k
+-t f32 -out_datatype f32 -transA false -transB false -transO false -g 1 -m 2816 -n 2944 -k 4096   # 506 | 2816 | 2944 | 4096
