@@ -33,6 +33,7 @@ public:
     // TODO: drop these
     std::string chip;
     bool disableSplitKForTuning;
+    bool disableStreamKForTuning;
     std::string triple;
     std::string chipFeatures;
     std::string perfConfig;
@@ -59,8 +60,9 @@ public:
 
   ConvGenerator(
       const std::string &arch = "", const std::string &chip = "",
-      bool disableSplitKForTuning = false, const std::string &triple = "",
-      const std::string &chipFeatures = "", const std::string &perfConfig = "",
+      bool disableSplitKForTuning = false, bool disableStreamKForTuning = false,
+      const std::string &triple = "", const std::string &chipFeatures = "",
+      const std::string &perfConfig = "",
       std::optional<int> num_cu = std::nullopt,
       std::optional<int> num_chiplets = std::nullopt,
       const std::optional<rock::ConvOpType> operation = std::nullopt,

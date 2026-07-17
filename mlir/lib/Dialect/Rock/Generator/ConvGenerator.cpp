@@ -40,10 +40,10 @@ using namespace mlir::rock;
 
 ConvGenerator::ConvGenerator(
     const std::string &arch, const std::string &chip,
-    bool disableSplitKForTuning, const std::string &triple,
-    const std::string &chipFeatures, const std::string &perfConfig,
-    std::optional<int> num_cu, std::optional<int> num_chiplets,
-    const std::optional<ConvOpType> operation,
+    bool disableSplitKForTuning, bool disableStreamKForTuning,
+    const std::string &triple, const std::string &chipFeatures,
+    const std::string &perfConfig, std::optional<int> num_cu,
+    std::optional<int> num_chiplets, const std::optional<ConvOpType> operation,
     const std::string &filterDataTypeStr, const std::string &inputDataTypeStr,
     const std::string &outputDataTypeStr, ArrayRef<int> dilations,
     ArrayRef<int> strides, ArrayRef<int> paddingLeft,
@@ -53,6 +53,7 @@ ConvGenerator::ConvGenerator(
     : config{arch,
              chip,
              disableSplitKForTuning,
+             disableStreamKForTuning,
              triple,
              chipFeatures,
              perfConfig,
@@ -687,6 +688,10 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
                               ArrayRef<NamedAttribute>(kernelAttrs));
   if (!config.disableSplitKForTuning) {
     func->setAttr(rock::EnableSplitKForTuningAttr::getMnemonic(),
+                  builder.getUnitAttr());
+  }
+  if (!config.disableStreamKForTuning) {
+    func->setAttr(rock::EnableStreamKForTuningAttr::getMnemonic(),
                   builder.getUnitAttr());
   }
   module.push_back(func);

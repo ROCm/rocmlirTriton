@@ -580,8 +580,8 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
       // consumed and freed before the next wave's loop starts, instead of
       // keeping one live 128x128 accumulator per wave until the end of the
       // kernel (which multiplies VGPR/AGPR usage by the number of waves and
-      // collapses occupancy). Falls back to the original store location when the
-      // source has no defining op (e.g. fused through a block argument).
+      // collapses occupancy). Falls back to the original store location when
+      // the source has no defining op (e.g. fused through a block argument).
       if (Operation *srcDef = (*srcGrid)[cell].getDefiningOp())
         b.setInsertionPointAfter(srcDef);
       else
