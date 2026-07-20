@@ -203,8 +203,9 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
                  InterfaceMethod<
                      /*desc=*/[{
           Gate for the `rock-set-reduction-layout` pass (warp
-          redistribution onto the reduction dim). `0` means off (the
-          default), `1` means on.
+          redistribution onto the reduction dim). `-1` means "use the
+          arch default" (the default, currently equivalent to off), `0`
+          means off, `1` means on.
         }],
                      /*retType=*/"int64_t",
                      /*methodName=*/"getUseReductionLayout",
