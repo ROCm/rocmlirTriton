@@ -69,6 +69,7 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -538,6 +539,13 @@ static llvm::cl::opt<bool> hasAttnBias(
     "with-attn-bias",
     llvm::cl::desc("Generate an attention kernel that is using a bias"),
     llvm::cl::init(false));
+
+static llvm::cl::opt<bool>
+    transposeBias("transBias",
+                  llvm::cl::desc("whether the attention bias input is stored "
+                                 "as Gxseq_len_kxseq_len_q instead of the "
+                                 "default score layout Gxseq_len_qxseq_len_k"),
+                  llvm::cl::init(false));
 
 static llvm::cl::opt<bool> transposeQ(
     "transQ",
@@ -1248,6 +1256,10 @@ static LogicalResult detectMissingArguments() {
   }
 
   if (operation == rock::KernelType::Attention) {
+    if (transposeBias && !hasAttnBias) {
+      llvm::errs() << "--transBias requires --with-attn-bias\n";
+      return failure();
+    }
     if (splitKV > 1 && !returnLSE) {
       llvm::errs()
           << "If split-kv > 1 (flash decoding), we need to return LSE\n";
@@ -1344,15 +1356,14 @@ static Value makeNDMemRef(OpBuilder &b, Value var, uint32_t ndim) {
   return var;
 }
 
-static std::pair<int64_t, int64_t> getMandNPerBlock(OpBuilder builder,
-                                                    const GenParams &params) {
-  // Mirrors PopulateParamsGemmGemm::obtainTuningParameters: prefer the
-  // user-supplied perfConfig, otherwise fall back to the first quick-tuning
-  // entry for this (arch, kernel, dtype).
-  assert(params.operation.has_value() && !params.types.empty());
+static std::pair<int64_t, int64_t>
+getMandNPerBlock(OpBuilder builder, const GenParams &params,
+                 rock::RockGemmGemmWrapperInterface op) {
+  // Mirror exactly what AffixTuningParameters picks, so the CPU and GPU use
+  // the same perf_config. A different perf_config could give the CPU and GPU
+  // a different split count in split-KV, causing verification failures.
   std::vector<rock::GemmGemmParamsAttr> defaults =
-      rock::PopulateParamsGemmGemm::getTuningParameters(
-          builder, params.arch, *params.operation, params.types[0]);
+      rock::PopulateParamsGemmGemm::getTuningParameters(builder, op);
   FailureOr<rock::GemmGemmParamsAttr> attnPerfConfig =
       rock::materializeTuningParams<rock::GemmGemmParamsAttr>(
           builder, params.perfConfig, defaults);
@@ -1535,7 +1546,19 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   // hack for split-kv:
   // use LSE and output tensors to compute final attention result
   if (splitKV > 1) {
-    int64_t nPerBlock = getMandNPerBlock(b, params).second;
+    // Resolve the block sizes from the *same* op the compiler will tune, so the
+    // reference split-KV partition matches the generated kernel exactly.
+    rock::AttentionOp attnOp;
+    module.walk([&](rock::AttentionOp op) {
+      assert(!attnOp && "expected exactly one rock.attention op in the module");
+      attnOp = op;
+    });
+    assert(attnOp && "split-kv requires a rock.attention op in the module");
+    int64_t nPerBlock =
+        getMandNPerBlock(
+            b, params,
+            cast<rock::RockGemmGemmWrapperInterface>(attnOp.getOperation()))
+            .second;
 
     // TODO: causal masking is not implemented yet
     // typically, causal masking is used in the prefill phase, where split-KV is
@@ -3036,8 +3059,10 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
     result.push_back(sType);
   }
   if (hasAttnBias) {
-    SmallVector<int64_t> biasDims{groupSize * numHeadsQ, sequenceLengthQ,
-                                  sequenceLengthK};
+    SmallVector<int64_t> biasDims{
+        groupSize * numHeadsQ,
+        transposeBias ? sequenceLengthK : sequenceLengthQ,
+        transposeBias ? sequenceLengthQ : sequenceLengthK};
     RankedTensorType bType =
         RankedTensorType::get(biasDims, elemTypes[biasIndex]);
     result.push_back(bType);
@@ -3093,7 +3118,9 @@ getAttentionDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
   if (hasAttnScale)
     result.emplace_back(SmallVector<StringRef>{gName, seqQName, seqKName});
   if (hasAttnBias)
-    result.emplace_back(SmallVector<StringRef>{gName, seqQName, seqKName});
+    result.emplace_back(
+        SmallVector<StringRef>{gName, transposeBias ? seqKName : seqQName,
+                               transposeBias ? seqQName : seqKName});
   if (!currentSeqLen.empty())
     result.emplace_back(SmallVector<StringRef>{gName});
   if (!prefixOffset.empty())
@@ -3685,6 +3712,14 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   }
   if (hasAttnBias) {
     bias = unflattenedArgs[optionalArgsCounter++];
+    if (transposeBias) {
+      auto biasType = cast<ShapedType>(bias.getType());
+      SmallVector<uint32_t> startDims{0, 2, 1};
+      SmallVector<uint32_t> endDims{0, 1, 2};
+      rock::BottomUpTMBuilder transform(builder, biasType.getShape(), loc);
+      transform.passThrough(endDims, startDims);
+      bias = rock::TransformOp::create(builder, loc, bias, transform.get());
+    }
     elemwiseInputs.push_back(bias);
   }
   if (!currentSeqLen.empty()) {
@@ -4744,6 +4779,9 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
 
   if (hasAttnBias) {
     auto biasTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
+    if (transposeBias)
+      biasTensor =
+          rock::tosa::getTransposeOp(builder, loc, biasTensor, {0, 2, 1});
     biasTensor = applyPreSoftmaxInputMask(biasTensor, 0.0f);
 
     if (fuseQuantizedScaleBias) {
@@ -6561,6 +6599,20 @@ int main(int argc, char **argv) {
   // Parse pass names in main to ensure static initialization completed.
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "MLIR Rock Dialect host generation\n");
+
+  // `-p` generates a kernel from command-line options unless an input file is
+  // provided. LLVM reports shell pipes and named FIFOs as fifo_file for fd 0;
+  // checking the file status lets us detect those streams without consuming any
+  // input, so accidental upstream output is not silently ignored.
+  constexpr int stdinFD = 0;
+  llvm::sys::fs::file_status stdinStatus;
+  bool stdinIsPipeOrFIFO =
+      !llvm::sys::fs::status(stdinFD, stdinStatus) &&
+      stdinStatus.type() == llvm::sys::fs::file_type::fifo_file;
+  if (populateDefaultValues && inputFilename.empty() && stdinIsPipeOrFIFO) {
+    llvm::errs() << "warning: rocmlir-gen -p is ignoring piped stdin because "
+                    "no input file was specified\n";
+  }
 
   amdgpu::Chipset chipset;
   if (!arch.getValue().empty()) {

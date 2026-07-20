@@ -158,20 +158,9 @@ struct RockLoadPtrOpRewritePattern
     auto resultTensorType = cast<RankedTensorType>(op.getResult().getType());
     Type elementType = resultTensorType.getElementType();
 
-    // Verify pointerTensor is a tensor of the pointer glue type
-    auto ptrTensorType = dyn_cast<RankedTensorType>(pointerTensor.getType());
-    if (!ptrTensorType || !isPtrGlueType(ptrTensorType.getElementType())) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Pointer tensor is not a tensor of the ptr glue type\n");
-      return failure();
-    }
-
-    // Verify maskTensor is a tensor of i1
-    auto maskTensorType = dyn_cast<RankedTensorType>(maskTensor.getType());
-    if (!maskTensorType || !maskTensorType.getElementType().isInteger(1)) {
-      LLVM_DEBUG(llvm::dbgs() << "Mask tensor is not a tensor of i1\n");
-      return failure();
-    }
+    // pointerTensor (tensor of i32/i64) and maskTensor (tensor of i1) element
+    // types and shapes are guaranteed by the op verifier.
+    auto ptrTensorType = cast<RankedTensorType>(pointerTensor.getType());
 
     // Create pointer type: !tt.ptr<elementType>
     // Use address space 1 (global) as default for Triton
@@ -182,7 +171,7 @@ struct RockLoadPtrOpRewritePattern
         RankedTensorType::get(ptrTensorType.getShape(), ptrType,
                               ptrTensorType.getEncoding());
 
-    // Convert tensor of i32 to tensor of pointers
+    // Convert tensor of i32/i64 to tensor of pointers
     Value ptrTensorOfPtrs =
         rock::CastToPtrOp::create(rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
@@ -307,22 +296,12 @@ struct RockStorePtrOpRewritePattern
     // of fusion ops (e.g., arith.addf) rather than the raw GEMM result.
     Value valueToStore = op.getSource();
 
-    // 2. Verify pointer tensor is a tensor of the pointer glue type
-    auto ptrTensorType = dyn_cast<RankedTensorType>(pointerTensor.getType());
-    if (!ptrTensorType || !isPtrGlueType(ptrTensorType.getElementType())) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Pointer tensor is not a tensor of the ptr glue type\n");
-      return failure();
-    }
+    // 2. pointerTensor (tensor of i32/i64) and maskTensor (tensor of i1)
+    // element types and shapes are guaranteed by the op verifier.
+    auto ptrTensorType = cast<RankedTensorType>(pointerTensor.getType());
 
-    // 3. Verify mask tensor is a tensor of i1
-    auto maskTensorType = dyn_cast<RankedTensorType>(maskTensor.getType());
-    if (!maskTensorType || !maskTensorType.getElementType().isInteger(1)) {
-      LLVM_DEBUG(llvm::dbgs() << "Mask tensor is not a tensor of i1\n");
-      return failure();
-    }
-
-    // 4. Convert the pointer tensor (tensor of i32) to tensor of triton pointers
+    // 3. Convert the pointer tensor (tensor of i32/i64) to tensor of triton
+    // pointers
     // Get element type from the value to store
     auto valueType = cast<RankedTensorType>(valueToStore.getType());
     Type elementType = valueType.getElementType();
@@ -338,7 +317,7 @@ struct RockStorePtrOpRewritePattern
     Value ptrTensorOfPtrs = rock::CastToPtrOp::create(
         rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
-    // 5. Create triton::StoreOp or triton::AtomicRMWOp depending on storeMethod
+    // 4. Create triton::StoreOp or triton::AtomicRMWOp depending on storeMethod
     auto storeMethod = op.getStoreMethod();
     if (storeMethod == rock::StoreMethod::AtomicAdd) {
       // Use FADD for floating point, ADD for integer

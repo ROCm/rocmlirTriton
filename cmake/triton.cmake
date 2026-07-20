@@ -245,6 +245,25 @@ message(STATUS "JSON_SYSPATH: ${JSON_SYSPATH}")
 
 add_subdirectory("${TRITON_PROJECT_DIR}" "external/triton" EXCLUDE_FROM_ALL)
 
+# Upstream Triton's bin targets (triton-opt, triton-reduce, triton-lsp,
+# triton-tensor-layout) unconditionally link the TritonTest* pass libraries and
+# register their passes (bin/RegisterTritonDialects.h). Those libraries are in
+# external/triton/test/lib, which upstream only adds under TRITON_BUILD_UT.
+# Turning UT on would trigger FetchContent() googletest for the C++ unit tests.
+# We keep UT OFF and instead build just test/lib here.
+if(TRITON_BUILD_BINARY AND NOT TRITON_BUILD_UT)
+  if(NOT MSVC)
+    set(TRITON_DISABLE_EH_RTTI_FLAGS "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions;-fno-rtti>")
+  endif()
+  include_directories(
+    ${MLIR_INCLUDE_DIRS}
+    ${LLVM_INCLUDE_DIRS}
+    ${TRITON_INCLUDE_DIRS}
+  )
+  add_subdirectory("${TRITON_PROJECT_DIR}/test/lib"
+                   "external/triton/rocmlir-test-lib" EXCLUDE_FROM_ALL)
+endif()
+
 #===----------------------------------------------------------------------===//
 # Helper Functions for rocMLIR Libraries
 #===----------------------------------------------------------------------===//

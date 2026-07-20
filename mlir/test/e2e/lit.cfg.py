@@ -41,6 +41,13 @@ config.substitutions.append(
 if config.random_data.strip():
     config.available_features.add('random_data')
 
+# Expose a `non_k_packed_scaled_input` lit feature so generated scaled-fp4 E2E
+# tests can guard layouts whose sub-byte (fp4) operand is packed along the
+# non-K (M/N) dimension. Only arches with the transpose-load repack (CDNA4)
+# lower those; see the `[[require]]` blocks in the scaled-fp4 TOMLs.
+if config.arch_support_non_k_packed_scaled_input:
+    config.available_features.add('non_k_packed_scaled_input')
+
 config.substitutions.append(('%rocmlir_gen_flags', config.rocmlir_gen_flags))
 config.substitutions.append(('%arch', config.arch))
 config.substitutions.append(('%pv', config.populate_validation))

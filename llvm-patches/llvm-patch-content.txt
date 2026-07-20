@@ -5,6 +5,83 @@ This directory holds downstream patch records against the Triton-pinned LLVM
 tree (external/llvm-project).
 
 ----------------------------------------------------------------------
+patch200945.patch
+----------------------------------------------------------------------
+- Upstream commit : 6359dd3b2a11316cc58c6a50807be1f2d964a3a3
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/200945
+- Upstream title  : [MachineScheduler] Rework dag-maps-huge-region
+- File Fixed      : llvm/include/llvm/CodeGen/ScheduleDAGInstrs.h
+                    llvm/lib/CodeGen/ScheduleDAGInstrs.cpp
+                    llvm/test/CodeGen/AArch64/dag-maps-huge-region.ll (new)
+                    llvm/test/CodeGen/AMDGPU/gfx-callable-return-types.ll
+                    llvm/test/CodeGen/AMDGPU/memintrinsic-unroll.ll
+                    llvm/test/CodeGen/X86/vector-interleaved-load-i64-stride-8.ll
+                    llvm/test/CodeGen/X86/vector-interleaved-store-i64-stride-8.ll
+- Contents        : Reworks MachineScheduler's dag-maps-huge-region handling
+                    so large scheduling regions periodically create a barrier
+                    chain and clear the memory dependency maps after a fixed
+                    number of memory operations. Lowers the default threshold
+                    to 500, removes the separate reduction-size option and
+                    map-reduction machinery, and updates the affected LIT
+                    expectations.
+
+Symptom without the patch
+-------------------------
+Large scheduling regions with many memory operations can spend excessive
+compile time and memory in ScheduleDAGInstrs dependency-map maintenance. In the
+problem cases upstream investigated, addChainDependencies() could dominate the
+CodeGen pipeline even after the old huge-region reduction kicked in.
+
+Root cause
+----------
+The old reduction waited until the load/store maps reached the huge-region
+limit, sorted the accumulated SUnit node numbers, inserted a barrier around the
+middle of the current set, and kept processing the remaining half of the maps.
+That still left large live dependency maps and repeated reduction work. The new
+scheme treats dag-maps-huge-region as a memory-operation interval: when the
+interval is reached, the current SUnit becomes the barrier chain, all memory
+dependency maps are cleared behind it, and subsequent memory operations depend
+on the barrier instead of retaining the full history.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+6359dd3b2a11316cc58c6a50807be1f2d964a3a3.
+
+----------------------------------------------------------------------
+patch202743.patch
+----------------------------------------------------------------------
+- Upstream commit : 253b574758902662cf2c9e1a9d5f62535325b827
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/202743
+- Upstream title  : [MachineScheduler] Check we don't add self dependency
+                    edge when adding barrier
+- File Fixed      : llvm/lib/CodeGen/ScheduleDAGInstrs.cpp
+                    llvm/test/CodeGen/X86/dag-maps-huge-region-crash.ll (new)
+- Contents        : Avoids adding a barrier dependency from an SUnit to
+                    itself when the same instruction becomes BarrierChain
+                    through FP-exception huge-region handling and then reaches
+                    memory-operation barrier handling. Adds an X86 regression
+                    test that forces dag-maps-huge-region=1.
+
+Symptom without the patch
+-------------------------
+With a very small dag-maps-huge-region threshold, an instruction that both may
+raise FP exceptions and performs a memory operation can first become the
+BarrierChain while clearing the FPExceptions map, then immediately try to add a
+memory dependency edge from that BarrierChain to itself. This can trip scheduler
+dependency assertions or crash during DAG construction.
+
+Root cause
+----------
+The follow-up to #200945 allowed both the FP-exception and memory-operation
+huge-region paths to run for the same SUnit. The FP-exception path sets
+BarrierChain to the current SUnit. The memory path then unconditionally added a
+predecessor barrier through BarrierChain, creating a self dependency when
+BarrierChain == SU. The fix skips that edge in the self case.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+253b574758902662cf2c9e1a9d5f62535325b827 or an equivalent mainline commit for
+#202743.
+
+----------------------------------------------------------------------
 patch205637.patch
 ----------------------------------------------------------------------
 - Upstream commit : 8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c
@@ -45,47 +122,51 @@ Drop this patch on the next LLVM/Triton bump that includes upstream commit
 8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c.
 
 ----------------------------------------------------------------------
-patch207473.patch
+patch208280.patch
 ----------------------------------------------------------------------
-- Upstream PR     : https://github.com/llvm/llvm-project/pull/207473
-- Upstream title  : [AMDGPU] Preserve LDS waits when demoting single-wave
-                    workgroup scope to wavefront
-- File Fixed      : llvm/lib/Target/AMDGPU/SIMemoryLegalizer.cpp
-                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-memops.ll
-                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-fence-mmra-local.ll (new)
-- Contents        : Records when a workgroup-scope fence/atomic is demoted to
-                    wavefront scope for a single-wave workgroup (the new
-                    SIMemOpInfo::WasWorkgroupScopeDemoted flag, set alongside
-                    the WORKGROUP -> WAVEFRONT demotion) and re-inserts the
-                    workgroup-scope LDS wait the demotion would otherwise drop.
-                    A new SICacheControl::insertDemotedWorkgroupLDSWait() helper
-                    waits only the LDS address space at WORKGROUP scope; it is
-                    called from expandStore, expandAtomicFence, and
-                    expandAtomicCmpxchgOrRmw. Global waits are still legitimately
-                    dropped by the single-wave demotion.
+- Upstream commit : 41c4167cd066e8a9c3185917cafa9bef2cbfdb6d
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/208280
+- Upstream title  : Revert "[AMDGPU] Use wavefront scope for single-wave
+                    workgroup synchronization (#187673)"
+- File Fixed      : llvm/docs/AMDGPUUsage.rst
+                    llvm/lib/Target/AMDGPU/AMDGPULowerIntrinsics.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPUSubtarget.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPUSubtarget.h
+                    llvm/lib/Target/AMDGPU/SIMemoryLegalizer.cpp
+                    llvm/test/CodeGen/AMDGPU/flat-saddr-atomics.ll
+                    llvm/test/CodeGen/AMDGPU/global-saddr-atomics.ll
+                    llvm/test/CodeGen/AMDGPU/llvm.amdgcn.load.monitor.gfx1250.ll
+                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-fence-mmra-local.ll (deleted)
+                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-memops.ll (deleted)
+- Contents        : Reverts upstream #187673's single-wave WORKGROUP ->
+                    WAVEFRONT scope demotion for workgroup-scope fences and
+                    non-relaxed atomics. Removes AMDGPUSubtarget::
+                    isSingleWavefrontWorkgroup() and the SIMemoryLegalizer
+                    demotion plumbing, restores the affected atomic wait/test
+                    expectations, and deletes the now-invalid single-wave
+                    memory-legalizer coverage, including the downstream-only
+                    #207473 fence/MMRA test. The remaining barrier lowering
+                    optimization computes the single-wave condition locally.
 
 Symptom without the patch
 -------------------------
 #187673 demotes workgroup-scoped fences and non-relaxed workgroup atomics to
-wavefront scope when the kernel's workgroup fits in a single wave
-(AMDGPUSubtarget::isSingleWavefrontWorkgroup). Collapsing the scope to
-WAVEFRONT in the SIMemOpInfo constructor (before insertWait runs) also drops
-two LDS waits that SIMemoryLegalizer only emits at WORKGROUP scope: the
-"S_WAITCNT lgkmcnt(0)" that orders LDS against later global/GDS accesses of the
-same wave, and the "S_WAITCNT_lds_direct" wait for asynchronous VMEM->LDS
-direct loads (buffer_load ... lds). Both are required for correctness
-regardless of wave count, so single-wave workgroups that use LDS miscompile --
-e.g. a ds_read is not drained before a subsequent buffer_load ... lds.
+wavefront scope when the kernel's workgroup fits in a single wave. That
+demotion can drop ordering that is still required within a single wave, notably
+for asynchronous DMA/VMEM-to-LDS behavior and LDS ordering against later
+global/GDS accesses. The narrower downstream fix in #207473 preserved the
+missing LDS waits, but upstream instead reverted the demotion wholesale in
+#208280.
 
 Root cause
 ----------
-The single-wave WORKGROUP -> WAVEFRONT demotion is too coarse. Eliding
-cross-wave synchronization is sound when there is only one wave, but the two
-LDS waits above are intra-wave ordering / async-copy completion, not cross-wave
-synchronization, so they must survive the demotion.
+The single-wave WORKGROUP -> WAVEFRONT equivalence was too broad for backend
+memory legalization. Workgroup-scope synchronization can carry ordering
+requirements that are not merely cross-wave synchronization, so lowering it to
+wavefront scope before SIMemoryLegalizer runs loses required waits/scopes.
 
-As of this bump #207473 is still open upstream (unmerged). Drop this patch on
-the next LLVM/Triton bump that pulls it into the pinned LLVM.
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 41c4167cd066e8a9c3185917cafa9bef2cbfdb6d.
 
 ----------------------------------------------------------------------
 patch205651.patch
@@ -184,3 +265,53 @@ As of this bump #167347 is still open upstream (unmerged). Drop or reconcile
 this patch once it -- or a successor such as #198472
 ("[AMDGPU] Fixed crash due to virtual register defs not dominating uses") --
 lands in the pinned LLVM with an equivalent or stronger dominance check.
+
+----------------------------------------------------------------------
+patch204648.patch
+----------------------------------------------------------------------
+- Upstream commit : 237fbfd (merge of d0f1670)
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/204648
+- Upstream title  : [CodeGen] Join live range segments after dead def move
+- File Fixed      : llvm/include/llvm/CodeGen/LiveInterval.h
+                    llvm/lib/CodeGen/LiveInterval.cpp
+                    llvm/lib/CodeGen/LiveIntervals.cpp
+- Contents        : Adds a shared LiveRange::mergeAdjacentSegments() helper that
+                    merges a segment with either touching neighbor that shares
+                    its value number. Uses it in MergeValueNumberInto() (replacing
+                    the inline forward/backward merge) and in
+                    LiveIntervals::HMEditor::handleMoveUp(), where the segments
+                    shifted down after a dead def is moved upward are retagged to
+                    the moved def's value number and then joined as we go
+                    (iterating by slot index up to the original end, since merging
+                    can erase segments). The upstream AMDGPU machine-scheduler
+                    regression test is omitted from this downstream record.
+
+Symptom without the patch
+-------------------------
+Moving a dead subregister def upward during machine scheduling
+(handleMoveUp) retags a following live-range segment to the same value
+number as the previous segment but leaves the two adjacent same-value
+segments unmerged. Live range verification rejects adjacent segments with
+the same value number, so with an asserts build the scheduler aborts (e.g.
+gfx950 attention kernels under -verify-misched); without asserts it produces
+malformed live ranges feeding register allocation.
+
+Root cause
+----------
+The retag loop in handleMoveUp only reassigned valno on the shifted-down
+segments and never joined any segment it made adjacent-and-equal to its
+neighbor, violating the LiveRange invariant that touching segments must not
+share a value number.
+
+CI coverage
+-----------
+mlir/test/rocmlir-driver/attention-i8-gfx950-sched-dead-def-join.mlir is a
+compile-only regression that pins the i8 gfx950 attention shape + perf_config
+which triggers this crash. With an asserts build lacking this patch,
+`rocmlir-driver -c` aborts in the machine scheduler
+(LiveIntervals::HMEditor::updateRange, `Assertion 'LR.verify()' failed`); with
+the patch it emits triton.hsaco. This lets a future LLVM bump catch the
+regression in normal CI instead of only during tuning.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 237fbfd.

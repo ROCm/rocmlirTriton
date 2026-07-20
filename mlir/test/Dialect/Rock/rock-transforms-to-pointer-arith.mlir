@@ -239,3 +239,67 @@ func.func @test_embed_conv_style(%arg0: tensor<1048576xf32>) -> tensor<8x64xf32>
 
   return %5 : tensor<8x64xf32>
 }
+
+// -----
+
+// Verifies 64-bit index arithmetic is emitted when the transform chain
+// requires it (here the underlying buffer exceeds the 32-bit byte range, and
+// the linearized index domain exceeds INT32_MAX). The base placeholder is
+// extracted directly as i64 (rock.extract_ptr -> i64) and the make_range
+// coordinates (necessarily i32) are sign-extended to i64, so all offset
+// arithmetic happens in 64 bits and cannot overflow before tt.addptr. No
+// base-widening extension is needed since the base already matches the offset
+// width.
+// CHECK-LABEL: @test_i64_large_buffer
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<8589934592xf16>)
+//      CHECK:   %[[BASE_PTR:.*]] = rock.extract_ptr %[[ARG0]] : tensor<8589934592xf16> -> i64
+//      CHECK:   %[[RANGE:.*]] = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+//      CHECK:   arith.extsi %[[RANGE]] : tensor<64xi32> to tensor<64xi64>
+//      CHECK:   arith.muli {{.*}} : i64
+//      CHECK:   arith.addi {{.*}} : tensor<64xi64>
+//      CHECK:   %[[BASE_SPLAT:.*]] = tt.splat %[[BASE_PTR]] : i64 -> tensor<64xi64>
+//  CHECK-NOT:   arith.extsi %[[BASE_SPLAT]]
+//      CHECK:   arith.addi {{.*}} : tensor<64xi64>
+//      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64xi64>, tensor<64xi1> -> tensor<64xf16>
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @test_i64_large_buffer(%arg0: tensor<8589934592xf16>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %c0_i32 = arith.constant 0 : i32
+
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{134217728, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [134217728, 64] -> [8589934592]> : tensor<8589934592xf16> to tensor<134217728x64xf16>
+
+  %pointers, %mask = rock.transforms_to_ptr %0[%c0_i32] : tensor<134217728x64xf16> -> tensor<64xi64>, tensor<64xi1>
+  %1 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64xi64>, tensor<64xi1> -> tensor<64xf16>
+
+  return %1 : tensor<64xf16>
+}
+
+// -----
+
+// Verifies i64 is chosen from the *index domain*, not the buffer size. Here the
+// buffer is tiny (131072 elements, 256 KB) but a Pad inflates the m dimension to
+// 2147483648 (> INT32_MAX). Even though every reachable offset is small, the
+// transform-chain bound overflows 32 bits, so TransformsToPtrOp must emit i64
+// offset arithmetic (base extracted as i64, coordinates/validity in i64).
+// CHECK-LABEL: @test_i64_overpad_small_buffer
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<131072xf16>)
+//      CHECK:   %[[BASE_PTR:.*]] = rock.extract_ptr %[[ARG0]] : tensor<131072xf16> -> i64
+//      CHECK:   %[[RANGE:.*]] = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+//      CHECK:   arith.extsi %[[RANGE]] : tensor<64xi32> to tensor<64xi64>
+//      CHECK:   arith.cmpi ult, {{.*}} : i64
+//      CHECK:   %[[BASE_SPLAT:.*]] = tt.splat %[[BASE_PTR]] : i64 -> tensor<64xi64>
+//  CHECK-NOT:   arith.extsi %[[BASE_SPLAT]]
+//      CHECK:   arith.addi {{.*}} : tensor<64xi64>
+//      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64xi64>, tensor<64xi1> -> tensor<64xf16>
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @test_i64_overpad_small_buffer(%arg0: tensor<131072xf16>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %c0_i32 = arith.constant 0 : i32
+
+  // Unmerge the small buffer into 2048x64, then Pad m up to 2147483648 (> INT32_MAX).
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{2048, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [2048, 64] -> [131072]> : tensor<131072xf16> to tensor<2048x64xf16>
+  %1 = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1)> by [<Pad{0, 2147481600} ["m_padded"] at [0] -> ["m"] at [0]>, <PassThrough ["n"] at [1] -> ["n"] at [1]>] bounds = [2147483648, 64] -> [2048, 64]> : tensor<2048x64xf16> to tensor<2147483648x64xf16>
+
+  %pointers, %mask = rock.transforms_to_ptr %1[%c0_i32] : tensor<2147483648x64xf16> -> tensor<64xi64>, tensor<64xi1>
+  %2 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64xi64>, tensor<64xi1> -> tensor<64xf16>
+
+  return %2 : tensor<64xf16>
+}

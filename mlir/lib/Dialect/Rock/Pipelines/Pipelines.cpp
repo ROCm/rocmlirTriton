@@ -106,6 +106,7 @@ static void validateTritonOptionsKnobs(const rock::TritonOptions &options) {
       {"useBufferAtomics", options.useBufferAtomics},
       {"bufferOpsAnalyzeSmallTensorRange",
        options.bufferOpsAnalyzeSmallTensorRange},
+      {"useReductionLayout", options.useReductionLayout},
   };
   for (auto [name, value] : boolKnobs) {
     if (!rock::isValidKnobBoolean(value))
@@ -214,7 +215,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
 
-  if (isBufferOpsEnabled(options.useBufferOps)) {
+  bool useBufferOps = isBufferOpsEnabled(options.useBufferOps);
+  if (useBufferOps) {
     pm->addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonAMDGPUCanonicalizePointers());
     pm->addPass(mlir::createCanonicalizerPass());
@@ -231,6 +233,11 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
       mlir::createTritonAMDGPUPrepareIfCombining());
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
+  if (useBufferOps) {
+    // Run after CSE so matching assume and loop-bound expressions share SSA,
+    // letting range analysis prove both non-negative.
+    pm->addPass(mlir::createTritonAMDGPUAnnotateBufferOpSplitSafety());
+  }
   pm->addPass(mlir::createSymbolDCEPass());
   // TODO(roctriton): Implement options like this.
   // if (options.instrumentationMode == "fpsan") {
@@ -245,9 +252,14 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 1. makeLLIR (the function below)
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
-static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch) {
+static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
+                     int64_t useReductionLayout) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
+  // Redistribute the layout of the reduction dimension to reduce
+  // register pressure.
+  if (useReductionLayout == 1)
+    pm->addPass(rock::createRockSetReductionLayoutPass());
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -427,6 +439,17 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // lower-blockwise-to-ptr (which lowers it away).
   addWithDCE(rock::createRockAddTritonMetadataPass());
 
+  // Legalize math ops on narrow floats before they are converted to integer
+  // storage types. LLVM math intrinsics do not accept fp8/fp4 operands.
+  {
+    math::MathExtendToSupportedTypesOptions mathExtendOptions;
+    // TODO: Gfx1250 has support for some bf16 math operations. Therefore this
+    // pass should pass through those supported opertions for bf16 on gfx1250.
+    mathExtendOptions.extraTypeStrs = {"f16"};
+    mathExtendOptions.targetTypeStr = "f32";
+    addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
+  }
+
   // We run this pass after lower-stores to catch redundant casts that cannot be
   // flagged earlier due to loads/stores that sit between truncf/extf pairs.
   if (!options.disableFastMath)
@@ -507,7 +530,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch);
+  makeLLIR(&pm, arch, options.useReductionLayout);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)

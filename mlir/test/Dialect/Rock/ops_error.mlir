@@ -675,7 +675,7 @@ func.func @store_result_multiple_uses(
 
 // Source is not i32
 func.func @cast_to_ptr_src_not_i32(%src: tensor<64x64xf32>) -> tensor<64x64x!tt.ptr<f16>> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %0 = rock.cast_to_ptr %src : tensor<64x64xf32> -> tensor<64x64x!tt.ptr<f16>>
   return %0 : tensor<64x64x!tt.ptr<f16>>
 }
@@ -704,6 +704,15 @@ func.func @extract_ptr_not_block_arg(%src: tensor<64x64xf32>) -> i32 attributes 
   // expected-error @+1 {{source must be a block argument}}
   %0 = rock.extract_ptr %cst : tensor<64x64xf32> -> i32
   return %0 : i32
+}
+
+// -----
+
+// Result must be an i32 or i64 placeholder
+func.func @extract_ptr_bad_result_type(%src: tensor<64x64xf32>) -> i16 attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result #0 must be 32-bit signless integer or 64-bit signless integer}}
+  %0 = rock.extract_ptr %src : tensor<64x64xf32> -> i16
+  return %0 : i16
 }
 
 // =============================================================================
@@ -744,7 +753,7 @@ func.func @blockwise_reduce_elem_type_mismatch(%input: tensor<64x64xf32>) -> ten
 
 // Pointers element type not i32
 func.func @transforms_to_ptr_ptr_not_i32(%src: tensor<64x64xf32>) -> (tensor<64x64xf16>, tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{result #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %ptrs, %mask = rock.transforms_to_ptr %src : tensor<64x64xf32> -> tensor<64x64xf16>, tensor<64x64xi1>
   return %ptrs, %mask : tensor<64x64xf16>, tensor<64x64xi1>
 }
@@ -936,7 +945,7 @@ func.func @blockwise_load_cache_modifier_wt(
 // Pointer tensor element type not i32
 func.func @blockwise_load_ptr_ptr_not_i32(
     %ptrs: tensor<64x64xf32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
@@ -980,7 +989,7 @@ func.func @blockwise_load_ptr_cache_modifier_wt(
 // Pointer tensor element type not i32
 func.func @blockwise_store_ptr_ptr_not_i32(
     %src: tensor<64x64xf32>, %ptrs: tensor<64x64xf16>, %mask: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
     : tensor<64x64xf32> -> tensor<64x64xf16>(tensor<64x64xi1>)
   return
@@ -1132,9 +1141,10 @@ func.func @transform_output_shape_mismatch(%arg0: tensor<256x128xf16>) -> tensor
 // Pre-second-GEMM body verification tests
 //
 // `verifyGemmPlusGemmLikeOp` requires that, when the pre-second-GEMM region is
-// non-empty, it contains a single block with at least one block argument whose
-// terminator is a `rock.yield` that yields exactly one value. The same verifier
-// is shared by `rock.gemm_elementwise_gemm`, `rock.conv_elementwise_gemm` and
+// non-empty, it contains a single block whose arguments are the first-GEMM
+// result followed by one argument per elementwise input and whose terminator is
+// a `rock.yield` that yields exactly one value. The same verifier is shared by
+// `rock.gemm_elementwise_gemm`, `rock.conv_elementwise_gemm` and
 // `rock.attention`.
 // =============================================================================
 
@@ -1170,19 +1180,38 @@ func.func @gemm_elementwise_gemm_body_multi_block(
   return %r : tensor<1x4x2xf32>
 }
 
-// Zero block arguments: the body's entry block must accept at least the
-// running first-GEMM result as a block argument.
+// Zero block arguments: the body's entry block must accept the running
+// first-GEMM result as a block argument.
 func.func @gemm_elementwise_gemm_body_no_block_args(
     %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
     -> tensor<1x4x2xf32>
     attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  // expected-error @+1 {{pre-second-GEMM body must have at least one block argument}}
+  // expected-error @+1 {{pre-second-GEMM body argument count must be 1 (the first-GEMM result plus one per elementwise input), but is 0}}
   %r = rock.gemm_elementwise_gemm{
    ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
    ab = elementwise {
    ^bb0:
      %cst = arith.constant dense<0.0> : tensor<1x4x4xf32>
      rock.yield %cst : tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Non-zero but still wrong block argument count: when there are elementwise
+// inputs, the entry block must accept one block argument for each of them.
+func.func @gemm_elementwise_gemm_body_missing_elemwise_arg(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>,
+    %bias: tensor<1x4x4xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body argument count must be 2 (the first-GEMM result plus one per elementwise input), but is 1}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise otherIns(%bias : tensor<1x4x4xf32>) {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     rock.yield %qk : tensor<1x4x4xf32>
    }
    out = ab * %c : tensor<1x4x2xf32>
   } -> tensor<1x4x2xf32>

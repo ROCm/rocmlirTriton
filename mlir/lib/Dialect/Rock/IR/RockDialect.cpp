@@ -1818,8 +1818,25 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
                              "number of extra indices exceeds source rank");
   auto shape =
       sourceType.getShape().take_back(sourceType.getRank() - numExtraIndices);
+
+  // This is where the pointer offset type (i32 vs i64) is decided for the whole
+  // lowering: the element type of the pointer tensor produced here dictates the
+  // width of all downstream pointer arithmetic.
+  //
+  // If evaluating the transform
+  // chain that feeds this op could overflow a signed 32-bit integer (large
+  // padded index domains) or the underlying buffer exceeds the 32-bit byte
+  // range, the pointer offset must be computed in 64 bits. Otherwise 32-bit
+  // offsets are sufficient (and cheaper, and keep buffer-op eligibility
+  // downstream).
+  SmallVector<TransformMapAttr> transforms;
+  bool needs64Bit;
+  std::tie(std::ignore, needs64Bit) =
+      untransform(adaptor.getSource(), transforms);
+  unsigned offsetWidth = needs64Bit ? 64 : 32;
+
   inferredReturnTypes.push_back(
-      RankedTensorType::get(shape, IntegerType::get(context, 32)));
+      RankedTensorType::get(shape, IntegerType::get(context, offsetWidth)));
   inferredReturnTypes.push_back(
       RankedTensorType::get(shape, IntegerType::get(context, 1)));
   return success();
@@ -1958,7 +1975,7 @@ GemmGemmSize GemmElementwiseGemmOp::getGemmGemmSize() {
           m = dimsA[offsetA + (getATransposed() ? 1 : 0)],
           k = dimsA[offsetA + (getATransposed() ? 0 : 1)],
           n = dimsB[offsetB + (getBTransposed() ? 0 : 1)],
-          o = dimsC[offsetC + (getCTransposed() ? 1 : 0)];
+          o = dimsC[offsetC + (getCTransposed() ? 0 : 1)];
   return GemmGemmSize(g, m, k, n, o);
 }
 
@@ -2069,19 +2086,27 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
 
   // The pre-second-GEMM region is optional in the assembly format, so an
   // empty region is legal. When present, however, downstream passes
-  // (e.g. RegularizeInterGemmFusion, GridwiseAttnToBlockwise) assume a
-  // single block whose terminator is a `rock.yield` of exactly one value.
-  // Enforce that shape here so malformed IR is rejected up front rather than
-  // crashing later in a pass.
+  // (e.g. RegularizeInterGemmFusion, GridwiseAttnToBlockwise) and the tuning
+  // key builder assume a single block whose arguments are the first-GEMM result
+  // followed by one argument per elementwise input, and whose terminator is a
+  // `rock.yield` of exactly one value. Enforce that shape here so malformed IR
+  // is rejected up front rather than crashing later in a pass.
   Region &body = op.getPreSecondGemmRegion();
   if (!body.empty()) {
     if (!body.hasOneBlock())
       return op.emitOpError(
           "pre-second-GEMM region must contain a single block");
     Block &block = body.front();
-    if (block.getNumArguments() == 0)
-      return op.emitOpError(
-          "pre-second-GEMM body must have at least one block argument");
+    unsigned numElemwiseInputs =
+        op.getPreSecondGemmElemwiseInputsMutable().size();
+    // Block argument 0 is the first-GEMM result; the remaining arguments map
+    // 1:1 to the pre-second-GEMM elementwise inputs.
+    if (block.getNumArguments() != 1 + numElemwiseInputs)
+      return op.emitOpError("pre-second-GEMM body argument count must be ")
+             << (1 + numElemwiseInputs)
+             << " (the first-GEMM result plus one per elementwise input), but "
+                "is "
+             << block.getNumArguments();
     auto yieldOp = dyn_cast<rock::YieldOp>(block.getTerminator());
     if (!yieldOp)
       return op.emitOpError(
@@ -2218,7 +2243,7 @@ GemmGemmSize AttentionOp::getGemmGemmSize() {
           m = dimsA[offsetA + (getQTransposed() ? 1 : 0)],
           k = dimsA[offsetA + (getQTransposed() ? 0 : 1)],
           n = dimsB[offsetB + (getKTransposed() ? 0 : 1)],
-          o = dimsC[offsetC + (getVTransposed() ? 1 : 0)];
+          o = dimsC[offsetC + (getVTransposed() ? 0 : 1)];
   return GemmGemmSize(g, m, k, n, o);
 }
 
@@ -2252,23 +2277,28 @@ constexpr size_t SmallVectorInlineSize = 32;
 // Number of trailing knob fields appended in each versioned perfConfig schema.
 // The sentinel value (`rock::kKnobDefault` = `-1`) lives in `KnobUtils.h`.
 //
-// NOTE: If you want to bump the perfConfig to v4, add a new `kNumKnobFieldsV4`
+// NOTE: If you want to bump the perfConfig to v5, add a new `kNumKnobFieldsV5`
 // constant and update the parser to expect the new number of fields.
+//
+// v3 dropped the legacy `scheduleHint` knob (v2's 6th field). v4 re-grows the
+// knob block by appending `useReductionLayout` on top of v3's five knobs.
 constexpr size_t kNumKnobFieldsV2 = 6;
 constexpr size_t kNumKnobFieldsV3 = 5;
+constexpr size_t kNumKnobFieldsV4 = 6;
 
 // Reject invalid knob values, reusing `rock::isValidKnobBoolean`.
 LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
                                 int64_t useBlockPingpong,
                                 int64_t useInThreadTranspose,
-                                int64_t useBufferOps,
-                                int64_t useBufferAtomics) {
+                                int64_t useBufferOps, int64_t useBufferAtomics,
+                                int64_t useReductionLayout) {
   const std::pair<StringRef, int64_t> boolKnobs[] = {
       {"useAsyncCopy", useAsyncCopy},
       {"useBlockPingpong", useBlockPingpong},
       {"useInThreadTranspose", useInThreadTranspose},
       {"useBufferOps", useBufferOps},
       {"useBufferAtomics", useBufferAtomics},
+      {"useReductionLayout", useReductionLayout},
   };
   for (auto [name, value] : boolKnobs) {
     if (!isValidKnobBoolean(value)) {
@@ -2339,8 +2369,8 @@ parsePerfConfigStr(StringRef configStr, StringRef expectedPrefix = "") {
 // the given version (11 tunable fields plus the version's knob fields), or
 // std::nullopt if the version is unknown.
 std::optional<size_t> getExpectedPerfConfigFieldCount(int version) {
-  static constexpr size_t kNumKnobFieldsByVersion[] = {0, kNumKnobFieldsV2,
-                                                       kNumKnobFieldsV3};
+  static constexpr size_t kNumKnobFieldsByVersion[] = {
+      0, kNumKnobFieldsV2, kNumKnobFieldsV3, kNumKnobFieldsV4};
   if (version < 1 ||
       version > static_cast<int>(std::size(kNumKnobFieldsByVersion)))
     return std::nullopt;
@@ -2366,6 +2396,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
+  // v4: 11 tunable fields + 6 knob fields = 17 (v3 knobs + useReductionLayout).
   std::optional<size_t> expectedCount =
       getExpectedPerfConfigFieldCount(version);
   if (!expectedCount || params.size() != *expectedCount) {
@@ -2389,6 +2420,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useInThreadTranspose = kKnobDefault;
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
+  int64_t useReductionLayout = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2401,9 +2433,12 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       warnIfScheduleHintIgnored(perfConfigStrAttr.getContext(),
                                 perfConfigStrAttr.strref(), scheduleHint);
     }
+    if (version >= 4)
+      useReductionLayout = params[idx++];
     if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
                                  useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics))) {
+                                 useBufferOps, useBufferAtomics,
+                                 useReductionLayout))) {
       return {};
     }
   }
@@ -2412,7 +2447,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       perfConfigStrAttr.getContext(), mPerBlock, nPerBlock, kPerBlock, kpack,
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics);
+      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
 }
 
 //===-----------------------------------------------------===//
@@ -2432,6 +2467,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
+  // v4: 11 tunable fields + 6 knob fields = 17 (v3 knobs + useReductionLayout).
   std::optional<size_t> expectedCount =
       getExpectedPerfConfigFieldCount(version);
   if (!expectedCount || params.size() != *expectedCount) {
@@ -2455,6 +2491,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useInThreadTranspose = kKnobDefault;
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
+  int64_t useReductionLayout = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2467,9 +2504,12 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       warnIfScheduleHintIgnored(perfConfigStrAttr.getContext(),
                                 perfConfigStrAttr.strref(), scheduleHint);
     }
+    if (version >= 4)
+      useReductionLayout = params[idx++];
     if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
                                  useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics))) {
+                                 useBufferOps, useBufferAtomics,
+                                 useReductionLayout))) {
       return {};
     }
   }
@@ -2478,7 +2518,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       perfConfigStrAttr.getContext(), mPerBlockG0, nPerBlockG0, kPerBlock,
       kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics);
+      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
 }
 
 //===----------------------------------------------------------------------===//
