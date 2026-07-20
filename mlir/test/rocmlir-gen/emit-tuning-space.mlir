@@ -29,6 +29,29 @@
 // RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
 // CHECK-MFMA-GFX950-KPACK: gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,1,}}
 
+// A large-K GEMM must not emit tile combos whose lowered index/mask tensors
+// exceed Triton's 2^20-element per-tensor cap: for k=16384 that means any tile
+// with max(mPerBlock, nPerBlock) > 64 (64*16384 == 1048576, the exact cap).
+// Such combos fail Triton's verifyTensorSize and, in exhaustive mode, abort the
+// whole config. The PowerOf2Ceil(K) capping tile (16384) must still appear,
+// paired only with in-cap M/N so K stays covered.
+// RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 256 -k 16384 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-MFMA \
+// RUN:       --implicit-check-not="gemm:v4:{{(128|256)}},{{[0-9]+}},16384," \
+// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+}},{{(128|256)}},16384,"
+// CHECK-TENSOR-CAP-MFMA: gemm:v4:64,64,16384,
+
+// The same per-tensor cap applies to attention (gemm+gemm): gemm0's K tile is
+// PowerOf2Ceil(head_dim_qk), so a large head_dim can push kPerBlock high enough
+// that kPerBlock * max(mPerBlock, nPerBlock) exceeds 2^20 and the lowered
+// index/mask tensor fails Triton's verifyTensorSize. For head_dim_qk=8192 the
+// capping tile is 8192, so max(m,n) must stay <= 128 (128*8192 == 1048576).
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 8192 -head_dim_v 128 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN \
+// RUN:       --implicit-check-not="attn:v4:256,{{[0-9]+}},8192," \
+// RUN:       --implicit-check-not="attn:v4:{{[0-9]+}},256,8192,"
+// CHECK-TENSOR-CAP-ATTN: attn:v4:128,128,8192,
+
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
 //===----------------------------------------------------------------------===//
