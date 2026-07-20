@@ -46,6 +46,12 @@
 // RUN: not rocmlir-gen --arch %arch --operation attention -t f16 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -sliding_window_size=16 2>&1 | FileCheck %s --check-prefix=ERR_SLIDING_WINDOW
 // ERR_SLIDING_WINDOW: sliding_window_size requires current_seq_len to be set
 
+// A negative sliding_window_size is a user error: the flag's contract is
+// "positive integer, 0 disables", so it must be rejected instead of silently
+// disabling sliding-window masking.
+// RUN: not rocmlir-gen --arch %arch --operation attention -t f16 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -sliding_window_size=-16 2>&1 | FileCheck %s --check-prefix=ERR_SLIDING_WINDOW_NEG
+// ERR_SLIDING_WINDOW_NEG: sliding_window_size must be non-negative
+
 // Attention, gemm+gemm, and conv+gemm pipelines require -t (dataTypeAlias).
 // RUN: not rocmlir-gen --arch %arch --operation attention -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 2>&1 | FileCheck %s --check-prefix=ERR_NO_DTYPE
 // ERR_NO_DTYPE: Type of the attention/gemm+gemm/conv+gemm operation is not specified

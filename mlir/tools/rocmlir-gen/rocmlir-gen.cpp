@@ -1276,6 +1276,13 @@ static LogicalResult detectMissingArguments() {
     // Sliding-window masking is defined relative to the KV-cache position, so
     // the Rock verifier requires currentSeqLen. Reject the combination here
     // instead of emitting IR that fails verification downstream.
+    // The flag's contract is "positive integer, 0 disables". A negative value
+    // is a user error that would otherwise slip through silently, since every
+    // downstream use is gated on `slidingWindowSize > 0`.
+    if (slidingWindowSize < 0) {
+      llvm::errs() << "sliding_window_size must be non-negative\n";
+      return failure();
+    }
     if (slidingWindowSize > 0) {
       // slidingWindowSize is later materialized into i32 attributes/constants,
       // so reject values that would silently truncate.
