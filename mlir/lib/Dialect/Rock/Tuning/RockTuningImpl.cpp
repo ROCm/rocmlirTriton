@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/LdsBlacklist.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -40,8 +41,10 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LogicalResult.h"
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <random>
+#include <set>
 
 namespace mlir {
 namespace rock {
@@ -54,6 +57,9 @@ enum class GemmMNDim { M, N };
 // Largest per-block M/N tile size we tune for. Also acts as the threshold below
 // which a small dimension is covered by a single tightly-fitting tile.
 #define MAX_MN_PER_BLOCK 256
+
+// Largest per-block K tile size we tune for.
+#define MAX_K_PER_BLOCK 512
 
 // Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
 // tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
@@ -108,15 +114,18 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
 
 // Drop kPerBlock candidates larger than the K dimension rounded up to the next
 // power of two: a tile bigger than PowerOf2Ceil(K) would only pad K and waste
-// work.
+// work. Adds the capping tile so K stays covered, but only when it does not
+// exceed MAX_K_PER_BLOCK (bigger tiles waste LDS and are ~never optimal).
 static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
   assert(k > 0 && !kPerBlockList.empty() &&
          "capKPerBlockByK expects a positive K and a non-empty candidate list");
   uint32_t cap = static_cast<uint32_t>(llvm::PowerOf2Ceil(k));
-  uint32_t maxCandidateK = *llvm::max_element(kPerBlockList);
   llvm::erase_if(kPerBlockList, [&](uint32_t v) { return v > cap; });
-  if (!llvm::is_contained(kPerBlockList, cap) && cap < maxCandidateK)
+  if (!llvm::is_contained(kPerBlockList, cap) && k <= MAX_K_PER_BLOCK)
     kPerBlockList.push_back(cap);
+  assert(llvm::all_of(kPerBlockList,
+                      [](uint32_t v) { return v <= MAX_K_PER_BLOCK; }) &&
+         "kPerBlock candidates must not exceed MAX_K_PER_BLOCK");
 }
 
 // Triton caps every tensor at 2^20 elements and enforces it via
@@ -403,7 +412,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       std::min<uint64_t>(llvm::PowerOf2Ceil(gemm0K), 2048);
   std::vector<uint32_t> kPerBlock = {gemm0KPerBlock};
   if (kind == TuningParamSetKind::Exhaustive) {
-    for (uint32_t k : {16, 32, 64, 128, 512, 1024, 2048})
+    for (uint32_t k : {16, 32, 64, 128, 512})
       if (!llvm::is_contained(kPerBlock, k))
         kPerBlock.push_back(k);
   }
@@ -695,6 +704,15 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
 
   auto tuningInfo = std::make_unique<PopulateParams>();
 
+  // Tile shapes known to overflow LDS for this (arch, input dtype) are dropped
+  // up front: LDS usage of a plain GEMM is independent of M/N/K, so this cache
+  // (populated offline, see LdsBlacklist.h) never depends on the problem shape.
+  // It is keyed on only the LDS-relevant fields (see GemmLdsKey), so it also
+  // covers configs that differ only in an LDS-irrelevant field (kpack, splitK,
+  // ...). A miss returns an empty set, so an un-populated blacklist is a no-op.
+  GemmLdsKeySet ldsBlacklistSet =
+      LdsBlacklist::lookupGemm(rock::getArchValue(gemmOp), info.gemmAType);
+
   OpBuilder b(gemmOp.getContext());
   for (uint32_t gemmMPerBlock : params[0]) {
     for (uint32_t gemmNPerBlock : params[1]) {
@@ -712,6 +730,17 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                   gemmOp, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock);
               for (int64_t splitKFactor : optimalSplitKFactors) {
                 for (int64_t numStages : params[5]) {
+                  // Drop LDS-overflowing tiles before building any attribute or
+                  // running the (expensive) performance filter below: the
+                  // projection depends only on fields fixed by this point, so a
+                  // blacklisted tile is dead for every inner splitK/wave/CTA
+                  // combination. Field order must match GemmLdsKey /
+                  // PROJECTION_INDICES.
+                  if (!ldsBlacklistSet.empty() &&
+                      ldsBlacklistSet.count({gemmMPerBlock, gemmNPerBlock,
+                                             gemmKPerBlock, numWaves,
+                                             matrixInstrNonkdim, numStages}))
+                    continue;
                   for (int64_t wavesPerEU : params[6]) {
                     for (int64_t gridGroupSize : params[7]) {
                       for (uint32_t numCTAs : params[8]) {
@@ -727,11 +756,12 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useBufferAtomics=*/kKnobDefault,
                             /*useReductionLayout=*/kKnobDefault,
                             /*useOptimizeEpilogue=*/kKnobDefault);
-                        if (kind != TuningParamSetKind::Full ||
-                            succeeded(tuningInfo->couldBePerformant(
-                                info, gemmParams)))
-                          newSpace->tuningRange.push_back(
-                              cast<RockTuningParamAttrInterface>(gemmParams));
+                        if (kind == TuningParamSetKind::Full &&
+                            failed(tuningInfo->couldBePerformant(info,
+                                                                 gemmParams)))
+                          continue;
+                        newSpace->tuningRange.push_back(
+                            cast<RockTuningParamAttrInterface>(gemmParams));
                       }
                     }
                   }

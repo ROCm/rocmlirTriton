@@ -371,6 +371,16 @@ Also check that `tritonUtils.cpp::getMfmaVersion()` and
 Additionally, `mlir/test/common_utils/amd_arch_db/binding.cpp` will need to have
 it's `py::enum_<ISAFamily>(...).value(...)` enum updated as well.
 
+When a new ISA family (not just a new chip in an existing family) gains support,
+add a representative chip to `DEFAULT_ARCHES` in
+`mlir/utils/performance/generateLDSBlacklist.py`. The LDS-overflow blacklist is
+keyed per ISA family because `ttg.shared` depends on the matmul lowering (MFMA
+vs WMMA vs non-accel), so a new family with no entry gets *no* blacklist and its
+overflowing tiles are never pruned during tuning. Existing chips that fall into
+an already-listed family are covered automatically by the lookup-time fallback
+(see `LdsBlacklist.cpp`), so they do not need a new entry. After editing the
+list, regenerate the `.inc` (Step 11).
+
 **How to detect needed changes:** Triton uses exhaustive `switch` statements over
 `ISAFamily`. If a new variant is added, our switches (which use `default:`) will
 silently return a fallback value. The `ISAFamily` enum is defined in
@@ -520,7 +530,34 @@ optional Triton components, and generated third-party CMake cache variables
 must not leave Triton's `find_package(MLIR)` pointed at a prebuilt LLVM/MLIR
 layout instead of rocmlirTriton's in-tree build.
 
-## Step 11: Run Tests
+## Step 11: Regenerate the LDS overflow blacklist
+
+The compiled-in blacklist of GEMM perf configs that overflow LDS
+(`mlir/include/mlir/Dialect/Rock/Tuning/LdsBlacklistPerfconfigs.inc`, consumed
+via `LdsBlacklist.h`) is an *empirical* artifact: it records which tile shapes
+exceed each arch's LDS budget under the current Rock->Triton lowering. A Triton
+(or Triton-pinned LLVM) bump can change per-block shared-memory usage, so the
+table must be regenerated against the freshly built compiler — otherwise it
+drifts out of sync and the nightly drift-detection test
+(`generateLDSBlacklist.py --verify`) fails.
+
+If this bump added a new ISA family, first add a representative chip to
+`DEFAULT_ARCHES` in `generateLDSBlacklist.py` (see section 5.5) so the new family
+gets a blacklist at all.
+
+The generator is copied into `build/bin` (by the `ci-performance-scripts`
+target), so run it from there to pick up the just-built tools:
+
+```bash
+cd build/bin
+python3 generateLDSBlacklist.py
+```
+
+This rewrites `LdsBlacklistPerfconfigs.inc` in place for the full arch/dtype
+matrix. Because the table is compiled into the library, rebuild afterward
+(`bash cmake.sh` from the project root) and commit the regenerated `.inc`.
+
+## Step 12: Run Tests
 
 ```bash
 cd build && ninja check-rocmlir
@@ -551,9 +588,11 @@ Use this checklist to track progress:
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::mlirTypeToScaleDotElemType()` if changed
 - [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
+- [ ] Add a representative chip to `DEFAULT_ARCHES` in `generateLDSBlacklist.py` if a new ISA family was added (see section 5.5)
 - [ ] Refresh `triton-patches/` and `llvm-patches/` records and indexes
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
+- [ ] Regenerate the LDS blacklist (`generateLDSBlacklist.py` from `build/bin`), rebuild, and commit the updated `.inc`
 - [ ] Run tests with `cd build && ninja check-rocmlir`
 - [ ] All tests pass
 - [ ] Commit all changes
@@ -616,3 +655,5 @@ If new Triton headers are needed:
 | Build script | `cmake.sh` |
 | Fat library deps generator | `mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl` |
 | Fat library deps list | `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` |
+| LDS blacklist generator | `mlir/utils/performance/generateLDSBlacklist.py` |
+| LDS blacklist table | `mlir/include/mlir/Dialect/Rock/Tuning/LdsBlacklistPerfconfigs.inc` |
