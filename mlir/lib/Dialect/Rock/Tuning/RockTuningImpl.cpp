@@ -238,6 +238,8 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
   bool isWmma = accelKind == MatrixAccelKind::WMMA ||
                 accelKind == MatrixAccelKind::ScaledWMMA;
 
+  int64_t k = gemmOp.getGemmSize().k;
+
   std::vector<uint32_t> kList;
   if (isMfma)
     kList = kind == TuningParamSetKind::Exhaustive
@@ -247,12 +249,18 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     kList = kind == TuningParamSetKind::Exhaustive
                 ? std::vector<uint32_t>{32, 64, 128, 256}
                 : std::vector<uint32_t>{32, 64};
-  else
-    return {4, 8, 16}; // non-accel (FMA) keeps a small pow2-ish K list
+  else {
+    kList = {1, 4, 8, 16};
+    capKPerBlockByK(kList, k);
+    return kList;
+  }
+
+  // Cap the pow2 K tiles by the actual K dimension so we don't tune (and pad)
+  // K tiles far larger than the problem's K.
+  capKPerBlockByK(kList, k);
 
   // Also tune non-pow2 K tiles (only on non-scaled GEMMs).
   if (!gemmOp.getScaleA() && !gemmOp.getScaleB()) {
-    int64_t k = gemmOp.getGemmSize().k;
     uint32_t baseMinK = *llvm::min_element(kList);
     for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
                                               /*maxK=*/256))
