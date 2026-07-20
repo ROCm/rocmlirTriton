@@ -118,9 +118,9 @@ static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
 }
 
 // Triton caps every tensor at 2^20 elements and enforces it via
-// OpTrait::impl::verifyTensorSize. Keep this in sync with
-// `maxTensorNumElements` in
-// external/triton/include/triton/Dialect/Triton/IR/Traits.h.
+// OpTrait::impl::verifyTensorSize. Hand-mirrored from `maxTensorNumElements` in
+// external/triton/include/triton/Dialect/Triton/IR/Traits.h; re-audited on
+// every Triton bump (see docs/bump_triton_version.md section 5.4.1).
 static constexpr int64_t kTritonMaxTensorNumElements = 1048576;
 
 // A GEMM tile lowered through the Rock->Triton bridge materialises kPerBlock x
@@ -395,11 +395,29 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
   auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getRangeGemmGemm(gemmGemmOp, waveSize, kind);
+  // gemm1's N tile is derived, not tuned: gemm1NPerBlock = PowerOf2Ceil(head
+  // dim of V) (see PopulateParamsGemmGemm::getGemm1Params). Mirror that
+  // derivation here so we can guard gemm1's lowered tensor against the same
+  // Triton per-tensor cap as gemm0.
+  auto cShape = cast<ShapedType>(gemmGemmOp.getCType()).getShape();
+  int cIdx = gemmGemmOp.getTransposedC() ? 0 : 1;
+  if (cShape.size() == 3)
+    cIdx++;
+  uint32_t gemm1NPerBlock =
+      static_cast<uint32_t>(llvm::PowerOf2Ceil(cShape[cIdx]));
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
     for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
       auto optimalSplitKFactors =
           computeOptimalSplitKFactors(gemmGemmOp, gemm0MPerBlock);
+
+      // gemm1 lowers a gemm0NPerBlock x max(gemm0MPerBlock, gemm1NPerBlock)
+      // index/mask tensor (its contraction tile is gemm0NPerBlock). Guard it
+      // against the same cap as gemm0; this depends only on the gemm0 M/N
+      // tiles, so check it once outside the gemmKPerBlock loop.
+      if (exceedsTritonTensorCap(gemm0MPerBlock, gemm1NPerBlock,
+                                 gemm0NPerBlock))
+        continue;
 
       for (uint32_t gemmKPerBlock : validRangeGemmGemmParams[2]) {
         // Skip tiles whose lowered index/mask tensors would exceed Triton's

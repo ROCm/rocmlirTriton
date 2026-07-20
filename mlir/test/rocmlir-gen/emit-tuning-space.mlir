@@ -52,6 +52,28 @@
 // RUN:       --implicit-check-not="attn:v4:{{[0-9]+}},256,8192,"
 // CHECK-TENSOR-CAP-ATTN: attn:v4:128,128,8192,
 
+// gemm1's N tile is not tuned: gemm1NPerBlock = PowerOf2Ceil(head_dim_v) and
+// its contraction tile is gemm0NPerBlock, so gemm1 lowers a gemm0NPerBlock x
+// max(gemm0MPerBlock, gemm1NPerBlock) index/mask tensor. A large head_dim_v can
+// therefore blow the same 2^20 cap on a config gemm0's own check would pass.
+// For head_dim_v=8192 (gemm1NPerBlock=8192), gemm0NPerBlock must stay <= 128
+// (128*8192 == 1048576, the exact cap); every gemm0NPerBlock=256 combo drops,
+// regardless of gemm0's K tile (here head_dim_qk=128 keeps gemm0 in-cap).
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V \
+// RUN:       --implicit-check-not="attn:v4:{{[0-9]+}},256,"
+// CHECK-TENSOR-CAP-ATTN-V: attn:v4:16,128,
+
+// Same gemm1 guard with a transposed output (-transO): head_dim_v then lives at
+// a different position in C's shape, so the derivation must follow
+// getTransposedC() (matching PopulateParamsGemmGemm::getGemm1Params). The cap
+// behaviour must be identical -- every gemm0NPerBlock=256 combo still drops for
+// head_dim_v=8192.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 -transO --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V-TRANSO \
+// RUN:       --implicit-check-not="attn:v4:{{[0-9]+}},256,"
+// CHECK-TENSOR-CAP-ATTN-V-TRANSO: attn:v4:16,128,
+
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
 //===----------------------------------------------------------------------===//
