@@ -396,15 +396,11 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getRangeGemmGemm(gemmGemmOp, waveSize, kind);
   // gemm1's N tile is derived, not tuned: gemm1NPerBlock = PowerOf2Ceil(head
-  // dim of V) (see PopulateParamsGemmGemm::getGemm1Params). Mirror that
-  // derivation here so we can guard gemm1's lowered tensor against the same
-  // Triton per-tensor cap as gemm0.
-  auto cShape = cast<ShapedType>(gemmGemmOp.getCType()).getShape();
-  int cIdx = gemmGemmOp.getTransposedC() ? 0 : 1;
-  if (cShape.size() == 3)
-    cIdx++;
+  // dim of V) (see PopulateParamsGemmGemm::getGemm1Params). GemmGemmSize::o is
+  // that head-dim-of-V, already extracted transpose-aware, so guard gemm1's
+  // lowered tensor against the same Triton per-tensor cap as gemm0.
   uint32_t gemm1NPerBlock =
-      static_cast<uint32_t>(llvm::PowerOf2Ceil(cShape[cIdx]));
+      static_cast<uint32_t>(llvm::PowerOf2Ceil(gemmGemmOp.getGemmGemmSize().o));
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
     for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
