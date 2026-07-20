@@ -58,7 +58,8 @@ struct GemmOrderingTestEnv {
         /*useInThreadTranspose=*/kKnobDefault,
         /*useBufferOps=*/kKnobDefault,
         /*useBufferAtomics=*/kKnobDefault,
-        /*useReductionLayout=*/kKnobDefault);
+        /*useReductionLayout=*/kKnobDefault,
+        /*useOptimizeEpilogue=*/kKnobDefault);
   }
 };
 
@@ -251,6 +252,7 @@ TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsFields) {
   EXPECT_EQ(p.getNumStages(), 1);
   EXPECT_EQ(p.getWavesPerEU(), 0);
   EXPECT_EQ(p.getGridGroupSize(), 0);
+  EXPECT_EQ(p.getUseOptimizeEpilogue(), kKnobDefault);
 }
 
 TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsPassesPredicate) {

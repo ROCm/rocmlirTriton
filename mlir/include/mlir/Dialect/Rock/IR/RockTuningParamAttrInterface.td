@@ -212,6 +212,17 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
                      /*args=*/(ins),
                      /*methodBody=*/"",
                      /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Gate for Triton's `OptimizeEpilogue` pass. `-1` selects the
+          store-tail heuristic, `0` disables the pass, and `1` enables it
+          unconditionally.
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getUseOptimizeEpilogue",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
   ];
 }
 

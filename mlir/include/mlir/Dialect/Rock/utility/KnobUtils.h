@@ -6,13 +6,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The knobs are serialized into the `gemm:v4:` / `attn:v4:` perfConfig
-// schema and threaded through `TritonOptions` / `BackendOptions` in
-// `Pipelines.h`. They split into two shapes:
+// The knobs are serialized into the `gemm:v5:` / `attn:v5:` perfConfig
+// schema and consumed by the Rock/Triton lowering pipelines.
 //
-//   - Five knobs, which legal values are:
-//     `kKnobDefault` (-1, "use the arch default"), `0` (force off), or
-//     `1` (force on). Validate with `isValidKnobBoolean`.
+// Their legal values are `kKnobDefault` (-1, automatic/default behavior),
+// `0` (force off), or `1` (force on). Validate with
+// `isValidKnobBoolean`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,15 +23,15 @@
 namespace mlir {
 namespace rock {
 
-/// Tri-state sentinel for the five Triton knob fields in the perfConfig
+/// Tri-state sentinel for the Triton knob fields in the perfConfig
 /// (`useAsyncCopy`, `useBlockPingpong`, `useInThreadTranspose`,
-/// `useBufferOps`, `useBufferAtomics`) plus the debug-only
+/// `useBufferOps`, `useBufferAtomics`, `useReductionLayout`,
+/// `useOptimizeEpilogue`) plus the debug-only
 /// `TritonOptions::bufferOpsAnalyzeSmallTensorRange` override (which lives
-/// outside the perfConfig). A field set to
-/// `kKnobDefault` means "use the per-arch default"; `0` and `1` mean
-/// explicit off/on. Lives here (rather than in `Pipelines.h`) so
-/// the IR / Tuning libraries can consume it without pulling in
-/// `mlir/Pass/PassOptions.h`.
+/// outside the perfConfig). A field set to `kKnobDefault` selects its
+/// automatic/default behavior; `0` and `1` mean explicit off/on. Lives here
+/// (rather than in `Pipelines.h`) so the IR / Tuning libraries can consume it
+/// without pulling in `mlir/Pass/PassOptions.h`.
 inline constexpr int kKnobDefault = -1;
 
 /// Returns true iff `value` is a legal value for any of the
