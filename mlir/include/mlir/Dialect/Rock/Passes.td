@@ -747,6 +747,13 @@ def RockAddTritonMetadataPass
       coalesces. GEMMs with no reachable store (e.g. a chained-dot head) are
       left untouched so the downstream default layout is kept.
 
+    - `rock.prefer_lds_epilogue` (OptimizeEpilogue automatic policy): for
+      16-bit output stores, the pass compares each thread's dwordx4 store burst
+      with the enclosing constant reduction-loop depth. If the exposure is at
+      least two, it marks the kernel so Triton's OptimizeEpilogue pass retains
+      the paced LDS round-trip. An unknown reduction depth keeps the register
+      bypass.
+
     Additional kinds of Triton-bound metadata can be added here as the pipeline
     grows.
   }];

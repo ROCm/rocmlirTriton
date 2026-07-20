@@ -110,7 +110,8 @@ getConservativeDefaultGemmGemmParams(MLIRContext *ctx) {
                                  /*useInThreadTranspose=*/kKnobDefault,
                                  /*useBufferOps=*/kKnobDefault,
                                  /*useBufferAtomics=*/kKnobDefault,
-                                 /*useReductionLayout=*/kKnobDefault);
+                                 /*useReductionLayout=*/kKnobDefault,
+                                 /*useOptimizeEpilogue=*/kKnobDefault);
 }
 
 /// Estimate the peak LDS (shared memory) bytes a fused gemm+gemm/attention

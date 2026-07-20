@@ -225,6 +225,7 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       NumCUAttr::getMnemonic(),
       NumChipletsAttr::getMnemonic(),
       BlockSizeAttr::getMnemonic(),
+      UseOptimizeEpilogueAttr::getMnemonic(),
       GridSizeAttr::getMnemonic(),
       CpuVerifierAttr::getMnemonic(),
   };
@@ -357,6 +358,9 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Set attributes on the function.
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           b.getI32IntegerAttr(blockSize));
+  getOperation()->setAttr(
+      rock::UseOptimizeEpilogueAttr::getMnemonic(),
+      b.getI64IntegerAttr(gemmParams.getUseOptimizeEpilogue()));
 
   // Check fusion legality. These checks should happen after perfConfig is
   // picked either through heuristics or user provided.
@@ -439,4 +443,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   assert(blockSize > 0);
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           builder.getI32IntegerAttr(blockSize));
+  getOperation()->setAttr(
+      rock::UseOptimizeEpilogueAttr::getMnemonic(),
+      builder.getI64IntegerAttr(attnPerfConfig.getUseOptimizeEpilogue()));
 }
