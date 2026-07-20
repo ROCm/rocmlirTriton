@@ -1295,6 +1295,14 @@ static LogicalResult detectMissingArguments() {
             << "sliding_window_size requires current_seq_len to be set\n";
         return failure();
       }
+      // The Rock verifier rejects a window larger than the key sequence length
+      // ("slidingWindowSize must not exceed max sequence length"). Reject it
+      // here too so the driver reports a clear error instead of emitting IR
+      // that only fails later in verification.
+      if (sequenceLengthK > 0 && slidingWindowSize > sequenceLengthK) {
+        llvm::errs() << "sliding_window_size must not exceed seq_len_k\n";
+        return failure();
+      }
     }
   }
 
