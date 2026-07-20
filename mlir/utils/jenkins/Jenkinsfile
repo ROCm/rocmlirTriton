@@ -673,13 +673,16 @@ void check_randomE2ETests(String codepath) {
 // Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
 // one of its operation kinds. parameterSweeps.py exposes ``conv`` and ``gemm``;
 // attentionSweeps.py exposes ``attention`` and ``gemm_gemm``. Both share the
-// same ``-j``/``--samples``/``--log-failures`` interface and ship in
-// <build>/bin/ via the ``ci-performance-scripts`` target.
+// same ``-j``/``--samples``/``--test-timeout-sec``/``--log-failures`` interface
+// and ship in <build>/bin/ via the ``ci-performance-scripts`` target.
+// The scripts default to a 120s per-stage timeout, which is tuned for the fast
+// per-PR lit smoke tests; override it to 600s here to match rocMLIR's weekly
+// sweep budget so large but valid configs are not miscounted as timeouts.
 void runSweep(String script, String kind, int samples, String codepath) {
     int limit_lit_workers = setLitWorkerCount()
     timeout(time: 300, activity: true, unit: 'MINUTES') {
         dir('build') {
-            sh """python3 ./bin/${script} -j ${limit_lit_workers} --samples ${samples} ${kind} --log-failures"""
+            sh """python3 ./bin/${script} -j ${limit_lit_workers} --samples ${samples} --test-timeout-sec 600 ${kind} --log-failures"""
         }
     }
 }
