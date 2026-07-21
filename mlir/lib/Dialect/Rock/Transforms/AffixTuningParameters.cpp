@@ -164,8 +164,8 @@ static LogicalResult validateGridGroupSize(Operation *op,
 // must be powers of two: gemm+gemm requires it, plain gemm only requires them
 // to be positive since rock-decompose-nonpow2-tiles handles non-pow2 M/N.
 // `requirePow2K` likewise controls kPerBlock: plain gemm allows non-pow2 K
-// (rock-gridwise-gemm-to-blockwise decomposes it into power-of-two segments), while
-// gemm+gemm and scaled gemm still require a power-of-two K tile.
+// (rock-gridwise-gemm-to-blockwise decomposes it into power-of-two segments),
+// while gemm+gemm and scaled gemm still require a power-of-two K tile.
 static LogicalResult validatePerfConfig(Operation *op,
                                         RockTuningParamAttrInterface params,
                                         bool requirePow2MN, bool requirePow2K) {

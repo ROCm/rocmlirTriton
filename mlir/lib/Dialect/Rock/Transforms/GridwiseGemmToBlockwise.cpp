@@ -280,8 +280,9 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     SmallVector<Pow2Segment> kSegs = decomposePow2(kPerBlock);
     bool peelK = kSegs.size() > 1;
     if (peelK && isScaledGemm) {
-      return op->emitOpError("non-power-of-two kPerBlock is not supported for "
-                             "scaled gemm (should have been rejected by affix)");
+      return op->emitOpError(
+          "non-power-of-two kPerBlock is not supported for "
+          "scaled gemm (should have been rejected by affix)");
     }
 
     // Build the operand views for each K segment. sliceBlockedDims returns
