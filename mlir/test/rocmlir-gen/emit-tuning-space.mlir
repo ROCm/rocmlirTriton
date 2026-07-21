@@ -29,6 +29,51 @@
 // RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
 // CHECK-MFMA-GFX950-KPACK: gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,1,}}
 
+// A large-K GEMM must not emit tile combos whose lowered index/mask tensors
+// exceed Triton's 2^20-element per-tensor cap: for k=16384 that means any tile
+// with max(mPerBlock, nPerBlock) > 64 (64*16384 == 1048576, the exact cap).
+// Such combos fail Triton's verifyTensorSize and, in exhaustive mode, abort the
+// whole config. The PowerOf2Ceil(K) capping tile (16384) must still appear,
+// paired only with in-cap M/N so K stays covered.
+// RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 256 -k 16384 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-MFMA \
+// RUN:       --implicit-check-not="gemm:v4:{{(128|256)}},{{[0-9]+}},16384," \
+// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+}},{{(128|256)}},16384,"
+// CHECK-TENSOR-CAP-MFMA: gemm:v4:64,64,16384,
+
+// The same per-tensor cap applies to attention (gemm+gemm): gemm0's K tile is
+// PowerOf2Ceil(head_dim_qk), so a large head_dim can push kPerBlock high enough
+// that kPerBlock * max(mPerBlock, nPerBlock) exceeds 2^20 and the lowered
+// index/mask tensor fails Triton's verifyTensorSize. For head_dim_qk=8192 the
+// capping tile is 8192, so max(m,n) must stay <= 128 (128*8192 == 1048576).
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 8192 -head_dim_v 128 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN \
+// RUN:       --implicit-check-not="attn:v4:256,{{[0-9]+}},8192," \
+// RUN:       --implicit-check-not="attn:v4:{{[0-9]+}},256,8192,"
+// CHECK-TENSOR-CAP-ATTN: attn:v4:128,128,8192,
+
+// gemm1's N tile is not tuned: gemm1NPerBlock = PowerOf2Ceil(head_dim_v) and
+// its contraction tile is gemm0NPerBlock, so gemm1 lowers a gemm0NPerBlock x
+// max(gemm0MPerBlock, gemm1NPerBlock) index/mask tensor. A large head_dim_v can
+// therefore blow the same 2^20 cap on a config gemm0's own check would pass.
+// For head_dim_v=8192 (gemm1NPerBlock=8192), gemm0NPerBlock must stay <= 128
+// (128*8192 == 1048576, the exact cap); every gemm0NPerBlock=256 combo drops,
+// regardless of gemm0's K tile (here head_dim_qk=128 keeps gemm0 in-cap).
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V \
+// RUN:       --implicit-check-not="attn:v4:{{[0-9]+}},256,"
+// CHECK-TENSOR-CAP-ATTN-V: attn:v4:16,128,
+
+// Same gemm1 guard with a transposed output (-transO): head_dim_v then lives at
+// a different position in C's shape, so the derivation must follow
+// getTransposedC() (matching PopulateParamsGemmGemm::getGemm1Params). The cap
+// behaviour must be identical -- every gemm0NPerBlock=256 combo still drops for
+// head_dim_v=8192.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 -transO --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V-TRANSO \
+// RUN:       --implicit-check-not="attn:v4:{{[0-9]+}},256,"
+// CHECK-TENSOR-CAP-ATTN-V-TRANSO: attn:v4:16,128,
+
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
 //===----------------------------------------------------------------------===//
