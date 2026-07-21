@@ -55,6 +55,8 @@ Value mlir::rock::makeRange(OpBuilder &b, Location loc, int32_t start,
     auto currentType = cast<RankedTensorType>(expandedTensor.getType());
     SmallVector<int64_t> newShape(currentType.getShape().begin(),
                                   currentType.getShape().end());
+    assert(unitDimIdx <= static_cast<int64_t>(newShape.size()) &&
+           "unit dim insertion index out of bounds");
     newShape.insert(newShape.begin() + unitDimIdx, 1);
     auto expandedType = RankedTensorType::get(newShape, b.getI32Type());
     expandedTensor = triton::ExpandDimsOp::create(b, loc, expandedType,
@@ -174,6 +176,13 @@ Value mlir::rock::broadcastToShape(OpBuilder &b, Location loc, Value v,
     return triton::SplatOp::create(b, loc, target, v);
   if (tt.getShape() == shape)
     return v;
+  // Make sure its broadcastable.
+  ArrayRef<int64_t> srcShape = tt.getShape();
+  if (srcShape.size() != shape.size())
+    return {};
+  for (auto [srcDim, dstDim] : llvm::zip_equal(srcShape, shape))
+    if (srcDim != dstDim && srcDim != 1)
+      return {};
   return triton::BroadcastOp::create(b, loc, target, v);
 }
 
@@ -189,10 +198,10 @@ namespace {
 class AffineApplyExpander
     : public AffineExprVisitor<AffineApplyExpander, Value> {
 public:
-  AffineApplyExpander(OpBuilder &builder, ValueRange dimValues,
-                      ValueRange symbolValues, Location loc, Type indexType)
-      : builder(builder), dimValues(dimValues), symbolValues(symbolValues),
-        loc(loc), indexType(indexType) {}
+  AffineApplyExpander(OpBuilder &builder, Location loc, ValueRange dimValues,
+                      ValueRange symbolValues, Type indexType)
+      : builder(builder), loc(loc), dimValues(dimValues),
+        symbolValues(symbolValues), indexType(indexType) {}
 
   template <typename OpTy>
   Value buildBinaryExpr(AffineBinaryOpExpr expr,
@@ -331,9 +340,9 @@ public:
 
 private:
   OpBuilder &builder;
+  Location loc;
   ValueRange dimValues;
   ValueRange symbolValues;
-  Location loc;
   // Element type (i32 or i64) used for constants introduced while expanding the
   // affine expression. Must match the width of the incoming coordinate values.
   Type indexType;
@@ -342,7 +351,7 @@ private:
 static Value expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
                               ValueRange dimValues, ValueRange symbolValues,
                               Type indexType) {
-  return AffineApplyExpander(builder, dimValues, symbolValues, loc, indexType)
+  return AffineApplyExpander(builder, loc, dimValues, symbolValues, indexType)
       .visit(expr);
 }
 } // namespace
@@ -465,10 +474,17 @@ FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
 
   OffsetAndMask result;
   result.mask = broadcastToShape(b, loc, isValid, outShape);
+  if (!result.mask)
+    return emitError(loc) << "cannot broadcast validity mask of type "
+                          << isValid.getType() << " to the output tile shape";
   if (computeOffset) {
     if (computed.size() != 1)
       return failure();
     result.offset = broadcastToShape(b, loc, computed[0], outShape);
+    if (!result.offset)
+      return emitError(loc) << "cannot broadcast offset of type "
+                            << computed[0].getType()
+                            << " to the output tile shape";
   }
   return result;
 }

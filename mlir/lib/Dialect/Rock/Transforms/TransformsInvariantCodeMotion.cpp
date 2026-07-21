@@ -947,10 +947,20 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
     }
     // Carry the validity (suffix) coordinates as full tiles plus a full-tile
     // zero offset accumulator (the base pointer already encodes offset0).
+    bool carriedInitsOk = true;
     for (unsigned pos :
-         ArrayRef<unsigned>(cand.coordPositions).take_back(suffixCount))
-      r.carriedInits.push_back(
-          broadcastToShape(b, loc, (*iter0)[pos], outShape));
+         ArrayRef<unsigned>(cand.coordPositions).take_back(suffixCount)) {
+      Value carried = broadcastToShape(b, loc, (*iter0)[pos], outShape);
+      if (!carried) {
+        carriedInitsOk = false;
+        break;
+      }
+      r.carriedInits.push_back(carried);
+    }
+    // A carried coordinate that can't be broadcast to the tile shape means this
+    // candidate isn't eligible; skip it and let the op be lowered in place.
+    if (!carriedInitsOk)
+      continue;
     auto offTy = RankedTensorType::get(outShape, ptrType.getElementType());
     r.offsetAccInit = splatConst(b, loc, offTy, 0);
     reduced.push_back(std::move(r));

@@ -48,6 +48,9 @@ Value makeRange(OpBuilder &b, Location loc, int32_t start, int32_t end,
                 int64_t numDims, int64_t nonUnitDim, Type elemType);
 
 /// Splat/broadcast `v` (scalar or tensor) to a tensor of shape `shape`.
+/// A scalar is always splat. A tensor is broadcast only when its shape has the
+/// same rank as `shape` and every dim either matches or is a unit dim; when it
+/// is not broadcastable a null Value is returned (callers must check).
 Value broadcastToShape(OpBuilder &b, Location loc, Value v,
                        ArrayRef<int64_t> shape);
 
