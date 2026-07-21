@@ -319,6 +319,22 @@ in `mlir/lib/Dialect/Rock/IR/RockDialect.cpp` (the `switch` is exhaustive and
 classifies each modifier as load-legal or store-only) and the
 `getNameForCacheModifier()` helper.
 
+### 5.4.1 Mirrored constants (from Triton IR traits)
+
+Some Triton compile-time constants are hand-copied into rocMLIR so the tuning /
+lowering logic can reason about a Triton limit without taking a link/header
+dependency on the Triton dialect. Like the mirrored enums above, these are
+**manual copies** that will silently drift if upstream changes the value, so
+diff the source on every bump:
+
+| Rock copy | Upstream source | What to check |
+|-----------|-----------------|---------------|
+| `kTritonMaxTensorNumElements` in `mlir/lib/Dialect/Rock/Tuning/RockTuningImpl.cpp` | `maxTensorNumElements` in `external/triton/include/triton/Dialect/Triton/IR/Traits.h` | Integer value must match exactly (currently `1048576`). It gates the tuning space (`exceedsTritonTensorCap`) against Triton's per-tensor element cap enforced by `verifyTensorSize`; if it drifts high, tuning emits configs that fail Triton verification, and if it drifts low, valid configs get dropped. |
+
+```bash
+git diff "$OLD_REPO..$NEW_REPO" -- external/triton/include/triton/Dialect/Triton/IR/Traits.h
+```
+
 ### 5.5 Architecture Database (`AmdArchDb.cpp`)
 
 `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` maps AMD GPU architectures to hardware
@@ -510,6 +526,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h`
 - [ ] Generate diff for `CMakeLists.txt` and `python/build_helpers.py`, then update `cmake/triton.cmake` for any new build options, downloads, or generated cache variables
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/TritonAttrDefs.td` and reconcile the mirrored `CacheModifier` enum (see section 5.4)
+- [ ] Generate diff for `include/triton/Dialect/Triton/IR/Traits.h` and reconcile the mirrored `kTritonMaxTensorNumElements` constant (see section 5.4.1)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
@@ -576,6 +593,8 @@ If new Triton headers are needed:
 | Triton utility replicas | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
 | Mirrored `CacheModifier` enum | `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` |
 | Triton `CacheModifier` source | `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` |
+| Mirrored `kTritonMaxTensorNumElements` constant | `mlir/lib/Dialect/Rock/Tuning/RockTuningImpl.cpp` |
+| Triton `maxTensorNumElements` source | `external/triton/include/triton/Dialect/Triton/IR/Traits.h` |
 | Triton compiler.py | `external/triton/third_party/amd/backend/compiler.py` |
 | Triton llvm.cc | `external/triton/python/src/llvm.cc` |
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |
