@@ -154,6 +154,7 @@ static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(
     return analyzeSmallTensorRangeOverride;
   return false;
 }
+
 // Based on make_ttgir() in
 // @triton//:third_party/amd/backend/compiler.py
 static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
@@ -255,12 +256,10 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
                      int64_t useReductionLayout) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
-  // Redistribute the layout of the reduction dimension to reduce register
-  // pressure. Always scheduled, but the `useReductionLayout`
-  // actually controls whether it runs.
-  rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
-  reductionLayoutOpts.useReductionLayout = useReductionLayout;
-  pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
+  // Redistribute the layout of the reduction dimension to reduce
+  // register pressure.
+  if (useReductionLayout == 1)
+    pm->addPass(rock::createRockSetReductionLayoutPass());
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -439,17 +438,6 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // Must run after lower-stores (needs the rock.blockwise_store) and before
   // lower-blockwise-to-ptr (which lowers it away).
   addWithDCE(rock::createRockAddTritonMetadataPass());
-
-  // Legalize math ops on narrow floats before they are converted to integer
-  // storage types. LLVM math intrinsics do not accept fp8/fp4 operands.
-  {
-    math::MathExtendToSupportedTypesOptions mathExtendOptions;
-    // TODO: Gfx1250 has support for some bf16 math operations. Therefore this
-    // pass should pass through those supported opertions for bf16 on gfx1250.
-    mathExtendOptions.extraTypeStrs = {"f16"};
-    mathExtendOptions.targetTypeStr = "f32";
-    addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
-  }
 
   // We run this pass after lower-stores to catch redundant casts that cannot be
   // flagged earlier due to loads/stores that sit between truncf/extf pairs.

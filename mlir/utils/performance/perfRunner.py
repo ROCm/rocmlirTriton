@@ -282,6 +282,8 @@ def get_bank_conflict(filename):
             if row['Counter_Name'] == 'LDSBankConflict':
                 result.append(float(row['Counter_Value']))
         csv_file.close()
+        if len(result) == 0:  # counter absent (e.g. not collected on gfx12)
+            return np.nan
         result_average = sum(result) / len(result)
         return result_average
 
@@ -2015,6 +2017,13 @@ def lookup_tuning_db(tuning_db: MaybeTuningDb, arch: str, config: PerfConfigurat
 
     if (arch, config_str) in tuning_db:
         return tuning_db[arch, config_str]
+
+    # Conv to_command_line() appends " -m conv" and " -t 1", which the
+    # quick-tuning DB testVectors omit. Retry with those tokens stripped so
+    # DB rows produced by the tuning tool still match.
+    conv_norm = config_str.replace(" -m conv", "").replace(" -t 1", "")
+    if conv_norm != config_str and (arch, conv_norm) in tuning_db:
+        return tuning_db[arch, conv_norm]
 
     if isinstance(config, AttentionConfiguration):
         false_flags = []

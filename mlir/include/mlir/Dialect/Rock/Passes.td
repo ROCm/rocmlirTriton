@@ -358,10 +358,25 @@ def RockTransformsInvariantCodeMotionPass
       validity by checking a coordinate that moves as the IV increases: the set of valid
       elements is then different on each iteration, so the mask would have to be recomputed
       every step and cannot be precomputed once.
+
+    The rewrite trades per-iteration recomputation (a transient offset tile that
+    is dead after each load) for a loop-invariant base tile that stays live for
+    the whole loop. On loops with a very small constant trip count there is
+    almost nothing to amortize, so the extra live tile is pure register-pressure
+    overhead. `min-loop-trip-count` gates the rewrite: loops whose constant trip
+    count is known and below this threshold are left untouched. Loops with a
+    dynamic (unknown) trip count are always processed, since they are assumed to
+    iterate enough to amortize the cost.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "scf::SCFDialect", "arith::ArithDialect",
                            "triton::TritonDialect"];
+  let options = [
+    Option<"minLoopTripCount", "min-loop-trip-count", "unsigned",
+           /*default=*/"3",
+           "Skip incrementalizing loops whose constant trip count is known and "
+           "strictly below this threshold (0 disables the gate).">,
+  ];
 }
 
 def RockTransformsToPointerArithPass

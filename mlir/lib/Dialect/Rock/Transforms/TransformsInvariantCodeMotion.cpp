@@ -28,6 +28,7 @@
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -53,6 +54,8 @@ namespace {
 struct RockTransformsInvariantCodeMotionPass
     : public rock::impl::RockTransformsInvariantCodeMotionPassBase<
           RockTransformsInvariantCodeMotionPass> {
+  using RockTransformsInvariantCodeMotionPassBase::
+      RockTransformsInvariantCodeMotionPassBase;
   void runOnOperation() override;
 };
 } // end anonymous namespace
@@ -760,10 +763,44 @@ static void simplifyAffineCandidate(Candidate &cand, Value iv, Value lb) {
 static bool simplifyCarryCandidates(scf::ForOp loop,
                                     MutableArrayRef<Candidate> carryCands);
 
+/// Return the loop's constant trip count when the bounds and step are all
+/// compile-time constants, or std::nullopt when it cannot be determined (a
+/// dynamic bound/step). A non-positive step or an empty range yields 0.
+static std::optional<int64_t> getConstantTripCount(scf::ForOp loop) {
+  APInt lbAP, ubAP, stepAP;
+  if (!matchPattern(loop.getLowerBound(), m_ConstantInt(&lbAP)) ||
+      !matchPattern(loop.getUpperBound(), m_ConstantInt(&ubAP)) ||
+      !matchPattern(loop.getStep(), m_ConstantInt(&stepAP)))
+    return std::nullopt;
+  int64_t lb = lbAP.getSExtValue();
+  int64_t ub = ubAP.getSExtValue();
+  int64_t step = stepAP.getSExtValue();
+  if (step <= 0)
+    return std::nullopt;
+  if (ub <= lb)
+    return 0;
+  return llvm::divideCeil(ub - lb, step);
+}
+
 /// Simplify all eligible transforms_to_ptr ops in `loop`: Affine candidates are
 /// rewritten in place, Carry candidates get loop-carried coordinate state.
 /// Returns true if the IR was changed.
-static bool trySimplifyTransformsCandidates(scf::ForOp loop) {
+static bool trySimplifyTransformsCandidates(scf::ForOp loop,
+                                            unsigned minLoopTripCount) {
+  // Register-pressure gate: incrementalizing turns a transient per-iteration
+  // offset tile into a loop-invariant base tile that stays live for the whole
+  // loop. When the constant trip count is known and small there is nothing to
+  // amortize, so skip the rewrite. Dynamic trip counts are always processed.
+  if (minLoopTripCount != 0) {
+    if (std::optional<int64_t> tc = getConstantTripCount(loop);
+        tc && *tc < static_cast<int64_t>(minLoopTripCount)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Skip " << loop.getLoc() << ": constant trip count " << *tc
+                 << " < min-loop-trip-count " << minLoopTripCount << "\n");
+      return false;
+    }
+  }
+
   SmallVector<Candidate, 0> candidates;
   for (Operation &o : loop.getBody()->without_terminator()) {
     if (auto tp = dyn_cast<TransformsToPtrOp>(&o)) {
@@ -1124,7 +1161,7 @@ void RockTransformsInvariantCodeMotionPass::runOnOperation() {
     SmallVector<scf::ForOp> loops;
     func.walk([&](scf::ForOp f) { loops.push_back(f); });
     for (scf::ForOp f : loops) {
-      if (trySimplifyTransformsCandidates(f)) {
+      if (trySimplifyTransformsCandidates(f, minLoopTripCount)) {
         changed = true;
         break;
       }
