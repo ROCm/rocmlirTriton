@@ -194,7 +194,8 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 //
 //   (1) It must divide K evenly
 //   (2) It must generate exactly two power-of-two K segments
-//   (3) Tile size must be within [min(m,n)/2, min(m,n))
+//   (3) Tile size must be within [min(mPerBlock,nPerBlock)/2,
+//                                 min(mPerBlock,nPerBlock))
 //
 // Empirically, this gives a small amount of candidates and always
 // captures the best kPerBlock candidate (i.e., we dont need to consider all
@@ -207,41 +208,41 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 //   kPerBlock trades loop/sync overhead (small K -> many iterations)
 //   against LDS pressure/occupancy (large K -> fewer resident
 //   workgroups). The useful range is at the block's own scale:
-//   after min(m,n) the K tile dominates LDS and occupancy drops, so a
-//   bigger K stops helping, hence the upper bound min(m,n).
-//   The lower bound min(m,n)/2 is just the next pow2 down: the only non-pow2
-//   K that is worth adding are the ones between the largest pow2 gap
-//   (min(m,n)/2 -> min(m,n)); smaller K is already sampled by the pow2 list.
+//   after min(mPerBlock,nPerBlock) the K tile dominates LDS and occupancy
+//   drops, so a bigger K stops helping, hence the upper bound.
+//   The lower bound min(mPerBlock,nPerBlock)/2 is just the next pow2 down:
+//   the only non-pow2 K that is worth adding are the ones between the
+//   largest pow2 gap; smaller K is already sampled by the pow2 list.
 //
 // Its real strength is that it barely grows the search space. It is evaluated
-// per (m,n) tile and returns only the two-segment divisors of K that fall in
-// that tile's [min(m,n)/2, min(m,n)) window (in the worst case, 2 values per
-// tile). A power-of-two K is valid for every (m,n), but a non-pow2 K attaches
-// only to the tiles whose window it lands in, so it does not multiply the
-// size of the search space.
+// per (mPerBlock,nPerBlock) tile and returns only the two-segment divisors of
+// K that fall in that tile's window (in the worst case, 2 values per tile).
+// A power-of-two K is valid for every tile, but a non-pow2 K attaches only
+// to the tiles whose window it lands in, so it does not increase search space
+// significantly.
 //
 // For example, for K=1728:
 //
-// Each enumerated (m,n) tile gains exactly 2 candidates, and the union across
-// all tiles is {18,24,36,48,72,96,144,192}. I.e.,
-// {18,24} attach to min(m,n)=32
-// {36,48} attach to min(m,n)=64
-// {72,96} attach to min(m,n)=128
-// {144,192} attach to min(m,n)=256
+// Each enumerated tile gains exactly 2 candidates, and the union across all
+// tiles is {18,24,36,48,72,96,144,192}. I.e.,
+// {18,24} attach to min(mPerBlock,nPerBlock)=32
+// {36,48} attach to min(mPerBlock,nPerBlock)=64
+// {72,96} attach to min(mPerBlock,nPerBlock)=128
+// {144,192} attach to min(mPerBlock,nPerBlock)=256
 //
 // The space grows from 4500 to 5460 configs (+21%) instead of 5x (4500 ->
 // 22500).
 static SmallVector<uint32_t, 2>
-windowDividingKPerBlock(int64_t k, uint32_t mPerBlock, uint32_t nPerBlock,
+windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
                         uint32_t minBaseK, uint32_t maxK) {
   SmallVector<uint32_t, 2> candidates;
-  if (k <= 0)
+  if (gemmK <= 0)
     return candidates;
   uint32_t minMN = std::min(mPerBlock, nPerBlock);
   uint32_t lo = std::max(minBaseK, minMN / 2);
   uint32_t hi = std::min<uint32_t>(maxK, minMN);
-  for (uint32_t d = lo; d < hi && static_cast<int64_t>(d) <= k; ++d) {
-    if (k % d == 0 && llvm::popcount(d) == 2)
+  for (uint32_t d = lo; d < hi && static_cast<int64_t>(d) <= gemmK; ++d) {
+    if (gemmK % d == 0 && llvm::popcount(d) == 2)
       candidates.push_back(d);
   }
   return candidates;
@@ -271,8 +272,6 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
                 : std::vector<uint32_t>{32, 64};
   else {
     kList = {1, 4, 8, 16};
-    capKPerBlockByK(kList, k);
-    return kList;
   }
 
   // Cap the pow2 K tiles by the actual K dimension so we don't tune (and pad)

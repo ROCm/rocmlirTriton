@@ -2550,6 +2550,13 @@ Value mlir::rock::sliceBlockedDims(OpBuilder &b, Location loc, Value view,
                                    ArrayRef<int64_t> blocks,
                                    ArrayRef<int64_t> tiles,
                                    ArrayRef<Pow2Segment> segs) {
+  // If no segment actually narrows its tile, no slicing is needed.
+  bool allFull = llvm::all_of(llvm::seq<size_t>(0, segs.size()), [&](size_t k) {
+    return segs[k].offset == 0 && segs[k].length == tiles[k];
+  });
+  if (allFull)
+    return view;
+
   auto type = cast<RankedTensorType>(view.getType());
   ArrayRef<int64_t> shape = type.getShape();
   unsigned rank = shape.size();

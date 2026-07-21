@@ -280,29 +280,21 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     SmallVector<Pow2Segment> kSegs = decomposePow2(kPerBlock);
     bool peelK = kSegs.size() > 1;
     if (peelK && isScaledGemm) {
-      rock::markAsNotApplicable(op);
       return op->emitOpError("non-power-of-two kPerBlock is not supported for "
-                             "scaled gemm");
+                             "scaled gemm (should have been rejected by affix)");
     }
 
-    // Build the operand views for the K slices. A single
-    // (power-of-two) segment reuses the operands directly, so their views are
-    // left untouched. Left as two branches intentionally since the peelK
-    // branch emits more complex transforms, which might be less performant
-    // than the else branch.
+    // Build the operand views for each K segment. sliceBlockedDims returns
+    // the operand unchanged when the segment covers the full tile (pow2 case),
+    // so no special-casing is needed.
     SmallVector<Value> segMatA, segMatB;
-    if (peelK) {
-      for (Pow2Segment seg : kSegs) {
-        segMatA.push_back(sliceBlockedDims(b, loc, matA, /*sliceDims=*/{2},
-                                           /*blocks=*/{kIterations},
-                                           /*tiles=*/{kPerBlock}, {seg}));
-        segMatB.push_back(sliceBlockedDims(b, loc, matB, /*sliceDims=*/{1},
-                                           /*blocks=*/{kIterations},
-                                           /*tiles=*/{kPerBlock}, {seg}));
-      }
-    } else {
-      segMatA.push_back(matA);
-      segMatB.push_back(matB);
+    for (Pow2Segment seg : kSegs) {
+      segMatA.push_back(sliceBlockedDims(b, loc, matA, /*sliceDims=*/{2},
+                                         /*blocks=*/{kIterations},
+                                         /*tiles=*/{kPerBlock}, {seg}));
+      segMatB.push_back(sliceBlockedDims(b, loc, matB, /*sliceDims=*/{1},
+                                         /*blocks=*/{kIterations},
+                                         /*tiles=*/{kPerBlock}, {seg}));
     }
 
     scf::ForOp loopOp = createMainLoop(b, loc, nIterations, ValueRange{initAcc});

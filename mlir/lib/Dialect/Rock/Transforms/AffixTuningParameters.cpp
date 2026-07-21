@@ -164,7 +164,7 @@ static LogicalResult validateGridGroupSize(Operation *op,
 // must be powers of two: gemm+gemm requires it, plain gemm only requires them
 // to be positive since rock-decompose-nonpow2-tiles handles non-pow2 M/N.
 // `requirePow2K` likewise controls kPerBlock: plain gemm allows non-pow2 K
-// (rock-gridwise-gemm-to-blockwise peels it into power-of-two segments), while
+// (rock-gridwise-gemm-to-blockwise decomposes it into power-of-two segments), while
 // gemm+gemm and scaled gemm still require a power-of-two K tile.
 static LogicalResult validatePerfConfig(Operation *op,
                                         RockTuningParamAttrInterface params,
@@ -311,7 +311,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
                           << perfConfigAttr << "\n");
 
   // Scaled GEMMs are not yet handled by rock-decompose-nonpow2-tiles (M/N) nor
-  // by the K-peeling in rock-gridwise-gemm-to-blockwise, so keep the
+  // by the K decomposition in rock-gridwise-gemm-to-blockwise, so keep the
   // power-of-two M/N and K requirements for them; plain GEMMs allow both to be
   // non-pow2.
   bool isScaledGemm = op.getScaleA() || op.getScaleB();

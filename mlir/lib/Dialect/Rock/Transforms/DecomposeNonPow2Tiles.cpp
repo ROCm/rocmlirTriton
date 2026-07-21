@@ -297,14 +297,11 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
 
   SmallVector<Value> resultGrid;
   for (auto [i, mSeg] : llvm::enumerate(mSegs)) {
-    Value aCell = a;
-    if (mSeg.length != mPerBlock)
-      aCell = sliceBlockedDims(b, loc, a, {1}, {mBlocks}, {mPerBlock}, {mSeg});
+    Value aCell =
+        sliceBlockedDims(b, loc, a, {1}, {mBlocks}, {mPerBlock}, {mSeg});
     for (auto [j, nSeg] : llvm::enumerate(nSegs)) {
-      Value bCell = bMat;
-      if (nSeg.length != nPerBlock)
-        bCell =
-            sliceBlockedDims(b, loc, bMat, {2}, {nBlocks}, {nPerBlock}, {nSeg});
+      Value bCell =
+          sliceBlockedDims(b, loc, bMat, {2}, {nBlocks}, {nPerBlock}, {nSeg});
       auto cCellType = RankedTensorType::get(
           {G, mBlocks * mSeg.length, nBlocks * nSeg.length}, cElemType);
       auto sub = GridwiseGemmOp::create(

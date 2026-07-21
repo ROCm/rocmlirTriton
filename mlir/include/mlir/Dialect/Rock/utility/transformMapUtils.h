@@ -293,7 +293,7 @@ FailureOr<bool> isInputNonInjective(Value value);
 FailureOr<Type> getOutputFusionElementType(Value value);
 
 //===----------------------------------------------------------------------===//
-// Non-power-of-two tile peeling
+// Non-power-of-two K decomposition
 //===----------------------------------------------------------------------===//
 
 /// A power-of-two segment of a tile dimension: the half-open interval
