@@ -107,7 +107,9 @@ func.func @self_gemm_gemm_with_dot_product(%arg0: tensor<1x1x64xf32>, %arg1: ten
 }
 
 // CHECK: rock.gemm_elementwise_gemm
-// CHECK: elementwise otherIns(%arg2, %arg3 : tensor<786432xi8>, tensor<786432xf16>)
+// The input-only cast(%arg2) is hoisted out of the region and fused as an
+// external input, so it enters the elementwise region already cast to i1.
+// CHECK: elementwise otherIns(%{{.*}}, %{{.*}} : tensor<1x12x256x256xi1>, tensor<1x12x256x256xf16>)
 func.func @mlir_gemm_gemm_where(%arg0: tensor<786432xf16>, %arg1: tensor<786432xf16>, %arg2: tensor<786432xi8>, %arg3: tensor<786432xf16>, %arg4: tensor<786432xf16>) -> tensor<786432xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel = "mixr"} {
   %expanded = tensor.expand_shape %arg4 [[0, 1, 2, 3]] output_shape [1, 12, 256, 256] : tensor<786432xf16> into tensor<1x12x256x256xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1, 2, 3]] output_shape [1, 12, 256, 256] : tensor<786432xf16> into tensor<1x12x256x256xf16>

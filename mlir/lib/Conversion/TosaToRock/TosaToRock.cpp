@@ -448,58 +448,84 @@ elementwise region afterwards.
 template <typename OpT>
 struct ElementwiseRegionFinder {
   /*
-  This is simple DFS traversal to find out if it can hit gemm/conv op from the
-  input. It keeps track of visited nodes to avoid cycles. It caches visited ops
-  in topological order for rewrite. It also caches constant values and block
-  argument candidates which will be used during rewrite.
+  Post-order DFS that discovers the elementwise region feeding `input` and
+  reports whether `input`'s producer subtree reaches the first gemm/conv op.
+
+  A value is classified as one of:
+    - the first gemm/conv output (block argument 0 of the region),
+    - a constant (cloned into the region body iff a body op uses it -- see
+      rewrite() -- so it stays inlined),
+    - an external input (passed into the region as a block argument), or
+    - an elementwise/reshape op that is cloned into the region body.
+
+  Elementwise ops that do not reach the first gemm are part of the input fusion
+  operations and should not be put into the ElementwiseRegion. Their result is
+  left outside as a single external input; only ops on the path from the first
+  gemm are cloned into the region body.
+
+  External inputs are committed lazily by their *kept* consumer rather than when
+  first seen, so a hoisted sub-chain is never recorded as a region input.
   */
-  void visit(Value input) {
-    if (visitedSet.contains(input))
-      return;
-    visitedSet.insert(input);
-    OpT fusionOp = input.getDefiningOp<OpT>();
+  bool visit(Value input) {
+    if (auto it = reachesCache.find(input); it != reachesCache.end())
+      return it->second;
+    // Seed with `false` before recursing so cycles resolve conservatively.
+    reachesCache[input] = false;
+
     Operation *op = input.getDefiningOp();
+    OpT fusionOp = input.getDefiningOp<OpT>();
 
-    // We cannot handle bwd_data/weight conv ops + gemm yet, so bail early
+    // We cannot handle bwd_data/weight conv ops + gemm yet, so bail early.
     if (std::is_same_v<OpT, tosa::TransposeConv2DOp> && op)
-      return;
+      return false;
 
-    // we need to traverse tranposes if it's conv2d
+    // We need to traverse transposes if it's conv2d.
     if (std::is_same_v<OpT, tosa::Conv2DOp> && op) {
-      Operation *convOp = getConvOp(op);
-      if (convOp)
+      if (Operation *convOp = getConvOp(op))
         fusionOp = cast<OpT>(convOp);
     }
     if (fusionOp) {
       firstGemmBasedOp = fusionOp;
       firstGemmBasedVal = input;
-      // Always place the first-gemm value at position 0 so that
-      // getPreSoftmaxQKArgument() (which returns block arg 0) is correct
-      // regardless of DFS visit order.
-      blockArgCandidates.insert(blockArgCandidates.begin(), input);
-      return;
+      // The first-gemm value is the region's dedicated input, materialized as
+      // block argument 0 by rewrite(). Marking its reachesCache entry `true`
+      // keeps consumers from adding it to blockArgCandidates when settling
+      // operands, so blockArgCandidates holds only the external inputs.
+      reachesCache[input] = true;
+      return true;
     }
-    if (op && dyn_cast<tosa::ConstOp>(op)) {
-      constantVals.push_back(input);
-      return;
-    }
-    // Right now, this is a bit restricted that we only allow reshape-like
-    // ops between in the elementwise tree that get fused to the fusion point.
-    // TODO: however, the latest code gridwise-gemm-to-blockwise should tackle
-    // more cases. The absolute restriction is gemm0Output to block
-    // should contain invertible transforms, but that's future work.
-    if (!op || (!isElementwiseOp(op) &&
-                !isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(op))) {
-      // cache blockArgCandidates for rewrite
-      blockArgCandidates.push_back(input);
-      return;
-    }
-    for (Value operand : op->getOperands()) {
-      // do a DFS on each operand
-      visit(operand);
-    }
-    // keep topological order for rewrite
+
+    // Only elementwise and reshape-like ops are fused into the region body;
+    // anything else (constants, external inputs) is a leaf settled by its
+    // consumer.
+    // TODO(rocmlirTriton): the reshape-like restriction mirrors the
+    // gridwise-gemm-to-blockwise fusion contract (gemm0Output-to-block must be
+    // invertible transforms); relaxing it is future work.
+    bool isRegionOp =
+        op && (isElementwiseOp(op) ||
+               isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(op));
+    if (!isRegionOp)
+      return false;
+
+    bool reaches = false;
+    for (Value operand : op->getOperands())
+      reaches |= visit(operand);
+    reachesCache[input] = reaches;
+
+    // Hoist input-only sub-chains: leave this op outside the region so its
+    // result is fused as an external input instead of cloned into the body.
+    if (!reaches)
+      return false;
+
+    // Keep this op (in topological order for cloning) and settle each operand
+    // not produced inside the region -- i.e. without a `true` reachesCache
+    // entry
+    // -- as a constant or external input.
+    for (Value operand : op->getOperands())
+      if (!reachesCache.lookup(operand))
+        commitExternalInput(operand);
     visitedOps.push_back(op);
+    return reaches;
   }
 
   FailureOr<OpT> getFirstGemmBasedOp() const {
@@ -509,12 +535,10 @@ struct ElementwiseRegionFinder {
   }
 
   SmallVector<Value> getElementwiseArgs() const {
-    SmallVector<Value> elementwiseArgs = blockArgCandidates;
-    auto it = std::find(elementwiseArgs.begin(), elementwiseArgs.end(),
-                        firstGemmBasedVal);
-    assert(it != elementwiseArgs.end());
-    elementwiseArgs.erase(it);
-    return elementwiseArgs;
+    // blockArgCandidates holds exactly the external inputs; the first-gemm
+    // value is tracked separately and materialized as block argument 0 by
+    // rewrite().
+    return llvm::to_vector(blockArgCandidates);
   }
 
   void rewrite(Value input, OpBuilder &regionBuilder, Block *block,
@@ -522,28 +546,50 @@ struct ElementwiseRegionFinder {
     PatternRewriter::InsertionGuard guard(regionBuilder);
     regionBuilder.setInsertionPointToEnd(block);
     IRMapping mapper;
+    // Constants consumed by kept ops are cloned into the body (the region is
+    // isolated from the surrounding IR); they were collected while settling
+    // operands, so every one is used by some body op.
     for (Value v : constantVals) {
       auto *newConstOp = regionBuilder.clone(*v.getDefiningOp());
       mapper.map(v, newConstOp->getResult(0));
     }
-    for (Value v : blockArgCandidates) {
-      auto newBlockArg = addBlockArgument(v, block, loc);
-      mapper.map(v, newBlockArg);
-    }
-    for (Operation *op : visitedOps) {
+    // Block argument 0 is the first-gemm value (getPreSoftmaxQKArgument()
+    // relies on this position); the rest are the external inputs in
+    // getElementwiseArgs (and therefore otherIns) order. All must be mapped
+    // before cloning the body ops that reference them.
+    mapper.map(firstGemmBasedVal,
+               addBlockArgument(firstGemmBasedVal, block, loc));
+    for (Value v : blockArgCandidates)
+      mapper.map(v, addBlockArgument(v, block, loc));
+    for (Operation *op : visitedOps)
       regionBuilder.clone(*op, mapper);
-    }
     // Yield the final value of the elementwise chain, consistent with
     // rocmlir-gen which yields the result from preSecondGemmBody regions.
     rock::YieldOp::create(regionBuilder, loc, mapper.lookupOrDefault(input));
   }
 
 private:
+  // Records `operand` as a region input: constants are cloned into the body by
+  // rewrite() (kept inlined), other external inputs become block arguments.
+  // Both SetVectors dedup, so an input feeding several kept ops is added once.
+  void commitExternalInput(Value operand) {
+    if (operand.getDefiningOp<tosa::ConstOp>())
+      constantVals.insert(operand);
+    else
+      blockArgCandidates.insert(operand);
+  }
+
   OpT firstGemmBasedOp = nullptr;
   Value firstGemmBasedVal = nullptr;
-  DenseSet<Value> visitedSet;
-  SmallVector<Value> blockArgCandidates;
-  SmallVector<Value> constantVals;
+  // Maps each visited value to whether its subtree reaches the first gemm. A
+  // `true` entry marks a value produced inside the region (a kept op result or
+  // the first-gemm value); presence also marks a value as visited.
+  llvm::DenseMap<Value, bool> reachesCache;
+  // Constants consumed by kept ops, cloned into the region body by rewrite().
+  llvm::SetVector<Value> constantVals;
+  // External (non-constant) region inputs in insertion order; block argument 0
+  // (the first-gemm value) is tracked separately in firstGemmBasedVal.
+  llvm::SetVector<Value> blockArgCandidates;
   SmallVector<Operation *> visitedOps;
 };
 
