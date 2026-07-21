@@ -32,7 +32,8 @@ struct GemmGemmOrderingTestEnv {
   Type f16, f32;
   AttentionOp attn;
 
-  explicit GemmGemmOrderingTestEnv(int64_t headV = 64, bool useF32 = false)
+  explicit GemmGemmOrderingTestEnv(int64_t headV = 64, bool useF32 = false,
+                                   bool useF32V = false)
       : builder(&ctx) {
     DialectRegistry reg;
     reg.insert<rock::RockDialect>();
@@ -49,11 +50,12 @@ struct GemmGemmOrderingTestEnv {
     // Shapes: Q,O are [G, seq_q, head_qk/head_v]; K is [G, head_qk, seq_k];
     // V is [G, seq_k, head_v]. Only V's `head_v` (the last dim) matters for
     // `gemm1NPerBlock` since the predicate reads `op.getCType()`.
-    Type elemType = useF32 ? f32 : f16;
-    auto qT = RankedTensorType::get({1, 64, 64}, elemType);
-    auto kT = RankedTensorType::get({1, 64, 64}, elemType);
-    auto vT = RankedTensorType::get({1, 64, headV}, elemType);
-    auto oT = RankedTensorType::get({1, 64, headV}, elemType);
+    Type qkElemType = useF32 ? f32 : f16;
+    Type vElemType = useF32 || useF32V ? f32 : f16;
+    auto qT = RankedTensorType::get({1, 64, 64}, qkElemType);
+    auto kT = RankedTensorType::get({1, 64, 64}, qkElemType);
+    auto vT = RankedTensorType::get({1, 64, headV}, vElemType);
+    auto oT = RankedTensorType::get({1, 64, headV}, vElemType);
 
     auto funcType = builder.getFunctionType({qT, kT, vT}, {oT});
     auto func = func::FuncOp::create(builder, loc, "test", funcType);
@@ -107,21 +109,21 @@ TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsKpackNot1) {
   GemmGemmOrderingTestEnv e;
   auto p = e.params(32, 32, 32, /*kpack=*/2, 1, 4, 0, 1, 1, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
-      e.builder, p, e.f16, e.f16, "gfx942", e.op()));
+      e.builder, p, e.f16, e.f16, e.f16, "gfx942", e.op()));
 }
 
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsSplitKNot1) {
   GemmGemmOrderingTestEnv e;
   auto p = e.params(32, 32, 32, 1, 1, 4, 0, /*splitKFactor=*/2, 1, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
-      e.builder, p, e.f16, e.f16, "gfx942", e.op()));
+      e.builder, p, e.f16, e.f16, e.f16, "gfx942", e.op()));
 }
 
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsNumCTAsNot1) {
   GemmGemmOrderingTestEnv e;
   auto p = e.params(32, 32, 32, 1, /*numCTAs=*/2, 4, 0, 1, 1, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
-      e.builder, p, e.f16, e.f16, "gfx942", e.op()));
+      e.builder, p, e.f16, e.f16, e.f16, "gfx942", e.op()));
 }
 
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsGemm0LDSOverflow) {
@@ -129,7 +131,7 @@ TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsGemm0LDSOverflow) {
   // Huge gemm0 tile blows the LDS budget by itself, regardless of headV.
   auto p = e.params(256, 256, 256, 1, 1, 4, 16, 1, 2, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
-      e.builder, p, e.f32, e.f32, "gfx942", e.op()));
+      e.builder, p, e.f32, e.f32, e.f32, "gfx942", e.op()));
 }
 
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsGemm1VTileOverflow) {
@@ -142,18 +144,28 @@ TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsGemm1VTileOverflow) {
   GemmGemmOrderingTestEnv e(/*headV=*/16384, /*useF32=*/true);
   auto p = e.params(32, 32, 32, 1, 1, 4, 0, 1, 1, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
-      e.builder, p, e.f32, e.f32, "gfx942", e.op()));
+      e.builder, p, e.f32, e.f32, e.f32, "gfx942", e.op()));
+}
+
+TEST(PerfConfigOrderingGemmGemmTest, IsApplicableUsesVElementBitWidth) {
+  // With headV=512, the f16 Q+K+V tiles fit in gfx942's 64 KiB LDS, but
+  // widening only V to f32 pushes the footprint over the limit.
+  GemmGemmOrderingTestEnv e(/*headV=*/512, /*useF32=*/false,
+                            /*useF32V=*/true);
+  auto p = e.params(32, 32, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
+      e.builder, p, e.f16, e.f16, e.f32, "gfx942", e.op()));
 }
 
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableAcceptsConservativeDefault) {
   GemmGemmOrderingTestEnv e;
   auto p = e.params(32, 32, 32, 1, 1, 4, 0, 1, 1, 0, 0);
   EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
-      e.builder, p, e.f16, e.f16, "gfx942", e.op()));
+      e.builder, p, e.f16, e.f16, e.f16, "gfx942", e.op()));
   EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
-      e.builder, p, e.f32, e.f32, "gfx942", e.op()));
+      e.builder, p, e.f32, e.f32, e.f32, "gfx942", e.op()));
   EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
-      e.builder, p, e.f16, e.f16, "gfx1100", e.op()));
+      e.builder, p, e.f16, e.f16, e.f16, "gfx1100", e.op()));
 }
 
 // --- orderParams<GemmGemmParamsAttr> ---
@@ -166,7 +178,7 @@ TEST(PerfConfigOrderingGemmGemmTest, OrderParamsBumpsSecondToFront) {
   std::vector<GemmGemmParamsAttr> in{bad, good, other};
   auto out = orderParams<GemmGemmParamsAttr>(in, [&](GemmGemmParamsAttr p) {
     return isGemmGemmParamsConservativelyApplicable(e.builder, p, e.f16, e.f16,
-                                                    "gfx942", e.op());
+                                                    e.f16, "gfx942", e.op());
   });
   ASSERT_EQ(out.size(), 3u);
   EXPECT_EQ(out[0], good);
@@ -201,11 +213,29 @@ TEST(PerfConfigOrderingGemmGemmTest,
   auto p = getConservativeDefaultGemmGemmParams(&e.ctx);
   for (StringRef arch : {"gfx90a", "gfx942", "gfx950", "gfx1030", "gfx1100",
                          "gfx1200", "gfx1250"}) {
-    EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(e.builder, p, e.f16,
-                                                         e.f16, arch, e.op()))
+    EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
+        e.builder, p, e.f16, e.f16, e.f16, arch, e.op()))
         << "default not applicable on " << arch << " for f16";
-    EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(e.builder, p, e.f32,
-                                                         e.f32, arch, e.op()))
+    EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
+        e.builder, p, e.f32, e.f32, e.f32, arch, e.op()))
         << "default not applicable on " << arch << " for f32";
   }
+}
+
+TEST(PerfConfigOrderingGemmGemmTest, EstimateUsesElementBitWidth) {
+  GemmGemmOrderingTestEnv e;
+  FailureOr<int64_t> f32Bytes = estimateGemmGemmLdsBytes(e.f32, /*gemmO=*/64);
+  FailureOr<int64_t> f64Bytes =
+      estimateGemmGemmLdsBytes(e.builder.getF64Type(), /*gemmO=*/64);
+
+  ASSERT_TRUE(succeeded(f32Bytes));
+  ASSERT_TRUE(succeeded(f64Bytes));
+  EXPECT_EQ(*f32Bytes, 16 * 1024);
+  EXPECT_EQ(*f64Bytes, 32 * 1024);
+}
+
+TEST(PerfConfigOrderingGemmGemmTest, EstimateRejectsWidthlessType) {
+  GemmGemmOrderingTestEnv e;
+  EXPECT_TRUE(
+      failed(estimateGemmGemmLdsBytes(e.builder.getNoneType(), /*gemmO=*/64)));
 }

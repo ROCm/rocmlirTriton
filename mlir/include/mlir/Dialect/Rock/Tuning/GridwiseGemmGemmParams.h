@@ -62,38 +62,36 @@ private:
 /// Pure-arithmetic core of the gemm+gemm/attention peak-LDS footprint.
 /// Covers the three concurrently-live tiles: gemm0's A (Q) and B (K) tiles
 /// plus gemm1's B (V) tile, the latter sized by `gemm1NPerBlock`; the gemm0
-/// result P stays in registers. `aBits`/`bBits` are the A/B element bit
-/// widths (V is approximated as `bBits`: exact for plain attention,
-/// conservative when V is wider). The footprint is accumulated in bits so
-/// sub-byte element types are not rounded per element, then converted to
-/// bytes once and scaled by the pipeline stage count. This is the single
-/// source of truth shared by `isGemmGemmParamsConservativelyApplicable` and
+/// result P stays in registers. `aBits`/`bBits`/`cBits` are the A (Q), B (K),
+/// and C (V) element bit widths. The footprint is accumulated in bits so
+/// sub-byte element types are not rounded per element, then converted to bytes
+/// once and scaled by the pipeline stage count. This is the single source of
+/// truth shared by `isGemmGemmParamsConservativelyApplicable` and
 /// `estimateGemmGemmLdsBytes`.
 static inline int64_t gemmGemmLdsBytes(GemmGemmParamsAttr p,
                                        int64_t gemm1NPerBlock, int64_t aBits,
-                                       int64_t bBits) {
+                                       int64_t bBits, int64_t cBits) {
   int64_t totalBits = (p.getMPerBlockG0() * p.getKPerBlock() * aBits) +
                       (p.getNPerBlockG0() * p.getKPerBlock() * bBits) +
-                      (p.getNPerBlockG0() * gemm1NPerBlock * bBits);
+                      (p.getNPerBlockG0() * gemm1NPerBlock * cBits);
   return llvm::divideCeil(totalBits, static_cast<int64_t>(8)) *
          p.getNumStages();
 }
 
 /// Gemm+gemm/attention counterpart of isGemmParamsConservativelyApplicable.
 /// LDS bound covers gemm0's A+B tiles (Q, K) plus gemm1's B tile (V); P stays
-/// in registers. V's bitwidth is approximated as `bElemType` (true for plain
-/// attention; conservative when V is wider). The gemm1 tile uses
-/// `getGemm1Params(...).getNPerBlock()` so there's a single source of truth.
+/// in registers. The gemm1 tile uses `getGemm1Params(...).getNPerBlock()` so
+/// there's a single source of truth.
 inline bool isGemmGemmParamsConservativelyApplicable(
     OpBuilder &b, GemmGemmParamsAttr p, Type aElemType, Type bElemType,
-    StringRef arch, RockGemmGemmWrapperInterface op) {
+    Type cElemType, StringRef arch, RockGemmGemmWrapperInterface op) {
   if (p.getKpack() != 1 || p.getSplitKFactor() != 1 || p.getNumCTAs() != 1)
     return false;
   int64_t gemm1NPerBlock =
       PopulateParamsGemmGemm::getGemm1Params(b, op, p).getNPerBlock();
-  int64_t bytes =
-      gemmGemmLdsBytes(p, gemm1NPerBlock, aElemType.getIntOrFloatBitWidth(),
-                       bElemType.getIntOrFloatBitWidth());
+  int64_t bytes = gemmGemmLdsBytes(
+      p, gemm1NPerBlock, aElemType.getIntOrFloatBitWidth(),
+      bElemType.getIntOrFloatBitWidth(), cElemType.getIntOrFloatBitWidth());
   return bytes <= getLDSSize(arch);
 }
 
@@ -121,26 +119,24 @@ getConservativeDefaultGemmGemmParams(MLIRContext *ctx) {
 /// the problem-sizes-only sibling of
 /// `isGemmGemmParamsConservativelyApplicable`: it needs neither an op nor a
 /// module, so callers such as the MIGraphX CAPI can gate on problem sizes
-/// alone. Returns failure for a non-positive `gemmO` or an element type that
-/// the accelerated gemm+gemm path does not support (4/8/16-bit floats).
+/// alone. Returns failure for a non-positive `gemmO` or a type that has no
+/// integer or floating-point bit width.
 inline FailureOr<int64_t> estimateGemmGemmLdsBytes(Type elemType,
                                                    int64_t gemmO) {
   if (gemmO <= 0)
     return failure();
-  // The estimate is only meaningful for the accelerated gemm+gemm input types
-  // (4/8/16-bit floats, e.g. f4/fp8/f16/bf16); reject anything else.
-  if (!isa<FloatType>(elemType))
+  // LDS usage depends only on element width. Operation-specific type support
+  // is validated by the operation or compilation pipeline, not this estimator.
+  if (!isa<IntegerType, FloatType>(elemType))
     return failure();
   unsigned bits = elemType.getIntOrFloatBitWidth();
-  if (bits != 4 && bits != 8 && bits != 16)
-    return failure();
 
   GemmGemmParamsAttr params =
       getConservativeDefaultGemmGemmParams(elemType.getContext());
   // The second gemm's N-per-block tile covers the power-of-two-padded gemmO,
   // matching getGemm1Params().
   int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(gemmO);
-  return gemmGemmLdsBytes(params, gemm1NPerBlock,
+  return gemmGemmLdsBytes(params, gemm1NPerBlock, static_cast<int64_t>(bits),
                           static_cast<int64_t>(bits),
                           static_cast<int64_t>(bits));
 }

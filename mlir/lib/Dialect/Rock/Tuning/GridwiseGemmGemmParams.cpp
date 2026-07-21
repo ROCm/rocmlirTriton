@@ -35,19 +35,22 @@ PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
                                             RockGemmGemmWrapperInterface op) {
   // Bump the first applicable config (Q + K + V LDS fit, kpack/splitK/numCTAs
   // == 1) to the front for skip-benchmarking consumers.
-  auto elemType = cast<ShapedType>(op.getAType()).getElementType();
+  auto aElemType = cast<ShapedType>(op.getAType()).getElementType();
+  auto bElemType = cast<ShapedType>(op.getBType()).getElementType();
+  auto cElemType = cast<ShapedType>(op.getCType()).getElementType();
   auto arch = rock::getArchValue(op);
-  auto list = getTuningParameters(b, arch, op.getKernelType(), elemType);
+  auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType);
   auto ordered =
       orderParams<GemmGemmParamsAttr>(list, [&](GemmGemmParamsAttr p) {
-        return isGemmGemmParamsConservativelyApplicable(b, p, elemType,
-                                                        elemType, arch, op);
+        return isGemmGemmParamsConservativelyApplicable(
+            b, p, aElemType, bElemType, cElemType, arch, op);
       });
   // Guarantee MIGRAPHX_SKIP_BENCHMARKING consumers see an applicable
   // `front()`: if no table entry passed the check, prepend the conservative
   // default.
-  if (ordered.empty() || !isGemmGemmParamsConservativelyApplicable(
-                             b, ordered.front(), elemType, elemType, arch, op))
+  if (ordered.empty() ||
+      !isGemmGemmParamsConservativelyApplicable(b, ordered.front(), aElemType,
+                                                bElemType, cElemType, arch, op))
     ordered.insert(ordered.begin(),
                    getConservativeDefaultGemmGemmParams(b.getContext()));
   return ordered;
